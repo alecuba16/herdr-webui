@@ -52,8 +52,8 @@ use crate::server::client_accept::{
 };
 use crate::server::client_transport::ServerEvent;
 use crate::server::clients::{
-    events_include_interaction, latest_app_client, render_targets, terminal_attach_client_ids,
-    ClientConnection, ClientConnectionMode,
+    events_include_interaction, latest_app_client, latest_visible_client, render_targets,
+    terminal_attach_client_ids, ClientConnection, ClientConnectionMode,
 };
 use crate::server::keybindings::{app_keybindings, apply_keybindings};
 use crate::server::notifications::{
@@ -1133,7 +1133,7 @@ impl HeadlessServer {
     }
 
     fn promote_latest_remaining_client(&mut self) -> bool {
-        let next_foreground = latest_app_client(&self.clients);
+        let next_foreground = latest_visible_client(&self.clients);
         let changed = next_foreground != self.foreground_client_id;
         self.foreground_client_id = next_foreground;
         self.sync_foreground_client_state();
@@ -2164,8 +2164,13 @@ impl HeadlessServer {
         client.render_state.reset_baseline();
         client.last_activity = stamp;
         let was_foreground = self.foreground_client_id == Some(client_id);
+        let should_promote_attach = self.foreground_client_id.is_none();
         if was_foreground {
             self.promote_latest_remaining_client();
+        } else if should_promote_attach {
+            self.foreground_client_id = Some(client_id);
+            self.sync_foreground_client_state();
+            self.resize_shared_runtime_to_effective_size();
         }
 
         info!(client_id, cols, rows, terminal_id = %terminal_id, "terminal attach client connected");

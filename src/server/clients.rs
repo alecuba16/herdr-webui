@@ -220,6 +220,19 @@ pub(crate) fn latest_app_client(clients: &HashMap<u64, ClientConnection>) -> Opt
         .map(|(&client_id, _)| client_id)
 }
 
+pub(crate) fn latest_visible_client(clients: &HashMap<u64, ClientConnection>) -> Option<u64> {
+    latest_app_client(clients).or_else(|| {
+        clients
+            .iter()
+            .filter(|(_, client)| {
+                client.writer.is_some()
+                    && matches!(client.mode, ClientConnectionMode::TerminalAttach { .. })
+            })
+            .max_by_key(|(_, client)| client.last_activity)
+            .map(|(&client_id, _)| client_id)
+    })
+}
+
 pub(crate) fn terminal_attach_client_ids(
     clients: &HashMap<u64, ClientConnection>,
     terminal_id: &str,

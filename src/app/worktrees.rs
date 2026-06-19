@@ -568,11 +568,17 @@ impl App {
             create.error = Some("branch is required".into());
             return;
         }
+        let base = create.base.trim().to_string();
+        if branch == base {
+            create.error = Some("branch must differ from base branch".into());
+            return;
+        }
         if create.creating {
             return;
         }
 
         create.branch = branch.clone();
+        create.base = base;
         self.state.name_input = branch.clone();
         if create.checkout_path_overridden {
             create.checkout_path = std::path::PathBuf::from(create.checkout_path_input.trim());
