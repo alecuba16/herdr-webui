@@ -96,7 +96,12 @@ impl App {
         };
         let base = params
             .base
-            .unwrap_or_else(|| crate::worktree::default_base_branch(&source.source_repo_root));
+            .unwrap_or_else(|| crate::worktree::default_base_branch(&source.source_repo_root))
+            .trim()
+            .to_string();
+        if branch == base {
+            return encode_error(id, "invalid_request", "branch must differ from base branch");
+        }
         let checkout_path = match params.path {
             Some(path) => match absolute_user_path(&path) {
                 Ok(path) => path,
