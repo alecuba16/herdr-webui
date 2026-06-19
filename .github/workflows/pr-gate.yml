@@ -15,7 +15,7 @@ jobs:
       - name: Check if contributor is approved
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
-          github-token: ${{ secrets.KANGAL_GITHUB_TOKEN }}
+          github-token: ${{ github.token }}
           script: |
             const prAuthor = context.payload.pull_request.user.login;
             const reopener = context.payload.sender?.login ?? null;
