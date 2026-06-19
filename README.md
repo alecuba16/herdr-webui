@@ -340,6 +340,46 @@ Future test improvements:
 - Add macOS install tests by extracting plist/write/launchctl command construction from side-effect execution.
 - Keep browser UI JavaScript untested for now; settings modal, theme, drag-and-drop, notification scope, and terminal focus still require manual browser checks unless a browser automation suite is added later.
 
+## Backend Compatibility
+
+WebUI checks Herdr backend compatibility at runtime through `/api/versions`. It asks the backend for its version with the existing `ping` API and returns compatibility metadata:
+
+```json
+{
+  "webui": "0.0.1",
+  "backend": "0.7.0",
+  "protocol_version": 14,
+  "min_backend": "0.7.0",
+  "max_tested_backend": "0.7.0",
+  "compatibility": {
+    "status": "compatible",
+    "compatible": true,
+    "message": "backend version is supported"
+  }
+}
+```
+
+Compatibility status values:
+
+- `compatible`: backend is within the supported and tested version range.
+- `too_old`: backend is older than WebUI's minimum supported version.
+- `untested_newer`: backend is newer than WebUI's maximum tested version; it may work, but this release has not validated it.
+- `unknown`: backend version is unavailable or cannot be parsed.
+
+Current compatibility table:
+
+| WebUI version | Min backend | Max tested backend | Direct attach protocol |
+| --- | --- | --- | --- |
+| 0.0.1 | 0.7.0 | 0.7.0 | 14 |
+
+Compatibility testing strategy:
+
+- Unit tests cover semantic version parsing and compatibility status decisions.
+- API-level tests use a fake Herdr JSON socket for `/api/versions` and assert compatibility metadata.
+- Future releases should add fake Herdr socket fixtures for workspace, tab, pane, agent, worktree, and terminal attach contracts.
+- If Herdr later exposes a stable API/protocol crate, WebUI should depend on it so Dependabot can propose schema/protocol bumps and CI can catch incompatibilities.
+- Until then, updating `max_tested_backend` and this table should remain a manual release step after testing against the target Herdr backend.
+
 ## Versioning and Releases
 
 The binary reports its version with:

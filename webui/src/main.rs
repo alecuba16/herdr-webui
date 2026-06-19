@@ -25,8 +25,80 @@ const INSTALL_LABEL: &str = "herdr-web";
 const MAX_FRAME_SIZE: usize = 2 * 1024 * 1024;
 const MAX_GRAPHICS_FRAME_SIZE: usize = 32 * 1024 * 1024;
 const PROTOCOL_VERSION: u32 = 14;
+const MIN_BACKEND_VERSION: &str = "0.7.0";
+const MAX_TESTED_BACKEND_VERSION: &str = "0.7.0";
 
 type LocalStream = interprocess::local_socket::Stream;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct SimpleVersion {
+    major: u64,
+    minor: u64,
+    patch: u64,
+}
+
+impl SimpleVersion {
+    fn parse(value: &str) -> Option<Self> {
+        let value = value.strip_prefix('v').unwrap_or(value);
+        let core = value
+            .find(['-', '+'])
+            .map(|index| &value[..index])
+            .unwrap_or(value);
+        let mut parts = core.split('.');
+        let major = parts.next()?.parse().ok()?;
+        let minor = parts.next()?.parse().ok()?;
+        let patch = parts.next()?.parse().ok()?;
+        parts.next().is_none().then_some(Self {
+            major,
+            minor,
+            patch,
+        })
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum BackendCompatibility {
+    Compatible,
+    TooOld,
+    UntestedNewer,
+    Unknown,
+}
+
+impl BackendCompatibility {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Compatible => "compatible",
+            Self::TooOld => "too_old",
+            Self::UntestedNewer => "untested_newer",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    fn message(&self, backend: Option<&str>) -> &'static str {
+        match self {
+            Self::Compatible => "backend version is supported",
+            Self::TooOld => "backend version is older than the minimum supported version",
+            Self::UntestedNewer => "backend version is newer than the maximum tested version",
+            Self::Unknown if backend.is_some() => "backend version could not be parsed",
+            Self::Unknown => "backend version is unavailable",
+        }
+    }
+}
+
+fn backend_compatibility(backend: Option<&str>) -> BackendCompatibility {
+    let Some(backend) = backend.and_then(SimpleVersion::parse) else {
+        return BackendCompatibility::Unknown;
+    };
+    let min = SimpleVersion::parse(MIN_BACKEND_VERSION).expect("valid min backend version");
+    let max = SimpleVersion::parse(MAX_TESTED_BACKEND_VERSION).expect("valid max backend version");
+    if backend < min {
+        BackendCompatibility::TooOld
+    } else if backend > max {
+        BackendCompatibility::UntestedNewer
+    } else {
+        BackendCompatibility::Compatible
+    }
+}
 
 #[derive(Clone, Debug)]
 struct WebConfig {
@@ -728,8 +800,23 @@ async fn versions(
     }
     let session = session_from_headers(&state, &headers);
     let api = api_for_headers(&state, &headers);
-    Json(json!({ "webui": HERDR_WEBUI_VERSION, "backend": api.backend_version(), "session": session_display_name(session.as_deref()) }))
-        .into_response()
+    let backend = api.backend_version();
+    let compatibility = backend_compatibility(backend.as_deref());
+    let compatibility_message = compatibility.message(backend.as_deref());
+    Json(json!({
+        "webui": HERDR_WEBUI_VERSION,
+        "backend": backend,
+        "session": session_display_name(session.as_deref()),
+        "protocol_version": PROTOCOL_VERSION,
+        "min_backend": MIN_BACKEND_VERSION,
+        "max_tested_backend": MAX_TESTED_BACKEND_VERSION,
+        "compatibility": {
+            "status": compatibility.as_str(),
+            "compatible": compatibility == BackendCompatibility::Compatible,
+            "message": compatibility_message,
+        }
+    }))
+    .into_response()
 }
 
 async fn launch_session(
@@ -1670,6 +1757,7 @@ mod tests {
     use serde_json::Value;
     use std::io::Cursor;
     use std::sync::{Mutex as StdMutex, OnceLock};
+    use std::thread;
     use tower::ServiceExt;
 
     fn test_state() -> WebState {
@@ -1690,6 +1778,10 @@ mod tests {
 
     fn test_app() -> Router {
         app_router(test_state())
+    }
+
+    fn test_app_with_state(state: WebState) -> Router {
+        app_router(state)
     }
 
     fn request(method: Method, uri: &str) -> axum::http::request::Builder {
@@ -1713,6 +1805,40 @@ mod tests {
         std::env::remove_var("HERDR_WEB_USER");
         std::env::remove_var("HERDR_WEB_PASSWORD");
         std::env::remove_var("HERDR_WEB_LOCALHOST_NO_AUTH");
+    }
+
+    #[cfg(unix)]
+    fn fake_api_socket(response: serde_json::Value) -> (PathBuf, thread::JoinHandle<()>) {
+        use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+
+        let path = std::env::temp_dir().join(format!(
+            "herdr-webui-api-test-{}.sock",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_file(&path);
+        let name = path.clone().to_fs_name::<GenericFilePath>().unwrap();
+        let listener = ListenerOptions::new()
+            .name(name)
+            .try_overwrite(true)
+            .create_sync()
+            .unwrap();
+        let handle = thread::spawn(move || {
+            let mut stream = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(request["method"], "ping");
+            stream
+                .write_all(serde_json::to_string(&response).unwrap().as_bytes())
+                .unwrap();
+            stream.write_all(b"\n").unwrap();
+            stream.flush().unwrap();
+        });
+        (path, handle)
     }
 
     #[test]
@@ -2001,6 +2127,49 @@ mod tests {
     }
 
     #[test]
+    fn parses_simple_semver_values() {
+        assert_eq!(
+            SimpleVersion::parse("v0.7.0+abc").unwrap(),
+            SimpleVersion {
+                major: 0,
+                minor: 7,
+                patch: 0
+            }
+        );
+        assert_eq!(
+            SimpleVersion::parse("0.7.1-dev").unwrap(),
+            SimpleVersion {
+                major: 0,
+                minor: 7,
+                patch: 1
+            }
+        );
+        assert_eq!(SimpleVersion::parse("0.7"), None);
+        assert_eq!(SimpleVersion::parse("unknown"), None);
+    }
+
+    #[test]
+    fn classifies_backend_compatibility() {
+        assert_eq!(
+            backend_compatibility(Some("0.6.9")),
+            BackendCompatibility::TooOld
+        );
+        assert_eq!(
+            backend_compatibility(Some("0.7.0")),
+            BackendCompatibility::Compatible
+        );
+        assert_eq!(
+            backend_compatibility(Some("0.7.1")),
+            BackendCompatibility::UntestedNewer
+        );
+        assert_eq!(
+            backend_compatibility(Some("bad")),
+            BackendCompatibility::Unknown
+        );
+        assert_eq!(backend_compatibility(None), BackendCompatibility::Unknown);
+    }
+
+    #[test]
     fn computes_workspace_order_key_from_session() {
         let state = test_state();
         let mut headers = HeaderMap::new();
@@ -2095,6 +2264,39 @@ mod tests {
         assert_eq!(response_json(unauthenticated).await["authenticated"], false);
         assert_eq!(authenticated.status(), StatusCode::OK);
         assert_eq!(response_json(authenticated).await["authenticated"], true);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn versions_api_reports_backend_compatibility_from_fake_socket() {
+        let (socket, handle) = fake_api_socket(json!({
+            "id": "web:ping",
+            "result": { "version": "0.7.0" }
+        }));
+        let mut state = test_state();
+        state.api_socket = Some(socket.clone());
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                request(Method::GET, "/api/versions")
+                    .header(header::COOKIE, "herdr_web_session=token-123")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = response_json(response).await;
+
+        assert_eq!(body["backend"], "0.7.0");
+        assert_eq!(body["min_backend"], MIN_BACKEND_VERSION);
+        assert_eq!(body["max_tested_backend"], MAX_TESTED_BACKEND_VERSION);
+        assert_eq!(body["protocol_version"], PROTOCOL_VERSION);
+        assert_eq!(body["compatibility"]["status"], "compatible");
+        assert_eq!(body["compatibility"]["compatible"], true);
+
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
     }
 
     #[tokio::test]
@@ -2347,7 +2549,7 @@ function statusMark(status,withText=false){const s=statusClass(status);if(s==='w
 function statusDot(status){const s=statusClass(status);if(s==='working')return '<span class="dot working"></span>';if(s==='blocked')return '<span class="dot blocked"></span>';if(s==='idle'||s==='done')return `<span class="dot ${s==='done'?'done':'idle'}"></span>`;return '<span class="dot unknown"></span>'}
 function apiOptions(opt){const next=Object.assign({},opt||{});next.headers=Object.assign({},next.headers||{},state.session&&state.session!=='default'?{'x-herdr-session':state.session}:{});return next}
 async function api(url,opt){const r=await fetch(url,apiOptions(opt));if(r.status===401){location.href='/';throw Error('unauthorized')}const body=await r.json();if(!r.ok||body.error)throw Error(body.error||r.statusText);return body}
-async function loadVersions(){const versionsEl=el('versions');try{const v=await api('/api/versions');const session=v.session||state.session||'default';if(versionsEl)versionsEl.textContent=`session ${session} · webui ${v.webui||'-'} · backend ${v.backend||'offline'}`;const button=el('sessionButton');if(button)button.textContent=state.session||session}catch(e){if(versionsEl)versionsEl.textContent='webui - · backend offline'}}
+async function loadVersions(){const versionsEl=el('versions');try{const v=await api('/api/versions');const session=v.session||state.session||'default';const compat=v.compatibility||{},status=compat.status&&compat.status!=='compatible'?' · '+compat.status:'';if(versionsEl){versionsEl.textContent=`session ${session} · webui ${v.webui||'-'} · backend ${v.backend||'offline'}${status}`;versionsEl.title=compat.message||''}const button=el('sessionButton');if(button)button.textContent=state.session||session}catch(e){if(versionsEl)versionsEl.textContent='webui - · backend offline'}}
 function sessionPrefix(){return '/session/'+encodeURIComponent(state.session||'default')}
 function expandScopedId(ws,id){if(!ws||!id)return id||null;return `${ws}:${id}`}
 function compactScopedId(ws,id){if(!ws||!id)return id||null;const prefix=`${ws}:`;return id.startsWith(prefix)?id.slice(prefix.length):id}
