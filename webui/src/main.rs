@@ -1093,19 +1093,28 @@ async fn remove_worktree_path(
     let repo_root = expand_user_path_string(&body.repo_root);
     let path = expand_user_path_string(&body.path);
     let mut command = Command::new("git");
-    command.arg("-C").arg(&repo_root).args(["worktree", "remove"]);
+    command
+        .arg("-C")
+        .arg(&repo_root)
+        .args(["worktree", "remove"]);
     if body.force.unwrap_or(false) {
         command.arg("--force");
     }
     command.arg(&path);
     match command.output() {
-        Ok(output) if output.status.success() => Json(json!({ "ok": true, "path": path })).into_response(),
+        Ok(output) if output.status.success() => {
+            Json(json!({ "ok": true, "path": path })).into_response()
+        }
         Ok(output) => (
             StatusCode::BAD_GATEWAY,
             Json(json!({ "error": String::from_utf8_lossy(&output.stderr).trim() })),
         )
             .into_response(),
-        Err(err) => (StatusCode::BAD_GATEWAY, Json(json!({ "error": err.to_string() }))).into_response(),
+        Err(err) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": err.to_string() })),
+        )
+            .into_response(),
     }
 }
 
@@ -1199,10 +1208,12 @@ fn display_path_for_prefix(path: &Path, prefix: &str) -> String {
 fn directory_suggestions(prefix: &str) -> Vec<PathSuggestion> {
     let prefix = prefix.trim();
     let expanded = expand_path_prefix(prefix);
-    let has_trailing_separator = prefix.ends_with('/') || prefix.ends_with(std::path::MAIN_SEPARATOR);
+    let has_trailing_separator =
+        prefix.ends_with('/') || prefix.ends_with(std::path::MAIN_SEPARATOR);
     let (dir, name_prefix) = if prefix.is_empty() {
         (
-            home_dir().unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))),
+            home_dir()
+                .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))),
             String::new(),
         )
     } else if has_trailing_separator {
@@ -1303,7 +1314,11 @@ async fn git_branches(
     };
     match list_git_branches(cwd) {
         Ok(branches) => Json(GitBranchesResponse { branches }).into_response(),
-        Err(err) => (StatusCode::BAD_GATEWAY, Json(json!({ "error": err.to_string() }))).into_response(),
+        Err(err) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": err.to_string() })),
+        )
+            .into_response(),
     }
 }
 
