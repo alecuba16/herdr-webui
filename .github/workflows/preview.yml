@@ -33,7 +33,7 @@ jobs:
       base_version: ${{ steps.plan.outputs.base_version }}
       protocol: ${{ steps.plan.outputs.protocol }}
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: master
           fetch-depth: 0
@@ -86,7 +86,7 @@ jobs:
 
       - name: Install Rust tools
         if: steps.plan.outputs.should_publish == 'true'
-        uses: taiki-e/install-action@fd2f5e3d644b484055ebf4268f474c565f148f25 # v2.81.9
+        uses: taiki-e/install-action@b8cecb83565409bcc297b2df6e77f030b2a468d5 # v2.82.0
         with:
           tool: just,cargo-nextest
 
@@ -138,7 +138,7 @@ jobs:
       HERDR_BUILD_ID: ${{ needs.preflight.outputs.build_id }}
       HERDR_BUILD_COMMIT: ${{ needs.preflight.outputs.commit }}
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ needs.preflight.outputs.commit }}
           persist-credentials: false
@@ -252,7 +252,7 @@ jobs:
       contents: write
       issues: write
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: master
           fetch-depth: 0

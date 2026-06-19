@@ -27,7 +27,7 @@ jobs:
       HERDR_WEBUI_VERSION: 0.1.0+${{ github.sha }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
