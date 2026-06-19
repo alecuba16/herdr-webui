@@ -99,9 +99,6 @@ impl App {
             .unwrap_or_else(|| crate::worktree::default_base_branch(&source.source_repo_root))
             .trim()
             .to_string();
-        if branch == base {
-            return encode_error(id, "invalid_request", "branch must differ from base branch");
-        }
         let checkout_path = match params.path {
             Some(path) => match absolute_user_path(&path) {
                 Ok(path) => path,
@@ -126,12 +123,15 @@ impl App {
             }
         }
 
-        let command = crate::worktree::build_worktree_add_new_branch_command(
+        let command = match crate::worktree::build_worktree_add_command_for_branch(
             &source.source_checkout_path,
             &checkout_path,
             &branch,
             &base,
-        );
+        ) {
+            Ok(command) => command,
+            Err(err) => return encode_error(id, "worktree_create_failed", err),
+        };
         if let Err(err) = crate::worktree::run_worktree_command(&command) {
             return encode_error(id, "worktree_create_failed", err);
         }
@@ -765,11 +765,16 @@ impl App {
     }
 
     fn worktree_source_info(&self, source: &WorktreeSource) -> WorktreeSourceInfo {
+        let worktree_directory = crate::worktree::configured_worktree_directory(
+            &source.source_repo_root,
+            &self.state.worktree_directory,
+        );
         WorktreeSourceInfo {
             repo_key: source.repo_key.clone(),
             repo_name: source.repo_name.clone(),
             repo_root: source.source_repo_root.display().to_string(),
             source_checkout_path: source.source_checkout_path.display().to_string(),
+            default_worktree_directory: worktree_directory.display().to_string(),
             source_workspace_id: source
                 .workspace_idx
                 .map(|idx| self.public_workspace_id(idx)),

@@ -333,6 +333,66 @@ pub(crate) fn build_worktree_add_new_branch_command(
     }
 }
 
+pub(crate) fn build_worktree_add_existing_branch_command(
+    repo_root: &Path,
+    path: &Path,
+    branch: &str,
+) -> WorktreeCommand {
+    WorktreeCommand {
+        program: "git".to_string(),
+        args: vec![
+            "-C".to_string(),
+            repo_root.display().to_string(),
+            "worktree".to_string(),
+            "add".to_string(),
+            path.display().to_string(),
+            branch.to_string(),
+        ],
+    }
+}
+
+pub(crate) fn branch_exists(repo_root: &Path, branch: &str) -> Result<bool, String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["show-ref", "--verify", "--quiet"])
+        .arg(format!("refs/heads/{branch}"))
+        .output()
+        .map_err(|err| err.to_string())?;
+    if output.status.success() {
+        Ok(true)
+    } else if output.status.code() == Some(1) {
+        Ok(false)
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Err(if !stderr.is_empty() {
+            stderr
+        } else if !stdout.is_empty() {
+            stdout
+        } else {
+            format!("git show-ref failed with status {}", output.status)
+        })
+    }
+}
+
+pub(crate) fn build_worktree_add_command_for_branch(
+    repo_root: &Path,
+    path: &Path,
+    branch: &str,
+    base: &str,
+) -> Result<WorktreeCommand, String> {
+    if branch_exists(repo_root, branch)? {
+        Ok(build_worktree_add_existing_branch_command(
+            repo_root, path, branch,
+        ))
+    } else {
+        Ok(build_worktree_add_new_branch_command(
+            repo_root, path, branch, base,
+        ))
+    }
+}
+
 pub(crate) fn run_worktree_command(command: &WorktreeCommand) -> Result<(), String> {
     let output = std::process::Command::new(&command.program)
         .args(&command.args)
@@ -817,6 +877,55 @@ prunable stale
                 "HEAD"
             ]
         );
+    }
+
+    #[test]
+    fn worktree_add_command_checks_out_existing_branch() {
+        let command = build_worktree_add_existing_branch_command(
+            Path::new("/repo/herdr"),
+            Path::new("/w/herdr/PAIINF-228"),
+            "PAIINF-228",
+        );
+        assert_eq!(command.program, "git");
+        assert_eq!(
+            command.args,
+            vec![
+                "-C",
+                "/repo/herdr",
+                "worktree",
+                "add",
+                "/w/herdr/PAIINF-228",
+                "PAIINF-228"
+            ]
+        );
+    }
+
+    #[test]
+    fn worktree_add_command_uses_existing_branch_when_branch_already_exists() {
+        let repo = create_committed_repo("worktree-existing-branch-repo");
+        run_git(&repo, &["branch", "PAIINF-228-gpu-slicing"]);
+
+        let command = build_worktree_add_command_for_branch(
+            &repo,
+            Path::new("/w/tower/paiinf-228-gpu-slicing"),
+            "PAIINF-228-gpu-slicing",
+            "PAIINF-228",
+        )
+        .unwrap();
+
+        assert_eq!(
+            command.args,
+            vec![
+                "-C",
+                repo.to_str().unwrap(),
+                "worktree",
+                "add",
+                "/w/tower/paiinf-228-gpu-slicing",
+                "PAIINF-228-gpu-slicing"
+            ]
+        );
+
+        let _ = std::fs::remove_dir_all(repo);
     }
 
     #[test]

@@ -569,10 +569,6 @@ impl App {
             return;
         }
         let base = create.base.trim().to_string();
-        if branch == base {
-            create.error = Some("branch must differ from base branch".into());
-            return;
-        }
         if create.creating {
             return;
         }
@@ -586,12 +582,19 @@ impl App {
         create.creating = true;
         create.error = None;
 
-        let command = crate::worktree::build_worktree_add_new_branch_command(
+        let command = match crate::worktree::build_worktree_add_command_for_branch(
             &create.source_checkout_path,
             &create.checkout_path,
             &create.branch,
             &create.base,
-        );
+        ) {
+            Ok(command) => command,
+            Err(err) => {
+                create.creating = false;
+                create.error = Some(err);
+                return;
+            }
+        };
         let parent_dir = create
             .checkout_path
             .parent()

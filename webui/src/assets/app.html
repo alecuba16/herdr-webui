@@ -1,0 +1,91 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>herdr web</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <script src="/assets/xterm.js"></script>
+    <link rel="stylesheet" href="/assets/xterm.css" />
+    <link rel="stylesheet" href="/assets/app.css" />
+  </head>
+  <body>
+    <div id="app">
+      <aside class="side">
+        <div class="head">
+          <strong>herdr web</strong
+          ><button class="mini" id="themeToggle" title="Toggle theme">☾</button
+          ><button class="mini" id="shortcutsToggle" title="Shortcuts">?</button
+          ><button class="mini" id="settingsToggle" title="Settings">⚙</button
+          ><button class="btn" id="newWs" title="Create workspace">＋</button>
+        </div>
+        <div class="section">
+          <div class="muted" id="versions">webui - · backend -</div>
+          <div id="workspaces"></div>
+          <div class="section-header">Agents</div>
+          <div id="agents"></div>
+        </div>
+      </aside>
+      <main class="main">
+        <div class="tabs" id="tabs"></div>
+        <div class="terminal-shell" id="terminalShell">
+          <div class="terminal-loading" id="terminalLoading">
+            <span>Loading panel</span>
+          </div>
+          <div class="terminal" id="terminal"></div>
+        </div>
+      </main>
+    </div>
+    <div class="context-menu" id="clipboardMenu">
+      <button id="copyMenu">Copy</button><button id="pasteMenu">Paste</button>
+    </div>
+    <div class="modal-backdrop" id="settingsModal">
+      <div class="modal">
+        <h2>Settings</h2>
+        <label class="option"
+          ><span
+            >Default theme<small
+              >Auto follows browser/system theme; if unavailable it uses
+              light.</small
+            ></span
+          ><select class="settings-select" id="optTheme">
+            <option value="auto">Auto</option>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select></label
+        ><label class="option"
+          ><input type="checkbox" id="optOverflow" /><span
+            >Show terminal overflow scrollbars<small
+              >Keep backend terminal size and use browser scrollbars when it
+              overflows.</small
+            ></span
+          ></label
+        ><label class="option"
+          ><input type="checkbox" id="optFit" /><span
+            >Resize terminal to browser viewport<small
+              >Ask Herdr to use browser-sized terminal dimensions instead of
+              pane layout size.</small
+            ></span
+          ></label
+        ><label class="option"
+          ><input type="checkbox" id="optShiftEnterNewline" /><span
+            >Shift+Enter inserts newline<small
+              >Intercept browser Shift+Enter and send OpenCode newline
+              input.</small
+            ></span
+          ></label
+        ><label class="option"
+          ><input type="checkbox" id="optSound" /><span
+            >Agent attention sounds<small
+              >Play a browser sound when an agent needs attention.</small
+            ></span
+          ></label
+        >
+        <div class="modal-actions">
+          <button class="btn" id="settingsClose">Close</button>
+        </div>
+      </div>
+    </div>
+    <script src="/assets/app.js"></script>
+  </body>
+</html>
