@@ -1,0 +1,56 @@
+name: WebUI CI
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - "webui/**"
+      - "Makefile"
+      - ".github/workflows/webui-ci.yml"
+  pull_request:
+    branches:
+      - master
+    paths:
+      - "webui/**"
+      - "Makefile"
+      - ".github/workflows/webui-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Build and test
+    runs-on: macos-latest
+    env:
+      HERDR_WEBUI_VERSION: 0.1.0+${{ github.sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: webui -> ../target
+
+      - name: Format check
+        run: cargo fmt --manifest-path webui/Cargo.toml --check
+
+      - name: Check
+        run: cargo check --manifest-path webui/Cargo.toml --target-dir target
+
+      - name: Test
+        run: cargo test --manifest-path webui/Cargo.toml --target-dir target
+
+      - name: Build release
+        run: cargo build --release --manifest-path webui/Cargo.toml --target-dir target
+
+      - name: Version contains commit hash
+        run: |
+          version="$(target/release/herdr-webui --version)"
+          echo "version=$version"
+          test "$version" = "0.1.0+${GITHUB_SHA}"
