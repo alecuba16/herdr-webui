@@ -4110,7 +4110,7 @@ last_pane = "prefix+tab"
     }
 
     #[tokio::test]
-    async fn route_client_input_sends_shift_enter_lf_for_modify_other_keys_pane() {
+    async fn route_client_input_preserves_shift_enter_for_modify_other_keys_pane() {
         let mut app = test_app();
         let mut workspace = Workspace::test_new("test");
         let focused = workspace.focused_pane_id().unwrap();
@@ -4124,7 +4124,10 @@ last_pane = "prefix+tab"
 
         app.route_client_input(b"\x1b[13;2u".to_vec());
 
-        assert_eq!(rx.recv().await.unwrap(), bytes::Bytes::from_static(b"\n"));
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            bytes::Bytes::from_static(b"\x1b[27;2;13~")
+        );
     }
 
     #[tokio::test]

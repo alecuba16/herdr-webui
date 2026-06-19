@@ -12,10 +12,6 @@ pub fn encode_key(key: KeyEvent, protocol: KeyboardProtocol) -> Vec<u8> {
 }
 
 pub fn encode_terminal_key(key: TerminalKey, protocol: KeyboardProtocol) -> Vec<u8> {
-    if key.code == KeyCode::Enter && key.modifiers == KeyModifiers::SHIFT {
-        return vec![b'\n'];
-    }
-
     if let Some(bytes) = encode_text_input(&key) {
         return bytes;
     }
@@ -577,7 +573,10 @@ mod tests {
     #[test]
     fn kitty_shift_enter() {
         let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT);
-        assert_eq!(encode_key(key, KeyboardProtocol::Kitty { flags: 1 }), b"\n");
+        assert_eq!(
+            encode_key(key, KeyboardProtocol::Kitty { flags: 1 }),
+            b"\x1b[13;2u"
+        );
     }
 
     #[test]
