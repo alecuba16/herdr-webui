@@ -32,6 +32,7 @@ pub struct TerminalTheme {
 pub enum DefaultColorKind {
     Foreground,
     Background,
+    Cursor,
 }
 
 pub const HOST_COLOR_QUERY_SEQUENCE: &str = "\x1b]10;?\x1b\\\x1b]11;?\x1b\\";
@@ -43,6 +44,7 @@ impl TerminalTheme {
         match kind {
             DefaultColorKind::Foreground => self.foreground = Some(color),
             DefaultColorKind::Background => self.background = Some(color),
+            DefaultColorKind::Cursor => {}
         }
         self
     }
@@ -70,6 +72,7 @@ pub fn osc_set_default_color_sequence(kind: DefaultColorKind, color: RgbColor) -
     let command = match kind {
         DefaultColorKind::Foreground => 10,
         DefaultColorKind::Background => 11,
+        DefaultColorKind::Cursor => 12,
     };
     format!(
         "\x1b]{command};rgb:{:02x}/{:02x}/{:02x}\x1b\\",
@@ -81,6 +84,7 @@ pub fn osc_reset_default_color_sequence(kind: DefaultColorKind) -> &'static str 
     match kind {
         DefaultColorKind::Foreground => "\x1b]110\x1b\\",
         DefaultColorKind::Background => "\x1b]111\x1b\\",
+        DefaultColorKind::Cursor => "\x1b]112\x1b\\",
     }
 }
 
@@ -167,6 +171,25 @@ mod tests {
         assert_eq!(
             osc_reset_default_color_sequence(DefaultColorKind::Background),
             "\x1b]111\x1b\\"
+        );
+        assert_eq!(
+            osc_reset_default_color_sequence(DefaultColorKind::Cursor),
+            "\x1b]112\x1b\\"
+        );
+    }
+
+    #[test]
+    fn cursor_color_sequence_uses_osc_12() {
+        assert_eq!(
+            osc_set_default_color_sequence(
+                DefaultColorKind::Cursor,
+                RgbColor {
+                    r: 0xaa,
+                    g: 0xbb,
+                    b: 0xcc,
+                }
+            ),
+            "\x1b]12;rgb:aa/bb/cc\x1b\\"
         );
     }
 

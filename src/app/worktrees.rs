@@ -92,11 +92,13 @@ impl App {
             .map(|duration| duration.as_micros().min(u128::from(u64::MAX)) as u64)
             .unwrap_or(0);
         let branch = crate::worktree::generated_branch_slug(seed);
-        let checkout_path = crate::worktree::default_checkout_path(
+        let worktree_directory = crate::worktree::configured_worktree_directory(
+            &space.repo_root,
             &self.state.worktree_directory,
-            &repo_name,
-            &branch,
         );
+        let checkout_path =
+            crate::worktree::default_checkout_path(&worktree_directory, &repo_name, &branch);
+        let base = crate::worktree::default_base_branch(&space.repo_root);
 
         tracing::info!(
             ws_idx,
@@ -116,6 +118,10 @@ impl App {
             repo_key: space.key,
             repo_name,
             branch,
+            base,
+            checkout_path_input: checkout_path.display().to_string(),
+            checkout_path_overridden: false,
+            editing_checkout_path: false,
             checkout_path,
             error: None,
             creating: false,
@@ -160,13 +166,27 @@ impl App {
                 }
             };
 
-        let list = match crate::worktree::list_existing_worktrees(&space.repo_root) {
+        let mut list = match crate::worktree::list_existing_worktrees(&space.repo_root) {
             Ok(list) => list,
             Err(err) => {
                 self.state.config_diagnostic = Some(err);
                 return;
             }
         };
+        let worktree_directory = crate::worktree::configured_worktree_directory(
+            &space.repo_root,
+            &self.state.worktree_directory,
+        );
+        list.extend(crate::worktree::list_default_directory_worktrees(
+            &worktree_directory,
+            &space.label,
+            &space.key,
+        ));
+        list.sort_by(|a, b| a.path.cmp(&b.path));
+        list.dedup_by(|a, b| {
+            crate::worktree::canonical_or_original(&a.path)
+                == crate::worktree::canonical_or_original(&b.path)
+        });
         let entries = list
             .into_iter()
             .filter(|entry| !entry.is_bare && !entry.is_prunable)
@@ -246,8 +266,31 @@ impl App {
                 self.close_worktree_create_dialog();
             }
             KeyCode::Enter => self.start_worktree_add(),
+            KeyCode::Tab | KeyCode::BackTab => self.cycle_worktree_create_field(),
+            KeyCode::Char(' ')
+                if self
+                    .state
+                    .worktree_create
+                    .as_ref()
+                    .is_some_and(|create| create.editing_checkout_path) =>
+            {
+                self.insert_worktree_create_text(" ");
+            }
+            KeyCode::Char(' ') => self.toggle_worktree_checkout_override(),
             KeyCode::Backspace => {
-                if self.state.name_input_replace_on_type {
+                if self
+                    .state
+                    .worktree_create
+                    .as_ref()
+                    .is_some_and(|create| create.editing_checkout_path)
+                {
+                    if let Some(create) = &mut self.state.worktree_create {
+                        create.checkout_path_input.pop();
+                        create.checkout_path =
+                            std::path::PathBuf::from(&create.checkout_path_input);
+                        create.error = None;
+                    }
+                } else if self.state.name_input_replace_on_type {
                     self.state.name_input.clear();
                     self.state.name_input_replace_on_type = false;
                 } else {
@@ -263,6 +306,15 @@ impl App {
     }
 
     pub(crate) fn insert_worktree_create_text(&mut self, text: &str) {
+        if let Some(create) = &mut self.state.worktree_create {
+            if create.editing_checkout_path {
+                create.checkout_path_input.push_str(text);
+                create.checkout_path = std::path::PathBuf::from(&create.checkout_path_input);
+                create.checkout_path_overridden = true;
+                create.error = None;
+                return;
+            }
+        }
         if self.state.name_input_replace_on_type {
             self.state.name_input.clear();
             self.state.name_input_replace_on_type = false;
@@ -470,12 +522,40 @@ impl App {
             return;
         };
         create.branch = self.state.name_input.clone();
-        create.checkout_path = crate::worktree::default_checkout_path(
-            &self.state.worktree_directory,
-            &create.repo_name,
-            &create.branch,
-        );
+        if !create.checkout_path_overridden {
+            let worktree_directory = crate::worktree::configured_worktree_directory(
+                &create.source_repo_root,
+                &self.state.worktree_directory,
+            );
+            create.checkout_path = crate::worktree::default_checkout_path(
+                &worktree_directory,
+                &create.repo_name,
+                &create.branch,
+            );
+            create.checkout_path_input = create.checkout_path.display().to_string();
+        }
         create.error = None;
+    }
+
+    fn cycle_worktree_create_field(&mut self) {
+        let Some(create) = &mut self.state.worktree_create else {
+            return;
+        };
+        if create.checkout_path_overridden {
+            create.editing_checkout_path = !create.editing_checkout_path;
+        }
+    }
+
+    fn toggle_worktree_checkout_override(&mut self) {
+        let Some(create) = &mut self.state.worktree_create else {
+            return;
+        };
+        create.checkout_path_overridden = !create.checkout_path_overridden;
+        create.editing_checkout_path = create.checkout_path_overridden;
+        if !create.checkout_path_overridden {
+            create.editing_checkout_path = false;
+            self.sync_worktree_branch_from_input();
+        }
     }
 
     pub(crate) fn start_worktree_add(&mut self) {
@@ -494,11 +574,9 @@ impl App {
 
         create.branch = branch.clone();
         self.state.name_input = branch.clone();
-        create.checkout_path = crate::worktree::default_checkout_path(
-            &self.state.worktree_directory,
-            &create.repo_name,
-            &branch,
-        );
+        if create.checkout_path_overridden {
+            create.checkout_path = std::path::PathBuf::from(create.checkout_path_input.trim());
+        }
         create.creating = true;
         create.error = None;
 
@@ -506,7 +584,7 @@ impl App {
             &create.source_checkout_path,
             &create.checkout_path,
             &create.branch,
-            "HEAD",
+            &create.base,
         );
         let parent_dir = create
             .checkout_path
@@ -823,7 +901,11 @@ mod tests {
             repo_key: "repo-key".into(),
             repo_name: "herdr".into(),
             branch: "generated-branch".into(),
+            base: "main".into(),
             checkout_path: "/repo/herdr-generated-branch".into(),
+            checkout_path_input: "/repo/herdr-generated-branch".into(),
+            checkout_path_overridden: false,
+            editing_checkout_path: false,
             error: None,
             creating: false,
         });
@@ -1100,7 +1182,11 @@ mod tests {
             repo_key: "repo-key".into(),
             repo_name: "herdr".into(),
             branch: "old".into(),
+            base: "main".into(),
             checkout_path: std::path::PathBuf::from("/old"),
+            checkout_path_input: "/old".into(),
+            checkout_path_overridden: false,
+            editing_checkout_path: false,
             error: Some("old error".into()),
             creating: false,
         });
@@ -1114,6 +1200,42 @@ mod tests {
             std::path::PathBuf::from("/w/herdr/issue-137")
         );
         assert_eq!(create.error, None);
+    }
+
+    #[test]
+    fn checkout_path_override_stops_branch_sync_until_disabled() {
+        let mut app = app_for_worktree_tests();
+        app.state.worktree_directory = std::path::PathBuf::from("/w");
+        app.state.name_input = "issue/137".into();
+        app.state.worktree_create = Some(WorktreeCreateState {
+            source_workspace_id: "source".into(),
+            source_checkout_path: std::path::PathBuf::from("/repo/herdr"),
+            source_existing_membership: None,
+            source_repo_root: std::path::PathBuf::from("/repo/herdr"),
+            repo_key: "repo-key".into(),
+            repo_name: "herdr".into(),
+            branch: "issue/137".into(),
+            base: "main".into(),
+            checkout_path: std::path::PathBuf::from("/custom/path"),
+            checkout_path_input: "/custom/path".into(),
+            checkout_path_overridden: true,
+            editing_checkout_path: false,
+            error: None,
+            creating: false,
+        });
+
+        app.state.name_input = "issue/138".into();
+        app.sync_worktree_branch_from_input();
+        assert_eq!(
+            app.state.worktree_create.as_ref().unwrap().checkout_path,
+            std::path::PathBuf::from("/custom/path")
+        );
+
+        app.toggle_worktree_checkout_override();
+        assert_eq!(
+            app.state.worktree_create.as_ref().unwrap().checkout_path,
+            std::path::PathBuf::from("/w/herdr/issue-138")
+        );
     }
 
     #[test]
@@ -1133,7 +1255,11 @@ mod tests {
             repo_key: "repo-key".into(),
             repo_name: "herdr".into(),
             branch: branch.into(),
+            base: "HEAD".into(),
             checkout_path: checkout.clone(),
+            checkout_path_input: checkout.display().to_string(),
+            checkout_path_overridden: false,
+            editing_checkout_path: false,
             error: None,
             creating: false,
         });
@@ -1244,7 +1370,11 @@ mod tests {
             repo_key: "repo-key".into(),
             repo_name: "herdr".into(),
             branch: branch.into(),
+            base: "HEAD".into(),
             checkout_path: checkout.clone(),
+            checkout_path_input: checkout.display().to_string(),
+            checkout_path_overridden: false,
+            editing_checkout_path: false,
             error: None,
             creating: false,
         });

@@ -439,7 +439,7 @@ pub struct UiConfig {
     pub mouse_scroll_lines: Option<NonZeroUsize>,
     /// Ask for confirmation before closing a workspace. Default: true.
     pub confirm_close: bool,
-    /// Ask for a tab name before creating a new tab. Default: true.
+    /// Legacy setting retained for config compatibility. New tabs are auto-numbered.
     pub prompt_new_tab_name: bool,
     /// Show agent labels in split pane borders when no manual pane label is set. Default: false.
     pub show_agent_labels_on_pane_borders: bool,
@@ -628,7 +628,7 @@ impl Default for UiConfig {
             redraw_on_focus_gained: true,
             mouse_scroll_lines: None,
             confirm_close: true,
-            prompt_new_tab_name: true,
+            prompt_new_tab_name: false,
             show_agent_labels_on_pane_borders: false,
             agent_panel_sort: AgentPanelSortConfig::Spaces,
             accent: "cyan".into(),
@@ -856,16 +856,16 @@ directory = "~/Projects/herdr-worktrees"
     }
 
     #[test]
-    fn prompt_new_tab_name_defaults_on_and_parses() {
+    fn prompt_new_tab_name_defaults_off_and_parses() {
         let default_config = Config::default();
-        assert!(default_config.ui.prompt_new_tab_name);
+        assert!(!default_config.ui.prompt_new_tab_name);
 
         let toml = r#"
 [ui]
-prompt_new_tab_name = false
+prompt_new_tab_name = true
 "#;
         let config: Config = toml::from_str(toml).unwrap();
-        assert!(!config.ui.prompt_new_tab_name);
+        assert!(config.ui.prompt_new_tab_name);
     }
 
     #[test]

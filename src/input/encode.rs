@@ -12,6 +12,10 @@ pub fn encode_key(key: KeyEvent, protocol: KeyboardProtocol) -> Vec<u8> {
 }
 
 pub fn encode_terminal_key(key: TerminalKey, protocol: KeyboardProtocol) -> Vec<u8> {
+    if key.code == KeyCode::Enter && key.modifiers == KeyModifiers::SHIFT {
+        return vec![b'\n'];
+    }
+
     if let Some(bytes) = encode_text_input(&key) {
         return bytes;
     }
@@ -405,6 +409,7 @@ fn encode_legacy_inner(key: KeyEvent) -> Vec<u8> {
                 ch.encode_utf8(&mut buf).as_bytes().to_vec()
             }
         }
+        KeyCode::Enter if key.modifiers == KeyModifiers::SHIFT => vec![b'\n'],
         KeyCode::Enter => vec![b'\r'],
         KeyCode::Backspace => vec![127],
         KeyCode::Tab => vec![9],
@@ -476,9 +481,9 @@ mod tests {
     }
 
     #[test]
-    fn legacy_shift_enter_is_just_cr() {
+    fn legacy_shift_enter_is_lf() {
         let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT);
-        assert_eq!(encode_key(key, KeyboardProtocol::Legacy), vec![b'\r']);
+        assert_eq!(encode_key(key, KeyboardProtocol::Legacy), vec![b'\n']);
     }
 
     #[test]
@@ -572,10 +577,7 @@ mod tests {
     #[test]
     fn kitty_shift_enter() {
         let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT);
-        assert_eq!(
-            encode_key(key, KeyboardProtocol::Kitty { flags: 1 }),
-            b"\x1b[13;2u"
-        );
+        assert_eq!(encode_key(key, KeyboardProtocol::Kitty { flags: 1 }), b"\n");
     }
 
     #[test]

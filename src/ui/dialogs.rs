@@ -240,10 +240,10 @@ pub(super) fn render_new_linked_worktree_overlay(app: &AppState, frame: &mut Fra
     };
 
     super::dim_background(frame, area);
-    let Some(inner) = render_modal_shell(frame, area, 68, 10, &app.palette) else {
+    let Some(inner) = render_modal_shell(frame, area, 78, 12, &app.palette) else {
         return;
     };
-    if inner.height < 7 {
+    if inner.height < 9 {
         return;
     }
 
@@ -255,9 +255,11 @@ pub(super) fn render_new_linked_worktree_overlay(app: &AppState, frame: &mut Fra
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
         Constraint::Min(0),
     ])
-    .areas::<8>(inner);
+    .areas::<10>(inner);
 
     render_modal_header(frame, rows[0], "new worktree", &app.palette);
 
@@ -276,25 +278,50 @@ pub(super) fn render_new_linked_worktree_overlay(app: &AppState, frame: &mut Fra
         input_rect,
     );
 
-    let checkout = create.checkout_path.display().to_string();
     frame.render_widget(
-        Paragraph::new(" checkout").style(Style::default().fg(app.palette.overlay0)),
+        Paragraph::new(format!(" base {}", create.base))
+            .style(Style::default().fg(app.palette.overlay0)),
         rows[3],
     );
+    let checked = if create.checkout_path_overridden {
+        "[x]"
+    } else {
+        "[ ]"
+    };
+    let focus = if create.editing_checkout_path {
+        " path"
+    } else {
+        ""
+    };
     frame.render_widget(
-        Paragraph::new(format!(" {checkout}")).style(Style::default().fg(app.palette.subtext0)),
+        Paragraph::new(format!(" {checked} override checkout path{focus}"))
+            .style(Style::default().fg(app.palette.overlay0)),
         rows[4],
     );
+
+    let checkout = if create.checkout_path_overridden {
+        format!(" {}█", create.checkout_path_input)
+    } else {
+        format!(" {}", create.checkout_path.display())
+    };
+    let path_style = if create.editing_checkout_path {
+        Style::default()
+            .fg(app.palette.text)
+            .bg(app.palette.surface0)
+    } else {
+        Style::default().fg(app.palette.subtext0)
+    };
+    frame.render_widget(Paragraph::new(checkout).style(path_style), rows[5]);
 
     if create.creating {
         frame.render_widget(
             Paragraph::new(" creating…").style(Style::default().fg(app.palette.overlay0)),
-            rows[5],
+            rows[6],
         );
     } else if let Some(error) = &create.error {
         frame.render_widget(
             Paragraph::new(format!(" {error}")).style(Style::default().fg(app.palette.red)),
-            rows[5],
+            rows[6],
         );
     }
 

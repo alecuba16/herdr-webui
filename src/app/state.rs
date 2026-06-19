@@ -291,18 +291,18 @@ impl Palette {
         }
     }
 
-    /// One Dark — Atom's classic dark theme.
+    /// One Dark — from Th3Whit3Wolf/one-nvim.
     pub fn one_dark() -> Self {
         Self {
-            accent: Color::Rgb(97, 175, 239), // blue
+            accent: Color::Rgb(82, 139, 255),
             panel_bg: Color::Rgb(40, 44, 52),
-            surface0: Color::Rgb(44, 49, 58),
-            surface1: Color::Rgb(62, 68, 81),
-            surface_dim: Color::Rgb(40, 44, 52),
+            surface0: Color::Rgb(44, 50, 60),
+            surface1: Color::Rgb(62, 68, 82),
+            surface_dim: Color::Rgb(24, 26, 31),
             overlay0: Color::Rgb(92, 99, 112),
-            overlay1: Color::Rgb(115, 122, 135),
+            overlay1: Color::Rgb(130, 137, 151),
             text: Color::Rgb(171, 178, 191),
-            subtext0: Color::Rgb(150, 156, 168),
+            subtext0: Color::Rgb(130, 137, 151),
             mauve: Color::Rgb(198, 120, 221),
             green: Color::Rgb(152, 195, 121),
             yellow: Color::Rgb(229, 192, 123),
@@ -313,14 +313,14 @@ impl Palette {
         }
     }
 
-    /// One Light — Atom's classic light theme.
+    /// One Light — from Th3Whit3Wolf/one-nvim.
     pub fn one_light() -> Self {
         Self {
-            accent: Color::Rgb(64, 120, 242),
+            accent: Color::Rgb(82, 111, 255),
             panel_bg: Color::Rgb(250, 250, 250),
             surface0: Color::Rgb(240, 240, 241),
-            surface1: Color::Rgb(229, 229, 230),
-            surface_dim: Color::Rgb(245, 245, 246),
+            surface1: Color::Rgb(208, 208, 208),
+            surface_dim: Color::Rgb(231, 233, 225),
             overlay0: Color::Rgb(160, 161, 167),
             overlay1: Color::Rgb(104, 107, 119),
             text: Color::Rgb(56, 58, 66),
@@ -329,8 +329,8 @@ impl Palette {
             green: Color::Rgb(80, 161, 79),
             yellow: Color::Rgb(193, 132, 1),
             red: Color::Rgb(228, 86, 73),
-            blue: Color::Rgb(64, 120, 242),
-            teal: Color::Rgb(1, 132, 188),
+            blue: Color::Rgb(1, 132, 188),
+            teal: Color::Rgb(9, 151, 179),
             peach: Color::Rgb(152, 104, 1),
         }
     }
@@ -501,8 +501,8 @@ impl Palette {
             "nord" => Some(Self::nord()),
             "gruvbox" | "gruvbox-dark" => Some(Self::gruvbox()),
             "gruvbox-light" => Some(Self::gruvbox_light()),
-            "one-dark" | "onedark" => Some(Self::one_dark()),
-            "one-light" | "onelight" => Some(Self::one_light()),
+            "one-dark" | "onedark" | "one-nvim" | "one-nvim-dark" => Some(Self::one_dark()),
+            "one-light" | "onelight" | "one-nvim-light" => Some(Self::one_light()),
             "solarized" | "solarized-dark" => Some(Self::solarized()),
             "solarized-light" => Some(Self::solarized_light()),
             "kanagawa" => Some(Self::kanagawa()),
@@ -585,7 +585,11 @@ pub struct WorktreeCreateState {
     pub repo_key: String,
     pub repo_name: String,
     pub branch: String,
+    pub base: String,
     pub checkout_path: std::path::PathBuf,
+    pub checkout_path_input: String,
+    pub checkout_path_overridden: bool,
+    pub editing_checkout_path: bool,
     pub error: Option<String>,
     pub creating: bool,
 }
@@ -915,6 +919,8 @@ pub const THEME_NAMES: &[&str] = &[
     "nord",
     "gruvbox",
     "gruvbox-light",
+    "one-nvim",
+    "one-nvim-light",
     "one-dark",
     "one-light",
     "solarized",
@@ -1714,7 +1720,7 @@ impl AppState {
             redraw_on_focus_gained: true,
             mouse_scroll_lines: crate::config::DEFAULT_MOUSE_SCROLL_LINES,
             confirm_close: true,
-            prompt_new_tab_name: true,
+            prompt_new_tab_name: false,
             show_agent_labels_on_pane_borders: false,
             pane_history_persistence: false,
             reveal_hidden_cursor_for_cjk_ime: false,
@@ -2157,12 +2163,31 @@ mod tests {
 
     #[test]
     fn light_theme_aliases_resolve() {
-        for name in ["light", "latte", "tokyo-day", "onelight", "lotus", "dawn"] {
+        for name in [
+            "light",
+            "latte",
+            "tokyo-day",
+            "onelight",
+            "one-nvim-light",
+            "lotus",
+            "dawn",
+        ] {
             assert!(
                 Palette::from_name(name).is_some(),
                 "theme should resolve: {name}"
             );
         }
+    }
+
+    #[test]
+    fn one_nvim_aliases_use_one_palette() {
+        assert_eq!(Palette::from_name("one-nvim"), Some(Palette::one_dark()));
+        assert_eq!(
+            Palette::from_name("one-nvim-light"),
+            Some(Palette::one_light())
+        );
+        assert_eq!(Palette::one_dark().accent, Color::Rgb(82, 139, 255));
+        assert_eq!(Palette::one_light().accent, Color::Rgb(82, 111, 255));
     }
 
     #[test]

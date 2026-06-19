@@ -53,7 +53,7 @@ impl App {
             Ok(source) => source,
             Err(err) => return encode_error(id, err.code, err.message),
         };
-        let entries = match crate::worktree::list_existing_worktrees(&source.source_repo_root) {
+        let entries = match self.worktree_entries_for_source(&source) {
             Ok(entries) => entries,
             Err(err) => return encode_error(id, "worktree_list_failed", err),
         };
@@ -90,21 +90,29 @@ impl App {
         if branch.is_empty() {
             return encode_error(id, "invalid_request", "branch is required");
         }
-        let base = params.base.unwrap_or_else(|| "HEAD".into());
         let mut source = match self.resolve_worktree_source(params.workspace_id, params.cwd) {
             Ok(source) => source,
             Err(err) => return encode_error(id, err.code, err.message),
         };
+        let base = params
+            .base
+            .unwrap_or_else(|| crate::worktree::default_base_branch(&source.source_repo_root));
         let checkout_path = match params.path {
             Some(path) => match absolute_user_path(&path) {
                 Ok(path) => path,
                 Err(err) => return encode_error(id, err.code, err.message),
             },
-            None => crate::worktree::default_checkout_path(
-                &self.state.worktree_directory,
-                &source.repo_name,
-                &branch,
-            ),
+            None => {
+                let worktree_directory = crate::worktree::configured_worktree_directory(
+                    &source.source_repo_root,
+                    &self.state.worktree_directory,
+                );
+                crate::worktree::default_checkout_path(
+                    &worktree_directory,
+                    &source.repo_name,
+                    &branch,
+                )
+            }
         };
 
         if let Some(parent_dir) = checkout_path.parent() {
@@ -462,12 +470,17 @@ impl App {
 
         if let Some(cwd) = cwd {
             let path = absolute_user_path(&cwd)?;
-            let space = crate::workspace::git_space_metadata(&path).ok_or_else(|| {
-                ApiFailure::new(
-                    "not_git_worktree",
-                    "Herdr worktree actions require a path inside a Git work tree",
-                )
-            })?;
+            let space = match crate::workspace::git_space_metadata(&path) {
+                Some(space) => space,
+                None => self
+                    .git_space_from_worktree_directory(&path)
+                    .ok_or_else(|| {
+                        ApiFailure::new(
+                            "not_git_worktree",
+                            "Herdr worktree actions require a path inside a Git work tree",
+                        )
+                    })?,
+            };
             let workspace_idx = self.list_source_workspace_idx_for_space(&space);
             return Ok(worktree_source_from_space(space, workspace_idx, true));
         }
@@ -484,6 +497,30 @@ impl App {
             ));
         };
         self.worktree_list_source_from_workspace(ws_idx)
+    }
+
+    fn git_space_from_worktree_directory(
+        &self,
+        directory: &Path,
+    ) -> Option<crate::workspace::GitSpaceMetadata> {
+        let entries = std::fs::read_dir(directory).ok()?;
+        let mut spaces = entries
+            .flatten()
+            .filter_map(|entry| {
+                let path = entry.path();
+                if path.is_dir() {
+                    crate::workspace::git_space_metadata(&path)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        spaces.sort_by(|a, b| {
+            a.label
+                .cmp(&b.label)
+                .then_with(|| a.repo_root.cmp(&b.repo_root))
+        });
+        spaces.into_iter().next()
     }
 
     fn worktree_source_from_workspace(&self, ws_idx: usize) -> Result<WorktreeSource, ApiFailure> {
@@ -683,7 +720,8 @@ impl App {
         path: Option<String>,
         branch: Option<String>,
     ) -> Result<crate::worktree::ExistingWorktree, ApiFailure> {
-        let entries = crate::worktree::list_existing_worktrees(&source.source_repo_root)
+        let entries = self
+            .worktree_entries_for_source(source)
             .map_err(|err| ApiFailure::new("worktree_list_failed", err))?;
         if let Some(path) = path {
             let expected = absolute_user_path(&path)?;
@@ -731,6 +769,28 @@ impl App {
                 .workspace_idx
                 .map(|idx| self.public_workspace_id(idx)),
         }
+    }
+
+    fn worktree_entries_for_source(
+        &self,
+        source: &WorktreeSource,
+    ) -> Result<Vec<crate::worktree::ExistingWorktree>, String> {
+        let mut entries = crate::worktree::list_existing_worktrees(&source.source_repo_root)?;
+        let worktree_directory = crate::worktree::configured_worktree_directory(
+            &source.source_repo_root,
+            &self.state.worktree_directory,
+        );
+        entries.extend(crate::worktree::list_default_directory_worktrees(
+            &worktree_directory,
+            &source.repo_name,
+            &source.repo_key,
+        ));
+        entries.sort_by(|a, b| a.path.cmp(&b.path));
+        entries.dedup_by(|a, b| {
+            crate::worktree::canonical_or_original(&a.path)
+                == crate::worktree::canonical_or_original(&b.path)
+        });
+        Ok(entries)
     }
 
     fn worktree_info_for_entry(
@@ -1501,6 +1561,52 @@ mod tests {
         let remove = crate::worktree::build_worktree_remove_command(&repo, &checkout, false);
         crate::worktree::run_worktree_command(&remove).unwrap();
         let _ = std::fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn api_worktree_list_accepts_directory_containing_linked_checkouts() {
+        let repo = create_committed_repo("api-worktree-list-directory-repo");
+        let worktree_dir = unique_temp_path("api-worktree-list-directory");
+        let checkout = worktree_dir.join("feature");
+        run_git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                "worktree/api-list-directory",
+                checkout.to_str().unwrap(),
+                "HEAD",
+            ],
+        );
+        let mut app = app_with_parent(&repo);
+
+        let response = app.handle_api_request(Request {
+            id: "req".into(),
+            method: crate::api::schema::Method::WorktreeList(WorktreeListParams {
+                workspace_id: None,
+                cwd: Some(worktree_dir.display().to_string()),
+            }),
+        });
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::WorktreeList { source, worktrees } = success.result else {
+            panic!("expected worktree_list response");
+        };
+        assert_eq!(
+            crate::worktree::canonical_or_original(std::path::Path::new(&source.repo_root)),
+            crate::worktree::canonical_or_original(&repo)
+        );
+        assert!(worktrees.iter().any(|entry| {
+            entry.branch.as_deref() == Some("worktree/api-list-directory")
+                && entry.is_linked_worktree
+        }));
+
+        let remove = crate::worktree::build_worktree_remove_command(&repo, &checkout, false);
+        crate::worktree::run_worktree_command(&remove).unwrap();
+        let _ = std::fs::remove_dir_all(repo);
+        let _ = std::fs::remove_dir_all(worktree_dir);
     }
 
     #[test]
