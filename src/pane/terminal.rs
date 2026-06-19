@@ -1007,6 +1007,12 @@ impl GhosttyPaneTerminal {
         key: crate::input::TerminalKey,
         protocol: crate::input::KeyboardProtocol,
     ) -> Vec<u8> {
+        if key.code == crossterm::event::KeyCode::Enter
+            && key.modifiers == crossterm::event::KeyModifiers::SHIFT
+        {
+            return vec![b'\n'];
+        }
+
         if ghostty_prefers_herdr_text_encoding(key) {
             return crate::input::encode_terminal_key(key, protocol);
         }
@@ -2558,7 +2564,7 @@ mod tests {
     }
 
     #[test]
-    fn ghostty_kitty_pane_encodes_shift_enter_as_csi_u() {
+    fn ghostty_kitty_pane_encodes_shift_enter_as_lf() {
         let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(80, 24, 0).unwrap();
         let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).unwrap();
@@ -2572,12 +2578,12 @@ mod tests {
             pane.keyboard_protocol(),
             Some(crate::input::KeyboardProtocol::Kitty { flags: 5 })
         );
-        assert_eq!(encoded, b"\x1b[13;2u");
+        assert_eq!(encoded, b"\n");
     }
 
     #[cfg(unix)]
     #[test]
-    fn ghostty_seed_keyboard_protocol_flags_restores_shift_enter_encoding() {
+    fn ghostty_seed_keyboard_protocol_flags_preserves_shift_enter_lf() {
         let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(80, 24, 0).unwrap();
         let pane = GhosttyPaneTerminal::new(terminal, tx).unwrap();
@@ -2590,7 +2596,7 @@ mod tests {
             pane.keyboard_protocol(),
             Some(crate::input::KeyboardProtocol::Kitty { flags: 5 })
         );
-        assert_eq!(encoded, b"\x1b[13;2u");
+        assert_eq!(encoded, b"\n");
     }
 
     #[cfg(unix)]
@@ -2622,7 +2628,7 @@ mod tests {
     }
 
     #[test]
-    fn ghostty_modify_other_keys_mode_one_preserves_shift_enter() {
+    fn ghostty_modify_other_keys_mode_one_preserves_shift_enter_lf() {
         let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(80, 24, 0).unwrap();
         let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).unwrap();
@@ -2632,7 +2638,7 @@ mod tests {
         let key = crate::input::parse_terminal_key_sequence("\x1b[13;2u").unwrap();
         let encoded = pane.encode_terminal_key(key, crate::input::KeyboardProtocol::Legacy);
 
-        assert_eq!(encoded, b"\x1b[27;2;13~");
+        assert_eq!(encoded, b"\n");
     }
 
     #[test]

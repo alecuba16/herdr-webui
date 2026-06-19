@@ -843,12 +843,9 @@ pub(super) fn execute_navigate_action_in_context(
         }
         NavigateAction::NewTab => {
             if state.active.is_some() {
-                if state.prompt_new_tab_name {
-                    super::modal::open_new_tab_dialog(state);
-                } else {
-                    state.request_new_tab = true;
-                    leave_navigate_mode(state);
-                }
+                state.request_new_tab = true;
+                state.requested_new_tab_name = None;
+                leave_navigate_mode(state);
             }
         }
         NavigateAction::RenameTab => super::modal::open_rename_active_tab(state, false),
@@ -979,7 +976,7 @@ fn workspace_can_start_worktree_action(
             .as_deref()
             .and_then(crate::workspace::git_space_metadata)
     });
-    !git_space.is_some_and(|space| space.is_linked_worktree)
+    git_space.is_some_and(|space| !space.is_linked_worktree)
 }
 
 fn leave_navigate_mode(state: &mut AppState) {
@@ -1218,10 +1215,10 @@ mod tests {
     #[test]
     fn custom_new_worktree_key_requests_selected_workspace() {
         let mut state = state_with_workspaces(&["main", "scratch"]);
-        state.workspaces[1].identity_cwd = unique_temp_path("navigate-new-worktree-selected");
+        mark_worktree_space_member(&mut state, 0, "repo-key");
         state.mode = Mode::Navigate;
-        state.selected = 1;
-        state.active = Some(0);
+        state.selected = 0;
+        state.active = Some(1);
         state.keybinds.new_worktree = crate::config::ActionKeybinds::prefix("g");
 
         handle_navigate_key(
@@ -1229,8 +1226,27 @@ mod tests {
             KeyEvent::new(KeyCode::Char('g'), KeyModifiers::empty()),
         );
 
-        assert_eq!(state.request_new_linked_worktree, Some(1));
+        assert_eq!(state.request_new_linked_worktree, Some(0));
         assert_eq!(state.mode, Mode::Terminal);
+    }
+
+    #[test]
+    fn new_worktree_action_is_hidden_for_non_git_workspace() {
+        let mut terminal_runtimes = TerminalRuntimeRegistry::new();
+        let mut state = state_with_workspaces(&["scratch"]);
+        state.workspaces[0].identity_cwd = unique_temp_path("navigate-non-git-workspace");
+        state.mode = Mode::Navigate;
+        state.selected = 0;
+        state.active = Some(0);
+
+        execute_navigate_action_in_context(
+            &mut state,
+            &mut terminal_runtimes,
+            NavigateAction::NewWorktree,
+            ActionContext::Navigate,
+        );
+
+        assert_eq!(state.request_new_linked_worktree, None);
     }
 
     #[test]
@@ -1264,7 +1280,7 @@ mod tests {
     fn direct_new_worktree_action_targets_active_workspace() {
         let mut terminal_runtimes = TerminalRuntimeRegistry::new();
         let mut state = state_with_workspaces(&["main", "scratch"]);
-        state.workspaces[0].identity_cwd = unique_temp_path("navigate-new-worktree-active");
+        mark_worktree_space_member(&mut state, 0, "repo-key");
         state.mode = Mode::Terminal;
         state.selected = 1;
         state.active = Some(0);
@@ -2226,23 +2242,22 @@ last_pane = "prefix+tab"
     }
 
     #[test]
-    fn new_tab_action_opens_dialog_without_creating_tab() {
+    fn new_tab_action_creates_numbered_tab_by_default() {
         let mut state = state_with_workspaces(&["test"]);
 
         execute_navigate_action(&mut state, NavigateAction::NewTab);
 
-        assert_eq!(state.mode, Mode::RenameTab);
-        assert!(state.creating_new_tab);
-        assert_eq!(state.name_input, "2");
-        assert!(state.name_input_replace_on_type);
-        assert!(!state.request_new_tab);
+        assert_eq!(state.mode, Mode::Terminal);
+        assert!(!state.creating_new_tab);
+        assert!(state.request_new_tab);
+        assert!(state.requested_new_tab_name.is_none());
         assert_eq!(state.workspaces[0].tabs.len(), 1);
     }
 
     #[test]
-    fn new_tab_action_can_skip_rename_dialog() {
+    fn new_tab_action_ignores_legacy_prompt_setting() {
         let mut state = state_with_workspaces(&["test"]);
-        state.prompt_new_tab_name = false;
+        state.prompt_new_tab_name = true;
 
         execute_navigate_action(&mut state, NavigateAction::NewTab);
 

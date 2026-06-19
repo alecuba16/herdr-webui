@@ -110,7 +110,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 
 [theme]
 # Built-in themes: catppuccin, terminal, tokyo-night, dracula, nord,
-#                  gruvbox, one-dark, solarized, kanagawa, rose-pine,
+#                  gruvbox, one-dark (one-nvim), solarized, kanagawa, rose-pine,
 #                  vesper
 # name = "catppuccin"
 
@@ -226,6 +226,9 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # agents = ""     # e.g. "alt" makes alt+1..9 focus agent rows directly
 
 # [worktrees]
+# Root directory for Herdr-created worktrees: <directory>/<repo>/<branch-slug>.
+# A repo/user Git config value overrides this per repo:
+#   git config --global herdr.worktreeDirectory ~/Projects/worktrees
 # directory = "~/.herdr/worktrees"
 
 [ui]
@@ -262,9 +265,8 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # Ask for confirmation before closing a workspace
 # confirm_close = true
 
-# Ask for a tab name before creating a new tab.
-# Set false to create tabs immediately with generated names.
-# prompt_new_tab_name = true
+# Legacy setting retained for config compatibility. New tabs are auto-numbered.
+# prompt_new_tab_name = false
 
 # Show detected/reported agent labels in split pane borders when no manual pane name is set.
 # show_agent_labels_on_pane_borders = false
@@ -677,6 +679,7 @@ fn main() -> io::Result<()> {
         if crate::kitty_graphics::is_enabled() {
             let _ = crate::kitty_graphics::clear_all_host_graphics();
         }
+        app::reset_host_cursor_color();
         let _ = execute!(
             io::stdout(),
             DisableFocusChange,
@@ -741,6 +744,7 @@ fn main() -> io::Result<()> {
         if crate::kitty_graphics::is_enabled() {
             crate::kitty_graphics::clear_all_host_graphics()?;
         }
+        app::reset_host_cursor_color();
         pop_keyboard_enhancement_flags()?;
         execute!(
             io::stdout(),

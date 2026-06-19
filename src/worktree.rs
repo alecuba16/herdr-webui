@@ -155,6 +155,98 @@ pub(crate) fn default_checkout_path(root: &Path, repo_name: &str, branch: &str) 
     root.join(repo_name).join(branch_to_path_slug(branch))
 }
 
+pub(crate) fn configured_worktree_directory(repo_root: &Path, fallback: &Path) -> PathBuf {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["config", "--get", "herdr.worktreeDirectory"])
+        .output();
+    if let Ok(output) = output {
+        if output.status.success() {
+            let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !value.is_empty() {
+                return expand_tilde_absolute_path(&value);
+            }
+        }
+    }
+    fallback.to_path_buf()
+}
+
+pub(crate) fn default_base_branch(repo_root: &Path) -> String {
+    if let Ok(output) = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["symbolic-ref", "refs/remotes/origin/HEAD", "--short"])
+        .output()
+    {
+        if output.status.success() {
+            let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !value.is_empty() {
+                return value.strip_prefix("origin/").unwrap_or(&value).to_string();
+            }
+        }
+    }
+
+    for branch in ["main", "master"] {
+        if std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo_root)
+            .args([
+                "show-ref",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{branch}"),
+            ])
+            .status()
+            .is_ok_and(|status| status.success())
+        {
+            return branch.to_string();
+        }
+    }
+
+    if let Ok(output) = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["config", "--get", "init.defaultBranch"])
+        .output()
+    {
+        if output.status.success() {
+            let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !value.is_empty() {
+                return value;
+            }
+        }
+    }
+
+    "main".to_string()
+}
+
+pub(crate) fn list_default_directory_worktrees(
+    root: &Path,
+    repo_name: &str,
+    repo_key: &str,
+) -> Vec<ExistingWorktree> {
+    let dir = root.join(repo_name);
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .filter_map(|path| {
+            let space = crate::workspace::git_space_metadata(&path)?;
+            (space.key == repo_key).then(|| ExistingWorktree {
+                branch: crate::workspace::git_branch(&path),
+                path,
+                is_bare: false,
+                is_detached: false,
+                is_prunable: false,
+            })
+        })
+        .collect()
+}
+
 pub(crate) fn build_worktree_remove_command(
     repo_root: &Path,
     path: &Path,
@@ -440,6 +532,66 @@ prunable stale
                 },
             ]
         );
+    }
+
+    #[test]
+    fn configured_worktree_directory_prefers_git_config() {
+        let repo = create_committed_repo("worktree-configured-dir-repo");
+        let fallback = unique_temp_path("worktree-configured-dir-fallback");
+        let configured = unique_temp_path("worktree-configured-dir-custom");
+        run_git(
+            &repo,
+            &[
+                "config",
+                "herdr.worktreeDirectory",
+                configured.to_str().unwrap(),
+            ],
+        );
+
+        assert_eq!(configured_worktree_directory(&repo, &fallback), configured);
+
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn default_base_branch_uses_repo_default_branch() {
+        let repo = create_committed_repo("worktree-default-base-repo");
+        run_git(&repo, &["branch", "-M", "master"]);
+
+        assert_eq!(default_base_branch(&repo), "master");
+
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn default_directory_worktree_scan_finds_repo_checkouts() {
+        let repo = create_committed_repo("worktree-default-dir-scan-repo");
+        let space = crate::workspace::git_space_metadata(&repo).unwrap();
+        let root = unique_temp_path("worktree-default-dir-scan-root");
+        let checkout = default_checkout_path(&root, &space.label, "worktree/scan");
+        let parent = checkout.parent().unwrap();
+        std::fs::create_dir_all(parent).unwrap();
+        run_git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                "worktree/scan",
+                checkout.to_str().unwrap(),
+                "HEAD",
+            ],
+        );
+
+        let entries = list_default_directory_worktrees(&root, &space.label, &space.key);
+
+        assert!(entries.iter().any(|entry| entry.path == checkout));
+
+        let remove = build_worktree_remove_command(&repo, &checkout, false);
+        run_worktree_command(&remove).unwrap();
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(repo);
     }
 
     #[test]

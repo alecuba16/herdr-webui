@@ -672,7 +672,11 @@ mod tests {
             repo_key: "repo-key".into(),
             repo_name: "herdr".into(),
             branch: "generated-branch".into(),
+            base: "main".into(),
             checkout_path: "/repo/herdr-generated-branch".into(),
+            checkout_path_input: "/repo/herdr-generated-branch".into(),
+            checkout_path_overridden: false,
+            editing_checkout_path: false,
             error: None,
             creating: false,
         });

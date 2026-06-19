@@ -20,6 +20,8 @@ mod terminal_targets;
 mod theme_sync;
 mod worktrees;
 
+pub(crate) use theme_sync::reset_host_cursor_color;
+
 use std::collections::{HashMap, HashSet};
 use std::future::pending;
 use std::io::{self, Write};
@@ -243,9 +245,8 @@ fn sibling_theme_names(name: &str) -> (String, String) {
         "gruvbox" | "gruvbox-dark" | "gruvbox-light" => {
             ("gruvbox".to_string(), "gruvbox-light".to_string())
         }
-        "one-dark" | "onedark" | "one-light" | "onelight" => {
-            ("one-dark".to_string(), "one-light".to_string())
-        }
+        "one-dark" | "onedark" | "one-light" | "onelight" | "one-nvim" | "one-nvim-dark"
+        | "one-nvim-light" => ("one-dark".to_string(), "one-light".to_string()),
         "solarized" | "solarized-dark" | "solarized-light" => {
             ("solarized".to_string(), "solarized-light".to_string())
         }
@@ -662,7 +663,7 @@ impl App {
                 .and_then(|ws| ws.focused_pane_id().map(|pane_id| (idx, pane_id)))
         });
 
-        Self {
+        let app = Self {
             config_diagnostic_deadline: None,
             toast_deadline: None,
             copy_feedback_deadline: None,
@@ -704,7 +705,9 @@ impl App {
             local_terminal_notifications: true,
             config_reloaded_from_disk: false,
             prefix_input_source: Box::new(crate::platform::RealPrefixInputSource::default()),
-        }
+        };
+        app.apply_host_cursor_color();
+        app
     }
 
     #[cfg(unix)]
@@ -4107,7 +4110,7 @@ last_pane = "prefix+tab"
     }
 
     #[tokio::test]
-    async fn route_client_input_preserves_shift_enter_for_modify_other_keys_pane() {
+    async fn route_client_input_sends_shift_enter_lf_for_modify_other_keys_pane() {
         let mut app = test_app();
         let mut workspace = Workspace::test_new("test");
         let focused = workspace.focused_pane_id().unwrap();
@@ -4121,10 +4124,7 @@ last_pane = "prefix+tab"
 
         app.route_client_input(b"\x1b[13;2u".to_vec());
 
-        assert_eq!(
-            rx.recv().await.unwrap(),
-            bytes::Bytes::from_static(b"\x1b[27;2;13~")
-        );
+        assert_eq!(rx.recv().await.unwrap(), bytes::Bytes::from_static(b"\n"));
     }
 
     #[tokio::test]
@@ -4265,7 +4265,11 @@ last_pane = "prefix+tab"
             repo_key: "repo-key".into(),
             repo_name: "herdr".into(),
             branch: "generated-branch".into(),
+            base: "main".into(),
             checkout_path: "/repo/herdr-generated-branch".into(),
+            checkout_path_input: "/repo/herdr-generated-branch".into(),
+            checkout_path_overridden: false,
+            editing_checkout_path: false,
             error: None,
             creating: false,
         });
