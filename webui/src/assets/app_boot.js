@@ -16,6 +16,10 @@
     return !!(window.matchMedia && window.matchMedia(MOBILE_QUERY).matches);
   }
 
+  function resolvedLayout() {
+    return prefersMobile() ? "mobile" : "desktop";
+  }
+
   function loadCss(href) {
     const link = document.createElement("link");
     link.rel = "stylesheet";
@@ -31,18 +35,32 @@
   }
 
   function loadLayout() {
-    const mobile = prefersMobile();
-    document.documentElement.dataset.herdrLayout = mobile
-      ? "mobile"
-      : "desktop";
+    const layout = resolvedLayout();
+    const mobile = layout === "mobile";
+    document.documentElement.dataset.herdrLayout = layout;
     loadCss(mobile ? "/assets/mobile.css" : "/assets/app.css");
     if (mobile) {
       loadScript("/assets/mobile-core.js");
+      loadScript("/assets/mobile-attention.js");
       loadScript("/assets/mobile-terminal.js");
       loadScript("/assets/mobile-worktrees.js");
       loadScript("/assets/mobile-settings.js");
     }
     loadScript(mobile ? "/assets/mobile.js" : "/assets/app.js");
+    watchAutoLayout(layout);
+  }
+
+  function watchAutoLayout(currentLayout) {
+    if (readLayoutPreference() !== "auto" || !window.matchMedia) return;
+    const media = window.matchMedia(MOBILE_QUERY);
+    const onChange = () => {
+      if (readLayoutPreference() !== "auto") return;
+      const nextLayout = resolvedLayout();
+      if (nextLayout === currentLayout) return;
+      window.location.reload();
+    };
+    if (media.addEventListener) media.addEventListener("change", onChange);
+    else if (media.addListener) media.addListener(onChange);
   }
 
   loadLayout();

@@ -33,6 +33,7 @@
 
   let eventWs,
     refreshSeq = 0,
+    mobileAttention,
     mobileSettings,
     mobileTerminal,
     mobileWorktrees;
@@ -211,10 +212,6 @@
     return parts.filter(Boolean).join(" · ");
   }
 
-  function agentStatus(status) {
-    return status === "done" ? "done" : status || "unknown";
-  }
-
   function renderShell() {
     document.body.innerHTML = `
       <div id="mobileApp" class="mobile-app">
@@ -254,6 +251,7 @@
     el("mobileMeta").textContent = contextMeta(workspace);
     document.querySelectorAll(".mobile-nav button").forEach((button) => {
       button.classList.toggle("active", button.dataset.screen === state.screen);
+      button.innerHTML = mobileNavLabel(button.dataset.screen);
     });
     const screen = el("mobileScreen");
     screen.classList.toggle("terminal-active", state.screen === "terminal");
@@ -296,7 +294,8 @@
     const byId = workspacesById();
     const byTab = tabsById();
     const counts = tabCountsByWorkspace();
-    return state.agents
+    return mobileAttention
+      .sortAgents(state.agents)
       .map((agent) => {
         const active =
           agent.workspace_id === state.ws &&
@@ -310,7 +309,7 @@
           agent.agent ||
           agent.terminal_id ||
           "agent";
-        const status = agentStatus(agent.agent_status);
+        const status = mobileAttention.statusClass(agent.agent_status);
         const workspace = byId[agent.workspace_id];
         const repo =
           workspace && workspace.worktree
@@ -331,6 +330,20 @@
         return `<button class="mobile-row${active}" onclick="HerdrMobile.selectAgent(${jsArg(agent.workspace_id)},${jsArg(agent.tab_id)},${jsArg(agent.pane_id)})"><strong>${escapeHtml(title || name)}</strong><span><span class="mobile-chip">${escapeHtml(status)}</span> ${escapeHtml(name)}</span></button>`;
       })
       .join("");
+  }
+
+  function mobileNavLabel(screen) {
+    if (screen !== "agents")
+      return (
+        {
+          home: "Workspaces",
+          panels: "Panels",
+          worktrees: "Worktrees",
+          terminal: "Terminal",
+        }[screen] || screen
+      );
+    const status = mobileAttention.topStatus();
+    return `Agents${status ? ` <span class="mobile-nav-status ${escapeHtml(status)}">${escapeHtml(status)}</span>` : ""}`;
   }
 
   function renderPanels() {
@@ -405,6 +418,7 @@
         state.tabs = tabs.result.tabs || [];
         state.panes = panes.result.panes || [];
         state.agents = agents.result.agents || [];
+        mobileAttention.handleSound();
         mobileWorktrees.applyResult(worktrees);
         if (!state.tabs.some((tab) => tab.tab_id === state.tab))
           state.tab = (state.tabs[0] || {}).tab_id || null;
@@ -516,6 +530,11 @@
     document.body.classList.toggle("light", light);
   }
 
+  mobileAttention = globalThis.HerdrMobileAttention.create({
+    localStorage,
+    state,
+    window,
+  });
   mobileTerminal = globalThis.HerdrMobileTerminal.create({ el, state, wsUrl });
   mobileSettings = globalThis.HerdrMobileSettings.create({
     applyTheme,
@@ -563,5 +582,11 @@
   });
   window.addEventListener("resize", () => {
     if (state.screen === "terminal") mobileTerminal.connect();
+  });
+  document.addEventListener("pointerdown", mobileAttention.unlockAudio, {
+    once: true,
+  });
+  document.addEventListener("keydown", mobileAttention.unlockAudio, {
+    once: true,
   });
 })();

@@ -220,6 +220,22 @@ body.light {
   background: var(--panel2);
   color: var(--fg);
 }
+.mobile-nav-status {
+  display: block;
+  font-size: 10px;
+  line-height: 1.1;
+  margin-top: 2px;
+}
+.mobile-nav-status.blocked,
+.mobile-nav-status.done {
+  color: #f38ba8;
+}
+.mobile-nav-status.idle {
+  color: #a6e3a1;
+}
+.mobile-nav-status.working {
+  color: #f9e2af;
+}
 .mobile-form {
   display: grid;
   gap: 12px;

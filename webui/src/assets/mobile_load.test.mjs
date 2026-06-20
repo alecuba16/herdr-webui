@@ -26,6 +26,9 @@ function context(pathname = "/") {
   const historyCalls = [];
   const terminalStats = { disposed: 0, opened: 0 };
   const requests = [];
+  const navButtons = ["home", "agents", "panels", "worktrees", "terminal"].map(
+    (screen) => Object.assign(element(), { dataset: { screen } }),
+  );
   const getElement = (id) => {
     if (!elements.has(id)) elements.set(id, element(id));
     return elements.get(id);
@@ -38,7 +41,8 @@ function context(pathname = "/") {
       body: element("body"),
       createElement: () => element(),
       getElementById: getElement,
-      querySelectorAll: () => [],
+      querySelectorAll: (selector) =>
+        selector === ".mobile-nav button" ? navButtons : [],
       addEventListener() {},
     },
     history: {
@@ -93,7 +97,14 @@ function context(pathname = "/") {
         : url.includes("worktrees")
           ? {
               source: { source_workspace_id: "w1", repo_name: "alpha" },
-              worktrees: [],
+              worktrees: [
+                {
+                  label: "alpha",
+                  branch: "feature/mobile",
+                  path: "/tmp/alpha/mobile-worktree",
+                  is_linked_worktree: true,
+                },
+              ],
             }
           : url.includes("tabs")
             ? {
@@ -109,12 +120,32 @@ function context(pathname = "/") {
                     { tab_id: "w1:t2", pane_id: "w1:p2", terminal_id: "term2" },
                   ],
                 }
-              : { agents: [] };
+              : {
+                  agents: [
+                    {
+                      workspace_id: "w1",
+                      tab_id: "w1:t1",
+                      pane_id: "w1:p1",
+                      terminal_id: "term1",
+                      agent_status: "done",
+                      name: "done-agent",
+                    },
+                    {
+                      workspace_id: "w1",
+                      tab_id: "w1:t2",
+                      pane_id: "w1:p2",
+                      terminal_id: "term2",
+                      agent_status: "blocked",
+                      name: "blocked-agent",
+                    },
+                  ],
+                };
       return { ok: true, status: 200, json: async () => ({ result }) };
     },
   };
   ctx.terminalStats = terminalStats;
   ctx.requests = requests;
+  ctx.navButtons = navButtons;
   ctx.window = Object.assign(ctx, {
     matchMedia: () => ({ matches: false }),
     addEventListener() {},
@@ -128,6 +159,8 @@ describe("mobile bundle load", () => {
     readFileSync(new URL("./app_core.js", import.meta.url), "utf8") +
     "\n" +
     readFileSync(new URL("./mobile_core.js", import.meta.url), "utf8") +
+    "\n" +
+    readFileSync(new URL("./mobile_attention.js", import.meta.url), "utf8") +
     "\n" +
     readFileSync(new URL("./mobile_terminal.js", import.meta.url), "utf8") +
     "\n" +
@@ -206,6 +239,35 @@ describe("mobile bundle load", () => {
         (request) => request.url === "/api/worktrees?cwd=~%2Fcode%2Frepo",
       ),
     );
+  });
+
+  it("shows highest-priority agent status in agents tab label", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    const agentsButton = ctx.navButtons.find(
+      (button) => button.dataset.screen === "agents",
+    );
+    ok(agentsButton.innerHTML.includes("blocked"));
+  });
+
+  it("sorts mobile agents by attention priority", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    ctx.HerdrMobile.showScreen("agents");
+    const html = ctx.document.getElementById("mobileScreen").innerHTML;
+    ok(html.indexOf("blocked-agent") < html.indexOf("done-agent"));
+  });
+
+  it("shows worktree name as title and repo name as meta", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.loadWorktrees();
+    ctx.HerdrMobile.showScreen("worktrees");
+    const html = ctx.document.getElementById("mobileScreen").innerHTML;
+    ok(html.includes("<strong>mobile-worktree</strong>"));
+    ok(html.includes("<small>alpha</small>"));
   });
 
   it("creates new panel in selected workspace", async () => {

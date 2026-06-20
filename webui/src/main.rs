@@ -609,6 +609,7 @@ fn app_router(state: WebState) -> Router {
         .route("/assets/app.js", get(app_js))
         .route("/assets/login.css", get(login_css))
         .route("/assets/login.js", get(login_js))
+        .route("/assets/mobile-attention.js", get(mobile_attention_js))
         .route("/assets/mobile-core.js", get(mobile_core_js))
         .route("/assets/mobile-settings.js", get(mobile_settings_js))
         .route("/assets/mobile-terminal.js", get(mobile_terminal_js))
@@ -1648,6 +1649,10 @@ async fn mobile_js() -> Response {
 
 async fn mobile_core_js() -> Response {
     static_text(MOBILE_CORE_JS, "application/javascript; charset=utf-8")
+}
+
+async fn mobile_attention_js() -> Response {
+    static_text(MOBILE_ATTENTION_JS, "application/javascript; charset=utf-8")
 }
 
 async fn mobile_settings_js() -> Response {
@@ -2980,6 +2985,15 @@ mod tests {
             )
             .await
             .unwrap();
+        let mobile_attention_js = app
+            .clone()
+            .oneshot(
+                request(Method::GET, "/assets/mobile-attention.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         let mobile_terminal_js = app
             .clone()
             .oneshot(
@@ -3031,6 +3045,7 @@ mod tests {
         assert_eq!(app_boot_js.status(), StatusCode::OK);
         assert_eq!(app_core_js.status(), StatusCode::OK);
         assert_eq!(app_css.status(), StatusCode::OK);
+        assert_eq!(mobile_attention_js.status(), StatusCode::OK);
         assert_eq!(mobile_core_js.status(), StatusCode::OK);
         assert_eq!(mobile_terminal_js.status(), StatusCode::OK);
         assert_eq!(mobile_worktrees_js.status(), StatusCode::OK);
@@ -3063,6 +3078,10 @@ mod tests {
             .unwrap()
             .contains("text/css"));
         assert!(mobile_core_js.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .contains("javascript"));
+        assert!(mobile_attention_js.headers()[header::CONTENT_TYPE]
             .to_str()
             .unwrap()
             .contains("javascript"));
@@ -3134,6 +3153,13 @@ mod tests {
                 > 1000
         );
         assert!(
+            to_bytes(mobile_attention_js.into_body(), 1024 * 1024)
+                .await
+                .unwrap()
+                .len()
+                > 1000
+        );
+        assert!(
             to_bytes(mobile_terminal_js.into_body(), 1024 * 1024)
                 .await
                 .unwrap()
@@ -3187,6 +3213,7 @@ const APP_CORE_JS: &str = include_str!("assets/app_core.js");
 const APP_BOOT_JS: &str = include_str!("assets/app_boot.js");
 const APP_CSS: &str = include_str!("assets/app.css");
 const APP_JS: &str = include_str!("assets/app.js");
+const MOBILE_ATTENTION_JS: &str = include_str!("assets/mobile_attention.js");
 const MOBILE_CORE_JS: &str = include_str!("assets/mobile_core.js");
 const MOBILE_SETTINGS_JS: &str = include_str!("assets/mobile_settings.js");
 const MOBILE_TERMINAL_JS: &str = include_str!("assets/mobile_terminal.js");

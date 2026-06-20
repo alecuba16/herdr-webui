@@ -20,14 +20,24 @@
     }
 
     function renderRow(row, index) {
-      const title = row.label || row.branch || row.path || "worktree";
-      const meta = [
-        row.branch || (row.is_detached ? "detached" : "branch"),
-        row.path,
-      ]
-        .filter(Boolean)
-        .join(" · ");
+      const title =
+        pathBasename(row.path) || row.label || row.branch || "worktree";
+      const meta = repoLabel(row);
       return `<div class="mobile-worktree-row"><span><strong>${escapeHtml(title)}</strong><small>${escapeHtml(meta)}</small></span><button class="mobile-btn primary" onclick="HerdrMobile.openWorktree(${index})">Open</button></div>`;
+    }
+
+    function repoLabel(row) {
+      const value =
+        row.source_repo_name || row.repo_name || row.source_repo_root || "";
+      return pathBasename(value) || value || "repo";
+    }
+
+    function pathBasename(path) {
+      const parts = String(path || "")
+        .replace(/\/+$/, "")
+        .split("/")
+        .filter(Boolean);
+      return parts.length ? parts[parts.length - 1] : "";
     }
 
     function applyResult(response) {
@@ -38,6 +48,8 @@
         Object.assign({}, row, {
           source_workspace_id: source.source_workspace_id || null,
           source_cwd: source.source_checkout_path || source.repo_root || null,
+          source_repo_name:
+            source.repo_name || source.repo_key || source.repo_root || "",
         }),
       );
     }
