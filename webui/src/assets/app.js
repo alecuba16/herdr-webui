@@ -270,6 +270,9 @@ function themeCustomizerHtml() {
       .join("");
   return `<div class="theme-customizer"><div><strong>Theme colors</strong><small>Saved in this browser. Uses current defaults as reset reference.</small></div><div class="theme-customizer-actions"><label><span>Profile</span><select class="settings-select" id="themeColorProfile"><option value="default">Default</option><option value="catppuccin">Catppuccin</option><option value="tokyo">Tokyo Night</option><option value="nord">Nord</option></select></label><button type="button" class="tab add" id="themeColorsApplyProfile">Apply profile</button><button type="button" class="tab add" id="themeColorsApply">Apply / reload UI</button><button type="button" class="tab add" id="themeColorsReset">Reset theme colors</button></div><div class="theme-customizer-grid"><section><h3>Dark</h3>${rows("dark")}</section><section><h3>Light</h3>${rows("light")}</section></div></div>`;
 }
+function serverSettingsHtml() {
+  return `<div class="theme-customizer server-settings"><div><strong>Server access</strong><small>Saved in ~/.config/herdr-webui/webui-settings.json. Changing Bind restarts the WebUI listener.</small></div><label class="option"><span>Bind address<small>Use 127.0.0.1:8787 for local only or 0.0.0.0:8787 for LAN/public access.</small></span><input id="optServerBind" placeholder="127.0.0.1:8787"></label><label class="option"><span>Username<small>Required when binding outside localhost.</small></span><input id="optServerUser" autocomplete="username"></label><label class="option"><span>Password<small>Required when binding outside localhost. Leave blank to keep current password.</small></span><input id="optServerPassword" type="password" autocomplete="new-password"></label><label class="option"><input type="checkbox" id="optServerLocalBypass"><span>Allow localhost without login<small>Only applies to loopback requests.</small></span></label><div class="worktree-error" id="serverSettingsError"></div><div class="modal-actions"><button type="button" class="tab add" id="serverSettingsLoad">Reload server settings</button><button type="button" class="btn" id="serverSettingsApply">Apply server settings</button></div></div>`;
+}
 function themeColorInputId(mode, key) {
   return `optThemeColor-${mode}-${key}`;
 }
@@ -430,6 +433,8 @@ const themeColorProfiles = {
 };
 const settingsBody =
   settingsModal && settingsModal.querySelector(".settings-body");
+if (settingsBody && !el("optServerBind"))
+  settingsBody.insertAdjacentHTML("beforeend", serverSettingsHtml());
 if (settingsBody && !el("themeColorsApply"))
   settingsBody.insertAdjacentHTML("beforeend", themeCustomizerHtml());
 function normalizeThemeMode(value) {
@@ -862,6 +867,52 @@ async function api(url, opt) {
   if (!r.ok || body.error) throw Error(apiErrorMessage(body, r.statusText));
   return body;
 }
+async function loadServerSettings() {
+  const err = el("serverSettingsError");
+  if (err) err.textContent = "";
+  try {
+    const settings = await api("/api/server-settings");
+    el("optServerBind").value = settings.bind || "127.0.0.1:8787";
+    el("optServerUser").value = settings.username || "";
+    el("optServerPassword").value = "";
+    el("optServerPassword").placeholder = settings.has_password
+      ? "current password saved"
+      : "required for public bind";
+    el("optServerLocalBypass").checked = !!settings.localhost_no_auth;
+  } catch (ex) {
+    if (err) err.textContent = ex.message || String(ex);
+  }
+}
+async function applyServerSettings() {
+  const err = el("serverSettingsError"),
+    submit = el("serverSettingsApply"),
+    bind = el("optServerBind").value.trim(),
+    username = el("optServerUser").value.trim(),
+    password = el("optServerPassword").value,
+    localhostNoAuth = el("optServerLocalBypass").checked;
+  if (err) err.textContent = "";
+  submit.disabled = true;
+  try {
+    await api("/api/server-settings", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        bind,
+        username: username || null,
+        password: password ? password : null,
+        localhost_no_auth: localhostNoAuth,
+      }),
+    });
+    if (err)
+      err.textContent =
+        "Saved. If Bind changed, listener is restarting; reload this page using the new address if needed.";
+    el("optServerPassword").value = "";
+  } catch (ex) {
+    if (err) err.textContent = ex.message || String(ex);
+  } finally {
+    submit.disabled = false;
+  }
+}
 async function loadVersions() {
   const versionsEl = el("versions");
   try {
@@ -1265,7 +1316,7 @@ function render() {
   const themeIcon =
     themeMode === "auto" ? "A" : themeMode === "dark" ? "☾" : "☀";
   const sessionLabel = escapeHtml(state.session || "default");
-  const tabsTools = `<div class="tabs-tools"><button class="mini" id="sessionButtonTabs" title="Session manager" onclick="showSessionManager(state.backendOnline?'Session manager':'Herdr session offline')">${sessionLabel}</button><button class="mini" id="themeToggleTabs" title="Toggle theme" onclick="themeMode=themeMode==='auto'?'dark':(themeMode==='dark'?'light':'auto');applyTheme();render()">${themeIcon}</button><button class="mini" title="Shortcuts" onclick="applyOptions();el('shortcutsModal').style.display='grid'">?</button><button class="mini" title="Settings" onclick="el('settingsModal').style.display='grid';applyOptions()">⚙</button></div>`;
+  const tabsTools = `<div class="tabs-tools"><button class="mini" id="sessionButtonTabs" title="Session manager" onclick="showSessionManager(state.backendOnline?'Session manager':'Herdr session offline')">${sessionLabel}</button><button class="mini" id="themeToggleTabs" title="Toggle theme" onclick="themeMode=themeMode==='auto'?'dark':(themeMode==='dark'?'light':'auto');applyTheme();render()">${themeIcon}</button><button class="mini" title="Shortcuts" onclick="applyOptions();el('shortcutsModal').style.display='grid'">?</button><button class="mini" title="Settings" onclick="el('settingsModal').style.display='grid';applyOptions();loadServerSettings()">⚙</button></div>`;
   const tabsHtml =
     state.tabs.map((t) => renderTabButton(t, panesByTab)).join("") +
     (state.ws
@@ -2990,6 +3041,7 @@ let settingsBackdropDown = false,
 el("settingsToggle").onclick = () => {
   el("settingsModal").style.display = "grid";
   applyOptions();
+  loadServerSettings();
 };
 el("settingsClose").onclick = () => {
   el("settingsModal").style.display = "none";
@@ -3029,6 +3081,8 @@ el("themeColorsReset").onclick = () => applyThemeColorProfile("default");
 el("themeColorsApplyProfile").onclick = () => {
   applyThemeColorProfile(el("themeColorProfile").value);
 };
+el("serverSettingsLoad").onclick = loadServerSettings;
+el("serverSettingsApply").onclick = applyServerSettings;
 el("optOverflow").onchange = () => {
   options.overflow = el("optOverflow").checked;
   saveOptions();
