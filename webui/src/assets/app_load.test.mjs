@@ -134,6 +134,7 @@ describe("app bundle load", () => {
     match(html, /id="optServerUser"/);
     match(html, /id="optServerPassword"/);
     match(html, /id="optServerLocalBypass"/);
+    match(html, /id="optNoSleepAutoCooldown"/);
     match(html, /id="serverSettingsApply"/);
     match(html, /\.config\/herdr-webui\/webui-settings\.json/);
   });
@@ -146,6 +147,7 @@ describe("app bundle load", () => {
 
     match(html, /id="noSleepTest"/);
     match(html, /value="off"/);
+    match(html, /value="auto"/);
     match(html, /value="1h"/);
     match(html, /value="2h"/);
     match(html, /value="4h"/);

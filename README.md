@@ -385,9 +385,11 @@ Notification scope is configured in Settings:
 
 ### No-Sleep Mode
 
-The no-sleep control sits beside the `?` toolbar button. Options are Off, 1h, 2h, 4h, and Infinite.
+The no-sleep control sits beside the `?` toolbar button. Options are Off, Auto, 1h, 2h, 4h, and Infinite.
 
 No-sleep is managed by the WebUI backend process, not by each browser tab. This keeps the machine running the Herdr session awake even if the browser is in the background. All open WebUI tabs read the same backend state and refresh it periodically, so changing the option in one tab updates the others.
+
+Auto mode is also backend-managed. When Auto is enabled, WebUI polls the Herdr agent list from the backend process even if no browser tab is connected. If any agent status is `working`, WebUI prevents host sleep. When all agents are idle, done, blocked, unknown, or no agents exist, WebUI waits for the configured Auto cooldown, then releases the no-sleep inhibitor while leaving Auto selected. The default cooldown is 60 seconds.
 
 Timed modes automatically turn off when their duration expires. Infinite stays active until changed to Off or until the WebUI process exits.
 
@@ -442,7 +444,8 @@ Settings are stored in browser `localStorage`:
 
 - Default theme: Auto, Light, or Dark.
 - Server access: bind address, username, password, and localhost auth bypass. Stored in `~/.config/herdr-webui/webui-settings.json`.
-- No-sleep mode: Off, 1h, 2h, 4h, or Infinite. Managed by the WebUI backend process and shared by all browser tabs.
+- No-sleep mode: Off, Auto, 1h, 2h, 4h, or Infinite. Managed by the WebUI backend process and shared by all browser tabs.
+- No-sleep Auto cooldown: seconds to wait after agents stop working before releasing the backend no-sleep inhibitor. Stored in `~/.config/herdr-webui/webui-settings.json`.
 - Theme colors: edit Dark and Light palettes, apply built-in profiles, reset to defaults, and apply/reload UI immediately.
 - Show terminal overflow scrollbars.
 - Resize terminal to browser viewport.
@@ -472,7 +475,7 @@ No-sleep state is stored in WebUI process memory. It is shared across browser ta
 | Shortcut                                  | Action                                                                                |
 | ----------------------------------------- | ------------------------------------------------------------------------------------- |
 | `?` toolbar button                        | Open shortcut reference.                                                              |
-| No-sleep toolbar select                   | Ask WebUI backend to prevent host sleep: Off, 1h, 2h, 4h, or Infinite.                |
+| No-sleep toolbar select                   | Ask WebUI backend to prevent host sleep: Off, Auto, 1h, 2h, 4h, or Infinite.          |
 | `⚙` toolbar button                        | Open settings.                                                                        |
 | `Shift+Enter`                             | Insert newline in terminal when enabled.                                              |
 | `PageUp` / `PageDown`                     | Scroll Herdr terminal backend.                                                        |

@@ -114,6 +114,7 @@ struct PersistedServerSettings {
     user: Option<String>,
     password: Option<String>,
     localhost_no_auth: Option<bool>,
+    no_sleep_auto_cooldown_seconds: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -122,6 +123,7 @@ struct RuntimeServerSettings {
     user: Option<String>,
     password: Option<String>,
     localhost_no_auth: bool,
+    no_sleep_auto_cooldown_seconds: u64,
 }
 
 struct NoSleepGuard {
@@ -140,6 +142,8 @@ struct NoSleepState {
     until_ms: Option<u64>,
     error: Option<String>,
     guard: Option<NoSleepGuard>,
+    auto_generation: u64,
+    auto_idle_since_ms: Option<u64>,
 }
 
 impl Default for NoSleepState {
@@ -149,13 +153,15 @@ impl Default for NoSleepState {
             until_ms: None,
             error: None,
             guard: None,
+            auto_generation: 0,
+            auto_idle_since_ms: None,
         }
     }
 }
 
 fn no_sleep_ms(mode: &str) -> Option<u64> {
     match mode {
-        "off" | "infinite" => Some(0),
+        "off" | "auto" | "infinite" => Some(0),
         "1h" => Some(60 * 60 * 1000),
         "2h" => Some(2 * 60 * 60 * 1000),
         "4h" => Some(4 * 60 * 60 * 1000),
@@ -576,6 +582,12 @@ fn validate_runtime_server_settings(settings: &RuntimeServerSettings) -> io::Res
             "set username/password or allow localhost auth bypass",
         ));
     }
+    if settings.no_sleep_auto_cooldown_seconds > 3600 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "no-sleep auto cooldown must be 3600 seconds or less",
+        ));
+    }
     Ok(())
 }
 
@@ -585,6 +597,7 @@ fn default_runtime_server_settings(bind: SocketAddr) -> RuntimeServerSettings {
         user: None,
         password: None,
         localhost_no_auth: true,
+        no_sleep_auto_cooldown_seconds: 60,
     }
 }
 
@@ -610,9 +623,15 @@ fn load_runtime_server_settings(default_bind: SocketAddr) -> io::Result<RuntimeS
             format!("invalid webui-settings.json: {err}"),
         )
     })?;
-    let missing_keys = ["bind", "user", "password", "localhost_no_auth"]
-        .iter()
-        .any(|key| raw_json.get(key).is_none());
+    let missing_keys = [
+        "bind",
+        "user",
+        "password",
+        "localhost_no_auth",
+        "no_sleep_auto_cooldown_seconds",
+    ]
+    .iter()
+    .any(|key| raw_json.get(key).is_none());
     let persisted: PersistedServerSettings = serde_json::from_value(raw_json).map_err(|err| {
         io::Error::new(
             io::ErrorKind::InvalidData,
@@ -636,6 +655,9 @@ fn load_runtime_server_settings(default_bind: SocketAddr) -> io::Result<RuntimeS
     if let Some(localhost_no_auth) = persisted.localhost_no_auth {
         settings.localhost_no_auth = localhost_no_auth;
     }
+    if let Some(cooldown) = persisted.no_sleep_auto_cooldown_seconds {
+        settings.no_sleep_auto_cooldown_seconds = cooldown;
+    }
     validate_runtime_server_settings(&settings)?;
     if missing_keys {
         save_runtime_server_settings(&settings)?;
@@ -654,6 +676,7 @@ fn save_runtime_server_settings(settings: &RuntimeServerSettings) -> io::Result<
         user: settings.user.clone(),
         password: settings.password.clone(),
         localhost_no_auth: Some(settings.localhost_no_auth),
+        no_sleep_auto_cooldown_seconds: Some(settings.no_sleep_auto_cooldown_seconds),
     })?;
     fs::write(&path, content)?;
     #[cfg(unix)]
@@ -996,6 +1019,7 @@ struct UpdateServerSettingsRequest {
     username: Option<String>,
     password: Option<String>,
     localhost_no_auth: bool,
+    no_sleep_auto_cooldown_seconds: Option<u64>,
 }
 
 fn settings_public_json(settings: &RuntimeServerSettings) -> serde_json::Value {
@@ -1004,6 +1028,7 @@ fn settings_public_json(settings: &RuntimeServerSettings) -> serde_json::Value {
         "username": settings.user.clone().unwrap_or_default(),
         "has_password": settings.password.is_some(),
         "localhost_no_auth": settings.localhost_no_auth,
+        "no_sleep_auto_cooldown_seconds": settings.no_sleep_auto_cooldown_seconds,
         "settings_path": server_settings_path().to_string_lossy(),
     })
 }
@@ -1013,28 +1038,120 @@ fn no_sleep_public_json(state: &NoSleepState) -> serde_json::Value {
         "mode": &state.mode,
         "until_ms": state.until_ms,
         "error": &state.error,
+        "active": state.guard.is_some(),
         "supported": cfg!(any(target_os = "macos", target_os = "linux")),
     })
 }
 
-fn apply_no_sleep_mode(state: &mut NoSleepState, mode: String, until_ms: Option<u64>) -> bool {
+fn agents_working_from_value(value: &serde_json::Value) -> bool {
+    value
+        .pointer("/result/agents")
+        .and_then(|agents| agents.as_array())
+        .is_some_and(|agents| {
+            agents.iter().any(|agent| {
+                agent
+                    .get("agent_status")
+                    .or_else(|| agent.get("status"))
+                    .and_then(|status| status.as_str())
+                    == Some("working")
+            })
+        })
+}
+
+fn sync_auto_no_sleep(state: &mut NoSleepState, has_working_agents: bool, cooldown_seconds: u64) {
+    if state.mode != "auto" {
+        return;
+    }
+    if has_working_agents && state.guard.is_none() {
+        state.auto_idle_since_ms = None;
+        match start_no_sleep_guard() {
+            Ok(guard) => {
+                state.guard = Some(guard);
+                state.error = None;
+            }
+            Err(err) => {
+                state.error = Some(err.to_string());
+            }
+        }
+    } else if has_working_agents {
+        state.auto_idle_since_ms = None;
+        state.error = None;
+    } else {
+        let now = unix_ms_now();
+        let idle_since = *state.auto_idle_since_ms.get_or_insert(now);
+        if now.saturating_sub(idle_since) >= cooldown_seconds.saturating_mul(1000) {
+            state.guard = None;
+            state.error = None;
+        }
+    }
+}
+
+fn sync_auto_no_sleep_from_agents(state: &WebState, agents: &serde_json::Value) {
+    let cooldown = state
+        .server_settings
+        .lock()
+        .map(|settings| settings.no_sleep_auto_cooldown_seconds)
+        .unwrap_or(60);
+    let Ok(mut no_sleep) = state.no_sleep.lock() else {
+        return;
+    };
+    sync_auto_no_sleep(&mut no_sleep, agents_working_from_value(agents), cooldown);
+}
+
+fn apply_no_sleep_mode(
+    state: &mut NoSleepState,
+    mode: String,
+    until_ms: Option<u64>,
+) -> (bool, u64) {
+    state.auto_generation = state.auto_generation.wrapping_add(1);
+    let generation = state.auto_generation;
     state.guard = None;
     state.mode = "off".to_string();
     state.until_ms = None;
     state.error = None;
-    if mode == "off" {
-        return false;
+    state.auto_idle_since_ms = None;
+    if mode == "off" || mode == "auto" {
+        state.mode = mode;
+        return (false, generation);
     }
     match start_no_sleep_guard() {
         Ok(guard) => {
             state.mode = mode;
             state.until_ms = until_ms;
             state.guard = Some(guard);
-            true
+            (true, generation)
         }
         Err(err) => {
             state.error = Some(err.to_string());
-            false
+            (false, generation)
+        }
+    }
+}
+
+async fn run_auto_no_sleep_loop(state: WebState, api: ApiClient, generation: u64) {
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+    loop {
+        interval.tick().await;
+        let should_continue = state
+            .no_sleep
+            .lock()
+            .map(|state| state.mode == "auto" && state.auto_generation == generation)
+            .unwrap_or(false);
+        if !should_continue {
+            break;
+        }
+        match api.request_value(
+            json!({ "id": "web:agent:list:no-sleep-auto", "method": "agent.list", "params": {} }),
+        ) {
+            Ok(agents) => sync_auto_no_sleep_from_agents(&state, &agents),
+            Err(err) => {
+                if let Ok(mut no_sleep) = state.no_sleep.lock() {
+                    if no_sleep.mode == "auto" && no_sleep.auto_generation == generation {
+                        no_sleep.guard = None;
+                        no_sleep.error = Some(err);
+                    }
+                }
+            }
         }
     }
 }
@@ -1101,7 +1218,21 @@ async fn update_no_sleep(
     } else {
         Some(unix_ms_now() + duration_ms)
     };
+    let auto_api = api_for_headers(&state, &headers);
+    let auto_agents = (body.mode == "auto")
+        .then(|| {
+            auto_api
+                .request_value(json!({ "id": "web:agent:list:no-sleep", "method": "agent.list", "params": {} }))
+                .ok()
+        })
+        .flatten();
+    let mut auto_generation = None;
     let (response_json, timer_active) = {
+        let cooldown = state
+            .server_settings
+            .lock()
+            .map(|settings| settings.no_sleep_auto_cooldown_seconds)
+            .unwrap_or(60);
         let Ok(mut no_sleep) = state.no_sleep.lock() else {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1109,7 +1240,14 @@ async fn update_no_sleep(
             )
                 .into_response();
         };
-        let active = apply_no_sleep_mode(&mut no_sleep, body.mode.clone(), timer_until);
+        let (active, generation) =
+            apply_no_sleep_mode(&mut no_sleep, body.mode.clone(), timer_until);
+        if let Some(agents) = &auto_agents {
+            sync_auto_no_sleep(&mut no_sleep, agents_working_from_value(agents), cooldown);
+        }
+        if body.mode == "auto" {
+            auto_generation = Some(generation);
+        }
         (no_sleep_public_json(&no_sleep), active)
     };
     if let Some(until_ms) = timer_until.filter(|_| timer_active) {
@@ -1128,6 +1266,9 @@ async fn update_no_sleep(
                 no_sleep.until_ms = None;
             }
         });
+    }
+    if let Some(generation) = auto_generation {
+        tokio::spawn(run_auto_no_sleep_loop(state.clone(), auto_api, generation));
     }
     Json(response_json).into_response()
 }
@@ -1172,6 +1313,7 @@ async fn update_server_settings(
                     .and_then(|settings| settings.password.clone())
             }),
         localhost_no_auth: body.localhost_no_auth,
+        no_sleep_auto_cooldown_seconds: body.no_sleep_auto_cooldown_seconds.unwrap_or(60),
     };
     let bind_changed = current
         .as_ref()
@@ -2147,10 +2289,10 @@ async fn events_ws(
             socket_path: api_socket_path_for(Some(session)),
         })
         .unwrap_or_else(|| api_for_headers(&state, &headers));
-    ws.on_upgrade(move |socket| events_socket(api, socket))
+    ws.on_upgrade(move |socket| events_socket(state, api, socket))
 }
 
-async fn events_socket(api: ApiClient, mut socket: WebSocket) {
+async fn events_socket(state: WebState, api: ApiClient, mut socket: WebSocket) {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
     let subscribe_api = api.clone();
     std::thread::spawn(move || {
@@ -2194,6 +2336,9 @@ async fn events_socket(api: ApiClient, mut socket: WebSocket) {
             }
             _ = interval.tick() => {
                 let agents = api.request_value(json!({ "id": "web:agent:list:poll", "method": "agent.list", "params": {} })).ok();
+                if let Some(agents) = &agents {
+                    sync_auto_no_sleep_from_agents(&state, agents);
+                }
                 let workspaces = api.request_value(json!({ "id": "web:workspace:list:poll", "method": "workspace.list", "params": {} })).ok();
                 let value = json!({ "type": "snapshot", "agents": agents, "workspaces": workspaces });
                 if socket.send(Message::Text(value.to_string().into())).await.is_err() { break; }
@@ -2656,6 +2801,7 @@ mod tests {
                 user: Some("user".to_string()),
                 password: Some("pass".to_string()),
                 localhost_no_auth: false,
+                no_sleep_auto_cooldown_seconds: 60,
             })),
             no_sleep: Arc::new(Mutex::new(NoSleepState::default())),
             rebind_tx,
@@ -2983,6 +3129,7 @@ mod tests {
         assert_eq!(settings.user, None);
         assert_eq!(settings.password, None);
         assert!(settings.localhost_no_auth);
+        assert_eq!(settings.no_sleep_auto_cooldown_seconds, 60);
     }
 
     #[test]
@@ -3005,6 +3152,7 @@ mod tests {
         assert!(server_settings_path().exists());
         let raw = fs::read_to_string(server_settings_path()).unwrap();
         assert!(raw.contains("localhost_no_auth"));
+        assert!(raw.contains("no_sleep_auto_cooldown_seconds"));
 
         let _ = fs::remove_dir_all(config_home);
         std::env::remove_var("XDG_CONFIG_HOME");
@@ -3031,10 +3179,12 @@ mod tests {
         assert_eq!(settings.user, None);
         assert_eq!(settings.password, None);
         assert!(settings.localhost_no_auth);
+        assert_eq!(settings.no_sleep_auto_cooldown_seconds, 60);
         let raw = fs::read_to_string(path).unwrap();
         assert!(raw.contains("localhost_no_auth"));
         assert!(raw.contains("user"));
         assert!(raw.contains("password"));
+        assert!(raw.contains("no_sleep_auto_cooldown_seconds"));
 
         let _ = fs::remove_dir_all(config_home);
         std::env::remove_var("XDG_CONFIG_HOME");
@@ -3047,6 +3197,7 @@ mod tests {
             user: Some("test-user".to_string()),
             password: Some("test-password".to_string()),
             localhost_no_auth: false,
+            no_sleep_auto_cooldown_seconds: 60,
         })
         .unwrap();
 
@@ -3063,6 +3214,7 @@ mod tests {
             user: None,
             password: None,
             localhost_no_auth: true,
+            no_sleep_auto_cooldown_seconds: 60,
         }) {
             Ok(_) => panic!("expected public auth config to fail"),
             Err(err) => err,
@@ -3097,6 +3249,7 @@ mod tests {
         let before_body = response_json(before).await;
         assert_eq!(before_body["bind"], "127.0.0.1:8787");
         assert_eq!(before_body["username"], "user");
+        assert_eq!(before_body["no_sleep_auto_cooldown_seconds"], 60);
 
         let updated = app
             .oneshot(
@@ -3109,6 +3262,7 @@ mod tests {
                             "username": "test-user",
                             "password": "test-password",
                             "localhost_no_auth": true,
+                            "no_sleep_auto_cooldown_seconds": 90,
                         })
                         .to_string(),
                     ))
@@ -3121,6 +3275,7 @@ mod tests {
         assert_eq!(updated_body["bind"], "0.0.0.0:8787");
         assert_eq!(updated_body["username"], "test-user");
         assert_eq!(updated_body["has_password"], true);
+        assert_eq!(updated_body["no_sleep_auto_cooldown_seconds"], 90);
         assert!(server_settings_path().exists());
 
         let _ = fs::remove_dir_all(config_home);
@@ -3230,11 +3385,25 @@ mod tests {
     #[test]
     fn parses_no_sleep_modes() {
         assert_eq!(no_sleep_ms("off"), Some(0));
+        assert_eq!(no_sleep_ms("auto"), Some(0));
         assert_eq!(no_sleep_ms("1h"), Some(60 * 60 * 1000));
         assert_eq!(no_sleep_ms("2h"), Some(2 * 60 * 60 * 1000));
         assert_eq!(no_sleep_ms("4h"), Some(4 * 60 * 60 * 1000));
         assert_eq!(no_sleep_ms("infinite"), Some(0));
         assert_eq!(no_sleep_ms("bad"), None);
+    }
+
+    #[test]
+    fn detects_working_agents_for_auto_no_sleep() {
+        assert!(agents_working_from_value(&json!({
+            "result": { "agents": [{ "agent_status": "idle" }, { "agent_status": "working" }] }
+        })));
+        assert!(!agents_working_from_value(&json!({
+            "result": { "agents": [{ "agent_status": "idle" }, { "agent_status": "done" }] }
+        })));
+        assert!(!agents_working_from_value(
+            &json!({ "result": { "agents": [] } })
+        ));
     }
 
     #[test]
