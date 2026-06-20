@@ -16,6 +16,7 @@ This project builds a separate `herdr-webui` binary. It does not replace the ups
 - Supports shared drag-and-drop workspace ordering through the WebUI process.
 - Supports attention-based workspace and agent sorting.
 - Supports browser-local terminal scroll speed, theme, sizing, and key-sequence settings.
+- Supports runtime server access settings for bind address, username, password, and localhost auth bypass.
 - Supports configurable agent notification sound scope.
 - Provides a session manager when the Herdr backend is offline.
 - Can launch a Herdr backend process for the configured session.
@@ -99,6 +100,25 @@ Open:
 http://127.0.0.1:8787
 ```
 
+Default server access settings are created on disk when no settings file exists:
+
+- Bind address: `127.0.0.1:8787`.
+- Username: blank.
+- Password: blank.
+- Localhost auth bypass: enabled, so loopback requests do not need login by default.
+
+Server access settings can be changed from WebUI Settings. They are saved to:
+
+```text
+~/.config/herdr-webui/webui-settings.json
+```
+
+With `XDG_CONFIG_HOME` set, the file is:
+
+```text
+$XDG_CONFIG_HOME/herdr-webui/webui-settings.json
+```
+
 If Herdr backend is not running, open the session manager and launch it, or start it separately:
 
 ```sh
@@ -125,7 +145,7 @@ target/release/herdr-webui
 
 ## Run Locally
 
-Run with localhost auth bypass:
+Run locally:
 
 ```sh
 make run-web-local
@@ -134,7 +154,7 @@ make run-web-local
 Equivalent direct command:
 
 ```sh
-HERDR_WEB_LOCALHOST_NO_AUTH=true target/release/herdr-webui --bind 127.0.0.1:8787
+target/release/herdr-webui --bind 127.0.0.1:8787
 ```
 
 Then open:
@@ -155,20 +175,37 @@ herdr-webui uninstall-mac
 
 ## Authentication
 
-Environment variables:
+Server access settings are stored in `~/.config/herdr-webui/webui-settings.json` and can be edited from WebUI Settings:
 
-- `HERDR_WEB_USER`: username for login.
-- `HERDR_WEB_PASSWORD`: password for login.
-- `HERDR_WEB_LOCALHOST_NO_AUTH=true`: allow localhost requests without login.
+- Bind address, for example `127.0.0.1:8787` or `0.0.0.0:8787`.
+- Username.
+- Password.
+- Localhost auth bypass.
+
+Defaults when the file does not exist:
+
+- Bind address: `127.0.0.1:8787`.
+- Username: blank.
+- Password: blank.
+- Localhost auth bypass: enabled.
+
+Non-localhost binds require a username and password. Set both values before exposing WebUI outside localhost.
+
+To expose the server on all interfaces:
+
+1. Open Settings.
+2. Set `Bind address` to `0.0.0.0:8787`.
+3. Set a username and password.
+4. Press `Apply server settings`.
+5. Open the WebUI from another machine using `http://HOST_IP:8787`.
+
+Changing the bind address restarts the WebUI HTTP listener in the same process. If you move from `127.0.0.1` to `0.0.0.0`, reload the browser using the externally reachable address.
+
+The settings API intentionally does not expose the saved password value. Leaving the Password field blank in Settings keeps the current password.
+
+Environment variable:
+
 - `HERDR_WEB_HERDR_BIN`: Herdr backend binary used when WebUI launches a session.
-
-Non-localhost binds require credentials. Public binds without auth should fail fast.
-
-Example public bind:
-
-```sh
-HERDR_WEB_USER=admin HERDR_WEB_PASSWORD='change-me' target/release/herdr-webui --bind 0.0.0.0:8787
-```
 
 ## Sessions
 
@@ -387,6 +424,7 @@ Sizing:
 Settings are stored in browser `localStorage`:
 
 - Default theme: Auto, Light, or Dark.
+- Server access: bind address, username, password, and localhost auth bypass. Stored in `~/.config/herdr-webui/webui-settings.json`.
 - Theme colors: edit Dark and Light palettes, apply built-in profiles, reset to defaults, and apply/reload UI immediately.
 - Show terminal overflow scrollbars.
 - Resize terminal to browser viewport.
@@ -407,7 +445,7 @@ Theme color changes are stored in browser `localStorage`. Colors are normalized 
 
 Workspace drag-and-drop order is not stored in `localStorage`. It is stored in the WebUI backend process so multiple browser tabs can share it.
 
-Shortcut settings are stored in browser `localStorage`, so they survive closing and reopening browser tabs.
+Server access settings are stored on disk by the WebUI process. Browser settings such as shortcuts, theme, terminal sizing, notification scope, and worktree defaults are stored in browser `localStorage`, so they survive closing and reopening browser tabs on that browser.
 
 ## Shortcuts
 
@@ -571,6 +609,7 @@ GitHub Actions workflows:
 - Embedded offline assets.
 - Localhost auth bypass.
 - Credential auth for non-localhost use.
+- Runtime server access settings with dynamic listener rebind.
 - Workspace list/create/rename/close.
 - Worktree grouping, creation, and removal.
 - Worktree discovery/open modal.
@@ -626,6 +665,9 @@ GitHub Actions workflows:
 
 ## Security Notes
 
-- Do not bind to public interfaces without setting `HERDR_WEB_USER` and `HERDR_WEB_PASSWORD`.
-- `HERDR_WEB_LOCALHOST_NO_AUTH=true` is intended only for loopback development or trusted local use.
+- Do not expose WebUI outside localhost without setting a username and password.
+- Use Settings to change username and password before changing Bind address to `0.0.0.0:8787` or another non-loopback address.
+- Non-localhost binds are rejected unless a username and password are configured.
+- Localhost auth bypass applies only to loopback requests. Remote requests still need credentials.
+- Server access settings are stored in `~/.config/herdr-webui/webui-settings.json`. Protect this file because it contains the configured password.
 - The WebUI controls Herdr sessions and terminal input, so treat it as equivalent to shell access.

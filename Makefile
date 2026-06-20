@@ -10,9 +10,6 @@ LOCAL_BIN_DIR ?= $(HOME)/.local/bin
 INSTALL_BIN ?= $(LOCAL_BIN_DIR)/herdr-webui
 BUILD_BIN := $(CURDIR)/$(TARGET_DIR)/release/herdr-webui
 INSTALL_LOG_DIR := $(HOME)/Library/Logs/herdr-webui
-HERDR_WEB_LOCALHOST_NO_AUTH ?= true
-HERDR_WEB_USER ?=
-HERDR_WEB_PASSWORD ?=
 
 .PHONY: build check check-rust fmt run-web run-web-local test test-js coverage clean install-mac update-mac uninstall-mac
 
@@ -33,7 +30,7 @@ run-web:
 	$(CARGO) run --manifest-path $(WEBUI_MANIFEST) --target-dir $(TARGET_DIR) -- --bind $(BIND)
 
 run-web-local:
-	HERDR_WEB_LOCALHOST_NO_AUTH=true $(CARGO) run --manifest-path $(WEBUI_MANIFEST) --target-dir $(TARGET_DIR) -- --bind $(BIND)
+	$(CARGO) run --manifest-path $(WEBUI_MANIFEST) --target-dir $(TARGET_DIR) -- --bind $(BIND)
 
 test: test-js
 	$(CARGO) test --manifest-path $(WEBUI_MANIFEST) --target-dir $(TARGET_DIR)
@@ -63,13 +60,6 @@ install-mac: build
 		echo '    <string>--bind</string>'; \
 		echo '    <string>$(BIND)</string>'; \
 		echo '  </array>'; \
-		echo '  <key>EnvironmentVariables</key>'; \
-		echo '  <dict>'; \
-		echo '    <key>HERDR_WEB_LOCALHOST_NO_AUTH</key>'; \
-		echo '    <string>$(HERDR_WEB_LOCALHOST_NO_AUTH)</string>'; \
-		if [ -n "$(HERDR_WEB_USER)" ]; then echo '    <key>HERDR_WEB_USER</key>'; echo '    <string>$(HERDR_WEB_USER)</string>'; fi; \
-		if [ -n "$(HERDR_WEB_PASSWORD)" ]; then echo '    <key>HERDR_WEB_PASSWORD</key>'; echo '    <string>$(HERDR_WEB_PASSWORD)</string>'; fi; \
-		echo '  </dict>'; \
 		echo '  <key>RunAtLoad</key>'; \
 		echo '  <true/>'; \
 		echo '  <key>KeepAlive</key>'; \

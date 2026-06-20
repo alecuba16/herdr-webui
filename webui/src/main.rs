@@ -108,6 +108,22 @@ struct WebConfig {
     client_socket: Option<PathBuf>,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+struct PersistedServerSettings {
+    bind: Option<String>,
+    user: Option<String>,
+    password: Option<String>,
+    localhost_no_auth: Option<bool>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct RuntimeServerSettings {
+    bind: SocketAddr,
+    user: Option<String>,
+    password: Option<String>,
+    localhost_no_auth: bool,
+}
+
 impl WebConfig {
     fn parse(args: &[String]) -> io::Result<Self> {
         let mut bind = DEFAULT_BIND.parse::<SocketAddr>().expect("valid bind");
@@ -176,9 +192,6 @@ fn print_help() {
     eprintln!("herdr-webui install-mac [--bind HOST:PORT] [--session NAME]");
     eprintln!("herdr-webui update-mac");
     eprintln!("herdr-webui uninstall-mac");
-    eprintln!("env:");
-    eprintln!("  HERDR_WEB_USER=alice HERDR_WEB_PASSWORD=secret");
-    eprintln!("  HERDR_WEB_LOCALHOST_NO_AUTH=true");
 }
 
 fn home_dir() -> io::Result<PathBuf> {
@@ -231,28 +244,7 @@ fn copy_current_exe_to_install_path() -> io::Result<PathBuf> {
 
 fn plist_xml(config: &WebConfig, install_bin: &Path) -> io::Result<String> {
     let log_dir = install_log_dir()?;
-    let mut env_lines = vec![format!(
-        "    <key>HERDR_WEB_LOCALHOST_NO_AUTH</key>\n    <string>{}</string>",
-        xml_escape(
-            &std::env::var("HERDR_WEB_LOCALHOST_NO_AUTH").unwrap_or_else(|_| "true".to_string())
-        )
-    )];
-    if let Ok(user) = std::env::var("HERDR_WEB_USER") {
-        if !user.is_empty() {
-            env_lines.push(format!(
-                "    <key>HERDR_WEB_USER</key>\n    <string>{}</string>",
-                xml_escape(&user)
-            ));
-        }
-    }
-    if let Ok(password) = std::env::var("HERDR_WEB_PASSWORD") {
-        if !password.is_empty() {
-            env_lines.push(format!(
-                "    <key>HERDR_WEB_PASSWORD</key>\n    <string>{}</string>",
-                xml_escape(&password)
-            ));
-        }
-    }
+    let mut env_lines = Vec::new();
     if let Ok(herdr_bin) = std::env::var("HERDR_WEB_HERDR_BIN") {
         if !herdr_bin.is_empty() {
             env_lines.push(format!(
@@ -387,7 +379,9 @@ struct WebState {
     client_socket: Option<PathBuf>,
     session_name: Option<String>,
     herdr_bin: String,
-    auth: Arc<AuthConfig>,
+    auth: Arc<Mutex<AuthConfig>>,
+    server_settings: Arc<Mutex<RuntimeServerSettings>>,
+    rebind_tx: tokio::sync::watch::Sender<SocketAddr>,
     workspace_orders: Arc<Mutex<HashMap<String, Vec<String>>>>,
 }
 
@@ -465,33 +459,12 @@ struct AuthConfig {
 }
 
 impl AuthConfig {
-    fn load(bind: SocketAddr) -> io::Result<Self> {
-        let user = std::env::var("HERDR_WEB_USER")
-            .ok()
-            .filter(|value| !value.is_empty());
-        let password = std::env::var("HERDR_WEB_PASSWORD")
-            .ok()
-            .filter(|value| !value.is_empty());
-        let localhost_no_auth = std::env::var("HERDR_WEB_LOCALHOST_NO_AUTH")
-            .ok()
-            .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "on"));
-        let local_bind = bind.ip().is_loopback();
-        if !local_bind && (user.is_none() || password.is_none()) {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "HERDR_WEB_USER and HERDR_WEB_PASSWORD are required when binding non-local addresses",
-            ));
-        }
-        if local_bind && !localhost_no_auth && (user.is_none() || password.is_none()) {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "set HERDR_WEB_USER/HERDR_WEB_PASSWORD or HERDR_WEB_LOCALHOST_NO_AUTH=true",
-            ));
-        }
+    fn from_settings(settings: &RuntimeServerSettings) -> io::Result<Self> {
+        validate_runtime_server_settings(settings)?;
         let seed = format!(
             "{}:{}:{}",
-            user.as_deref().unwrap_or(""),
-            password.as_deref().unwrap_or(""),
+            settings.user.as_deref().unwrap_or(""),
+            settings.password.as_deref().unwrap_or(""),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map(|value| value.as_nanos())
@@ -502,12 +475,105 @@ impl AuthConfig {
             .map(|byte| format!("{byte:02x}"))
             .collect();
         Ok(Self {
-            user,
-            password,
-            localhost_no_auth,
+            user: settings.user.clone(),
+            password: settings.password.clone(),
+            localhost_no_auth: settings.localhost_no_auth,
             token,
         })
     }
+}
+
+fn validate_runtime_server_settings(settings: &RuntimeServerSettings) -> io::Result<()> {
+    let local_bind = settings.bind.ip().is_loopback();
+    if !local_bind && (settings.user.is_none() || settings.password.is_none()) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "username and password are required when binding non-local addresses",
+        ));
+    }
+    if local_bind
+        && !settings.localhost_no_auth
+        && (settings.user.is_none() || settings.password.is_none())
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "set username/password or allow localhost auth bypass",
+        ));
+    }
+    Ok(())
+}
+
+fn default_runtime_server_settings(bind: SocketAddr) -> RuntimeServerSettings {
+    RuntimeServerSettings {
+        bind,
+        user: None,
+        password: None,
+        localhost_no_auth: true,
+    }
+}
+
+fn server_settings_path() -> PathBuf {
+    if let Ok(dir) = std::env::var("XDG_CONFIG_HOME") {
+        return PathBuf::from(dir).join("herdr-webui/webui-settings.json");
+    }
+    std::env::var("HOME")
+        .map(|home| PathBuf::from(home).join(".config/herdr-webui/webui-settings.json"))
+        .unwrap_or_else(|_| std::env::temp_dir().join("herdr-webui/webui-settings.json"))
+}
+
+fn load_runtime_server_settings(default_bind: SocketAddr) -> io::Result<RuntimeServerSettings> {
+    let mut settings = default_runtime_server_settings(default_bind);
+    let path = server_settings_path();
+    let Ok(raw) = fs::read_to_string(path) else {
+        save_runtime_server_settings(&settings)?;
+        return Ok(settings);
+    };
+    let persisted: PersistedServerSettings = serde_json::from_str(&raw).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid webui-settings.json: {err}"),
+        )
+    })?;
+    if let Some(bind) = persisted.bind {
+        settings.bind = bind.parse().map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("invalid saved bind: {err}"),
+            )
+        })?;
+    }
+    if persisted.user.is_some() {
+        settings.user = persisted.user.filter(|value| !value.is_empty());
+    }
+    if persisted.password.is_some() {
+        settings.password = persisted.password.filter(|value| !value.is_empty());
+    }
+    if let Some(localhost_no_auth) = persisted.localhost_no_auth {
+        settings.localhost_no_auth = localhost_no_auth;
+    }
+    validate_runtime_server_settings(&settings)?;
+    Ok(settings)
+}
+
+fn save_runtime_server_settings(settings: &RuntimeServerSettings) -> io::Result<()> {
+    validate_runtime_server_settings(settings)?;
+    let path = server_settings_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let content = serde_json::to_string_pretty(&PersistedServerSettings {
+        bind: Some(settings.bind.to_string()),
+        user: settings.user.clone(),
+        password: settings.password.clone(),
+        localhost_no_auth: Some(settings.localhost_no_auth),
+    })?;
+    fs::write(&path, content)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
 }
 
 #[tokio::main]
@@ -527,26 +593,50 @@ async fn main() -> io::Result<()> {
         return uninstall_macos();
     }
     let config = WebConfig::parse(&args)?;
-    let auth = Arc::new(AuthConfig::load(config.bind)?);
+    let server_settings = load_runtime_server_settings(config.bind)?;
+    let auth = Arc::new(Mutex::new(AuthConfig::from_settings(&server_settings)?));
+    let server_settings = Arc::new(Mutex::new(server_settings.clone()));
+    let (rebind_tx, rebind_rx) = tokio::sync::watch::channel(server_settings.lock().unwrap().bind);
     let state = WebState {
         api_socket: config.api_socket.clone(),
         client_socket: config.client_socket.clone(),
         session_name: config.session.clone(),
         herdr_bin: std::env::var("HERDR_WEB_HERDR_BIN").unwrap_or_else(|_| "herdr".to_string()),
         auth,
+        server_settings,
+        rebind_tx,
         workspace_orders: Arc::new(Mutex::new(HashMap::new())),
     };
 
-    let app = app_router(state);
+    serve_rebindable(state, rebind_rx).await
+}
 
-    let listener = tokio::net::TcpListener::bind(config.bind).await?;
-    eprintln!("herdr-webui listening on http://{}", config.bind);
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .await
-    .map_err(io::Error::other)
+async fn serve_rebindable(
+    state: WebState,
+    mut rebind_rx: tokio::sync::watch::Receiver<SocketAddr>,
+) -> io::Result<()> {
+    loop {
+        let bind = { *rebind_rx.borrow() };
+        let listener = match tokio::net::TcpListener::bind(bind).await {
+            Ok(listener) => listener,
+            Err(err) => {
+                eprintln!("failed to bind http://{bind}: {err}");
+                rebind_rx.changed().await.map_err(io::Error::other)?;
+                continue;
+            }
+        };
+        eprintln!("herdr-webui listening on http://{bind}");
+        let mut shutdown_rx = rebind_rx.clone();
+        axum::serve(
+            listener,
+            app_router(state.clone()).into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(async move {
+            let _ = shutdown_rx.changed().await;
+        })
+        .await
+        .map_err(io::Error::other)?;
+    }
 }
 
 fn app_router(state: WebState) -> Router {
@@ -572,6 +662,10 @@ fn app_router(state: WebState) -> Router {
         .route("/api/me", get(me))
         .route("/api/sessions", get(sessions))
         .route("/api/versions", get(versions))
+        .route(
+            "/api/server-settings",
+            get(server_settings).post(update_server_settings),
+        )
         .route("/api/session/launch", post(launch_session))
         .route("/api/session/close", post(close_session))
         .route("/api/login", post(login))
@@ -746,7 +840,10 @@ fn read_json_line<T: for<'de> Deserialize<'de>>(
 }
 
 fn authorized(state: &WebState, headers: &HeaderMap, remote: SocketAddr) -> bool {
-    if remote.ip().is_loopback() && state.auth.localhost_no_auth {
+    let Ok(auth) = state.auth.lock() else {
+        return false;
+    };
+    if remote.ip().is_loopback() && auth.localhost_no_auth {
         return true;
     }
     let Some(cookie) = headers
@@ -759,7 +856,7 @@ fn authorized(state: &WebState, headers: &HeaderMap, remote: SocketAddr) -> bool
         let Some(value) = part.trim().strip_prefix(&format!("{COOKIE_NAME}=")) else {
             return false;
         };
-        constant_time_eq(value.as_bytes(), state.auth.token.as_bytes())
+        constant_time_eq(value.as_bytes(), auth.token.as_bytes())
     })
 }
 
@@ -801,6 +898,115 @@ async fn me(
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
 ) -> Response {
     Json(json!({ "authenticated": authorized(&state, &headers, remote) })).into_response()
+}
+
+#[derive(Deserialize)]
+struct UpdateServerSettingsRequest {
+    bind: String,
+    username: Option<String>,
+    password: Option<String>,
+    localhost_no_auth: bool,
+}
+
+fn settings_public_json(settings: &RuntimeServerSettings) -> serde_json::Value {
+    json!({
+        "bind": settings.bind.to_string(),
+        "username": settings.user.clone().unwrap_or_default(),
+        "has_password": settings.password.is_some(),
+        "localhost_no_auth": settings.localhost_no_auth,
+        "settings_path": server_settings_path().to_string_lossy(),
+    })
+}
+
+async fn server_settings(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+) -> Response {
+    if let Err(response) = require_auth(&state, &headers, remote) {
+        return response;
+    }
+    let Ok(settings) = state.server_settings.lock() else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "server settings unavailable" })),
+        )
+            .into_response();
+    };
+    Json(settings_public_json(&settings)).into_response()
+}
+
+async fn update_server_settings(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    Json(body): Json<UpdateServerSettingsRequest>,
+) -> Response {
+    if let Err(response) = require_auth(&state, &headers, remote) {
+        return response;
+    }
+    let bind = match body.bind.trim().parse::<SocketAddr>() {
+        Ok(bind) => bind,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": format!("invalid bind address: {err}") })),
+            )
+                .into_response();
+        }
+    };
+    let current = state
+        .server_settings
+        .lock()
+        .ok()
+        .map(|settings| settings.clone());
+    let next = RuntimeServerSettings {
+        bind,
+        user: body
+            .username
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+        password: body
+            .password
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .or_else(|| {
+                current
+                    .as_ref()
+                    .and_then(|settings| settings.password.clone())
+            }),
+        localhost_no_auth: body.localhost_no_auth,
+    };
+    let bind_changed = current
+        .as_ref()
+        .is_none_or(|settings| settings.bind != next.bind);
+    if let Err(err) = save_runtime_server_settings(&next) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": err.to_string() })),
+        )
+            .into_response();
+    }
+    let auth = match AuthConfig::from_settings(&next) {
+        Ok(auth) => auth,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": err.to_string() })),
+            )
+                .into_response();
+        }
+    };
+    if let Ok(mut auth_lock) = state.auth.lock() {
+        *auth_lock = auth;
+    }
+    if let Ok(mut settings_lock) = state.server_settings.lock() {
+        *settings_lock = next.clone();
+    }
+    if bind_changed {
+        let _ = state.rebind_tx.send(next.bind);
+    }
+    Json(settings_public_json(&next)).into_response()
 }
 
 async fn sessions(
@@ -903,18 +1109,26 @@ async fn login(
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
     Json(body): Json<LoginRequest>,
 ) -> Response {
-    if remote.ip().is_loopback() && state.auth.localhost_no_auth {
+    let Ok(auth) = state.auth.lock() else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "auth unavailable" })),
+        )
+            .into_response();
+    };
+    if remote.ip().is_loopback() && auth.localhost_no_auth {
+        drop(auth);
         return login_response(&state);
     }
-    let ok = state
-        .auth
+    let ok = auth
         .user
         .as_deref()
-        .zip(state.auth.password.as_deref())
+        .zip(auth.password.as_deref())
         .is_some_and(|(user, password)| {
             constant_time_eq(body.username.as_bytes(), user.as_bytes())
                 && constant_time_eq(body.password.as_bytes(), password.as_bytes())
         });
+    drop(auth);
     if !ok {
         return (
             StatusCode::UNAUTHORIZED,
@@ -926,12 +1140,17 @@ async fn login(
 }
 
 fn login_response(state: &WebState) -> Response {
+    let token = state
+        .auth
+        .lock()
+        .map(|auth| auth.token.clone())
+        .unwrap_or_default();
     let mut response = Json(json!({ "ok": true })).into_response();
     response.headers_mut().insert(
         header::SET_COOKIE,
         HeaderValue::from_str(&format!(
             "{COOKIE_NAME}={}; HttpOnly; SameSite=Lax; Path=/",
-            state.auth.token
+            token
         ))
         .expect("valid cookie"),
     );
@@ -2223,17 +2442,26 @@ mod tests {
     use tower::ServiceExt;
 
     fn test_state() -> WebState {
+        let bind = DEFAULT_BIND.parse::<SocketAddr>().unwrap();
+        let (rebind_tx, _) = tokio::sync::watch::channel(bind);
         WebState {
             api_socket: Some(PathBuf::from("/tmp/default-api.sock")),
             client_socket: Some(PathBuf::from("/tmp/default-client.sock")),
             session_name: None,
             herdr_bin: "herdr".to_string(),
-            auth: Arc::new(AuthConfig {
+            auth: Arc::new(Mutex::new(AuthConfig {
                 user: Some("user".to_string()),
                 password: Some("pass".to_string()),
                 localhost_no_auth: false,
                 token: "token-123".to_string(),
-            }),
+            })),
+            server_settings: Arc::new(Mutex::new(RuntimeServerSettings {
+                bind,
+                user: Some("user".to_string()),
+                password: Some("pass".to_string()),
+                localhost_no_auth: false,
+            })),
+            rebind_tx,
             workspace_orders: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -2264,9 +2492,7 @@ mod tests {
     }
 
     fn clear_auth_env() {
-        std::env::remove_var("HERDR_WEB_USER");
-        std::env::remove_var("HERDR_WEB_PASSWORD");
-        std::env::remove_var("HERDR_WEB_LOCALHOST_NO_AUTH");
+        std::env::remove_var("XDG_CONFIG_HOME");
     }
 
     #[cfg(unix)]
@@ -2415,9 +2641,6 @@ mod tests {
                 .as_nanos()
         ));
         std::env::set_var("HOME", &home);
-        std::env::set_var("HERDR_WEB_LOCALHOST_NO_AUTH", "false");
-        std::env::set_var("HERDR_WEB_USER", "a<&b");
-        std::env::set_var("HERDR_WEB_PASSWORD", "p\"q");
         std::env::set_var("HERDR_WEB_HERDR_BIN", "/opt/herdr'");
 
         let config = WebConfig {
@@ -2430,13 +2653,9 @@ mod tests {
 
         assert!(plist.contains("<string>/tmp/herdr-webui&amp;bin</string>"));
         assert!(plist.contains("<string>work&amp;test</string>"));
-        assert!(plist.contains("<string>a&lt;&amp;b</string>"));
-        assert!(plist.contains("<string>p&quot;q</string>"));
         assert!(plist.contains("<string>/opt/herdr&apos;</string>"));
         assert!(plist.contains("Library/Logs/herdr-webui/stdout.log"));
 
-        std::env::remove_var("HERDR_WEB_USER");
-        std::env::remove_var("HERDR_WEB_PASSWORD");
         std::env::remove_var("HERDR_WEB_HERDR_BIN");
     }
 
@@ -2518,8 +2737,8 @@ mod tests {
 
     #[test]
     fn authorizes_loopback_when_localhost_bypass_enabled() {
-        let mut state = test_state();
-        Arc::get_mut(&mut state.auth).unwrap().localhost_no_auth = true;
+        let state = test_state();
+        state.auth.lock().unwrap().localhost_no_auth = true;
 
         assert!(authorized(
             &state,
@@ -2560,54 +2779,151 @@ mod tests {
     }
 
     #[test]
-    fn loads_auth_with_localhost_bypass() {
-        let _guard = env_lock().lock().unwrap();
-        clear_auth_env();
-        std::env::set_var("HERDR_WEB_LOCALHOST_NO_AUTH", "true");
+    fn default_runtime_server_settings_use_no_credentials_and_local_bypass() {
+        let settings = default_runtime_server_settings("127.0.0.1:8787".parse().unwrap());
 
-        let auth = AuthConfig::load("127.0.0.1:8787".parse().unwrap()).unwrap();
-
-        assert!(auth.localhost_no_auth);
-        assert_eq!(auth.user, None);
-        assert_eq!(auth.password, None);
-        assert!(!auth.token.is_empty());
-
-        clear_auth_env();
+        assert_eq!(settings.bind, "127.0.0.1:8787".parse().unwrap());
+        assert_eq!(settings.user, None);
+        assert_eq!(settings.password, None);
+        assert!(settings.localhost_no_auth);
     }
 
     #[test]
-    fn loads_auth_with_credentials() {
+    fn missing_runtime_settings_file_creates_defaults() {
         let _guard = env_lock().lock().unwrap();
-        clear_auth_env();
-        std::env::set_var("HERDR_WEB_USER", "alice");
-        std::env::set_var("HERDR_WEB_PASSWORD", "secret");
+        let config_home = std::env::temp_dir().join(format!(
+            "herdr-webui-settings-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
 
-        let auth = AuthConfig::load("0.0.0.0:8787".parse().unwrap()).unwrap();
+        let settings = load_runtime_server_settings("127.0.0.1:8787".parse().unwrap()).unwrap();
 
-        assert_eq!(auth.user.as_deref(), Some("alice"));
-        assert_eq!(auth.password.as_deref(), Some("secret"));
+        assert_eq!(settings.user, None);
+        assert_eq!(settings.password, None);
+        assert!(settings.localhost_no_auth);
+        assert!(server_settings_path().exists());
+        let raw = fs::read_to_string(server_settings_path()).unwrap();
+        assert!(raw.contains("localhost_no_auth"));
+
+        let _ = fs::remove_dir_all(config_home);
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    #[test]
+    fn loads_auth_from_runtime_settings() {
+        let auth = AuthConfig::from_settings(&RuntimeServerSettings {
+            bind: "0.0.0.0:8787".parse().unwrap(),
+            user: Some("test-user".to_string()),
+            password: Some("test-password".to_string()),
+            localhost_no_auth: false,
+        })
+        .unwrap();
+
+        assert_eq!(auth.user.as_deref(), Some("test-user"));
+        assert_eq!(auth.password.as_deref(), Some("test-password"));
         assert!(!auth.localhost_no_auth);
         assert!(!auth.token.is_empty());
-
-        clear_auth_env();
     }
 
     #[test]
-    fn rejects_auth_without_credentials_when_required() {
-        let _guard = env_lock().lock().unwrap();
-        clear_auth_env();
-
-        let local_err = match AuthConfig::load("127.0.0.1:8787".parse().unwrap()) {
-            Ok(_) => panic!("expected localhost auth config to fail"),
-            Err(err) => err,
-        };
-        let public_err = match AuthConfig::load("0.0.0.0:8787".parse().unwrap()) {
+    fn rejects_public_bind_without_credentials() {
+        let public_err = match AuthConfig::from_settings(&RuntimeServerSettings {
+            bind: "0.0.0.0:8787".parse().unwrap(),
+            user: None,
+            password: None,
+            localhost_no_auth: true,
+        }) {
             Ok(_) => panic!("expected public auth config to fail"),
             Err(err) => err,
         };
 
-        assert_eq!(local_err.kind(), io::ErrorKind::PermissionDenied);
         assert_eq!(public_err.kind(), io::ErrorKind::PermissionDenied);
+    }
+
+    #[tokio::test]
+    async fn server_settings_api_reports_and_updates_runtime_settings() {
+        let _guard = env_lock().lock().unwrap();
+        let config_home = std::env::temp_dir().join(format!(
+            "herdr-webui-settings-api-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
+        let app = test_app();
+
+        let before = app
+            .clone()
+            .oneshot(
+                request(Method::GET, "/api/server-settings")
+                    .header(header::COOKIE, "herdr_web_session=token-123")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let before_body = response_json(before).await;
+        assert_eq!(before_body["bind"], "127.0.0.1:8787");
+        assert_eq!(before_body["username"], "user");
+
+        let updated = app
+            .oneshot(
+                request(Method::POST, "/api/server-settings")
+                    .header(header::COOKIE, "herdr_web_session=token-123")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "bind": "0.0.0.0:8787",
+                            "username": "test-user",
+                            "password": "test-password",
+                            "localhost_no_auth": true,
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let updated_body = response_json(updated).await;
+
+        assert_eq!(updated_body["bind"], "0.0.0.0:8787");
+        assert_eq!(updated_body["username"], "test-user");
+        assert_eq!(updated_body["has_password"], true);
+        assert!(server_settings_path().exists());
+
+        let _ = fs::remove_dir_all(config_home);
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    #[tokio::test]
+    async fn server_settings_api_rejects_public_bind_without_credentials() {
+        let app = test_app();
+
+        let response = app
+            .oneshot(
+                request(Method::POST, "/api/server-settings")
+                    .header(header::COOKIE, "herdr_web_session=token-123")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "bind": "0.0.0.0:8787",
+                            "username": null,
+                            "password": null,
+                            "localhost_no_auth": true,
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[test]

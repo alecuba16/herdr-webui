@@ -124,6 +124,20 @@ describe("app bundle load", () => {
     match(html, /id="workspaceCreateSubmit"/);
   });
 
+  it("renders server access settings fields", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    const html = ctx.serverSettingsHtml();
+
+    match(html, /id="optServerBind"/);
+    match(html, /id="optServerUser"/);
+    match(html, /id="optServerPassword"/);
+    match(html, /id="optServerLocalBypass"/);
+    match(html, /id="serverSettingsApply"/);
+    match(html, /\.config\/herdr-webui\/webui-settings\.json/);
+  });
+
   it("renders extracted worktree and shortcut modals", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
