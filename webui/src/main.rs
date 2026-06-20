@@ -955,7 +955,11 @@ fn workspace_order_key(state: &WebState, headers: &HeaderMap) -> String {
     session_display_name(session_from_headers(state, headers).as_deref()).to_string()
 }
 
-fn open_created_worktree_request(cwd: &str, path: &str, label: Option<String>) -> serde_json::Value {
+fn open_created_worktree_request(
+    cwd: &str,
+    path: &str,
+    label: Option<String>,
+) -> serde_json::Value {
     json!({
         "id": "web:worktree:open-created",
         "method": "worktree.open",

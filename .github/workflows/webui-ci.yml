@@ -15,8 +15,6 @@ jobs:
   test:
     name: Build and test
     runs-on: macos-latest
-    env:
-      HERDR_WEBUI_VERSION: 0.0.1+${{ github.sha }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -43,6 +41,12 @@ jobs:
 
       - name: Version contains commit hash
         run: |
+          short_sha="${GITHUB_SHA::12}"
+          if [ "$GITHUB_REF_NAME" = "main" ] || [ "$GITHUB_REF_NAME" = "master" ]; then
+            expected="${GITHUB_REF_NAME}-${short_sha}"
+          else
+            expected="snapshot-${short_sha}"
+          fi
           version="$(target/release/herdr-webui --version)"
           echo "version=$version"
-          test "$version" = "0.0.1+${GITHUB_SHA}"
+          test "$version" = "$expected"
