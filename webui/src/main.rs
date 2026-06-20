@@ -1627,10 +1627,9 @@ async fn login_css() -> Response {
 
 fn static_text(body: &'static str, content_type: &'static str) -> Response {
     let mut response = body.into_response();
-    response.headers_mut().insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static(content_type),
-    );
+    response
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
     response
 }
 
@@ -2923,16 +2922,20 @@ mod tests {
                 > 1000
         );
         assert!(to_bytes(css.into_body(), 1024 * 1024).await.unwrap().len() > 100);
-        assert!(to_bytes(app_js.into_body(), 1024 * 1024)
-            .await
-            .unwrap()
-            .len()
-            > 1000);
-        assert!(to_bytes(app_css.into_body(), 1024 * 1024)
-            .await
-            .unwrap()
-            .len()
-            > 1000);
+        assert!(
+            to_bytes(app_js.into_body(), 1024 * 1024)
+                .await
+                .unwrap()
+                .len()
+                > 1000
+        );
+        assert!(
+            to_bytes(app_css.into_body(), 1024 * 1024)
+                .await
+                .unwrap()
+                .len()
+                > 1000
+        );
         assert!(String::from_utf8(
             to_bytes(icon.into_body(), 1024 * 1024)
                 .await
