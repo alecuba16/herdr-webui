@@ -72,6 +72,19 @@ body.light {
 .mini:hover {
   background: var(--border2);
 }
+.no-sleep-control {
+  max-width: 118px;
+  appearance: none;
+}
+.no-sleep-control.active {
+  background: var(--accent);
+  color: var(--bg);
+  border-color: var(--accent);
+  font-weight: 800;
+}
+.no-sleep-control.unsupported {
+  opacity: 0.55;
+}
 .mini.danger {
   background: #3b2028;
   color: #ffccd5;
