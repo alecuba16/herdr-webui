@@ -528,7 +528,16 @@ fn load_runtime_server_settings(default_bind: SocketAddr) -> io::Result<RuntimeS
         save_runtime_server_settings(&settings)?;
         return Ok(settings);
     };
-    let persisted: PersistedServerSettings = serde_json::from_str(&raw).map_err(|err| {
+    let raw_json: serde_json::Value = serde_json::from_str(&raw).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid webui-settings.json: {err}"),
+        )
+    })?;
+    let missing_keys = ["bind", "user", "password", "localhost_no_auth"]
+        .iter()
+        .any(|key| raw_json.get(key).is_none());
+    let persisted: PersistedServerSettings = serde_json::from_value(raw_json).map_err(|err| {
         io::Error::new(
             io::ErrorKind::InvalidData,
             format!("invalid webui-settings.json: {err}"),
@@ -552,6 +561,9 @@ fn load_runtime_server_settings(default_bind: SocketAddr) -> io::Result<RuntimeS
         settings.localhost_no_auth = localhost_no_auth;
     }
     validate_runtime_server_settings(&settings)?;
+    if missing_keys {
+        save_runtime_server_settings(&settings)?;
+    }
     Ok(settings)
 }
 
@@ -2808,6 +2820,36 @@ mod tests {
         assert!(server_settings_path().exists());
         let raw = fs::read_to_string(server_settings_path()).unwrap();
         assert!(raw.contains("localhost_no_auth"));
+
+        let _ = fs::remove_dir_all(config_home);
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    #[test]
+    fn existing_runtime_settings_file_backfills_missing_keys() {
+        let _guard = env_lock().lock().unwrap();
+        let config_home = std::env::temp_dir().join(format!(
+            "herdr-webui-settings-backfill-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
+        let path = server_settings_path();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, r#"{"bind":"127.0.0.1:9999"}"#).unwrap();
+
+        let settings = load_runtime_server_settings("127.0.0.1:8787".parse().unwrap()).unwrap();
+
+        assert_eq!(settings.bind, "127.0.0.1:9999".parse().unwrap());
+        assert_eq!(settings.user, None);
+        assert_eq!(settings.password, None);
+        assert!(settings.localhost_no_auth);
+        let raw = fs::read_to_string(path).unwrap();
+        assert!(raw.contains("localhost_no_auth"));
+        assert!(raw.contains("user"));
+        assert!(raw.contains("password"));
 
         let _ = fs::remove_dir_all(config_home);
         std::env::remove_var("XDG_CONFIG_HOME");

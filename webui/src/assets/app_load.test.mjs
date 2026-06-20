@@ -138,6 +138,28 @@ describe("app bundle load", () => {
     match(html, /\.config\/herdr-webui\/webui-settings\.json/);
   });
 
+  it("renders no-sleep control options", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    const html = ctx.noSleepControlHtml("noSleepTest");
+
+    match(html, /id="noSleepTest"/);
+    match(html, /value="off"/);
+    match(html, /value="1h"/);
+    match(html, /value="2h"/);
+    match(html, /value="4h"/);
+    match(html, /value="infinite"/);
+  });
+
+  it("normalizes invalid no-sleep option to off", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    equal(ctx.normalizeOptions({ noSleepMode: "bad" }).noSleepMode, "off");
+    equal(ctx.normalizeOptions({ noSleepMode: "2h" }).noSleepMode, "2h");
+  });
+
   it("renders extracted worktree and shortcut modals", () => {
     const ctx = context();
     vm.runInContext(source, ctx);

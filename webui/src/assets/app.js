@@ -47,6 +47,8 @@ let term,
   inputQueue = [],
   inputFlushTimer = null,
   pasteFrameUntil = 0;
+let noSleepLock = null,
+  noSleepTimer = null;
 const inputEncoder = new TextEncoder();
 const {
   branchPathSlug,
@@ -457,6 +459,7 @@ const defaultOptions = {
   worktreeAutoDiscoverSeconds: 3,
   generateWorktreeNames: false,
   worktreeDefaultDirectory: "../worktrees",
+  noSleepMode: "off",
   themeColors: themeColorDefaults,
 };
 function loadOptions() {
@@ -497,6 +500,8 @@ function normalizeOptions(value) {
   next.worktreeDefaultDirectory =
     String(next.worktreeDefaultDirectory || "").trim() ||
     defaultOptions.worktreeDefaultDirectory;
+  if (!["off", "1h", "2h", "4h", "infinite"].includes(next.noSleepMode))
+    next.noSleepMode = defaultOptions.noSleepMode;
   next.themeColors = normalizeThemeColors(next.themeColors, themeColorDefaults);
   return next;
 }
@@ -505,6 +510,87 @@ localStorage.removeItem("herdr-web-shiftenter-migrated");
 function saveOptions() {
   options = normalizeOptions(options);
   localStorage.setItem("herdr-web-options", JSON.stringify(options));
+}
+function noSleepLabel(mode) {
+  if (mode === "1h") return "◷ 1h";
+  if (mode === "2h") return "◷ 2h";
+  if (mode === "4h") return "◷ 4h";
+  if (mode === "infinite") return "∞ Infinite";
+  return "No sleep: off";
+}
+function noSleepMs(mode) {
+  if (mode === "1h") return 60 * 60 * 1000;
+  if (mode === "2h") return 2 * 60 * 60 * 1000;
+  if (mode === "4h") return 4 * 60 * 60 * 1000;
+  return 0;
+}
+function noSleepControlHtml(extraId) {
+  const suffix = extraId ? ` id="${extraId}"` : "";
+  return `<select class="mini no-sleep-control"${suffix} title="Prevent computer sleep"><option value="off">No sleep: off</option><option value="1h">◷ 1h</option><option value="2h">◷ 2h</option><option value="4h">◷ 4h</option><option value="infinite">∞ Infinite</option></select>`;
+}
+function noSleepControls() {
+  return Array.from(document.querySelectorAll(".no-sleep-control"));
+}
+function syncNoSleepControls() {
+  const mode = options.noSleepMode || "off";
+  for (const control of noSleepControls()) {
+    control.value = mode;
+    control.title = !navigator.wakeLock
+      ? "Screen Wake Lock API not supported by this browser"
+      : mode === "off"
+        ? "Prevent computer sleep"
+        : `Preventing sleep: ${noSleepLabel(mode)}`;
+    control.classList.toggle("active", mode !== "off");
+    control.classList.toggle("unsupported", !navigator.wakeLock);
+  }
+}
+async function releaseNoSleep() {
+  clearTimeout(noSleepTimer);
+  noSleepTimer = null;
+  if (!noSleepLock) return;
+  const lock = noSleepLock;
+  noSleepLock = null;
+  try {
+    await lock.release();
+  } catch (_) {}
+}
+async function requestNoSleep() {
+  if (options.noSleepMode === "off") return;
+  if (!navigator.wakeLock) {
+    options.noSleepMode = "off";
+    saveOptions();
+    syncNoSleepControls();
+    return;
+  }
+  try {
+    await releaseNoSleep();
+    noSleepLock = await navigator.wakeLock.request("screen");
+    const lock = noSleepLock;
+    noSleepLock.addEventListener("release", () => {
+      if (noSleepLock === lock) noSleepLock = null;
+    });
+    const ms = noSleepMs(options.noSleepMode);
+    if (ms) {
+      noSleepTimer = setTimeout(() => {
+        options.noSleepMode = "off";
+        saveOptions();
+        releaseNoSleep();
+        syncNoSleepControls();
+      }, ms);
+    }
+  } catch (_) {
+    options.noSleepMode = "off";
+    saveOptions();
+  }
+  syncNoSleepControls();
+}
+function setNoSleepMode(mode) {
+  if (mode !== "off" && !navigator.wakeLock) mode = "off";
+  options.noSleepMode = mode;
+  saveOptions();
+  if (mode === "off") releaseNoSleep();
+  else requestNoSleep();
+  syncNoSleepControls();
 }
 saveOptions();
 const soundSetting = el("optSound");
@@ -1316,7 +1402,7 @@ function render() {
   const themeIcon =
     themeMode === "auto" ? "A" : themeMode === "dark" ? "☾" : "☀";
   const sessionLabel = escapeHtml(state.session || "default");
-  const tabsTools = `<div class="tabs-tools"><button class="mini" id="sessionButtonTabs" title="Session manager" onclick="showSessionManager(state.backendOnline?'Session manager':'Herdr session offline')">${sessionLabel}</button><button class="mini" id="themeToggleTabs" title="Toggle theme" onclick="themeMode=themeMode==='auto'?'dark':(themeMode==='dark'?'light':'auto');applyTheme();render()">${themeIcon}</button><button class="mini" title="Shortcuts" onclick="applyOptions();el('shortcutsModal').style.display='grid'">?</button><button class="mini" title="Settings" onclick="el('settingsModal').style.display='grid';applyOptions();loadServerSettings()">⚙</button></div>`;
+  const tabsTools = `<div class="tabs-tools"><button class="mini" id="sessionButtonTabs" title="Session manager" onclick="showSessionManager(state.backendOnline?'Session manager':'Herdr session offline')">${sessionLabel}</button><button class="mini" id="themeToggleTabs" title="Toggle theme" onclick="themeMode=themeMode==='auto'?'dark':(themeMode==='dark'?'light':'auto');applyTheme();render()">${themeIcon}</button><button class="mini" title="Shortcuts" onclick="applyOptions();el('shortcutsModal').style.display='grid'">?</button>${noSleepControlHtml()}<button class="mini" title="Settings" onclick="el('settingsModal').style.display='grid';applyOptions();loadServerSettings()">⚙</button></div>`;
   const tabsHtml =
     state.tabs.map((t) => renderTabButton(t, panesByTab)).join("") +
     (state.ws
@@ -1326,6 +1412,7 @@ function render() {
   if (tabsHtml !== lastTabsHtml) {
     tabs.innerHTML = tabsHtml;
     lastTabsHtml = tabsHtml;
+    syncNoSleepControls();
   }
   updateTitle(wsById, tabById, tabCountsByWorkspace, pane);
   if (state.editingTab) {
@@ -3022,6 +3109,10 @@ el("themeToggle").onclick = () => {
     themeMode === "auto" ? "dark" : themeMode === "dark" ? "light" : "auto";
   applyTheme();
 };
+document.addEventListener("change", (e) => {
+  if (!e.target || !e.target.classList.contains("no-sleep-control")) return;
+  setNoSleepMode(e.target.value);
+});
 if (window.matchMedia) {
   try {
     const media = window.matchMedia("(prefers-color-scheme: dark)");
@@ -3295,6 +3386,7 @@ document.addEventListener("visibilitychange", () => {
     loadVersions();
     refresh();
     connectEvents();
+    if (options.noSleepMode !== "off") requestNoSleep();
   }
 });
 document.addEventListener("pointerdown", unlockAudio, { once: true });
@@ -3302,6 +3394,8 @@ document.addEventListener("keydown", unlockAudio, { once: true });
 setupSessionChrome();
 applyTheme();
 applyOptions();
+syncNoSleepControls();
+requestNoSleep();
 loadVersions();
 refresh();
 connectEvents();
