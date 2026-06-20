@@ -82,10 +82,72 @@ jobs:
             dist/${{ matrix.artifact }}.tar.gz
             dist/${{ matrix.artifact }}.tar.gz.sha256
 
+  build-linux:
+    name: Build Linux x86_64
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Validate SemVer tag
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Tag must be vMAJOR.MINOR.PATCH"
+            exit 1
+          fi
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: webui -> ../target
+
+      - name: Test
+        run: cargo test --manifest-path webui/Cargo.toml --target-dir target
+
+      - name: Build release
+        run: cargo build --release --manifest-path webui/Cargo.toml --target-dir target --target x86_64-unknown-linux-gnu
+
+      - name: Verify release version
+        run: |
+          actual="$(target/x86_64-unknown-linux-gnu/release/herdr-webui --version)"
+          echo "version=$actual"
+          test "$actual" = "$GITHUB_REF_NAME"
+
+      - name: Package
+        run: |
+          mkdir -p dist/herdr-webui-linux-x86_64
+          cp target/x86_64-unknown-linux-gnu/release/herdr-webui dist/herdr-webui-linux-x86_64/herdr-webui
+          chmod 755 dist/herdr-webui-linux-x86_64/herdr-webui
+          cat > dist/herdr-webui-linux-x86_64/README.txt <<'EOF'
+          Run:
+            ./herdr-webui --bind 127.0.0.1:8787
+
+          Local development auth bypass:
+            HERDR_WEB_LOCALHOST_NO_AUTH=true ./herdr-webui --bind 127.0.0.1:8787
+          EOF
+          tar -C dist -czf dist/herdr-webui-linux-x86_64.tar.gz herdr-webui-linux-x86_64
+          sha256sum dist/herdr-webui-linux-x86_64.tar.gz > dist/herdr-webui-linux-x86_64.tar.gz.sha256
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: herdr-webui-linux-x86_64
+          path: |
+            dist/herdr-webui-linux-x86_64.tar.gz
+            dist/herdr-webui-linux-x86_64.tar.gz.sha256
+
   release:
     name: Publish GitHub release
     runs-on: ubuntu-latest
-    needs: build-macos
+    needs:
+      - build-macos
+      - build-linux
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@v8
