@@ -525,7 +525,9 @@ function noSleepControls() {
 function syncNoSleepControls() {
   const mode = noSleepState.mode || "off";
   for (const control of noSleepControls()) {
-    control.value = mode;
+    if (document.activeElement === control) continue;
+    if (control.value !== mode)
+      control.value = mode;
     control.title = noSleepState.error
       ? `No-sleep error: ${noSleepState.error}`
       : !noSleepState.supported
@@ -538,6 +540,26 @@ function syncNoSleepControls() {
     control.classList.toggle("active", !!noSleepState.active);
     control.classList.toggle("unsupported", !!noSleepState.error || !noSleepState.supported);
   }
+}
+function bindHost(bind) {
+  const value = String(bind || "").trim();
+  if (value.startsWith("[")) return value.slice(1, value.indexOf("]"));
+  const index = value.lastIndexOf(":");
+  return index >= 0 ? value.slice(0, index) : value;
+}
+function isNonLocalBind(bind) {
+  const host = bindHost(bind).toLowerCase();
+  return !(
+    host === "localhost" ||
+    host === "::1" ||
+    host === "127.0.0.1" ||
+    host.startsWith("127.")
+  );
+}
+function serverSettingsValidationError(bind, username, password, hasSavedPassword) {
+  if (isNonLocalBind(bind) && (!username || (!password && !hasSavedPassword)))
+    return "Username and password are required before binding to 0.0.0.0 or any non-local address.";
+  return "";
 }
 async function loadNoSleep() {
   try {
@@ -931,6 +953,9 @@ async function loadServerSettings() {
     el("optServerPassword").placeholder = settings.has_password
       ? "current password saved"
       : "required for public bind";
+    el("optServerPassword").dataset.hasPassword = settings.has_password
+      ? "true"
+      : "false";
     el("optServerLocalBypass").checked = !!settings.localhost_no_auth;
     el("optNoSleepAutoCooldown").value = String(
       settings.no_sleep_auto_cooldown_seconds ?? 60,
@@ -945,9 +970,20 @@ async function applyServerSettings() {
     bind = el("optServerBind").value.trim(),
     username = el("optServerUser").value.trim(),
     password = el("optServerPassword").value,
+    hasSavedPassword = el("optServerPassword").dataset.hasPassword === "true",
     localhostNoAuth = el("optServerLocalBypass").checked,
     noSleepAutoCooldown = Number(el("optNoSleepAutoCooldown").value || 60);
   if (err) err.textContent = "";
+  const validationError = serverSettingsValidationError(
+    bind,
+    username,
+    password,
+    hasSavedPassword,
+  );
+  if (validationError) {
+    if (err) err.textContent = validationError;
+    return;
+  }
   submit.disabled = true;
   try {
     await api("/api/server-settings", {
@@ -1382,7 +1418,7 @@ function render() {
   const themeIcon =
     themeMode === "auto" ? "A" : themeMode === "dark" ? "☾" : "☀";
   const sessionLabel = escapeHtml(state.session || "default");
-  const tabsTools = `<div class="tabs-tools"><button class="mini" id="sessionButtonTabs" title="Session manager" onclick="showSessionManager(state.backendOnline?'Session manager':'Herdr session offline')">${sessionLabel}</button><button class="mini" id="themeToggleTabs" title="Toggle theme" onclick="themeMode=themeMode==='auto'?'dark':(themeMode==='dark'?'light':'auto');applyTheme();render()">${themeIcon}</button><button class="mini" title="Shortcuts" onclick="applyOptions();el('shortcutsModal').style.display='grid'">?</button>${noSleepControlHtml()}<button class="mini" title="Settings" onclick="el('settingsModal').style.display='grid';applyOptions();loadServerSettings()">⚙</button></div>`;
+  const tabsTools = `<div class="tabs-tools"><button class="mini" id="sessionButtonTabs" title="Session manager" onclick="showSessionManager(state.backendOnline?'Session manager':'Herdr session offline')">${sessionLabel}</button><button class="mini" id="themeToggleTabs" title="Toggle theme" onclick="themeMode=themeMode==='auto'?'dark':(themeMode==='dark'?'light':'auto');applyTheme();render()">${themeIcon}</button>${noSleepControlHtml()}<button class="mini" title="Shortcuts" onclick="applyOptions();el('shortcutsModal').style.display='grid'">?</button><button class="mini" title="Settings" onclick="el('settingsModal').style.display='grid';applyOptions();loadServerSettings()">⚙</button></div>`;
   const tabsHtml =
     state.tabs.map((t) => renderTabButton(t, panesByTab)).join("") +
     (state.ws
