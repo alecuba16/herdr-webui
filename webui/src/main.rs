@@ -955,6 +955,25 @@ fn workspace_order_key(state: &WebState, headers: &HeaderMap) -> String {
     session_display_name(session_from_headers(state, headers).as_deref()).to_string()
 }
 
+fn open_created_worktree_request(
+    cwd: &str,
+    path: &str,
+    label: Option<String>,
+) -> serde_json::Value {
+    json!({
+        "id": "web:worktree:open-created",
+        "method": "worktree.open",
+        "params": {
+            "workspace_id": null,
+            "cwd": cwd,
+            "path": path,
+            "branch": null,
+            "label": label,
+            "focus": true,
+        },
+    })
+}
+
 async fn workspace_order(
     State(state): State<WebState>,
     headers: HeaderMap,
@@ -1060,18 +1079,7 @@ async fn create_worktree(
                 Ok(()) => {
                     return proxy_request(
                         &api_for_headers(&state, &headers),
-                        json!({
-                            "id": "web:worktree:open-created",
-                            "method": "worktree.open",
-                            "params": {
-                                "workspace_id": null,
-                                "cwd": null,
-                                "path": path,
-                                "branch": null,
-                                "label": body.label,
-                                "focus": true,
-                            },
-                        }),
+                        open_created_worktree_request(cwd, path, body.label),
                     );
                 }
                 Err(err) => {
@@ -2573,6 +2581,20 @@ mod tests {
 
         headers.insert("x-herdr-session", HeaderValue::from_static("work"));
         assert_eq!(workspace_order_key(&state, &headers), "work");
+    }
+
+    #[test]
+    fn open_created_worktree_request_preserves_source_cwd() {
+        let request = open_created_worktree_request(
+            "/tmp/source-repo",
+            "/tmp/worktrees/repo/feature",
+            Some("feature".into()),
+        );
+
+        assert_eq!(request["method"], "worktree.open");
+        assert_eq!(request["params"]["cwd"], "/tmp/source-repo");
+        assert_eq!(request["params"]["path"], "/tmp/worktrees/repo/feature");
+        assert_eq!(request["params"]["label"], "feature");
     }
 
     #[test]
