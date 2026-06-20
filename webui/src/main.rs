@@ -761,6 +761,7 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
+#[allow(clippy::result_large_err)]
 fn require_auth(state: &WebState, headers: &HeaderMap, remote: SocketAddr) -> Result<(), Response> {
     authorized(state, headers, remote)
         .then_some(())
@@ -1054,7 +1055,7 @@ async fn create_worktree(
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .unwrap_or("HEAD");
-            match create_worktree_checkout(cwd, &path, branch, base) {
+            match create_worktree_checkout(cwd, path, branch, base) {
                 Ok(()) => {
                     return proxy_request(
                         &api_for_headers(&state, &headers),

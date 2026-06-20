@@ -610,13 +610,6 @@ function resetTerminalConnection(clear = false) {
   connectedSize = "";
   if (clear && term) term.clear();
 }
-function openSelection(e, ws, tab, pane) {
-  if (e && (e.metaKey || e.ctrlKey)) {
-    window.open(selectionPath(ws, tab, pane), "herdr-selection");
-    return;
-  }
-  go(ws, tab, pane);
-}
 function navigateSelection(e, ws, tab, pane) {
   if (e && (e.metaKey || e.ctrlKey || e.shiftKey || e.button === 1))
     return true;
@@ -684,7 +677,7 @@ async function refreshOnline(seq) {
     if (state.ws) history.replaceState(null, "", selectionPath(state.ws));
     else history.replaceState(null, "", sessionPrefix());
   }
-  const worktreeSources = state.workspaces.map((ws) => ws.workspace_id);
+  const worktreeSources = worktreeSourceWorkspaceIds();
   const worktreeResults = await Promise.all(
     worktreeSources.map((id) =>
       api("/api/worktrees?workspace_id=" + encodeURIComponent(id)).catch(
@@ -920,12 +913,24 @@ function render() {
   const tabById = Object.fromEntries(
     state.allTabs.concat(state.tabs).map((t) => [t.tab_id, t]),
   );
+  const panesByTab = new Map();
+  for (const pane of state.panes) {
+    const panes = panesByTab.get(pane.tab_id) || [];
+    panes.push(pane);
+    panesByTab.set(pane.tab_id, panes);
+  }
+  const tabCountsByWorkspace = new Map();
+  for (const tab of state.allTabs)
+    tabCountsByWorkspace.set(
+      tab.workspace_id,
+      (tabCountsByWorkspace.get(tab.workspace_id) || 0) + 1,
+    );
   const workspacesHtml = renderSpaces();
   if (workspacesHtml !== lastWorkspacesHtml) {
     workspaces.innerHTML = workspacesHtml;
     lastWorkspacesHtml = workspacesHtml;
   }
-  const agentsHtml = renderAgents(wsById, tabById);
+  const agentsHtml = renderAgents(wsById, tabById, tabCountsByWorkspace);
   if (agentsHtml !== lastAgentsHtml) {
     agents.innerHTML = agentsHtml;
     lastAgentsHtml = agentsHtml;
@@ -936,7 +941,7 @@ function render() {
   const sessionLabel = escapeHtml(state.session || "default");
   const tabsTools = `<div class="tabs-tools"><button class="mini" id="sessionButtonTabs" title="Session manager" onclick="showSessionManager(state.backendOnline?'Session manager':'Herdr session offline')">${sessionLabel}</button><button class="mini" id="themeToggleTabs" title="Toggle theme" onclick="themeMode=themeMode==='auto'?'dark':(themeMode==='dark'?'light':'auto');applyTheme();render()">${themeIcon}</button><button class="mini" title="Shortcuts" onclick="applyOptions();el('shortcutsModal').style.display='grid'">?</button><button class="mini" title="Settings" onclick="el('settingsModal').style.display='grid';applyOptions()">⚙</button></div>`;
   const tabsHtml =
-    state.tabs.map((t) => renderTabButton(t)).join("") +
+    state.tabs.map((t) => renderTabButton(t, panesByTab)).join("") +
     (state.ws
       ? `<button class="tab add" title="New panel" onclick="newTab()">+</button>`
       : "") +
@@ -945,7 +950,7 @@ function render() {
     tabs.innerHTML = tabsHtml;
     lastTabsHtml = tabsHtml;
   }
-  updateTitle(wsById, tabById, pane);
+  updateTitle(wsById, tabById, tabCountsByWorkspace, pane);
   if (state.editingTab) {
     const input = document.querySelector(".tab-rename-input");
     if (input && document.activeElement !== input) {
@@ -962,7 +967,7 @@ function render() {
   }
   fitTerminalShell();
 }
-function updateTitle(wsById, tabById, pane) {
+function updateTitle(wsById, tabById, tabCountsByWorkspace, pane) {
   const w = wsById[state.ws];
   const t = tabById[state.tab];
   const workspace = w
@@ -970,11 +975,15 @@ function updateTitle(wsById, tabById, pane) {
       ? worktreeDisplayName(w)
       : w.label
     : state.ws || state.session || "herdr";
-  const panel = t ? agentTabLabel(state.ws, t) : pane ? pane.pane_id : "panel";
+  const panel = t
+    ? agentTabLabel(state.ws, t, tabCountsByWorkspace)
+    : pane
+      ? pane.pane_id
+      : "panel";
   document.title = `${workspace} • ${panel}`;
 }
-function tabHoverInfo(t) {
-  const panes = state.panes.filter((p) => p.tab_id === t.tab_id);
+function tabHoverInfo(t, panesByTab) {
+  const panes = panesByTab.get(t.tab_id) || [];
   const pane = panes.find((p) => p.pane_id === state.pane) || panes[0];
   if (!pane) return tabTitle(t);
   const size =
@@ -983,10 +992,10 @@ function tabHoverInfo(t) {
       : "";
   return `${tabTitle(t)} · ${pane.pane_id} · ${pane.terminal_id}${size}`;
 }
-function renderTabButton(t) {
+function renderTabButton(t, panesByTab) {
   if (state.editingTab === t.tab_id)
     return `<span class="tab ${t.tab_id === state.tab ? "active" : ""}"><input class="tab-rename-input" value="${escapeAttr(state.editingTabValue)}" oninput="state.editingTabValue=this.value" onkeydown="tabRenameKey(event,'${t.tab_id}')"></span>`;
-  return `<a class="tab ${t.tab_id === state.tab ? "active" : ""}" title="${escapeAttr(tabHoverInfo(t))}" href="${escapeAttr(selectionPath(t.workspace_id, t.tab_id))}" target="herdr-selection" onclick="return navigateSelection(event,'${t.workspace_id}','${t.tab_id}')" ondblclick="event.preventDefault();event.stopPropagation();startTabRename('${t.tab_id}','${escapeAttr(tabTitle(t))}')"><span class="tab-label">${escapeHtml(tabTitle(t))}</span><span class="tab-actions"><span class="mini warn" title="Close panel" onclick="event.preventDefault();event.stopPropagation();closeTab('${t.tab_id}')">✕</span></span></a>`;
+  return `<a class="tab ${t.tab_id === state.tab ? "active" : ""}" title="${escapeAttr(tabHoverInfo(t, panesByTab))}" href="${escapeAttr(selectionPath(t.workspace_id, t.tab_id))}" target="herdr-selection" onclick="return navigateSelection(event,'${t.workspace_id}','${t.tab_id}')" ondblclick="event.preventDefault();event.stopPropagation();startTabRename('${t.tab_id}','${escapeAttr(tabTitle(t))}')"><span class="tab-label">${escapeHtml(tabTitle(t))}</span><span class="tab-actions"><span class="mini warn" title="Close panel" onclick="event.preventDefault();event.stopPropagation();closeTab('${t.tab_id}')">✕</span></span></a>`;
 }
 function renderSpaces() {
   const groups = new Map(),
@@ -1143,6 +1152,16 @@ function spaceMeta(w) {
 function isLinkedWorktree(w) {
   return !!(w && w.worktree && w.worktree.is_linked_worktree);
 }
+function worktreeSourceWorkspaceIds() {
+  const idsByKey = new Map();
+  for (const w of state.workspaces) {
+    if (!w || !w.workspace_id) continue;
+    const key = worktreeGroupKey(w) || `workspace:${w.workspace_id}`;
+    if (!idsByKey.has(key) || (w.worktree && !w.worktree.is_linked_worktree))
+      idsByKey.set(key, w.workspace_id);
+  }
+  return [...idsByKey.values()];
+}
 function worktreeGroupKey(w) {
   return (
     (w &&
@@ -1190,11 +1209,13 @@ function samePath(a, b) {
     String(a || "").replace(/\/+$/, "") === String(b || "").replace(/\/+$/, "")
   );
 }
-function renderAgents(wsById, tabById) {
+function renderAgents(wsById, tabById, tabCountsByWorkspace) {
   const list = state.agents.slice();
   if (options.sortAgentsByStatus)
     list.sort((a, b) => agentAttentionRank(a) - agentAttentionRank(b));
-  return list.map((a) => renderAgentRow(a, wsById, tabById)).join("");
+  return list
+    .map((a) => renderAgentRow(a, wsById, tabById, tabCountsByWorkspace))
+    .join("");
 }
 function agentAttentionRank(a) {
   const status = statusClass(a.agent_status);
@@ -1204,13 +1225,13 @@ function agentToken(cls, value) {
   const s = String(value || "");
   return `<span class="agent-token ${cls}" title="${escapeAttr(s)}">${escapeHtml(s)}</span>`;
 }
-function renderAgentRow(a, wsById, tabById) {
+function renderAgentRow(a, wsById, tabById, tabCountsByWorkspace) {
   const w = wsById[a.workspace_id];
   const repo = w && w.worktree ? parentWorkspaceName(w, wsById) : null;
   const worktree =
     w && w.worktree ? worktreeDisplayName(w) : w ? w.label : a.workspace_id;
   const t = tabById[a.tab_id];
-  const tab = agentTabLabel(a.workspace_id, t);
+  const tab = agentTabLabel(a.workspace_id, t, tabCountsByWorkspace);
   const fullTitle =
     (repo ? `${repo} › ${worktree}` : worktree) + (tab ? ` › ${tab}` : "");
   const titleParts = repo
@@ -1232,9 +1253,9 @@ function renderAgentRow(a, wsById, tabById) {
     a.pane_id === state.pane;
   return `<a class="item ${active ? "active" : ""}" title="${escapeAttr(fullTitle)}" href="${escapeAttr(selectionPath(a.workspace_id, a.tab_id, a.pane_id))}" target="herdr-selection" onclick="return navigateSelection(event,'${a.workspace_id}','${a.tab_id}','${a.pane_id}')"><div class="agent-title">${statusMark(a.agent_status, status === "blocked")}${titleParts.join("")}</div><div class="agent-meta"><span class="agent-status ${status}">${escapeHtml(status)}</span><span>•</span><span class="agent-name">${escapeHtml(label)}</span></div></a>`;
 }
-function agentTabLabel(wsId, t) {
+function agentTabLabel(wsId, t, tabCountsByWorkspace) {
   if (!t) return "";
-  const count = state.allTabs.filter((x) => x.workspace_id === wsId).length;
+  const count = tabCountsByWorkspace.get(wsId) || 0;
   return count > 1 || t.label ? tabTitle(t) : "";
 }
 function pathBasename(path) {
@@ -1580,9 +1601,22 @@ function flushInputQueue() {
     termWs.send(inputQueue.shift());
   if (inputQueue.length) scheduleInputFlush();
 }
+function terminalPasteInput(text) {
+  const normalized = String(text || "").replace(/\r\n|\n/g, "\r");
+  if (term && term.modes && term.modes.bracketedPasteMode)
+    return "\x1b[200~" + normalized + "\x1b[201~";
+  return normalized;
+}
+function finishPasteFrameSoon() {
+  setTimeout(() => {
+    pasteFrameUntil = 0;
+    scheduleTerminalFrameWork();
+  }, 250);
+}
 function pasteToTerminal(text) {
   if (!termWs || termWs.readyState !== 1 || !text) return;
-  const bytes = inputEncoder.encode(text);
+  const input = terminalPasteInput(text);
+  const bytes = inputEncoder.encode(input);
   pasteFrameUntil = Date.now() + 250;
   if (
     bytes.length <= 32 * 1024 * 1024 &&
@@ -1590,17 +1624,11 @@ function pasteToTerminal(text) {
     termWs.bufferedAmount < 1024 * 1024
   ) {
     termWs.send(bytes);
-    setTimeout(() => {
-      pasteFrameUntil = 0;
-      scheduleTerminalFrameWork();
-    }, 250);
+    finishPasteFrameSoon();
     return;
   }
-  sendInputData(text);
-  setTimeout(() => {
-    pasteFrameUntil = 0;
-    scheduleTerminalFrameWork();
-  }, 250);
+  sendInputData(input);
+  finishPasteFrameSoon();
 }
 function showClipboardMenu(x, y) {
   const menu = el("clipboardMenu");
@@ -1890,6 +1918,7 @@ function openWorktreeOpenModal() {
   state.openWorktreeRows = [];
   state.openWorktreeAllRows = [];
   state.openWorktreeBranches = [];
+  state.openWorktreeBranchSourceKey = "";
   state.openWorktreeDefaultPath = "";
   state.openWorktreeBaseBranchName = "";
   el("worktreeNewBranch").value = "";
@@ -1943,6 +1972,7 @@ function openWorktreesForRepo(keyToken) {
   el("worktreeNewPath").value = "";
   state.openWorktreeDefaultPath = "";
   state.openWorktreeBaseBranchName = "";
+  state.openWorktreeBranchSourceKey = "";
   syncWorktreeBranchOptions([]);
   el("worktreeOpenError").textContent = "";
   el("worktreeDiscoverPath").value =
@@ -2016,13 +2046,22 @@ function syncWorktreeBranchOptions(branches) {
     .map((branch) => `<option value="${escapeAttr(branch)}"></option>`)
     .join("");
 }
+function worktreeSourceKey(source) {
+  return source
+    ? source.cwd || source.repo_root || source.workspace_id || ""
+    : "";
+}
 async function loadWorktreeBranchOptions() {
   const source = state.openWorktreeSource;
   if (!source || !source.cwd) {
     state.openWorktreeBranches = [];
     syncWorktreeBranchOptions([]);
+    state.openWorktreeBranchSourceKey = "";
     return;
   }
+  const key = worktreeSourceKey(source);
+  if (state.openWorktreeBranchSourceKey === key) return;
+  state.openWorktreeBranchSourceKey = key;
   try {
     const r = await api(
       "/api/git-branches?cwd=" + encodeURIComponent(source.cwd),
@@ -2031,6 +2070,7 @@ async function loadWorktreeBranchOptions() {
     syncWorktreeBranchOptions(state.openWorktreeBranches);
   } catch (_) {
     state.openWorktreeBranches = [];
+    state.openWorktreeBranchSourceKey = "";
     syncWorktreeBranchOptions([]);
   }
 }
@@ -2096,14 +2136,6 @@ function syncWorktreeCheckoutPath() {
     input.value = next;
   state.openWorktreeDefaultPath = next;
 }
-function branchExistsForNewWorktree(branch) {
-  branch = String(branch || "").trim();
-  if (!branch) return false;
-  return (
-    (state.openWorktreeBranches || []).includes(branch) ||
-    (state.openWorktreeRows || []).some((w) => textValue(w.branch) === branch)
-  );
-}
 function checkedOutWorktreeForBranch(branch) {
   branch = String(branch || "").trim();
   if (!branch) return null;
@@ -2153,7 +2185,6 @@ function acceptFirstWorktreePathSuggestion() {
     (w) => textValue(w.path) === path && w.is_linked_worktree,
   );
   state.openWorktreeSelected = idx >= 0 ? idx : null;
-  renderWorktreeOpenList();
   scheduleWorktreeAutodiscover();
   return true;
 }
@@ -2212,6 +2243,7 @@ async function discoverWorktrees() {
     const r = await api(url);
     const source = (r.result || {}).source || {};
     const sourceCwd = textValue(source.source_checkout_path) || path || null;
+    const previousSourceKey = worktreeSourceKey(state.openWorktreeSource);
     state.openWorktreeSource = {
       workspace_id: source.source_workspace_id || null,
       cwd: sourceCwd,
@@ -2219,6 +2251,12 @@ async function discoverWorktrees() {
       repo_root: textValue(source.repo_root),
       default_worktree_directory: textValue(source.default_worktree_directory),
     };
+    const nextSourceKey = worktreeSourceKey(state.openWorktreeSource);
+    if (previousSourceKey !== nextSourceKey) {
+      state.openWorktreeBranches = [];
+      state.openWorktreeBranchSourceKey = "";
+      syncWorktreeBranchOptions([]);
+    }
     state.openWorktreeAllRows = ((r.result || {}).worktrees || []).map((w) =>
       Object.assign({}, w, {
         path: textValue(w.path),
@@ -2238,6 +2276,7 @@ async function discoverWorktrees() {
     state.openWorktreeSource = null;
     state.openWorktreeRows = [];
     state.openWorktreeAllRows = [];
+    state.openWorktreeBranchSourceKey = "";
     syncWorktreeBranchOptions([]);
     renderWorktreeOpenList();
     err.textContent = ex.message || String(ex);
@@ -2703,14 +2742,11 @@ document.addEventListener(
 );
 el("worktreeOpenRefresh").onclick = async () => {
   await refresh();
-  state.openWorktreeRows = [];
-  state.openWorktreeAllRows = [];
-  state.openWorktreeSelected = null;
-  state.openWorktreeSource = null;
-  state.openWorktreeBranches = [];
-  syncWorktreeBranchOptions([]);
-  renderWorktreeOpenList();
-  scheduleWorktreeAutodiscover();
+  if (el("worktreeDiscoverPath").value.trim()) await discoverWorktrees();
+  else {
+    syncWorktreePathOptions(validOpenWorktreeRows());
+    renderWorktreeOpenList();
+  }
 };
 el("worktreeNewForm").onsubmit = (e) => {
   e.preventDefault();
@@ -2730,14 +2766,8 @@ function worktreePathInputChanged() {
     (w) => textValue(w.path) === value && w.is_linked_worktree,
   );
   state.openWorktreeSelected = idx >= 0 ? idx : null;
-  state.openWorktreeSource = null;
-  state.openWorktreeRows = [];
-  state.openWorktreeAllRows = [];
-  state.openWorktreeBranches = [];
-  syncWorktreeBranchOptions([]);
   scheduleWorktreePathSuggestions();
   scheduleWorktreeAutodiscover();
-  renderWorktreeOpenList();
 }
 el("worktreeDiscoverPath").addEventListener("input", worktreePathInputChanged);
 el("worktreeDiscoverPath").addEventListener("change", worktreePathInputChanged);
