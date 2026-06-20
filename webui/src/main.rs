@@ -412,7 +412,7 @@ fn validate_runtime_server_settings(settings: &RuntimeServerSettings) -> io::Res
     if !local_bind && (settings.user.is_none() || settings.password.is_none()) {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
-            "username and password are required when binding non-local addresses",
+            "username and password are required before binding to 0.0.0.0 or any non-local address",
         ));
     }
     if local_bind
@@ -965,6 +965,9 @@ fn sync_auto_no_sleep(state: &mut NoSleepState, has_working_agents: bool, cooldo
         let idle_since = *state.auto_idle_since_ms.get_or_insert(now);
         if now.saturating_sub(idle_since) >= cooldown_seconds.saturating_mul(1000) {
             state.guard = None;
+            state.mode = "off".to_string();
+            state.until_ms = None;
+            state.auto_idle_since_ms = None;
             state.error = None;
         }
     }
@@ -3172,6 +3175,37 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_json(response).await;
+        assert_eq!(
+            body["error"],
+            "username and password are required before binding to 0.0.0.0 or any non-local address"
+        );
+    }
+
+    #[tokio::test]
+    async fn server_settings_api_rejects_public_bind_with_missing_password() {
+        let state = test_state();
+        state.server_settings.lock().unwrap().password = None;
+        let response = test_app_with_state(state)
+            .oneshot(
+                request(Method::POST, "/api/server-settings")
+                    .header(header::COOKIE, "herdr_web_session=token-123")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "bind": "0.0.0.0:8787",
+                            "username": "user",
+                            "password": null,
+                            "localhost_no_auth": true,
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
@@ -3270,6 +3304,21 @@ mod tests {
         assert!(!agents_working_from_value(
             &json!({ "result": { "agents": [] } })
         ));
+    }
+
+    #[test]
+    fn auto_no_sleep_turns_off_after_idle_cooldown() {
+        let mut state = NoSleepState {
+            mode: "auto".to_string(),
+            auto_idle_since_ms: Some(unix_ms_now().saturating_sub(1000)),
+            ..NoSleepState::default()
+        };
+
+        sync_auto_no_sleep(&mut state, false, 0);
+
+        assert_eq!(state.mode, "off");
+        assert_eq!(state.auto_idle_since_ms, None);
+        assert!(state.guard.is_none());
     }
 
     #[test]

@@ -154,6 +154,12 @@ describe("app bundle load", () => {
     match(html, /value="infinite"/);
   });
 
+  it("does not duplicate no-sleep control in static header", () => {
+    const html = readFileSync(new URL("./app.html", import.meta.url), "utf8");
+
+    equal(html.includes("noSleepSelect"), false);
+  });
+
   it("handles rejected audio unlock attempts", () => {
     const ctx = context();
     ctx.AudioContext = class {
@@ -164,6 +170,19 @@ describe("app bundle load", () => {
     vm.runInContext(source, ctx);
 
     doesNotThrow(() => ctx.unlockAudio());
+  });
+
+  it("requires credentials for non-local server bind", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    equal(
+      ctx.serverSettingsValidationError("0.0.0.0:8787", "", "", false),
+      "Username and password are required before binding to 0.0.0.0 or any non-local address.",
+    );
+    equal(ctx.serverSettingsValidationError("0.0.0.0:8787", "user", "pass", false), "");
+    equal(ctx.serverSettingsValidationError("0.0.0.0:8787", "user", "", true), "");
+    equal(ctx.serverSettingsValidationError("127.0.0.1:8787", "", "", false), "");
   });
 
   it("renders extracted worktree and shortcut modals", () => {
