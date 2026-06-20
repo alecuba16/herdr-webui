@@ -54,6 +54,8 @@ Workspace, agent, and panel rows are real browser links. Normal click uses WebUI
 - `src/app/api/worktrees.rs`: Herdr JSON API worktree list/create/open/remove handlers.
 - `src/app/worktrees.rs`: TUI worktree modal and create/open flow.
 - `webui/src/assets/app.html`: main WebUI HTML shell.
+- `webui/src/assets/app_core.js`: DOM-free frontend core helpers shared by browser code and Node tests.
+- `webui/src/assets/app_core.test.mjs`: Node built-in test runner coverage for pure frontend helpers; no browser automation required.
 - `webui/src/assets/app.css`: main WebUI styles.
 - `webui/src/assets/app.js`: main WebUI browser logic.
 - `webui/src/assets/login.html`: login page HTML.
@@ -384,6 +386,7 @@ Sizing:
 Settings are stored in browser `localStorage`:
 
 - Default theme: Auto, Light, or Dark.
+- Theme colors: edit Dark and Light palettes, apply built-in profiles, reset to defaults, and apply/reload UI immediately.
 - Show terminal overflow scrollbars.
 - Resize terminal to browser viewport.
 - Shift+Enter inserts newline.
@@ -398,6 +401,8 @@ Settings are stored in browser `localStorage`:
 - Worktree autodiscover delay.
 
 The header theme button cycles Auto, Dark, and Light. Auto follows browser/system color scheme through `matchMedia`, with fallback polling.
+
+Theme color changes are stored in browser `localStorage`. Colors are normalized once when options load or are saved, then applied on startup, theme change, profile apply, reset, or explicit `Apply / reload UI`; render cycles do not recalculate color palettes.
 
 Workspace drag-and-drop order is not stored in `localStorage`. It is stored in the WebUI backend process so multiple browser tabs can share it.
 
@@ -437,6 +442,7 @@ Terminal:
 - xterm.js terminal attach for selected Herdr pane.
 - Raw input forwarding, clipboard paste, terminal scroll, and optional browser-viewport fit.
 - Fast bracketed paste forwarding for large clipboard payloads.
+- Browser-local light/dark theme color customization with built-in profiles and reset.
 - Terminal loading overlay during selection changes.
 - Visibility-based socket reconnect behavior.
 
@@ -478,11 +484,12 @@ make fmt
 make check
 make build
 make test
+make test-js
 make coverage
 make run-web-local
 ```
 
-The project has unit and API-level tests for CLI parsing, auth decisions, login, session/socket path resolution, LaunchAgent plist generation, workspace-order API behavior, static asset routes, and direct-attach protocol framing. `make coverage` uses `cargo llvm-cov` and prints a summary. Browser UI flows and live Herdr socket flows still need manual testing or future integration tests with fake Herdr socket servers.
+The project has unit and API-level tests for CLI parsing, auth decisions, login, session/socket path resolution, LaunchAgent plist generation, workspace-order API behavior, static asset routes, and direct-attach protocol framing. `make test` also runs DOM-free JavaScript helper tests through Node's built-in test runner. `make coverage` uses `cargo llvm-cov` and prints a summary. Browser UI flows and live Herdr socket flows still need manual testing or future integration tests with fake Herdr socket servers.
 
 Current tested coverage is limited by code that needs a real browser, live Herdr sockets, or macOS `launchctl` side effects. Recent coverage measurement:
 
@@ -497,7 +504,7 @@ Future test improvements:
 - Add WebSocket integration tests for `/ws/events` and `/ws/terminal` using in-process sockets.
 - Add tests for session header routing against fake default and named Herdr sockets.
 - Add macOS install tests by extracting plist/write/launchctl command construction from side-effect execution.
-- Keep browser UI JavaScript untested for now; settings modal, theme, drag-and-drop, notification scope, and terminal focus still require manual browser checks unless a browser automation suite is added later.
+- Keep browser-dependent UI flows manual for now; settings modal, theme, drag-and-drop, notification scope, and terminal focus still require browser checks unless a lightweight optional container/browser suite is added later.
 
 ## Backend Compatibility
 
@@ -505,7 +512,7 @@ WebUI checks Herdr backend compatibility at runtime through `/api/versions`. It 
 
 ```json
 {
-  "webui": "0.0.1",
+  "webui": "0.0.5",
   "backend": "0.7.0",
   "protocol_version": 14,
   "min_backend": "0.7.0",
@@ -579,6 +586,7 @@ GitHub Actions workflows:
 - Compact session/workspace/tab/pane URLs.
 - Real links for workspace, agent, and panel navigation.
 - Browser-local scroll speed setting.
+- Browser-local light/dark theme color customization.
 - Fast bracketed paste forwarding.
 - Event WebSocket with snapshot refresh.
 - Terminal WebSocket stale-session protection.
@@ -598,19 +606,22 @@ GitHub Actions workflows:
 - Herdr exposes agent status, but not structured OpenCode TODO/task lists through the current API.
 - Drag-and-drop workspace order is process-local memory and disappears when WebUI restarts.
 - Event handling still uses snapshot refresh/debounce rather than fine-grained local state patches.
-- Tests are minimal; most confidence currently comes from `make build` and manual browser checks.
+- Browser UI flows still rely on manual checks; Rust/API coverage covers server-side behavior and protocol framing.
 - Launch/session management is macOS-focused.
 - Worktree creation compatibility code in WebUI exists because older provided Herdr backends may try `git worktree add -b` even when a local branch already exists.
 
 ## Tech Debt
 
-- Add browser smoke tests for routing, inline rename, terminal focus, and session manager flows.
-- Add Rust tests for auth decisions, API proxy error handling, and plist generation.
+- Expand DOM-free JavaScript unit tests for pure frontend helpers: route parsing, option normalization, worktree source selection, and sorting. Existing Node tests cover worktree path slugging, absolute path normalization, and paste framing.
+- Add fake Herdr JSON socket tests for proxied mutation routes: worktree create/open/remove, tab close/rename, pane metadata, and session close.
+- Add fake Herdr client terminal socket tests for terminal attach edge cases: reconnect, resize dedupe, scroll messages, bracketed paste payloads, and stale socket close behavior.
 - Extract protocol/schema duplication into a shared internal crate if Herdr exposes one.
-- Add stable frontend state model instead of rebuilding large DOM sections on every refresh.
+- Move large inline HTML template strings in `app.js` into small render helpers or static HTML asset sections where it reduces churn without introducing a frontend framework.
+- Add stable frontend state boundaries for the highest-churn sections, especially worktree discovery and terminal attach, so updates do not require rebuilding unrelated DOM.
 - Add explicit backend protocol support for browser theme/default-color messages if terminal theme sync becomes required.
 - Improve `make update-mac` behavior when plist does not exist yet or was installed with a custom `INSTALL_BIN`.
-- Document compatibility matrix against Herdr backend versions once protocol changes stabilize.
+- Document a manual smoke checklist for release validation: login, session launch, terminal attach, paste, Shift+Enter, Worktrees modal, existing-branch worktree create, remove worktree, and macOS update.
+- Optional only: evaluate a lightweight browser/container smoke suite if manual checks become too costly; do not make Chrome/Puppeteer part of the default local workflow.
 
 ## Security Notes
 

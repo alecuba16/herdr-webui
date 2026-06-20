@@ -604,6 +604,7 @@ fn app_router(state: WebState) -> Router {
         .route("/api/pane-layout", get(pane_layout))
         .route("/api/agents", get(agents))
         .route("/assets/app.css", get(app_css))
+        .route("/assets/app-core.js", get(app_core_js))
         .route("/assets/app.js", get(app_js))
         .route("/assets/login.css", get(login_css))
         .route("/assets/login.js", get(login_js))
@@ -1612,6 +1613,10 @@ async fn xterm_css() -> Response {
 
 async fn app_js() -> Response {
     static_text(APP_JS, "application/javascript; charset=utf-8")
+}
+
+async fn app_core_js() -> Response {
+    static_text(APP_CORE_JS, "application/javascript; charset=utf-8")
 }
 
 async fn app_css() -> Response {
@@ -2740,6 +2745,7 @@ mod tests {
         .unwrap();
         assert!(login_body.contains("Login"));
         assert!(app_body.contains("Herdr"));
+        assert!(app_body.contains("/assets/app-core.js"));
         assert!(app_body.contains("/assets/app.js"));
         assert!(app_js_body.contains("optSoundScope"));
     }
@@ -2872,6 +2878,15 @@ mod tests {
             )
             .await
             .unwrap();
+        let app_core_js = app
+            .clone()
+            .oneshot(
+                request(Method::GET, "/assets/app-core.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         let app_css = app
             .clone()
             .oneshot(
@@ -2893,6 +2908,7 @@ mod tests {
         assert_eq!(js.status(), StatusCode::OK);
         assert_eq!(css.status(), StatusCode::OK);
         assert_eq!(app_js.status(), StatusCode::OK);
+        assert_eq!(app_core_js.status(), StatusCode::OK);
         assert_eq!(app_css.status(), StatusCode::OK);
         assert_eq!(icon.status(), StatusCode::OK);
         assert!(js.headers()[header::CONTENT_TYPE]
@@ -2904,6 +2920,10 @@ mod tests {
             .unwrap()
             .contains("text/css"));
         assert!(app_js.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .contains("javascript"));
+        assert!(app_core_js.headers()[header::CONTENT_TYPE]
             .to_str()
             .unwrap()
             .contains("javascript"));
@@ -2931,6 +2951,13 @@ mod tests {
                 > 1000
         );
         assert!(
+            to_bytes(app_core_js.into_body(), 1024 * 1024)
+                .await
+                .unwrap()
+                .len()
+                > 100
+        );
+        assert!(
             to_bytes(app_css.into_body(), 1024 * 1024)
                 .await
                 .unwrap()
@@ -2952,6 +2979,7 @@ const LOGIN_HTML: &str = include_str!("assets/login.html");
 const APP_HTML: &str = include_str!("assets/app.html");
 const LOGIN_CSS: &str = include_str!("assets/login.css");
 const LOGIN_JS: &str = include_str!("assets/login.js");
+const APP_CORE_JS: &str = include_str!("assets/app_core.js");
 const APP_CSS: &str = include_str!("assets/app.css");
 const APP_JS: &str = include_str!("assets/app.js");
 

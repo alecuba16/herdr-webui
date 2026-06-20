@@ -14,7 +14,7 @@ HERDR_WEB_LOCALHOST_NO_AUTH ?= true
 HERDR_WEB_USER ?=
 HERDR_WEB_PASSWORD ?=
 
-.PHONY: build check check-rust fmt run-web run-web-local test coverage clean install-mac update-mac uninstall-mac
+.PHONY: build check check-rust fmt run-web run-web-local test test-js coverage clean install-mac update-mac uninstall-mac
 
 build:
 	ZIG="$(ZIG)" $(CARGO) build --release --manifest-path $(ROOT_MANIFEST) --target-dir $(TARGET_DIR)
@@ -35,8 +35,11 @@ run-web:
 run-web-local:
 	HERDR_WEB_LOCALHOST_NO_AUTH=true $(CARGO) run --manifest-path $(WEBUI_MANIFEST) --target-dir $(TARGET_DIR) -- --bind $(BIND)
 
-test:
+test: test-js
 	$(CARGO) test --manifest-path $(WEBUI_MANIFEST) --target-dir $(TARGET_DIR)
+
+test-js:
+	node --test webui/src/assets/app_core.test.mjs
 
 coverage:
 	CARGO_TARGET_DIR=$(TARGET_DIR) $(CARGO) llvm-cov --manifest-path $(WEBUI_MANIFEST) --summary-only
