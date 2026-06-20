@@ -21,6 +21,8 @@ let state = {
   editingTabValue: "",
   editingWorkspace: null,
   editingWorkspaceValue: "",
+  workspaceCreateSuggestedLabel: "",
+  workspaceCreatePathSuggestTimer: null,
 };
 let term,
   termWs,
@@ -99,21 +101,10 @@ if (sectionEl && !el("workspacePane")) {
     document.querySelector(".side").appendChild(versionsEl);
   }
 }
-if (!el("worktreeCreateModal"))
-  document.body.insertAdjacentHTML(
-    "beforeend",
-    '<div class="modal-backdrop" id="worktreeCreateModal"><div class="modal"><div class="settings-head"><div><h2>Create worktree</h2><p>Creates a linked Git worktree from selected parent workspace and opens it.</p></div><button class="mini settings-close" id="worktreeCreateClose" title="Close">✕</button></div><form class="worktree-form" id="worktreeCreateForm"><div class="worktree-source" id="worktreeCreateSource">source workspace</div><div class="worktree-grid"><label>Branch<input id="worktreeBranch" placeholder="auto-generated if blank"></label><label>Base<input id="worktreeBase" placeholder="default branch"></label></div><div class="worktree-grid"><label>Label<input id="worktreeLabel" placeholder="optional"></label><label>Path<input id="worktreePath" placeholder="backend default if blank"></label></div><div class="worktree-error" id="worktreeCreateError"></div><div class="modal-actions"><button type="button" class="tab add" id="worktreeCreateCancel">Cancel</button><button class="btn" id="worktreeCreateSubmit">Create and open</button></div></form></div></div>',
-  );
-if (!el("worktreeOpenModal"))
-  document.body.insertAdjacentHTML(
-    "beforeend",
-    '<div class="modal-backdrop" id="worktreeOpenModal"><div class="modal"><div class="settings-head"><div><h2>Worktrees</h2><p>Type a repo path to open existing linked worktrees or create a new one.</p></div><button class="mini settings-close" id="worktreeOpenClose" title="Close">✕</button></div><div class="worktree-open-controls"><label><span>Repo or worktrees folder</span><input id="worktreeDiscoverPath" list="worktreePathOptions" placeholder="~/Documents/code/repo-or-worktrees"></label><datalist id="worktreePathOptions"></datalist><div class="worktree-loading" id="worktreeLoading">Discovering worktrees...</div></div><div class="worktree-open-list" id="worktreeOpenList"></div><div class="worktree-new" id="worktreeNewSection"><div class="worktree-new-head"><strong>Create a new worktree</strong><small>Uses repo path above. Leave base blank to use repo default branch.</small></div><form class="worktree-form" id="worktreeNewForm"><div class="worktree-grid"><label><span>Branch name</span><input id="worktreeNewBranch" placeholder="feature/my-branch"></label><label><span>Base branch</span><input id="worktreeNewBase" list="worktreeBranchOptions" placeholder="default branch"></label><datalist id="worktreeBranchOptions"></datalist></div><div class="worktree-grid"><label><span>Label</span><input id="worktreeNewLabel" placeholder="optional"></label><label><span>Checkout path</span><input id="worktreeNewPath" placeholder="select base branch or enter branch name"></label></div><button class="btn" id="worktreeNewSubmit">New worktree</button></form></div><div class="worktree-error" id="worktreeOpenError"></div><div class="worktree-open-footer"><button type="button" class="tab add" id="worktreeOpenRefresh">Refresh</button></div></div></div>',
-  );
-if (!el("shortcutsModal"))
-  document.body.insertAdjacentHTML(
-    "beforeend",
-    '<div class="modal-backdrop" id="shortcutsModal"><div class="modal"><div class="settings-head"><div><h2>Shortcuts</h2><p>Browser/WebUI shortcuts. Terminal apps may handle their own keybindings inside the pane.</p></div><button class="mini settings-close" id="shortcutsCloseTop" title="Close">✕</button></div><div class="shortcuts-list"><div class="shortcut-row"><kbd id="closeShortcutCurrent">Disabled</kbd><span>Close current Herdr panel. Configure in Settings.</span></div><div class="shortcut-row"><kbd>Shift+Enter</kbd><span>Send configured newline sequence to terminal.</span></div><div class="shortcut-row"><kbd>PageUp/PageDown</kbd><span>Scroll Herdr terminal backend.</span></div><div class="shortcut-row"><kbd>Option+Wheel</kbd><span>Scroll browser overflow instead of terminal backend.</span></div><div class="shortcut-row"><kbd>Cmd/Ctrl+C</kbd><span>Copy selected terminal text.</span></div><div class="shortcut-row"><kbd>Cmd/Ctrl+V</kbd><span>Paste clipboard into terminal.</span></div><div class="shortcut-row"><kbd>Double-click</kbd><span>Rename workspaces and panels.</span></div><div class="shortcut-row"><kbd>Cmd/Middle-click</kbd><span>Open workspace, agent, or panel link using browser tab behavior.</span></div></div><div class="modal-actions"><button class="btn" id="shortcutsClose">Close</button></div></div></div>',
-  );
+insertMissingHtml("worktreeCreateModal", worktreeCreateModalHtml());
+insertMissingHtml("worktreeOpenModal", worktreeOpenModalHtml());
+insertMissingHtml("workspaceCreateModal", workspaceCreateModalHtml());
+insertMissingHtml("shortcutsModal", shortcutsModalHtml());
 const settingsModal = el("settingsModal");
 if (settingsModal && !settingsModal.dataset.ux) {
   const modal = settingsModal.querySelector(".modal");
@@ -135,6 +126,139 @@ if (settingsModal && !settingsModal.dataset.ux) {
     };
   }
   settingsModal.dataset.ux = "1";
+}
+function insertMissingHtml(id, html) {
+  if (!el(id)) document.body.insertAdjacentHTML("beforeend", html);
+}
+function worktreeCreateModalHtml() {
+  return `
+    <div class="modal-backdrop" id="worktreeCreateModal">
+      <div class="modal">
+        <div class="settings-head">
+          <div>
+            <h2>Create worktree</h2>
+            <p>Creates a linked Git worktree from selected parent workspace and opens it.</p>
+          </div>
+          <button class="mini settings-close" id="worktreeCreateClose" title="Close">✕</button>
+        </div>
+        <form class="worktree-form" id="worktreeCreateForm">
+          <div class="worktree-source" id="worktreeCreateSource">source workspace</div>
+          <div class="worktree-grid">
+            <label>Branch<input id="worktreeBranch" placeholder="auto-generated if blank"></label>
+            <label>Base<input id="worktreeBase" placeholder="default branch"></label>
+          </div>
+          <div class="worktree-grid">
+            <label>Label<input id="worktreeLabel" placeholder="optional"></label>
+            <label>Path<input id="worktreePath" placeholder="backend default if blank"></label>
+          </div>
+          <div class="worktree-error" id="worktreeCreateError"></div>
+          <div class="modal-actions">
+            <button type="button" class="tab add" id="worktreeCreateCancel">Cancel</button>
+            <button class="btn" id="worktreeCreateSubmit">Create and open</button>
+          </div>
+        </form>
+      </div>
+    </div>`;
+}
+function worktreeOpenModalHtml() {
+  return `
+    <div class="modal-backdrop" id="worktreeOpenModal">
+      <div class="modal">
+        <div class="settings-head">
+          <div>
+            <h2>Worktrees</h2>
+            <p>Type a repo path to open existing linked worktrees or create a new one.</p>
+          </div>
+          <button class="mini settings-close" id="worktreeOpenClose" title="Close">✕</button>
+        </div>
+        <div class="worktree-open-controls">
+          <label>
+            <span>Repo or worktrees folder</span>
+            <input id="worktreeDiscoverPath" list="worktreePathOptions" placeholder="~/Documents/code/repo-or-worktrees">
+          </label>
+          <datalist id="worktreePathOptions"></datalist>
+          <div class="worktree-loading" id="worktreeLoading">Discovering worktrees...</div>
+        </div>
+        <div class="worktree-open-list" id="worktreeOpenList"></div>
+        <div class="worktree-new" id="worktreeNewSection">
+          <div class="worktree-new-head">
+            <strong>Create a new worktree</strong>
+            <small>Uses repo path above. Leave base blank to use repo default branch.</small>
+          </div>
+          <form class="worktree-form" id="worktreeNewForm">
+            <div class="worktree-grid">
+              <label><span>Branch name</span><input id="worktreeNewBranch" placeholder="feature/my-branch"></label>
+              <label><span>Base branch</span><input id="worktreeNewBase" list="worktreeBranchOptions" placeholder="default branch"></label>
+              <datalist id="worktreeBranchOptions"></datalist>
+            </div>
+            <div class="worktree-grid">
+              <label><span>Label</span><input id="worktreeNewLabel" placeholder="optional"></label>
+              <label><span>Checkout path</span><input id="worktreeNewPath" placeholder="select base branch or enter branch name"></label>
+            </div>
+            <button class="btn" id="worktreeNewSubmit">New worktree</button>
+          </form>
+        </div>
+        <div class="worktree-error" id="worktreeOpenError"></div>
+        <div class="worktree-open-footer">
+          <button type="button" class="tab add" id="worktreeOpenRefresh">Refresh</button>
+        </div>
+      </div>
+    </div>`;
+}
+function workspaceCreateModalHtml() {
+  return `
+    <div class="modal-backdrop" id="workspaceCreateModal">
+      <div class="modal">
+        <div class="settings-head">
+          <div>
+            <h2>New workspace</h2>
+            <p>Pick an existing folder first, then confirm the workspace name.</p>
+          </div>
+          <button class="mini settings-close" id="workspaceCreateClose" title="Close">✕</button>
+        </div>
+        <form class="worktree-form" id="workspaceCreateForm">
+          <label>
+            <span>Folder</span>
+            <input id="workspaceCreatePath" list="workspacePathOptions" placeholder="~/Documents/code/project" required>
+          </label>
+          <datalist id="workspacePathOptions"></datalist>
+          <label>
+            <span>Workspace name</span>
+            <input id="workspaceCreateLabel" placeholder="project name" required>
+          </label>
+          <div class="worktree-error" id="workspaceCreateError"></div>
+          <div class="modal-actions">
+            <button type="button" class="tab add" id="workspaceCreateCancel">Cancel</button>
+            <button class="btn" id="workspaceCreateSubmit">Create workspace</button>
+          </div>
+        </form>
+      </div>
+    </div>`;
+}
+function shortcutsModalHtml() {
+  return `
+    <div class="modal-backdrop" id="shortcutsModal">
+      <div class="modal">
+        <div class="settings-head">
+          <div>
+            <h2>Shortcuts</h2>
+            <p>Browser/WebUI shortcuts. Terminal apps may handle their own keybindings inside the pane.</p>
+          </div>
+          <button class="mini settings-close" id="shortcutsCloseTop" title="Close">✕</button>
+        </div>
+        <div class="shortcuts-list">
+          <div class="shortcut-row"><kbd id="closeShortcutCurrent">Disabled</kbd><span>Close current Herdr panel. Configure in Settings.</span></div>
+          <div class="shortcut-row"><kbd>Shift+Enter</kbd><span>Send configured newline sequence to terminal.</span></div>
+          <div class="shortcut-row"><kbd>PageUp/PageDown</kbd><span>Scroll Herdr terminal backend.</span></div>
+          <div class="shortcut-row"><kbd>Option+Wheel</kbd><span>Scroll browser overflow instead of terminal backend.</span></div>
+          <div class="shortcut-row"><kbd>Cmd/Ctrl+C</kbd><span>Copy selected terminal text.</span></div>
+          <div class="shortcut-row"><kbd>Cmd/Ctrl+V</kbd><span>Paste clipboard into terminal.</span></div>
+          <div class="shortcut-row"><kbd>Double-click</kbd><span>Rename workspaces and panels.</span></div>
+          <div class="shortcut-row"><kbd>Cmd/Middle-click</kbd><span>Open workspace, agent, or panel link using browser tab behavior.</span></div>
+        </div>
+        <div class="modal-actions"><button class="btn" id="shortcutsClose">Close</button></div>
+      </div>
+    </div>`;
 }
 function themeCustomizerHtml() {
   const rows = (mode) =>
@@ -1673,6 +1797,7 @@ function connectTerminal() {
 function modalOpen() {
   return [
     "settingsModal",
+    "workspaceCreateModal",
     "worktreeCreateModal",
     "worktreeOpenModal",
     "shortcutsModal",
@@ -2195,8 +2320,6 @@ function validOpenWorktreeRows() {
     );
 }
 function syncWorktreePathOptions(rows) {
-  const optionsEl = el("worktreePathOptions");
-  if (!optionsEl) return;
   const seen = new Set(),
     items = [];
   for (const w of rows || []) {
@@ -2213,30 +2336,61 @@ function syncWorktreePathOptions(rows) {
       `<option value="${escapeAttr(s.path)}">${escapeAttr(s.label || "directory")}</option>`,
     );
   }
+  renderPathOptions("worktreePathOptions", items);
+}
+function renderPathOptions(optionsId, items) {
+  const optionsEl = el(optionsId);
+  if (!optionsEl) return;
   optionsEl.innerHTML = items.join("");
 }
-function scheduleWorktreePathSuggestions() {
-  clearTimeout(state.openWorktreePathSuggestTimer);
-  state.openWorktreePathSuggestTimer = setTimeout(
-    loadWorktreePathSuggestions,
-    120,
+function syncDirectoryPathOptions(optionsId, suggestions) {
+  renderPathOptions(
+    optionsId,
+    (suggestions || []).map(
+      (s) =>
+        `<option value="${escapeAttr(s.path)}">${escapeAttr(s.label || "directory")}</option>`,
+    ),
   );
 }
+function scheduleWorktreePathSuggestions() {
+  state.openWorktreePathSuggestTimer = schedulePathSuggestions(
+    state.openWorktreePathSuggestTimer,
+    loadWorktreePathSuggestions,
+  );
+}
+function scheduleWorkspacePathSuggestions() {
+  state.workspaceCreatePathSuggestTimer = schedulePathSuggestions(
+    state.workspaceCreatePathSuggestTimer,
+    loadWorkspacePathSuggestions,
+  );
+}
+function schedulePathSuggestions(timer, load) {
+  clearTimeout(timer);
+  return setTimeout(load, 120);
+}
 async function loadWorktreePathSuggestions() {
-  const input = el("worktreeDiscoverPath");
-  if (!input) return;
+  const suggestions = await loadDirectoryPathSuggestions(
+    "worktreeDiscoverPath",
+    () => syncWorktreePathOptions(validOpenWorktreeRows()),
+  );
+  if (suggestions) state.openWorktreePathSuggestions = suggestions;
+}
+async function loadDirectoryPathSuggestions(inputId, onDone) {
+  const input = el(inputId);
+  if (!input) return null;
   const prefix = input.value;
+  let suggestions = [];
   try {
     const r = await api(
       "/api/path-suggestions?prefix=" + encodeURIComponent(prefix),
     );
-    if (input.value !== prefix) return;
-    state.openWorktreePathSuggestions = r.suggestions || [];
-    syncWorktreePathOptions(validOpenWorktreeRows());
+    if (input.value !== prefix) return null;
+    suggestions = r.suggestions || [];
   } catch (_) {
-    state.openWorktreePathSuggestions = [];
-    syncWorktreePathOptions(validOpenWorktreeRows());
+    suggestions = [];
   }
+  if (onDone) onDone(suggestions);
+  return suggestions;
 }
 function syncWorktreeBranchOptions(branches) {
   const optionsEl = el("worktreeBranchOptions");
@@ -2726,18 +2880,92 @@ function closeShortcutKeydown(e) {
   if (e.stopImmediatePropagation) e.stopImmediatePropagation();
   return true;
 }
-newWs.onclick = async () => {
-  const label = prompt("workspace label");
-  if (label === null) return;
-  const cwd = prompt("cwd (empty = default)") || null;
-  const r = await api("/api/workspaces", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ label, cwd }),
-  });
-  const ws = r.result.workspace.workspace_id;
-  go(ws);
+function openWorkspaceCreateModal() {
+  clearTimeout(state.workspaceCreatePathSuggestTimer);
+  state.workspaceCreateSuggestedLabel = "";
+  el("workspaceCreatePath").value = "";
+  el("workspaceCreateLabel").value = "";
+  el("workspaceCreateError").textContent = "";
+  syncDirectoryPathOptions("workspacePathOptions", []);
+  el("workspaceCreateModal").style.display = "grid";
+  setTimeout(() => el("workspaceCreatePath").focus(), 0);
+}
+function closeWorkspaceCreateModal() {
+  clearTimeout(state.workspaceCreatePathSuggestTimer);
+  el("workspaceCreateModal").style.display = "none";
+}
+function focusWorkspaceCreateLabel() {
+  syncWorkspaceCreateLabel();
+  el("workspaceCreateLabel").focus();
+  el("workspaceCreateLabel").select();
+}
+function suggestedWorkspaceLabel(path) {
+  return pathBasename(path) || "workspace";
+}
+function syncWorkspaceCreateLabel() {
+  const pathInput = el("workspaceCreatePath"),
+    labelInput = el("workspaceCreateLabel"),
+    previous = state.workspaceCreateSuggestedLabel || "",
+    next = suggestedWorkspaceLabel(pathInput.value.trim());
+  if (!labelInput.value.trim() || labelInput.value.trim() === previous)
+    labelInput.value = next;
+  state.workspaceCreateSuggestedLabel = next;
+}
+async function loadWorkspacePathSuggestions() {
+  await loadDirectoryPathSuggestions(
+    "workspaceCreatePath",
+    (items) => syncDirectoryPathOptions("workspacePathOptions", items),
+  );
+}
+async function createWorkspaceFromModal() {
+  const err = el("workspaceCreateError"),
+    submit = el("workspaceCreateSubmit"),
+    cwd = el("workspaceCreatePath").value.trim(),
+    label = el("workspaceCreateLabel").value.trim();
+  err.textContent = "";
+  if (!cwd) {
+    err.textContent = "Folder is required.";
+    return;
+  }
+  if (!label) {
+    err.textContent = "Workspace name is required.";
+    return;
+  }
+  submit.disabled = true;
+  try {
+    const r = await api("/api/workspaces", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ label, cwd }),
+    });
+    closeWorkspaceCreateModal();
+    const ws = r.result.workspace.workspace_id;
+    go(ws);
+  } catch (ex) {
+    err.textContent = ex.message || String(ex);
+  } finally {
+    submit.disabled = false;
+  }
+}
+newWs.onclick = () => {
+  openWorkspaceCreateModal();
 };
+el("workspaceCreateClose").onclick = closeWorkspaceCreateModal;
+el("workspaceCreateCancel").onclick = closeWorkspaceCreateModal;
+el("workspaceCreateForm").onsubmit = (e) => {
+  e.preventDefault();
+  if (document.activeElement === el("workspaceCreatePath")) {
+    focusWorkspaceCreateLabel();
+    return;
+  }
+  createWorkspaceFromModal();
+};
+function workspaceCreatePathChanged() {
+  syncWorkspaceCreateLabel();
+  scheduleWorkspacePathSuggestions();
+}
+el("workspaceCreatePath").addEventListener("input", workspaceCreatePathChanged);
+el("workspaceCreatePath").addEventListener("change", workspaceCreatePathChanged);
 el("themeToggle").onclick = () => {
   themeMode =
     themeMode === "auto" ? "dark" : themeMode === "dark" ? "light" : "auto";
@@ -2910,7 +3138,11 @@ document.addEventListener(
   "keydown",
   (e) => {
     if (e.key !== "Escape") return;
-    if (el("worktreeOpenModal").style.display === "grid") {
+    if (el("workspaceCreateModal").style.display === "grid") {
+      e.preventDefault();
+      e.stopPropagation();
+      closeWorkspaceCreateModal();
+    } else if (el("worktreeOpenModal").style.display === "grid") {
       e.preventDefault();
       e.stopPropagation();
       closeWorktreeOpenModal();

@@ -1496,6 +1496,21 @@ struct CreateWorkspaceRequest {
     label: Option<String>,
 }
 
+fn existing_workspace_cwd(cwd: Option<&str>) -> Result<Option<String>, Response> {
+    let Some(cwd) = cwd.map(str::trim).filter(|cwd| !cwd.is_empty()) else {
+        return Ok(None);
+    };
+    let expanded = expand_user_path_string(cwd);
+    if !Path::new(&expanded).is_dir() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "workspace folder must exist" })),
+        )
+            .into_response());
+    }
+    Ok(Some(expanded))
+}
+
 async fn create_workspace(
     State(state): State<WebState>,
     headers: HeaderMap,
@@ -1505,9 +1520,13 @@ async fn create_workspace(
     if let Err(response) = require_auth(&state, &headers, remote) {
         return response;
     }
+    let cwd = match existing_workspace_cwd(body.cwd.as_deref()) {
+        Ok(cwd) => cwd,
+        Err(response) => return response,
+    };
     proxy_request(
         &api_for_headers(&state, &headers),
-        json!({ "id": "web:workspace:create", "method": "workspace.create", "params": { "cwd": body.cwd, "focus": false, "label": body.label, "env": {} } }),
+        json!({ "id": "web:workspace:create", "method": "workspace.create", "params": { "cwd": cwd, "focus": false, "label": body.label, "env": {} } }),
     )
 }
 
@@ -2343,6 +2362,44 @@ mod tests {
     }
 
     #[test]
+    fn existing_workspace_cwd_allows_blank_cwd() {
+        assert_eq!(existing_workspace_cwd(None).unwrap(), None);
+        assert_eq!(existing_workspace_cwd(Some("  ")).unwrap(), None);
+    }
+
+    #[test]
+    fn existing_workspace_cwd_expands_existing_directory() {
+        let dir = std::env::temp_dir().join(format!(
+            "herdr-webui-workspace-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+
+        let cwd = existing_workspace_cwd(Some(dir.to_str().unwrap())).unwrap();
+
+        assert_eq!(cwd.as_deref(), Some(dir.to_str().unwrap()));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn existing_workspace_cwd_rejects_missing_directory() {
+        let dir = std::env::temp_dir().join(format!(
+            "herdr-webui-missing-workspace-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+
+        let response = existing_workspace_cwd(Some(dir.to_str().unwrap())).unwrap_err();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
     fn escapes_xml_special_characters() {
         assert_eq!(xml_escape("<&>\"'"), "&lt;&amp;&gt;&quot;&apos;");
     }
@@ -2721,6 +2778,32 @@ mod tests {
         assert_eq!(response_json(unauthenticated).await["authenticated"], false);
         assert_eq!(authenticated.status(), StatusCode::OK);
         assert_eq!(response_json(authenticated).await["authenticated"], true);
+    }
+
+    #[tokio::test]
+    async fn create_workspace_route_rejects_missing_cwd_before_proxy() {
+        let app = test_app();
+        let missing = std::env::temp_dir().join(format!(
+            "herdr-webui-route-missing-workspace-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+
+        let response = app
+            .oneshot(
+                request(Method::POST, "/api/workspaces")
+                    .header(header::COOKIE, "herdr_web_session=token-123")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({ "label": "missing", "cwd": missing }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response_json(response).await["error"], "workspace folder must exist");
     }
 
     #[cfg(unix)]
