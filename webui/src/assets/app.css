@@ -339,6 +339,59 @@ body.light {
   color: var(--muted);
   margin-top: 2px;
 }
+.theme-customizer {
+  border-top: 1px solid var(--border);
+  display: grid;
+  gap: 12px;
+  padding-top: 14px;
+}
+.theme-customizer strong,
+.theme-customizer h3 {
+  color: var(--fg);
+  margin: 0;
+}
+.theme-customizer small {
+  color: var(--muted);
+  display: block;
+  margin-top: 3px;
+}
+.theme-customizer-actions {
+  align-items: end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.theme-customizer-actions label {
+  display: grid;
+  gap: 4px;
+}
+.theme-customizer-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.theme-customizer-grid section {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+}
+.theme-customizer-grid label {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  font-size: 12px;
+  justify-content: space-between;
+}
+.theme-color-input {
+  background: transparent;
+  border: 0;
+  height: 26px;
+  padding: 0;
+  width: 42px;
+}
 .modal-actions {
   text-align: right;
   margin-top: 14px;

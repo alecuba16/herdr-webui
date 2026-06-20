@@ -46,6 +46,12 @@ let term,
   inputFlushTimer = null,
   pasteFrameUntil = 0;
 const inputEncoder = new TextEncoder();
+const {
+  branchPathSlug,
+  normalizeAbsolutePath,
+  normalizeThemeColors,
+  terminalPasteInput,
+} = globalThis.HerdrAppHelpers;
 const headTitle = document.querySelector(".head strong");
 if (headTitle) {
   const brand = document.createElement("div");
@@ -119,12 +125,26 @@ if (settingsModal && !settingsModal.dataset.ux) {
     [...modal.querySelectorAll("label.option")].forEach((node) =>
       body.appendChild(node),
     );
+    body.insertAdjacentHTML("beforeend", themeCustomizerHtml());
     modal.insertBefore(body, modal.querySelector(".modal-actions"));
     el("settingsCloseTop").onclick = () => {
       settingsModal.style.display = "none";
     };
   }
   settingsModal.dataset.ux = "1";
+}
+function themeCustomizerHtml() {
+  const rows = (mode) =>
+    themeColorFields
+      .map(
+        ([key, label]) =>
+          `<label><span>${label}</span><input class="theme-color-input" type="color" data-theme-mode="${mode}" data-theme-key="${key}" id="${themeColorInputId(mode, key)}"></label>`,
+      )
+      .join("");
+  return `<div class="theme-customizer"><div><strong>Theme colors</strong><small>Saved in this browser. Uses current defaults as reset reference.</small></div><div class="theme-customizer-actions"><label><span>Profile</span><select class="settings-select" id="themeColorProfile"><option value="default">Default</option><option value="catppuccin">Catppuccin</option><option value="tokyo">Tokyo Night</option><option value="nord">Nord</option></select></label><button type="button" class="tab add" id="themeColorsApplyProfile">Apply profile</button><button type="button" class="tab add" id="themeColorsApply">Apply / reload UI</button><button type="button" class="tab add" id="themeColorsReset">Reset theme colors</button></div><div class="theme-customizer-grid"><section><h3>Dark</h3>${rows("dark")}</section><section><h3>Light</h3>${rows("light")}</section></div></div>`;
+}
+function themeColorInputId(mode, key) {
+  return `optThemeColor-${mode}-${key}`;
 }
 const themes = {
   dark: {
@@ -162,6 +182,125 @@ const themes = {
     brightWhite: "#4c4f69",
   },
 };
+const themeColorFields = [
+  ["background", "Background", "--bg"],
+  ["foreground", "Text", "--fg"],
+  ["panel", "Panel", "--panel"],
+  ["panel2", "Panel 2", "--panel2"],
+  ["border", "Border", "--border"],
+  ["border2", "Border 2", "--border2"],
+  ["muted", "Muted", "--muted"],
+  ["accent", "Accent", "--accent"],
+  ["cursor", "Cursor", ""],
+  ["selectionBackground", "Selection", ""],
+];
+const themeColorDefaults = {
+  dark: {
+    background: "#11111b",
+    foreground: "#cdd6f4",
+    panel: "#181825",
+    panel2: "#1e1e2e",
+    border: "#313244",
+    border2: "#45475a",
+    muted: "#a6adc8",
+    accent: "#89b4fa",
+    cursor: "#1e66f5",
+    selectionBackground: "#1e66f5",
+  },
+  light: {
+    background: "#eff1f5",
+    foreground: "#4c4f69",
+    panel: "#e6e9ef",
+    panel2: "#ccd0da",
+    border: "#bcc0cc",
+    border2: "#9ca0b0",
+    muted: "#6c6f85",
+    accent: "#1e66f5",
+    cursor: "#1e66f5",
+    selectionBackground: "#1e66f5",
+  },
+};
+const themeColorProfiles = {
+  default: themeColorDefaults,
+  catppuccin: {
+    dark: {
+      background: "#11111b",
+      foreground: "#cdd6f4",
+      panel: "#181825",
+      panel2: "#1e1e2e",
+      border: "#313244",
+      border2: "#45475a",
+      muted: "#a6adc8",
+      accent: "#89b4fa",
+      cursor: "#1e66f5",
+      selectionBackground: "#1e66f5",
+    },
+    light: {
+      background: "#eff1f5",
+      foreground: "#4c4f69",
+      panel: "#e6e9ef",
+      panel2: "#ccd0da",
+      border: "#bcc0cc",
+      border2: "#9ca0b0",
+      muted: "#6c6f85",
+      accent: "#1e66f5",
+      cursor: "#1e66f5",
+      selectionBackground: "#1e66f5",
+    },
+  },
+  tokyo: {
+    dark: {
+      background: "#1a1b26",
+      foreground: "#c0caf5",
+      panel: "#24283b",
+      panel2: "#292e42",
+      border: "#414868",
+      border2: "#565f89",
+      muted: "#9aa5ce",
+      accent: "#7aa2f7",
+      cursor: "#7aa2f7",
+      selectionBackground: "#7aa2f7",
+    },
+    light: {
+      background: "#d5d6db",
+      foreground: "#343b58",
+      panel: "#e1e2e7",
+      panel2: "#c4c8da",
+      border: "#9699a8",
+      border2: "#7e8294",
+      muted: "#565a6e",
+      accent: "#34548a",
+      cursor: "#34548a",
+      selectionBackground: "#34548a",
+    },
+  },
+  nord: {
+    dark: {
+      background: "#2e3440",
+      foreground: "#d8dee9",
+      panel: "#3b4252",
+      panel2: "#434c5e",
+      border: "#4c566a",
+      border2: "#607087",
+      muted: "#a3b1c2",
+      accent: "#88c0d0",
+      cursor: "#88c0d0",
+      selectionBackground: "#88c0d0",
+    },
+    light: {
+      background: "#eceff4",
+      foreground: "#2e3440",
+      panel: "#e5e9f0",
+      panel2: "#d8dee9",
+      border: "#c2c9d3",
+      border2: "#a9b4c2",
+      muted: "#5e6878",
+      accent: "#5e81ac",
+      cursor: "#5e81ac",
+      selectionBackground: "#5e81ac",
+    },
+  },
+};
 function normalizeThemeMode(value) {
   if (value === "night") return "dark";
   if (value === "day") return "light";
@@ -182,6 +321,7 @@ const defaultOptions = {
   worktreeAutoDiscoverSeconds: 3,
   generateWorktreeNames: false,
   worktreeDefaultDirectory: "../worktrees",
+  themeColors: themeColorDefaults,
 };
 function loadOptions() {
   try {
@@ -221,6 +361,7 @@ function normalizeOptions(value) {
   next.worktreeDefaultDirectory =
     String(next.worktreeDefaultDirectory || "").trim() ||
     defaultOptions.worktreeDefaultDirectory;
+  next.themeColors = normalizeThemeColors(next.themeColors, themeColorDefaults);
   return next;
 }
 let options = normalizeOptions(loadOptions());
@@ -279,6 +420,7 @@ function applyOptions() {
     generateWorktreeNames.checked = !!options.generateWorktreeNames;
   if (worktreeDefaultDirectory)
     worktreeDefaultDirectory.value = options.worktreeDefaultDirectory || "";
+  syncThemeColorInputs();
   const worktreeNewBranch = el("worktreeNewBranch"),
     worktreeNewPath = el("worktreeNewPath");
   if (worktreeNewBranch)
@@ -299,6 +441,15 @@ function applyOptions() {
     }
   }
 }
+function syncThemeColorInputs() {
+  for (const mode of ["dark", "light"]) {
+    const colors = options.themeColors[mode] || themeColorDefaults[mode];
+    for (const [key] of themeColorFields) {
+      const input = el(themeColorInputId(mode, key));
+      if (input) input.value = colors[key];
+    }
+  }
+}
 function closeShortcutLabel() {
   if (options.closeShortcut === "altw") return "Option+W";
   if (options.closeShortcut === "shiftspacew") return "Shift+Space, W";
@@ -310,6 +461,35 @@ function saveCloseShortcutOption() {
   saveOptions();
   applyOptions();
 }
+function readThemeColorInputs() {
+  for (const mode of ["dark", "light"]) {
+    for (const [key] of themeColorFields) {
+      const input = el(themeColorInputId(mode, key));
+      if (input) options.themeColors[mode][key] = input.value;
+    }
+  }
+  options.themeColors = normalizeThemeColors(
+    options.themeColors,
+    themeColorDefaults,
+  );
+}
+function applyThemeColorsFromSettings() {
+  readThemeColorInputs();
+  saveOptions();
+  syncThemeColorInputs();
+  applyTheme();
+  render();
+}
+function applyThemeColorProfile(name) {
+  options.themeColors = normalizeThemeColors(
+    themeColorProfiles[name] || themeColorProfiles.default,
+    themeColorDefaults,
+  );
+  saveOptions();
+  syncThemeColorInputs();
+  applyTheme();
+  render();
+}
 function effectiveTheme() {
   if (themeMode === "dark") return "dark";
   if (themeMode === "light") return "light";
@@ -320,7 +500,15 @@ function effectiveTheme() {
   return "light";
 }
 function terminalTheme() {
-  return themes[effectiveTheme()] || themes.light;
+  const mode = effectiveTheme();
+  const colors = options.themeColors[mode] || themeColorDefaults[mode];
+  return {
+    ...(themes[mode] || themes.light),
+    background: colors.background,
+    foreground: colors.foreground,
+    cursor: colors.cursor,
+    selectionBackground: colors.selectionBackground,
+  };
 }
 function shiftEnterSequence() {
   return "\n";
@@ -331,6 +519,7 @@ function applyTheme() {
   lastEffectiveTheme = current;
   const light = current === "light";
   document.body.classList.toggle("light", light);
+  applyThemeColorVars(current);
   const toggle = el("themeToggle");
   if (toggle) {
     toggle.textContent =
@@ -350,6 +539,12 @@ function applyTheme() {
     }
   }
   fitTerminalShell();
+}
+function applyThemeColorVars(mode) {
+  const colors = options.themeColors[mode] || themeColorDefaults[mode];
+  for (const [key, , cssVar] of themeColorFields) {
+    if (cssVar) document.body.style.setProperty(cssVar, colors[key]);
+  }
 }
 function pollAutoTheme() {
   if (themeMode !== "auto") return;
@@ -1601,12 +1796,6 @@ function flushInputQueue() {
     termWs.send(inputQueue.shift());
   if (inputQueue.length) scheduleInputFlush();
 }
-function terminalPasteInput(text) {
-  const normalized = String(text || "").replace(/\r\n|\n/g, "\r");
-  if (term && term.modes && term.modes.bracketedPasteMode)
-    return "\x1b[200~" + normalized + "\x1b[201~";
-  return normalized;
-}
 function finishPasteFrameSoon() {
   setTimeout(() => {
     pasteFrameUntil = 0;
@@ -1615,7 +1804,10 @@ function finishPasteFrameSoon() {
 }
 function pasteToTerminal(text) {
   if (!termWs || termWs.readyState !== 1 || !text) return;
-  const input = terminalPasteInput(text);
+  const input = terminalPasteInput(
+    text,
+    !!(term && term.modes && term.modes.bracketedPasteMode),
+  );
   const bytes = inputEncoder.encode(input);
   pasteFrameUntil = Date.now() + 250;
   if (
@@ -2074,21 +2266,6 @@ async function loadWorktreeBranchOptions() {
     syncWorktreeBranchOptions([]);
   }
 }
-function branchPathSlug(branch) {
-  let slug = "",
-    lastDash = false;
-  for (const ch of String(branch || "")) {
-    if (/^[A-Za-z0-9]$/.test(ch)) {
-      slug += ch.toLowerCase();
-      lastDash = false;
-    } else if (!lastDash) {
-      slug += "-";
-      lastDash = true;
-    }
-  }
-  slug = slug.replace(/^-+|-+$/g, "");
-  return slug || "worktree";
-}
 function joinPath(...parts) {
   const clean = parts.filter(Boolean).map((part, index) => {
     part = String(part);
@@ -2096,17 +2273,6 @@ function joinPath(...parts) {
     return part.replace(/^\/+|\/+$/g, "");
   });
   return clean.join("/");
-}
-function normalizeAbsolutePath(path) {
-  path = String(path || "");
-  if (!path.startsWith("/")) return path;
-  const parts = [];
-  for (const part of path.split("/")) {
-    if (!part || part === ".") continue;
-    if (part === "..") parts.pop();
-    else parts.push(part);
-  }
-  return "/" + parts.join("/");
 }
 function worktreeRootForSource(source) {
   let root = String(options.worktreeDefaultDirectory || "").trim();
@@ -2618,6 +2784,11 @@ el("shortcutsModal").addEventListener("click", (e) => {
 el("optTheme").onchange = () => {
   themeMode = normalizeThemeMode(el("optTheme").value);
   applyTheme();
+};
+el("themeColorsApply").onclick = applyThemeColorsFromSettings;
+el("themeColorsReset").onclick = () => applyThemeColorProfile("default");
+el("themeColorsApplyProfile").onclick = () => {
+  applyThemeColorProfile(el("themeColorProfile").value);
 };
 el("optOverflow").onchange = () => {
   options.overflow = el("optOverflow").checked;
