@@ -2796,14 +2796,19 @@ mod tests {
                 request(Method::POST, "/api/workspaces")
                     .header(header::COOKIE, "herdr_web_session=token-123")
                     .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(json!({ "label": "missing", "cwd": missing }).to_string()))
+                    .body(Body::from(
+                        json!({ "label": "missing", "cwd": missing }).to_string(),
+                    ))
                     .unwrap(),
             )
             .await
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(response_json(response).await["error"], "workspace folder must exist");
+        assert_eq!(
+            response_json(response).await["error"],
+            "workspace folder must exist"
+        );
     }
 
     #[cfg(unix)]
