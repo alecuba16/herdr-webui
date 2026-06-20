@@ -604,10 +604,17 @@ fn app_router(state: WebState) -> Router {
         .route("/api/pane-layout", get(pane_layout))
         .route("/api/agents", get(agents))
         .route("/assets/app.css", get(app_css))
+        .route("/assets/app-boot.js", get(app_boot_js))
         .route("/assets/app-core.js", get(app_core_js))
         .route("/assets/app.js", get(app_js))
         .route("/assets/login.css", get(login_css))
         .route("/assets/login.js", get(login_js))
+        .route("/assets/mobile-core.js", get(mobile_core_js))
+        .route("/assets/mobile-settings.js", get(mobile_settings_js))
+        .route("/assets/mobile-terminal.js", get(mobile_terminal_js))
+        .route("/assets/mobile-worktrees.js", get(mobile_worktrees_js))
+        .route("/assets/mobile.css", get(mobile_css))
+        .route("/assets/mobile.js", get(mobile_js))
         .route("/assets/xterm.js", get(xterm_js))
         .route("/assets/xterm.css", get(xterm_css))
         .route("/favicon.svg", get(favicon_svg))
@@ -1623,12 +1630,40 @@ async fn app_js() -> Response {
     static_text(APP_JS, "application/javascript; charset=utf-8")
 }
 
+async fn app_boot_js() -> Response {
+    static_text(APP_BOOT_JS, "application/javascript; charset=utf-8")
+}
+
 async fn app_core_js() -> Response {
     static_text(APP_CORE_JS, "application/javascript; charset=utf-8")
 }
 
 async fn app_css() -> Response {
     static_text(APP_CSS, "text/css; charset=utf-8")
+}
+
+async fn mobile_js() -> Response {
+    static_text(MOBILE_JS, "application/javascript; charset=utf-8")
+}
+
+async fn mobile_core_js() -> Response {
+    static_text(MOBILE_CORE_JS, "application/javascript; charset=utf-8")
+}
+
+async fn mobile_settings_js() -> Response {
+    static_text(MOBILE_SETTINGS_JS, "application/javascript; charset=utf-8")
+}
+
+async fn mobile_terminal_js() -> Response {
+    static_text(MOBILE_TERMINAL_JS, "application/javascript; charset=utf-8")
+}
+
+async fn mobile_worktrees_js() -> Response {
+    static_text(MOBILE_WORKTREES_JS, "application/javascript; charset=utf-8")
+}
+
+async fn mobile_css() -> Response {
+    static_text(MOBILE_CSS, "text/css; charset=utf-8")
 }
 
 async fn login_js() -> Response {
@@ -2768,7 +2803,7 @@ mod tests {
         assert!(login_body.contains("Login"));
         assert!(app_body.contains("Herdr"));
         assert!(app_body.contains("/assets/app-core.js"));
-        assert!(app_body.contains("/assets/app.js"));
+        assert!(app_body.contains("/assets/app-boot.js"));
         assert!(app_js_body.contains("optSoundScope"));
     }
 
@@ -2900,6 +2935,15 @@ mod tests {
             )
             .await
             .unwrap();
+        let app_boot_js = app
+            .clone()
+            .oneshot(
+                request(Method::GET, "/assets/app-boot.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         let app_core_js = app
             .clone()
             .oneshot(
@@ -2918,6 +2962,60 @@ mod tests {
             )
             .await
             .unwrap();
+        let mobile_js = app
+            .clone()
+            .oneshot(
+                request(Method::GET, "/assets/mobile.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mobile_core_js = app
+            .clone()
+            .oneshot(
+                request(Method::GET, "/assets/mobile-core.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mobile_terminal_js = app
+            .clone()
+            .oneshot(
+                request(Method::GET, "/assets/mobile-terminal.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mobile_worktrees_js = app
+            .clone()
+            .oneshot(
+                request(Method::GET, "/assets/mobile-worktrees.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mobile_settings_js = app
+            .clone()
+            .oneshot(
+                request(Method::GET, "/assets/mobile-settings.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mobile_css = app
+            .clone()
+            .oneshot(
+                request(Method::GET, "/assets/mobile.css")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         let icon = app
             .oneshot(
                 request(Method::GET, "/favicon.svg")
@@ -2930,8 +3028,15 @@ mod tests {
         assert_eq!(js.status(), StatusCode::OK);
         assert_eq!(css.status(), StatusCode::OK);
         assert_eq!(app_js.status(), StatusCode::OK);
+        assert_eq!(app_boot_js.status(), StatusCode::OK);
         assert_eq!(app_core_js.status(), StatusCode::OK);
         assert_eq!(app_css.status(), StatusCode::OK);
+        assert_eq!(mobile_core_js.status(), StatusCode::OK);
+        assert_eq!(mobile_terminal_js.status(), StatusCode::OK);
+        assert_eq!(mobile_worktrees_js.status(), StatusCode::OK);
+        assert_eq!(mobile_settings_js.status(), StatusCode::OK);
+        assert_eq!(mobile_js.status(), StatusCode::OK);
+        assert_eq!(mobile_css.status(), StatusCode::OK);
         assert_eq!(icon.status(), StatusCode::OK);
         assert!(js.headers()[header::CONTENT_TYPE]
             .to_str()
@@ -2945,11 +3050,39 @@ mod tests {
             .to_str()
             .unwrap()
             .contains("javascript"));
+        assert!(app_boot_js.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .contains("javascript"));
         assert!(app_core_js.headers()[header::CONTENT_TYPE]
             .to_str()
             .unwrap()
             .contains("javascript"));
         assert!(app_css.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .contains("text/css"));
+        assert!(mobile_core_js.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .contains("javascript"));
+        assert!(mobile_terminal_js.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .contains("javascript"));
+        assert!(mobile_worktrees_js.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .contains("javascript"));
+        assert!(mobile_settings_js.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .contains("javascript"));
+        assert!(mobile_js.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .contains("javascript"));
+        assert!(mobile_css.headers()[header::CONTENT_TYPE]
             .to_str()
             .unwrap()
             .contains("text/css"));
@@ -2973,6 +3106,13 @@ mod tests {
                 > 1000
         );
         assert!(
+            to_bytes(app_boot_js.into_body(), 1024 * 1024)
+                .await
+                .unwrap()
+                .len()
+                > 100
+        );
+        assert!(
             to_bytes(app_core_js.into_body(), 1024 * 1024)
                 .await
                 .unwrap()
@@ -2981,6 +3121,48 @@ mod tests {
         );
         assert!(
             to_bytes(app_css.into_body(), 1024 * 1024)
+                .await
+                .unwrap()
+                .len()
+                > 1000
+        );
+        assert!(
+            to_bytes(mobile_core_js.into_body(), 1024 * 1024)
+                .await
+                .unwrap()
+                .len()
+                > 1000
+        );
+        assert!(
+            to_bytes(mobile_terminal_js.into_body(), 1024 * 1024)
+                .await
+                .unwrap()
+                .len()
+                > 1000
+        );
+        assert!(
+            to_bytes(mobile_worktrees_js.into_body(), 1024 * 1024)
+                .await
+                .unwrap()
+                .len()
+                > 1000
+        );
+        assert!(
+            to_bytes(mobile_settings_js.into_body(), 1024 * 1024)
+                .await
+                .unwrap()
+                .len()
+                > 100
+        );
+        assert!(
+            to_bytes(mobile_js.into_body(), 1024 * 1024)
+                .await
+                .unwrap()
+                .len()
+                > 1000
+        );
+        assert!(
+            to_bytes(mobile_css.into_body(), 1024 * 1024)
                 .await
                 .unwrap()
                 .len()
@@ -3002,8 +3184,15 @@ const APP_HTML: &str = include_str!("assets/app.html");
 const LOGIN_CSS: &str = include_str!("assets/login.css");
 const LOGIN_JS: &str = include_str!("assets/login.js");
 const APP_CORE_JS: &str = include_str!("assets/app_core.js");
+const APP_BOOT_JS: &str = include_str!("assets/app_boot.js");
 const APP_CSS: &str = include_str!("assets/app.css");
 const APP_JS: &str = include_str!("assets/app.js");
+const MOBILE_CORE_JS: &str = include_str!("assets/mobile_core.js");
+const MOBILE_SETTINGS_JS: &str = include_str!("assets/mobile_settings.js");
+const MOBILE_TERMINAL_JS: &str = include_str!("assets/mobile_terminal.js");
+const MOBILE_WORKTREES_JS: &str = include_str!("assets/mobile_worktrees.js");
+const MOBILE_CSS: &str = include_str!("assets/mobile.css");
+const MOBILE_JS: &str = include_str!("assets/mobile.js");
 
 const XTERM_CSS: &str = include_str!("assets/xterm.css");
 const XTERM_JS: &str = include_str!("assets/xterm.min.js");

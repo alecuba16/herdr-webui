@@ -39,7 +39,7 @@ test: test-js
 	$(CARGO) test --manifest-path $(WEBUI_MANIFEST) --target-dir $(TARGET_DIR)
 
 test-js:
-	node --test webui/src/assets/app_core.test.mjs webui/src/assets/app_load.test.mjs
+	node --test webui/src/assets/app_core.test.mjs webui/src/assets/app_load.test.mjs webui/src/assets/app_boot.test.mjs webui/src/assets/mobile_load.test.mjs
 
 coverage:
 	CARGO_TARGET_DIR=$(TARGET_DIR) $(CARGO) llvm-cov --manifest-path $(WEBUI_MANIFEST) --summary-only
