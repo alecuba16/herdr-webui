@@ -965,6 +965,9 @@ fn sync_auto_no_sleep(state: &mut NoSleepState, has_working_agents: bool, cooldo
         let idle_since = *state.auto_idle_since_ms.get_or_insert(now);
         if now.saturating_sub(idle_since) >= cooldown_seconds.saturating_mul(1000) {
             state.guard = None;
+            state.mode = "off".to_string();
+            state.until_ms = None;
+            state.auto_idle_since_ms = None;
             state.error = None;
         }
     }
@@ -3301,6 +3304,21 @@ mod tests {
         assert!(!agents_working_from_value(
             &json!({ "result": { "agents": [] } })
         ));
+    }
+
+    #[test]
+    fn auto_no_sleep_turns_off_after_idle_cooldown() {
+        let mut state = NoSleepState {
+            mode: "auto".to_string(),
+            auto_idle_since_ms: Some(unix_ms_now().saturating_sub(1000)),
+            ..NoSleepState::default()
+        };
+
+        sync_auto_no_sleep(&mut state, false, 0);
+
+        assert_eq!(state.mode, "off");
+        assert_eq!(state.auto_idle_since_ms, None);
+        assert!(state.guard.is_none());
     }
 
     #[test]

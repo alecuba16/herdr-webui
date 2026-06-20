@@ -154,6 +154,12 @@ describe("app bundle load", () => {
     match(html, /value="infinite"/);
   });
 
+  it("does not duplicate no-sleep control in static header", () => {
+    const html = readFileSync(new URL("./app.html", import.meta.url), "utf8");
+
+    equal(html.includes("noSleepSelect"), false);
+  });
+
   it("handles rejected audio unlock attempts", () => {
     const ctx = context();
     ctx.AudioContext = class {

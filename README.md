@@ -474,7 +474,7 @@ The no-sleep control sits beside the `?` toolbar button. Options are Off, Auto, 
 
 No-sleep is managed by the WebUI backend process, not by each browser tab. This keeps the machine running the Herdr session awake even if the browser is in the background. All open WebUI tabs read the same backend state and refresh it periodically, so changing the option in one tab updates the others.
 
-Auto mode is also backend-managed. When Auto is enabled, WebUI polls the Herdr agent list from the backend process even if no browser tab is connected. If any agent status is `working`, WebUI prevents host sleep. When all agents are idle, done, blocked, unknown, or no agents exist, WebUI waits for the configured Auto cooldown, then releases the no-sleep inhibitor while leaving Auto selected. The default cooldown is 60 seconds.
+Auto mode is also backend-managed. When Auto is enabled, WebUI polls the Herdr agent list from the backend process even if no browser tab is connected. If any agent status is `working`, WebUI prevents host sleep. When all agents are idle, done, blocked, unknown, or no agents exist, WebUI waits for the configured Auto cooldown and checks again. If no agents are working after that cooldown, WebUI releases the no-sleep inhibitor and switches the control back to Off. The default cooldown is 60 seconds.
 
 Timed modes automatically turn off when their duration expires. Infinite stays active until changed to Off or until the WebUI process exits.
 
