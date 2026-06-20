@@ -2203,7 +2203,7 @@ function syncWorktreePathOptions(rows) {
     if (!w.path || seen.has(w.path)) continue;
     seen.add(w.path);
     items.push(
-      `<option value="${escapeAttr(w.path)}">${escapeAttr(w.label || w.branch || "worktree")}</option>`,
+      `<option value="${escapeAttr(w.path)}">${escapeAttr(worktreeOpenRowTitle(w))}</option>`,
     );
   }
   for (const s of state.openWorktreePathSuggestions || []) {

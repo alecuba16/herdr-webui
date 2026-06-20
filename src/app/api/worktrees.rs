@@ -810,6 +810,7 @@ impl App {
     ) -> WorktreeInfo {
         let canonical_path = crate::worktree::canonical_or_original(&entry.path);
         let repo_root = crate::worktree::canonical_or_original(&source.source_repo_root);
+        let label = worktree_display_label(&entry.path, entry.branch.as_deref());
         WorktreeInfo {
             path: entry.path.display().to_string(),
             branch: entry.branch,
@@ -820,18 +821,19 @@ impl App {
             open_workspace_id: self
                 .open_workspace_idx_for_checkout(&canonical_path)
                 .map(|idx| self.public_workspace_id(idx)),
-            label: source.repo_name.clone(),
+            label,
         }
     }
 
     fn worktree_info_for_checkout(
         &self,
-        source: &WorktreeSource,
+        _source: &WorktreeSource,
         ws_idx: usize,
     ) -> Option<WorktreeInfo> {
         let membership = self.state.workspaces.get(ws_idx)?.worktree_space()?;
         let branch = crate::workspace::git_branch(&membership.checkout_path);
         let is_detached = branch.is_none();
+        let label = worktree_display_label(&membership.checkout_path, branch.as_deref());
         Some(WorktreeInfo {
             path: membership.checkout_path.display().to_string(),
             branch,
@@ -840,7 +842,7 @@ impl App {
             is_prunable: false,
             is_linked_worktree: membership.is_linked_worktree,
             open_workspace_id: Some(self.public_workspace_id(ws_idx)),
-            label: source.repo_name.clone(),
+            label,
         })
     }
 
@@ -980,6 +982,15 @@ fn worktree_membership(
     }
 }
 
+fn worktree_display_label(path: &Path, branch: Option<&str>) -> String {
+    branch.map(str::to_owned).unwrap_or_else(|| {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_owned)
+            .unwrap_or_else(|| path.display().to_string())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1088,6 +1099,7 @@ mod tests {
         assert_eq!(tab.workspace_id, workspace.workspace_id);
         assert_eq!(root_pane.workspace_id, workspace.workspace_id);
         assert_eq!(worktree.branch.as_deref(), Some("worktree/api-create"));
+        assert_eq!(worktree.label, "worktree/api-create");
         assert!(Path::new(&worktree.path).join("README.md").exists());
         assert_eq!(app.state.workspaces.len(), 2);
         assert!(
@@ -1501,6 +1513,7 @@ mod tests {
             .iter()
             .find(|entry| entry.branch.as_deref() == Some("worktree/api-list"))
             .unwrap();
+        assert_eq!(entry.label, "worktree/api-list");
         assert_eq!(
             entry.open_workspace_id.as_deref(),
             Some(app.state.workspaces[1].id.as_str())
