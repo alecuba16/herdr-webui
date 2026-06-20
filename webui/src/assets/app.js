@@ -52,6 +52,10 @@ const {
   normalizeThemeColors,
   terminalPasteInput,
 } = globalThis.HerdrAppHelpers;
+const workspaces = el("workspaces"),
+  agents = el("agents"),
+  tabs = el("tabs"),
+  newWs = el("newWs");
 const headTitle = document.querySelector(".head strong");
 if (headTitle) {
   const brand = document.createElement("div");
@@ -125,7 +129,6 @@ if (settingsModal && !settingsModal.dataset.ux) {
     [...modal.querySelectorAll("label.option")].forEach((node) =>
       body.appendChild(node),
     );
-    body.insertAdjacentHTML("beforeend", themeCustomizerHtml());
     modal.insertBefore(body, modal.querySelector(".modal-actions"));
     el("settingsCloseTop").onclick = () => {
       settingsModal.style.display = "none";
@@ -301,6 +304,10 @@ const themeColorProfiles = {
     },
   },
 };
+const settingsBody =
+  settingsModal && settingsModal.querySelector(".settings-body");
+if (settingsBody && !el("themeColorsApply"))
+  settingsBody.insertAdjacentHTML("beforeend", themeCustomizerHtml());
 function normalizeThemeMode(value) {
   if (value === "night") return "dark";
   if (value === "day") return "light";

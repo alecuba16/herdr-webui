@@ -56,6 +56,7 @@ Workspace, agent, and panel rows are real browser links. Normal click uses WebUI
 - `webui/src/assets/app.html`: main WebUI HTML shell.
 - `webui/src/assets/app_core.js`: DOM-free frontend core helpers shared by browser code and Node tests.
 - `webui/src/assets/app_core.test.mjs`: Node built-in test runner coverage for pure frontend helpers; no browser automation required.
+- `webui/src/assets/app_load.test.mjs`: Node VM smoke test that loads production frontend scripts and catches startup-order regressions without browser automation.
 - `webui/src/assets/app.css`: main WebUI styles.
 - `webui/src/assets/app.js`: main WebUI browser logic.
 - `webui/src/assets/login.html`: login page HTML.
@@ -410,22 +411,22 @@ Shortcut settings are stored in browser `localStorage`, so they survive closing 
 
 ## Shortcuts
 
-| Shortcut | Action |
-| --- | --- |
-| `?` toolbar button | Open shortcut reference. |
-| `⚙` toolbar button | Open settings. |
-| `Shift+Enter` | Insert newline in terminal when enabled. |
-| `PageUp` / `PageDown` | Scroll Herdr terminal backend. |
-| `Option+Wheel` | Scroll browser overflow instead of backend terminal scrollback. |
-| `Cmd/Ctrl+C` | Copy selected terminal text. |
-| `Cmd/Ctrl+V` | Paste clipboard into terminal. |
-| Right-click terminal | Open Copy/Paste menu. |
-| Double-click workspace or tab | Rename inline. |
-| Enter during rename | Save rename. |
-| Escape during rename | Cancel rename. |
-| Cmd/Ctrl-click, Shift-click, middle-click | Use browser-native tab behavior for workspace, agent, and panel links. |
-| Configured close-panel shortcut | Close selected Herdr panel. Options: Disabled, `Option+W`, or `Shift+Space` then `W`. |
-| Escape in Worktrees modal | Close modal. |
+| Shortcut                                  | Action                                                                                |
+| ----------------------------------------- | ------------------------------------------------------------------------------------- |
+| `?` toolbar button                        | Open shortcut reference.                                                              |
+| `⚙` toolbar button                        | Open settings.                                                                        |
+| `Shift+Enter`                             | Insert newline in terminal when enabled.                                              |
+| `PageUp` / `PageDown`                     | Scroll Herdr terminal backend.                                                        |
+| `Option+Wheel`                            | Scroll browser overflow instead of backend terminal scrollback.                       |
+| `Cmd/Ctrl+C`                              | Copy selected terminal text.                                                          |
+| `Cmd/Ctrl+V`                              | Paste clipboard into terminal.                                                        |
+| Right-click terminal                      | Open Copy/Paste menu.                                                                 |
+| Double-click workspace or tab             | Rename inline.                                                                        |
+| Enter during rename                       | Save rename.                                                                          |
+| Escape during rename                      | Cancel rename.                                                                        |
+| Cmd/Ctrl-click, Shift-click, middle-click | Use browser-native tab behavior for workspace, agent, and panel links.                |
+| Configured close-panel shortcut           | Close selected Herdr panel. Options: Disabled, `Option+W`, or `Shift+Space` then `W`. |
+| Escape in Worktrees modal                 | Close modal.                                                                          |
 
 Chrome and most browsers reserve `Cmd+W` for closing the browser tab, so WebUI does not expose it as a dependable close-panel shortcut.
 
@@ -489,7 +490,7 @@ make coverage
 make run-web-local
 ```
 
-The project has unit and API-level tests for CLI parsing, auth decisions, login, session/socket path resolution, LaunchAgent plist generation, workspace-order API behavior, static asset routes, and direct-attach protocol framing. `make test` also runs DOM-free JavaScript helper tests through Node's built-in test runner. `make coverage` uses `cargo llvm-cov` and prints a summary. Browser UI flows and live Herdr socket flows still need manual testing or future integration tests with fake Herdr socket servers.
+The project has unit and API-level tests for CLI parsing, auth decisions, login, session/socket path resolution, LaunchAgent plist generation, workspace-order API behavior, static asset routes, and direct-attach protocol framing. `make test` also runs DOM-free JavaScript helper tests and a production script load-order smoke test through Node's built-in test runner. `make coverage` uses `cargo llvm-cov` and prints a summary. Browser UI flows and live Herdr socket flows still need manual testing or future integration tests with fake Herdr socket servers.
 
 Current tested coverage is limited by code that needs a real browser, live Herdr sockets, or macOS `launchctl` side effects. Recent coverage measurement:
 
@@ -512,7 +513,7 @@ WebUI checks Herdr backend compatibility at runtime through `/api/versions`. It 
 
 ```json
 {
-  "webui": "0.0.5",
+  "webui": "0.0.7",
   "backend": "0.7.0",
   "protocol_version": 14,
   "min_backend": "0.7.0",
@@ -535,8 +536,8 @@ Compatibility status values:
 Current compatibility table:
 
 | WebUI version | Min backend | Max tested backend | Direct attach protocol |
-| --- | --- | --- | --- |
-| 0.0.5 | 0.7.0 | 0.7.0 | 14 |
+| ------------- | ----------- | ------------------ | ---------------------- |
+| 0.0.7         | 0.7.0       | 0.7.0              | 14                     |
 
 Compatibility testing strategy:
 
@@ -612,7 +613,7 @@ GitHub Actions workflows:
 
 ## Tech Debt
 
-- Expand DOM-free JavaScript unit tests for pure frontend helpers: route parsing, option normalization, worktree source selection, and sorting. Existing Node tests cover worktree path slugging, absolute path normalization, and paste framing.
+- Expand DOM-free JavaScript unit tests for pure frontend helpers: route parsing, option normalization, worktree source selection, and sorting. Existing Node tests cover worktree path slugging, absolute path normalization, paste framing, theme color normalization, and frontend script load order.
 - Add fake Herdr JSON socket tests for proxied mutation routes: worktree create/open/remove, tab close/rename, pane metadata, and session close.
 - Add fake Herdr client terminal socket tests for terminal attach edge cases: reconnect, resize dedupe, scroll messages, bracketed paste payloads, and stale socket close behavior.
 - Extract protocol/schema duplication into a shared internal crate if Herdr exposes one.
