@@ -20,8 +20,6 @@ jobs:
             artifact: herdr-webui-macos-aarch64
           - target: x86_64-apple-darwin
             artifact: herdr-webui-macos-x86_64
-    env:
-      HERDR_WEBUI_VERSION: ${{ github.ref_name }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -33,7 +31,6 @@ jobs:
             echo "Tag must be vMAJOR.MINOR.PATCH"
             exit 1
           fi
-          echo "HERDR_WEBUI_VERSION=$version" >> "$GITHUB_ENV"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -53,11 +50,10 @@ jobs:
 
       - name: Verify release version
         run: |
-          version="${GITHUB_REF_NAME#v}"
           if [ "${{ matrix.target }}" = "$(rustc -vV | sed -n 's/^host: //p')" ]; then
             actual="$(target/${{ matrix.target }}/release/herdr-webui --version)"
             echo "version=$actual"
-            test "$actual" = "$version"
+            test "$actual" = "$GITHUB_REF_NAME"
           fi
 
       - name: Package

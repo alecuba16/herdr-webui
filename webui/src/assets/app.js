@@ -2385,6 +2385,10 @@ function updateWorktreeNewVisibility() {
   if (section)
     section.style.display = state.openWorktreeSource ? "block" : "none";
 }
+function worktreeOpenRowTitle(w) {
+  const pathName = (w.path || "").split(/[\\/]/).filter(Boolean).pop();
+  return w.branch || pathName || w.label || "worktree";
+}
 function renderWorktreeOpenList() {
   const list = el("worktreeOpenList");
   if (!list) return;
@@ -2399,7 +2403,7 @@ function renderWorktreeOpenList() {
   list.innerHTML = rows
     .map(
       (w, i) =>
-        `<div class="worktree-open-row ${state.openWorktreeSelected === i ? "selected" : ""}"><span><strong>${escapeHtml(w.label || w.branch || "worktree")}</strong><small>${escapeHtml(w.branch || "detached")} · ${escapeHtml(w.path)}</small></span><span class="session-controls"><button class="mini danger" title="Remove worktree from disk" onclick="event.stopPropagation();removeDiscoveredWorktree(${i})">🗑</button><button class="btn" onclick="openDiscoveredWorktree(${i})">Open</button></span></div>`,
+        `<div class="worktree-open-row ${state.openWorktreeSelected === i ? "selected" : ""}"><span><strong>${escapeHtml(worktreeOpenRowTitle(w))}</strong><small>${escapeHtml(w.branch || "detached")} · ${escapeHtml(w.path)}</small></span><span class="session-controls"><button class="mini danger" title="Remove worktree from disk" onclick="event.stopPropagation();removeDiscoveredWorktree(${i})">🗑</button><button class="btn" onclick="openDiscoveredWorktree(${i})">Open</button></span></div>`,
     )
     .join("");
 }
