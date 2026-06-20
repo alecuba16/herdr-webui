@@ -47,6 +47,7 @@ let term,
   inputQueue = [],
   inputFlushTimer = null,
   pasteFrameUntil = 0;
+let noSleepState = { mode: "off", until_ms: null, error: null, supported: true };
 const inputEncoder = new TextEncoder();
 const {
   branchPathSlug,
@@ -271,7 +272,7 @@ function themeCustomizerHtml() {
   return `<div class="theme-customizer"><div><strong>Theme colors</strong><small>Saved in this browser. Uses current defaults as reset reference.</small></div><div class="theme-customizer-actions"><label><span>Profile</span><select class="settings-select" id="themeColorProfile"><option value="default">Default</option><option value="catppuccin">Catppuccin</option><option value="tokyo">Tokyo Night</option><option value="nord">Nord</option></select></label><button type="button" class="tab add" id="themeColorsApplyProfile">Apply profile</button><button type="button" class="tab add" id="themeColorsApply">Apply / reload UI</button><button type="button" class="tab add" id="themeColorsReset">Reset theme colors</button></div><div class="theme-customizer-grid"><section><h3>Dark</h3>${rows("dark")}</section><section><h3>Light</h3>${rows("light")}</section></div></div>`;
 }
 function serverSettingsHtml() {
-  return `<div class="theme-customizer server-settings"><div><strong>Server access</strong><small>Saved in ~/.config/herdr-webui/webui-settings.json. Changing Bind restarts the WebUI listener.</small></div><label class="option"><span>Bind address<small>Use 127.0.0.1:8787 for local only or 0.0.0.0:8787 for LAN/public access.</small></span><input id="optServerBind" placeholder="127.0.0.1:8787"></label><label class="option"><span>Username<small>Required when binding outside localhost.</small></span><input id="optServerUser" autocomplete="username"></label><label class="option"><span>Password<small>Required when binding outside localhost. Leave blank to keep current password.</small></span><input id="optServerPassword" type="password" autocomplete="new-password"></label><label class="option"><input type="checkbox" id="optServerLocalBypass"><span>Allow localhost without login<small>Only applies to loopback requests.</small></span></label><div class="worktree-error" id="serverSettingsError"></div><div class="modal-actions"><button type="button" class="tab add" id="serverSettingsLoad">Reload server settings</button><button type="button" class="btn" id="serverSettingsApply">Apply server settings</button></div></div>`;
+  return `<div class="theme-customizer server-settings"><div><strong>Server access</strong><small>Saved in ~/.config/herdr-webui/webui-settings.json. Changing Bind restarts the WebUI listener.</small></div><label class="option"><span>Bind address<small>Use 127.0.0.1:8787 for local only or 0.0.0.0:8787 for LAN/public access.</small></span><input id="optServerBind" placeholder="127.0.0.1:8787"></label><label class="option"><span>Username<small>Required when binding outside localhost.</small></span><input id="optServerUser" autocomplete="username"></label><label class="option"><span>Password<small>Required when binding outside localhost. Leave blank to keep current password.</small></span><input id="optServerPassword" type="password" autocomplete="new-password"></label><label class="option"><input type="checkbox" id="optServerLocalBypass"><span>Allow localhost without login<small>Only applies to loopback requests.</small></span></label><label class="option"><span>No-sleep Auto cooldown<small>Seconds to wait after agents stop working before releasing no-sleep.</small></span><input id="optNoSleepAutoCooldown" type="number" min="0" max="3600" step="1"></label><div class="worktree-error" id="serverSettingsError"></div><div class="modal-actions"><button type="button" class="tab add" id="serverSettingsLoad">Reload server settings</button><button type="button" class="btn" id="serverSettingsApply">Apply server settings</button></div></div>`;
 }
 function themeColorInputId(mode, key) {
   return `optThemeColor-${mode}-${key}`;
@@ -505,6 +506,58 @@ localStorage.removeItem("herdr-web-shiftenter-migrated");
 function saveOptions() {
   options = normalizeOptions(options);
   localStorage.setItem("herdr-web-options", JSON.stringify(options));
+}
+function noSleepLabel(mode) {
+  if (mode === "auto") return "Auto";
+  if (mode === "1h") return "◷ 1h";
+  if (mode === "2h") return "◷ 2h";
+  if (mode === "4h") return "◷ 4h";
+  if (mode === "infinite") return "∞ Infinite";
+  return "No sleep: off";
+}
+function noSleepControlHtml(extraId) {
+  const suffix = extraId ? ` id="${extraId}"` : "";
+  return `<select class="mini no-sleep-control"${suffix} title="Prevent computer sleep"><option value="off">No sleep: off</option><option value="auto">Auto</option><option value="1h">◷ 1h</option><option value="2h">◷ 2h</option><option value="4h">◷ 4h</option><option value="infinite">∞ Infinite</option></select>`;
+}
+function noSleepControls() {
+  return Array.from(document.querySelectorAll(".no-sleep-control"));
+}
+function syncNoSleepControls() {
+  const mode = noSleepState.mode || "off";
+  for (const control of noSleepControls()) {
+    control.value = mode;
+    control.title = noSleepState.error
+      ? `No-sleep error: ${noSleepState.error}`
+      : !noSleepState.supported
+        ? "No-sleep mode is not supported on this host"
+        : mode === "auto" && !noSleepState.active
+          ? "Auto no-sleep: monitoring agents"
+          : mode === "off"
+            ? "Prevent computer sleep from WebUI server"
+            : `WebUI server preventing sleep: ${noSleepLabel(mode)}`;
+    control.classList.toggle("active", !!noSleepState.active);
+    control.classList.toggle("unsupported", !!noSleepState.error || !noSleepState.supported);
+  }
+}
+async function loadNoSleep() {
+  try {
+    noSleepState = await api("/api/no-sleep");
+  } catch (_) {
+    noSleepState = { mode: "off", until_ms: null, error: "server unavailable", supported: true };
+  }
+  syncNoSleepControls();
+}
+async function setNoSleepMode(mode) {
+  try {
+    noSleepState = await api("/api/no-sleep", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ mode }),
+    });
+  } catch (ex) {
+    noSleepState = { mode: "off", until_ms: null, error: ex.message || String(ex), supported: true };
+  }
+  syncNoSleepControls();
 }
 saveOptions();
 const soundSetting = el("optSound");
@@ -879,6 +932,9 @@ async function loadServerSettings() {
       ? "current password saved"
       : "required for public bind";
     el("optServerLocalBypass").checked = !!settings.localhost_no_auth;
+    el("optNoSleepAutoCooldown").value = String(
+      settings.no_sleep_auto_cooldown_seconds ?? 60,
+    );
   } catch (ex) {
     if (err) err.textContent = ex.message || String(ex);
   }
@@ -889,7 +945,8 @@ async function applyServerSettings() {
     bind = el("optServerBind").value.trim(),
     username = el("optServerUser").value.trim(),
     password = el("optServerPassword").value,
-    localhostNoAuth = el("optServerLocalBypass").checked;
+    localhostNoAuth = el("optServerLocalBypass").checked,
+    noSleepAutoCooldown = Number(el("optNoSleepAutoCooldown").value || 60);
   if (err) err.textContent = "";
   submit.disabled = true;
   try {
@@ -901,6 +958,7 @@ async function applyServerSettings() {
         username: username || null,
         password: password ? password : null,
         localhost_no_auth: localhostNoAuth,
+        no_sleep_auto_cooldown_seconds: noSleepAutoCooldown,
       }),
     });
     if (err)
@@ -1316,7 +1374,7 @@ function render() {
   const themeIcon =
     themeMode === "auto" ? "A" : themeMode === "dark" ? "☾" : "☀";
   const sessionLabel = escapeHtml(state.session || "default");
-  const tabsTools = `<div class="tabs-tools"><button class="mini" id="sessionButtonTabs" title="Session manager" onclick="showSessionManager(state.backendOnline?'Session manager':'Herdr session offline')">${sessionLabel}</button><button class="mini" id="themeToggleTabs" title="Toggle theme" onclick="themeMode=themeMode==='auto'?'dark':(themeMode==='dark'?'light':'auto');applyTheme();render()">${themeIcon}</button><button class="mini" title="Shortcuts" onclick="applyOptions();el('shortcutsModal').style.display='grid'">?</button><button class="mini" title="Settings" onclick="el('settingsModal').style.display='grid';applyOptions();loadServerSettings()">⚙</button></div>`;
+  const tabsTools = `<div class="tabs-tools"><button class="mini" id="sessionButtonTabs" title="Session manager" onclick="showSessionManager(state.backendOnline?'Session manager':'Herdr session offline')">${sessionLabel}</button><button class="mini" id="themeToggleTabs" title="Toggle theme" onclick="themeMode=themeMode==='auto'?'dark':(themeMode==='dark'?'light':'auto');applyTheme();render()">${themeIcon}</button><button class="mini" title="Shortcuts" onclick="applyOptions();el('shortcutsModal').style.display='grid'">?</button>${noSleepControlHtml()}<button class="mini" title="Settings" onclick="el('settingsModal').style.display='grid';applyOptions();loadServerSettings()">⚙</button></div>`;
   const tabsHtml =
     state.tabs.map((t) => renderTabButton(t, panesByTab)).join("") +
     (state.ws
@@ -1326,6 +1384,7 @@ function render() {
   if (tabsHtml !== lastTabsHtml) {
     tabs.innerHTML = tabsHtml;
     lastTabsHtml = tabsHtml;
+    syncNoSleepControls();
   }
   updateTitle(wsById, tabById, tabCountsByWorkspace, pane);
   if (state.editingTab) {
@@ -3022,6 +3081,10 @@ el("themeToggle").onclick = () => {
     themeMode === "auto" ? "dark" : themeMode === "dark" ? "light" : "auto";
   applyTheme();
 };
+document.addEventListener("change", (e) => {
+  if (!e.target || !e.target.classList.contains("no-sleep-control")) return;
+  setNoSleepMode(e.target.value);
+});
 if (window.matchMedia) {
   try {
     const media = window.matchMedia("(prefers-color-scheme: dark)");
@@ -3295,13 +3358,18 @@ document.addEventListener("visibilitychange", () => {
     loadVersions();
     refresh();
     connectEvents();
+    loadNoSleep();
   }
 });
+window.addEventListener("focus", loadNoSleep);
+setInterval(loadNoSleep, 5000);
 document.addEventListener("pointerdown", unlockAudio, { once: true });
 document.addEventListener("keydown", unlockAudio, { once: true });
 setupSessionChrome();
 applyTheme();
 applyOptions();
+syncNoSleepControls();
+loadNoSleep();
 loadVersions();
 refresh();
 connectEvents();
