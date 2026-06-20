@@ -263,16 +263,6 @@ body.light {
   background: var(--border);
   color: var(--fg);
 }
-.tab-info {
-  margin-left: auto;
-  color: var(--muted);
-  font-size: 12px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 45%;
-  padding-left: 12px;
-}
 .main {
   display: flex;
   flex-direction: column;
@@ -524,23 +514,6 @@ input {
   font-size: 12px;
   margin-right: 4px;
 }
-.agent-group-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 14px 0 6px 0;
-  color: var(--fg);
-  font-weight: 700;
-  font-size: 12px;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
-}
-.agent-group-header:after {
-  content: "";
-  height: 1px;
-  background: var(--border);
-  flex: 1;
-}
 .tab {
   min-width: 140px;
   display: inline-flex;
@@ -747,9 +720,6 @@ body.light .terminal .xterm-selection div {
 .tabs-tools .mini {
   margin-left: 0;
 }
-.tabs .tab-info {
-  margin-left: 0;
-}
 .head #sessionButton,
 .head #themeToggle,
 .head #shortcutsToggle,
@@ -765,9 +735,7 @@ body {
   --action-border: var(--border2);
 }
 .btn,
-.tab.add,
-.sidebar-actions .btn,
-.sidebar-actions .worktree-open-trigger {
+.tab.add {
   background: var(--accent);
   color: var(--accent-fg);
   border: 1px solid var(--accent);
@@ -775,14 +743,6 @@ body {
 .btn:hover,
 .tab.add:hover {
   background: color-mix(in srgb, var(--accent), white 10%);
-}
-.sidebar-actions .btn:hover,
-.sidebar-actions .btn:focus,
-.sidebar-actions .worktree-open-trigger:hover,
-.sidebar-actions .worktree-open-trigger:focus {
-  background: #1e3a8a;
-  color: #dbeafe;
-  border-color: #1d4ed8;
 }
 .tab.active {
   background: var(--accent);
@@ -835,20 +795,6 @@ body {
   background: #315044;
   color: #a6e3a1;
   border-color: #74c7a3;
-}
-body.light .sidebar-actions .btn,
-body.light .sidebar-actions .worktree-open-trigger {
-  background: var(--accent);
-  color: var(--accent-fg);
-  border-color: var(--accent);
-}
-body.light .sidebar-actions .btn:hover,
-body.light .sidebar-actions .btn:focus,
-body.light .sidebar-actions .worktree-open-trigger:hover,
-body.light .sidebar-actions .worktree-open-trigger:focus {
-  background: #1e3a8a;
-  color: #dbeafe;
-  border-color: #1d4ed8;
 }
 a.item,
 a.item:visited,

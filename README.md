@@ -48,6 +48,11 @@ Workspace, agent, and panel rows are real browser links. Normal click uses WebUI
 
 - `webui/src/main.rs`: WebUI server, auth, JSON proxy, WebSockets, embedded HTML/CSS/JS, terminal bridge, and macOS-facing behavior.
 - `webui/Cargo.toml`: standalone Rust crate for `herdr-webui`.
+- `Cargo.toml`: root Herdr crate used for backend-compatible types, server code, and release build output.
+- `src/`: root Herdr application, API schema, worktree helpers, terminal/input integration, and tests.
+- `src/worktree.rs`: shared worktree path, listing, command, and branch-detection helpers.
+- `src/app/api/worktrees.rs`: Herdr JSON API worktree list/create/open/remove handlers.
+- `src/app/worktrees.rs`: TUI worktree modal and create/open flow.
 - `webui/src/assets/app.html`: main WebUI HTML shell.
 - `webui/src/assets/app.css`: main WebUI styles.
 - `webui/src/assets/app.js`: main WebUI browser logic.
@@ -59,6 +64,8 @@ Workspace, agent, and panel rows are real browser links. Normal click uses WebUI
 - `webui/src/assets/herdr-logo.svg`: favicon served by the WebUI.
 - `Makefile`: build, run, install, update, and uninstall commands.
 - `plan.md`: original implementation plan and design goals.
+- `target/`: release/debug build output shared by root and WebUI crates.
+- `webui/target/`: generated Cargo build output when WebUI crate is built with its own target dir; do not commit it.
 
 The Rust binary embeds the frontend assets with `include_str!`, so release artifacts do not need external static files next to the binary.
 
@@ -274,6 +281,11 @@ Behavior:
 - Checkout path auto-fills from default worktree directory, repo name, and branch slug.
 - Manual Checkout path edits are preserved.
 - Default worktree directory is browser-local and defaults to `../worktrees`; relative paths resolve from repo root.
+- Path suggestions are shown through the browser dropdown for `Repo or worktrees folder`.
+- Typing a path updates only suggestions and schedules discovery; it does not clear the create form.
+- The existing worktree list and create section update after discovery completes, not on every keystroke.
+- Branch suggestions refresh only when the discovered source repo changes.
+- The Refresh button rediscovers the current path without wiping Branch name, Label, or Checkout path.
 - Existing local branch names are allowed. WebUI checks whether the branch is already checked out in any worktree. If not checked out, it creates the worktree with `git worktree add <path> <branch>`.
 - New branches use `git worktree add -b <branch> <path> <base>`.
 - After Git creates the checkout, WebUI asks Herdr backend to open the new path.
@@ -349,6 +361,7 @@ Input handling:
 - Switching from an agent row restores xterm focus so OpenCode-style terminal input continues working.
 - `Cmd/Ctrl+C` copies xterm selection when text is selected.
 - `Cmd/Ctrl+V` pastes clipboard into terminal.
+- Large paste payloads are sent as one WebSocket frame when possible, while preserving bracketed-paste markers for terminal apps that request them.
 - Optional close-panel shortcut setting supports `Option+W` or `Shift+Space, W`.
 - Chrome reserves `Cmd+W` for browser tab close, so WebUI does not offer it as a reliable shortcut.
 - Right-click opens Copy/Paste menu.
@@ -423,6 +436,7 @@ Terminal:
 
 - xterm.js terminal attach for selected Herdr pane.
 - Raw input forwarding, clipboard paste, terminal scroll, and optional browser-viewport fit.
+- Fast bracketed paste forwarding for large clipboard payloads.
 - Terminal loading overlay during selection changes.
 - Visibility-based socket reconnect behavior.
 
@@ -436,6 +450,8 @@ Workspace and panel management:
 Worktrees:
 
 - Discover worktrees from repo path or worktrees directory.
+- Browser dropdown path suggestions for repo/worktree discovery.
+- Stateful Worktrees modal: discovery does not reset create fields.
 - Group linked worktrees by repository.
 - Create new linked worktrees from existing or new branches.
 - Open existing linked worktrees.
@@ -513,7 +529,7 @@ Current compatibility table:
 
 | WebUI version | Min backend | Max tested backend | Direct attach protocol |
 | --- | --- | --- | --- |
-| 0.0.4 | 0.7.0 | 0.7.0 | 14 |
+| 0.0.5 | 0.7.0 | 0.7.0 | 14 |
 
 Compatibility testing strategy:
 
@@ -550,6 +566,7 @@ GitHub Actions workflows:
 - Workspace list/create/rename/close.
 - Worktree grouping, creation, and removal.
 - Worktree discovery/open modal.
+- Stateful Worktrees discovery UX with dropdown suggestions.
 - Existing-branch worktree creation workaround in WebUI server.
 - Configurable default worktree checkout directory.
 - Tab list/create/rename/close.
@@ -562,6 +579,7 @@ GitHub Actions workflows:
 - Compact session/workspace/tab/pane URLs.
 - Real links for workspace, agent, and panel navigation.
 - Browser-local scroll speed setting.
+- Fast bracketed paste forwarding.
 - Event WebSocket with snapshot refresh.
 - Terminal WebSocket stale-session protection.
 - Terminal loading overlay while switching selections.
