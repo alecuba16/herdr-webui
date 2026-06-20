@@ -22,7 +22,7 @@ This project builds a separate `herdr-webui` binary. It does not replace the ups
 - Provides a session manager when the Herdr backend is offline.
 - Can launch a Herdr backend process for the configured session.
 - Provides optional browser notifications through agent attention sounds.
-- Can run from macOS LaunchAgent as a per-user service.
+- Can run from macOS LaunchAgent or Linux systemd user service.
 
 ## How It Works
 
@@ -173,7 +173,16 @@ herdr-webui [--bind HOST:PORT] [--session NAME] [--api-socket PATH] [--client-so
 herdr-webui --version
 herdr-webui install-mac [--bind HOST:PORT] [--session NAME]
 herdr-webui update-mac
+herdr-webui install-linux [--bind HOST:PORT] [--session NAME]
+herdr-webui update-linux
+herdr-webui start-mac | start
+herdr-webui stop-mac | stop
+herdr-webui restart-mac | restart
+herdr-webui start-linux | start
+herdr-webui stop-linux | stop
+herdr-webui restart-linux | restart
 herdr-webui uninstall-mac
+herdr-webui uninstall-linux
 ```
 
 ## Authentication
@@ -268,6 +277,24 @@ Or from a downloaded release binary:
 ./herdr-webui update-mac
 ```
 
+`update-mac` copies the current binary to `~/.local/bin/herdr-webui` and restarts the LaunchAgent. It does not overwrite `~/.config/herdr-webui/webui-settings.json`. If a newer binary needs additional settings keys, WebUI keeps existing values and writes missing keys with defaults on startup.
+
+Control the installed LaunchAgent without replacing the binary:
+
+```sh
+herdr-webui start
+herdr-webui stop
+herdr-webui restart
+```
+
+Explicit macOS command names are also available:
+
+```sh
+herdr-webui start-mac
+herdr-webui stop-mac
+herdr-webui restart-mac
+```
+
 Uninstall LaunchAgent:
 
 ```sh
@@ -281,6 +308,62 @@ Or:
 ```
 
 `~/.local/bin` does not need to be in `PATH` for LaunchAgent to work because the plist uses the full binary path. If it is not in shell `PATH`, `make install-mac` prints a note.
+
+## Linux Install
+
+Install as a per-user systemd service:
+
+```sh
+make install-linux
+```
+
+Release binaries can install themselves too:
+
+```sh
+./herdr-webui install-linux
+```
+
+This does three things:
+
+- Installs binary to `~/.local/bin/herdr-webui`.
+- Writes user service to `~/.config/systemd/user/herdr-web.service`.
+- Runs `systemctl --user daemon-reload` and enables/starts `herdr-web.service`.
+
+Update installed binary and restart the user service:
+
+```sh
+make update-linux
+```
+
+Or from a downloaded release binary:
+
+```sh
+./herdr-webui update-linux
+```
+
+`update-linux` copies the current binary to `~/.local/bin/herdr-webui`, reloads the user systemd daemon, and restarts `herdr-web.service`. It does not overwrite `~/.config/herdr-webui/webui-settings.json`; missing config keys are backfilled with defaults on startup.
+
+Control the installed Linux service without replacing the binary:
+
+```sh
+herdr-webui start-linux
+herdr-webui stop-linux
+herdr-webui restart-linux
+```
+
+On Linux, aliases `start`, `stop`, and `restart` target the Linux user service. On macOS, those same aliases target the LaunchAgent.
+
+Uninstall the Linux user service:
+
+```sh
+make uninstall-linux
+```
+
+Or:
+
+```sh
+./herdr-webui uninstall-linux
+```
 
 ## UI Behavior
 
@@ -375,6 +458,8 @@ The working animation is a square-loop indicator. Agent metadata uses colored st
 ### Notification Sounds
 
 Agent attention sounds are browser-local and start only after a user gesture unlocks browser audio. Sounds trigger when an agent newly enters an attention state such as blocked or done.
+
+Chrome may block Web Audio until the page receives a click or key press. WebUI defers sound playback until that gesture unlocks audio; notification sounds remain optional and browser-local.
 
 Notification scope is configured in Settings:
 
@@ -658,7 +743,7 @@ GitHub Actions workflows:
 - Terminal WebSocket stale-session protection.
 - Terminal loading overlay while switching selections.
 - Browser visibility reconnect behavior.
-- macOS LaunchAgent install/update/uninstall.
+- macOS LaunchAgent and Linux systemd user service install/update/start/stop/restart/uninstall.
 
 ## Known Limitations
 
@@ -673,7 +758,7 @@ GitHub Actions workflows:
 - Drag-and-drop workspace order is process-local memory and disappears when WebUI restarts.
 - Event handling still uses snapshot refresh/debounce rather than fine-grained local state patches.
 - Browser UI flows still rely on manual checks; Rust/API coverage covers server-side behavior and protocol framing.
-- Launch/session management is macOS-focused.
+- Launch/session management is desktop-service focused through macOS LaunchAgent and Linux systemd user service commands.
 - Worktree creation compatibility code in WebUI exists because older provided Herdr backends may try `git worktree add -b` even when a local branch already exists.
 
 ## Tech Debt

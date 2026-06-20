@@ -1285,8 +1285,16 @@ function unlockAudio() {
   try {
     audioCtx =
       audioCtx || new (window.AudioContext || window.webkitAudioContext)();
-    audioCtx.resume();
-    audioUnlocked = true;
+    const resumed = audioCtx.resume();
+    if (resumed && resumed.then) {
+      resumed
+        .then(() => {
+          audioUnlocked = true;
+        })
+        .catch(() => {});
+    } else {
+      audioUnlocked = true;
+    }
   } catch (e) {}
 }
 function handleAttentionSound() {

@@ -154,6 +154,18 @@ describe("app bundle load", () => {
     match(html, /value="infinite"/);
   });
 
+  it("handles rejected audio unlock attempts", () => {
+    const ctx = context();
+    ctx.AudioContext = class {
+      resume() {
+        return Promise.reject(new Error("blocked"));
+      }
+    };
+    vm.runInContext(source, ctx);
+
+    doesNotThrow(() => ctx.unlockAudio());
+  });
+
   it("renders extracted worktree and shortcut modals", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
