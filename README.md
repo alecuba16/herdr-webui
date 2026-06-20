@@ -201,7 +201,7 @@ Defaults when the file does not exist:
 - Password: blank.
 - Localhost auth bypass: enabled.
 
-Non-localhost binds require a username and password. Set both values before exposing WebUI outside localhost.
+Non-localhost binds require both username and password. WebUI rejects `0.0.0.0` or any other non-loopback bind until both credentials are configured.
 
 To expose the server on all interfaces:
 

@@ -166,6 +166,19 @@ describe("app bundle load", () => {
     doesNotThrow(() => ctx.unlockAudio());
   });
 
+  it("requires credentials for non-local server bind", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    equal(
+      ctx.serverSettingsValidationError("0.0.0.0:8787", "", "", false),
+      "Username and password are required before binding to 0.0.0.0 or any non-local address.",
+    );
+    equal(ctx.serverSettingsValidationError("0.0.0.0:8787", "user", "pass", false), "");
+    equal(ctx.serverSettingsValidationError("0.0.0.0:8787", "user", "", true), "");
+    equal(ctx.serverSettingsValidationError("127.0.0.1:8787", "", "", false), "");
+  });
+
   it("renders extracted worktree and shortcut modals", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
