@@ -18,6 +18,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
+mod service;
+
 const DEFAULT_BIND: &str = "127.0.0.1:8787";
 const COOKIE_NAME: &str = "herdr_web_session";
 const HERDR_WEBUI_VERSION: &str = env!("HERDR_WEBUI_VERSION");
@@ -267,191 +269,31 @@ fn required_arg<'a>(args: &'a [String], index: usize, flag: &str) -> io::Result<
     })
 }
 
-fn print_help() {
-    eprintln!("herdr-webui [--bind HOST:PORT] [--session NAME] [--api-socket PATH] [--client-socket PATH]");
-    eprintln!("herdr-webui --version");
-    eprintln!("herdr-webui install-mac [--bind HOST:PORT] [--session NAME]");
-    eprintln!("herdr-webui update-mac");
-    eprintln!("herdr-webui uninstall-mac");
-}
-
 fn home_dir() -> io::Result<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::NotFound,
-            "HOME is required for macOS install",
-        )
-    })
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME is required"))
 }
 
-fn local_bin_dir() -> io::Result<PathBuf> {
-    Ok(home_dir()?.join(".local").join("bin"))
+fn print_help() {
+    eprint!("{}", help_text());
 }
 
-fn install_bin_path() -> io::Result<PathBuf> {
-    Ok(local_bin_dir()?.join("herdr-webui"))
-}
-
-fn install_plist_path() -> io::Result<PathBuf> {
-    Ok(home_dir()?
-        .join("Library")
-        .join("LaunchAgents")
-        .join(format!("{INSTALL_LABEL}.plist")))
-}
-
-fn install_log_dir() -> io::Result<PathBuf> {
-    Ok(home_dir()?.join("Library").join("Logs").join("herdr-webui"))
-}
-
-fn copy_current_exe_to_install_path() -> io::Result<PathBuf> {
-    let source = std::env::current_exe()?;
-    let target = install_bin_path()?;
-    if let Some(parent) = target.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let same_file = source.canonicalize().ok() == target.canonicalize().ok();
-    if !same_file {
-        fs::copy(&source, &target)?;
-    }
-    let mut permissions = fs::metadata(&target)?.permissions();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        permissions.set_mode(0o755);
-    }
-    fs::set_permissions(&target, permissions)?;
-    Ok(target)
-}
-
-fn plist_xml(config: &WebConfig, install_bin: &Path) -> io::Result<String> {
-    let log_dir = install_log_dir()?;
-    let mut env_lines = Vec::new();
-    if let Ok(herdr_bin) = std::env::var("HERDR_WEB_HERDR_BIN") {
-        if !herdr_bin.is_empty() {
-            env_lines.push(format!(
-                "    <key>HERDR_WEB_HERDR_BIN</key>\n    <string>{}</string>",
-                xml_escape(&herdr_bin)
-            ));
-        }
-    }
-    let mut args = vec![
-        format!(
-            "    <string>{}</string>",
-            xml_escape(&install_bin.display().to_string())
-        ),
-        "    <string>--bind</string>".to_string(),
-        format!(
-            "    <string>{}</string>",
-            xml_escape(&config.bind.to_string())
-        ),
-    ];
-    if let Some(session) = &config.session {
-        args.push("    <string>--session</string>".to_string());
-        args.push(format!("    <string>{}</string>", xml_escape(session)));
-    }
-    Ok(format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>{label}</string>
-  <key>ProgramArguments</key>
-  <array>
-{args}
-  </array>
-  <key>EnvironmentVariables</key>
-  <dict>
-{env}
-  </dict>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <true/>
-  <key>StandardOutPath</key>
-  <string>{stdout}</string>
-  <key>StandardErrorPath</key>
-  <string>{stderr}</string>
-</dict>
-</plist>
-"#,
-        label = INSTALL_LABEL,
-        args = args.join("\n"),
-        env = env_lines.join("\n"),
-        stdout = xml_escape(&log_dir.join("stdout.log").display().to_string()),
-        stderr = xml_escape(&log_dir.join("stderr.log").display().to_string())
-    ))
-}
-
-fn xml_escape(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
-}
-
-fn launchctl(args: &[&str]) -> io::Result<bool> {
-    let status = Command::new("launchctl").args(args).status()?;
-    Ok(status.success())
-}
-
-fn mac_domain() -> String {
-    format!("gui/{}", unsafe { libc_getuid() })
-}
-
-#[cfg(unix)]
-unsafe fn libc_getuid() -> u32 {
-    unsafe extern "C" {
-        fn getuid() -> u32;
-    }
-    getuid()
-}
-
-#[cfg(not(unix))]
-unsafe fn libc_getuid() -> u32 {
-    0
-}
-
-fn install_macos(config: WebConfig) -> io::Result<()> {
-    let install_bin = copy_current_exe_to_install_path()?;
-    let plist = install_plist_path()?;
-    fs::create_dir_all(plist.parent().expect("plist has parent"))?;
-    fs::create_dir_all(install_log_dir()?)?;
-    fs::write(&plist, plist_xml(&config, &install_bin)?)?;
-    let domain = mac_domain();
-    let plist_arg = plist.display().to_string();
-    let _ = launchctl(&["bootout", &domain, &plist_arg]);
-    launchctl(&["bootstrap", &domain, &plist_arg])?;
-    launchctl(&["kickstart", "-k", &format!("{domain}/{INSTALL_LABEL}")])?;
-    println!("Installed {INSTALL_LABEL} at {}", plist.display());
-    println!("Installed binary at {}", install_bin.display());
-    println!("Open http://{}", config.bind);
-    Ok(())
-}
-
-fn update_macos() -> io::Result<()> {
-    let install_bin = copy_current_exe_to_install_path()?;
-    let domain = mac_domain();
-    if !launchctl(&["kickstart", "-k", &format!("{domain}/{INSTALL_LABEL}")])? {
-        let plist = install_plist_path()?;
-        launchctl(&["bootstrap", &domain, &plist.display().to_string()])?;
-    }
-    println!("Updated binary at {}", install_bin.display());
-    println!("Restarted {INSTALL_LABEL}");
-    Ok(())
-}
-
-fn uninstall_macos() -> io::Result<()> {
-    let plist = install_plist_path()?;
-    let domain = mac_domain();
-    let _ = launchctl(&["bootout", &domain, &plist.display().to_string()]);
-    if plist.exists() {
-        fs::remove_file(&plist)?;
-    }
-    println!("Uninstalled {INSTALL_LABEL}");
-    Ok(())
+fn help_text() -> &'static str {
+    "herdr-webui [--bind HOST:PORT] [--session NAME] [--api-socket PATH] [--client-socket PATH]\n\
+herdr-webui --version\n\
+herdr-webui install-mac [--bind HOST:PORT] [--session NAME]\n\
+herdr-webui update-mac\n\
+herdr-webui install-linux [--bind HOST:PORT] [--session NAME]\n\
+herdr-webui update-linux\n\
+herdr-webui start-mac | start\n\
+herdr-webui stop-mac | stop\n\
+herdr-webui restart-mac | restart\n\
+herdr-webui start-linux | start\n\
+herdr-webui stop-linux | stop\n\
+herdr-webui restart-linux | restart\n\
+herdr-webui uninstall-mac\n\
+herdr-webui uninstall-linux\n"
 }
 
 #[derive(Clone)]
@@ -695,13 +537,55 @@ async fn main() -> io::Result<()> {
         return Ok(());
     }
     if matches!(args.first().map(String::as_str), Some("install-mac")) {
-        return install_macos(WebConfig::parse(&args[1..])?);
+        return service::install_macos(WebConfig::parse(&args[1..])?);
     }
     if matches!(args.first().map(String::as_str), Some("update-mac")) {
-        return update_macos();
+        return service::update_macos();
+    }
+    if matches!(args.first().map(String::as_str), Some("install-linux")) {
+        return service::install_linux(WebConfig::parse(&args[1..])?);
+    }
+    if matches!(args.first().map(String::as_str), Some("update-linux")) {
+        return service::update_linux();
+    }
+    if matches!(
+        args.first().map(String::as_str),
+        Some("start-mac" | "start")
+    ) {
+        if matches!(args.first().map(String::as_str), Some("start")) {
+            return service::start_service();
+        }
+        return service::start_macos_service();
+    }
+    if matches!(args.first().map(String::as_str), Some("start-linux")) {
+        return service::start_linux_service();
+    }
+    if matches!(args.first().map(String::as_str), Some("stop")) {
+        return service::stop_service();
+    }
+    if matches!(args.first().map(String::as_str), Some("stop-mac")) {
+        return service::stop_macos_service();
+    }
+    if matches!(args.first().map(String::as_str), Some("stop-linux")) {
+        return service::stop_linux_service();
+    }
+    if matches!(
+        args.first().map(String::as_str),
+        Some("restart-mac" | "restart")
+    ) {
+        if matches!(args.first().map(String::as_str), Some("restart")) {
+            return service::restart_service();
+        }
+        return service::restart_macos_service();
+    }
+    if matches!(args.first().map(String::as_str), Some("restart-linux")) {
+        return service::restart_linux_service();
     }
     if matches!(args.first().map(String::as_str), Some("uninstall-mac")) {
-        return uninstall_macos();
+        return service::uninstall_macos();
+    }
+    if matches!(args.first().map(String::as_str), Some("uninstall-linux")) {
+        return service::uninstall_linux();
     }
     let config = WebConfig::parse(&args)?;
     let server_settings = load_runtime_server_settings(config.bind)?;
@@ -2911,6 +2795,22 @@ mod tests {
     }
 
     #[test]
+    fn help_lists_macos_service_commands() {
+        let text = help_text();
+
+        assert!(text.contains("herdr-webui update-mac"));
+        assert!(text.contains("herdr-webui install-linux"));
+        assert!(text.contains("herdr-webui update-linux"));
+        assert!(text.contains("herdr-webui start-mac | start"));
+        assert!(text.contains("herdr-webui stop-mac | stop"));
+        assert!(text.contains("herdr-webui restart-mac | restart"));
+        assert!(text.contains("herdr-webui start-linux | start"));
+        assert!(text.contains("herdr-webui stop-linux | stop"));
+        assert!(text.contains("herdr-webui restart-linux | restart"));
+        assert!(text.contains("herdr-webui uninstall-linux"));
+    }
+
+    #[test]
     fn rejects_invalid_config_flags() {
         let missing = ["--bind"].map(String::from);
         let invalid_bind = ["--bind", "not-a-socket"].map(String::from);
@@ -2966,40 +2866,6 @@ mod tests {
         let response = existing_workspace_cwd(Some(dir.to_str().unwrap())).unwrap_err();
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    }
-
-    #[test]
-    fn escapes_xml_special_characters() {
-        assert_eq!(xml_escape("<&>\"'"), "&lt;&amp;&gt;&quot;&apos;");
-    }
-
-    #[test]
-    fn builds_plist_with_session_and_escaped_values() {
-        let _guard = env_lock().lock().unwrap();
-        let home = std::env::temp_dir().join(format!(
-            "herdr-webui-test-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::env::set_var("HOME", &home);
-        std::env::set_var("HERDR_WEB_HERDR_BIN", "/opt/herdr'");
-
-        let config = WebConfig {
-            bind: "127.0.0.1:8787".parse().unwrap(),
-            session: Some("work&test".to_string()),
-            api_socket: None,
-            client_socket: None,
-        };
-        let plist = plist_xml(&config, Path::new("/tmp/herdr-webui&bin")).unwrap();
-
-        assert!(plist.contains("<string>/tmp/herdr-webui&amp;bin</string>"));
-        assert!(plist.contains("<string>work&amp;test</string>"));
-        assert!(plist.contains("<string>/opt/herdr&apos;</string>"));
-        assert!(plist.contains("Library/Logs/herdr-webui/stdout.log"));
-
-        std::env::remove_var("HERDR_WEB_HERDR_BIN");
     }
 
     #[test]
