@@ -17,6 +17,7 @@ This project builds a separate `herdr-webui` binary. It does not replace the ups
 - Supports attention-based workspace and agent sorting.
 - Supports browser-local terminal scroll speed, theme, sizing, and key-sequence settings.
 - Supports runtime server access settings for bind address, username, password, and localhost auth bypass.
+- Supports backend-managed no-sleep mode so the machine running WebUI/Herdr can stay awake for timed or unlimited sessions.
 - Supports configurable agent notification sound scope.
 - Provides a session manager when the Herdr backend is offline.
 - Can launch a Herdr backend process for the configured session.
@@ -118,6 +119,8 @@ With `XDG_CONFIG_HOME` set, the file is:
 ```text
 $XDG_CONFIG_HOME/herdr-webui/webui-settings.json
 ```
+
+If the settings file already exists but is missing newer keys, WebUI keeps existing values and writes the missing keys with defaults.
 
 If Herdr backend is not running, open the session manager and launch it, or start it separately:
 
@@ -380,6 +383,20 @@ Notification scope is configured in Settings:
 
 `Current agent tab` is the default to avoid one agent state change ringing in many open browser tabs.
 
+### No-Sleep Mode
+
+The no-sleep control sits beside the `?` toolbar button. Options are Off, 1h, 2h, 4h, and Infinite.
+
+No-sleep is managed by the WebUI backend process, not by each browser tab. This keeps the machine running the Herdr session awake even if the browser is in the background. All open WebUI tabs read the same backend state and refresh it periodically, so changing the option in one tab updates the others.
+
+Timed modes automatically turn off when their duration expires. Infinite stays active until changed to Off or until the WebUI process exits.
+
+Platform support:
+
+- macOS uses `caffeinate`.
+- Linux uses `systemd-inhibit`.
+- Other platforms report no-sleep as unsupported.
+
 ### Rename
 
 Workspaces and tabs use inline rename:
@@ -425,6 +442,7 @@ Settings are stored in browser `localStorage`:
 
 - Default theme: Auto, Light, or Dark.
 - Server access: bind address, username, password, and localhost auth bypass. Stored in `~/.config/herdr-webui/webui-settings.json`.
+- No-sleep mode: Off, 1h, 2h, 4h, or Infinite. Managed by the WebUI backend process and shared by all browser tabs.
 - Theme colors: edit Dark and Light palettes, apply built-in profiles, reset to defaults, and apply/reload UI immediately.
 - Show terminal overflow scrollbars.
 - Resize terminal to browser viewport.
@@ -447,11 +465,14 @@ Workspace drag-and-drop order is not stored in `localStorage`. It is stored in t
 
 Server access settings are stored on disk by the WebUI process. Browser settings such as shortcuts, theme, terminal sizing, notification scope, and worktree defaults are stored in browser `localStorage`, so they survive closing and reopening browser tabs on that browser.
 
+No-sleep state is stored in WebUI process memory. It is shared across browser tabs connected to the same WebUI process and stops when WebUI exits.
+
 ## Shortcuts
 
 | Shortcut                                  | Action                                                                                |
 | ----------------------------------------- | ------------------------------------------------------------------------------------- |
 | `?` toolbar button                        | Open shortcut reference.                                                              |
+| No-sleep toolbar select                   | Ask WebUI backend to prevent host sleep: Off, 1h, 2h, 4h, or Infinite.                |
 | `⚙` toolbar button                        | Open settings.                                                                        |
 | `Shift+Enter`                             | Insert newline in terminal when enabled.                                              |
 | `PageUp` / `PageDown`                     | Scroll Herdr terminal backend.                                                        |
@@ -509,6 +530,7 @@ Agents:
 - Attention-based sorting.
 - Browser-local notification sounds for attention changes.
 - Notification scope can be current tab only or all tabs.
+- Backend-managed no-sleep mode shared by all browser tabs.
 
 Sessions:
 
@@ -610,6 +632,7 @@ GitHub Actions workflows:
 - Localhost auth bypass.
 - Credential auth for non-localhost use.
 - Runtime server access settings with dynamic listener rebind.
+- Backend-managed no-sleep control with timed and infinite modes.
 - Workspace list/create/rename/close.
 - Worktree grouping, creation, and removal.
 - Worktree discovery/open modal.

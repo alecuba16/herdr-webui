@@ -47,8 +47,7 @@ let term,
   inputQueue = [],
   inputFlushTimer = null,
   pasteFrameUntil = 0;
-let noSleepLock = null,
-  noSleepTimer = null;
+let noSleepState = { mode: "off", until_ms: null, error: null, supported: true };
 const inputEncoder = new TextEncoder();
 const {
   branchPathSlug,
@@ -459,7 +458,6 @@ const defaultOptions = {
   worktreeAutoDiscoverSeconds: 3,
   generateWorktreeNames: false,
   worktreeDefaultDirectory: "../worktrees",
-  noSleepMode: "off",
   themeColors: themeColorDefaults,
 };
 function loadOptions() {
@@ -500,8 +498,6 @@ function normalizeOptions(value) {
   next.worktreeDefaultDirectory =
     String(next.worktreeDefaultDirectory || "").trim() ||
     defaultOptions.worktreeDefaultDirectory;
-  if (!["off", "1h", "2h", "4h", "infinite"].includes(next.noSleepMode))
-    next.noSleepMode = defaultOptions.noSleepMode;
   next.themeColors = normalizeThemeColors(next.themeColors, themeColorDefaults);
   return next;
 }
@@ -518,12 +514,6 @@ function noSleepLabel(mode) {
   if (mode === "infinite") return "∞ Infinite";
   return "No sleep: off";
 }
-function noSleepMs(mode) {
-  if (mode === "1h") return 60 * 60 * 1000;
-  if (mode === "2h") return 2 * 60 * 60 * 1000;
-  if (mode === "4h") return 4 * 60 * 60 * 1000;
-  return 0;
-}
 function noSleepControlHtml(extraId) {
   const suffix = extraId ? ` id="${extraId}"` : "";
   return `<select class="mini no-sleep-control"${suffix} title="Prevent computer sleep"><option value="off">No sleep: off</option><option value="1h">◷ 1h</option><option value="2h">◷ 2h</option><option value="4h">◷ 4h</option><option value="infinite">∞ Infinite</option></select>`;
@@ -532,64 +522,38 @@ function noSleepControls() {
   return Array.from(document.querySelectorAll(".no-sleep-control"));
 }
 function syncNoSleepControls() {
-  const mode = options.noSleepMode || "off";
+  const mode = noSleepState.mode || "off";
   for (const control of noSleepControls()) {
     control.value = mode;
-    control.title = !navigator.wakeLock
-      ? "Screen Wake Lock API not supported by this browser"
+    control.title = noSleepState.error
+      ? `No-sleep error: ${noSleepState.error}`
+      : !noSleepState.supported
+        ? "No-sleep mode is not supported on this host"
       : mode === "off"
-        ? "Prevent computer sleep"
-        : `Preventing sleep: ${noSleepLabel(mode)}`;
+          ? "Prevent computer sleep from WebUI server"
+          : `WebUI server preventing sleep: ${noSleepLabel(mode)}`;
     control.classList.toggle("active", mode !== "off");
-    control.classList.toggle("unsupported", !navigator.wakeLock);
+    control.classList.toggle("unsupported", !!noSleepState.error || !noSleepState.supported);
   }
 }
-async function releaseNoSleep() {
-  clearTimeout(noSleepTimer);
-  noSleepTimer = null;
-  if (!noSleepLock) return;
-  const lock = noSleepLock;
-  noSleepLock = null;
+async function loadNoSleep() {
   try {
-    await lock.release();
-  } catch (_) {}
-}
-async function requestNoSleep() {
-  if (options.noSleepMode === "off") return;
-  if (!navigator.wakeLock) {
-    options.noSleepMode = "off";
-    saveOptions();
-    syncNoSleepControls();
-    return;
-  }
-  try {
-    await releaseNoSleep();
-    noSleepLock = await navigator.wakeLock.request("screen");
-    const lock = noSleepLock;
-    noSleepLock.addEventListener("release", () => {
-      if (noSleepLock === lock) noSleepLock = null;
-    });
-    const ms = noSleepMs(options.noSleepMode);
-    if (ms) {
-      noSleepTimer = setTimeout(() => {
-        options.noSleepMode = "off";
-        saveOptions();
-        releaseNoSleep();
-        syncNoSleepControls();
-      }, ms);
-    }
+    noSleepState = await api("/api/no-sleep");
   } catch (_) {
-    options.noSleepMode = "off";
-    saveOptions();
+    noSleepState = { mode: "off", until_ms: null, error: "server unavailable", supported: true };
   }
   syncNoSleepControls();
 }
-function setNoSleepMode(mode) {
-  if (mode !== "off" && !navigator.wakeLock) mode = "off";
-  options.noSleepMode = mode;
-  saveOptions();
-  if (mode === "off") releaseNoSleep();
-  else requestNoSleep();
+async function setNoSleepMode(mode) {
+  try {
+    noSleepState = await api("/api/no-sleep", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ mode }),
+    });
+  } catch (ex) {
+    noSleepState = { mode: "off", until_ms: null, error: ex.message || String(ex), supported: true };
+  }
   syncNoSleepControls();
 }
 saveOptions();
@@ -3386,16 +3350,18 @@ document.addEventListener("visibilitychange", () => {
     loadVersions();
     refresh();
     connectEvents();
-    if (options.noSleepMode !== "off") requestNoSleep();
+    loadNoSleep();
   }
 });
+window.addEventListener("focus", loadNoSleep);
+setInterval(loadNoSleep, 5000);
 document.addEventListener("pointerdown", unlockAudio, { once: true });
 document.addEventListener("keydown", unlockAudio, { once: true });
 setupSessionChrome();
 applyTheme();
 applyOptions();
 syncNoSleepControls();
-requestNoSleep();
+loadNoSleep();
 loadVersions();
 refresh();
 connectEvents();

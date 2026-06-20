@@ -3,7 +3,7 @@ use std::fs;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -122,6 +122,81 @@ struct RuntimeServerSettings {
     user: Option<String>,
     password: Option<String>,
     localhost_no_auth: bool,
+}
+
+struct NoSleepGuard {
+    child: Child,
+}
+
+impl Drop for NoSleepGuard {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+struct NoSleepState {
+    mode: String,
+    until_ms: Option<u64>,
+    error: Option<String>,
+    guard: Option<NoSleepGuard>,
+}
+
+impl Default for NoSleepState {
+    fn default() -> Self {
+        Self {
+            mode: "off".to_string(),
+            until_ms: None,
+            error: None,
+            guard: None,
+        }
+    }
+}
+
+fn no_sleep_ms(mode: &str) -> Option<u64> {
+    match mode {
+        "off" | "infinite" => Some(0),
+        "1h" => Some(60 * 60 * 1000),
+        "2h" => Some(2 * 60 * 60 * 1000),
+        "4h" => Some(4 * 60 * 60 * 1000),
+        _ => None,
+    }
+}
+
+fn unix_ms_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+fn start_no_sleep_guard() -> io::Result<NoSleepGuard> {
+    #[cfg(target_os = "macos")]
+    let child = Command::new("caffeinate")
+        .args(["-dimsu"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    #[cfg(target_os = "linux")]
+    let child = Command::new("systemd-inhibit")
+        .args([
+            "--what=sleep:idle",
+            "--who=herdr-webui",
+            "--why=Herdr WebUI no-sleep mode",
+            "sleep",
+            "infinity",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    return Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "no-sleep mode is only supported on macOS and Linux",
+    ));
+    Ok(NoSleepGuard { child })
 }
 
 impl WebConfig {
@@ -381,6 +456,7 @@ struct WebState {
     herdr_bin: String,
     auth: Arc<Mutex<AuthConfig>>,
     server_settings: Arc<Mutex<RuntimeServerSettings>>,
+    no_sleep: Arc<Mutex<NoSleepState>>,
     rebind_tx: tokio::sync::watch::Sender<SocketAddr>,
     workspace_orders: Arc<Mutex<HashMap<String, Vec<String>>>>,
 }
@@ -616,6 +692,7 @@ async fn main() -> io::Result<()> {
         herdr_bin: std::env::var("HERDR_WEB_HERDR_BIN").unwrap_or_else(|_| "herdr".to_string()),
         auth,
         server_settings,
+        no_sleep: Arc::new(Mutex::new(NoSleepState::default())),
         rebind_tx,
         workspace_orders: Arc::new(Mutex::new(HashMap::new())),
     };
@@ -678,6 +755,7 @@ fn app_router(state: WebState) -> Router {
             "/api/server-settings",
             get(server_settings).post(update_server_settings),
         )
+        .route("/api/no-sleep", get(no_sleep).post(update_no_sleep))
         .route("/api/session/launch", post(launch_session))
         .route("/api/session/close", post(close_session))
         .route("/api/login", post(login))
@@ -930,6 +1008,37 @@ fn settings_public_json(settings: &RuntimeServerSettings) -> serde_json::Value {
     })
 }
 
+fn no_sleep_public_json(state: &NoSleepState) -> serde_json::Value {
+    json!({
+        "mode": &state.mode,
+        "until_ms": state.until_ms,
+        "error": &state.error,
+        "supported": cfg!(any(target_os = "macos", target_os = "linux")),
+    })
+}
+
+fn apply_no_sleep_mode(state: &mut NoSleepState, mode: String, until_ms: Option<u64>) -> bool {
+    state.guard = None;
+    state.mode = "off".to_string();
+    state.until_ms = None;
+    state.error = None;
+    if mode == "off" {
+        return false;
+    }
+    match start_no_sleep_guard() {
+        Ok(guard) => {
+            state.mode = mode;
+            state.until_ms = until_ms;
+            state.guard = Some(guard);
+            true
+        }
+        Err(err) => {
+            state.error = Some(err.to_string());
+            false
+        }
+    }
+}
+
 async fn server_settings(
     State(state): State<WebState>,
     headers: HeaderMap,
@@ -946,6 +1055,81 @@ async fn server_settings(
             .into_response();
     };
     Json(settings_public_json(&settings)).into_response()
+}
+
+#[derive(Deserialize)]
+struct UpdateNoSleepRequest {
+    mode: String,
+}
+
+async fn no_sleep(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+) -> Response {
+    if let Err(response) = require_auth(&state, &headers, remote) {
+        return response;
+    }
+    let Ok(no_sleep) = state.no_sleep.lock() else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "no-sleep state unavailable" })),
+        )
+            .into_response();
+    };
+    Json(no_sleep_public_json(&no_sleep)).into_response()
+}
+
+async fn update_no_sleep(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    Json(body): Json<UpdateNoSleepRequest>,
+) -> Response {
+    if let Err(response) = require_auth(&state, &headers, remote) {
+        return response;
+    }
+    let Some(duration_ms) = no_sleep_ms(body.mode.as_str()) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "invalid no-sleep mode" })),
+        )
+            .into_response();
+    };
+    let timer_until = if body.mode == "off" || duration_ms == 0 {
+        None
+    } else {
+        Some(unix_ms_now() + duration_ms)
+    };
+    let (response_json, timer_active) = {
+        let Ok(mut no_sleep) = state.no_sleep.lock() else {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "no-sleep state unavailable" })),
+            )
+                .into_response();
+        };
+        let active = apply_no_sleep_mode(&mut no_sleep, body.mode.clone(), timer_until);
+        (no_sleep_public_json(&no_sleep), active)
+    };
+    if let Some(until_ms) = timer_until.filter(|_| timer_active) {
+        let state_for_timer = state.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(
+                until_ms.saturating_sub(unix_ms_now()),
+            ))
+            .await;
+            let Ok(mut no_sleep) = state_for_timer.no_sleep.lock() else {
+                return;
+            };
+            if no_sleep.until_ms == Some(until_ms) {
+                no_sleep.guard = None;
+                no_sleep.mode = "off".to_string();
+                no_sleep.until_ms = None;
+            }
+        });
+    }
+    Json(response_json).into_response()
 }
 
 async fn update_server_settings(
@@ -2473,6 +2657,7 @@ mod tests {
                 password: Some("pass".to_string()),
                 localhost_no_auth: false,
             })),
+            no_sleep: Arc::new(Mutex::new(NoSleepState::default())),
             rebind_tx,
             workspace_orders: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -2968,6 +3153,42 @@ mod tests {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
+    #[tokio::test]
+    async fn no_sleep_api_reports_shared_default_state() {
+        let response = test_app()
+            .oneshot(
+                request(Method::GET, "/api/no-sleep")
+                    .header(header::COOKIE, "herdr_web_session=token-123")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["mode"], "off");
+        assert_eq!(body["until_ms"], Value::Null);
+    }
+
+    #[tokio::test]
+    async fn no_sleep_api_rejects_invalid_mode() {
+        let response = test_app()
+            .oneshot(
+                request(Method::POST, "/api/no-sleep")
+                    .header(header::COOKIE, "herdr_web_session=token-123")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"mode":"bad"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_json(response).await;
+        assert_eq!(body["error"], "invalid no-sleep mode");
+    }
+
     #[test]
     fn require_auth_returns_unauthorized_response() {
         let state = test_state();
@@ -3004,6 +3225,16 @@ mod tests {
         );
         assert_eq!(SimpleVersion::parse("0.7"), None);
         assert_eq!(SimpleVersion::parse("unknown"), None);
+    }
+
+    #[test]
+    fn parses_no_sleep_modes() {
+        assert_eq!(no_sleep_ms("off"), Some(0));
+        assert_eq!(no_sleep_ms("1h"), Some(60 * 60 * 1000));
+        assert_eq!(no_sleep_ms("2h"), Some(2 * 60 * 60 * 1000));
+        assert_eq!(no_sleep_ms("4h"), Some(4 * 60 * 60 * 1000));
+        assert_eq!(no_sleep_ms("infinite"), Some(0));
+        assert_eq!(no_sleep_ms("bad"), None);
     }
 
     #[test]
