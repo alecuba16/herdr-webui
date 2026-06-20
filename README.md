@@ -48,11 +48,58 @@ Workspace, agent, and panel rows are real browser links. Normal click uses WebUI
 
 - `webui/src/main.rs`: WebUI server, auth, JSON proxy, WebSockets, embedded HTML/CSS/JS, terminal bridge, and macOS-facing behavior.
 - `webui/Cargo.toml`: standalone Rust crate for `herdr-webui`.
+- `webui/src/assets/app.html`: main WebUI HTML shell.
+- `webui/src/assets/app.css`: main WebUI styles.
+- `webui/src/assets/app.js`: main WebUI browser logic.
+- `webui/src/assets/login.html`: login page HTML.
+- `webui/src/assets/login.css`: login page styles.
+- `webui/src/assets/login.js`: login page logic.
 - `webui/src/assets/xterm.min.js`: vendored xterm.js runtime.
 - `webui/src/assets/xterm.css`: vendored xterm styles.
 - `webui/src/assets/herdr-logo.svg`: favicon served by the WebUI.
 - `Makefile`: build, run, install, update, and uninstall commands.
 - `plan.md`: original implementation plan and design goals.
+
+The Rust binary embeds the frontend assets with `include_str!`, so release artifacts do not need external static files next to the binary.
+
+## Quick Start
+
+Prerequisites:
+
+- Rust toolchain.
+- Git CLI.
+- Herdr backend binary available as `herdr` in `PATH`, or set `HERDR_WEB_HERDR_BIN`.
+- Zig `0.15.x` for the root Herdr crate build. The Makefile first tries `./zigbin/zig`, then common `zig@0.15` locations, then `zig` from `PATH`.
+
+Build both root Herdr crate and WebUI crate:
+
+```sh
+make build
+```
+
+Run local development server without login on loopback:
+
+```sh
+make run-web-local
+```
+
+Open:
+
+```text
+http://127.0.0.1:8787
+```
+
+If Herdr backend is not running, open the session manager and launch it, or start it separately:
+
+```sh
+herdr server
+```
+
+Use a specific Herdr binary for launched sessions:
+
+```sh
+HERDR_WEB_HERDR_BIN=/opt/homebrew/bin/herdr make run-web-local
+```
 
 ## Build
 
@@ -86,6 +133,16 @@ Then open:
 http://127.0.0.1:8787
 ```
 
+CLI options:
+
+```text
+herdr-webui [--bind HOST:PORT] [--session NAME] [--api-socket PATH] [--client-socket PATH]
+herdr-webui --version
+herdr-webui install-mac [--bind HOST:PORT] [--session NAME]
+herdr-webui update-mac
+herdr-webui uninstall-mac
+```
+
 ## Authentication
 
 Environment variables:
@@ -93,6 +150,7 @@ Environment variables:
 - `HERDR_WEB_USER`: username for login.
 - `HERDR_WEB_PASSWORD`: password for login.
 - `HERDR_WEB_LOCALHOST_NO_AUTH=true`: allow localhost requests without login.
+- `HERDR_WEB_HERDR_BIN`: Herdr backend binary used when WebUI launches a session.
 
 Non-localhost binds require credentials. Public binds without auth should fail fast.
 
@@ -200,14 +258,30 @@ Destructive actions include the target name in the confirmation prompt:
 
 ### Worktree Creation
 
-The `♧+` button opens a worktree creation modal with:
+The Worktrees modal can discover an existing repo or a directory containing linked worktrees. Enter a repo path in `Repo or worktrees folder`, then WebUI lists existing linked worktrees and exposes a create form.
+
+The create form has:
 
 - Branch name.
-- Base ref, defaulting to `HEAD`.
+- Base branch.
 - Optional label.
-- Optional path.
+- Checkout path.
 
-After creation, WebUI routes to the new workspace, tab, and root pane returned by Herdr.
+Behavior:
+
+- Selecting a non-default base branch pre-fills Branch name with that branch.
+- Selecting `main` or `master` leaves Branch name blank unless generated names are enabled.
+- Checkout path auto-fills from default worktree directory, repo name, and branch slug.
+- Manual Checkout path edits are preserved.
+- Default worktree directory is browser-local and defaults to `../worktrees`; relative paths resolve from repo root.
+- Existing local branch names are allowed. WebUI checks whether the branch is already checked out in any worktree. If not checked out, it creates the worktree with `git worktree add <path> <branch>`.
+- New branches use `git worktree add -b <branch> <path> <base>`.
+- After Git creates the checkout, WebUI asks Herdr backend to open the new path.
+
+Close behavior:
+
+- Press `X` or `Escape` to close the Worktrees modal.
+- Clicking outside the Worktrees modal does not close it.
 
 ### Workspace Sorting
 
@@ -278,6 +352,7 @@ Input handling:
 - Optional close-panel shortcut setting supports `Option+W` or `Shift+Space, W`.
 - Chrome reserves `Cmd+W` for browser tab close, so WebUI does not offer it as a reliable shortcut.
 - Right-click opens Copy/Paste menu.
+- `Shift+Enter` sends newline by default when the setting is enabled.
 
 Scrolling:
 
@@ -298,19 +373,87 @@ Settings are stored in browser `localStorage`:
 - Default theme: Auto, Light, or Dark.
 - Show terminal overflow scrollbars.
 - Resize terminal to browser viewport.
-- Shift+Enter sequence.
+- Shift+Enter inserts newline.
 - Close panel shortcut: Disabled, Option+W, or Shift+Space then W.
 - Sort agents by attention.
 - Workspace sorting: Default, Drag&drop, or State.
 - Notification scope: Current agent tab or All tabs.
 - Terminal scroll speed.
 - Agent attention sounds.
+- Generate worktree branch names.
+- Default worktree directory.
+- Worktree autodiscover delay.
 
 The header theme button cycles Auto, Dark, and Light. Auto follows browser/system color scheme through `matchMedia`, with fallback polling.
 
 Workspace drag-and-drop order is not stored in `localStorage`. It is stored in the WebUI backend process so multiple browser tabs can share it.
 
 Shortcut settings are stored in browser `localStorage`, so they survive closing and reopening browser tabs.
+
+## Shortcuts
+
+| Shortcut | Action |
+| --- | --- |
+| `?` toolbar button | Open shortcut reference. |
+| `⚙` toolbar button | Open settings. |
+| `Shift+Enter` | Insert newline in terminal when enabled. |
+| `PageUp` / `PageDown` | Scroll Herdr terminal backend. |
+| `Option+Wheel` | Scroll browser overflow instead of backend terminal scrollback. |
+| `Cmd/Ctrl+C` | Copy selected terminal text. |
+| `Cmd/Ctrl+V` | Paste clipboard into terminal. |
+| Right-click terminal | Open Copy/Paste menu. |
+| Double-click workspace or tab | Rename inline. |
+| Enter during rename | Save rename. |
+| Escape during rename | Cancel rename. |
+| Cmd/Ctrl-click, Shift-click, middle-click | Use browser-native tab behavior for workspace, agent, and panel links. |
+| Configured close-panel shortcut | Close selected Herdr panel. Options: Disabled, `Option+W`, or `Shift+Space` then `W`. |
+| Escape in Worktrees modal | Close modal. |
+
+Chrome and most browsers reserve `Cmd+W` for closing the browser tab, so WebUI does not expose it as a dependable close-panel shortcut.
+
+## Capabilities
+
+Navigation:
+
+- Workspace, worktree, tab, pane, and agent browser navigation.
+- URL-addressable selection with browser back/forward support.
+- Multiple browser tabs can inspect different Herdr selections without fighting global Herdr focus.
+
+Terminal:
+
+- xterm.js terminal attach for selected Herdr pane.
+- Raw input forwarding, clipboard paste, terminal scroll, and optional browser-viewport fit.
+- Terminal loading overlay during selection changes.
+- Visibility-based socket reconnect behavior.
+
+Workspace and panel management:
+
+- Create, rename, and close workspaces.
+- Create, rename, and close tabs/panels.
+- Inline rename for workspaces and tabs.
+- Destructive action confirmations include target name.
+
+Worktrees:
+
+- Discover worktrees from repo path or worktrees directory.
+- Group linked worktrees by repository.
+- Create new linked worktrees from existing or new branches.
+- Open existing linked worktrees.
+- Remove linked worktrees, with dirty-check/force handling where supported.
+- Configurable default worktree directory and autodiscover delay.
+
+Agents:
+
+- Agent status list with workspace/worktree and panel context.
+- Attention-based sorting.
+- Browser-local notification sounds for attention changes.
+- Notification scope can be current tab only or all tabs.
+
+Sessions:
+
+- Default and named Herdr session support.
+- Session manager for offline backend state.
+- Launch, retry, reset, and close session actions.
 
 ## Development Commands
 
@@ -370,7 +513,7 @@ Current compatibility table:
 
 | WebUI version | Min backend | Max tested backend | Direct attach protocol |
 | --- | --- | --- | --- |
-| 0.0.1 | 0.7.0 | 0.7.0 | 14 |
+| 0.0.4 | 0.7.0 | 0.7.0 | 14 |
 
 Compatibility testing strategy:
 
@@ -406,6 +549,9 @@ GitHub Actions workflows:
 - Credential auth for non-localhost use.
 - Workspace list/create/rename/close.
 - Worktree grouping, creation, and removal.
+- Worktree discovery/open modal.
+- Existing-branch worktree creation workaround in WebUI server.
+- Configurable default worktree checkout directory.
 - Tab list/create/rename/close.
 - Pane terminal attach.
 - Agent list and status display.
@@ -425,21 +571,21 @@ GitHub Actions workflows:
 ## Known Limitations
 
 - WebUI duplicates minimal Herdr protocol/schema types instead of depending on a stable shared crate.
-- Main app HTML/CSS/JS is embedded as a large Rust string in `main.rs`.
+- Frontend assets are separate files, but still embedded into the binary at compile time.
 - Terminal rendering attaches one selected pane, not full multi-pane workspace layout.
 - Browser viewport sizing resizes the Herdr terminal attach; fully independent browser-only terminal sizing is not supported by the current direct attach protocol.
 - Theme toggle updates WebUI and xterm renderer, but cannot force already-running child TUIs to change their own color theme.
 - Browser focus policies prevent WebUI from reliably focusing or switching to an arbitrary already-open browser tab.
-- Robust semantic key encoding for every key combination is limited by Herdr's current direct attach protocol. WebUI can send configured raw sequences, but backend protocol support is needed for richer semantic key events.
+- Robust semantic key encoding for every key combination is limited by Herdr's current direct attach protocol.
 - Herdr exposes agent status, but not structured OpenCode TODO/task lists through the current API.
 - Drag-and-drop workspace order is process-local memory and disappears when WebUI restarts.
 - Event handling still uses snapshot refresh/debounce rather than fine-grained local state patches.
 - Tests are minimal; most confidence currently comes from `make build` and manual browser checks.
 - Launch/session management is macOS-focused.
+- Worktree creation compatibility code in WebUI exists because older provided Herdr backends may try `git worktree add -b` even when a local branch already exists.
 
 ## Tech Debt
 
-- Split embedded frontend into separate source files and embed them at build time.
 - Add browser smoke tests for routing, inline rename, terminal focus, and session manager flows.
 - Add Rust tests for auth decisions, API proxy error handling, and plist generation.
 - Extract protocol/schema duplication into a shared internal crate if Herdr exposes one.
