@@ -661,7 +661,7 @@ WebUI checks Herdr backend compatibility at runtime through `/api/versions`. It 
 
 ```json
 {
-  "webui": "0.0.7",
+  "webui": "v0.0.14",
   "backend": "0.7.0",
   "protocol_version": 14,
   "backend_protocol_version": 14,
@@ -687,7 +687,7 @@ Current compatibility table:
 
 | WebUI version | Min backend | Max tested backend | Direct attach protocol |
 | ------------- | ----------- | ------------------ | ---------------------- |
-| 0.0.7         | 0.7.0       | 0.7.1              | 14                     |
+| v0.0.14       | 0.7.0       | 0.7.1              | 14                     |
 
 Compatibility testing strategy:
 
