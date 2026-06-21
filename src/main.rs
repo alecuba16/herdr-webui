@@ -227,6 +227,14 @@ fn required_arg<'a>(args: &'a [String], index: usize, flag: &str) -> io::Result<
     })
 }
 
+fn take_flag(args: &mut Vec<String>, flag: &str) -> bool {
+    let Some(index) = args.iter().position(|arg| arg == flag) else {
+        return false;
+    };
+    args.remove(index);
+    true
+}
+
 fn home_dir() -> io::Result<PathBuf> {
     std::env::var_os("HOME")
         .map(PathBuf::from)
@@ -238,19 +246,19 @@ fn print_help() {
 }
 
 fn help_text() -> &'static str {
-    "herdr-webui [--bind HOST:PORT] [--session NAME] [--api-socket PATH] [--client-socket PATH]\n\
+    "herdr-webui [--verbose] [--bind HOST:PORT] [--session NAME] [--api-socket PATH] [--client-socket PATH]\n\
 herdr-webui --version\n\
-herdr-webui install-mac [--bind HOST:PORT] [--session NAME]\n\
-herdr-webui update-mac\n\
+herdr-webui install-mac [--verbose] [--bind HOST:PORT] [--session NAME]\n\
+herdr-webui update-mac [--verbose]\n\
 herdr-webui install-linux [--bind HOST:PORT] [--session NAME]\n\
 herdr-webui update-linux\n\
-herdr-webui start-mac | start\n\
-herdr-webui stop-mac | stop\n\
-herdr-webui restart-mac | restart\n\
+herdr-webui start-mac | start [--verbose]\n\
+herdr-webui stop-mac | stop [--verbose]\n\
+herdr-webui restart-mac | restart [--verbose]\n\
 herdr-webui start-linux | start\n\
 herdr-webui stop-linux | stop\n\
 herdr-webui restart-linux | restart\n\
-herdr-webui uninstall-mac\n\
+herdr-webui uninstall-mac [--verbose]\n\
 herdr-webui uninstall-linux\n"
 }
 
@@ -497,7 +505,10 @@ fn save_runtime_server_settings(settings: &RuntimeServerSettings) -> io::Result<
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
-    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    let mut args = std::env::args().skip(1).collect::<Vec<_>>();
+    if take_flag(&mut args, "--verbose") || take_flag(&mut args, "-v") {
+        std::env::set_var("HERDR_WEB_VERBOSE", "1");
+    }
     if matches!(args.first().map(String::as_str), Some("--version" | "-V")) {
         println!("{HERDR_WEBUI_VERSION}");
         return Ok(());
