@@ -44,14 +44,14 @@ describe("normalizeAbsolutePath", () => {
 });
 
 describe("terminalPasteInput", () => {
-  it("normalizes newlines to carriage returns", () => {
-    assert.equal(terminalPasteInput("a\nb\r\nc", false), "a\rb\rc");
+  it("keeps pasted newlines as non-submitting line feeds", () => {
+    assert.equal(terminalPasteInput("a\nb\r\nc\rd", false), "a\nb\nc\nd");
   });
 
   it("wraps bracketed paste when enabled", () => {
     assert.equal(
       terminalPasteInput("hello\n", true),
-      "\x1b[200~hello\r\x1b[201~",
+      "\x1b[200~hello\n\x1b[201~",
     );
   });
 });
