@@ -19,10 +19,10 @@ just check
 Or run pieces directly:
 
 ```sh
-cargo fmt --manifest-path webui/Cargo.toml --check
-cargo clippy --manifest-path webui/Cargo.toml --target-dir target --all-targets -- -D warnings
-cargo test --manifest-path webui/Cargo.toml --target-dir target
-node --test webui/src/assets/app_core.test.mjs webui/src/assets/app_load.test.mjs webui/src/assets/app_boot.test.mjs webui/src/assets/mobile_load.test.mjs
+cargo fmt --check
+cargo clippy --target-dir target --all-targets -- -D warnings
+cargo test --target-dir target
+node --test src/assets/app_core.test.mjs src/assets/app_load.test.mjs src/assets/app_boot.test.mjs src/assets/mobile_load.test.mjs
 ```
 
 ## Releases
