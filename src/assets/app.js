@@ -272,7 +272,7 @@ function themeCustomizerHtml() {
   return `<div class="theme-customizer"><div><strong>Theme colors</strong><small>Saved in this browser. Uses current defaults as reset reference.</small></div><div class="theme-customizer-actions"><label><span>Profile</span><select class="settings-select" id="themeColorProfile"><option value="default">Default</option><option value="catppuccin">Catppuccin</option><option value="tokyo">Tokyo Night</option><option value="nord">Nord</option></select></label><button type="button" class="tab add" id="themeColorsApplyProfile">Apply profile</button><button type="button" class="tab add" id="themeColorsApply">Apply / reload UI</button><button type="button" class="tab add" id="themeColorsReset">Reset theme colors</button></div><div class="theme-customizer-grid"><section><h3>Dark</h3>${rows("dark")}</section><section><h3>Light</h3>${rows("light")}</section></div></div>`;
 }
 function serverSettingsHtml() {
-  return `<div class="theme-customizer server-settings"><div><strong>Server access</strong><small>Saved in ~/.config/herdr-webui/webui-settings.json. Changing Bind restarts the WebUI listener.</small></div><label class="option"><span>Bind address<small>Use 127.0.0.1:8787 for local only or 0.0.0.0:8787 for LAN/public access.</small></span><input id="optServerBind" placeholder="127.0.0.1:8787"></label><label class="option"><span>Username<small>Required when binding outside localhost.</small></span><input id="optServerUser" autocomplete="username"></label><label class="option"><span>Password<small>Required when binding outside localhost. Leave blank to keep current password.</small></span><input id="optServerPassword" type="password" autocomplete="new-password"></label><label class="option"><input type="checkbox" id="optServerLocalBypass"><span>Allow localhost without login<small>Only applies to loopback requests.</small></span></label><label class="option"><span>No-sleep Auto cooldown<small>Seconds to wait after agents stop working before releasing no-sleep.</small></span><input id="optNoSleepAutoCooldown" type="number" min="0" max="3600" step="1"></label><div class="worktree-error" id="serverSettingsError"></div><div class="modal-actions"><button type="button" class="tab add" id="serverSettingsLoad">Reload server settings</button><button type="button" class="btn" id="serverSettingsApply">Apply server settings</button></div></div>`;
+  return `<div class="server-settings"><section class="settings-section"><div class="settings-section-head"><h3>Network access</h3><p>Saved in ~/.config/herdr-webui/webui-settings.json. Changing Bind restarts the WebUI listener.</p></div><label class="option"><span>Bind address<small>Use 127.0.0.1:8787 for local only or 0.0.0.0:8787 for LAN/public access.</small></span><input id="optServerBind" placeholder="127.0.0.1:8787"></label><label class="option"><span>Username<small>Required when binding outside localhost.</small></span><input id="optServerUser" autocomplete="username"></label><label class="option"><span>Password<small>Required when binding outside localhost. Leave blank to keep current password.</small></span><input id="optServerPassword" type="password" autocomplete="new-password"></label><label class="option"><input type="checkbox" id="optServerLocalBypass"><span>Allow localhost without login<small>Only applies to loopback requests.</small></span></label></section><section class="settings-section"><div class="settings-section-head"><h3>Power behavior</h3><p>Server-side sleep prevention defaults.</p></div><label class="option"><span>No-sleep Auto cooldown<small>Seconds to wait after agents stop working before releasing no-sleep.</small></span><input id="optNoSleepAutoCooldown" type="number" min="0" max="3600" step="1"></label></section><div class="worktree-error" id="serverSettingsError"></div><div class="modal-actions"><button type="button" class="tab add" id="serverSettingsLoad">Reload server settings</button><button type="button" class="btn" id="serverSettingsApply">Apply server settings</button></div></div>`;
 }
 function themeColorInputId(mode, key) {
   return `optThemeColor-${mode}-${key}`;
@@ -590,6 +590,66 @@ if (soundSetting && !el("optSortAgents"))
       "afterend",
       '<label class="option"><span>Close panel shortcut<small>Stored in browser storage and available after reopening the tab.</small></span><select class="settings-select" id="optCloseShortcut"><option value="off">Disabled</option><option value="altw">Option+W</option><option value="shiftspacew">Shift+Space then W</option></select></label><label class="option"><input type="checkbox" id="optSortAgents"><span>Sort agents by attention<small>Blocked first, then done, unknown, idle, working.</small></span></label><label class="option"><span>Workspace sorting<small>Default tree order, shared drag-and-drop order, or attention state priority.</small></span><select class="settings-select" id="optWorkspaceSort"><option value="default">Default</option><option value="drag">Drag&drop</option><option value="state">State</option></select></label><label class="option"><span>Notification scope<small>Choose whether sounds ring in every open tab or only the tab viewing the agent panel.</small></span><select class="settings-select" id="optSoundScope"><option value="current">Current agent tab</option><option value="all">All tabs</option></select></label><label class="option"><input type="checkbox" id="optGenerateWorktreeNames"><span>Generate worktree branch names<small>Allow blank Branch name in Worktrees modal. Herdr generates worktree/&lt;name&gt;.</small></span></label><label class="option"><span>Default worktree directory<small>Relative paths resolve from repo root. Example: ../worktrees.</small></span><input id="optWorktreeDefaultDirectory" placeholder="../worktrees"></label><label class="option"><span>Scroll speed<small><span id="scrollLinesValue">3</span> terminal lines per wheel step.</small></span><input type="range" id="optScrollLines" min="1" max="20" step="1"></label><label class="option"><span>Worktree autodiscover<small>Seconds to wait after path input stops. Set 0 for immediate.</small></span><input type="number" id="optWorktreeAutoDiscover" min="0" max="30" step="0.5"></label>',
     );
+groupSettingsSections();
+function groupSettingsSections() {
+  if (!settingsBody || settingsBody.dataset.sections === "1") return;
+  const sectionDefs = [
+    {
+      title: "Appearance",
+      desc: "Theme mode and color palette.",
+      ids: ["optTheme"],
+      blocks: ["themeColorsApply"],
+    },
+    {
+      title: "Terminal input",
+      desc: "Viewport sizing, scrolling, and keyboard behavior.",
+      ids: ["optOverflow", "optFit", "optShiftEnterNewline", "optScrollLines"],
+    },
+    {
+      title: "Agents and alerts",
+      desc: "Attention sorting, shortcuts, and notification sound scope.",
+      ids: ["optSound", "optSoundScope", "optSortAgents", "optCloseShortcut"],
+    },
+    {
+      title: "Worktrees",
+      desc: "Discovery, naming, and default worktree locations.",
+      ids: [
+        "optWorkspaceSort",
+        "optGenerateWorktreeNames",
+        "optWorktreeDefaultDirectory",
+        "optWorktreeAutoDiscover",
+      ],
+    },
+    {
+      title: "Server",
+      desc: "Network access and server-side power behavior.",
+      blocks: ["optServerBind"],
+    },
+  ];
+  for (const def of sectionDefs) {
+    const nodes = [];
+    for (const id of def.ids || []) {
+      const control = el(id);
+      const row = control && control.closest("label.option");
+      if (row && !nodes.includes(row)) nodes.push(row);
+    }
+    for (const id of def.blocks || []) {
+      const control = el(id);
+      const block =
+        control &&
+        (control.closest(".theme-customizer") ||
+          control.closest(".server-settings"));
+      if (block && !nodes.includes(block)) nodes.push(block);
+    }
+    if (!nodes.length) continue;
+    const section = document.createElement("section");
+    section.className = "settings-section";
+    section.innerHTML = `<div class="settings-section-head"><h3>${def.title}</h3><p>${def.desc}</p></div>`;
+    for (const node of nodes) section.appendChild(node);
+    settingsBody.appendChild(section);
+  }
+  settingsBody.dataset.sections = "1";
+}
 function applyOptions() {
   const shell = el("terminalShell");
   if (shell) shell.classList.toggle("no-overflow", !options.overflow);

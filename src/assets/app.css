@@ -1049,6 +1049,31 @@ body.light .chip.worktree {
 .settings-body {
   padding: 10px 20px 16px;
 }
+.settings-section {
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  display: grid;
+  gap: 10px;
+  margin: 12px 0;
+  padding: 12px;
+}
+.settings-section-head h3 {
+  margin: 0;
+  font-size: 14px;
+}
+.settings-section-head p {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 3px 0 0;
+}
+.settings-section > .theme-customizer {
+  border-top: 0;
+  padding-top: 0;
+}
+.settings-section > .server-settings {
+  display: grid;
+  gap: 12px;
+}
 .option {
   background: var(--panel2);
   border: 1px solid var(--border);

@@ -180,6 +180,10 @@ describe("mobile bundle load", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
     doesNotThrow(() => ctx.HerdrMobile.showScreen("settings"));
+    const settingsHtml = ctx.document.getElementById("mobileScreen").innerHTML;
+    ok(settingsHtml.includes("mobile-settings-group"));
+    ok(settingsHtml.includes("Appearance"));
+    ok(settingsHtml.includes("Layout"));
     doesNotThrow(() => ctx.HerdrMobile.showScreen("worktrees"));
     doesNotThrow(() =>
       ctx.HerdrMobile.updateWorktreeField("worktreeBranch", "feature/mobile"),

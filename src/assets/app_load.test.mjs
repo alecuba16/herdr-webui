@@ -136,7 +136,20 @@ describe("app bundle load", () => {
     match(html, /id="optServerLocalBypass"/);
     match(html, /id="optNoSleepAutoCooldown"/);
     match(html, /id="serverSettingsApply"/);
+    match(html, /<h3>Network access<\/h3>/);
+    match(html, /<h3>Power behavior<\/h3>/);
     match(html, /\.config\/herdr-webui\/webui-settings\.json/);
+  });
+
+  it("defines grouped settings sections", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    match(source, /title: "Appearance"/);
+    match(source, /title: "Terminal input"/);
+    match(source, /title: "Agents and alerts"/);
+    match(source, /title: "Worktrees"/);
+    match(source, /title: "Server"/);
   });
 
   it("renders no-sleep control options", () => {
