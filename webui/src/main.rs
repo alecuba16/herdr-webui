@@ -28,7 +28,7 @@ const MAX_FRAME_SIZE: usize = 2 * 1024 * 1024;
 const MAX_GRAPHICS_FRAME_SIZE: usize = 32 * 1024 * 1024;
 const PROTOCOL_VERSION: u32 = 14;
 const MIN_BACKEND_VERSION: &str = "0.7.0";
-const MAX_TESTED_BACKEND_VERSION: &str = "0.7.0";
+const MAX_TESTED_BACKEND_VERSION: &str = "0.7.1";
 
 type LocalStream = interprocess::local_socket::Stream;
 
@@ -61,6 +61,7 @@ impl SimpleVersion {
 #[derive(Debug, PartialEq, Eq)]
 enum BackendCompatibility {
     Compatible,
+    ProtocolMismatch,
     TooOld,
     UntestedNewer,
     Unknown,
@@ -70,6 +71,7 @@ impl BackendCompatibility {
     fn as_str(&self) -> &'static str {
         match self {
             Self::Compatible => "compatible",
+            Self::ProtocolMismatch => "protocol_mismatch",
             Self::TooOld => "too_old",
             Self::UntestedNewer => "untested_newer",
             Self::Unknown => "unknown",
@@ -79,6 +81,7 @@ impl BackendCompatibility {
     fn message(&self, backend: Option<&str>) -> &'static str {
         match self {
             Self::Compatible => "backend version is supported",
+            Self::ProtocolMismatch => "backend direct attach protocol does not match this WebUI build",
             Self::TooOld => "backend version is older than the minimum supported version",
             Self::UntestedNewer => "backend version is newer than the maximum tested version",
             Self::Unknown if backend.is_some() => "backend version could not be parsed",
@@ -87,7 +90,12 @@ impl BackendCompatibility {
     }
 }
 
-fn backend_compatibility(backend: Option<&str>) -> BackendCompatibility {
+fn backend_compatibility(backend: Option<&str>, protocol: Option<u32>) -> BackendCompatibility {
+    match protocol {
+        Some(protocol) if protocol != PROTOCOL_VERSION => return BackendCompatibility::ProtocolMismatch,
+        Some(_) => {}
+        None => return BackendCompatibility::Unknown,
+    }
     let Some(backend) = backend.and_then(SimpleVersion::parse) else {
         return BackendCompatibility::Unknown;
     };
@@ -100,6 +108,12 @@ fn backend_compatibility(backend: Option<&str>) -> BackendCompatibility {
     } else {
         BackendCompatibility::Compatible
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BackendInfo {
+    version: Option<String>,
+    protocol: Option<u32>,
 }
 
 #[derive(Clone, Debug)]
@@ -346,15 +360,23 @@ impl ApiClient {
         Ok(EventStream { reader })
     }
 
-    fn backend_version(&self) -> Option<String> {
+    fn backend_info(&self) -> BackendInfo {
         let response = self
             .request_value(json!({ "id": "web:ping", "method": "ping", "params": {} }))
-            .ok()?;
-        response
-            .get("result")
+            .ok();
+        let version = response
+            .as_ref()
+            .and_then(|response| response.get("result"))
             .and_then(|result| result.get("version"))
             .and_then(|version| version.as_str())
-            .map(str::to_string)
+            .map(str::to_string);
+        let protocol = response
+            .as_ref()
+            .and_then(|response| response.get("result"))
+            .and_then(|result| result.get("protocol"))
+            .and_then(|protocol| protocol.as_u64())
+            .and_then(|protocol| u32::try_from(protocol).ok());
+        BackendInfo { version, protocol }
     }
 }
 
@@ -1255,14 +1277,15 @@ async fn versions(
     }
     let session = session_from_headers(&state, &headers);
     let api = api_for_headers(&state, &headers);
-    let backend = api.backend_version();
-    let compatibility = backend_compatibility(backend.as_deref());
-    let compatibility_message = compatibility.message(backend.as_deref());
+    let backend = api.backend_info();
+    let compatibility = backend_compatibility(backend.version.as_deref(), backend.protocol);
+    let compatibility_message = compatibility.message(backend.version.as_deref());
     Json(json!({
         "webui": HERDR_WEBUI_VERSION,
-        "backend": backend,
+        "backend": backend.version,
         "session": session_display_name(session.as_deref()),
         "protocol_version": PROTOCOL_VERSION,
+        "backend_protocol_version": backend.protocol,
         "min_backend": MIN_BACKEND_VERSION,
         "max_tested_backend": MAX_TESTED_BACKEND_VERSION,
         "compatibility": {
@@ -3324,22 +3347,34 @@ mod tests {
     #[test]
     fn classifies_backend_compatibility() {
         assert_eq!(
-            backend_compatibility(Some("0.6.9")),
+            backend_compatibility(Some("0.6.9"), Some(PROTOCOL_VERSION)),
             BackendCompatibility::TooOld
         );
         assert_eq!(
-            backend_compatibility(Some("0.7.0")),
+            backend_compatibility(Some("0.7.0"), Some(PROTOCOL_VERSION)),
             BackendCompatibility::Compatible
         );
         assert_eq!(
-            backend_compatibility(Some("0.7.1")),
+            backend_compatibility(Some("0.7.1"), Some(PROTOCOL_VERSION)),
+            BackendCompatibility::Compatible
+        );
+        assert_eq!(
+            backend_compatibility(Some("0.7.2"), Some(PROTOCOL_VERSION)),
             BackendCompatibility::UntestedNewer
         );
         assert_eq!(
-            backend_compatibility(Some("bad")),
+            backend_compatibility(Some("bad"), Some(PROTOCOL_VERSION)),
             BackendCompatibility::Unknown
         );
-        assert_eq!(backend_compatibility(None), BackendCompatibility::Unknown);
+        assert_eq!(backend_compatibility(None, None), BackendCompatibility::Unknown);
+        assert_eq!(
+            backend_compatibility(Some("0.7.0"), None),
+            BackendCompatibility::Unknown
+        );
+        assert_eq!(
+            backend_compatibility(Some("0.7.0"), Some(PROTOCOL_VERSION + 1)),
+            BackendCompatibility::ProtocolMismatch
+        );
     }
 
     #[test]
@@ -3489,7 +3524,7 @@ mod tests {
     async fn versions_api_reports_backend_compatibility_from_fake_socket() {
         let (socket, handle) = fake_api_socket(json!({
             "id": "web:ping",
-            "result": { "version": "0.7.0" }
+            "result": { "version": "0.7.0", "protocol": PROTOCOL_VERSION }
         }));
         let mut state = test_state();
         state.api_socket = Some(socket.clone());
@@ -3510,6 +3545,7 @@ mod tests {
         assert_eq!(body["min_backend"], MIN_BACKEND_VERSION);
         assert_eq!(body["max_tested_backend"], MAX_TESTED_BACKEND_VERSION);
         assert_eq!(body["protocol_version"], PROTOCOL_VERSION);
+        assert_eq!(body["backend_protocol_version"], PROTOCOL_VERSION);
         assert_eq!(body["compatibility"]["status"], "compatible");
         assert_eq!(body["compatibility"]["compatible"], true);
 

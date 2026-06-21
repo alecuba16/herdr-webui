@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## [0.7.2] - 2026-06-21
+
+### Changed
+- WebUI backend compatibility now requires both a known tested backend version and a matching direct attach protocol from Herdr's `ping` API.
+
 ## [0.7.1] - 2026-06-21
 
 ### Added
