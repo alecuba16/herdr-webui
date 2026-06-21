@@ -81,7 +81,9 @@ impl BackendCompatibility {
     fn message(&self, backend: Option<&str>) -> &'static str {
         match self {
             Self::Compatible => "backend version is supported",
-            Self::ProtocolMismatch => "backend direct attach protocol does not match this WebUI build",
+            Self::ProtocolMismatch => {
+                "backend direct attach protocol does not match this WebUI build"
+            }
             Self::TooOld => "backend version is older than the minimum supported version",
             Self::UntestedNewer => "backend version is newer than the maximum tested version",
             Self::Unknown if backend.is_some() => "backend version could not be parsed",
@@ -92,7 +94,9 @@ impl BackendCompatibility {
 
 fn backend_compatibility(backend: Option<&str>, protocol: Option<u32>) -> BackendCompatibility {
     match protocol {
-        Some(protocol) if protocol != PROTOCOL_VERSION => return BackendCompatibility::ProtocolMismatch,
+        Some(protocol) if protocol != PROTOCOL_VERSION => {
+            return BackendCompatibility::ProtocolMismatch
+        }
         Some(_) => {}
         None => return BackendCompatibility::Unknown,
     }
@@ -1963,17 +1967,19 @@ struct CreateWorkspaceRequest {
     label: Option<String>,
 }
 
-fn existing_workspace_cwd(cwd: Option<&str>) -> Result<Option<String>, Response> {
+fn existing_workspace_cwd(cwd: Option<&str>) -> Result<Option<String>, Box<Response>> {
     let Some(cwd) = cwd.map(str::trim).filter(|cwd| !cwd.is_empty()) else {
         return Ok(None);
     };
     let expanded = expand_user_path_string(cwd);
     if !Path::new(&expanded).is_dir() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "workspace folder must exist" })),
-        )
-            .into_response());
+        return Err(Box::new(
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "workspace folder must exist" })),
+            )
+                .into_response(),
+        ));
     }
     Ok(Some(expanded))
 }
@@ -1989,7 +1995,7 @@ async fn create_workspace(
     }
     let cwd = match existing_workspace_cwd(body.cwd.as_deref()) {
         Ok(cwd) => cwd,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     proxy_request(
         &api_for_headers(&state, &headers),
@@ -2681,6 +2687,26 @@ enum ServerMessage {
     },
 }
 
+const LOGIN_HTML: &str = include_str!("assets/login.html");
+const APP_HTML: &str = include_str!("assets/app.html");
+const LOGIN_CSS: &str = include_str!("assets/login.css");
+const LOGIN_JS: &str = include_str!("assets/login.js");
+const APP_CORE_JS: &str = include_str!("assets/app_core.js");
+const APP_BOOT_JS: &str = include_str!("assets/app_boot.js");
+const APP_CSS: &str = include_str!("assets/app.css");
+const APP_JS: &str = include_str!("assets/app.js");
+const MOBILE_ATTENTION_JS: &str = include_str!("assets/mobile_attention.js");
+const MOBILE_CORE_JS: &str = include_str!("assets/mobile_core.js");
+const MOBILE_SETTINGS_JS: &str = include_str!("assets/mobile_settings.js");
+const MOBILE_TERMINAL_JS: &str = include_str!("assets/mobile_terminal.js");
+const MOBILE_WORKTREES_JS: &str = include_str!("assets/mobile_worktrees.js");
+const MOBILE_CSS: &str = include_str!("assets/mobile.css");
+const MOBILE_JS: &str = include_str!("assets/mobile.js");
+
+const XTERM_CSS: &str = include_str!("assets/xterm.css");
+const XTERM_JS: &str = include_str!("assets/xterm.min.js");
+const HERDR_LOGO: &str = include_str!("assets/herdr-logo.svg");
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2742,10 +2768,6 @@ mod tests {
     fn env_lock() -> &'static StdMutex<()> {
         static LOCK: OnceLock<StdMutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| StdMutex::new(()))
-    }
-
-    fn clear_auth_env() {
-        std::env::remove_var("XDG_CONFIG_HOME");
     }
 
     #[cfg(unix)]
@@ -3115,6 +3137,7 @@ mod tests {
         assert_eq!(public_err.kind(), io::ErrorKind::PermissionDenied);
     }
 
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn server_settings_api_reports_and_updates_runtime_settings() {
         let _guard = env_lock().lock().unwrap();
@@ -3366,7 +3389,10 @@ mod tests {
             backend_compatibility(Some("bad"), Some(PROTOCOL_VERSION)),
             BackendCompatibility::Unknown
         );
-        assert_eq!(backend_compatibility(None, None), BackendCompatibility::Unknown);
+        assert_eq!(
+            backend_compatibility(None, None),
+            BackendCompatibility::Unknown
+        );
         assert_eq!(
             backend_compatibility(Some("0.7.0"), None),
             BackendCompatibility::Unknown
@@ -4001,23 +4027,3 @@ mod tests {
         .contains("<svg"));
     }
 }
-
-const LOGIN_HTML: &str = include_str!("assets/login.html");
-const APP_HTML: &str = include_str!("assets/app.html");
-const LOGIN_CSS: &str = include_str!("assets/login.css");
-const LOGIN_JS: &str = include_str!("assets/login.js");
-const APP_CORE_JS: &str = include_str!("assets/app_core.js");
-const APP_BOOT_JS: &str = include_str!("assets/app_boot.js");
-const APP_CSS: &str = include_str!("assets/app.css");
-const APP_JS: &str = include_str!("assets/app.js");
-const MOBILE_ATTENTION_JS: &str = include_str!("assets/mobile_attention.js");
-const MOBILE_CORE_JS: &str = include_str!("assets/mobile_core.js");
-const MOBILE_SETTINGS_JS: &str = include_str!("assets/mobile_settings.js");
-const MOBILE_TERMINAL_JS: &str = include_str!("assets/mobile_terminal.js");
-const MOBILE_WORKTREES_JS: &str = include_str!("assets/mobile_worktrees.js");
-const MOBILE_CSS: &str = include_str!("assets/mobile.css");
-const MOBILE_JS: &str = include_str!("assets/mobile.js");
-
-const XTERM_CSS: &str = include_str!("assets/xterm.css");
-const XTERM_JS: &str = include_str!("assets/xterm.min.js");
-const HERDR_LOGO: &str = include_str!("assets/herdr-logo.svg");

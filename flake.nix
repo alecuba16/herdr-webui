@@ -1,5 +1,5 @@
 {
-  description = "herdr — terminal workspace manager for AI coding agents";
+  description = "herdr-webui — browser UI for official Herdr sessions";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -23,25 +23,25 @@
         system:
         let
           pkgs = pkgsFor system;
-          herdr = pkgs.callPackage ./nix/package.nix { };
+          herdr-webui = pkgs.callPackage ./nix/package.nix { };
         in
         {
-          inherit herdr;
-          default = herdr;
+          inherit herdr-webui;
+          default = herdr-webui;
         }
       );
 
       apps = forAllSystems (system: {
         default = {
           type = "app";
-          program = "${self.packages.${system}.default}/bin/herdr";
-          meta.description = "Run Herdr";
+          program = "${self.packages.${system}.default}/bin/herdr-webui";
+          meta.description = "Run Herdr WebUI";
         };
       });
 
       checks = forAllSystems (system: {
-        herdr = self.packages.${system}.default;
-        default = self.checks.${system}.herdr;
+        herdr-webui = self.packages.${system}.default;
+        default = self.checks.${system}.herdr-webui;
       });
 
       devShells = forAllSystems (
@@ -51,24 +51,14 @@
         in
         {
           default = pkgs.mkShell {
-            name = "herdr-dev";
+            name = "herdr-webui-dev";
             packages = with pkgs; [
               cargo
-              cargo-nextest
               clippy
-              cmake
               just
-              ninja
-              pkg-config
               rustc
               rustfmt
-              zig_0_15
             ];
-
-            env = {
-              LIBGHOSTTY_VT_OPTIMIZE = "Debug";
-              LIBGHOSTTY_VT_SIMD = "true";
-            };
           };
         }
       );
@@ -76,7 +66,7 @@
       formatter = forAllSystems (system: (pkgsFor system).nixfmt);
 
       overlays.default = final: _prev: {
-        herdr = final.callPackage ./nix/package.nix { };
+        herdr-webui = final.callPackage ./nix/package.nix { };
       };
     };
 }
