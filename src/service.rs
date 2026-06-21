@@ -12,10 +12,11 @@ pub fn install_macos(config: WebConfig) -> io::Result<()> {
     fs::create_dir_all(mac_log_dir()?)?;
     fs::write(&plist, mac_plist_xml(&config, &install_bin)?)?;
     let domain = mac_domain();
+    let service = mac_service_target();
     let plist_arg = plist.display().to_string();
-    let _ = launchctl(&["bootout", &domain, &plist_arg]);
+    let _ = launchctl_quiet(&["bootout", &service]);
     launchctl(&["bootstrap", &domain, &plist_arg])?;
-    launchctl(&["kickstart", "-k", &format!("{domain}/{INSTALL_LABEL}")])?;
+    launchctl(&["kickstart", "-k", &service])?;
     println!("Installed {INSTALL_LABEL} at {}", plist.display());
     println!("Installed binary at {}", install_bin.display());
     println!("Open http://{}", config.bind);
@@ -38,8 +39,8 @@ pub fn start_macos_service() -> io::Result<()> {
         ));
     }
     let domain = mac_domain();
-    let service = format!("{domain}/{INSTALL_LABEL}");
-    if !launchctl(&["kickstart", "-k", &service])? {
+    let service = mac_service_target();
+    if !launchctl_quiet(&["kickstart", "-k", &service])? {
         launchctl(&["bootstrap", &domain, &plist.display().to_string()])?;
         launchctl(&["kickstart", "-k", &service])?;
     }
@@ -48,9 +49,8 @@ pub fn start_macos_service() -> io::Result<()> {
 }
 
 pub fn stop_macos_service() -> io::Result<()> {
-    let domain = mac_domain();
-    let service = format!("{domain}/{INSTALL_LABEL}");
-    let _ = launchctl(&["bootout", &service]);
+    let service = mac_service_target();
+    let _ = launchctl_quiet(&["bootout", &service]);
     println!("Stopped {INSTALL_LABEL}");
     Ok(())
 }
@@ -64,8 +64,8 @@ pub fn restart_macos_service() -> io::Result<()> {
 
 pub fn uninstall_macos() -> io::Result<()> {
     let plist = mac_plist_path()?;
-    let domain = mac_domain();
-    let _ = launchctl(&["bootout", &domain, &plist.display().to_string()]);
+    let service = mac_service_target();
+    let _ = launchctl_quiet(&["bootout", &service]);
     if plist.exists() {
         fs::remove_file(&plist)?;
     }
@@ -325,6 +325,11 @@ fn launchctl(args: &[&str]) -> io::Result<bool> {
     Ok(status.success())
 }
 
+fn launchctl_quiet(args: &[&str]) -> io::Result<bool> {
+    let output = Command::new("launchctl").args(args).output()?;
+    Ok(output.status.success())
+}
+
 fn systemctl_user(args: &[&str]) -> io::Result<bool> {
     let status = Command::new("systemctl")
         .arg("--user")
@@ -342,6 +347,10 @@ fn systemctl_user(args: &[&str]) -> io::Result<bool> {
 
 fn mac_domain() -> String {
     format!("gui/{}", unsafe { libc_getuid() })
+}
+
+fn mac_service_target() -> String {
+    format!("{}/{INSTALL_LABEL}", mac_domain())
 }
 
 #[cfg(unix)]
