@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
-use std::io::{self, BufRead, BufReader, Read, Write};
+use std::io::{self, BufRead, BufReader, Write};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, Path as AxumPath, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
-use axum::response::{Html, IntoResponse, Response};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use interprocess::TryClone as _;
@@ -18,7 +18,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
+mod assets;
+mod compat;
+mod protocol;
 mod service;
+
+use assets::*;
+#[cfg(test)]
+use compat::SimpleVersion;
+use compat::{backend_compatibility, BackendCompatibility};
+use protocol::*;
 
 const DEFAULT_BIND: &str = "127.0.0.1:8787";
 const COOKIE_NAME: &str = "herdr_web_session";
@@ -32,86 +41,17 @@ const MAX_TESTED_BACKEND_VERSION: &str = "0.7.1";
 
 type LocalStream = interprocess::local_socket::Stream;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct SimpleVersion {
-    major: u64,
-    minor: u64,
-    patch: u64,
-}
-
-impl SimpleVersion {
-    fn parse(value: &str) -> Option<Self> {
-        let value = value.strip_prefix('v').unwrap_or(value);
-        let core = value
-            .find(['-', '+'])
-            .map(|index| &value[..index])
-            .unwrap_or(value);
-        let mut parts = core.split('.');
-        let major = parts.next()?.parse().ok()?;
-        let minor = parts.next()?.parse().ok()?;
-        let patch = parts.next()?.parse().ok()?;
-        parts.next().is_none().then_some(Self {
-            major,
-            minor,
-            patch,
-        })
-    }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum BackendCompatibility {
-    Compatible,
-    ProtocolMismatch,
-    TooOld,
-    UntestedNewer,
-    Unknown,
-}
-
-impl BackendCompatibility {
-    fn as_str(&self) -> &'static str {
-        match self {
-            Self::Compatible => "compatible",
-            Self::ProtocolMismatch => "protocol_mismatch",
-            Self::TooOld => "too_old",
-            Self::UntestedNewer => "untested_newer",
-            Self::Unknown => "unknown",
-        }
-    }
-
-    fn message(&self, backend: Option<&str>) -> &'static str {
-        match self {
-            Self::Compatible => "backend version is supported",
-            Self::ProtocolMismatch => {
-                "backend direct attach protocol does not match this WebUI build"
-            }
-            Self::TooOld => "backend version is older than the minimum supported version",
-            Self::UntestedNewer => "backend version is newer than the maximum tested version",
-            Self::Unknown if backend.is_some() => "backend version could not be parsed",
-            Self::Unknown => "backend version is unavailable",
-        }
-    }
-}
-
-fn backend_compatibility(backend: Option<&str>, protocol: Option<u32>) -> BackendCompatibility {
-    match protocol {
-        Some(protocol) if protocol != PROTOCOL_VERSION => {
-            return BackendCompatibility::ProtocolMismatch
-        }
-        Some(_) => {}
-        None => return BackendCompatibility::Unknown,
-    }
-    let Some(backend) = backend.and_then(SimpleVersion::parse) else {
-        return BackendCompatibility::Unknown;
-    };
-    let min = SimpleVersion::parse(MIN_BACKEND_VERSION).expect("valid min backend version");
-    let max = SimpleVersion::parse(MAX_TESTED_BACKEND_VERSION).expect("valid max backend version");
-    if backend < min {
-        BackendCompatibility::TooOld
-    } else if backend > max {
-        BackendCompatibility::UntestedNewer
-    } else {
-        BackendCompatibility::Compatible
-    }
+fn backend_compatibility_for_supported_range(
+    backend: Option<&str>,
+    protocol: Option<u32>,
+) -> BackendCompatibility {
+    backend_compatibility(
+        backend,
+        protocol,
+        PROTOCOL_VERSION,
+        MIN_BACKEND_VERSION,
+        MAX_TESTED_BACKEND_VERSION,
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -909,9 +849,9 @@ async fn index(
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
 ) -> Response {
     if authorized(&state, &headers, remote) {
-        Html(APP_HTML).into_response()
+        app_html()
     } else {
-        Html(LOGIN_HTML).into_response()
+        login_html()
     }
 }
 
@@ -1282,7 +1222,8 @@ async fn versions(
     let session = session_from_headers(&state, &headers);
     let api = api_for_headers(&state, &headers);
     let backend = api.backend_info();
-    let compatibility = backend_compatibility(backend.version.as_deref(), backend.protocol);
+    let compatibility =
+        backend_compatibility_for_supported_range(backend.version.as_deref(), backend.protocol);
     let compatibility_message = compatibility.message(backend.version.as_deref());
     Json(json!({
         "webui": HERDR_WEBUI_VERSION,
@@ -2111,83 +2052,6 @@ async fn close_tab(
     )
 }
 
-async fn xterm_js() -> Response {
-    static_text(XTERM_JS, "application/javascript; charset=utf-8")
-}
-
-async fn xterm_css() -> Response {
-    static_text(XTERM_CSS, "text/css; charset=utf-8")
-}
-
-async fn app_js() -> Response {
-    static_text(APP_JS, "application/javascript; charset=utf-8")
-}
-
-async fn app_boot_js() -> Response {
-    static_text(APP_BOOT_JS, "application/javascript; charset=utf-8")
-}
-
-async fn app_core_js() -> Response {
-    static_text(APP_CORE_JS, "application/javascript; charset=utf-8")
-}
-
-async fn app_css() -> Response {
-    static_text(APP_CSS, "text/css; charset=utf-8")
-}
-
-async fn mobile_js() -> Response {
-    static_text(MOBILE_JS, "application/javascript; charset=utf-8")
-}
-
-async fn mobile_core_js() -> Response {
-    static_text(MOBILE_CORE_JS, "application/javascript; charset=utf-8")
-}
-
-async fn mobile_attention_js() -> Response {
-    static_text(MOBILE_ATTENTION_JS, "application/javascript; charset=utf-8")
-}
-
-async fn mobile_settings_js() -> Response {
-    static_text(MOBILE_SETTINGS_JS, "application/javascript; charset=utf-8")
-}
-
-async fn mobile_terminal_js() -> Response {
-    static_text(MOBILE_TERMINAL_JS, "application/javascript; charset=utf-8")
-}
-
-async fn mobile_worktrees_js() -> Response {
-    static_text(MOBILE_WORKTREES_JS, "application/javascript; charset=utf-8")
-}
-
-async fn mobile_css() -> Response {
-    static_text(MOBILE_CSS, "text/css; charset=utf-8")
-}
-
-async fn login_js() -> Response {
-    static_text(LOGIN_JS, "application/javascript; charset=utf-8")
-}
-
-async fn login_css() -> Response {
-    static_text(LOGIN_CSS, "text/css; charset=utf-8")
-}
-
-fn static_text(body: &'static str, content_type: &'static str) -> Response {
-    let mut response = body.into_response();
-    response
-        .headers_mut()
-        .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
-    response
-}
-
-async fn favicon_svg() -> Response {
-    let mut response = HERDR_LOGO.into_response();
-    response.headers_mut().insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("image/svg+xml; charset=utf-8"),
-    );
-    response
-}
-
 async fn events_ws(
     State(state): State<WebState>,
     headers: HeaderMap,
@@ -2433,279 +2297,6 @@ async fn terminal_socket(path: PathBuf, query: TerminalQuery, mut socket: WebSoc
     }
     let _ = in_tx.send(ClientMessage::Detach);
 }
-
-fn write_message<W: Write, M: Serialize>(writer: &mut W, msg: &M) -> Result<(), String> {
-    let payload = bincode::serde::encode_to_vec(msg, bincode::config::standard())
-        .map_err(|err| err.to_string())?;
-    let len = u32::try_from(payload.len()).map_err(|_| "payload too large".to_string())?;
-    writer
-        .write_all(&len.to_le_bytes())
-        .map_err(|err| err.to_string())?;
-    writer.write_all(&payload).map_err(|err| err.to_string())?;
-    writer.flush().map_err(|err| err.to_string())
-}
-
-fn read_message<R: Read, M: for<'de> Deserialize<'de>>(
-    reader: &mut R,
-    max_frame_size: usize,
-) -> Result<M, String> {
-    let mut len_buf = [0u8; 4];
-    reader
-        .read_exact(&mut len_buf)
-        .map_err(|err| err.to_string())?;
-    let len = u32::from_le_bytes(len_buf) as usize;
-    if len > max_frame_size {
-        return Err(format!("frame size {len} exceeds maximum {max_frame_size}"));
-    }
-    let mut payload = vec![0u8; len];
-    reader
-        .read_exact(&mut payload)
-        .map_err(|err| err.to_string())?;
-    let (msg, consumed) = bincode::serde::decode_from_slice(&payload, bincode::config::standard())
-        .map_err(|err| err.to_string())?;
-    if consumed != len {
-        return Err("trailing bytes in frame".into());
-    }
-    Ok(msg)
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-enum RenderEncoding {
-    SemanticFrame,
-    TerminalAnsi,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-enum ClientKeybindings {
-    Server,
-    Local { keys_toml: String },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-enum ClientLaunchMode {
-    App,
-    TerminalAttach,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-enum ClientMessage {
-    Hello {
-        version: u32,
-        cols: u16,
-        rows: u16,
-        cell_width_px: u32,
-        cell_height_px: u32,
-        requested_encoding: RenderEncoding,
-        keybindings: ClientKeybindings,
-        launch_mode: ClientLaunchMode,
-    },
-    Input {
-        data: Vec<u8>,
-    },
-    ClipboardImage {
-        extension: String,
-        data: Vec<u8>,
-    },
-    Resize {
-        cols: u16,
-        rows: u16,
-        cell_width_px: u32,
-        cell_height_px: u32,
-    },
-    Detach,
-    AttachTerminal {
-        terminal_id: String,
-        takeover: bool,
-    },
-    AttachScroll {
-        source: AttachScrollSource,
-        direction: AttachScrollDirection,
-        lines: u16,
-        column: Option<u16>,
-        row: Option<u16>,
-        modifiers: u8,
-    },
-    InputEvents {
-        events: Vec<ClientInputEvent>,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-enum AttachScrollDirection {
-    Up,
-    Down,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-enum AttachScrollSource {
-    Wheel,
-    PageKey { input: Vec<u8> },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-enum ClientInputEvent {
-    Key {
-        code: ClientKeyCode,
-        modifiers: u8,
-        kind: ClientKeyKind,
-    },
-    Mouse {
-        kind: ClientMouseKind,
-        column: u16,
-        row: u16,
-        modifiers: u8,
-    },
-    Paste {
-        text: String,
-    },
-    FocusGained,
-    FocusLost,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-enum ClientKeyKind {
-    Press,
-    Repeat,
-    Release,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-enum ClientKeyCode {
-    Backspace,
-    Enter,
-    Left,
-    Right,
-    Up,
-    Down,
-    Home,
-    End,
-    PageUp,
-    PageDown,
-    Tab,
-    BackTab,
-    Delete,
-    Insert,
-    Esc,
-    Char(char),
-    F(u8),
-    Null,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-enum ClientMouseButton {
-    Left,
-    Right,
-    Middle,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-enum ClientMouseKind {
-    Down(ClientMouseButton),
-    Up(ClientMouseButton),
-    Drag(ClientMouseButton),
-    Moved,
-    ScrollUp,
-    ScrollDown,
-    ScrollLeft,
-    ScrollRight,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct CellData {
-    symbol: String,
-    fg: u32,
-    bg: u32,
-    modifier: u16,
-    skip: bool,
-    hyperlink: Option<u32>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct CursorState {
-    x: u16,
-    y: u16,
-    visible: bool,
-    #[serde(default)]
-    shape: u8,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct FrameData {
-    cells: Vec<CellData>,
-    width: u16,
-    height: u16,
-    cursor: Option<CursorState>,
-    hyperlinks: Vec<String>,
-    graphics: Vec<u8>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct TerminalFrame {
-    seq: u64,
-    width: u16,
-    height: u16,
-    full: bool,
-    bytes: Vec<u8>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-enum NotifyKind {
-    Sound,
-    Toast,
-    SystemToast,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-enum ServerMessage {
-    Welcome {
-        version: u32,
-        encoding: RenderEncoding,
-        error: Option<String>,
-    },
-    Frame(FrameData),
-    Terminal(TerminalFrame),
-    Graphics {
-        bytes: Vec<u8>,
-    },
-    ServerShutdown {
-        reason: Option<String>,
-    },
-    Notify {
-        kind: NotifyKind,
-        message: String,
-        body: Option<String>,
-    },
-    Clipboard {
-        data: String,
-    },
-    WindowTitle {
-        title: Option<String>,
-    },
-    ReloadSoundConfig,
-    MouseCapture {
-        enabled: bool,
-    },
-}
-
-const LOGIN_HTML: &str = include_str!("assets/login.html");
-const APP_HTML: &str = include_str!("assets/app.html");
-const LOGIN_CSS: &str = include_str!("assets/login.css");
-const LOGIN_JS: &str = include_str!("assets/login.js");
-const APP_CORE_JS: &str = include_str!("assets/app_core.js");
-const APP_BOOT_JS: &str = include_str!("assets/app_boot.js");
-const APP_CSS: &str = include_str!("assets/app.css");
-const APP_JS: &str = include_str!("assets/app.js");
-const MOBILE_ATTENTION_JS: &str = include_str!("assets/mobile_attention.js");
-const MOBILE_CORE_JS: &str = include_str!("assets/mobile_core.js");
-const MOBILE_SETTINGS_JS: &str = include_str!("assets/mobile_settings.js");
-const MOBILE_TERMINAL_JS: &str = include_str!("assets/mobile_terminal.js");
-const MOBILE_WORKTREES_JS: &str = include_str!("assets/mobile_worktrees.js");
-const MOBILE_CSS: &str = include_str!("assets/mobile.css");
-const MOBILE_JS: &str = include_str!("assets/mobile.js");
-
-const XTERM_CSS: &str = include_str!("assets/xterm.css");
-const XTERM_JS: &str = include_str!("assets/xterm.min.js");
-const HERDR_LOGO: &str = include_str!("assets/herdr-logo.svg");
 
 #[cfg(test)]
 mod tests {
@@ -3370,35 +2961,35 @@ mod tests {
     #[test]
     fn classifies_backend_compatibility() {
         assert_eq!(
-            backend_compatibility(Some("0.6.9"), Some(PROTOCOL_VERSION)),
+            backend_compatibility_for_supported_range(Some("0.6.9"), Some(PROTOCOL_VERSION)),
             BackendCompatibility::TooOld
         );
         assert_eq!(
-            backend_compatibility(Some("0.7.0"), Some(PROTOCOL_VERSION)),
+            backend_compatibility_for_supported_range(Some("0.7.0"), Some(PROTOCOL_VERSION)),
             BackendCompatibility::Compatible
         );
         assert_eq!(
-            backend_compatibility(Some("0.7.1"), Some(PROTOCOL_VERSION)),
+            backend_compatibility_for_supported_range(Some("0.7.1"), Some(PROTOCOL_VERSION)),
             BackendCompatibility::Compatible
         );
         assert_eq!(
-            backend_compatibility(Some("0.7.2"), Some(PROTOCOL_VERSION)),
+            backend_compatibility_for_supported_range(Some("0.7.2"), Some(PROTOCOL_VERSION)),
             BackendCompatibility::UntestedNewer
         );
         assert_eq!(
-            backend_compatibility(Some("bad"), Some(PROTOCOL_VERSION)),
+            backend_compatibility_for_supported_range(Some("bad"), Some(PROTOCOL_VERSION)),
             BackendCompatibility::Unknown
         );
         assert_eq!(
-            backend_compatibility(None, None),
+            backend_compatibility_for_supported_range(None, None),
             BackendCompatibility::Unknown
         );
         assert_eq!(
-            backend_compatibility(Some("0.7.0"), None),
+            backend_compatibility_for_supported_range(Some("0.7.0"), None),
             BackendCompatibility::Unknown
         );
         assert_eq!(
-            backend_compatibility(Some("0.7.0"), Some(PROTOCOL_VERSION + 1)),
+            backend_compatibility_for_supported_range(Some("0.7.0"), Some(PROTOCOL_VERSION + 1)),
             BackendCompatibility::ProtocolMismatch
         );
     }

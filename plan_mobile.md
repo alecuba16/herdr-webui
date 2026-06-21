@@ -8,9 +8,9 @@ The mobile UI should use the same backend APIs, route state, terminal protocol, 
 
 ## Current Frontend Shape
 
-- `webui/src/assets/app.html` defines a desktop shell: sidebar with workspaces/agents plus main area with tabs and terminal.
-- `webui/src/assets/app.css` uses a fixed desktop grid: sidebar width `330px` plus flexible main column.
-- `webui/src/assets/app.js` mutates the desktop DOM at startup, builds the sidebar split, and renders workspaces, agents, tabs, and terminal chrome in one desktop-oriented flow.
+- `src/assets/app.html` defines a desktop shell: sidebar with workspaces/agents plus main area with tabs and terminal.
+- `src/assets/app.css` uses a fixed desktop grid: sidebar width `330px` plus flexible main column.
+- `src/assets/app.js` mutates the desktop DOM at startup, builds the sidebar split, and renders workspaces, agents, tabs, and terminal chrome in one desktop-oriented flow.
 - There are no responsive `@media` rules today.
 - URL state already carries selected session/workspace/tab/pane, so mobile can reuse deep links and browser refresh behavior.
 
@@ -27,7 +27,7 @@ The mobile UI should use the same backend APIs, route state, terminal protocol, 
 
 ### Boot Layer
 
-Add `webui/src/assets/app_boot.js`.
+Add `src/assets/app_boot.js`.
 
 Responsibilities:
 
@@ -40,7 +40,7 @@ Responsibilities:
 
 ### Shared Runtime
 
-Add `webui/src/assets/app_runtime.js` after the boot layer proves useful.
+Add `src/assets/app_runtime.js` after the boot layer proves useful.
 
 Move shared non-layout logic out of `app.js` incrementally:
 
@@ -60,8 +60,8 @@ Keep extraction small and verified step by step. Do not rewrite the desktop UI j
 
 Keep current files as desktop implementation:
 
-- `webui/src/assets/app.js`
-- `webui/src/assets/app.css`
+- `src/assets/app.js`
+- `src/assets/app.css`
 
 Desktop behavior should remain unchanged except for calling shared runtime functions after extraction.
 
@@ -69,8 +69,8 @@ Desktop behavior should remain unchanged except for calling shared runtime funct
 
 Add:
 
-- `webui/src/assets/mobile.js`
-- `webui/src/assets/mobile.css`
+- `src/assets/mobile.js`
+- `src/assets/mobile.css`
 
 Mobile bundle owns its markup and render flow. It should not depend on desktop classes such as `.side`, `.tabs`, or `.sidebar-split`.
 

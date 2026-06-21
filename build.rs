@@ -5,7 +5,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=GITHUB_REF_TYPE");
     println!("cargo:rerun-if-env-changed=GITHUB_REF_NAME");
     println!("cargo:rerun-if-env-changed=GITHUB_SHA");
-    println!("cargo:rerun-if-changed=../.git/HEAD");
+    println!("cargo:rerun-if-changed=.git/HEAD");
 
     let version = std::env::var("HERDR_WEBUI_VERSION").unwrap_or_else(|_| detected_version());
     println!("cargo:rustc-env=HERDR_WEBUI_VERSION={version}");

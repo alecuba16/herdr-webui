@@ -24,20 +24,18 @@ jobs:
 
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: webui -> ../target
 
       - name: Format check
-        run: cargo fmt --manifest-path webui/Cargo.toml --check
+        run: cargo fmt --check
 
       - name: Check
-        run: cargo check --manifest-path webui/Cargo.toml --target-dir target
+        run: cargo check --target-dir target
 
       - name: Test
-        run: cargo test --manifest-path webui/Cargo.toml --target-dir target
+        run: cargo test --target-dir target
 
       - name: Build release
-        run: cargo build --release --manifest-path webui/Cargo.toml --target-dir target
+        run: cargo build --release --target-dir target
 
       - name: Version contains commit hash
         run: |

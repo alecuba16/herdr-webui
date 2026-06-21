@@ -76,10 +76,13 @@ herdr-webui uninstall-linux
 
 ## Project Layout
 
-- `webui/Cargo.toml`: standalone Rust crate for `herdr-webui`.
-- `webui/src/main.rs`: WebUI server, auth, JSON proxy, WebSockets, terminal bridge, install helpers.
-- `webui/src/service.rs`: OS service helpers.
-- `webui/src/assets/`: embedded HTML/CSS/JS and frontend tests.
+- `Cargo.toml`: Rust crate manifest for `herdr-webui`.
+- `src/main.rs`: WebUI server, auth, JSON proxy, WebSockets, terminal bridge, install helpers.
+- `src/assets.rs`: embedded frontend asset responses.
+- `src/compat.rs`: backend compatibility checks.
+- `src/protocol.rs`: Herdr direct terminal attach wire types and frame codec.
+- `src/service.rs`: OS service helpers.
+- `src/assets/`: embedded HTML/CSS/JS and frontend tests.
 - `.github/workflows/webui-ci.yml`: WebUI CI.
 - `.github/workflows/webui-release.yml`: WebUI release builds for `v0.0.*` tags.
 - `Makefile`: local build, run, install, update, uninstall commands.

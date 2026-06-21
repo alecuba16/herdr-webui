@@ -1,6 +1,5 @@
 CARGO ?= cargo
 BIND ?= 127.0.0.1:8787
-WEBUI_MANIFEST := webui/Cargo.toml
 TARGET_DIR := target
 INSTALL_LABEL ?= herdr-web
 INSTALL_PLIST := $(HOME)/Library/LaunchAgents/$(INSTALL_LABEL).plist
@@ -13,34 +12,34 @@ INSTALL_LOG_DIR := $(HOME)/Library/Logs/herdr-webui
 .PHONY: build check check-rust fmt run-web run-web-local test test-js coverage clean install-mac update-mac start-mac stop-mac restart-mac uninstall-mac install-linux update-linux start-linux stop-linux restart-linux uninstall-linux
 
 build:
-	$(CARGO) build --release --manifest-path $(WEBUI_MANIFEST) --target-dir $(TARGET_DIR)
+	$(CARGO) build --release --target-dir $(TARGET_DIR)
 
 check:
-	$(CARGO) check --manifest-path $(WEBUI_MANIFEST) --target-dir $(TARGET_DIR)
+	$(CARGO) check --target-dir $(TARGET_DIR)
 
 check-rust:
-	$(CARGO) check --manifest-path $(WEBUI_MANIFEST) --target-dir $(TARGET_DIR)
+	$(CARGO) check --target-dir $(TARGET_DIR)
 
 fmt:
-	$(CARGO) fmt --manifest-path $(WEBUI_MANIFEST)
+	$(CARGO) fmt
 
 run-web:
-	$(CARGO) run --manifest-path $(WEBUI_MANIFEST) --target-dir $(TARGET_DIR) -- --bind $(BIND)
+	$(CARGO) run --target-dir $(TARGET_DIR) -- --bind $(BIND)
 
 run-web-local:
-	$(CARGO) run --manifest-path $(WEBUI_MANIFEST) --target-dir $(TARGET_DIR) -- --bind $(BIND)
+	$(CARGO) run --target-dir $(TARGET_DIR) -- --bind $(BIND)
 
 test: test-js
-	$(CARGO) test --manifest-path $(WEBUI_MANIFEST) --target-dir $(TARGET_DIR)
+	$(CARGO) test --target-dir $(TARGET_DIR)
 
 test-js:
-	node --test webui/src/assets/app_core.test.mjs webui/src/assets/app_load.test.mjs webui/src/assets/app_boot.test.mjs webui/src/assets/mobile_load.test.mjs
+	node --test src/assets/app_core.test.mjs src/assets/app_load.test.mjs src/assets/app_boot.test.mjs src/assets/mobile_load.test.mjs
 
 coverage:
-	CARGO_TARGET_DIR=$(TARGET_DIR) $(CARGO) llvm-cov --manifest-path $(WEBUI_MANIFEST) --summary-only
+	CARGO_TARGET_DIR=$(TARGET_DIR) $(CARGO) llvm-cov --summary-only
 
 clean:
-	$(CARGO) clean --manifest-path $(WEBUI_MANIFEST) --target-dir $(TARGET_DIR)
+	$(CARGO) clean --target-dir $(TARGET_DIR)
 
 install-mac: build
 	mkdir -p "$(HOME)/Library/LaunchAgents" "$(INSTALL_LOG_DIR)" "$(LOCAL_BIN_DIR)"

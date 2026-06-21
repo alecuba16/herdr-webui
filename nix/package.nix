@@ -4,7 +4,7 @@
 }:
 
 let
-  manifest = lib.importTOML ../webui/Cargo.toml;
+  manifest = lib.importTOML ../Cargo.toml;
 in
 rustPlatform.buildRustPackage {
   pname = manifest.package.name;
@@ -16,7 +16,8 @@ rustPlatform.buildRustPackage {
       lib.fileset.unions [
         ../Cargo.lock
         ../Cargo.toml
-        ../webui
+        ../build.rs
+        ../src
       ]
     );
   };
@@ -24,9 +25,6 @@ rustPlatform.buildRustPackage {
   cargoLock = {
     lockFile = ../Cargo.lock;
   };
-
-  cargoBuildFlags = [ "--package=herdr-webui" ];
-  cargoTestFlags = [ "--package=herdr-webui" ];
 
   meta = {
     description = "Browser UI for an official Herdr backend session";
