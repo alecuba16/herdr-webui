@@ -7,13 +7,14 @@ use crate::{WebConfig, INSTALL_LABEL};
 
 pub fn install_macos(config: WebConfig) -> io::Result<()> {
     ensure_macos_user_context()?;
-    let install_bin = copy_current_exe_to_install_path()?;
     let plist = mac_plist_path()?;
+    let domain = mac_domain();
+    let service = mac_service_target();
+    log_macos_context("install", Some(&plist));
+    let install_bin = copy_current_exe_to_install_path()?;
     fs::create_dir_all(plist.parent().expect("plist has parent"))?;
     fs::create_dir_all(mac_log_dir()?)?;
     fs::write(&plist, mac_plist_xml(&config, &install_bin)?)?;
-    let domain = mac_domain();
-    let service = mac_service_target();
     let plist_arg = plist.display().to_string();
     let _ = launchctl_quiet(&["bootout", &service]);
     launchctl_required(&["bootstrap", &domain, &plist_arg])?;
@@ -26,6 +27,7 @@ pub fn install_macos(config: WebConfig) -> io::Result<()> {
 
 pub fn update_macos() -> io::Result<()> {
     ensure_macos_user_context()?;
+    log_macos_context("update", mac_plist_path().ok().as_deref());
     let install_bin = copy_current_exe_to_install_path()?;
     restart_macos_service()?;
     println!("Updated binary at {}", install_bin.display());
@@ -35,6 +37,7 @@ pub fn update_macos() -> io::Result<()> {
 pub fn start_macos_service() -> io::Result<()> {
     ensure_macos_user_context()?;
     let plist = mac_plist_path()?;
+    log_macos_context("start", Some(&plist));
     if !plist.exists() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
@@ -53,6 +56,7 @@ pub fn start_macos_service() -> io::Result<()> {
 
 pub fn stop_macos_service() -> io::Result<()> {
     ensure_macos_user_context()?;
+    log_macos_context("stop", None);
     let service = mac_service_target();
     let _ = launchctl_quiet(&["bootout", &service]);
     println!("Stopped {INSTALL_LABEL}");
@@ -69,6 +73,7 @@ pub fn restart_macos_service() -> io::Result<()> {
 pub fn uninstall_macos() -> io::Result<()> {
     ensure_macos_user_context()?;
     let plist = mac_plist_path()?;
+    log_macos_context("uninstall", Some(&plist));
     let service = mac_service_target();
     let _ = launchctl_quiet(&["bootout", &service]);
     if plist.exists() {
@@ -327,11 +332,13 @@ fn xml_escape(value: &str) -> String {
 
 fn launchctl_quiet(args: &[&str]) -> io::Result<bool> {
     let output = Command::new("launchctl").args(args).output()?;
+    log_command_output("launchctl", args, &output);
     Ok(output.status.success())
 }
 
 fn launchctl_required(args: &[&str]) -> io::Result<()> {
     let output = Command::new("launchctl").args(args).output()?;
+    log_command_output("launchctl", args, &output);
     if output.status.success() {
         return Ok(());
     }
@@ -368,6 +375,48 @@ fn mac_domain() -> String {
 
 fn mac_service_target() -> String {
     format!("{}/{INSTALL_LABEL}", mac_domain())
+}
+
+fn service_verbose() -> bool {
+    matches!(
+        std::env::var("HERDR_WEB_VERBOSE").as_deref(),
+        Ok("1" | "true" | "yes" | "on")
+    )
+}
+
+fn log_macos_context(action: &str, plist: Option<&Path>) {
+    if !service_verbose() {
+        return;
+    }
+    eprintln!("herdr-webui {action}-mac debug:");
+    eprintln!("  uid: {}", unsafe { libc_getuid() });
+    eprintln!("  euid: {}", unsafe { libc_geteuid() });
+    eprintln!(
+        "  home: {}",
+        home_dir().map_or_else(|err| err.to_string(), |path| path.display().to_string())
+    );
+    eprintln!("  domain: {}", mac_domain());
+    eprintln!("  service: {}", mac_service_target());
+    if let Some(plist) = plist {
+        eprintln!("  plist: {}", plist.display());
+        eprintln!("  plist exists: {}", plist.exists());
+    }
+}
+
+fn log_command_output(command: &str, args: &[&str], output: &std::process::Output) {
+    if !service_verbose() {
+        return;
+    }
+    eprintln!("  command: {command} {}", args.join(" "));
+    eprintln!("  status: {}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !stdout.is_empty() {
+        eprintln!("  stdout: {stdout}");
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if !stderr.is_empty() {
+        eprintln!("  stderr: {stderr}");
+    }
 }
 
 fn ensure_macos_user_context() -> io::Result<()> {
