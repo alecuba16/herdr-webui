@@ -542,9 +542,17 @@ mod tests {
     #[tokio::test]
     async fn pane_cell_url_resolver_finds_visible_url() {
         let line = "see https://example.com/pr/307.";
-        let (app, info) = app_with_screen_bytes(line.as_bytes());
+        let (mut app, info) = app_with_screen_bytes(line.as_bytes());
         let pane_id = app.state.workspaces[0].tabs[0].root_pane;
         let col = line.find("example").expect("url host") as u16;
+
+        assert_eq!(
+            app.state
+                .url_at_pane_cell(&app.terminal_runtimes, pane_id, 0, col),
+            None
+        );
+
+        app.state.auto_detect_links = true;
 
         assert_eq!(
             app.state

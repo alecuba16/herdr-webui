@@ -581,6 +581,7 @@ pub(crate) enum NavigateAction {
     NextWorkspace,
     PreviousAgent,
     NextAgent,
+    FocusPriorityAgent,
     NewTab,
     RenameTab,
     PreviousTab,
@@ -685,6 +686,7 @@ fn action_for_key(
         (&kb.next_workspace, NavigateAction::NextWorkspace),
         (&kb.previous_agent, NavigateAction::PreviousAgent),
         (&kb.next_agent, NavigateAction::NextAgent),
+        (&kb.focus_priority_agent, NavigateAction::FocusPriorityAgent),
         (&kb.new_tab, NavigateAction::NewTab),
         (&kb.rename_tab, NavigateAction::RenameTab),
         (&kb.previous_tab, NavigateAction::PreviousTab),
@@ -840,6 +842,11 @@ pub(super) fn execute_navigate_action_in_context(
         NavigateAction::NextAgent => {
             state.next_agent();
             leave_navigate_mode(state);
+        }
+        NavigateAction::FocusPriorityAgent => {
+            if state.focus_priority_agent() {
+                leave_navigate_mode(state);
+            }
         }
         NavigateAction::NewTab => {
             if state.active.is_some() {

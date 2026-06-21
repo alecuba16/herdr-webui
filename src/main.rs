@@ -176,6 +176,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # next_workspace = ""     # optional, unset by default
 # previous_agent = ""     # optional, unset by default
 # next_agent = ""         # optional, unset by default
+# focus_priority_agent = "prefix+a" # first blocked, else done, else idle agent
 # focus_agent = ""        # optional indexed binding, e.g. "prefix+alt+1..9"
 # remote_image_paste = "ctrl+v" # only active in herdr --remote; empty disables raw-key image paste
 # new_tab = "prefix+c"
@@ -253,6 +254,10 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # Optional modifier that forwards right-click hold/drag gestures to pane apps instead of opening Herdr's pane menu.
 # Empty/off disables this. Shift is intentionally unsupported because terminals commonly reserve Shift+mouse.
 # right_click_passthrough_modifier = ""
+
+# Parse plain text http(s) URLs in pane output for modified-click opening.
+# Explicit terminal hyperlinks (OSC 8) remain clickable regardless of this setting.
+# auto_detect_links = false
 
 # Force a full redraw when the outer terminal regains focus.
 # Set false to reduce visible flashing when switching back to Herdr.

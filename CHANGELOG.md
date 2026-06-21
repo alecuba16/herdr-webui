@@ -1,6 +1,17 @@
 # Changelog
 
+This changelog tracks root Herdr app releases. WebUI-only `v0.0.x` releases use GitHub Release notes generated from their tags.
+
 ## Unreleased
+
+## [0.7.2] - 2026-06-21
+
+### Added
+- Added `keys.focus_priority_agent`, defaulting to `prefix+a`, to jump to the first blocked agent, then done agent, then idle agent.
+- Added `[ui].auto_detect_links` and a Settings > Links toggle for opt-in plain text URL detection in pane output. It defaults to off; explicit terminal hyperlinks still work.
+
+### Fixed
+- Delayed sound notifications no longer delay or suppress toast delivery when sound is disabled or configured with a longer delay.
 
 ## [0.7.1] - 2026-06-21
 

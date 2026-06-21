@@ -1960,8 +1960,20 @@ function modalOpen() {
     return m && m.style.display && m.style.display !== "none";
   });
 }
+function preserveActiveElementFocus() {
+  const active = document.activeElement;
+  if (!active || active === document.body) return false;
+  if (active.isContentEditable) return true;
+  return !!active.closest("input, select, textarea, button, [role='button']");
+}
 function focusTerminal() {
-  if (state.editingTab || state.editingWorkspace || modalOpen() || !term)
+  if (
+    state.editingTab ||
+    state.editingWorkspace ||
+    modalOpen() ||
+    preserveActiveElementFocus() ||
+    !term
+  )
     return;
   try {
     term.focus();

@@ -278,6 +278,7 @@ pub struct Keybinds {
     pub next_workspace: ActionKeybinds,
     pub previous_agent: ActionKeybinds,
     pub next_agent: ActionKeybinds,
+    pub focus_priority_agent: ActionKeybinds,
     pub focus_agent: Vec<IndexedKeybind>,
     pub new_tab: ActionKeybinds,
     pub rename_tab: ActionKeybinds,
@@ -461,6 +462,10 @@ impl Config {
             next_workspace: action!("keys.next_workspace", &self.keys.next_workspace),
             previous_agent: action!("keys.previous_agent", &self.keys.previous_agent),
             next_agent: action!("keys.next_agent", &self.keys.next_agent),
+            focus_priority_agent: action!(
+                "keys.focus_priority_agent",
+                &self.keys.focus_priority_agent
+            ),
             focus_agent: indexed!("keys.focus_agent", &self.keys.focus_agent),
             new_tab: action!("keys.new_tab", &self.keys.new_tab),
             rename_tab: action!("keys.rename_tab", &self.keys.rename_tab),
@@ -1311,6 +1316,18 @@ next_tab = "prefix+n"
             binding_triggers(&kb.goto),
             vec![BindingTrigger::Prefix((
                 KeyCode::Char('g'),
+                KeyModifiers::empty()
+            ))]
+        );
+    }
+
+    #[test]
+    fn focus_priority_agent_defaults_to_prefix_a() {
+        let kb = Config::default().keybinds();
+        assert_eq!(
+            binding_triggers(&kb.focus_priority_agent),
+            vec![BindingTrigger::Prefix((
+                KeyCode::Char('a'),
                 KeyModifiers::empty()
             ))]
         );
