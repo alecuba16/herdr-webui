@@ -854,6 +854,7 @@ pub enum SettingsSection {
     Sound,
     Toast,
     PaneLabels,
+    Links,
     Experiments,
     Integrations,
 }
@@ -864,6 +865,7 @@ impl SettingsSection {
         Self::Sound,
         Self::Toast,
         Self::PaneLabels,
+        Self::Links,
         Self::Integrations,
         Self::Experiments,
     ];
@@ -874,6 +876,7 @@ impl SettingsSection {
             Self::Sound => "sound",
             Self::Toast => "toasts",
             Self::PaneLabels => "pane labels",
+            Self::Links => "links",
             Self::Experiments => "experiments",
             Self::Integrations => "integrations",
         }
@@ -1213,6 +1216,8 @@ pub struct PendingAgentNotification {
     pub known_agent: Option<crate::detect::Agent>,
     pub kind: ToastKind,
     pub state: AgentState,
+    pub sound_only: bool,
+    pub include_sound: bool,
     pub deadline: std::time::Instant,
 }
 
@@ -1338,7 +1343,8 @@ pub struct AppState {
     pub update_dismissed: bool,
     pub config_diagnostic: Option<String>,
     pub toast: Option<ToastNotification>,
-    pub pending_agent_notifications: std::collections::HashMap<PaneId, PendingAgentNotification>,
+    pub pending_agent_notifications:
+        std::collections::HashMap<PaneId, Vec<PendingAgentNotification>>,
     pub copy_feedback: Option<CopyFeedback>,
     /// Last reported focus state for the outer terminal hosting herdr.
     /// None means unsupported or not yet reported, which preserves active-pane suppression.
@@ -1368,6 +1374,7 @@ pub struct AppState {
     pub confirm_close: bool,
     pub prompt_new_tab_name: bool,
     pub show_agent_labels_on_pane_borders: bool,
+    pub auto_detect_links: bool,
     pub pane_history_persistence: bool,
     /// Expose the focused pane's cursor anchor to the outer terminal even when
     /// the pane requested `?25l`. See `[experimental] reveal_hidden_cursor_for_cjk_ime`.
@@ -1454,6 +1461,10 @@ impl AppState {
 
     pub fn agent_border_labels_enabled(&self) -> bool {
         self.show_agent_labels_on_pane_borders
+    }
+
+    pub fn auto_detect_links_enabled(&self) -> bool {
+        self.auto_detect_links
     }
 
     pub fn pane_history_persistence_enabled(&self) -> bool {
@@ -1722,6 +1733,7 @@ impl AppState {
             confirm_close: true,
             prompt_new_tab_name: false,
             show_agent_labels_on_pane_borders: false,
+            auto_detect_links: false,
             pane_history_persistence: false,
             reveal_hidden_cursor_for_cjk_ime: false,
             cjk_ime_agent_filter_configured: false,
@@ -1985,16 +1997,18 @@ impl AppState {
                 assert_workspace_pane(&target.workspace_id, target.pane_id, "toast target");
             }
         }
-        for (&pane_id, notification) in &self.pending_agent_notifications {
-            assert_eq!(
-                pane_id, notification.pane_id,
-                "pending agent notification map key must match payload pane id"
-            );
-            assert_workspace_pane(
-                &notification.workspace_id,
-                notification.pane_id,
-                "pending agent notification",
-            );
+        for (&pane_id, notifications) in &self.pending_agent_notifications {
+            for notification in notifications {
+                assert_eq!(
+                    pane_id, notification.pane_id,
+                    "pending agent notification map key must match payload pane id"
+                );
+                assert_workspace_pane(
+                    &notification.workspace_id,
+                    notification.pane_id,
+                    "pending agent notification",
+                );
+            }
         }
         for &pane_id in self.plugin_panes.keys() {
             assert_live_pane(pane_id, "plugin pane record");

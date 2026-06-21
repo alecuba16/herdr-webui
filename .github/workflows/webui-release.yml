@@ -3,7 +3,7 @@ name: WebUI Release
 on:
   push:
     tags:
-      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v0.0.*"
 
 permissions:
   contents: write

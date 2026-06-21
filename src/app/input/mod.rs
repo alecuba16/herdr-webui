@@ -273,6 +273,9 @@ impl App {
                     SettingsAction::SaveAgentBorderLabels(enabled) => {
                         self.save_agent_border_labels(enabled)
                     }
+                    SettingsAction::SaveAutoDetectLinks(enabled) => {
+                        self.save_auto_detect_links(enabled)
+                    }
                     SettingsAction::SavePaneHistory(enabled) => {
                         self.save_pane_history_persistence(enabled)
                     }

@@ -22,6 +22,7 @@ pub(super) enum SettingsAction {
     SaveSoundDelay(u64),
     SaveToastDelivery(ToastDelivery),
     SaveAgentBorderLabels(bool),
+    SaveAutoDetectLinks(bool),
     SavePaneHistory(bool),
     SaveSwitchAsciiInputSourceInPrefix(bool),
     InstallRecommendedIntegrations,
@@ -55,6 +56,9 @@ impl App {
                 SettingsAction::SaveToastDelivery(delivery) => self.save_toast_delivery(delivery),
                 SettingsAction::SaveAgentBorderLabels(enabled) => {
                     self.save_agent_border_labels(enabled)
+                }
+                SettingsAction::SaveAutoDetectLinks(enabled) => {
+                    self.save_auto_detect_links(enabled)
                 }
                 SettingsAction::SavePaneHistory(enabled) => {
                     self.save_pane_history_persistence(enabled)
@@ -266,6 +270,30 @@ pub(super) fn update_settings_state(state: &mut AppState, key: KeyEvent) -> Opti
                 state.settings.list.selected = toast_delivery_index(state.toast_delivery());
             }
             KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => {
+                state.settings.section = SettingsSection::Links;
+                state.settings.list.selected = usize::from(!state.auto_detect_links_enabled());
+            }
+            _ => {
+                if let Some(super::modal::ModalAction::Close) =
+                    super::modal::modal_action_from_key(&key, super::modal::SETTINGS_ACTIONS)
+                {
+                    cancel_settings(state);
+                }
+            }
+        },
+        SettingsSection::Links => match key.code {
+            KeyCode::Up | KeyCode::Char('k') | KeyCode::Down | KeyCode::Char('j') => {
+                state.settings.list.selected = 1 - state.settings.list.selected.min(1);
+            }
+            KeyCode::Enter | KeyCode::Char(' ') => {
+                let enabled = state.settings.list.selected == 0;
+                return Some(SettingsAction::SaveAutoDetectLinks(enabled));
+            }
+            KeyCode::BackTab | KeyCode::Left | KeyCode::Char('h') => {
+                state.settings.section = SettingsSection::PaneLabels;
+                state.settings.list.selected = usize::from(!state.agent_border_labels_enabled());
+            }
+            KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => {
                 state.settings.section = SettingsSection::Integrations;
                 state.settings.list.selected = 0;
             }
@@ -306,8 +334,8 @@ pub(super) fn update_settings_state(state: &mut AppState, key: KeyEvent) -> Opti
                 return Some(SettingsAction::InstallRecommendedIntegrations);
             }
             KeyCode::BackTab | KeyCode::Left | KeyCode::Char('h') => {
-                state.settings.section = SettingsSection::PaneLabels;
-                state.settings.list.selected = usize::from(!state.agent_border_labels_enabled());
+                state.settings.section = SettingsSection::Links;
+                state.settings.list.selected = usize::from(!state.auto_detect_links_enabled());
             }
             KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => {
                 state.settings.section = SettingsSection::Experiments;
@@ -338,6 +366,7 @@ pub(crate) fn open_settings_at(state: &mut AppState, section: SettingsSection) {
         SettingsSection::Sound => sound_settings_index(state),
         SettingsSection::Toast => toast_delivery_index(state.toast_delivery()),
         SettingsSection::PaneLabels => usize::from(!state.agent_border_labels_enabled()),
+        SettingsSection::Links => usize::from(!state.auto_detect_links_enabled()),
         SettingsSection::Experiments => 0,
         SettingsSection::Integrations => 0,
     };
@@ -433,6 +462,14 @@ impl AppState {
                     None
                 }
             }
+            SettingsSection::Links => {
+                let list_y = area.y + 3;
+                if row >= list_y && row < list_y + 2 {
+                    Some((row - list_y) as usize)
+                } else {
+                    None
+                }
+            }
             SettingsSection::Experiments => {
                 let list_y = area.y + 3;
                 if row >= list_y && row < list_y + ExperimentSetting::ALL.len() as u16 {
@@ -457,6 +494,7 @@ impl AppState {
                         SettingsSection::PaneLabels => {
                             usize::from(!self.agent_border_labels_enabled())
                         }
+                        SettingsSection::Links => usize::from(!self.auto_detect_links_enabled()),
                         SettingsSection::Experiments => 0,
                         SettingsSection::Integrations => 0,
                     });
@@ -477,6 +515,10 @@ impl AppState {
                         SettingsSection::PaneLabels => {
                             let enabled = idx == 0;
                             Some(SettingsAction::SaveAgentBorderLabels(enabled))
+                        }
+                        SettingsSection::Links => {
+                            let enabled = idx == 0;
+                            Some(SettingsAction::SaveAutoDetectLinks(enabled))
                         }
                         SettingsSection::Experiments => experiment_toggle_action(self, idx),
                         SettingsSection::Integrations => None,
@@ -643,6 +685,12 @@ mod tests {
             &mut state,
             KeyEvent::new(KeyCode::Tab, KeyModifiers::empty()),
         );
+        assert_eq!(state.settings.section, SettingsSection::Links);
+
+        update_settings_state(
+            &mut state,
+            KeyEvent::new(KeyCode::Tab, KeyModifiers::empty()),
+        );
         assert_eq!(state.settings.section, SettingsSection::Integrations);
 
         update_settings_state(
@@ -673,7 +721,32 @@ mod tests {
             &mut state,
             KeyEvent::new(KeyCode::BackTab, KeyModifiers::empty()),
         );
+        assert_eq!(state.settings.section, SettingsSection::Links);
+
+        update_settings_state(
+            &mut state,
+            KeyEvent::new(KeyCode::BackTab, KeyModifiers::empty()),
+        );
         assert_eq!(state.settings.section, SettingsSection::PaneLabels);
+    }
+
+    #[test]
+    fn settings_links_toggle_returns_save_action() {
+        let mut state = state_with_workspaces(&["test"]);
+        state.auto_detect_links = false;
+        open_settings_at(&mut state, SettingsSection::Links);
+
+        update_settings_state(
+            &mut state,
+            KeyEvent::new(KeyCode::Up, KeyModifiers::empty()),
+        );
+
+        let action = update_settings_state(
+            &mut state,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()),
+        );
+
+        assert_eq!(action, Some(SettingsAction::SaveAutoDetectLinks(true)));
     }
 
     #[test]

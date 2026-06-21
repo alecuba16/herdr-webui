@@ -141,6 +141,17 @@ pub(super) fn render_settings_overlay(app: &AppState, frame: &mut Frame, area: R
                 app.settings.list.selected,
             );
         }
+        SettingsSection::Links => {
+            render_settings_toggle(
+                frame,
+                content_area,
+                p,
+                "auto-detect links",
+                "parse plain text http(s) URLs in pane output for modified-click opening",
+                app.auto_detect_links_enabled(),
+                app.settings.list.selected,
+            );
+        }
         SettingsSection::Experiments => {
             render_settings_experiments(app, frame, content_area);
         }

@@ -335,6 +335,8 @@ pub struct KeysConfig {
     pub previous_agent: BindingConfig,
     /// Focus the next agent shown in the agent panel. Unset by default.
     pub next_agent: BindingConfig,
+    /// Focus the first blocked agent, then done, then idle. Default: "prefix+a".
+    pub focus_priority_agent: BindingConfig,
     /// Focus an agent by index 1-9. Unset by default.
     pub focus_agent: BindingConfig,
     /// Local-client shortcut that sends a clipboard image to a remote Herdr session. Default: "ctrl+v".
@@ -443,6 +445,8 @@ pub struct UiConfig {
     pub prompt_new_tab_name: bool,
     /// Show agent labels in split pane borders when no manual pane label is set. Default: false.
     pub show_agent_labels_on_pane_borders: bool,
+    /// Auto-detect plain text http(s) links in pane output. Default: false.
+    pub auto_detect_links: bool,
     /// Agent sidebar ordering. Saved values are "spaces" or "priority". Default: "spaces".
     pub agent_panel_sort: AgentPanelSortConfig,
     /// Accent color for highlights, borders, and navigation UI.
@@ -573,6 +577,7 @@ impl Default for KeysConfig {
             next_workspace: BindingConfig::empty(),
             previous_agent: BindingConfig::empty(),
             next_agent: BindingConfig::empty(),
+            focus_priority_agent: BindingConfig::one("prefix+a"),
             focus_agent: BindingConfig::empty(),
             remote_image_paste: "ctrl+v".into(),
             new_tab: BindingConfig::one("prefix+c"),
@@ -630,6 +635,7 @@ impl Default for UiConfig {
             confirm_close: true,
             prompt_new_tab_name: false,
             show_agent_labels_on_pane_borders: false,
+            auto_detect_links: false,
             agent_panel_sort: AgentPanelSortConfig::Spaces,
             accent: "cyan".into(),
             toast: ToastConfig::default(),
@@ -840,6 +846,19 @@ show_agent_labels_on_pane_borders = true
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert!(config.ui.show_agent_labels_on_pane_borders);
+    }
+
+    #[test]
+    fn auto_detect_links_defaults_off_and_parses() {
+        let default_config = Config::default();
+        assert!(!default_config.ui.auto_detect_links);
+
+        let toml = r#"
+[ui]
+auto_detect_links = true
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(config.ui.auto_detect_links);
     }
 
     #[test]
