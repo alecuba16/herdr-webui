@@ -1,7 +1,5 @@
 CARGO ?= cargo
-ZIG ?= $(shell if [ -x "$(CURDIR)/zigbin/zig" ]; then printf '%s' "$(CURDIR)/zigbin/zig"; elif command -v zig@0.15 >/dev/null 2>&1; then command -v zig@0.15; elif [ -x /opt/homebrew/opt/zig@0.15/bin/zig ]; then printf '%s' /opt/homebrew/opt/zig@0.15/bin/zig; elif [ -x /usr/local/opt/zig@0.15/bin/zig ]; then printf '%s' /usr/local/opt/zig@0.15/bin/zig; else command -v zig; fi)
 BIND ?= 127.0.0.1:8787
-ROOT_MANIFEST := Cargo.toml
 WEBUI_MANIFEST := webui/Cargo.toml
 TARGET_DIR := target
 INSTALL_LABEL ?= herdr-web
@@ -15,7 +13,6 @@ INSTALL_LOG_DIR := $(HOME)/Library/Logs/herdr-webui
 .PHONY: build check check-rust fmt run-web run-web-local test test-js coverage clean install-mac update-mac start-mac stop-mac restart-mac uninstall-mac install-linux update-linux start-linux stop-linux restart-linux uninstall-linux
 
 build:
-	ZIG="$(ZIG)" $(CARGO) build --release --manifest-path $(ROOT_MANIFEST) --target-dir $(TARGET_DIR)
 	$(CARGO) build --release --manifest-path $(WEBUI_MANIFEST) --target-dir $(TARGET_DIR)
 
 check:
