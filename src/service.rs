@@ -6,6 +6,7 @@ use std::process::Command;
 use crate::{WebConfig, INSTALL_LABEL};
 
 pub fn install_macos(config: WebConfig) -> io::Result<()> {
+    ensure_macos_user_context()?;
     let install_bin = copy_current_exe_to_install_path()?;
     let plist = mac_plist_path()?;
     fs::create_dir_all(plist.parent().expect("plist has parent"))?;
@@ -15,8 +16,8 @@ pub fn install_macos(config: WebConfig) -> io::Result<()> {
     let service = mac_service_target();
     let plist_arg = plist.display().to_string();
     let _ = launchctl_quiet(&["bootout", &service]);
-    launchctl(&["bootstrap", &domain, &plist_arg])?;
-    launchctl(&["kickstart", "-k", &service])?;
+    launchctl_required(&["bootstrap", &domain, &plist_arg])?;
+    launchctl_required(&["kickstart", "-k", &service])?;
     println!("Installed {INSTALL_LABEL} at {}", plist.display());
     println!("Installed binary at {}", install_bin.display());
     println!("Open http://{}", config.bind);
@@ -24,6 +25,7 @@ pub fn install_macos(config: WebConfig) -> io::Result<()> {
 }
 
 pub fn update_macos() -> io::Result<()> {
+    ensure_macos_user_context()?;
     let install_bin = copy_current_exe_to_install_path()?;
     restart_macos_service()?;
     println!("Updated binary at {}", install_bin.display());
@@ -31,6 +33,7 @@ pub fn update_macos() -> io::Result<()> {
 }
 
 pub fn start_macos_service() -> io::Result<()> {
+    ensure_macos_user_context()?;
     let plist = mac_plist_path()?;
     if !plist.exists() {
         return Err(io::Error::new(
@@ -41,14 +44,15 @@ pub fn start_macos_service() -> io::Result<()> {
     let domain = mac_domain();
     let service = mac_service_target();
     if !launchctl_quiet(&["kickstart", "-k", &service])? {
-        launchctl(&["bootstrap", &domain, &plist.display().to_string()])?;
-        launchctl(&["kickstart", "-k", &service])?;
+        launchctl_required(&["bootstrap", &domain, &plist.display().to_string()])?;
+        launchctl_required(&["kickstart", "-k", &service])?;
     }
     println!("Started {INSTALL_LABEL}");
     Ok(())
 }
 
 pub fn stop_macos_service() -> io::Result<()> {
+    ensure_macos_user_context()?;
     let service = mac_service_target();
     let _ = launchctl_quiet(&["bootout", &service]);
     println!("Stopped {INSTALL_LABEL}");
@@ -63,6 +67,7 @@ pub fn restart_macos_service() -> io::Result<()> {
 }
 
 pub fn uninstall_macos() -> io::Result<()> {
+    ensure_macos_user_context()?;
     let plist = mac_plist_path()?;
     let service = mac_service_target();
     let _ = launchctl_quiet(&["bootout", &service]);
@@ -320,14 +325,26 @@ fn xml_escape(value: &str) -> String {
         .replace('\'', "&apos;")
 }
 
-fn launchctl(args: &[&str]) -> io::Result<bool> {
-    let status = Command::new("launchctl").args(args).status()?;
-    Ok(status.success())
-}
-
 fn launchctl_quiet(args: &[&str]) -> io::Result<bool> {
     let output = Command::new("launchctl").args(args).output()?;
     Ok(output.status.success())
+}
+
+fn launchctl_required(args: &[&str]) -> io::Result<()> {
+    let output = Command::new("launchctl").args(args).output()?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let detail = if stderr.is_empty() {
+        format!("exit status {}", output.status)
+    } else {
+        stderr
+    };
+    Err(io::Error::other(format!(
+        "launchctl {} failed: {detail}",
+        args.join(" ")
+    )))
 }
 
 fn systemctl_user(args: &[&str]) -> io::Result<bool> {
@@ -353,6 +370,16 @@ fn mac_service_target() -> String {
     format!("{}/{INSTALL_LABEL}", mac_domain())
 }
 
+fn ensure_macos_user_context() -> io::Result<()> {
+    if unsafe { libc_geteuid() } == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "macOS LaunchAgent commands must be run without sudo; run `herdr-webui install-mac` as your user",
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(unix)]
 unsafe fn libc_getuid() -> u32 {
     unsafe extern "C" {
@@ -361,9 +388,22 @@ unsafe fn libc_getuid() -> u32 {
     getuid()
 }
 
+#[cfg(unix)]
+unsafe fn libc_geteuid() -> u32 {
+    unsafe extern "C" {
+        fn geteuid() -> u32;
+    }
+    geteuid()
+}
+
 #[cfg(not(unix))]
 unsafe fn libc_getuid() -> u32 {
     0
+}
+
+#[cfg(not(unix))]
+unsafe fn libc_geteuid() -> u32 {
+    1
 }
 
 #[cfg(test)]
