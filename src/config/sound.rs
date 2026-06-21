@@ -10,6 +10,10 @@ use super::io::resolve_config_relative_path;
 #[serde(default)]
 pub struct SoundConfig {
     pub enabled: bool,
+    /// Notification playback volume as a percentage. 100 is normal volume.
+    pub volume: u8,
+    /// Seconds an agent must remain in a notifying state before playing sound.
+    pub delay_seconds: u64,
     /// Optional mp3 file path used for all notification sounds.
     /// Relative paths are resolved from the config file's directory.
     pub path: Option<PathBuf>,
@@ -145,6 +149,8 @@ impl Default for SoundConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            volume: 200,
+            delay_seconds: 10,
             path: None,
             done_path: None,
             request_path: None,
@@ -190,6 +196,8 @@ mod tests {
         let toml = r#"
 [ui.sound]
 enabled = true
+volume = 150
+delay_seconds = 10
 path = "sounds/all.mp3"
 done_path = "sounds/done.mp3"
 request_path = "/tmp/request.mp3"
@@ -200,6 +208,8 @@ claude = "on"
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert!(config.ui.sound.enabled);
+        assert_eq!(config.ui.sound.volume, 150);
+        assert_eq!(config.ui.sound.delay_seconds, 10);
         assert_eq!(config.ui.sound.path, Some(PathBuf::from("sounds/all.mp3")));
         assert_eq!(
             config.ui.sound.done_path,

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## [0.7.1] - 2026-06-21
+
+### Added
+- Added sound alert volume and delay selectors in Settings with `[ui.sound].volume` and `[ui.sound].delay_seconds` config support.
+
+### Fixed
+- Fixed PNG decoding against the current `png` crate API.
+
 ## [0.7.0] - 2026-06-15
 
 ### Added

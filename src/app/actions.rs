@@ -2678,7 +2678,17 @@ impl AppState {
         });
         let workspace_id = self.workspaces[ws_idx].id.clone();
 
-        if self.toast_config.delay_seconds == 0 {
+        let delay_seconds = if sound.is_some() {
+            self.sound
+                .delay_seconds
+                .min(crate::config::MAX_TOAST_DELAY_SECONDS)
+        } else {
+            self.toast_config
+                .delay_seconds
+                .min(crate::config::MAX_TOAST_DELAY_SECONDS)
+        };
+
+        if delay_seconds == 0 {
             return self.agent_notification_delivery(
                 ws_idx,
                 pane_id,
@@ -2701,10 +2711,6 @@ impl AppState {
                 state: change.state,
                 deadline: {
                     let now = std::time::Instant::now();
-                    let delay_seconds = self
-                        .toast_config
-                        .delay_seconds
-                        .min(crate::config::MAX_TOAST_DELAY_SECONDS);
                     now.checked_add(std::time::Duration::from_secs(delay_seconds))
                         .unwrap_or(now)
                 },
@@ -4298,6 +4304,30 @@ mod tests {
         assert_eq!(toast.title, "pi needs attention");
         assert_eq!(toast.context, "background · 2");
         assert!(state.pending_agent_notifications.is_empty());
+    }
+
+    #[test]
+    fn delayed_background_waiting_uses_sound_delay_for_sound_notifications() {
+        let mut state = app_with_workspaces(&["active", "background"]);
+        state.active = Some(0);
+        state.toast_config.delivery = crate::config::ToastDelivery::Herdr;
+        state.toast_config.delay_seconds = 1;
+        state.sound.delay_seconds = 30;
+        let bg_pane_id = *state.workspaces[1].panes.keys().next().unwrap();
+
+        let before = std::time::Instant::now();
+        state.handle_app_event(AppEvent::StateChanged {
+            pane_id: bg_pane_id,
+            agent: Some(Agent::Pi),
+            state: AgentState::Blocked,
+            visible_blocker: false,
+            visible_working: false,
+            process_exited: false,
+            observed_at: before,
+        });
+
+        let deadline = state.next_pending_agent_notification_deadline().unwrap();
+        assert!(deadline >= before + std::time::Duration::from_secs(30));
     }
 
     #[test]

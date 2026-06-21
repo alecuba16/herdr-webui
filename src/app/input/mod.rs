@@ -263,6 +263,10 @@ impl App {
                 match action {
                     SettingsAction::SaveTheme(name) => self.save_theme(&name),
                     SettingsAction::SaveSound(enabled) => self.save_sound(enabled),
+                    SettingsAction::SaveSoundVolume(volume) => self.save_sound_volume(volume),
+                    SettingsAction::SaveSoundDelay(delay_seconds) => {
+                        self.save_sound_delay(delay_seconds)
+                    }
                     SettingsAction::SaveToastDelivery(delivery) => {
                         self.save_toast_delivery(delivery)
                     }
