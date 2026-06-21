@@ -63,6 +63,27 @@ impl App {
         }
     }
 
+    pub(super) fn save_sound_volume(&mut self, volume: u8) {
+        if self.update_config_file("sound volume", |content| {
+            crate::config::upsert_section_value(content, "ui.sound", "volume", &volume.to_string())
+        }) {
+            self.apply_config_from_disk(false);
+        }
+    }
+
+    pub(super) fn save_sound_delay(&mut self, delay_seconds: u64) {
+        if self.update_config_file("sound delay", |content| {
+            crate::config::upsert_section_value(
+                content,
+                "ui.sound",
+                "delay_seconds",
+                &delay_seconds.to_string(),
+            )
+        }) {
+            self.apply_config_from_disk(false);
+        }
+    }
+
     pub(super) fn save_toast_delivery(&mut self, delivery: crate::config::ToastDelivery) {
         let value = match delivery {
             crate::config::ToastDelivery::Off => "\"off\"",

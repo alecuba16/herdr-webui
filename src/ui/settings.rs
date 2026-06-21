@@ -110,15 +110,7 @@ pub(super) fn render_settings_overlay(app: &AppState, frame: &mut Frame, area: R
             render_settings_theme(app, frame, content_area);
         }
         SettingsSection::Sound => {
-            render_settings_toggle(
-                frame,
-                content_area,
-                p,
-                "sound alerts",
-                "play sounds when agents change state in background",
-                app.sound_enabled(),
-                app.settings.list.selected,
-            );
+            render_settings_sound(app, frame, content_area);
         }
         SettingsSection::Toast => {
             render_modal_choice_list(
@@ -411,6 +403,53 @@ fn render_settings_toggle(
         p,
         1,
     );
+}
+
+fn render_settings_sound(app: &AppState, frame: &mut Frame, area: Rect) {
+    let p = &app.palette;
+    let [desc_area, _, list_area] = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Length(1),
+        Constraint::Min(2),
+    ])
+    .areas::<3>(area);
+
+    super::widgets::render_modal_description(
+        frame,
+        desc_area,
+        "play sounds when agents change state in background",
+        Style::default().fg(p.overlay1),
+    );
+
+    let rows = [
+        ("sound alerts: on", app.sound.enabled),
+        ("sound alerts: off", !app.sound.enabled),
+        ("volume: 50%", app.sound.volume == 50),
+        ("volume: 100%", app.sound.volume == 100),
+        ("volume: 150%", app.sound.volume == 150),
+        ("volume: 200%", app.sound.volume == 200),
+        ("sound delay: off", app.sound.delay_seconds == 0),
+        ("sound delay: 5s", app.sound.delay_seconds == 5),
+        ("sound delay: 10s", app.sound.delay_seconds == 10),
+        ("sound delay: 30s", app.sound.delay_seconds == 30),
+    ];
+
+    for (idx, (label, active)) in rows.iter().copied().enumerate() {
+        let style = if idx == app.settings.list.selected {
+            Style::default()
+                .bg(p.surface0)
+                .fg(p.text)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(p.subtext0)
+        };
+        let marker = if active { " ✓" } else { "" };
+        let row = Rect::new(list_area.x, list_area.y + idx as u16, list_area.width, 1);
+        frame.render_widget(
+            Paragraph::new(format!(" {label}{marker}")).style(style),
+            row,
+        );
+    }
 }
 
 fn render_settings_experiments(app: &AppState, frame: &mut Frame, area: Rect) {

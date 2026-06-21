@@ -298,6 +298,8 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # Play sounds when agents change state in background workspaces
 [ui.sound]
 # enabled = true
+# volume = 200 # percent: 50, 100, 150, or 200
+# delay_seconds = 10 # wait before playing sounds for agent state changes
 # Optional custom mp3 sound files. Relative paths are resolved from this config file's directory.
 # path = "sounds/notification.mp3"   # one mp3 file for all sound notifications
 # done_path = "sounds/done.mp3"      # overrides only finished notifications

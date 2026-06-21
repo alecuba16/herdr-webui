@@ -488,7 +488,7 @@ fn decode_png_rgba(bytes: &[u8]) -> Option<DecodedPng> {
     let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder.read_info().ok()?;
-    let mut buf = vec![0; reader.output_buffer_size()];
+    let mut buf = vec![0; reader.output_buffer_size()?];
     let info = reader.next_frame(&mut buf).ok()?;
     let frame = &buf[..info.buffer_size()];
     if info.bit_depth != png::BitDepth::Eight {

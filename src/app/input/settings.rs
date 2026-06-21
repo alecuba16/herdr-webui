@@ -9,12 +9,17 @@ use crate::{
     config::ToastDelivery,
 };
 
+const SOUND_VOLUME_OPTIONS: [u8; 4] = [50, 100, 150, 200];
+const SOUND_DELAY_OPTIONS: [u64; 4] = [0, 5, 10, 30];
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 // The shared `Save` verb is semantic: these actions persist settings.
 #[allow(clippy::enum_variant_names)]
 pub(super) enum SettingsAction {
     SaveTheme(String),
     SaveSound(bool),
+    SaveSoundVolume(u8),
+    SaveSoundDelay(u64),
     SaveToastDelivery(ToastDelivery),
     SaveAgentBorderLabels(bool),
     SavePaneHistory(bool),
@@ -43,6 +48,10 @@ impl App {
             match action {
                 SettingsAction::SaveTheme(name) => self.save_theme(&name),
                 SettingsAction::SaveSound(enabled) => self.save_sound(enabled),
+                SettingsAction::SaveSoundVolume(volume) => self.save_sound_volume(volume),
+                SettingsAction::SaveSoundDelay(delay_seconds) => {
+                    self.save_sound_delay(delay_seconds)
+                }
                 SettingsAction::SaveToastDelivery(delivery) => self.save_toast_delivery(delivery),
                 SettingsAction::SaveAgentBorderLabels(enabled) => {
                     self.save_agent_border_labels(enabled)
@@ -93,6 +102,25 @@ fn toast_delivery_for_index(idx: usize) -> ToastDelivery {
         1 => ToastDelivery::Herdr,
         2 => ToastDelivery::Terminal,
         _ => ToastDelivery::System,
+    }
+}
+
+fn sound_settings_index(state: &AppState) -> usize {
+    usize::from(!state.sound_enabled())
+}
+
+fn sound_settings_action_for_index(idx: usize) -> Option<SettingsAction> {
+    match idx {
+        0 => Some(SettingsAction::SaveSound(true)),
+        1 => Some(SettingsAction::SaveSound(false)),
+        2..=5 => SOUND_VOLUME_OPTIONS
+            .get(idx - 2)
+            .copied()
+            .map(SettingsAction::SaveSoundVolume),
+        idx => SOUND_DELAY_OPTIONS
+            .get(idx.saturating_sub(6))
+            .copied()
+            .map(SettingsAction::SaveSoundDelay),
     }
 }
 
@@ -168,7 +196,7 @@ pub(super) fn update_settings_state(state: &mut AppState, key: KeyEvent) -> Opti
             }
             KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => {
                 state.settings.section = SettingsSection::Sound;
-                state.settings.list.selected = usize::from(!state.sound_enabled());
+                state.settings.list.selected = sound_settings_index(state);
             }
             KeyCode::BackTab | KeyCode::Left | KeyCode::Char('h') => {
                 state.settings.section = SettingsSection::Experiments;
@@ -181,12 +209,10 @@ pub(super) fn update_settings_state(state: &mut AppState, key: KeyEvent) -> Opti
             },
         },
         SettingsSection::Sound => match key.code {
-            KeyCode::Up | KeyCode::Char('k') | KeyCode::Down | KeyCode::Char('j') => {
-                state.settings.list.selected = 1 - state.settings.list.selected.min(1);
-            }
+            KeyCode::Up | KeyCode::Char('k') => state.settings.list.move_prev(),
+            KeyCode::Down | KeyCode::Char('j') => state.settings.list.move_next(10),
             KeyCode::Enter | KeyCode::Char(' ') => {
-                let enabled = state.settings.list.selected == 0;
-                return Some(SettingsAction::SaveSound(enabled));
+                return sound_settings_action_for_index(state.settings.list.selected);
             }
             KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => {
                 state.settings.section = SettingsSection::Toast;
@@ -213,7 +239,7 @@ pub(super) fn update_settings_state(state: &mut AppState, key: KeyEvent) -> Opti
             }
             KeyCode::BackTab | KeyCode::Left | KeyCode::Char('h') => {
                 state.settings.section = SettingsSection::Sound;
-                state.settings.list.selected = usize::from(!state.sound_enabled());
+                state.settings.list.selected = sound_settings_index(state);
             }
             KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => {
                 state.settings.section = SettingsSection::PaneLabels;
@@ -309,7 +335,7 @@ pub(crate) fn open_settings_at(state: &mut AppState, section: SettingsSection) {
     state.settings.section = section;
     state.settings.list.selected = match section {
         SettingsSection::Theme => current_theme_index(&state.theme_name),
-        SettingsSection::Sound => usize::from(!state.sound_enabled()),
+        SettingsSection::Sound => sound_settings_index(state),
         SettingsSection::Toast => toast_delivery_index(state.toast_delivery()),
         SettingsSection::PaneLabels => usize::from(!state.agent_border_labels_enabled()),
         SettingsSection::Experiments => 0,
@@ -385,7 +411,7 @@ impl AppState {
             }
             SettingsSection::Sound => {
                 let list_y = area.y + 3;
-                if row >= list_y && row < list_y + 2 {
+                if row >= list_y && row < list_y + 10 {
                     Some((row - list_y) as usize)
                 } else {
                     None
@@ -426,7 +452,7 @@ impl AppState {
                     self.settings.section = section;
                     self.settings.list.select(match section {
                         SettingsSection::Theme => current_theme_index(&self.theme_name),
-                        SettingsSection::Sound => usize::from(!self.sound_enabled()),
+                        SettingsSection::Sound => sound_settings_index(self),
                         SettingsSection::Toast => toast_delivery_index(self.toast_delivery()),
                         SettingsSection::PaneLabels => {
                             usize::from(!self.agent_border_labels_enabled())
@@ -443,10 +469,7 @@ impl AppState {
                             preview_selected_theme(self);
                             None
                         }
-                        SettingsSection::Sound => {
-                            let enabled = idx == 0;
-                            Some(SettingsAction::SaveSound(enabled))
-                        }
+                        SettingsSection::Sound => sound_settings_action_for_index(idx),
                         SettingsSection::Toast => {
                             let delivery = toast_delivery_for_index(idx);
                             Some(SettingsAction::SaveToastDelivery(delivery))
@@ -539,6 +562,36 @@ mod tests {
 
         assert_eq!(action, Some(SettingsAction::SaveSound(true)));
         assert!(!state.sound.enabled);
+        assert_eq!(state.mode, Mode::Settings);
+    }
+
+    #[test]
+    fn settings_sound_delay_returns_save_action() {
+        let mut state = state_with_workspaces(&["test"]);
+        open_settings_at(&mut state, SettingsSection::Sound);
+        state.settings.list.selected = 8;
+
+        let action = update_settings_state(
+            &mut state,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()),
+        );
+
+        assert_eq!(action, Some(SettingsAction::SaveSoundDelay(10)));
+        assert_eq!(state.mode, Mode::Settings);
+    }
+
+    #[test]
+    fn settings_sound_volume_returns_save_action() {
+        let mut state = state_with_workspaces(&["test"]);
+        open_settings_at(&mut state, SettingsSection::Sound);
+        state.settings.list.selected = 5;
+
+        let action = update_settings_state(
+            &mut state,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()),
+        );
+
+        assert_eq!(action, Some(SettingsAction::SaveSoundVolume(200)));
         assert_eq!(state.mode, Mode::Settings);
     }
 
