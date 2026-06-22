@@ -161,6 +161,17 @@ make uninstall-mac
 make uninstall-linux
 ```
 
+## FAQ
+
+### `herdr rejected terminal connection: client version 14 is newer than server version 13; please upgrade the herdr server`
+
+This means WebUI is using a newer terminal attach protocol than the Herdr server process handling the session.
+
+Check two things:
+
+- Verify the `herdr` binary version in `PATH`, or the binary set through `HERDR_WEB_HERDR_BIN`.
+- Make sure old Herdr server sessions are not still running. Updating the `herdr` binary does not upgrade already-running session processes; close all running Herdr sessions, then start them again with the updated binary.
+
 ## Release Policy
 
 WebUI releases use `v0.0.x` tags and GitHub Release notes. Root Herdr releases are not produced by this repository.
