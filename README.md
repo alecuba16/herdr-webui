@@ -58,21 +58,23 @@ HERDR_WEB_HERDR_BIN=/opt/homebrew/bin/herdr make run-web-local
 ## CLI
 
 ```text
-herdr-webui [--bind HOST:PORT] [--session NAME] [--api-socket PATH] [--client-socket PATH]
+herdr-webui [--verbose] [--bind HOST:PORT] [--session NAME] [--api-socket PATH] [--client-socket PATH]
 herdr-webui --version
-herdr-webui install-mac [--bind HOST:PORT] [--session NAME]
-herdr-webui update-mac
+herdr-webui install-mac [--verbose] [--bind HOST:PORT] [--session NAME]
+herdr-webui update-mac [--verbose]
 herdr-webui install-linux [--bind HOST:PORT] [--session NAME]
 herdr-webui update-linux
-herdr-webui start-mac | start
-herdr-webui stop-mac | stop
-herdr-webui restart-mac | restart
+herdr-webui start-mac | start [--verbose]
+herdr-webui stop-mac | stop [--verbose]
+herdr-webui restart-mac | restart [--verbose]
 herdr-webui start-linux | start
 herdr-webui stop-linux | stop
 herdr-webui restart-linux | restart
-herdr-webui uninstall-mac
+herdr-webui uninstall-mac [--verbose]
 herdr-webui uninstall-linux
 ```
+
+Use `--verbose`, `-v`, or `HERDR_WEB_VERBOSE=1` with macOS service commands to print LaunchAgent diagnostics, including UID/EUID, launchctl domain, service target, plist path, and launchctl stderr.
 
 ## Project Layout
 
@@ -97,6 +99,7 @@ Server access settings are stored in `~/.config/herdr-webui/webui-settings.json`
 - Username.
 - Password.
 - Localhost auth bypass.
+- No-sleep Auto cooldown.
 
 Non-localhost binds require both username and password. WebUI rejects `0.0.0.0` or any other non-loopback bind until both credentials are configured.
 
@@ -122,6 +125,8 @@ Install as a per-user macOS LaunchAgent:
 make install-mac
 ```
 
+Run macOS LaunchAgent commands as your normal user, not with `sudo`. LaunchAgents load into the current user's `gui/$UID` launchctl domain; running with `sudo` targets root's domain and is rejected.
+
 Install as a per-user Linux systemd service:
 
 ```sh
@@ -133,6 +138,13 @@ Release binaries can install themselves too:
 ```sh
 ./herdr-webui install-mac
 ./herdr-webui install-linux
+```
+
+For macOS service troubleshooting:
+
+```sh
+./herdr-webui install-mac --verbose
+./herdr-webui uninstall-mac --verbose
 ```
 
 Update installed binary and restart service:
