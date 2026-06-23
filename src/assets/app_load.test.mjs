@@ -162,6 +162,15 @@ describe("app bundle load", () => {
     match(source, /displayStatus = dismissed \? "ignored"/);
   });
 
+  it("defines tab activity setting and badge", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    match(source, /id="optShowTabActivity"/);
+    match(source, /tab-activity/);
+    match(source, /tabActivityLabel/);
+  });
+
   it("captures terminal paste before xterm native paste", () => {
     match(source, /addEventListener\(\s*"paste"/);
     match(source, /stopImmediatePropagation\(\)/);

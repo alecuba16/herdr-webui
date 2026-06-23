@@ -43,6 +43,7 @@ let term,
   lastWorkspacesHtml = "",
   lastAgentsHtml = "",
   lastTabsHtml = "",
+  tabActivity = {},
   closeChordUntil = 0,
   inputQueue = [],
   inputFlushTimer = null,
@@ -55,6 +56,7 @@ const {
   normalizeAbsolutePath,
   normalizeThemeColors,
   terminalPasteInput,
+  tabActivityLabel,
   terminalWheelScrollBatch,
 } = globalThis.HerdrAppHelpers;
 const workspaces = el("workspaces"),
@@ -458,6 +460,7 @@ const defaultOptions = {
   workingDismissMinutes: 30,
   workspaceSort: "default",
   scrollLines: 3,
+  showTabActivity: false,
   worktreeAutoDiscoverSeconds: 3,
   generateWorktreeNames: false,
   worktreeDefaultDirectory: "../worktrees",
@@ -492,6 +495,7 @@ function normalizeOptions(value) {
   if (!["default", "drag", "state"].includes(next.workspaceSort))
     next.workspaceSort = defaultOptions.workspaceSort;
   next.scrollLines = Math.max(1, Math.min(20, Number(next.scrollLines) || 3));
+  next.showTabActivity = next.showTabActivity === true;
   next.worktreeAutoDiscoverSeconds = Math.max(
     0,
     Math.min(
@@ -688,7 +692,7 @@ if (soundSetting && !el("optSortAgents"))
     .closest("label")
     .insertAdjacentHTML(
       "afterend",
-      '<label class="option"><span>Close panel shortcut<small>Stored in browser storage and available after reopening the tab.</small></span><select class="settings-select" id="optCloseShortcut"><option value="off">Disabled</option><option value="altw">Option+W</option><option value="shiftspacew">Shift+Space then W</option></select></label><label class="option"><input type="checkbox" id="optSortAgents"><span>Sort agents by attention<small>Blocked first, then done, unknown, idle, ignored working, working.</small></span></label><label class="option"><span>Ignore stuck working for<small>Minutes to keep a local dismissed-working override before showing working again.</small></span><input id="optWorkingDismissMinutes" type="number" min="1" max="1440" step="1"></label><label class="option"><span>Workspace sorting<small>Default tree order, shared drag-and-drop order, or attention state priority.</small></span><select class="settings-select" id="optWorkspaceSort"><option value="default">Default</option><option value="drag">Drag&drop</option><option value="state">State</option></select></label><label class="option"><span>Notification scope<small>Choose whether sounds ring in every open tab or only the tab viewing the agent panel.</small></span><select class="settings-select" id="optSoundScope"><option value="current">Current agent tab</option><option value="all">All tabs</option></select></label><label class="option"><input type="checkbox" id="optGenerateWorktreeNames"><span>Generate worktree branch names<small>Allow blank Branch name in Worktrees modal. Herdr generates worktree/&lt;name&gt;.</small></span></label><label class="option"><span>Default worktree directory<small>Relative paths resolve from repo root. Example: ../worktrees.</small></span><input id="optWorktreeDefaultDirectory" placeholder="../worktrees"></label><label class="option"><span>Scroll speed<small><span id="scrollLinesValue">3</span> terminal lines per wheel step.</small></span><input type="range" id="optScrollLines" min="1" max="20" step="1"></label><label class="option"><span>Worktree autodiscover<small>Seconds to wait after path input stops. Set 0 for immediate.</small></span><input type="number" id="optWorktreeAutoDiscover" min="0" max="30" step="0.5"></label>',
+      '<label class="option"><span>Close panel shortcut<small>Stored in browser storage and available after reopening the tab.</small></span><select class="settings-select" id="optCloseShortcut"><option value="off">Disabled</option><option value="altw">Option+W</option><option value="shiftspacew">Shift+Space then W</option></select></label><label class="option"><input type="checkbox" id="optSortAgents"><span>Sort agents by attention<small>Blocked first, then done, unknown, idle, ignored working, working.</small></span></label><label class="option"><span>Ignore stuck working for<small>Minutes to keep a local dismissed-working override before showing working again.</small></span><input id="optWorkingDismissMinutes" type="number" min="1" max="1440" step="1"></label><label class="option"><input type="checkbox" id="optShowTabActivity"><span>Show panel last update<small>Display local last-change age on top panel tabs. Updates on refreshes, events, and selected terminal output; no timer polling.</small></span></label><label class="option"><span>Workspace sorting<small>Default tree order, shared drag-and-drop order, or attention state priority.</small></span><select class="settings-select" id="optWorkspaceSort"><option value="default">Default</option><option value="drag">Drag&drop</option><option value="state">State</option></select></label><label class="option"><span>Notification scope<small>Choose whether sounds ring in every open tab or only the tab viewing the agent panel.</small></span><select class="settings-select" id="optSoundScope"><option value="current">Current agent tab</option><option value="all">All tabs</option></select></label><label class="option"><input type="checkbox" id="optGenerateWorktreeNames"><span>Generate worktree branch names<small>Allow blank Branch name in Worktrees modal. Herdr generates worktree/&lt;name&gt;.</small></span></label><label class="option"><span>Default worktree directory<small>Relative paths resolve from repo root. Example: ../worktrees.</small></span><input id="optWorktreeDefaultDirectory" placeholder="../worktrees"></label><label class="option"><span>Scroll speed<small><span id="scrollLinesValue">3</span> terminal lines per wheel step.</small></span><input type="range" id="optScrollLines" min="1" max="20" step="1"></label><label class="option"><span>Worktree autodiscover<small>Seconds to wait after path input stops. Set 0 for immediate.</small></span><input type="number" id="optWorktreeAutoDiscover" min="0" max="30" step="0.5"></label>',
     );
 groupSettingsSections();
 function groupSettingsSections() {
@@ -714,6 +718,7 @@ function groupSettingsSections() {
         "optSortAgents",
         "optWorkingDismissMinutes",
         "optCloseShortcut",
+        "optShowTabActivity",
       ],
     },
     {
@@ -771,6 +776,7 @@ function applyOptions() {
     soundScope = el("optSoundScope"),
     scrollLines = el("optScrollLines"),
     scrollLinesValue = el("scrollLinesValue"),
+    showTabActivity = el("optShowTabActivity"),
     worktreeAutoDiscover = el("optWorktreeAutoDiscover"),
     generateWorktreeNames = el("optGenerateWorktreeNames"),
     worktreeDefaultDirectory = el("optWorktreeDefaultDirectory"),
@@ -792,6 +798,7 @@ function applyOptions() {
   if (scrollLines) scrollLines.value = String(options.scrollLines || 3);
   if (scrollLinesValue)
     scrollLinesValue.textContent = String(options.scrollLines || 3);
+  if (showTabActivity) showTabActivity.checked = !!options.showTabActivity;
   if (worktreeAutoDiscover)
     worktreeAutoDiscover.value = String(
       options.worktreeAutoDiscoverSeconds ?? 3,
@@ -1557,6 +1564,7 @@ function tabTitle(t) {
 }
 function render() {
   cleanupWorkingDismissals();
+  updateTabActivity();
   const wsById = Object.fromEntries(
     state.workspaces.map((w) => [w.workspace_id, w]),
   );
@@ -1633,6 +1641,53 @@ function updateTitle(wsById, tabById, tabCountsByWorkspace, pane) {
       : "panel";
   document.title = `${workspace} • ${panel}`;
 }
+function tabActivityKey(workspaceId, tabId) {
+  return `${state.session || "default"}|${workspaceId || ""}|${tabId || ""}`;
+}
+function tabActivitySignature(t) {
+  const panes = state.panes
+    .filter((p) => p.tab_id === t.tab_id)
+    .map((p) => [p.pane_id, p.terminal_id, !!p.focused]);
+  const agents = state.agents
+    .filter((a) => a.workspace_id === t.workspace_id && a.tab_id === t.tab_id)
+    .map((a) => [
+      a.pane_id,
+      a.terminal_id,
+      a.name || a.display_agent || a.agent || "",
+      statusClass(a.agent_status),
+    ]);
+  return JSON.stringify([
+    t.workspace_id,
+    t.tab_id,
+    t.label || "",
+    t.number || 0,
+    !!t.focused,
+    panes,
+    agents,
+  ]);
+}
+function updateTabActivity() {
+  const now = Date.now(),
+    seen = new Set();
+  for (const t of state.allTabs.concat(state.tabs)) {
+    const key = tabActivityKey(t.workspace_id, t.tab_id),
+      signature = tabActivitySignature(t),
+      current = tabActivity[key];
+    seen.add(key);
+    if (!current || current.signature !== signature)
+      tabActivity[key] = { signature, updatedAt: now };
+  }
+  for (const key of Object.keys(tabActivity)) {
+    if (key.startsWith(`${state.session || "default"}|`) && !seen.has(key))
+      delete tabActivity[key];
+  }
+}
+function markCurrentTabActivity() {
+  if (!state.ws || !state.tab) return;
+  const key = tabActivityKey(state.ws, state.tab),
+    current = tabActivity[key] || {};
+  tabActivity[key] = { ...current, updatedAt: Date.now() };
+}
 function tabHoverInfo(t, panesByTab) {
   const panes = panesByTab.get(t.tab_id) || [];
   const pane = panes.find((p) => p.pane_id === state.pane) || panes[0];
@@ -1646,7 +1701,12 @@ function tabHoverInfo(t, panesByTab) {
 function renderTabButton(t, panesByTab) {
   if (state.editingTab === t.tab_id)
     return `<span class="tab ${t.tab_id === state.tab ? "active" : ""}"><input class="tab-rename-input" value="${escapeAttr(state.editingTabValue)}" oninput="state.editingTabValue=this.value" onkeydown="tabRenameKey(event,'${t.tab_id}')"></span>`;
-  return `<a class="tab ${t.tab_id === state.tab ? "active" : ""}" title="${escapeAttr(tabHoverInfo(t, panesByTab))}" href="${escapeAttr(selectionPath(t.workspace_id, t.tab_id))}" target="herdr-selection" onclick="return navigateSelection(event,'${t.workspace_id}','${t.tab_id}')" ondblclick="event.preventDefault();event.stopPropagation();startTabRename('${t.tab_id}','${escapeAttr(tabTitle(t))}')"><span class="tab-label">${escapeHtml(tabTitle(t))}</span><span class="tab-actions"><span class="mini warn" title="Close panel" onclick="event.preventDefault();event.stopPropagation();closeTab('${t.tab_id}')">✕</span></span></a>`;
+  const activity = tabActivity[tabActivityKey(t.workspace_id, t.tab_id)],
+    activityLabel =
+      options.showTabActivity && activity
+        ? tabActivityLabel(activity.updatedAt, Date.now())
+        : "";
+  return `<a class="tab ${t.tab_id === state.tab ? "active" : ""}" title="${escapeAttr(tabHoverInfo(t, panesByTab))}" href="${escapeAttr(selectionPath(t.workspace_id, t.tab_id))}" target="herdr-selection" onclick="return navigateSelection(event,'${t.workspace_id}','${t.tab_id}')" ondblclick="event.preventDefault();event.stopPropagation();startTabRename('${t.tab_id}','${escapeAttr(tabTitle(t))}')"><span class="tab-label">${escapeHtml(tabTitle(t))}</span>${activityLabel ? `<span class="tab-activity">${escapeHtml(activityLabel)}</span>` : ""}<span class="tab-actions"><span class="mini warn" title="Close panel" onclick="event.preventDefault();event.stopPropagation();closeTab('${t.tab_id}')">✕</span></span></a>`;
 }
 function renderSpaces() {
   const groups = new Map(),
@@ -2130,6 +2190,7 @@ function connectTerminal() {
   ws.onmessage = (e) => {
     if (termWs !== ws || connectedTerminalId !== target) return;
     setTerminalLoading(false);
+    markCurrentTabActivity();
     if (typeof e.data === "string") term.write(e.data);
     else term.write(new Uint8Array(e.data));
     clearDismissedWorkingForTerminal(state.terminalId);
@@ -3427,6 +3488,12 @@ el("optWorkingDismissMinutes").oninput = () => {
     1,
     Math.min(1440, Number(el("optWorkingDismissMinutes").value) || 30),
   );
+  saveOptions();
+  applyOptions();
+  render();
+};
+el("optShowTabActivity").onchange = () => {
+  options.showTabActivity = el("optShowTabActivity").checked;
   saveOptions();
   applyOptions();
   render();

@@ -273,10 +273,21 @@ body.light {
   color: var(--fg);
   border: 1px solid var(--border);
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.tab-activity {
+  color: var(--muted);
+  font-size: 11px;
 }
 .tab.active {
   background: var(--accent);
   color: var(--bg);
+}
+.tab.active .tab-activity {
+  color: var(--accent-fg);
+  opacity: 0.75;
 }
 .tab.active .mini {
   color: var(--fg);
