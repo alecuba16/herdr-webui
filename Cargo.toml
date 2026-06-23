@@ -1,6 +1,6 @@
 [package]
 name = "herdr-webui"
-version = "0.0.31"
+version = "0.0.32"
 edition = "2021"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/alecuba16/herdr-webui"

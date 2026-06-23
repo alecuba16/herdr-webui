@@ -159,6 +159,7 @@ describe("app bundle load", () => {
     match(source, /id="optWorkingDismissMinutes"/);
     match(source, /id="optStuckWorkingEnabled"/);
     match(source, /id="optAgentSortMode"/);
+    match(source, /id="optParentCloseMode"/);
     match(source, /Dismiss/);
     match(source, /herdr-web-working-dismissals/);
     match(source, /displayStatus = dismissed \? "ignored"/);
