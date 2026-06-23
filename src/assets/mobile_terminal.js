@@ -45,6 +45,25 @@
       }
       terminal.innerHTML = "";
       term.open(terminal);
+      if (!terminal.dataset.pasteHandler) {
+        terminal.addEventListener(
+          "paste",
+          (event) => {
+            const text =
+              event.clipboardData && event.clipboardData.getData("text/plain");
+            if (!text || !termWs || termWs.readyState !== 1) return;
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            const paste = globalThis.HerdrAppHelpers.terminalPasteInput(
+              text,
+              !!(term && term.modes && term.modes.bracketedPasteMode),
+            );
+            termWs.send(paste);
+          },
+          true,
+        );
+        terminal.dataset.pasteHandler = "1";
+      }
       openedTerminalElement = terminal;
       try {
         term.resize(nextSize.cols, nextSize.rows);

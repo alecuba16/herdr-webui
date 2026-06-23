@@ -45,14 +45,18 @@ describe("normalizeAbsolutePath", () => {
 });
 
 describe("terminalPasteInput", () => {
-  it("keeps pasted newlines as non-submitting line feeds", () => {
-    assert.equal(terminalPasteInput("a\nb\r\nc\rd", false), "a\nb\nc\nd");
+  it("converts pasted newlines to non-submitting spaces", () => {
+    assert.equal(terminalPasteInput("a\nb\r\nc\rd", false), "a b c d");
+  });
+
+  it("drops trailing pasted newlines", () => {
+    assert.equal(terminalPasteInput("run command\n", false), "run command");
   });
 
   it("wraps bracketed paste when enabled", () => {
     assert.equal(
       terminalPasteInput("hello\n", true),
-      "\x1b[200~hello\n\x1b[201~",
+      "\x1b[200~hello\x1b[201~",
     );
   });
 });
