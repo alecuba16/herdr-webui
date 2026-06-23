@@ -2094,7 +2094,7 @@ async fn events_socket(state: WebState, api: ApiClient, mut socket: WebSocket) {
                 {"type":"workspace.created"}, {"type":"workspace.updated"}, {"type":"workspace.renamed"}, {"type":"workspace.closed"}, {"type":"workspace.focused"},
                 {"type":"worktree.created"}, {"type":"worktree.opened"}, {"type":"worktree.removed"},
                 {"type":"tab.created"}, {"type":"tab.closed"}, {"type":"tab.focused"}, {"type":"tab.renamed"},
-                {"type":"pane.created"}, {"type":"pane.closed"}, {"type":"pane.focused"}, {"type":"pane.moved"}, {"type":"pane.exited"}, {"type":"pane.agent_detected"}
+                {"type":"pane.created"}, {"type":"pane.closed"}, {"type":"pane.focused"}, {"type":"pane.moved"}, {"type":"pane.exited"}, {"type":"pane.agent_detected"}, {"type":"pane.agent_status_changed"}
             ]}
         });
         let Ok(mut stream) = subscribe_api.subscribe(request) else {

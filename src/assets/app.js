@@ -456,7 +456,8 @@ const defaultOptions = {
   soundScope: "current",
   shiftEnterNewline: true,
   closeShortcut: "off",
-  sortAgentsByStatus: false,
+  agentSortMode: "off",
+  stuckWorkingEnabled: true,
   workingDismissMinutes: 30,
   workspaceSort: "default",
   scrollLines: 3,
@@ -485,7 +486,11 @@ function normalizeOptions(value) {
   if (!["off", "altw", "shiftspacew"].includes(next.closeShortcut))
     next.closeShortcut = defaultOptions.closeShortcut;
   next.shiftEnterNewline = next.shiftEnterNewline !== false;
-  next.sortAgentsByStatus = next.sortAgentsByStatus === true;
+  if (!["off", "attention", "attention_inverted"].includes(next.agentSortMode))
+    next.agentSortMode = defaultOptions.agentSortMode;
+  next.stuckWorkingEnabled = next.stuckWorkingEnabled !== false;
+  if (next.sortAgentsByStatus === true) next.agentSortMode = "attention";
+  delete next.sortAgentsByStatus;
   next.workingDismissMinutes = Math.max(
     1,
     Math.min(1440, Number(next.workingDismissMinutes) || 30),
@@ -550,6 +555,13 @@ function agentSignature(a) {
   ].join("|");
 }
 function cleanupWorkingDismissals() {
+  if (!options.stuckWorkingEnabled) {
+    if (Object.keys(workingDismissals).length) {
+      workingDismissals = {};
+      saveWorkingDismissals();
+    }
+    return;
+  }
   const now = Date.now();
   const ttl =
     Math.max(1, Number(options.workingDismissMinutes) || 30) * 60 * 1000;
@@ -579,6 +591,7 @@ function cleanupWorkingDismissals() {
 }
 function isWorkingDismissed(agent) {
   return (
+    options.stuckWorkingEnabled &&
     !!workingDismissals[agentOverrideKey(agent)] &&
     statusClass(agent.agent_status) === "working"
   );
@@ -687,12 +700,12 @@ async function setNoSleepMode(mode) {
 }
 saveOptions();
 const soundSetting = el("optSound");
-if (soundSetting && !el("optSortAgents"))
+if (soundSetting && !el("optAgentSortMode"))
   soundSetting
     .closest("label")
     .insertAdjacentHTML(
       "afterend",
-      '<label class="option"><span>Close panel shortcut<small>Stored in browser storage and available after reopening the tab.</small></span><select class="settings-select" id="optCloseShortcut"><option value="off">Disabled</option><option value="altw">Option+W</option><option value="shiftspacew">Shift+Space then W</option></select></label><label class="option"><input type="checkbox" id="optSortAgents"><span>Sort agents by attention<small>Blocked first, then done, unknown, idle, ignored working, working.</small></span></label><label class="option"><span>Ignore stuck working for<small>Minutes to keep a local dismissed-working override before showing working again.</small></span><input id="optWorkingDismissMinutes" type="number" min="1" max="1440" step="1"></label><label class="option"><input type="checkbox" id="optShowTabActivity"><span>Show panel last update<small>Display local last-change age on top panel tabs. Updates on refreshes, events, and selected terminal output; no timer polling.</small></span></label><label class="option"><span>Workspace sorting<small>Default tree order, shared drag-and-drop order, or attention state priority.</small></span><select class="settings-select" id="optWorkspaceSort"><option value="default">Default</option><option value="drag">Drag&drop</option><option value="state">State</option></select></label><label class="option"><span>Notification scope<small>Choose whether sounds ring in every open tab or only the tab viewing the agent panel.</small></span><select class="settings-select" id="optSoundScope"><option value="current">Current agent tab</option><option value="all">All tabs</option></select></label><label class="option"><input type="checkbox" id="optGenerateWorktreeNames"><span>Generate worktree branch names<small>Allow blank Branch name in Worktrees modal. Herdr generates worktree/&lt;name&gt;.</small></span></label><label class="option"><span>Default worktree directory<small>Relative paths resolve from repo root. Example: ../worktrees.</small></span><input id="optWorktreeDefaultDirectory" placeholder="../worktrees"></label><label class="option"><span>Scroll speed<small><span id="scrollLinesValue">3</span> terminal lines per wheel step.</small></span><input type="range" id="optScrollLines" min="1" max="20" step="1"></label><label class="option"><span>Worktree autodiscover<small>Seconds to wait after path input stops. Set 0 for immediate.</small></span><input type="number" id="optWorktreeAutoDiscover" min="0" max="30" step="0.5"></label>',
+      '<label class="option"><span>Close panel shortcut<small>Stored in browser storage and available after reopening the tab.</small></span><select class="settings-select" id="optCloseShortcut"><option value="off">Disabled</option><option value="altw">Option+W</option><option value="shiftspacew">Shift+Space then W</option></select></label><label class="option"><span>Agent sorting<small>Sort agents by attention priority, or show them in default order.</small></span><select class="settings-select" id="optAgentSortMode"><option value="off">Default order</option><option value="attention">Attention (blocked first)</option><option value="attention_inverted">Attention (working first)</option></select></label><label class="option"><input type="checkbox" id="optStuckWorkingEnabled"><span>Ignore stuck working agents<small>Dismiss working agents that appear stuck. Clears automatically on status changes and terminal output.</small></span></label><label class="option"><span>Ignore stuck working for<small>Minutes to keep a local dismissed-working override before showing working again.</small></span><input id="optWorkingDismissMinutes" type="number" min="1" max="1440" step="1"></label><label class="option"><input type="checkbox" id="optShowTabActivity"><span>Show panel last update<small>Display local last-change age on top panel tabs. Updates on refreshes, events, and selected terminal output; no timer polling.</small></span></label><label class="option"><span>Workspace sorting<small>Default tree order, shared drag-and-drop order, or attention state priority.</small></span><select class="settings-select" id="optWorkspaceSort"><option value="default">Default</option><option value="drag">Drag&drop</option><option value="state">State</option></select></label><label class="option"><span>Notification scope<small>Choose whether sounds ring in every open tab or only the tab viewing the agent panel.</small></span><select class="settings-select" id="optSoundScope"><option value="current">Current agent tab</option><option value="all">All tabs</option></select></label><label class="option"><input type="checkbox" id="optGenerateWorktreeNames"><span>Generate worktree branch names<small>Allow blank Branch name in Worktrees modal. Herdr generates worktree/&lt;name&gt;.</small></span></label><label class="option"><span>Default worktree directory<small>Relative paths resolve from repo root. Example: ../worktrees.</small></span><input id="optWorktreeDefaultDirectory" placeholder="../worktrees"></label><label class="option"><span>Scroll speed<small><span id="scrollLinesValue">3</span> terminal lines per wheel step.</small></span><input type="range" id="optScrollLines" min="1" max="20" step="1"></label><label class="option"><span>Worktree autodiscover<small>Seconds to wait after path input stops. Set 0 for immediate.</small></span><input type="number" id="optWorktreeAutoDiscover" min="0" max="30" step="0.5"></label>',
     );
 groupSettingsSections();
 function groupSettingsSections() {
@@ -715,7 +728,8 @@ function groupSettingsSections() {
       ids: [
         "optSound",
         "optSoundScope",
-        "optSortAgents",
+        "optAgentSortMode",
+        "optStuckWorkingEnabled",
         "optWorkingDismissMinutes",
         "optCloseShortcut",
         "optShowTabActivity",
@@ -770,7 +784,8 @@ function applyOptions() {
     sound = el("optSound"),
     themeSelect = el("optTheme"),
     closeShortcut = el("optCloseShortcut"),
-    sortAgents = el("optSortAgents"),
+    sortAgents = el("optAgentSortMode"),
+    stuckWorkingEnabled = el("optStuckWorkingEnabled"),
     workingDismissMinutes = el("optWorkingDismissMinutes"),
     workspaceSort = el("optWorkspaceSort"),
     soundScope = el("optSoundScope"),
@@ -790,7 +805,9 @@ function applyOptions() {
   if (closeShortcut) closeShortcut.value = options.closeShortcut || "off";
   if (closeShortcutCurrent)
     closeShortcutCurrent.textContent = closeShortcutLabel();
-  if (sortAgents) sortAgents.checked = !!options.sortAgentsByStatus;
+  if (sortAgents) sortAgents.value = options.agentSortMode || "off";
+  if (stuckWorkingEnabled)
+    stuckWorkingEnabled.checked = options.stuckWorkingEnabled !== false;
   if (workingDismissMinutes)
     workingDismissMinutes.value = String(options.workingDismissMinutes || 30);
   if (workspaceSort) workspaceSort.value = options.workspaceSort || "default";
@@ -1922,8 +1939,11 @@ function samePath(a, b) {
 }
 function renderAgents(wsById, tabById, tabCountsByWorkspace) {
   const list = state.agents.slice();
-  if (options.sortAgentsByStatus)
-    list.sort((a, b) => agentAttentionRank(a) - agentAttentionRank(b));
+  if (options.agentSortMode !== "off")
+    list.sort((a, b) => {
+      const diff = agentAttentionRank(a) - agentAttentionRank(b);
+      return options.agentSortMode === "attention_inverted" ? -diff : diff;
+    });
   return list
     .map((a) => renderAgentRow(a, wsById, tabById, tabCountsByWorkspace))
     .join("");
@@ -1962,7 +1982,7 @@ function renderAgentRow(a, wsById, tabById, tabCountsByWorkspace) {
   const dismissed = isWorkingDismissed(a);
   const displayStatus = dismissed ? "ignored" : status;
   const action =
-    status === "working"
+    status === "working" && options.stuckWorkingEnabled
       ? dismissed
         ? `<span class="mini agent-action" title="Show this working agent again" onclick="event.preventDefault();event.stopPropagation();restoreWorkingAgent('${a.workspace_id}','${a.tab_id}','${a.pane_id}','${a.terminal_id || ""}')">Undo</span>`
         : `<span class="mini agent-action" title="Locally ignore this stuck working state" onclick="event.preventDefault();event.stopPropagation();dismissWorkingAgent('${a.workspace_id}','${a.tab_id}','${a.pane_id}','${a.terminal_id || ""}')">Dismiss</span>`
@@ -2031,7 +2051,28 @@ function connectEvents() {
       return;
     }
     if (msg.type === "snapshot") applySnapshot(msg);
-    else if (msg.type === "event") scheduleRefresh();
+    else if (msg.type === "event") {
+      const evt = msg.event || {},
+        kind = evt.event || evt.type;
+      if (kind === "pane.agent_status_changed") {
+        const d = evt.data || {};
+        if (statusClass(d.agent_status) !== "working") {
+          for (const agent of state.agents) {
+            if (
+              agent.pane_id === d.pane_id &&
+              agent.workspace_id === d.workspace_id
+            ) {
+              const key = agentOverrideKey(agent);
+              if (workingDismissals[key]) {
+                delete workingDismissals[key];
+                saveWorkingDismissals();
+              }
+            }
+          }
+        }
+      }
+      scheduleRefresh();
+    }
   };
   ws.onclose = () => {
     if (eventWs === ws) eventWs = null;
@@ -3477,8 +3518,14 @@ el("optShiftEnterNewline").onchange = () => {
 };
 el("optCloseShortcut").oninput = saveCloseShortcutOption;
 el("optCloseShortcut").onchange = saveCloseShortcutOption;
-el("optSortAgents").onchange = () => {
-  options.sortAgentsByStatus = el("optSortAgents").checked;
+el("optAgentSortMode").onchange = () => {
+  options.agentSortMode = el("optAgentSortMode").value;
+  saveOptions();
+  applyOptions();
+  render();
+};
+el("optStuckWorkingEnabled").onchange = () => {
+  options.stuckWorkingEnabled = el("optStuckWorkingEnabled").checked;
   saveOptions();
   applyOptions();
   render();
