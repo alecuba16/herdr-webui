@@ -669,6 +669,7 @@ fn app_router(state: WebState) -> Router {
         .route("/api/tabs/{tab_id}/rename", post(rename_tab))
         .route("/api/tabs/{tab_id}/close", post(close_tab))
         .route("/api/panes", get(panes))
+        .route("/api/panes/{pane_id}/close", post(close_pane))
         .route("/api/pane-layout", get(pane_layout))
         .route("/api/agents", get(agents))
         .route("/assets/app.css", get(app_css))
@@ -2060,6 +2061,21 @@ async fn close_tab(
     proxy_request(
         &api_for_headers(&state, &headers),
         json!({ "id": "web:tab:close", "method": "tab.close", "params": { "tab_id": tab_id } }),
+    )
+}
+
+async fn close_pane(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    AxumPath(pane_id): AxumPath<String>,
+) -> Response {
+    if let Err(response) = require_auth(&state, &headers, remote) {
+        return response;
+    }
+    proxy_request(
+        &api_for_headers(&state, &headers),
+        json!({ "id": "web:pane:close", "method": "pane.close", "params": { "pane_id": pane_id } }),
     )
 }
 

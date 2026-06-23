@@ -3186,24 +3186,36 @@ async function createDiscoveredWorktree() {
 async function closeWorkspace(id) {
   const w = state.workspaces.find((x) => x.workspace_id === id),
     kind = isLinkedWorktree(w) ? "worktree" : "workspace";
-  const linkedToReopen =
-    w && !isLinkedWorktree(w)
-      ? state.workspaces
-          .filter(
-            (x) =>
-              isLinkedWorktree(x) &&
-              worktreeGroupKey(x) === worktreeGroupKey(w),
-          )
-          .map((x) => ({
-            path: x.worktree && x.worktree.checkout_path,
-            label: x.label,
-          }))
-          .filter((x) => x.path)
-      : [];
-  let msg = `Close ${kind} "${workspaceCloseName(id)}"?`;
-  if (linkedToReopen.length)
-    msg += `\n\nThis will also close ${linkedToReopen.length} linked worktree(s) and stop their processes. They will be re-opened with fresh shells.`;
-  if (!confirm(msg)) return;
+  const hasLinkedWorktrees =
+    w &&
+    !isLinkedWorktree(w) &&
+    state.workspaces.some(
+      (x) =>
+        isLinkedWorktree(x) && worktreeGroupKey(x) === worktreeGroupKey(w),
+    );
+  if (hasLinkedWorktrees) {
+    const wsTabs = state.tabs.filter((t) => t.workspace_id === id);
+    if (
+      !confirm(
+        `Close panels in "${workspaceCloseName(id)}"? Linked worktrees will keep running.`,
+      )
+    )
+      return;
+    for (const tab of wsTabs) {
+      const tabPanes = state.panes.filter((p) => p.tab_id === tab.tab_id);
+      for (const pane of tabPanes) {
+        try {
+          await api(
+            `/api/panes/${encodeURIComponent(pane.pane_id)}/close`,
+            { method: "POST" },
+          );
+        } catch (e) {}
+      }
+    }
+    refresh();
+    return;
+  }
+  if (!confirm(`Close ${kind} "${workspaceCloseName(id)}"?`)) return;
   await api(`/api/workspaces/${encodeURIComponent(id)}/close`, {
     method: "POST",
   });
@@ -3211,16 +3223,6 @@ async function closeWorkspace(id) {
     state.ws = null;
     state.tab = null;
     state.pane = null;
-  }
-  await refresh();
-  for (const wt of linkedToReopen) {
-    try {
-      await api("/api/worktrees/open", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ path: wt.path, label: wt.label }),
-      });
-    } catch (e) {}
   }
   refresh();
 }
