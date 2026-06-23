@@ -162,6 +162,12 @@ describe("app bundle load", () => {
     match(source, /displayStatus = dismissed \? "ignored"/);
   });
 
+  it("captures terminal paste before xterm native paste", () => {
+    match(source, /addEventListener\(\s*"paste"/);
+    match(source, /stopImmediatePropagation\(\)/);
+    match(source, /pasteToTerminal\(text\)/);
+  });
+
   it("renders no-sleep control options", () => {
     const ctx = context();
     vm.runInContext(source, ctx);

@@ -2080,6 +2080,17 @@ function connectTerminal() {
       { passive: false },
     );
     el("terminalShell").addEventListener(
+      "paste",
+      (e) => {
+        const text = e.clipboardData && e.clipboardData.getData("text/plain");
+        if (!text) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        pasteToTerminal(text);
+      },
+      true,
+    );
+    el("terminalShell").addEventListener(
       "keydown",
       (e) => {
         if (

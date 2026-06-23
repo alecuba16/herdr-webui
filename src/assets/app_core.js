@@ -28,7 +28,7 @@
   }
 
   function terminalPasteInput(text, bracketedPasteMode) {
-    const normalized = String(text || "").replace(/\r\n|\r/g, "\n");
+    const normalized = String(text || "").replace(/\r\n|\r|\n/g, " ").replace(/ +$/, "");
     if (bracketedPasteMode) return "\x1b[200~" + normalized + "\x1b[201~";
     return normalized;
   }
