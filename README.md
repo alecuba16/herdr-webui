@@ -127,8 +127,40 @@ Panel tab activity:
 - When enabled, top panel tabs show the last WebUI-observed update age next to the tab label.
 - Activity is tracked locally in the browser from tab, pane, and agent list changes.
 - Labels use coarse buckets to avoid constant recalculation: `<1m`, exact minute values such as `5m ago`, `>1h`, and `>1d`.
-- WebUI does not poll a timer to update these labels continuously. Labels refresh when WebUI renders after normal refreshes, Herdr events, or terminal output.
+- WebUI does not poll a timer to update these labels continuously. Labels refresh when WebUI renders after normal refreshes or Herdr events.
 - The timestamp is not persisted by Herdr and is not a backend audit timestamp. Reloading the page starts local tracking again.
+
+Agent sorting:
+
+- Configure in Settings under `Agents and alerts` with the `Agent sorting` dropdown.
+- `Default order` shows agents in Herdr's natural order.
+- `Attention (blocked first)` sorts blocked agents first, then done, unknown, idle, ignored working, working.
+- `Attention (working first)` inverts the priority so working agents appear first.
+
+Stuck working agents:
+
+- Enable `Ignore stuck working agents` in Settings under `Agents and alerts`.
+- When enabled, working agents that appear stuck can be locally dismissed with a `Dismiss` button.
+- Dismissed agents show as `ignored` and do not trigger attention sounds.
+- Dismissals clear automatically when Herdr reports a status change via `pane.agent_status_changed` events, or after a configurable timeout (`Ignore stuck working for` minutes).
+- Dismissals are stored in browser `localStorage` and are local-only overrides, not backend truth mutations.
+
+Parent workspace close with linked worktrees:
+
+- Configure in Settings under `Agents and alerts` with the `Parent workspace close` dropdown.
+- `Close panels only` (default): closes all panes in the parent workspace via the Herdr API. Linked worktrees keep running. The last pane is blocked by Herdr's confirmation guard, so the parent workspace stays with an idle shell.
+- `Full close + re-open worktrees`: closes the parent workspace entirely. Herdr cascades the close to all linked worktrees, stopping their processes. WebUI then re-opens each linked worktree via the `worktree.open` API. Re-opened worktrees start with fresh shells; running processes are lost.
+
+Terminal paste:
+
+- Pasted text is sanitized before reaching the terminal. Newlines (`\r\n`, `\r`, `\n`) are converted to spaces, and trailing spaces are trimmed.
+- This prevents pasted multiline text from auto-submitting terminal input via implicit Enter.
+- Both desktop and mobile terminals capture paste events in the capture phase before xterm or native handlers process them.
+
+Terminal scroll:
+
+- Wheel scroll speed is configurable in Settings under `Terminal input` with the `Scroll speed` slider.
+- Small trackpad wheel deltas are accumulated before sending scroll commands, preventing tiny events from each scrolling a full line batch.
 
 ## Install
 
