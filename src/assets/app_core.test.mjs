@@ -7,6 +7,7 @@ const {
   branchPathSlug,
   normalizeAbsolutePath,
   normalizeThemeColors,
+  tabActivityLabel,
   terminalPasteInput,
   terminalWheelScrollBatch,
 } = require("./app_core.js");
@@ -58,6 +59,17 @@ describe("terminalPasteInput", () => {
       terminalPasteInput("hello\n", true),
       "\x1b[200~hello\x1b[201~",
     );
+  });
+});
+
+describe("tabActivityLabel", () => {
+  const now = 1_000_000_000;
+
+  it("formats update ages without sub-minute churn", () => {
+    assert.equal(tabActivityLabel(now - 30_000, now), "<1m");
+    assert.equal(tabActivityLabel(now - 5 * 60_000, now), "5m ago");
+    assert.equal(tabActivityLabel(now - 61 * 60_000, now), ">1h");
+    assert.equal(tabActivityLabel(now - 25 * 60 * 60_000, now), ">1d");
   });
 });
 
