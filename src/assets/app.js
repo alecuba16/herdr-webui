@@ -3187,6 +3187,20 @@ async function closeWorkspace(id) {
   const w = state.workspaces.find((x) => x.workspace_id === id),
     kind = isLinkedWorktree(w) ? "worktree" : "workspace";
   if (!confirm(`Close ${kind} "${workspaceCloseName(id)}"?`)) return;
+  const linkedToReopen =
+    w && !isLinkedWorktree(w)
+      ? state.workspaces
+          .filter(
+            (x) =>
+              isLinkedWorktree(x) &&
+              worktreeGroupKey(x) === worktreeGroupKey(w),
+          )
+          .map((x) => ({
+            path: x.worktree && x.worktree.checkout_path,
+            label: x.label,
+          }))
+          .filter((x) => x.path)
+      : [];
   await api(`/api/workspaces/${encodeURIComponent(id)}/close`, {
     method: "POST",
   });
@@ -3194,6 +3208,16 @@ async function closeWorkspace(id) {
     state.ws = null;
     state.tab = null;
     state.pane = null;
+  }
+  await refresh();
+  for (const wt of linkedToReopen) {
+    try {
+      await api("/api/worktrees/open", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ path: wt.path, label: wt.label }),
+      });
+    } catch (e) {}
   }
   refresh();
 }
