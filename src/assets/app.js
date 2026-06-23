@@ -46,7 +46,8 @@ let term,
   closeChordUntil = 0,
   inputQueue = [],
   inputFlushTimer = null,
-  pasteFrameUntil = 0;
+  pasteFrameUntil = 0,
+  wheelScrollRemainder = 0;
 let noSleepState = { mode: "off", until_ms: null, error: null, supported: true };
 const inputEncoder = new TextEncoder();
 const {
@@ -54,6 +55,7 @@ const {
   normalizeAbsolutePath,
   normalizeThemeColors,
   terminalPasteInput,
+  terminalWheelScrollBatch,
 } = globalThis.HerdrAppHelpers;
 const workspaces = el("workspaces"),
   agents = el("agents"),
@@ -1232,6 +1234,7 @@ function setTerminalLoading(show) {
   if (loading) loading.classList.toggle("show", !!show);
 }
 function resetTerminalConnection(clear = false) {
+  wheelScrollRemainder = 0;
   if (inputFlushTimer) {
     clearTimeout(inputFlushTimer);
     inputFlushTimer = null;
@@ -2058,13 +2061,18 @@ function connectTerminal() {
         e.preventDefault();
         const delta =
           Math.abs(e.deltaY) >= Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
-        const lines = Math.max(
-          1,
-          Math.min(20, Number(options.scrollLines) || 3),
+        const scroll = terminalWheelScrollBatch(
+          wheelScrollRemainder,
+          delta,
+          e.deltaMode,
+          options.scrollLines,
+          state.termRows || rows,
         );
+        wheelScrollRemainder = scroll.remainder;
+        if (!scroll.lines) return;
         sendBackendScroll(
-          delta < 0 ? "up" : "down",
-          lines,
+          scroll.direction,
+          scroll.lines,
           mouseCell(e),
           mouseModifiers(e),
         );
