@@ -453,6 +453,7 @@ const defaultOptions = {
   shiftEnterNewline: true,
   closeShortcut: "off",
   sortAgentsByStatus: false,
+  workingDismissMinutes: 30,
   workspaceSort: "default",
   scrollLines: 3,
   worktreeAutoDiscoverSeconds: 3,
@@ -480,6 +481,10 @@ function normalizeOptions(value) {
     next.closeShortcut = defaultOptions.closeShortcut;
   next.shiftEnterNewline = next.shiftEnterNewline !== false;
   next.sortAgentsByStatus = next.sortAgentsByStatus === true;
+  next.workingDismissMinutes = Math.max(
+    1,
+    Math.min(1440, Number(next.workingDismissMinutes) || 30),
+  );
   if (!["all", "current"].includes(next.soundScope))
     next.soundScope = defaultOptions.soundScope;
   if (!["default", "drag", "state"].includes(next.workspaceSort))
@@ -503,9 +508,102 @@ function normalizeOptions(value) {
 }
 let options = normalizeOptions(loadOptions());
 localStorage.removeItem("herdr-web-shiftenter-migrated");
+let workingDismissals = loadWorkingDismissals();
 function saveOptions() {
   options = normalizeOptions(options);
   localStorage.setItem("herdr-web-options", JSON.stringify(options));
+}
+function loadWorkingDismissals() {
+  try {
+    const parsed = JSON.parse(
+      localStorage.getItem("herdr-web-working-dismissals") || "{}",
+    );
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed
+      : {};
+  } catch (_) {
+    return {};
+  }
+}
+function saveWorkingDismissals() {
+  localStorage.setItem(
+    "herdr-web-working-dismissals",
+    JSON.stringify(workingDismissals),
+  );
+}
+function agentOverrideKey(a) {
+  return a.terminal_id || `${a.workspace_id}:${a.tab_id}:${a.pane_id}`;
+}
+function agentSignature(a) {
+  return [
+    a.workspace_id,
+    a.tab_id,
+    a.pane_id,
+    a.terminal_id,
+    a.name || a.display_agent || a.agent || "",
+  ].join("|");
+}
+function cleanupWorkingDismissals() {
+  const now = Date.now();
+  const ttl =
+    Math.max(1, Number(options.workingDismissMinutes) || 30) * 60 * 1000;
+  const seen = new Set();
+  let changed = false;
+  for (const agent of state.agents) {
+    const key = agentOverrideKey(agent);
+    seen.add(key);
+    const dismissal = workingDismissals[key];
+    if (!dismissal) continue;
+    if (
+      statusClass(agent.agent_status) !== "working" ||
+      dismissal.signature !== agentSignature(agent) ||
+      now - dismissal.dismissedAt > ttl
+    ) {
+      delete workingDismissals[key];
+      changed = true;
+    }
+  }
+  for (const key of Object.keys(workingDismissals)) {
+    if (!seen.has(key)) {
+      delete workingDismissals[key];
+      changed = true;
+    }
+  }
+  if (changed) saveWorkingDismissals();
+}
+function isWorkingDismissed(agent) {
+  return (
+    !!workingDismissals[agentOverrideKey(agent)] &&
+    statusClass(agent.agent_status) === "working"
+  );
+}
+function dismissWorkingAgent(workspaceId, tabId, paneId, terminalId) {
+  const agent = state.agents.find(
+    (item) =>
+      item.workspace_id === workspaceId &&
+      item.tab_id === tabId &&
+      item.pane_id === paneId &&
+      (!terminalId || item.terminal_id === terminalId),
+  );
+  if (!agent) return;
+  workingDismissals[agentOverrideKey(agent)] = {
+    dismissedAt: Date.now(),
+    signature: agentSignature(agent),
+  };
+  saveWorkingDismissals();
+  render();
+}
+function restoreWorkingAgent(workspaceId, tabId, paneId, terminalId) {
+  const key = terminalId || `${workspaceId}:${tabId}:${paneId}`;
+  delete workingDismissals[key];
+  saveWorkingDismissals();
+  render();
+}
+function clearDismissedWorkingForTerminal(terminalId) {
+  if (!terminalId || !workingDismissals[terminalId]) return;
+  delete workingDismissals[terminalId];
+  saveWorkingDismissals();
+  render();
 }
 function noSleepLabel(mode) {
   if (mode === "auto") return "Auto";
@@ -588,7 +686,7 @@ if (soundSetting && !el("optSortAgents"))
     .closest("label")
     .insertAdjacentHTML(
       "afterend",
-      '<label class="option"><span>Close panel shortcut<small>Stored in browser storage and available after reopening the tab.</small></span><select class="settings-select" id="optCloseShortcut"><option value="off">Disabled</option><option value="altw">Option+W</option><option value="shiftspacew">Shift+Space then W</option></select></label><label class="option"><input type="checkbox" id="optSortAgents"><span>Sort agents by attention<small>Blocked first, then done, unknown, idle, working.</small></span></label><label class="option"><span>Workspace sorting<small>Default tree order, shared drag-and-drop order, or attention state priority.</small></span><select class="settings-select" id="optWorkspaceSort"><option value="default">Default</option><option value="drag">Drag&drop</option><option value="state">State</option></select></label><label class="option"><span>Notification scope<small>Choose whether sounds ring in every open tab or only the tab viewing the agent panel.</small></span><select class="settings-select" id="optSoundScope"><option value="current">Current agent tab</option><option value="all">All tabs</option></select></label><label class="option"><input type="checkbox" id="optGenerateWorktreeNames"><span>Generate worktree branch names<small>Allow blank Branch name in Worktrees modal. Herdr generates worktree/&lt;name&gt;.</small></span></label><label class="option"><span>Default worktree directory<small>Relative paths resolve from repo root. Example: ../worktrees.</small></span><input id="optWorktreeDefaultDirectory" placeholder="../worktrees"></label><label class="option"><span>Scroll speed<small><span id="scrollLinesValue">3</span> terminal lines per wheel step.</small></span><input type="range" id="optScrollLines" min="1" max="20" step="1"></label><label class="option"><span>Worktree autodiscover<small>Seconds to wait after path input stops. Set 0 for immediate.</small></span><input type="number" id="optWorktreeAutoDiscover" min="0" max="30" step="0.5"></label>',
+      '<label class="option"><span>Close panel shortcut<small>Stored in browser storage and available after reopening the tab.</small></span><select class="settings-select" id="optCloseShortcut"><option value="off">Disabled</option><option value="altw">Option+W</option><option value="shiftspacew">Shift+Space then W</option></select></label><label class="option"><input type="checkbox" id="optSortAgents"><span>Sort agents by attention<small>Blocked first, then done, unknown, idle, ignored working, working.</small></span></label><label class="option"><span>Ignore stuck working for<small>Minutes to keep a local dismissed-working override before showing working again.</small></span><input id="optWorkingDismissMinutes" type="number" min="1" max="1440" step="1"></label><label class="option"><span>Workspace sorting<small>Default tree order, shared drag-and-drop order, or attention state priority.</small></span><select class="settings-select" id="optWorkspaceSort"><option value="default">Default</option><option value="drag">Drag&drop</option><option value="state">State</option></select></label><label class="option"><span>Notification scope<small>Choose whether sounds ring in every open tab or only the tab viewing the agent panel.</small></span><select class="settings-select" id="optSoundScope"><option value="current">Current agent tab</option><option value="all">All tabs</option></select></label><label class="option"><input type="checkbox" id="optGenerateWorktreeNames"><span>Generate worktree branch names<small>Allow blank Branch name in Worktrees modal. Herdr generates worktree/&lt;name&gt;.</small></span></label><label class="option"><span>Default worktree directory<small>Relative paths resolve from repo root. Example: ../worktrees.</small></span><input id="optWorktreeDefaultDirectory" placeholder="../worktrees"></label><label class="option"><span>Scroll speed<small><span id="scrollLinesValue">3</span> terminal lines per wheel step.</small></span><input type="range" id="optScrollLines" min="1" max="20" step="1"></label><label class="option"><span>Worktree autodiscover<small>Seconds to wait after path input stops. Set 0 for immediate.</small></span><input type="number" id="optWorktreeAutoDiscover" min="0" max="30" step="0.5"></label>',
     );
 groupSettingsSections();
 function groupSettingsSections() {
@@ -608,7 +706,13 @@ function groupSettingsSections() {
     {
       title: "Agents and alerts",
       desc: "Attention sorting, shortcuts, and notification sound scope.",
-      ids: ["optSound", "optSoundScope", "optSortAgents", "optCloseShortcut"],
+      ids: [
+        "optSound",
+        "optSoundScope",
+        "optSortAgents",
+        "optWorkingDismissMinutes",
+        "optCloseShortcut",
+      ],
     },
     {
       title: "Worktrees",
@@ -660,6 +764,7 @@ function applyOptions() {
     themeSelect = el("optTheme"),
     closeShortcut = el("optCloseShortcut"),
     sortAgents = el("optSortAgents"),
+    workingDismissMinutes = el("optWorkingDismissMinutes"),
     workspaceSort = el("optWorkspaceSort"),
     soundScope = el("optSoundScope"),
     scrollLines = el("optScrollLines"),
@@ -678,6 +783,8 @@ function applyOptions() {
   if (closeShortcutCurrent)
     closeShortcutCurrent.textContent = closeShortcutLabel();
   if (sortAgents) sortAgents.checked = !!options.sortAgentsByStatus;
+  if (workingDismissMinutes)
+    workingDismissMinutes.value = String(options.workingDismissMinutes || 30);
   if (workspaceSort) workspaceSort.value = options.workspaceSort || "default";
   if (soundScope) soundScope.value = options.soundScope || "current";
   if (scrollLines) scrollLines.value = String(options.scrollLines || 3);
@@ -1446,6 +1553,7 @@ function tabTitle(t) {
   return t.label || `tab ${t.number}`;
 }
 function render() {
+  cleanupWorkingDismissals();
   const wsById = Object.fromEntries(
     state.workspaces.map((w) => [w.workspace_id, w]),
   );
@@ -1758,6 +1866,7 @@ function renderAgents(wsById, tabById, tabCountsByWorkspace) {
     .join("");
 }
 function agentAttentionRank(a) {
+  if (isWorkingDismissed(a)) return 3.5;
   const status = statusClass(a.agent_status);
   return { blocked: 0, done: 1, unknown: 2, idle: 3, working: 4 }[status] ?? 2;
 }
@@ -1787,11 +1896,19 @@ function renderAgentRow(a, wsById, tabById, tabCountsByWorkspace) {
     );
   const label = a.name || a.display_agent || a.agent || a.terminal_id;
   const status = statusClass(a.agent_status);
+  const dismissed = isWorkingDismissed(a);
+  const displayStatus = dismissed ? "ignored" : status;
+  const action =
+    status === "working"
+      ? dismissed
+        ? `<span class="mini agent-action" title="Show this working agent again" onclick="event.preventDefault();event.stopPropagation();restoreWorkingAgent('${a.workspace_id}','${a.tab_id}','${a.pane_id}','${a.terminal_id || ""}')">Undo</span>`
+        : `<span class="mini agent-action" title="Locally ignore this stuck working state" onclick="event.preventDefault();event.stopPropagation();dismissWorkingAgent('${a.workspace_id}','${a.tab_id}','${a.pane_id}','${a.terminal_id || ""}')">Dismiss</span>`
+      : "";
   const active =
     a.workspace_id === state.ws &&
     a.tab_id === state.tab &&
     a.pane_id === state.pane;
-  return `<a class="item ${active ? "active" : ""}" title="${escapeAttr(fullTitle)}" href="${escapeAttr(selectionPath(a.workspace_id, a.tab_id, a.pane_id))}" target="herdr-selection" onclick="return navigateSelection(event,'${a.workspace_id}','${a.tab_id}','${a.pane_id}')"><div class="agent-title">${statusMark(a.agent_status, status === "blocked")}${titleParts.join("")}</div><div class="agent-meta"><span class="agent-status ${status}">${escapeHtml(status)}</span><span>•</span><span class="agent-name">${escapeHtml(label)}</span></div></a>`;
+  return `<a class="item ${active ? "active" : ""} ${dismissed ? "agent-dismissed" : ""}" title="${escapeAttr(fullTitle)}" href="${escapeAttr(selectionPath(a.workspace_id, a.tab_id, a.pane_id))}" target="herdr-selection" onclick="return navigateSelection(event,'${a.workspace_id}','${a.tab_id}','${a.pane_id}')"><div class="agent-title">${statusMark(displayStatus, status === "blocked")}${titleParts.join("")}</div><div class="agent-meta"><span class="agent-status ${displayStatus}">${escapeHtml(displayStatus)}</span><span>•</span><span class="agent-name">${escapeHtml(label)}</span>${action}</div></a>`;
 }
 function agentTabLabel(wsId, t, tabCountsByWorkspace) {
   if (!t) return "";
@@ -1996,6 +2113,7 @@ function connectTerminal() {
     setTerminalLoading(false);
     if (typeof e.data === "string") term.write(e.data);
     else term.write(new Uint8Array(e.data));
+    clearDismissedWorkingForTerminal(state.terminalId);
     scheduleTerminalFrameWork();
   };
   ws.onclose = () => {
@@ -3281,6 +3399,15 @@ el("optCloseShortcut").oninput = saveCloseShortcutOption;
 el("optCloseShortcut").onchange = saveCloseShortcutOption;
 el("optSortAgents").onchange = () => {
   options.sortAgentsByStatus = el("optSortAgents").checked;
+  saveOptions();
+  applyOptions();
+  render();
+};
+el("optWorkingDismissMinutes").oninput = () => {
+  options.workingDismissMinutes = Math.max(
+    1,
+    Math.min(1440, Number(el("optWorkingDismissMinutes").value) || 30),
+  );
   saveOptions();
   applyOptions();
   render();
