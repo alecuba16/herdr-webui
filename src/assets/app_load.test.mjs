@@ -157,6 +157,8 @@ describe("app bundle load", () => {
     vm.runInContext(source, ctx);
 
     match(source, /id="optWorkingDismissMinutes"/);
+    match(source, /id="optStuckWorkingEnabled"/);
+    match(source, /id="optAgentSortMode"/);
     match(source, /Dismiss/);
     match(source, /herdr-web-working-dismissals/);
     match(source, /displayStatus = dismissed \? "ignored"/);
