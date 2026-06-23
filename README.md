@@ -125,7 +125,7 @@ Panel tab activity:
 
 - Enable `Show panel last update` in Settings under `Agents and alerts`.
 - When enabled, top panel tabs show the last WebUI-observed update age next to the tab label.
-- Activity is tracked locally in the browser from tab, pane, and agent list changes, plus terminal output for the currently attached terminal.
+- Activity is tracked locally in the browser from tab, pane, and agent list changes.
 - Labels use coarse buckets to avoid constant recalculation: `<1m`, exact minute values such as `5m ago`, `>1h`, and `>1d`.
 - WebUI does not poll a timer to update these labels continuously. Labels refresh when WebUI renders after normal refreshes, Herdr events, or terminal output.
 - The timestamp is not persisted by Herdr and is not a backend audit timestamp. Reloading the page starts local tracking again.

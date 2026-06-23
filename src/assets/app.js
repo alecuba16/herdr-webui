@@ -1699,12 +1699,6 @@ function updateTabActivity() {
       delete tabActivity[key];
   }
 }
-function markCurrentTabActivity() {
-  if (!state.ws || !state.tab) return;
-  const key = tabActivityKey(state.ws, state.tab),
-    current = tabActivity[key] || {};
-  tabActivity[key] = { ...current, updatedAt: Date.now() };
-}
 function tabHoverInfo(t, panesByTab) {
   const panes = panesByTab.get(t.tab_id) || [];
   const pane = panes.find((p) => p.pane_id === state.pane) || panes[0];
@@ -2231,7 +2225,6 @@ function connectTerminal() {
   ws.onmessage = (e) => {
     if (termWs !== ws || connectedTerminalId !== target) return;
     setTerminalLoading(false);
-    markCurrentTabActivity();
     if (typeof e.data === "string") term.write(e.data);
     else term.write(new Uint8Array(e.data));
     clearDismissedWorkingForTerminal(state.terminalId);
