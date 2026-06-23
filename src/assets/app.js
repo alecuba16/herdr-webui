@@ -3186,7 +3186,6 @@ async function createDiscoveredWorktree() {
 async function closeWorkspace(id) {
   const w = state.workspaces.find((x) => x.workspace_id === id),
     kind = isLinkedWorktree(w) ? "worktree" : "workspace";
-  if (!confirm(`Close ${kind} "${workspaceCloseName(id)}"?`)) return;
   const linkedToReopen =
     w && !isLinkedWorktree(w)
       ? state.workspaces
@@ -3201,6 +3200,10 @@ async function closeWorkspace(id) {
           }))
           .filter((x) => x.path)
       : [];
+  let msg = `Close ${kind} "${workspaceCloseName(id)}"?`;
+  if (linkedToReopen.length)
+    msg += `\n\nThis will also close ${linkedToReopen.length} linked worktree(s) and stop their processes. They will be re-opened with fresh shells.`;
+  if (!confirm(msg)) return;
   await api(`/api/workspaces/${encodeURIComponent(id)}/close`, {
     method: "POST",
   });
