@@ -152,6 +152,16 @@ describe("app bundle load", () => {
     match(source, /title: "Server"/);
   });
 
+  it("defines stuck-working dismissal controls", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    match(source, /id="optWorkingDismissMinutes"/);
+    match(source, /Dismiss/);
+    match(source, /herdr-web-working-dismissals/);
+    match(source, /displayStatus = dismissed \? "ignored"/);
+  });
+
   it("renders no-sleep control options", () => {
     const ctx = context();
     vm.runInContext(source, ctx);

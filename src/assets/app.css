@@ -236,8 +236,17 @@ body.light {
 .agent-status.working {
   color: #df8e1d;
 }
+.agent-status.ignored {
+  color: var(--muted);
+}
 .agent-status.blocked {
   color: #d20f39;
+}
+.agent-dismissed {
+  opacity: 0.72;
+}
+.agent-action {
+  margin-left: auto;
 }
 .agent-status.unknown {
   color: var(--muted);
