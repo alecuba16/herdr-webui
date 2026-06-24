@@ -13,6 +13,7 @@ from datetime import datetime
 
 
 OWNER = "alecuba16"
+LOG_PATH = "/workspace/cleanup_results.log"
 NON_DELETABLE_STATUSES = {
     "in_progress",
     "queued",
