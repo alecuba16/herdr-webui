@@ -1941,13 +1941,17 @@ function samePath(a, b) {
 function renderAgents(wsById, tabById, tabCountsByWorkspace) {
   const list = state.agents.slice();
   if (options.agentSortMode !== "off")
-    list.sort((a, b) => {
-      const diff = agentAttentionRank(a) - agentAttentionRank(b);
-      return options.agentSortMode === "attention_inverted" ? -diff : diff;
-    });
+    list.sort(agentAttentionCompare);
   return list
     .map((a) => renderAgentRow(a, wsById, tabById, tabCountsByWorkspace))
     .join("");
+}
+function agentAttentionCompare(a, b) {
+  const aRank = agentAttentionRank(a),
+    bRank = agentAttentionRank(b);
+  if (aRank === 0 || bRank === 0) return aRank - bRank;
+  const diff = aRank - bRank;
+  return options.agentSortMode === "attention_inverted" ? -diff : diff;
 }
 function agentAttentionRank(a) {
   if (isWorkingDismissed(a)) return 3.5;

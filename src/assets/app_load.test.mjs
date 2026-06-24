@@ -165,6 +165,43 @@ describe("app bundle load", () => {
     match(source, /displayStatus = dismissed \? "ignored"/);
   });
 
+  it("keeps blocked agents first when attention sorting is inverted", () => {
+    const ctx = context();
+    ctx.localStorage.setItem(
+      "herdr-web-options",
+      JSON.stringify({ agentSortMode: "attention_inverted" }),
+    );
+    vm.runInContext(source, ctx);
+
+    equal(
+      Math.sign(
+        ctx.agentAttentionCompare(
+          { agent_status: "blocked" },
+          { agent_status: "working" },
+        ),
+      ),
+      -1,
+    );
+    equal(
+      Math.sign(
+        ctx.agentAttentionCompare(
+          { agent_status: "working" },
+          { agent_status: "blocked" },
+        ),
+      ),
+      1,
+    );
+    equal(
+      Math.sign(
+        ctx.agentAttentionCompare(
+          { agent_status: "working" },
+          { agent_status: "done" },
+        ),
+      ),
+      -1,
+    );
+  });
+
   it("defines tab activity setting and badge", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
