@@ -1,0 +1,392 @@
+Processing 64 repositories for alecuba16
+
+[1/64]
+=== alecuba16/herdr-webui ===
+Runs: 127 total, keeping 7 (Approve Merged Contributor, CI, Nix, PR Gate, WebUI CI, WebUI Release, github_actions in /. - Update #1426601368)
+Releases: 33 total, keeping v0.0.33 (2026-06-23T22:07:18Z)
+Done: deleted 0 runs, 32 releases; failures: 120 runs, 0 releases
+
+[2/64]
+=== alecuba16/businessbar ===
+Runs: 18 total, keeping 2 (Build & Test, Release DMG)
+Releases: 5 total, keeping v1.2.2 (2026-05-25T13:28:49Z)
+Done: deleted 0 runs, 0 releases; failures: 16 runs, 4 releases
+
+[3/64]
+=== alecuba16/openwrt_microsocks_luci ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[4/64]
+=== alecuba16/profile ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[5/64]
+=== alecuba16/ner_pdf_extractor_ruby_rails ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[6/64]
+=== alecuba16/aws-sso-creds-default-login ===
+Runs: none
+Releases: 10 total, keeping 1.2.11 (2024-07-19T10:16:43Z)
+Done: deleted 0 runs, 0 releases; failures: 0 runs, 9 releases
+
+[7/64]
+=== alecuba16/homebrew-tap ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[8/64]
+=== alecuba16/fuhrlander ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[9/64]
+=== alecuba16/docker-hbase-m1 ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[10/64]
+=== alecuba16/go-configparser-lowercase ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[11/64]
+=== alecuba16/spark_aws_glue3_windows ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[12/64]
+=== alecuba16/jij_coding_challenge ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[13/64]
+=== alecuba16/mapreduce_minhash_lsh ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[14/64]
+=== alecuba16/helm-hbase-chart-apple-m1 ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[15/64]
+=== alecuba16/datafusion_cdap_batch_joiner_plugin ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[16/64]
+=== alecuba16/datafusion_cdap_windower_plugin ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[17/64]
+=== alecuba16/datafusion_cdap_spark_streaming_source_plugin ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[18/64]
+=== alecuba16/datafusion_cdap_spark_sink_plugin ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[19/64]
+=== alecuba16/datafusion_cdap_spark_compute_plugin ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[20/64]
+=== alecuba16/datafusion_cdap_batch_aggregator_plugin ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[21/64]
+=== alecuba16/datafusion_cdap_alert_publisher_plugin ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[22/64]
+=== alecuba16/datafusion_cdap_postaction_plugin ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[23/64]
+=== alecuba16/datafusion_cdap_action_plugin ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[24/64]
+=== alecuba16/datafusion_cdap_batch_source_plugin ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[25/64]
+=== alecuba16/datafusion_cdap_batch_sink_plugin ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[26/64]
+=== alecuba16/datafusion_cdap_transformation_plugin ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[27/64]
+=== alecuba16/datafusion_cdap_error_transformation_plugin ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[28/64]
+=== alecuba16/scala_technical_test_adevinta ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[29/64]
+=== alecuba16/sdggroup_technical_test_spark_kafka_airflow ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[30/64]
+=== alecuba16/albelli_test ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[31/64]
+=== alecuba16/node_microservices_mongodb ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[32/64]
+=== alecuba16/simple_rest_microservice ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[33/64]
+=== alecuba16/co3_gamificationform_vue ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[34/64]
+=== alecuba16/spring_aspects_test ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[35/64]
+=== alecuba16/python_pytorch_keras_models ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[36/64]
+=== alecuba16/springboot_meeting_rooms_cli ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[37/64]
+=== alecuba16/springboot_meeting_room_reservation_test ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[38/64]
+=== alecuba16/SPARK_scala_stackoverflow ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[39/64]
+=== alecuba16/SOM_windturbine ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[40/64]
+=== alecuba16/PCA_windturbine ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[41/64]
+=== alecuba16/elm_classifier ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[42/64]
+=== alecuba16/entropy_based_counter_detection ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[43/64]
+=== alecuba16/deep_learning_lstm_text_classifier_windturbine ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[44/64]
+=== alecuba16/deep_learning_autoencoder_and_variatonal_autoencoder ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[45/64]
+=== alecuba16/deep_learning_GAN_with_windturbine_data ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[46/64]
+=== alecuba16/DBSCAN_clustering_windturbines ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[47/64]
+=== alecuba16/spur_helical_gears_gcode_generator ===
+Runs: none
+Releases: 4 total, keeping 0.4 (2021-08-21T11:30:02Z)
+Done: deleted 0 runs, 0 releases; failures: 0 runs, 3 releases
+
+[48/64]
+=== alecuba16/LCD_GRBL_56_axes ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[49/64]
+=== alecuba16/pyaehw4a1 ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[50/64]
+=== alecuba16/appinventorBLE ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[51/64]
+=== alecuba16/HDGSOM ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[52/64]
+=== alecuba16/hisense-aeh-w4a1 ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[53/64]
+=== alecuba16/sparta ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[54/64]
+=== alecuba16/ble_gattt_myo ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[55/64]
+=== alecuba16/binaryGAN ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[56/64]
+=== alecuba16/vga_passthrough_tools ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[57/64]
+=== alecuba16/RMySQL ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[58/64]
+=== alecuba16/PyTorchWindowsBinary ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[59/64]
+=== alecuba16/simplex_graph_parallel ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[60/64]
+=== alecuba16/crossplatformuvic ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[61/64]
+=== alecuba16/appinventorblemodule ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[62/64]
+=== alecuba16/MIToolbox ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[63/64]
+=== alecuba16/FEASTR ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+[64/64]
+=== alecuba16/contiki-sensinode ===
+Runs: none
+Releases: none
+Done: deleted 0 runs, 0 releases
+
+=== SUMMARY ===
+Repos processed: 64
+Runs deleted: 0
+Releases deleted: 32
+Failures: 152
+Log written to: /workspace/cleanup_results.log
