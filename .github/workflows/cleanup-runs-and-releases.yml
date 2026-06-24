@@ -1,0 +1,101 @@
+name: Cleanup Runs and Releases
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete old workflow runs (keep latest per workflow)
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const runs = [];
+            let page = 1;
+
+            while (true) {
+              const response = await github.rest.actions.listWorkflowRunsForRepo({
+                owner,
+                repo,
+                per_page: 100,
+                page,
+              });
+              runs.push(...response.data.workflow_runs);
+              if (response.data.workflow_runs.length < 100) break;
+              page += 1;
+            }
+
+            const latestByWorkflow = new Map();
+            for (const run of runs) {
+              const current = latestByWorkflow.get(run.workflow_id);
+              if (!current || new Date(run.created_at) > new Date(current.created_at)) {
+                latestByWorkflow.set(run.workflow_id, run);
+              }
+            }
+
+            const keepIds = new Set([...latestByWorkflow.values()].map((run) => run.id));
+            const toDelete = runs.filter((run) => !keepIds.has(run.id));
+
+            core.info(`Runs: ${runs.length} total, keeping ${keepIds.size}, deleting ${toDelete.length}`);
+
+            for (const run of toDelete) {
+              await github.rest.actions.deleteWorkflowRun({
+                owner,
+                repo,
+                run_id: run.id,
+              });
+            }
+
+      - name: Delete old releases (keep latest by date)
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const releases = [];
+            let page = 1;
+
+            while (true) {
+              const response = await github.rest.repos.listReleases({
+                owner,
+                repo,
+                per_page: 100,
+                page,
+              });
+              releases.push(...response.data);
+              if (response.data.length < 100) break;
+              page += 1;
+            }
+
+            if (releases.length <= 1) {
+              core.info(`Releases: ${releases.length} total, nothing to delete`);
+              return;
+            }
+
+            releases.sort((a, b) => {
+              const aDate = new Date(a.published_at || a.created_at);
+              const bDate = new Date(b.published_at || b.created_at);
+              return bDate - aDate;
+            });
+
+            const keep = releases[0];
+            const toDelete = releases.slice(1);
+
+            core.info(
+              `Releases: ${releases.length} total, keeping ${keep.tag_name}, deleting ${toDelete.length}`
+            );
+
+            for (const release of toDelete) {
+              await github.rest.repos.deleteRelease({
+                owner,
+                repo,
+                release_id: release.id,
+              });
+            }
