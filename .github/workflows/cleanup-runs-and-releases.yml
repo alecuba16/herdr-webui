@@ -1,5 +1,7 @@
 name: Cleanup Runs and Releases
 
+# One-time maintenance workflow; safe to remove after cleanup.
+
 on:
   workflow_dispatch:
   push:
