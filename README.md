@@ -135,7 +135,7 @@ Agent sorting:
 - Configure in Settings under `Agents and alerts` with the `Agent sorting` dropdown.
 - `Default order` shows agents in Herdr's natural order.
 - `Attention (blocked first)` sorts blocked agents first, then done, unknown, idle, ignored working, working.
-- `Attention (working first)` inverts the priority so working agents appear first.
+- `Attention (working first)` keeps blocked agents first, then inverts the remaining priority so working agents appear before done, unknown, and idle agents.
 
 Stuck working agents:
 
