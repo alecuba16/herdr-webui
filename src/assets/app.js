@@ -49,6 +49,13 @@ let term,
   inputFlushTimer = null,
   pasteFrameUntil = 0,
   wheelScrollRemainder = 0;
+const SIDEBAR_COLLAPSED_KEY = "herdr-web-sidebar-collapsed";
+const FAST_REFRESH_EVENTS = new Set([
+  "worktree.created",
+  "worktree.opened",
+  "worktree.removed",
+]);
+let sidebarCollapsed = storedFlag(SIDEBAR_COLLAPSED_KEY);
 let noSleepState = { mode: "off", until_ms: null, error: null, supported: true };
 const inputEncoder = new TextEncoder();
 const {
@@ -63,6 +70,37 @@ const workspaces = el("workspaces"),
   agents = el("agents"),
   tabs = el("tabs"),
   newWs = el("newWs");
+applySidebarCollapsed();
+const sidebarToggle = el("sidebarToggle");
+if (sidebarToggle)
+  sidebarToggle.onclick = () => {
+    sidebarCollapsed = !sidebarCollapsed;
+    storeFlag(SIDEBAR_COLLAPSED_KEY, sidebarCollapsed);
+    applySidebarCollapsed();
+    scheduleTerminalFit();
+  };
+function storedFlag(key) {
+  try {
+    return localStorage.getItem(key) === "1";
+  } catch (_) {
+    return false;
+  }
+}
+function storeFlag(key, value) {
+  try {
+    localStorage.setItem(key, value ? "1" : "0");
+  } catch (_) {}
+}
+function applySidebarCollapsed() {
+  const app = el("app"),
+    button = el("sidebarToggle");
+  if (app) app.classList.toggle("sidebar-collapsed", sidebarCollapsed);
+  if (button) {
+    button.textContent = sidebarCollapsed ? "›" : "‹";
+    button.title = sidebarCollapsed ? "Show sidebar" : "Hide sidebar";
+    button.setAttribute("aria-label", button.title);
+  }
+}
 const headTitle = document.querySelector(".head strong");
 if (headTitle) {
   const brand = document.createElement("div");
@@ -1503,9 +1541,12 @@ async function refresh() {
     if (button) button.textContent = (state.session || "default") + " offline";
   }
 }
-function scheduleRefresh() {
+function scheduleRefresh(delay = 500) {
   clearTimeout(refreshTimer);
-  refreshTimer = setTimeout(refresh, 500);
+  refreshTimer = setTimeout(refresh, delay);
+}
+function worktreeEventNeedsFastRefresh(kind) {
+  return FAST_REFRESH_EVENTS.has(kind);
 }
 function applySnapshot(msg) {
   const wr = msg.workspaces && msg.workspaces.result;
@@ -2076,7 +2117,7 @@ function connectEvents() {
           }
         }
       }
-      scheduleRefresh();
+      scheduleRefresh(worktreeEventNeedsFastRefresh(kind) ? 50 : 500);
     }
   };
   ws.onclose = () => {

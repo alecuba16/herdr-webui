@@ -1369,6 +1369,18 @@ fn proxy_request(api: &ApiClient, request: serde_json::Value) -> Response {
     }
 }
 
+async fn proxy_request_async(api: ApiClient, request: serde_json::Value) -> Response {
+    match tokio::task::spawn_blocking(move || api.request_value(request)).await {
+        Ok(Ok(value)) => Json(value).into_response(),
+        Ok(Err(err)) => (StatusCode::BAD_GATEWAY, Json(json!({ "error": err }))).into_response(),
+        Err(err) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": err.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
 async fn workspaces(
     State(state): State<WebState>,
     headers: HeaderMap,
@@ -1404,6 +1416,96 @@ fn open_created_worktree_request(
             "focus": true,
         },
     })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HerdrWorktreeApiVersion {
+    V0_7_0,
+    V0_7_1,
+}
+
+impl HerdrWorktreeApiVersion {
+    fn from_backend(version: Option<&str>) -> Self {
+        let supports_native_existing_branch = version
+            .and_then(crate::compat::SimpleVersion::parse)
+            .is_some_and(|version| {
+                version
+                    >= (crate::compat::SimpleVersion {
+                        major: 0,
+                        minor: 7,
+                        patch: 1,
+                    })
+            });
+        if supports_native_existing_branch {
+            Self::V0_7_1
+        } else {
+            Self::V0_7_0
+        }
+    }
+
+    fn uses_native_existing_branch_create(self) -> bool {
+        matches!(self, Self::V0_7_1)
+    }
+}
+
+struct HerdrWorktreeApi {
+    client: ApiClient,
+    version: HerdrWorktreeApiVersion,
+}
+
+impl HerdrWorktreeApi {
+    fn detect(client: ApiClient) -> Self {
+        let backend = client.backend_info();
+        let version = HerdrWorktreeApiVersion::from_backend(backend.version.as_deref());
+        Self { client, version }
+    }
+
+    fn new(client: ApiClient) -> Self {
+        Self {
+            client,
+            version: HerdrWorktreeApiVersion::V0_7_1,
+        }
+    }
+
+    fn needs_legacy_existing_branch_create(&self) -> bool {
+        !self.version.uses_native_existing_branch_create()
+    }
+
+    fn legacy_open_created_request(
+        &self,
+        cwd: &str,
+        path: &str,
+        label: Option<String>,
+    ) -> serde_json::Value {
+        let _ = self;
+        open_created_worktree_request(cwd, path, label)
+    }
+
+    fn create_request(
+        &self,
+        body: CreateWorktreeRequest,
+        cwd: Option<String>,
+        path: Option<String>,
+    ) -> serde_json::Value {
+        let _ = self;
+        json!({
+            "id": "web:worktree:create",
+            "method": "worktree.create",
+            "params": {
+                "workspace_id": body.workspace_id,
+                "cwd": cwd,
+                "branch": body.branch,
+                "base": body.base,
+                "path": path,
+                "label": body.label,
+                "focus": true,
+            },
+        })
+    }
+
+    fn remove_request(workspace_id: String) -> serde_json::Value {
+        json!({ "id": "web:worktree:remove", "method": "worktree.remove", "params": { "workspace_id": workspace_id, "force": false } })
+    }
 }
 
 async fn workspace_order(
@@ -1498,9 +1600,16 @@ async fn create_worktree(
     }
     let cwd = body.cwd.as_deref().map(expand_user_path_string);
     let path = body.path.as_deref().map(expand_user_path_string);
+    let api = api_for_headers(&state, &headers);
     if let (Some(cwd), Some(path), Some(branch)) = (&cwd, &path, body.branch.as_deref()) {
         let branch = branch.trim();
-        if !branch.is_empty() {
+        if !branch.is_empty() && git_branch_exists(cwd, branch).unwrap_or(false) {
+            let worktree_api = HerdrWorktreeApi::detect(api.clone());
+            if !worktree_api.needs_legacy_existing_branch_create() {
+                let request =
+                    worktree_api.create_request(body, Some(cwd.clone()), Some(path.clone()));
+                return proxy_request_async(worktree_api.client, request).await;
+            }
             let base = body
                 .base
                 .as_deref()
@@ -1510,8 +1619,8 @@ async fn create_worktree(
             match create_worktree_checkout(cwd, path, branch, base) {
                 Ok(()) => {
                     return proxy_request(
-                        &api_for_headers(&state, &headers),
-                        open_created_worktree_request(cwd, path, body.label),
+                        &worktree_api.client,
+                        worktree_api.legacy_open_created_request(cwd, path, body.label),
                     );
                 }
                 Err(err) => {
@@ -1524,22 +1633,9 @@ async fn create_worktree(
             }
         }
     }
-    proxy_request(
-        &api_for_headers(&state, &headers),
-        json!({
-            "id": "web:worktree:create",
-            "method": "worktree.create",
-            "params": {
-                "workspace_id": body.workspace_id,
-                "cwd": cwd,
-                "branch": body.branch,
-                "base": body.base,
-                "path": path,
-                "label": body.label,
-                "focus": true,
-            },
-        }),
-    )
+    let worktree_api = HerdrWorktreeApi::new(api);
+    let request = worktree_api.create_request(body, cwd, path);
+    proxy_request_async(worktree_api.client, request).await
 }
 
 fn run_git_capture(args: &[&str]) -> Result<std::process::Output, String> {
@@ -1659,7 +1755,6 @@ async fn remove_worktree_path(
             .into_response(),
     }
 }
-
 async fn agents(
     State(state): State<WebState>,
     headers: HeaderMap,
@@ -2001,10 +2096,8 @@ async fn remove_worktree(
     if let Err(response) = require_auth(&state, &headers, remote) {
         return response;
     }
-    proxy_request(
-        &api_for_headers(&state, &headers),
-        json!({ "id": "web:worktree:remove", "method": "worktree.remove", "params": { "workspace_id": workspace_id, "force": false } }),
-    )
+    let request = HerdrWorktreeApi::remove_request(workspace_id);
+    proxy_request_async(api_for_headers(&state, &headers), request).await
 }
 
 #[derive(Deserialize)]
@@ -3044,6 +3137,56 @@ mod tests {
         assert_eq!(request["params"]["cwd"], "/tmp/source-repo");
         assert_eq!(request["params"]["path"], "/tmp/worktrees/repo/feature");
         assert_eq!(request["params"]["label"], "feature");
+    }
+
+    #[test]
+    fn worktree_api_version_selects_native_existing_branch_support() {
+        assert_eq!(
+            HerdrWorktreeApiVersion::from_backend(Some("0.7.0")),
+            HerdrWorktreeApiVersion::V0_7_0,
+        );
+        assert_eq!(
+            HerdrWorktreeApiVersion::from_backend(Some("0.7.1")),
+            HerdrWorktreeApiVersion::V0_7_1,
+        );
+        assert_eq!(
+            HerdrWorktreeApiVersion::from_backend(Some("0.7.2")),
+            HerdrWorktreeApiVersion::V0_7_1,
+        );
+        assert_eq!(
+            HerdrWorktreeApiVersion::from_backend(None),
+            HerdrWorktreeApiVersion::V0_7_0,
+        );
+    }
+
+    #[test]
+    fn worktree_api_builds_native_create_request() {
+        let worktree_api = HerdrWorktreeApi {
+            client: ApiClient {
+                socket_path: PathBuf::from("/tmp/herdr.sock"),
+            },
+            version: HerdrWorktreeApiVersion::V0_7_1,
+        };
+
+        let request = worktree_api.create_request(
+            CreateWorktreeRequest {
+                workspace_id: Some("w_1".into()),
+                cwd: Some("~/repo".into()),
+                branch: Some("feature/demo".into()),
+                base: Some("main".into()),
+                path: Some("../worktrees/demo".into()),
+                label: Some("demo".into()),
+            },
+            Some("/home/me/repo".into()),
+            Some("/home/me/worktrees/demo".into()),
+        );
+
+        assert_eq!(request["method"], "worktree.create");
+        assert_eq!(request["params"]["workspace_id"], "w_1");
+        assert_eq!(request["params"]["cwd"], "/home/me/repo");
+        assert_eq!(request["params"]["path"], "/home/me/worktrees/demo");
+        assert_eq!(request["params"]["branch"], "feature/demo");
+        assert_eq!(request["params"]["focus"], true);
     }
 
     #[test]

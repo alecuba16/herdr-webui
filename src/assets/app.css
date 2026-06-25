@@ -29,9 +29,12 @@ body.light {
 }
 #app {
   display: grid;
-  grid-template-columns: 330px minmax(0, 1fr);
+  grid-template-columns: 330px 18px minmax(0, 1fr);
   height: 100vh;
   overflow: hidden;
+}
+#app.sidebar-collapsed {
+  grid-template-columns: 0 28px minmax(0, 1fr);
 }
 .side {
   border-right: 1px solid var(--border);
@@ -40,6 +43,34 @@ body.light {
   flex-direction: column;
   min-width: 0;
   overflow: hidden;
+}
+#app.sidebar-collapsed .side {
+  border-right: 0;
+  visibility: hidden;
+}
+.sidebar-toggle {
+  appearance: none;
+  border: 0;
+  border-left: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+  background: linear-gradient(180deg, var(--panel), var(--panel2));
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 18px;
+  font-weight: 900;
+  padding: 0;
+  transition:
+    background 120ms ease,
+    color 120ms ease;
+}
+.sidebar-toggle:hover,
+.sidebar-toggle:focus {
+  background: var(--border);
+  color: var(--fg);
+  outline: none;
+}
+#app.sidebar-collapsed .sidebar-toggle {
+  color: var(--accent);
 }
 .head {
   padding: 14px;
