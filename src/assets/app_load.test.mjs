@@ -23,6 +23,9 @@ function element(id = "") {
     textContent: "",
     innerHTML: "",
     title: "",
+    setAttribute(name, value) {
+      this[name] = value;
+    },
     closest() {
       return this;
     },
@@ -163,6 +166,24 @@ describe("app bundle load", () => {
     match(source, /Dismiss/);
     match(source, /herdr-web-working-dismissals/);
     match(source, /displayStatus = dismissed \? "ignored"/);
+  });
+
+  it("defines sidebar collapse controls", () => {
+    const html = readFileSync(new URL("./app.html", import.meta.url), "utf8");
+
+    match(html, /id="sidebarToggle"/);
+    match(source, /herdr-web-sidebar-collapsed/);
+    match(source, /applySidebarCollapsed/);
+  });
+
+  it("fast-refreshes worktree lifecycle events", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    equal(ctx.worktreeEventNeedsFastRefresh("worktree.created"), true);
+    equal(ctx.worktreeEventNeedsFastRefresh("worktree.opened"), true);
+    equal(ctx.worktreeEventNeedsFastRefresh("worktree.removed"), true);
+    equal(ctx.worktreeEventNeedsFastRefresh("pane.closed"), false);
   });
 
   it("keeps blocked agents first when attention sorting is inverted", () => {

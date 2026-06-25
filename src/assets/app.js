@@ -49,6 +49,7 @@ let term,
   inputFlushTimer = null,
   pasteFrameUntil = 0,
   wheelScrollRemainder = 0;
+let sidebarCollapsed = localStorage.getItem("herdr-web-sidebar-collapsed") === "1";
 let noSleepState = { mode: "off", until_ms: null, error: null, supported: true };
 const inputEncoder = new TextEncoder();
 const {
@@ -63,6 +64,28 @@ const workspaces = el("workspaces"),
   agents = el("agents"),
   tabs = el("tabs"),
   newWs = el("newWs");
+applySidebarCollapsed();
+const sidebarToggle = el("sidebarToggle");
+if (sidebarToggle)
+  sidebarToggle.onclick = () => {
+    sidebarCollapsed = !sidebarCollapsed;
+    localStorage.setItem(
+      "herdr-web-sidebar-collapsed",
+      sidebarCollapsed ? "1" : "0",
+    );
+    applySidebarCollapsed();
+    scheduleTerminalFit();
+  };
+function applySidebarCollapsed() {
+  const app = el("app"),
+    button = el("sidebarToggle");
+  if (app) app.classList.toggle("sidebar-collapsed", sidebarCollapsed);
+  if (button) {
+    button.textContent = sidebarCollapsed ? "›" : "‹";
+    button.title = sidebarCollapsed ? "Show sidebar" : "Hide sidebar";
+    button.setAttribute("aria-label", button.title);
+  }
+}
 const headTitle = document.querySelector(".head strong");
 if (headTitle) {
   const brand = document.createElement("div");
@@ -1503,9 +1526,12 @@ async function refresh() {
     if (button) button.textContent = (state.session || "default") + " offline";
   }
 }
-function scheduleRefresh() {
+function scheduleRefresh(delay = 500) {
   clearTimeout(refreshTimer);
-  refreshTimer = setTimeout(refresh, 500);
+  refreshTimer = setTimeout(refresh, delay);
+}
+function worktreeEventNeedsFastRefresh(kind) {
+  return kind === "worktree.created" || kind === "worktree.opened" || kind === "worktree.removed";
 }
 function applySnapshot(msg) {
   const wr = msg.workspaces && msg.workspaces.result;
@@ -2076,7 +2102,7 @@ function connectEvents() {
           }
         }
       }
-      scheduleRefresh();
+      scheduleRefresh(worktreeEventNeedsFastRefresh(kind) ? 50 : 500);
     }
   };
   ws.onclose = () => {

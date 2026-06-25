@@ -1369,6 +1369,18 @@ fn proxy_request(api: &ApiClient, request: serde_json::Value) -> Response {
     }
 }
 
+async fn proxy_request_async(api: ApiClient, request: serde_json::Value) -> Response {
+    match tokio::task::spawn_blocking(move || api.request_value(request)).await {
+        Ok(Ok(value)) => Json(value).into_response(),
+        Ok(Err(err)) => (StatusCode::BAD_GATEWAY, Json(json!({ "error": err }))).into_response(),
+        Err(err) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": err.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
 async fn workspaces(
     State(state): State<WebState>,
     headers: HeaderMap,
@@ -1498,34 +1510,37 @@ async fn create_worktree(
     }
     let cwd = body.cwd.as_deref().map(expand_user_path_string);
     let path = body.path.as_deref().map(expand_user_path_string);
-    if let (Some(cwd), Some(path), Some(branch)) = (&cwd, &path, body.branch.as_deref()) {
-        let branch = branch.trim();
-        if !branch.is_empty() {
-            let base = body
-                .base
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .unwrap_or("HEAD");
-            match create_worktree_checkout(cwd, path, branch, base) {
-                Ok(()) => {
-                    return proxy_request(
-                        &api_for_headers(&state, &headers),
-                        open_created_worktree_request(cwd, path, body.label),
-                    );
-                }
-                Err(err) => {
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(json!({ "ok": false, "error": err })),
-                    )
-                        .into_response();
+    let api = api_for_headers(&state, &headers);
+    if !backend_supports_native_existing_branch_worktrees(&api) {
+        if let (Some(cwd), Some(path), Some(branch)) = (&cwd, &path, body.branch.as_deref()) {
+            let branch = branch.trim();
+            if !branch.is_empty() && git_branch_exists(cwd, branch).unwrap_or(false) {
+                let base = body
+                    .base
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or("HEAD");
+                match create_worktree_checkout(cwd, path, branch, base) {
+                    Ok(()) => {
+                        return proxy_request(
+                            &api,
+                            open_created_worktree_request(cwd, path, body.label),
+                        );
+                    }
+                    Err(err) => {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(json!({ "ok": false, "error": err })),
+                        )
+                            .into_response();
+                    }
                 }
             }
         }
     }
-    proxy_request(
-        &api_for_headers(&state, &headers),
+    proxy_request_async(
+        api,
         json!({
             "id": "web:worktree:create",
             "method": "worktree.create",
@@ -1540,6 +1555,22 @@ async fn create_worktree(
             },
         }),
     )
+    .await
+}
+
+fn backend_supports_native_existing_branch_worktrees(api: &ApiClient) -> bool {
+    api.backend_info()
+        .version
+        .as_deref()
+        .and_then(crate::compat::SimpleVersion::parse)
+        .is_some_and(|version| {
+            version
+                >= (crate::compat::SimpleVersion {
+                    major: 0,
+                    minor: 7,
+                    patch: 1,
+                })
+        })
 }
 
 fn run_git_capture(args: &[&str]) -> Result<std::process::Output, String> {
@@ -2001,10 +2032,11 @@ async fn remove_worktree(
     if let Err(response) = require_auth(&state, &headers, remote) {
         return response;
     }
-    proxy_request(
-        &api_for_headers(&state, &headers),
+    proxy_request_async(
+        api_for_headers(&state, &headers),
         json!({ "id": "web:worktree:remove", "method": "worktree.remove", "params": { "workspace_id": workspace_id, "force": false } }),
     )
+    .await
 }
 
 #[derive(Deserialize)]
