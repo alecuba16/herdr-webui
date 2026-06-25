@@ -174,6 +174,31 @@ describe("app bundle load", () => {
     match(html, /id="sidebarToggle"/);
     match(source, /herdr-web-sidebar-collapsed/);
     match(source, /applySidebarCollapsed/);
+    match(source, /sidebarAgentStatusCounts/);
+    match(source, /sidebar-count/);
+  });
+
+  it("renders collapsed sidebar agent counters", () => {
+    const ctx = context();
+    ctx.localStorage.setItem("herdr-web-sidebar-collapsed", "1");
+    vm.runInContext(source, ctx);
+
+    const html = vm.runInContext(
+      `state.agents = [
+        { agent_status: "blocked" },
+        { agent_status: "working" },
+        { agent_status: "idle" },
+        { agent_status: "done" },
+        { agent_status: "done" },
+      ];
+      sidebarToggleHtml();`,
+      ctx,
+    );
+
+    match(html, /sidebar-count blocked[^>]*>1</);
+    match(html, /sidebar-count working[^>]*>1</);
+    match(html, /sidebar-count idle[^>]*>1</);
+    match(html, /sidebar-count done[^>]*>2</);
   });
 
   it("fast-refreshes pane, tab, and worktree lifecycle events", () => {

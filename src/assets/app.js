@@ -99,10 +99,36 @@ function applySidebarCollapsed() {
     button = el("sidebarToggle");
   if (app) app.classList.toggle("sidebar-collapsed", sidebarCollapsed);
   if (button) {
-    button.textContent = sidebarCollapsed ? "›" : "‹";
+    button.innerHTML = sidebarToggleHtml();
     button.title = sidebarCollapsed ? "Show sidebar" : "Hide sidebar";
     button.setAttribute("aria-label", button.title);
   }
+}
+function sidebarAgentStatusCounts() {
+  const counts = { blocked: 0, working: 0, idle: 0, done: 0 };
+  for (const agent of state.agents || []) {
+    const status = isWorkingDismissed(agent) ? "idle" : statusClass(agent.agent_status);
+    if (Object.prototype.hasOwnProperty.call(counts, status)) counts[status] += 1;
+  }
+  return counts;
+}
+function sidebarToggleHtml() {
+  const arrow = `<span class="sidebar-toggle-arrow">${sidebarCollapsed ? "›" : "‹"}</span>`;
+  if (!sidebarCollapsed) return arrow;
+  const counts = sidebarAgentStatusCounts();
+  const badges = [
+    ["blocked", counts.blocked],
+    ["working", counts.working],
+    ["idle", counts.idle],
+    ["done", counts.done],
+  ]
+    .filter(([, count]) => count > 0)
+    .map(
+      ([status, count]) =>
+        `<span class="sidebar-count ${status}" title="${count} ${status} agent${count === 1 ? "" : "s"}">${count}</span>`,
+    )
+    .join("");
+  return arrow + (badges ? `<span class="sidebar-counts">${badges}</span>` : "");
 }
 const headTitle = document.querySelector(".head strong");
 if (headTitle) {
@@ -1679,6 +1705,7 @@ function render() {
     agents.innerHTML = agentsHtml;
     lastAgentsHtml = agentsHtml;
   }
+  applySidebarCollapsed();
   const pane = state.panes.find((p) => p.pane_id === state.pane);
   const themeIcon =
     themeMode === "auto" ? "A" : themeMode === "dark" ? "☾" : "☀";
