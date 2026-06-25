@@ -12,10 +12,12 @@ Standalone browser UI for an official Herdr backend session.
 
 Compatibility:
 
-- Backend protocol: `14`.
-- Minimum tested Herdr: `0.7.0`.
-- Maximum tested Herdr: `0.7.1`.
-- Newer Herdr builds may work when protocol stays compatible, but WebUI reports them as untested.
+| WebUI | Herdr | Protocol | Status | Notes |
+| --- | --- | --- | --- | --- |
+| `0.0.35` | `0.7.1` | `14` | Tested | Uses native `worktree.create` existing-branch support and async/deferred worktree operations. |
+| `0.0.35` | `0.7.0` | `14` | Minimum supported | Uses WebUI's legacy existing-branch worktree fallback when needed. |
+
+Newer Herdr builds may work when protocol stays compatible, but WebUI reports them as untested.
 
 ## Build
 
@@ -120,6 +122,18 @@ If `--session NAME` is supplied, launched Herdr processes receive `HERDR_SESSION
 ## WebUI Features
 
 The browser UI provides workspace navigation, top panel tabs, agent status, terminal attach, and local-only convenience settings stored in browser storage.
+
+Sidebar:
+
+- Use the vertical divider between the sidebar and terminal to hide or show the workspace/agents sidebar.
+- The collapsed state is stored in browser `localStorage`.
+
+Worktrees:
+
+- With Herdr `0.7.1` and newer, WebUI uses Herdr's native `worktree.create` support for existing local branches and deferred Git work.
+- With Herdr `0.7.0`, WebUI keeps a legacy fallback for creating a checkout from an existing branch when a checkout path is supplied.
+- WebUI subscribes to `worktree.created`, `worktree.opened`, and `worktree.removed` and refreshes workspace/agent state quickly after these events.
+- `worktree.removed` events from Herdr `0.7.1` may include a workspace snapshot. This is additive; WebUI refreshes from the backend state instead of relying only on the event payload.
 
 Panel tab activity:
 
