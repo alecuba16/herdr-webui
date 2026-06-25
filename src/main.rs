@@ -1454,16 +1454,21 @@ struct HerdrWorktreeApi {
 }
 
 impl HerdrWorktreeApi {
-    fn new(client: ApiClient) -> Self {
+    fn detect(client: ApiClient) -> Self {
         let backend = client.backend_info();
         let version = HerdrWorktreeApiVersion::from_backend(backend.version.as_deref());
         Self { client, version }
     }
 
-    fn needs_legacy_existing_branch_create(&self, cwd: &str, branch: &str) -> bool {
+    fn new(client: ApiClient) -> Self {
+        Self {
+            client,
+            version: HerdrWorktreeApiVersion::V0_7_1,
+        }
+    }
+
+    fn needs_legacy_existing_branch_create(&self) -> bool {
         !self.version.uses_native_existing_branch_create()
-            && !branch.trim().is_empty()
-            && git_branch_exists(cwd, branch).unwrap_or(false)
     }
 
     fn legacy_open_created_request(
@@ -1498,8 +1503,7 @@ impl HerdrWorktreeApi {
         })
     }
 
-    fn remove_request(&self, workspace_id: String) -> serde_json::Value {
-        let _ = self;
+    fn remove_request(workspace_id: String) -> serde_json::Value {
         json!({ "id": "web:worktree:remove", "method": "worktree.remove", "params": { "workspace_id": workspace_id, "force": false } })
     }
 }
@@ -1596,10 +1600,16 @@ async fn create_worktree(
     }
     let cwd = body.cwd.as_deref().map(expand_user_path_string);
     let path = body.path.as_deref().map(expand_user_path_string);
-    let worktree_api = HerdrWorktreeApi::new(api_for_headers(&state, &headers));
+    let api = api_for_headers(&state, &headers);
     if let (Some(cwd), Some(path), Some(branch)) = (&cwd, &path, body.branch.as_deref()) {
         let branch = branch.trim();
-        if worktree_api.needs_legacy_existing_branch_create(cwd, branch) {
+        if !branch.is_empty() && git_branch_exists(cwd, branch).unwrap_or(false) {
+            let worktree_api = HerdrWorktreeApi::detect(api.clone());
+            if !worktree_api.needs_legacy_existing_branch_create() {
+                let request =
+                    worktree_api.create_request(body, Some(cwd.clone()), Some(path.clone()));
+                return proxy_request_async(worktree_api.client, request).await;
+            }
             let base = body
                 .base
                 .as_deref()
@@ -1623,6 +1633,7 @@ async fn create_worktree(
             }
         }
     }
+    let worktree_api = HerdrWorktreeApi::new(api);
     let request = worktree_api.create_request(body, cwd, path);
     proxy_request_async(worktree_api.client, request).await
 }
@@ -2085,9 +2096,8 @@ async fn remove_worktree(
     if let Err(response) = require_auth(&state, &headers, remote) {
         return response;
     }
-    let worktree_api = HerdrWorktreeApi::new(api_for_headers(&state, &headers));
-    let request = worktree_api.remove_request(workspace_id);
-    proxy_request_async(worktree_api.client, request).await
+    let request = HerdrWorktreeApi::remove_request(workspace_id);
+    proxy_request_async(api_for_headers(&state, &headers), request).await
 }
 
 #[derive(Deserialize)]

@@ -49,7 +49,13 @@ let term,
   inputFlushTimer = null,
   pasteFrameUntil = 0,
   wheelScrollRemainder = 0;
-let sidebarCollapsed = localStorage.getItem("herdr-web-sidebar-collapsed") === "1";
+const SIDEBAR_COLLAPSED_KEY = "herdr-web-sidebar-collapsed";
+const FAST_REFRESH_EVENTS = new Set([
+  "worktree.created",
+  "worktree.opened",
+  "worktree.removed",
+]);
+let sidebarCollapsed = storedFlag(SIDEBAR_COLLAPSED_KEY);
 let noSleepState = { mode: "off", until_ms: null, error: null, supported: true };
 const inputEncoder = new TextEncoder();
 const {
@@ -69,13 +75,22 @@ const sidebarToggle = el("sidebarToggle");
 if (sidebarToggle)
   sidebarToggle.onclick = () => {
     sidebarCollapsed = !sidebarCollapsed;
-    localStorage.setItem(
-      "herdr-web-sidebar-collapsed",
-      sidebarCollapsed ? "1" : "0",
-    );
+    storeFlag(SIDEBAR_COLLAPSED_KEY, sidebarCollapsed);
     applySidebarCollapsed();
     scheduleTerminalFit();
   };
+function storedFlag(key) {
+  try {
+    return localStorage.getItem(key) === "1";
+  } catch (_) {
+    return false;
+  }
+}
+function storeFlag(key, value) {
+  try {
+    localStorage.setItem(key, value ? "1" : "0");
+  } catch (_) {}
+}
 function applySidebarCollapsed() {
   const app = el("app"),
     button = el("sidebarToggle");
@@ -1531,7 +1546,7 @@ function scheduleRefresh(delay = 500) {
   refreshTimer = setTimeout(refresh, delay);
 }
 function worktreeEventNeedsFastRefresh(kind) {
-  return kind === "worktree.created" || kind === "worktree.opened" || kind === "worktree.removed";
+  return FAST_REFRESH_EVENTS.has(kind);
 }
 function applySnapshot(msg) {
   const wr = msg.workspaces && msg.workspaces.result;
