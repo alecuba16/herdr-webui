@@ -176,14 +176,33 @@ describe("app bundle load", () => {
     match(source, /applySidebarCollapsed/);
   });
 
-  it("fast-refreshes worktree lifecycle events", () => {
+  it("fast-refreshes pane, tab, and worktree lifecycle events", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
 
-    equal(ctx.worktreeEventNeedsFastRefresh("worktree.created"), true);
-    equal(ctx.worktreeEventNeedsFastRefresh("worktree.opened"), true);
-    equal(ctx.worktreeEventNeedsFastRefresh("worktree.removed"), true);
-    equal(ctx.worktreeEventNeedsFastRefresh("pane.closed"), false);
+    equal(ctx.eventNeedsFastRefresh("pane.closed"), true);
+    equal(ctx.eventNeedsFastRefresh("pane.exited"), true);
+    equal(ctx.eventNeedsFastRefresh("tab.closed"), true);
+    equal(ctx.eventNeedsFastRefresh("worktree.created"), true);
+    equal(ctx.eventNeedsFastRefresh("worktree.opened"), true);
+    equal(ctx.eventNeedsFastRefresh("worktree.removed"), true);
+    equal(ctx.eventNeedsFastRefresh("pane.focused"), false);
+  });
+
+  it("forgets selected pane when Herdr reports it exited", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    const result = vm.runInContext(
+      `state.pane = "pane_1";
+       state.terminalId = "term_1";
+       forgetClosedSelection("pane.exited", { pane_id: "pane_1" });
+       ({ pane: state.pane, terminalId: state.terminalId });`,
+      ctx,
+    );
+
+    equal(result.pane, null);
+    equal(result.terminalId, null);
   });
 
   it("keeps blocked agents first when attention sorting is inverted", () => {
@@ -217,6 +236,61 @@ describe("app bundle load", () => {
         ctx.agentAttentionCompare(
           { agent_status: "working" },
           { agent_status: "done" },
+        ),
+      ),
+      -1,
+    );
+    equal(
+      Math.sign(
+        ctx.agentAttentionCompare(
+          { agent_status: "unknown" },
+          { agent_status: "done" },
+        ),
+      ),
+      -1,
+    );
+  });
+
+  it("keeps blocked agents first, then idle before done", () => {
+    const ctx = context();
+    ctx.localStorage.setItem(
+      "herdr-web-options",
+      JSON.stringify({ agentSortMode: "attention" }),
+    );
+    vm.runInContext(source, ctx);
+
+    equal(
+      Math.sign(
+        ctx.agentAttentionCompare(
+          { agent_status: "blocked" },
+          { agent_status: "idle" },
+        ),
+      ),
+      -1,
+    );
+    equal(
+      Math.sign(
+        ctx.agentAttentionCompare(
+          { agent_status: "idle" },
+          { agent_status: "done" },
+        ),
+      ),
+      -1,
+    );
+    equal(
+      Math.sign(
+        ctx.agentAttentionCompare(
+          { agent_status: "idle" },
+          { agent_status: "working" },
+        ),
+      ),
+      -1,
+    );
+    equal(
+      Math.sign(
+        ctx.agentAttentionCompare(
+          { agent_status: "done" },
+          { agent_status: "working" },
         ),
       ),
       -1,

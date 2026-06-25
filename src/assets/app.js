@@ -51,6 +51,9 @@ let term,
   wheelScrollRemainder = 0;
 const SIDEBAR_COLLAPSED_KEY = "herdr-web-sidebar-collapsed";
 const FAST_REFRESH_EVENTS = new Set([
+  "pane.closed",
+  "pane.exited",
+  "tab.closed",
   "worktree.created",
   "worktree.opened",
   "worktree.removed",
@@ -1545,8 +1548,26 @@ function scheduleRefresh(delay = 500) {
   clearTimeout(refreshTimer);
   refreshTimer = setTimeout(refresh, delay);
 }
-function worktreeEventNeedsFastRefresh(kind) {
+function eventNeedsFastRefresh(kind) {
   return FAST_REFRESH_EVENTS.has(kind);
+}
+function forgetClosedSelection(kind, data) {
+  if (kind === "pane.closed" || kind === "pane.exited") {
+    if (data && data.pane_id && data.pane_id === state.pane) {
+      resetTerminalConnection(true);
+      state.pane = null;
+      state.terminalId = null;
+      render();
+    }
+  } else if (kind === "tab.closed") {
+    if (data && data.tab_id && data.tab_id === state.tab) {
+      resetTerminalConnection(true);
+      state.tab = null;
+      state.pane = null;
+      state.terminalId = null;
+      render();
+    }
+  }
 }
 function applySnapshot(msg) {
   const wr = msg.workspaces && msg.workspaces.result;
@@ -1990,14 +2011,17 @@ function renderAgents(wsById, tabById, tabCountsByWorkspace) {
 function agentAttentionCompare(a, b) {
   const aRank = agentAttentionRank(a),
     bRank = agentAttentionRank(b);
-  if (aRank === 0 || bRank === 0) return aRank - bRank;
-  const diff = aRank - bRank;
-  return options.agentSortMode === "attention_inverted" ? -diff : diff;
+  return aRank - bRank;
 }
 function agentAttentionRank(a) {
-  if (isWorkingDismissed(a)) return 3.5;
   const status = statusClass(a.agent_status);
-  return { blocked: 0, done: 1, unknown: 2, idle: 3, working: 4 }[status] ?? 2;
+  if (status === "blocked") return 0;
+  if (options.agentSortMode === "attention_inverted") {
+    if (isWorkingDismissed(a)) return 2;
+    return { working: 1, unknown: 3, done: 4, idle: 5 }[status] ?? 3;
+  }
+  if (isWorkingDismissed(a)) return 4;
+  return { idle: 1, done: 2, unknown: 3, working: 5 }[status] ?? 3;
 }
 function agentToken(cls, value) {
   const s = String(value || "");
@@ -2099,9 +2123,10 @@ function connectEvents() {
     if (msg.type === "snapshot") applySnapshot(msg);
     else if (msg.type === "event") {
       const evt = msg.event || {},
-        kind = evt.event || evt.type;
+        kind = evt.event || evt.type,
+        data = evt.data || {};
       if (kind === "pane.agent_status_changed") {
-        const d = evt.data || {};
+        const d = data;
         if (statusClass(d.agent_status) !== "working") {
           for (const agent of state.agents) {
             if (
@@ -2117,7 +2142,8 @@ function connectEvents() {
           }
         }
       }
-      scheduleRefresh(worktreeEventNeedsFastRefresh(kind) ? 50 : 500);
+      forgetClosedSelection(kind, data);
+      scheduleRefresh(eventNeedsFastRefresh(kind) ? 50 : 500);
     }
   };
   ws.onclose = () => {
