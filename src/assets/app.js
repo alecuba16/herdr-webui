@@ -23,6 +23,8 @@ let state = {
   editingWorkspaceValue: "",
   workspaceCreateSuggestedLabel: "",
   workspaceCreatePathSuggestTimer: null,
+  createWorktreeOriginalSource: "",
+  createWorktreePathSuggestTimer: null,
 };
 let term,
   termWs,
@@ -215,7 +217,11 @@ function worktreeCreateModalHtml() {
           <button class="mini settings-close" id="worktreeCreateClose" title="Close">✕</button>
         </div>
         <form class="worktree-form" id="worktreeCreateForm">
-          <div class="worktree-source" id="worktreeCreateSource">source workspace</div>
+          <label class="worktree-source">
+            <span>Source repo path</span>
+            <input id="worktreeCreateSource" list="worktreeCreatePathOptions" placeholder="parent workspace path" autocomplete="off">
+            <datalist id="worktreeCreatePathOptions"></datalist>
+          </label>
           <div class="worktree-grid">
             <label>Branch<input id="worktreeBranch" placeholder="auto-generated if blank"></label>
             <label>Base<input id="worktreeBase" placeholder="default branch"></label>
@@ -2794,19 +2800,27 @@ function openWorktreeCreateModal(id) {
   const w = state.workspaces.find((x) => x.workspace_id === id);
   if (!w || isLinkedWorktree(w)) return;
   state.createWorktreeWorkspace = id;
-  el("worktreeCreateSource").textContent = w.label || id;
+  const sourcePath = (w.worktree && w.worktree.checkout_path) || "";
+  state.createWorktreeOriginalSource = sourcePath;
+  el("worktreeCreateSource").value = sourcePath;
   el("worktreeBranch").value = "";
   el("worktreeBase").value = "";
   el("worktreeLabel").value = "";
   el("worktreePath").value = "";
   el("worktreeCreateError").textContent = "";
+  renderPathOptions("worktreeCreatePathOptions", []);
   el("worktreeCreateModal").style.display = "grid";
-  setTimeout(() => el("worktreeBranch").focus(), 0);
+  setTimeout(() => {
+    el("worktreeBranch").focus();
+    loadCreateWorktreePathSuggestions();
+  }, 0);
 }
 function closeWorktreeCreateModal() {
   const m = el("worktreeCreateModal");
   if (m) m.style.display = "none";
+  clearTimeout(state.createWorktreePathSuggestTimer);
   state.createWorktreeWorkspace = null;
+  state.createWorktreeOriginalSource = "";
 }
 function setWorktreeLoading(show) {
   const loading = el("worktreeLoading");
@@ -2958,6 +2972,15 @@ async function loadWorktreePathSuggestions() {
   );
   if (suggestions) state.openWorktreePathSuggestions = suggestions;
 }
+async function loadCreateWorktreePathSuggestions() {
+  await loadDirectoryPathSuggestions("worktreeCreateSource", (items) => {
+    const opts = (items || []).map(
+      (s) =>
+        `<option value="${escapeAttr(s.path)}">${escapeAttr(s.label || "directory")}</option>`,
+    );
+    renderPathOptions("worktreeCreatePathOptions", opts);
+  });
+}
 async function loadDirectoryPathSuggestions(inputId, onDone) {
   const input = el(inputId);
   if (!input) return null;
@@ -3052,8 +3075,75 @@ function checkedOutWorktreeForBranch(branch) {
   return (
     (state.openWorktreeAllRows || state.openWorktreeRows || []).find(
       (w) => textValue(w.branch) === branch && !w.is_prunable,
-    ) || null
+    ) ||
+    (state.worktrees || []).find(
+      (w) => textValue(w.branch) === branch && !w.is_prunable,
+    ) ||
+    null
   );
+}
+function resolveWorktreeSource(input) {
+  const workspaceId = input.workspaceId || null,
+    sourcePath = String(input.sourcePath || "").trim(),
+    originalSource = String(input.originalSource || "").trim(),
+    discovered = input.discoveredSource || {},
+    fallbackWorkspaceId = input.fallbackWorkspaceId || null;
+  if (workspaceId) {
+    const edited = sourcePath && sourcePath !== originalSource;
+    return { workspace_id: workspaceId, cwd: edited ? sourcePath : null };
+  }
+  const wsId = discovered.workspace_id || (!sourcePath ? fallbackWorkspaceId : null);
+  return {
+    workspace_id: wsId || null,
+    cwd: wsId ? null : (discovered.cwd || sourcePath || null),
+  };
+}
+async function submitWorktreeCreate(input) {
+  const errEl = input.errEl,
+    submitEl = input.submitEl,
+    closeFn = input.closeFn,
+    source = input.source,
+    branch = String(input.branch || "").trim(),
+    base = String(input.base || "").trim(),
+    label = String(input.label || "").trim(),
+    path = String(input.path || "").trim();
+  errEl.textContent = "";
+  if (!branch && !options.generateWorktreeNames) {
+    errEl.textContent =
+      "Branch name is required. Enable Generate worktree branch names in Settings to leave it blank.";
+    return;
+  }
+  const checkedOut = checkedOutWorktreeForBranch(branch);
+  if (checkedOut) {
+    errEl.textContent = `Branch "${branch}" is already checked out at ${textValue(checkedOut.path)}`;
+    return;
+  }
+  submitEl.disabled = true;
+  try {
+    const r = await api("/api/worktrees", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        workspace_id: source.workspace_id,
+        cwd: source.cwd,
+        branch: branch || null,
+        base: base || null,
+        label: label || null,
+        path: path || null,
+      }),
+    });
+    closeFn();
+    const result = r.result || {};
+    go(
+      result.workspace.workspace_id,
+      result.tab && result.tab.tab_id,
+      result.root_pane && result.root_pane.pane_id,
+    );
+  } catch (ex) {
+    errEl.textContent = ex.message || String(ex);
+  } finally {
+    submitEl.disabled = false;
+  }
 }
 function defaultBaseBranch() {
   const branches = state.openWorktreeBranches || [];
@@ -3260,53 +3350,35 @@ async function removeDiscoveredWorktree(index) {
 }
 async function createDiscoveredWorktree() {
   const err = el("worktreeOpenError"),
-    sourcePath = el("worktreeDiscoverPath").value.trim(),
-    branch = el("worktreeNewBranch").value.trim(),
-    base = el("worktreeNewBase").value.trim(),
-    label = el("worktreeNewLabel").value.trim(),
-    path = el("worktreeNewPath").value.trim(),
-    submit = el("worktreeNewSubmit");
+    submitEl = el("worktreeNewSubmit"),
+    sourcePath = el("worktreeDiscoverPath").value.trim();
   err.textContent = "";
-  if (!branch && !options.generateWorktreeNames) {
-    err.textContent =
-      "Branch name is required. Enable Generate worktree branch names in Settings to leave it blank.";
-    return;
-  }
-  submit.disabled = true;
-  try {
-    if (sourcePath && !state.openWorktreeSource) await discoverWorktrees();
-    const checkedOut = checkedOutWorktreeForBranch(branch);
-    if (checkedOut) {
-      err.textContent = `Branch "${branch}" is already checked out at ${textValue(checkedOut.path)}`;
+  if (sourcePath && !state.openWorktreeSource) {
+    submitEl.disabled = true;
+    try {
+      await discoverWorktrees();
+    } catch (ex) {
+      err.textContent = ex.message || String(ex);
       return;
+    } finally {
+      submitEl.disabled = false;
     }
-    const source = state.openWorktreeSource || {};
-    const workspaceId = source.workspace_id || (!sourcePath ? state.ws : null),
-      cwd = workspaceId ? null : (source.cwd || sourcePath || null);
-    const r = await api("/api/worktrees", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        workspace_id: workspaceId,
-        cwd,
-        branch: branch || null,
-        base: base || null,
-        label: label || null,
-        path: path || null,
-      }),
-    });
-    closeWorktreeOpenModal();
-    const result = r.result || {};
-    go(
-      result.workspace.workspace_id,
-      result.tab && result.tab.tab_id,
-      result.root_pane && result.root_pane.pane_id,
-    );
-  } catch (ex) {
-    err.textContent = ex.message || String(ex);
-  } finally {
-    submit.disabled = false;
   }
+  const source = resolveWorktreeSource({
+    sourcePath,
+    discoveredSource: state.openWorktreeSource || {},
+    fallbackWorkspaceId: state.ws,
+  });
+  await submitWorktreeCreate({
+    errEl: el("worktreeOpenError"),
+    submitEl: el("worktreeNewSubmit"),
+    closeFn: closeWorktreeOpenModal,
+    source,
+    branch: el("worktreeNewBranch").value,
+    base: el("worktreeNewBase").value,
+    label: el("worktreeNewLabel").value,
+    path: el("worktreeNewPath").value,
+  });
 }
 async function closeWorkspace(id) {
   const w = state.workspaces.find((x) => x.workspace_id === id),
@@ -3787,40 +3859,29 @@ el("optSound").onchange = () => {
 };
 el("worktreeCreateClose").onclick = closeWorktreeCreateModal;
 el("worktreeCreateCancel").onclick = closeWorktreeCreateModal;
+el("worktreeCreateSource").oninput = () => {
+  state.createWorktreePathSuggestTimer = schedulePathSuggestions(
+    state.createWorktreePathSuggestTimer,
+    loadCreateWorktreePathSuggestions,
+  );
+};
 el("worktreeCreateForm").onsubmit = async (e) => {
   e.preventDefault();
-  const err = el("worktreeCreateError"),
-    submit = el("worktreeCreateSubmit");
-  err.textContent = "";
-  const branch = el("worktreeBranch").value.trim(),
-    base = el("worktreeBase").value.trim(),
-    label = el("worktreeLabel").value.trim(),
-    path = el("worktreePath").value.trim();
-  submit.disabled = true;
-  try {
-    const r = await api("/api/worktrees", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        workspace_id: state.createWorktreeWorkspace,
-        branch: branch || null,
-        base: base || null,
-        label: label || null,
-        path: path || null,
-      }),
-    });
-    closeWorktreeCreateModal();
-    const result = r.result || {};
-    go(
-      result.workspace.workspace_id,
-      result.tab && result.tab.tab_id,
-      result.root_pane && result.root_pane.pane_id,
-    );
-  } catch (ex) {
-    err.textContent = ex.message || String(ex);
-  } finally {
-    submit.disabled = false;
-  }
+  const source = resolveWorktreeSource({
+    workspaceId: state.createWorktreeWorkspace,
+    sourcePath: el("worktreeCreateSource").value,
+    originalSource: state.createWorktreeOriginalSource,
+  });
+  await submitWorktreeCreate({
+    errEl: el("worktreeCreateError"),
+    submitEl: el("worktreeCreateSubmit"),
+    closeFn: closeWorktreeCreateModal,
+    source,
+    branch: el("worktreeBranch").value,
+    base: el("worktreeBase").value,
+    label: el("worktreeLabel").value,
+    path: el("worktreePath").value,
+  });
 };
 el("worktreeOpenClose").onclick = closeWorktreeOpenModal;
 document.addEventListener(

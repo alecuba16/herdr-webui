@@ -413,11 +413,203 @@ describe("app bundle load", () => {
 
     match(ctx.worktreeCreateModalHtml(), /id="worktreeCreateForm"/);
     match(ctx.worktreeCreateModalHtml(), /id="worktreeCreateSubmit"/);
+    match(ctx.worktreeCreateModalHtml(), /id="worktreeCreateSource"/);
+    match(ctx.worktreeCreateModalHtml(), /list="worktreeCreatePathOptions"/);
     match(ctx.worktreeOpenModalHtml(), /id="worktreeDiscoverPath"/);
     match(ctx.worktreeOpenModalHtml(), /id="worktreePathOptions"/);
     match(ctx.worktreeOpenModalHtml(), /id="worktreeBranchOptions"/);
     match(ctx.shortcutsModalHtml(), /id="shortcutsModal"/);
     match(ctx.shortcutsModalHtml(), /id="closeShortcutCurrent"/);
+  });
+
+  it("prefills create-worktree source from parent workspace checkout path", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    vm.runInContext(
+      `state.workspaces = [
+        { workspace_id: "ws1", label: "alpha", pane_count: 1, worktree: { checkout_path: "/repo/alpha", is_linked_worktree: false } },
+      ];
+      openWorktreeCreateModal("ws1");`,
+      ctx,
+    );
+
+    equal(ctx.document.getElementById("worktreeCreateSource").value, "/repo/alpha");
+    const result = vm.runInContext(
+      `JSON.stringify({
+        workspace: state.createWorktreeWorkspace,
+        original: state.createWorktreeOriginalSource,
+      })`,
+      ctx,
+    );
+    const parsed = JSON.parse(result);
+    equal(parsed.workspace, "ws1");
+    equal(parsed.original, "/repo/alpha");
+  });
+
+  it("sends workspace_id and omits cwd when create-worktree source is unchanged", async () => {
+    const ctx = context();
+    const calls = [];
+    ctx.fetch = async (url, opt) => {
+      calls.push({ url, body: JSON.parse(opt.body) });
+      return { status: 200, json: async () => ({ result: { workspace: { workspace_id: "new" } } }) };
+    };
+    vm.runInContext(source, ctx);
+    vm.runInContext(
+      `state.workspaces = [
+        { workspace_id: "ws1", label: "alpha", pane_count: 1, worktree: { checkout_path: "/repo/alpha", is_linked_worktree: false } },
+      ];
+      openWorktreeCreateModal("ws1");`,
+      ctx,
+    );
+
+    await vm.runInContext(
+      `el("worktreeBranch").value = "feature/x";
+       (async () => { await el("worktreeCreateForm").onsubmit({ preventDefault() {} }); })();`,
+      ctx,
+    );
+
+    equal(calls.length, 1);
+    equal(calls[0].body.workspace_id, "ws1");
+    equal(calls[0].body.cwd, null);
+    equal(calls[0].body.branch, "feature/x");
+  });
+
+  it("sends cwd and keeps workspace_id when create-worktree source is edited", async () => {
+    const ctx = context();
+    const calls = [];
+    ctx.fetch = async (url, opt) => {
+      calls.push({ url, body: JSON.parse(opt.body) });
+      return { status: 200, json: async () => ({ result: { workspace: { workspace_id: "new" } } }) };
+    };
+    vm.runInContext(source, ctx);
+    vm.runInContext(
+      `state.workspaces = [
+        { workspace_id: "ws1", label: "alpha", pane_count: 1, worktree: { checkout_path: "/repo/alpha", is_linked_worktree: false } },
+      ];
+      openWorktreeCreateModal("ws1");`,
+      ctx,
+    );
+
+    await vm.runInContext(
+      `el("worktreeCreateSource").value = "/repo/other";
+       el("worktreeBranch").value = "feature/y";
+       (async () => { await el("worktreeCreateForm").onsubmit({ preventDefault() {} }); })();`,
+      ctx,
+    );
+
+    equal(calls.length, 1);
+    equal(calls[0].body.workspace_id, "ws1");
+    equal(calls[0].body.cwd, "/repo/other");
+    equal(calls[0].body.branch, "feature/y");
+  });
+
+  it("create-worktree form blocks blank branch when generate names disabled", async () => {
+    const ctx = context();
+    const calls = [];
+    ctx.fetch = async (url, opt) => {
+      calls.push({ url, body: JSON.parse(opt.body) });
+      return { status: 200, json: async () => ({ result: { workspace: { workspace_id: "new" } } }) };
+    };
+    vm.runInContext(source, ctx);
+    vm.runInContext(
+      `state.workspaces = [
+        { workspace_id: "ws1", label: "alpha", pane_count: 1, worktree: { checkout_path: "/repo/alpha", is_linked_worktree: false } },
+      ];
+      options.generateWorktreeNames = false;
+      openWorktreeCreateModal("ws1");`,
+      ctx,
+    );
+
+    await vm.runInContext(
+      `el("worktreeBranch").value = "";
+       (async () => { await el("worktreeCreateForm").onsubmit({ preventDefault() {} }); })();`,
+      ctx,
+    );
+
+    equal(calls.length, 0);
+    match(
+      ctx.document.getElementById("worktreeCreateError").textContent,
+      /Branch name is required/,
+    );
+  });
+
+  it("create-worktree form blocks branch already checked out globally", async () => {
+    const ctx = context();
+    const calls = [];
+    ctx.fetch = async (url, opt) => {
+      calls.push({ url, body: JSON.parse(opt.body) });
+      return { status: 200, json: async () => ({ result: { workspace: { workspace_id: "new" } } }) };
+    };
+    vm.runInContext(source, ctx);
+    vm.runInContext(
+      `state.workspaces = [
+        { workspace_id: "ws1", label: "alpha", pane_count: 1, worktree: { checkout_path: "/repo/alpha", is_linked_worktree: false } },
+      ];
+      state.worktrees = [
+        { branch: "feature/exists", path: "/repo/exists", is_prunable: false },
+      ];
+      openWorktreeCreateModal("ws1");`,
+      ctx,
+    );
+
+    await vm.runInContext(
+      `el("worktreeBranch").value = "feature/exists";
+       (async () => { await el("worktreeCreateForm").onsubmit({ preventDefault() {} }); })();`,
+      ctx,
+    );
+
+    equal(calls.length, 0);
+    match(
+      ctx.document.getElementById("worktreeCreateError").textContent,
+      /already checked out/,
+    );
+  });
+
+  it("resolveWorktreeSource keeps workspace anchor when path unchanged", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    const result = vm.runInContext(
+      `JSON.stringify(resolveWorktreeSource({
+        workspaceId: "ws1",
+        sourcePath: "/repo/alpha",
+        originalSource: "/repo/alpha",
+      }))`,
+      ctx,
+    );
+    const parsed = JSON.parse(result);
+    equal(parsed.workspace_id, "ws1");
+    equal(parsed.cwd, null);
+  });
+
+  it("resolveWorktreeSource sends cwd when explicit workspace path edited", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    const result = vm.runInContext(
+      `JSON.stringify(resolveWorktreeSource({
+        workspaceId: "ws1",
+        sourcePath: "/repo/other",
+        originalSource: "/repo/alpha",
+      }))`,
+      ctx,
+    );
+    const parsed = JSON.parse(result);
+    equal(parsed.workspace_id, "ws1");
+    equal(parsed.cwd, "/repo/other");
+  });
+
+  it("resolveWorktreeSource is path-first exclusive without workspace anchor", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    const result = vm.runInContext(
+      `JSON.stringify(resolveWorktreeSource({
+        sourcePath: "/repo/free",
+        discoveredSource: { cwd: "/repo/free" },
+      }))`,
+      ctx,
+    );
+    const parsed = JSON.parse(result);
+    equal(parsed.workspace_id, null);
+    equal(parsed.cwd, "/repo/free");
   });
 
   it("prefills workspace label from final folder segment", () => {
