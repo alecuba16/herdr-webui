@@ -530,6 +530,54 @@ body.light {
 .context-menu button:hover {
   background: var(--border);
 }
+.shortcut-prefix-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: start center;
+  pointer-events: none;
+  padding-top: 18px;
+}
+.shortcut-prefix-overlay[hidden] {
+  display: none;
+}
+.shortcut-prefix-card {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  border: 1px solid var(--border2);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--panel), transparent 5%);
+  box-shadow: 0 18px 55px rgba(0, 0, 0, 0.35);
+  padding: 10px 13px;
+}
+.shortcut-prefix-card span {
+  color: var(--muted);
+  font-size: 12px;
+}
+.shortcut-prefix-card kbd {
+  background: var(--panel2);
+  border: 1px solid var(--border2);
+  border-bottom-width: 2px;
+  border-radius: 7px;
+  padding: 3px 7px;
+  font:
+    12px ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+}
+.shortcut-capture {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+  align-items: center;
+}
+.shortcut-capture input {
+  max-width: 140px;
+  text-align: center;
+}
 .terminal-shell::-webkit-scrollbar {
   width: 10px;
   height: 10px;
