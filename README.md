@@ -185,8 +185,9 @@ Terminal font:
 Keyboard shortcuts:
 
 - Enable or disable from Settings under `Agents and alerts` with `Global keyboard shortcuts`.
-- Press `?` outside terminal/input fields to open the shortcut reference.
-- Alt-based shortcuts work from the terminal and UI: `Alt+S` settings, `Alt+B` sidebar, `Alt+N` new workspace, `Alt+P` new panel, `Alt+W` worktrees, `Alt+T` create worktree, `Alt+X` close panel, `Alt+Shift+X` close workspace/worktree, `Alt+Delete` remove linked worktree, `Alt+A` next attention agent, `Alt+J/K` workspace navigation, `Alt+[/]` panel navigation, `Alt+F` terminal focus, and `Alt+,/.` focus navigation.
+- Press configured prefix (`Ctrl+B` by default) to open the WebUI shortcut prefix overlay. The next shortcut key is handled by WebUI and not sent to the terminal; `Esc` cancels.
+- Change the prefix in Settings with `Shortcut prefix` → `Record`.
+- Prefix shortcuts work from the terminal and UI: prefix then `S` settings, `B` sidebar, `N` new workspace, `P` new panel, `W` worktrees, `T` create worktree, `X` close panel, `Shift+X` close workspace/worktree, `Delete` remove linked worktree, `A` next agent by blocked/done/idle/working priority, `Shift+A` previous agent by reverse priority, `J/K` workspace navigation, `[/]` panel navigation, `F` terminal focus, and `,/.` focus navigation.
 
 ## Install
 

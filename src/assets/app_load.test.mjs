@@ -160,12 +160,45 @@ describe("app bundle load", () => {
     vm.runInContext(source, ctx);
 
     match(source, /id="optGlobalShortcutsEnabled"/);
+    match(source, /id="optGlobalShortcutPrefix"/);
+    match(source, /id="optGlobalShortcutPrefixCapture"/);
+    match(source, /DEFAULT_GLOBAL_SHORTCUT_PREFIX/);
     match(source, /id="optTerminalFontFamily"/);
     match(source, /JetBrainsMono Nerd Font/);
     match(source, /handleGlobalShortcut/);
-    match(source, /Alt\+KeyS/);
-    match(source, /Alt\+KeyX/);
+    match(source, /isShortcutPrefix/);
+    match(source, /runPrefixedShortcut/);
+    match(source, /selectRelativeAgent\(1\)/);
+    match(source, /selectRelativeAgent\(-1\)/);
     match(source, /terminalFontFamily/);
+  });
+
+  it("normalizes configurable shortcut prefixes", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    equal(ctx.normalizeShortcutPrefix("control+b"), "Ctrl+B");
+    equal(ctx.normalizeShortcutPrefix("Option+Shift+x"), "Alt+Shift+X");
+    equal(ctx.normalizeShortcutPrefix("bad+b"), "Ctrl+B");
+    equal(ctx.normalizeShortcutPrefix("b"), "Ctrl+B");
+  });
+
+  it("cycles agents by blocked done idle working priority", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    const order = vm.runInContext(
+      `state.agents = [
+        { agent_status: "working", pane_id: "working" },
+        { agent_status: "idle", pane_id: "idle" },
+        { agent_status: "blocked", pane_id: "blocked" },
+        { agent_status: "done", pane_id: "done" },
+      ];
+      agentCycleList().map((agent) => agent.pane_id).join(",");`,
+      ctx,
+    );
+
+    equal(order, "blocked,done,idle,working");
   });
 
   it("defines stuck-working dismissal controls", () => {
