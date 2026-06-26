@@ -14,8 +14,8 @@ Compatibility:
 
 | WebUI | Herdr | Protocol | Status | Notes |
 | --- | --- | --- | --- | --- |
-| `0.0.35` | `0.7.1` | `14` | Tested | Uses native `worktree.create` existing-branch support and async/deferred worktree operations. |
-| `0.0.35` | `0.7.0` | `14` | Minimum supported | Uses WebUI's legacy existing-branch worktree fallback when needed. |
+| `0.0.39` | `0.7.1` | `14` | Tested | Adds keyboard prefix navigation, search palette, worktree labels, safer close actions, terminal font setting, and split frontend assets. |
+| `0.0.39` | `0.7.0` | `14` | Minimum supported | Uses WebUI's legacy existing-branch worktree fallback when needed. |
 
 Newer Herdr builds may work when protocol stays compatible, but WebUI reports them as untested.
 
@@ -87,6 +87,9 @@ Use `--verbose`, `-v`, or `HERDR_WEB_VERBOSE=1` with macOS service commands to p
 - `src/protocol.rs`: Herdr direct terminal attach wire types and frame codec.
 - `src/service.rs`: OS service helpers.
 - `src/assets/`: embedded HTML/CSS/JS and frontend tests.
+- `src/assets/desktop/`: desktop UI bundle chunks and desktop-only CSS.
+- `src/assets/mobile/`: mobile UI bundle chunks and mobile-only CSS.
+- `src/assets/shared/`: browser helpers shared by desktop and mobile bundles.
 - `.github/workflows/webui-ci.yml`: WebUI CI.
 - `.github/workflows/webui-release.yml`: WebUI release builds for `v0.0.*` tags.
 - `Makefile`: local build, run, install, update, uninstall commands.
@@ -127,6 +130,7 @@ Sidebar:
 
 - Use the vertical divider between the sidebar and terminal to hide or show the workspace/agents sidebar.
 - The collapsed state is stored in browser `localStorage`.
+- When collapsed, the sidebar shows compact agent counters for blocked, working, idle, and done agents.
 
 Worktrees:
 
@@ -134,6 +138,16 @@ Worktrees:
 - With Herdr `0.7.0`, WebUI keeps a legacy fallback for creating a checkout from an existing branch when a checkout path is supplied.
 - WebUI subscribes to `worktree.created`, `worktree.opened`, and `worktree.removed` and refreshes workspace/agent state quickly after these events.
 - `worktree.removed` events from Herdr `0.7.1` may include a workspace snapshot. This is additive; WebUI refreshes from the backend state instead of relying only on the event payload.
+- Linked worktree cards use the branch name as the main title and show a custom worktree label as a small label chip when one exists.
+- Agent rows prefer the linked worktree custom label, so running agents are easier to scan across many branches.
+- Worktree groups avoid duplicate repo headers when the parent workspace card is already visible.
+- Removing a linked worktree is available from the worktree actions and from the keyboard prefix `Delete` shortcut.
+
+Panel and workspace close:
+
+- Closing the last panel in a workspace closes the workspace with Herdr's `workspace.close` API instead of calling `tab.close`, because Herdr rejects closing the last tab.
+- Closing a workspace or linked worktree uses `workspace.close` to close all panels in that workspace.
+- Closing a normal non-last panel still uses `tab.close`.
 
 Panel tab activity:
 
@@ -175,6 +189,28 @@ Terminal scroll:
 
 - Wheel scroll speed is configurable in Settings under `Terminal input` with the `Scroll speed` slider.
 - Small trackpad wheel deltas are accumulated before sending scroll commands, preventing tiny events from each scrolling a full line batch.
+
+Terminal font:
+
+- Configure in Settings under `Terminal input` with `Terminal font`.
+- Use any installed CSS font family, including Nerd Fonts commonly used by Neovim, for example `JetBrainsMono Nerd Font, monospace` or `MesloLGS NF, monospace`.
+- Browsers can only render fonts installed on the local machine.
+
+Search palette:
+
+- Open search from the top-right `⌕` button or with the keyboard prefix then `/`.
+- Search is local and in-memory over currently loaded workspaces, repos, worktrees, labels, panels, and agents.
+- Results include workspace (`ws`), worktree (`wt`), panel (`pn`), and agent (`ag`) entries.
+- Use `Enter` to open the selected result, arrow keys to move selection, and `Esc` to close.
+- Search result navigation always targets a concrete panel when one is available.
+
+Keyboard shortcuts:
+
+- Enable or disable from Settings under `Agents and alerts` with `Global keyboard shortcuts`.
+- Press configured prefix (`Ctrl+B` by default) to open the WebUI shortcut prefix overlay. The next shortcut key is handled by WebUI and not sent to the terminal; `Esc` cancels.
+- Change the prefix in Settings with `Shortcut prefix` → `Record`.
+- Prefix shortcuts work from the terminal and UI: prefix then `/` search, `?` shortcuts help, `S` settings, `B` sidebar, `N` new workspace, `P` new panel, `W` worktrees, `T` create worktree, `X` close panel, `Shift+X` close workspace/worktree, `Delete` remove linked worktree, `A` next agent by blocked/done/idle/working priority, `Shift+A` previous agent by reverse priority, `J/K` workspace navigation, `[/]` panel navigation, `F` terminal focus, and `,/.` focus navigation.
+- Optional direct search shortcuts can be configured in Settings. They are disabled by default to avoid conflicts with terminal applications.
 
 ## Install
 

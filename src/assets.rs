@@ -6,17 +6,20 @@ pub(crate) const APP_HTML: &str = include_str!("assets/app.html");
 
 const LOGIN_CSS: &str = include_str!("assets/login.css");
 const LOGIN_JS: &str = include_str!("assets/login.js");
-const APP_CORE_JS: &str = include_str!("assets/app_core.js");
+const SHARED_CORE_JS: &str = include_str!("assets/shared/core.js");
 const APP_BOOT_JS: &str = include_str!("assets/app_boot.js");
-const APP_CSS: &str = include_str!("assets/app.css");
-const APP_JS: &str = include_str!("assets/app.js");
-const MOBILE_ATTENTION_JS: &str = include_str!("assets/mobile_attention.js");
-const MOBILE_CORE_JS: &str = include_str!("assets/mobile_core.js");
-const MOBILE_SETTINGS_JS: &str = include_str!("assets/mobile_settings.js");
-const MOBILE_TERMINAL_JS: &str = include_str!("assets/mobile_terminal.js");
-const MOBILE_WORKTREES_JS: &str = include_str!("assets/mobile_worktrees.js");
-const MOBILE_CSS: &str = include_str!("assets/mobile.css");
-const MOBILE_JS: &str = include_str!("assets/mobile.js");
+const DESKTOP_CSS: &str = include_str!("assets/desktop/app.css");
+const DESKTOP_SEARCH_CSS: &str = include_str!("assets/desktop/search.css");
+const DESKTOP_SHORTCUTS_CSS: &str = include_str!("assets/desktop/shortcuts.css");
+const DESKTOP_SEARCH_JS: &str = include_str!("assets/desktop/search.js");
+const DESKTOP_JS: &str = include_str!("assets/desktop/app.js");
+const MOBILE_ATTENTION_JS: &str = include_str!("assets/mobile/attention.js");
+const MOBILE_CORE_JS: &str = include_str!("assets/mobile/core.js");
+const MOBILE_SETTINGS_JS: &str = include_str!("assets/mobile/settings.js");
+const MOBILE_TERMINAL_JS: &str = include_str!("assets/mobile/terminal.js");
+const MOBILE_WORKTREES_JS: &str = include_str!("assets/mobile/worktrees.js");
+const MOBILE_CSS: &str = include_str!("assets/mobile/app.css");
+const MOBILE_JS: &str = include_str!("assets/mobile/app.js");
 const XTERM_CSS: &str = include_str!("assets/xterm.css");
 const XTERM_JS: &str = include_str!("assets/xterm.min.js");
 const HERDR_LOGO: &str = include_str!("assets/herdr-logo.svg");
@@ -37,20 +40,32 @@ pub(crate) async fn xterm_css() -> Response {
     static_text(XTERM_CSS, "text/css; charset=utf-8")
 }
 
-pub(crate) async fn app_js() -> Response {
-    static_text(APP_JS, "application/javascript; charset=utf-8")
+pub(crate) async fn desktop_js() -> Response {
+    static_text(DESKTOP_JS, "application/javascript; charset=utf-8")
 }
 
 pub(crate) async fn app_boot_js() -> Response {
     static_text(APP_BOOT_JS, "application/javascript; charset=utf-8")
 }
 
-pub(crate) async fn app_core_js() -> Response {
-    static_text(APP_CORE_JS, "application/javascript; charset=utf-8")
+pub(crate) async fn shared_core_js() -> Response {
+    static_text(SHARED_CORE_JS, "application/javascript; charset=utf-8")
 }
 
-pub(crate) async fn app_css() -> Response {
-    static_text(APP_CSS, "text/css; charset=utf-8")
+pub(crate) async fn desktop_search_js() -> Response {
+    static_text(DESKTOP_SEARCH_JS, "application/javascript; charset=utf-8")
+}
+
+pub(crate) async fn desktop_css() -> Response {
+    static_text(DESKTOP_CSS, "text/css; charset=utf-8")
+}
+
+pub(crate) async fn desktop_search_css() -> Response {
+    static_text(DESKTOP_SEARCH_CSS, "text/css; charset=utf-8")
+}
+
+pub(crate) async fn desktop_shortcuts_css() -> Response {
+    static_text(DESKTOP_SHORTCUTS_CSS, "text/css; charset=utf-8")
 }
 
 pub(crate) async fn mobile_js() -> Response {

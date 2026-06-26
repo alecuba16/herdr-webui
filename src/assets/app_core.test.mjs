@@ -8,10 +8,15 @@ const {
   normalizeAbsolutePath,
   normalizeThemeColors,
   resolveTerminalFontFamily,
+  textValue,
+  resolveWorktreeSource,
+  checkedOutWorktreeForBranch,
+  validateWorktreeCreate,
+  buildWorktreeCreateBody,
   tabActivityLabel,
   terminalPasteInput,
   terminalWheelScrollBatch,
-} = require("./app_core.js");
+} = require("./shared/core.js");
 
 describe("branchPathSlug", () => {
   it("lowercases and collapses separators", () => {
@@ -153,6 +158,159 @@ describe("resolveTerminalFontFamily", () => {
     assert.equal(
       resolveTerminalFontFamily("  'Iosevka Nerd Font', monospace  "),
       "'Iosevka Nerd Font', monospace",
+    );
+  });
+});
+
+describe("textValue", () => {
+  it("extracts strings from primitive and object shapes", () => {
+    assert.equal(textValue("alpha"), "alpha");
+    assert.equal(textValue(42), "42");
+    assert.equal(textValue(null), "");
+    assert.equal(textValue(undefined), "");
+    assert.equal(textValue({ path: "/repo" }), "/repo");
+    assert.equal(textValue({ label: "main" }), "main");
+  });
+});
+
+describe("resolveWorktreeSource", () => {
+  it("keeps workspace anchor when path unchanged", () => {
+    assert.deepEqual(
+      resolveWorktreeSource({
+        workspaceId: "ws1",
+        sourcePath: "/repo/alpha",
+        originalSource: "/repo/alpha",
+      }),
+      { workspace_id: "ws1", cwd: null },
+    );
+  });
+
+  it("sends cwd when explicit workspace path edited", () => {
+    assert.deepEqual(
+      resolveWorktreeSource({
+        workspaceId: "ws1",
+        sourcePath: "/repo/other",
+        originalSource: "/repo/alpha",
+      }),
+      { workspace_id: "ws1", cwd: "/repo/other" },
+    );
+  });
+
+  it("is path-first exclusive without workspace anchor", () => {
+    assert.deepEqual(
+      resolveWorktreeSource({
+        sourcePath: "/repo/free",
+        discoveredSource: { cwd: "/repo/free" },
+      }),
+      { workspace_id: null, cwd: "/repo/free" },
+    );
+  });
+
+  it("uses fallback workspace when source path is blank", () => {
+    assert.deepEqual(
+      resolveWorktreeSource({
+        sourcePath: "",
+        discoveredSource: {},
+        fallbackWorkspaceId: "ws-default",
+      }),
+      { workspace_id: "ws-default", cwd: null },
+    );
+  });
+});
+
+describe("checkedOutWorktreeForBranch", () => {
+  const rows = [
+    { branch: "main", path: "/repo/main", is_prunable: false },
+    { branch: "dev", path: "/repo/dev", is_prunable: true },
+  ];
+
+  it("finds a checked-out branch across multiple lists", () => {
+    assert.equal(
+      checkedOutWorktreeForBranch("main", [rows])?.path,
+      "/repo/main",
+    );
+  });
+
+  it("skips prunable worktrees", () => {
+    assert.equal(checkedOutWorktreeForBranch("dev", [rows]), null);
+  });
+
+  it("returns null for blank branch", () => {
+    assert.equal(checkedOutWorktreeForBranch("", [rows]), null);
+  });
+});
+
+describe("validateWorktreeCreate", () => {
+  const lists = [[{ branch: "exists", path: "/repo/exists", is_prunable: false }]];
+
+  it("requires a branch when generateWorktreeNames is false", () => {
+    assert.match(
+      validateWorktreeCreate({ branch: "", generateWorktreeNames: false }),
+      /Branch name is required/,
+    );
+  });
+
+  it("allows blank branch when generateWorktreeNames is true", () => {
+    assert.equal(
+      validateWorktreeCreate({
+        branch: "",
+        generateWorktreeNames: true,
+        worktreeLists: lists,
+      }),
+      "",
+    );
+  });
+
+  it("blocks an already checked-out branch", () => {
+    assert.match(
+      validateWorktreeCreate({
+        branch: "exists",
+        generateWorktreeNames: true,
+        worktreeLists: lists,
+      }),
+      /already checked out/,
+    );
+  });
+});
+
+describe("buildWorktreeCreateBody", () => {
+  it("builds the API body from resolved source and form fields", () => {
+    assert.deepEqual(
+      buildWorktreeCreateBody({
+        source: { workspace_id: "ws1", cwd: null },
+        branch: "feature/x",
+        base: "main",
+        label: "my-label",
+        path: "/repo/worktrees/x",
+      }),
+      {
+        workspace_id: "ws1",
+        cwd: null,
+        branch: "feature/x",
+        base: "main",
+        label: "my-label",
+        path: "/repo/worktrees/x",
+      },
+    );
+  });
+
+  it("nullifies blank fields", () => {
+    assert.deepEqual(
+      buildWorktreeCreateBody({
+        source: { workspace_id: null, cwd: "/repo" },
+        branch: "",
+        base: "",
+        label: "",
+        path: "",
+      }),
+      {
+        workspace_id: null,
+        cwd: "/repo",
+        branch: null,
+        base: null,
+        label: null,
+        path: null,
+      },
     );
   });
 });

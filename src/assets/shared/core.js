@@ -97,11 +97,84 @@
     return trimmed || DEFAULT_TERMINAL_FONT_FAMILY;
   }
 
+  function textValue(v) {
+    if (v === null || v === undefined) return "";
+    if (typeof v === "string") return v;
+    if (typeof v === "number" || typeof v === "boolean") return String(v);
+    if (v.path) return textValue(v.path);
+    if (v.display) return textValue(v.display);
+    if (v.label) return textValue(v.label);
+    if (v.name) return textValue(v.name);
+    return "";
+  }
+
+  function resolveWorktreeSource(input) {
+    const workspaceId = input.workspaceId || null,
+      sourcePath = String(input.sourcePath || "").trim(),
+      originalSource = String(input.originalSource || "").trim(),
+      discovered = input.discoveredSource || {},
+      fallbackWorkspaceId = input.fallbackWorkspaceId || null;
+    if (workspaceId) {
+      const edited = sourcePath && sourcePath !== originalSource;
+      return { workspace_id: workspaceId, cwd: edited ? sourcePath : null };
+    }
+    const wsId = discovered.workspace_id || (!sourcePath ? fallbackWorkspaceId : null);
+    return {
+      workspace_id: wsId || null,
+      cwd: wsId ? null : (discovered.cwd || sourcePath || null),
+    };
+  }
+
+  function checkedOutWorktreeForBranch(branch, worktreeLists) {
+    branch = String(branch || "").trim();
+    if (!branch) return null;
+    const lists = worktreeLists || [];
+    for (const list of lists) {
+      const found = (list || []).find(
+        (w) => textValue(w.branch) === branch && !w.is_prunable,
+      );
+      if (found) return found;
+    }
+    return null;
+  }
+
+  function validateWorktreeCreate(input) {
+    const branch = String(input.branch || "").trim();
+    if (!branch && !input.generateWorktreeNames) {
+      return "Branch name is required. Enable Generate worktree branch names in Settings to leave it blank.";
+    }
+    const checkedOut = checkedOutWorktreeForBranch(
+      branch,
+      input.worktreeLists || [],
+    );
+    if (checkedOut) {
+      return `Branch "${branch}" is already checked out at ${textValue(checkedOut.path)}`;
+    }
+    return "";
+  }
+
+  function buildWorktreeCreateBody(input) {
+    const source = input.source || {};
+    return {
+      workspace_id: source.workspace_id ?? null,
+      cwd: source.cwd ?? null,
+      branch: String(input.branch || "").trim() || null,
+      base: String(input.base || "").trim() || null,
+      label: String(input.label || "").trim() || null,
+      path: String(input.path || "").trim() || null,
+    };
+  }
+
   const helpers = {
     branchPathSlug,
     normalizeAbsolutePath,
     normalizeThemeColors,
     resolveTerminalFontFamily,
+    textValue,
+    resolveWorktreeSource,
+    checkedOutWorktreeForBranch,
+    validateWorktreeCreate,
+    buildWorktreeCreateBody,
     terminalWheelScrollBatch,
     terminalPasteInput,
     tabActivityLabel,

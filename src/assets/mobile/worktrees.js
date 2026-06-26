@@ -101,11 +101,34 @@
 
     async function create() {
       state.worktreeError = "";
-      const source = state.worktreeSource || {};
-      const sourcePath = state.worktreeDiscoverPath.trim();
-      const branch = state.worktreeBranch.trim();
-      if (!branch) {
-        state.worktreeError = "Branch name required on mobile for now.";
+      const helpers = globalThis.HerdrAppHelpers || {},
+        source = state.worktreeSource || {},
+        sourcePath = state.worktreeDiscoverPath.trim(),
+        branch = state.worktreeBranch.trim();
+      let generateWorktreeNames = false;
+      try {
+        const parsed = JSON.parse(
+          (globalThis.localStorage &&
+            globalThis.localStorage.getItem("herdr-web-options")) ||
+            "{}",
+        );
+        generateWorktreeNames = !!parsed.generateWorktreeNames;
+      } catch (_) {}
+      const resolved = helpers.resolveWorktreeSource({
+        discoveredSource: {
+          workspace_id: source.source_workspace_id,
+          cwd: source.source_checkout_path || source.repo_root,
+        },
+        sourcePath,
+        fallbackWorkspaceId: state.ws,
+      });
+      const error = helpers.validateWorktreeCreate({
+        branch,
+        generateWorktreeNames,
+        worktreeLists: [state.worktreeRows || []],
+      });
+      if (error) {
+        state.worktreeError = error;
         render();
         return;
       }
@@ -113,28 +136,23 @@
         const response = await api("/api/worktrees", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            workspace_id:
-              source.source_workspace_id || (sourcePath ? null : state.ws),
-            cwd: source.source_workspace_id
-              ? null
-              : source.source_checkout_path ||
-                source.repo_root ||
-                sourcePath ||
-                null,
-            branch,
-            base: state.worktreeBase.trim() || null,
-            label: state.worktreeLabel.trim() || null,
-            path: state.worktreePath.trim() || null,
-          }),
+          body: JSON.stringify(
+            helpers.buildWorktreeCreateBody({
+              source: resolved,
+              branch,
+              base: state.worktreeBase,
+              label: state.worktreeLabel,
+              path: state.worktreePath,
+            }),
+          ),
         });
         state.worktreeBranch = "";
         state.worktreeBase = "";
         state.worktreeLabel = "";
         state.worktreePath = "";
         navigateToResult(response);
-      } catch (error) {
-        state.worktreeError = error.message || String(error);
+      } catch (err) {
+        state.worktreeError = err.message || String(err);
         render();
       }
     }
