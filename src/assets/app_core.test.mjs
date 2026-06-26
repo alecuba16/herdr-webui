@@ -7,6 +7,7 @@ const {
   branchPathSlug,
   normalizeAbsolutePath,
   normalizeThemeColors,
+  resolveTerminalFontFamily,
   tabActivityLabel,
   terminalPasteInput,
   terminalWheelScrollBatch,
@@ -129,6 +130,29 @@ describe("normalizeThemeColors", () => {
     assert.deepEqual(
       normalizeThemeColors({ dark: { background: "red" } }, defaults),
       defaults,
+    );
+  });
+});
+
+describe("resolveTerminalFontFamily", () => {
+  it("returns the default stack for blank values", () => {
+    assert.equal(resolveTerminalFontFamily(""), resolveTerminalFontFamily());
+    assert.equal(resolveTerminalFontFamily("   "), resolveTerminalFontFamily());
+    assert.equal(resolveTerminalFontFamily(null), resolveTerminalFontFamily());
+    assert.equal(resolveTerminalFontFamily(undefined), resolveTerminalFontFamily());
+  });
+
+  it("includes Nerd Font fallbacks in the default stack", () => {
+    const fallback = resolveTerminalFontFamily("");
+    assert.match(fallback, /Symbols Nerd Font Mono/);
+    assert.match(fallback, /JetBrainsMono Nerd Font/);
+    assert.match(fallback, /monospace/);
+  });
+
+  it("trims and preserves a user-provided font-family list", () => {
+    assert.equal(
+      resolveTerminalFontFamily("  'Iosevka Nerd Font', monospace  "),
+      "'Iosevka Nerd Font', monospace",
     );
   });
 });

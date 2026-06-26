@@ -6,6 +6,35 @@
       connectedTerminalKey = "",
       connectedTerminalSize = "";
 
+    function terminalFontFamily() {
+      try {
+        const parsed = JSON.parse(
+          (globalThis.localStorage &&
+            globalThis.localStorage.getItem("herdr-web-options")) ||
+            "{}",
+        );
+        return globalThis.HerdrAppHelpers.resolveTerminalFontFamily(
+          parsed && parsed.terminalFontFamily,
+        );
+      } catch (_) {
+        return globalThis.HerdrAppHelpers.resolveTerminalFontFamily("");
+      }
+    }
+    function applyFontFamily() {
+      if (!term) return;
+      const family = terminalFontFamily();
+      try {
+        term.options.fontFamily = family;
+      } catch (e) {
+        try {
+          term.setOption("fontFamily", family);
+        } catch (_) {}
+      }
+      try {
+        term.refresh(0, Math.max(0, (term.rows || 1) - 1));
+      } catch (_) {}
+    }
+
     function size() {
       const shell = el("terminalShell");
       if (!shell) return { cols: 80, rows: 24 };
@@ -36,7 +65,7 @@
       if (!term) {
         term = new Terminal({
           convertEol: false,
-          fontFamily: "ui-monospace,SFMono-Regular,Menlo,monospace",
+          fontFamily: terminalFontFamily(),
           scrollback: 10000,
         });
         term.onData((data) => {
@@ -113,7 +142,7 @@
       openedTerminalElement = null;
     }
 
-    return { connect, destroy, disconnect };
+    return { connect, destroy, disconnect, applyFontFamily };
   }
 
   globalThis.HerdrMobileTerminal = { create: createMobileTerminal };

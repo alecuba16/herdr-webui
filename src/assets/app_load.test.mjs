@@ -155,6 +155,30 @@ describe("app bundle load", () => {
     match(source, /title: "Server"/);
   });
 
+  it("exposes a configurable terminal font-family setting", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    match(source, /id="optTerminalFont"/);
+    match(
+      source,
+      /ids: \["optOverflow", "optFit", "optShiftEnterNewline", "optScrollLines", "optTerminalFont"\]/,
+    );
+    match(source, /function applyTerminalFont\(\)/);
+  });
+
+  it("normalizes the terminal font-family option to a trimmed string", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    equal(
+      ctx.normalizeOptions({ terminalFontFamily: "  Hack Nerd Font  " })
+        .terminalFontFamily,
+      "Hack Nerd Font",
+    );
+    equal(ctx.normalizeOptions({}).terminalFontFamily, "");
+  });
+
   it("defines stuck-working dismissal controls", () => {
     const ctx = context();
     vm.runInContext(source, ctx);

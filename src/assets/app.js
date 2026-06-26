@@ -65,6 +65,7 @@ const {
   branchPathSlug,
   normalizeAbsolutePath,
   normalizeThemeColors,
+  resolveTerminalFontFamily,
   terminalPasteInput,
   tabActivityLabel,
   terminalWheelScrollBatch,
@@ -529,6 +530,7 @@ const defaultOptions = {
   workingDismissMinutes: 30,
   workspaceSort: "default",
   scrollLines: 3,
+  terminalFontFamily: "",
   showTabActivity: false,
   worktreeAutoDiscoverSeconds: 3,
   generateWorktreeNames: false,
@@ -570,6 +572,7 @@ function normalizeOptions(value) {
   if (!["default", "drag", "state"].includes(next.workspaceSort))
     next.workspaceSort = defaultOptions.workspaceSort;
   next.scrollLines = Math.max(1, Math.min(20, Number(next.scrollLines) || 3));
+  next.terminalFontFamily = String(next.terminalFontFamily || "").trim();
   next.showTabActivity = next.showTabActivity === true;
   next.worktreeAutoDiscoverSeconds = Math.max(
     0,
@@ -775,7 +778,7 @@ if (soundSetting && !el("optAgentSortMode"))
     .closest("label")
     .insertAdjacentHTML(
       "afterend",
-      '<label class="option"><span>Close panel shortcut<small>Stored in browser storage and available after reopening the tab.</small></span><select class="settings-select" id="optCloseShortcut"><option value="off">Disabled</option><option value="altw">Option+W</option><option value="shiftspacew">Shift+Space then W</option></select></label><label class="option"><span>Agent sorting<small>Sort agents by attention priority, or show them in default order.</small></span><select class="settings-select" id="optAgentSortMode"><option value="off">Default order</option><option value="attention">Attention (blocked first)</option><option value="attention_inverted">Attention (working first)</option></select></label><label class="option"><span>Parent workspace close<small>Close panels only (keeps linked worktrees running) or full close with re-open (stops processes, re-opens worktrees with fresh shells).</small></span><select class="settings-select" id="optParentCloseMode"><option value="panels">Close panels only</option><option value="close">Full close + re-open worktrees</option></select></label><label class="option"><input type="checkbox" id="optStuckWorkingEnabled"><span>Ignore stuck working agents<small>Dismiss working agents that appear stuck. Clears automatically on status changes and terminal output.</small></span></label><label class="option"><span>Ignore stuck working for<small>Minutes to keep a local dismissed-working override before showing working again.</small></span><input id="optWorkingDismissMinutes" type="number" min="1" max="1440" step="1"></label><label class="option"><input type="checkbox" id="optShowTabActivity"><span>Show panel last update<small>Display local last-change age on top panel tabs. Updates on refreshes, events, and selected terminal output; no timer polling.</small></span></label><label class="option"><span>Workspace sorting<small>Default tree order, shared drag-and-drop order, or attention state priority.</small></span><select class="settings-select" id="optWorkspaceSort"><option value="default">Default</option><option value="drag">Drag&drop</option><option value="state">State</option></select></label><label class="option"><span>Notification scope<small>Choose whether sounds ring in every open tab or only the tab viewing the agent panel.</small></span><select class="settings-select" id="optSoundScope"><option value="current">Current agent tab</option><option value="all">All tabs</option></select></label><label class="option"><input type="checkbox" id="optGenerateWorktreeNames"><span>Generate worktree branch names<small>Allow blank Branch name in Worktrees modal. Herdr generates worktree/&lt;name&gt;.</small></span></label><label class="option"><span>Default worktree directory<small>Relative paths resolve from repo root. Example: ../worktrees.</small></span><input id="optWorktreeDefaultDirectory" placeholder="../worktrees"></label><label class="option"><span>Scroll speed<small><span id="scrollLinesValue">3</span> terminal lines per wheel step.</small></span><input type="range" id="optScrollLines" min="1" max="20" step="1"></label><label class="option"><span>Worktree autodiscover<small>Seconds to wait after path input stops. Set 0 for immediate.</small></span><input type="number" id="optWorktreeAutoDiscover" min="0" max="30" step="0.5"></label>',
+      '<label class="option"><span>Close panel shortcut<small>Stored in browser storage and available after reopening the tab.</small></span><select class="settings-select" id="optCloseShortcut"><option value="off">Disabled</option><option value="altw">Option+W</option><option value="shiftspacew">Shift+Space then W</option></select></label><label class="option"><span>Agent sorting<small>Sort agents by attention priority, or show them in default order.</small></span><select class="settings-select" id="optAgentSortMode"><option value="off">Default order</option><option value="attention">Attention (blocked first)</option><option value="attention_inverted">Attention (working first)</option></select></label><label class="option"><span>Parent workspace close<small>Close panels only (keeps linked worktrees running) or full close with re-open (stops processes, re-opens worktrees with fresh shells).</small></span><select class="settings-select" id="optParentCloseMode"><option value="panels">Close panels only</option><option value="close">Full close + re-open worktrees</option></select></label><label class="option"><input type="checkbox" id="optStuckWorkingEnabled"><span>Ignore stuck working agents<small>Dismiss working agents that appear stuck. Clears automatically on status changes and terminal output.</small></span></label><label class="option"><span>Ignore stuck working for<small>Minutes to keep a local dismissed-working override before showing working again.</small></span><input id="optWorkingDismissMinutes" type="number" min="1" max="1440" step="1"></label><label class="option"><input type="checkbox" id="optShowTabActivity"><span>Show panel last update<small>Display local last-change age on top panel tabs. Updates on refreshes, events, and selected terminal output; no timer polling.</small></span></label><label class="option"><span>Workspace sorting<small>Default tree order, shared drag-and-drop order, or attention state priority.</small></span><select class="settings-select" id="optWorkspaceSort"><option value="default">Default</option><option value="drag">Drag&drop</option><option value="state">State</option></select></label><label class="option"><span>Notification scope<small>Choose whether sounds ring in every open tab or only the tab viewing the agent panel.</small></span><select class="settings-select" id="optSoundScope"><option value="current">Current agent tab</option><option value="all">All tabs</option></select></label><label class="option"><input type="checkbox" id="optGenerateWorktreeNames"><span>Generate worktree branch names<small>Allow blank Branch name in Worktrees modal. Herdr generates worktree/&lt;name&gt;.</small></span></label><label class="option"><span>Default worktree directory<small>Relative paths resolve from repo root. Example: ../worktrees.</small></span><input id="optWorktreeDefaultDirectory" placeholder="../worktrees"></label><label class="option"><span>Scroll speed<small><span id="scrollLinesValue">3</span> terminal lines per wheel step.</small></span><input type="range" id="optScrollLines" min="1" max="20" step="1"></label><label class="option"><span>Terminal font<small>CSS font-family for the terminal. Add a Nerd Font family name (for example, JetBrainsMono Nerd Font) so icon glyphs render. Leave blank for the default stack.</small></span><input id="optTerminalFont" placeholder="JetBrainsMono Nerd Font, monospace"></label><label class="option"><span>Worktree autodiscover<small>Seconds to wait after path input stops. Set 0 for immediate.</small></span><input type="number" id="optWorktreeAutoDiscover" min="0" max="30" step="0.5"></label>',
     );
 groupSettingsSections();
 function groupSettingsSections() {
@@ -790,7 +793,7 @@ function groupSettingsSections() {
     {
       title: "Terminal input",
       desc: "Viewport sizing, scrolling, and keyboard behavior.",
-      ids: ["optOverflow", "optFit", "optShiftEnterNewline", "optScrollLines"],
+      ids: ["optOverflow", "optFit", "optShiftEnterNewline", "optScrollLines", "optTerminalFont"],
     },
     {
       title: "Agents and alerts",
@@ -863,6 +866,7 @@ function applyOptions() {
     soundScope = el("optSoundScope"),
     scrollLines = el("optScrollLines"),
     scrollLinesValue = el("scrollLinesValue"),
+    terminalFont = el("optTerminalFont"),
     showTabActivity = el("optShowTabActivity"),
     worktreeAutoDiscover = el("optWorktreeAutoDiscover"),
     generateWorktreeNames = el("optGenerateWorktreeNames"),
@@ -889,6 +893,7 @@ function applyOptions() {
   if (scrollLines) scrollLines.value = String(options.scrollLines || 3);
   if (scrollLinesValue)
     scrollLinesValue.textContent = String(options.scrollLines || 3);
+  if (terminalFont) terminalFont.value = options.terminalFontFamily || "";
   if (showTabActivity) showTabActivity.checked = !!options.showTabActivity;
   if (worktreeAutoDiscover)
     worktreeAutoDiscover.value = String(
@@ -1017,6 +1022,21 @@ function applyTheme() {
     }
   }
   fitTerminalShell();
+}
+function applyTerminalFont() {
+  if (!term) return;
+  const family = resolveTerminalFontFamily(options.terminalFontFamily);
+  try {
+    term.options.fontFamily = family;
+  } catch (e) {
+    try {
+      term.setOption("fontFamily", family);
+    } catch (_) {}
+  }
+  try {
+    term.refresh(0, Math.max(0, (term.rows || 1) - 1));
+  } catch (_) {}
+  fitTerminalSurface();
 }
 function applyThemeColorVars(mode) {
   const colors = options.themeColors[mode] || themeColorDefaults[mode];
@@ -2209,7 +2229,7 @@ function connectTerminal() {
   if (!term) {
     term = new Terminal({
       convertEol: false,
-      fontFamily: "ui-monospace,SFMono-Regular,Menlo,monospace",
+      fontFamily: resolveTerminalFontFamily(options.terminalFontFamily),
       theme: terminalTheme(),
       scrollback: 10000,
     });
@@ -3733,6 +3753,12 @@ el("optScrollLines").oninput = () => {
   );
   saveOptions();
   applyOptions();
+};
+el("optTerminalFont").oninput = () => {
+  options.terminalFontFamily = el("optTerminalFont").value.trim();
+  saveOptions();
+  applyOptions();
+  applyTerminalFont();
 };
 el("optWorktreeAutoDiscover").oninput = () => {
   options.worktreeAutoDiscoverSeconds = Math.max(

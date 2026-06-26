@@ -184,6 +184,13 @@ describe("mobile bundle load", () => {
     ok(settingsHtml.includes("mobile-settings-group"));
     ok(settingsHtml.includes("Appearance"));
     ok(settingsHtml.includes("Layout"));
+    ok(settingsHtml.includes("Terminal font"));
+    ok(settingsHtml.includes("HerdrMobile.setTerminalFontFamily"));
+    equal(typeof ctx.HerdrMobile.setTerminalFontFamily, "function");
+    equal(typeof ctx.HerdrMobile.applyTerminalFontFamily, "function");
+    doesNotThrow(() =>
+      ctx.HerdrMobile.setTerminalFontFamily("Hack Nerd Font, monospace"),
+    );
     doesNotThrow(() => ctx.HerdrMobile.showScreen("worktrees"));
     doesNotThrow(() =>
       ctx.HerdrMobile.updateWorktreeField("worktreeBranch", "feature/mobile"),
