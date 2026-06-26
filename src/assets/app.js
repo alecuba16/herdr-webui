@@ -3262,7 +3262,7 @@ async function createDiscoveredWorktree() {
     }
     const source = state.openWorktreeSource || {};
     const workspaceId = source.workspace_id || (!sourcePath ? state.ws : null),
-      cwd = source.cwd || sourcePath || null;
+      cwd = workspaceId ? null : (source.cwd || sourcePath || null);
     const r = await api("/api/worktrees", {
       method: "POST",
       headers: { "content-type": "application/json" },
