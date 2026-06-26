@@ -106,9 +106,11 @@ describe("app bundle load", () => {
 
   beforeEach(() => {
     source =
-      readFileSync(new URL("./app_core.js", import.meta.url), "utf8") +
+      readFileSync(new URL("./shared/core.js", import.meta.url), "utf8") +
       "\n" +
-      readFileSync(new URL("./app.js", import.meta.url), "utf8");
+      readFileSync(new URL("./desktop/search.js", import.meta.url), "utf8") +
+      "\n" +
+      readFileSync(new URL("./desktop/app.js", import.meta.url), "utf8");
   });
 
   it("loads without initialization-order ReferenceError", () => {
@@ -199,6 +201,204 @@ describe("app bundle load", () => {
     );
 
     equal(order, "blocked,done,idle,working");
+  });
+
+  it("shows linked worktree branch as title and custom label as label chip", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    const result = vm.runInContext(
+      `const workspace = {
+        workspace_id: "ws1",
+        label: "friendly label",
+        pane_count: 1,
+        agent_status: "idle",
+        worktree: {
+          is_linked_worktree: true,
+          checkout_path: "/tmp/repo/folder-name",
+        },
+      };
+      state.worktrees = [{
+        open_workspace_id: "ws1",
+        path: "/tmp/repo/folder-name",
+        branch: "feature/demo",
+        label: "repo label",
+      }];
+      ({ title: workspaceDisplayTitle(workspace), meta: spaceMeta(workspace) });`,
+      ctx,
+    );
+
+    equal(result.title, "feature/demo");
+    match(result.meta, /chip label/);
+    match(result.meta, /friendly label/);
+    equal(result.meta.includes("chip branch"), false);
+  });
+
+  it("shows linked worktree custom label in agent list", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    const html = vm.runInContext(
+      `const workspace = {
+        workspace_id: "ws1",
+        label: "friendly label",
+        worktree: {
+          is_linked_worktree: true,
+          checkout_path: "/tmp/repo/folder-name",
+          repo_key: "repo",
+          repo_name: "repo",
+        },
+      };
+      state.worktrees = [{
+        open_workspace_id: "ws1",
+        path: "/tmp/repo/folder-name",
+        branch: "feature/demo",
+        label: "repo label",
+      }];
+      renderAgentRow(
+        { workspace_id: "ws1", tab_id: "tab1", pane_id: "pane1", agent_status: "idle", name: "agent" },
+        { ws1: workspace },
+        { tab1: { workspace_id: "ws1", tab_id: "tab1", label: "" } },
+        new Map([["ws1", 1]]),
+      );`,
+      ctx,
+    );
+
+    match(html, /agent-worktree[^>]*>friendly label</);
+    equal(html.includes("feature/demo"), false);
+  });
+
+  it("searches labels agents repos and returns panel targets", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    const results = vm.runInContext(
+      `state.workspaces = [{
+        workspace_id: "ws1",
+        label: "friendly label",
+        worktree: {
+          is_linked_worktree: true,
+          repo_name: "repo-name",
+          repo_key: "repo-key",
+          repo_root: "/tmp/repo",
+          checkout_path: "/tmp/worktrees/repo/feature",
+        },
+      }];
+      state.tabs = [{ workspace_id: "ws1", tab_id: "tab1", label: "main panel" }];
+      state.allTabs = state.tabs;
+      state.panes = [{ tab_id: "tab1", pane_id: "pane1" }];
+      state.worktrees = [{ open_workspace_id: "ws1", path: "/tmp/worktrees/repo/feature", branch: "feature/demo", label: "repo label" }];
+      state.agents = [{ workspace_id: "ws1", tab_id: "tab1", pane_id: "pane1", agent_status: "blocked", name: "deploy agent" }];
+      ({ label: searchCandidates("friendly")[0], agent: searchCandidates("deploy")[0], repo: searchCandidates("repo-name")[0] });`,
+      ctx,
+    );
+
+    equal(results.label.ws, "ws1");
+    equal(results.label.tab, "tab1");
+    equal(results.label.pane, "pane1");
+    equal(results.agent.kind, "agent");
+    equal(results.repo.ws, "ws1");
+  });
+
+  it("hides repo header actions when parent workspace card exists", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    const html = vm.runInContext(
+      `state.worktrees = [{ is_linked_worktree: true, source_repo_key: "repo", open_workspace_id: null }];
+      renderRepoHeader({ key: "repo", label: "repo", parent: { workspace_id: "ws1" } });`,
+      ctx,
+    );
+
+    equal(html.includes("with-actions"), false);
+    equal(html.includes("repo-actions"), false);
+  });
+
+  it("does not render repo header when parent workspace card exists", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    const html = vm.runInContext(
+      `state.workspaces = [
+        {
+          workspace_id: "parent",
+          label: "repo",
+          pane_count: 1,
+          agent_status: "idle",
+          worktree: {
+            is_linked_worktree: false,
+            repo_key: "repo-key",
+            repo_name: "repo",
+            repo_root: "/tmp/repo",
+            checkout_path: "/tmp/repo",
+          },
+        },
+        {
+          workspace_id: "child",
+          label: "feature",
+          pane_count: 1,
+          agent_status: "idle",
+          worktree: {
+            is_linked_worktree: true,
+            repo_key: "repo-key",
+            repo_name: "repo",
+            repo_root: "/tmp/repo",
+            checkout_path: "/tmp/worktrees/repo/feature",
+          },
+        },
+      ];
+      state.worktrees = [
+        { open_workspace_id: "parent", path: "/tmp/repo", branch: "main" },
+        { open_workspace_id: "child", path: "/tmp/worktrees/repo/feature", branch: "feature" },
+      ];
+      renderSpaces();`,
+      ctx,
+    );
+
+    equal(html.includes("repo-header workspace-orphan-header"), false);
+    match(html, /workspace-group-main/);
+  });
+
+  it("closes the last panel by closing its workspace instead of tab.close", async () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    const calls = await vm.runInContext(
+      `const calls = [];
+      api = async (url, opt = {}) => {
+        calls.push({ url, method: opt.method || "GET" });
+        return { result: {} };
+      };
+      refresh = () => {};
+      state.ws = "ws1";
+      state.tab = "tab1";
+      state.pane = "pane1";
+      state.tabs = [{ workspace_id: "ws1", tab_id: "tab1", label: "one" }];
+      state.allTabs = state.tabs;
+      state.panes = [{ tab_id: "tab1", pane_id: "pane1" }];
+      closeTab("tab1").then(() => calls);`,
+      ctx,
+    );
+
+    equal(calls.length, 1);
+    equal(calls[0].url, "/api/workspaces/ws1/close");
+  });
+
+  it("closes workspace panels through workspace.close", async () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    const calls = await vm.runInContext(
+      `const calls = [];
+      api = async (url, opt = {}) => {
+        calls.push({ url, method: opt.method || "GET" });
+        return { result: {} };
+      };
+      closeWorkspaceById("ws1").then(() => calls);`,
+      ctx,
+    );
+
+    equal(calls.map((call) => call.url).join(","), "/api/workspaces/ws1/close");
   });
 
   it("defines stuck-working dismissal controls", () => {

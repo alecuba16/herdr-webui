@@ -38,15 +38,24 @@
     const layout = resolvedLayout();
     const mobile = layout === "mobile";
     document.documentElement.dataset.herdrLayout = layout;
-    loadCss(mobile ? "/assets/mobile.css" : "/assets/app.css");
     if (mobile) {
-      loadScript("/assets/mobile-core.js");
-      loadScript("/assets/mobile-attention.js");
-      loadScript("/assets/mobile-terminal.js");
-      loadScript("/assets/mobile-worktrees.js");
-      loadScript("/assets/mobile-settings.js");
+      loadCss("/assets/mobile/app.css");
+    } else {
+      loadCss("/assets/desktop/app.css");
+      loadCss("/assets/desktop/shortcuts.css");
+      loadCss("/assets/desktop/search.css");
     }
-    loadScript(mobile ? "/assets/mobile.js" : "/assets/app.js");
+    loadScript("/assets/shared/core.js");
+    if (mobile) {
+      loadScript("/assets/mobile/core.js");
+      loadScript("/assets/mobile/attention.js");
+      loadScript("/assets/mobile/terminal.js");
+      loadScript("/assets/mobile/worktrees.js");
+      loadScript("/assets/mobile/settings.js");
+    } else {
+      loadScript("/assets/desktop/search.js");
+    }
+    loadScript(mobile ? "/assets/mobile/app.js" : "/assets/desktop/app.js");
     watchAutoLayout(layout);
   }
 

@@ -672,19 +672,22 @@ fn app_router(state: WebState) -> Router {
         .route("/api/panes/{pane_id}/close", post(close_pane))
         .route("/api/pane-layout", get(pane_layout))
         .route("/api/agents", get(agents))
-        .route("/assets/app.css", get(app_css))
+        .route("/assets/desktop/app.css", get(desktop_css))
+        .route("/assets/desktop/search.css", get(desktop_search_css))
+        .route("/assets/desktop/shortcuts.css", get(desktop_shortcuts_css))
         .route("/assets/app-boot.js", get(app_boot_js))
-        .route("/assets/app-core.js", get(app_core_js))
-        .route("/assets/app.js", get(app_js))
+        .route("/assets/shared/core.js", get(shared_core_js))
+        .route("/assets/desktop/search.js", get(desktop_search_js))
+        .route("/assets/desktop/app.js", get(desktop_js))
         .route("/assets/login.css", get(login_css))
         .route("/assets/login.js", get(login_js))
-        .route("/assets/mobile-attention.js", get(mobile_attention_js))
-        .route("/assets/mobile-core.js", get(mobile_core_js))
-        .route("/assets/mobile-settings.js", get(mobile_settings_js))
-        .route("/assets/mobile-terminal.js", get(mobile_terminal_js))
-        .route("/assets/mobile-worktrees.js", get(mobile_worktrees_js))
-        .route("/assets/mobile.css", get(mobile_css))
-        .route("/assets/mobile.js", get(mobile_js))
+        .route("/assets/mobile/attention.js", get(mobile_attention_js))
+        .route("/assets/mobile/core.js", get(mobile_core_js))
+        .route("/assets/mobile/settings.js", get(mobile_settings_js))
+        .route("/assets/mobile/terminal.js", get(mobile_terminal_js))
+        .route("/assets/mobile/worktrees.js", get(mobile_worktrees_js))
+        .route("/assets/mobile/app.css", get(mobile_css))
+        .route("/assets/mobile/app.js", get(mobile_js))
         .route("/assets/xterm.js", get(xterm_js))
         .route("/assets/xterm.css", get(xterm_css))
         .route("/favicon.svg", get(favicon_svg))
@@ -3361,7 +3364,7 @@ mod tests {
             .unwrap();
         let app_js = app
             .oneshot(
-                request(Method::GET, "/assets/app.js")
+                request(Method::GET, "/assets/desktop/app.js")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -3391,7 +3394,6 @@ mod tests {
         .unwrap();
         assert!(login_body.contains("Login"));
         assert!(app_body.contains("Herdr"));
-        assert!(app_body.contains("/assets/app-core.js"));
         assert!(app_body.contains("/assets/app-boot.js"));
         assert!(app_js_body.contains("optSoundScope"));
     }
@@ -3518,7 +3520,7 @@ mod tests {
         let app_js = app
             .clone()
             .oneshot(
-                request(Method::GET, "/assets/app.js")
+                request(Method::GET, "/assets/desktop/app.js")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -3536,7 +3538,16 @@ mod tests {
         let app_core_js = app
             .clone()
             .oneshot(
-                request(Method::GET, "/assets/app-core.js")
+                request(Method::GET, "/assets/shared/core.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let desktop_search_js = app
+            .clone()
+            .oneshot(
+                request(Method::GET, "/assets/desktop/search.js")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -3545,7 +3556,25 @@ mod tests {
         let app_css = app
             .clone()
             .oneshot(
-                request(Method::GET, "/assets/app.css")
+                request(Method::GET, "/assets/desktop/app.css")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let desktop_search_css = app
+            .clone()
+            .oneshot(
+                request(Method::GET, "/assets/desktop/search.css")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let desktop_shortcuts_css = app
+            .clone()
+            .oneshot(
+                request(Method::GET, "/assets/desktop/shortcuts.css")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -3554,7 +3583,7 @@ mod tests {
         let mobile_js = app
             .clone()
             .oneshot(
-                request(Method::GET, "/assets/mobile.js")
+                request(Method::GET, "/assets/mobile/app.js")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -3563,7 +3592,7 @@ mod tests {
         let mobile_core_js = app
             .clone()
             .oneshot(
-                request(Method::GET, "/assets/mobile-core.js")
+                request(Method::GET, "/assets/mobile/core.js")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -3572,7 +3601,7 @@ mod tests {
         let mobile_attention_js = app
             .clone()
             .oneshot(
-                request(Method::GET, "/assets/mobile-attention.js")
+                request(Method::GET, "/assets/mobile/attention.js")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -3581,7 +3610,7 @@ mod tests {
         let mobile_terminal_js = app
             .clone()
             .oneshot(
-                request(Method::GET, "/assets/mobile-terminal.js")
+                request(Method::GET, "/assets/mobile/terminal.js")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -3590,7 +3619,7 @@ mod tests {
         let mobile_worktrees_js = app
             .clone()
             .oneshot(
-                request(Method::GET, "/assets/mobile-worktrees.js")
+                request(Method::GET, "/assets/mobile/worktrees.js")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -3599,7 +3628,7 @@ mod tests {
         let mobile_settings_js = app
             .clone()
             .oneshot(
-                request(Method::GET, "/assets/mobile-settings.js")
+                request(Method::GET, "/assets/mobile/settings.js")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -3608,7 +3637,7 @@ mod tests {
         let mobile_css = app
             .clone()
             .oneshot(
-                request(Method::GET, "/assets/mobile.css")
+                request(Method::GET, "/assets/mobile/app.css")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -3628,7 +3657,10 @@ mod tests {
         assert_eq!(app_js.status(), StatusCode::OK);
         assert_eq!(app_boot_js.status(), StatusCode::OK);
         assert_eq!(app_core_js.status(), StatusCode::OK);
+        assert_eq!(desktop_search_js.status(), StatusCode::OK);
         assert_eq!(app_css.status(), StatusCode::OK);
+        assert_eq!(desktop_search_css.status(), StatusCode::OK);
+        assert_eq!(desktop_shortcuts_css.status(), StatusCode::OK);
         assert_eq!(mobile_attention_js.status(), StatusCode::OK);
         assert_eq!(mobile_core_js.status(), StatusCode::OK);
         assert_eq!(mobile_terminal_js.status(), StatusCode::OK);
@@ -3657,7 +3689,19 @@ mod tests {
             .to_str()
             .unwrap()
             .contains("javascript"));
+        assert!(desktop_search_js.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .contains("javascript"));
         assert!(app_css.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .contains("text/css"));
+        assert!(desktop_search_css.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .contains("text/css"));
+        assert!(desktop_shortcuts_css.headers()[header::CONTENT_TYPE]
             .to_str()
             .unwrap()
             .contains("text/css"));
@@ -3723,11 +3767,32 @@ mod tests {
                 > 100
         );
         assert!(
+            to_bytes(desktop_search_js.into_body(), 1024 * 1024)
+                .await
+                .unwrap()
+                .len()
+                > 100
+        );
+        assert!(
             to_bytes(app_css.into_body(), 1024 * 1024)
                 .await
                 .unwrap()
                 .len()
                 > 1000
+        );
+        assert!(
+            to_bytes(desktop_search_css.into_body(), 1024 * 1024)
+                .await
+                .unwrap()
+                .len()
+                > 100
+        );
+        assert!(
+            to_bytes(desktop_shortcuts_css.into_body(), 1024 * 1024)
+                .await
+                .unwrap()
+                .len()
+                > 100
         );
         assert!(
             to_bytes(mobile_core_js.into_body(), 1024 * 1024)

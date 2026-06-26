@@ -156,19 +156,19 @@ function context(pathname = "/") {
 
 describe("mobile bundle load", () => {
   const source =
-    readFileSync(new URL("./app_core.js", import.meta.url), "utf8") +
+    readFileSync(new URL("./shared/core.js", import.meta.url), "utf8") +
     "\n" +
-    readFileSync(new URL("./mobile_core.js", import.meta.url), "utf8") +
+    readFileSync(new URL("./mobile/core.js", import.meta.url), "utf8") +
     "\n" +
-    readFileSync(new URL("./mobile_attention.js", import.meta.url), "utf8") +
+    readFileSync(new URL("./mobile/attention.js", import.meta.url), "utf8") +
     "\n" +
-    readFileSync(new URL("./mobile_terminal.js", import.meta.url), "utf8") +
+    readFileSync(new URL("./mobile/terminal.js", import.meta.url), "utf8") +
     "\n" +
-    readFileSync(new URL("./mobile_worktrees.js", import.meta.url), "utf8") +
+    readFileSync(new URL("./mobile/worktrees.js", import.meta.url), "utf8") +
     "\n" +
-    readFileSync(new URL("./mobile_settings.js", import.meta.url), "utf8") +
+    readFileSync(new URL("./mobile/settings.js", import.meta.url), "utf8") +
     "\n" +
-    readFileSync(new URL("./mobile.js", import.meta.url), "utf8");
+    readFileSync(new URL("./mobile/app.js", import.meta.url), "utf8");
 
   it("loads mobile shell without browser automation", () => {
     const ctx = context();

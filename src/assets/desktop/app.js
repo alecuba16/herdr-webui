@@ -50,7 +50,10 @@ let term,
   pasteFrameUntil = 0,
   wheelScrollRemainder = 0,
   shortcutPrefixUntil = 0,
-  shortcutPrefixTimer = null;
+  shortcutPrefixTimer = null,
+  searchFramePending = false,
+  searchResults = [],
+  searchSelectedIndex = 0;
 const SIDEBAR_COLLAPSED_KEY = "herdr-web-sidebar-collapsed";
 const DEFAULT_GLOBAL_SHORTCUT_PREFIX = "Ctrl+B";
 const FAST_REFRESH_EVENTS = new Set([
@@ -324,6 +327,7 @@ function shortcutsModalHtml() {
         <div class="shortcuts-list">
           <div class="shortcut-row"><kbd id="closeShortcutCurrent">Disabled</kbd><span>Close current Herdr panel. Configure in Settings.</span></div>
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())}</kbd><span>Open WebUI shortcut prefix overlay. Next shortcut key is handled by WebUI and not sent to terminal. Esc cancels.</span></div>
+          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then /</kbd><span>Search workspaces, repos, worktrees, labels, agents, and panels.</span></div>
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then ?</kbd><span>Open this shortcuts reference.</span></div>
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then S</kbd><span>Open Settings.</span></div>
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then B</kbd><span>Show or hide the workspace/agents sidebar.</span></div>
@@ -575,6 +579,7 @@ const defaultOptions = {
   closeShortcut: "off",
   globalShortcutsEnabled: true,
   globalShortcutPrefix: DEFAULT_GLOBAL_SHORTCUT_PREFIX,
+  searchShortcut: "off",
   terminalFontFamily: "ui-monospace,SFMono-Regular,Menlo,monospace",
   agentSortMode: "off",
   parentCloseMode: "panels",
@@ -612,6 +617,10 @@ function normalizeOptions(value) {
     next.globalShortcutPrefix,
     defaultOptions.globalShortcutPrefix,
   );
+  next.searchShortcut =
+    String(next.searchShortcut || "").toLowerCase() === "off"
+      ? "off"
+      : normalizeShortcutPrefix(next.searchShortcut, "off");
   next.terminalFontFamily =
     String(next.terminalFontFamily || "").trim().slice(0, 200) ||
     defaultOptions.terminalFontFamily;
@@ -836,7 +845,7 @@ if (soundSetting && !el("optAgentSortMode"))
     .closest("label")
     .insertAdjacentHTML(
       "afterend",
-      '<label class="option"><input type="checkbox" id="optGlobalShortcutsEnabled"><span>Global keyboard shortcuts<small>Enable prefix WebUI navigation shortcuts listed under ?.</small></span></label><label class="option"><span>Shortcut prefix<small>Click Record, press desired key combination, then use it before WebUI shortcuts.</small></span><span class="shortcut-capture"><input id="optGlobalShortcutPrefix" readonly><button type="button" class="tab add" id="optGlobalShortcutPrefixCapture">Record</button></span></label><label class="option"><span>Terminal font<small>Use installed font family, including Nerd Fonts used by Neovim.</small></span><input id="optTerminalFontFamily" list="terminalFontPresets" placeholder="JetBrainsMono Nerd Font, monospace"><datalist id="terminalFontPresets"><option value="JetBrainsMono Nerd Font, monospace"><option value="MesloLGS NF, monospace"><option value="Hack Nerd Font, monospace"><option value="FiraCode Nerd Font, monospace"><option value="CaskaydiaCove Nerd Font, monospace"><option value="ui-monospace,SFMono-Regular,Menlo,monospace"></datalist></label><label class="option"><span>Close panel shortcut<small>Stored in browser storage and available after reopening the tab.</small></span><select class="settings-select" id="optCloseShortcut"><option value="off">Disabled</option><option value="altw">Option+W</option><option value="shiftspacew">Shift+Space then W</option></select></label><label class="option"><span>Agent sorting<small>Sort agents by attention priority, or show them in default order.</small></span><select class="settings-select" id="optAgentSortMode"><option value="off">Default order</option><option value="attention">Attention (blocked first)</option><option value="attention_inverted">Attention (working first)</option></select></label><label class="option"><span>Parent workspace close<small>Close panels only (keeps linked worktrees running) or full close with re-open (stops processes, re-opens worktrees with fresh shells).</small></span><select class="settings-select" id="optParentCloseMode"><option value="panels">Close panels only</option><option value="close">Full close + re-open worktrees</option></select></label><label class="option"><input type="checkbox" id="optStuckWorkingEnabled"><span>Ignore stuck working agents<small>Dismiss working agents that appear stuck. Clears automatically on status changes and terminal output.</small></span></label><label class="option"><span>Ignore stuck working for<small>Minutes to keep a local dismissed-working override before showing working again.</small></span><input id="optWorkingDismissMinutes" type="number" min="1" max="1440" step="1"></label><label class="option"><input type="checkbox" id="optShowTabActivity"><span>Show panel last update<small>Display local last-change age on top panel tabs. Updates on refreshes, events, and selected terminal output; no timer polling.</small></span></label><label class="option"><span>Workspace sorting<small>Default tree order, shared drag-and-drop order, or attention state priority.</small></span><select class="settings-select" id="optWorkspaceSort"><option value="default">Default</option><option value="drag">Drag&drop</option><option value="state">State</option></select></label><label class="option"><span>Notification scope<small>Choose whether sounds ring in every open tab or only the tab viewing the agent panel.</small></span><select class="settings-select" id="optSoundScope"><option value="current">Current agent tab</option><option value="all">All tabs</option></select></label><label class="option"><input type="checkbox" id="optGenerateWorktreeNames"><span>Generate worktree branch names<small>Allow blank Branch name in Worktrees modal. Herdr generates worktree/&lt;name&gt;.</small></span></label><label class="option"><span>Default worktree directory<small>Relative paths resolve from repo root. Example: ../worktrees.</small></span><input id="optWorktreeDefaultDirectory" placeholder="../worktrees"></label><label class="option"><span>Scroll speed<small><span id="scrollLinesValue">3</span> terminal lines per wheel step.</small></span><input type="range" id="optScrollLines" min="1" max="20" step="1"></label><label class="option"><span>Worktree autodiscover<small>Seconds to wait after path input stops. Set 0 for immediate.</small></span><input type="number" id="optWorktreeAutoDiscover" min="0" max="30" step="0.5"></label>',
+      '<label class="option"><input type="checkbox" id="optGlobalShortcutsEnabled"><span>Global keyboard shortcuts<small>Enable prefix WebUI navigation shortcuts listed under ?.</small></span></label><label class="option"><span>Shortcut prefix<small>Click Record, press desired key combination, then use it before WebUI shortcuts.</small></span><span class="shortcut-capture"><input id="optGlobalShortcutPrefix" readonly><button type="button" class="tab add" id="optGlobalShortcutPrefixCapture">Record</button></span></label><label class="option"><span>Search shortcut<small>Optional direct shortcut. Leave disabled if it conflicts with terminal apps.</small></span><span class="shortcut-capture"><input id="optSearchShortcut" readonly><button type="button" class="tab add" id="optSearchShortcutCapture">Record</button><button type="button" class="tab add" id="optSearchShortcutClear">Clear</button></span></label><label class="option"><span>Terminal font<small>Use installed monospaced font family, including Nerd Fonts used by Neovim.</small></span><input id="optTerminalFontFamily" list="terminalFontPresets" placeholder="&quot;MesloLGS Nerd Font Mono&quot;, monospace"><datalist id="terminalFontPresets"><option value="&quot;MesloLGS Nerd Font Mono&quot;, &quot;MesloLGS NF&quot;, monospace"><option value="&quot;MesloLGS Nerd Font&quot;, &quot;MesloLGS NF&quot;, monospace"><option value="&quot;JetBrainsMono Nerd Font Mono&quot;, &quot;JetBrainsMono Nerd Font&quot;, monospace"><option value="&quot;Hack Nerd Font Mono&quot;, &quot;Hack Nerd Font&quot;, monospace"><option value="&quot;FiraCode Nerd Font Mono&quot;, &quot;FiraCode Nerd Font&quot;, monospace"><option value="&quot;CaskaydiaCove Nerd Font Mono&quot;, &quot;CaskaydiaCove Nerd Font&quot;, monospace"><option value="ui-monospace,SFMono-Regular,Menlo,monospace"></datalist></label><label class="option"><span>Close panel shortcut<small>Stored in browser storage and available after reopening the tab.</small></span><select class="settings-select" id="optCloseShortcut"><option value="off">Disabled</option><option value="altw">Option+W</option><option value="shiftspacew">Shift+Space then W</option></select></label><label class="option"><span>Agent sorting<small>Sort agents by attention priority, or show them in default order.</small></span><select class="settings-select" id="optAgentSortMode"><option value="off">Default order</option><option value="attention">Attention (blocked first)</option><option value="attention_inverted">Attention (working first)</option></select></label><label class="option"><span>Parent workspace close<small>Close panels only (keeps linked worktrees running) or full close with re-open (stops processes, re-opens worktrees with fresh shells).</small></span><select class="settings-select" id="optParentCloseMode"><option value="panels">Close panels only</option><option value="close">Full close + re-open worktrees</option></select></label><label class="option"><input type="checkbox" id="optStuckWorkingEnabled"><span>Ignore stuck working agents<small>Dismiss working agents that appear stuck. Clears automatically on status changes and terminal output.</small></span></label><label class="option"><span>Ignore stuck working for<small>Minutes to keep a local dismissed-working override before showing working again.</small></span><input id="optWorkingDismissMinutes" type="number" min="1" max="1440" step="1"></label><label class="option"><input type="checkbox" id="optShowTabActivity"><span>Show panel last update<small>Display local last-change age on top panel tabs. Updates on refreshes, events, and selected terminal output; no timer polling.</small></span></label><label class="option"><span>Workspace sorting<small>Default tree order, shared drag-and-drop order, or attention state priority.</small></span><select class="settings-select" id="optWorkspaceSort"><option value="default">Default</option><option value="drag">Drag&drop</option><option value="state">State</option></select></label><label class="option"><span>Notification scope<small>Choose whether sounds ring in every open tab or only the tab viewing the agent panel.</small></span><select class="settings-select" id="optSoundScope"><option value="current">Current agent tab</option><option value="all">All tabs</option></select></label><label class="option"><input type="checkbox" id="optGenerateWorktreeNames"><span>Generate worktree branch names<small>Allow blank Branch name in Worktrees modal. Herdr generates worktree/&lt;name&gt;.</small></span></label><label class="option"><span>Default worktree directory<small>Relative paths resolve from repo root. Example: ../worktrees.</small></span><input id="optWorktreeDefaultDirectory" placeholder="../worktrees"></label><label class="option"><span>Scroll speed<small><span id="scrollLinesValue">3</span> terminal lines per wheel step.</small></span><input type="range" id="optScrollLines" min="1" max="20" step="1"></label><label class="option"><span>Worktree autodiscover<small>Seconds to wait after path input stops. Set 0 for immediate.</small></span><input type="number" id="optWorktreeAutoDiscover" min="0" max="30" step="0.5"></label>',
     );
 groupSettingsSections();
 function groupSettingsSections() {
@@ -867,6 +876,7 @@ function groupSettingsSections() {
         "optSoundScope",
         "optGlobalShortcutsEnabled",
         "optGlobalShortcutPrefix",
+        "optSearchShortcut",
         "optAgentSortMode",
         "optParentCloseMode",
         "optStuckWorkingEnabled",
@@ -924,6 +934,7 @@ function applyOptions() {
     sound = el("optSound"),
     globalShortcutsEnabled = el("optGlobalShortcutsEnabled"),
     globalShortcutPrefix = el("optGlobalShortcutPrefix"),
+    searchShortcut = el("optSearchShortcut"),
     terminalFontFamily = el("optTerminalFontFamily"),
     themeSelect = el("optTheme"),
     closeShortcut = el("optCloseShortcut"),
@@ -949,6 +960,7 @@ function applyOptions() {
     globalShortcutsEnabled.checked = options.globalShortcutsEnabled !== false;
   if (globalShortcutPrefix)
     globalShortcutPrefix.value = globalShortcutPrefixLabel();
+  if (searchShortcut) searchShortcut.value = searchShortcutLabel();
   const prefixKey = el("shortcutPrefixKey");
   if (prefixKey) prefixKey.textContent = globalShortcutPrefixLabel();
   if (terminalFontFamily)
@@ -1790,7 +1802,13 @@ function render() {
       (tabCountsByWorkspace.get(tab.workspace_id) || 0) + 1,
     );
   const workspacesHtml = renderSpaces();
-  if (workspacesHtml !== lastWorkspacesHtml) {
+  const workspaceRenameActive = !!document.querySelector(
+    ".workspace-rename-input",
+  );
+  if (
+    workspacesHtml !== lastWorkspacesHtml &&
+    !(state.editingWorkspace && workspaceRenameActive)
+  ) {
     workspaces.innerHTML = workspacesHtml;
     lastWorkspacesHtml = workspacesHtml;
   }
@@ -1804,14 +1822,15 @@ function render() {
   const themeIcon =
     themeMode === "auto" ? "A" : themeMode === "dark" ? "☾" : "☀";
   const sessionLabel = escapeHtml(state.session || "default");
-  const tabsTools = `<div class="tabs-tools"><button class="mini" id="sessionButtonTabs" title="Session manager" onclick="showSessionManager(state.backendOnline?'Session manager':'Herdr session offline')">${sessionLabel}</button><button class="mini" id="themeToggleTabs" title="Toggle theme" onclick="themeMode=themeMode==='auto'?'dark':(themeMode==='dark'?'light':'auto');applyTheme();render()">${themeIcon}</button>${noSleepControlHtml()}<button class="mini" title="Shortcuts" onclick="applyOptions();el('shortcutsModal').style.display='grid'">?</button><button class="mini" title="Settings" onclick="el('settingsModal').style.display='grid';applyOptions();loadServerSettings()">⚙</button></div>`;
+  const tabsTools = `<div class="tabs-tools"><button class="mini" id="sessionButtonTabs" title="Session manager" onclick="showSessionManager(state.backendOnline?'Session manager':'Herdr session offline')">${sessionLabel}</button><button class="mini" id="searchButtonTabs" title="Search" onclick="openSearchPalette()">⌕</button><button class="mini" id="themeToggleTabs" title="Toggle theme" onclick="themeMode=themeMode==='auto'?'dark':(themeMode==='dark'?'light':'auto');applyTheme();render()">${themeIcon}</button>${noSleepControlHtml()}<button class="mini" title="Shortcuts" onclick="applyOptions();el('shortcutsModal').style.display='grid'">?</button><button class="mini" title="Settings" onclick="el('settingsModal').style.display='grid';applyOptions();loadServerSettings()">⚙</button></div>`;
   const tabsHtml =
     state.tabs.map((t) => renderTabButton(t, panesByTab)).join("") +
     (state.ws
       ? `<button class="tab add" title="New panel" onclick="newTab()">+</button>`
       : "") +
     tabsTools;
-  if (tabsHtml !== lastTabsHtml) {
+  const tabRenameActive = !!document.querySelector(".tab-rename-input");
+  if (tabsHtml !== lastTabsHtml && !(state.editingTab && tabRenameActive)) {
     tabs.innerHTML = tabsHtml;
     lastTabsHtml = tabsHtml;
     syncNoSleepControls();
@@ -1821,14 +1840,12 @@ function render() {
     const input = document.querySelector(".tab-rename-input");
     if (input && document.activeElement !== input) {
       input.focus();
-      input.select();
     }
   }
   if (state.editingWorkspace) {
     const input = document.querySelector(".workspace-rename-input");
     if (input && document.activeElement !== input) {
       input.focus();
-      input.select();
     }
   }
   fitTerminalShell();
@@ -1901,7 +1918,7 @@ function tabHoverInfo(t, panesByTab) {
 }
 function renderTabButton(t, panesByTab) {
   if (state.editingTab === t.tab_id)
-    return `<span class="tab ${t.tab_id === state.tab ? "active" : ""}"><input class="tab-rename-input" value="${escapeAttr(state.editingTabValue)}" oninput="state.editingTabValue=this.value" onkeydown="tabRenameKey(event,'${t.tab_id}')"></span>`;
+    return `<span class="tab ${t.tab_id === state.tab ? "active" : ""}"><input class="tab-rename-input" value="${escapeAttr(state.editingTabValue)}" onmousedown="event.stopPropagation()" onclick="event.stopPropagation()" onblur="commitTabRename('${t.tab_id}')" oninput="state.editingTabValue=this.value" onkeydown="tabRenameKey(event,'${t.tab_id}')"></span>`;
   const activity = tabActivity[tabActivityKey(t.workspace_id, t.tab_id)],
     activityLabel =
       options.showTabActivity && activity
@@ -1946,7 +1963,7 @@ function renderSpaces() {
       continue;
     }
     const children = sortGroupChildren(item.children);
-    html += renderRepoHeader(item);
+    if (!item.parent) html += renderRepoHeader(item);
     if (item.parent)
       html += renderWorkspaceCard(item.parent, "workspace-group-main");
     html += children
@@ -1963,12 +1980,12 @@ function renderSpaces() {
 function renderRepoHeader(group) {
   const actions = [],
     keyToken = encodeURIComponent(group.key);
-  actions.push(
-    group.parent
-      ? `<span class="mini tree" title="Create worktree" onclick="event.preventDefault();event.stopPropagation();openWorktreeCreateModal('${group.parent.workspace_id}')">♧+</span>`
-      : `<span class="mini tree" title="Create worktree" onclick="event.preventDefault();event.stopPropagation();openWorktreesForRepo('${keyToken}')">♧+</span>`,
-  );
-  if (repoHasUnopenedWorktrees(group))
+  if (!group.parent) {
+    actions.push(
+      `<span class="mini tree" title="Create worktree" onclick="event.preventDefault();event.stopPropagation();openWorktreesForRepo('${keyToken}')">♧+</span>`,
+    );
+  }
+  if (!group.parent && repoHasUnopenedWorktrees(group))
     actions.push(
       `<span class="mini tree" title="Open worktree" onclick="event.preventDefault();event.stopPropagation();openWorktreesForRepo('${keyToken}')">↗</span>`,
     );
@@ -2031,9 +2048,10 @@ function sortGroupChildren(children) {
 }
 function renderWorkspaceCard(w, extraClass) {
   const editing = state.editingWorkspace === w.workspace_id;
+  const title = workspaceDisplayTitle(w);
   const label = editing
-    ? `<input class="workspace-rename-input" value="${escapeAttr(state.editingWorkspaceValue)}" oninput="state.editingWorkspaceValue=this.value" onkeydown="workspaceRenameKey(event,'${w.workspace_id}')">`
-    : `<span class="label">${escapeHtml(w.label)}</span>`;
+    ? `<input class="workspace-rename-input" value="${escapeAttr(state.editingWorkspaceValue)}" onmousedown="event.stopPropagation()" onclick="event.stopPropagation()" onblur="commitWorkspaceRename('${w.workspace_id}')" oninput="state.editingWorkspaceValue=this.value" onkeydown="workspaceRenameKey(event,'${w.workspace_id}')">`
+    : `<span class="label">${escapeHtml(title)}</span>`;
   const linked = isLinkedWorktree(w);
   const worktreeAction = linked
     ? `<span class="mini danger" title="Remove worktree from disk" onclick="event.preventDefault();event.stopPropagation();removeWorktree('${w.workspace_id}')">🗑</span>`
@@ -2051,15 +2069,31 @@ function renderWorkspaceCard(w, extraClass) {
       : "";
   return `<a class="item ${w.workspace_id === state.ws ? "active" : ""} ${extraClass || ""}" data-workspace-id="${escapeAttr(w.workspace_id)}" href="${escapeAttr(selectionPath(w.workspace_id))}" target="herdr-selection"${drag} onclick="if(state.editingWorkspace){event.preventDefault();return false}return navigateSelection(event,'${w.workspace_id}')" ondblclick="event.preventDefault();event.stopPropagation();startWorkspaceRename('${w.workspace_id}','${escapeAttr(w.label)}')"><div class="space-title"><span>${statusDot(w.agent_status)}</span>${label}<span class="space-actions">${worktreeAction}<span class="mini warn" title="${closeTitle}" onclick="event.preventDefault();event.stopPropagation();closeWorkspace('${w.workspace_id}')">✕</span></span></div><div class="muted">${spaceMeta(w)}</div></a>`;
 }
+function workspaceDisplayTitle(w) {
+  if (!isLinkedWorktree(w)) return w.label;
+  return workspaceBranch(w) || worktreeDisplayName(w) || w.label;
+}
 function spaceMeta(w) {
   const wt = worktreeForWorkspace(w);
   const parts = [`${w.pane_count} panes`];
-  const branch =
-    (wt && (wt.branch || (wt.is_detached ? "detached" : ""))) ||
-    state.workspaceBranches[w.workspace_id];
-  if (branch)
-    parts.push(`<span class="chip branch">${escapeHtml(branch)}</span>`);
+  if (isLinkedWorktree(w)) {
+    const label = worktreeCustomLabel(w, wt);
+    if (label)
+      parts.push(`<span class="chip label"><span class="chip-icon" aria-hidden="true">🏷</span>${escapeHtml(label)}</span>`);
+  } else {
+    const branch = workspaceBranch(w);
+    if (branch)
+      parts.push(`<span class="chip branch">${escapeHtml(branch)}</span>`);
+  }
   return parts.join(" ");
+}
+function worktreeCustomLabel(w, wt = worktreeForWorkspace(w)) {
+  const label = textValue(w.label || (wt && wt.label));
+  if (!label) return "";
+  const branch = workspaceBranch(w);
+  const folder = pathBasename((wt && wt.path) || (w.worktree && w.worktree.checkout_path));
+  if (label === branch || label === folder) return "";
+  return label;
 }
 function isLinkedWorktree(w) {
   return !!(w && w.worktree && w.worktree.is_linked_worktree);
@@ -2152,7 +2186,7 @@ function renderAgentRow(a, wsById, tabById, tabCountsByWorkspace) {
   const w = wsById[a.workspace_id];
   const repo = w && w.worktree ? parentWorkspaceName(w, wsById) : null;
   const worktree =
-    w && w.worktree ? worktreeDisplayName(w) : w ? w.label : a.workspace_id;
+    w && w.worktree ? agentWorktreeDisplayName(w) : w ? w.label : a.workspace_id;
   const t = tabById[a.tab_id];
   const tab = agentTabLabel(a.workspace_id, t, tabCountsByWorkspace);
   const fullTitle =
@@ -2184,6 +2218,10 @@ function renderAgentRow(a, wsById, tabById, tabCountsByWorkspace) {
     a.pane_id === state.pane;
   return `<a class="item ${active ? "active" : ""} ${dismissed ? "agent-dismissed" : ""}" title="${escapeAttr(fullTitle)}" href="${escapeAttr(selectionPath(a.workspace_id, a.tab_id, a.pane_id))}" target="herdr-selection" onclick="return navigateSelection(event,'${a.workspace_id}','${a.tab_id}','${a.pane_id}')"><div class="agent-title">${statusMark(displayStatus, status === "blocked")}${titleParts.join("")}</div><div class="agent-meta"><span class="agent-status ${displayStatus}">${escapeHtml(displayStatus)}</span><span>•</span><span class="agent-name">${escapeHtml(label)}</span>${action}</div></a>`;
 }
+function agentWorktreeDisplayName(w) {
+  if (!isLinkedWorktree(w)) return worktreeDisplayName(w);
+  return worktreeCustomLabel(w) || worktreeDisplayName(w);
+}
 function agentTabLabel(wsId, t, tabCountsByWorkspace) {
   if (!t) return "";
   const count = tabCountsByWorkspace.get(wsId) || 0;
@@ -2200,6 +2238,7 @@ function worktreeDisplayName(w) {
   if (!w) return "worktree";
   const wt = worktreeForWorkspace(w);
   return (
+    workspaceBranch(w) ||
     pathBasename((wt && wt.path) || (w.worktree && w.worktree.checkout_path)) ||
     (wt && wt.label) ||
     w.label
@@ -2446,6 +2485,7 @@ function modalOpen() {
     "worktreeCreateModal",
     "worktreeOpenModal",
     "shortcutsModal",
+    "searchPalette",
   ].some((id) => {
     const m = el(id);
     return m && m.style.display && m.style.display !== "none";
@@ -3431,28 +3471,35 @@ async function closeWorkspace(id) {
       refresh();
       return;
     }
-    const wsTabs = state.tabs.filter((t) => t.workspace_id === id);
     if (
       !confirm(
         `Close panels in "${workspaceCloseName(id)}"? Linked worktrees will keep running.`,
       )
     )
       return;
-    for (const tab of wsTabs) {
-      const tabPanes = state.panes.filter((p) => p.tab_id === tab.tab_id);
-      for (const pane of tabPanes) {
-        try {
-          await api(
-            `/api/panes/${encodeURIComponent(pane.pane_id)}/close`,
-            { method: "POST" },
-          );
-        } catch (e) {}
-      }
-    }
+    await closeWorkspaceById(id);
     refresh();
     return;
   }
   if (!confirm(`Close ${kind} "${workspaceCloseName(id)}"?`)) return;
+  await closeWorkspaceById(id);
+  refresh();
+}
+function tabsForWorkspace(id) {
+  return state.allTabs
+    .concat(state.tabs)
+    .filter((tab, index, tabs) =>
+      tab.workspace_id === id &&
+      tabs.findIndex((candidate) => candidate.tab_id === tab.tab_id) === index,
+    );
+}
+function panesForTab(id) {
+  return state.panes.filter((pane) => pane.tab_id === id);
+}
+async function closePaneById(id) {
+  await api(`/api/panes/${encodeURIComponent(id)}/close`, { method: "POST" });
+}
+async function closeWorkspaceById(id) {
   await api(`/api/workspaces/${encodeURIComponent(id)}/close`, {
     method: "POST",
   });
@@ -3461,7 +3508,6 @@ async function closeWorkspace(id) {
     state.tab = null;
     state.pane = null;
   }
-  refresh();
 }
 async function removeWorktree(id) {
   if (!confirm(`Remove and close worktree "${workspaceCloseName(id)}"?`))
@@ -3490,6 +3536,11 @@ function startWorkspaceRename(id, label) {
   state.editingWorkspace = id;
   state.editingWorkspaceValue = label || "";
   render();
+  setTimeout(() => {
+    if (state.editingWorkspace !== id) return;
+    const input = document.querySelector(".workspace-rename-input");
+    if (input) input.select();
+  }, 0);
 }
 function workspaceRenameKey(e, id) {
   if (e.key === "Enter") {
@@ -3518,6 +3569,11 @@ function startTabRename(id, label) {
   state.editingTab = id;
   state.editingTabValue = label || "";
   render();
+  setTimeout(() => {
+    if (state.editingTab !== id) return;
+    const input = document.querySelector(".tab-rename-input");
+    if (input) input.select();
+  }, 0);
 }
 function tabRenameKey(e, id) {
   if (e.key === "Enter") {
@@ -3544,8 +3600,18 @@ async function commitTabRename(id) {
 }
 async function closeTab(id) {
   if (!confirm(`Close panel "${panelCloseName(id)}"?`)) return;
-  await api(`/api/tabs/${encodeURIComponent(id)}/close`, { method: "POST" });
-  state.tab = null;
+  const tab = state.allTabs.concat(state.tabs).find((t) => t.tab_id === id),
+    workspaceId = tab && tab.workspace_id,
+    workspaceTabs = workspaceId ? tabsForWorkspace(workspaceId) : [];
+  if (workspaceTabs.length > 1) {
+    await api(`/api/tabs/${encodeURIComponent(id)}/close`, { method: "POST" });
+  } else if (workspaceId) {
+    await closeWorkspaceById(workspaceId);
+  } else {
+    const panes = panesForTab(id);
+    if (panes.length) await closePaneById(panes[0].pane_id);
+  }
+  if (state.tab === id) state.tab = null;
   state.pane = null;
   refresh();
 }
@@ -3718,8 +3784,14 @@ function globalShortcutPrefixLabel() {
     return DEFAULT_GLOBAL_SHORTCUT_PREFIX;
   }
 }
+function searchShortcutLabel() {
+  return options.searchShortcut === "off" ? "Disabled" : options.searchShortcut;
+}
 function isShortcutPrefix(e) {
   return shortcutPrefixFromEvent(e) === globalShortcutPrefixLabel();
+}
+function isSearchShortcut(e) {
+  return options.searchShortcut !== "off" && shortcutPrefixFromEvent(e) === options.searchShortcut;
 }
 function showShortcutPrefixOverlay() {
   shortcutPrefixUntil = Date.now() + 5000;
@@ -3738,6 +3810,8 @@ function hideShortcutPrefixOverlay() {
 function runPrefixedShortcut(e) {
   switch (shortcutKey(e)) {
     case "Slash":
+      openSearchPalette();
+      return true;
     case "Shift+Slash":
       showShortcutsModal();
       return true;
@@ -3800,6 +3874,12 @@ function handleGlobalShortcut(e) {
   if (modalOpen()) {
     hideShortcutPrefixOverlay();
     return false;
+  }
+  if (isSearchShortcut(e)) {
+    if (editableShortcutTarget(e.target) && !terminalShortcutTarget(e.target))
+      return false;
+    openSearchPalette();
+    return consumeShortcutEvent(e);
   }
   const prefixActive = shortcutPrefixUntil > Date.now();
   if (prefixActive) {
@@ -3951,6 +4031,12 @@ el("shortcutsClose").onclick = () => {
 el("shortcutsCloseTop").onclick = () => {
   el("shortcutsModal").style.display = "none";
 };
+el("searchPaletteClose").onclick = closeSearchPalette;
+el("searchPaletteInput").oninput = scheduleSearch;
+el("searchPaletteInput").onkeydown = searchPaletteKeydown;
+el("searchPalette").addEventListener("click", (e) => {
+  if (e.target === el("searchPalette")) closeSearchPalette();
+});
 el("shortcutsModal").addEventListener("pointerdown", (e) => {
   shortcutsBackdropDown = e.target === el("shortcutsModal");
 });
@@ -4147,6 +4233,10 @@ document.addEventListener(
       e.preventDefault();
       e.stopPropagation();
       closeWorktreeCreateModal();
+    } else if (el("searchPalette").style.display === "grid") {
+      e.preventDefault();
+      e.stopPropagation();
+      closeSearchPalette();
     }
   },
   true,
