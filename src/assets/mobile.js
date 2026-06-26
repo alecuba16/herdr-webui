@@ -564,6 +564,8 @@
     updateWorktreeField: mobileWorktrees.updateField,
     setThemeMode: mobileSettings.setThemeMode,
     setLayoutPreference: mobileSettings.setLayoutPreference,
+    setTerminalFontFamily: mobileSettings.setTerminalFontFamily,
+    applyTerminalFontFamily: mobileTerminal.applyFontFamily,
     currentScreen,
     currentSelection,
     refresh,
