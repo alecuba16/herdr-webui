@@ -10,7 +10,7 @@ const {
   tabActivityLabel,
   terminalPasteInput,
   terminalWheelScrollBatch,
-} = require("./app_core.js");
+} = require("./shared/core.js");
 
 describe("branchPathSlug", () => {
   it("lowercases and collapses separators", () => {

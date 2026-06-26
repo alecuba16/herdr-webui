@@ -6,7 +6,6 @@
     <title>herdr web</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <script src="/assets/xterm.js"></script>
-    <script src="/assets/app-core.js"></script>
     <link rel="stylesheet" href="/assets/xterm.css" />
   </head>
   <body>
@@ -45,6 +44,17 @@
         <strong>Shortcut prefix active</strong>
         <span>Press shortcut key. Esc cancels.</span>
         <kbd id="shortcutPrefixKey">Ctrl+B</kbd>
+      </div>
+    </div>
+    <div class="modal-backdrop search-palette" id="searchPalette">
+      <div class="modal search-modal">
+        <div class="search-head">
+          <span class="search-icon">⌕</span>
+          <input id="searchPaletteInput" placeholder="Search workspaces, repos, worktrees, labels, agents..." autocomplete="off" />
+          <button class="mini settings-close" id="searchPaletteClose" title="Close">✕</button>
+        </div>
+        <div class="search-results" id="searchPaletteResults"></div>
+        <div class="search-help">Enter opens selection · ↑/↓ moves · Esc closes</div>
       </div>
     </div>
     <div class="modal-backdrop" id="settingsModal">

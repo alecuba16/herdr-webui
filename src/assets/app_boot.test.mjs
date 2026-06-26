@@ -61,21 +61,26 @@ describe("app boot", () => {
     const { ctx, links, scripts } = context();
     vm.runInContext(source, ctx);
     equal(ctx.document.documentElement.dataset.herdrLayout, "desktop");
-    equal(links[0].href, "/assets/app.css");
-    equal(scripts[0].src, "/assets/app.js");
+    equal(links[0].href, "/assets/desktop/app.css");
+    equal(links[1].href, "/assets/desktop/shortcuts.css");
+    equal(links[2].href, "/assets/desktop/search.css");
+    equal(scripts[0].src, "/assets/shared/core.js");
+    equal(scripts[1].src, "/assets/desktop/search.js");
+    equal(scripts[2].src, "/assets/desktop/app.js");
   });
 
   it("loads mobile bundle for narrow screens", () => {
     const { ctx, links, scripts } = context({ mobile: true });
     vm.runInContext(source, ctx);
     equal(ctx.document.documentElement.dataset.herdrLayout, "mobile");
-    equal(links[0].href, "/assets/mobile.css");
-    equal(scripts[0].src, "/assets/mobile-core.js");
-    equal(scripts[1].src, "/assets/mobile-attention.js");
-    equal(scripts[2].src, "/assets/mobile-terminal.js");
-    equal(scripts[3].src, "/assets/mobile-worktrees.js");
-    equal(scripts[4].src, "/assets/mobile-settings.js");
-    equal(scripts[5].src, "/assets/mobile.js");
+    equal(links[0].href, "/assets/mobile/app.css");
+    equal(scripts[0].src, "/assets/shared/core.js");
+    equal(scripts[1].src, "/assets/mobile/core.js");
+    equal(scripts[2].src, "/assets/mobile/attention.js");
+    equal(scripts[3].src, "/assets/mobile/terminal.js");
+    equal(scripts[4].src, "/assets/mobile/worktrees.js");
+    equal(scripts[5].src, "/assets/mobile/settings.js");
+    equal(scripts[6].src, "/assets/mobile/app.js");
   });
 
   it("honors explicit desktop override", () => {
@@ -85,8 +90,8 @@ describe("app boot", () => {
     });
     vm.runInContext(source, ctx);
     equal(ctx.document.documentElement.dataset.herdrLayout, "desktop");
-    equal(links[0].href, "/assets/app.css");
-    equal(scripts[0].src, "/assets/app.js");
+    equal(links[0].href, "/assets/desktop/app.css");
+    equal(scripts[0].src, "/assets/shared/core.js");
   });
 
   it("reloads to switch layout when auto viewport crosses breakpoint", () => {
