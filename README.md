@@ -176,6 +176,18 @@ Terminal scroll:
 - Wheel scroll speed is configurable in Settings under `Terminal input` with the `Scroll speed` slider.
 - Small trackpad wheel deltas are accumulated before sending scroll commands, preventing tiny events from each scrolling a full line batch.
 
+Terminal font:
+
+- Configure in Settings under `Terminal input` with `Terminal font`.
+- Use any installed CSS font family, including Nerd Fonts commonly used by Neovim, for example `JetBrainsMono Nerd Font, monospace` or `MesloLGS NF, monospace`.
+- Browsers can only render fonts installed on the local machine.
+
+Keyboard shortcuts:
+
+- Enable or disable from Settings under `Agents and alerts` with `Global keyboard shortcuts`.
+- Press `?` outside terminal/input fields to open the shortcut reference.
+- Alt-based shortcuts work from the terminal and UI: `Alt+S` settings, `Alt+B` sidebar, `Alt+N` new workspace, `Alt+P` new panel, `Alt+W` worktrees, `Alt+T` create worktree, `Alt+X` close panel, `Alt+Shift+X` close workspace/worktree, `Alt+Delete` remove linked worktree, `Alt+A` next attention agent, `Alt+J/K` workspace navigation, `Alt+[/]` panel navigation, `Alt+F` terminal focus, and `Alt+,/.` focus navigation.
+
 ## Install
 
 Install as a per-user macOS LaunchAgent:
