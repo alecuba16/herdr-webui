@@ -155,6 +155,19 @@ describe("app bundle load", () => {
     match(source, /title: "Server"/);
   });
 
+  it("defines keyboard shortcuts and terminal font settings", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    match(source, /id="optGlobalShortcutsEnabled"/);
+    match(source, /id="optTerminalFontFamily"/);
+    match(source, /JetBrainsMono Nerd Font/);
+    match(source, /handleGlobalShortcut/);
+    match(source, /Alt\+KeyS/);
+    match(source, /Alt\+KeyX/);
+    match(source, /terminalFontFamily/);
+  });
+
   it("defines stuck-working dismissal controls", () => {
     const ctx = context();
     vm.runInContext(source, ctx);

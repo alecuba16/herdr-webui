@@ -320,6 +320,21 @@ function shortcutsModalHtml() {
         </div>
         <div class="shortcuts-list">
           <div class="shortcut-row"><kbd id="closeShortcutCurrent">Disabled</kbd><span>Close current Herdr panel. Configure in Settings.</span></div>
+          <div class="shortcut-row"><kbd>?</kbd><span>Open this shortcuts reference.</span></div>
+          <div class="shortcut-row"><kbd>Alt+S</kbd><span>Open Settings.</span></div>
+          <div class="shortcut-row"><kbd>Alt+B</kbd><span>Show or hide the workspace/agents sidebar.</span></div>
+          <div class="shortcut-row"><kbd>Alt+N</kbd><span>Create workspace.</span></div>
+          <div class="shortcut-row"><kbd>Alt+P</kbd><span>Create panel in current workspace.</span></div>
+          <div class="shortcut-row"><kbd>Alt+W</kbd><span>Open Worktrees browser.</span></div>
+          <div class="shortcut-row"><kbd>Alt+T</kbd><span>Create worktree from current workspace.</span></div>
+          <div class="shortcut-row"><kbd>Alt+X</kbd><span>Close current panel.</span></div>
+          <div class="shortcut-row"><kbd>Alt+Shift+X</kbd><span>Close current workspace or linked worktree.</span></div>
+          <div class="shortcut-row"><kbd>Alt+Delete</kbd><span>Remove current linked worktree from disk.</span></div>
+          <div class="shortcut-row"><kbd>Alt+A</kbd><span>Jump to next agent needing attention.</span></div>
+          <div class="shortcut-row"><kbd>Alt+J / Alt+K</kbd><span>Jump to next or previous workspace.</span></div>
+          <div class="shortcut-row"><kbd>Alt+] / Alt+[</kbd><span>Jump to next or previous panel.</span></div>
+          <div class="shortcut-row"><kbd>Alt+F</kbd><span>Focus terminal.</span></div>
+          <div class="shortcut-row"><kbd>Alt+. / Alt+,</kbd><span>Focus next or previous visible UI control.</span></div>
           <div class="shortcut-row"><kbd>Shift+Enter</kbd><span>Send configured newline sequence to terminal.</span></div>
           <div class="shortcut-row"><kbd>PageUp/PageDown</kbd><span>Scroll Herdr terminal backend.</span></div>
           <div class="shortcut-row"><kbd>Option+Wheel</kbd><span>Scroll browser overflow instead of terminal backend.</span></div>
@@ -523,6 +538,8 @@ const defaultOptions = {
   soundScope: "current",
   shiftEnterNewline: true,
   closeShortcut: "off",
+  globalShortcutsEnabled: true,
+  terminalFontFamily: "ui-monospace,SFMono-Regular,Menlo,monospace",
   agentSortMode: "off",
   parentCloseMode: "panels",
   stuckWorkingEnabled: true,
@@ -554,6 +571,10 @@ function normalizeOptions(value) {
   if (!["off", "altw", "shiftspacew"].includes(next.closeShortcut))
     next.closeShortcut = defaultOptions.closeShortcut;
   next.shiftEnterNewline = next.shiftEnterNewline !== false;
+  next.globalShortcutsEnabled = next.globalShortcutsEnabled !== false;
+  next.terminalFontFamily =
+    String(next.terminalFontFamily || "").trim().slice(0, 200) ||
+    defaultOptions.terminalFontFamily;
   if (!["off", "attention", "attention_inverted"].includes(next.agentSortMode))
     next.agentSortMode = defaultOptions.agentSortMode;
   if (!["panels", "close"].includes(next.parentCloseMode))
@@ -775,7 +796,7 @@ if (soundSetting && !el("optAgentSortMode"))
     .closest("label")
     .insertAdjacentHTML(
       "afterend",
-      '<label class="option"><span>Close panel shortcut<small>Stored in browser storage and available after reopening the tab.</small></span><select class="settings-select" id="optCloseShortcut"><option value="off">Disabled</option><option value="altw">Option+W</option><option value="shiftspacew">Shift+Space then W</option></select></label><label class="option"><span>Agent sorting<small>Sort agents by attention priority, or show them in default order.</small></span><select class="settings-select" id="optAgentSortMode"><option value="off">Default order</option><option value="attention">Attention (blocked first)</option><option value="attention_inverted">Attention (working first)</option></select></label><label class="option"><span>Parent workspace close<small>Close panels only (keeps linked worktrees running) or full close with re-open (stops processes, re-opens worktrees with fresh shells).</small></span><select class="settings-select" id="optParentCloseMode"><option value="panels">Close panels only</option><option value="close">Full close + re-open worktrees</option></select></label><label class="option"><input type="checkbox" id="optStuckWorkingEnabled"><span>Ignore stuck working agents<small>Dismiss working agents that appear stuck. Clears automatically on status changes and terminal output.</small></span></label><label class="option"><span>Ignore stuck working for<small>Minutes to keep a local dismissed-working override before showing working again.</small></span><input id="optWorkingDismissMinutes" type="number" min="1" max="1440" step="1"></label><label class="option"><input type="checkbox" id="optShowTabActivity"><span>Show panel last update<small>Display local last-change age on top panel tabs. Updates on refreshes, events, and selected terminal output; no timer polling.</small></span></label><label class="option"><span>Workspace sorting<small>Default tree order, shared drag-and-drop order, or attention state priority.</small></span><select class="settings-select" id="optWorkspaceSort"><option value="default">Default</option><option value="drag">Drag&drop</option><option value="state">State</option></select></label><label class="option"><span>Notification scope<small>Choose whether sounds ring in every open tab or only the tab viewing the agent panel.</small></span><select class="settings-select" id="optSoundScope"><option value="current">Current agent tab</option><option value="all">All tabs</option></select></label><label class="option"><input type="checkbox" id="optGenerateWorktreeNames"><span>Generate worktree branch names<small>Allow blank Branch name in Worktrees modal. Herdr generates worktree/&lt;name&gt;.</small></span></label><label class="option"><span>Default worktree directory<small>Relative paths resolve from repo root. Example: ../worktrees.</small></span><input id="optWorktreeDefaultDirectory" placeholder="../worktrees"></label><label class="option"><span>Scroll speed<small><span id="scrollLinesValue">3</span> terminal lines per wheel step.</small></span><input type="range" id="optScrollLines" min="1" max="20" step="1"></label><label class="option"><span>Worktree autodiscover<small>Seconds to wait after path input stops. Set 0 for immediate.</small></span><input type="number" id="optWorktreeAutoDiscover" min="0" max="30" step="0.5"></label>',
+      '<label class="option"><input type="checkbox" id="optGlobalShortcutsEnabled"><span>Global keyboard shortcuts<small>Enable Alt-based WebUI navigation shortcuts listed under ?.</small></span></label><label class="option"><span>Terminal font<small>Use installed font family, including Nerd Fonts used by Neovim.</small></span><input id="optTerminalFontFamily" list="terminalFontPresets" placeholder="JetBrainsMono Nerd Font, monospace"><datalist id="terminalFontPresets"><option value="JetBrainsMono Nerd Font, monospace"><option value="MesloLGS NF, monospace"><option value="Hack Nerd Font, monospace"><option value="FiraCode Nerd Font, monospace"><option value="CaskaydiaCove Nerd Font, monospace"><option value="ui-monospace,SFMono-Regular,Menlo,monospace"></datalist></label><label class="option"><span>Close panel shortcut<small>Stored in browser storage and available after reopening the tab.</small></span><select class="settings-select" id="optCloseShortcut"><option value="off">Disabled</option><option value="altw">Option+W</option><option value="shiftspacew">Shift+Space then W</option></select></label><label class="option"><span>Agent sorting<small>Sort agents by attention priority, or show them in default order.</small></span><select class="settings-select" id="optAgentSortMode"><option value="off">Default order</option><option value="attention">Attention (blocked first)</option><option value="attention_inverted">Attention (working first)</option></select></label><label class="option"><span>Parent workspace close<small>Close panels only (keeps linked worktrees running) or full close with re-open (stops processes, re-opens worktrees with fresh shells).</small></span><select class="settings-select" id="optParentCloseMode"><option value="panels">Close panels only</option><option value="close">Full close + re-open worktrees</option></select></label><label class="option"><input type="checkbox" id="optStuckWorkingEnabled"><span>Ignore stuck working agents<small>Dismiss working agents that appear stuck. Clears automatically on status changes and terminal output.</small></span></label><label class="option"><span>Ignore stuck working for<small>Minutes to keep a local dismissed-working override before showing working again.</small></span><input id="optWorkingDismissMinutes" type="number" min="1" max="1440" step="1"></label><label class="option"><input type="checkbox" id="optShowTabActivity"><span>Show panel last update<small>Display local last-change age on top panel tabs. Updates on refreshes, events, and selected terminal output; no timer polling.</small></span></label><label class="option"><span>Workspace sorting<small>Default tree order, shared drag-and-drop order, or attention state priority.</small></span><select class="settings-select" id="optWorkspaceSort"><option value="default">Default</option><option value="drag">Drag&drop</option><option value="state">State</option></select></label><label class="option"><span>Notification scope<small>Choose whether sounds ring in every open tab or only the tab viewing the agent panel.</small></span><select class="settings-select" id="optSoundScope"><option value="current">Current agent tab</option><option value="all">All tabs</option></select></label><label class="option"><input type="checkbox" id="optGenerateWorktreeNames"><span>Generate worktree branch names<small>Allow blank Branch name in Worktrees modal. Herdr generates worktree/&lt;name&gt;.</small></span></label><label class="option"><span>Default worktree directory<small>Relative paths resolve from repo root. Example: ../worktrees.</small></span><input id="optWorktreeDefaultDirectory" placeholder="../worktrees"></label><label class="option"><span>Scroll speed<small><span id="scrollLinesValue">3</span> terminal lines per wheel step.</small></span><input type="range" id="optScrollLines" min="1" max="20" step="1"></label><label class="option"><span>Worktree autodiscover<small>Seconds to wait after path input stops. Set 0 for immediate.</small></span><input type="number" id="optWorktreeAutoDiscover" min="0" max="30" step="0.5"></label>',
     );
 groupSettingsSections();
 function groupSettingsSections() {
@@ -790,7 +811,13 @@ function groupSettingsSections() {
     {
       title: "Terminal input",
       desc: "Viewport sizing, scrolling, and keyboard behavior.",
-      ids: ["optOverflow", "optFit", "optShiftEnterNewline", "optScrollLines"],
+      ids: [
+        "optOverflow",
+        "optFit",
+        "optShiftEnterNewline",
+        "optScrollLines",
+        "optTerminalFontFamily",
+      ],
     },
     {
       title: "Agents and alerts",
@@ -798,6 +825,7 @@ function groupSettingsSections() {
       ids: [
         "optSound",
         "optSoundScope",
+        "optGlobalShortcutsEnabled",
         "optAgentSortMode",
         "optParentCloseMode",
         "optStuckWorkingEnabled",
@@ -853,6 +881,8 @@ function applyOptions() {
     fitOpt = el("optFit"),
     shiftEnterNewline = el("optShiftEnterNewline"),
     sound = el("optSound"),
+    globalShortcutsEnabled = el("optGlobalShortcutsEnabled"),
+    terminalFontFamily = el("optTerminalFontFamily"),
     themeSelect = el("optTheme"),
     closeShortcut = el("optCloseShortcut"),
     sortAgents = el("optAgentSortMode"),
@@ -873,6 +903,10 @@ function applyOptions() {
   if (shiftEnterNewline)
     shiftEnterNewline.checked = options.shiftEnterNewline !== false;
   if (sound) sound.checked = !!options.sound;
+  if (globalShortcutsEnabled)
+    globalShortcutsEnabled.checked = options.globalShortcutsEnabled !== false;
+  if (terminalFontFamily)
+    terminalFontFamily.value = options.terminalFontFamily || "";
   if (themeSelect) themeSelect.value = themeMode;
   if (closeShortcut) closeShortcut.value = options.closeShortcut || "off";
   if (closeShortcutCurrent)
@@ -991,6 +1025,19 @@ function terminalTheme() {
 function shiftEnterSequence() {
   return "\n";
 }
+function terminalFontFamily() {
+  return options.terminalFontFamily || defaultOptions.terminalFontFamily;
+}
+function applyTerminalFont() {
+  if (!term) return;
+  try {
+    term.options.fontFamily = terminalFontFamily();
+  } catch (e) {
+    try {
+      term.setOption("fontFamily", terminalFontFamily());
+    } catch (_) {}
+  }
+}
 function applyTheme() {
   themeMode = normalizeThemeMode(themeMode);
   const current = effectiveTheme();
@@ -1008,6 +1055,7 @@ function applyTheme() {
   if (themeSelect) themeSelect.value = themeMode;
   localStorage.setItem("herdr-web-theme", themeMode);
   if (term) {
+    applyTerminalFont();
     try {
       term.options.theme = terminalTheme();
     } catch (e) {
@@ -2209,7 +2257,7 @@ function connectTerminal() {
   if (!term) {
     term = new Terminal({
       convertEol: false,
-      fontFamily: "ui-monospace,SFMono-Regular,Menlo,monospace",
+      fontFamily: terminalFontFamily(),
       theme: terminalTheme(),
       scrollback: 10000,
     });
@@ -2363,12 +2411,12 @@ function preserveActiveElementFocus() {
   if (active.isContentEditable) return true;
   return !!active.closest("input, select, textarea, button, [role='button']");
 }
-function focusTerminal() {
+function focusTerminal(force = false) {
   if (
     state.editingTab ||
     state.editingWorkspace ||
     modalOpen() ||
-    preserveActiveElementFocus() ||
+    (!force && preserveActiveElementFocus()) ||
     !term
   )
     return;
@@ -3498,13 +3546,171 @@ function handleCloseShortcut(e) {
   }
   return false;
 }
-function closeCurrentPanelShortcut() {
-  if ((options.closeShortcut || "off") === "off" || !state.tab) return false;
+function closeCurrentPanelShortcut(force = false) {
+  if ((!force && (options.closeShortcut || "off") === "off") || !state.tab)
+    return false;
   closeTab(state.tab);
   return true;
 }
 function closeShortcutKeydown(e) {
   if (!handleCloseShortcut(e)) return false;
+  e.preventDefault();
+  e.stopPropagation();
+  if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+  return true;
+}
+function showShortcutsModal() {
+  applyOptions();
+  el("shortcutsModal").style.display = "grid";
+}
+function showSettingsModal() {
+  el("settingsModal").style.display = "grid";
+  applyOptions();
+  loadServerSettings();
+}
+function currentWorkspace() {
+  return state.workspaces.find((w) => w.workspace_id === state.ws) || null;
+}
+function orderedWorkspaceIds() {
+  return state.workspaces.map((w) => w.workspace_id).filter(Boolean);
+}
+function selectRelativeWorkspace(delta) {
+  const ids = orderedWorkspaceIds();
+  if (!ids.length) return false;
+  const current = Math.max(0, ids.indexOf(state.ws));
+  const next = ids[(current + delta + ids.length) % ids.length];
+  go(next);
+  return true;
+}
+function selectRelativePanel(delta) {
+  const tabs = state.tabs.map((t) => t.tab_id).filter(Boolean);
+  if (!tabs.length) return false;
+  const current = Math.max(0, tabs.indexOf(state.tab));
+  const next = tabs[(current + delta + tabs.length) % tabs.length];
+  go(state.ws, next);
+  return true;
+}
+function selectNextAttentionAgent() {
+  const list = state.agents.filter(needsAttention);
+  if (!list.length) return false;
+  const current = list.findIndex(
+    (a) =>
+      a.workspace_id === state.ws &&
+      a.tab_id === state.tab &&
+      a.pane_id === state.pane,
+  );
+  const agent = list[(current + 1 + list.length) % list.length];
+  go(agent.workspace_id, agent.tab_id, agent.pane_id);
+  return true;
+}
+function removeCurrentWorktreeShortcut() {
+  const workspace = currentWorkspace();
+  if (!isLinkedWorktree(workspace)) return false;
+  removeWorktree(workspace.workspace_id);
+  return true;
+}
+function focusRelativeControl(delta) {
+  const controls = [...document.querySelectorAll('a[href],button,input,select,textarea,[tabindex]:not([tabindex="-1"])')]
+    .filter((node) => {
+      if (node.disabled || node.getAttribute("aria-hidden") === "true")
+        return false;
+      const rect = node.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    });
+  if (!controls.length) return false;
+  const current = controls.indexOf(document.activeElement);
+  controls[(current + delta + controls.length) % controls.length].focus();
+  return true;
+}
+function editableShortcutTarget(target) {
+  if (!target) return false;
+  if (target.isContentEditable) return true;
+  return !!target.closest("input, textarea, select, [contenteditable='true']");
+}
+function terminalShortcutTarget(target) {
+  return !!(target && target.closest && target.closest(".xterm"));
+}
+function keyCombo(e) {
+  if (!e.altKey || e.ctrlKey || e.metaKey) return "";
+  const shift = e.shiftKey ? "Shift+" : "";
+  return `Alt+${shift}${e.code || e.key}`;
+}
+function handleGlobalShortcut(e) {
+  if (e.defaultPrevented || options.globalShortcutsEnabled === false) return false;
+  if (modalOpen()) return false;
+  if (!e.altKey && e.key !== "?") return false;
+  if (editableShortcutTarget(e.target)) {
+    if (!e.altKey || !terminalShortcutTarget(e.target)) return false;
+  }
+  let handled = false;
+  if (e.key === "?" && !e.altKey && !e.ctrlKey && !e.metaKey) {
+    handled = true;
+    showShortcutsModal();
+  } else {
+    switch (keyCombo(e)) {
+      case "Alt+KeyS":
+        showSettingsModal();
+        handled = true;
+        break;
+      case "Alt+KeyB":
+        sidebarToggle && sidebarToggle.click();
+        handled = true;
+        break;
+      case "Alt+KeyN":
+        openWorkspaceCreateModal();
+        handled = true;
+        break;
+      case "Alt+KeyP":
+        if (state.ws) newTab();
+        handled = true;
+        break;
+      case "Alt+KeyW":
+        openWorktreeOpenModal();
+        handled = true;
+        break;
+      case "Alt+KeyT":
+        if (state.ws) openWorktreeCreateModal(state.ws);
+        handled = true;
+        break;
+      case "Alt+KeyX":
+        handled = closeCurrentPanelShortcut(true);
+        break;
+      case "Alt+Shift+KeyX":
+        if (state.ws) closeWorkspace(state.ws);
+        handled = true;
+        break;
+      case "Alt+Delete":
+      case "Alt+Backspace":
+        handled = removeCurrentWorktreeShortcut();
+        break;
+      case "Alt+KeyA":
+        handled = selectNextAttentionAgent();
+        break;
+      case "Alt+KeyJ":
+        handled = selectRelativeWorkspace(1);
+        break;
+      case "Alt+KeyK":
+        handled = selectRelativeWorkspace(-1);
+        break;
+      case "Alt+BracketRight":
+        handled = selectRelativePanel(1);
+        break;
+      case "Alt+BracketLeft":
+        handled = selectRelativePanel(-1);
+        break;
+      case "Alt+KeyF":
+        focusTerminal(true);
+        handled = true;
+        break;
+      case "Alt+Period":
+        handled = focusRelativeControl(1);
+        break;
+      case "Alt+Comma":
+        handled = focusRelativeControl(-1);
+        break;
+    }
+  }
+  if (!handled) return false;
   e.preventDefault();
   e.stopPropagation();
   if (e.stopImmediatePropagation) e.stopImmediatePropagation();
@@ -3683,6 +3889,17 @@ el("optShiftEnterNewline").onchange = () => {
 };
 el("optCloseShortcut").oninput = saveCloseShortcutOption;
 el("optCloseShortcut").onchange = saveCloseShortcutOption;
+el("optGlobalShortcutsEnabled").onchange = () => {
+  options.globalShortcutsEnabled = el("optGlobalShortcutsEnabled").checked;
+  saveOptions();
+  applyOptions();
+};
+el("optTerminalFontFamily").oninput = () => {
+  options.terminalFontFamily = el("optTerminalFontFamily").value;
+  saveOptions();
+  applyTerminalFont();
+  fitTerminalShell();
+};
 el("optAgentSortMode").onchange = () => {
   options.agentSortMode = el("optAgentSortMode").value;
   saveOptions();
@@ -3872,6 +4089,7 @@ document.addEventListener("click", (e) => {
   if (menu && !menu.contains(e.target)) hideClipboardMenu();
 });
 window.addEventListener("keydown", closeShortcutKeydown, true);
+window.addEventListener("keydown", handleGlobalShortcut, true);
 document.addEventListener("keydown", (e) => {
   if (editableEventTarget(e)) return;
   const copyKey =
