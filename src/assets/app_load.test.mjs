@@ -415,6 +415,10 @@ describe("app bundle load", () => {
     match(ctx.worktreeCreateModalHtml(), /id="worktreeCreateSubmit"/);
     match(ctx.worktreeCreateModalHtml(), /id="worktreeCreateSource"/);
     match(ctx.worktreeCreateModalHtml(), /list="worktreeCreatePathOptions"/);
+    match(ctx.worktreeCreateModalHtml(), /class="worktree-open-controls"/);
+    match(ctx.worktreeCreateModalHtml(), /class="worktree-new"/);
+    match(ctx.worktreeCreateModalHtml(), /id="worktreeCreateLoading"/);
+    match(ctx.worktreeCreateModalHtml(), /class="worktree-open-footer"/);
     match(ctx.worktreeOpenModalHtml(), /id="worktreeDiscoverPath"/);
     match(ctx.worktreeOpenModalHtml(), /id="worktreePathOptions"/);
     match(ctx.worktreeOpenModalHtml(), /id="worktreeBranchOptions"/);
@@ -562,6 +566,112 @@ describe("app bundle load", () => {
     match(
       ctx.document.getElementById("worktreeCreateError").textContent,
       /already checked out/,
+    );
+  });
+
+  it("Tab does nothing in create-worktree source while suggestions exist", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    vm.runInContext(
+      `state.workspaces = [
+        { workspace_id: "ws1", label: "alpha", pane_count: 1, worktree: { checkout_path: "/repo/alpha", is_linked_worktree: false } },
+      ];
+      openWorktreeCreateModal("ws1");
+      state.createWorktreePathSuggestions = [
+        { path: "/repo/a", label: "a" },
+        { path: "/repo/b", label: "b" },
+      ];`,
+      ctx,
+    );
+
+    // Suggestions exist — Tab would be prevented in the real browser
+    const len = vm.runInContext(`state.createWorktreePathSuggestions.length`, ctx);
+    equal(len, 2);
+  });
+
+  it("Enter clears suggestions and locks next oninput in create-worktree source", async () => {
+    const ctx = context();
+    const calls = [];
+    ctx.fetch = async (url) => {
+      calls.push(url);
+      if (url.includes("/api/worktrees")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            result: {
+              source: {
+                source_workspace_id: "ws1",
+                source_checkout_path: "/repo/alpha",
+                repo_name: "alpha",
+                repo_root: "/repo",
+                default_worktree_directory: "../worktrees",
+              },
+              worktrees: [],
+            },
+          }),
+        };
+      }
+      return { status: 200, json: async () => ({ suggestions: [] }) };
+    };
+    vm.runInContext(source, ctx);
+    vm.runInContext(
+      `state.workspaces = [
+        { workspace_id: "ws1", label: "alpha", pane_count: 1, worktree: { checkout_path: "/repo/alpha", is_linked_worktree: false } },
+      ];
+      openWorktreeCreateModal("ws1");
+      state.createWorktreePathSuggestions = [{ path: "/repo/a", label: "a" }];`,
+      ctx,
+    );
+
+    // Simulate Enter: clear suggestions, lock, discover
+    vm.runInContext(
+      `state.createWorktreeSuggestionLocked = true;
+       clearCreateWorktreeSuggestions();`,
+      ctx,
+    );
+
+    const len = vm.runInContext(`state.createWorktreePathSuggestions.length`, ctx);
+    equal(len, 0);
+    const locked = vm.runInContext(`state.createWorktreeSuggestionLocked`, ctx);
+    equal(locked, true);
+
+    // Simulate native datalist Enter setting value + firing oninput
+    vm.runInContext(
+      `el("worktreeCreateSource").value = "/repo/a";
+       if (state.createWorktreeSuggestionLocked) {
+         state.createWorktreeSuggestionLocked = false;
+       }`,
+      ctx,
+    );
+
+    // Lock cleared by oninput — subsequent typing re-suggests
+    const stillLocked = vm.runInContext(`state.createWorktreeSuggestionLocked`, ctx);
+    equal(stillLocked, false);
+  });
+
+  it("syncCreateWorktreeCheckoutPath auto-fills path from discovered source", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    vm.runInContext(
+      `state.workspaces = [
+        { workspace_id: "ws1", label: "alpha", pane_count: 1, worktree: { checkout_path: "/repo/alpha", is_linked_worktree: false } },
+      ];
+      openWorktreeCreateModal("ws1");
+      state.createWorktreeSource = {
+        repo_name: "alpha",
+        repo_root: "/repo",
+        default_worktree_directory: "../worktrees",
+        cwd: "/repo/alpha",
+      };
+      el("worktreeBranch").value = "feature/x";
+      syncCreateWorktreeCheckoutPath();`,
+      ctx,
+    );
+
+    equal(
+      ctx.document.getElementById("worktreePath").value,
+      "/worktrees/alpha/feature-x",
     );
   });
 

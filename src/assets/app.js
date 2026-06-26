@@ -25,6 +25,12 @@ let state = {
   workspaceCreatePathSuggestTimer: null,
   createWorktreeOriginalSource: "",
   createWorktreePathSuggestTimer: null,
+  createWorktreePathSuggestions: [],
+  createWorktreeSuggestionIndex: -1,
+  createWorktreeSource: null,
+  createWorktreeAutodiscoverTimer: null,
+  createWorktreeDefaultPath: "",
+  createWorktreeSuggestionLocked: false,
 };
 let term,
   termWs,
@@ -68,6 +74,11 @@ const {
   normalizeAbsolutePath,
   normalizeThemeColors,
   resolveTerminalFontFamily,
+  textValue,
+  resolveWorktreeSource: resolveWorktreeSourceHelper,
+  checkedOutWorktreeForBranch: checkedOutWorktreeForBranchHelper,
+  validateWorktreeCreate: validateWorktreeCreateHelper,
+  buildWorktreeCreateBody,
   terminalPasteInput,
   tabActivityLabel,
   terminalWheelScrollBatch,
@@ -212,30 +223,39 @@ function worktreeCreateModalHtml() {
         <div class="settings-head">
           <div>
             <h2>Create worktree</h2>
-            <p>Creates a linked Git worktree from selected parent workspace and opens it.</p>
+            <p>Creates a linked Git worktree from the selected parent workspace and opens it.</p>
           </div>
           <button class="mini settings-close" id="worktreeCreateClose" title="Close">✕</button>
         </div>
-        <form class="worktree-form" id="worktreeCreateForm">
-          <label class="worktree-source">
+        <div class="worktree-open-controls">
+          <label>
             <span>Source repo path</span>
             <input id="worktreeCreateSource" list="worktreeCreatePathOptions" placeholder="parent workspace path" autocomplete="off">
-            <datalist id="worktreeCreatePathOptions"></datalist>
           </label>
-          <div class="worktree-grid">
-            <label>Branch<input id="worktreeBranch" placeholder="auto-generated if blank"></label>
-            <label>Base<input id="worktreeBase" placeholder="default branch"></label>
+          <datalist id="worktreeCreatePathOptions"></datalist>
+          <div class="worktree-loading" id="worktreeCreateLoading">Discovering worktrees...</div>
+        </div>
+        <div class="worktree-new">
+          <div class="worktree-new-head">
+            <strong>Create a new worktree</strong>
+            <small>Uses the repo path above. Leave base blank to use the repo default branch.</small>
           </div>
-          <div class="worktree-grid">
-            <label>Label<input id="worktreeLabel" placeholder="optional"></label>
-            <label>Path<input id="worktreePath" placeholder="backend default if blank"></label>
-          </div>
-          <div class="worktree-error" id="worktreeCreateError"></div>
-          <div class="modal-actions">
-            <button type="button" class="tab add" id="worktreeCreateCancel">Cancel</button>
-            <button class="btn" id="worktreeCreateSubmit">Create and open</button>
-          </div>
-        </form>
+          <form class="worktree-form" id="worktreeCreateForm">
+            <div class="worktree-grid">
+              <label><span>Branch name</span><input id="worktreeBranch" placeholder="feature/my-branch"></label>
+              <label><span>Base branch</span><input id="worktreeBase" placeholder="default branch"></label>
+            </div>
+            <div class="worktree-grid">
+              <label><span>Label</span><input id="worktreeLabel" placeholder="optional"></label>
+              <label><span>Checkout path</span><input id="worktreePath" placeholder="backend default if blank"></label>
+            </div>
+            <div class="worktree-error" id="worktreeCreateError"></div>
+            <div class="worktree-open-footer">
+              <button type="button" class="tab add" id="worktreeCreateCancel">Cancel</button>
+              <button type="submit" class="btn" id="worktreeCreateSubmit">Create and open</button>
+            </div>
+          </form>
+        </div>
       </div>
     </div>`;
 }
@@ -332,6 +352,7 @@ function shortcutsModalHtml() {
           <div class="shortcut-row"><kbd>Option+Wheel</kbd><span>Scroll browser overflow instead of terminal backend.</span></div>
           <div class="shortcut-row"><kbd>Cmd/Ctrl+C</kbd><span>Copy selected terminal text.</span></div>
           <div class="shortcut-row"><kbd>Cmd/Ctrl+V</kbd><span>Paste clipboard into terminal.</span></div>
+          <div class="shortcut-row"><kbd>Ctrl+B</kbd><span>Herdr prefix key. Passes through to the terminal; Herdr handles its own keybindings.</span></div>
           <div class="shortcut-row"><kbd>Double-click</kbd><span>Rename workspaces and panels.</span></div>
           <div class="shortcut-row"><kbd>Cmd/Middle-click</kbd><span>Open workspace, agent, or panel link using browser tab behavior.</span></div>
         </div>
@@ -2717,16 +2738,6 @@ function escapeHtml(s) {
 function escapeAttr(s) {
   return escapeHtml(s).replace(/'/g, "&#39;");
 }
-function textValue(v) {
-  if (v === null || v === undefined) return "";
-  if (typeof v === "string") return v;
-  if (typeof v === "number" || typeof v === "boolean") return String(v);
-  if (v.path) return textValue(v.path);
-  if (v.display) return textValue(v.display);
-  if (v.label) return textValue(v.label);
-  if (v.name) return textValue(v.name);
-  return "";
-}
 function workspaceCloseName(id) {
   const w = state.workspaces.find((x) => x.workspace_id === id);
   if (!w) return id;
@@ -2802,12 +2813,17 @@ function openWorktreeCreateModal(id) {
   state.createWorktreeWorkspace = id;
   const sourcePath = (w.worktree && w.worktree.checkout_path) || "";
   state.createWorktreeOriginalSource = sourcePath;
+  state.createWorktreePathSuggestions = [];
+  state.createWorktreeSuggestionIndex = -1;
+  state.createWorktreeSource = null;
+  state.createWorktreeDefaultPath = "";
   el("worktreeCreateSource").value = sourcePath;
   el("worktreeBranch").value = "";
   el("worktreeBase").value = "";
   el("worktreeLabel").value = "";
   el("worktreePath").value = "";
   el("worktreeCreateError").textContent = "";
+  setCreateWorktreeLoading(false);
   renderPathOptions("worktreeCreatePathOptions", []);
   el("worktreeCreateModal").style.display = "grid";
   setTimeout(() => {
@@ -2819,8 +2835,19 @@ function closeWorktreeCreateModal() {
   const m = el("worktreeCreateModal");
   if (m) m.style.display = "none";
   clearTimeout(state.createWorktreePathSuggestTimer);
+  clearTimeout(state.createWorktreeAutodiscoverTimer);
   state.createWorktreeWorkspace = null;
   state.createWorktreeOriginalSource = "";
+  state.createWorktreePathSuggestions = [];
+  state.createWorktreeSuggestionIndex = -1;
+  state.createWorktreeSource = null;
+  state.createWorktreeDefaultPath = "";
+  state.createWorktreeSuggestionLocked = false;
+  setCreateWorktreeLoading(false);
+}
+function setCreateWorktreeLoading(show) {
+  const loading = el("worktreeCreateLoading");
+  if (loading) loading.classList.toggle("show", !!show);
 }
 function setWorktreeLoading(show) {
   const loading = el("worktreeLoading");
@@ -2828,6 +2855,7 @@ function setWorktreeLoading(show) {
 }
 function closeWorktreeOpenModal() {
   clearTimeout(state.openWorktreeAutodiscoverTimer);
+  state.openWorktreeSuggestionLocked = false;
   setWorktreeLoading(false);
   const m = el("worktreeOpenModal");
   if (m) m.style.display = "none";
@@ -2835,6 +2863,7 @@ function closeWorktreeOpenModal() {
 function openWorktreeOpenModal() {
   state.openWorktreeSelected = null;
   state.openWorktreePathSuggestions = [];
+  state.openWorktreeSuggestionLocked = false;
   state.openWorktreeSource = null;
   state.openWorktreeRows = [];
   state.openWorktreeAllRows = [];
@@ -2973,13 +3002,82 @@ async function loadWorktreePathSuggestions() {
   if (suggestions) state.openWorktreePathSuggestions = suggestions;
 }
 async function loadCreateWorktreePathSuggestions() {
-  await loadDirectoryPathSuggestions("worktreeCreateSource", (items) => {
-    const opts = (items || []).map(
-      (s) =>
-        `<option value="${escapeAttr(s.path)}">${escapeAttr(s.label || "directory")}</option>`,
-    );
-    renderPathOptions("worktreeCreatePathOptions", opts);
-  });
+  const suggestions = await loadDirectoryPathSuggestions(
+    "worktreeCreateSource",
+    (items) => syncDirectoryPathOptions("worktreeCreatePathOptions", items),
+  );
+  if (suggestions) {
+    state.createWorktreePathSuggestions = suggestions;
+    state.createWorktreeSuggestionIndex = -1;
+  }
+}
+async function discoverCreateWorktreeSource() {
+  clearTimeout(state.createWorktreeAutodiscoverTimer);
+  setCreateWorktreeLoading(true);
+  const path = el("worktreeCreateSource").value.trim();
+  el("worktreeCreateError").textContent = "";
+  try {
+    let url = "/api/worktrees";
+    if (path) url += "?cwd=" + encodeURIComponent(path);
+    const r = await api(url);
+    const source = (r.result || {}).source || {};
+    const sourceCwd = textValue(source.source_checkout_path) || path || null;
+    state.createWorktreeSource = {
+      workspace_id: source.source_workspace_id || null,
+      cwd: sourceCwd,
+      repo_name: textValue(source.repo_name),
+      repo_root: textValue(source.repo_root),
+      default_worktree_directory: textValue(source.default_worktree_directory),
+    };
+    syncCreateWorktreeCheckoutPath();
+  } catch (ex) {
+    state.createWorktreeSource = null;
+    el("worktreeCreateError").textContent = ex.message || String(ex);
+  } finally {
+    setCreateWorktreeLoading(false);
+  }
+}
+function clearCreateWorktreeSuggestions() {
+  state.createWorktreePathSuggestions = [];
+  state.createWorktreeSuggestionIndex = -1;
+  renderPathOptions("worktreeCreatePathOptions", []);
+}
+function scheduleCreateWorktreeAutodiscover() {
+  clearTimeout(state.createWorktreeAutodiscoverTimer);
+  const seconds = Number(options.worktreeAutoDiscoverSeconds) || 0;
+  const value = el("worktreeCreateSource").value.trim();
+  setCreateWorktreeLoading(false);
+  if (!value) return;
+  setCreateWorktreeLoading(true);
+  state.createWorktreeAutodiscoverTimer = setTimeout(
+    () => {
+      if (
+        el("worktreeCreateModal").style.display === "grid" &&
+        el("worktreeCreateSource").value.trim() === value
+      )
+        discoverCreateWorktreeSource();
+      else setCreateWorktreeLoading(false);
+    },
+    Math.max(0, seconds) * 1000,
+  );
+}
+function syncCreateWorktreeCheckoutPath() {
+  const input = el("worktreePath");
+  if (!input) return;
+  const source = state.createWorktreeSource || {},
+    branch = el("worktreeBranch").value.trim(),
+    root = worktreeRootForSource(source),
+    repo = source.repo_name;
+  if (!root || !repo || !branch) {
+    const prev = state.createWorktreeDefaultPath || "";
+    if (input.value.trim() === prev) input.value = "";
+    state.createWorktreeDefaultPath = "";
+    return;
+  }
+  const next = joinPath(root, repo, branchPathSlug(branch));
+  if (!input.value.trim() || input.value.trim() === state.createWorktreeDefaultPath)
+    input.value = next;
+  state.createWorktreeDefaultPath = next;
 }
 async function loadDirectoryPathSuggestions(inputId, onDone) {
   const input = el(inputId);
@@ -3070,33 +3168,13 @@ function syncWorktreeCheckoutPath() {
   state.openWorktreeDefaultPath = next;
 }
 function checkedOutWorktreeForBranch(branch) {
-  branch = String(branch || "").trim();
-  if (!branch) return null;
-  return (
-    (state.openWorktreeAllRows || state.openWorktreeRows || []).find(
-      (w) => textValue(w.branch) === branch && !w.is_prunable,
-    ) ||
-    (state.worktrees || []).find(
-      (w) => textValue(w.branch) === branch && !w.is_prunable,
-    ) ||
-    null
-  );
+  return checkedOutWorktreeForBranchHelper(branch, [
+    state.openWorktreeAllRows || state.openWorktreeRows || [],
+    state.worktrees || [],
+  ]);
 }
 function resolveWorktreeSource(input) {
-  const workspaceId = input.workspaceId || null,
-    sourcePath = String(input.sourcePath || "").trim(),
-    originalSource = String(input.originalSource || "").trim(),
-    discovered = input.discoveredSource || {},
-    fallbackWorkspaceId = input.fallbackWorkspaceId || null;
-  if (workspaceId) {
-    const edited = sourcePath && sourcePath !== originalSource;
-    return { workspace_id: workspaceId, cwd: edited ? sourcePath : null };
-  }
-  const wsId = discovered.workspace_id || (!sourcePath ? fallbackWorkspaceId : null);
-  return {
-    workspace_id: wsId || null,
-    cwd: wsId ? null : (discovered.cwd || sourcePath || null),
-  };
+  return resolveWorktreeSourceHelper(input);
 }
 async function submitWorktreeCreate(input) {
   const errEl = input.errEl,
@@ -3108,14 +3186,16 @@ async function submitWorktreeCreate(input) {
     label = String(input.label || "").trim(),
     path = String(input.path || "").trim();
   errEl.textContent = "";
-  if (!branch && !options.generateWorktreeNames) {
-    errEl.textContent =
-      "Branch name is required. Enable Generate worktree branch names in Settings to leave it blank.";
-    return;
-  }
-  const checkedOut = checkedOutWorktreeForBranch(branch);
-  if (checkedOut) {
-    errEl.textContent = `Branch "${branch}" is already checked out at ${textValue(checkedOut.path)}`;
+  const error = validateWorktreeCreateHelper({
+    branch,
+    generateWorktreeNames: options.generateWorktreeNames,
+    worktreeLists: [
+      state.openWorktreeAllRows || state.openWorktreeRows || [],
+      state.worktrees || [],
+    ],
+  });
+  if (error) {
+    errEl.textContent = error;
     return;
   }
   submitEl.disabled = true;
@@ -3123,14 +3203,9 @@ async function submitWorktreeCreate(input) {
     const r = await api("/api/worktrees", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        workspace_id: source.workspace_id,
-        cwd: source.cwd,
-        branch: branch || null,
-        base: base || null,
-        label: label || null,
-        path: path || null,
-      }),
+      body: JSON.stringify(
+        buildWorktreeCreateBody({ source, branch, base, label, path }),
+      ),
     });
     closeFn();
     const result = r.result || {};
@@ -3860,11 +3935,27 @@ el("optSound").onchange = () => {
 el("worktreeCreateClose").onclick = closeWorktreeCreateModal;
 el("worktreeCreateCancel").onclick = closeWorktreeCreateModal;
 el("worktreeCreateSource").oninput = () => {
+  if (state.createWorktreeSuggestionLocked) {
+    state.createWorktreeSuggestionLocked = false;
+    return;
+  }
+  state.createWorktreeSuggestionIndex = -1;
   state.createWorktreePathSuggestTimer = schedulePathSuggestions(
     state.createWorktreePathSuggestTimer,
     loadCreateWorktreePathSuggestions,
   );
+  scheduleCreateWorktreeAutodiscover();
 };
+el("worktreeCreateSource").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    state.createWorktreeSuggestionLocked = true;
+    clearCreateWorktreeSuggestions();
+    discoverCreateWorktreeSource();
+  }
+});
+el("worktreeBranch").addEventListener("input", syncCreateWorktreeCheckoutPath);
+el("worktreeBranch").addEventListener("change", syncCreateWorktreeCheckoutPath);
 el("worktreeCreateForm").onsubmit = async (e) => {
   e.preventDefault();
   const source = resolveWorktreeSource({
@@ -3904,6 +3995,45 @@ document.addEventListener(
   },
   true,
 );
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Tab") return;
+  const modalIds = [
+    "settingsModal",
+    "worktreeCreateModal",
+    "worktreeOpenModal",
+    "workspaceCreateModal",
+    "shortcutsModal",
+  ];
+  const modal = modalIds
+    .map((id) => el(id))
+    .find((m) => m && m.style.display === "grid");
+  if (!modal) return;
+  const focusable = modal.querySelectorAll(
+    'input:not([type="hidden"]):not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled]), [tabindex]:not([tabindex="-1"])',
+  );
+  if (!focusable.length) {
+    e.preventDefault();
+    return;
+  }
+  const filtered = Array.from(focusable).filter(
+    (f) => f.offsetParent !== null || f === document.activeElement,
+  );
+  if (!filtered.length) return;
+  const active = document.activeElement;
+  const first = filtered[0],
+    last = filtered[filtered.length - 1];
+  if (e.shiftKey) {
+    if (active === first || !modal.contains(active)) {
+      e.preventDefault();
+      last.focus();
+    }
+  } else {
+    if (active === last || !modal.contains(active)) {
+      e.preventDefault();
+      first.focus();
+    }
+  }
+});
 el("worktreeOpenRefresh").onclick = async () => {
   await refresh();
   if (el("worktreeDiscoverPath").value.trim()) await discoverWorktrees();
@@ -3925,6 +4055,10 @@ el("worktreeNewBranch").addEventListener("input", () => {
 });
 el("worktreeNewBranch").addEventListener("change", syncWorktreeCheckoutPath);
 function worktreePathInputChanged() {
+  if (state.openWorktreeSuggestionLocked) {
+    state.openWorktreeSuggestionLocked = false;
+    return;
+  }
   const value = el("worktreeDiscoverPath").value.trim();
   const idx = (state.openWorktreeRows || []).findIndex(
     (w) => textValue(w.path) === value && w.is_linked_worktree,
@@ -3936,9 +4070,10 @@ function worktreePathInputChanged() {
 el("worktreeDiscoverPath").addEventListener("input", worktreePathInputChanged);
 el("worktreeDiscoverPath").addEventListener("change", worktreePathInputChanged);
 el("worktreeDiscoverPath").addEventListener("keydown", (e) => {
-  if (e.key === "Tab" && acceptFirstWorktreePathSuggestion()) {
+  if (e.key === "Enter") {
     e.preventDefault();
-    e.stopPropagation();
+    state.openWorktreeSuggestionLocked = true;
+    renderPathOptions("worktreePathOptions", []);
   }
 });
 function editableEventTarget(e) {
