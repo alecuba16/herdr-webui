@@ -284,6 +284,18 @@ body.light {
   border-color: #a6e3a1;
   color: #a6e3a1;
 }
+.chip.label {
+  border-color: transparent;
+  background: transparent;
+  color: #cba6f7;
+  font-weight: 700;
+  padding: 1px 2px;
+}
+.chip-icon {
+  display: inline-block;
+  margin-right: 4px;
+  opacity: 0.85;
+}
 .agent-title,
 .agent-meta {
   display: flex;
@@ -1095,6 +1107,10 @@ body:not(.light) .chip.worktree {
   border-color: #a6e3a1;
   color: #a6e3a1;
 }
+body:not(.light) .chip.label {
+  border-color: transparent;
+  color: #cba6f7;
+}
 body.light .chip.branch {
   border-color: #174ea6;
   color: #174ea6;
@@ -1106,6 +1122,10 @@ body.light .chip.repo {
 body.light .chip.worktree {
   border-color: #166534;
   color: #166534;
+}
+body.light .chip.label {
+  border-color: transparent;
+  color: #7e22ce;
 }
 .modal-backdrop {
   backdrop-filter: blur(8px);
