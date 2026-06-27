@@ -268,7 +268,7 @@ dependencies = [
 
 [[package]]
 name = "herdr-webui"
-version = "0.0.40"
+version = "0.0.41"
 dependencies = [
  "axum",
  "bincode",
