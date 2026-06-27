@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::future::IntoFuture;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::SocketAddr;
@@ -588,27 +589,41 @@ async fn serve_rebindable(
     state: WebState,
     mut rebind_rx: tokio::sync::watch::Receiver<SocketAddr>,
 ) -> io::Result<()> {
+    let mut sigterm =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .map_err(io::Error::other)?;
+    let mut sigint =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+            .map_err(io::Error::other)?;
+
     loop {
         let bind = *rebind_rx.borrow_and_update();
         let listener = match tokio::net::TcpListener::bind(bind).await {
             Ok(listener) => listener,
             Err(err) => {
                 eprintln!("failed to bind http://{bind}: {err}");
-                rebind_rx.changed().await.map_err(io::Error::other)?;
+                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                 continue;
             }
         };
         eprintln!("herdr-webui listening on http://{bind}");
         let mut shutdown_rx = rebind_rx.clone();
-        axum::serve(
+        let server = axum::serve(
             listener,
             app_router(state.clone()).into_make_service_with_connect_info::<SocketAddr>(),
         )
         .with_graceful_shutdown(async move {
             let _ = shutdown_rx.changed().await;
         })
-        .await
-        .map_err(io::Error::other)?;
+        .into_future();
+        tokio::pin!(server);
+        tokio::select! {
+            _ = sigterm.recv() => return Ok(()),
+            _ = sigint.recv() => return Ok(()),
+            res = &mut server => {
+                res.map_err(io::Error::other)?;
+            }
+        }
     }
 }
 
