@@ -84,18 +84,24 @@ update-mac: build
 
 start-mac:
 	@if [ ! -f "$(INSTALL_PLIST)" ]; then echo "LaunchAgent plist not found at $(INSTALL_PLIST)" >&2; exit 1; fi
+	launchctl enable "gui/$$(id -u)/$(INSTALL_LABEL)" >/dev/null 2>&1 || true
 	launchctl kickstart -k "gui/$$(id -u)/$(INSTALL_LABEL)" >/dev/null 2>&1 || \
 		{ launchctl bootstrap "gui/$$(id -u)" "$(INSTALL_PLIST)" && launchctl kickstart -k "gui/$$(id -u)/$(INSTALL_LABEL)"; }
 	@echo "Started $(INSTALL_LABEL)"
 
 stop-mac:
+	launchctl disable "gui/$$(id -u)/$(INSTALL_LABEL)" >/dev/null 2>&1 || true
 	launchctl bootout "gui/$$(id -u)/$(INSTALL_LABEL)" >/dev/null 2>&1 || true
 	@echo "Stopped $(INSTALL_LABEL)"
 
-restart-mac: stop-mac start-mac
+restart-mac:
+	$(MAKE) stop-mac
+	@sleep 1
+	$(MAKE) start-mac
 	@echo "Restarted $(INSTALL_LABEL)"
 
 uninstall-mac:
+	launchctl disable "gui/$$(id -u)/$(INSTALL_LABEL)" >/dev/null 2>&1 || true
 	launchctl bootout "gui/$$(id -u)" "$(INSTALL_PLIST)" >/dev/null 2>&1 || true
 	rm -f "$(INSTALL_PLIST)"
 	@echo "Uninstalled $(INSTALL_LABEL)"
