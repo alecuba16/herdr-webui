@@ -589,7 +589,7 @@ async fn serve_rebindable(
     mut rebind_rx: tokio::sync::watch::Receiver<SocketAddr>,
 ) -> io::Result<()> {
     loop {
-        let bind = { *rebind_rx.borrow() };
+        let bind = *rebind_rx.borrow_and_update();
         let listener = match tokio::net::TcpListener::bind(bind).await {
             Ok(listener) => listener,
             Err(err) => {
