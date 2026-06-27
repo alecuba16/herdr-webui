@@ -1,6 +1,6 @@
 use std::collections::HashMap;
-use std::future::IntoFuture;
 use std::fs;
+use std::future::IntoFuture;
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -589,12 +589,10 @@ async fn serve_rebindable(
     state: WebState,
     mut rebind_rx: tokio::sync::watch::Receiver<SocketAddr>,
 ) -> io::Result<()> {
-    let mut sigterm =
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .map_err(io::Error::other)?;
-    let mut sigint =
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
-            .map_err(io::Error::other)?;
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .map_err(io::Error::other)?;
+    let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+        .map_err(io::Error::other)?;
 
     loop {
         let bind = *rebind_rx.borrow_and_update();
