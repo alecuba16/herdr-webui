@@ -15,9 +15,36 @@
     state.contextMenu = null;
     if (state.visible) render();
   });
+  document.addEventListener("keydown", handleKeydown);
 
   function active() {
     return state.cache[state.activeKey] || null;
+  }
+
+  function handleKeydown(event) {
+    if (!state.visible || !event || event.key !== "Escape") return;
+    const view = active();
+    if (!view) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (state.contextMenu) {
+      state.contextMenu = null;
+      render();
+      return;
+    }
+    if (view.tab === "commit") {
+      if (!confirm("Leave commit editor and return to changes? Draft is saved locally.")) return;
+      saveDraftFromDom();
+      window.HerdrGitUi.showChangesList();
+    } else if (isChangesListView(view)) {
+      if (confirm("Hide Git UI?")) hide();
+    } else {
+      window.HerdrGitUi.showChangesList();
+    }
+  }
+
+  function isChangesListView(view) {
+    return !!(view && view.tab === "changes" && currentMode() === "changes" && !view.file && !view.sideEditor);
   }
 
   function gitUiOptions() {
@@ -873,9 +900,26 @@
     tab(tab) {
       if (!["changes", "log", "stash", "commit", "conflicts", "history"].includes(tab)) return;
       saveDraftFromDom();
-      if (tab === "changes" && active().temporaryHistoryCompare) this.latestChanges();
+      if (tab === "changes") {
+        this.showChangesList();
+        return;
+      }
       active().tab = tab;
       render();
+    },
+    showChangesList() {
+      const view = active();
+      if (!view) return;
+      view.mode = "changes";
+      view.compareBase = "";
+      view.compareTarget = "";
+      view.temporaryHistoryCompare = false;
+      view.sideEditor = null;
+      view.file = "";
+      view.diffKind = "";
+      view.diffScope = "all";
+      view.tab = "changes";
+      loadDiff().catch((e) => { view.error = e.message; render(); });
     },
     selectFile(file, kind) {
       const view = active();
@@ -1120,17 +1164,7 @@
       render();
     },
     latestChanges() {
-      const view = active();
-      if (!view) return;
-      view.mode = "changes";
-      view.compareBase = "";
-      view.compareTarget = "";
-      view.temporaryHistoryCompare = false;
-      view.sideEditor = null;
-      view.file = "";
-      view.diffKind = "";
-      view.diffScope = "all";
-      loadDiff().catch((e) => { view.error = e.message; render(); });
+      this.showChangesList();
     },
     selectLogCommit(event, hash) {
       hash = decodeURIComponent(hash);
