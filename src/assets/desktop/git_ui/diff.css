@@ -214,6 +214,33 @@
   flex-shrink: 0;
   gap: 6px;
 }
+.git-ui-large-file-diff {
+  align-items: center;
+  background: var(--bg);
+  color: var(--muted);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  justify-content: center;
+  min-height: 180px;
+  padding: 24px;
+  text-align: center;
+}
+.git-ui-large-file-diff p {
+  margin: 0;
+}
+.git-ui-large-file-load {
+  background: transparent;
+  border: 0;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  font-size: 16px;
+  padding: 4px 8px;
+}
+.git-ui-large-file-load:hover {
+  text-decoration: underline;
+}
 .git-ui-hunk-head {
   align-items: center;
   display: flex;
