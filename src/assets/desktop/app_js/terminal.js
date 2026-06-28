@@ -83,6 +83,8 @@ function connectTerminal() {
     term.onData(sendInputData);
     if (term.attachCustomKeyEventHandler)
       term.attachCustomKeyEventHandler((e) => {
+        if (window.HerdrGitUi && window.HerdrGitUi.isVisible && window.HerdrGitUi.isVisible())
+          return false;
         if (e.type === "keydown" && handleCloseShortcut(e)) return false;
         if (
           options.shiftEnterNewline !== false &&

@@ -143,11 +143,23 @@ describe("app bundle load", () => {
   });
 
   it("defines Git UI changes-list Escape navigation", () => {
-    match(gitUiSource, /document\.addEventListener\("keydown", handleKeydown\);/);
+    match(gitUiSource, /window\.addEventListener\("keydown", handleKeydown, true\);/);
     match(gitUiSource, /if \(tab === "changes"\) \{\n\s+this\.showChangesList\(\);\n\s+return;\n\s+\}/);
     match(gitUiSource, /Leave commit editor and return to changes\? Draft is saved locally\./);
     match(gitUiSource, /Hide Git UI\?/);
     match(gitUiSource, /function isChangesListView\(view\)/);
+  });
+
+  it("keeps Git UI keyboard input away from the terminal", () => {
+    match(gitUiSource, /Git drawer owns keyboard while visible/);
+    match(gitUiSource, /event\.stopImmediatePropagation/);
+    match(gitUiSource, /function handleGitShortcut\(event, view\)/);
+    match(gitUiSource, /Git UI shortcuts:/);
+    match(gitUiSource, /function shortcutFilePath\(event, view\)/);
+    match(gitUiSource, /A Stage file/);
+    match(gitUiSource, /activateTreeItem\(event\)/);
+    match(gitUiSource, /role="treeitem" tabindex="0" data-git-path=/);
+    match(source, /HerdrGitUi\.isVisible\(\)\)\n\s+return false;/);
   });
 
   it("renders new workspace modal with folder autocomplete fields", () => {
