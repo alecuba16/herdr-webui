@@ -88,6 +88,8 @@ Use `--verbose`, `-v`, or `HERDR_WEB_VERBOSE=1` with macOS service commands to p
 - `src/service.rs`: OS service helpers.
 - `src/assets/`: embedded HTML/CSS/JS and frontend tests.
 - `src/assets/desktop/`: desktop UI bundle chunks and desktop-only CSS.
+- `src/assets/desktop/app_css/`: desktop shell CSS modules concatenated into `/assets/desktop/app.css`.
+- `src/assets/desktop/app_js/`: desktop shell JS modules concatenated into `/assets/desktop/app.js`.
 - `src/assets/desktop/git_ui/`: embedded Git UI modules for settings, syntax highlighting, log actions, drawer shell CSS, diff CSS, log CSS, and layout CSS.
 - `src/assets/icons/`: SVG icons served as static assets and referenced from CSS/markup.
 - `src/assets/mobile/`: mobile UI bundle chunks and mobile-only CSS.
@@ -101,7 +103,7 @@ The Rust binary embeds frontend assets with `include_str!`, so release artifacts
 ## Frontend Notes
 
 - Desktop and mobile UI are currently embedded vanilla HTML/CSS/JS assets with no build step.
-- Desktop Git UI is split into plain JS/CSS modules and concatenated by `src/assets.rs`; public URLs stay `/assets/desktop/git-ui.js` and `/assets/desktop/git-ui.css`.
+- Desktop shell and Git UI assets are split into plain JS/CSS modules and concatenated by `src/assets.rs`; public URLs stay `/assets/desktop/app.js`, `/assets/desktop/app.css`, `/assets/desktop/git-ui.js`, and `/assets/desktop/git-ui.css`.
 - Prefer moving behavior out of inline handlers into delegated JS listeners and shared CSS classes when touching UI code.
 - SVG icons should live under `src/assets/icons/` and be referenced from CSS or markup, not embedded inline in JS templates.
 

@@ -103,18 +103,43 @@ function context() {
 
 describe("app bundle load", () => {
   let source;
+  let gitUiSource;
 
   beforeEach(() => {
+    const desktopAppSource = [
+      "./desktop/app_js/core.js",
+      "./desktop/app_js/render.js",
+      "./desktop/app_js/terminal.js",
+      "./desktop/app_js/worktrees.js",
+      "./desktop/app_js/shortcuts.js",
+      "./desktop/app_js/workspace_create.js",
+      "./desktop/app_js/bindings.js",
+    ]
+      .map((path) => readFileSync(new URL(path, import.meta.url), "utf8"))
+      .join("");
     source =
       readFileSync(new URL("./shared/core.js", import.meta.url), "utf8") +
       "\n" +
       readFileSync(new URL("./desktop/search.js", import.meta.url), "utf8") +
       "\n" +
-      readFileSync(new URL("./desktop/app.js", import.meta.url), "utf8");
+      desktopAppSource;
+    gitUiSource = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
   });
 
   it("loads without initialization-order ReferenceError", () => {
     doesNotThrow(() => vm.runInContext(source, context()));
+  });
+
+  it("keeps file history header scoped to selected files", () => {
+    match(gitUiSource, /function renderFileToolbar\(activeTab\) \{\n\s+const view = active\(\) \|\| \{\};\n\s+if \(!view\.file\) return "";/);
+    equal([...gitUiSource.matchAll(/git-ui-log-head/g)].length, 1);
+  });
+
+  it("hides only large file diffs by default", () => {
+    match(gitUiSource, /const LARGE_FILE_DIFF_LINE_LIMIT = 500;/);
+    match(gitUiSource, /Large diffs are not rendered by default\./);
+    match(gitUiSource, /loadLargeDiff\(file\)/);
+    ok(!gitUiSource.includes("Select a file from left list to render its changes."));
   });
 
   it("renders new workspace modal with folder autocomplete fields", () => {

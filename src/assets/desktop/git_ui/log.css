@@ -4,7 +4,8 @@
   font-size: 12px;
   white-space: pre-wrap;
 }
-.git-ui-log-head {
+.git-ui-log-head,
+.git-ui-log-scope-head {
   align-items: center;
   background: var(--panel);
   border: 1px solid var(--border);

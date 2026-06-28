@@ -1,0 +1,2011 @@
+let state = {
+  session: "default",
+  sessions: [],
+  workspaces: [],
+  worktrees: [],
+  workspaceBranches: {},
+  workspaceOrder: [],
+  dragWorkspace: null,
+  tabs: [],
+  allTabs: [],
+  panes: [],
+  agents: [],
+  ws: null,
+  tab: null,
+  pane: null,
+  terminalId: null,
+  termCols: null,
+  termRows: null,
+  fitDefault: false,
+  editingTab: null,
+  editingTabValue: "",
+  editingWorkspace: null,
+  editingWorkspaceValue: "",
+  workspaceCreateSuggestedLabel: "",
+  workspaceCreatePathSuggestTimer: null,
+  createWorktreeOriginalSource: "",
+  createWorktreePathSuggestTimer: null,
+  createWorktreePathSuggestions: [],
+  createWorktreeSuggestionIndex: -1,
+  createWorktreeSuggestionLocked: false,
+  createWorktreeSource: null,
+  createWorktreeAutodiscoverTimer: null,
+  createWorktreeDefaultPath: "",
+  openWorktreeSuggestionLocked: false,
+};
+let term,
+  termWs,
+  eventWs,
+  hiddenTimer,
+  refreshTimer,
+  connectedTerminalId = null,
+  connectedSize = "",
+  termScrollBound = false,
+  audioCtx = null,
+  audioUnlocked = false,
+  knownAttention = null,
+  lastAttentionSound = 0,
+  creatingDefaultWorkspace = false,
+  refreshSeq = 0,
+  terminalFramePending = false,
+  resizeFramePending = false,
+  lastWorkspacesHtml = "",
+  lastAgentsHtml = "",
+  lastTabsHtml = "",
+  tabActivity = {},
+  closeChordUntil = 0,
+  inputQueue = [],
+  inputFlushTimer = null,
+  pasteFrameUntil = 0,
+  wheelScrollRemainder = 0,
+  shortcutPrefixUntil = 0,
+  shortcutPrefixTimer = null,
+  searchFramePending = false,
+  searchResults = [],
+  searchSelectedIndex = 0;
+const SIDEBAR_COLLAPSED_KEY = "herdr-web-sidebar-collapsed";
+const DEFAULT_GLOBAL_SHORTCUT_PREFIX = "Ctrl+B";
+const FAST_REFRESH_EVENTS = new Set([
+  "pane.closed",
+  "pane.exited",
+  "tab.closed",
+  "worktree.created",
+  "worktree.opened",
+  "worktree.removed",
+]);
+let sidebarCollapsed = storedFlag(SIDEBAR_COLLAPSED_KEY);
+let noSleepState = { mode: "off", until_ms: null, error: null, supported: true };
+const inputEncoder = new TextEncoder();
+const {
+  branchPathSlug,
+  normalizeAbsolutePath,
+  normalizeThemeColors,
+  resolveTerminalFontFamily,
+  textValue,
+  resolveWorktreeSource: resolveWorktreeSourceHelper,
+  checkedOutWorktreeForBranch: checkedOutWorktreeForBranchHelper,
+  validateWorktreeCreate: validateWorktreeCreateHelper,
+  buildWorktreeCreateBody,
+  terminalPasteInput,
+  tabActivityLabel,
+  terminalWheelScrollBatch,
+} = globalThis.HerdrAppHelpers;
+const workspaces = el("workspaces"),
+  agents = el("agents"),
+  tabs = el("tabs"),
+  newWs = el("newWs");
+applySidebarCollapsed();
+const sidebarToggle = el("sidebarToggle");
+if (sidebarToggle)
+  sidebarToggle.onclick = () => {
+    sidebarCollapsed = !sidebarCollapsed;
+    storeFlag(SIDEBAR_COLLAPSED_KEY, sidebarCollapsed);
+    applySidebarCollapsed();
+    scheduleTerminalFit();
+  };
+function storedFlag(key) {
+  try {
+    return localStorage.getItem(key) === "1";
+  } catch (_) {
+    return false;
+  }
+}
+function storeFlag(key, value) {
+  try {
+    localStorage.setItem(key, value ? "1" : "0");
+  } catch (_) {}
+}
+function applySidebarCollapsed() {
+  const app = el("app"),
+    button = el("sidebarToggle");
+  if (app) app.classList.toggle("sidebar-collapsed", sidebarCollapsed);
+  if (button) {
+    button.innerHTML = sidebarToggleHtml();
+    button.title = sidebarCollapsed ? "Show sidebar" : "Hide sidebar";
+    button.setAttribute("aria-label", button.title);
+  }
+}
+function sidebarAgentStatusCounts() {
+  const counts = { blocked: 0, working: 0, idle: 0, done: 0 };
+  for (const agent of state.agents || []) {
+    const status = isWorkingDismissed(agent) ? "idle" : statusClass(agent.agent_status);
+    if (Object.prototype.hasOwnProperty.call(counts, status)) counts[status] += 1;
+  }
+  return counts;
+}
+function sidebarToggleHtml() {
+  const arrow = `<span class="sidebar-toggle-arrow">${sidebarCollapsed ? "›" : "‹"}</span>`;
+  if (!sidebarCollapsed) return arrow;
+  const counts = sidebarAgentStatusCounts();
+  const badges = [
+    ["blocked", counts.blocked],
+    ["working", counts.working],
+    ["idle", counts.idle],
+    ["done", counts.done],
+  ]
+    .filter(([, count]) => count > 0)
+    .map(
+      ([status, count]) =>
+        `<span class="sidebar-count ${status}" title="${count} ${status} agent${count === 1 ? "" : "s"}">${count}</span>`,
+    )
+    .join("");
+  return arrow + (badges ? `<span class="sidebar-counts">${badges}</span>` : "");
+}
+function appIcon(name) {
+  const iconName = String(name || "").replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`);
+  return `<span class="app-icon app-icon-${iconName}" aria-hidden="true"></span>`;
+}
+const headTitle = document.querySelector(".head strong");
+if (headTitle) {
+  const brand = document.createElement("div");
+  brand.className = "brand";
+  brand.innerHTML =
+    '<img src="/favicon.svg" alt=""><div class="brand-text"><span class="brand-title">Herdr</span><span class="brand-subtitle">WebUI</span></div>';
+  headTitle.replaceWith(brand);
+}
+const sectionEl = document.querySelector(".side .section");
+if (sectionEl && !el("workspacePane")) {
+  const versionsEl = el("versions"),
+    workspacesEl = el("workspaces"),
+    agentsEl = el("agents"),
+    oldAgentsHeader = document.querySelector(".section-header");
+  const split = document.createElement("div");
+  split.className = "sidebar-split";
+  const workspacePane = document.createElement("div");
+  workspacePane.id = "workspacePane";
+  workspacePane.className = "sidebar-pane workspaces-pane";
+  workspacePane.insertAdjacentHTML(
+    "beforeend",
+    '<div class="section-header">Workspaces</div><div class="workspace-context-actions" id="workspaceContextActions"></div>',
+  );
+  const workspaceScroll = document.createElement("div");
+  workspaceScroll.className = "sidebar-scroll";
+  workspaceScroll.appendChild(workspacesEl);
+  workspacePane.appendChild(workspaceScroll);
+  const agentsPane = document.createElement("div");
+  agentsPane.className = "sidebar-pane agents-pane";
+  agentsPane.innerHTML = '<div class="section-header">Agents</div>';
+  const agentsScroll = document.createElement("div");
+  agentsScroll.className = "sidebar-scroll";
+  agentsScroll.appendChild(agentsEl);
+  agentsPane.appendChild(agentsScroll);
+  if (oldAgentsHeader) oldAgentsHeader.remove();
+  split.appendChild(workspacePane);
+  split.appendChild(agentsPane);
+  sectionEl.appendChild(split);
+  if (versionsEl) {
+    versionsEl.classList.add("side-footer");
+    document.querySelector(".side").appendChild(versionsEl);
+  }
+}
+insertMissingHtml("worktreeCreateModal", worktreeCreateModalHtml());
+insertMissingHtml("worktreeOpenModal", worktreeOpenModalHtml());
+insertMissingHtml("workspaceCreateModal", workspaceCreateModalHtml());
+insertMissingHtml("shortcutsModal", shortcutsModalHtml());
+insertMissingHtml("questionModal", questionModalHtml());
+const settingsModal = el("settingsModal");
+if (settingsModal && !settingsModal.dataset.ux) {
+  const modal = settingsModal.querySelector(".modal");
+  const heading = modal && modal.querySelector("h2");
+  if (modal && heading) {
+    const head = document.createElement("div");
+    head.className = "settings-head";
+    head.innerHTML =
+      '<div><h2>Settings</h2><p>Browser-local preferences for terminal, theme, and agent behavior.</p></div><button class="mini settings-close" id="settingsCloseTop" title="Close">✕</button>';
+    heading.replaceWith(head);
+    const body = document.createElement("div");
+    body.className = "settings-body";
+    [...modal.querySelectorAll("label.option")].forEach((node) =>
+      body.appendChild(node),
+    );
+    modal.insertBefore(body, modal.querySelector(".modal-actions"));
+    el("settingsCloseTop").onclick = () => {
+      settingsModal.style.display = "none";
+    };
+  }
+  settingsModal.dataset.ux = "1";
+}
+function insertMissingHtml(id, html) {
+  if (!el(id)) document.body.insertAdjacentHTML("beforeend", html);
+}
+function questionModalHtml() {
+  return `
+    <div class="modal-backdrop question-modal" id="questionModal">
+      <div class="modal question-modal-card">
+        <div class="settings-head">
+          <div>
+            <h2 id="questionTitle">Confirm action</h2>
+            <p id="questionMessage"></p>
+          </div>
+          <button class="mini settings-close" id="questionClose" title="Cancel">✕</button>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="tab add" id="questionCancel">Cancel</button>
+          <button type="button" class="btn question-confirm" id="questionConfirm">Confirm</button>
+        </div>
+      </div>
+    </div>`;
+}
+function worktreeCreateModalHtml() {
+  return `
+    <div class="modal-backdrop" id="worktreeCreateModal">
+      <div class="modal">
+        <div class="settings-head">
+          <div>
+            <h2>Create worktree</h2>
+            <p>Creates a linked Git worktree from the selected parent workspace and opens it.</p>
+          </div>
+          <button class="mini settings-close" id="worktreeCreateClose" title="Close">✕</button>
+        </div>
+        <div class="worktree-open-controls">
+          <label>
+            <span>Source repo path</span>
+            <input id="worktreeCreateSource" list="worktreeCreatePathOptions" placeholder="parent workspace path" autocomplete="off">
+          </label>
+          <datalist id="worktreeCreatePathOptions"></datalist>
+          <div class="worktree-loading" id="worktreeCreateLoading">Discovering worktrees...</div>
+        </div>
+        <div class="worktree-new">
+          <div class="worktree-new-head">
+            <strong>Create a new worktree</strong>
+            <small>Uses the repo path above. Leave base blank to use the repo default branch.</small>
+          </div>
+          <form class="worktree-form" id="worktreeCreateForm">
+            <div class="worktree-grid">
+              <label><span>Branch name</span><input id="worktreeBranch" placeholder="feature/my-branch"></label>
+              <label><span>Base branch</span><input id="worktreeBase" placeholder="default branch"></label>
+            </div>
+            <div class="worktree-grid">
+              <label><span>Label</span><input id="worktreeLabel" placeholder="optional"></label>
+              <label><span>Checkout path</span><input id="worktreePath" placeholder="backend default if blank"></label>
+            </div>
+            <div class="worktree-error" id="worktreeCreateError"></div>
+            <div class="worktree-open-footer">
+              <button type="button" class="tab add" id="worktreeCreateCancel">Cancel</button>
+              <button type="submit" class="btn" id="worktreeCreateSubmit">Create and open</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>`;
+}
+function worktreeOpenModalHtml() {
+  return `
+    <div class="modal-backdrop" id="worktreeOpenModal">
+      <div class="modal">
+        <div class="settings-head">
+          <div>
+            <h2>Worktrees</h2>
+            <p>Type a repo path to open existing linked worktrees or create a new one.</p>
+          </div>
+          <button class="mini settings-close" id="worktreeOpenClose" title="Close">✕</button>
+        </div>
+        <div class="worktree-open-controls">
+          <label>
+            <span>Repo or worktrees folder</span>
+            <input id="worktreeDiscoverPath" list="worktreePathOptions" placeholder="~/Documents/code/repo-or-worktrees">
+          </label>
+          <datalist id="worktreePathOptions"></datalist>
+          <div class="worktree-loading" id="worktreeLoading">Discovering worktrees...</div>
+        </div>
+        <div class="worktree-open-list" id="worktreeOpenList"></div>
+        <div class="worktree-new" id="worktreeNewSection">
+          <div class="worktree-new-head">
+            <strong>Create a new worktree</strong>
+            <small>Uses repo path above. Leave base blank to use repo default branch.</small>
+          </div>
+          <form class="worktree-form" id="worktreeNewForm">
+            <div class="worktree-grid">
+              <label><span>Branch name</span><input id="worktreeNewBranch" placeholder="feature/my-branch"></label>
+              <label><span>Base branch</span><input id="worktreeNewBase" list="worktreeBranchOptions" placeholder="default branch"></label>
+              <datalist id="worktreeBranchOptions"></datalist>
+            </div>
+            <div class="worktree-grid">
+              <label><span>Label</span><input id="worktreeNewLabel" placeholder="optional"></label>
+              <label><span>Checkout path</span><input id="worktreeNewPath" placeholder="select base branch or enter branch name"></label>
+            </div>
+            <button class="btn" id="worktreeNewSubmit">New worktree</button>
+          </form>
+        </div>
+        <div class="worktree-error" id="worktreeOpenError"></div>
+        <div class="worktree-open-footer">
+          <button type="button" class="tab add" id="worktreeOpenRefresh">Refresh</button>
+        </div>
+      </div>
+    </div>`;
+}
+function workspaceCreateModalHtml() {
+  return `
+    <div class="modal-backdrop" id="workspaceCreateModal">
+      <div class="modal">
+        <div class="settings-head">
+          <div>
+            <h2>New workspace</h2>
+            <p>Pick an existing folder first, then confirm the workspace name.</p>
+          </div>
+          <button class="mini settings-close" id="workspaceCreateClose" title="Close">✕</button>
+        </div>
+        <form class="worktree-form" id="workspaceCreateForm">
+          <label>
+            <span>Folder</span>
+            <input id="workspaceCreatePath" list="workspacePathOptions" placeholder="~/Documents/code/project" required>
+          </label>
+          <datalist id="workspacePathOptions"></datalist>
+          <label>
+            <span>Workspace name</span>
+            <input id="workspaceCreateLabel" placeholder="project name" required>
+          </label>
+          <div class="worktree-error" id="workspaceCreateError"></div>
+          <div class="modal-actions">
+            <button type="button" class="tab add" id="workspaceCreateCancel">Cancel</button>
+            <button class="btn" id="workspaceCreateSubmit">Create workspace</button>
+          </div>
+        </form>
+      </div>
+    </div>`;
+}
+function shortcutsModalHtml() {
+  return `
+    <div class="modal-backdrop" id="shortcutsModal">
+      <div class="modal">
+        <div class="settings-head">
+          <div>
+            <h2>Shortcuts</h2>
+            <p>Browser/WebUI shortcuts. Terminal apps may handle their own keybindings inside the pane.</p>
+          </div>
+          <button class="mini settings-close" id="shortcutsCloseTop" title="Close">✕</button>
+        </div>
+        <div class="shortcuts-list">
+          <div class="shortcut-row"><kbd id="closeShortcutCurrent">Disabled</kbd><span>Close current Herdr panel. Configure in Settings.</span></div>
+          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())}</kbd><span>Open WebUI shortcut prefix overlay. Next shortcut key is handled by WebUI and not sent to terminal. Esc cancels.</span></div>
+          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then /</kbd><span>Search workspaces, repos, worktrees, labels, agents, and panels.</span></div>
+          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then ?</kbd><span>Open this shortcuts reference.</span></div>
+          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then S</kbd><span>Open Settings.</span></div>
+          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then B</kbd><span>Show or hide the workspace/agents sidebar.</span></div>
+          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then N</kbd><span>Create workspace.</span></div>
+          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then P</kbd><span>Create panel in current workspace.</span></div>
+          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then W</kbd><span>Open Worktrees browser.</span></div>
+          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then T</kbd><span>Create worktree from current workspace.</span></div>
+          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then X</kbd><span>Close current panel.</span></div>
+          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then Shift+X</kbd><span>Close current workspace or linked worktree.</span></div>
+          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then Delete</kbd><span>Remove current linked worktree from disk.</span></div>
+          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then A</kbd><span>Jump agents by status priority: blocked, done, idle, working.</span></div>
+          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then Shift+A</kbd><span>Jump agents in reverse priority order.</span></div>
+          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then J / K</kbd><span>Jump to next or previous workspace.</span></div>
+          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then ] / [</kbd><span>Jump to next or previous panel.</span></div>
+          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then F</kbd><span>Focus terminal.</span></div>
+          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then . / ,</kbd><span>Focus next or previous visible UI control.</span></div>
+          <div class="shortcut-row"><kbd>Shift+Enter</kbd><span>Send configured newline sequence to terminal.</span></div>
+          <div class="shortcut-row"><kbd>PageUp/PageDown</kbd><span>Scroll Herdr terminal backend.</span></div>
+          <div class="shortcut-row"><kbd>Option+Wheel</kbd><span>Scroll browser overflow instead of terminal backend.</span></div>
+          <div class="shortcut-row"><kbd>Cmd/Ctrl+C</kbd><span>Copy selected terminal text.</span></div>
+          <div class="shortcut-row"><kbd>Cmd/Ctrl+V</kbd><span>Paste clipboard into terminal.</span></div>
+          <div class="shortcut-row"><kbd>Double-click</kbd><span>Rename workspaces and panels.</span></div>
+          <div class="shortcut-row"><kbd>Cmd/Middle-click</kbd><span>Open workspace, agent, or panel link using browser tab behavior.</span></div>
+        </div>
+        <div class="modal-actions"><button class="btn" id="shortcutsClose">Close</button></div>
+      </div>
+    </div>`;
+}
+function themeCustomizerHtml() {
+  const rows = (mode) =>
+    themeColorFields
+      .map(
+        ([key, label]) =>
+          `<label><span>${label}</span><input class="theme-color-input" type="color" data-theme-mode="${mode}" data-theme-key="${key}" id="${themeColorInputId(mode, key)}"></label>`,
+      )
+      .join("");
+  return `<div class="theme-customizer"><div><strong>Theme colors</strong><small>Saved in this browser. Uses current defaults as reset reference.</small></div><div class="theme-customizer-actions"><label><span>Profile</span><select class="settings-select" id="themeColorProfile"><option value="default">Default</option><option value="catppuccin">Catppuccin</option><option value="tokyo">Tokyo Night</option><option value="nord">Nord</option></select></label><button type="button" class="tab add" id="themeColorsApplyProfile">Apply profile</button><button type="button" class="tab add" id="themeColorsApply">Apply / reload UI</button><button type="button" class="tab add" id="themeColorsReset">Reset theme colors</button></div><div class="theme-customizer-grid"><section><h3>Dark</h3>${rows("dark")}</section><section><h3>Light</h3>${rows("light")}</section></div></div>`;
+}
+function serverSettingsHtml() {
+  return `<div class="server-settings"><section class="settings-section"><div class="settings-section-head"><h3>Network access</h3><p>Saved in ~/.config/herdr-webui/webui-settings.json. Changing Bind restarts the WebUI listener.</p></div><label class="option"><span>Bind address<small>Use 127.0.0.1:8787 for local only or 0.0.0.0:8787 for LAN/public access.</small></span><input id="optServerBind" placeholder="127.0.0.1:8787"></label><label class="option"><span>Username<small>Required when binding outside localhost.</small></span><input id="optServerUser" autocomplete="username"></label><label class="option"><span>Password<small>Required when binding outside localhost. Leave blank to keep current password.</small></span><input id="optServerPassword" type="password" autocomplete="new-password"></label><label class="option"><input type="checkbox" id="optServerLocalBypass"><span>Allow localhost without login<small>Only applies to loopback requests.</small></span></label></section><section class="settings-section"><div class="settings-section-head"><h3>Power behavior</h3><p>Server-side sleep prevention defaults.</p></div><label class="option"><span>No-sleep Auto cooldown<small>Seconds to wait after agents stop working before releasing no-sleep.</small></span><input id="optNoSleepAutoCooldown" type="number" min="0" max="3600" step="1"></label></section><div class="worktree-error" id="serverSettingsError"></div><div class="modal-actions"><button type="button" class="tab add" id="serverSettingsLoad">Reload server settings</button><button type="button" class="btn" id="serverSettingsApply">Apply server settings</button></div></div>`;
+}
+function themeColorInputId(mode, key) {
+  return `optThemeColor-${mode}-${key}`;
+}
+const themes = {
+  dark: {
+    background: "#11111b",
+    foreground: "#cdd6f4",
+    cursor: "#1e66f5",
+    cursorAccent: "#ffffff",
+    selectionBackground: "#1e66f5aa",
+    black: "#6c7086",
+    brightBlack: "#9399b2",
+    red: "#f38ba8",
+    green: "#a6e3a1",
+    yellow: "#f9e2af",
+    blue: "#89b4fa",
+    magenta: "#cba6f7",
+    cyan: "#94e2d5",
+    white: "#cdd6f4",
+    brightWhite: "#ffffff",
+  },
+  light: {
+    background: "#eff1f5",
+    foreground: "#4c4f69",
+    cursor: "#1e66f5",
+    cursorAccent: "#ffffff",
+    selectionBackground: "#1e66f599",
+    black: "#5c5f77",
+    brightBlack: "#6c6f85",
+    red: "#d20f39",
+    green: "#40a02b",
+    yellow: "#df8e1d",
+    blue: "#1e66f5",
+    magenta: "#8839ef",
+    cyan: "#179299",
+    white: "#acb0be",
+    brightWhite: "#4c4f69",
+  },
+};
+const themeColorFields = [
+  ["background", "Background", "--bg"],
+  ["foreground", "Text", "--fg"],
+  ["panel", "Panel", "--panel"],
+  ["panel2", "Panel 2", "--panel2"],
+  ["border", "Border", "--border"],
+  ["border2", "Border 2", "--border2"],
+  ["muted", "Muted", "--muted"],
+  ["accent", "Accent", "--accent"],
+  ["cursor", "Cursor", ""],
+  ["selectionBackground", "Selection", ""],
+];
+const themeColorDefaults = {
+  dark: {
+    background: "#11111b",
+    foreground: "#cdd6f4",
+    panel: "#181825",
+    panel2: "#1e1e2e",
+    border: "#313244",
+    border2: "#45475a",
+    muted: "#a6adc8",
+    accent: "#89b4fa",
+    cursor: "#1e66f5",
+    selectionBackground: "#1e66f5",
+  },
+  light: {
+    background: "#eff1f5",
+    foreground: "#4c4f69",
+    panel: "#e6e9ef",
+    panel2: "#ccd0da",
+    border: "#bcc0cc",
+    border2: "#9ca0b0",
+    muted: "#6c6f85",
+    accent: "#1e66f5",
+    cursor: "#1e66f5",
+    selectionBackground: "#1e66f5",
+  },
+};
+const themeColorProfiles = {
+  default: themeColorDefaults,
+  catppuccin: {
+    dark: {
+      background: "#11111b",
+      foreground: "#cdd6f4",
+      panel: "#181825",
+      panel2: "#1e1e2e",
+      border: "#313244",
+      border2: "#45475a",
+      muted: "#a6adc8",
+      accent: "#89b4fa",
+      cursor: "#1e66f5",
+      selectionBackground: "#1e66f5",
+    },
+    light: {
+      background: "#eff1f5",
+      foreground: "#4c4f69",
+      panel: "#e6e9ef",
+      panel2: "#ccd0da",
+      border: "#bcc0cc",
+      border2: "#9ca0b0",
+      muted: "#6c6f85",
+      accent: "#1e66f5",
+      cursor: "#1e66f5",
+      selectionBackground: "#1e66f5",
+    },
+  },
+  tokyo: {
+    dark: {
+      background: "#1a1b26",
+      foreground: "#c0caf5",
+      panel: "#24283b",
+      panel2: "#292e42",
+      border: "#414868",
+      border2: "#565f89",
+      muted: "#9aa5ce",
+      accent: "#7aa2f7",
+      cursor: "#7aa2f7",
+      selectionBackground: "#7aa2f7",
+    },
+    light: {
+      background: "#d5d6db",
+      foreground: "#343b58",
+      panel: "#e1e2e7",
+      panel2: "#c4c8da",
+      border: "#9699a8",
+      border2: "#7e8294",
+      muted: "#565a6e",
+      accent: "#34548a",
+      cursor: "#34548a",
+      selectionBackground: "#34548a",
+    },
+  },
+  nord: {
+    dark: {
+      background: "#2e3440",
+      foreground: "#d8dee9",
+      panel: "#3b4252",
+      panel2: "#434c5e",
+      border: "#4c566a",
+      border2: "#607087",
+      muted: "#a3b1c2",
+      accent: "#88c0d0",
+      cursor: "#88c0d0",
+      selectionBackground: "#88c0d0",
+    },
+    light: {
+      background: "#eceff4",
+      foreground: "#2e3440",
+      panel: "#e5e9f0",
+      panel2: "#d8dee9",
+      border: "#c2c9d3",
+      border2: "#a9b4c2",
+      muted: "#5e6878",
+      accent: "#5e81ac",
+      cursor: "#5e81ac",
+      selectionBackground: "#5e81ac",
+    },
+  },
+};
+const settingsModules = window.HerdrSettingsModules || [];
+window.HerdrSettingsModules = settingsModules;
+window.HerdrWebUiModules = settingsModules;
+const moduleOptionDefaults = settingsModules.reduce(
+  (acc, module) => Object.assign(acc, module.defaults || {}),
+  {},
+);
+const settingsBody =
+  settingsModal && settingsModal.querySelector(".settings-body");
+if (settingsBody && !el("optServerBind"))
+  settingsBody.insertAdjacentHTML("beforeend", serverSettingsHtml());
+if (settingsBody && !el("themeColorsApply"))
+  settingsBody.insertAdjacentHTML("beforeend", themeCustomizerHtml());
+if (settingsBody) {
+  for (const module of settingsModules) {
+    if (module.html && !el(`moduleSettings-${module.id}`)) {
+      settingsBody.insertAdjacentHTML(
+        "beforeend",
+        `<div id="moduleSettings-${module.id}">${module.html}</div>`,
+      );
+    }
+  }
+}
+function normalizeThemeMode(value) {
+  if (value === "night") return "dark";
+  if (value === "day") return "light";
+  return ["auto", "light", "dark"].includes(value) ? value : "auto";
+}
+function normalizeShortcutPrefix(value, fallback = DEFAULT_GLOBAL_SHORTCUT_PREFIX) {
+  const parts = String(value || "")
+    .split("+")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (!parts.length) return fallback;
+  const key = parts.pop();
+  const mods = new Set(
+    parts.map((part) => {
+      const lower = part.toLowerCase();
+      if (lower === "control") return "Ctrl";
+      if (lower === "cmd" || lower === "command" || lower === "meta")
+        return "Meta";
+      return lower === "ctrl"
+        ? "Ctrl"
+        : lower === "alt" || lower === "option"
+          ? "Alt"
+          : lower === "shift"
+            ? "Shift"
+            : "";
+    }),
+  );
+  mods.delete("");
+  const cleanKey = key.length === 1 ? key.toUpperCase() : key;
+  if (!cleanKey || !mods.size) return fallback;
+  return ["Ctrl", "Alt", "Shift", "Meta"]
+    .filter((mod) => mods.has(mod))
+    .concat(cleanKey)
+    .join("+");
+}
+let themeMode = normalizeThemeMode(localStorage.getItem("herdr-web-theme")),
+  lastEffectiveTheme = null;
+const defaultOptions = {
+  overflow: true,
+  fitToBrowser: false,
+  sound: true,
+  soundScope: "current",
+  shiftEnterNewline: true,
+  closeShortcut: "off",
+  globalShortcutsEnabled: true,
+  globalShortcutPrefix: DEFAULT_GLOBAL_SHORTCUT_PREFIX,
+  searchShortcut: "off",
+  terminalFontFamily: "ui-monospace,SFMono-Regular,Menlo,monospace",
+  agentSortMode: "off",
+  parentCloseMode: "panels",
+  stuckWorkingEnabled: true,
+  workingDismissMinutes: 30,
+  workspaceSort: "default",
+  scrollLines: 3,
+  showTabActivity: false,
+  worktreeAutoDiscoverSeconds: 3,
+  generateWorktreeNames: false,
+  worktreeDefaultDirectory: "../worktrees",
+  themeColors: themeColorDefaults,
+  ...moduleOptionDefaults,
+};
+function loadOptions() {
+  try {
+    return {
+      ...defaultOptions,
+      ...JSON.parse(localStorage.getItem("herdr-web-options") || "{}"),
+    };
+  } catch (_) {
+    return { ...defaultOptions };
+  }
+}
+function normalizeOptions(value) {
+  const next = { ...defaultOptions, ...(value || {}) };
+  delete next.shiftEnter;
+  if (next.captureCmdW === true || next.closeShortcut === true)
+    next.closeShortcut = "altw";
+  delete next.captureCmdW;
+  if (!["off", "altw", "shiftspacew"].includes(next.closeShortcut))
+    next.closeShortcut = defaultOptions.closeShortcut;
+  next.shiftEnterNewline = next.shiftEnterNewline !== false;
+  next.globalShortcutsEnabled = next.globalShortcutsEnabled !== false;
+  next.globalShortcutPrefix = normalizeShortcutPrefix(
+    next.globalShortcutPrefix,
+    defaultOptions.globalShortcutPrefix,
+  );
+  next.searchShortcut =
+    String(next.searchShortcut || "").toLowerCase() === "off"
+      ? "off"
+      : normalizeShortcutPrefix(next.searchShortcut, "off");
+  next.terminalFontFamily =
+    String(next.terminalFontFamily || "").trim().slice(0, 200) ||
+    defaultOptions.terminalFontFamily;
+  if (!["off", "attention", "attention_inverted"].includes(next.agentSortMode))
+    next.agentSortMode = defaultOptions.agentSortMode;
+  if (!["panels", "close"].includes(next.parentCloseMode))
+    next.parentCloseMode = defaultOptions.parentCloseMode;
+  next.stuckWorkingEnabled = next.stuckWorkingEnabled !== false;
+  if (next.sortAgentsByStatus === true) next.agentSortMode = "attention";
+  delete next.sortAgentsByStatus;
+  next.workingDismissMinutes = Math.max(
+    1,
+    Math.min(1440, Number(next.workingDismissMinutes) || 30),
+  );
+  if (!["all", "current"].includes(next.soundScope))
+    next.soundScope = defaultOptions.soundScope;
+  if (!["default", "drag", "state"].includes(next.workspaceSort))
+    next.workspaceSort = defaultOptions.workspaceSort;
+  next.scrollLines = Math.max(1, Math.min(20, Number(next.scrollLines) || 3));
+  next.showTabActivity = next.showTabActivity === true;
+  next.worktreeAutoDiscoverSeconds = Math.max(
+    0,
+    Math.min(
+      30,
+      Number.isFinite(Number(next.worktreeAutoDiscoverSeconds))
+        ? Number(next.worktreeAutoDiscoverSeconds)
+        : defaultOptions.worktreeAutoDiscoverSeconds,
+    ),
+  );
+  next.generateWorktreeNames = next.generateWorktreeNames === true;
+  next.worktreeDefaultDirectory =
+    String(next.worktreeDefaultDirectory || "").trim() ||
+    defaultOptions.worktreeDefaultDirectory;
+  next.themeColors = normalizeThemeColors(next.themeColors, themeColorDefaults);
+  for (const module of settingsModules) {
+    if (typeof module.normalize === "function") module.normalize(next);
+  }
+  return next;
+}
+let options = normalizeOptions(loadOptions());
+localStorage.removeItem("herdr-web-shiftenter-migrated");
+let workingDismissals = loadWorkingDismissals();
+function saveOptions() {
+  options = normalizeOptions(options);
+  localStorage.setItem("herdr-web-options", JSON.stringify(options));
+}
+function loadWorkingDismissals() {
+  try {
+    const parsed = JSON.parse(
+      localStorage.getItem("herdr-web-working-dismissals") || "{}",
+    );
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed
+      : {};
+  } catch (_) {
+    return {};
+  }
+}
+function saveWorkingDismissals() {
+  localStorage.setItem(
+    "herdr-web-working-dismissals",
+    JSON.stringify(workingDismissals),
+  );
+}
+function agentOverrideKey(a) {
+  return a.terminal_id || `${a.workspace_id}:${a.tab_id}:${a.pane_id}`;
+}
+function agentSignature(a) {
+  return [
+    a.workspace_id,
+    a.tab_id,
+    a.pane_id,
+    a.terminal_id,
+    a.name || a.display_agent || a.agent || "",
+  ].join("|");
+}
+function cleanupWorkingDismissals() {
+  if (!options.stuckWorkingEnabled) {
+    if (Object.keys(workingDismissals).length) {
+      workingDismissals = {};
+      saveWorkingDismissals();
+    }
+    return;
+  }
+  const now = Date.now();
+  const ttl =
+    Math.max(1, Number(options.workingDismissMinutes) || 30) * 60 * 1000;
+  const seen = new Set();
+  let changed = false;
+  for (const agent of state.agents) {
+    const key = agentOverrideKey(agent);
+    seen.add(key);
+    const dismissal = workingDismissals[key];
+    if (!dismissal) continue;
+    if (
+      statusClass(agent.agent_status) !== "working" ||
+      dismissal.signature !== agentSignature(agent) ||
+      now - dismissal.dismissedAt > ttl
+    ) {
+      delete workingDismissals[key];
+      changed = true;
+    }
+  }
+  for (const key of Object.keys(workingDismissals)) {
+    if (!seen.has(key)) {
+      delete workingDismissals[key];
+      changed = true;
+    }
+  }
+  if (changed) saveWorkingDismissals();
+}
+function isWorkingDismissed(agent) {
+  return (
+    options.stuckWorkingEnabled &&
+    !!workingDismissals[agentOverrideKey(agent)] &&
+    statusClass(agent.agent_status) === "working"
+  );
+}
+function dismissWorkingAgent(workspaceId, tabId, paneId, terminalId) {
+  const agent = state.agents.find(
+    (item) =>
+      item.workspace_id === workspaceId &&
+      item.tab_id === tabId &&
+      item.pane_id === paneId &&
+      (!terminalId || item.terminal_id === terminalId),
+  );
+  if (!agent) return;
+  workingDismissals[agentOverrideKey(agent)] = {
+    dismissedAt: Date.now(),
+    signature: agentSignature(agent),
+  };
+  saveWorkingDismissals();
+  render();
+}
+function restoreWorkingAgent(workspaceId, tabId, paneId, terminalId) {
+  const key = terminalId || `${workspaceId}:${tabId}:${paneId}`;
+  delete workingDismissals[key];
+  saveWorkingDismissals();
+  render();
+}
+function clearDismissedWorkingForTerminal(terminalId) {
+  if (!terminalId || !workingDismissals[terminalId]) return;
+  delete workingDismissals[terminalId];
+  saveWorkingDismissals();
+  render();
+}
+function noSleepLabel(mode) {
+  if (mode === "auto") return "Coffee auto";
+  if (mode === "1h") return "Coffee 1h";
+  if (mode === "2h") return "Coffee 2h";
+  if (mode === "4h") return "Coffee 4h";
+  if (mode === "infinite") return "Coffee infinite";
+  return "Coffee off";
+}
+function noSleepSubscript(mode) {
+  if (mode === "auto") return "A";
+  if (["1h", "2h", "4h"].includes(mode)) return "◷";
+  if (mode === "infinite") return "∞";
+  return "";
+}
+function noSleepButtonHtml(mode) {
+  const sub = noSleepSubscript(mode);
+  return `<span class="coffee-outline" aria-hidden="true"></span>${sub ? `<sub>${sub}</sub>` : ""}`;
+}
+function noSleepControlHtml(extraId) {
+  const suffix = extraId ? ` id="${extraId}"` : "";
+  return `<span class="no-sleep-wrap"><button type="button" class="btn shell-action shell-icon-button no-sleep-control"${suffix} value="off" title="Prevent computer sleep">${noSleepButtonHtml("off")}</button><span class="no-sleep-menu" hidden><button type="button" data-mode="off">${noSleepButtonHtml("off")}<span>Off</span></button><button type="button" data-mode="auto">${noSleepButtonHtml("auto")}<span>Auto</span></button><button type="button" data-mode="1h">${noSleepButtonHtml("1h")}<span>1 hour</span></button><button type="button" data-mode="2h">${noSleepButtonHtml("2h")}<span>2 hours</span></button><button type="button" data-mode="4h">${noSleepButtonHtml("4h")}<span>4 hours</span></button><button type="button" data-mode="infinite">${noSleepButtonHtml("infinite")}<span>Infinite</span></button></span></span>`;
+}
+function noSleepControls() {
+  return Array.from(document.querySelectorAll(".no-sleep-control"));
+}
+function closeNoSleepMenus(except) {
+  document.querySelectorAll(".no-sleep-menu").forEach((menu) => {
+    if (menu !== except) menu.hidden = true;
+  });
+}
+function syncNoSleepControls() {
+  const mode = noSleepState.mode || "off";
+  for (const control of noSleepControls()) {
+    control.dataset.mode = mode;
+    control.value = mode;
+    control.innerHTML = noSleepButtonHtml(mode);
+    control.title = noSleepState.error
+      ? `No-sleep error: ${noSleepState.error}`
+      : !noSleepState.supported
+        ? "No-sleep mode is not supported on this host"
+        : mode === "auto" && !noSleepState.active
+          ? "Auto no-sleep: monitoring agents"
+          : mode === "off"
+            ? "Prevent computer sleep from WebUI server"
+            : `WebUI server preventing sleep: ${noSleepLabel(mode)}`;
+    control.classList.toggle("active", mode !== "off");
+    control.classList.toggle("unsupported", !!noSleepState.error || !noSleepState.supported);
+    const wrap = control.closest && control.closest(".no-sleep-wrap");
+    if (wrap) {
+      wrap.querySelectorAll(".no-sleep-menu [data-mode]").forEach((option) => {
+        option.classList.toggle("active", option.dataset.mode === mode);
+      });
+    }
+  }
+}
+function bindHost(bind) {
+  const value = String(bind || "").trim();
+  if (value.startsWith("[")) return value.slice(1, value.indexOf("]"));
+  const index = value.lastIndexOf(":");
+  return index >= 0 ? value.slice(0, index) : value;
+}
+function isNonLocalBind(bind) {
+  const host = bindHost(bind).toLowerCase();
+  return !(
+    host === "localhost" ||
+    host === "::1" ||
+    host === "127.0.0.1" ||
+    host.startsWith("127.")
+  );
+}
+function serverSettingsValidationError(bind, username, password, hasSavedPassword) {
+  if (isNonLocalBind(bind) && (!username || (!password && !hasSavedPassword)))
+    return "Username and password are required before binding to 0.0.0.0 or any non-local address.";
+  return "";
+}
+async function loadNoSleep() {
+  try {
+    noSleepState = await api("/api/no-sleep");
+  } catch (_) {
+    noSleepState = { mode: "off", until_ms: null, error: "server unavailable", supported: true };
+  }
+  syncNoSleepControls();
+}
+async function setNoSleepMode(mode) {
+  try {
+    noSleepState = await api("/api/no-sleep", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ mode }),
+    });
+  } catch (ex) {
+    noSleepState = { mode: "off", until_ms: null, error: ex.message || String(ex), supported: true };
+  }
+  syncNoSleepControls();
+}
+saveOptions();
+const soundSetting = el("optSound");
+if (soundSetting && !el("optAgentSortMode"))
+  soundSetting
+    .closest("label")
+    .insertAdjacentHTML(
+      "afterend",
+      '<label class="option"><input type="checkbox" id="optGlobalShortcutsEnabled"><span>Global keyboard shortcuts<small>Enable prefix WebUI navigation shortcuts listed under ?.</small></span></label><label class="option"><span>Shortcut prefix<small>Click Record, press desired key combination, then use it before WebUI shortcuts.</small></span><span class="shortcut-capture"><input id="optGlobalShortcutPrefix" readonly><button type="button" class="tab add" id="optGlobalShortcutPrefixCapture">Record</button></span></label><label class="option"><span>Search shortcut<small>Optional direct shortcut. Leave disabled if it conflicts with terminal apps.</small></span><span class="shortcut-capture"><input id="optSearchShortcut" readonly><button type="button" class="tab add" id="optSearchShortcutCapture">Record</button><button type="button" class="tab add" id="optSearchShortcutClear">Clear</button></span></label><label class="option"><span>Terminal font<small>Use installed monospaced font family, including Nerd Fonts used by Neovim.</small></span><input id="optTerminalFontFamily" list="terminalFontPresets" placeholder="&quot;MesloLGS Nerd Font Mono&quot;, monospace"><datalist id="terminalFontPresets"><option value="&quot;MesloLGS Nerd Font Mono&quot;, &quot;MesloLGS NF&quot;, monospace"><option value="&quot;MesloLGS Nerd Font&quot;, &quot;MesloLGS NF&quot;, monospace"><option value="&quot;JetBrainsMono Nerd Font Mono&quot;, &quot;JetBrainsMono Nerd Font&quot;, monospace"><option value="&quot;Hack Nerd Font Mono&quot;, &quot;Hack Nerd Font&quot;, monospace"><option value="&quot;FiraCode Nerd Font Mono&quot;, &quot;FiraCode Nerd Font&quot;, monospace"><option value="&quot;CaskaydiaCove Nerd Font Mono&quot;, &quot;CaskaydiaCove Nerd Font&quot;, monospace"><option value="ui-monospace,SFMono-Regular,Menlo,monospace"></datalist></label><label class="option"><span>Close panel shortcut<small>Stored in browser storage and available after reopening the tab.</small></span><select class="settings-select" id="optCloseShortcut"><option value="off">Disabled</option><option value="altw">Option+W</option><option value="shiftspacew">Shift+Space then W</option></select></label><label class="option"><span>Agent sorting<small>Sort agents by attention priority, or show them in default order.</small></span><select class="settings-select" id="optAgentSortMode"><option value="off">Default order</option><option value="attention">Attention (blocked first)</option><option value="attention_inverted">Attention (working first)</option></select></label><label class="option"><span>Parent workspace close<small>Close panels only (keeps linked worktrees running) or full close with re-open (stops processes, re-opens worktrees with fresh shells).</small></span><select class="settings-select" id="optParentCloseMode"><option value="panels">Close panels only</option><option value="close">Full close + re-open worktrees</option></select></label><label class="option"><input type="checkbox" id="optStuckWorkingEnabled"><span>Ignore stuck working agents<small>Dismiss working agents that appear stuck. Clears automatically on status changes and terminal output.</small></span></label><label class="option"><span>Ignore stuck working for<small>Minutes to keep a local dismissed-working override before showing working again.</small></span><input id="optWorkingDismissMinutes" type="number" min="1" max="1440" step="1"></label><label class="option"><input type="checkbox" id="optShowTabActivity"><span>Show panel last update<small>Display local last-change age on top panel tabs. Updates on refreshes, events, and selected terminal output; no timer polling.</small></span></label><label class="option"><span>Workspace sorting<small>Default tree order, shared drag-and-drop order, or attention state priority.</small></span><select class="settings-select" id="optWorkspaceSort"><option value="default">Default</option><option value="drag">Drag&drop</option><option value="state">State</option></select></label><label class="option"><span>Notification scope<small>Choose whether sounds ring in every open tab or only the tab viewing the agent panel.</small></span><select class="settings-select" id="optSoundScope"><option value="current">Current agent tab</option><option value="all">All tabs</option></select></label><label class="option"><input type="checkbox" id="optGenerateWorktreeNames"><span>Generate worktree branch names<small>Allow blank Branch name in Worktrees modal. Herdr generates worktree/&lt;name&gt;.</small></span></label><label class="option"><span>Default worktree directory<small>Relative paths resolve from repo root. Example: ../worktrees.</small></span><input id="optWorktreeDefaultDirectory" placeholder="../worktrees"></label><label class="option"><span>Scroll speed<small><span id="scrollLinesValue">3</span> terminal lines per wheel step.</small></span><input type="range" id="optScrollLines" min="1" max="20" step="1"></label><label class="option"><span>Worktree autodiscover<small>Seconds to wait after path input stops. Set 0 for immediate.</small></span><input type="number" id="optWorktreeAutoDiscover" min="0" max="30" step="0.5"></label>',
+    );
+groupSettingsSections();
+function groupSettingsSections() {
+  if (!settingsBody || settingsBody.dataset.sections === "1") return;
+  const sectionDefs = [
+    {
+      title: "Appearance",
+      desc: "Theme mode and color palette.",
+      ids: ["optTheme"],
+      blocks: ["themeColorsApply"],
+    },
+    {
+      title: "Terminal input",
+      desc: "Viewport sizing, scrolling, and keyboard behavior.",
+      ids: [
+        "optOverflow",
+        "optFit",
+        "optShiftEnterNewline",
+        "optScrollLines",
+        "optTerminalFontFamily",
+      ],
+    },
+    {
+      title: "Agents and alerts",
+      desc: "Attention sorting, shortcuts, and notification sound scope.",
+      ids: [
+        "optSound",
+        "optSoundScope",
+        "optGlobalShortcutsEnabled",
+        "optGlobalShortcutPrefix",
+        "optSearchShortcut",
+        "optAgentSortMode",
+        "optParentCloseMode",
+        "optStuckWorkingEnabled",
+        "optWorkingDismissMinutes",
+        "optCloseShortcut",
+        "optShowTabActivity",
+      ],
+    },
+    {
+      title: "Worktrees",
+      desc: "Discovery, naming, and default worktree locations.",
+      ids: [
+        "optWorkspaceSort",
+        "optGenerateWorktreeNames",
+        "optWorktreeDefaultDirectory",
+        "optWorktreeAutoDiscover",
+      ],
+    },
+    {
+      title: "Server",
+      desc: "Network access and server-side power behavior.",
+      blocks: ["optServerBind"],
+    },
+    ...settingsModules.map((module) => ({
+      title: module.title,
+      desc: module.desc || "Module settings.",
+      ids: module.ids || [],
+      blocks: module.blocks || [],
+    })),
+  ];
+  for (const def of sectionDefs) {
+    const nodes = [];
+    for (const id of def.ids || []) {
+      const control = el(id);
+      const row = control && control.closest("label.option");
+      if (row && !nodes.includes(row)) nodes.push(row);
+    }
+    for (const id of def.blocks || []) {
+      const control = el(id);
+      const block =
+        control &&
+        (control.closest(".theme-customizer") ||
+          control.closest(".server-settings"));
+      if (block && !nodes.includes(block)) nodes.push(block);
+    }
+    if (!nodes.length) continue;
+    const section = document.createElement("section");
+    section.className = "settings-section";
+    section.innerHTML = `<div class="settings-section-head"><h3>${def.title}</h3><p>${def.desc}</p></div>`;
+    for (const node of nodes) section.appendChild(node);
+    settingsBody.appendChild(section);
+  }
+  settingsBody.dataset.sections = "1";
+}
+function applyOptions() {
+  const shell = el("terminalShell");
+  if (shell) shell.classList.toggle("no-overflow", !options.overflow);
+  const overflow = el("optOverflow"),
+    fitOpt = el("optFit"),
+    shiftEnterNewline = el("optShiftEnterNewline"),
+    sound = el("optSound"),
+    globalShortcutsEnabled = el("optGlobalShortcutsEnabled"),
+    globalShortcutPrefix = el("optGlobalShortcutPrefix"),
+    searchShortcut = el("optSearchShortcut"),
+    terminalFontFamily = el("optTerminalFontFamily"),
+    themeSelect = el("optTheme"),
+    closeShortcut = el("optCloseShortcut"),
+    sortAgents = el("optAgentSortMode"),
+    parentCloseMode = el("optParentCloseMode"),
+    stuckWorkingEnabled = el("optStuckWorkingEnabled"),
+    workingDismissMinutes = el("optWorkingDismissMinutes"),
+    workspaceSort = el("optWorkspaceSort"),
+    soundScope = el("optSoundScope"),
+    scrollLines = el("optScrollLines"),
+    scrollLinesValue = el("scrollLinesValue"),
+    showTabActivity = el("optShowTabActivity"),
+    worktreeAutoDiscover = el("optWorktreeAutoDiscover"),
+    generateWorktreeNames = el("optGenerateWorktreeNames"),
+    worktreeDefaultDirectory = el("optWorktreeDefaultDirectory"),
+    closeShortcutCurrent = el("closeShortcutCurrent");
+  if (overflow) overflow.checked = !!options.overflow;
+  if (fitOpt) fitOpt.checked = !!options.fitToBrowser;
+  if (shiftEnterNewline)
+    shiftEnterNewline.checked = options.shiftEnterNewline !== false;
+  if (sound) sound.checked = !!options.sound;
+  if (globalShortcutsEnabled)
+    globalShortcutsEnabled.checked = options.globalShortcutsEnabled !== false;
+  if (globalShortcutPrefix)
+    globalShortcutPrefix.value = globalShortcutPrefixLabel();
+  if (searchShortcut) searchShortcut.value = searchShortcutLabel();
+  const prefixKey = el("shortcutPrefixKey");
+  if (prefixKey) prefixKey.textContent = globalShortcutPrefixLabel();
+  if (terminalFontFamily)
+    terminalFontFamily.value = options.terminalFontFamily || "";
+  if (themeSelect) themeSelect.value = themeMode;
+  if (closeShortcut) closeShortcut.value = options.closeShortcut || "off";
+  if (closeShortcutCurrent)
+    closeShortcutCurrent.textContent = closeShortcutLabel();
+  if (sortAgents) sortAgents.value = options.agentSortMode || "off";
+  if (parentCloseMode)
+    parentCloseMode.value = options.parentCloseMode || "panels";
+  if (stuckWorkingEnabled)
+    stuckWorkingEnabled.checked = options.stuckWorkingEnabled !== false;
+  if (workingDismissMinutes)
+    workingDismissMinutes.value = String(options.workingDismissMinutes || 30);
+  if (workspaceSort) workspaceSort.value = options.workspaceSort || "default";
+  if (soundScope) soundScope.value = options.soundScope || "current";
+  if (scrollLines) scrollLines.value = String(options.scrollLines || 3);
+  if (scrollLinesValue)
+    scrollLinesValue.textContent = String(options.scrollLines || 3);
+  if (showTabActivity) showTabActivity.checked = !!options.showTabActivity;
+  if (worktreeAutoDiscover)
+    worktreeAutoDiscover.value = String(
+      options.worktreeAutoDiscoverSeconds ?? 3,
+    );
+  if (generateWorktreeNames)
+    generateWorktreeNames.checked = !!options.generateWorktreeNames;
+  if (worktreeDefaultDirectory)
+    worktreeDefaultDirectory.value = options.worktreeDefaultDirectory || "";
+  for (const module of settingsModules) {
+    if (typeof module.apply === "function") module.apply(options);
+  }
+  syncGitWorkspaceToggle();
+  syncThemeColorInputs();
+  const worktreeNewBranch = el("worktreeNewBranch"),
+    worktreeNewPath = el("worktreeNewPath");
+  if (worktreeNewBranch)
+    worktreeNewBranch.placeholder = options.generateWorktreeNames
+      ? "optional, generated if blank"
+      : "required unless selecting existing branch";
+  if (worktreeNewPath)
+    worktreeNewPath.placeholder = options.generateWorktreeNames
+      ? "filled after branch name"
+      : "auto-filled from branch name";
+  fitTerminalShell();
+  if (options.fitToBrowser) {
+    const fit = browserTerminalSize();
+    if (fit) {
+      state.termCols = fit.cols;
+      state.termRows = fit.rows;
+      connectTerminal();
+    }
+  }
+}
+function syncThemeColorInputs() {
+  for (const mode of ["dark", "light"]) {
+    const colors = options.themeColors[mode] || themeColorDefaults[mode];
+    for (const [key] of themeColorFields) {
+      const input = el(themeColorInputId(mode, key));
+      if (input) input.value = colors[key];
+    }
+  }
+}
+function closeShortcutLabel() {
+  if (options.closeShortcut === "altw") return "Option+W";
+  if (options.closeShortcut === "shiftspacew") return "Shift+Space, W";
+  return "Disabled";
+}
+function saveCloseShortcutOption() {
+  options.closeShortcut = el("optCloseShortcut").value;
+  closeChordUntil = 0;
+  saveOptions();
+  applyOptions();
+}
+function readThemeColorInputs() {
+  for (const mode of ["dark", "light"]) {
+    for (const [key] of themeColorFields) {
+      const input = el(themeColorInputId(mode, key));
+      if (input) options.themeColors[mode][key] = input.value;
+    }
+  }
+  options.themeColors = normalizeThemeColors(
+    options.themeColors,
+    themeColorDefaults,
+  );
+}
+function applyThemeColorsFromSettings() {
+  readThemeColorInputs();
+  saveOptions();
+  syncThemeColorInputs();
+  applyTheme();
+  render();
+}
+function applyThemeColorProfile(name) {
+  options.themeColors = normalizeThemeColors(
+    themeColorProfiles[name] || themeColorProfiles.default,
+    themeColorDefaults,
+  );
+  saveOptions();
+  syncThemeColorInputs();
+  applyTheme();
+  render();
+}
+function effectiveTheme() {
+  if (themeMode === "dark") return "dark";
+  if (themeMode === "light") return "light";
+  if (window.matchMedia)
+    return window.matchMedia("(prefers-color-scheme: dark)").matches
+      ? "dark"
+      : "light";
+  return "light";
+}
+function terminalTheme() {
+  const mode = effectiveTheme();
+  const colors = options.themeColors[mode] || themeColorDefaults[mode];
+  return {
+    ...(themes[mode] || themes.light),
+    background: colors.background,
+    foreground: colors.foreground,
+    cursor: colors.cursor,
+    selectionBackground: colors.selectionBackground,
+  };
+}
+function shiftEnterSequence() {
+  return "\n";
+}
+function terminalFontFamily() {
+  return options.terminalFontFamily || defaultOptions.terminalFontFamily;
+}
+function applyTerminalFont() {
+  if (!term) return;
+  try {
+    term.options.fontFamily = terminalFontFamily();
+  } catch (e) {
+    try {
+      term.setOption("fontFamily", terminalFontFamily());
+    } catch (_) {}
+  }
+}
+function applyTheme() {
+  themeMode = normalizeThemeMode(themeMode);
+  const current = effectiveTheme();
+  lastEffectiveTheme = current;
+  const light = current === "light";
+  document.body.classList.toggle("light", light);
+  applyThemeColorVars(current);
+  const toggle = el("themeToggle");
+  if (toggle) {
+    toggle.textContent =
+      themeMode === "auto" ? "A" : themeMode === "dark" ? "☾" : "☀";
+    toggle.title = "Theme: " + themeMode + " (" + current + ")";
+  }
+  const themeSelect = el("optTheme");
+  if (themeSelect) themeSelect.value = themeMode;
+  localStorage.setItem("herdr-web-theme", themeMode);
+  if (term) {
+    applyTerminalFont();
+    try {
+      term.options.theme = terminalTheme();
+    } catch (e) {
+      try {
+        term.setOption("theme", terminalTheme());
+      } catch (_) {}
+    }
+  }
+  fitTerminalShell();
+}
+function applyThemeColorVars(mode) {
+  const colors = options.themeColors[mode] || themeColorDefaults[mode];
+  for (const [key, , cssVar] of themeColorFields) {
+    if (cssVar) document.body.style.setProperty(cssVar, colors[key]);
+  }
+}
+function pollAutoTheme() {
+  if (themeMode !== "auto") return;
+  const current = effectiveTheme();
+  if (current !== lastEffectiveTheme) applyTheme();
+}
+function el(id) {
+  return document.getElementById(id);
+}
+function askQuestion({ title = "Confirm action", message = "Continue?", confirmText = "Confirm", danger = false } = {}) {
+  const modal = el("questionModal");
+  if (!modal) return Promise.resolve(confirm(message));
+  el("questionTitle").textContent = title;
+  el("questionMessage").textContent = message;
+  const confirmButton = el("questionConfirm");
+  confirmButton.textContent = confirmText;
+  confirmButton.classList.toggle("danger", !!danger);
+  modal.style.display = "grid";
+  confirmButton.focus();
+  return new Promise((resolve) => {
+    state.questionResolve = resolve;
+  });
+}
+function closeQuestion(answer) {
+  const modal = el("questionModal");
+  if (modal) modal.style.display = "none";
+  const resolve = state.questionResolve;
+  state.questionResolve = null;
+  if (resolve) resolve(!!answer);
+}
+function gitUiEnabled() {
+  return options.gitUiEnabled !== false;
+}
+function themeToggleIcon() {
+  if (themeMode === "auto") return `${appIcon("themeAuto")}<sub>A</sub>`;
+  return themeMode === "dark" ? '<span aria-hidden="true">☾</span>' : '<span aria-hidden="true">☀</span>';
+}
+function setupSessionChrome() {
+  const head = document.querySelector(".head");
+  const oldSessionButton = el("sessionButton");
+  if (oldSessionButton) oldSessionButton.remove();
+  if (!el("searchButtonHead")) {
+    const b = document.createElement("button");
+    b.className = "btn shell-action";
+    b.id = "searchButtonHead";
+    b.title = "Search";
+    b.textContent = "⌕";
+    head.insertBefore(b, el("newWs"));
+    b.onclick = () => openSearchPalette();
+  }
+  if (!el("themeToggleHead")) {
+    const b = document.createElement("button");
+    b.className = "btn shell-action shell-icon-button";
+    b.id = "themeToggleHead";
+    b.title = "Toggle theme";
+    b.innerHTML = themeToggleIcon();
+    head.insertBefore(b, el("newWs"));
+    b.onclick = () => {
+      themeMode = themeMode === "auto" ? "dark" : themeMode === "dark" ? "light" : "auto";
+      applyTheme();
+      render();
+    };
+  }
+  if (!el("noSleepHead")) {
+    const wrap = document.createElement("span");
+    wrap.innerHTML = noSleepControlHtml("noSleepHead");
+    head.insertBefore(wrap.firstChild, el("newWs"));
+    syncNoSleepControls();
+  }
+  if (!el("openWorktrees")) {
+    const newWsButton = el("newWs");
+    const b = document.createElement("button");
+    b.className = "btn worktree-open-trigger";
+    b.id = "openWorktrees";
+    b.title = "Open or create worktrees";
+    b.textContent = "♧";
+    newWsButton.insertAdjacentElement("afterend", b);
+    b.onclick = () => openWorktreeOpenModal();
+  }
+  if (!gitUiEnabled()) {
+    const existingGitToggle = el("gitWorkspaceToggle");
+    if (existingGitToggle) existingGitToggle.remove();
+    if (window.HerdrGitUi) window.HerdrGitUi.hide();
+  } else if (!el("gitWorkspaceToggle")) {
+    const openWorktrees = el("openWorktrees");
+    const b = document.createElement("button");
+    b.className = "btn worktree-open-trigger git-workspace-toggle unknown";
+    b.id = "gitWorkspaceToggle";
+    b.title = "Show Git drawer";
+    b.innerHTML = appIcon("git");
+    b.setAttribute("aria-label", "Show Git drawer");
+    openWorktrees.insertAdjacentElement("afterend", b);
+    b.onclick = () => openWorkspaceGitUi(state.ws);
+  }
+  const side = document.querySelector(".side");
+  const workspacePane = el("workspacePane");
+  if (workspacePane && !el("workspaceContextActions")) {
+    const header = workspacePane.querySelector(".section-header");
+    const actions = document.createElement("div");
+    actions.id = "workspaceContextActions";
+    actions.className = "workspace-context-actions";
+    if (header) header.insertAdjacentElement("afterend", actions);
+    else workspacePane.insertBefore(actions, workspacePane.firstChild);
+  }
+  const stalePanelActions = el("panelContextActions");
+  if (stalePanelActions) stalePanelActions.remove();
+  const versionsEl = el("versions");
+  let footer = el("sideFooterBar");
+  if (!footer) {
+    footer = document.createElement("div");
+    footer.id = "sideFooterBar";
+    footer.className = "side-footer-bar";
+    side.appendChild(footer);
+  }
+  const brand = document.querySelector(".brand");
+  if (brand && brand.parentNode !== footer) footer.appendChild(brand);
+  if (!el("footerSessionButton")) {
+    const b = document.createElement("button");
+    b.id = "footerSessionButton";
+    b.className = "footer-session-button";
+    b.title = "Session manager";
+    b.textContent = state.session || "default";
+    b.onclick = () => showSessionManager(state.backendOnline ? "Session manager" : "Herdr session offline");
+    const brandText = brand && brand.querySelector(".brand-text");
+    if (brandText) brandText.appendChild(b);
+    else footer.appendChild(b);
+  } else {
+    const button = el("footerSessionButton"),
+      brandText = brand && brand.querySelector(".brand-text");
+    if (button && brandText && button.parentNode !== brandText)
+      brandText.appendChild(button);
+  }
+  if (versionsEl && versionsEl.parentNode !== footer) {
+    versionsEl.remove();
+    versionsEl.classList.add("side-footer", "footer-meta");
+    footer.appendChild(versionsEl);
+  }
+  if (versionsEl) versionsEl.classList.add("side-footer", "footer-meta");
+  if (!el("footerShortcutsButton")) {
+    const actions = document.createElement("span");
+    actions.className = "footer-actions";
+    actions.innerHTML = `<button class="mini footer-icon-button" id="footerShortcutsButton" title="Shortcuts" aria-label="Shortcuts">${appIcon("help")}</button><button class="mini footer-icon-button" id="footerSettingsButton" title="Settings" aria-label="Settings">${appIcon("settings")}</button>`;
+    footer.appendChild(actions);
+    el("footerShortcutsButton").onclick = () => { applyOptions(); el("shortcutsModal").style.display = "grid"; };
+    el("footerSettingsButton").onclick = () => { el("settingsModal").style.display = "grid"; applyOptions(); loadServerSettings(); };
+  }
+  const footerShortcutsButton = el("footerShortcutsButton");
+  const footerSettingsButton = el("footerSettingsButton");
+  if (footerShortcutsButton) {
+    footerShortcutsButton.classList.add("footer-icon-button");
+    footerShortcutsButton.setAttribute("aria-label", "Shortcuts");
+    footerShortcutsButton.innerHTML = appIcon("help");
+  }
+  if (footerSettingsButton) {
+    footerSettingsButton.classList.add("footer-icon-button");
+    footerSettingsButton.setAttribute("aria-label", "Settings");
+    footerSettingsButton.innerHTML = appIcon("settings");
+  }
+  if (!el("sessionManager")) {
+    const m = document.createElement("div");
+    m.className = "session-manager";
+    m.id = "sessionManager";
+    m.innerHTML =
+      '<div class="session-card"><div class="session-hero"><div><h1 id="sessionManagerTitle">Sessions</h1><p id="sessionManagerText">Choose a Herdr backend session to open.</p></div><div class="session-current"><span class="dot unknown"></span><span id="sessionCurrentLabel">default</span></div></div><div class="session-actions"><div class="session-list" id="sessionList"></div><div class="session-line session-new"><span><strong>Target another session</strong><small>Create or open a named target URL. Launch starts backend for current target.</small></span><span class="session-controls"><button class="btn" id="newSessionTarget">New target</button></span></div></div></div>';
+    document.querySelector(".main").prepend(m);
+    el("newSessionTarget").onclick = () => {
+      const name = prompt("session name");
+      if (name) goSession(name);
+    };
+  }
+}
+async function loadSessions() {
+  try {
+    const r = await api("/api/sessions");
+    state.sessions = r.sessions || [];
+  } catch (e) {
+    state.sessions = [{ name: state.session || "default", running: false }];
+  }
+}
+function renderSessionRows() {
+  const list = state.sessions.length
+    ? state.sessions
+    : [{ name: state.session || "default", running: state.backendOnline }];
+  return list
+    .map((s) => {
+      const active = s.name === state.session;
+      const status = `<span class="status-pill ${s.running ? "running" : "offline"}">${s.running ? "running" : "offline"}</span>`;
+      const controls = active
+        ? `<span class="session-controls"><button class="btn" onclick="event.stopPropagation();launchBackend()">Launch</button><button class="tab add" onclick="event.stopPropagation();refresh()">Retry</button><button class="tab add" onclick="event.stopPropagation();resetSession()">Reset workspaces</button><button class="mini danger" onclick="event.stopPropagation();closeCurrentSession()">Close</button></span>`
+        : `<span class="session-controls">${status}</span>`;
+      return `<div class="session-line ${active ? "active" : ""}" onclick="goSession('${escapeAttr(s.name)}')"><span><strong>${escapeHtml(s.name)}</strong><small>${active ? "current browser target" : s.running ? "click to switch to this running session" : "click to target this offline session"}</small></span>${controls}</div>`;
+    })
+    .join("");
+}
+async function showSessionManager(title, text) {
+  await loadSessions();
+  const titleEl = el("sessionManagerTitle"),
+    textEl = el("sessionManagerText"),
+    manager = el("sessionManager"),
+    list = el("sessionList"),
+    current = el("sessionCurrentLabel");
+  if (titleEl) titleEl.textContent = title || "Session manager";
+  if (textEl)
+    textEl.textContent =
+      text || `Current target: ${state.session || "default"}`;
+  if (current) current.textContent = state.session || "default";
+  if (list) list.innerHTML = renderSessionRows();
+  if (manager) manager.style.display = "block";
+}
+function hideSessionManager() {
+  const manager = el("sessionManager");
+  if (manager) manager.style.display = "none";
+}
+async function launchBackend() {
+  const textEl = el("sessionManagerText");
+  if (textEl) textEl.textContent = "Launching Herdr session...";
+  try {
+    const r = await api("/api/session/launch", { method: "POST" });
+    if (textEl)
+      textEl.textContent = r.ok
+        ? `Launched pid ${r.pid}. Waiting for backend...`
+        : r.error || "Launch failed";
+    setTimeout(refresh, 1200);
+  } catch (e) {
+    if (textEl) textEl.textContent = e.message || String(e);
+  }
+}
+async function closeCurrentSession() {
+  if (!confirm("Close current Herdr session?")) return;
+  try {
+    await api("/api/session/close", { method: "POST" });
+    showSessionManager(
+      "Herdr session closed",
+      "Session stopped. You can launch it again.",
+    );
+    setTimeout(refresh, 800);
+  } catch (e) {
+    showSessionManager("Close failed", e.message || String(e));
+  }
+}
+async function resetSession() {
+  if (!confirm("Close all workspaces in this session?")) return;
+  for (const w of [...state.workspaces]) {
+    try {
+      await api(`/api/workspaces/${encodeURIComponent(w.workspace_id)}/close`, {
+        method: "POST",
+      });
+    } catch (e) {}
+  }
+  state.ws = null;
+  state.tab = null;
+  state.pane = null;
+  refresh();
+}
+const statusClass = (s) => (s === "done" ? "done" : s || "unknown");
+function statusMark(status, withText = false) {
+  const s = statusClass(status);
+  if (s === "working")
+    return '<span class="herdr-spinner" aria-label="working"><i></i><i></i><i></i><i></i></span>';
+  if (s === "blocked")
+    return withText ? '<span class="blocked-text">blocked</span>' : "";
+  return "";
+}
+function statusDot(status) {
+  const s = statusClass(status);
+  if (s === "working") return '<span class="dot working"></span>';
+  if (s === "blocked") return '<span class="dot blocked"></span>';
+  if (s === "idle" || s === "done")
+    return `<span class="dot ${s === "done" ? "done" : "idle"}"></span>`;
+  return '<span class="dot unknown"></span>';
+}
+function apiOptions(opt) {
+  const next = Object.assign({}, opt || {});
+  next.headers = Object.assign(
+    {},
+    next.headers || {},
+    state.session && state.session !== "default"
+      ? { "x-herdr-session": state.session }
+      : {},
+  );
+  return next;
+}
+function apiErrorMessage(body, statusText) {
+  const err = body && body.error;
+  if (!err) return statusText;
+  if (typeof err === "string") return err;
+  if (err.message) return String(err.message);
+  if (err.code) return String(err.code);
+  try {
+    return JSON.stringify(err);
+  } catch (_) {
+    return statusText;
+  }
+}
+async function api(url, opt) {
+  const r = await fetch(url, apiOptions(opt));
+  if (r.status === 401) {
+    location.href = "/";
+    throw Error("unauthorized");
+  }
+  const body = await r.json();
+  if (!r.ok || body.error) throw Error(apiErrorMessage(body, r.statusText));
+  return body;
+}
+async function loadServerSettings() {
+  const err = el("serverSettingsError");
+  if (err) err.textContent = "";
+  try {
+    const settings = await api("/api/server-settings");
+    el("optServerBind").value = settings.bind || "127.0.0.1:8787";
+    el("optServerUser").value = settings.username || "";
+    el("optServerPassword").value = "";
+    el("optServerPassword").placeholder = settings.has_password
+      ? "current password saved"
+      : "required for public bind";
+    el("optServerPassword").dataset.hasPassword = settings.has_password
+      ? "true"
+      : "false";
+    el("optServerLocalBypass").checked = !!settings.localhost_no_auth;
+    el("optNoSleepAutoCooldown").value = String(
+      settings.no_sleep_auto_cooldown_seconds ?? 60,
+    );
+  } catch (ex) {
+    if (err) err.textContent = ex.message || String(ex);
+  }
+}
+async function applyServerSettings() {
+  const err = el("serverSettingsError"),
+    submit = el("serverSettingsApply"),
+    bind = el("optServerBind").value.trim(),
+    username = el("optServerUser").value.trim(),
+    password = el("optServerPassword").value,
+    hasSavedPassword = el("optServerPassword").dataset.hasPassword === "true",
+    localhostNoAuth = el("optServerLocalBypass").checked,
+    noSleepAutoCooldown = Number(el("optNoSleepAutoCooldown").value || 60);
+  if (err) err.textContent = "";
+  const validationError = serverSettingsValidationError(
+    bind,
+    username,
+    password,
+    hasSavedPassword,
+  );
+  if (validationError) {
+    if (err) err.textContent = validationError;
+    return;
+  }
+  submit.disabled = true;
+  try {
+    await api("/api/server-settings", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        bind,
+        username: username || null,
+        password: password ? password : null,
+        localhost_no_auth: localhostNoAuth,
+        no_sleep_auto_cooldown_seconds: noSleepAutoCooldown,
+      }),
+    });
+    if (err)
+      err.textContent =
+        "Saved. If Bind changed, listener is restarting; reload this page using the new address if needed.";
+    el("optServerPassword").value = "";
+  } catch (ex) {
+    if (err) err.textContent = ex.message || String(ex);
+  } finally {
+    submit.disabled = false;
+  }
+}
+async function loadVersions() {
+  const versionsEl = el("versions");
+  try {
+    const v = await api("/api/versions");
+    const session = v.session || state.session || "default";
+    const compat = v.compatibility || {},
+      status =
+        compat.status && compat.status !== "compatible"
+          ? " · " + compat.status
+          : "";
+    if (versionsEl) {
+      versionsEl.textContent = `webui ${v.webui || "-"} · backend ${v.backend || "offline"}${status}`;
+      versionsEl.title = `session ${session}${compat.message ? ` · ${compat.message}` : ""}`;
+    }
+    const button = el("footerSessionButton");
+    if (button) button.textContent = state.session || session;
+  } catch (e) {
+    if (versionsEl) versionsEl.textContent = "webui - · backend offline";
+    const button = el("footerSessionButton");
+    if (button) button.textContent = state.session || "default";
+  }
+}
+function sessionPrefix() {
+  return "/session/" + encodeURIComponent(state.session || "default");
+}
+function expandScopedId(ws, id) {
+  if (!ws || !id) return id || null;
+  return `${ws}:${id}`;
+}
+function compactScopedId(ws, id) {
+  if (!ws || !id) return id || null;
+  const prefix = `${ws}:`;
+  return id.startsWith(prefix) ? id.slice(prefix.length) : id;
+}
+function selectionPath(ws, tab, pane) {
+  let p = sessionPrefix() + "/workspace/" + encodeURIComponent(ws);
+  if (tab) p += "/tab/" + encodeURIComponent(compactScopedId(ws, tab));
+  if (pane) p += "/pane/" + encodeURIComponent(compactScopedId(ws, pane));
+  return p;
+}
+function parseRoute() {
+  const p = location.pathname
+    .split("/")
+    .filter(Boolean)
+    .map(decodeURIComponent);
+  let i = 0;
+  state.session = "default";
+  if (p[0] === "session") {
+    state.session = p[1] || "default";
+    i = 2;
+  }
+  state.ws = p[i] === "workspace" ? p[i + 1] : null;
+  state.tab = p[i + 2] === "tab" ? expandScopedId(state.ws, p[i + 3]) : null;
+  state.pane = p[i + 4] === "pane" ? expandScopedId(state.ws, p[i + 5]) : null;
+}
+function setTerminalLoading(show) {
+  const loading = el("terminalLoading");
+  if (loading) loading.classList.toggle("show", !!show);
+}
+function resetTerminalConnection(clear = false) {
+  wheelScrollRemainder = 0;
+  if (inputFlushTimer) {
+    clearTimeout(inputFlushTimer);
+    inputFlushTimer = null;
+  }
+  inputQueue = [];
+  if (termWs) {
+    termWs.onclose = null;
+    try {
+      termWs.close();
+    } catch (e) {}
+    termWs = null;
+  }
+  connectedTerminalId = null;
+  connectedSize = "";
+  if (clear && term) term.clear();
+}
+function navigateSelection(e, ws, tab, pane) {
+  if (e && (e.metaKey || e.ctrlKey || e.shiftKey || e.button === 1))
+    return true;
+  e.preventDefault();
+  if (window.HerdrGitUi) window.HerdrGitUi.hide();
+  go(ws, tab, pane);
+  return false;
+}
+function go(ws, tab, pane) {
+  history.pushState(null, "", selectionPath(ws, tab, pane));
+  parseRoute();
+  resetTerminalConnection(true);
+  setTerminalLoading(true);
+  refresh();
+}
+function goSession(name) {
+  state.session = name || "default";
+  state.ws = null;
+  state.tab = null;
+  state.pane = null;
+  resetTerminalConnection(true);
+  setTerminalLoading(true);
+  if (eventWs) {
+    eventWs.onclose = null;
+    try {
+      eventWs.close();
+    } catch (e) {}
+    eventWs = null;
+  }
+  history.pushState(null, "", sessionPrefix());
+  parseRoute();
+  loadVersions();
+  refresh();
+  connectEvents();
+}
+async function refreshOnline(seq) {
+  parseRoute();
+  const w = await api("/api/workspaces");
+  if (seq !== refreshSeq) return;
+  state.workspaces = w.result.workspaces || [];
+  if (state.workspaces.length === 0 && !creatingDefaultWorkspace) {
+    creatingDefaultWorkspace = true;
+    try {
+      const r = await api("/api/workspaces", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ label: "default", cwd: null }),
+      });
+      if (seq !== refreshSeq) return;
+      state.ws = r.result.workspace.workspace_id;
+      state.fitDefault = true;
+      history.replaceState(null, "", selectionPath(state.ws));
+      creatingDefaultWorkspace = false;
+      return refresh();
+    } catch (e) {
+      creatingDefaultWorkspace = false;
+    }
+  }
+  if (state.ws && !state.workspaces.some((w) => w.workspace_id === state.ws)) {
+    resetTerminalConnection(true);
+    setTerminalLoading(false);
+    state.ws = (state.workspaces[0] || {}).workspace_id || null;
+    state.tab = null;
+    state.pane = null;
+    state.terminalId = null;
+    if (state.ws) history.replaceState(null, "", selectionPath(state.ws));
+    else history.replaceState(null, "", sessionPrefix());
+  }
+  const worktreeSources = worktreeSourceWorkspaceIds();
+  const worktreeResults = await Promise.all(
+    worktreeSources.map((id) =>
+      api("/api/worktrees?workspace_id=" + encodeURIComponent(id)).catch(
+        () => null,
+      ),
+    ),
+  );
+  if (seq !== refreshSeq) return;
+  state.worktrees = worktreeResults.flatMap((r) => {
+    const result = (r || {}).result || {},
+      source = result.source || {};
+    return (result.worktrees || []).map((wt) =>
+      Object.assign({}, wt, {
+        source_workspace_id: source.source_workspace_id,
+        source_repo_name: source.repo_name,
+        source_repo_key: source.repo_key,
+        source_repo_root: source.repo_root,
+        source_cwd: source.source_checkout_path,
+        default_worktree_directory: source.default_worktree_directory,
+      }),
+    );
+  });
+  state.workspaceBranches = {};
+  for (const r of worktreeResults) {
+    const result = (r || {}).result || {},
+      source = result.source || {},
+      sourceId = source.source_workspace_id,
+      sourcePath = source.source_checkout_path;
+    if (!sourceId || !sourcePath) continue;
+    const match = (result.worktrees || []).find((wt) =>
+      samePath(wt.path, sourcePath),
+    );
+    if (match && (match.branch || match.is_detached))
+      state.workspaceBranches[sourceId] =
+        match.branch || (match.is_detached ? "detached" : "");
+  }
+  try {
+    const order = await api("/api/workspace-order");
+    if (seq !== refreshSeq) return;
+    state.workspaceOrder = order.order || [];
+  } catch (e) {
+    state.workspaceOrder = [];
+  }
+  if (!state.ws && state.workspaces[0])
+    state.ws = state.workspaces[0].workspace_id;
+  if (state.ws) {
+    const [allT, t, p, a] = await Promise.all([
+      api("/api/tabs"),
+      api("/api/tabs?workspace_id=" + encodeURIComponent(state.ws)),
+      api("/api/panes?workspace_id=" + encodeURIComponent(state.ws)),
+      api("/api/agents"),
+    ]);
+    if (seq !== refreshSeq) return;
+    state.allTabs = allT.result.tabs || [];
+    state.tabs = t.result.tabs || [];
+    state.panes = p.result.panes || [];
+    state.agents = a.result.agents || [];
+    handleAttentionSound();
+    if (!state.tabs.some((t) => t.tab_id === state.tab)) {
+      const focused = state.tabs.find((t) => t.focused);
+      state.tab = (focused || state.tabs[0] || {}).tab_id || null;
+    }
+    if (!state.panes.some((p) => p.pane_id === state.pane)) {
+      const pane =
+        state.panes.find((x) => x.tab_id === state.tab && x.focused) ||
+        state.panes.find((x) => x.tab_id === state.tab) ||
+        state.panes[0];
+      state.pane = pane && pane.pane_id;
+    }
+    const pane = state.panes.find((x) => x.pane_id === state.pane);
+    state.terminalId = pane && pane.terminal_id;
+    state.termCols = null;
+    state.termRows = null;
+    state.layoutCols = null;
+    state.layoutRows = null;
+    state.layoutPaneCount = 0;
+    if (state.pane) {
+      try {
+        const l = await api(
+          "/api/pane-layout?pane_id=" + encodeURIComponent(state.pane),
+        );
+        if (seq !== refreshSeq) return;
+        const layout = (l.result || {}).layout || {},
+          lp = layout.panes || [];
+        const selected = lp.find((x) => x.pane_id === state.pane);
+        if (selected && selected.rect) {
+          state.termCols = Math.max(1, selected.rect.width);
+          state.termRows = Math.max(1, selected.rect.height);
+          state.layoutCols = Math.max(
+            1,
+            (layout.area || {}).width || state.termCols,
+          );
+          state.layoutRows = Math.max(
+            1,
+            (layout.area || {}).height || state.termRows,
+          );
+          state.layoutPaneCount = lp.length;
+        }
+      } catch (e) {}
+    }
+    if (
+      state.fitDefault ||
+      options.fitToBrowser ||
+      shouldFitFocusedWebTerminal() ||
+      shouldAutoFitDetachedTerminal()
+    ) {
+      const fit = browserTerminalSize();
+      if (fit) {
+        state.termCols = fit.cols;
+        state.termRows = fit.rows;
+        state.fitDefault = false;
+      }
+    }
+    if (
+      (location.pathname === "/" ||
+        location.pathname === "/session" ||
+        location.pathname ===
+          "/session/" + encodeURIComponent(state.session)) &&
+      state.ws
+    )
+      history.replaceState(
+        null,
+        "",
+        selectionPath(state.ws, state.tab, state.pane),
+      );
+  }
+  render();
+  connectTerminal();
+}
+async function refresh() {
+  const seq = ++refreshSeq;
+  try {
+    await refreshOnline(seq);
+    if (seq !== refreshSeq) return;
+    state.backendOnline = true;
+    hideSessionManager();
+    const button = el("footerSessionButton");
+    if (button) button.textContent = state.session || "default";
+  } catch (e) {
+    state.backendOnline = false;
+    state.workspaces = [];
+    state.tabs = [];
+    state.panes = [];
+    state.agents = [];
+    render();
+    showSessionManager(
+      "Herdr session offline",
+      `No backend reachable for session ${state.session || "default"}: ${e.message || e}`,
+    );
+    const button = el("footerSessionButton");
+    if (button) button.textContent = (state.session || "default") + " offline";
+  }
+}
+function scheduleRefresh(delay = 500) {
+  clearTimeout(refreshTimer);
+  refreshTimer = setTimeout(refresh, delay);
+}
+function eventNeedsFastRefresh(kind) {
+  return FAST_REFRESH_EVENTS.has(kind);
+}
+function forgetClosedSelection(kind, data) {
+  if (kind === "pane.exited" && data && data.pane_id) {
+    closePaneById(data.pane_id)
+      .then(() => scheduleRefresh(50))
+      .catch(() => {});
+  }
+  if (kind === "pane.closed" || kind === "pane.exited") {
+    if (data && data.pane_id && data.pane_id === state.pane) {
+      resetTerminalConnection(true);
+      state.pane = null;
+      state.terminalId = null;
+      render();
+    }
+  } else if (kind === "tab.closed") {
+    if (data && data.tab_id && data.tab_id === state.tab) {
+      resetTerminalConnection(true);
+      state.tab = null;
+      state.pane = null;
+      state.terminalId = null;
+      render();
+    }
+  }
+}
+function applySnapshot(msg) {
+  const wr = msg.workspaces && msg.workspaces.result;
+  const ar = msg.agents && msg.agents.result;
+  if (wr && wr.workspaces) state.workspaces = wr.workspaces;
+  if (ar && ar.agents) {
+    state.agents = ar.agents;
+    handleAttentionSound();
+  }
+  render();
+}
+function unlockAudio() {
+  if (audioUnlocked) return;
+  try {
+    audioCtx =
+      audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    const resumed = audioCtx.resume();
+    if (resumed && resumed.then) {
+      resumed
+        .then(() => {
+          audioUnlocked = true;
+        })
+        .catch(() => {});
+    } else {
+      audioUnlocked = true;
+    }
+  } catch (e) {}
+}
+function handleAttentionSound() {
+  const attentionAgents = state.agents.filter(needsAttention);
+  const current = new Set(attentionAgents.map(agentKey));
+  if (knownAttention === null) {
+    knownAttention = current;
+    return;
+  }
+  const newlyAttentioned = attentionAgents.filter(
+    (a) => !knownAttention.has(agentKey(a)),
+  );
+  knownAttention = current;
+  if (newlyAttentioned.length && shouldPlayAttentionSound(newlyAttentioned))
+    playAttentionSound();
+}
+function needsAttention(a) {
+  const s = statusClass(a.agent_status);
+  return s === "blocked" || s === "done";
+}
+function agentKey(a) {
+  return a.terminal_id || `${a.workspace_id}:${a.tab_id}:${a.pane_id}`;
+}
+function shouldPlayAttentionSound(agents) {
+  if ((options.soundScope || "current") === "all") return true;
+  return agents.some(
+    (a) =>
+      a.workspace_id === state.ws &&
+      a.tab_id === state.tab &&
+      a.pane_id === state.pane,
+  );
+}
+function playAttentionSound() {
+  if (!options.sound || !audioUnlocked) return;
+  const now = Date.now();
+  if (now - lastAttentionSound < 1500) return;
+  lastAttentionSound = now;
+  if (!audioCtx || audioCtx.state !== "running") return;
+  const o = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  o.type = "sine";
+  o.frequency.setValueAtTime(880, audioCtx.currentTime);
+  o.frequency.setValueAtTime(660, audioCtx.currentTime + 0.08);
+  g.gain.setValueAtTime(0.0001, audioCtx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.12, audioCtx.currentTime + 0.01);
+  g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.22);
+  o.connect(g);
+  g.connect(audioCtx.destination);
+  o.start();
+  o.stop(audioCtx.currentTime + 0.24);
+}
+function tabTitle(t) {
+  return t.label || `tab ${t.number}`;
+}
