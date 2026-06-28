@@ -1,0 +1,144 @@
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  display: none;
+  place-items: center;
+  background: #0008;
+  z-index: 1100;
+}
+.modal {
+  background: var(--panel);
+  border: 1px solid var(--border2);
+  border-radius: 14px;
+  padding: 18px;
+  min-width: 320px;
+  box-shadow: 0 18px 50px #0008;
+}
+.modal h2 {
+  margin: 0 0 12px 0;
+  font-size: 18px;
+}
+.option {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin: 12px 0;
+}
+.option span {
+  display: block;
+}
+.option small {
+  display: block;
+  color: var(--muted);
+  margin-top: 2px;
+}
+.theme-customizer {
+  border-top: 1px solid var(--border);
+  display: grid;
+  gap: 12px;
+  padding-top: 14px;
+}
+.theme-customizer strong,
+.theme-customizer h3 {
+  color: var(--fg);
+  margin: 0;
+}
+.theme-customizer small {
+  color: var(--muted);
+  display: block;
+  margin-top: 3px;
+}
+.theme-customizer-actions {
+  align-items: end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.theme-customizer-actions label {
+  display: grid;
+  gap: 4px;
+}
+.theme-customizer-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.theme-customizer-grid section {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+}
+.theme-customizer-grid label {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  font-size: 12px;
+  justify-content: space-between;
+}
+.theme-color-input {
+  background: transparent;
+  border: 0;
+  height: 26px;
+  padding: 0;
+  width: 42px;
+}
+.modal-actions {
+  text-align: right;
+  margin-top: 14px;
+}
+.question-modal-card {
+  max-width: 420px;
+}
+.question-modal-card p {
+  color: var(--muted);
+  margin: 6px 0 0;
+  white-space: pre-line;
+}
+.question-confirm.danger {
+  background: #7f1d1d;
+  border-color: #f38ba8;
+  color: #fff;
+}
+.question-confirm.danger:hover,
+.question-confirm.danger:focus {
+  background: #991b1b;
+}
+.settings-select {
+  background: var(--panel2);
+  color: var(--fg);
+  border: 1px solid var(--border2);
+  border-radius: 8px;
+  padding: 7px;
+  min-width: 140px;
+}
+.settings-select:hover,
+.settings-select:focus {
+  background: var(--control-hover);
+  border-color: var(--accent-border);
+}
+.context-menu {
+  position: fixed;
+  z-index: 1000;
+  display: none;
+  background: var(--panel);
+  border: 1px solid var(--border2);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px #0006;
+  padding: 4px;
+}
+.context-menu button {
+  display: block;
+  width: 120px;
+  text-align: left;
+  background: transparent;
+  color: var(--fg);
+  border: 0;
+  padding: 7px 9px;
+  border-radius: 6px;
+}
+.context-menu button:hover {
+  background: var(--border);
+}

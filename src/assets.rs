@@ -8,7 +8,14 @@ const LOGIN_CSS: &str = include_str!("assets/login.css");
 const LOGIN_JS: &str = include_str!("assets/login.js");
 const SHARED_CORE_JS: &str = include_str!("assets/shared/core.js");
 const APP_BOOT_JS: &str = include_str!("assets/app_boot.js");
-const DESKTOP_CSS: &str = include_str!("assets/desktop/app.css");
+const DESKTOP_CSS: &str = concat!(
+    include_str!("assets/desktop/app_css/base.css"),
+    include_str!("assets/desktop/app_css/modals.css"),
+    include_str!("assets/desktop/app_css/terminal.css"),
+    include_str!("assets/desktop/app_css/chrome.css"),
+    include_str!("assets/desktop/app_css/controls.css"),
+    include_str!("assets/desktop/app_css/workspaces.css"),
+);
 const DESKTOP_GIT_UI_CSS: &str = concat!(
     include_str!("assets/desktop/git_ui/shell.css"),
     include_str!("assets/desktop/git_ui/entry.css"),
