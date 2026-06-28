@@ -1263,12 +1263,59 @@ async fn git_ui_conflict_action(
 mod tests {
     use super::*;
 
+    fn query() -> GitUiQuery {
+        GitUiQuery {
+            cwd: None,
+            scope: None,
+            file: None,
+            base: None,
+            target: None,
+            merge_base: None,
+            max: None,
+            ref_name: None,
+            all: None,
+            context: None,
+        }
+    }
+
     #[test]
     fn rejects_unsafe_repo_paths() {
         assert!(safe_repo_path("src/main.rs").is_ok());
+        assert_eq!(safe_repo_path(" src/main.rs ").unwrap(), "src/main.rs");
         assert!(safe_repo_path("../secret").is_err());
+        assert!(safe_repo_path("src/../secret").is_err());
         assert!(safe_repo_path("/tmp/secret").is_err());
         assert!(safe_repo_path("").is_err());
+        assert!(safe_repo_path("src\0secret").is_err());
+    }
+
+    #[test]
+    fn rejects_unsafe_git_tokens() {
+        assert_eq!(safe_git_token(" main ", "branch").unwrap(), "main");
+        assert!(safe_git_token("", "branch").is_err());
+        assert!(safe_git_token("--upload-pack=/tmp/x", "branch").is_err());
+        assert!(safe_git_token("main\0next", "branch").is_err());
+    }
+
+    #[test]
+    fn parses_diff_paths() {
+        assert_eq!(
+            parse_diff_path("a/src/main.rs").as_deref(),
+            Some("src/main.rs")
+        );
+        assert_eq!(
+            parse_diff_path("b/src/main.rs").as_deref(),
+            Some("src/main.rs")
+        );
+        assert_eq!(parse_diff_path("/dev/null"), None);
+        assert_eq!(
+            parse_diff_path("\"a/src/file\\tname.rs\"").as_deref(),
+            Some("src/file\tname.rs")
+        );
+        assert_eq!(
+            parse_diff_path("\"b/src/file\\\"name.rs\"").as_deref(),
+            Some("src/file\"name.rs")
+        );
     }
 
     #[test]
@@ -1283,5 +1330,102 @@ mod tests {
         assert_eq!(files[0].chunks[0].lines.len(), 3);
         assert_eq!(files[0].chunks[0].lines[0].line_type, "delete");
         assert_eq!(files[0].chunks[0].lines[1].line_type, "add");
+    }
+
+    #[test]
+    fn parses_added_deleted_and_renamed_diffs() {
+        let diff = "diff --git a/new.txt b/new.txt\nnew file mode 100644\n--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1 @@\n+new\n\ndiff --git a/old.txt b/old.txt\ndeleted file mode 100644\n--- a/old.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-old\n\ndiff --git a/old-name.txt b/new-name.txt\nsimilarity index 100%\nrename from old-name.txt\nrename to new-name.txt\n--- a/old-name.txt\n+++ b/new-name.txt\n";
+        let files = parse_unified_diff(diff);
+
+        assert_eq!(files.len(), 3);
+        assert_eq!(files[0].status, "added");
+        assert_eq!(files[0].path, "new.txt");
+        assert_eq!(files[0].additions, 1);
+        assert_eq!(files[1].status, "deleted");
+        assert_eq!(files[1].path, "old.txt");
+        assert_eq!(files[1].deletions, 1);
+        assert_eq!(files[2].status, "renamed");
+        assert_eq!(files[2].path, "new-name.txt");
+        assert_eq!(files[2].old_path.as_deref(), Some("old-name.txt"));
+    }
+
+    #[test]
+    fn builds_git_diff_args_for_scopes_and_compare() {
+        let mut staged = query();
+        staged.scope = Some("staged".to_string());
+        staged.file = Some("src/main.rs".to_string());
+        staged.context = Some(500);
+        assert_eq!(
+            git_ui_diff_args(&staged, false).unwrap(),
+            vec![
+                "diff",
+                "--no-ext-diff",
+                "--color=never",
+                "-U200",
+                "--cached",
+                "--",
+                "src/main.rs"
+            ]
+        );
+
+        let mut working = query();
+        working.scope = Some("working".to_string());
+        working.context = Some(0);
+        assert_eq!(
+            git_ui_diff_args(&working, false).unwrap(),
+            vec!["diff", "--no-ext-diff", "--color=never", "-U0"]
+        );
+
+        let mut compare = query();
+        compare.base = Some("main".to_string());
+        compare.target = Some("feature".to_string());
+        compare.merge_base = Some(true);
+        assert_eq!(
+            git_ui_diff_args(&compare, true).unwrap(),
+            vec![
+                "diff",
+                "--no-ext-diff",
+                "--color=never",
+                "-U3",
+                "--merge-base",
+                "main",
+                "feature"
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_unsafe_diff_args() {
+        let mut bad_file = query();
+        bad_file.file = Some("../secret".to_string());
+        assert!(git_ui_diff_args(&bad_file, false).is_err());
+
+        let mut bad_ref = query();
+        bad_ref.base = Some("--help".to_string());
+        assert!(git_ui_diff_args(&bad_ref, true).is_err());
+    }
+
+    #[test]
+    fn validates_git_ui_paths_request() {
+        let body = GitUiPathsRequest {
+            cwd: "/repo".to_string(),
+            paths: vec!["a.txt".to_string(), "dir/b.txt".to_string()],
+            confirmed: None,
+        };
+        assert_eq!(git_ui_paths(&body).unwrap(), vec!["a.txt", "dir/b.txt"]);
+
+        let empty = GitUiPathsRequest {
+            cwd: "/repo".to_string(),
+            paths: vec![],
+            confirmed: None,
+        };
+        assert!(git_ui_paths(&empty).is_err());
+
+        let unsafe_path = GitUiPathsRequest {
+            cwd: "/repo".to_string(),
+            paths: vec!["../secret".to_string()],
+            confirmed: None,
+        };
+        assert!(git_ui_paths(&unsafe_path).is_err());
     }
 }
