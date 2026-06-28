@@ -105,12 +105,23 @@ describe("app bundle load", () => {
   let source;
 
   beforeEach(() => {
+    const desktopAppSource = [
+      "./desktop/app_js/core.js",
+      "./desktop/app_js/render.js",
+      "./desktop/app_js/terminal.js",
+      "./desktop/app_js/worktrees.js",
+      "./desktop/app_js/shortcuts.js",
+      "./desktop/app_js/workspace_create.js",
+      "./desktop/app_js/bindings.js",
+    ]
+      .map((path) => readFileSync(new URL(path, import.meta.url), "utf8"))
+      .join("");
     source =
       readFileSync(new URL("./shared/core.js", import.meta.url), "utf8") +
       "\n" +
       readFileSync(new URL("./desktop/search.js", import.meta.url), "utf8") +
       "\n" +
-      readFileSync(new URL("./desktop/app.js", import.meta.url), "utf8");
+      desktopAppSource;
   });
 
   it("loads without initialization-order ReferenceError", () => {
