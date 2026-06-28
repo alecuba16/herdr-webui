@@ -891,11 +891,6 @@ function syncNoSleepControls() {
     }
   }
 }
-function nextNoSleepMode(mode) {
-  const modes = ["off", "auto", "1h", "2h", "4h", "infinite"];
-  const index = modes.indexOf(mode || "off");
-  return modes[(index + 1) % modes.length];
-}
 function bindHost(bind) {
   const value = String(bind || "").trim();
   if (value.startsWith("[")) return value.slice(1, value.indexOf("]"));
@@ -3699,23 +3694,6 @@ function syncBranchNameFromBase() {
   branchInput.value = base;
   state.openWorktreeBaseBranchName = base;
   syncWorktreeCheckoutPath();
-}
-function firstWorktreePathSuggestion() {
-  const rows = validOpenWorktreeRows();
-  if (rows.length) return rows[0].path;
-  const suggestions = state.openWorktreePathSuggestions || [];
-  return suggestions.length ? textValue(suggestions[0].path) : "";
-}
-function acceptFirstWorktreePathSuggestion() {
-  const path = firstWorktreePathSuggestion();
-  if (!path) return false;
-  el("worktreeDiscoverPath").value = path;
-  const idx = (state.openWorktreeRows || []).findIndex(
-    (w) => textValue(w.path) === path && w.is_linked_worktree,
-  );
-  state.openWorktreeSelected = idx >= 0 ? idx : null;
-  scheduleWorktreeAutodiscover();
-  return true;
 }
 function scheduleWorktreeAutodiscover() {
   clearTimeout(state.openWorktreeAutodiscoverTimer);
