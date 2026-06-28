@@ -1,0 +1,450 @@
+document.addEventListener("click", (e) => {
+  const workspaceAction = e.target && e.target.closest && e.target.closest("[data-workspace-action]");
+  if (workspaceAction) {
+    e.preventDefault();
+    e.stopPropagation();
+    runWorkspaceContextAction(workspaceAction.dataset.workspaceAction, workspaceAction);
+    return;
+  }
+  const option = e.target && e.target.closest && e.target.closest(".no-sleep-menu [data-mode]");
+  if (option) {
+    closeNoSleepMenus();
+    setNoSleepMode(option.dataset.mode || "off");
+    return;
+  }
+  const control = e.target && e.target.closest && e.target.closest(".no-sleep-control");
+  if (control) {
+    const wrap = control.closest(".no-sleep-wrap");
+    const menu = wrap && wrap.querySelector(".no-sleep-menu");
+    if (menu) {
+      const nextHidden = !menu.hidden;
+      closeNoSleepMenus(menu);
+      menu.hidden = nextHidden;
+    }
+    return;
+  }
+  if (!e.target || !e.target.closest || !e.target.closest(".no-sleep-wrap")) closeNoSleepMenus();
+});
+document.addEventListener("change", (e) => {
+  if (e.target && e.target.id === "panelSelector") selectPanelFromHeader(e.target.value);
+});
+if (window.matchMedia) {
+  try {
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    if (media.addEventListener)
+      media.addEventListener("change", () => {
+        if (themeMode === "auto") applyTheme();
+      });
+    else if (media.addListener)
+      media.addListener(() => {
+        if (themeMode === "auto") applyTheme();
+      });
+  } catch (e) {}
+}
+setInterval(pollAutoTheme, 2000);
+let settingsBackdropDown = false,
+  shortcutsBackdropDown = false;
+el("settingsToggle").onclick = () => {
+  el("settingsModal").style.display = "grid";
+  applyOptions();
+  loadServerSettings();
+};
+el("settingsClose").onclick = () => {
+  el("settingsModal").style.display = "none";
+};
+el("settingsModal").addEventListener("pointerdown", (e) => {
+  settingsBackdropDown = e.target === el("settingsModal");
+});
+el("settingsModal").addEventListener("click", (e) => {
+  if (settingsBackdropDown && e.target === el("settingsModal"))
+    el("settingsModal").style.display = "none";
+  settingsBackdropDown = false;
+});
+el("shortcutsToggle").onclick = () => {
+  applyOptions();
+  el("shortcutsModal").style.display = "grid";
+};
+el("shortcutsClose").onclick = () => {
+  el("shortcutsModal").style.display = "none";
+};
+el("shortcutsCloseTop").onclick = () => {
+  el("shortcutsModal").style.display = "none";
+};
+el("searchPaletteClose").onclick = closeSearchPalette;
+el("searchPaletteInput").oninput = scheduleSearch;
+el("searchPaletteInput").onkeydown = searchPaletteKeydown;
+el("searchPalette").addEventListener("click", (e) => {
+  if (e.target === el("searchPalette")) closeSearchPalette();
+});
+el("shortcutsModal").addEventListener("pointerdown", (e) => {
+  shortcutsBackdropDown = e.target === el("shortcutsModal");
+});
+el("shortcutsModal").addEventListener("click", (e) => {
+  if (shortcutsBackdropDown && e.target === el("shortcutsModal"))
+    el("shortcutsModal").style.display = "none";
+  shortcutsBackdropDown = false;
+});
+el("optTheme").onchange = () => {
+  themeMode = normalizeThemeMode(el("optTheme").value);
+  applyTheme();
+};
+el("themeColorsApply").onclick = applyThemeColorsFromSettings;
+el("themeColorsReset").onclick = () => applyThemeColorProfile("default");
+el("themeColorsApplyProfile").onclick = () => {
+  applyThemeColorProfile(el("themeColorProfile").value);
+};
+el("serverSettingsLoad").onclick = loadServerSettings;
+el("serverSettingsApply").onclick = applyServerSettings;
+el("optOverflow").onchange = () => {
+  options.overflow = el("optOverflow").checked;
+  saveOptions();
+  applyOptions();
+};
+el("optFit").onchange = () => {
+  options.fitToBrowser = el("optFit").checked;
+  saveOptions();
+  applyOptions();
+};
+el("optShiftEnterNewline").onchange = () => {
+  options.shiftEnterNewline = el("optShiftEnterNewline").checked;
+  saveOptions();
+  applyOptions();
+};
+el("optCloseShortcut").oninput = saveCloseShortcutOption;
+el("optCloseShortcut").onchange = saveCloseShortcutOption;
+el("optGlobalShortcutsEnabled").onchange = () => {
+  options.globalShortcutsEnabled = el("optGlobalShortcutsEnabled").checked;
+  saveOptions();
+  applyOptions();
+};
+el("optGlobalShortcutPrefixCapture").onclick = () => {
+  const button = el("optGlobalShortcutPrefixCapture"),
+    input = el("optGlobalShortcutPrefix");
+  button.textContent = "Press keys...";
+  if (input) input.value = "Press keys...";
+  const capture = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+    const prefix = shortcutPrefixFromEvent(e);
+    if (prefix) {
+      options.globalShortcutPrefix = prefix;
+      saveOptions();
+    }
+    button.textContent = "Record";
+    applyOptions();
+  };
+  window.addEventListener("keydown", capture, { once: true, capture: true });
+};
+el("optTerminalFontFamily").oninput = () => {
+  options.terminalFontFamily = el("optTerminalFontFamily").value;
+  saveOptions();
+  applyTerminalFont();
+  fitTerminalShell();
+};
+el("optAgentSortMode").onchange = () => {
+  options.agentSortMode = el("optAgentSortMode").value;
+  saveOptions();
+  applyOptions();
+  render();
+};
+el("optParentCloseMode").onchange = () => {
+  options.parentCloseMode = el("optParentCloseMode").value;
+  saveOptions();
+  applyOptions();
+};
+el("optStuckWorkingEnabled").onchange = () => {
+  options.stuckWorkingEnabled = el("optStuckWorkingEnabled").checked;
+  saveOptions();
+  applyOptions();
+  render();
+};
+el("optWorkingDismissMinutes").oninput = () => {
+  options.workingDismissMinutes = Math.max(
+    1,
+    Math.min(1440, Number(el("optWorkingDismissMinutes").value) || 30),
+  );
+  saveOptions();
+  applyOptions();
+  render();
+};
+el("optShowTabActivity").onchange = () => {
+  options.showTabActivity = el("optShowTabActivity").checked;
+  saveOptions();
+  applyOptions();
+  render();
+};
+el("optWorkspaceSort").onchange = () => {
+  options.workspaceSort = el("optWorkspaceSort").value;
+  saveOptions();
+  applyOptions();
+  render();
+};
+el("optSoundScope").onchange = () => {
+  options.soundScope = el("optSoundScope").value;
+  saveOptions();
+  applyOptions();
+};
+el("optScrollLines").oninput = () => {
+  options.scrollLines = Math.max(
+    1,
+    Math.min(20, Number(el("optScrollLines").value) || 3),
+  );
+  saveOptions();
+  applyOptions();
+};
+el("optWorktreeAutoDiscover").oninput = () => {
+  options.worktreeAutoDiscoverSeconds = Math.max(
+    0,
+    Math.min(30, Number(el("optWorktreeAutoDiscover").value) || 0),
+  );
+  saveOptions();
+  applyOptions();
+  scheduleWorktreeAutodiscover();
+};
+el("optGenerateWorktreeNames").onchange = () => {
+  options.generateWorktreeNames = el("optGenerateWorktreeNames").checked;
+  saveOptions();
+  applyOptions();
+};
+el("optWorktreeDefaultDirectory").oninput = () => {
+  options.worktreeDefaultDirectory =
+    el("optWorktreeDefaultDirectory").value.trim() || "../worktrees";
+  saveOptions();
+  syncWorktreeCheckoutPath();
+};
+el("optSound").onchange = () => {
+  options.sound = el("optSound").checked;
+  saveOptions();
+  applyOptions();
+};
+for (const module of settingsModules) {
+  if (typeof module.bind === "function") {
+    module.bind({
+      el,
+      saveOptions,
+      applyOptions,
+      setOption(key, value) {
+        options[key] = value;
+      },
+      getOption(key) {
+        return options[key];
+      },
+    });
+  }
+}
+el("worktreeCreateClose").onclick = closeWorktreeCreateModal;
+el("worktreeCreateCancel").onclick = closeWorktreeCreateModal;
+el("worktreeCreateSource").oninput = () => {
+  if (state.createWorktreeSuggestionLocked) {
+    state.createWorktreeSuggestionLocked = false;
+    return;
+  }
+  state.createWorktreeSuggestionIndex = -1;
+  state.createWorktreePathSuggestTimer = schedulePathSuggestions(
+    state.createWorktreePathSuggestTimer,
+    loadCreateWorktreePathSuggestions,
+  );
+  scheduleCreateWorktreeAutodiscover();
+};
+el("worktreeCreateSource").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    state.createWorktreeSuggestionLocked = true;
+    clearCreateWorktreeSuggestions();
+    discoverCreateWorktreeSource();
+  }
+});
+el("worktreeBranch").addEventListener("input", syncCreateWorktreeCheckoutPath);
+el("worktreeBranch").addEventListener("change", syncCreateWorktreeCheckoutPath);
+el("worktreeCreateForm").onsubmit = async (e) => {
+  e.preventDefault();
+  const source = resolveWorktreeSource({
+    workspaceId: state.createWorktreeWorkspace,
+    sourcePath: el("worktreeCreateSource").value,
+    originalSource: state.createWorktreeOriginalSource,
+  });
+  await submitWorktreeCreate({
+    errEl: el("worktreeCreateError"),
+    submitEl: el("worktreeCreateSubmit"),
+    closeFn: closeWorktreeCreateModal,
+    source,
+    branch: el("worktreeBranch").value,
+    base: el("worktreeBase").value,
+    label: el("worktreeLabel").value,
+    path: el("worktreePath").value,
+  });
+};
+el("worktreeOpenClose").onclick = closeWorktreeOpenModal;
+document.addEventListener(
+  "keydown",
+  (e) => {
+    if (e.key !== "Escape") return;
+    if (el("workspaceCreateModal").style.display === "grid") {
+      e.preventDefault();
+      e.stopPropagation();
+      closeWorkspaceCreateModal();
+    } else if (el("worktreeOpenModal").style.display === "grid") {
+      e.preventDefault();
+      e.stopPropagation();
+      closeWorktreeOpenModal();
+    } else if (el("worktreeCreateModal").style.display === "grid") {
+      e.preventDefault();
+      e.stopPropagation();
+      closeWorktreeCreateModal();
+    } else if (el("searchPalette").style.display === "grid") {
+      e.preventDefault();
+      e.stopPropagation();
+      closeSearchPalette();
+    }
+  },
+  true,
+);
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Tab") return;
+  const modalIds = [
+    "settingsModal",
+    "worktreeCreateModal",
+    "worktreeOpenModal",
+    "workspaceCreateModal",
+    "shortcutsModal",
+    "searchPalette",
+  ];
+  const modal = modalIds
+    .map((id) => el(id))
+    .find((m) => m && m.style.display === "grid");
+  if (!modal) return;
+  const focusable = modal.querySelectorAll(
+    'input:not([type="hidden"]):not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled]), [tabindex]:not([tabindex="-1"])',
+  );
+  if (!focusable.length) {
+    e.preventDefault();
+    return;
+  }
+  const filtered = Array.from(focusable).filter(
+    (f) => f.offsetParent !== null || f === document.activeElement,
+  );
+  if (!filtered.length) return;
+  const active = document.activeElement;
+  const first = filtered[0],
+    last = filtered[filtered.length - 1];
+  if (e.shiftKey) {
+    if (active === first || !modal.contains(active)) {
+      e.preventDefault();
+      last.focus();
+    }
+  } else {
+    if (active === last || !modal.contains(active)) {
+      e.preventDefault();
+      first.focus();
+    }
+  }
+});
+el("worktreeOpenRefresh").onclick = async () => {
+  await refresh();
+  if (el("worktreeDiscoverPath").value.trim()) await discoverWorktrees();
+  else {
+    syncWorktreePathOptions(validOpenWorktreeRows());
+    renderWorktreeOpenList();
+  }
+};
+el("worktreeNewForm").onsubmit = (e) => {
+  e.preventDefault();
+  createDiscoveredWorktree();
+};
+el("worktreeNewBase").addEventListener("input", syncBranchNameFromBase);
+el("worktreeNewBase").addEventListener("change", syncBranchNameFromBase);
+el("worktreeNewBranch").addEventListener("input", () => {
+  if (el("worktreeNewBranch").value.trim() !== state.openWorktreeBaseBranchName)
+    state.openWorktreeBaseBranchName = "";
+  syncWorktreeCheckoutPath();
+});
+el("worktreeNewBranch").addEventListener("change", syncWorktreeCheckoutPath);
+function worktreePathInputChanged() {
+  if (state.openWorktreeSuggestionLocked) {
+    state.openWorktreeSuggestionLocked = false;
+    return;
+  }
+  const value = el("worktreeDiscoverPath").value.trim();
+  const idx = (state.openWorktreeRows || []).findIndex(
+    (w) => textValue(w.path) === value && w.is_linked_worktree,
+  );
+  state.openWorktreeSelected = idx >= 0 ? idx : null;
+  scheduleWorktreePathSuggestions();
+  scheduleWorktreeAutodiscover();
+}
+el("worktreeDiscoverPath").addEventListener("input", worktreePathInputChanged);
+el("worktreeDiscoverPath").addEventListener("change", worktreePathInputChanged);
+el("worktreeDiscoverPath").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    state.openWorktreeSuggestionLocked = true;
+    renderPathOptions("worktreePathOptions", []);
+  }
+});
+function editableEventTarget(e) {
+  const t = e.target;
+  return (
+    t &&
+    (t.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName))
+  );
+}
+el("copyMenu").onclick = copySelection;
+el("pasteMenu").onclick = pasteClipboard;
+el("terminalShell").addEventListener("contextmenu", (e) => {
+  e.preventDefault();
+  showClipboardMenu(e.clientX, e.clientY);
+});
+document.addEventListener("click", (e) => {
+  const menu = el("clipboardMenu");
+  if (menu && !menu.contains(e.target)) hideClipboardMenu();
+});
+window.addEventListener("keydown", closeShortcutKeydown, true);
+window.addEventListener("keydown", handleGlobalShortcut, true);
+document.addEventListener("keydown", (e) => {
+  if (editableEventTarget(e)) return;
+  const copyKey =
+    (e.metaKey || e.ctrlKey) &&
+    !e.shiftKey &&
+    !e.altKey &&
+    e.key.toLowerCase() === "c";
+  const pasteKey =
+    (e.metaKey || e.ctrlKey) &&
+    !e.shiftKey &&
+    !e.altKey &&
+    e.key.toLowerCase() === "v";
+  if (copyKey && term && term.getSelection && term.getSelection()) {
+    e.preventDefault();
+    copySelection();
+  } else if (pasteKey) {
+    e.preventDefault();
+    pasteClipboard();
+  }
+});
+window.onpopstate = refresh;
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    hiddenTimer = setTimeout(() => {
+      if (eventWs) eventWs.close();
+      if (termWs) termWs.close();
+    }, 1000);
+  } else {
+    clearTimeout(hiddenTimer);
+    loadVersions();
+    refresh();
+    connectEvents();
+    loadNoSleep();
+  }
+});
+window.addEventListener("focus", loadNoSleep);
+setInterval(loadNoSleep, 5000);
+document.addEventListener("pointerdown", unlockAudio, { once: true });
+document.addEventListener("keydown", unlockAudio, { once: true });
+setupSessionChrome();
+applyTheme();
+applyOptions();
+syncNoSleepControls();
+loadNoSleep();
+loadVersions();
+refresh();
+connectEvents();

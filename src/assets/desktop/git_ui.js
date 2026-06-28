@@ -8,6 +8,7 @@
     contextMenu: null,
     branchModal: null,
   };
+  const LARGE_FILE_DIFF_LINE_LIMIT = 500;
 
   document.addEventListener("click", () => {
     if (!state.contextMenu) return;
@@ -38,6 +39,17 @@
 
   function diffLineCount(files) {
     return (files || []).reduce((total, file) => total + (file.chunks || []).reduce((sum, chunk) => sum + ((chunk.lines || []).length), 0), 0);
+  }
+
+  function diffFileLineCount(file) {
+    return ((file && file.chunks) || []).reduce((sum, chunk) => sum + ((chunk.lines || []).length), 0);
+  }
+
+  function hashText(value) {
+    let hash = 0;
+    const text = String(value || "");
+    for (let i = 0; i < text.length; i++) hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0;
+    return Math.abs(hash).toString(16);
   }
 
   function esc(value) {
@@ -151,6 +163,7 @@
         compareFilePaths: [],
         collapsedSections: {},
         collapsedFiles: {},
+        loadedLargeDiffFiles: {},
         collapsedDirs: {},
         pendingLogScrollHash: "",
         temporaryHistoryCompare: false,
@@ -370,6 +383,7 @@
 
   function renderFileToolbar(activeTab) {
     const view = active() || {};
+    if (!view.file) return "";
     const conflicts = ((((view.status || {}).conflicted) || []).length > 0);
     const compare = currentMode() !== "changes"
       ? `<span class="git-ui-compare-state">Comparing ${esc(view.compareBase || "base")} → ${esc(view.compareTarget || "target")}</span><button class="git-ui-btn" onclick="HerdrGitUi.latestChanges()">Back to latest changes</button>`
@@ -403,8 +417,8 @@
     if (!files.length) return `${head}<div class="git-ui-muted">No diff.</div>`;
     const limit = largeDiffLineLimit();
     const count = diffLineCount(files);
-    if (!view.file && limit > 0 && count > limit) {
-      return `${head}<div class="git-ui-large-diff"><strong>Large diff hidden</strong><span>${count} lines exceed ${limit} line limit. Select a file from left list to render its changes.</span></div>`;
+    if (view.file && limit > 0 && count > limit && !((view.loadedLargeDiffFiles || {})[view.file])) {
+      return `${head}<div class="git-ui-large-diff"><strong>Large diff hidden</strong><span>${count} lines exceed ${limit} line limit.</span><button class="git-ui-btn" onclick="HerdrGitUi.loadLargeDiff('${arg(view.file)}')">Load diff</button></div>`;
     }
     return `${head}${files.map(renderDiffFile).join("")}`;
   }
@@ -454,14 +468,23 @@
 
   function renderDiffFile(file) {
     const mode = currentMode();
-    const collapsed = !!((active() || {}).collapsedFiles || {})[file.path];
-    const left = mode === "changes" ? "previous" : (active().compareBase || "base");
-    const right = mode === "readonly-compare" ? (active().compareTarget || "target") : "current";
-    if ((active() || {}).showBlame) ensureBlame(file.path);
-    const restore = mode === "changes" && (active().diffScope || "all") !== "staged"
+    const view = active() || {};
+    const collapsed = !!(view.collapsedFiles || {})[file.path];
+    const large = diffFileLineCount(file) > LARGE_FILE_DIFF_LINE_LIMIT;
+    const loadedLarge = !!(view.loadedLargeDiffFiles || {})[file.path];
+    const left = mode === "changes" ? "previous" : (view.compareBase || "base");
+    const right = mode === "readonly-compare" ? (view.compareTarget || "target") : "current";
+    if (view.showBlame && (!large || loadedLarge)) ensureBlame(file.path);
+    const restore = mode === "changes" && (view.diffScope || "all") !== "staged"
       ? `<button class="git-ui-btn danger" title="Restore complete file" onclick="HerdrGitUi.discardFile('${arg(file.path)}')">Restore file</button>`
       : "";
-    return `<div class="git-ui-diff-file" data-git-path="${esc(file.path)}"><div class="git-ui-diff-file-head"><button class="git-ui-file-collapse" title="${collapsed ? "Show file" : "Collapse file"}" onclick="HerdrGitUi.toggleFile('${arg(file.path)}')">${collapsed ? "+" : "−"}</button><strong>${esc(file.path)}</strong><span class="git-ui-muted">${esc(left)} → ${esc(right)}</span><span class="git-ui-diff-file-actions"><span class="git-ui-badge add">+${file.additions || 0}</span> <span class="git-ui-badge del">-${file.deletions || 0}</span>${restore}</span></div>${collapsed ? "" : (file.chunks || []).map((chunk, index) => renderChunk(file, chunk, index)).join("")}</div>`;
+    const body = collapsed ? "" : large && !loadedLarge ? renderLargeDiffPlaceholder(file) : (file.chunks || []).map((chunk, index) => renderChunk(file, chunk, index)).join("");
+    return `<div class="git-ui-diff-file" data-git-path="${esc(file.path)}"><div class="git-ui-diff-file-head"><button class="git-ui-file-collapse" title="${collapsed ? "Show file" : "Collapse file"}" onclick="HerdrGitUi.toggleFile('${arg(file.path)}')">${collapsed ? "+" : "−"}</button><strong>${esc(file.path)}</strong><span class="git-ui-muted">${esc(left)} → ${esc(right)}</span><span class="git-ui-diff-file-actions"><span class="git-ui-badge add">+${file.additions || 0}</span> <span class="git-ui-badge del">-${file.deletions || 0}</span>${restore}</span></div>${body}</div>`;
+  }
+
+  function renderLargeDiffPlaceholder(file) {
+    const id = `hidden-diff-reason-${hashText(file.path)}`;
+    return `<div class="git-ui-large-file-diff"><button aria-describedby="${id}" class="git-ui-large-file-load" type="button" onclick="HerdrGitUi.loadLargeDiff('${arg(file.path)}')"><strong>Load diff</strong></button><p id="${id}">Large diffs are not rendered by default.</p></div>`;
   }
 
   function scrollToDiffFile(path) {
@@ -626,7 +649,7 @@
     const data = await api(`/api/git-ui/log?cwd=${encodeURIComponent(view.cwd)}&all=${view.logAll ? "true" : "false"}`);
     const selected = view.selectedLogCommits || [];
     const compare = Actions.selectedLogToolbar(selected);
-    replaceContent(version, `<div class="git-ui-log-head"><span class="git-ui-toolbar-title">History scope</span><button class="git-ui-btn ${!view.logAll ? "active" : ""}" onclick="HerdrGitUi.setLogAll(false)">Current branch</button><button class="git-ui-btn ${view.logAll ? "active" : ""}" onclick="HerdrGitUi.setLogAll(true)">All branches</button>${compare}</div><div class="git-ui-log">${(data.lines || []).map(renderLogLine).join("")}</div>`);
+    replaceContent(version, `<div class="git-ui-log-scope-head"><span class="git-ui-toolbar-title">History scope</span><button class="git-ui-btn ${!view.logAll ? "active" : ""}" onclick="HerdrGitUi.setLogAll(false)">Current branch</button><button class="git-ui-btn ${view.logAll ? "active" : ""}" onclick="HerdrGitUi.setLogAll(true)">All branches</button>${compare}</div><div class="git-ui-log">${(data.lines || []).map(renderLogLine).join("")}</div>`);
     if (view.pendingLogScrollHash) {
       const hash = view.pendingLogScrollHash;
       view.pendingLogScrollHash = "";
@@ -866,6 +889,13 @@
       }
       view.diffScope = kind === "S" ? "staged" : kind === "M" || kind === "?" ? "working" : "all";
       loadDiff().then(() => requestAnimationFrame(() => scrollToDiffFile(view.file))).catch((e) => { view.error = e.message; render(); });
+    },
+    loadLargeDiff(file) {
+      const view = active();
+      if (!view) return;
+      const path = decodeURIComponent(file);
+      view.loadedLargeDiffFiles = Object.assign({}, view.loadedLargeDiffFiles || {}, { [path]: true });
+      render();
     },
     fileMenu(event, file, kind) {
       event.preventDefault();
