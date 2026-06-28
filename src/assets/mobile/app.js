@@ -29,6 +29,8 @@
     worktreeBase: "",
     worktreeLabel: "",
     worktreePath: "",
+    gitStatus: null,
+    gitError: "",
   };
 
   let eventWs,
@@ -226,6 +228,7 @@
           <button data-screen="agents">Agents</button>
           <button data-screen="panels">Panels</button>
           <button data-screen="worktrees">Worktrees</button>
+          <button data-screen="git">Git</button>
           <button data-screen="terminal">Terminal</button>
         </nav>
       </div>`;
@@ -263,6 +266,7 @@
     else if (state.screen === "panels") screen.innerHTML = renderPanels();
     else if (state.screen === "worktrees")
       screen.innerHTML = mobileWorktrees.renderScreen();
+    else if (state.screen === "git") renderGitScreen(screen);
     else if (state.screen === "settings")
       screen.innerHTML = mobileSettings.render();
     else if (state.screen === "terminal") renderTerminalScreen(screen);
@@ -339,6 +343,7 @@
           home: "Workspaces",
           panels: "Panels",
           worktrees: "Worktrees",
+          git: "Git",
           terminal: "Terminal",
         }[screen] || screen
       );
@@ -364,6 +369,60 @@
     if (!state.terminalId)
       return '<div class="mobile-loading">No terminal selected</div>';
     return `<div class="mobile-terminal-screen"><div class="mobile-tabs" id="mobileTerminalTabs">${renderTerminalTabsWithAdd()}</div><div class="mobile-terminal-shell" id="terminalShell"><div class="mobile-terminal" id="terminal"></div></div></div>`;
+  }
+
+  function currentWorkspaceCwd() {
+    const workspace = currentWorkspace();
+    return (
+      (workspace && workspace.worktree && workspace.worktree.checkout_path) ||
+      (workspace && (workspace.cwd || workspace.path)) ||
+      ""
+    );
+  }
+
+  async function loadGitStatus() {
+    const cwd = currentWorkspaceCwd();
+    if (!cwd) {
+      state.gitError = "No checkout path for selected workspace";
+      state.gitStatus = null;
+      render();
+      return;
+    }
+    try {
+      state.gitError = "";
+      state.gitStatus = await api(
+        "/api/git-ui/status?cwd=" + encodeURIComponent(cwd),
+      );
+    } catch (error) {
+      state.gitError = error.message || String(error);
+      state.gitStatus = null;
+    }
+    render();
+  }
+
+  function renderGitScreen(screen) {
+    const status = state.gitStatus;
+    if (state.gitError) {
+      screen.innerHTML = `<section class="mobile-section"><h2>Git</h2><div class="mobile-error">${escapeHtml(state.gitError)}</div><button class="mobile-btn primary mobile-wide" onclick="HerdrMobile.loadGitStatus()">Retry</button></section>`;
+      return;
+    }
+    if (!status) {
+      screen.innerHTML = `<section class="mobile-section"><h2>Git</h2><div class="mobile-loading">Loading Git status</div></section>`;
+      loadGitStatus();
+      return;
+    }
+    const rows = [
+      ["Conflicts", status.conflicted || []],
+      ["Staged", status.staged || []],
+      ["Unstaged", status.unstaged || []],
+      ["Untracked", status.untracked || []],
+    ]
+      .map(
+        ([title, files]) =>
+          `<h3>${escapeHtml(title)}</h3>${files.length ? files.map((file) => `<div class="mobile-row"><strong>${escapeHtml(file)}</strong></div>`).join("") : '<div class="mobile-loading">None</div>'}`,
+      )
+      .join("");
+    screen.innerHTML = `<section class="mobile-section"><h2>Git</h2><p class="mobile-help">${escapeHtml(status.branch || "detached")} · ${escapeHtml(status.state || "")}</p><button class="mobile-btn primary mobile-wide" onclick="HerdrMobile.loadGitStatus()">Refresh</button>${rows}</section>`;
   }
 
   function renderTerminalTabsWithAdd() {
@@ -450,6 +509,8 @@
     state.tab = null;
     state.pane = null;
     state.screen = "terminal";
+    state.gitStatus = null;
+    state.gitError = "";
     history.pushState(null, "", selectionPath(id));
     mobileTerminal.destroy(true);
     refresh();
@@ -558,6 +619,7 @@
     selectAgent,
     selectTab,
     createPanel,
+    loadGitStatus,
     loadWorktrees: mobileWorktrees.load,
     openWorktree: mobileWorktrees.open,
     createWorktree: mobileWorktrees.create,

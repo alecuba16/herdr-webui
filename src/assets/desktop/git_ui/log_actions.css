@@ -1,0 +1,6 @@
+.git-ui-log-actions-separator {
+  border-left: 1px solid var(--border);
+  display: inline-block;
+  height: 22px;
+  margin: 0 2px;
+}

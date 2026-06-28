@@ -1,0 +1,7 @@
+/* Syntax highlighting */
+.git-ui-syn-com { color: var(--git-syn-com); }
+.git-ui-syn-fn { color: var(--git-syn-fn); }
+.git-ui-syn-kw { color: var(--git-syn-kw); }
+.git-ui-syn-num { color: var(--git-syn-num); }
+.git-ui-syn-str { color: var(--git-syn-str); }
+.git-ui-syn-type { color: var(--git-syn-type); }
