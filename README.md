@@ -14,8 +14,8 @@ Compatibility:
 
 | WebUI | Herdr | Protocol | Status | Notes |
 | --- | --- | --- | --- | --- |
-| `0.0.44` | `0.7.1` | `14` | Tested | Optimises embedded Git UI internals with split frontend assets, scoped file history controls, and per-file large diff loading. |
-| `0.0.44` | `0.7.0` | `14` | Minimum supported | Uses WebUI's legacy existing-branch worktree fallback when needed. |
+| `0.0.45` | `0.7.1` | `14` | Tested | Improves embedded Git UI navigation with Escape handling, all-changes return behavior, split frontend assets, scoped file history controls, and per-file large diff loading. |
+| `0.0.45` | `0.7.0` | `14` | Minimum supported | Uses WebUI's legacy existing-branch worktree fallback when needed. |
 
 Newer Herdr builds may work when protocol stays compatible, but WebUI reports them as untested.
 
