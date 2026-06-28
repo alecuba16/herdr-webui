@@ -154,12 +154,20 @@ describe("app bundle load", () => {
     match(gitUiSource, /Git drawer owns keyboard while visible/);
     match(gitUiSource, /event\.stopImmediatePropagation/);
     match(gitUiSource, /function handleGitShortcut\(event, view\)/);
-    match(gitUiSource, /Git UI shortcuts:/);
+    match(gitUiSource, /function isGitShortcutPrefix\(event\)/);
+    match(gitUiSource, /function gitShortcutPrefixLabel\(\)/);
     match(gitUiSource, /function shortcutFilePath\(event, view\)/);
-    match(gitUiSource, /A Stage file/);
+    match(gitUiSource, /Y Stage file/);
+    match(gitUiSource, /G Stage\/unstage all/);
     match(gitUiSource, /activateTreeItem\(event\)/);
     match(gitUiSource, /role="treeitem" tabindex="0" data-git-path=/);
     match(source, /HerdrGitUi\.isVisible\(\)\)\n\s+return false;/);
+  });
+
+  it("keeps Git prefix shortcuts collision-free with WebUI prefix keys", () => {
+    const webuiKeys = new Set([...source.matchAll(/case "([^"]+)":/g)].map((match) => match[1]));
+    const gitKeys = ["Digit1", "Digit2", "Digit3", "Digit4", "KeyC", "KeyL", "KeyR", "KeyG", "KeyY", "KeyU", "KeyD", "KeyZ", "KeyH", "KeyM", "KeyE", "KeyO", "KeyV", "KeyI", "Digit0"];
+    equal(gitKeys.filter((key) => webuiKeys.has(key)).join(","), "");
   });
 
   it("renders new workspace modal with folder autocomplete fields", () => {
