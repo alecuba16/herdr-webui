@@ -1,0 +1,362 @@
+/* Diff viewer */
+.git-ui-diff-file {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  margin-bottom: 14px;
+  overflow: hidden;
+}
+.git-ui-editor {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+.git-ui-editor-head {
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  padding: 10px;
+}
+.git-ui-editor-text {
+  background: transparent;
+  border: 0;
+  box-sizing: border-box;
+  color: var(--fg);
+  flex: 1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  min-height: 58vh;
+  outline: none;
+  padding: 12px;
+  resize: vertical;
+  tab-size: 2;
+  white-space: pre;
+  width: 100%;
+  z-index: 1;
+}
+.git-ui-split-editor {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  min-height: 0;
+}
+.git-ui-split-editor section {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+}
+.git-ui-editor-preview {
+  background: var(--bg);
+  color: var(--fg);
+  flex: 1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 0;
+  min-height: 58vh;
+  overflow: auto;
+  padding: 12px;
+  tab-size: 2;
+  white-space: pre;
+}
+.git-ui-hunk-editor-list {
+  display: grid;
+  gap: 12px;
+}
+.git-ui-hunk-editor {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.git-ui-hunk-editor-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+.git-ui-hunk-editor-grid section {
+  background: var(--panel);
+  min-width: 0;
+}
+.git-ui-hunk-editor-grid section + section {
+  border-left: 1px solid var(--border);
+}
+.git-ui-editor-preview.del .git-ui-editor-line {
+  background: rgba(248, 81, 73, 0.18);
+  border-left: 4px solid #da3633;
+}
+.git-ui-hunk-edit {
+  background: rgba(46, 160, 67, 0.1);
+  border: 0;
+  border-left: 4px solid #1b7c3d;
+  box-sizing: border-box;
+  color: var(--fg);
+  display: block;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  min-height: 160px;
+  outline: none;
+  padding: 12px;
+  resize: vertical;
+  tab-size: 2;
+  white-space: pre;
+  width: 100%;
+}
+.git-ui-hunk-edit:focus {
+  background: var(--bg);
+  box-shadow: inset 0 0 0 2px rgba(56, 139, 253, 0.18);
+}
+.git-ui-hunk-edit[readonly] {
+  color: var(--muted);
+  cursor: not-allowed;
+}
+.git-ui-editor-line {
+  display: block;
+  min-height: 1.5em;
+  padding: 0 4px;
+}
+.git-ui-editor-line.changed {
+  background: rgba(248, 81, 73, 0.18);
+  border-left: 4px solid #da3633;
+  padding-left: 8px;
+}
+.git-ui-editor-stack {
+  background: var(--bg);
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+.git-ui-editor-bands {
+  bottom: 0;
+  left: 0;
+  overflow: hidden;
+  pointer-events: none;
+  position: absolute;
+  right: 0;
+  top: 0;
+}
+.git-ui-editor-bands span {
+  background: rgba(46, 160, 67, 0.18);
+  border-left: 4px solid #1b7c3d;
+  height: calc(var(--line-count) * 1.5em);
+  left: 0;
+  position: absolute;
+  right: 0;
+  top: calc((var(--line-start) - 1) * 1.5em + 12px);
+}
+@media (max-width: 900px) {
+  .git-ui-split-editor,
+  .git-ui-hunk-editor-grid {
+    grid-template-columns: 1fr;
+  }
+  .git-ui-hunk-editor-grid section + section {
+    border-left: 0;
+    border-top: 1px solid var(--border);
+  }
+}
+.git-ui-side-edit-note {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+  margin-bottom: 10px;
+  padding: 8px 10px;
+}
+.git-ui-side-edit-note.error {
+  border-color: #da3633;
+  color: #da3633;
+}
+.git-ui-diff-file-head {
+  align-items: center;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  padding: 8px 10px;
+}
+.git-ui-file-collapse {
+  background: var(--panel2);
+  border: 1px solid var(--border2);
+  border-radius: 6px;
+  color: var(--muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  font: inherit;
+  font-weight: 800;
+  line-height: 1;
+  padding: 2px 6px;
+}
+.git-ui-file-collapse:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.git-ui-diff-file-head strong,
+.git-ui-diff-file-head .git-ui-muted {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.git-ui-diff-file-actions {
+  align-items: center;
+  display: inline-flex;
+  flex-shrink: 0;
+  gap: 6px;
+}
+.git-ui-hunk-head {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+.git-ui-hunk-actions {
+  display: inline-flex;
+  gap: 6px;
+}
+.git-ui-hunk-head {
+  background: var(--panel2);
+  border-left: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  padding: 5px 10px;
+}
+.git-ui-hunk {
+  border-left: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+  border-top: 1px solid var(--border);
+}
+.git-ui-diff-row {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr) 132px minmax(0, 1fr);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.git-ui-context-cell {
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  display: flex;
+  justify-content: center;
+}
+.git-ui-context-arrow {
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 0 4px;
+}
+.git-ui-context-arrow:hover {
+  background: var(--panel2);
+  color: var(--accent);
+}
+.git-ui-line-pair {
+  align-items: center;
+  background: var(--panel);
+  border-left: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+  color: var(--muted);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px minmax(0, 1fr);
+  gap: 4px;
+  padding: 1px 8px;
+  text-align: right;
+  user-select: none;
+}
+.git-ui-line-pair em {
+  display: block;
+  font-style: normal;
+  opacity: 0.72;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.git-ui-line-old,
+.git-ui-line-new {
+  color: var(--muted);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.git-ui-line-old {
+  text-align: left;
+}
+.git-ui-line-new {
+  text-align: right;
+}
+.git-ui-line-action {
+  background: var(--panel);
+  border: 1px solid var(--border2);
+  border-radius: 999px;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+  line-height: 1;
+  min-width: 24px;
+  padding: 2px 4px;
+  position: relative;
+  z-index: 1;
+}
+.git-ui-line-action-spacer {
+  display: inline-block;
+  min-width: 24px;
+}
+.git-ui-line-action:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.git-ui-code {
+  min-width: 0;
+  overflow: hidden;
+  padding: 1px 8px;
+  white-space: pre;
+}
+.git-ui-change-start .git-ui-code-old,
+.git-ui-change-start .git-ui-code-new,
+.git-ui-change-start .git-ui-line-pair {
+  border-top: 1px solid var(--border2);
+}
+.git-ui-change-end .git-ui-code-old,
+.git-ui-change-end .git-ui-code-new,
+.git-ui-change-end .git-ui-line-pair {
+  border-bottom: 1px solid var(--border2);
+}
+.git-ui-add .git-ui-code-new,
+.git-ui-change .git-ui-code-new {
+  background: rgba(46, 160, 67, 0.18);
+  border-left: 4px solid #1b7c3d;
+}
+.git-ui-del .git-ui-code-old,
+.git-ui-change .git-ui-code-old {
+  background: rgba(248, 81, 73, 0.18);
+  border-left: 4px solid #da3633;
+}
+.git-ui-add .git-ui-word-change,
+.git-ui-change .git-ui-code-new .git-ui-word-change {
+  background: rgba(46, 160, 67, 0.42);
+  border-radius: 2px;
+}
+.git-ui-del .git-ui-word-change,
+.git-ui-change .git-ui-code-old .git-ui-word-change {
+  background: rgba(248, 81, 73, 0.36);
+  border-radius: 2px;
+}

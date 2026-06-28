@@ -14,8 +14,8 @@ Compatibility:
 
 | WebUI | Herdr | Protocol | Status | Notes |
 | --- | --- | --- | --- | --- |
-| `0.0.39` | `0.7.1` | `14` | Tested | Adds keyboard prefix navigation, search palette, worktree labels, safer close actions, terminal font setting, and split frontend assets. |
-| `0.0.39` | `0.7.0` | `14` | Minimum supported | Uses WebUI's legacy existing-branch worktree fallback when needed. |
+| `0.0.43` | `0.7.1` | `14` | Tested | Adds the embedded Git drawer/tab, themeable desktop shell, compact workspace/panel controls, no-sleep dropdown, safer pane exit handling, keyboard prefix navigation, search palette, worktree labels, terminal font setting, and split frontend assets. |
+| `0.0.43` | `0.7.0` | `14` | Minimum supported | Uses WebUI's legacy existing-branch worktree fallback when needed. |
 
 Newer Herdr builds may work when protocol stays compatible, but WebUI reports them as untested.
 
@@ -88,6 +88,8 @@ Use `--verbose`, `-v`, or `HERDR_WEB_VERBOSE=1` with macOS service commands to p
 - `src/service.rs`: OS service helpers.
 - `src/assets/`: embedded HTML/CSS/JS and frontend tests.
 - `src/assets/desktop/`: desktop UI bundle chunks and desktop-only CSS.
+- `src/assets/desktop/git_ui/`: embedded Git UI modules for settings, syntax highlighting, log actions, drawer shell CSS, diff CSS, log CSS, and layout CSS.
+- `src/assets/icons/`: SVG icons served as static assets and referenced from CSS/markup.
 - `src/assets/mobile/`: mobile UI bundle chunks and mobile-only CSS.
 - `src/assets/shared/`: browser helpers shared by desktop and mobile bundles.
 - `.github/workflows/webui-ci.yml`: WebUI CI.
@@ -95,6 +97,19 @@ Use `--verbose`, `-v`, or `HERDR_WEB_VERBOSE=1` with macOS service commands to p
 - `Makefile`: local build, run, install, update, uninstall commands.
 
 The Rust binary embeds frontend assets with `include_str!`, so release artifacts do not need external static files next to the binary.
+
+## Frontend Notes
+
+- Desktop and mobile UI are currently embedded vanilla HTML/CSS/JS assets with no build step.
+- Desktop Git UI is split into plain JS/CSS modules and concatenated by `src/assets.rs`; public URLs stay `/assets/desktop/git-ui.js` and `/assets/desktop/git-ui.css`.
+- Prefer moving behavior out of inline handlers into delegated JS listeners and shared CSS classes when touching UI code.
+- SVG icons should live under `src/assets/icons/` and be referenced from CSS or markup, not embedded inline in JS templates.
+
+TODO:
+
+- Evaluate a small progressive templating layer, with `petite-vue` as the leading option, to reduce inline JavaScript and string-template complexity.
+- Keep the migration incremental if adopted: start with isolated islands such as settings, modals, sidebar workspace rows, and Git file lists.
+- Avoid adding a heavier framework unless it removes more code than it adds. `jQuery` is not expected to help much here because the main pain is templating/state, not DOM selection.
 
 ## Authentication
 
@@ -131,6 +146,17 @@ Sidebar:
 - Use the vertical divider between the sidebar and terminal to hide or show the workspace/agents sidebar.
 - The collapsed state is stored in browser `localStorage`.
 - When collapsed, the sidebar shows compact agent counters for blocked, working, idle, and done agents.
+- The header exposes compact Search, Theme, No-sleep, Worktree, New workspace, and Git controls.
+- The footer shows the Herdr brand, current session, shortcut help, and settings.
+- Theme colors are browser-local and expose shared accent variables used by shell controls and the embedded Git UI.
+- No-sleep supports Off, Auto, 1 hour, 2 hours, 4 hours, and Infinite from a compact dropdown.
+
+Panels:
+
+- The selected workspace or worktree is pinned at the top of the workspace list.
+- The selected row includes compact actions for worktree creation, opening, closing, and removal.
+- The current panel selector lives inside the selected workspace/worktree row and supports switching panels, creating a panel, renaming a panel, and closing a panel.
+- WebUI subscribes to `pane.closed`, `pane.exited`, and `tab.closed`, clears stale terminal selection immediately, and auto-closes exited panes before switching to the next available panel.
 
 Worktrees:
 
@@ -143,11 +169,33 @@ Worktrees:
 - Worktree groups avoid duplicate repo headers when the parent workspace card is already visible.
 - Removing a linked worktree is available from the worktree actions and from the keyboard prefix `Delete` shortcut.
 
+Git UI:
+
+- Desktop workspaces and linked worktrees include an embedded Git drawer opened from the sidebar Git button.
+- Mobile includes a Git tab for the selected workspace or worktree with grouped status lists.
+- The desktop drawer is embedded in the WebUI binary; it uses the system `git` CLI through Rust API routes and does not require a separate Node, React, or Vite runtime.
+- When the drawer is hidden, WebUI blanks the drawer DOM and invalidates pending renders to reduce browser work.
+- The drawer shows worktree actions, grouped file status, staged/unstaged/untracked/conflicted files, commit form, log, stash list, file history, conflicts, blame, hunk editing, and side-by-side diffs.
+- File lists are shown as a collapsible folder tree with file-level line counts. Settings can switch the file list to filename-only mode with the full path in the tooltip.
+- Right-click a file for actions such as stash, discard, stage, or unstage. Section-level bulk actions stage or unstage grouped files with confirmation.
+- Commit drafts are stored in browser `localStorage` per workspace/worktree/ref.
+- Large diffs are protected by a browser-local `Git large diff line limit` setting under Settings → `Git UI`. Above the limit, WebUI hides full automatic rendering and asks you to select files individually. Set the value to `0` to always render full diffs.
+- Diffs support per-file collapse, collapse/show all, visual change grouping, inline word highlights, context expansion, hunk stage/unstage/restore actions, and per-file blame from the Changes file view.
+- Syntax highlighting is embedded and modular for common project files including JSON, YAML, Python, Java, Rust, Go, JavaScript, TypeScript, CSS, Kotlin, shell, Makefiles, and HTML.
+- Side-by-side hunk editing lets you edit current hunk text, save back to the working tree with a hash guard, and refresh the diff.
+- The branch pill opens a branch switch modal. Remote branch selection creates a local branch from the remote base.
+- The log view supports click commit selection and shift-click two-commit comparison. Select one commit to compare it with current working-tree changes, reset soft/hard, or rebase commits after the selected commit onto `main`/`master`.
+- File history can show a read-only temporary commit diff or jump to the matching commit in the log.
+- Stashes can be listed, applied, popped, dropped with confirmation, or created from all changes or a single file.
+- Mutating/destructive operations are guarded: discard, hard reset, rebase, stash drop, and section bulk changes require confirmation; backend paths and refs are validated before running Git.
+- Git API routes cover status, diff, compare, branches, log, blame, file read/write, file history, stashes, conflicts, stage, unstage, discard, stash, switch, reset, rebase, commit, apply-patch, and conflict actions.
+
 Panel and workspace close:
 
 - Closing the last panel in a workspace closes the workspace with Herdr's `workspace.close` API instead of calling `tab.close`, because Herdr rejects closing the last tab.
 - Closing a workspace or linked worktree uses `workspace.close` to close all panels in that workspace.
 - Closing a normal non-last panel still uses `tab.close`.
+- When Herdr reports `pane.exited`, WebUI closes that pane through Herdr's `pane.close` API and switches away from it after refresh.
 
 Panel tab activity:
 

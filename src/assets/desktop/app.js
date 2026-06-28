@@ -151,6 +151,10 @@ function sidebarToggleHtml() {
     .join("");
   return arrow + (badges ? `<span class="sidebar-counts">${badges}</span>` : "");
 }
+function appIcon(name) {
+  const iconName = String(name || "").replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`);
+  return `<span class="app-icon app-icon-${iconName}" aria-hidden="true"></span>`;
+}
 const headTitle = document.querySelector(".head strong");
 if (headTitle) {
   const brand = document.createElement("div");
@@ -172,7 +176,7 @@ if (sectionEl && !el("workspacePane")) {
   workspacePane.className = "sidebar-pane workspaces-pane";
   workspacePane.insertAdjacentHTML(
     "beforeend",
-    '<div class="section-header">Workspaces</div>',
+    '<div class="section-header">Workspaces</div><div class="workspace-context-actions" id="workspaceContextActions"></div>',
   );
   const workspaceScroll = document.createElement("div");
   workspaceScroll.className = "sidebar-scroll";
@@ -198,6 +202,7 @@ insertMissingHtml("worktreeCreateModal", worktreeCreateModalHtml());
 insertMissingHtml("worktreeOpenModal", worktreeOpenModalHtml());
 insertMissingHtml("workspaceCreateModal", workspaceCreateModalHtml());
 insertMissingHtml("shortcutsModal", shortcutsModalHtml());
+insertMissingHtml("questionModal", questionModalHtml());
 const settingsModal = el("settingsModal");
 if (settingsModal && !settingsModal.dataset.ux) {
   const modal = settingsModal.querySelector(".modal");
@@ -222,6 +227,24 @@ if (settingsModal && !settingsModal.dataset.ux) {
 }
 function insertMissingHtml(id, html) {
   if (!el(id)) document.body.insertAdjacentHTML("beforeend", html);
+}
+function questionModalHtml() {
+  return `
+    <div class="modal-backdrop question-modal" id="questionModal">
+      <div class="modal question-modal-card">
+        <div class="settings-head">
+          <div>
+            <h2 id="questionTitle">Confirm action</h2>
+            <p id="questionMessage"></p>
+          </div>
+          <button class="mini settings-close" id="questionClose" title="Cancel">✕</button>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="tab add" id="questionCancel">Cancel</button>
+          <button type="button" class="btn question-confirm" id="questionConfirm">Confirm</button>
+        </div>
+      </div>
+    </div>`;
 }
 function worktreeCreateModalHtml() {
   return `
@@ -555,12 +578,29 @@ const themeColorProfiles = {
     },
   },
 };
+const settingsModules = window.HerdrSettingsModules || [];
+window.HerdrSettingsModules = settingsModules;
+window.HerdrWebUiModules = settingsModules;
+const moduleOptionDefaults = settingsModules.reduce(
+  (acc, module) => Object.assign(acc, module.defaults || {}),
+  {},
+);
 const settingsBody =
   settingsModal && settingsModal.querySelector(".settings-body");
 if (settingsBody && !el("optServerBind"))
   settingsBody.insertAdjacentHTML("beforeend", serverSettingsHtml());
 if (settingsBody && !el("themeColorsApply"))
   settingsBody.insertAdjacentHTML("beforeend", themeCustomizerHtml());
+if (settingsBody) {
+  for (const module of settingsModules) {
+    if (module.html && !el(`moduleSettings-${module.id}`)) {
+      settingsBody.insertAdjacentHTML(
+        "beforeend",
+        `<div id="moduleSettings-${module.id}">${module.html}</div>`,
+      );
+    }
+  }
+}
 function normalizeThemeMode(value) {
   if (value === "night") return "dark";
   if (value === "day") return "light";
@@ -620,6 +660,7 @@ const defaultOptions = {
   generateWorktreeNames: false,
   worktreeDefaultDirectory: "../worktrees",
   themeColors: themeColorDefaults,
+  ...moduleOptionDefaults,
 };
 function loadOptions() {
   try {
@@ -683,6 +724,9 @@ function normalizeOptions(value) {
     String(next.worktreeDefaultDirectory || "").trim() ||
     defaultOptions.worktreeDefaultDirectory;
   next.themeColors = normalizeThemeColors(next.themeColors, themeColorDefaults);
+  for (const module of settingsModules) {
+    if (typeof module.normalize === "function") module.normalize(next);
+  }
   return next;
 }
 let options = normalizeOptions(loadOptions());
@@ -793,26 +837,41 @@ function clearDismissedWorkingForTerminal(terminalId) {
   render();
 }
 function noSleepLabel(mode) {
-  if (mode === "auto") return "Auto";
-  if (mode === "1h") return "◷ 1h";
-  if (mode === "2h") return "◷ 2h";
-  if (mode === "4h") return "◷ 4h";
-  if (mode === "infinite") return "∞ Infinite";
-  return "No sleep: off";
+  if (mode === "auto") return "Coffee auto";
+  if (mode === "1h") return "Coffee 1h";
+  if (mode === "2h") return "Coffee 2h";
+  if (mode === "4h") return "Coffee 4h";
+  if (mode === "infinite") return "Coffee infinite";
+  return "Coffee off";
+}
+function noSleepSubscript(mode) {
+  if (mode === "auto") return "A";
+  if (["1h", "2h", "4h"].includes(mode)) return "◷";
+  if (mode === "infinite") return "∞";
+  return "";
+}
+function noSleepButtonHtml(mode) {
+  const sub = noSleepSubscript(mode);
+  return `<span class="coffee-outline" aria-hidden="true"></span>${sub ? `<sub>${sub}</sub>` : ""}`;
 }
 function noSleepControlHtml(extraId) {
   const suffix = extraId ? ` id="${extraId}"` : "";
-  return `<select class="mini no-sleep-control"${suffix} title="Prevent computer sleep"><option value="off">No sleep: off</option><option value="auto">Auto</option><option value="1h">◷ 1h</option><option value="2h">◷ 2h</option><option value="4h">◷ 4h</option><option value="infinite">∞ Infinite</option></select>`;
+  return `<span class="no-sleep-wrap"><button type="button" class="btn shell-action shell-icon-button no-sleep-control"${suffix} value="off" title="Prevent computer sleep">${noSleepButtonHtml("off")}</button><span class="no-sleep-menu" hidden><button type="button" data-mode="off">${noSleepButtonHtml("off")}<span>Off</span></button><button type="button" data-mode="auto">${noSleepButtonHtml("auto")}<span>Auto</span></button><button type="button" data-mode="1h">${noSleepButtonHtml("1h")}<span>1 hour</span></button><button type="button" data-mode="2h">${noSleepButtonHtml("2h")}<span>2 hours</span></button><button type="button" data-mode="4h">${noSleepButtonHtml("4h")}<span>4 hours</span></button><button type="button" data-mode="infinite">${noSleepButtonHtml("infinite")}<span>Infinite</span></button></span></span>`;
 }
 function noSleepControls() {
   return Array.from(document.querySelectorAll(".no-sleep-control"));
 }
+function closeNoSleepMenus(except) {
+  document.querySelectorAll(".no-sleep-menu").forEach((menu) => {
+    if (menu !== except) menu.hidden = true;
+  });
+}
 function syncNoSleepControls() {
   const mode = noSleepState.mode || "off";
   for (const control of noSleepControls()) {
-    if (document.activeElement === control) continue;
-    if (control.value !== mode)
-      control.value = mode;
+    control.dataset.mode = mode;
+    control.value = mode;
+    control.innerHTML = noSleepButtonHtml(mode);
     control.title = noSleepState.error
       ? `No-sleep error: ${noSleepState.error}`
       : !noSleepState.supported
@@ -822,9 +881,20 @@ function syncNoSleepControls() {
           : mode === "off"
             ? "Prevent computer sleep from WebUI server"
             : `WebUI server preventing sleep: ${noSleepLabel(mode)}`;
-    control.classList.toggle("active", !!noSleepState.active);
+    control.classList.toggle("active", mode !== "off");
     control.classList.toggle("unsupported", !!noSleepState.error || !noSleepState.supported);
+    const wrap = control.closest && control.closest(".no-sleep-wrap");
+    if (wrap) {
+      wrap.querySelectorAll(".no-sleep-menu [data-mode]").forEach((option) => {
+        option.classList.toggle("active", option.dataset.mode === mode);
+      });
+    }
   }
+}
+function nextNoSleepMode(mode) {
+  const modes = ["off", "auto", "1h", "2h", "4h", "infinite"];
+  const index = modes.indexOf(mode || "off");
+  return modes[(index + 1) % modes.length];
 }
 function bindHost(bind) {
   const value = String(bind || "").trim();
@@ -928,6 +998,12 @@ function groupSettingsSections() {
       desc: "Network access and server-side power behavior.",
       blocks: ["optServerBind"],
     },
+    ...settingsModules.map((module) => ({
+      title: module.title,
+      desc: module.desc || "Module settings.",
+      ids: module.ids || [],
+      blocks: module.blocks || [],
+    })),
   ];
   for (const def of sectionDefs) {
     const nodes = [];
@@ -1018,6 +1094,10 @@ function applyOptions() {
     generateWorktreeNames.checked = !!options.generateWorktreeNames;
   if (worktreeDefaultDirectory)
     worktreeDefaultDirectory.value = options.worktreeDefaultDirectory || "";
+  for (const module of settingsModules) {
+    if (typeof module.apply === "function") module.apply(options);
+  }
+  syncGitWorkspaceToggle();
   syncThemeColorInputs();
   const worktreeNewBranch = el("worktreeNewBranch"),
     worktreeNewPath = el("worktreeNewPath");
@@ -1166,19 +1246,65 @@ function pollAutoTheme() {
 function el(id) {
   return document.getElementById(id);
 }
+function askQuestion({ title = "Confirm action", message = "Continue?", confirmText = "Confirm", danger = false } = {}) {
+  const modal = el("questionModal");
+  if (!modal) return Promise.resolve(confirm(message));
+  el("questionTitle").textContent = title;
+  el("questionMessage").textContent = message;
+  const confirmButton = el("questionConfirm");
+  confirmButton.textContent = confirmText;
+  confirmButton.classList.toggle("danger", !!danger);
+  modal.style.display = "grid";
+  confirmButton.focus();
+  return new Promise((resolve) => {
+    state.questionResolve = resolve;
+  });
+}
+function closeQuestion(answer) {
+  const modal = el("questionModal");
+  if (modal) modal.style.display = "none";
+  const resolve = state.questionResolve;
+  state.questionResolve = null;
+  if (resolve) resolve(!!answer);
+}
+function gitUiEnabled() {
+  return options.gitUiEnabled !== false;
+}
+function themeToggleIcon() {
+  if (themeMode === "auto") return `${appIcon("themeAuto")}<sub>A</sub>`;
+  return themeMode === "dark" ? '<span aria-hidden="true">☾</span>' : '<span aria-hidden="true">☀</span>';
+}
 function setupSessionChrome() {
   const head = document.querySelector(".head");
-  if (!el("sessionButton")) {
+  const oldSessionButton = el("sessionButton");
+  if (oldSessionButton) oldSessionButton.remove();
+  if (!el("searchButtonHead")) {
     const b = document.createElement("button");
-    b.className = "mini";
-    b.id = "sessionButton";
-    b.title = "Session manager";
-    b.textContent = "session";
-    head.insertBefore(b, el("themeToggle"));
-    b.onclick = () =>
-      showSessionManager(
-        state.backendOnline ? "Session manager" : "Herdr session offline",
-      );
+    b.className = "btn shell-action";
+    b.id = "searchButtonHead";
+    b.title = "Search";
+    b.textContent = "⌕";
+    head.insertBefore(b, el("newWs"));
+    b.onclick = () => openSearchPalette();
+  }
+  if (!el("themeToggleHead")) {
+    const b = document.createElement("button");
+    b.className = "btn shell-action shell-icon-button";
+    b.id = "themeToggleHead";
+    b.title = "Toggle theme";
+    b.innerHTML = themeToggleIcon();
+    head.insertBefore(b, el("newWs"));
+    b.onclick = () => {
+      themeMode = themeMode === "auto" ? "dark" : themeMode === "dark" ? "light" : "auto";
+      applyTheme();
+      render();
+    };
+  }
+  if (!el("noSleepHead")) {
+    const wrap = document.createElement("span");
+    wrap.innerHTML = noSleepControlHtml("noSleepHead");
+    head.insertBefore(wrap.firstChild, el("newWs"));
+    syncNoSleepControls();
   }
   if (!el("openWorktrees")) {
     const newWsButton = el("newWs");
@@ -1190,12 +1316,84 @@ function setupSessionChrome() {
     newWsButton.insertAdjacentElement("afterend", b);
     b.onclick = () => openWorktreeOpenModal();
   }
+  if (!gitUiEnabled()) {
+    const existingGitToggle = el("gitWorkspaceToggle");
+    if (existingGitToggle) existingGitToggle.remove();
+    if (window.HerdrGitUi) window.HerdrGitUi.hide();
+  } else if (!el("gitWorkspaceToggle")) {
+    const openWorktrees = el("openWorktrees");
+    const b = document.createElement("button");
+    b.className = "btn worktree-open-trigger git-workspace-toggle unknown";
+    b.id = "gitWorkspaceToggle";
+    b.title = "Show Git drawer";
+    b.innerHTML = appIcon("git");
+    b.setAttribute("aria-label", "Show Git drawer");
+    openWorktrees.insertAdjacentElement("afterend", b);
+    b.onclick = () => openWorkspaceGitUi(state.ws);
+  }
   const side = document.querySelector(".side");
+  const workspacePane = el("workspacePane");
+  if (workspacePane && !el("workspaceContextActions")) {
+    const header = workspacePane.querySelector(".section-header");
+    const actions = document.createElement("div");
+    actions.id = "workspaceContextActions";
+    actions.className = "workspace-context-actions";
+    if (header) header.insertAdjacentElement("afterend", actions);
+    else workspacePane.insertBefore(actions, workspacePane.firstChild);
+  }
+  const stalePanelActions = el("panelContextActions");
+  if (stalePanelActions) stalePanelActions.remove();
   const versionsEl = el("versions");
-  if (versionsEl && !versionsEl.classList.contains("side-footer")) {
+  let footer = el("sideFooterBar");
+  if (!footer) {
+    footer = document.createElement("div");
+    footer.id = "sideFooterBar";
+    footer.className = "side-footer-bar";
+    side.appendChild(footer);
+  }
+  const brand = document.querySelector(".brand");
+  if (brand && brand.parentNode !== footer) footer.appendChild(brand);
+  if (!el("footerSessionButton")) {
+    const b = document.createElement("button");
+    b.id = "footerSessionButton";
+    b.className = "footer-session-button";
+    b.title = "Session manager";
+    b.textContent = state.session || "default";
+    b.onclick = () => showSessionManager(state.backendOnline ? "Session manager" : "Herdr session offline");
+    const brandText = brand && brand.querySelector(".brand-text");
+    if (brandText) brandText.appendChild(b);
+    else footer.appendChild(b);
+  } else {
+    const button = el("footerSessionButton"),
+      brandText = brand && brand.querySelector(".brand-text");
+    if (button && brandText && button.parentNode !== brandText)
+      brandText.appendChild(button);
+  }
+  if (versionsEl && versionsEl.parentNode !== footer) {
     versionsEl.remove();
-    versionsEl.classList.add("side-footer");
-    side.appendChild(versionsEl);
+    versionsEl.classList.add("side-footer", "footer-meta");
+    footer.appendChild(versionsEl);
+  }
+  if (versionsEl) versionsEl.classList.add("side-footer", "footer-meta");
+  if (!el("footerShortcutsButton")) {
+    const actions = document.createElement("span");
+    actions.className = "footer-actions";
+    actions.innerHTML = `<button class="mini footer-icon-button" id="footerShortcutsButton" title="Shortcuts" aria-label="Shortcuts">${appIcon("help")}</button><button class="mini footer-icon-button" id="footerSettingsButton" title="Settings" aria-label="Settings">${appIcon("settings")}</button>`;
+    footer.appendChild(actions);
+    el("footerShortcutsButton").onclick = () => { applyOptions(); el("shortcutsModal").style.display = "grid"; };
+    el("footerSettingsButton").onclick = () => { el("settingsModal").style.display = "grid"; applyOptions(); loadServerSettings(); };
+  }
+  const footerShortcutsButton = el("footerShortcutsButton");
+  const footerSettingsButton = el("footerSettingsButton");
+  if (footerShortcutsButton) {
+    footerShortcutsButton.classList.add("footer-icon-button");
+    footerShortcutsButton.setAttribute("aria-label", "Shortcuts");
+    footerShortcutsButton.innerHTML = appIcon("help");
+  }
+  if (footerSettingsButton) {
+    footerSettingsButton.classList.add("footer-icon-button");
+    footerSettingsButton.setAttribute("aria-label", "Settings");
+    footerSettingsButton.innerHTML = appIcon("settings");
   }
   if (!el("sessionManager")) {
     const m = document.createElement("div");
@@ -1419,13 +1617,15 @@ async function loadVersions() {
           ? " · " + compat.status
           : "";
     if (versionsEl) {
-      versionsEl.textContent = `session ${session} · webui ${v.webui || "-"} · backend ${v.backend || "offline"}${status}`;
-      versionsEl.title = compat.message || "";
+      versionsEl.textContent = `webui ${v.webui || "-"} · backend ${v.backend || "offline"}${status}`;
+      versionsEl.title = `session ${session}${compat.message ? ` · ${compat.message}` : ""}`;
     }
-    const button = el("sessionButton");
+    const button = el("footerSessionButton");
     if (button) button.textContent = state.session || session;
   } catch (e) {
     if (versionsEl) versionsEl.textContent = "webui - · backend offline";
+    const button = el("footerSessionButton");
+    if (button) button.textContent = state.session || "default";
   }
 }
 function sessionPrefix() {
@@ -1487,6 +1687,7 @@ function navigateSelection(e, ws, tab, pane) {
   if (e && (e.metaKey || e.ctrlKey || e.shiftKey || e.button === 1))
     return true;
   e.preventDefault();
+  if (window.HerdrGitUi) window.HerdrGitUi.hide();
   go(ws, tab, pane);
   return false;
 }
@@ -1687,7 +1888,7 @@ async function refresh() {
     if (seq !== refreshSeq) return;
     state.backendOnline = true;
     hideSessionManager();
-    const button = el("sessionButton");
+    const button = el("footerSessionButton");
     if (button) button.textContent = state.session || "default";
   } catch (e) {
     state.backendOnline = false;
@@ -1700,7 +1901,7 @@ async function refresh() {
       "Herdr session offline",
       `No backend reachable for session ${state.session || "default"}: ${e.message || e}`,
     );
-    const button = el("sessionButton");
+    const button = el("footerSessionButton");
     if (button) button.textContent = (state.session || "default") + " offline";
   }
 }
@@ -1712,6 +1913,11 @@ function eventNeedsFastRefresh(kind) {
   return FAST_REFRESH_EVENTS.has(kind);
 }
 function forgetClosedSelection(kind, data) {
+  if (kind === "pane.exited" && data && data.pane_id) {
+    closePaneById(data.pane_id)
+      .then(() => scheduleRefresh(50))
+      .catch(() => {});
+  }
   if (kind === "pane.closed" || kind === "pane.exited") {
     if (data && data.pane_id && data.pane_id === state.pane) {
       resetTerminalConnection(true);
@@ -1840,23 +2046,24 @@ function render() {
     workspaces.innerHTML = workspacesHtml;
     lastWorkspacesHtml = workspacesHtml;
   }
+  const workspaceContextActions = el("workspaceContextActions"),
+    workspaceContextHtml = renderWorkspaceContextActions();
+  if (
+    workspaceContextActions &&
+    workspaceContextActions.innerHTML !== workspaceContextHtml
+  )
+    workspaceContextActions.innerHTML = workspaceContextHtml;
   const agentsHtml = renderAgents(wsById, tabById, tabCountsByWorkspace);
   if (agentsHtml !== lastAgentsHtml) {
     agents.innerHTML = agentsHtml;
     lastAgentsHtml = agentsHtml;
   }
   applySidebarCollapsed();
+  syncGitWorkspaceToggle();
+  const themeHead = el("themeToggleHead");
+  if (themeHead) themeHead.innerHTML = themeToggleIcon();
   const pane = state.panes.find((p) => p.pane_id === state.pane);
-  const themeIcon =
-    themeMode === "auto" ? "A" : themeMode === "dark" ? "☾" : "☀";
-  const sessionLabel = escapeHtml(state.session || "default");
-  const tabsTools = `<div class="tabs-tools"><button class="mini" id="sessionButtonTabs" title="Session manager" onclick="showSessionManager(state.backendOnline?'Session manager':'Herdr session offline')">${sessionLabel}</button><button class="mini" id="searchButtonTabs" title="Search" onclick="openSearchPalette()">⌕</button><button class="mini" id="themeToggleTabs" title="Toggle theme" onclick="themeMode=themeMode==='auto'?'dark':(themeMode==='dark'?'light':'auto');applyTheme();render()">${themeIcon}</button>${noSleepControlHtml()}<button class="mini" title="Shortcuts" onclick="applyOptions();el('shortcutsModal').style.display='grid'">?</button><button class="mini" title="Settings" onclick="el('settingsModal').style.display='grid';applyOptions();loadServerSettings()">⚙</button></div>`;
-  const tabsHtml =
-    state.tabs.map((t) => renderTabButton(t, panesByTab)).join("") +
-    (state.ws
-      ? `<button class="tab add" title="New panel" onclick="newTab()">+</button>`
-      : "") +
-    tabsTools;
+  const tabsHtml = "";
   const tabRenameActive = !!document.querySelector(".tab-rename-input");
   if (tabsHtml !== lastTabsHtml && !(state.editingTab && tabRenameActive)) {
     tabs.innerHTML = tabsHtml;
@@ -1878,6 +2085,7 @@ function render() {
   }
   fitTerminalShell();
 }
+window.HerdrDesktopRender = render;
 function updateTitle(wsById, tabById, tabCountsByWorkspace, pane) {
   const w = wsById[state.ws];
   const t = tabById[state.tab];
@@ -1984,6 +2192,10 @@ function renderSpaces() {
   }
   for (const g of groups.values()) items.push(g);
   items = sortWorkspaceItems(items);
+  const selectedIndex = items.findIndex((item) =>
+    workspaceItemIds(item).includes(state.ws),
+  );
+  if (selectedIndex > 0) items.unshift(items.splice(selectedIndex, 1)[0]);
   let html = "";
   for (const item of items) {
     if (item.type === "single") {
@@ -1991,33 +2203,82 @@ function renderSpaces() {
       continue;
     }
     const children = sortGroupChildren(item.children);
+    const selectedChildIndex = children.findIndex((w) => w.workspace_id === state.ws);
+    if (selectedChildIndex > 0) children.unshift(children.splice(selectedChildIndex, 1)[0]);
     if (!item.parent) html += renderRepoHeader(item);
     if (item.parent)
       html += renderWorkspaceCard(item.parent, "workspace-group-main");
+    const selectedChild = children.find((w) => w.workspace_id === state.ws);
+    if (selectedChild)
+      html += renderWorkspaceCard(selectedChild, "workspace-child selected-pin");
     html += children
-      .map((w, i) =>
+      .filter((w) => w.workspace_id !== state.ws)
+      .map((w, i, list) =>
         renderWorkspaceCard(
           w,
-          "workspace-child " + (i === children.length - 1 ? "last" : ""),
+          "workspace-child " + (i === list.length - 1 ? "last" : ""),
         ),
       )
       .join("");
   }
   return html;
 }
+function selectedWorkspace() {
+  return state.workspaces.find((w) => w.workspace_id === state.ws) || null;
+}
+function worktreeRowsForKey(key) {
+  if (!key) return [];
+  return state.worktrees.filter((w) => worktreeRowGroupKey(w) === key);
+}
+function selectedWorkspaceWorktreeKey(w = selectedWorkspace()) {
+  return worktreeGroupKey(w);
+}
+function renderWorkspaceContextActions() {
+  return "";
+}
+function selectedWorkspaceActionButtons(w) {
+  if (!w || w.workspace_id !== state.ws) return "";
+  const key = selectedWorkspaceWorktreeKey(w),
+    rows = worktreeRowsForKey(key),
+    linked = isLinkedWorktree(w),
+    hasOtherWorktrees = rows.some(
+      (row) => row.open_workspace_id !== w.workspace_id,
+    ),
+    label = escapeHtml(workspaceDisplayTitle(w));
+  const buttons = [];
+  if (!linked)
+    buttons.push(
+      `<span class="mini tree" data-workspace-action="create-worktree" title="Create a linked worktree from ${label}" onclick="event.preventDefault();event.stopPropagation();runWorkspaceContextAction('create-worktree',this)">♧+</span>`,
+    );
+  if (key && hasOtherWorktrees)
+    buttons.push(
+      `<span class="mini tree" data-workspace-action="open-worktrees" data-key="${escapeAttr(encodeURIComponent(key))}" title="Open or create other worktrees for this repo" onclick="event.preventDefault();event.stopPropagation();runWorkspaceContextAction('open-worktrees',this)">↗</span>`,
+    );
+  buttons.push(
+    `<span class="mini warn" data-workspace-action="close" title="Close selected ${linked ? "worktree" : "workspace"} and its panels" onclick="event.preventDefault();event.stopPropagation();runWorkspaceContextAction('close',this)">✕</span>`,
+  );
+  if (linked)
+    buttons.push(
+      `<span class="mini danger" data-workspace-action="remove-worktree" title="Remove selected worktree from disk after confirmation" onclick="event.preventDefault();event.stopPropagation();runWorkspaceContextAction('remove-worktree',this)">🗑</span>`,
+    );
+  return `<span class="space-actions selected-space-actions">${buttons.join("")}</span>`;
+}
+function renderPanelField() {
+  if (!state.ws)
+    return '<span class="panel-field-empty">No panel</span>';
+  const tabs = state.tabs || [],
+    current = tabs.find((t) => t.tab_id === state.tab) || tabs[0] || null,
+    currentLabel = current ? tabTitle(current) : "No panel";
+  const options = tabs
+    .map(
+      (t) =>
+        `<option value="${escapeAttr(t.tab_id)}"${t.tab_id === state.tab ? " selected" : ""}>${escapeHtml(tabTitle(t))}</option>`,
+    )
+    .join("");
+  return `<div class="panel-field"><select class="panel-selector" id="panelSelector" title="Current panel: ${escapeAttr(currentLabel)}. Click to switch panels or choose an action." onmousedown="event.stopPropagation()" onclick="event.stopPropagation()">${options}<option value="__new__">+ New panel</option>${current ? '<option value="__rename__">Rename panel...</option><option value="__close__">Close panel...</option>' : ""}</select></div>`;
+}
 function renderRepoHeader(group) {
-  const actions = [],
-    keyToken = encodeURIComponent(group.key);
-  if (!group.parent) {
-    actions.push(
-      `<span class="mini tree" title="Create worktree" onclick="event.preventDefault();event.stopPropagation();openWorktreesForRepo('${keyToken}')">♧+</span>`,
-    );
-  }
-  if (!group.parent && repoHasUnopenedWorktrees(group))
-    actions.push(
-      `<span class="mini tree" title="Open worktree" onclick="event.preventDefault();event.stopPropagation();openWorktreesForRepo('${keyToken}')">↗</span>`,
-    );
-  return `<div class="repo-header workspace-orphan-header ${actions.length ? "with-actions" : ""}"><span>${escapeHtml(group.label)}</span>${actions.length ? `<span class="repo-actions">${actions.join("")}</span>` : ""}</div>`;
+  return `<div class="repo-header workspace-orphan-header"><span>${escapeHtml(group.label)}</span></div>`;
 }
 function workspaceItemIds(item) {
   return item.type === "single"
@@ -2080,11 +2341,6 @@ function renderWorkspaceCard(w, extraClass) {
   const label = editing
     ? `<input class="workspace-rename-input" value="${escapeAttr(state.editingWorkspaceValue)}" onmousedown="event.stopPropagation()" onclick="event.stopPropagation()" onblur="commitWorkspaceRename('${w.workspace_id}')" oninput="state.editingWorkspaceValue=this.value" onkeydown="workspaceRenameKey(event,'${w.workspace_id}')">`
     : `<span class="label">${escapeHtml(title)}</span>`;
-  const linked = isLinkedWorktree(w);
-  const worktreeAction = linked
-    ? `<span class="mini danger" title="Remove worktree from disk" onclick="event.preventDefault();event.stopPropagation();removeWorktree('${w.workspace_id}')">🗑</span>`
-    : `<span class="mini tree" title="Create worktree" onclick="event.preventDefault();event.stopPropagation();openWorktreeCreateModal('${w.workspace_id}')">♧+</span>`;
-  const closeTitle = linked ? "Close worktree" : "Close workspace";
   const drag =
     options.workspaceSort === "drag"
       ? ' draggable="true" ondragstart="workspaceDragStart(event,\'' +
@@ -2095,7 +2351,83 @@ function renderWorkspaceCard(w, extraClass) {
         w.workspace_id +
         '\')" ondragend="workspaceDragEnd(event)"'
       : "";
-  return `<a class="item ${w.workspace_id === state.ws ? "active" : ""} ${extraClass || ""}" data-workspace-id="${escapeAttr(w.workspace_id)}" href="${escapeAttr(selectionPath(w.workspace_id))}" target="herdr-selection"${drag} onclick="if(state.editingWorkspace){event.preventDefault();return false}return navigateSelection(event,'${w.workspace_id}')" ondblclick="event.preventDefault();event.stopPropagation();startWorkspaceRename('${w.workspace_id}','${escapeAttr(w.label)}')"><div class="space-title"><span>${statusDot(w.agent_status)}</span>${label}<span class="space-actions">${worktreeAction}<span class="mini warn" title="${closeTitle}" onclick="event.preventDefault();event.stopPropagation();closeWorkspace('${w.workspace_id}')">✕</span></span></div><div class="muted">${spaceMeta(w)}</div></a>`;
+  const selected = w.workspace_id === state.ws;
+  const meta = selected ? selectedSpaceMeta(w) : spaceMeta(w);
+  const panelControls = selected ? renderPanelField() : "";
+  const body = `<div class="space-title"><span>${statusDot(w.agent_status)}</span>${label}${selectedWorkspaceActionButtons(w)}</div><div class="muted space-meta-line">${panelControls}${meta}</div>`;
+  if (selected)
+    return `<div class="item active ${extraClass || ""}" data-workspace-id="${escapeAttr(w.workspace_id)}"${drag} ondblclick="event.preventDefault();event.stopPropagation();startWorkspaceRename('${w.workspace_id}','${escapeAttr(w.label)}')">${body}</div>`;
+  return `<a class="item ${extraClass || ""}" data-workspace-id="${escapeAttr(w.workspace_id)}" href="${escapeAttr(selectionPath(w.workspace_id))}" target="herdr-selection"${drag} onclick="if(state.editingWorkspace){event.preventDefault();return false}return navigateSelection(event,'${w.workspace_id}')" ondblclick="event.preventDefault();event.stopPropagation();startWorkspaceRename('${w.workspace_id}','${escapeAttr(w.label)}')">${body}</a>`;
+}
+
+function syncGitWorkspaceToggle() {
+  const button = el("gitWorkspaceToggle");
+  if (!gitUiEnabled()) {
+    if (button) button.remove();
+    if (window.HerdrGitUi) window.HerdrGitUi.hide();
+    return;
+  }
+  if (!button) {
+    setupSessionChrome();
+    return;
+  }
+  const workspace = state.workspaces.find((w) => w.workspace_id === state.ws);
+  const status = window.HerdrGitUi && window.HerdrGitUi.workspaceStatus ? window.HerdrGitUi.workspaceStatus(state.ws, workspace) : "unknown";
+  button.className = `btn worktree-open-trigger git-workspace-toggle ${status}`;
+  button.innerHTML = appIcon("git");
+  button.setAttribute("aria-label", status === "nogit" ? "No Git repository detected" : "Show or hide Git drawer");
+  button.title = status === "nogit" ? "No Git repository detected" : "Show or hide Git drawer";
+}
+
+function openWorkspaceGitUi(id) {
+  if (!gitUiEnabled()) return;
+  const workspace = state.workspaces.find((w) => w.workspace_id === id);
+  if (!workspace || !window.HerdrGitUi) return;
+  window.HerdrGitUi.open(workspace);
+  render();
+}
+function runWorkspaceContextAction(action, button) {
+  const w = selectedWorkspace();
+  if (!w) return;
+  if (action === "create-worktree") openWorktreeCreateModal(w.workspace_id);
+  else if (action === "open-worktrees") openWorktreesForRepo(button.dataset.key || "");
+  else if (action === "close") closeWorkspace(w.workspace_id);
+  else if (action === "remove-worktree") removeWorktree(w.workspace_id);
+}
+function resetPanelSelector() {
+  const selector = el("panelSelector");
+  if (selector) selector.value = state.tab || "";
+}
+async function renameCurrentPanel() {
+  const tab = state.allTabs.concat(state.tabs).find((t) => t.tab_id === state.tab);
+  if (!tab) return;
+  const label = prompt("Rename panel", tabTitle(tab));
+  if (label === null) return;
+  const trimmed = String(label || "").trim();
+  if (!trimmed) return;
+  await api(`/api/tabs/${encodeURIComponent(tab.tab_id)}/rename`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ label: trimmed }),
+  });
+  refresh();
+}
+async function selectPanelFromHeader(value) {
+  if (value === "__new__") {
+    newTab();
+    return;
+  }
+  if (value === "__rename__") {
+    resetPanelSelector();
+    await renameCurrentPanel();
+    return;
+  }
+  if (value === "__close__") {
+    resetPanelSelector();
+    if (state.tab) await closeTab(state.tab);
+    return;
+  }
+  if (value && value !== state.tab) go(state.ws, value);
 }
 function workspaceDisplayTitle(w) {
   if (!isLinkedWorktree(w)) return w.label;
@@ -2104,6 +2436,20 @@ function workspaceDisplayTitle(w) {
 function spaceMeta(w) {
   const wt = worktreeForWorkspace(w);
   const parts = [`${w.pane_count} panes`];
+  if (isLinkedWorktree(w)) {
+    const label = worktreeCustomLabel(w, wt);
+    if (label)
+      parts.push(`<span class="chip label"><span class="chip-icon" aria-hidden="true">🏷</span>${escapeHtml(label)}</span>`);
+  } else {
+    const branch = workspaceBranch(w);
+    if (branch)
+      parts.push(`<span class="chip branch">${escapeHtml(branch)}</span>`);
+  }
+  return parts.join(" ");
+}
+function selectedSpaceMeta(w) {
+  const wt = worktreeForWorkspace(w),
+    parts = [];
   if (isLinkedWorktree(w)) {
     const label = worktreeCustomLabel(w, wt);
     if (label)
@@ -2148,14 +2494,6 @@ function worktreeRowGroupKey(w) {
   return (
     (w && (w.source_repo_key || w.source_repo_root || w.source_repo_name)) || ""
   );
-}
-function repoRowsForGroup(group) {
-  return state.worktrees.filter(
-    (w) => w.is_linked_worktree && worktreeRowGroupKey(w) === group.key,
-  );
-}
-function repoHasUnopenedWorktrees(group) {
-  return repoRowsForGroup(group).some((w) => !w.open_workspace_id);
 }
 function findWorktreeParent(group) {
   return (
@@ -3509,11 +3847,12 @@ async function openDiscoveredWorktree(index) {
 async function removeDiscoveredWorktree(index) {
   const row = (state.openWorktreeRows || [])[index];
   if (!row || !row.is_linked_worktree) return;
-  if (
-    !confirm(
-      `Remove worktree "${row.label || row.branch || row.path}" from disk?`,
-    )
-  )
+  if (!(await askQuestion({
+    title: "Remove worktree from disk?",
+    message: `Remove worktree "${row.label || row.branch || row.path}" from disk?`,
+    confirmText: "Remove",
+    danger: true,
+  })))
     return;
   const err = el("worktreeOpenError");
   err.textContent = "";
@@ -3616,7 +3955,7 @@ async function closeWorkspace(id) {
       let msg = `Close workspace "${workspaceCloseName(id)}"?`;
       if (linkedToReopen.length)
         msg += `\n\nThis will close ${linkedToReopen.length} linked worktree(s) and stop their processes. They will be re-opened with fresh shells.`;
-      if (!confirm(msg)) return;
+      if (!(await askQuestion({ title: "Close workspace?", message: msg, confirmText: "Close", danger: true }))) return;
       await api(`/api/workspaces/${encodeURIComponent(id)}/close`, {
         method: "POST",
       });
@@ -3638,17 +3977,23 @@ async function closeWorkspace(id) {
       refresh();
       return;
     }
-    if (
-      !confirm(
-        `Close panels in "${workspaceCloseName(id)}"? Linked worktrees will keep running.`,
-      )
-    )
+    if (!(await askQuestion({
+      title: "Close workspace panels?",
+      message: `Close panels in "${workspaceCloseName(id)}"? Linked worktrees will keep running.`,
+      confirmText: "Close panels",
+      danger: true,
+    })))
       return;
     await closeWorkspaceById(id);
     refresh();
     return;
   }
-  if (!confirm(`Close ${kind} "${workspaceCloseName(id)}"?`)) return;
+  if (!(await askQuestion({
+    title: `Close ${kind}?`,
+    message: `Close ${kind} "${workspaceCloseName(id)}"?`,
+    confirmText: "Close",
+    danger: true,
+  }))) return;
   await closeWorkspaceById(id);
   refresh();
 }
@@ -3677,7 +4022,12 @@ async function closeWorkspaceById(id) {
   }
 }
 async function removeWorktree(id) {
-  if (!confirm(`Remove and close worktree "${workspaceCloseName(id)}"?`))
+  if (!(await askQuestion({
+    title: "Remove worktree from disk?",
+    message: `Remove and close worktree "${workspaceCloseName(id)}"? This deletes the linked checkout directory.`,
+    confirmText: "Remove",
+    danger: true,
+  })))
     return;
   await api(`/api/workspaces/${encodeURIComponent(id)}/worktree-remove`, {
     method: "POST",
@@ -4133,6 +4483,9 @@ newWs.onclick = () => {
 };
 el("workspaceCreateClose").onclick = closeWorkspaceCreateModal;
 el("workspaceCreateCancel").onclick = closeWorkspaceCreateModal;
+el("questionClose").onclick = () => closeQuestion(false);
+el("questionCancel").onclick = () => closeQuestion(false);
+el("questionConfirm").onclick = () => closeQuestion(true);
 el("workspaceCreateForm").onsubmit = (e) => {
   e.preventDefault();
   if (document.activeElement === el("workspaceCreatePath")) {
@@ -4152,9 +4505,35 @@ el("themeToggle").onclick = () => {
     themeMode === "auto" ? "dark" : themeMode === "dark" ? "light" : "auto";
   applyTheme();
 };
+document.addEventListener("click", (e) => {
+  const workspaceAction = e.target && e.target.closest && e.target.closest("[data-workspace-action]");
+  if (workspaceAction) {
+    e.preventDefault();
+    e.stopPropagation();
+    runWorkspaceContextAction(workspaceAction.dataset.workspaceAction, workspaceAction);
+    return;
+  }
+  const option = e.target && e.target.closest && e.target.closest(".no-sleep-menu [data-mode]");
+  if (option) {
+    closeNoSleepMenus();
+    setNoSleepMode(option.dataset.mode || "off");
+    return;
+  }
+  const control = e.target && e.target.closest && e.target.closest(".no-sleep-control");
+  if (control) {
+    const wrap = control.closest(".no-sleep-wrap");
+    const menu = wrap && wrap.querySelector(".no-sleep-menu");
+    if (menu) {
+      const nextHidden = !menu.hidden;
+      closeNoSleepMenus(menu);
+      menu.hidden = nextHidden;
+    }
+    return;
+  }
+  if (!e.target || !e.target.closest || !e.target.closest(".no-sleep-wrap")) closeNoSleepMenus();
+});
 document.addEventListener("change", (e) => {
-  if (!e.target || !e.target.classList.contains("no-sleep-control")) return;
-  setNoSleepMode(e.target.value);
+  if (e.target && e.target.id === "panelSelector") selectPanelFromHeader(e.target.value);
 });
 if (window.matchMedia) {
   try {
@@ -4346,6 +4725,21 @@ el("optSound").onchange = () => {
   saveOptions();
   applyOptions();
 };
+for (const module of settingsModules) {
+  if (typeof module.bind === "function") {
+    module.bind({
+      el,
+      saveOptions,
+      applyOptions,
+      setOption(key, value) {
+        options[key] = value;
+      },
+      getOption(key) {
+        return options[key];
+      },
+    });
+  }
+}
 el("worktreeCreateClose").onclick = closeWorktreeCreateModal;
 el("worktreeCreateCancel").onclick = closeWorktreeCreateModal;
 el("worktreeCreateSource").oninput = () => {

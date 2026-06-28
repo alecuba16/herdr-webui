@@ -476,6 +476,26 @@ describe("app bundle load", () => {
     equal(result.terminalId, null);
   });
 
+  it("auto-closes pane when Herdr reports it exited", async () => {
+    const requests = [];
+    const ctx = context();
+    ctx.fetch = async (url, opt) => {
+      requests.push({ url, method: (opt && opt.method) || "GET" });
+      return { ok: true, status: 200, json: async () => ({}) };
+    };
+    vm.runInContext(source, ctx);
+
+    vm.runInContext(
+      `forgetClosedSelection("pane.exited", { pane_id: "pane_1" });`,
+      ctx,
+    );
+    await Promise.resolve();
+
+    const closeRequest = requests.find((request) => request.url === "/api/panes/pane_1/close");
+    ok(closeRequest);
+    equal(closeRequest.method, "POST");
+  });
+
   it("keeps blocked agents first when attention sorting is inverted", () => {
     const ctx = context();
     ctx.localStorage.setItem(
@@ -591,11 +611,8 @@ describe("app bundle load", () => {
 
     match(html, /id="noSleepTest"/);
     match(html, /value="off"/);
-    match(html, /value="auto"/);
-    match(html, /value="1h"/);
-    match(html, /value="2h"/);
-    match(html, /value="4h"/);
-    match(html, /value="infinite"/);
+    match(html, /shell-icon-button/);
+    match(html, /coffee-outline/);
   });
 
   it("does not duplicate no-sleep control in static header", () => {
