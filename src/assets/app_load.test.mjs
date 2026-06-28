@@ -142,6 +142,14 @@ describe("app bundle load", () => {
     ok(!gitUiSource.includes("Select a file from left list to render its changes."));
   });
 
+  it("defines Git UI changes-list Escape navigation", () => {
+    match(gitUiSource, /document\.addEventListener\("keydown", handleKeydown\);/);
+    match(gitUiSource, /if \(tab === "changes"\) \{\n\s+this\.showChangesList\(\);\n\s+return;\n\s+\}/);
+    match(gitUiSource, /Leave commit editor and return to changes\? Draft is saved locally\./);
+    match(gitUiSource, /Hide Git UI\?/);
+    match(gitUiSource, /function isChangesListView\(view\)/);
+  });
+
   it("renders new workspace modal with folder autocomplete fields", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
