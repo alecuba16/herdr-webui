@@ -207,3 +207,42 @@ pub(crate) async fn icon_folder_svg() -> Response {
 pub(crate) async fn icon_file_svg() -> Response {
     static_svg(ICON_FILE)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::header;
+
+    fn content_type(response: &Response) -> &str {
+        response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("")
+    }
+
+    #[tokio::test]
+    async fn serves_remaining_static_text_assets_with_content_types() {
+        let javascript = "application/javascript; charset=utf-8";
+        let css = "text/css; charset=utf-8";
+
+        assert_eq!(content_type(&desktop_git_ui_js().await), javascript);
+        assert_eq!(content_type(&login_js().await), javascript);
+        assert_eq!(content_type(&desktop_git_ui_css().await), css);
+        assert_eq!(content_type(&login_css().await), css);
+    }
+
+    #[tokio::test]
+    async fn serves_icon_assets_as_svg() {
+        let svg = "image/svg+xml; charset=utf-8";
+
+        assert_eq!(content_type(&icon_help_svg().await), svg);
+        assert_eq!(content_type(&icon_settings_svg().await), svg);
+        assert_eq!(content_type(&icon_theme_auto_svg().await), svg);
+        assert_eq!(content_type(&icon_git_svg().await), svg);
+        assert_eq!(content_type(&icon_chevron_right_svg().await), svg);
+        assert_eq!(content_type(&icon_chevron_down_svg().await), svg);
+        assert_eq!(content_type(&icon_folder_svg().await), svg);
+        assert_eq!(content_type(&icon_file_svg().await), svg);
+    }
+}

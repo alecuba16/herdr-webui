@@ -476,6 +476,20 @@ mod tests {
     }
 
     #[test]
+    fn linux_service_unit_quotes_shell_sensitive_args() {
+        let config = WebConfig {
+            bind: "127.0.0.1:8787".parse().unwrap(),
+            session: Some("work session's path".to_string()),
+            api_socket: None,
+            client_socket: None,
+        };
+
+        let unit = linux_service_unit(&config, Path::new("/tmp/herdr webui"));
+
+        assert!(unit.contains("ExecStart='/tmp/herdr webui' --bind 127.0.0.1:8787 --session 'work session'\\''s path'"));
+    }
+
+    #[test]
     fn mac_plist_contains_binary_and_flags() {
         let config = WebConfig {
             bind: "127.0.0.1:8787".parse().unwrap(),
@@ -491,5 +505,18 @@ mod tests {
         assert!(plist.contains("<string>127.0.0.1:8787</string>"));
         assert!(plist.contains("<string>--session</string>"));
         assert!(plist.contains("<string>work</string>"));
+    }
+
+    #[test]
+    fn escapes_service_file_values() {
+        assert_eq!(systemd_escape_arg("plain/path:1"), "plain/path:1");
+        assert_eq!(systemd_escape_arg("has space"), "'has space'");
+        assert_eq!(systemd_escape_arg("has'quote"), "'has'\\''quote'");
+        assert_eq!(systemd_escape_arg("has\\slash"), "'has\\\\slash'");
+
+        assert_eq!(
+            xml_escape("<&>\"'"),
+            "&lt;&amp;&gt;&quot;&apos;".to_string()
+        );
     }
 }
