@@ -80,6 +80,22 @@ el("shortcutsModal").addEventListener("pointerdown", (e) => {
   shortcutsBackdropDown = e.target === el("shortcutsModal");
 });
 el("shortcutsModal").addEventListener("click", (e) => {
+  const record = e.target && e.target.closest && e.target.closest("[data-shortcut-record]");
+  if (record) {
+    e.preventDefault();
+    const [scope, action] = record.dataset.shortcutRecord.split(":");
+    recordShortcut(scope, action, record);
+    shortcutsBackdropDown = false;
+    return;
+  }
+  const reset = e.target && e.target.closest && e.target.closest("[data-shortcut-reset]");
+  if (reset) {
+    e.preventDefault();
+    const [scope, action] = reset.dataset.shortcutReset.split(":");
+    resetShortcut(scope, action);
+    shortcutsBackdropDown = false;
+    return;
+  }
   if (shortcutsBackdropDown && e.target === el("shortcutsModal"))
     el("shortcutsModal").style.display = "none";
   shortcutsBackdropDown = false;

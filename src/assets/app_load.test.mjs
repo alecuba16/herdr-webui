@@ -157,11 +157,27 @@ describe("app bundle load", () => {
     match(gitUiSource, /function isGitShortcutPrefix\(event\)/);
     match(gitUiSource, /function gitShortcutPrefixLabel\(\)/);
     match(gitUiSource, /function shortcutFilePath\(event, view\)/);
-    match(gitUiSource, /Y Stage file/);
-    match(gitUiSource, /G Stage\/unstage all/);
+    match(gitUiSource, /DEFAULT_GIT_SHORTCUTS/);
+    match(gitUiSource, /gitShortcutMap\(\)/);
     match(gitUiSource, /activateTreeItem\(event\)/);
     match(gitUiSource, /role="treeitem" tabindex="0" data-git-path=/);
     match(source, /HerdrGitUi\.isVisible\(\)\)\n\s+return false;/);
+  });
+
+  it("renders shortcut editor with collision detection", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    const html = ctx.shortcutsModalHtml();
+
+    match(html, /id="shortcutEditor"/);
+    match(source, /DEFAULT_WEBUI_SHORTCUTS/);
+    match(source, /removeWorktreeAlt: "Backspace"/);
+    match(source, /removeWorktreeAlt: \(\) =>/);
+    match(source, /DEFAULT_GIT_SHORTCUTS/);
+    match(source, /function shortcutCollisionFor\(scope, action, key\)/);
+    match(source, /data-shortcut-record/);
+    match(source, /Shortcut conflict with:/);
   });
 
   it("keeps Git prefix shortcuts collision-free with WebUI prefix keys", () => {

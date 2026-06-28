@@ -439,11 +439,22 @@ body.light .chip.label {
 }
 .shortcut-row {
   display: grid;
-  grid-template-columns: 120px 1fr;
+  grid-template-columns: 150px minmax(0, 1fr) auto auto;
   gap: 12px;
   align-items: center;
   padding: 9px 0;
   border-bottom: 1px solid var(--border);
+}
+.shortcut-row.conflict {
+  background: rgba(248, 81, 73, 0.08);
+  border-radius: 8px;
+  padding-left: 8px;
+  padding-right: 8px;
+}
+.shortcut-row small {
+  color: #da3633;
+  display: block;
+  margin-top: 3px;
 }
 .shortcut-row:last-child {
   border-bottom: 0;

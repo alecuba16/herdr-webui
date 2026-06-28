@@ -191,59 +191,84 @@ function hideShortcutPrefixOverlay() {
   if (overlay) overlay.hidden = true;
 }
 function runPrefixedShortcut(e) {
-  switch (shortcutKey(e)) {
-    case "Slash":
+  const actions = {
+    search: () => {
       openSearchPalette();
       return true;
-    case "Shift+Slash":
+    },
+    help: () => {
       showShortcutsModal();
       return true;
-    case "KeyS":
+    },
+    settings: () => {
       showSettingsModal();
       return true;
-    case "KeyB":
+    },
+    sidebar: () => {
       sidebarToggle && sidebarToggle.click();
       return true;
-    case "KeyN":
+    },
+    newWorkspace: () => {
       openWorkspaceCreateModal();
       return true;
-    case "KeyP":
+    },
+    newPanel: () => {
       if (state.ws) newTab();
       return true;
-    case "KeyW":
+    },
+    openWorktrees: () => {
       openWorktreeOpenModal();
       return true;
-    case "KeyT":
+    },
+    createWorktree: () => {
       if (state.ws) openWorktreeCreateModal(state.ws);
       return true;
-    case "KeyX":
+    },
+    closePanel: () => {
       return closeCurrentPanelShortcut(true);
-    case "Shift+KeyX":
+    },
+    closeWorkspace: () => {
       if (state.ws) closeWorkspace(state.ws);
       return true;
-    case "Delete":
-    case "Backspace":
+    },
+    removeWorktree: () => {
       return removeCurrentWorktreeShortcut();
-    case "KeyA":
+    },
+    removeWorktreeAlt: () => {
+      return removeCurrentWorktreeShortcut();
+    },
+    nextAgent: () => {
       return selectRelativeAgent(1);
-    case "Shift+KeyA":
+    },
+    prevAgent: () => {
       return selectRelativeAgent(-1);
-    case "KeyJ":
+    },
+    nextWorkspace: () => {
       return selectRelativeWorkspace(1);
-    case "KeyK":
+    },
+    prevWorkspace: () => {
       return selectRelativeWorkspace(-1);
-    case "BracketRight":
+    },
+    nextPanel: () => {
       return selectRelativePanel(1);
-    case "BracketLeft":
+    },
+    prevPanel: () => {
       return selectRelativePanel(-1);
-    case "KeyF":
+    },
+    focusTerminal: () => {
       focusTerminal(true);
       return true;
-    case "Period":
+    },
+    focusNext: () => {
       return focusRelativeControl(1);
-    case "Comma":
+    },
+    focusPrev: () => {
       return focusRelativeControl(-1);
-  }
+    },
+  };
+  const key = shortcutKey(e);
+  const entry = Object.entries(options.webuiShortcuts || {}).find(([, value]) => value === key);
+  if (entry && actions[entry[0]]) return actions[entry[0]]();
   return false;
 }
 function consumeShortcutEvent(e) {

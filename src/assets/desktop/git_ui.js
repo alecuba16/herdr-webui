@@ -10,6 +10,27 @@
     shortcutPrefixUntil: 0,
   };
   const LARGE_FILE_DIFF_LINE_LIMIT = 500;
+  const DEFAULT_GIT_SHORTCUTS = {
+    changes: "Digit1",
+    commit: "Digit2",
+    log: "Digit3",
+    stash: "Digit4",
+    commitAlt: "KeyC",
+    logAlt: "KeyL",
+    refresh: "KeyR",
+    stageAll: "KeyG",
+    stageFile: "KeyY",
+    unstageFile: "KeyU",
+    discardFile: "KeyD",
+    stashFile: "KeyZ",
+    history: "KeyH",
+    blame: "KeyM",
+    edit: "KeyE",
+    compare: "KeyO",
+    branch: "KeyV",
+    focusFile: "KeyI",
+    help: "Digit0",
+  };
 
   document.addEventListener("click", () => {
     if (!state.contextMenu) return;
@@ -67,29 +88,31 @@
     state.shortcutPrefixUntil = 0;
     if (event.metaKey || event.ctrlKey || event.altKey) return false;
     if (event.key === "Escape" || editableTarget(event.target)) return false;
-    const key = event.key && event.key.length === 1 ? event.key.toLowerCase() : event.key;
+    const key = shortcutKey(event);
+    const shortcutMap = gitShortcutMap();
     const actions = {
-      "1": () => window.HerdrGitUi.showChangesList(),
-      "2": () => window.HerdrGitUi.tab("commit"),
-      "3": () => window.HerdrGitUi.tab("log"),
-      "4": () => window.HerdrGitUi.tab("stash"),
-      c: () => window.HerdrGitUi.tab("commit"),
-      l: () => window.HerdrGitUi.tab("log"),
-      r: () => window.HerdrGitUi.refresh(),
-      g: () => window.HerdrGitUi.toggleStageAll(),
-      h: () => { if (view.file) window.HerdrGitUi.tab("history"); },
-      m: () => { if (view.file) window.HerdrGitUi.toggleBlame(); },
-      e: () => { if (view.file && canEditCurrentFile(view)) window.HerdrGitUi.editSideBySide(); },
-      y: () => { const path = shortcutFilePath(event, view); if (path) window.HerdrGitUi.stageFile(encodeURIComponent(path)); },
-      u: () => { const path = shortcutFilePath(event, view); if (path) window.HerdrGitUi.unstageFile(encodeURIComponent(path)); },
-      d: () => { const path = shortcutFilePath(event, view); if (path) window.HerdrGitUi.discardFile(encodeURIComponent(path)); },
-      z: () => { const path = shortcutFilePath(event, view); if (path) window.HerdrGitUi.stashFile(encodeURIComponent(path)); },
-      o: () => window.HerdrGitUi.compareCurrent(),
-      v: () => window.HerdrGitUi.openBranchModal(),
-      i: () => focusFirstGitFile(),
-      "0": () => showGitKeyboardHelp(),
+      changes: () => window.HerdrGitUi.showChangesList(),
+      commit: () => window.HerdrGitUi.tab("commit"),
+      log: () => window.HerdrGitUi.tab("log"),
+      stash: () => window.HerdrGitUi.tab("stash"),
+      commitAlt: () => window.HerdrGitUi.tab("commit"),
+      logAlt: () => window.HerdrGitUi.tab("log"),
+      refresh: () => window.HerdrGitUi.refresh(),
+      stageAll: () => window.HerdrGitUi.toggleStageAll(),
+      history: () => { if (view.file) window.HerdrGitUi.tab("history"); },
+      blame: () => { if (view.file) window.HerdrGitUi.toggleBlame(); },
+      edit: () => { if (view.file && canEditCurrentFile(view)) window.HerdrGitUi.editSideBySide(); },
+      stageFile: () => { const path = shortcutFilePath(event, view); if (path) window.HerdrGitUi.stageFile(encodeURIComponent(path)); },
+      unstageFile: () => { const path = shortcutFilePath(event, view); if (path) window.HerdrGitUi.unstageFile(encodeURIComponent(path)); },
+      discardFile: () => { const path = shortcutFilePath(event, view); if (path) window.HerdrGitUi.discardFile(encodeURIComponent(path)); },
+      stashFile: () => { const path = shortcutFilePath(event, view); if (path) window.HerdrGitUi.stashFile(encodeURIComponent(path)); },
+      compare: () => window.HerdrGitUi.compareCurrent(),
+      branch: () => window.HerdrGitUi.openBranchModal(),
+      focusFile: () => focusFirstGitFile(),
+      help: () => showGitKeyboardHelp(),
     };
-    const action = actions[key];
+    const match = Object.entries(shortcutMap).find(([, value]) => value === key);
+    const action = match && actions[match[0]];
     if (!action) return false;
     event.preventDefault();
     action();
@@ -102,6 +125,15 @@
 
   function gitShortcutPrefixLabel() {
     return normalizeShortcutPrefix(gitUiOptions().globalShortcutPrefix || "Ctrl+B");
+  }
+
+  function gitShortcutMap() {
+    const configured = gitUiOptions().gitShortcuts || {};
+    return Object.assign({}, DEFAULT_GIT_SHORTCUTS, configured);
+  }
+
+  function shortcutKey(event) {
+    return `${event.shiftKey ? "Shift+" : ""}${event.code || event.key}`;
   }
 
   function normalizeShortcutPrefix(value) {
@@ -144,7 +176,19 @@
   }
 
   function showGitKeyboardHelp() {
-    alert(`${gitShortcutPrefixLabel()} then:\n1 Changes list\n2 Commit\n3 Log\n4 Stash\nR Refresh\nG Stage/unstage all\nY Stage file\nU Unstage file\nD Discard file\nZ Stash file\nH File history\nM Toggle blame\nE Edit file\nO Current compare\nV Branch switch\nI Focus file list\n0 Git shortcut help\nEsc Back / hide`);
+    const map = gitShortcutMap();
+    alert(`${gitShortcutPrefixLabel()} then:\n${shortcutDisplay(map.changes)} Changes list\n${shortcutDisplay(map.commit)} Commit\n${shortcutDisplay(map.log)} Log\n${shortcutDisplay(map.stash)} Stash\n${shortcutDisplay(map.refresh)} Refresh\n${shortcutDisplay(map.stageAll)} Stage/unstage all\n${shortcutDisplay(map.stageFile)} Stage file\n${shortcutDisplay(map.unstageFile)} Unstage file\n${shortcutDisplay(map.discardFile)} Discard file\n${shortcutDisplay(map.stashFile)} Stash file\n${shortcutDisplay(map.history)} File history\n${shortcutDisplay(map.blame)} Toggle blame\n${shortcutDisplay(map.edit)} Edit file\n${shortcutDisplay(map.compare)} Current compare\n${shortcutDisplay(map.branch)} Branch switch\n${shortcutDisplay(map.focusFile)} Focus file list\n${shortcutDisplay(map.help)} Git shortcut help\nEsc Back / hide`);
+  }
+
+  function shortcutDisplay(value) {
+    return String(value || "")
+      .replace(/^Key/, "")
+      .replace(/^Digit/, "")
+      .replace("BracketLeft", "[")
+      .replace("BracketRight", "]")
+      .replace("Slash", "/")
+      .replace("Period", ".")
+      .replace("Comma", ",");
   }
 
   function gitUiOptions() {
