@@ -7,6 +7,7 @@
     renderVersion: 0,
     contextMenu: null,
     branchModal: null,
+    shortcutPrefixUntil: 0,
   };
   const LARGE_FILE_DIFF_LINE_LIMIT = 500;
 
@@ -28,6 +29,11 @@
     // Git drawer owns keyboard while visible, so terminal/global shortcuts behind it do not receive input.
     event.stopPropagation();
     if (event.stopImmediatePropagation) event.stopImmediatePropagation();
+    if (isGitShortcutPrefix(event)) {
+      state.shortcutPrefixUntil = Date.now() + 5000;
+      event.preventDefault();
+      return;
+    }
     if (handleGitShortcut(event, view)) return;
     if (event.key !== "Escape") return;
     event.preventDefault();
@@ -57,7 +63,9 @@
   }
 
   function handleGitShortcut(event, view) {
-    if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return false;
+    if (event.defaultPrevented || state.shortcutPrefixUntil <= Date.now()) return false;
+    state.shortcutPrefixUntil = 0;
+    if (event.metaKey || event.ctrlKey || event.altKey) return false;
     if (event.key === "Escape" || editableTarget(event.target)) return false;
     const key = event.key && event.key.length === 1 ? event.key.toLowerCase() : event.key;
     const actions = {
@@ -68,24 +76,57 @@
       c: () => window.HerdrGitUi.tab("commit"),
       l: () => window.HerdrGitUi.tab("log"),
       r: () => window.HerdrGitUi.refresh(),
-      s: () => window.HerdrGitUi.toggleStageAll(),
+      g: () => window.HerdrGitUi.toggleStageAll(),
       h: () => { if (view.file) window.HerdrGitUi.tab("history"); },
-      b: () => { if (view.file) window.HerdrGitUi.toggleBlame(); },
+      m: () => { if (view.file) window.HerdrGitUi.toggleBlame(); },
       e: () => { if (view.file && canEditCurrentFile(view)) window.HerdrGitUi.editSideBySide(); },
-      a: () => { const path = shortcutFilePath(event, view); if (path) window.HerdrGitUi.stageFile(encodeURIComponent(path)); },
+      y: () => { const path = shortcutFilePath(event, view); if (path) window.HerdrGitUi.stageFile(encodeURIComponent(path)); },
       u: () => { const path = shortcutFilePath(event, view); if (path) window.HerdrGitUi.unstageFile(encodeURIComponent(path)); },
       d: () => { const path = shortcutFilePath(event, view); if (path) window.HerdrGitUi.discardFile(encodeURIComponent(path)); },
       z: () => { const path = shortcutFilePath(event, view); if (path) window.HerdrGitUi.stashFile(encodeURIComponent(path)); },
       o: () => window.HerdrGitUi.compareCurrent(),
-      p: () => window.HerdrGitUi.openBranchModal(),
-      f: () => focusFirstGitFile(),
-      "?": () => showGitKeyboardHelp(),
+      v: () => window.HerdrGitUi.openBranchModal(),
+      i: () => focusFirstGitFile(),
+      "0": () => showGitKeyboardHelp(),
     };
     const action = actions[key];
     if (!action) return false;
     event.preventDefault();
     action();
     return true;
+  }
+
+  function isGitShortcutPrefix(event) {
+    return shortcutPrefixFromEvent(event) === gitShortcutPrefixLabel();
+  }
+
+  function gitShortcutPrefixLabel() {
+    return normalizeShortcutPrefix(gitUiOptions().globalShortcutPrefix || "Ctrl+B");
+  }
+
+  function normalizeShortcutPrefix(value) {
+    const text = String(value || "Ctrl+B").trim();
+    if (!text) return "Ctrl+B";
+    const parts = text.split("+").map((part) => part.trim()).filter(Boolean);
+    const key = parts.pop() || "B";
+    const mods = [];
+    if (parts.some((part) => /^ctrl|control$/i.test(part))) mods.push("Ctrl");
+    if (parts.some((part) => /^alt|option$/i.test(part))) mods.push("Alt");
+    if (parts.some((part) => /^shift$/i.test(part))) mods.push("Shift");
+    if (parts.some((part) => /^meta|cmd|command$/i.test(part))) mods.push("Meta");
+    if (!mods.length) mods.push("Ctrl");
+    return mods.concat(key.length === 1 ? key.toUpperCase() : key).join("+");
+  }
+
+  function shortcutPrefixFromEvent(event) {
+    const mods = [];
+    if (event.ctrlKey) mods.push("Ctrl");
+    if (event.altKey) mods.push("Alt");
+    if (event.shiftKey) mods.push("Shift");
+    if (event.metaKey) mods.push("Meta");
+    const key = event.key === " " ? "Space" : String(event.key || "");
+    if (!key || ["Control", "Alt", "Shift", "Meta"].includes(key)) return "";
+    return mods.concat(key.length === 1 ? key.toUpperCase() : key).join("+");
   }
 
   function editableTarget(target) {
@@ -103,7 +144,7 @@
   }
 
   function showGitKeyboardHelp() {
-    alert("Git UI shortcuts:\n1 Changes list\n2 Commit\n3 Log\n4 Stash\nR Refresh\nS Stage/unstage all\nA Stage file\nU Unstage file\nD Discard file\nZ Stash file\nH File history\nB Toggle blame\nE Edit file\nO Current compare\nP Branch switch\nF Focus file list\nEsc Back / hide");
+    alert(`${gitShortcutPrefixLabel()} then:\n1 Changes list\n2 Commit\n3 Log\n4 Stash\nR Refresh\nG Stage/unstage all\nY Stage file\nU Unstage file\nD Discard file\nZ Stash file\nH File history\nM Toggle blame\nE Edit file\nO Current compare\nV Branch switch\nI Focus file list\n0 Git shortcut help\nEsc Back / hide`);
   }
 
   function gitUiOptions() {
