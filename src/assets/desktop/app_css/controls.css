@@ -1,0 +1,162 @@
+.tabs-tools {
+  margin-left: auto;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.tabs-tools .mini {
+  margin-left: 0;
+}
+.head #themeToggle,
+.head #shortcutsToggle,
+.head #settingsToggle {
+  display: none;
+}
+body {
+  --accent-fg: var(--bg);
+  --accent-1: var(--accent);
+  --accent-soft: color-mix(in srgb, var(--accent), transparent 84%);
+  --accent-2: var(--accent-soft);
+  --accent-border: color-mix(in srgb, var(--accent), transparent 45%);
+  --accent-2-border: var(--accent-border);
+  --accent-hover: color-mix(in srgb, var(--accent), white 10%);
+  --control-hover: color-mix(in srgb, var(--panel2), var(--accent) 12%);
+  --focus-ring: 0 0 0 2px color-mix(in srgb, var(--accent), transparent 68%);
+  --action-bg: var(--border);
+  --action-fg: var(--fg);
+  --action-border: var(--border2);
+}
+button,
+.btn,
+.mini,
+.tab,
+input,
+select,
+textarea,
+.option,
+.item {
+  transition:
+    background 120ms ease,
+    border-color 120ms ease,
+    box-shadow 120ms ease,
+    color 120ms ease,
+    transform 80ms ease;
+}
+button:not(:disabled),
+.btn:not(:disabled),
+.mini:not(:disabled),
+.tab:not(:disabled),
+select:not(:disabled),
+input[type="checkbox"]:not(:disabled) {
+  cursor: pointer;
+}
+button:hover:not(:disabled),
+.btn:hover:not(:disabled),
+.mini:hover:not(:disabled),
+.tab:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+button:active:not(:disabled),
+.btn:active:not(:disabled),
+.mini:active:not(:disabled),
+.tab:active:not(:disabled) {
+  transform: translateY(0);
+}
+button:focus-visible,
+.btn:focus-visible,
+.mini:focus-visible,
+.tab:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  box-shadow: var(--focus-ring);
+  outline: none;
+}
+input[type="checkbox"] {
+  accent-color: var(--accent);
+}
+.btn,
+.tab.add {
+  background: var(--accent-1);
+  color: var(--accent-fg);
+  border: 1px solid var(--accent-1);
+}
+.btn:hover,
+.tab.add:hover {
+  background: var(--accent-hover);
+}
+.tab.active {
+  background: var(--accent-1);
+  color: var(--accent-fg);
+  border-color: var(--accent-1);
+}
+.item.active {
+  background: var(--accent-2);
+  border-color: var(--accent-2-border);
+}
+.item.active:hover {
+  background: color-mix(in srgb, var(--accent), transparent 78%);
+  border-color: var(--accent);
+}
+.mini,
+.mini.danger,
+.mini.warn,
+.mini.tree,
+.tab.active .mini {
+  background: var(--action-bg);
+  color: var(--action-fg);
+  border-color: var(--action-border);
+}
+.mini:hover,
+.mini:focus,
+.tab.active .mini:hover,
+.tab.active .mini:focus {
+  background: var(--control-hover);
+  color: var(--fg);
+  border-color: var(--accent-border);
+}
+.mini.danger:hover,
+.mini.danger:focus,
+.tab.active .mini.danger:hover,
+.tab.active .mini.danger:focus {
+  background: #5a2734;
+  color: #ffccd5;
+  border-color: #f38ba8;
+}
+.mini.warn:hover,
+.mini.warn:focus,
+.tab.active .mini.warn:hover,
+.tab.active .mini.warn:focus {
+  background: #56401b;
+  color: #f9e2af;
+  border-color: #f9e2af;
+}
+.mini.tree:hover,
+.mini.tree:focus {
+  background: #315044;
+  color: #a6e3a1;
+  border-color: #74c7a3;
+}
+a.item,
+a.item:visited,
+a.item:hover,
+a.item:active {
+  color: var(--fg);
+  text-decoration: none;
+}
+a.tab,
+a.tab:visited,
+a.tab:hover,
+a.tab:active {
+  color: var(--fg);
+  text-decoration: none;
+}
+a.tab.active,
+a.tab.active:visited,
+a.tab.active:hover,
+a.tab.active:active {
+  color: var(--bg);
+}
+a.item {
+  display: block;
+}
