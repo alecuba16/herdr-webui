@@ -143,11 +143,47 @@ describe("app bundle load", () => {
   });
 
   it("defines Git UI changes-list Escape navigation", () => {
-    match(gitUiSource, /document\.addEventListener\("keydown", handleKeydown\);/);
+    match(gitUiSource, /window\.addEventListener\("keydown", handleKeydown, true\);/);
     match(gitUiSource, /if \(tab === "changes"\) \{\n\s+this\.showChangesList\(\);\n\s+return;\n\s+\}/);
     match(gitUiSource, /Leave commit editor and return to changes\? Draft is saved locally\./);
     match(gitUiSource, /Hide Git UI\?/);
     match(gitUiSource, /function isChangesListView\(view\)/);
+  });
+
+  it("keeps Git UI keyboard input away from the terminal", () => {
+    match(gitUiSource, /Git drawer owns keyboard while visible/);
+    match(gitUiSource, /event\.stopImmediatePropagation/);
+    match(gitUiSource, /function handleGitShortcut\(event, view\)/);
+    match(gitUiSource, /function isGitShortcutPrefix\(event\)/);
+    match(gitUiSource, /function gitShortcutPrefixLabel\(\)/);
+    match(gitUiSource, /function shortcutFilePath\(event, view\)/);
+    match(gitUiSource, /DEFAULT_GIT_SHORTCUTS/);
+    match(gitUiSource, /gitShortcutMap\(\)/);
+    match(gitUiSource, /activateTreeItem\(event\)/);
+    match(gitUiSource, /role="treeitem" tabindex="0" data-git-path=/);
+    match(source, /HerdrGitUi\.isVisible\(\)\)\n\s+return false;/);
+  });
+
+  it("renders shortcut editor with collision detection", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    const html = ctx.shortcutsModalHtml();
+
+    match(html, /id="shortcutEditor"/);
+    match(source, /DEFAULT_WEBUI_SHORTCUTS/);
+    match(source, /removeWorktreeAlt: "Backspace"/);
+    match(source, /removeWorktreeAlt: \(\) =>/);
+    match(source, /DEFAULT_GIT_SHORTCUTS/);
+    match(source, /function shortcutCollisionFor\(scope, action, key\)/);
+    match(source, /data-shortcut-record/);
+    match(source, /Shortcut conflict with:/);
+  });
+
+  it("keeps Git prefix shortcuts collision-free with WebUI prefix keys", () => {
+    const webuiKeys = new Set([...source.matchAll(/case "([^"]+)":/g)].map((match) => match[1]));
+    const gitKeys = ["Digit1", "Digit2", "Digit3", "Digit4", "KeyC", "KeyL", "KeyR", "KeyG", "KeyY", "KeyU", "KeyD", "KeyZ", "KeyH", "KeyM", "KeyE", "KeyO", "KeyV", "KeyI", "Digit0"];
+    equal(gitKeys.filter((key) => webuiKeys.has(key)).join(","), "");
   });
 
   it("renders new workspace modal with folder autocomplete fields", () => {

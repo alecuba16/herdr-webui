@@ -14,7 +14,7 @@ Compatibility:
 
 | WebUI | Herdr | Protocol | Status | Notes |
 | --- | --- | --- | --- | --- |
-| `0.0.45` | `0.7.1` | `14` | Tested | Improves embedded Git UI navigation with Escape handling, all-changes return behavior, split frontend assets, scoped file history controls, and per-file large diff loading. |
+| `0.0.45` | `0.7.1` | `14` | Tested | Improves embedded Git UI navigation with Escape handling, all-changes return behavior, split frontend assets, scoped file history controls, keyboard-owned drawer input, and per-file large diff loading. |
 | `0.0.45` | `0.7.0` | `14` | Minimum supported | Uses WebUI's legacy existing-branch worktree fallback when needed. |
 
 Newer Herdr builds may work when protocol stays compatible, but WebUI reports them as untested.
@@ -181,13 +181,16 @@ Git UI:
 - File lists are shown as a collapsible folder tree with file-level line counts. Settings can switch the file list to filename-only mode with the full path in the tooltip.
 - Right-click a file for actions such as stash, discard, stage, or unstage. Section-level bulk actions stage or unstage grouped files with confirmation.
 - Commit drafts are stored in browser `localStorage` per workspace/worktree/ref.
-- Large diffs are protected by a browser-local `Git large diff line limit` setting under Settings → `Git UI`. Above the limit, WebUI hides full automatic rendering and asks you to select files individually. Set the value to `0` to always render full diffs.
+- Large diffs are protected by a browser-local `Git large diff line limit` setting under Settings → `Git UI`. In the all-changes view, files over 500 diff lines show a per-file `Load diff` placeholder so many-file changes remain usable. In selected-file view, the configured limit can still hide very large renders until you explicitly load them. Set the setting to `0` to disable the selected-file line limit.
 - Diffs support per-file collapse, collapse/show all, visual change grouping, inline word highlights, context expansion, hunk stage/unstage/restore actions, and per-file blame from the Changes file view.
 - Syntax highlighting is embedded and modular for common project files including JSON, YAML, Python, Java, Rust, Go, JavaScript, TypeScript, CSS, Kotlin, shell, Makefiles, and HTML.
 - Side-by-side hunk editing lets you edit current hunk text, save back to the working tree with a hash guard, and refresh the diff.
 - The branch pill opens a branch switch modal. Remote branch selection creates a local branch from the remote base.
 - The log view supports click commit selection and shift-click two-commit comparison. Select one commit to compare it with current working-tree changes, reset soft/hard, or rebase commits after the selected commit onto `main`/`master`.
 - File history can show a read-only temporary commit diff or jump to the matching commit in the log.
+- When the desktop Git drawer is visible, it owns keyboard input so keystrokes are not sent to the background terminal. `Esc` returns from nested Git views to the all-changes list; on the all-changes list it asks before hiding Git UI; in the commit editor it asks before leaving and saves the draft locally.
+- The shortcuts window includes an editor for WebUI and Git prefix shortcuts. Recording a shortcut that duplicates another WebUI or Git shortcut is blocked and reported.
+- Desktop Git shortcuts use the same configured WebUI prefix (`Ctrl+B` by default) while the drawer is focused. Defaults avoid the global WebUI prefix keys: prefix then `1` changes list, `2`/`C` commit, `3`/`L` log, `4` stash, `R` refresh, `G` stage or unstage all, `Y` stage focused/selected file, `U` unstage focused/selected file, `D` discard focused/selected file, `Z` stash focused/selected file, `H` selected-file history, `M` selected-file blame, `E` edit selected file, `O` current compare, `V` branch switch, `I` focus file list, `0` show Git shortcut help. `Enter` or `Space` activate focused file and folder rows without prefix.
 - Stashes can be listed, applied, popped, dropped with confirmation, or created from all changes or a single file.
 - Mutating/destructive operations are guarded: discard, hard reset, rebase, stash drop, and section bulk changes require confirmation; backend paths and refs are validated before running Git.
 - Git API routes cover status, diff, compare, branches, log, blame, file read/write, file history, stashes, conflicts, stage, unstage, discard, stash, switch, reset, rebase, commit, apply-patch, and conflict actions.
@@ -259,7 +262,7 @@ Keyboard shortcuts:
 - Enable or disable from Settings under `Agents and alerts` with `Global keyboard shortcuts`.
 - Press configured prefix (`Ctrl+B` by default) to open the WebUI shortcut prefix overlay. The next shortcut key is handled by WebUI and not sent to the terminal; `Esc` cancels.
 - Change the prefix in Settings with `Shortcut prefix` → `Record`.
-- Prefix shortcuts work from the terminal and UI: prefix then `/` search, `?` shortcuts help, `S` settings, `B` sidebar, `N` new workspace, `P` new panel, `W` worktrees, `T` create worktree, `X` close panel, `Shift+X` close workspace/worktree, `Delete` remove linked worktree, `A` next agent by blocked/done/idle/working priority, `Shift+A` previous agent by reverse priority, `J/K` workspace navigation, `[/]` panel navigation, `F` terminal focus, and `,/.` focus navigation.
+- Prefix shortcuts work from the terminal and UI and can be remapped from the shortcuts window with collision detection. Defaults are: prefix then `/` search, `?` shortcuts help, `S` settings, `B` sidebar, `N` new workspace, `P` new panel, `W` worktrees, `T` create worktree, `X` close panel, `Shift+X` close workspace/worktree, `Delete`/`Backspace` remove linked worktree, `A` next agent by blocked/done/idle/working priority, `Shift+A` previous agent by reverse priority, `J/K` workspace navigation, `[/]` panel navigation, `F` terminal focus, and `,/.` focus navigation.
 - Optional direct search shortcuts can be configured in Settings. They are disabled by default to avoid conflicts with terminal applications.
 
 ## Install
