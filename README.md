@@ -14,8 +14,8 @@ Compatibility:
 
 | WebUI | Herdr | Protocol | Status | Notes |
 | --- | --- | --- | --- | --- |
-| `0.0.43` | `0.7.1` | `14` | Tested | Adds the embedded Git drawer/tab, themeable desktop shell, compact workspace/panel controls, no-sleep dropdown, safer pane exit handling, keyboard prefix navigation, search palette, worktree labels, terminal font setting, and split frontend assets. |
-| `0.0.43` | `0.7.0` | `14` | Minimum supported | Uses WebUI's legacy existing-branch worktree fallback when needed. |
+| `0.0.44` | `0.7.1` | `14` | Tested | Optimises embedded Git UI internals with split frontend assets, scoped file history controls, and per-file large diff loading. |
+| `0.0.44` | `0.7.0` | `14` | Minimum supported | Uses WebUI's legacy existing-branch worktree fallback when needed. |
 
 Newer Herdr builds may work when protocol stays compatible, but WebUI reports them as untested.
 
