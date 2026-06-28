@@ -34,7 +34,15 @@ const DESKTOP_GIT_UI_JS: &str = concat!(
     include_str!("assets/desktop/git_ui.js"),
 );
 const DESKTOP_SEARCH_JS: &str = include_str!("assets/desktop/search.js");
-const DESKTOP_JS: &str = include_str!("assets/desktop/app.js");
+const DESKTOP_JS: &str = concat!(
+    include_str!("assets/desktop/app_js/core.js"),
+    include_str!("assets/desktop/app_js/render.js"),
+    include_str!("assets/desktop/app_js/terminal.js"),
+    include_str!("assets/desktop/app_js/worktrees.js"),
+    include_str!("assets/desktop/app_js/shortcuts.js"),
+    include_str!("assets/desktop/app_js/workspace_create.js"),
+    include_str!("assets/desktop/app_js/bindings.js"),
+);
 const MOBILE_ATTENTION_JS: &str = include_str!("assets/mobile/attention.js");
 const MOBILE_CORE_JS: &str = include_str!("assets/mobile/core.js");
 const MOBILE_SETTINGS_JS: &str = include_str!("assets/mobile/settings.js");
