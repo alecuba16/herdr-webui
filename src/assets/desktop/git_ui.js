@@ -7,28 +7,64 @@
     renderVersion: 0,
     contextMenu: null,
     branchModal: null,
+    shortcutPrefixUntil: 0,
   };
   const LARGE_FILE_DIFF_LINE_LIMIT = 500;
+  const DEFAULT_GIT_SHORTCUTS = {
+    changes: "Digit1",
+    commit: "Digit2",
+    log: "Digit3",
+    stash: "Digit4",
+    commitAlt: "KeyC",
+    logAlt: "KeyL",
+    refresh: "KeyR",
+    stageAll: "KeyG",
+    stageFile: "KeyY",
+    unstageFile: "KeyU",
+    discardFile: "KeyD",
+    stashFile: "KeyZ",
+    history: "KeyH",
+    blame: "KeyM",
+    edit: "KeyE",
+    compare: "KeyO",
+    branch: "KeyV",
+    focusFile: "KeyI",
+    help: "Digit0",
+  };
 
   document.addEventListener("click", () => {
     if (!state.contextMenu) return;
     state.contextMenu = null;
     if (state.visible) render();
   });
-  document.addEventListener("keydown", handleKeydown);
+  window.addEventListener("keydown", handleKeydown, true);
 
   function active() {
     return state.cache[state.activeKey] || null;
   }
 
   function handleKeydown(event) {
-    if (!state.visible || !event || event.key !== "Escape") return;
+    if (!state.visible || !event) return;
     const view = active();
     if (!view) return;
-    event.preventDefault();
+    // Git drawer owns keyboard while visible, so terminal/global shortcuts behind it do not receive input.
     event.stopPropagation();
+    if (event.stopImmediatePropagation) event.stopImmediatePropagation();
+    if (isGitShortcutPrefix(event)) {
+      state.shortcutPrefixUntil = Date.now() + 5000;
+      event.preventDefault();
+      return;
+    }
+    if (handleGitShortcut(event, view)) return;
+    if (event.key !== "Escape") return;
+    event.preventDefault();
     if (state.contextMenu) {
       state.contextMenu = null;
+      render();
+      return;
+    }
+    if (state.branchModal) {
+      state.branchModal = null;
       render();
       return;
     }
@@ -45,6 +81,114 @@
 
   function isChangesListView(view) {
     return !!(view && view.tab === "changes" && currentMode() === "changes" && !view.file && !view.sideEditor);
+  }
+
+  function handleGitShortcut(event, view) {
+    if (event.defaultPrevented || state.shortcutPrefixUntil <= Date.now()) return false;
+    state.shortcutPrefixUntil = 0;
+    if (event.metaKey || event.ctrlKey || event.altKey) return false;
+    if (event.key === "Escape" || editableTarget(event.target)) return false;
+    const key = shortcutKey(event);
+    const shortcutMap = gitShortcutMap();
+    const actions = {
+      changes: () => window.HerdrGitUi.showChangesList(),
+      commit: () => window.HerdrGitUi.tab("commit"),
+      log: () => window.HerdrGitUi.tab("log"),
+      stash: () => window.HerdrGitUi.tab("stash"),
+      commitAlt: () => window.HerdrGitUi.tab("commit"),
+      logAlt: () => window.HerdrGitUi.tab("log"),
+      refresh: () => window.HerdrGitUi.refresh(),
+      stageAll: () => window.HerdrGitUi.toggleStageAll(),
+      history: () => { if (view.file) window.HerdrGitUi.tab("history"); },
+      blame: () => { if (view.file) window.HerdrGitUi.toggleBlame(); },
+      edit: () => { if (view.file && canEditCurrentFile(view)) window.HerdrGitUi.editSideBySide(); },
+      stageFile: () => { const path = shortcutFilePath(event, view); if (path) window.HerdrGitUi.stageFile(encodeURIComponent(path)); },
+      unstageFile: () => { const path = shortcutFilePath(event, view); if (path) window.HerdrGitUi.unstageFile(encodeURIComponent(path)); },
+      discardFile: () => { const path = shortcutFilePath(event, view); if (path) window.HerdrGitUi.discardFile(encodeURIComponent(path)); },
+      stashFile: () => { const path = shortcutFilePath(event, view); if (path) window.HerdrGitUi.stashFile(encodeURIComponent(path)); },
+      compare: () => window.HerdrGitUi.compareCurrent(),
+      branch: () => window.HerdrGitUi.openBranchModal(),
+      focusFile: () => focusFirstGitFile(),
+      help: () => showGitKeyboardHelp(),
+    };
+    const match = Object.entries(shortcutMap).find(([, value]) => value === key);
+    const action = match && actions[match[0]];
+    if (!action) return false;
+    event.preventDefault();
+    action();
+    return true;
+  }
+
+  function isGitShortcutPrefix(event) {
+    return shortcutPrefixFromEvent(event) === gitShortcutPrefixLabel();
+  }
+
+  function gitShortcutPrefixLabel() {
+    return normalizeShortcutPrefix(gitUiOptions().globalShortcutPrefix || "Ctrl+B");
+  }
+
+  function gitShortcutMap() {
+    const configured = gitUiOptions().gitShortcuts || {};
+    return Object.assign({}, DEFAULT_GIT_SHORTCUTS, configured);
+  }
+
+  function shortcutKey(event) {
+    return `${event.shiftKey ? "Shift+" : ""}${event.code || event.key}`;
+  }
+
+  function normalizeShortcutPrefix(value) {
+    const text = String(value || "Ctrl+B").trim();
+    if (!text) return "Ctrl+B";
+    const parts = text.split("+").map((part) => part.trim()).filter(Boolean);
+    const key = parts.pop() || "B";
+    const mods = [];
+    if (parts.some((part) => /^ctrl|control$/i.test(part))) mods.push("Ctrl");
+    if (parts.some((part) => /^alt|option$/i.test(part))) mods.push("Alt");
+    if (parts.some((part) => /^shift$/i.test(part))) mods.push("Shift");
+    if (parts.some((part) => /^meta|cmd|command$/i.test(part))) mods.push("Meta");
+    if (!mods.length) mods.push("Ctrl");
+    return mods.concat(key.length === 1 ? key.toUpperCase() : key).join("+");
+  }
+
+  function shortcutPrefixFromEvent(event) {
+    const mods = [];
+    if (event.ctrlKey) mods.push("Ctrl");
+    if (event.altKey) mods.push("Alt");
+    if (event.shiftKey) mods.push("Shift");
+    if (event.metaKey) mods.push("Meta");
+    const key = event.key === " " ? "Space" : String(event.key || "");
+    if (!key || ["Control", "Alt", "Shift", "Meta"].includes(key)) return "";
+    return mods.concat(key.length === 1 ? key.toUpperCase() : key).join("+");
+  }
+
+  function editableTarget(target) {
+    return !!(target && target.closest && target.closest("input, textarea, select, [contenteditable='true']"));
+  }
+
+  function shortcutFilePath(event, view) {
+    const row = event.target && event.target.closest && event.target.closest(".git-ui-file[data-git-path]");
+    return (row && row.dataset.gitPath) || (view && view.file) || "";
+  }
+
+  function focusFirstGitFile() {
+    const node = document.querySelector(".git-ui-file[role='treeitem'], .git-ui-btn, .git-ui-file-action");
+    if (node && node.focus) node.focus();
+  }
+
+  function showGitKeyboardHelp() {
+    const map = gitShortcutMap();
+    alert(`${gitShortcutPrefixLabel()} then:\n${shortcutDisplay(map.changes)} Changes list\n${shortcutDisplay(map.commit)} Commit\n${shortcutDisplay(map.log)} Log\n${shortcutDisplay(map.stash)} Stash\n${shortcutDisplay(map.refresh)} Refresh\n${shortcutDisplay(map.stageAll)} Stage/unstage all\n${shortcutDisplay(map.stageFile)} Stage file\n${shortcutDisplay(map.unstageFile)} Unstage file\n${shortcutDisplay(map.discardFile)} Discard file\n${shortcutDisplay(map.stashFile)} Stash file\n${shortcutDisplay(map.history)} File history\n${shortcutDisplay(map.blame)} Toggle blame\n${shortcutDisplay(map.edit)} Edit file\n${shortcutDisplay(map.compare)} Current compare\n${shortcutDisplay(map.branch)} Branch switch\n${shortcutDisplay(map.focusFile)} Focus file list\n${shortcutDisplay(map.help)} Git shortcut help\nEsc Back / hide`);
+  }
+
+  function shortcutDisplay(value) {
+    return String(value || "")
+      .replace(/^Key/, "")
+      .replace(/^Digit/, "")
+      .replace("BracketLeft", "[")
+      .replace("BracketRight", "]")
+      .replace("Slash", "/")
+      .replace("Period", ".")
+      .replace("Comma", ",");
   }
 
   function gitUiOptions() {
@@ -146,6 +290,7 @@
     panel = document.createElement("div");
     panel.id = "gitUiPanel";
     panel.className = "git-ui-panel";
+    panel.tabIndex = -1;
     panel.style.display = "none";
     if (shell && shell.parentNode) shell.parentNode.appendChild(panel);
     return panel;
@@ -203,6 +348,7 @@
     state.open = true;
     state.visible = true;
     showPanel(true);
+    requestAnimationFrame(() => ensurePanel().focus({ preventScroll: true }));
     render();
     if (!active().status) await refresh();
   }
@@ -342,7 +488,7 @@
       if (entry.type === "dir") {
         const dirPath = path ? `${path}/${entry.name}` : entry.name;
         const collapsed = !!((view.collapsedDirs || {})[dirPath]);
-        return `<div class="git-ui-file git-ui-dir" role="treeitem" aria-expanded="${collapsed ? "false" : "true"}" style="--level:${level}" onclick="HerdrGitUi.toggleDir('${arg(dirPath)}')"><span class="git-ui-tree-caret">${treeIcon(collapsed ? "chevron-right" : "chevron-down")}</span><span class="git-ui-tree-icon folder">${treeIcon("folder")}</span><span class="git-ui-path">${esc(entry.name)}</span></div>${collapsed ? "" : renderTreeNode(entry.child, dirPath, kind, view, level + 1)}`;
+        return `<div class="git-ui-file git-ui-dir" role="treeitem" tabindex="0" aria-expanded="${collapsed ? "false" : "true"}" style="--level:${level}" onclick="HerdrGitUi.toggleDir('${arg(dirPath)}')" onkeydown="HerdrGitUi.activateTreeItem(event)"><span class="git-ui-tree-caret">${treeIcon(collapsed ? "chevron-right" : "chevron-down")}</span><span class="git-ui-tree-icon folder">${treeIcon("folder")}</span><span class="git-ui-path">${esc(entry.name)}</span></div>${collapsed ? "" : renderTreeNode(entry.child, dirPath, kind, view, level + 1)}`;
       }
       return renderSideFile(entry.path, entry.name, kind, view, level);
     }).join("");
@@ -350,7 +496,7 @@
 
   function renderSideFile(file, name, kind, view, level) {
     const summary = fileSummary(file, kind);
-    return `<div class="git-ui-file ${view.file === file && view.diffKind === kind ? "active" : ""}" role="treeitem" style="--level:${level}" onclick="HerdrGitUi.selectFile('${arg(file)}','${kind}')" oncontextmenu="return HerdrGitUi.fileMenu(event,'${arg(file)}','${kind}')"><span class="git-ui-tree-caret"></span><span class="git-ui-tree-icon file">${treeIcon("file")}</span><span class="git-ui-path" title="${esc(file)}">${esc(name)}</span><span class="git-ui-file-meta">${summary}</span></div>`;
+    return `<div class="git-ui-file ${view.file === file && view.diffKind === kind ? "active" : ""}" role="treeitem" tabindex="0" data-git-path="${esc(file)}" data-git-kind="${esc(kind)}" style="--level:${level}" onclick="HerdrGitUi.selectFile('${arg(file)}','${kind}')" onkeydown="HerdrGitUi.activateTreeItem(event)" oncontextmenu="return HerdrGitUi.fileMenu(event,'${arg(file)}','${kind}')"><span class="git-ui-tree-caret"></span><span class="git-ui-tree-icon file">${treeIcon("file")}</span><span class="git-ui-path" title="${esc(file)}">${esc(name)}</span><span class="git-ui-file-meta">${summary}</span></div>`;
   }
 
   function renderContextMenu() {
@@ -940,6 +1086,11 @@
       const path = decodeURIComponent(file);
       view.loadedLargeDiffFiles = Object.assign({}, view.loadedLargeDiffFiles || {}, { [path]: true });
       render();
+    },
+    activateTreeItem(event) {
+      if (!event || !["Enter", " ", "Spacebar"].includes(event.key)) return;
+      event.preventDefault();
+      event.currentTarget.click();
     },
     fileMenu(event, file, kind) {
       event.preventDefault();

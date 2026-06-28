@@ -65,6 +65,50 @@ let term,
   searchSelectedIndex = 0;
 const SIDEBAR_COLLAPSED_KEY = "herdr-web-sidebar-collapsed";
 const DEFAULT_GLOBAL_SHORTCUT_PREFIX = "Ctrl+B";
+const DEFAULT_WEBUI_SHORTCUTS = {
+  search: "Slash",
+  help: "Shift+Slash",
+  settings: "KeyS",
+  sidebar: "KeyB",
+  newWorkspace: "KeyN",
+  newPanel: "KeyP",
+  openWorktrees: "KeyW",
+  createWorktree: "KeyT",
+  closePanel: "KeyX",
+  closeWorkspace: "Shift+KeyX",
+  removeWorktree: "Delete",
+  removeWorktreeAlt: "Backspace",
+  nextAgent: "KeyA",
+  prevAgent: "Shift+KeyA",
+  nextWorkspace: "KeyJ",
+  prevWorkspace: "KeyK",
+  nextPanel: "BracketRight",
+  prevPanel: "BracketLeft",
+  focusTerminal: "KeyF",
+  focusNext: "Period",
+  focusPrev: "Comma",
+};
+const DEFAULT_GIT_SHORTCUTS = {
+  changes: "Digit1",
+  commit: "Digit2",
+  log: "Digit3",
+  stash: "Digit4",
+  commitAlt: "KeyC",
+  logAlt: "KeyL",
+  refresh: "KeyR",
+  stageAll: "KeyG",
+  stageFile: "KeyY",
+  unstageFile: "KeyU",
+  discardFile: "KeyD",
+  stashFile: "KeyZ",
+  history: "KeyH",
+  blame: "KeyM",
+  edit: "KeyE",
+  compare: "KeyO",
+  branch: "KeyV",
+  focusFile: "KeyI",
+  help: "Digit0",
+};
 const FAST_REFRESH_EVENTS = new Set([
   "pane.closed",
   "pane.exited",
@@ -375,6 +419,7 @@ function shortcutsModalHtml() {
           </div>
           <button class="mini settings-close" id="shortcutsCloseTop" title="Close">✕</button>
         </div>
+        <div id="shortcutEditor"></div>
         <div class="shortcuts-list">
           <div class="shortcut-row"><kbd id="closeShortcutCurrent">Disabled</kbd><span>Close current Herdr panel. Configure in Settings.</span></div>
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())}</kbd><span>Open WebUI shortcut prefix overlay. Next shortcut key is handled by WebUI and not sent to terminal. Esc cancels.</span></div>
@@ -388,7 +433,7 @@ function shortcutsModalHtml() {
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then T</kbd><span>Create worktree from current workspace.</span></div>
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then X</kbd><span>Close current panel.</span></div>
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then Shift+X</kbd><span>Close current workspace or linked worktree.</span></div>
-          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then Delete</kbd><span>Remove current linked worktree from disk.</span></div>
+          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then Delete/Backspace</kbd><span>Remove current linked worktree from disk.</span></div>
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then A</kbd><span>Jump agents by status priority: blocked, done, idle, working.</span></div>
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then Shift+A</kbd><span>Jump agents in reverse priority order.</span></div>
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then J / K</kbd><span>Jump to next or previous workspace.</span></div>
@@ -406,6 +451,162 @@ function shortcutsModalHtml() {
         <div class="modal-actions"><button class="btn" id="shortcutsClose">Close</button></div>
       </div>
     </div>`;
+}
+
+const shortcutEditorGroups = [
+  {
+    scope: "webuiShortcuts",
+    title: "WebUI Prefix Shortcuts",
+    items: [
+      ["search", "Search palette"],
+      ["help", "Shortcut window"],
+      ["settings", "Settings"],
+      ["sidebar", "Toggle sidebar"],
+      ["newWorkspace", "New workspace"],
+      ["newPanel", "New panel"],
+      ["openWorktrees", "Open worktrees"],
+      ["createWorktree", "Create worktree"],
+      ["closePanel", "Close panel"],
+      ["closeWorkspace", "Close workspace/worktree"],
+      ["removeWorktree", "Remove linked worktree"],
+      ["removeWorktreeAlt", "Remove linked worktree alternate"],
+      ["nextAgent", "Next agent"],
+      ["prevAgent", "Previous agent"],
+      ["nextWorkspace", "Next workspace"],
+      ["prevWorkspace", "Previous workspace"],
+      ["nextPanel", "Next panel"],
+      ["prevPanel", "Previous panel"],
+      ["focusTerminal", "Focus terminal"],
+      ["focusNext", "Focus next control"],
+      ["focusPrev", "Focus previous control"],
+    ],
+  },
+  {
+    scope: "gitShortcuts",
+    title: "Git UI Prefix Shortcuts",
+    items: [
+      ["changes", "Changes list"],
+      ["commit", "Commit"],
+      ["log", "Log"],
+      ["stash", "Stash"],
+      ["commitAlt", "Commit alternate"],
+      ["logAlt", "Log alternate"],
+      ["refresh", "Refresh"],
+      ["stageAll", "Stage/unstage all"],
+      ["stageFile", "Stage file"],
+      ["unstageFile", "Unstage file"],
+      ["discardFile", "Discard file"],
+      ["stashFile", "Stash file"],
+      ["history", "File history"],
+      ["blame", "Blame"],
+      ["edit", "Edit file"],
+      ["compare", "Current compare"],
+      ["branch", "Branch switch"],
+      ["focusFile", "Focus file list"],
+      ["help", "Git shortcut help"],
+    ],
+  },
+];
+
+function defaultShortcutMap(scope) {
+  return scope === "gitShortcuts" ? DEFAULT_GIT_SHORTCUTS : DEFAULT_WEBUI_SHORTCUTS;
+}
+
+function normalizeShortcutMap(value, defaults) {
+  const next = { ...defaults };
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    for (const key of Object.keys(defaults)) {
+      if (typeof value[key] === "string" && value[key].trim())
+        next[key] = value[key].trim();
+    }
+  }
+  return next;
+}
+
+function shortcutKeyFromEvent(e) {
+  const base = e.code || e.key;
+  if (!base || ["ControlLeft", "ControlRight", "AltLeft", "AltRight", "ShiftLeft", "ShiftRight", "MetaLeft", "MetaRight"].includes(base))
+    return "";
+  return `${e.shiftKey ? "Shift+" : ""}${base}`;
+}
+
+function shortcutDisplay(value) {
+  return String(value || "")
+    .replace(/^Key/, "")
+    .replace(/^Digit/, "")
+    .replace("BracketLeft", "[")
+    .replace("BracketRight", "]")
+    .replace("Slash", "/")
+    .replace("Period", ".")
+    .replace("Comma", ",")
+    .replace("Shift+", "Shift+");
+}
+
+function shortcutCollisionMap() {
+  const byKey = {};
+  for (const group of shortcutEditorGroups) {
+    const map = options[group.scope] || defaultShortcutMap(group.scope);
+    for (const [action, label] of group.items) {
+      const key = map[action];
+      if (!key) continue;
+      (byKey[key] ||= []).push(`${group.title}: ${label}`);
+    }
+  }
+  return byKey;
+}
+
+function shortcutCollisionFor(scope, action, key) {
+  const collisions = [];
+  for (const group of shortcutEditorGroups) {
+    const map = options[group.scope] || defaultShortcutMap(group.scope);
+    for (const [otherAction, label] of group.items) {
+      if (group.scope === scope && otherAction === action) continue;
+      if (map[otherAction] === key) collisions.push(`${group.title}: ${label}`);
+    }
+  }
+  return collisions;
+}
+
+function renderShortcutEditor() {
+  const target = el("shortcutEditor");
+  if (!target) return;
+  const collisions = shortcutCollisionMap();
+  target.innerHTML = `<div class="settings-section"><h3>Shortcut Editor</h3><p class="settings-note">All entries below use the configured prefix (${escapeHtml(globalShortcutPrefixLabel())}) first. Recording a duplicate is blocked.</p>${shortcutEditorGroups.map((group) => {
+    const map = options[group.scope] || defaultShortcutMap(group.scope);
+    return `<h4>${escapeHtml(group.title)}</h4><div class="shortcuts-list">${group.items.map(([action, label]) => {
+      const key = map[action];
+      const duplicate = (collisions[key] || []).length > 1;
+      return `<div class="shortcut-row ${duplicate ? "conflict" : ""}"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then ${escapeHtml(shortcutDisplay(key))}</kbd><span>${escapeHtml(label)}${duplicate ? `<small>Conflict: ${escapeHtml((collisions[key] || []).join("; "))}</small>` : ""}</span><button class="mini" data-shortcut-record="${group.scope}:${action}">Record</button><button class="mini" data-shortcut-reset="${group.scope}:${action}">Reset</button></div>`;
+    }).join("")}</div>`;
+  }).join("")}</div>`;
+}
+
+function recordShortcut(scope, action, button) {
+  if (button) button.textContent = "Press key...";
+  const capture = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+    const key = shortcutKeyFromEvent(e);
+    if (!key) return renderShortcutEditor();
+    const conflicts = shortcutCollisionFor(scope, action, key);
+    if (conflicts.length) {
+      alert(`Shortcut conflict with: ${conflicts.join(", ")}`);
+      return renderShortcutEditor();
+    }
+    options[scope] = { ...(options[scope] || defaultShortcutMap(scope)), [action]: key };
+    saveOptions();
+    applyOptions();
+    renderShortcutEditor();
+  };
+  window.addEventListener("keydown", capture, { once: true, capture: true });
+}
+
+function resetShortcut(scope, action) {
+  options[scope] = { ...(options[scope] || defaultShortcutMap(scope)), [action]: defaultShortcutMap(scope)[action] };
+  saveOptions();
+  applyOptions();
+  renderShortcutEditor();
 }
 function themeCustomizerHtml() {
   const rows = (mode) =>
@@ -647,6 +848,8 @@ const defaultOptions = {
   closeShortcut: "off",
   globalShortcutsEnabled: true,
   globalShortcutPrefix: DEFAULT_GLOBAL_SHORTCUT_PREFIX,
+  webuiShortcuts: DEFAULT_WEBUI_SHORTCUTS,
+  gitShortcuts: DEFAULT_GIT_SHORTCUTS,
   searchShortcut: "off",
   terminalFontFamily: "ui-monospace,SFMono-Regular,Menlo,monospace",
   agentSortMode: "off",
@@ -685,6 +888,14 @@ function normalizeOptions(value) {
   next.globalShortcutPrefix = normalizeShortcutPrefix(
     next.globalShortcutPrefix,
     defaultOptions.globalShortcutPrefix,
+  );
+  next.webuiShortcuts = normalizeShortcutMap(
+    next.webuiShortcuts,
+    DEFAULT_WEBUI_SHORTCUTS,
+  );
+  next.gitShortcuts = normalizeShortcutMap(
+    next.gitShortcuts,
+    DEFAULT_GIT_SHORTCUTS,
   );
   next.searchShortcut =
     String(next.searchShortcut || "").toLowerCase() === "off"
@@ -1062,6 +1273,7 @@ function applyOptions() {
   if (searchShortcut) searchShortcut.value = searchShortcutLabel();
   const prefixKey = el("shortcutPrefixKey");
   if (prefixKey) prefixKey.textContent = globalShortcutPrefixLabel();
+  renderShortcutEditor();
   if (terminalFontFamily)
     terminalFontFamily.value = options.terminalFontFamily || "";
   if (themeSelect) themeSelect.value = themeMode;
