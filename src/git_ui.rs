@@ -1268,6 +1268,7 @@ mod tests {
     use std::collections::HashMap;
     use std::fs;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1328,16 +1329,20 @@ mod tests {
 
     impl TempRepo {
         fn new() -> Self {
+            static NEXT_REPO_ID: AtomicU64 = AtomicU64::new(0);
             let path = std::env::temp_dir().join(format!(
-                "herdr-webui-git-ui-test-{}",
+                "herdr-webui-git-ui-test-{}-{}-{}",
+                std::process::id(),
                 SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap()
-                    .as_nanos()
+                    .as_nanos(),
+                NEXT_REPO_ID.fetch_add(1, Ordering::Relaxed)
             ));
             fs::create_dir_all(&path).unwrap();
             let repo = Self { path };
             repo.git(&["init"]);
+            repo.git(&["checkout", "-b", "main"]);
             repo.git(&["config", "user.email", "test@example.com"]);
             repo.git(&["config", "user.name", "Test User"]);
             repo
@@ -1857,6 +1862,355 @@ mod tests {
             )
             .await;
             assert_eq!(reset_without_confirm.status(), StatusCode::BAD_REQUEST);
+        });
+    }
+
+    #[test]
+    fn git_ui_destructive_and_validation_edges_work() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let repo = TempRepo::new();
+            repo.commit_initial();
+            let cwd = repo.path.to_str().unwrap().to_string();
+            let state = test_state();
+            fs::create_dir_all(repo.path.join("scratch-dir")).unwrap();
+            fs::write(repo.path.join("scratch-dir/file.txt"), "scratch\n").unwrap();
+
+            let discard_dir = git_ui_discard(
+                State(state.clone()),
+                HeaderMap::new(),
+                ConnectInfo(remote()),
+                Json(GitUiPathsRequest {
+                    cwd: cwd.clone(),
+                    paths: vec!["scratch-dir".to_string()],
+                    confirmed: Some(true),
+                }),
+            )
+            .await;
+            assert_eq!(discard_dir.status(), StatusCode::OK);
+            assert!(!repo.path.join("scratch-dir").exists());
+
+            let invalid_reset = git_ui_reset(
+                State(state.clone()),
+                HeaderMap::new(),
+                ConnectInfo(remote()),
+                Json(GitUiResetRequest {
+                    cwd: cwd.clone(),
+                    mode: "sideways".to_string(),
+                    ref_name: "HEAD".to_string(),
+                    confirmation: None,
+                }),
+            )
+            .await;
+            assert_eq!(invalid_reset.status(), StatusCode::BAD_REQUEST);
+
+            let empty_commit = git_ui_commit(
+                State(state.clone()),
+                HeaderMap::new(),
+                ConnectInfo(remote()),
+                Json(GitUiCommitRequest {
+                    cwd: cwd.clone(),
+                    title: "  ".to_string(),
+                    body: None,
+                    amend: None,
+                }),
+            )
+            .await;
+            assert_eq!(empty_commit.status(), StatusCode::BAD_REQUEST);
+
+            let empty_patch = git_ui_apply_patch(
+                State(state),
+                HeaderMap::new(),
+                ConnectInfo(remote()),
+                Json(GitUiApplyPatchRequest {
+                    cwd,
+                    patch: "  ".to_string(),
+                    reverse: None,
+                    cached: None,
+                }),
+            )
+            .await;
+            assert_eq!(empty_patch.status(), StatusCode::BAD_REQUEST);
+        });
+    }
+
+    #[test]
+    fn git_ui_file_history_switch_reset_and_patch_routes_work() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let repo = TempRepo::new();
+            repo.commit_initial();
+            repo.write("tracked.txt", "one\ntwo\n");
+            repo.git(&["add", "tracked.txt"]);
+            repo.git(&["commit", "-m", "update tracked"]);
+            let cwd = repo.path.to_str().unwrap().to_string();
+            let state = test_state();
+
+            let history = git_ui_file_history(
+                State(state.clone()),
+                HeaderMap::new(),
+                ConnectInfo(remote()),
+                Query(GitUiQuery {
+                    cwd: Some(cwd.clone()),
+                    file: Some("tracked.txt".to_string()),
+                    ..query()
+                }),
+            )
+            .await;
+            assert_eq!(history.status(), StatusCode::OK);
+            let json = response_json(history).await;
+            assert_eq!(json["commits"].as_array().unwrap().len(), 2);
+
+            let switch = git_ui_switch(
+                State(state.clone()),
+                HeaderMap::new(),
+                ConnectInfo(remote()),
+                Json(GitUiSwitchRequest {
+                    cwd: cwd.clone(),
+                    branch: "feature".to_string(),
+                    create: Some(true),
+                    base: Some("HEAD".to_string()),
+                }),
+            )
+            .await;
+            assert_eq!(switch.status(), StatusCode::OK);
+            assert_eq!(repo.git(&["branch", "--show-current"]).trim(), "feature");
+
+            let reset = git_ui_reset(
+                State(state.clone()),
+                HeaderMap::new(),
+                ConnectInfo(remote()),
+                Json(GitUiResetRequest {
+                    cwd: cwd.clone(),
+                    mode: "mixed".to_string(),
+                    ref_name: "HEAD".to_string(),
+                    confirmation: None,
+                }),
+            )
+            .await;
+            assert_eq!(reset.status(), StatusCode::OK);
+
+            let patch = "diff --git a/patched.txt b/patched.txt\nnew file mode 100644\nindex 0000000..3e75765\n--- /dev/null\n+++ b/patched.txt\n@@ -0,0 +1 @@\n+patched\n";
+            let apply = git_ui_apply_patch(
+                State(state.clone()),
+                HeaderMap::new(),
+                ConnectInfo(remote()),
+                Json(GitUiApplyPatchRequest {
+                    cwd: cwd.clone(),
+                    patch: patch.to_string(),
+                    reverse: None,
+                    cached: None,
+                }),
+            )
+            .await;
+            assert_eq!(apply.status(), StatusCode::OK);
+            assert_eq!(fs::read_to_string(repo.path.join("patched.txt")).unwrap(), "patched\n");
+
+            let reverse = git_ui_apply_patch(
+                State(state),
+                HeaderMap::new(),
+                ConnectInfo(remote()),
+                Json(GitUiApplyPatchRequest {
+                    cwd,
+                    patch: patch.to_string(),
+                    reverse: Some(true),
+                    cached: None,
+                }),
+            )
+            .await;
+            assert_eq!(reverse.status(), StatusCode::OK);
+            assert!(!repo.path.join("patched.txt").exists());
+        });
+    }
+
+    #[test]
+    fn git_ui_stash_pop_drop_and_commit_amend_work() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let repo = TempRepo::new();
+            repo.commit_initial();
+            repo.write("tracked.txt", "one\ntwo\n");
+            let cwd = repo.path.to_str().unwrap().to_string();
+            let state = test_state();
+
+            let stash = git_ui_stash(
+                State(state.clone()),
+                HeaderMap::new(),
+                ConnectInfo(remote()),
+                Json(GitUiStashRequest {
+                    cwd: cwd.clone(),
+                    message: None,
+                    paths: None,
+                    stash: None,
+                    pop: None,
+                    confirmed: None,
+                }),
+            )
+            .await;
+            assert_eq!(stash.status(), StatusCode::OK);
+
+            let pop = git_ui_stash_apply(
+                State(state.clone()),
+                HeaderMap::new(),
+                ConnectInfo(remote()),
+                Json(GitUiStashRequest {
+                    cwd: cwd.clone(),
+                    message: None,
+                    paths: None,
+                    stash: Some("stash@{0}".to_string()),
+                    pop: Some(true),
+                    confirmed: None,
+                }),
+            )
+            .await;
+            assert_eq!(pop.status(), StatusCode::OK);
+            assert_eq!(
+                fs::read_to_string(repo.path.join("tracked.txt")).unwrap(),
+                "one\ntwo\n"
+            );
+
+            repo.git(&["add", "tracked.txt"]);
+            let amend = git_ui_commit(
+                State(state.clone()),
+                HeaderMap::new(),
+                ConnectInfo(remote()),
+                Json(GitUiCommitRequest {
+                    cwd: cwd.clone(),
+                    title: "amended title".to_string(),
+                    body: Some("amended body".to_string()),
+                    amend: Some(true),
+                }),
+            )
+            .await;
+            assert_eq!(amend.status(), StatusCode::OK);
+            assert!(repo
+                .git(&["log", "-1", "--format=%B"])
+                .contains("amended body"));
+
+            repo.write("drop.txt", "drop\n");
+            let stash = git_ui_stash(
+                State(state.clone()),
+                HeaderMap::new(),
+                ConnectInfo(remote()),
+                Json(GitUiStashRequest {
+                    cwd: cwd.clone(),
+                    message: Some("drop me".to_string()),
+                    paths: Some(vec!["drop.txt".to_string()]),
+                    stash: None,
+                    pop: None,
+                    confirmed: None,
+                }),
+            )
+            .await;
+            assert_eq!(stash.status(), StatusCode::OK);
+
+            let drop_without_confirm = git_ui_stash_drop(
+                State(state.clone()),
+                HeaderMap::new(),
+                ConnectInfo(remote()),
+                Json(GitUiStashRequest {
+                    cwd: cwd.clone(),
+                    message: None,
+                    paths: None,
+                    stash: Some("stash@{0}".to_string()),
+                    pop: None,
+                    confirmed: None,
+                }),
+            )
+            .await;
+            assert_eq!(drop_without_confirm.status(), StatusCode::BAD_REQUEST);
+
+            let drop = git_ui_stash_drop(
+                State(state),
+                HeaderMap::new(),
+                ConnectInfo(remote()),
+                Json(GitUiStashRequest {
+                    cwd,
+                    message: None,
+                    paths: None,
+                    stash: Some("stash@{0}".to_string()),
+                    pop: None,
+                    confirmed: Some(true),
+                }),
+            )
+            .await;
+            assert_eq!(drop.status(), StatusCode::OK);
+        });
+    }
+
+    #[test]
+    fn git_ui_conflict_routes_detect_resolve_and_abort_merge() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let repo = TempRepo::new();
+            repo.write("conflict.txt", "base\n");
+            repo.git(&["add", "conflict.txt"]);
+            repo.git(&["commit", "-m", "base"]);
+            repo.git(&["switch", "-c", "other"]);
+            repo.write("conflict.txt", "other\n");
+            repo.git(&["commit", "-am", "other change"]);
+            repo.git(&["switch", "main"]);
+            repo.write("conflict.txt", "main\n");
+            repo.git(&["commit", "-am", "main change"]);
+            let merge = Command::new("git")
+                .current_dir(&repo.path)
+                .args(["merge", "other"])
+                .output()
+                .unwrap();
+            assert!(!merge.status.success());
+            let cwd = repo.path.to_str().unwrap().to_string();
+            let state = test_state();
+
+            let conflicts = git_ui_conflicts(
+                State(state.clone()),
+                HeaderMap::new(),
+                ConnectInfo(remote()),
+                Query(GitUiQuery {
+                    cwd: Some(cwd.clone()),
+                    ..query()
+                }),
+            )
+            .await;
+            assert_eq!(conflicts.status(), StatusCode::OK);
+            let json = response_json(conflicts).await;
+            assert_eq!(json["files"][0], "conflict.txt");
+            assert_eq!(json["merge"], true);
+
+            let resolve = git_ui_conflict_resolve(
+                State(state.clone()),
+                HeaderMap::new(),
+                ConnectInfo(remote()),
+                Json(GitUiConflictResolveRequest {
+                    cwd: cwd.clone(),
+                    path: "conflict.txt".to_string(),
+                    mode: "manual".to_string(),
+                    content: Some("resolved\n".to_string()),
+                }),
+            )
+            .await;
+            assert_eq!(resolve.status(), StatusCode::OK);
+            assert_eq!(
+                fs::read_to_string(repo.path.join("conflict.txt")).unwrap(),
+                "resolved\n"
+            );
+            assert!(repo
+                .git(&["diff", "--cached", "--name-only"])
+                .contains("conflict.txt"));
+
+            repo.git(&["merge", "--abort"]);
+            let merge = Command::new("git")
+                .current_dir(&repo.path)
+                .args(["merge", "other"])
+                .output()
+                .unwrap();
+            assert!(!merge.status.success());
+            let abort = git_ui_conflict_action(
+                State(state),
+                HeaderMap::new(),
+                ConnectInfo(remote()),
+                Json(GitUiConflictActionRequest {
+                    cwd,
+                    action: "merge-abort".to_string(),
+                }),
+            )
+            .await;
+            assert_eq!(abort.status(), StatusCode::OK);
         });
     }
 }
