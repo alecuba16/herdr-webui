@@ -42,6 +42,7 @@
       loadCss("/assets/mobile/app.css");
     } else {
       loadCss("/assets/desktop/app.css");
+      loadCss("/assets/desktop/git-ui.css");
       loadCss("/assets/desktop/shortcuts.css");
       loadCss("/assets/desktop/search.css");
     }
@@ -54,6 +55,7 @@
       loadScript("/assets/mobile/settings.js");
     } else {
       loadScript("/assets/desktop/search.js");
+      loadScript("/assets/desktop/git-ui.js");
     }
     loadScript(mobile ? "/assets/mobile/app.js" : "/assets/desktop/app.js");
     watchAutoLayout(layout);

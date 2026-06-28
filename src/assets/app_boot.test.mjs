@@ -62,11 +62,13 @@ describe("app boot", () => {
     vm.runInContext(source, ctx);
     equal(ctx.document.documentElement.dataset.herdrLayout, "desktop");
     equal(links[0].href, "/assets/desktop/app.css");
-    equal(links[1].href, "/assets/desktop/shortcuts.css");
-    equal(links[2].href, "/assets/desktop/search.css");
+    equal(links[1].href, "/assets/desktop/git-ui.css");
+    equal(links[2].href, "/assets/desktop/shortcuts.css");
+    equal(links[3].href, "/assets/desktop/search.css");
     equal(scripts[0].src, "/assets/shared/core.js");
     equal(scripts[1].src, "/assets/desktop/search.js");
-    equal(scripts[2].src, "/assets/desktop/app.js");
+    equal(scripts[2].src, "/assets/desktop/git-ui.js");
+    equal(scripts[3].src, "/assets/desktop/app.js");
   });
 
   it("loads mobile bundle for narrow screens", () => {
