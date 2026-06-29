@@ -198,6 +198,47 @@ function validOpenWorktreeRows() {
       (w) => w.is_linked_worktree && (w.source_workspace_id || w.source_cwd),
     );
 }
+const WORKTREE_DISCOVER_MAX_CANDIDATES = 80;
+const WORKTREE_DISCOVER_SKIP_DIRS = new Set([".git", "node_modules", "target", ".venv", "venv", "vendor"]);
+
+async function worktreeListForPath(path) {
+  let url = "/api/worktrees";
+  if (path) url += "?cwd=" + encodeURIComponent(path);
+  return api(url);
+}
+
+async function immediateChildDirectories(basePath) {
+  const data = await api(
+    `/api/file-browser/tree?cwd=${encodeURIComponent(basePath)}&path=&dirs_only=true`,
+  );
+  return (data.entries || [])
+    .filter((entry) => entry.kind === "dir" && !WORKTREE_DISCOVER_SKIP_DIRS.has(String(entry.name || "")))
+    .map((entry) => joinPath(basePath, entry.path));
+}
+
+async function worktreeDiscoveryCandidates(startPath) {
+  const start = String(startPath || "").trim(),
+    depth = Math.max(0, Math.min(5, Number(options.worktreeDiscoverDepth) || 0)),
+    seen = new Set(),
+    candidates = [];
+  let frontier = [{ path: start, depth: 0 }];
+  while (frontier.length && candidates.length < WORKTREE_DISCOVER_MAX_CANDIDATES) {
+    const current = frontier.shift();
+    if (!current || seen.has(current.path)) continue;
+    seen.add(current.path);
+    candidates.push(current.path);
+    if (!current.path || current.depth >= depth) continue;
+    try {
+      const children = await immediateChildDirectories(current.path);
+      for (const child of children) {
+        if (seen.has(child) || candidates.length + frontier.length >= WORKTREE_DISCOVER_MAX_CANDIDATES) break;
+        frontier.push({ path: child, depth: current.depth + 1 });
+      }
+    } catch (_) {}
+  }
+  return candidates;
+}
+
 function syncWorktreePathOptions(rows) {
   const seen = new Set(),
     items = [];
@@ -353,8 +394,15 @@ function syncWorktreeCheckoutPath() {
   state.openWorktreeDefaultPath = next;
 }
 function checkedOutWorktreeForBranch(branch) {
+  const source = state.openWorktreeSource || {},
+    openRows = state.openWorktreeAllRows || state.openWorktreeRows || [];
+  if (source.repo_root) {
+    return checkedOutWorktreeForBranchHelper(branch, [
+      openRows.filter((w) => w.source_repo_root === source.repo_root),
+    ]);
+  }
   return checkedOutWorktreeForBranchHelper(branch, [
-    state.openWorktreeAllRows || state.openWorktreeRows || [],
+    openRows,
     state.worktrees || [],
   ]);
 }
@@ -495,44 +543,77 @@ async function discoverWorktrees() {
   clearTimeout(state.openWorktreeAutodiscoverTimer);
   setWorktreeLoading(true);
   const err = el("worktreeOpenError"),
-    path = el("worktreeDiscoverPath").value.trim();
+    path = el("worktreeDiscoverPath").value.trim(),
+    scanDepth = Math.max(0, Math.min(5, Number(options.worktreeDiscoverDepth) || 0));
   err.textContent = "";
   state.openWorktreeSelected = null;
   try {
-    let url = "/api/worktrees";
-    if (path) url += "?cwd=" + encodeURIComponent(path);
-    const r = await api(url);
-    const source = (r.result || {}).source || {};
-    const sourceCwd = textValue(source.source_checkout_path) || path || null;
+    const candidates = await worktreeDiscoveryCandidates(path);
+    let firstSource = null,
+      firstSourceCwd = null,
+      allRows = [],
+      lastError = null;
+    for (const candidate of candidates) {
+      try {
+        const r = await worktreeListForPath(candidate);
+        const result = r.result || {},
+          source = result.source || {},
+          repoRoot = textValue(source.repo_root),
+          repoName = textValue(source.repo_name),
+          sourceCwd = textValue(source.source_checkout_path) || candidate || null;
+        if (!repoRoot || !repoName) continue;
+        if (!firstSource) {
+          firstSource = source;
+          firstSourceCwd = sourceCwd;
+        }
+        allRows = allRows.concat((result.worktrees || []).map((w) =>
+          Object.assign({}, w, {
+            path: textValue(w.path),
+            label: textValue(w.label),
+            branch: textValue(w.branch),
+            source_workspace_id: source.source_workspace_id,
+            source_repo_name: repoName,
+            source_repo_root: repoRoot,
+            source_cwd: sourceCwd,
+          }),
+        ));
+      } catch (ex) {
+        lastError = ex;
+        if (!scanDepth) throw ex;
+      }
+    }
+    const source = firstSource || {};
     const previousSourceKey = worktreeSourceKey(state.openWorktreeSource);
-    state.openWorktreeSource = {
-      workspace_id: source.source_workspace_id || null,
-      cwd: sourceCwd,
-      repo_name: textValue(source.repo_name),
-      repo_root: textValue(source.repo_root),
-      default_worktree_directory: textValue(source.default_worktree_directory),
-    };
+    state.openWorktreeSource = firstSource
+      ? {
+          workspace_id: source.source_workspace_id || null,
+          cwd: firstSourceCwd,
+          repo_name: textValue(source.repo_name),
+          repo_root: textValue(source.repo_root),
+          default_worktree_directory: textValue(source.default_worktree_directory),
+        }
+      : null;
     const nextSourceKey = worktreeSourceKey(state.openWorktreeSource);
     if (previousSourceKey !== nextSourceKey) {
       state.openWorktreeBranches = [];
       state.openWorktreeBranchSourceKey = "";
       syncWorktreeBranchOptions([]);
     }
-    state.openWorktreeAllRows = ((r.result || {}).worktrees || []).map((w) =>
-      Object.assign({}, w, {
-        path: textValue(w.path),
-        label: textValue(w.label),
-        branch: textValue(w.branch),
-        source_workspace_id: source.source_workspace_id,
-        source_repo_name: textValue(source.repo_name),
-        source_repo_root: textValue(source.repo_root),
-        source_cwd: sourceCwd,
-      }),
-    );
+    const seenRows = new Set();
+    state.openWorktreeAllRows = allRows.filter((row) => {
+      const key = row.path || `${row.source_cwd || ""}:${row.branch || ""}`;
+      if (seenRows.has(key)) return false;
+      seenRows.add(key);
+      return true;
+    });
     state.openWorktreeRows = state.openWorktreeAllRows;
     renderWorktreeOpenList();
-    loadWorktreeBranchOptions();
-    syncWorktreeCheckoutPath();
+    if (state.openWorktreeSource) {
+      loadWorktreeBranchOptions();
+      syncWorktreeCheckoutPath();
+    }
+    if (!state.openWorktreeSource && scanDepth && lastError)
+      err.textContent = "No Git repository found within configured discovery depth.";
   } catch (ex) {
     state.openWorktreeSource = null;
     state.openWorktreeRows = [];

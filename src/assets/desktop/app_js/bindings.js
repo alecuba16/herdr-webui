@@ -233,6 +233,14 @@ el("optWorktreeAutoDiscover").oninput = () => {
   applyOptions();
   scheduleWorktreeAutodiscover();
 };
+el("optWorktreeDiscoverDepth").oninput = () => {
+  options.worktreeDiscoverDepth = Math.max(
+    0,
+    Math.min(5, Math.floor(Number(el("optWorktreeDiscoverDepth").value) || 0)),
+  );
+  saveOptions();
+  applyOptions();
+};
 el("optGenerateWorktreeNames").onchange = () => {
   options.generateWorktreeNames = el("optGenerateWorktreeNames").checked;
   saveOptions();

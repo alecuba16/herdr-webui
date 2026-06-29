@@ -240,6 +240,7 @@ describe("app bundle load", () => {
     match(source, /id="optGlobalShortcutPrefixCapture"/);
     match(source, /DEFAULT_GLOBAL_SHORTCUT_PREFIX/);
     match(source, /id="optTerminalFontFamily"/);
+    match(source, /id="optWorktreeDiscoverDepth"/);
     match(source, /JetBrainsMono Nerd Font/);
     match(source, /handleGlobalShortcut/);
     match(source, /isShortcutPrefix/);
