@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::Write;
 use std::net::SocketAddr;
@@ -162,7 +163,22 @@ struct GitDiffFile {
     status: String,
     additions: usize,
     deletions: usize,
+    line_count: usize,
+    editable_hunks: Vec<GitEditableHunk>,
     chunks: Vec<GitDiffChunk>,
+}
+
+#[derive(Serialize)]
+struct GitEditableHunk {
+    index: usize,
+    header: String,
+    #[serde(rename = "oldText")]
+    old_text: String,
+    text: String,
+    #[serde(rename = "newStart")]
+    new_start: usize,
+    #[serde(rename = "newEnd")]
+    new_end: usize,
 }
 
 #[derive(Serialize)]
@@ -253,6 +269,37 @@ fn parse_diff_path(raw: &str) -> Option<String> {
         }
     }
     Some(path.replace("\\t", "\t").replace("\\\"", "\""))
+}
+
+fn editable_hunks(chunks: &[GitDiffChunk]) -> Vec<GitEditableHunk> {
+    chunks
+        .iter()
+        .enumerate()
+        .map(|(index, chunk)| {
+            let mut old_lines = Vec::new();
+            let mut new_lines = Vec::new();
+            let mut new_numbers = Vec::new();
+            for line in &chunk.lines {
+                if line.line_type != "add" {
+                    old_lines.push(line.content.clone());
+                }
+                if line.line_type != "delete" {
+                    new_lines.push(line.content.clone());
+                    if let Some(number) = line.new_line_number {
+                        new_numbers.push(number);
+                    }
+                }
+            }
+            GitEditableHunk {
+                index,
+                header: chunk.header.clone(),
+                old_text: old_lines.join("\n"),
+                text: new_lines.join("\n"),
+                new_start: new_numbers.iter().min().copied().unwrap_or(0),
+                new_end: new_numbers.iter().max().copied().unwrap_or(0),
+            }
+        })
+        .collect()
 }
 
 fn parse_unified_diff(text: &str) -> Vec<GitDiffFile> {
@@ -374,12 +421,16 @@ fn parse_unified_diff(text: &str) -> Vec<GitDiffFile> {
             .flat_map(|chunk| &chunk.lines)
             .filter(|line| line.line_type == "delete")
             .count();
+        let line_count = chunks.iter().map(|chunk| chunk.lines.len()).sum();
+        let editable_hunks = editable_hunks(&chunks);
         files.push(GitDiffFile {
             path,
             old_path: (status == "renamed").then_some(old_path.unwrap_or_default()),
             status: status.to_string(),
             additions,
             deletions,
+            line_count,
+            editable_hunks,
             chunks,
         });
     }
@@ -506,11 +557,19 @@ async fn git_ui_status(
     } else {
         "dirty"
     };
+    let change_count = conflicted
+        .iter()
+        .chain(&staged)
+        .chain(&unstaged)
+        .chain(&untracked)
+        .collect::<BTreeSet<_>>()
+        .len();
     Json(json!({
         "repo_path": repo,
         "branch": branch,
         "upstream": upstream,
         "state": state_name,
+        "change_count": change_count,
         "staged": staged,
         "unstaged": unstaged,
         "untracked": untracked,
@@ -533,7 +592,11 @@ async fn git_ui_diff_common(query: GitUiQuery, compare: bool) -> Response {
         Err(err) => return git_json_error(StatusCode::BAD_REQUEST, err),
     };
     match git_ui_text_strings(cwd, &args) {
-        Ok(text) => Json(json!({ "files": parse_unified_diff(&text) })).into_response(),
+        Ok(text) => {
+            let files = parse_unified_diff(&text);
+            let total_line_count: usize = files.iter().map(|file| file.line_count).sum();
+            Json(json!({ "files": files, "line_count": total_line_count })).into_response()
+        }
         Err(err) => git_json_error(StatusCode::BAD_GATEWAY, err),
     }
 }

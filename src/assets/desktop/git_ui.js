@@ -223,10 +223,12 @@
   }
 
   function diffFileLineCount(file) {
+    if (Number.isFinite(Number(file && file.line_count))) return Number(file.line_count);
     return ((file && file.chunks) || []).reduce((sum, chunk) => sum + ((chunk.lines || []).length), 0);
   }
 
   function changeSetFileCount(status) {
+    if (Number.isFinite(Number(status && status.change_count))) return Number(status.change_count);
     const seen = new Set([...(status.conflicted || []), ...(status.staged || []), ...(status.unstaged || []), ...(status.untracked || [])].filter(Boolean));
     return seen.size;
   }
@@ -666,7 +668,7 @@
     }
     if (!files.length) return `${head}<div class="git-ui-muted">No diff.</div>`;
     const limit = largeDiffLineLimit();
-    const count = diffLineCount(files);
+    const count = Number.isFinite(Number(view.diff.line_count)) ? Number(view.diff.line_count) : diffLineCount(files);
     if (view.file && limit > 0 && count > limit && !((view.loadedLargeDiffFiles || {})[view.file])) {
       return `${head}<div class="git-ui-large-diff"><strong>Large diff hidden</strong><span>${count} lines exceed ${limit} line limit.</span><button class="git-ui-btn" onclick="HerdrGitUi.loadLargeDiff('${arg(view.file)}')">Load diff</button></div>`;
     }
@@ -717,6 +719,7 @@
   }
 
   function buildEditableHunks(file) {
+    if (file && Array.isArray(file.editable_hunks)) return file.editable_hunks;
     return ((file && file.chunks) || []).map((chunk, index) => {
       const oldLines = [];
       const newLines = [];

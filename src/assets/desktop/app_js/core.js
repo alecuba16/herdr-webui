@@ -2042,9 +2042,9 @@ function goSession(name) {
 }
 async function refreshOnline(seq) {
   parseRoute();
-  const w = await api("/api/workspaces");
+  let appState = await loadAppState(state.ws, state.pane);
   if (seq !== refreshSeq) return;
-  state.workspaces = w.result.workspaces || [];
+  state.workspaces = appState.workspaces || [];
   if (state.workspaces.length === 0 && !creatingDefaultWorkspace) {
     creatingDefaultWorkspace = true;
     try {
@@ -2073,64 +2073,21 @@ async function refreshOnline(seq) {
     if (state.ws) history.replaceState(null, "", selectionPath(state.ws));
     else history.replaceState(null, "", sessionPrefix());
   }
-  const worktreeSources = worktreeSourceWorkspaceIds();
-  const worktreeResults = await Promise.all(
-    worktreeSources.map((id) =>
-      api("/api/worktrees?workspace_id=" + encodeURIComponent(id)).catch(
-        () => null,
-      ),
-    ),
-  );
-  if (seq !== refreshSeq) return;
-  state.worktrees = worktreeResults.flatMap((r) => {
-    const result = (r || {}).result || {},
-      source = result.source || {};
-    return (result.worktrees || []).map((wt) =>
-      Object.assign({}, wt, {
-        source_workspace_id: source.source_workspace_id,
-        source_repo_name: source.repo_name,
-        source_repo_key: source.repo_key,
-        source_repo_root: source.repo_root,
-        source_cwd: source.source_checkout_path,
-        default_worktree_directory: source.default_worktree_directory,
-      }),
-    );
-  });
-  state.workspaceBranches = {};
-  for (const r of worktreeResults) {
-    const result = (r || {}).result || {},
-      source = result.source || {},
-      sourceId = source.source_workspace_id,
-      sourcePath = source.source_checkout_path;
-    if (!sourceId || !sourcePath) continue;
-    const match = (result.worktrees || []).find((wt) =>
-      samePath(wt.path, sourcePath),
-    );
-    if (match && (match.branch || match.is_detached))
-      state.workspaceBranches[sourceId] =
-        match.branch || (match.is_detached ? "detached" : "");
-  }
-  try {
-    const order = await api("/api/workspace-order");
-    if (seq !== refreshSeq) return;
-    state.workspaceOrder = order.order || [];
-  } catch (e) {
-    state.workspaceOrder = [];
-  }
   if (!state.ws && state.workspaces[0])
     state.ws = state.workspaces[0].workspace_id;
-  if (state.ws) {
-    const [allT, t, p, a] = await Promise.all([
-      api("/api/tabs"),
-      api("/api/tabs?workspace_id=" + encodeURIComponent(state.ws)),
-      api("/api/panes?workspace_id=" + encodeURIComponent(state.ws)),
-      api("/api/agents"),
-    ]);
+  if (state.ws && appState.workspace_id !== state.ws) {
+    appState = await loadAppState(state.ws, state.pane);
     if (seq !== refreshSeq) return;
-    state.allTabs = allT.result.tabs || [];
-    state.tabs = t.result.tabs || [];
-    state.panes = p.result.panes || [];
-    state.agents = a.result.agents || [];
+    state.workspaces = appState.workspaces || state.workspaces;
+  }
+  state.worktrees = appState.worktrees || [];
+  state.workspaceBranches = appState.workspace_branches || {};
+  state.workspaceOrder = appState.workspace_order || [];
+  if (state.ws) {
+    state.allTabs = appState.all_tabs || [];
+    state.tabs = appState.tabs || [];
+    state.panes = appState.panes || [];
+    state.agents = appState.agents || [];
     handleAttentionSound();
     if (!state.tabs.some((t) => t.tab_id === state.tab)) {
       const focused = state.tabs.find((t) => t.focused);
@@ -2150,30 +2107,7 @@ async function refreshOnline(seq) {
     state.layoutCols = null;
     state.layoutRows = null;
     state.layoutPaneCount = 0;
-    if (state.pane) {
-      try {
-        const l = await api(
-          "/api/pane-layout?pane_id=" + encodeURIComponent(state.pane),
-        );
-        if (seq !== refreshSeq) return;
-        const layout = (l.result || {}).layout || {},
-          lp = layout.panes || [];
-        const selected = lp.find((x) => x.pane_id === state.pane);
-        if (selected && selected.rect) {
-          state.termCols = Math.max(1, selected.rect.width);
-          state.termRows = Math.max(1, selected.rect.height);
-          state.layoutCols = Math.max(
-            1,
-            (layout.area || {}).width || state.termCols,
-          );
-          state.layoutRows = Math.max(
-            1,
-            (layout.area || {}).height || state.termRows,
-          );
-          state.layoutPaneCount = lp.length;
-        }
-      } catch (e) {}
-    }
+    if (state.pane) await applyPaneLayoutFromAppState(appState, seq);
     if (
       state.fitDefault ||
       options.fitToBrowser ||
@@ -2202,6 +2136,39 @@ async function refreshOnline(seq) {
   }
   render();
   connectTerminal();
+}
+async function loadAppState(workspaceId, paneId) {
+  const params = new URLSearchParams();
+  if (workspaceId) params.set("workspace_id", workspaceId);
+  if (paneId) params.set("pane_id", paneId);
+  const query = params.toString();
+  const result = await api(`/api/app-state${query ? `?${query}` : ""}`);
+  result.workspace_id = workspaceId || "";
+  result.pane_id = paneId || "";
+  return result;
+}
+async function applyPaneLayoutFromAppState(appState, seq) {
+  let layout = appState && appState.pane_id === state.pane ? appState.layout : null;
+  if (!layout || !Array.isArray(layout.panes)) {
+    try {
+      const l = await api(
+        "/api/pane-layout?pane_id=" + encodeURIComponent(state.pane),
+      );
+      if (seq !== refreshSeq) return;
+      layout = (l.result || {}).layout || {};
+    } catch (e) {
+      return;
+    }
+  }
+  const lp = layout.panes || [];
+  const selected = lp.find((x) => x.pane_id === state.pane);
+  if (selected && selected.rect) {
+    state.termCols = Math.max(1, selected.rect.width);
+    state.termRows = Math.max(1, selected.rect.height);
+    state.layoutCols = Math.max(1, (layout.area || {}).width || state.termCols);
+    state.layoutRows = Math.max(1, (layout.area || {}).height || state.termRows);
+    state.layoutPaneCount = lp.length;
+  }
 }
 async function refresh() {
   const seq = ++refreshSeq;
