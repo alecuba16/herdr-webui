@@ -43,6 +43,12 @@ const MAX_TESTED_BACKEND_VERSION: &str = "0.7.1";
 
 type LocalStream = interprocess::local_socket::Stream;
 
+#[cfg(test)]
+pub(crate) fn env_test_lock() -> &'static Mutex<()> {
+    static LOCK: std::sync::OnceLock<Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
 fn backend_compatibility_for_supported_range(
     backend: Option<&str>,
     protocol: Option<u32>,
@@ -703,6 +709,7 @@ fn app_router(state: WebState) -> Router {
         .route("/assets/mobile/settings.js", get(mobile_settings_js))
         .route("/assets/mobile/terminal.js", get(mobile_terminal_js))
         .route("/assets/mobile/worktrees.js", get(mobile_worktrees_js))
+        .route("/assets/mobile/git.js", get(mobile_git_js))
         .route("/assets/mobile/app.css", get(mobile_css))
         .route("/assets/mobile/app.js", get(mobile_js))
         .route("/assets/xterm.js", get(xterm_js))
@@ -2460,7 +2467,7 @@ mod tests {
     use axum::http::{Method, Request};
     use serde_json::Value;
     use std::io::Cursor;
-    use std::sync::{Mutex as StdMutex, OnceLock};
+    use std::sync::{Arc as StdArc, Mutex as StdMutex};
     use std::thread;
     use tower::ServiceExt;
 
@@ -2512,8 +2519,7 @@ mod tests {
     }
 
     fn env_lock() -> &'static StdMutex<()> {
-        static LOCK: OnceLock<StdMutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| StdMutex::new(()))
+        crate::env_test_lock()
     }
 
     #[cfg(unix)]
@@ -2548,6 +2554,55 @@ mod tests {
             stream.flush().unwrap();
         });
         (path, handle)
+    }
+
+    #[cfg(unix)]
+    fn fake_api_socket_many(
+        count: usize,
+    ) -> (
+        PathBuf,
+        StdArc<StdMutex<Vec<serde_json::Value>>>,
+        thread::JoinHandle<()>,
+    ) {
+        use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+
+        let path = std::env::temp_dir().join(format!(
+            "herdr-webui-api-many-test-{}.sock",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_file(&path);
+        let name = path.clone().to_fs_name::<GenericFilePath>().unwrap();
+        let listener = ListenerOptions::new()
+            .name(name)
+            .try_overwrite(true)
+            .create_sync()
+            .unwrap();
+        let requests = StdArc::new(StdMutex::new(Vec::new()));
+        let requests_for_thread = requests.clone();
+        let handle = thread::spawn(move || {
+            for index in 0..count {
+                let mut stream = listener.accept().unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                requests_for_thread.lock().unwrap().push(request.clone());
+                let response = json!({
+                    "ok": true,
+                    "index": index,
+                    "result": { "method": request["method"].clone(), "params": request["params"].clone() }
+                });
+                stream
+                    .write_all(serde_json::to_string(&response).unwrap().as_bytes())
+                    .unwrap();
+                stream.write_all(b"\n").unwrap();
+                stream.flush().unwrap();
+            }
+        });
+        (path, requests, handle)
     }
 
     #[test]
@@ -3526,6 +3581,205 @@ mod tests {
 
         assert_eq!(response_json(work).await["order"], json!(["w2", "w1"]));
         assert_eq!(response_json(default).await["order"], json!([]));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn proxy_routes_forward_expected_herdr_requests() {
+        let tmp = std::env::temp_dir().join(format!(
+            "herdr-webui-route-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&tmp).unwrap();
+        let (socket, captured, handle) = fake_api_socket_many(18);
+        let mut state = test_state();
+        state.api_socket = Some(socket.clone());
+        let app = test_app_with_state(state);
+        let routes = vec![
+            (Method::GET, "/api/workspaces", None, "workspace.list"),
+            (
+                Method::POST,
+                "/api/workspaces",
+                Some(json!({ "cwd": tmp.to_string_lossy(), "label": "tmp" })),
+                "workspace.create",
+            ),
+            (
+                Method::POST,
+                "/api/workspaces/w1/rename",
+                Some(json!({ "label": "renamed" })),
+                "workspace.rename",
+            ),
+            (
+                Method::POST,
+                "/api/workspaces/w1/close",
+                None,
+                "workspace.close",
+            ),
+            (Method::GET, "/api/tabs?workspace_id=w1", None, "tab.list"),
+            (
+                Method::POST,
+                "/api/tabs",
+                Some(json!({ "workspace_id": "w1", "label": "panel" })),
+                "tab.create",
+            ),
+            (
+                Method::POST,
+                "/api/tabs/t1/rename",
+                Some(json!({ "label": "shell" })),
+                "tab.rename",
+            ),
+            (Method::POST, "/api/tabs/t1/close", None, "tab.close"),
+            (Method::GET, "/api/panes?workspace_id=w1", None, "pane.list"),
+            (Method::POST, "/api/panes/p1/close", None, "pane.close"),
+            (
+                Method::GET,
+                "/api/pane-layout?pane_id=p1",
+                None,
+                "pane.layout",
+            ),
+            (Method::GET, "/api/agents", None, "agent.list"),
+            (
+                Method::GET,
+                "/api/worktrees?workspace_id=w1",
+                None,
+                "worktree.list",
+            ),
+            (
+                Method::POST,
+                "/api/worktrees",
+                Some(
+                    json!({ "workspace_id": "w1", "cwd": tmp.to_string_lossy(), "branch": "feature/mobile", "base": "main", "path": tmp.join("wt").to_string_lossy(), "label": "mobile" }),
+                ),
+                "worktree.create",
+            ),
+            (
+                Method::POST,
+                "/api/worktrees/open",
+                Some(
+                    json!({ "workspace_id": "w1", "path": tmp.join("wt").to_string_lossy(), "label": "mobile" }),
+                ),
+                "worktree.open",
+            ),
+            (
+                Method::POST,
+                "/api/workspaces/w1/worktree-remove",
+                None,
+                "worktree.remove",
+            ),
+            (Method::POST, "/api/session/close", None, "server.stop"),
+            (Method::GET, "/api/versions", None, "ping"),
+        ];
+
+        for (method, uri, body, expected_method) in &routes {
+            let mut builder =
+                request(method.clone(), uri).header(header::COOKIE, "herdr_web_session=token-123");
+            if body.is_some() {
+                builder = builder.header(header::CONTENT_TYPE, "application/json");
+            }
+            let body = body
+                .as_ref()
+                .map(|value| Body::from(value.to_string()))
+                .unwrap_or_else(Body::empty);
+            let response = app
+                .clone()
+                .oneshot(builder.body(body).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{uri}");
+            let json = response_json(response).await;
+            if *expected_method == "ping" {
+                assert_eq!(json["compatibility"]["status"], "unknown");
+            } else {
+                assert_eq!(json["result"]["method"], *expected_method, "{uri}");
+            }
+        }
+
+        handle.join().unwrap();
+        let requests = captured.lock().unwrap();
+        let methods = requests
+            .iter()
+            .map(|request| request["method"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            methods,
+            routes
+                .iter()
+                .map(|(_, _, _, method)| *method)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(requests[1]["params"]["focus"], false);
+        assert_eq!(requests[5]["params"]["focus"], false);
+        assert_eq!(requests[14]["params"]["focus"], true);
+        assert_eq!(requests[15]["params"]["force"], false);
+        let _ = fs::remove_file(socket);
+        let _ = fs::remove_dir_all(tmp);
+    }
+
+    #[tokio::test]
+    async fn local_path_and_git_routes_cover_success_and_errors() {
+        let _guard = env_lock().lock().unwrap();
+        let home = std::env::temp_dir().join(format!(
+            "herdr-webui-path-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(home.join("alpha-dir")).unwrap();
+        fs::write(home.join("alpha-file"), "not a dir").unwrap();
+        let old_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", &home);
+        let app = test_app();
+
+        let suggestions = app
+            .clone()
+            .oneshot(
+                request(Method::GET, "/api/path-suggestions?prefix=alp")
+                    .header(header::COOKIE, "herdr_web_session=token-123")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(suggestions.status(), StatusCode::OK);
+        let body = response_json(suggestions).await;
+        assert_eq!(body["suggestions"][0]["label"], "alpha-dir");
+
+        let missing = app
+            .clone()
+            .oneshot(
+                request(Method::GET, "/api/git-branches")
+                    .header(header::COOKIE, "herdr_web_session=token-123")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), StatusCode::BAD_REQUEST);
+
+        let not_git = app
+            .oneshot(
+                request(
+                    Method::GET,
+                    &format!("/api/git-branches?cwd={}", home.display()),
+                )
+                .header(header::COOKIE, "herdr_web_session=token-123")
+                .body(Body::empty())
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(not_git.status(), StatusCode::BAD_GATEWAY);
+
+        if let Some(old_home) = old_home {
+            std::env::set_var("HOME", old_home);
+        } else {
+            std::env::remove_var("HOME");
+        }
+        let _ = fs::remove_dir_all(home);
     }
 
     #[tokio::test]

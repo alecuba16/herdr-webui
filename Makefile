@@ -36,7 +36,7 @@ test-js:
 	node --test src/assets/app_core.test.mjs src/assets/app_load.test.mjs src/assets/app_boot.test.mjs src/assets/mobile_load.test.mjs
 
 coverage:
-	CARGO_TARGET_DIR=$(TARGET_DIR) $(CARGO) llvm-cov --summary-only
+	CARGO_TARGET_DIR=$(TARGET_DIR) $(CARGO) llvm-cov --summary-only --fail-under-lines 80
 
 clean:
 	$(CARGO) clean --target-dir $(TARGET_DIR)

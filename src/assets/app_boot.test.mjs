@@ -81,8 +81,9 @@ describe("app boot", () => {
     equal(scripts[2].src, "/assets/mobile/attention.js");
     equal(scripts[3].src, "/assets/mobile/terminal.js");
     equal(scripts[4].src, "/assets/mobile/worktrees.js");
-    equal(scripts[5].src, "/assets/mobile/settings.js");
-    equal(scripts[6].src, "/assets/mobile/app.js");
+    equal(scripts[5].src, "/assets/mobile/git.js");
+    equal(scripts[6].src, "/assets/mobile/settings.js");
+    equal(scripts[7].src, "/assets/mobile/app.js");
   });
 
   it("honors explicit desktop override", () => {

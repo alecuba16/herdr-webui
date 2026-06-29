@@ -26,7 +26,7 @@ function context(pathname = "/") {
   const historyCalls = [];
   const terminalStats = { disposed: 0, opened: 0 };
   const requests = [];
-  const navButtons = ["home", "agents", "panels", "worktrees", "terminal"].map(
+  const navButtons = ["home", "agents", "panels", "worktrees", "git", "terminal"].map(
     (screen) => Object.assign(element(), { dataset: { screen } }),
   );
   const getElement = (id) => {
@@ -90,9 +90,49 @@ function context(pathname = "/") {
           status: 200,
           json: async () => ({ result: { tab: { tab_id: "w1:t3" } } }),
         };
+      if (url.includes("/api/git-ui/status"))
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            branch: "feature/mobile",
+            state: "clean",
+            staged: [],
+            unstaged: ["src/mobile.js"],
+            untracked: [],
+            conflicted: [],
+          }),
+        };
+      if (url.includes("/api/git-ui/diff"))
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            files: [
+              {
+                path: "src/mobile.js",
+                additions: 1,
+                deletions: 0,
+                chunks: [
+                  {
+                    header: "@@ -1 +1 @@",
+                    lines: [{ line_type: "add", content: "mobile" }],
+                  },
+                ],
+              },
+            ],
+          }),
+        };
       const result = url.includes("workspaces")
         ? {
-            workspaces: [{ workspace_id: "w1", label: "alpha", pane_count: 1 }],
+            workspaces: [
+              {
+                workspace_id: "w1",
+                label: "alpha",
+                cwd: "/tmp/alpha",
+                pane_count: 1,
+              },
+            ],
           }
         : url.includes("worktrees")
           ? {
@@ -166,6 +206,8 @@ describe("mobile bundle load", () => {
     "\n" +
     readFileSync(new URL("./mobile/worktrees.js", import.meta.url), "utf8") +
     "\n" +
+    readFileSync(new URL("./mobile/git.js", import.meta.url), "utf8") +
+    "\n" +
     readFileSync(new URL("./mobile/settings.js", import.meta.url), "utf8") +
     "\n" +
     readFileSync(new URL("./mobile/app.js", import.meta.url), "utf8");
@@ -195,6 +237,16 @@ describe("mobile bundle load", () => {
     doesNotThrow(() =>
       ctx.HerdrMobile.updateWorktreeField("worktreeBranch", "feature/mobile"),
     );
+  });
+
+  it("renders mobile Git screen from same Git UI API", async () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    doesNotThrow(() => ctx.HerdrMobile.showScreen("git"));
+    equal(typeof ctx.HerdrMobile.loadGitStatus, "function");
+    const html = ctx.document.getElementById("mobileScreen").innerHTML;
+    ok(html.includes("mobile-git") || html.includes("Git"));
   });
 
   it("does not force terminal screen after user selects another mobile tab", async () => {

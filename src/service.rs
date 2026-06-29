@@ -458,6 +458,101 @@ unsafe fn libc_geteuid() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::sync::MutexGuard;
+
+    struct TestEnv {
+        _guard: MutexGuard<'static, ()>,
+        root: PathBuf,
+        old_home: Option<std::ffi::OsString>,
+        old_xdg: Option<std::ffi::OsString>,
+        old_path: Option<std::ffi::OsString>,
+        old_herdr_bin: Option<std::ffi::OsString>,
+    }
+
+    impl TestEnv {
+        fn new() -> Self {
+            let guard = crate::env_test_lock()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let root = std::env::temp_dir().join(format!(
+                "herdr-webui-service-test-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            fs::create_dir_all(&root).unwrap();
+            let bin = root.join("bin");
+            fs::create_dir_all(&bin).unwrap();
+            write_fake_command(&bin.join("systemctl"));
+            write_fake_command(&bin.join("launchctl"));
+
+            let old_home = std::env::var_os("HOME");
+            let old_xdg = std::env::var_os("XDG_CONFIG_HOME");
+            let old_path = std::env::var_os("PATH");
+            let old_herdr_bin = std::env::var_os("HERDR_WEB_HERDR_BIN");
+
+            std::env::set_var("HOME", &root);
+            std::env::set_var("XDG_CONFIG_HOME", root.join("xdg"));
+            let path = old_path
+                .as_ref()
+                .map(|value| format!("{}:{}", bin.display(), value.to_string_lossy()))
+                .unwrap_or_else(|| bin.display().to_string());
+            std::env::set_var("PATH", path);
+            std::env::set_var("HERDR_WEB_HERDR_BIN", "/tmp/herdr bin");
+
+            Self {
+                _guard: guard,
+                root,
+                old_home,
+                old_xdg,
+                old_path,
+                old_herdr_bin,
+            }
+        }
+
+        fn config(&self) -> WebConfig {
+            WebConfig {
+                bind: "127.0.0.1:8787".parse().unwrap(),
+                session: Some("mobile git".to_string()),
+                api_socket: None,
+                client_socket: None,
+            }
+        }
+    }
+
+    impl Drop for TestEnv {
+        fn drop(&mut self) {
+            restore_env("HOME", self.old_home.take());
+            restore_env("XDG_CONFIG_HOME", self.old_xdg.take());
+            restore_env("PATH", self.old_path.take());
+            restore_env("HERDR_WEB_HERDR_BIN", self.old_herdr_bin.take());
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn restore_env(key: &str, value: Option<std::ffi::OsString>) {
+        if let Some(value) = value {
+            std::env::set_var(key, value);
+        } else {
+            std::env::remove_var(key);
+        }
+    }
+
+    fn write_fake_command(path: &Path) {
+        fs::write(
+            path,
+            "#!/bin/sh\nprintf '%s\\n' \"$0 $*\" >> \"$HOME/commands.log\"\nexit 0\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
 
     #[test]
     fn linux_service_unit_contains_binary_and_flags() {
@@ -518,5 +613,81 @@ mod tests {
             xml_escape("<&>\"'"),
             "&lt;&amp;&gt;&quot;&apos;".to_string()
         );
+    }
+
+    #[test]
+    fn linux_service_lifecycle_uses_user_systemd_files() {
+        let env = TestEnv::new();
+
+        install_linux(env.config()).unwrap();
+        let service_path = linux_service_path().unwrap();
+        let unit = fs::read_to_string(&service_path).unwrap();
+        assert!(unit.contains("Environment=HERDR_WEB_HERDR_BIN='/tmp/herdr bin'"));
+        assert!(unit.contains("--session 'mobile git'"));
+        assert!(install_bin_path().unwrap().exists());
+
+        start_linux_service().unwrap();
+        stop_linux_service().unwrap();
+        restart_linux_service().unwrap();
+        update_linux().unwrap();
+        uninstall_linux().unwrap();
+
+        assert!(!service_path.exists());
+        let commands = fs::read_to_string(env.root.join("commands.log")).unwrap();
+        assert!(commands.contains("systemctl --user daemon-reload"));
+        assert!(commands.contains("systemctl --user enable --now herdr-web.service"));
+        assert!(commands.contains("systemctl --user start herdr-web.service"));
+        assert!(commands.contains("systemctl --user stop herdr-web.service"));
+        assert!(commands.contains("systemctl --user restart herdr-web.service"));
+        assert!(commands.contains("systemctl --user disable --now herdr-web.service"));
+    }
+
+    #[test]
+    fn linux_service_start_and_restart_require_installed_unit() {
+        let _env = TestEnv::new();
+
+        let start = start_linux_service().unwrap_err();
+        assert_eq!(start.kind(), io::ErrorKind::NotFound);
+        assert!(start.to_string().contains("systemd user service not found"));
+
+        let restart = restart_linux_service().unwrap_err();
+        assert_eq!(restart.kind(), io::ErrorKind::NotFound);
+        assert!(restart
+            .to_string()
+            .contains("systemd user service not found"));
+    }
+
+    #[test]
+    fn mac_service_lifecycle_uses_launchagent_files() {
+        let env = TestEnv::new();
+
+        install_macos(env.config()).unwrap();
+        let plist = mac_plist_path().unwrap();
+        let plist_xml = fs::read_to_string(&plist).unwrap();
+        assert!(plist_xml.contains("<key>HERDR_WEB_HERDR_BIN</key>"));
+        assert!(plist_xml.contains("<string>/tmp/herdr bin</string>"));
+        assert!(plist_xml.contains("<string>mobile git</string>"));
+        assert!(mac_log_dir().unwrap().exists());
+
+        start_macos_service().unwrap();
+        stop_macos_service().unwrap();
+        restart_macos_service().unwrap();
+        update_macos().unwrap();
+        uninstall_macos().unwrap();
+
+        assert!(!plist.exists());
+        let commands = fs::read_to_string(env.root.join("commands.log")).unwrap();
+        assert!(commands.contains("launchctl bootout gui/"));
+        assert!(commands.contains("launchctl bootstrap gui/"));
+        assert!(commands.contains("launchctl kickstart -k gui/"));
+    }
+
+    #[test]
+    fn mac_service_start_requires_launchagent() {
+        let _env = TestEnv::new();
+
+        let err = start_macos_service().unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+        assert!(err.to_string().contains("LaunchAgent plist not found"));
     }
 }
