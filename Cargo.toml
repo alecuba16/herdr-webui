@@ -1,7 +1,7 @@
 [package]
 name = "herdr-webui"
 # Static package version tracks the next WebUI SemVer; runtime builds use build.rs.
-version = "0.0.50"
+version = "0.0.51"
 edition = "2021"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/alecuba16/herdr-webui"
