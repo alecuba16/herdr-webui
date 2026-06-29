@@ -18,7 +18,8 @@ Standalone browser UI for an official Herdr backend session.
 
 | WebUI | Herdr | Protocol | Status | Notes |
 | --- | --- | --- | --- | --- |
-| `0.0.50` | `0.7.1+` | `14` | Current | Settings search/UX refresh, squared rounded buttons, CodeMirror merge hunk editing, lazy assets, backend app-state/Git metadata, file explorer/editor. |
+| `0.0.51` | `0.7.1+` | `14` | Current | Combined workspace/worktree browser, configurable deep worktree discovery, Settings search/UX refresh, squared rounded buttons, CodeMirror merge hunk editing, lazy assets, backend app-state/Git metadata, file explorer/editor. |
+| `0.0.50` | `0.7.1+` | `14` | Supported | Settings search/UX refresh, squared rounded buttons, CodeMirror merge hunk editing, lazy assets, backend app-state/Git metadata, file explorer/editor. |
 | `0.0.49` | `0.7.1` | `14` | Tested | File browser/editor, shared file trees, CodeMirror editing, large Git change-set placeholders, browser notifications, themed favicons, local snapshot versioning. |
 | `0.0.46` | `0.7.1` | `14` | Tested | Configurable WebUI/Git prefix shortcuts, Git keyboard isolation, Rust coverage above 70%. |
 | `0.0.45` | `0.7.0` | `14` | Minimum supported | Uses legacy worktree fallback when native existing-branch support is unavailable. |
@@ -46,7 +47,7 @@ target/release/herdr-webui
 Runtime version behavior:
 
 - Local builds report `snapshot-<shortsha>`.
-- GitHub Actions tag builds report release tag, for example `v0.0.50`.
+- GitHub Actions tag builds report release tag, for example `v0.0.51`.
 - `Cargo.toml` keeps static package SemVer; runtime product version comes from `build.rs` and is exposed by `herdr-webui --version` and `/api/versions`.
 
 ## Run
