@@ -72,6 +72,17 @@ textarea:focus-visible {
   box-shadow: var(--focus-ring);
   outline: none;
 }
+button:disabled,
+.btn:disabled,
+.mini:disabled,
+.tab:disabled {
+  background: var(--border) !important;
+  border-color: var(--border2) !important;
+  color: var(--muted) !important;
+  cursor: not-allowed;
+  opacity: 0.72;
+  transform: none;
+}
 input[type="checkbox"] {
   accent-color: var(--accent);
 }

@@ -112,7 +112,7 @@ function closeWorktreeOpenModal() {
   const m = el("worktreeOpenModal");
   if (m) m.style.display = "none";
 }
-function openWorktreeOpenModal() {
+function openWorktreeOpenModal(initialPath = "") {
   state.openWorktreeSelected = null;
   state.openWorktreeSuggestionLocked = false;
   state.openWorktreeSource = null;
@@ -126,13 +126,17 @@ function openWorktreeOpenModal() {
   el("worktreeNewBase").value = "";
   el("worktreeNewLabel").value = "";
   el("worktreeNewPath").value = "";
+  el("workspaceBrowserLabel").value = "";
   syncWorktreeBranchOptions([]);
+  el("worktreeDiscoverPath").value = String(initialPath || "");
+  syncWorkspaceBrowserLabel();
   renderWorktreeOpenList();
   el("worktreeOpenError").textContent = "";
   el("worktreeOpenModal").style.display = "grid";
   setTimeout(() => {
     el("worktreeDiscoverPath").focus();
   }, 0);
+  if (initialPath) discoverWorktrees();
 }
 function openWorktreesForRepo(keyToken) {
   const key = decodeURIComponent(keyToken),
@@ -448,8 +452,22 @@ function scheduleWorktreeAutodiscover() {
 }
 function updateWorktreeNewVisibility() {
   const section = el("worktreeNewSection");
-  if (section)
-    section.style.display = state.openWorktreeSource ? "block" : "none";
+  if (section) section.style.display = "block";
+  syncWorktreeCreateAvailability();
+}
+function isDiscoveredGitRepo() {
+  const source = state.openWorktreeSource || {};
+  return !!(source.cwd && source.repo_root && source.repo_name);
+}
+function syncWorktreeCreateAvailability() {
+  const enabled = isDiscoveredGitRepo(),
+    submit = el("worktreeNewSubmit"),
+    hint = el("worktreeNewHint");
+  if (submit) submit.disabled = !enabled;
+  if (hint)
+    hint.textContent = enabled
+      ? "Uses the discovered Git repo. Leave base blank to use repo default branch."
+      : "Select a Git repo folder first. Worktree creation is disabled for non-repo folders.";
 }
 function worktreeOpenRowTitle(w) {
   const pathName = (w.path || "").split(/[\\/]/).filter(Boolean).pop();
@@ -463,7 +481,7 @@ function renderWorktreeOpenList() {
   syncWorktreePathOptions(rows);
   updateWorktreeNewVisibility();
   if (!rows.length) {
-    list.innerHTML = `<div class="worktree-open-empty">${state.openWorktreeSource ? "No linked worktrees found. Create a new one below." : "Enter a repo path or worktrees folder. Discovery starts automatically."}</div>`;
+    list.innerHTML = `<div class="worktree-open-empty">${state.openWorktreeSource ? "No linked worktrees found. Create a workspace or worktree below." : "Choose a folder. Discovery starts automatically and worktree creation enables only for Git repos."}</div>`;
     return;
   }
   list.innerHTML = rows
@@ -525,6 +543,41 @@ async function discoverWorktrees() {
     err.textContent = ex.message || String(ex);
   } finally {
     setWorktreeLoading(false);
+    syncWorktreeCreateAvailability();
+  }
+}
+function syncWorkspaceBrowserLabel() {
+  const label = el("workspaceBrowserLabel");
+  if (!label) return;
+  const next = suggestedWorkspaceLabel(el("worktreeDiscoverPath").value.trim());
+  if (!label.value.trim() || label.value.trim() === (state.workspaceCreateSuggestedLabel || ""))
+    label.value = next;
+  state.workspaceCreateSuggestedLabel = next;
+}
+async function createWorkspaceFromBrowser() {
+  const err = el("worktreeOpenError"),
+    submit = el("workspaceBrowserSubmit"),
+    cwd = el("worktreeDiscoverPath").value.trim(),
+    label = el("workspaceBrowserLabel").value.trim() || suggestedWorkspaceLabel(cwd);
+  err.textContent = "";
+  if (!cwd) {
+    err.textContent = "Folder is required.";
+    return;
+  }
+  submit.disabled = true;
+  try {
+    const r = await api("/api/workspaces", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ label, cwd }),
+    });
+    closeWorktreeOpenModal();
+    const ws = r.result.workspace.workspace_id;
+    go(ws);
+  } catch (ex) {
+    err.textContent = ex.message || String(ex);
+  } finally {
+    submit.disabled = false;
   }
 }
 async function openDiscoveredWorktree(index) {
@@ -605,6 +658,10 @@ async function createDiscoveredWorktree() {
   submit.disabled = true;
   try {
     if (sourcePath && !state.openWorktreeSource) await discoverWorktrees();
+    if (!isDiscoveredGitRepo()) {
+      err.textContent = "Select a Git repo folder before creating a worktree.";
+      return;
+    }
     const checkedOut = checkedOutWorktreeForBranch(branch);
     if (checkedOut) {
       err.textContent = `Branch "${branch}" is already checked out at ${textValue(checkedOut.path)}`;

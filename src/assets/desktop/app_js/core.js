@@ -386,23 +386,34 @@ function worktreeOpenModalHtml() {
       <div class="modal">
         <div class="settings-head">
           <div>
-            <h2>Worktrees</h2>
-            <p>Type a repo path to open existing linked worktrees or create a new one.</p>
+            <h2>Workspace browser</h2>
+            <p>Browse to a folder, open discovered worktrees, or create a workspace/worktree.</p>
           </div>
           <button class="mini settings-close" id="worktreeOpenClose" title="Close">✕</button>
         </div>
         <div class="worktree-open-controls">
           <label>
-            <span>Repo or worktrees folder</span>
+            <span>Folder</span>
             <input id="worktreeDiscoverPath" placeholder="~/Documents/code/repo-or-worktrees">
           </label>
           <div class="worktree-loading" id="worktreeLoading">Discovering worktrees...</div>
         </div>
         <div class="worktree-open-list" id="worktreeOpenList"></div>
+        <div class="worktree-new workspace-browser-create">
+          <div class="worktree-new-head">
+            <strong>Create workspace</strong>
+            <small>Uses the selected folder. The name is suggested from the folder name.</small>
+          </div>
+          <form class="worktree-form" id="workspaceBrowserForm">
+            <div class="worktree-grid">
+              <label><span>Workspace name</span><input id="workspaceBrowserLabel" placeholder="project name"></label>
+            </div>
+          </form>
+        </div>
         <div class="worktree-new" id="worktreeNewSection">
           <div class="worktree-new-head">
             <strong>Create a new worktree</strong>
-            <small>Uses repo path above. Leave base blank to use repo default branch.</small>
+            <small id="worktreeNewHint">Select a Git repo folder first. Leave base blank to use repo default branch.</small>
           </div>
           <form class="worktree-form" id="worktreeNewForm">
             <div class="worktree-grid">
@@ -414,12 +425,13 @@ function worktreeOpenModalHtml() {
               <label><span>Label</span><input id="worktreeNewLabel" placeholder="optional"></label>
               <label><span>Checkout path</span><input id="worktreeNewPath" placeholder="select base branch or enter branch name"></label>
             </div>
-            <button class="btn" id="worktreeNewSubmit">New worktree</button>
           </form>
         </div>
         <div class="worktree-error" id="worktreeOpenError"></div>
         <div class="worktree-open-footer">
           <button type="button" class="tab add" id="worktreeOpenRefresh">Refresh</button>
+          <button type="button" class="btn" id="workspaceBrowserSubmit">Create workspace</button>
+          <button type="submit" form="worktreeNewForm" class="btn" id="worktreeNewSubmit" disabled>New worktree</button>
         </div>
       </div>
     </div>`;
@@ -1636,25 +1648,21 @@ function setupSessionChrome() {
     head.insertBefore(wrap.firstChild, el("newWs"));
     syncNoSleepControls();
   }
-  if (!el("openWorktrees")) {
-    const newWsButton = el("newWs");
-    const b = document.createElement("button");
-    b.className = "btn worktree-open-trigger";
-    b.id = "openWorktrees";
-    b.title = "Open or create worktrees";
-    b.textContent = "♧";
-    newWsButton.insertAdjacentElement("afterend", b);
-    b.onclick = () => openWorktreeOpenModal();
+  const oldOpenWorktrees = el("openWorktrees");
+  if (oldOpenWorktrees) oldOpenWorktrees.remove();
+  const newWsButton = el("newWs");
+  if (newWsButton) {
+    newWsButton.title = "Browse folders, create workspace or worktree";
+    newWsButton.setAttribute("aria-label", "Browse folders, create workspace or worktree");
   }
   if (!el("terminalWorkspaceToggle")) {
-    const openWorktrees = el("openWorktrees");
     const t = document.createElement("button");
     t.className = "btn worktree-open-trigger shell-action shell-icon-button";
     t.id = "terminalWorkspaceToggle";
     t.title = "Show terminal";
     t.innerHTML = appIcon("terminal");
     t.setAttribute("aria-label", "Show terminal");
-    openWorktrees.insertAdjacentElement("afterend", t);
+    newWsButton.insertAdjacentElement("afterend", t);
     t.onclick = () => showTerminalShellMode();
   }
   if (!gitUiEnabled()) {
@@ -1662,19 +1670,18 @@ function setupSessionChrome() {
     if (existingGitToggle) existingGitToggle.remove();
     if (window.HerdrGitUi) window.HerdrGitUi.hide();
   } else if (!el("gitWorkspaceToggle")) {
-    const openWorktrees = el("openWorktrees");
     const b = document.createElement("button");
     b.className = "btn worktree-open-trigger shell-action shell-icon-button git-workspace-toggle unknown";
     b.id = "gitWorkspaceToggle";
     b.title = "Show Git drawer";
     b.innerHTML = appIcon("git");
     b.setAttribute("aria-label", "Show Git drawer");
-    const terminalToggle = el("terminalWorkspaceToggle") || openWorktrees;
+    const terminalToggle = el("terminalWorkspaceToggle") || newWsButton;
     terminalToggle.insertAdjacentElement("afterend", b);
     b.onclick = () => openWorkspaceGitUi(state.ws);
   }
   if (!el("fileWorkspaceToggle")) {
-    const gitToggle = el("gitWorkspaceToggle") || el("terminalWorkspaceToggle") || el("openWorktrees");
+    const gitToggle = el("gitWorkspaceToggle") || el("terminalWorkspaceToggle") || newWsButton;
     const b = document.createElement("button");
     b.className = "btn worktree-open-trigger shell-action shell-icon-button";
     b.id = "fileWorkspaceToggle";

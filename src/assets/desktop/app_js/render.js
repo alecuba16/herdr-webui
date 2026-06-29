@@ -407,7 +407,7 @@ async function openWorkspaceFileBrowser(id) {
 function runWorkspaceContextAction(action, button) {
   const w = selectedWorkspace();
   if (!w) return;
-  if (action === "create-worktree") openWorktreeCreateModal(w.workspace_id);
+  if (action === "create-worktree") openWorktreeOpenModal((w.worktree && w.worktree.checkout_path) || w.cwd || w.path || "");
   else if (action === "open-worktrees") openWorktreesForRepo(button.dataset.key || "");
   else if (action === "close") closeWorkspace(w.workspace_id);
   else if (action === "remove-worktree") removeWorktree(w.workspace_id);
