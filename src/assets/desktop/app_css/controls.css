@@ -137,6 +137,12 @@ input[type="checkbox"] {
   color: #a6e3a1;
   border-color: #74c7a3;
 }
+.selected-space-actions .mini.tree:active,
+.selected-space-actions .mini.tree:focus-visible {
+  background: var(--accent-1);
+  color: var(--accent-fg);
+  border-color: var(--accent-1);
+}
 a.item,
 a.item:visited,
 a.item:hover,

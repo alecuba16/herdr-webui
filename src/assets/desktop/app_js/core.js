@@ -257,11 +257,15 @@ if (settingsModal && !settingsModal.dataset.ux) {
     head.innerHTML =
       '<div><h2>Settings</h2><p>Browser-local preferences for terminal, theme, and agent behavior.</p></div><button class="mini settings-close" id="settingsCloseTop" title="Close">✕</button>';
     heading.replaceWith(head);
+    const search = document.createElement("label");
+    search.className = "settings-search";
+    search.innerHTML = '<span>Search settings</span><input id="settingsSearch" placeholder="Theme, Git, shortcuts..." autocomplete="off">';
     const body = document.createElement("div");
     body.className = "settings-body";
     [...modal.querySelectorAll("label.option")].forEach((node) =>
       body.appendChild(node),
     );
+    modal.insertBefore(search, modal.querySelector(".modal-actions"));
     modal.insertBefore(body, modal.querySelector(".modal-actions"));
     el("settingsCloseTop").onclick = () => {
       settingsModal.style.display = "none";
@@ -1152,6 +1156,7 @@ if (soundSetting && !el("optAgentSortMode"))
       '<label class="option"><input type="checkbox" id="optGlobalShortcutsEnabled"><span>Global keyboard shortcuts<small>Enable prefix WebUI navigation shortcuts listed under ?.</small></span></label><label class="option"><span>Shortcut prefix<small>Click Record, press desired key combination, then use it before WebUI shortcuts.</small></span><span class="shortcut-capture"><input id="optGlobalShortcutPrefix" readonly><button type="button" class="tab add" id="optGlobalShortcutPrefixCapture">Record</button></span></label><label class="option"><span>Search shortcut<small>Optional direct shortcut. Leave disabled if it conflicts with terminal apps.</small></span><span class="shortcut-capture"><input id="optSearchShortcut" readonly><button type="button" class="tab add" id="optSearchShortcutCapture">Record</button><button type="button" class="tab add" id="optSearchShortcutClear">Clear</button></span></label><label class="option"><span>Terminal font<small>Use installed monospaced font family, including Nerd Fonts used by Neovim.</small></span><input id="optTerminalFontFamily" list="terminalFontPresets" placeholder="&quot;MesloLGS Nerd Font Mono&quot;, monospace"><datalist id="terminalFontPresets"><option value="&quot;MesloLGS Nerd Font Mono&quot;, &quot;MesloLGS NF&quot;, monospace"><option value="&quot;MesloLGS Nerd Font&quot;, &quot;MesloLGS NF&quot;, monospace"><option value="&quot;JetBrainsMono Nerd Font Mono&quot;, &quot;JetBrainsMono Nerd Font&quot;, monospace"><option value="&quot;Hack Nerd Font Mono&quot;, &quot;Hack Nerd Font&quot;, monospace"><option value="&quot;FiraCode Nerd Font Mono&quot;, &quot;FiraCode Nerd Font&quot;, monospace"><option value="&quot;CaskaydiaCove Nerd Font Mono&quot;, &quot;CaskaydiaCove Nerd Font&quot;, monospace"><option value="ui-monospace,SFMono-Regular,Menlo,monospace"></datalist></label><label class="option"><span>Close panel shortcut<small>Stored in browser storage and available after reopening the tab.</small></span><select class="settings-select" id="optCloseShortcut"><option value="off">Disabled</option><option value="altw">Option+W</option><option value="shiftspacew">Shift+Space then W</option></select></label><label class="option"><span>Agent sorting<small>Sort agents by attention priority, or show them in default order.</small></span><select class="settings-select" id="optAgentSortMode"><option value="off">Default order</option><option value="attention">Attention (blocked first)</option><option value="attention_inverted">Attention (working first)</option></select></label><label class="option"><span>Parent workspace close<small>Close panels only (keeps linked worktrees running) or full close with re-open (stops processes, re-opens worktrees with fresh shells).</small></span><select class="settings-select" id="optParentCloseMode"><option value="panels">Close panels only</option><option value="close">Full close + re-open worktrees</option></select></label><label class="option"><input type="checkbox" id="optStuckWorkingEnabled"><span>Ignore stuck working agents<small>Dismiss working agents that appear stuck. Clears automatically on status changes and terminal output.</small></span></label><label class="option"><span>Ignore stuck working for<small>Minutes to keep a local dismissed-working override before showing working again.</small></span><input id="optWorkingDismissMinutes" type="number" min="1" max="1440" step="1"></label><label class="option"><input type="checkbox" id="optShowTabActivity"><span>Show panel last update<small>Display local last-change age on top panel tabs. Updates on refreshes, events, and selected terminal output; no timer polling.</small></span></label><label class="option"><span>Workspace sorting<small>Default tree order, shared drag-and-drop order, or attention state priority.</small></span><select class="settings-select" id="optWorkspaceSort"><option value="default">Default</option><option value="drag">Drag&drop</option><option value="state">State</option></select></label><label class="option"><span>Notification scope<small>Choose whether sounds ring in every open tab or only the tab viewing the agent panel.</small></span><select class="settings-select" id="optSoundScope"><option value="current">Current agent tab</option><option value="all">All tabs</option></select></label><label class="option"><input type="checkbox" id="optGenerateWorktreeNames"><span>Generate worktree branch names<small>Allow blank Branch name in Worktrees modal. Herdr generates worktree/&lt;name&gt;.</small></span></label><label class="option"><span>Default worktree directory<small>Relative paths resolve from repo root. Example: ../worktrees.</small></span><input id="optWorktreeDefaultDirectory" placeholder="../worktrees"></label><label class="option"><span>Scroll speed<small><span id="scrollLinesValue">3</span> terminal lines per wheel step.</small></span><input type="range" id="optScrollLines" min="1" max="20" step="1"></label><label class="option"><span>Worktree autodiscover<small>Seconds to wait after path input stops. Set 0 for immediate.</small></span><input type="number" id="optWorktreeAutoDiscover" min="0" max="30" step="0.5"></label>',
     );
 groupSettingsSections();
+bindSettingsSearch();
 function groupSettingsSections() {
   if (!settingsBody || settingsBody.dataset.sections === "1") return;
   const sectionDefs = [
@@ -1234,6 +1239,36 @@ function groupSettingsSections() {
     settingsBody.appendChild(section);
   }
   settingsBody.dataset.sections = "1";
+}
+function bindSettingsSearch() {
+  const input = el("settingsSearch");
+  if (!input || input.dataset.bound === "1") return;
+  let empty = el("settingsSearchEmpty");
+  if (settingsBody && !empty) {
+    settingsBody.insertAdjacentHTML("afterend", '<div id="settingsSearchEmpty" class="settings-empty" hidden>No settings found.</div>');
+    empty = el("settingsSearchEmpty");
+  }
+  const filter = () => {
+    const query = input.value.trim().toLowerCase();
+    let visibleSections = 0;
+    document.querySelectorAll(".settings-section").forEach((section) => {
+      const head = section.querySelector(".settings-section-head");
+      const headMatch = !!query && !!head && head.textContent.toLowerCase().includes(query);
+      let visibleRows = 0;
+      section.querySelectorAll(":scope > .option, :scope > .theme-customizer, :scope > .server-settings").forEach((row) => {
+        const match = !query || headMatch || row.textContent.toLowerCase().includes(query);
+        row.classList.toggle("settings-filter-hidden", !match);
+        if (match) visibleRows++;
+      });
+      const hideSection = !!query && !headMatch && !visibleRows;
+      section.classList.toggle("settings-filter-hidden", hideSection);
+      if (!hideSection) visibleSections++;
+    });
+    if (empty) empty.hidden = !query || visibleSections > 0;
+  };
+  input.dataset.bound = "1";
+  input.addEventListener("input", filter);
+  filter();
 }
 function applyOptions() {
   const shell = el("terminalShell");

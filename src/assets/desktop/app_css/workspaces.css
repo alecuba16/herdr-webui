@@ -149,8 +149,36 @@ body.light .chip.label {
   font-size: 16px;
   padding: 5px 9px;
 }
+.settings-search {
+  border-bottom: 1px solid var(--border);
+  display: grid;
+  gap: 6px;
+  padding: 12px 20px;
+}
+.settings-search span {
+  color: var(--muted);
+  font-size: 12px;
+}
+.settings-search input {
+  background: var(--panel2);
+  border: 1px solid var(--border2);
+  border-radius: 10px;
+  color: var(--fg);
+  padding: 9px 11px;
+}
+.settings-search input:focus {
+  border-color: var(--accent-border);
+  outline: none;
+}
 .settings-body {
   padding: 10px 20px 16px;
+}
+.settings-empty {
+  color: var(--muted);
+  padding: 0 20px 16px;
+}
+.settings-filter-hidden {
+  display: none !important;
 }
 .settings-section {
   border: 1px solid var(--border);
