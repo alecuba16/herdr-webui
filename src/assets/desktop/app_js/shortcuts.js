@@ -209,7 +209,7 @@ function runPrefixedShortcut(e) {
       return true;
     },
     newWorkspace: () => {
-      openWorkspaceCreateModal();
+      openWorktreeOpenModal();
       return true;
     },
     newPanel: () => {
@@ -221,7 +221,10 @@ function runPrefixedShortcut(e) {
       return true;
     },
     createWorktree: () => {
-      if (state.ws) openWorktreeCreateModal(state.ws);
+      if (state.ws) {
+        const w = state.workspaces.find((x) => x.workspace_id === state.ws);
+        openWorktreeOpenModal((w && ((w.worktree && w.worktree.checkout_path) || w.cwd || w.path)) || "");
+      }
       return true;
     },
     closePanel: () => {

@@ -188,16 +188,18 @@ describe("app bundle load", () => {
     equal(gitKeys.filter((key) => webuiKeys.has(key)).join(","), "");
   });
 
-  it("renders new workspace modal with manual folder field", () => {
+  it("renders combined workspace browser actions", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
 
-    const html = ctx.workspaceCreateModalHtml();
+    const html = ctx.worktreeOpenModalHtml();
 
-    match(html, /id="workspaceCreatePath"/);
-    ok(!html.includes("workspacePathOptions"));
-    match(html, /id="workspaceCreateLabel"/);
-    match(html, /id="workspaceCreateSubmit"/);
+    match(html, /Workspace browser/);
+    match(html, /id="worktreeDiscoverPath"/);
+    match(html, /id="workspaceBrowserLabel"/);
+    match(html, /id="workspaceBrowserSubmit"/);
+    match(html, /id="worktreeNewSubmit" disabled/);
+    match(source, /newWs\.onclick = \(\) => \{\n  openWorktreeOpenModal\(\);/);
   });
 
   it("renders server access settings fields", () => {

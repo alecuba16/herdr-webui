@@ -372,6 +372,11 @@ el("worktreeOpenRefresh").onclick = async () => {
     renderWorktreeOpenList();
   }
 };
+el("workspaceBrowserSubmit").onclick = createWorkspaceFromBrowser;
+el("workspaceBrowserForm").onsubmit = (e) => {
+  e.preventDefault();
+  createWorkspaceFromBrowser();
+};
 el("worktreeNewForm").onsubmit = (e) => {
   e.preventDefault();
   createDiscoveredWorktree();
@@ -389,7 +394,10 @@ function worktreePathInputChanged() {
     state.openWorktreeSuggestionLocked = false;
     return;
   }
+  syncWorkspaceBrowserLabel();
   const value = el("worktreeDiscoverPath").value.trim();
+  state.openWorktreeSource = null;
+  syncWorktreeCreateAvailability();
   const idx = (state.openWorktreeRows || []).findIndex(
     (w) => textValue(w.path) === value && w.is_linked_worktree,
   );
