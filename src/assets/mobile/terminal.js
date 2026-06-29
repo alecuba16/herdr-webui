@@ -21,6 +21,56 @@
       openedTerminalElement = null,
       connectedTerminalKey = "",
       connectedTerminalSize = "";
+    const SCROLLBACK_INITIAL = 1000;
+    const SCROLLBACK_BLOCK = 1000;
+    const SCROLLBACK_MAX = 2000;
+    let scrollbackLimit = SCROLLBACK_INITIAL;
+
+    function countLines(data) {
+      let lines = 0;
+      if (typeof data === "string") {
+        for (let i = 0; i < data.length; i += 1) {
+          if (data.charCodeAt(i) === 10) lines += 1;
+        }
+        return lines;
+      }
+      if (!(data instanceof Uint8Array)) return 0;
+      for (let i = 0; i < data.length; i += 1) {
+        if (data[i] === 10) lines += 1;
+      }
+      return lines;
+    }
+
+    function setScrollback(limit) {
+      scrollbackLimit = Math.min(SCROLLBACK_MAX, Math.max(1, limit));
+      if (!term) return;
+      try {
+        term.options.scrollback = scrollbackLimit;
+      } catch (_) {
+        try {
+          term.setOption("scrollback", scrollbackLimit);
+        } catch (_) {}
+      }
+    }
+
+    function maybeGrowScrollback(incomingLines = 0) {
+      if (!term || scrollbackLimit >= SCROLLBACK_MAX) return;
+      const bufferLength = term.buffer && term.buffer.active ? term.buffer.active.length : 0;
+      const rows = term.rows || 30;
+      const used = Math.max(0, bufferLength - rows);
+      const needed = used + incomingLines;
+      if (needed < scrollbackLimit - SCROLLBACK_BLOCK / 2) return;
+      const blocks = Math.ceil(
+        (needed - scrollbackLimit + SCROLLBACK_BLOCK / 2) / SCROLLBACK_BLOCK,
+      );
+      setScrollback(scrollbackLimit + Math.max(1, blocks) * SCROLLBACK_BLOCK);
+    }
+
+    function writeTerminalData(data) {
+      maybeGrowScrollback(countLines(data));
+      term.write(data);
+      maybeGrowScrollback();
+    }
 
     function terminalFontFamily() {
       try {
@@ -83,10 +133,11 @@
       connectedTerminalKey = terminalKey;
       connectedTerminalSize = terminalSizeKey;
       if (!term) {
+        scrollbackLimit = SCROLLBACK_INITIAL;
         term = new Terminal({
           convertEol: false,
           fontFamily: terminalFontFamily(),
-          scrollback: 2000,
+          scrollback: scrollbackLimit,
         });
         term.onData((data) => {
           if (termWs && termWs.readyState === 1) termWs.send(data);
@@ -126,8 +177,8 @@
       ws.binaryType = "arraybuffer";
       ws.onmessage = (event) => {
         if (termWs !== ws) return;
-        if (typeof event.data === "string") term.write(event.data);
-        else term.write(new Uint8Array(event.data));
+        if (typeof event.data === "string") writeTerminalData(event.data);
+        else writeTerminalData(new Uint8Array(event.data));
       };
       ws.onclose = () => {
         if (termWs === ws) {

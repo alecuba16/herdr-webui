@@ -16,6 +16,7 @@ Goal: reduce CPU, memory, bundle parse cost, and maintenance risk across backend
 - Lazy-load desktop Git UI and file browser JavaScript on first use instead of desktop boot.
 - Coalesce mobile event websocket refreshes so event bursts trigger one API refresh instead of one per message.
 - Add short browser cache headers for embedded static JS/CSS/SVG assets to reduce repeated transfer and parse on reload.
+- Grow xterm scrollback in blocks instead of allocating the max scrollback on terminal creation.
 
 ## P0 Performance
 
