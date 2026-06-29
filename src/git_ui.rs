@@ -914,7 +914,7 @@ async fn git_ui_discard(
         let tracked = git_ui_output(&repo, &["ls-files", "--error-unmatch", "--", path])
             .is_ok_and(|output| output.status.success());
         if tracked {
-            if let Err(err) = git_ui_text(&repo, &["restore", "--", path]) {
+            if let Err(err) = git_ui_text(&repo, &["restore", "--staged", "--worktree", "--", path]) {
                 return git_json_error(StatusCode::BAD_GATEWAY, err);
             }
         } else {
@@ -1844,6 +1844,29 @@ mod tests {
             )
             .await;
             assert_eq!(discard.status(), StatusCode::OK);
+            assert_eq!(
+                fs::read_to_string(repo.path.join("tracked.txt")).unwrap(),
+                "one\n"
+            );
+
+            repo.write("tracked.txt", "staged\n");
+            repo.git(&["add", "tracked.txt"]);
+            assert!(repo
+                .git(&["diff", "--cached", "--name-only"])
+                .contains("tracked.txt"));
+            let discard_staged = git_ui_discard(
+                State(state.clone()),
+                HeaderMap::new(),
+                ConnectInfo(remote()),
+                Json(GitUiPathsRequest {
+                    cwd: cwd.clone(),
+                    paths: vec!["tracked.txt".to_string()],
+                    confirmed: Some(true),
+                }),
+            )
+            .await;
+            assert_eq!(discard_staged.status(), StatusCode::OK);
+            assert_eq!(repo.git(&["diff", "--cached", "--name-only"]), "");
             assert_eq!(
                 fs::read_to_string(repo.path.join("tracked.txt")).unwrap(),
                 "one\n"
