@@ -497,3 +497,9 @@
   min-height: 72px;
   resize: vertical;
 }
+.git-ui-btn,
+.git-ui-menu button,
+.git-ui-modal button,
+.git-ui-panel button {
+  border-radius: 8px !important;
+}

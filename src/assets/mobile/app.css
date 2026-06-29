@@ -483,3 +483,9 @@ body.light {
     grid-column: 1 / -1;
   }
 }
+button,
+.mobile-btn,
+.mobile-nav button,
+.cm-herdr-hunk-actions button {
+  border-radius: 8px !important;
+}

@@ -50,7 +50,7 @@ let settingsBackdropDown = false,
   shortcutsBackdropDown = false;
 el("settingsToggle").onclick = () => {
   el("settingsModal").style.display = "grid";
-  applyOptions();
+  prepareSettingsModalOpen();
   loadServerSettings();
 };
 el("settingsClose").onclick = () => {

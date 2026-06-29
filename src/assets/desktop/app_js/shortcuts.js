@@ -60,7 +60,7 @@ function showShortcutsModal() {
 }
 function showSettingsModal() {
   el("settingsModal").style.display = "grid";
-  applyOptions();
+  prepareSettingsModalOpen();
   loadServerSettings();
 }
 function currentWorkspace() {

@@ -145,6 +145,27 @@ body.light .chip.label {
   color: var(--muted);
   font-size: 13px;
 }
+.settings-search {
+  display: grid;
+  gap: 5px;
+  min-width: min(280px, 42vw);
+}
+.settings-search span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.settings-search input {
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--fg);
+  font: inherit;
+  padding: 9px 10px;
+  width: 100%;
+}
 .settings-close {
   font-size: 16px;
   padding: 5px 9px;
@@ -168,6 +189,14 @@ body.light .chip.label {
   color: var(--muted);
   font-size: 12px;
   margin: 3px 0 0;
+}
+.settings-filter-hidden {
+  display: none !important;
+}
+.settings-empty {
+  color: var(--muted);
+  padding: 24px 12px;
+  text-align: center;
 }
 .settings-section > .theme-customizer {
   border-top: 0;
@@ -193,6 +222,30 @@ body.light .chip.label {
 }
 .option select {
   margin-left: auto;
+}
+button,
+.btn,
+.mini,
+.tab,
+.footer-icon-button,
+.shell-icon-button,
+.footer-session-button,
+.git-ui-btn {
+  border-radius: 8px !important;
+}
+@media (max-width: 700px) {
+  .settings-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .settings-search {
+    min-width: 0;
+  }
+  .settings-close {
+    position: absolute;
+    right: 20px;
+    top: 18px;
+  }
 }
 .modal-actions {
   position: sticky;
