@@ -13,6 +13,59 @@ function ensureTerminalAsset() {
   });
   return terminalAssetPromise;
 }
+const TERMINAL_SCROLLBACK_INITIAL = 2000;
+const TERMINAL_SCROLLBACK_BLOCK = 2000;
+const TERMINAL_SCROLLBACK_MAX = 10000;
+let terminalScrollbackLimit = TERMINAL_SCROLLBACK_INITIAL;
+
+function countTerminalLines(data) {
+  let lines = 0;
+  if (typeof data === "string") {
+    for (let i = 0; i < data.length; i += 1) {
+      if (data.charCodeAt(i) === 10) lines += 1;
+    }
+    return lines;
+  }
+  if (!(data instanceof Uint8Array)) return 0;
+  for (let i = 0; i < data.length; i += 1) {
+    if (data[i] === 10) lines += 1;
+  }
+  return lines;
+}
+
+function setTerminalScrollback(limit) {
+  terminalScrollbackLimit = Math.min(TERMINAL_SCROLLBACK_MAX, Math.max(1, limit));
+  if (!term) return;
+  try {
+    term.options.scrollback = terminalScrollbackLimit;
+  } catch (_) {
+    try {
+      term.setOption("scrollback", terminalScrollbackLimit);
+    } catch (_) {}
+  }
+}
+
+function maybeGrowTerminalScrollback(incomingLines = 0) {
+  if (!term || terminalScrollbackLimit >= TERMINAL_SCROLLBACK_MAX) return;
+  const bufferLength = term.buffer && term.buffer.active ? term.buffer.active.length : 0;
+  const rows = term.rows || state.termRows || 30;
+  const used = Math.max(0, bufferLength - rows);
+  const needed = used + incomingLines;
+  if (needed < terminalScrollbackLimit - TERMINAL_SCROLLBACK_BLOCK / 2) return;
+  const blocks = Math.ceil(
+    (needed - terminalScrollbackLimit + TERMINAL_SCROLLBACK_BLOCK / 2) /
+      TERMINAL_SCROLLBACK_BLOCK,
+  );
+  setTerminalScrollback(
+    terminalScrollbackLimit + Math.max(1, blocks) * TERMINAL_SCROLLBACK_BLOCK,
+  );
+}
+
+function writeTerminalData(data) {
+  maybeGrowTerminalScrollback(countTerminalLines(data));
+  term.write(data);
+  maybeGrowTerminalScrollback();
+}
 
 function connectEvents() {
   if (document.hidden || eventWs) return;
@@ -96,11 +149,12 @@ function connectTerminal() {
   connectedTerminalId = target;
   connectedSize = size;
   if (!term) {
+    terminalScrollbackLimit = TERMINAL_SCROLLBACK_INITIAL;
     term = new Terminal({
       convertEol: false,
       fontFamily: terminalFontFamily(),
       theme: terminalTheme(),
-      scrollback: 10000,
+      scrollback: terminalScrollbackLimit,
     });
     term.open(terminal);
     applyTheme();
@@ -221,8 +275,8 @@ function connectTerminal() {
   ws.onmessage = (e) => {
     if (termWs !== ws || connectedTerminalId !== target) return;
     setTerminalLoading(false);
-    if (typeof e.data === "string") term.write(e.data);
-    else term.write(new Uint8Array(e.data));
+    if (typeof e.data === "string") writeTerminalData(e.data);
+    else writeTerminalData(new Uint8Array(e.data));
     clearDismissedWorkingForTerminal(state.terminalId);
     scheduleTerminalFrameWork();
   };
