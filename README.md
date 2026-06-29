@@ -1,25 +1,35 @@
-# Herdr WebUI
+# herdr-webui
 
 Standalone browser UI for an official Herdr backend session.
 
-`herdr-webui` is not a Herdr fork and does not ship the Herdr terminal multiplexer. It connects to a running Herdr backend through Herdr's JSON API socket and direct terminal attach socket, then exposes workspace navigation, agent status, and terminal attach in a local web app.
+`herdr-webui` is not a Herdr fork and does not ship the Herdr terminal multiplexer. It connects to a running Herdr backend through Herdr's JSON API socket and terminal attach socket, then exposes workspaces, panels, agents, terminals, Git, and files in local web UI.
+
+## Highlights
+
+- Desktop and mobile UI with terminal attach, workspace navigation, agent status, Git, and file browsing.
+- Desktop Git UI with status, diffs, commit, log, stash, blame, file history, conflict tools, branch switch, hunk actions, and guarded destructive operations.
+- File explorer/editor backed by authenticated Rust routes with path safety, hash guards, rename, delete, split panes, and shared file trees.
+- CodeMirror 6 editor bundle loaded lazily for file editing, previews, syntax highlighting, and side-by-side hunk merge editing.
+- Settings search, shortcut editor, theme colors, terminal font/scroll controls, browser notifications, no-sleep controls, and consistent squared rounded buttons.
+- Backend-offloaded app state and Git metadata to reduce browser CPU/RAM on large workspaces.
+- Embedded assets: release binary contains frontend HTML/CSS/JS.
+
+## Compatibility
+
+| WebUI | Herdr | Protocol | Status | Notes |
+| --- | --- | --- | --- | --- |
+| `0.0.50` | `0.7.1+` | `14` | Current | Settings search/UX refresh, squared rounded buttons, CodeMirror merge hunk editing, lazy assets, backend app-state/Git metadata, file explorer/editor. |
+| `0.0.49` | `0.7.1` | `14` | Tested | File browser/editor, shared file trees, CodeMirror editing, large Git change-set placeholders, browser notifications, themed favicons, local snapshot versioning. |
+| `0.0.46` | `0.7.1` | `14` | Tested | Configurable WebUI/Git prefix shortcuts, Git keyboard isolation, Rust coverage above 70%. |
+| `0.0.45` | `0.7.0` | `14` | Minimum supported | Uses legacy worktree fallback when native existing-branch support is unavailable. |
+
+Newer Herdr builds may work when protocol stays compatible. WebUI reports untested versions in `/api/versions`.
 
 ## Requirements
 
 - Rust toolchain for local builds.
-- Git CLI for worktree features.
+- Git CLI for Git and worktree features.
 - Official Herdr binary available as `herdr` in `PATH`, or set `HERDR_WEB_HERDR_BIN`.
-
-Compatibility:
-
-| WebUI | Herdr | Protocol | Status | Notes |
-| --- | --- | --- | --- | --- |
-| `0.0.49` | `0.7.1` | `14` | Current | Adds file browser/editor, shared file trees, CodeMirror editing, large Git change-set placeholders, browser notifications, themed favicons, and local snapshot versioning. |
-| `0.0.46` | `0.7.1` | `14` | Tested | Adds configurable WebUI/Git prefix shortcuts, keeps Git drawer keyboard input isolated, and raises Rust line coverage above 70%. |
-| `0.0.45` | `0.7.1` | `14` | Tested | Improves embedded Git UI navigation with Escape handling, all-changes return behavior, split frontend assets, scoped file history controls, keyboard-owned drawer input, and per-file large diff loading. |
-| `0.0.45` | `0.7.0` | `14` | Minimum supported | Uses WebUI's legacy existing-branch worktree fallback when needed. |
-
-Newer Herdr builds may work when protocol stays compatible, but WebUI reports them as untested.
 
 ## Build
 
@@ -33,13 +43,13 @@ Binary output:
 target/release/herdr-webui
 ```
 
-Runtime version:
+Runtime version behavior:
 
 - Local builds report `snapshot-<shortsha>`.
-- GitHub Actions tag builds report the release tag.
-- `Cargo.toml` keeps the next static WebUI SemVer for package metadata; product version still comes from `build.rs` and is exposed by `herdr-webui --version` and `/api/versions`.
+- GitHub Actions tag builds report release tag, for example `v0.0.50`.
+- `Cargo.toml` keeps static package SemVer; runtime product version comes from `build.rs` and is exposed by `herdr-webui --version` and `/api/versions`.
 
-## Run Locally
+## Run
 
 Start Herdr separately:
 
@@ -47,7 +57,7 @@ Start Herdr separately:
 herdr server
 ```
 
-Run WebUI without login on loopback:
+Run WebUI on loopback without login:
 
 ```sh
 make run-web-local
@@ -64,6 +74,14 @@ Use a specific Herdr binary when WebUI launches backend sessions:
 ```sh
 HERDR_WEB_HERDR_BIN=/opt/homebrew/bin/herdr make run-web-local
 ```
+
+Named session:
+
+```sh
+target/release/herdr-webui --session work --bind 127.0.0.1:8787
+```
+
+When Herdr is offline, WebUI shows a session manager that can launch Herdr, retry connection, reset workspaces, or close the current session.
 
 ## CLI
 
@@ -84,241 +102,27 @@ herdr-webui uninstall-mac [--verbose]
 herdr-webui uninstall-linux
 ```
 
-Use `--verbose`, `-v`, or `HERDR_WEB_VERBOSE=1` with macOS service commands to print LaunchAgent diagnostics, including UID/EUID, launchctl domain, service target, plist path, and launchctl stderr.
-
-## Project Layout
-
-- `Cargo.toml`: Rust crate manifest for `herdr-webui`.
-- `src/main.rs`: WebUI server, auth, JSON proxy, WebSockets, terminal bridge, install helpers.
-- `src/assets.rs`: embedded frontend asset responses.
-- `src/compat.rs`: backend compatibility checks.
-- `src/file_browser.rs`: authenticated file-browser API for trees, file read/write, rename, and delete.
-- `src/protocol.rs`: Herdr direct terminal attach wire types and frame codec.
-- `src/service.rs`: OS service helpers.
-- `src/assets/`: embedded HTML/CSS/JS and frontend tests.
-- `src/assets/desktop/`: desktop UI bundle chunks and desktop-only CSS.
-- `src/assets/desktop/app_css/`: desktop shell CSS modules concatenated into `/assets/desktop/app.css`.
-- `src/assets/desktop/app_js/`: desktop shell JS modules concatenated into `/assets/desktop/app.js`.
-- `src/assets/desktop/file_browser.js` and `src/assets/desktop/file_browser.css`: desktop file explorer and editor shell.
-- `src/assets/desktop/git_ui/`: embedded Git UI modules for settings, syntax highlighting, log actions, drawer shell CSS, diff CSS, log CSS, and layout CSS.
-- `src/assets/icons/`: SVG icons served as static assets and referenced from CSS/markup.
-- `src/assets/mobile/`: mobile UI bundle chunks and mobile-only CSS.
-- `src/assets/shared/`: browser helpers shared by desktop and mobile bundles.
-- `src/assets/shared/file_tree.js` and `src/assets/shared/editor.js`: shared file-tree renderer and lightweight editor abstraction.
-- `src/assets/vendor/codemirror_entry.mjs`: CodeMirror bundle source entry; `src/assets/vendor/codemirror.bundle.js` is the checked-in generated browser bundle.
-- `.github/workflows/webui-ci.yml`: WebUI CI.
-- `.github/workflows/webui-release.yml`: WebUI release builds for `v0.0.*` tags.
-- `Makefile`: local build, run, install, update, uninstall commands.
-
-The Rust binary embeds frontend assets with `include_str!`, so release artifacts do not need external static files next to the binary.
-
-## Frontend Notes
-
-- Desktop and mobile UI are embedded vanilla HTML/CSS/JS assets. The main shell has no frontend build step; the optional CodeMirror editor bundle is generated from `src/assets/vendor/codemirror_entry.mjs` and checked in.
-- Desktop shell and Git UI assets are split into plain JS/CSS modules and concatenated by `src/assets.rs`; public URLs stay `/assets/desktop/app.js`, `/assets/desktop/app.css`, `/assets/desktop/git-ui.js`, and `/assets/desktop/git-ui.css`.
-- Prefer moving behavior out of inline handlers into delegated JS listeners and shared CSS classes when touching UI code.
-- SVG icons should live under `src/assets/icons/` and be referenced from CSS or markup, not embedded inline in JS templates.
-
-Optimization direction:
-
-- Prefer backend view-model endpoints over adding a frontend framework. The server is Rust, already talks to Herdr and Git, and can derive workspace, worktree, pane, agent, and Git metadata with less browser CPU pressure than JavaScript.
-- `/api/app-state` aggregates the desktop refresh payload so the browser does not fan out many requests and rebuild the same worktree/workspace metadata on every event burst.
-- Git endpoints precompute cheap metadata such as change counts, diff line counts, and editable hunk models. Frontend code should use those fields and keep JS fallback logic only for older responses or tests.
-- Avoid HTMX or WASM as first-choice optimization tools for this app. HTMX fits simpler server-rendered forms/lists but conflicts with the stateful terminal, editor, Git drawer, keyboard routing, and websocket lifecycle. WASM still spends browser CPU and adds bundle/bridge cost; when data already lives on the server, Rust backend computation is simpler.
-- If more offload is needed, add narrow Rust-rendered partials or JSON tree models for heavy sections such as Git file trees, diff shells, search results, and workspace rows. Keep terminal and editor lifecycle in explicit JavaScript controllers.
-
-## Authentication
-
-Server access settings are stored in `~/.config/herdr-webui/webui-settings.json` and can be edited from WebUI Settings:
-
-- Bind address, for example `127.0.0.1:8787` or `0.0.0.0:8787`.
-- Username.
-- Password.
-- Localhost auth bypass.
-- No-sleep Auto cooldown.
-
-Non-localhost binds require both username and password. WebUI rejects `0.0.0.0` or any other non-loopback bind until both credentials are configured.
-
-## Sessions
-
-By default, WebUI targets Herdr's default session sockets.
-
-Use a named session:
-
-```sh
-target/release/herdr-webui --session work --bind 127.0.0.1:8787
-```
-
-When Herdr is offline, WebUI shows a session manager. It can launch Herdr using `HERDR_WEB_HERDR_BIN` or `herdr` from `PATH`, retry connection, reset workspaces, or close the current Herdr session.
-
-If `--session NAME` is supplied, launched Herdr processes receive `HERDR_SESSION=NAME`.
-
-## WebUI Features
-
-The browser UI provides workspace navigation, top panel tabs, agent status, terminal attach, Git views, file browsing/editing, and local-only convenience settings stored in browser storage.
-
-Sidebar:
-
-- Use the vertical divider between the sidebar and terminal to hide or show the workspace/agents sidebar.
-- The collapsed state is stored in browser `localStorage`.
-- When collapsed, the sidebar shows compact agent counters for blocked, working, idle, and done agents.
-- The header exposes compact Search, Theme, No-sleep, Worktree, New workspace, Git, and Files controls.
-- The footer shows the Herdr brand, current session, shortcut help, and settings.
-- Theme colors are browser-local and expose shared accent variables used by shell controls and the embedded Git UI.
-- No-sleep supports Off, Auto, 1 hour, 2 hours, 4 hours, and Infinite from a compact dropdown.
-
-Panels:
-
-- The selected workspace or worktree is pinned at the top of the workspace list.
-- The selected row includes compact actions for worktree creation, opening, closing, and removal.
-- The current panel selector lives inside the selected workspace/worktree row and supports switching panels, creating a panel, renaming a panel, and closing a panel.
-- WebUI subscribes to `pane.closed`, `pane.exited`, and `tab.closed`, clears stale terminal selection immediately, and auto-closes exited panes before switching to the next available panel.
-
-Worktrees:
-
-- With Herdr `0.7.1` and newer, WebUI uses Herdr's native `worktree.create` support for existing local branches and deferred Git work.
-- With Herdr `0.7.0`, WebUI keeps a legacy fallback for creating a checkout from an existing branch when a checkout path is supplied.
-- WebUI subscribes to `worktree.created`, `worktree.opened`, and `worktree.removed` and refreshes workspace/agent state quickly after these events.
-- `worktree.removed` events from Herdr `0.7.1` may include a workspace snapshot. This is additive; WebUI refreshes from the backend state instead of relying only on the event payload.
-- Linked worktree cards use the branch name as the main title and show a custom worktree label as a small label chip when one exists.
-- Agent rows prefer the linked worktree custom label, so running agents are easier to scan across many branches.
-- Worktree groups avoid duplicate repo headers when the parent workspace card is already visible.
-- Removing a linked worktree is available from the worktree actions and from the keyboard prefix `Delete` shortcut.
-
-File browser:
-
-- Desktop workspaces and linked worktrees include a file explorer opened from the sidebar Files button. Git, Files, and terminal views are mutually exclusive foreground modes.
-- The desktop explorer uses the authenticated `/api/file-browser/*` routes to list files, preview text files, edit and save files with a hash guard, rename entries, and delete files or folders with confirmation.
-- Folders are lazy-loaded and default collapsed. Double-click a folder to enter it as the current root. The `...` row goes to the parent within the current browser root.
-- Enable `File browser parent folders` in Settings to allow the `...` row at the workspace/worktree root to move above that directory.
-- Single-clicking a file opens it by replacing the currently selected preview pane. Shift-click or right-click `Open in split` opens another split pane.
-- File preview panes include close buttons. Closing a dirty edited file asks for confirmation.
-- Right-click a file or folder for contextual actions: open, open in split, enter folder, rename, delete, and copy path.
-- File tree indentation is configurable with `Tree indentation` in Settings and is shared with Git file trees.
-- Mobile includes a Files tab for browsing and previewing files.
-
-Git UI:
-
-- Desktop workspaces and linked worktrees include an embedded Git drawer opened from the sidebar Git button.
-- Mobile includes a Git tab for the selected workspace or worktree with grouped status lists.
-- The desktop drawer is embedded in the WebUI binary; it uses the system `git` CLI through Rust API routes and does not require a separate Node, React, or Vite runtime.
-- When the drawer is hidden, WebUI blanks the drawer DOM and invalidates pending renders to reduce browser work.
-- The drawer shows worktree actions, grouped file status, staged/unstaged/untracked/conflicted files, commit form, log, stash list, file history, conflicts, blame, hunk editing, and side-by-side diffs.
-- File lists are shown as a collapsible folder tree with file-level line counts. Settings can switch the file list to filename-only mode with the full path in the tooltip.
-- Right-click a file for actions such as stash, discard, stage, or unstage. Section-level bulk actions stage or unstage grouped files with confirmation.
-- Commit drafts are stored in browser `localStorage` per workspace/worktree/ref.
-- Large diffs are protected by browser-local Git UI limits. In large change sets, the all-changes view shows GitHub-like file shells and each file body has a `Load diff` button that fetches that file on demand. Individual files over 500 diff lines also show a per-file `Load diff` placeholder. In selected-file view, the configured line limit can still hide very large renders until you explicitly load them. Set the line-limit setting to `0` to disable the selected-file line limit.
-- Diffs support per-file collapse, collapse/show all, visual change grouping, inline word highlights, context expansion, hunk stage/unstage/restore actions, and per-file blame from the Changes file view.
-- Syntax highlighting is embedded and modular for common project files including JSON, YAML, Python, Java, Rust, Go, JavaScript, TypeScript, CSS, Kotlin, shell, Makefiles, and HTML.
-- Side-by-side hunk editing lets you edit current hunk text, save back to the working tree with a hash guard, and refresh the diff.
-- The branch pill opens a branch switch modal. Remote branch selection creates a local branch from the remote base.
-- The log view supports click commit selection and shift-click two-commit comparison. Select one commit to compare it with current working-tree changes, reset soft/hard, or rebase commits after the selected commit onto `main`/`master`.
-- File history can show a read-only temporary commit diff or jump to the matching commit in the log.
-- When the desktop Git drawer is visible, it owns keyboard input so keystrokes are not sent to the background terminal. `Esc` returns from nested Git views to the all-changes list; on the all-changes list it asks before hiding Git UI; in the commit editor it asks before leaving and saves the draft locally.
-- The shortcuts window includes an editor for WebUI and Git prefix shortcuts. Recording a shortcut that duplicates another WebUI or Git shortcut is blocked and reported.
-- Desktop Git shortcuts use the same configured WebUI prefix (`Ctrl+B` by default) while the drawer is focused. Defaults avoid the global WebUI prefix keys: prefix then `1` changes list, `2`/`C` commit, `3`/`L` log, `4` stash, `R` refresh, `G` stage or unstage all, `Y` stage focused/selected file, `U` unstage focused/selected file, `D` discard focused/selected file, `Z` stash focused/selected file, `H` selected-file history, `M` selected-file blame, `E` edit selected file, `O` current compare, `V` branch switch, `I` focus file list, `0` show Git shortcut help. `Enter` or `Space` activate focused file and folder rows without prefix.
-- Stashes can be listed, applied, popped, dropped with confirmation, or created from all changes or a single file.
-- Mutating/destructive operations are guarded: discard, hard reset, rebase, stash drop, and section bulk changes require confirmation; backend paths and refs are validated before running Git.
-- Git API routes cover status, diff, compare, branches, log, blame, file read/write, file history, stashes, conflicts, stage, unstage, discard, stash, switch, reset, rebase, commit, apply-patch, and conflict actions.
-
-Panel and workspace close:
-
-- Closing the last panel in a workspace closes the workspace with Herdr's `workspace.close` API instead of calling `tab.close`, because Herdr rejects closing the last tab.
-- Closing a workspace or linked worktree uses `workspace.close` to close all panels in that workspace.
-- Closing a normal non-last panel still uses `tab.close`.
-- When Herdr reports `pane.exited`, WebUI closes that pane through Herdr's `pane.close` API and switches away from it after refresh.
-
-Panel tab activity:
-
-- Enable `Show panel last update` in Settings under `Agents and alerts`.
-- When enabled, top panel tabs show the last WebUI-observed update age next to the tab label.
-- Activity is tracked locally in the browser from tab, pane, and agent list changes.
-- Labels use coarse buckets to avoid constant recalculation: `<1m`, exact minute values such as `5m ago`, `>1h`, and `>1d`.
-- WebUI does not poll a timer to update these labels continuously. Labels refresh when WebUI renders after normal refreshes or Herdr events.
-- The timestamp is not persisted by Herdr and is not a backend audit timestamp. Reloading the page starts local tracking again.
-
-Agent sorting:
-
-- Configure in Settings under `Agents and alerts` with the `Agent sorting` dropdown.
-- `Default order` shows agents in Herdr's natural order.
-- `Attention (blocked first)` sorts blocked agents first, then idle agents, done agents, unknown agents, ignored working agents, and working agents.
-- `Attention (working first)` keeps blocked agents first, then working agents, ignored working agents, unknown agents, and done/idle agents.
-
-Stuck working agents:
-
-- Enable `Ignore stuck working agents` in Settings under `Agents and alerts`.
-- When enabled, working agents that appear stuck can be locally dismissed with a `Dismiss` button.
-- Dismissed agents show as `ignored` and do not trigger attention sounds.
-- Dismissals clear automatically when Herdr reports a status change via `pane.agent_status_changed` events, or after a configurable timeout (`Ignore stuck working for` minutes).
-- Dismissals are stored in browser `localStorage` and are local-only overrides, not backend truth mutations.
-
-Parent workspace close with linked worktrees:
-
-- Configure in Settings under `Agents and alerts` with the `Parent workspace close` dropdown.
-- `Close panels only` (default): closes all panes in the parent workspace via the Herdr API. Linked worktrees keep running. The last pane is blocked by Herdr's confirmation guard, so the parent workspace stays with an idle shell.
-- `Full close + re-open worktrees`: closes the parent workspace entirely. Herdr cascades the close to all linked worktrees, stopping their processes. WebUI then re-opens each linked worktree via the `worktree.open` API. Re-opened worktrees start with fresh shells; running processes are lost.
-
-Terminal paste:
-
-- Pasted text is sanitized before reaching the terminal. Newlines (`\r\n`, `\r`, `\n`) are converted to spaces, and trailing spaces are trimmed.
-- This prevents pasted multiline text from auto-submitting terminal input via implicit Enter.
-- Both desktop and mobile terminals capture paste events in the capture phase before xterm or native handlers process them.
-
-Terminal scroll:
-
-- Wheel scroll speed is configurable in Settings under `Terminal input` with the `Scroll speed` slider.
-- Small trackpad wheel deltas are accumulated before sending scroll commands, preventing tiny events from each scrolling a full line batch.
-
-Terminal font:
-
-- Configure in Settings under `Terminal input` with `Terminal font`.
-- Use any installed CSS font family, including Nerd Fonts commonly used by Neovim, for example `JetBrainsMono Nerd Font, monospace` or `MesloLGS NF, monospace`.
-- Browsers can only render fonts installed on the local machine.
-
-Search palette:
-
-- Open search from the top-right `⌕` button or with the keyboard prefix then `/`.
-- Search is local and in-memory over currently loaded workspaces, repos, worktrees, labels, panels, and agents.
-- Results include workspace (`ws`), worktree (`wt`), panel (`pn`), and agent (`ag`) entries.
-- Use `Enter` to open the selected result, arrow keys to move selection, and `Esc` to close.
-- Search result navigation always targets a concrete panel when one is available.
-
-Keyboard shortcuts:
-
-- Enable or disable from Settings under `Agents and alerts` with `Global keyboard shortcuts`.
-- Press configured prefix (`Ctrl+B` by default) to open the WebUI shortcut prefix overlay. The next shortcut key is handled by WebUI and not sent to the terminal; `Esc` cancels.
-- Change the prefix in Settings with `Shortcut prefix` → `Record`.
-- Prefix shortcuts work from the terminal and UI and can be remapped from the shortcuts window with collision detection. Defaults are: prefix then `/` search, `?` shortcuts help, `S` settings, `B` sidebar, `N` new workspace, `P` new panel, `W` worktrees, `T` create worktree, `X` close panel, `Shift+X` close workspace/worktree, `Delete`/`Backspace` remove linked worktree, `A` next agent by blocked/done/idle/working priority, `Shift+A` previous agent by reverse priority, `J/K` workspace navigation, `[/]` panel navigation, `F` terminal focus, and `,/.` focus navigation.
-- Optional direct search shortcuts can be configured in Settings. They are disabled by default to avoid conflicts with terminal applications.
+Use `--verbose`, `-v`, or `HERDR_WEB_VERBOSE=1` with macOS service commands to print LaunchAgent diagnostics.
 
 ## Install
 
-Install as a per-user macOS LaunchAgent:
+Install as per-user macOS LaunchAgent:
 
 ```sh
 make install-mac
 ```
 
-Run macOS LaunchAgent commands as your normal user, not with `sudo`. LaunchAgents load into the current user's `gui/$UID` launchctl domain; running with `sudo` targets root's domain and is rejected.
-
-Install as a per-user Linux systemd service:
+Install as per-user Linux systemd service:
 
 ```sh
 make install-linux
 ```
 
-Release binaries can install themselves too:
+Release binaries can install themselves:
 
 ```sh
 ./herdr-webui install-mac
 ./herdr-webui install-linux
-```
-
-For macOS service troubleshooting:
-
-```sh
-./herdr-webui install-mac --verbose
-./herdr-webui uninstall-mac --verbose
 ```
 
 Update installed binary and restart service:
@@ -335,27 +139,134 @@ make uninstall-mac
 make uninstall-linux
 ```
 
-## FAQ
+Run macOS LaunchAgent commands as normal user, not with `sudo`. LaunchAgents load into current user's `gui/$UID` domain; `sudo` targets root's domain and fails.
+
+## Authentication
+
+Server access settings live in `~/.config/herdr-webui/webui-settings.json` and can be edited from WebUI Settings:
+
+- Bind address, for example `127.0.0.1:8787` or `0.0.0.0:8787`.
+- Username.
+- Password.
+- Localhost auth bypass.
+- No-sleep Auto cooldown.
+
+Non-localhost binds require username and password. WebUI rejects `0.0.0.0` or other non-loopback binds until both credentials are configured.
+
+## UI Overview
+
+Desktop shell:
+
+- Sidebar workspace/worktree tree, agent list, top panel tabs, terminal foreground, Git foreground, and Files foreground.
+- Sidebar can collapse; collapsed view keeps compact agent counters.
+- Header exposes Search, Theme, No-sleep, Worktree, New workspace, Git, and Files controls.
+- Footer exposes current session, shortcut help, settings, and version info.
+- Settings are grouped and searchable. Local settings include theme colors, terminal font, scroll speed, shortcuts, notifications, file tree indentation, Git limits, and file browser parent traversal.
+
+Mobile shell:
+
+- Mobile tabs for Agents, Worktrees, Terminal, Git, Files, and Settings.
+- Terminal paste handling, file browsing, Git status, settings, and notifications are available without desktop layout.
+
+Terminals:
+
+- Terminal attach uses Herdr direct terminal attach protocol.
+- Pasted multiline text is sanitized before reaching terminal input: newlines become spaces and trailing spaces are trimmed.
+- Wheel scroll speed is configurable. Small trackpad deltas are accumulated to avoid overscrolling.
+- Terminal font can use any locally installed CSS font family, including Nerd Fonts.
+
+Search and shortcuts:
+
+- Search palette opens from header button or configured prefix then `/`.
+- Search is local over loaded workspaces, repos, worktrees, labels, panels, and agents.
+- Global prefix shortcuts are configurable. Default prefix is `Ctrl+B`.
+- Shortcut editor blocks duplicate WebUI/Git bindings and reports collisions.
+
+## File Browser
+
+- Desktop workspaces and linked worktrees open Files as foreground mode. Git, Files, and terminal modes are mutually exclusive.
+- Rust routes under `/api/file-browser/*` list trees, read files, save files, rename entries, and delete files/folders.
+- Backend canonicalizes paths and rejects traversal outside allowed roots unless parent-folder traversal is explicitly enabled.
+- Folders lazy-load and default collapsed. `...` row moves to parent.
+- Text files can be previewed or edited. Saves use hash guard to avoid overwriting changed files.
+- Shift-click or context-menu `Open in split` opens another split preview pane.
+- Shared `HerdrFileTree` powers file explorer, Git changed-file tree, and directory pickers.
+- Shared `HerdrEditor` lazily upgrades from fallback preview/textarea to CodeMirror.
+
+## Git UI
+
+- Desktop Git runs through Rust API routes and system `git`; no Node/React/Vite runtime is required.
+- Mobile Git shows grouped status for selected workspace/worktree.
+- Drawer covers status, staged/unstaged/untracked/conflicted files, commit, amend, log, stash, file history, blame, compare, conflict resolution, branch switch, reset, rebase, stage/unstage, discard, and hunk restore.
+- Large change sets render lightweight file shells first; individual file diffs load on demand.
+- Git endpoints precompute change counts, diff line counts, and editable hunk models.
+- File lists use compact folder trees with line counts; Settings can switch to filename-only mode.
+- Diffs support collapse, word highlights, context expansion, hunk actions, per-file blame, and side-by-side current/previous views.
+- Hunk editing uses CodeMirror `MergeView`: previous side read-only, current side editable, then saved back with hash guard.
+- Mutating/destructive operations require confirmation and validate paths/refs before running Git.
+- When Git is visible, it owns keyboard input so terminal does not receive Git keystrokes.
+
+## Worktrees And Panels
+
+- Herdr `0.7.1+` native worktree creation is used for existing local branches and deferred Git work.
+- Herdr `0.7.0` keeps legacy fallback for existing branch checkout when path is supplied.
+- WebUI subscribes to worktree and pane lifecycle events and refreshes quickly after changes.
+- Linked worktree cards use branch as title and optional custom label as chip.
+- Agent rows prefer worktree custom label for easier scan across branches.
+- Closing last panel closes workspace with Herdr `workspace.close`; non-last panels use `tab.close`.
+- When Herdr reports `pane.exited`, WebUI closes pane and switches away after refresh.
+
+## Architecture
+
+- Rust server embeds all static frontend assets with `include_str!`.
+- Desktop and mobile frontend are vanilla JS/CSS assets; no framework runtime is shipped.
+- Desktop shell and Git UI are split into source modules and concatenated by `src/assets.rs`.
+- CodeMirror bundle is generated from `src/assets/vendor/codemirror_entry.mjs` into checked-in `codemirror.bundle.js`.
+- `/api/app-state` aggregates desktop refresh data to reduce request fan-out and repeated browser-side derivation.
+- Git and file-browser backend routes do cheap view-model work in Rust so browser renders less and computes less.
+- Prefer backend JSON/view-model endpoints over HTMX/WASM/framework rewrites for heavy data paths. Terminal, editor, Git drawer, keyboard routing, and websocket lifecycle stay in explicit JavaScript controllers.
+
+## Project Layout
+
+```text
+src/main.rs                         WebUI server, auth, API proxy, websockets, service commands
+src/assets.rs                       Embedded asset routes and concatenation
+src/file_browser.rs                 File browser API and path safety
+src/git_ui.rs                       Git API routes, diff parsing, metadata models
+src/protocol.rs                     Terminal attach wire protocol
+src/service.rs                      macOS/Linux service helpers
+src/assets/app.html                 Static HTML shell
+src/assets/desktop/app_js/          Desktop shell JS modules
+src/assets/desktop/app_css/         Desktop shell CSS modules
+src/assets/desktop/git_ui/          Git UI JS/CSS modules
+src/assets/desktop/file_browser.*   Desktop file explorer
+src/assets/mobile/                  Mobile UI modules
+src/assets/shared/                  Shared frontend helpers, file tree, editor
+src/assets/vendor/                  CodeMirror source entry and generated bundle
+.github/workflows/                  CI and release workflows
+Makefile                            Local build/run/install/update targets
+```
+
+## Troubleshooting
 
 ### `herdr rejected terminal connection: client version 14 is newer than server version 13; please upgrade the herdr server`
 
-This means WebUI is using a newer terminal attach protocol than the Herdr server process handling the session.
+WebUI is using newer terminal attach protocol than running Herdr server process.
 
-Check two things:
+- Verify Herdr binary in `PATH`, or the binary set by `HERDR_WEB_HERDR_BIN`.
+- Stop old Herdr sessions. Updating Herdr binary does not upgrade already-running session processes.
+- Start Herdr again with updated binary.
 
-- Verify the `herdr` binary version in `PATH`, or the binary set through `HERDR_WEB_HERDR_BIN`.
-- Make sure old Herdr server sessions are not still running. Updating the `herdr` binary does not upgrade already-running session processes; close all running Herdr sessions, then start them again with the updated binary.
+### macOS blocks downloaded binary
 
-### macOS blocks the downloaded binary
-
-If macOS blocks the release binary because it was downloaded from the internet, remove the quarantine attribute and make it executable:
+Remove quarantine and make executable:
 
 ```sh
 sudo xattr -d com.apple.quarantine herdr-webui
 chmod +x herdr-webui
 ```
 
-Run those commands from the directory containing the downloaded `herdr-webui` binary, or pass the full path to the file.
+Run from directory containing downloaded binary, or pass full path.
 
 ## Release Policy
 
