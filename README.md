@@ -119,11 +119,13 @@ The Rust binary embeds frontend assets with `include_str!`, so release artifacts
 - Prefer moving behavior out of inline handlers into delegated JS listeners and shared CSS classes when touching UI code.
 - SVG icons should live under `src/assets/icons/` and be referenced from CSS or markup, not embedded inline in JS templates.
 
-TODO:
+Optimization direction:
 
-- Evaluate a small progressive templating layer, with `petite-vue` as the leading option, to reduce inline JavaScript and string-template complexity.
-- Keep the migration incremental if adopted: start with isolated islands such as settings, modals, sidebar workspace rows, and Git file lists.
-- Avoid adding a heavier framework unless it removes more code than it adds. `jQuery` is not expected to help much here because the main pain is templating/state, not DOM selection.
+- Prefer backend view-model endpoints over adding a frontend framework. The server is Rust, already talks to Herdr and Git, and can derive workspace, worktree, pane, agent, and Git metadata with less browser CPU pressure than JavaScript.
+- `/api/app-state` aggregates the desktop refresh payload so the browser does not fan out many requests and rebuild the same worktree/workspace metadata on every event burst.
+- Git endpoints precompute cheap metadata such as change counts, diff line counts, and editable hunk models. Frontend code should use those fields and keep JS fallback logic only for older responses or tests.
+- Avoid HTMX or WASM as first-choice optimization tools for this app. HTMX fits simpler server-rendered forms/lists but conflicts with the stateful terminal, editor, Git drawer, keyboard routing, and websocket lifecycle. WASM still spends browser CPU and adds bundle/bridge cost; when data already lives on the server, Rust backend computation is simpler.
+- If more offload is needed, add narrow Rust-rendered partials or JSON tree models for heavy sections such as Git file trees, diff shells, search results, and workspace rows. Keep terminal and editor lifecycle in explicit JavaScript controllers.
 
 ## Authentication
 
