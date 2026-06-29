@@ -914,7 +914,8 @@ async fn git_ui_discard(
         let tracked = git_ui_output(&repo, &["ls-files", "--error-unmatch", "--", path])
             .is_ok_and(|output| output.status.success());
         if tracked {
-            if let Err(err) = git_ui_text(&repo, &["restore", "--staged", "--worktree", "--", path]) {
+            if let Err(err) = git_ui_text(&repo, &["restore", "--staged", "--worktree", "--", path])
+            {
                 return git_json_error(StatusCode::BAD_GATEWAY, err);
             }
         } else {
