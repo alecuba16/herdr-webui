@@ -204,6 +204,16 @@
     return Number.isFinite(value) ? Math.max(0, value) : 2000;
   }
 
+  function largeChangeFileLimit() {
+    const value = Number(gitUiOptions().gitUiLargeChangeFileLimit);
+    return Number.isFinite(value) ? Math.max(0, value) : 25;
+  }
+
+  function largeSectionFileLimit() {
+    const value = Number(gitUiOptions().gitUiLargeSectionFileLimit);
+    return Number.isFinite(value) ? Math.max(0, value) : 250;
+  }
+
   function fileListMode() {
     return gitUiOptions().gitUiFileListMode === "flat" ? "flat" : "tree";
   }
@@ -214,6 +224,11 @@
 
   function diffFileLineCount(file) {
     return ((file && file.chunks) || []).reduce((sum, chunk) => sum + ((chunk.lines || []).length), 0);
+  }
+
+  function changeSetFileCount(status) {
+    const seen = new Set([...(status.conflicted || []), ...(status.staged || []), ...(status.unstaged || []), ...(status.untracked || [])].filter(Boolean));
+    return seen.size;
   }
 
   function hashText(value) {
@@ -237,6 +252,7 @@
 
   const Syntax = window.HerdrGitSyntax;
   const Actions = window.HerdrGitActions;
+  const FileTree = window.HerdrFileTree;
 
   function highlight(code, path) {
     return Syntax.highlight(code, path);
@@ -299,10 +315,20 @@
   function showPanel(show) {
     const panel = ensurePanel();
     panel.style.display = show ? "grid" : "none";
+    syncTerminalVisibility(show);
     if (!show) {
       state.renderVersion++;
       panel.innerHTML = "";
     }
+  }
+
+  function syncTerminalVisibility(show) {
+    const shell = document.getElementById("terminalShell");
+    if (!shell) return;
+    const fileBrowser = window.HerdrFileBrowser;
+    const fileOpen = !!(fileBrowser && fileBrowser.isOpen && fileBrowser.isOpen());
+    shell.style.display = show || fileOpen ? "none" : "";
+    if (window.syncShellModeButtons) window.syncShellModeButtons();
   }
 
   async function open(workspace) {
@@ -334,9 +360,11 @@
         selectedLogCommits: [],
         compareFilePaths: [],
         collapsedSections: {},
+        expandedLargeSections: {},
         collapsedFiles: {},
         loadedLargeDiffFiles: {},
         collapsedDirs: {},
+        expandedCompactDirs: {},
         pendingLogScrollHash: "",
         temporaryHistoryCompare: false,
         sideEditor: null,
@@ -384,6 +412,7 @@
     if (state.visible) render();
     try {
       view.status = await api(`/api/git-ui/status?cwd=${encodeURIComponent(view.cwd)}`);
+      if (state.visible) render();
       await loadDiff();
       view.loading = false;
       if (state.visible) render();
@@ -407,14 +436,33 @@
       return;
     }
     const scope = view.file ? (view.diffScope || "all") : "all";
+    const changeLimit = largeChangeFileLimit();
+    const changeCount = changeSetFileCount(view.status || {});
+    if (!view.file && changeLimit > 0 && changeCount > changeLimit && !view.loadLargeChangeSet) {
+      view.diff = { files: [], skipped_large_change_set: true, file_count: changeCount, file_limit: changeLimit };
+      if (state.visible) render();
+      return;
+    }
     const url = `/api/git-ui/diff?cwd=${encodeURIComponent(view.cwd)}&scope=${encodeURIComponent(scope)}&context=${context}` + (view.file ? `&file=${encodeURIComponent(view.file)}` : "");
     view.diff = await api(url);
     if (state.visible) render();
   }
 
   async function post(path, body) {
-    await api(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-    await refresh();
+    const view = active();
+    if (!view || view.mutating) return;
+    view.mutating = true;
+    if (state.visible) render();
+    try {
+      await api(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+      await refresh();
+    } catch (err) {
+      view.error = err.message || String(err);
+      if (state.visible) render();
+    } finally {
+      view.mutating = false;
+      if (state.visible) render();
+    }
   }
 
   function currentMode() {
@@ -436,7 +484,11 @@
     const list = files || [];
     const collapsed = !!((view.collapsedSections || {})[title]);
     const action = sectionBulkAction(title, kind, list);
-    return `<div class="git-ui-section"><div class="git-ui-section-head"><button class="git-ui-section-toggle" onclick="HerdrGitUi.toggleSection('${arg(title)}')"><span>${treeIcon(collapsed ? "chevron-right" : "chevron-down")}</span><strong>${esc(title)}</strong><em>${list.length}</em></button>${action}</div>${collapsed ? "" : `<div class="git-ui-list" role="tree" aria-label="${esc(title)} files">${list.length ? renderFileTree(list, kind, view) : `<div class="git-ui-empty-row">No ${esc(title.toLowerCase())} files</div>`}</div>`}</div>`;
+    const limit = largeSectionFileLimit();
+    const limited = limit > 0 && list.length > limit && !((view.expandedLargeSections || {})[title]);
+    const visibleList = limited ? list.slice(0, limit) : list;
+    const largeNote = limited ? `<div class="git-ui-large-file-diff"><button class="git-ui-large-file-load" type="button" onclick="HerdrGitUi.expandLargeSection('${arg(title)}')"><strong>Show all ${esc(title.toLowerCase())} files</strong></button><p>Showing first ${limit} of ${list.length} files to keep browser responsive.</p></div>` : "";
+    return `<div class="git-ui-section"><div class="git-ui-section-head"><button class="git-ui-section-toggle" onclick="HerdrGitUi.toggleSection('${arg(title)}')"><span>${treeIcon(collapsed ? "chevron-right" : "chevron-down")}</span><strong>${esc(title)}</strong><em>${list.length}</em></button>${action}</div>${collapsed ? "" : `<div class="git-ui-list" role="tree" aria-label="${esc(title)} files">${visibleList.length ? renderFileTree(visibleList, kind, view) : `<div class="git-ui-empty-row">No ${esc(title.toLowerCase())} files</div>`}${largeNote}</div>`}</div>`;
   }
 
   function sectionBulkAction(title, kind, files) {
@@ -452,6 +504,25 @@
   }
 
   function renderFileTree(files, kind, view) {
+    if (FileTree && FileTree.renderPathTree) {
+      return FileTree.renderPathTree(files, {
+        callback: "HerdrGitUi",
+        toggleMethod: "toggleDir",
+        selectMethod: "selectFile",
+        activateMethod: "activateTreeItem",
+        contextMethod: "fileMenu",
+        dataPrefix: "git",
+        rowClass: "git-ui-file",
+        dirClass: "git-ui-file git-ui-dir",
+        kind,
+        selectedPath: view.file,
+        selectedKind: view.diffKind,
+        collapsedDirs: view.collapsedDirs || {},
+        expandedCompactDirs: view.expandedCompactDirs || {},
+        expandCompactMethod: "expandCompactDir",
+        metaForPath: fileSummary,
+      });
+    }
     if (fileListMode() === "flat") return renderFlatFileList(files, kind, view);
     const root = { dirs: new Map(), files: [] };
     for (const file of files) {
@@ -533,13 +604,15 @@
   }
 
   function fileSummary(path, kind) {
-    const file = diffFile(path) || {};
+    const view = active() || {};
+    const statusSummaries = ((view.status || {}).summaries) || {};
+    const summary = kind === "S" ? (statusSummaries.staged || {})[path] : kind === "M" ? (statusSummaries.unstaged || {})[path] : null;
+    const file = diffFile(path) || summary || {};
     const status = file.status || (kind === "?" ? "added" : "modified");
     const icon = status === "added" ? "+" : status === "deleted" ? "−" : "✎";
     const cls = status === "added" ? "add" : status === "deleted" ? "del" : "edit";
-    const additions = Number(file.additions || 0);
-    const deletions = Number(file.deletions || 0);
-    const counts = `<span class="git-ui-file-counts"><b>+${additions}</b><i>-${deletions}</i></span>`;
+    const hasCounts = Number.isFinite(Number(file.additions)) && Number.isFinite(Number(file.deletions));
+    const counts = hasCounts ? `<span class="git-ui-file-counts"><b>+${Number(file.additions)}</b><i>-${Number(file.deletions)}</i></span>` : "";
     return `<span class="git-ui-file-summary"><span class="git-ui-file-icon ${cls}">${icon}</span>${counts}</span>`;
   }
 
@@ -587,6 +660,10 @@
     if (view.sideEditor && view.sideEditor.path === view.file) return `${renderFileToolbar("changes")}${renderSideEditor(view)}`;
     const files = (view.diff && view.diff.files) || [];
     const head = renderFileToolbar("changes");
+    if (view.diff && view.diff.skipped_large_change_set) {
+      const shells = largeChangeDiffShells(view);
+      return `${head}${shells.length ? shells.map(renderDiffFile).join("") : `<div class="git-ui-muted">No diff.</div>`}`;
+    }
     if (!files.length) return `${head}<div class="git-ui-muted">No diff.</div>`;
     const limit = largeDiffLineLimit();
     const count = diffLineCount(files);
@@ -594,6 +671,29 @@
       return `${head}<div class="git-ui-large-diff"><strong>Large diff hidden</strong><span>${count} lines exceed ${limit} line limit.</span><button class="git-ui-btn" onclick="HerdrGitUi.loadLargeDiff('${arg(view.file)}')">Load diff</button></div>`;
     }
     return `${head}${files.map(renderDiffFile).join("")}`;
+  }
+
+  function largeChangeDiffShells(view) {
+    const loaded = (view.diff && view.diff.files) || [];
+    const loadedByKey = new Map(loaded.map((file) => [`${file.diff_kind || ""}:${file.path}`, file]));
+    return largeChangeFileItems(view).map((item) => loadedByKey.get(`${item.kind}:${item.path}`) || largeChangeHiddenFile(view, item));
+  }
+
+  function largeChangeFileItems(view) {
+    const status = (view && view.status) || {};
+    const items = [];
+    const push = (paths, kind) => (paths || []).forEach((path) => items.push({ path, kind }));
+    push(status.conflicted, "U");
+    push(status.staged, "S");
+    push(status.unstaged, "M");
+    push(status.untracked, "?");
+    return items.filter((item, index) => items.findIndex((other) => other.path === item.path && other.kind === item.kind) === index);
+  }
+
+  function largeChangeHiddenFile(view, item) {
+    const statusSummaries = ((view.status || {}).summaries) || {};
+    const summary = item.kind === "S" ? (statusSummaries.staged || {})[item.path] : item.kind === "M" ? (statusSummaries.unstaged || {})[item.path] : null;
+    return Object.assign({ path: item.path, diff_kind: item.kind, hidden_large_change: true, chunks: [] }, summary || {});
   }
 
   function renderSideEditor(view) {
@@ -609,7 +709,7 @@
     const currentText = hunk.text || "";
     const readonly = hunk.newStart ? "" : " readonly";
     const meta = hunk.newStart ? `current lines ${hunk.newStart}-${hunk.newEnd}` : "no current lines";
-    return `<div class="git-ui-hunk-editor"><div class="git-ui-hunk-head"><span>${esc(hunk.header || "hunk")}</span><span class="git-ui-muted">${esc(meta)}</span></div><div class="git-ui-hunk-editor-grid"><section><div class="git-ui-editor-head"><strong>Previous</strong><span class="git-ui-muted">read-only</span></div><pre class="git-ui-editor-preview del"><code>${renderEditorLines(oldText, "old")}</code></pre></section><section><div class="git-ui-editor-head"><strong>Current</strong><span class="git-ui-muted">editable hunk</span></div><textarea class="git-ui-hunk-edit" data-hunk-index="${hunk.index}" spellcheck="false"${readonly}>${esc(currentText)}</textarea></section></div></div>`;
+    return `<div class="git-ui-hunk-editor"><div class="git-ui-hunk-head"><span>${esc(hunk.header || "hunk")}</span><span class="git-ui-muted">${esc(meta)}</span></div><div class="git-ui-hunk-editor-grid"><section><div class="git-ui-editor-head"><strong>Previous</strong><span class="git-ui-muted">read-only</span></div><pre class="git-ui-editor-preview del"><code>${renderEditorLines(oldText, "old")}</code></pre></section><section><div class="git-ui-editor-head"><strong>Current</strong><span class="git-ui-muted">editable hunk</span></div><div class="git-ui-hunk-edit-mount" data-hunk-index="${hunk.index}" data-readonly="${hunk.newStart ? "false" : "true"}"></div><textarea class="git-ui-hunk-edit git-ui-hunk-edit-hidden" data-hunk-index="${hunk.index}" spellcheck="false"${readonly}>${esc(currentText)}</textarea></section></div></div>`;
   }
 
   function renderEditorLines(content, side) {
@@ -645,14 +745,25 @@
     const collapsed = !!(view.collapsedFiles || {})[file.path];
     const large = diffFileLineCount(file) > LARGE_FILE_DIFF_LINE_LIMIT;
     const loadedLarge = !!(view.loadedLargeDiffFiles || {})[file.path];
-    const left = mode === "changes" ? "previous" : (view.compareBase || "base");
+    const left = mode === "changes" ? fileDiffLeftLabel(file) : (view.compareBase || "base");
     const right = mode === "readonly-compare" ? (view.compareTarget || "target") : "current";
     if (view.showBlame && (!large || loadedLarge)) ensureBlame(file.path);
-    const restore = mode === "changes" && (view.diffScope || "all") !== "staged"
+    const restore = mode === "changes" && file.diff_kind !== "S" && (view.diffScope || "all") !== "staged"
       ? `<button class="git-ui-btn danger" title="Restore complete file" onclick="HerdrGitUi.discardFile('${arg(file.path)}')">Restore file</button>`
       : "";
-    const body = collapsed ? "" : large && !loadedLarge ? renderLargeDiffPlaceholder(file) : (file.chunks || []).map((chunk, index) => renderChunk(file, chunk, index)).join("");
+    const body = collapsed ? "" : file.hidden_large_change ? renderLargeChangePlaceholder(file) : large && !loadedLarge ? renderLargeDiffPlaceholder(file) : (file.chunks || []).map((chunk, index) => renderChunk(file, chunk, index)).join("");
     return `<div class="git-ui-diff-file" data-git-path="${esc(file.path)}"><div class="git-ui-diff-file-head"><button class="git-ui-file-collapse" title="${collapsed ? "Show file" : "Collapse file"}" onclick="HerdrGitUi.toggleFile('${arg(file.path)}')">${collapsed ? "+" : "−"}</button><strong>${esc(file.path)}</strong><span class="git-ui-muted">${esc(left)} → ${esc(right)}</span><span class="git-ui-diff-file-actions"><span class="git-ui-badge add">+${file.additions || 0}</span> <span class="git-ui-badge del">-${file.deletions || 0}</span>${restore}</span></div>${body}</div>`;
+  }
+
+  function fileDiffLeftLabel(file) {
+    if (file.diff_kind === "S") return "index";
+    if (file.diff_kind === "?") return "new file";
+    return "previous";
+  }
+
+  function renderLargeChangePlaceholder(file) {
+    const id = `hidden-change-diff-reason-${hashText(`${file.diff_kind || ""}:${file.path}`)}`;
+    return `<div class="git-ui-large-file-diff"><button aria-describedby="${id}" class="git-ui-large-file-load" type="button" onclick="HerdrGitUi.loadLargeDiff('${arg(file.path)}','${arg(file.diff_kind || "")}')"><strong>Load diff</strong></button><p id="${id}">Diff hidden to keep large change sets responsive.</p></div>`;
   }
 
   function renderLargeDiffPlaceholder(file) {
@@ -946,7 +1057,9 @@
     saveSideEditorFromDom();
     const version = ++state.renderVersion;
     const panel = ensurePanel();
+    panel.classList.toggle("mutating", !!((active() || {}).mutating));
     panel.innerHTML = renderSide() + renderMain() + renderContextMenu() + renderBranchModal();
+    mountSideEditors();
     const view = active() || {};
     if (view.tab === "log") renderLog(version).catch((e) => { view.error = e.message; render(); });
     if (view.tab === "stash") renderStash(version).catch((e) => { view.error = e.message; render(); });
@@ -957,6 +1070,23 @@
     if (!state.visible || version !== state.renderVersion) return;
     const content = document.querySelector(".git-ui-content");
     if (content) content.innerHTML = html;
+  }
+
+  function mountSideEditors() {
+    const view = active() || {};
+    if (!window.HerdrEditor || !view.sideEditor) return;
+    document.querySelectorAll(".git-ui-hunk-edit-mount[data-hunk-index]").forEach((mount) => {
+      const index = Number(mount.dataset.hunkIndex || 0);
+      const textarea = document.querySelector(`.git-ui-hunk-edit-hidden[data-hunk-index="${index}"]`);
+      if (!textarea) return;
+      window.HerdrEditor.create({
+        parent: mount,
+        path: view.file || view.sideEditor.path || "",
+        content: textarea.value,
+        readonly: mount.dataset.readonly === "true",
+        onChange(value) { textarea.value = value; },
+      });
+    });
   }
 
   function draftKey(view) {
@@ -1072,6 +1202,7 @@
       const path = decodeURIComponent(file);
       view.file = path;
       view.diffKind = kind || "";
+      view.expandedCompactDirs = {};
       if (view.sideEditor && view.sideEditor.path !== path) view.sideEditor = null;
       if (currentMode() !== "changes") {
         loadDiff().then(() => requestAnimationFrame(() => scrollToDiffFile(view.file))).catch((e) => { view.error = e.message; render(); });
@@ -1080,10 +1211,33 @@
       view.diffScope = kind === "S" ? "staged" : kind === "M" || kind === "?" ? "working" : "all";
       loadDiff().then(() => requestAnimationFrame(() => scrollToDiffFile(view.file))).catch((e) => { view.error = e.message; render(); });
     },
-    loadLargeDiff(file) {
+    loadLargeDiff(file, kind) {
       const view = active();
       if (!view) return;
       const path = decodeURIComponent(file);
+      if (path === "__all__") {
+        view.loadLargeChangeSet = true;
+        view.loading = true;
+        render();
+        loadDiff()
+          .catch((e) => { view.error = e.message; })
+          .finally(() => { view.loading = false; render(); });
+        return;
+      }
+      if (view.diff && view.diff.skipped_large_change_set) {
+        const diffKind = kind ? decodeURIComponent(kind) : "";
+        const scope = diffKind === "S" ? "staged" : diffKind === "M" || diffKind === "?" ? "working" : "all";
+        const context = Math.max(0, Math.min(200, Number(view.diffContext || 3)));
+        api(`/api/git-ui/diff?cwd=${encodeURIComponent(view.cwd)}&scope=${encodeURIComponent(scope)}&context=${context}&file=${encodeURIComponent(path)}`)
+          .then((data) => {
+            const nextFiles = ((data && data.files) || []).map((diffFile) => Object.assign({}, diffFile, { diff_kind: diffKind }));
+            const existing = (view.diff.files || []).filter((diffFile) => !(diffFile.path === path && (!diffKind || diffFile.diff_kind === diffKind)));
+            view.diff.files = existing.concat(nextFiles);
+          })
+          .catch((e) => { view.error = e.message || String(e); })
+          .finally(() => render());
+        return;
+      }
       view.loadedLargeDiffFiles = Object.assign({}, view.loadedLargeDiffFiles || {}, { [path]: true });
       render();
     },
@@ -1211,12 +1365,32 @@
       view.collapsedDirs[path] = !view.collapsedDirs[path];
       render();
     },
+    expandCompactDir(path) {
+      const view = active();
+      if (!view) return;
+      path = decodeURIComponent(path);
+      view.expandedCompactDirs = view.expandedCompactDirs || {};
+      let current = "";
+      for (const part of path.split("/").filter(Boolean)) {
+        current = current ? `${current}/${part}` : part;
+        view.expandedCompactDirs[current] = true;
+      }
+      render();
+    },
     toggleSection(title) {
       const view = active();
       if (!view) return;
       title = decodeURIComponent(title);
       view.collapsedSections = view.collapsedSections || {};
       view.collapsedSections[title] = !view.collapsedSections[title];
+      render();
+    },
+    expandLargeSection(title) {
+      const view = active();
+      if (!view) return;
+      title = decodeURIComponent(title);
+      view.expandedLargeSections = view.expandedLargeSections || {};
+      view.expandedLargeSections[title] = true;
       render();
     },
     collapseAllFiles() {

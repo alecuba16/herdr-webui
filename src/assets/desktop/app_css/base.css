@@ -266,25 +266,78 @@ body.light {
   gap: 4px;
   justify-content: flex-end;
   min-width: 0;
+  position: relative;
 }
 .panel-field .mini {
   margin-left: 0;
 }
-.panel-selector {
+.panel-label {
+  align-items: center;
   background: var(--panel);
   border: 1px solid var(--border2);
   border-radius: 8px;
   color: var(--fg);
-  font: inherit;
+  cursor: pointer;
+  display: inline-flex;
   font-size: 11px;
+  gap: 5px;
   max-width: 118px;
   min-width: 0;
+  overflow: hidden;
   padding: 4px 6px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.panel-selector:hover,
-.panel-selector:focus {
+.panel-label span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.panel-label:hover {
   background: var(--control-hover);
   border-color: var(--accent-border);
+}
+.panel-rename-input {
+  cursor: text;
+  max-width: none;
+  width: 100%;
+}
+.panel-caret {
+  color: var(--muted);
+  flex: 0 0 auto;
+  font-size: 9px;
+}
+.panel-add {
+  flex: 0 0 auto;
+}
+.panel-menu {
+  background: var(--panel);
+  border: 1px solid var(--border2);
+  border-radius: 10px;
+  box-shadow: 0 12px 30px #0007;
+  display: grid;
+  gap: 2px;
+  left: 0;
+  min-width: min(220px, 70vw);
+  padding: 5px;
+  position: absolute;
+  top: calc(100% + 4px);
+  z-index: 70;
+}
+.panel-menu-item {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--fg);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  padding: 6px 8px;
+  text-align: left;
+}
+.panel-menu-item:hover,
+.panel-menu-item.active {
+  background: var(--control-hover);
+  border-color: var(--border2);
 }
 .repo-header {
   display: flex;
@@ -337,7 +390,7 @@ body.light {
 .space-meta-line .panel-field {
   flex: 1;
 }
-.space-meta-line .panel-selector {
+.space-meta-line .panel-label {
   max-width: none;
   width: 100%;
 }
@@ -403,6 +456,12 @@ body.light {
 }
 .app-icon-git {
   mask-image: url("/assets/icons/git.svg");
+}
+.app-icon-file {
+  mask-image: url("/assets/icons/file.svg");
+}
+.app-icon-terminal {
+  mask-image: url("/assets/icons/terminal.svg");
 }
 .git-workspace-toggle .app-icon {
   height: 17px;

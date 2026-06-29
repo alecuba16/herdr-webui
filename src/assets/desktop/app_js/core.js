@@ -19,15 +19,11 @@ let state = {
   fitDefault: false,
   editingTab: null,
   editingTabValue: "",
+  panelMenuOpen: false,
   editingWorkspace: null,
   editingWorkspaceValue: "",
   workspaceCreateSuggestedLabel: "",
-  workspaceCreatePathSuggestTimer: null,
   createWorktreeOriginalSource: "",
-  createWorktreePathSuggestTimer: null,
-  createWorktreePathSuggestions: [],
-  createWorktreeSuggestionIndex: -1,
-  createWorktreeSuggestionLocked: false,
   createWorktreeSource: null,
   createWorktreeAutodiscoverTimer: null,
   createWorktreeDefaultPath: "",
@@ -130,10 +126,13 @@ const {
   checkedOutWorktreeForBranch: checkedOutWorktreeForBranchHelper,
   validateWorktreeCreate: validateWorktreeCreateHelper,
   buildWorktreeCreateBody,
+  createFaviconNotifier,
   terminalPasteInput,
   tabActivityLabel,
   terminalWheelScrollBatch,
 } = globalThis.HerdrAppHelpers;
+const browserFavicon = createFaviconNotifier(document);
+let browserFaviconError = false;
 const workspaces = el("workspaces"),
   agents = el("agents"),
   tabs = el("tabs"),
@@ -198,6 +197,34 @@ function sidebarToggleHtml() {
 function appIcon(name) {
   const iconName = String(name || "").replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`);
   return `<span class="app-icon app-icon-${iconName}" aria-hidden="true"></span>`;
+}
+function shellMode() {
+  if (window.HerdrGitUi && window.HerdrGitUi.isVisible && window.HerdrGitUi.isVisible()) return "git";
+  if (window.HerdrFileBrowser && window.HerdrFileBrowser.isOpen && window.HerdrFileBrowser.isOpen()) return "files";
+  return "terminal";
+}
+function syncShellModeButtons() {
+  const mode = shellMode();
+  for (const [id, value] of [
+    ["terminalWorkspaceToggle", "terminal"],
+    ["gitWorkspaceToggle", "git"],
+    ["fileWorkspaceToggle", "files"],
+  ]) {
+    const button = el(id);
+    if (!button) continue;
+    const active = mode === value;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+  }
+}
+function showTerminalShellMode() {
+  if (window.HerdrGitUi) window.HerdrGitUi.hide();
+  if (window.HerdrFileBrowser) window.HerdrFileBrowser.hide();
+  const shell = el("terminalShell");
+  if (shell) shell.style.display = "";
+  syncShellModeButtons();
+  if (state.terminalId && !term && typeof Terminal !== "undefined") connectTerminal();
+  fitTerminalShell();
 }
 const headTitle = document.querySelector(".head strong");
 if (headTitle) {
@@ -304,9 +331,8 @@ function worktreeCreateModalHtml() {
         <div class="worktree-open-controls">
           <label>
             <span>Source repo path</span>
-            <input id="worktreeCreateSource" list="worktreeCreatePathOptions" placeholder="parent workspace path" autocomplete="off">
+            <input id="worktreeCreateSource" placeholder="parent workspace path" autocomplete="off">
           </label>
-          <datalist id="worktreeCreatePathOptions"></datalist>
           <div class="worktree-loading" id="worktreeCreateLoading">Discovering worktrees...</div>
         </div>
         <div class="worktree-new">
@@ -347,9 +373,8 @@ function worktreeOpenModalHtml() {
         <div class="worktree-open-controls">
           <label>
             <span>Repo or worktrees folder</span>
-            <input id="worktreeDiscoverPath" list="worktreePathOptions" placeholder="~/Documents/code/repo-or-worktrees">
+            <input id="worktreeDiscoverPath" placeholder="~/Documents/code/repo-or-worktrees">
           </label>
-          <datalist id="worktreePathOptions"></datalist>
           <div class="worktree-loading" id="worktreeLoading">Discovering worktrees...</div>
         </div>
         <div class="worktree-open-list" id="worktreeOpenList"></div>
@@ -392,9 +417,8 @@ function workspaceCreateModalHtml() {
         <form class="worktree-form" id="workspaceCreateForm">
           <label>
             <span>Folder</span>
-            <input id="workspaceCreatePath" list="workspacePathOptions" placeholder="~/Documents/code/project" required>
+            <input id="workspaceCreatePath" placeholder="~/Documents/code/project" required>
           </label>
-          <datalist id="workspacePathOptions"></datalist>
           <label>
             <span>Workspace name</span>
             <input id="workspaceCreateLabel" placeholder="project name" required>
@@ -843,6 +867,7 @@ const defaultOptions = {
   overflow: true,
   fitToBrowser: false,
   sound: true,
+  browserNotifications: false,
   soundScope: "current",
   shiftEnterNewline: true,
   closeShortcut: "off",
@@ -858,6 +883,8 @@ const defaultOptions = {
   workingDismissMinutes: 30,
   workspaceSort: "default",
   scrollLines: 3,
+  treeIndentPx: 14,
+  fileBrowserAllowParent: false,
   showTabActivity: false,
   worktreeAutoDiscoverSeconds: 3,
   generateWorktreeNames: false,
@@ -917,9 +944,12 @@ function normalizeOptions(value) {
   );
   if (!["all", "current"].includes(next.soundScope))
     next.soundScope = defaultOptions.soundScope;
+  next.browserNotifications = next.browserNotifications === true;
   if (!["default", "drag", "state"].includes(next.workspaceSort))
     next.workspaceSort = defaultOptions.workspaceSort;
   next.scrollLines = Math.max(1, Math.min(20, Number(next.scrollLines) || 3));
+  next.treeIndentPx = Math.max(0, Math.min(40, Number(next.treeIndentPx) || 14));
+  next.fileBrowserAllowParent = next.fileBrowserAllowParent === true;
   next.showTabActivity = next.showTabActivity === true;
   next.worktreeAutoDiscoverSeconds = Math.max(
     0,
@@ -1144,12 +1174,27 @@ async function setNoSleepMode(mode) {
 }
 saveOptions();
 const soundSetting = el("optSound");
-if (soundSetting && !el("optAgentSortMode"))
+if (soundSetting && !el("optBrowserNotifications"))
   soundSetting
     .closest("label")
     .insertAdjacentHTML(
       "afterend",
-      '<label class="option"><input type="checkbox" id="optGlobalShortcutsEnabled"><span>Global keyboard shortcuts<small>Enable prefix WebUI navigation shortcuts listed under ?.</small></span></label><label class="option"><span>Shortcut prefix<small>Click Record, press desired key combination, then use it before WebUI shortcuts.</small></span><span class="shortcut-capture"><input id="optGlobalShortcutPrefix" readonly><button type="button" class="tab add" id="optGlobalShortcutPrefixCapture">Record</button></span></label><label class="option"><span>Search shortcut<small>Optional direct shortcut. Leave disabled if it conflicts with terminal apps.</small></span><span class="shortcut-capture"><input id="optSearchShortcut" readonly><button type="button" class="tab add" id="optSearchShortcutCapture">Record</button><button type="button" class="tab add" id="optSearchShortcutClear">Clear</button></span></label><label class="option"><span>Terminal font<small>Use installed monospaced font family, including Nerd Fonts used by Neovim.</small></span><input id="optTerminalFontFamily" list="terminalFontPresets" placeholder="&quot;MesloLGS Nerd Font Mono&quot;, monospace"><datalist id="terminalFontPresets"><option value="&quot;MesloLGS Nerd Font Mono&quot;, &quot;MesloLGS NF&quot;, monospace"><option value="&quot;MesloLGS Nerd Font&quot;, &quot;MesloLGS NF&quot;, monospace"><option value="&quot;JetBrainsMono Nerd Font Mono&quot;, &quot;JetBrainsMono Nerd Font&quot;, monospace"><option value="&quot;Hack Nerd Font Mono&quot;, &quot;Hack Nerd Font&quot;, monospace"><option value="&quot;FiraCode Nerd Font Mono&quot;, &quot;FiraCode Nerd Font&quot;, monospace"><option value="&quot;CaskaydiaCove Nerd Font Mono&quot;, &quot;CaskaydiaCove Nerd Font&quot;, monospace"><option value="ui-monospace,SFMono-Regular,Menlo,monospace"></datalist></label><label class="option"><span>Close panel shortcut<small>Stored in browser storage and available after reopening the tab.</small></span><select class="settings-select" id="optCloseShortcut"><option value="off">Disabled</option><option value="altw">Option+W</option><option value="shiftspacew">Shift+Space then W</option></select></label><label class="option"><span>Agent sorting<small>Sort agents by attention priority, or show them in default order.</small></span><select class="settings-select" id="optAgentSortMode"><option value="off">Default order</option><option value="attention">Attention (blocked first)</option><option value="attention_inverted">Attention (working first)</option></select></label><label class="option"><span>Parent workspace close<small>Close panels only (keeps linked worktrees running) or full close with re-open (stops processes, re-opens worktrees with fresh shells).</small></span><select class="settings-select" id="optParentCloseMode"><option value="panels">Close panels only</option><option value="close">Full close + re-open worktrees</option></select></label><label class="option"><input type="checkbox" id="optStuckWorkingEnabled"><span>Ignore stuck working agents<small>Dismiss working agents that appear stuck. Clears automatically on status changes and terminal output.</small></span></label><label class="option"><span>Ignore stuck working for<small>Minutes to keep a local dismissed-working override before showing working again.</small></span><input id="optWorkingDismissMinutes" type="number" min="1" max="1440" step="1"></label><label class="option"><input type="checkbox" id="optShowTabActivity"><span>Show panel last update<small>Display local last-change age on top panel tabs. Updates on refreshes, events, and selected terminal output; no timer polling.</small></span></label><label class="option"><span>Workspace sorting<small>Default tree order, shared drag-and-drop order, or attention state priority.</small></span><select class="settings-select" id="optWorkspaceSort"><option value="default">Default</option><option value="drag">Drag&drop</option><option value="state">State</option></select></label><label class="option"><span>Notification scope<small>Choose whether sounds ring in every open tab or only the tab viewing the agent panel.</small></span><select class="settings-select" id="optSoundScope"><option value="current">Current agent tab</option><option value="all">All tabs</option></select></label><label class="option"><input type="checkbox" id="optGenerateWorktreeNames"><span>Generate worktree branch names<small>Allow blank Branch name in Worktrees modal. Herdr generates worktree/&lt;name&gt;.</small></span></label><label class="option"><span>Default worktree directory<small>Relative paths resolve from repo root. Example: ../worktrees.</small></span><input id="optWorktreeDefaultDirectory" placeholder="../worktrees"></label><label class="option"><span>Scroll speed<small><span id="scrollLinesValue">3</span> terminal lines per wheel step.</small></span><input type="range" id="optScrollLines" min="1" max="20" step="1"></label><label class="option"><span>Worktree autodiscover<small>Seconds to wait after path input stops. Set 0 for immediate.</small></span><input type="number" id="optWorktreeAutoDiscover" min="0" max="30" step="0.5"></label>',
+      '<label class="option"><input type="checkbox" id="optBrowserNotifications"><span>Browser notifications<small>Ask this browser to show system notifications when an agent becomes blocked or done.</small></span></label>',
+    );
+if (soundSetting && !el("optAgentSortMode"))
+  (el("optBrowserNotifications") || soundSetting)
+    .closest("label")
+    .insertAdjacentHTML(
+      "afterend",
+      '<label class="option"><input type="checkbox" id="optGlobalShortcutsEnabled"><span>Global keyboard shortcuts<small>Enable prefix WebUI navigation shortcuts listed under ?.</small></span></label><label class="option"><span>Shortcut prefix<small>Click Record, press desired key combination, then use it before WebUI shortcuts.</small></span><span class="shortcut-capture"><input id="optGlobalShortcutPrefix" readonly><button type="button" class="tab add" id="optGlobalShortcutPrefixCapture">Record</button></span></label><label class="option"><span>Search shortcut<small>Optional direct shortcut. Leave disabled if it conflicts with terminal apps.</small></span><span class="shortcut-capture"><input id="optSearchShortcut" readonly><button type="button" class="tab add" id="optSearchShortcutCapture">Record</button><button type="button" class="tab add" id="optSearchShortcutClear">Clear</button></span></label><label class="option"><span>Terminal font<small>Use installed monospaced font family, including Nerd Fonts used by Neovim.</small></span><input id="optTerminalFontFamily" list="terminalFontPresets" placeholder="&quot;MesloLGS Nerd Font Mono&quot;, monospace"><datalist id="terminalFontPresets"><option value="&quot;MesloLGS Nerd Font Mono&quot;, &quot;MesloLGS NF&quot;, monospace"><option value="&quot;MesloLGS Nerd Font&quot;, &quot;MesloLGS NF&quot;, monospace"><option value="&quot;JetBrainsMono Nerd Font Mono&quot;, &quot;JetBrainsMono Nerd Font&quot;, monospace"><option value="&quot;Hack Nerd Font Mono&quot;, &quot;Hack Nerd Font&quot;, monospace"><option value="&quot;FiraCode Nerd Font Mono&quot;, &quot;FiraCode Nerd Font&quot;, monospace"><option value="&quot;CaskaydiaCove Nerd Font Mono&quot;, &quot;CaskaydiaCove Nerd Font&quot;, monospace"><option value="ui-monospace,SFMono-Regular,Menlo,monospace"></datalist></label><label class="option"><span>Close panel shortcut<small>Stored in browser storage and available after reopening the tab.</small></span><select class="settings-select" id="optCloseShortcut"><option value="off">Disabled</option><option value="altw">Option+W</option><option value="shiftspacew">Shift+Space then W</option></select></label><label class="option"><span>Agent sorting<small>Sort agents by attention priority, or show them in default order.</small></span><select class="settings-select" id="optAgentSortMode"><option value="off">Default order</option><option value="attention">Attention (blocked first)</option><option value="attention_inverted">Attention (working first)</option></select></label><label class="option"><span>Parent workspace close<small>Close panels only (keeps linked worktrees running) or full close with re-open (stops processes, re-opens worktrees with fresh shells).</small></span><select class="settings-select" id="optParentCloseMode"><option value="panels">Close panels only</option><option value="close">Full close + re-open worktrees</option></select></label><label class="option"><input type="checkbox" id="optStuckWorkingEnabled"><span>Ignore stuck working agents<small>Dismiss working agents that appear stuck. Clears automatically on status changes and terminal output.</small></span></label><label class="option"><span>Ignore stuck working for<small>Minutes to keep a local dismissed-working override before showing working again.</small></span><input id="optWorkingDismissMinutes" type="number" min="1" max="1440" step="1"></label><label class="option"><input type="checkbox" id="optShowTabActivity"><span>Show panel last update<small>Display local last-change age on top panel tabs. Updates on refreshes, events, and selected terminal output; no timer polling.</small></span></label><label class="option"><span>Workspace sorting<small>Default tree order, shared drag-and-drop order, or attention state priority.</small></span><select class="settings-select" id="optWorkspaceSort"><option value="default">Default</option><option value="drag">Drag&drop</option><option value="state">State</option></select></label><label class="option"><span>Notification scope<small>Choose whether alerts fire in every open tab or only the tab viewing the agent panel.</small></span><select class="settings-select" id="optSoundScope"><option value="current">Current agent tab</option><option value="all">All tabs</option></select></label><label class="option"><input type="checkbox" id="optGenerateWorktreeNames"><span>Generate worktree branch names<small>Allow blank Branch name in Worktrees modal. Herdr generates worktree/&lt;name&gt;.</small></span></label><label class="option"><span>Default worktree directory<small>Relative paths resolve from repo root. Example: ../worktrees.</small></span><input id="optWorktreeDefaultDirectory" placeholder="../worktrees"></label><label class="option"><span>Scroll speed<small><span id="scrollLinesValue">3</span> terminal lines per wheel step.</small></span><input type="range" id="optScrollLines" min="1" max="20" step="1"></label><label class="option"><span>Worktree autodiscover<small>Seconds to wait after path input stops. Set 0 for immediate.</small></span><input type="number" id="optWorktreeAutoDiscover" min="0" max="30" step="0.5"></label>',
+    );
+const showTabActivitySetting = el("optShowTabActivity");
+if (showTabActivitySetting && !el("optTreeIndentPx"))
+  showTabActivitySetting
+    .closest("label")
+    .insertAdjacentHTML(
+      "afterend",
+      '<label class="option"><span>Tree indentation<small>Pixels added per folder level in file trees.</small></span><input id="optTreeIndentPx" type="number" min="0" max="40" step="1"></label><label class="option"><input type="checkbox" id="optFileBrowserAllowParent"><span>File browser parent folders<small>Allow Files to go above the workspace/worktree directory with the ... row.</small></span></label>',
     );
 groupSettingsSections();
 function groupSettingsSections() {
@@ -1158,7 +1203,7 @@ function groupSettingsSections() {
     {
       title: "Appearance",
       desc: "Theme mode and color palette.",
-      ids: ["optTheme"],
+      ids: ["optTheme", "optTreeIndentPx", "optFileBrowserAllowParent"],
       blocks: ["themeColorsApply"],
     },
     {
@@ -1177,6 +1222,7 @@ function groupSettingsSections() {
       desc: "Attention sorting, shortcuts, and notification sound scope.",
       ids: [
         "optSound",
+        "optBrowserNotifications",
         "optSoundScope",
         "optGlobalShortcutsEnabled",
         "optGlobalShortcutPrefix",
@@ -1242,6 +1288,7 @@ function applyOptions() {
     fitOpt = el("optFit"),
     shiftEnterNewline = el("optShiftEnterNewline"),
     sound = el("optSound"),
+    browserNotifications = el("optBrowserNotifications"),
     globalShortcutsEnabled = el("optGlobalShortcutsEnabled"),
     globalShortcutPrefix = el("optGlobalShortcutPrefix"),
     searchShortcut = el("optSearchShortcut"),
@@ -1255,6 +1302,8 @@ function applyOptions() {
     workspaceSort = el("optWorkspaceSort"),
     soundScope = el("optSoundScope"),
     scrollLines = el("optScrollLines"),
+    treeIndentPx = el("optTreeIndentPx"),
+    fileBrowserAllowParent = el("optFileBrowserAllowParent"),
     scrollLinesValue = el("scrollLinesValue"),
     showTabActivity = el("optShowTabActivity"),
     worktreeAutoDiscover = el("optWorktreeAutoDiscover"),
@@ -1266,6 +1315,10 @@ function applyOptions() {
   if (shiftEnterNewline)
     shiftEnterNewline.checked = options.shiftEnterNewline !== false;
   if (sound) sound.checked = !!options.sound;
+  if (browserNotifications) {
+    browserNotifications.checked = !!options.browserNotifications;
+    browserNotifications.disabled = !("Notification" in window);
+  }
   if (globalShortcutsEnabled)
     globalShortcutsEnabled.checked = options.globalShortcutsEnabled !== false;
   if (globalShortcutPrefix)
@@ -1290,6 +1343,10 @@ function applyOptions() {
   if (workspaceSort) workspaceSort.value = options.workspaceSort || "default";
   if (soundScope) soundScope.value = options.soundScope || "current";
   if (scrollLines) scrollLines.value = String(options.scrollLines || 3);
+  if (treeIndentPx) treeIndentPx.value = String(options.treeIndentPx ?? 14);
+  if (fileBrowserAllowParent)
+    fileBrowserAllowParent.checked = !!options.fileBrowserAllowParent;
+  document.body.style.setProperty("--herdr-tree-indent", `${options.treeIndentPx ?? 14}px`);
   if (scrollLinesValue)
     scrollLinesValue.textContent = String(options.scrollLines || 3);
   if (showTabActivity) showTabActivity.checked = !!options.showTabActivity;
@@ -1322,7 +1379,7 @@ function applyOptions() {
     if (fit) {
       state.termCols = fit.cols;
       state.termRows = fit.rows;
-      connectTerminal();
+      if (typeof Terminal !== "undefined") connectTerminal();
     }
   }
 }
@@ -1523,6 +1580,17 @@ function setupSessionChrome() {
     newWsButton.insertAdjacentElement("afterend", b);
     b.onclick = () => openWorktreeOpenModal();
   }
+  if (!el("terminalWorkspaceToggle")) {
+    const openWorktrees = el("openWorktrees");
+    const t = document.createElement("button");
+    t.className = "btn worktree-open-trigger shell-action shell-icon-button";
+    t.id = "terminalWorkspaceToggle";
+    t.title = "Show terminal";
+    t.innerHTML = appIcon("terminal");
+    t.setAttribute("aria-label", "Show terminal");
+    openWorktrees.insertAdjacentElement("afterend", t);
+    t.onclick = () => showTerminalShellMode();
+  }
   if (!gitUiEnabled()) {
     const existingGitToggle = el("gitWorkspaceToggle");
     if (existingGitToggle) existingGitToggle.remove();
@@ -1530,14 +1598,27 @@ function setupSessionChrome() {
   } else if (!el("gitWorkspaceToggle")) {
     const openWorktrees = el("openWorktrees");
     const b = document.createElement("button");
-    b.className = "btn worktree-open-trigger git-workspace-toggle unknown";
+    b.className = "btn worktree-open-trigger shell-action shell-icon-button git-workspace-toggle unknown";
     b.id = "gitWorkspaceToggle";
     b.title = "Show Git drawer";
     b.innerHTML = appIcon("git");
     b.setAttribute("aria-label", "Show Git drawer");
-    openWorktrees.insertAdjacentElement("afterend", b);
+    const terminalToggle = el("terminalWorkspaceToggle") || openWorktrees;
+    terminalToggle.insertAdjacentElement("afterend", b);
     b.onclick = () => openWorkspaceGitUi(state.ws);
   }
+  if (!el("fileWorkspaceToggle")) {
+    const gitToggle = el("gitWorkspaceToggle") || el("terminalWorkspaceToggle") || el("openWorktrees");
+    const b = document.createElement("button");
+    b.className = "btn worktree-open-trigger shell-action shell-icon-button";
+    b.id = "fileWorkspaceToggle";
+    b.title = "Show file browser";
+    b.innerHTML = appIcon("file");
+    b.setAttribute("aria-label", "Show file browser");
+    gitToggle.insertAdjacentElement("afterend", b);
+    b.onclick = () => openWorkspaceFileBrowser(state.ws);
+  }
+  syncShellModeButtons();
   const side = document.querySelector(".side");
   const workspacePane = el("workspacePane");
   if (workspacePane && !el("workspaceContextActions")) {
@@ -1872,7 +1953,7 @@ function setTerminalLoading(show) {
   const loading = el("terminalLoading");
   if (loading) loading.classList.toggle("show", !!show);
 }
-function resetTerminalConnection(clear = false) {
+function resetTerminalConnection(clear = false, destroy = false) {
   wheelScrollRemainder = 0;
   if (inputFlushTimer) {
     clearTimeout(inputFlushTimer);
@@ -1888,13 +1969,26 @@ function resetTerminalConnection(clear = false) {
   }
   connectedTerminalId = null;
   connectedSize = "";
-  if (clear && term) term.clear();
+  if (destroy && term) {
+    try {
+      term.dispose();
+    } catch (_) {}
+    term = null;
+  }
+  if (destroy) {
+    const terminalEl = el("terminal");
+    if (terminalEl) terminalEl.innerHTML = "";
+  } else if (clear && term) term.clear();
+}
+function replaceSelectionHistory() {
+  history.replaceState(null, "", state.ws ? selectionPath(state.ws, state.tab, state.pane) : sessionPrefix());
 }
 function navigateSelection(e, ws, tab, pane) {
   if (e && (e.metaKey || e.ctrlKey || e.shiftKey || e.button === 1))
     return true;
   e.preventDefault();
   if (window.HerdrGitUi) window.HerdrGitUi.hide();
+  if (window.HerdrFileBrowser) window.HerdrFileBrowser.hide();
   go(ws, tab, pane);
   return false;
 }
@@ -2127,10 +2221,11 @@ function forgetClosedSelection(kind, data) {
   }
   if (kind === "pane.closed" || kind === "pane.exited") {
     if (data && data.pane_id && data.pane_id === state.pane) {
-      resetTerminalConnection(true);
-      state.pane = null;
-      state.terminalId = null;
+      resetTerminalConnection(true, true);
+      selectFallbackPaneAfterClosed(data.pane_id);
       render();
+      replaceSelectionHistory();
+      if (typeof Terminal !== "undefined") connectTerminal();
     }
   } else if (kind === "tab.closed") {
     if (data && data.tab_id && data.tab_id === state.tab) {
@@ -2141,6 +2236,25 @@ function forgetClosedSelection(kind, data) {
       render();
     }
   }
+}
+
+function selectFallbackPaneAfterClosed(closedPaneId) {
+  const remainingPanes = (state.panes || []).filter((pane) => pane.pane_id !== closedPaneId);
+  let nextPane = remainingPanes.find((pane) => pane.tab_id === state.tab && pane.focused) ||
+    remainingPanes.find((pane) => pane.tab_id === state.tab) ||
+    remainingPanes.find((pane) => pane.workspace_id === state.ws) ||
+    remainingPanes[0] ||
+    null;
+  if (!nextPane) {
+    const nextTab = (state.tabs || []).find((tab) => tab.tab_id !== state.tab) || state.tabs[0] || null;
+    state.tab = nextTab && nextTab.tab_id;
+    state.pane = null;
+    state.terminalId = null;
+    return;
+  }
+  state.tab = nextPane.tab_id || state.tab;
+  state.pane = nextPane.pane_id;
+  state.terminalId = nextPane.terminal_id || null;
 }
 function applySnapshot(msg) {
   const wr = msg.workspaces && msg.workspaces.result;
@@ -2172,6 +2286,7 @@ function unlockAudio() {
 function handleAttentionSound() {
   const attentionAgents = state.agents.filter(needsAttention);
   const current = new Set(attentionAgents.map(agentKey));
+  syncBrowserFavicon();
   if (knownAttention === null) {
     knownAttention = current;
     return;
@@ -2182,6 +2297,67 @@ function handleAttentionSound() {
   knownAttention = current;
   if (newlyAttentioned.length && shouldPlayAttentionSound(newlyAttentioned))
     playAttentionSound();
+  if (newlyAttentioned.length) notifyAttention(newlyAttentioned);
+}
+function notificationTitle(agent) {
+  const status = statusClass(agent.agent_status);
+  return status === "blocked" ? "Agent blocked" : "Agent done";
+}
+function notificationBody(agent) {
+  const workspace = state.workspaces.find((w) => w.workspace_id === agent.workspace_id);
+  const name = agent.name || agent.display_agent || agent.agent || agent.terminal_id || "agent";
+  const workspaceName = workspace ? workspaceDisplayTitle(workspace) : agent.workspace_id || "workspace";
+  return `${name} in ${workspaceName}`;
+}
+function notifyAttention(agents) {
+  if (!options.browserNotifications || !("Notification" in window)) return;
+  if (Notification.permission !== "granted") return;
+  for (const agent of agents.slice(0, 3)) {
+    try {
+      const notification = new Notification(notificationTitle(agent), {
+        body: notificationBody(agent),
+        icon: "/favicon-attention.svg",
+        tag: agentKey(agent),
+      });
+      notification.onclick = () => {
+        window.focus();
+        if (agent.workspace_id) go(agent.workspace_id, agent.tab_id, agent.pane_id);
+        notification.close();
+      };
+    } catch (_) {}
+  }
+}
+async function setBrowserNotifications(enabled) {
+  if (!enabled) {
+    options.browserNotifications = false;
+    saveOptions();
+    applyOptions();
+    return;
+  }
+  if (!("Notification" in window)) {
+    options.browserNotifications = false;
+    saveOptions();
+    applyOptions();
+    return;
+  }
+  let permission = Notification.permission;
+  if (permission === "default") {
+    try {
+      permission = await Notification.requestPermission();
+    } catch (_) {
+      permission = "denied";
+    }
+  }
+  options.browserNotifications = permission === "granted";
+  saveOptions();
+  applyOptions();
+}
+function syncBrowserFavicon() {
+  if (browserFaviconError) {
+    browserFavicon.set("error");
+    return;
+  }
+  browserFavicon.set(document.hidden && state.agents.some(needsAttention) ? "attention" : "normal");
 }
 function needsAttention(a) {
   const s = statusClass(a.agent_status);

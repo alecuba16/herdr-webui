@@ -1,15 +1,12 @@
 function openWorkspaceCreateModal() {
-  clearTimeout(state.workspaceCreatePathSuggestTimer);
   state.workspaceCreateSuggestedLabel = "";
   el("workspaceCreatePath").value = "";
   el("workspaceCreateLabel").value = "";
   el("workspaceCreateError").textContent = "";
-  syncDirectoryPathOptions("workspacePathOptions", []);
   el("workspaceCreateModal").style.display = "grid";
   setTimeout(() => el("workspaceCreatePath").focus(), 0);
 }
 function closeWorkspaceCreateModal() {
-  clearTimeout(state.workspaceCreatePathSuggestTimer);
   el("workspaceCreateModal").style.display = "none";
 }
 function focusWorkspaceCreateLabel() {
@@ -28,12 +25,6 @@ function syncWorkspaceCreateLabel() {
   if (!labelInput.value.trim() || labelInput.value.trim() === previous)
     labelInput.value = next;
   state.workspaceCreateSuggestedLabel = next;
-}
-async function loadWorkspacePathSuggestions() {
-  await loadDirectoryPathSuggestions(
-    "workspaceCreatePath",
-    (items) => syncDirectoryPathOptions("workspacePathOptions", items),
-  );
 }
 async function createWorkspaceFromModal() {
   const err = el("workspaceCreateError"),
@@ -83,7 +74,6 @@ el("workspaceCreateForm").onsubmit = (e) => {
 };
 function workspaceCreatePathChanged() {
   syncWorkspaceCreateLabel();
-  scheduleWorkspacePathSuggestions();
 }
 el("workspaceCreatePath").addEventListener("input", workspaceCreatePathChanged);
 el("workspaceCreatePath").addEventListener("change", workspaceCreatePathChanged);

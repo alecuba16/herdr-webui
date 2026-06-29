@@ -165,6 +165,39 @@
     };
   }
 
+  const faviconUrls = {
+    normal: "/favicon.svg",
+    attention: "/favicon-attention.svg",
+    error: "/favicon-error.svg",
+  };
+
+  function createFaviconNotifier(doc) {
+    const documentRef = doc || root.document;
+    let current = "";
+    function ensureLink() {
+      if (!documentRef || !documentRef.head) return null;
+      let link = documentRef.querySelector('link[rel="icon"]');
+      if (!link) {
+        link = documentRef.createElement("link");
+        link.rel = "icon";
+        link.type = "image/svg+xml";
+        documentRef.head.appendChild(link);
+      }
+      return link;
+    }
+    return {
+      set(state) {
+        const next = state === "attention" || state === "error" ? state : "normal";
+        if (next === current) return;
+        const link = ensureLink();
+        if (!link) return;
+        current = next;
+        link.href = faviconUrls[next] || faviconUrls.normal;
+      },
+      get() { return current || "normal"; },
+    };
+  }
+
   const helpers = {
     branchPathSlug,
     normalizeAbsolutePath,
@@ -175,6 +208,7 @@
     checkedOutWorktreeForBranch,
     validateWorktreeCreate,
     buildWorktreeCreateBody,
+    createFaviconNotifier,
     terminalWheelScrollBatch,
     terminalPasteInput,
     tabActivityLabel,

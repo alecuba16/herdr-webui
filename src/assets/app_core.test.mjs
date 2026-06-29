@@ -13,10 +13,33 @@ const {
   checkedOutWorktreeForBranch,
   validateWorktreeCreate,
   buildWorktreeCreateBody,
+  createFaviconNotifier,
   tabActivityLabel,
   terminalPasteInput,
   terminalWheelScrollBatch,
 } = require("./shared/core.js");
+
+describe("createFaviconNotifier", () => {
+  it("creates one icon link and only updates on state changes", () => {
+    const links = [];
+    const doc = {
+      head: { appendChild: (link) => links.push(link) },
+      querySelector: () => links[0] || null,
+      createElement: () => ({ rel: "", type: "", href: "" }),
+    };
+    const notifier = createFaviconNotifier(doc);
+
+    notifier.set("normal");
+    const firstHref = links[0].href;
+    notifier.set("normal");
+    notifier.set("attention");
+
+    assert.equal(links.length, 1);
+    assert.equal(links[0].rel, "icon");
+    assert.notEqual(links[0].href, firstHref);
+    assert.equal(notifier.get(), "attention");
+  });
+});
 
 describe("branchPathSlug", () => {
   it("lowercases and collapses separators", () => {

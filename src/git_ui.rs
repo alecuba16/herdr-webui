@@ -165,6 +165,12 @@ struct GitDiffFile {
     chunks: Vec<GitDiffChunk>,
 }
 
+#[derive(Serialize)]
+struct GitFileSummary {
+    additions: Option<usize>,
+    deletions: Option<usize>,
+}
+
 fn git_json_error(status: StatusCode, error: impl Into<String>) -> Response {
     (status, Json(json!({ "error": error.into() }))).into_response()
 }
@@ -227,6 +233,7 @@ fn safe_git_token<'a>(value: &'a str, label: &str) -> Result<&'a str, String> {
     Ok(trimmed)
 }
 
+#[allow(clippy::result_large_err)]
 fn git_ui_auth(state: &WebState, headers: &HeaderMap, remote: SocketAddr) -> Result<(), Response> {
     require_auth(state, headers, remote)
 }
@@ -379,6 +386,24 @@ fn parse_unified_diff(text: &str) -> Vec<GitDiffFile> {
     files
 }
 
+fn parse_numstat(text: &str) -> serde_json::Map<String, serde_json::Value> {
+    let mut summaries = serde_json::Map::new();
+    for line in text.lines() {
+        let mut parts = line.splitn(3, '\t');
+        let additions = parts.next().and_then(|value| value.parse::<usize>().ok());
+        let deletions = parts.next().and_then(|value| value.parse::<usize>().ok());
+        let Some(path) = parts.next() else { continue };
+        summaries.insert(
+            path.to_string(),
+            json!(GitFileSummary {
+                additions,
+                deletions,
+            }),
+        );
+    }
+    summaries
+}
+
 fn git_ui_diff_args(query: &GitUiQuery, compare: bool) -> Result<Vec<String>, String> {
     let mut args = vec![
         "diff".to_string(),
@@ -468,6 +493,12 @@ async fn git_ui_status(
     let stashes = git_ui_text(&repo, &["stash", "list", "--format=%gd"])
         .map(|text| text.lines().count())
         .unwrap_or(0);
+    let staged_summaries = git_ui_text(&repo, &["diff", "--numstat", "--cached"])
+        .map(|text| parse_numstat(&text))
+        .unwrap_or_default();
+    let unstaged_summaries = git_ui_text(&repo, &["diff", "--numstat"])
+        .map(|text| parse_numstat(&text))
+        .unwrap_or_default();
     let state_name = if !conflicted.is_empty() {
         "conflicts"
     } else if staged.is_empty() && unstaged.is_empty() && untracked.is_empty() {
@@ -484,6 +515,10 @@ async fn git_ui_status(
         "unstaged": unstaged,
         "untracked": untracked,
         "conflicted": conflicted,
+        "summaries": {
+            "staged": staged_summaries,
+            "unstaged": unstaged_summaries,
+        },
         "stashes": stashes,
     }))
     .into_response()
