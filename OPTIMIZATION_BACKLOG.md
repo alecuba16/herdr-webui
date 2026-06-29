@@ -13,6 +13,8 @@ Goal: reduce CPU, memory, bundle parse cost, and maintenance risk across backend
 - Reduce mobile xterm scrollback from `10000` to `2000` rows.
 - Remove terminal shell/surface fit from the desktop terminal output animation-frame path.
 - Lazy-load xterm JavaScript from desktop/mobile terminal connect paths instead of parsing it at initial HTML load.
+- Lazy-load desktop Git UI and file browser JavaScript on first use instead of desktop boot.
+- Coalesce mobile event websocket refreshes so event bursts trigger one API refresh instead of one per message.
 
 ## P0 Performance
 
@@ -43,9 +45,9 @@ Goal: reduce CPU, memory, bundle parse cost, and maintenance risk across backend
 - Git file view size caps:
   - `git_ui.rs` file route lacks file-browser binary/size guard.
   - Fix: reuse file-browser file-read helper.
-- Mobile refresh coalescing:
-  - `src/assets/mobile/app.js` event WS refresh path fetches broad state after many events.
-  - Fix: debounce and fetch by event type; avoid worktree fetch unless visible or current workspace changed.
+- Mobile refresh selectivity:
+  - `src/assets/mobile/app.js` now debounces event bursts, but refresh still fetches broad state.
+  - Fix: use event type to skip worktree fetch unless Worktrees screen or current workspace changed.
 - Mobile shell boot:
   - `app.html` parses desktop shell before mobile replaces body.
   - Fix: minimal boot shell, desktop/mobile render own skeleton.
@@ -84,7 +86,7 @@ Goal: reduce CPU, memory, bundle parse cost, and maintenance risk across backend
 
 ## Suggested Iteration Order
 
-1. Finish frontend boot/runtime cheap wins: mobile refresh debounce and terminal asset cache headers.
+1. Finish frontend boot/runtime cheap wins: event-type selective mobile refresh and terminal asset cache headers.
 2. Add backend blocking-operation wrappers and git/file caps.
 3. Split Git/file browser rendering to preserve DOM/editor instances.
 4. Refactor large files into modules without behavior changes.

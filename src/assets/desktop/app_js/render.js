@@ -371,10 +371,12 @@ function syncGitWorkspaceToggle() {
   syncShellModeButtons();
 }
 
-function openWorkspaceGitUi(id) {
+async function openWorkspaceGitUi(id) {
   if (!gitUiEnabled()) return;
   const workspace = state.workspaces.find((w) => w.workspace_id === id);
-  if (!workspace || !window.HerdrGitUi) return;
+  if (!workspace) return;
+  const loaded = await loadGitUiModule();
+  if (!loaded || !window.HerdrGitUi) return;
   if (window.HerdrFileBrowser) window.HerdrFileBrowser.hide();
   window.HerdrGitUi.open(workspace);
   render();
@@ -393,9 +395,11 @@ function syncFileWorkspaceToggle() {
   syncShellModeButtons();
 }
 
-function openWorkspaceFileBrowser(id) {
+async function openWorkspaceFileBrowser(id) {
   const workspace = state.workspaces.find((w) => w.workspace_id === id);
-  if (!workspace || !window.HerdrFileBrowser) return;
+  if (!workspace) return;
+  const loaded = await loadFileBrowserModule();
+  if (!loaded || !window.HerdrFileBrowser) return;
   if (window.HerdrGitUi) window.HerdrGitUi.hide();
   window.HerdrFileBrowser.open(workspace).catch((error) => alert(error.message || String(error)));
   render();

@@ -35,6 +35,7 @@
   };
 
   let eventWs,
+    refreshTimer = null,
     refreshSeq = 0,
     browserFavicon = createFaviconNotifier(document),
     browserFaviconError = false,
@@ -484,6 +485,10 @@
   }
 
   async function refresh() {
+    if (refreshTimer) {
+      clearTimeout(refreshTimer);
+      refreshTimer = null;
+    }
     const seq = ++refreshSeq;
     state.error = "";
     parseRoute(false);
@@ -608,11 +613,19 @@
     if (eventWs || !globalThis.WebSocket) return;
     const ws = new WebSocket(wsUrl("/ws/events"));
     eventWs = ws;
-    ws.onmessage = () => refresh();
+    ws.onmessage = () => scheduleRefresh();
     ws.onclose = () => {
       if (eventWs === ws) eventWs = null;
       setTimeout(connectEvents, 1500);
     };
+  }
+
+  function scheduleRefresh(delay = 250) {
+    if (refreshTimer) return;
+    refreshTimer = setTimeout(() => {
+      refreshTimer = null;
+      refresh();
+    }, delay);
   }
 
   function applyTheme() {

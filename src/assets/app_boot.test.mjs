@@ -70,10 +70,8 @@ describe("app boot", () => {
     equal(scripts[1].src, "/assets/shared/file-tree.js");
     equal(scripts[2].src, "/assets/shared/editor.js");
     equal(scripts[3].src, "/assets/desktop/search.js");
-    equal(scripts[4].src, "/assets/desktop/git-ui.js");
-    equal(scripts[5].src, "/assets/desktop/file-browser.js");
-    equal(scripts[6].src, "/assets/desktop/directory-picker.js");
-    equal(scripts[7].src, "/assets/desktop/app.js");
+    equal(scripts[4].src, "/assets/desktop/directory-picker.js");
+    equal(scripts[5].src, "/assets/desktop/app.js");
   });
 
   it("loads mobile bundle for narrow screens", () => {
