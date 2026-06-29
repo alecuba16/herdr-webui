@@ -1,4 +1,8 @@
 document.addEventListener("click", (e) => {
+  if (state.panelMenuOpen && (!e.target || !e.target.closest || !e.target.closest(".panel-field"))) {
+    state.panelMenuOpen = false;
+    render();
+  }
   const workspaceAction = e.target && e.target.closest && e.target.closest("[data-workspace-action]");
   if (workspaceAction) {
     e.preventDefault();
@@ -25,9 +29,6 @@ document.addEventListener("click", (e) => {
   }
   if (!e.target || !e.target.closest || !e.target.closest(".no-sleep-wrap")) closeNoSleepMenus();
 });
-document.addEventListener("change", (e) => {
-  if (e.target && e.target.id === "panelSelector") selectPanelFromHeader(e.target.value);
-});
 if (window.matchMedia) {
   try {
     const media = window.matchMedia("(prefers-color-scheme: dark)");
@@ -41,6 +42,9 @@ if (window.matchMedia) {
       });
   } catch (e) {}
 }
+document.addEventListener("visibilitychange", () => {
+  syncBrowserFavicon();
+});
 setInterval(pollAutoTheme, 2000);
 let settingsBackdropDown = false,
   shortcutsBackdropDown = false;
@@ -209,6 +213,17 @@ el("optScrollLines").oninput = () => {
   saveOptions();
   applyOptions();
 };
+el("optTreeIndentPx").oninput = () => {
+  options.treeIndentPx = Math.max(0, Math.min(40, Number(el("optTreeIndentPx").value) || 0));
+  saveOptions();
+  applyOptions();
+  render();
+};
+el("optFileBrowserAllowParent").onchange = () => {
+  options.fileBrowserAllowParent = el("optFileBrowserAllowParent").checked;
+  saveOptions();
+  applyOptions();
+};
 el("optWorktreeAutoDiscover").oninput = () => {
   options.worktreeAutoDiscoverSeconds = Math.max(
     0,
@@ -234,6 +249,9 @@ el("optSound").onchange = () => {
   saveOptions();
   applyOptions();
 };
+el("optBrowserNotifications").onchange = () => {
+  setBrowserNotifications(el("optBrowserNotifications").checked);
+};
 for (const module of settingsModules) {
   if (typeof module.bind === "function") {
     module.bind({
@@ -252,21 +270,11 @@ for (const module of settingsModules) {
 el("worktreeCreateClose").onclick = closeWorktreeCreateModal;
 el("worktreeCreateCancel").onclick = closeWorktreeCreateModal;
 el("worktreeCreateSource").oninput = () => {
-  if (state.createWorktreeSuggestionLocked) {
-    state.createWorktreeSuggestionLocked = false;
-    return;
-  }
-  state.createWorktreeSuggestionIndex = -1;
-  state.createWorktreePathSuggestTimer = schedulePathSuggestions(
-    state.createWorktreePathSuggestTimer,
-    loadCreateWorktreePathSuggestions,
-  );
   scheduleCreateWorktreeAutodiscover();
 };
 el("worktreeCreateSource").addEventListener("keydown", (e) => {
   if (e.key === "Enter") {
     e.preventDefault();
-    state.createWorktreeSuggestionLocked = true;
     clearCreateWorktreeSuggestions();
     discoverCreateWorktreeSource();
   }
@@ -386,7 +394,6 @@ function worktreePathInputChanged() {
     (w) => textValue(w.path) === value && w.is_linked_worktree,
   );
   state.openWorktreeSelected = idx >= 0 ? idx : null;
-  scheduleWorktreePathSuggestions();
   scheduleWorktreeAutodiscover();
 }
 el("worktreeDiscoverPath").addEventListener("input", worktreePathInputChanged);
@@ -398,6 +405,15 @@ el("worktreeDiscoverPath").addEventListener("keydown", (e) => {
     renderPathOptions("worktreePathOptions", []);
   }
 });
+if (window.HerdrDirectoryPicker) {
+  [
+    "workspaceCreatePath",
+    "worktreeDiscoverPath",
+    "worktreeCreateSource",
+    "worktreePath",
+    "worktreeNewPath",
+  ].forEach((id) => window.HerdrDirectoryPicker.attach(id));
+}
 function editableEventTarget(e) {
   const t = e.target;
   return (

@@ -43,19 +43,26 @@
     } else {
       loadCss("/assets/desktop/app.css");
       loadCss("/assets/desktop/git-ui.css");
+      loadCss("/assets/desktop/file-browser.css");
       loadCss("/assets/desktop/shortcuts.css");
       loadCss("/assets/desktop/search.css");
     }
     loadScript("/assets/shared/core.js");
+    loadScript("/assets/shared/file-tree.js");
+    loadScript("/assets/vendor/codemirror.js");
+    loadScript("/assets/shared/editor.js");
     if (mobile) {
       loadScript("/assets/mobile/core.js");
       loadScript("/assets/mobile/attention.js");
       loadScript("/assets/mobile/terminal.js");
       loadScript("/assets/mobile/worktrees.js");
+      loadScript("/assets/mobile/file-browser.js");
       loadScript("/assets/mobile/settings.js");
     } else {
       loadScript("/assets/desktop/search.js");
       loadScript("/assets/desktop/git-ui.js");
+      loadScript("/assets/desktop/file-browser.js");
+      loadScript("/assets/desktop/directory-picker.js");
     }
     loadScript(mobile ? "/assets/mobile/app.js" : "/assets/desktop/app.js");
     watchAutoLayout(layout);

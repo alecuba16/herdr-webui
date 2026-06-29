@@ -48,10 +48,11 @@
         );
         return {
           sound: parsed.sound !== false,
+          browserNotifications: parsed.browserNotifications === true,
           soundScope: parsed.soundScope === "all" ? "all" : "current",
         };
       } catch (_) {
-        return { sound: true, soundScope: "current" };
+        return { sound: true, browserNotifications: false, soundScope: "current" };
       }
     }
 
@@ -79,6 +80,30 @@
       );
       knownAttention = current;
       if (newlyAttentioned.length && shouldPlay(newlyAttentioned)) play();
+      if (newlyAttentioned.length) notify(newlyAttentioned);
+    }
+
+    function notify(agents) {
+      const currentOptions = options();
+      if (!currentOptions.browserNotifications || !("Notification" in window)) return;
+      if (window.Notification.permission !== "granted") return;
+      for (const agent of agents.slice(0, 3)) {
+        try {
+          new window.Notification(notificationTitle(agent), {
+            body: notificationBody(agent),
+            icon: "/favicon-attention.svg",
+            tag: key(agent),
+          });
+        } catch (_) {}
+      }
+    }
+
+    function notificationTitle(agent) {
+      return statusClass(agent.agent_status) === "blocked" ? "Agent blocked" : "Agent done";
+    }
+
+    function notificationBody(agent) {
+      return agent.name || agent.display_agent || agent.agent || agent.terminal_id || "Agent needs attention";
     }
 
     function unlockAudio() {

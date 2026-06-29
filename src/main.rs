@@ -21,6 +21,7 @@ use sha2::{Digest, Sha256};
 
 mod assets;
 mod compat;
+mod file_browser;
 mod git_ui;
 mod protocol;
 mod service;
@@ -665,8 +666,8 @@ fn app_router(state: WebState) -> Router {
         .route("/api/worktrees", get(worktrees).post(create_worktree))
         .route("/api/worktrees/open", post(open_worktree))
         .route("/api/worktrees/remove-path", post(remove_worktree_path))
-        .route("/api/path-suggestions", get(path_suggestions))
         .route("/api/git-branches", get(git_branches))
+        .merge(file_browser::routes())
         .merge(git_ui::routes())
         .route(
             "/api/workspaces/{workspace_id}/rename",
@@ -689,11 +690,26 @@ fn app_router(state: WebState) -> Router {
         .route("/api/agents", get(agents))
         .route("/assets/desktop/app.css", get(desktop_css))
         .route("/assets/desktop/git-ui.css", get(desktop_git_ui_css))
+        .route(
+            "/assets/desktop/file-browser.css",
+            get(desktop_file_browser_css),
+        )
         .route("/assets/desktop/search.css", get(desktop_search_css))
         .route("/assets/desktop/shortcuts.css", get(desktop_shortcuts_css))
         .route("/assets/app-boot.js", get(app_boot_js))
         .route("/assets/shared/core.js", get(shared_core_js))
+        .route("/assets/shared/file-tree.js", get(shared_file_tree_js))
+        .route("/assets/vendor/codemirror.js", get(vendor_codemirror_js))
+        .route("/assets/shared/editor.js", get(shared_editor_js))
         .route("/assets/desktop/git-ui.js", get(desktop_git_ui_js))
+        .route(
+            "/assets/desktop/file-browser.js",
+            get(desktop_file_browser_js),
+        )
+        .route(
+            "/assets/desktop/directory-picker.js",
+            get(desktop_directory_picker_js),
+        )
         .route("/assets/desktop/search.js", get(desktop_search_js))
         .route("/assets/desktop/app.js", get(desktop_js))
         .route("/assets/login.css", get(login_css))
@@ -703,6 +719,10 @@ fn app_router(state: WebState) -> Router {
         .route("/assets/mobile/settings.js", get(mobile_settings_js))
         .route("/assets/mobile/terminal.js", get(mobile_terminal_js))
         .route("/assets/mobile/worktrees.js", get(mobile_worktrees_js))
+        .route(
+            "/assets/mobile/file-browser.js",
+            get(mobile_file_browser_js),
+        )
         .route("/assets/mobile/app.css", get(mobile_css))
         .route("/assets/mobile/app.js", get(mobile_js))
         .route("/assets/xterm.js", get(xterm_js))
@@ -711,14 +731,18 @@ fn app_router(state: WebState) -> Router {
         .route("/assets/icons/settings.svg", get(icon_settings_svg))
         .route("/assets/icons/theme-auto.svg", get(icon_theme_auto_svg))
         .route("/assets/icons/git.svg", get(icon_git_svg))
+        .route("/assets/icons/terminal.svg", get(icon_terminal_svg))
         .route(
             "/assets/icons/chevron-right.svg",
             get(icon_chevron_right_svg),
         )
         .route("/assets/icons/chevron-down.svg", get(icon_chevron_down_svg))
         .route("/assets/icons/folder.svg", get(icon_folder_svg))
+        .route("/assets/icons/folder-up.svg", get(icon_folder_up_svg))
         .route("/assets/icons/file.svg", get(icon_file_svg))
         .route("/favicon.svg", get(favicon_svg))
+        .route("/favicon-attention.svg", get(favicon_attention_svg))
+        .route("/favicon-error.svg", get(favicon_error_svg))
         .route("/ws/events", get(events_ws))
         .route("/ws/terminal", get(terminal_ws))
         .with_state(state)
@@ -1811,17 +1835,6 @@ struct WorkspaceQuery {
 }
 
 #[derive(Deserialize)]
-struct PathSuggestionsQuery {
-    prefix: Option<String>,
-}
-
-#[derive(Serialize)]
-struct PathSuggestion {
-    path: String,
-    label: String,
-}
-
-#[derive(Deserialize)]
 struct GitBranchesQuery {
     cwd: Option<String>,
 }
@@ -1852,97 +1865,6 @@ fn expand_path_prefix(prefix: &str) -> PathBuf {
 
 pub(crate) fn expand_user_path_string(path: &str) -> String {
     expand_path_prefix(path).to_string_lossy().to_string()
-}
-
-fn display_path_for_prefix(path: &Path, prefix: &str) -> String {
-    if prefix == "~" || prefix.starts_with("~/") {
-        if let Ok(home) = home_dir() {
-            if let Ok(rest) = path.strip_prefix(&home) {
-                let rest = rest.to_string_lossy();
-                return if rest.is_empty() {
-                    "~".to_string()
-                } else {
-                    format!("~/{}", rest)
-                };
-            }
-        }
-    }
-    if !prefix.starts_with('/') {
-        if let Ok(home) = home_dir() {
-            if let Ok(rest) = path.strip_prefix(&home) {
-                return rest.to_string_lossy().to_string();
-            }
-        }
-    }
-    path.to_string_lossy().to_string()
-}
-
-fn directory_suggestions(prefix: &str) -> Vec<PathSuggestion> {
-    let prefix = prefix.trim();
-    let expanded = expand_path_prefix(prefix);
-    let has_trailing_separator =
-        prefix.ends_with('/') || prefix.ends_with(std::path::MAIN_SEPARATOR);
-    let (dir, name_prefix) = if prefix.is_empty() {
-        (
-            home_dir()
-                .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))),
-            String::new(),
-        )
-    } else if has_trailing_separator {
-        (expanded, String::new())
-    } else {
-        (
-            expanded
-                .parent()
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|| PathBuf::from(".")),
-            expanded
-                .file_name()
-                .map(|name| name.to_string_lossy().to_string())
-                .unwrap_or_default(),
-        )
-    };
-    let mut suggestions = Vec::new();
-    let name_prefix_lower = name_prefix.to_lowercase();
-    let entries = match fs::read_dir(&dir) {
-        Ok(entries) => entries,
-        Err(_) => return suggestions,
-    };
-    for entry in entries.flatten() {
-        let file_name = entry.file_name().to_string_lossy().to_string();
-        if !name_prefix_lower.is_empty() && !file_name.to_lowercase().contains(&name_prefix_lower) {
-            continue;
-        }
-        if name_prefix.is_empty() && file_name.starts_with('.') {
-            continue;
-        }
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-        suggestions.push(PathSuggestion {
-            label: file_name,
-            path: display_path_for_prefix(&path, prefix),
-        });
-        if suggestions.len() >= 30 {
-            break;
-        }
-    }
-    suggestions.sort_by(|a, b| a.label.cmp(&b.label));
-    suggestions
-}
-
-async fn path_suggestions(
-    State(state): State<WebState>,
-    headers: HeaderMap,
-    ConnectInfo(remote): ConnectInfo<SocketAddr>,
-    Query(query): Query<PathSuggestionsQuery>,
-) -> Response {
-    if let Err(response) = require_auth(&state, &headers, remote) {
-        return response;
-    }
-    Json(json!({ "suggestions": directory_suggestions(query.prefix.as_deref().unwrap_or_default()) }))
-        .into_response()
 }
 
 fn list_git_branches(cwd: &str) -> io::Result<Vec<String>> {
@@ -3676,8 +3598,26 @@ mod tests {
             .await
             .unwrap();
         let icon = app
+            .clone()
             .oneshot(
                 request(Method::GET, "/favicon.svg")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let attention_icon = app
+            .clone()
+            .oneshot(
+                request(Method::GET, "/favicon-attention.svg")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let error_icon = app
+            .oneshot(
+                request(Method::GET, "/favicon-error.svg")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -3701,6 +3641,8 @@ mod tests {
         assert_eq!(mobile_js.status(), StatusCode::OK);
         assert_eq!(mobile_css.status(), StatusCode::OK);
         assert_eq!(icon.status(), StatusCode::OK);
+        assert_eq!(attention_icon.status(), StatusCode::OK);
+        assert_eq!(error_icon.status(), StatusCode::OK);
         assert!(js.headers()[header::CONTENT_TYPE]
             .to_str()
             .unwrap()

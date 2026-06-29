@@ -7,6 +7,7 @@
     samePath,
     selectionPath: mobileSelectionPath,
   } = globalThis.HerdrMobileCore;
+  const { createFaviconNotifier } = globalThis.HerdrAppHelpers;
 
   const state = {
     session: "default",
@@ -35,9 +36,12 @@
 
   let eventWs,
     refreshSeq = 0,
+    browserFavicon = createFaviconNotifier(document),
+    browserFaviconError = false,
     mobileAttention,
     mobileSettings,
     mobileTerminal,
+    mobileFileBrowser,
     mobileWorktrees;
 
   function el(id) {
@@ -228,6 +232,7 @@
           <button data-screen="agents">Agents</button>
           <button data-screen="panels">Panels</button>
           <button data-screen="worktrees">Worktrees</button>
+          <button data-screen="files">Files</button>
           <button data-screen="git">Git</button>
           <button data-screen="terminal">Terminal</button>
         </nav>
@@ -249,6 +254,7 @@
 
   function render() {
     if (!el("mobileScreen")) renderShell();
+    applyTreeIndent();
     const workspace = currentWorkspace();
     el("mobileTitle").textContent = workspaceTitle(workspace);
     el("mobileMeta").textContent = contextMeta(workspace);
@@ -259,6 +265,7 @@
     const screen = el("mobileScreen");
     screen.classList.toggle("terminal-active", state.screen === "terminal");
     if (state.error) {
+      syncBrowserFavicon();
       screen.innerHTML = `<div class="mobile-error">${escapeHtml(state.error)}</div>`;
       return;
     }
@@ -266,11 +273,34 @@
     else if (state.screen === "panels") screen.innerHTML = renderPanels();
     else if (state.screen === "worktrees")
       screen.innerHTML = mobileWorktrees.renderScreen();
+    else if (state.screen === "files")
+      screen.innerHTML = mobileFileBrowser.renderScreen();
     else if (state.screen === "git") renderGitScreen(screen);
     else if (state.screen === "settings")
       screen.innerHTML = mobileSettings.render();
     else if (state.screen === "terminal") renderTerminalScreen(screen);
     else screen.innerHTML = renderHome();
+    syncBrowserFavicon();
+  }
+
+  function applyTreeIndent() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
+      const value = Math.max(0, Math.min(40, Number(parsed.treeIndentPx) || 14));
+      document.body.style.setProperty("--herdr-tree-indent", `${value}px`);
+    } catch (_) {}
+  }
+
+  function syncBrowserFavicon() {
+    if (browserFaviconError) {
+      browserFavicon.set("error");
+      return;
+    }
+    const attention = state.agents.some((agent) => {
+      const status = mobileAttention.statusClass(agent.agent_status);
+      return status === "blocked" || status === "done";
+    });
+    browserFavicon.set(document.hidden && attention ? "attention" : "normal");
   }
 
   function renderHome() {
@@ -343,6 +373,7 @@
           home: "Workspaces",
           panels: "Panels",
           worktrees: "Worktrees",
+          files: "Files",
           git: "Git",
           terminal: "Terminal",
         }[screen] || screen
@@ -477,6 +508,7 @@
         state.tabs = tabs.result.tabs || [];
         state.panes = panes.result.panes || [];
         state.agents = agents.result.agents || [];
+        browserFaviconError = false;
         mobileAttention.handleSound();
         mobileWorktrees.applyResult(worktrees);
         if (!state.tabs.some((tab) => tab.tab_id === state.tab))
@@ -499,6 +531,7 @@
       render();
       if (state.screen === "terminal") mobileTerminal.connect();
     } catch (error) {
+      browserFaviconError = true;
       state.error = error.message || String(error);
       render();
     }
@@ -511,6 +544,7 @@
     state.screen = "terminal";
     state.gitStatus = null;
     state.gitError = "";
+    mobileFileBrowser.reset();
     history.pushState(null, "", selectionPath(id));
     mobileTerminal.destroy(true);
     refresh();
@@ -613,6 +647,13 @@
     selectionPath,
     state,
   });
+  mobileFileBrowser = globalThis.HerdrMobileFileBrowser.create({
+    api,
+    currentWorkspaceCwd,
+    escapeHtml,
+    render,
+    state,
+  });
 
   globalThis.HerdrMobile = {
     selectWorkspace,
@@ -620,11 +661,19 @@
     selectTab,
     createPanel,
     loadGitStatus,
+    filesToggle: mobileFileBrowser.toggle,
+    filesSelect: mobileFileBrowser.select,
+    filesUp: mobileFileBrowser.up,
+    filesRefresh: mobileFileBrowser.refresh,
+    filesBackToTree: mobileFileBrowser.backToTree,
+    filesRefreshFile: mobileFileBrowser.refreshFile,
     loadWorktrees: mobileWorktrees.load,
     openWorktree: mobileWorktrees.open,
     createWorktree: mobileWorktrees.create,
     updateWorktreeField: mobileWorktrees.updateField,
     setThemeMode: mobileSettings.setThemeMode,
+    setBrowserNotifications: mobileSettings.setBrowserNotifications,
+    setFileBrowserDepth: mobileSettings.setFileBrowserDepth,
     setLayoutPreference: mobileSettings.setLayoutPreference,
     setTerminalFontFamily: mobileSettings.setTerminalFontFamily,
     applyTerminalFontFamily: mobileTerminal.applyFontFamily,
@@ -632,6 +681,12 @@
     currentSelection,
     refresh,
     showScreen,
+  };
+
+  globalThis.HerdrMobileFiles = {
+    toggle: mobileFileBrowser.toggle,
+    select: mobileFileBrowser.select,
+    up: mobileFileBrowser.up,
   };
 
   renderShell();
@@ -647,6 +702,7 @@
   window.addEventListener("resize", () => {
     if (state.screen === "terminal") mobileTerminal.connect();
   });
+  document.addEventListener("visibilitychange", syncBrowserFavicon);
   document.addEventListener("pointerdown", mobileAttention.unlockAudio, {
     once: true,
   });

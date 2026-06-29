@@ -73,9 +73,6 @@ function openWorktreeCreateModal(id) {
   state.createWorktreeWorkspace = id;
   const sourcePath = (w.worktree && w.worktree.checkout_path) || "";
   state.createWorktreeOriginalSource = sourcePath;
-  state.createWorktreePathSuggestions = [];
-  state.createWorktreeSuggestionIndex = -1;
-  state.createWorktreeSuggestionLocked = false;
   state.createWorktreeSource = null;
   state.createWorktreeDefaultPath = "";
   el("worktreeCreateSource").value = sourcePath;
@@ -85,23 +82,17 @@ function openWorktreeCreateModal(id) {
   el("worktreePath").value = "";
   el("worktreeCreateError").textContent = "";
   setCreateWorktreeLoading(false);
-  renderPathOptions("worktreeCreatePathOptions", []);
   el("worktreeCreateModal").style.display = "grid";
   setTimeout(() => {
     el("worktreeBranch").focus();
-    loadCreateWorktreePathSuggestions();
   }, 0);
 }
 function closeWorktreeCreateModal() {
   const m = el("worktreeCreateModal");
   if (m) m.style.display = "none";
-  clearTimeout(state.createWorktreePathSuggestTimer);
   clearTimeout(state.createWorktreeAutodiscoverTimer);
   state.createWorktreeWorkspace = null;
   state.createWorktreeOriginalSource = "";
-  state.createWorktreePathSuggestions = [];
-  state.createWorktreeSuggestionIndex = -1;
-  state.createWorktreeSuggestionLocked = false;
   state.createWorktreeSource = null;
   state.createWorktreeDefaultPath = "";
   setCreateWorktreeLoading(false);
@@ -123,7 +114,6 @@ function closeWorktreeOpenModal() {
 }
 function openWorktreeOpenModal() {
   state.openWorktreeSelected = null;
-  state.openWorktreePathSuggestions = [];
   state.openWorktreeSuggestionLocked = false;
   state.openWorktreeSource = null;
   state.openWorktreeRows = [];
@@ -142,7 +132,6 @@ function openWorktreeOpenModal() {
   el("worktreeOpenModal").style.display = "grid";
   setTimeout(() => {
     el("worktreeDiscoverPath").focus();
-    loadWorktreePathSuggestions();
   }, 0);
 }
 function openWorktreesForRepo(keyToken) {
@@ -151,7 +140,6 @@ function openWorktreesForRepo(keyToken) {
     rows = allRows.filter((w) => w.is_linked_worktree);
   const source = allRows[0] || rows[0] || {};
   state.openWorktreeSelected = null;
-  state.openWorktreePathSuggestions = [];
   state.openWorktreeSource = {
     workspace_id: source.source_workspace_id || null,
     cwd: source.source_cwd || null,
@@ -216,13 +204,6 @@ function syncWorktreePathOptions(rows) {
       `<option value="${escapeAttr(w.path)}">${escapeAttr(worktreeOpenRowTitle(w))}</option>`,
     );
   }
-  for (const s of state.openWorktreePathSuggestions || []) {
-    if (!s.path || seen.has(s.path)) continue;
-    seen.add(s.path);
-    items.push(
-      `<option value="${escapeAttr(s.path)}">${escapeAttr(s.label || "directory")}</option>`,
-    );
-  }
   renderPathOptions("worktreePathOptions", items);
 }
 function renderPathOptions(optionsId, items) {
@@ -230,51 +211,7 @@ function renderPathOptions(optionsId, items) {
   if (!optionsEl) return;
   optionsEl.innerHTML = items.join("");
 }
-function syncDirectoryPathOptions(optionsId, suggestions) {
-  renderPathOptions(
-    optionsId,
-    (suggestions || []).map(
-      (s) =>
-        `<option value="${escapeAttr(s.path)}">${escapeAttr(s.label || "directory")}</option>`,
-    ),
-  );
-}
-function scheduleWorktreePathSuggestions() {
-  state.openWorktreePathSuggestTimer = schedulePathSuggestions(
-    state.openWorktreePathSuggestTimer,
-    loadWorktreePathSuggestions,
-  );
-}
-function scheduleWorkspacePathSuggestions() {
-  state.workspaceCreatePathSuggestTimer = schedulePathSuggestions(
-    state.workspaceCreatePathSuggestTimer,
-    loadWorkspacePathSuggestions,
-  );
-}
-function schedulePathSuggestions(timer, load) {
-  clearTimeout(timer);
-  return setTimeout(load, 120);
-}
-async function loadWorktreePathSuggestions() {
-  const suggestions = await loadDirectoryPathSuggestions(
-    "worktreeDiscoverPath",
-    () => syncWorktreePathOptions(validOpenWorktreeRows()),
-  );
-  if (suggestions) state.openWorktreePathSuggestions = suggestions;
-}
-async function loadCreateWorktreePathSuggestions() {
-  const suggestions = await loadDirectoryPathSuggestions(
-    "worktreeCreateSource",
-    (items) => syncDirectoryPathOptions("worktreeCreatePathOptions", items),
-  );
-  if (suggestions) {
-    state.createWorktreePathSuggestions = suggestions;
-    state.createWorktreeSuggestionIndex = -1;
-  }
-}
 function clearCreateWorktreeSuggestions() {
-  state.createWorktreePathSuggestions = [];
-  state.createWorktreeSuggestionIndex = -1;
   renderPathOptions("worktreeCreatePathOptions", []);
 }
 async function discoverCreateWorktreeSource() {
@@ -339,23 +276,6 @@ function syncCreateWorktreeCheckoutPath() {
   if (!input.value.trim() || input.value.trim() === state.createWorktreeDefaultPath)
     input.value = next;
   state.createWorktreeDefaultPath = next;
-}
-async function loadDirectoryPathSuggestions(inputId, onDone) {
-  const input = el(inputId);
-  if (!input) return null;
-  const prefix = input.value;
-  let suggestions = [];
-  try {
-    const r = await api(
-      "/api/path-suggestions?prefix=" + encodeURIComponent(prefix),
-    );
-    if (input.value !== prefix) return null;
-    suggestions = r.suggestions || [];
-  } catch (_) {
-    suggestions = [];
-  }
-  if (onDone) onDone(suggestions);
-  return suggestions;
 }
 function syncWorktreeBranchOptions(branches) {
   const optionsEl = el("worktreeBranchOptions");

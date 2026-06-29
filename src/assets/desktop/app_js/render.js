@@ -44,6 +44,7 @@ function render() {
   }
   applySidebarCollapsed();
   syncGitWorkspaceToggle();
+  syncFileWorkspaceToggle();
   const themeHead = el("themeToggleHead");
   if (themeHead) themeHead.innerHTML = themeToggleIcon();
   const pane = state.panes.find((p) => p.pane_id === state.pane);
@@ -55,6 +56,7 @@ function render() {
     syncNoSleepControls();
   }
   updateTitle(wsById, tabById, tabCountsByWorkspace, pane);
+  syncBrowserFavicon();
   if (state.editingTab) {
     const input = document.querySelector(".tab-rename-input");
     if (input && document.activeElement !== input) {
@@ -253,13 +255,18 @@ function renderPanelField() {
   const tabs = state.tabs || [],
     current = tabs.find((t) => t.tab_id === state.tab) || tabs[0] || null,
     currentLabel = current ? tabTitle(current) : "No panel";
-  const options = tabs
-    .map(
-      (t) =>
-        `<option value="${escapeAttr(t.tab_id)}"${t.tab_id === state.tab ? " selected" : ""}>${escapeHtml(tabTitle(t))}</option>`,
-    )
-    .join("");
-  return `<div class="panel-field"><select class="panel-selector" id="panelSelector" title="Current panel: ${escapeAttr(currentLabel)}. Click to switch panels or choose an action." onmousedown="event.stopPropagation()" onclick="event.stopPropagation()">${options}<option value="__new__">+ New panel</option>${current ? '<option value="__rename__">Rename panel...</option><option value="__close__">Close panel...</option>' : ""}</select></div>`;
+  const hasSwitcher = tabs.length > 1;
+  if (current && state.editingTab === current.tab_id)
+    return `<div class="panel-field"><input class="panel-label panel-rename-input tab-rename-input" value="${escapeAttr(state.editingTabValue)}" onmousedown="event.stopPropagation()" onclick="event.stopPropagation()" onblur="commitTabRename('${current.tab_id}')" oninput="state.editingTabValue=this.value" onkeydown="tabRenameKey(event,'${current.tab_id}')"><button class="mini panel-add" title="New panel" onclick="event.preventDefault();event.stopPropagation();newTab()">+</button></div>`;
+  const menu = hasSwitcher && state.panelMenuOpen ? `<div class="panel-menu">${tabs.map((tab) => `<button class="panel-menu-item${tab.tab_id === state.tab ? " active" : ""}" onclick="event.preventDefault();event.stopPropagation();state.panelMenuOpen=false;go(state.ws,decodeURIComponent('${encodeURIComponent(tab.tab_id)}'))">${escapeHtml(tabTitle(tab))}</button>`).join("")}</div>` : "";
+  const caret = hasSwitcher ? '<span class="panel-caret">▼</span>' : "";
+  const click = hasSwitcher ? "togglePanelMenu()" : "";
+  return `<div class="panel-field"><button class="panel-label" title="Current panel: ${escapeAttr(currentLabel)}. Double-click to rename." onclick="event.preventDefault();event.stopPropagation();${click}" ondblclick="event.preventDefault();event.stopPropagation();state.panelMenuOpen=false;${current ? `startTabRename('${current.tab_id}','${escapeAttr(currentLabel)}')` : ""}"><span>${escapeHtml(currentLabel)}</span>${caret}</button>${menu}<button class="mini panel-add" title="New panel" onclick="event.preventDefault();event.stopPropagation();newTab()">+</button></div>`;
+}
+
+function togglePanelMenu() {
+  state.panelMenuOpen = !state.panelMenuOpen;
+  render();
 }
 function renderRepoHeader(group) {
   return `<div class="repo-header workspace-orphan-header"><span>${escapeHtml(group.label)}</span></div>`;
@@ -357,17 +364,40 @@ function syncGitWorkspaceToggle() {
   }
   const workspace = state.workspaces.find((w) => w.workspace_id === state.ws);
   const status = window.HerdrGitUi && window.HerdrGitUi.workspaceStatus ? window.HerdrGitUi.workspaceStatus(state.ws, workspace) : "unknown";
-  button.className = `btn worktree-open-trigger git-workspace-toggle ${status}`;
+  button.className = `btn worktree-open-trigger shell-action shell-icon-button git-workspace-toggle ${status}`;
   button.innerHTML = appIcon("git");
   button.setAttribute("aria-label", status === "nogit" ? "No Git repository detected" : "Show or hide Git drawer");
   button.title = status === "nogit" ? "No Git repository detected" : "Show or hide Git drawer";
+  syncShellModeButtons();
 }
 
 function openWorkspaceGitUi(id) {
   if (!gitUiEnabled()) return;
   const workspace = state.workspaces.find((w) => w.workspace_id === id);
   if (!workspace || !window.HerdrGitUi) return;
+  if (window.HerdrFileBrowser) window.HerdrFileBrowser.hide();
   window.HerdrGitUi.open(workspace);
+  render();
+}
+
+function syncFileWorkspaceToggle() {
+  const button = el("fileWorkspaceToggle");
+  if (!button) {
+    setupSessionChrome();
+    return;
+  }
+  const workspace = state.workspaces.find((w) => w.workspace_id === state.ws);
+  const hasPath = !!(workspace && ((workspace.worktree && workspace.worktree.checkout_path) || workspace.cwd || workspace.path));
+  button.disabled = !hasPath;
+  button.title = hasPath ? "Show file browser" : "No workspace path available";
+  syncShellModeButtons();
+}
+
+function openWorkspaceFileBrowser(id) {
+  const workspace = state.workspaces.find((w) => w.workspace_id === id);
+  if (!workspace || !window.HerdrFileBrowser) return;
+  if (window.HerdrGitUi) window.HerdrGitUi.hide();
+  window.HerdrFileBrowser.open(workspace).catch((error) => alert(error.message || String(error)));
   render();
 }
 function runWorkspaceContextAction(action, button) {
@@ -377,10 +407,6 @@ function runWorkspaceContextAction(action, button) {
   else if (action === "open-worktrees") openWorktreesForRepo(button.dataset.key || "");
   else if (action === "close") closeWorkspace(w.workspace_id);
   else if (action === "remove-worktree") removeWorktree(w.workspace_id);
-}
-function resetPanelSelector() {
-  const selector = el("panelSelector");
-  if (selector) selector.value = state.tab || "";
 }
 async function renameCurrentPanel() {
   const tab = state.allTabs.concat(state.tabs).find((t) => t.tab_id === state.tab);
@@ -395,23 +421,6 @@ async function renameCurrentPanel() {
     body: JSON.stringify({ label: trimmed }),
   });
   refresh();
-}
-async function selectPanelFromHeader(value) {
-  if (value === "__new__") {
-    newTab();
-    return;
-  }
-  if (value === "__rename__") {
-    resetPanelSelector();
-    await renameCurrentPanel();
-    return;
-  }
-  if (value === "__close__") {
-    resetPanelSelector();
-    if (state.tab) await closeTab(state.tab);
-    return;
-  }
-  if (value && value !== state.tab) go(state.ws, value);
 }
 function workspaceDisplayTitle(w) {
   if (!isLinkedWorktree(w)) return w.label;

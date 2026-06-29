@@ -7,6 +7,9 @@ pub(crate) const APP_HTML: &str = include_str!("assets/app.html");
 const LOGIN_CSS: &str = include_str!("assets/login.css");
 const LOGIN_JS: &str = include_str!("assets/login.js");
 const SHARED_CORE_JS: &str = include_str!("assets/shared/core.js");
+const SHARED_FILE_TREE_JS: &str = include_str!("assets/shared/file_tree.js");
+const SHARED_EDITOR_JS: &str = include_str!("assets/shared/editor.js");
+const VENDOR_CODEMIRROR_JS: &str = include_str!("assets/vendor/codemirror.bundle.js");
 const APP_BOOT_JS: &str = include_str!("assets/app_boot.js");
 const DESKTOP_CSS: &str = concat!(
     include_str!("assets/desktop/app_css/base.css"),
@@ -26,6 +29,7 @@ const DESKTOP_GIT_UI_CSS: &str = concat!(
     include_str!("assets/desktop/git_ui/syntax.css"),
 );
 const DESKTOP_SEARCH_CSS: &str = include_str!("assets/desktop/search.css");
+const DESKTOP_FILE_BROWSER_CSS: &str = include_str!("assets/desktop/file_browser.css");
 const DESKTOP_SHORTCUTS_CSS: &str = include_str!("assets/desktop/shortcuts.css");
 const DESKTOP_GIT_UI_JS: &str = concat!(
     include_str!("assets/desktop/git_ui/settings.js"),
@@ -34,6 +38,8 @@ const DESKTOP_GIT_UI_JS: &str = concat!(
     include_str!("assets/desktop/git_ui.js"),
 );
 const DESKTOP_SEARCH_JS: &str = include_str!("assets/desktop/search.js");
+const DESKTOP_FILE_BROWSER_JS: &str = include_str!("assets/desktop/file_browser.js");
+const DESKTOP_DIRECTORY_PICKER_JS: &str = include_str!("assets/desktop/directory_picker.js");
 const DESKTOP_JS: &str = concat!(
     include_str!("assets/desktop/app_js/core.js"),
     include_str!("assets/desktop/app_js/render.js"),
@@ -48,6 +54,7 @@ const MOBILE_CORE_JS: &str = include_str!("assets/mobile/core.js");
 const MOBILE_SETTINGS_JS: &str = include_str!("assets/mobile/settings.js");
 const MOBILE_TERMINAL_JS: &str = include_str!("assets/mobile/terminal.js");
 const MOBILE_WORKTREES_JS: &str = include_str!("assets/mobile/worktrees.js");
+const MOBILE_FILE_BROWSER_JS: &str = include_str!("assets/mobile/file_browser.js");
 const MOBILE_CSS: &str = include_str!("assets/mobile/app.css");
 const MOBILE_JS: &str = include_str!("assets/mobile/app.js");
 const XTERM_CSS: &str = include_str!("assets/xterm.css");
@@ -57,9 +64,11 @@ const ICON_HELP: &str = include_str!("assets/icons/help.svg");
 const ICON_SETTINGS: &str = include_str!("assets/icons/settings.svg");
 const ICON_THEME_AUTO: &str = include_str!("assets/icons/theme-auto.svg");
 const ICON_GIT: &str = include_str!("assets/icons/git.svg");
+const ICON_TERMINAL: &str = include_str!("assets/icons/terminal.svg");
 const ICON_CHEVRON_RIGHT: &str = include_str!("assets/icons/chevron-right.svg");
 const ICON_CHEVRON_DOWN: &str = include_str!("assets/icons/chevron-down.svg");
 const ICON_FOLDER: &str = include_str!("assets/icons/folder.svg");
+const ICON_FOLDER_UP: &str = include_str!("assets/icons/folder-up.svg");
 const ICON_FILE: &str = include_str!("assets/icons/file.svg");
 
 pub(crate) fn app_html() -> Response {
@@ -94,8 +103,37 @@ pub(crate) async fn shared_core_js() -> Response {
     static_text(SHARED_CORE_JS, "application/javascript; charset=utf-8")
 }
 
+pub(crate) async fn shared_file_tree_js() -> Response {
+    static_text(SHARED_FILE_TREE_JS, "application/javascript; charset=utf-8")
+}
+
+pub(crate) async fn shared_editor_js() -> Response {
+    static_text(SHARED_EDITOR_JS, "application/javascript; charset=utf-8")
+}
+
+pub(crate) async fn vendor_codemirror_js() -> Response {
+    static_text(
+        VENDOR_CODEMIRROR_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
 pub(crate) async fn desktop_search_js() -> Response {
     static_text(DESKTOP_SEARCH_JS, "application/javascript; charset=utf-8")
+}
+
+pub(crate) async fn desktop_file_browser_js() -> Response {
+    static_text(
+        DESKTOP_FILE_BROWSER_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(crate) async fn desktop_directory_picker_js() -> Response {
+    static_text(
+        DESKTOP_DIRECTORY_PICKER_JS,
+        "application/javascript; charset=utf-8",
+    )
 }
 
 pub(crate) async fn desktop_css() -> Response {
@@ -108,6 +146,10 @@ pub(crate) async fn desktop_git_ui_css() -> Response {
 
 pub(crate) async fn desktop_search_css() -> Response {
     static_text(DESKTOP_SEARCH_CSS, "text/css; charset=utf-8")
+}
+
+pub(crate) async fn desktop_file_browser_css() -> Response {
+    static_text(DESKTOP_FILE_BROWSER_CSS, "text/css; charset=utf-8")
 }
 
 pub(crate) async fn desktop_shortcuts_css() -> Response {
@@ -138,6 +180,13 @@ pub(crate) async fn mobile_worktrees_js() -> Response {
     static_text(MOBILE_WORKTREES_JS, "application/javascript; charset=utf-8")
 }
 
+pub(crate) async fn mobile_file_browser_js() -> Response {
+    static_text(
+        MOBILE_FILE_BROWSER_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
 pub(crate) async fn mobile_css() -> Response {
     static_text(MOBILE_CSS, "text/css; charset=utf-8")
 }
@@ -160,6 +209,30 @@ fn static_text(body: &'static str, content_type: &'static str) -> Response {
 
 pub(crate) async fn favicon_svg() -> Response {
     let mut response = HERDR_LOGO.into_response();
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("image/svg+xml; charset=utf-8"),
+    );
+    response
+}
+
+pub(crate) async fn favicon_attention_svg() -> Response {
+    themed_favicon_svg("#fff7ed", "#fed7aa", "#f97316")
+}
+
+pub(crate) async fn favicon_error_svg() -> Response {
+    themed_favicon_svg("#fef2f2", "#fecaca", "#ef4444")
+}
+
+fn themed_favicon_svg(background: &str, chrome: &str, accent: &str) -> Response {
+    let body = HERDR_LOGO
+        .replace("#e0e0e0", background)
+        .replace("#f5f5f5", background)
+        .replace("#bdbdbd", chrome)
+        .replace("#a0a0a0", accent)
+        .replace("#808080", accent)
+        .replace("#606060", accent);
+    let mut response = body.into_response();
     response.headers_mut().insert(
         header::CONTENT_TYPE,
         HeaderValue::from_static("image/svg+xml; charset=utf-8"),
@@ -192,6 +265,10 @@ pub(crate) async fn icon_git_svg() -> Response {
     static_svg(ICON_GIT)
 }
 
+pub(crate) async fn icon_terminal_svg() -> Response {
+    static_svg(ICON_TERMINAL)
+}
+
 pub(crate) async fn icon_chevron_right_svg() -> Response {
     static_svg(ICON_CHEVRON_RIGHT)
 }
@@ -202,6 +279,10 @@ pub(crate) async fn icon_chevron_down_svg() -> Response {
 
 pub(crate) async fn icon_folder_svg() -> Response {
     static_svg(ICON_FOLDER)
+}
+
+pub(crate) async fn icon_folder_up_svg() -> Response {
+    static_svg(ICON_FOLDER_UP)
 }
 
 pub(crate) async fn icon_file_svg() -> Response {
@@ -227,8 +308,18 @@ mod tests {
         let css = "text/css; charset=utf-8";
 
         assert_eq!(content_type(&desktop_git_ui_js().await), javascript);
+        assert_eq!(content_type(&desktop_file_browser_js().await), javascript);
+        assert_eq!(
+            content_type(&desktop_directory_picker_js().await),
+            javascript
+        );
+        assert_eq!(content_type(&shared_file_tree_js().await), javascript);
+        assert_eq!(content_type(&shared_editor_js().await), javascript);
+        assert_eq!(content_type(&vendor_codemirror_js().await), javascript);
+        assert_eq!(content_type(&mobile_file_browser_js().await), javascript);
         assert_eq!(content_type(&login_js().await), javascript);
         assert_eq!(content_type(&desktop_git_ui_css().await), css);
+        assert_eq!(content_type(&desktop_file_browser_css().await), css);
         assert_eq!(content_type(&login_css().await), css);
     }
 
@@ -240,9 +331,11 @@ mod tests {
         assert_eq!(content_type(&icon_settings_svg().await), svg);
         assert_eq!(content_type(&icon_theme_auto_svg().await), svg);
         assert_eq!(content_type(&icon_git_svg().await), svg);
+        assert_eq!(content_type(&icon_terminal_svg().await), svg);
         assert_eq!(content_type(&icon_chevron_right_svg().await), svg);
         assert_eq!(content_type(&icon_chevron_down_svg().await), svg);
         assert_eq!(content_type(&icon_folder_svg().await), svg);
+        assert_eq!(content_type(&icon_folder_up_svg().await), svg);
         assert_eq!(content_type(&icon_file_svg().await), svg);
     }
 }

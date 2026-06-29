@@ -14,6 +14,7 @@ Compatibility:
 
 | WebUI | Herdr | Protocol | Status | Notes |
 | --- | --- | --- | --- | --- |
+| `0.0.49` | `0.7.1` | `14` | Current | Adds file browser/editor, shared file trees, CodeMirror editing, large Git change-set placeholders, browser notifications, themed favicons, and local snapshot versioning. |
 | `0.0.46` | `0.7.1` | `14` | Tested | Adds configurable WebUI/Git prefix shortcuts, keeps Git drawer keyboard input isolated, and raises Rust line coverage above 70%. |
 | `0.0.45` | `0.7.1` | `14` | Tested | Improves embedded Git UI navigation with Escape handling, all-changes return behavior, split frontend assets, scoped file history controls, keyboard-owned drawer input, and per-file large diff loading. |
 | `0.0.45` | `0.7.0` | `14` | Minimum supported | Uses WebUI's legacy existing-branch worktree fallback when needed. |
@@ -31,6 +32,12 @@ Binary output:
 ```text
 target/release/herdr-webui
 ```
+
+Runtime version:
+
+- Local builds report `snapshot-<shortsha>`.
+- GitHub Actions tag builds report the release tag.
+- `Cargo.toml` keeps the next static WebUI SemVer for package metadata; product version still comes from `build.rs` and is exposed by `herdr-webui --version` and `/api/versions`.
 
 ## Run Locally
 
@@ -85,16 +92,20 @@ Use `--verbose`, `-v`, or `HERDR_WEB_VERBOSE=1` with macOS service commands to p
 - `src/main.rs`: WebUI server, auth, JSON proxy, WebSockets, terminal bridge, install helpers.
 - `src/assets.rs`: embedded frontend asset responses.
 - `src/compat.rs`: backend compatibility checks.
+- `src/file_browser.rs`: authenticated file-browser API for trees, file read/write, rename, and delete.
 - `src/protocol.rs`: Herdr direct terminal attach wire types and frame codec.
 - `src/service.rs`: OS service helpers.
 - `src/assets/`: embedded HTML/CSS/JS and frontend tests.
 - `src/assets/desktop/`: desktop UI bundle chunks and desktop-only CSS.
 - `src/assets/desktop/app_css/`: desktop shell CSS modules concatenated into `/assets/desktop/app.css`.
 - `src/assets/desktop/app_js/`: desktop shell JS modules concatenated into `/assets/desktop/app.js`.
+- `src/assets/desktop/file_browser.js` and `src/assets/desktop/file_browser.css`: desktop file explorer and editor shell.
 - `src/assets/desktop/git_ui/`: embedded Git UI modules for settings, syntax highlighting, log actions, drawer shell CSS, diff CSS, log CSS, and layout CSS.
 - `src/assets/icons/`: SVG icons served as static assets and referenced from CSS/markup.
 - `src/assets/mobile/`: mobile UI bundle chunks and mobile-only CSS.
 - `src/assets/shared/`: browser helpers shared by desktop and mobile bundles.
+- `src/assets/shared/file_tree.js` and `src/assets/shared/editor.js`: shared file-tree renderer and lightweight editor abstraction.
+- `src/assets/vendor/codemirror_entry.mjs`: CodeMirror bundle source entry; `src/assets/vendor/codemirror.bundle.js` is the checked-in generated browser bundle.
 - `.github/workflows/webui-ci.yml`: WebUI CI.
 - `.github/workflows/webui-release.yml`: WebUI release builds for `v0.0.*` tags.
 - `Makefile`: local build, run, install, update, uninstall commands.
@@ -103,7 +114,7 @@ The Rust binary embeds frontend assets with `include_str!`, so release artifacts
 
 ## Frontend Notes
 
-- Desktop and mobile UI are currently embedded vanilla HTML/CSS/JS assets with no build step.
+- Desktop and mobile UI are embedded vanilla HTML/CSS/JS assets. The main shell has no frontend build step; the optional CodeMirror editor bundle is generated from `src/assets/vendor/codemirror_entry.mjs` and checked in.
 - Desktop shell and Git UI assets are split into plain JS/CSS modules and concatenated by `src/assets.rs`; public URLs stay `/assets/desktop/app.js`, `/assets/desktop/app.css`, `/assets/desktop/git-ui.js`, and `/assets/desktop/git-ui.css`.
 - Prefer moving behavior out of inline handlers into delegated JS listeners and shared CSS classes when touching UI code.
 - SVG icons should live under `src/assets/icons/` and be referenced from CSS or markup, not embedded inline in JS templates.
@@ -142,14 +153,14 @@ If `--session NAME` is supplied, launched Herdr processes receive `HERDR_SESSION
 
 ## WebUI Features
 
-The browser UI provides workspace navigation, top panel tabs, agent status, terminal attach, and local-only convenience settings stored in browser storage.
+The browser UI provides workspace navigation, top panel tabs, agent status, terminal attach, Git views, file browsing/editing, and local-only convenience settings stored in browser storage.
 
 Sidebar:
 
 - Use the vertical divider between the sidebar and terminal to hide or show the workspace/agents sidebar.
 - The collapsed state is stored in browser `localStorage`.
 - When collapsed, the sidebar shows compact agent counters for blocked, working, idle, and done agents.
-- The header exposes compact Search, Theme, No-sleep, Worktree, New workspace, and Git controls.
+- The header exposes compact Search, Theme, No-sleep, Worktree, New workspace, Git, and Files controls.
 - The footer shows the Herdr brand, current session, shortcut help, and settings.
 - Theme colors are browser-local and expose shared accent variables used by shell controls and the embedded Git UI.
 - No-sleep supports Off, Auto, 1 hour, 2 hours, 4 hours, and Infinite from a compact dropdown.
@@ -172,6 +183,18 @@ Worktrees:
 - Worktree groups avoid duplicate repo headers when the parent workspace card is already visible.
 - Removing a linked worktree is available from the worktree actions and from the keyboard prefix `Delete` shortcut.
 
+File browser:
+
+- Desktop workspaces and linked worktrees include a file explorer opened from the sidebar Files button. Git, Files, and terminal views are mutually exclusive foreground modes.
+- The desktop explorer uses the authenticated `/api/file-browser/*` routes to list files, preview text files, edit and save files with a hash guard, rename entries, and delete files or folders with confirmation.
+- Folders are lazy-loaded and default collapsed. Double-click a folder to enter it as the current root. The `...` row goes to the parent within the current browser root.
+- Enable `File browser parent folders` in Settings to allow the `...` row at the workspace/worktree root to move above that directory.
+- Single-clicking a file opens it by replacing the currently selected preview pane. Shift-click or right-click `Open in split` opens another split pane.
+- File preview panes include close buttons. Closing a dirty edited file asks for confirmation.
+- Right-click a file or folder for contextual actions: open, open in split, enter folder, rename, delete, and copy path.
+- File tree indentation is configurable with `Tree indentation` in Settings and is shared with Git file trees.
+- Mobile includes a Files tab for browsing and previewing files.
+
 Git UI:
 
 - Desktop workspaces and linked worktrees include an embedded Git drawer opened from the sidebar Git button.
@@ -182,7 +205,7 @@ Git UI:
 - File lists are shown as a collapsible folder tree with file-level line counts. Settings can switch the file list to filename-only mode with the full path in the tooltip.
 - Right-click a file for actions such as stash, discard, stage, or unstage. Section-level bulk actions stage or unstage grouped files with confirmation.
 - Commit drafts are stored in browser `localStorage` per workspace/worktree/ref.
-- Large diffs are protected by a browser-local `Git large diff line limit` setting under Settings → `Git UI`. In the all-changes view, files over 500 diff lines show a per-file `Load diff` placeholder so many-file changes remain usable. In selected-file view, the configured limit can still hide very large renders until you explicitly load them. Set the setting to `0` to disable the selected-file line limit.
+- Large diffs are protected by browser-local Git UI limits. In large change sets, the all-changes view shows GitHub-like file shells and each file body has a `Load diff` button that fetches that file on demand. Individual files over 500 diff lines also show a per-file `Load diff` placeholder. In selected-file view, the configured line limit can still hide very large renders until you explicitly load them. Set the line-limit setting to `0` to disable the selected-file line limit.
 - Diffs support per-file collapse, collapse/show all, visual change grouping, inline word highlights, context expansion, hunk stage/unstage/restore actions, and per-file blame from the Changes file view.
 - Syntax highlighting is embedded and modular for common project files including JSON, YAML, Python, Java, Rust, Go, JavaScript, TypeScript, CSS, Kotlin, shell, Makefiles, and HTML.
 - Side-by-side hunk editing lets you edit current hunk text, save back to the working tree with a hash guard, and refresh the diff.
