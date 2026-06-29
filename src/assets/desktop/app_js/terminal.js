@@ -1,3 +1,19 @@
+let terminalAssetPromise = null;
+
+function ensureTerminalAsset() {
+  if (typeof Terminal !== "undefined") return Promise.resolve(true);
+  if (terminalAssetPromise) return terminalAssetPromise;
+  terminalAssetPromise = new Promise((resolve) => {
+    const script = document.createElement("script");
+    script.async = true;
+    script.src = "/assets/xterm.js";
+    script.onload = () => resolve(typeof Terminal !== "undefined");
+    script.onerror = () => resolve(false);
+    document.body.appendChild(script);
+  });
+  return terminalAssetPromise;
+}
+
 function connectEvents() {
   if (document.hidden || eventWs) return;
   const eventSession = state.session;
@@ -49,6 +65,14 @@ function connectTerminal() {
   if (!state.terminalId) {
     resetTerminalConnection(true);
     setTerminalLoading(false);
+    return;
+  }
+  if (typeof Terminal === "undefined") {
+    setTerminalLoading(true);
+    ensureTerminalAsset().then((loaded) => {
+      if (loaded) connectTerminal();
+      else setTerminalLoading(false);
+    });
     return;
   }
   fitTerminalShell();
@@ -250,8 +274,6 @@ function scheduleTerminalFrameWork() {
   terminalFramePending = true;
   requestAnimationFrame(() => {
     terminalFramePending = false;
-    fitTerminalShell();
-    fitTerminalSurface();
     focusTerminal();
   });
 }

@@ -1,4 +1,20 @@
 (function () {
+  let terminalAssetPromise = null;
+
+  function ensureTerminalAsset() {
+    if (globalThis.Terminal) return Promise.resolve(true);
+    if (terminalAssetPromise) return terminalAssetPromise;
+    terminalAssetPromise = new Promise((resolve) => {
+      const script = document.createElement("script");
+      script.async = true;
+      script.src = "/assets/xterm.js";
+      script.onload = () => resolve(!!globalThis.Terminal);
+      script.onerror = () => resolve(false);
+      document.body.appendChild(script);
+    });
+    return terminalAssetPromise;
+  }
+
   function createMobileTerminal({ el, state, wsUrl }) {
     let term,
       termWs,
@@ -46,7 +62,11 @@
 
     function connect() {
       const terminal = el("terminal");
-      if (!terminal || !state.terminalId || !globalThis.Terminal) return;
+      if (!terminal || !state.terminalId) return;
+      if (!globalThis.Terminal) {
+        ensureTerminalAsset().then((loaded) => { if (loaded) connect(); });
+        return;
+      }
       if (term && openedTerminalElement && openedTerminalElement !== terminal)
         destroy(false);
       const nextSize = size();
@@ -66,7 +86,7 @@
         term = new Terminal({
           convertEol: false,
           fontFamily: terminalFontFamily(),
-          scrollback: 10000,
+          scrollback: 2000,
         });
         term.onData((data) => {
           if (termWs && termWs.readyState === 1) termWs.send(data);

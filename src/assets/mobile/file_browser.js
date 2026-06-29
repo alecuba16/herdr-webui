@@ -3,7 +3,7 @@
     const Tree = globalThis.HerdrFileTree;
     const Editor = globalThis.HerdrEditor;
     const state = deps.state;
-    const local = { path: "", entries: [], selected: "", file: null, error: "", loading: false };
+    const local = { path: "", entries: [], selected: "", file: null, error: "", loading: false, editor: null, editorPath: "" };
 
     function cwd() {
       return deps.currentWorkspaceCwd() || "";
@@ -24,6 +24,7 @@
         const data = await deps.api(`/api/file-browser/tree?cwd=${encodeURIComponent(root)}&path=${encodeURIComponent(path || "")}&depth=${depth}`);
         local.path = data.path || "";
         local.entries = data.entries || [];
+        destroyEditor();
         local.file = null;
       } catch (error) {
         local.error = error.message || String(error);
@@ -35,6 +36,7 @@
     async function openFile(path) {
       const root = cwd();
       local.selected = path;
+      destroyEditor();
       local.file = null;
       local.loading = true;
       deps.render();
@@ -86,15 +88,26 @@
       else body = `<div id="mobileFilePreview"></div>`;
       setTimeout(() => {
         const parent = document.getElementById("mobileFilePreview");
-        if (parent && local.file) Editor.create({ parent, path: local.file.path, content: local.file.content || "", readonly: true, hideHeader: true });
+        if (!parent || !local.file) return;
+        if (local.editor && local.editorPath === local.file.path) return;
+        if (local.editor && local.editor.destroy) local.editor.destroy();
+        local.editorPath = local.file.path;
+        local.editor = Editor.create({ parent, path: local.file.path, content: local.file.content || "", readonly: true, hideHeader: true });
       }, 0);
       return `<section class="mobile-section mobile-files"><h2>Files</h2><div class="mobile-actions"><button class="mobile-btn" onclick="HerdrMobile.filesBackToTree()">Back</button><button class="mobile-btn" onclick="HerdrMobile.filesRefreshFile()">Refresh</button></div><p class="mobile-help">${deps.escapeHtml(file.path || "")}</p>${local.error ? `<div class="mobile-error">${deps.escapeHtml(local.error)}</div>` : ""}${body}</section>`;
+    }
+
+    function destroyEditor() {
+      if (local.editor && local.editor.destroy) local.editor.destroy();
+      local.editor = null;
+      local.editorPath = "";
     }
 
     return {
       load,
       renderScreen,
       reset() {
+        destroyEditor();
         local.path = "";
         local.entries = [];
         local.selected = "";
@@ -105,7 +118,7 @@
       select(encodedPath) { openFile(decodeURIComponent(encodedPath)); },
       up() { load(parentPath(local.path)); },
       refresh() { load(local.path); },
-      backToTree() { local.file = null; deps.render(); },
+      backToTree() { destroyEditor(); local.file = null; deps.render(); },
       refreshFile() { if (local.file) openFile(local.file.path); },
     };
   }
