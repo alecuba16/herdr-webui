@@ -15,6 +15,7 @@ Goal: reduce CPU, memory, bundle parse cost, and maintenance risk across backend
 - Lazy-load xterm JavaScript from desktop/mobile terminal connect paths instead of parsing it at initial HTML load.
 - Lazy-load desktop Git UI and file browser JavaScript on first use instead of desktop boot.
 - Coalesce mobile event websocket refreshes so event bursts trigger one API refresh instead of one per message.
+- Add short browser cache headers for embedded static JS/CSS/SVG assets to reduce repeated transfer and parse on reload.
 
 ## P0 Performance
 
@@ -86,7 +87,7 @@ Goal: reduce CPU, memory, bundle parse cost, and maintenance risk across backend
 
 ## Suggested Iteration Order
 
-1. Finish frontend boot/runtime cheap wins: event-type selective mobile refresh and terminal asset cache headers.
+1. Finish frontend boot/runtime cheap wins: event-type selective mobile refresh and content-hash/ETag asset caching.
 2. Add backend blocking-operation wrappers and git/file caps.
 3. Split Git/file browser rendering to preserve DOM/editor instances.
 4. Refactor large files into modules without behavior changes.

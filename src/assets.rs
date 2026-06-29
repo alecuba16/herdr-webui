@@ -204,6 +204,10 @@ fn static_text(body: &'static str, content_type: &'static str) -> Response {
     response
         .headers_mut()
         .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=300"),
+    );
     response
 }
 
@@ -212,6 +216,10 @@ pub(crate) async fn favicon_svg() -> Response {
     response.headers_mut().insert(
         header::CONTENT_TYPE,
         HeaderValue::from_static("image/svg+xml; charset=utf-8"),
+    );
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=300"),
     );
     response
 }
@@ -237,6 +245,10 @@ fn themed_favicon_svg(background: &str, chrome: &str, accent: &str) -> Response 
         header::CONTENT_TYPE,
         HeaderValue::from_static("image/svg+xml; charset=utf-8"),
     );
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=300"),
+    );
     response
 }
 
@@ -245,6 +257,10 @@ fn static_svg(body: &'static str) -> Response {
     response.headers_mut().insert(
         header::CONTENT_TYPE,
         HeaderValue::from_static("image/svg+xml; charset=utf-8"),
+    );
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=300"),
     );
     response
 }
@@ -302,6 +318,14 @@ mod tests {
             .unwrap_or("")
     }
 
+    fn cache_control(response: &Response) -> &str {
+        response
+            .headers()
+            .get(header::CACHE_CONTROL)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("")
+    }
+
     #[tokio::test]
     async fn serves_remaining_static_text_assets_with_content_types() {
         let javascript = "application/javascript; charset=utf-8";
@@ -321,6 +345,10 @@ mod tests {
         assert_eq!(content_type(&desktop_git_ui_css().await), css);
         assert_eq!(content_type(&desktop_file_browser_css().await), css);
         assert_eq!(content_type(&login_css().await), css);
+        assert_eq!(
+            cache_control(&vendor_codemirror_js().await),
+            "public, max-age=300"
+        );
     }
 
     #[tokio::test]
@@ -337,5 +365,6 @@ mod tests {
         assert_eq!(content_type(&icon_folder_svg().await), svg);
         assert_eq!(content_type(&icon_folder_up_svg().await), svg);
         assert_eq!(content_type(&icon_file_svg().await), svg);
+        assert_eq!(cache_control(&icon_file_svg().await), "public, max-age=300");
     }
 }
