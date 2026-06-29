@@ -473,7 +473,12 @@
   }
 
   function canMutateDiff() {
-    return currentMode() === "changes" || currentMode() === "current-compare";
+    const view = active() || {};
+    return currentMode() === "changes" || currentMode() === "current-compare" || (currentMode() === "readonly-compare" && view.compareTarget === ".");
+  }
+
+  function comparesWorkingTree(view = active()) {
+    return !!(view && (currentMode() === "current-compare" || (currentMode() === "readonly-compare" && view.compareTarget === ".")));
   }
 
   function allFiles() {
@@ -644,7 +649,7 @@
     const sideEditor = view.sideEditor && view.sideEditor.path === view.file
       ? `<button class="git-ui-btn primary" ${view.sideEditor.saving ? "disabled" : ""} onclick="HerdrGitUi.saveSideEditor()">${view.sideEditor.saving ? "Saving..." : "Save edits"}</button><button class="git-ui-btn" onclick="HerdrGitUi.cancelSideEditor()">Cancel edits</button>`
       : activeTab === "changes" && canEditCurrentFile(view)
-        ? `<button class="git-ui-btn" onclick="HerdrGitUi.editSideBySide()">Edit side-by-side</button>`
+        ? `<button class="git-ui-btn" onclick="HerdrGitUi.editSideBySide()">${comparesWorkingTree(view) ? "Edit current file" : "Edit side-by-side"}</button>`
         : "";
     return `<div class="git-ui-log-head"><span class="git-ui-toolbar-title">File view</span><button class="git-ui-btn ${activeTab === "changes" ? "active" : ""}" onclick="HerdrGitUi.latestChanges()">Changes</button><button class="git-ui-btn ${activeTab === "history" ? "active" : ""}" onclick="HerdrGitUi.tab('history')">History</button>${blame}${sideEditor}${conflicts ? `<button class="git-ui-btn ${activeTab === "conflicts" ? "active" : ""}" onclick="HerdrGitUi.tab('conflicts')">Conflicts</button>` : ""}${collapse}${compare}</div>`;
   }
@@ -751,8 +756,9 @@
     const left = mode === "changes" ? fileDiffLeftLabel(file) : (view.compareBase || "base");
     const right = mode === "readonly-compare" ? (view.compareTarget || "target") : "current";
     if (view.showBlame && (!large || loadedLarge)) ensureBlame(file.path);
-    const restore = mode === "changes" && file.diff_kind !== "S" && (view.diffScope || "all") !== "staged"
-      ? `<button class="git-ui-btn danger" title="Restore complete file" onclick="HerdrGitUi.discardFile('${arg(file.path)}')">Restore file</button>`
+    const canRestoreFile = (mode === "changes" && file.diff_kind !== "S" && (view.diffScope || "all") !== "staged") || comparesWorkingTree(view);
+    const restore = canRestoreFile
+      ? `<button class="git-ui-btn danger" title="Restore complete file" onclick="HerdrGitUi.restoreDiffFile('${arg(file.path)}')">Restore file</button>`
       : "";
     const body = collapsed ? "" : file.hidden_large_change ? renderLargeChangePlaceholder(file) : large && !loadedLarge ? renderLargeDiffPlaceholder(file) : (file.chunks || []).map((chunk, index) => renderChunk(file, chunk, index)).join("");
     return `<div class="git-ui-diff-file" data-git-path="${esc(file.path)}"><div class="git-ui-diff-file-head"><button class="git-ui-file-collapse" title="${collapsed ? "Show file" : "Collapse file"}" onclick="HerdrGitUi.toggleFile('${arg(file.path)}')">${collapsed ? "+" : "−"}</button><strong>${esc(file.path)}</strong><span class="git-ui-muted">${esc(left)} → ${esc(right)}</span><span class="git-ui-diff-file-actions"><span class="git-ui-badge add">+${file.additions || 0}</span> <span class="git-ui-badge del">-${file.deletions || 0}</span>${restore}</span></div>${body}</div>`;
@@ -875,7 +881,8 @@
     const newAuthor = blameName(path, newNo);
     const status = view.status || {};
     const hasWorkingPath = scope === "working" || (scope === "all" && ([...(status.unstaged || []), ...(status.untracked || [])].includes(path)));
-    const blockButton = currentMode() === "changes" && hasWorkingPath && (add || del) && isFirstChange(rows, rowIndex)
+    const canRestoreBlock = (currentMode() === "changes" && hasWorkingPath) || comparesWorkingTree(view);
+    const blockButton = canRestoreBlock && (add || del) && isFirstChange(rows, rowIndex)
       ? `<button class="git-ui-line-action" title="Restore this block" onclick="HerdrGitUi.restoreHunk('${arg(path)}',${hunkIndex})">&gt;&gt;</button>`
       : `<span class="git-ui-line-action-spacer"></span>`;
     const contextControls = rowIndex === 0
@@ -1145,16 +1152,21 @@
   function hunkPatch(path, index) {
     const file = diffFile(path);
     if (!file || !file.chunks || !file.chunks[index]) return "";
-    const chunk = file.chunks[index];
+    return filePatch(file, [file.chunks[index]]);
+  }
+
+  function filePatch(file, chunks) {
     const oldPath = file.old_path || file.path;
     const lines = [];
     lines.push(`diff --git a/${oldPath} b/${file.path}`);
     lines.push(`--- a/${oldPath}`);
     lines.push(`+++ b/${file.path}`);
-    lines.push(chunk.header);
-    for (const line of chunk.lines || []) {
-      const prefix = line.line_type === "add" ? "+" : line.line_type === "delete" ? "-" : " ";
-      lines.push(prefix + (line.content || ""));
+    for (const chunk of chunks || []) {
+      lines.push(chunk.header);
+      for (const line of chunk.lines || []) {
+        const prefix = line.line_type === "add" ? "+" : line.line_type === "delete" ? "-" : " ";
+        lines.push(prefix + (line.content || ""));
+      }
     }
     return lines.join("\n") + "\n";
   }
@@ -1298,13 +1310,24 @@
     unstageFile(path) { post("/api/git-ui/unstage", { cwd: active().cwd, paths: [decodeURIComponent(path)] }); },
     restoreFile(path) { if (confirm("Restore this file change?")) post("/api/git-ui/discard", { cwd: active().cwd, paths: [decodeURIComponent(path)], confirmed: true }); },
     restoreHunk(path, index) { path = decodeURIComponent(path); if (confirm("Restore this hunk?")) applyHunk(path, index, { reverse: true }); },
+    restoreDiffFile(path) {
+      path = decodeURIComponent(path);
+      const file = diffFile(path);
+      if (!file) return;
+      if (comparesWorkingTree()) {
+        const patch = filePatch(file, file.chunks || []);
+        if (patch && confirm(`Restore complete file ${path}?`)) post("/api/git-ui/apply-patch", { cwd: active().cwd, patch, reverse: true });
+        return;
+      }
+      this.discardFile(encodeURIComponent(path));
+    },
     discardFile(path) { path = decodeURIComponent(path); if (confirm(`Restore complete file ${path}?`)) post("/api/git-ui/discard", { cwd: active().cwd, paths: [path], confirmed: true }); },
     toggleBlame() { const view = active(); if (!view) return; view.showBlame = !view.showBlame; render(); },
     async editSideBySide() {
       const view = active();
       if (!canEditCurrentFile(view)) return;
       const file = diffFile(view.file);
-      const previousRef = "HEAD";
+      const previousRef = comparesWorkingTree(view) ? (view.compareBase || "HEAD") : "HEAD";
       view.sideEditor = { path: view.file, content: "", hunks: [], previousRef, hash: "", loading: true, saving: false, error: "" };
       render();
       try {
@@ -1461,7 +1484,16 @@
       else post("/api/git-ui/switch", { cwd: view.cwd, branch });
     },
     async compareCurrent() {
-      this.latestChanges();
+      const view = active();
+      if (!view) return;
+      view.compareBase = "HEAD";
+      view.compareTarget = ".";
+      view.mode = "readonly-compare";
+      view.temporaryHistoryCompare = false;
+      view.tab = "changes";
+      view.file = "";
+      view.diffKind = "";
+      await loadDiff();
     },
     async compareCommits(base, target) {
       active().compareBase = base;
