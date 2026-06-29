@@ -303,7 +303,7 @@ if (settingsModal && !settingsModal.dataset.ux) {
     const head = document.createElement("div");
     head.className = "settings-head";
     head.innerHTML =
-      '<div><h2>Settings</h2><p>Browser-local preferences for terminal, theme, and agent behavior.</p></div><button class="mini settings-close" id="settingsCloseTop" title="Close">✕</button>';
+      '<div><h2>Settings</h2><p>Browser-local preferences for terminal, theme, and agent behavior.</p></div><label class="settings-search"><span>Search settings</span><input id="settingsSearch" type="search" placeholder="Search theme, terminal, Git..." autocomplete="off"></label><button class="mini settings-close" id="settingsCloseTop" title="Close">✕</button>';
     heading.replaceWith(head);
     const body = document.createElement("div");
     body.className = "settings-body";
@@ -1218,6 +1218,7 @@ if (showTabActivitySetting && !el("optTreeIndentPx"))
       '<label class="option"><span>Tree indentation<small>Pixels added per folder level in file trees.</small></span><input id="optTreeIndentPx" type="number" min="0" max="40" step="1"></label><label class="option"><input type="checkbox" id="optFileBrowserAllowParent"><span>File browser parent folders<small>Allow Files to go above the workspace/worktree directory with the ... row.</small></span></label>',
     );
 groupSettingsSections();
+setupSettingsSearch();
 function groupSettingsSections() {
   if (!settingsBody || settingsBody.dataset.sections === "1") return;
   const sectionDefs = [
@@ -1301,6 +1302,50 @@ function groupSettingsSections() {
     settingsBody.appendChild(section);
   }
   settingsBody.dataset.sections = "1";
+}
+function setupSettingsSearch() {
+  const input = el("settingsSearch"),
+    body = settingsBody;
+  if (!input || !body || body.dataset.search === "1") return;
+  const empty = document.createElement("div");
+  empty.className = "settings-empty settings-filter-hidden";
+  empty.textContent = "No settings match your search.";
+  body.appendChild(empty);
+  input.addEventListener("input", filterSettings);
+  body.dataset.search = "1";
+  filterSettings();
+}
+function prepareSettingsModalOpen() {
+  applyOptions();
+  const input = el("settingsSearch");
+  if (!input) return;
+  input.value = "";
+  filterSettings();
+  requestAnimationFrame(() => input.focus());
+}
+function filterSettings() {
+  const input = el("settingsSearch"),
+    body = settingsBody;
+  if (!input || !body) return;
+  const query = input.value.trim().toLowerCase();
+  let visibleSections = 0;
+  const sections = Array.from(body.children || []).filter((node) => node.classList.contains("settings-section"));
+  for (const section of sections) {
+    const sectionHead = section.querySelector(".settings-section-head");
+    const sectionMatches = !query || (sectionHead && sectionHead.textContent.toLowerCase().includes(query));
+    let visibleRows = 0;
+    const rows = Array.from(section.children || []).filter((node) => !node.classList.contains("settings-section-head"));
+    for (const row of rows) {
+      const match = sectionMatches || row.textContent.toLowerCase().includes(query);
+      row.classList.toggle("settings-filter-hidden", !match);
+      if (match) visibleRows += 1;
+    }
+    const visible = sectionMatches || visibleRows > 0;
+    section.classList.toggle("settings-filter-hidden", !visible);
+    if (visible) visibleSections += 1;
+  }
+  const empty = body.querySelector(".settings-empty");
+  if (empty) empty.classList.toggle("settings-filter-hidden", visibleSections > 0);
 }
 function applyOptions() {
   const shell = el("terminalShell");
@@ -1690,7 +1735,7 @@ function setupSessionChrome() {
     actions.innerHTML = `<button class="mini footer-icon-button" id="footerShortcutsButton" title="Shortcuts" aria-label="Shortcuts">${appIcon("help")}</button><button class="mini footer-icon-button" id="footerSettingsButton" title="Settings" aria-label="Settings">${appIcon("settings")}</button>`;
     footer.appendChild(actions);
     el("footerShortcutsButton").onclick = () => { applyOptions(); el("shortcutsModal").style.display = "grid"; };
-    el("footerSettingsButton").onclick = () => { el("settingsModal").style.display = "grid"; applyOptions(); loadServerSettings(); };
+    el("footerSettingsButton").onclick = () => { el("settingsModal").style.display = "grid"; prepareSettingsModalOpen(); loadServerSettings(); };
   }
   const footerShortcutsButton = el("footerShortcutsButton");
   const footerSettingsButton = el("footerSettingsButton");
