@@ -40,6 +40,24 @@
   width: 100%;
   z-index: 1;
 }
+.git-ui-hunk-edit-hidden {
+  display: none;
+}
+.git-ui-hunk-edit-mount {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  min-height: 180px;
+  overflow: hidden;
+}
+.git-ui-hunk-edit-mount .herdr-editor {
+  min-height: 180px;
+}
+.git-ui-hunk-edit-mount .herdr-editor-head {
+  display: none;
+}
+.git-ui-hunk-edit-mount .herdr-editor-mount {
+  min-height: 180px;
+}
 .git-ui-split-editor {
   display: grid;
   gap: 12px;

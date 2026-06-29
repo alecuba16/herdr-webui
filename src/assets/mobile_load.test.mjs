@@ -26,7 +26,7 @@ function context(pathname = "/") {
   const historyCalls = [];
   const terminalStats = { disposed: 0, opened: 0 };
   const requests = [];
-  const navButtons = ["home", "agents", "panels", "worktrees", "terminal"].map(
+  const navButtons = ["home", "agents", "panels", "worktrees", "files", "git", "terminal"].map(
     (screen) => Object.assign(element(), { dataset: { screen } }),
   );
   const getElement = (id) => {
@@ -158,6 +158,10 @@ describe("mobile bundle load", () => {
   const source =
     readFileSync(new URL("./shared/core.js", import.meta.url), "utf8") +
     "\n" +
+    readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8") +
+    "\n" +
+    readFileSync(new URL("./shared/editor.js", import.meta.url), "utf8") +
+    "\n" +
     readFileSync(new URL("./mobile/core.js", import.meta.url), "utf8") +
     "\n" +
     readFileSync(new URL("./mobile/attention.js", import.meta.url), "utf8") +
@@ -165,6 +169,8 @@ describe("mobile bundle load", () => {
     readFileSync(new URL("./mobile/terminal.js", import.meta.url), "utf8") +
     "\n" +
     readFileSync(new URL("./mobile/worktrees.js", import.meta.url), "utf8") +
+    "\n" +
+    readFileSync(new URL("./mobile/file_browser.js", import.meta.url), "utf8") +
     "\n" +
     readFileSync(new URL("./mobile/settings.js", import.meta.url), "utf8") +
     "\n" +

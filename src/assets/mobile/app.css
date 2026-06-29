@@ -201,7 +201,7 @@ body.light {
 }
 .mobile-nav {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(6, 1fr);
   gap: 6px;
   padding: 8px max(8px, env(safe-area-inset-right))
     max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
@@ -219,6 +219,147 @@ body.light {
 .mobile-nav button.active {
   background: var(--panel2);
   color: var(--fg);
+}
+.mobile-actions {
+  display: flex;
+  gap: 8px;
+  margin: 8px 0 10px;
+}
+.mobile-help {
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.herdr-file-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.herdr-tree-row {
+  align-items: center;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--fg);
+  display: grid;
+  font: inherit;
+  gap: 6px;
+  grid-template-columns: 16px 18px minmax(0, 1fr) auto auto;
+  min-height: 44px;
+  padding: 9px 10px 9px calc(10px + var(--tree-offset, 0px));
+  text-align: left;
+  width: 100%;
+}
+.herdr-tree-row.active {
+  border-color: var(--accent);
+}
+.herdr-tree-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.herdr-tree-crumb {
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+}
+.herdr-tree-crumb:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+.herdr-tree-sep {
+  color: var(--muted);
+  padding: 0 2px;
+}
+.herdr-tree-meta,
+.herdr-tree-status {
+  color: var(--muted);
+  font-size: 11px;
+}
+.herdr-tree-status {
+  border: 1px solid var(--border2);
+  border-radius: 999px;
+  min-width: 20px;
+  padding: 1px 5px;
+  text-align: center;
+}
+.herdr-tree-icon {
+  background: currentColor;
+  display: inline-block;
+  height: 15px;
+  mask-position: center;
+  mask-repeat: no-repeat;
+  mask-size: contain;
+  width: 15px;
+}
+.herdr-tree-icon-chevron-right { mask-image: url("/assets/icons/chevron-right.svg"); }
+.herdr-tree-icon-chevron-down { mask-image: url("/assets/icons/chevron-down.svg"); }
+.herdr-tree-icon-folder { mask-image: url("/assets/icons/folder.svg"); }
+.herdr-tree-icon-folder-up { mask-image: url("/assets/icons/folder-up.svg"); }
+.herdr-tree-icon-file { mask-image: url("/assets/icons/file.svg"); }
+.herdr-editor {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.herdr-editor-mount {
+  min-height: 55vh;
+}
+.herdr-editor-head {
+  align-items: center;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  padding: 8px 10px;
+}
+.herdr-editor-head span {
+  color: var(--muted);
+  font-size: 12px;
+}
+.herdr-editor-code,
+.herdr-editor textarea {
+  background: var(--panel2);
+  color: var(--fg);
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  margin: 0;
+  min-height: 55vh;
+  overflow: auto;
+  padding: 12px;
+  white-space: pre;
+}
+.cm-herdr-blame-gutter .cm-gutterElement {
+  color: var(--muted);
+  font-size: 11px;
+  min-width: 72px;
+}
+.cm-herdr-hunk-add { background: color-mix(in srgb, #1db910, transparent 88%); }
+.cm-herdr-hunk-delete,
+.cm-herdr-hunk-del { background: color-mix(in srgb, #f38ba8, transparent 88%); }
+.cm-herdr-hunk-changed,
+.cm-herdr-hunk-edit { background: color-mix(in srgb, var(--accent), transparent 90%); }
+.cm-herdr-hunk-actions {
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  display: flex;
+  gap: 6px;
+  overflow: auto;
+  padding: 6px 8px;
+}
+.cm-herdr-hunk-actions button {
+  background: var(--panel2);
+  border: 1px solid var(--border2);
+  border-radius: 8px;
+  color: var(--fg);
+  font: inherit;
+  font-size: 11px;
+  padding: 4px 8px;
 }
 .mobile-nav-status {
   display: block;

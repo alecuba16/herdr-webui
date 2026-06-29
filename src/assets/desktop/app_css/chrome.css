@@ -169,6 +169,7 @@
 }
 .head #newWs,
 .head #openWorktrees,
+.head #terminalWorkspaceToggle,
 .head #gitWorkspaceToggle,
 .head .shell-action {
   width: 34px;
@@ -179,11 +180,10 @@
 }
 .head #newWs,
 .head #openWorktrees,
-.head .shell-action.active,
 .head .no-sleep-control.active {
-  background: var(--accent-1);
-  color: var(--accent-fg);
-  border: 1px solid var(--accent-1);
+  background: var(--accent-2);
+  color: var(--accent-1);
+  border: 1px solid var(--accent-2-border);
 }
 .head .shell-action,
 .head .no-sleep-control {
@@ -191,9 +191,19 @@
   color: var(--accent-1);
   border: 1px solid var(--accent-2-border);
 }
+.head .shell-action.active,
+.head .no-sleep-control.active {
+  background: var(--accent-1);
+  color: var(--accent-fg);
+  border: 1px solid var(--accent-1);
+}
 .head .shell-action:hover,
+.head #newWs:hover,
+.head #openWorktrees:hover,
 .head .no-sleep-control:hover,
 .head .shell-action:focus,
+.head #newWs:focus,
+.head #openWorktrees:focus,
 .head .no-sleep-control:focus {
   background: var(--control-hover);
   border-color: var(--accent);

@@ -138,8 +138,10 @@ describe("app bundle load", () => {
   it("hides only large file diffs by default", () => {
     match(gitUiSource, /const LARGE_FILE_DIFF_LINE_LIMIT = 500;/);
     match(gitUiSource, /Large diffs are not rendered by default\./);
-    match(gitUiSource, /loadLargeDiff\(file\)/);
+    match(gitUiSource, /Diff hidden to keep large change sets responsive\./);
+    match(gitUiSource, /loadLargeDiff\(file, kind\)/);
     ok(!gitUiSource.includes("Select a file from left list to render its changes."));
+    ok(!gitUiSource.includes("Large change set hidden"));
   });
 
   it("defines Git UI changes-list Escape navigation", () => {
@@ -186,14 +188,14 @@ describe("app bundle load", () => {
     equal(gitKeys.filter((key) => webuiKeys.has(key)).join(","), "");
   });
 
-  it("renders new workspace modal with folder autocomplete fields", () => {
+  it("renders new workspace modal with manual folder field", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
 
     const html = ctx.workspaceCreateModalHtml();
 
     match(html, /id="workspaceCreatePath"/);
-    match(html, /list="workspacePathOptions"/);
+    ok(!html.includes("workspacePathOptions"));
     match(html, /id="workspaceCreateLabel"/);
     match(html, /id="workspaceCreateSubmit"/);
   });
@@ -222,6 +224,7 @@ describe("app bundle load", () => {
     match(source, /title: "Appearance"/);
     match(source, /title: "Terminal input"/);
     match(source, /title: "Agents and alerts"/);
+    match(source, /id="optBrowserNotifications"/);
     match(source, /title: "Worktrees"/);
     match(source, /title: "Server"/);
   });
@@ -529,13 +532,39 @@ describe("app bundle load", () => {
     equal(ctx.eventNeedsFastRefresh("pane.focused"), false);
   });
 
-  it("forgets selected pane when Herdr reports it exited", () => {
+  it("switches selected pane when Herdr reports current pane exited", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
 
     const result = vm.runInContext(
       `state.pane = "pane_1";
        state.terminalId = "term_1";
+       state.tab = "tab_1";
+       state.panes = [
+         { tab_id: "tab_1", pane_id: "pane_1", terminal_id: "term_1" },
+         { tab_id: "tab_1", pane_id: "pane_2", terminal_id: "term_2" },
+       ];
+       forgetClosedSelection("pane.exited", { pane_id: "pane_1" });
+       ({ pane: state.pane, terminalId: state.terminalId });`,
+      ctx,
+    );
+
+    equal(result.pane, "pane_2");
+    equal(result.terminalId, "term_2");
+  });
+
+  it("clears selected pane when no fallback pane remains", () => {
+    const ctx = context();
+    const replaced = [];
+    ctx.history.replaceState = (_state, _title, url) => replaced.push(url);
+    vm.runInContext(source, ctx);
+
+    const result = vm.runInContext(
+      `state.pane = "pane_1";
+       state.terminalId = "term_1";
+       state.tab = "tab_1";
+       state.ws = "ws1";
+       state.panes = [{ tab_id: "tab_1", pane_id: "pane_1", terminal_id: "term_1" }];
        forgetClosedSelection("pane.exited", { pane_id: "pane_1" });
        ({ pane: state.pane, terminalId: state.terminalId });`,
       ctx,
@@ -543,6 +572,27 @@ describe("app bundle load", () => {
 
     equal(result.pane, null);
     equal(result.terminalId, null);
+    equal(replaced.at(-1), "/session/default/workspace/ws1");
+  });
+
+  it("clears stale terminal DOM when selected pane exits even without xterm object", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    const terminal = ctx.document.getElementById("terminal");
+    terminal.innerHTML = "stale terminal";
+
+    vm.runInContext(
+      `term = null;
+       state.ws = "ws1";
+       state.tab = "tab_1";
+       state.pane = "pane_1";
+       state.terminalId = "term_1";
+       state.panes = [{ tab_id: "tab_1", pane_id: "pane_1", terminal_id: "term_1" }];
+       forgetClosedSelection("pane.exited", { pane_id: "pane_1" });`,
+      ctx,
+    );
+
+    equal(terminal.innerHTML, "");
   });
 
   it("auto-closes pane when Herdr reports it exited", async () => {
@@ -666,6 +716,22 @@ describe("app bundle load", () => {
     match(source, /tabActivityLabel/);
   });
 
+  it("renders current panel as label with add button", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    const html = vm.runInContext(
+      `state.ws = "ws1";
+       state.tab = "tab1";
+       state.tabs = [{ workspace_id: "ws1", tab_id: "tab1", label: "main" }];
+       renderPanelField();`,
+      ctx,
+    );
+
+    match(html, /panel-label/);
+    match(html, /panel-add/);
+    ok(!html.includes("panelSelector"));
+  });
+
   it("captures terminal paste before xterm native paste", () => {
     match(source, /addEventListener\(\s*"paste"/);
     match(source, /stopImmediatePropagation\(\)/);
@@ -722,7 +788,7 @@ describe("app bundle load", () => {
     match(ctx.worktreeCreateModalHtml(), /id="worktreeCreateForm"/);
     match(ctx.worktreeCreateModalHtml(), /id="worktreeCreateSubmit"/);
     match(ctx.worktreeOpenModalHtml(), /id="worktreeDiscoverPath"/);
-    match(ctx.worktreeOpenModalHtml(), /id="worktreePathOptions"/);
+    ok(!ctx.worktreeOpenModalHtml().includes("worktreePathOptions"));
     match(ctx.worktreeOpenModalHtml(), /id="worktreeBranchOptions"/);
     match(ctx.shortcutsModalHtml(), /id="shortcutsModal"/);
     match(ctx.shortcutsModalHtml(), /id="closeShortcutCurrent"/);
@@ -772,41 +838,21 @@ describe("app bundle load", () => {
     equal(ctx.suggestedWorkspaceLabel(""), "workspace");
   });
 
-  it("returns null for stale path suggestion responses", async () => {
+  it("does not expose old path suggestion helper", () => {
     const ctx = context();
-    ctx.fetch = async () => {
-      const input = ctx.document.getElementById("workspaceCreatePath");
-      input.value = "/tmp/b";
-      return {
-        ok: true,
-        status: 200,
-        json: async () => ({ suggestions: [{ path: "/tmp/a" }] }),
-      };
-    };
     vm.runInContext(source, ctx);
-    ctx.document.getElementById("workspaceCreatePath").value = "/tmp/a";
 
-    const suggestions = await ctx.loadDirectoryPathSuggestions("workspaceCreatePath");
-
-    equal(suggestions, null);
+    equal(ctx.loadDirectoryPathSuggestions, undefined);
+    equal(ctx.schedulePathSuggestions, undefined);
   });
 
-  it("updates datalist for fresh path suggestions", async () => {
+  it("workspace path changes only update generated label", () => {
     const ctx = context();
-    ctx.fetch = async () => ({
-      ok: true,
-      status: 200,
-      json: async () => ({ suggestions: [{ label: "project", path: "/tmp/project" }] }),
-    });
     vm.runInContext(source, ctx);
-    ctx.document.getElementById("workspaceCreatePath").value = "/tmp";
+    ctx.document.getElementById("workspaceCreatePath").value = "/tmp/project";
 
-    const suggestions = await ctx.loadDirectoryPathSuggestions(
-      "workspaceCreatePath",
-      (items) => ctx.syncDirectoryPathOptions("workspacePathOptions", items),
-    );
+    ctx.workspaceCreatePathChanged();
 
-    equal(suggestions.length, 1);
-    ok(ctx.document.getElementById("workspacePathOptions").innerHTML.includes("/tmp/project"));
+    equal(ctx.document.getElementById("workspaceCreateLabel").value, "project");
   });
 });
