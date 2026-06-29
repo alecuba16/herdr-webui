@@ -712,15 +712,10 @@
   }
 
   function renderEditableHunk(hunk) {
-    const oldText = hunk.oldText || "";
     const currentText = hunk.text || "";
     const readonly = hunk.newStart ? "" : " readonly";
     const meta = hunk.newStart ? `current lines ${hunk.newStart}-${hunk.newEnd}` : "no current lines";
-    return `<div class="git-ui-hunk-editor"><div class="git-ui-hunk-head"><span>${esc(hunk.header || "hunk")}</span><span class="git-ui-muted">${esc(meta)}</span></div><div class="git-ui-hunk-editor-grid"><section><div class="git-ui-editor-head"><strong>Previous</strong><span class="git-ui-muted">read-only</span></div><pre class="git-ui-editor-preview del"><code>${renderEditorLines(oldText, "old")}</code></pre></section><section><div class="git-ui-editor-head"><strong>Current</strong><span class="git-ui-muted">editable hunk</span></div><div class="git-ui-hunk-edit-mount" data-hunk-index="${hunk.index}" data-readonly="${hunk.newStart ? "false" : "true"}"></div><textarea class="git-ui-hunk-edit git-ui-hunk-edit-hidden" data-hunk-index="${hunk.index}" spellcheck="false"${readonly}>${esc(currentText)}</textarea></section></div></div>`;
-  }
-
-  function renderEditorLines(content, side) {
-    return String(content || "").split("\n").map((line) => `<span class="git-ui-editor-line ${side}">${highlight(line, active().file) || "\n"}</span>`).join("\n");
+    return `<div class="git-ui-hunk-editor"><div class="git-ui-hunk-head"><span>${esc(hunk.header || "hunk")}</span><span class="git-ui-muted">${esc(meta)}</span></div><div class="git-ui-hunk-edit-mount" data-hunk-index="${hunk.index}" data-readonly="${hunk.newStart ? "false" : "true"}"></div><textarea class="git-ui-hunk-edit git-ui-hunk-edit-hidden" data-hunk-index="${hunk.index}" spellcheck="false"${readonly}>${esc(currentText)}</textarea></div>`;
   }
 
   function buildEditableHunks(file) {
@@ -1089,9 +1084,12 @@
       const index = Number(mount.dataset.hunkIndex || 0);
       const textarea = document.querySelector(`.git-ui-hunk-edit-hidden[data-hunk-index="${index}"]`);
       if (!textarea) return;
-      window.HerdrEditor.create({
+      const hunk = (view.sideEditor.hunks || [])[index] || {};
+      const create = window.HerdrEditor.createMerge || window.HerdrEditor.create;
+      create({
         parent: mount,
         path: view.file || view.sideEditor.path || "",
+        previous: hunk.oldText || "",
         content: textarea.value,
         readonly: mount.dataset.readonly === "true",
         onChange(value) { textarea.value = value; },

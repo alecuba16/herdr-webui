@@ -1,4 +1,5 @@
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
+import { MergeView } from "@codemirror/merge";
 import { css } from "@codemirror/lang-css";
 import { go } from "@codemirror/lang-go";
 import { html } from "@codemirror/lang-html";
@@ -156,8 +157,7 @@ function buildHunkDecorations(view, hunks, actions) {
   return Decoration.set(decorations, true);
 }
 
-function create(options) {
-  const opts = options || {};
+function editorExtensions(opts) {
   const extensions = [
     lineNumbers(),
     highlightSpecialChars(),
@@ -183,9 +183,14 @@ function create(options) {
     }));
   }
   extensions.push(...gitOverlayExtensions(opts));
+  return extensions;
+}
+
+function create(options) {
+  const opts = options || {};
   const view = new EditorView({
     parent: opts.parent,
-    state: EditorState.create({ doc: String(opts.content || ""), extensions }),
+    state: EditorState.create({ doc: String(opts.content || ""), extensions: editorExtensions(opts) }),
   });
   return {
     view,
@@ -197,4 +202,31 @@ function create(options) {
   };
 }
 
-export { create, languageForPath };
+function createMerge(options) {
+  const opts = options || {};
+  const readonlyCurrent = opts.readonly !== false;
+  const merge = new MergeView({
+    parent: opts.parent,
+    a: {
+      doc: String(opts.previous || ""),
+      extensions: editorExtensions(Object.assign({}, opts, { readonly: true, onChange: null })),
+    },
+    b: {
+      doc: String(opts.content || ""),
+      extensions: editorExtensions(Object.assign({}, opts, { readonly: readonlyCurrent, onChange: opts.onChange })),
+    },
+    orientation: "a-b",
+    highlightChanges: true,
+    gutter: true,
+  });
+  return {
+    view: merge.b,
+    getValue() { return merge.b.state.doc.toString(); },
+    setValue(value) {
+      merge.b.dispatch({ changes: { from: 0, to: merge.b.state.doc.length, insert: String(value == null ? "" : value) } });
+    },
+    destroy() { merge.destroy(); },
+  };
+}
+
+export { create, createMerge, languageForPath };
