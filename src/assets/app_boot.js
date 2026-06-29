@@ -52,6 +52,7 @@
       loadScript("/assets/mobile/attention.js");
       loadScript("/assets/mobile/terminal.js");
       loadScript("/assets/mobile/worktrees.js");
+      loadScript("/assets/mobile/git.js");
       loadScript("/assets/mobile/settings.js");
     } else {
       loadScript("/assets/desktop/search.js");

@@ -48,6 +48,7 @@ const MOBILE_CORE_JS: &str = include_str!("assets/mobile/core.js");
 const MOBILE_SETTINGS_JS: &str = include_str!("assets/mobile/settings.js");
 const MOBILE_TERMINAL_JS: &str = include_str!("assets/mobile/terminal.js");
 const MOBILE_WORKTREES_JS: &str = include_str!("assets/mobile/worktrees.js");
+const MOBILE_GIT_JS: &str = include_str!("assets/mobile/git.js");
 const MOBILE_CSS: &str = include_str!("assets/mobile/app.css");
 const MOBILE_JS: &str = include_str!("assets/mobile/app.js");
 const XTERM_CSS: &str = include_str!("assets/xterm.css");
@@ -136,6 +137,10 @@ pub(crate) async fn mobile_terminal_js() -> Response {
 
 pub(crate) async fn mobile_worktrees_js() -> Response {
     static_text(MOBILE_WORKTREES_JS, "application/javascript; charset=utf-8")
+}
+
+pub(crate) async fn mobile_git_js() -> Response {
+    static_text(MOBILE_GIT_JS, "application/javascript; charset=utf-8")
 }
 
 pub(crate) async fn mobile_css() -> Response {
