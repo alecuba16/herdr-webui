@@ -18,38 +18,89 @@
     return esc(content);
   }
 
+  let codeMirrorPromise = null;
+
+  function loadCodeMirror() {
+    if (window.HerdrCodeMirror && window.HerdrCodeMirror.create) return Promise.resolve(true);
+    if (codeMirrorPromise) return codeMirrorPromise;
+    codeMirrorPromise = new Promise((resolve) => {
+      const script = document.createElement("script");
+      script.async = true;
+      script.src = "/assets/vendor/codemirror.js";
+      script.onload = () => resolve(!!(window.HerdrCodeMirror && window.HerdrCodeMirror.create));
+      script.onerror = () => resolve(false);
+      document.body.appendChild(script);
+    });
+    return codeMirrorPromise;
+  }
+
   function create(options) {
     const opts = options || {};
     const parent = opts.parent;
     if (!parent) return null;
-    if (window.HerdrCodeMirror && window.HerdrCodeMirror.create) {
+    let destroyed = false;
+    let inner = null;
+    let content = String(opts.content || "");
+
+    function createCodeMirror() {
       const head = opts.hideHeader ? "" : `<div class="herdr-editor-head"><strong>${esc(opts.path || "Editor")}</strong><span>${esc(languageFor(opts.path))}</span></div>`;
       parent.innerHTML = `<div class="herdr-editor cm">${head}<div class="herdr-editor-mount"></div></div>`;
       const mount = parent.querySelector(".herdr-editor-mount");
-      const editor = window.HerdrCodeMirror.create(Object.assign({}, opts, { parent: mount }));
+      const editor = window.HerdrCodeMirror.create(Object.assign({}, opts, { parent: mount, content }));
       return {
         getValue() { return editor.getValue(); },
-        setValue(value) { editor.setValue(value); },
+        setValue(value) { content = String(value == null ? "" : value); editor.setValue(content); },
         destroy() { editor.destroy(); parent.innerHTML = ""; },
       };
+    }
+
+    if (window.HerdrCodeMirror && window.HerdrCodeMirror.create) {
+      inner = createCodeMirror();
+      return editorHandle();
     }
     const readonly = opts.readonly !== false;
     parent.innerHTML = readonly ? previewHtml(opts) : editHtml(opts);
     const textarea = parent.querySelector("textarea");
-    if (textarea && opts.onChange) textarea.addEventListener("input", () => opts.onChange(textarea.value));
-    return {
+    if (textarea && opts.onChange) textarea.addEventListener("input", () => {
+      content = textarea.value;
+      opts.onChange(textarea.value);
+    });
+    inner = {
       getValue() {
         const node = parent.querySelector("textarea");
-        return node ? node.value : String(opts.content || "");
+        return node ? node.value : content;
       },
       setValue(value) {
-        opts.content = String(value == null ? "" : value);
+        content = String(value == null ? "" : value);
+        opts.content = content;
         parent.innerHTML = readonly ? previewHtml(opts) : editHtml(opts);
       },
       destroy() {
         parent.innerHTML = "";
       },
     };
+    loadCodeMirror().then((available) => {
+      if (!available || destroyed || !parent.isConnected) return;
+      content = inner.getValue();
+      inner.destroy();
+      inner = createCodeMirror();
+    });
+    return editorHandle();
+
+    function editorHandle() {
+      return {
+        getValue() { return inner && inner.getValue ? inner.getValue() : content; },
+        setValue(value) {
+          content = String(value == null ? "" : value);
+          if (inner && inner.setValue) inner.setValue(content);
+        },
+        destroy() {
+          destroyed = true;
+          if (inner && inner.destroy) inner.destroy();
+          parent.innerHTML = "";
+        },
+      };
+    }
   }
 
   function previewHtml(opts) {
