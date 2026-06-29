@@ -58,34 +58,35 @@
 .git-ui-hunk-edit-mount .herdr-editor-mount {
   min-height: 180px;
 }
-.git-ui-split-editor {
-  display: grid;
-  gap: 12px;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  min-height: 0;
+.git-ui-hunk-edit-mount .herdr-editor.merge,
+.git-ui-hunk-edit-mount .herdr-editor.merge .herdr-editor-mount {
+  height: min(70vh, 640px);
 }
-.git-ui-split-editor section {
+.git-ui-hunk-edit-mount .cm-mergeView {
   background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  overflow: hidden;
-}
-.git-ui-editor-preview {
-  background: var(--bg);
-  color: var(--fg);
-  flex: 1;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
-  line-height: 1.5;
-  margin: 0;
-  min-height: 58vh;
+  height: 100%;
   overflow: auto;
-  padding: 12px;
-  tab-size: 2;
-  white-space: pre;
+}
+.git-ui-hunk-edit-mount .cm-mergeViewEditors {
+  min-height: 100%;
+}
+.git-ui-hunk-edit-mount .cm-mergeViewEditor {
+  min-width: 0;
+}
+.git-ui-hunk-edit-mount .cm-deletedChunk,
+.git-ui-hunk-edit-mount .cm-changedLine.cm-deletedChunk {
+  background: rgba(248, 81, 73, 0.18);
+}
+.git-ui-hunk-edit-mount .cm-insertedChunk,
+.git-ui-hunk-edit-mount .cm-changedLine.cm-insertedChunk {
+  background: rgba(46, 160, 67, 0.14);
+}
+.git-ui-hunk-edit-mount .herdr-editor.merge.fallback {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+.git-ui-hunk-edit-mount .herdr-editor.merge.fallback section {
+  min-width: 0;
 }
 .git-ui-hunk-editor-list {
   display: grid;
@@ -95,21 +96,6 @@
   border: 1px solid var(--border);
   border-radius: 10px;
   overflow: hidden;
-}
-.git-ui-hunk-editor-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-}
-.git-ui-hunk-editor-grid section {
-  background: var(--panel);
-  min-width: 0;
-}
-.git-ui-hunk-editor-grid section + section {
-  border-left: 1px solid var(--border);
-}
-.git-ui-editor-preview.del .git-ui-editor-line {
-  background: rgba(248, 81, 73, 0.18);
-  border-left: 4px solid #da3633;
 }
 .git-ui-hunk-edit {
   background: rgba(46, 160, 67, 0.1);
@@ -137,49 +123,12 @@
   color: var(--muted);
   cursor: not-allowed;
 }
-.git-ui-editor-line {
-  display: block;
-  min-height: 1.5em;
-  padding: 0 4px;
-}
-.git-ui-editor-line.changed {
-  background: rgba(248, 81, 73, 0.18);
-  border-left: 4px solid #da3633;
-  padding-left: 8px;
-}
-.git-ui-editor-stack {
-  background: var(--bg);
-  display: flex;
-  flex: 1;
-  min-height: 0;
-  position: relative;
-}
-.git-ui-editor-bands {
-  bottom: 0;
-  left: 0;
-  overflow: hidden;
-  pointer-events: none;
-  position: absolute;
-  right: 0;
-  top: 0;
-}
-.git-ui-editor-bands span {
-  background: rgba(46, 160, 67, 0.18);
-  border-left: 4px solid #1b7c3d;
-  height: calc(var(--line-count) * 1.5em);
-  left: 0;
-  position: absolute;
-  right: 0;
-  top: calc((var(--line-start) - 1) * 1.5em + 12px);
-}
 @media (max-width: 900px) {
-  .git-ui-split-editor,
-  .git-ui-hunk-editor-grid {
-    grid-template-columns: 1fr;
+  .git-ui-hunk-edit-mount .cm-mergeViewEditors {
+    flex-direction: column;
   }
-  .git-ui-hunk-editor-grid section + section {
-    border-left: 0;
-    border-top: 1px solid var(--border);
+  .git-ui-hunk-edit-mount .herdr-editor.merge.fallback {
+    grid-template-columns: 1fr;
   }
 }
 .git-ui-side-edit-note {

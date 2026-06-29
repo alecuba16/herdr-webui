@@ -103,6 +103,72 @@
     }
   }
 
+  function createMerge(options) {
+    const opts = options || {};
+    const parent = opts.parent;
+    if (!parent) return null;
+    let destroyed = false;
+    let inner = null;
+    let content = String(opts.content || "");
+
+    function createCodeMirrorMerge() {
+      if (!window.HerdrCodeMirror || !window.HerdrCodeMirror.createMerge) return null;
+      parent.innerHTML = `<div class="herdr-editor cm merge"><div class="herdr-editor-mount"></div></div>`;
+      const mount = parent.querySelector(".herdr-editor-mount");
+      const editor = window.HerdrCodeMirror.createMerge(Object.assign({}, opts, { parent: mount, content }));
+      return {
+        getValue() { return editor.getValue(); },
+        setValue(value) { content = String(value == null ? "" : value); editor.setValue(content); },
+        destroy() { editor.destroy(); parent.innerHTML = ""; },
+      };
+    }
+
+    if (window.HerdrCodeMirror && window.HerdrCodeMirror.createMerge) {
+      inner = createCodeMirrorMerge();
+      return editorHandle();
+    }
+    parent.innerHTML = mergeFallbackHtml(opts);
+    const textarea = parent.querySelector("textarea");
+    if (textarea && opts.onChange) textarea.addEventListener("input", () => {
+      content = textarea.value;
+      opts.onChange(textarea.value);
+    });
+    inner = {
+      getValue() {
+        const node = parent.querySelector("textarea");
+        return node ? node.value : content;
+      },
+      setValue(value) {
+        content = String(value == null ? "" : value);
+        opts.content = content;
+        parent.innerHTML = mergeFallbackHtml(opts);
+      },
+      destroy() { parent.innerHTML = ""; },
+    };
+    loadCodeMirror().then((available) => {
+      if (!available || destroyed || !parent.isConnected) return;
+      content = inner.getValue();
+      inner.destroy();
+      inner = createCodeMirrorMerge() || inner;
+    });
+    return editorHandle();
+
+    function editorHandle() {
+      return {
+        getValue() { return inner && inner.getValue ? inner.getValue() : content; },
+        setValue(value) {
+          content = String(value == null ? "" : value);
+          if (inner && inner.setValue) inner.setValue(content);
+        },
+        destroy() {
+          destroyed = true;
+          if (inner && inner.destroy) inner.destroy();
+          parent.innerHTML = "";
+        },
+      };
+    }
+  }
+
   function previewHtml(opts) {
     const content = String(opts.content || "");
     const head = opts.hideHeader ? "" : `<div class="herdr-editor-head"><strong>${esc(opts.path || "Preview")}</strong><span>${esc(languageFor(opts.path))}</span></div>`;
@@ -114,5 +180,10 @@
     return `<div class="herdr-editor">${head}<textarea spellcheck="false">${esc(opts.content || "")}</textarea></div>`;
   }
 
-  window.HerdrEditor = { create, highlight, languageFor };
+  function mergeFallbackHtml(opts) {
+    const readonly = opts.readonly !== false ? " readonly" : "";
+    return `<div class="herdr-editor merge fallback"><section><div class="herdr-editor-head"><strong>Previous</strong><span>${esc(languageFor(opts.path))}</span></div><pre class="herdr-editor-code"><code>${highlight(opts.previous || "", opts.path)}</code></pre></section><section><div class="herdr-editor-head"><strong>Current</strong><span>${esc(languageFor(opts.path))}</span></div><textarea spellcheck="false"${readonly}>${esc(opts.content || "")}</textarea></section></div>`;
+  }
+
+  window.HerdrEditor = { create, createMerge, highlight, languageFor };
 })();
