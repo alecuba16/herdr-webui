@@ -59,8 +59,6 @@
       loadScript("/assets/mobile/settings.js");
     } else {
       loadScript("/assets/desktop/search.js");
-      loadScript("/assets/desktop/git-ui.js");
-      loadScript("/assets/desktop/file-browser.js");
       loadScript("/assets/desktop/directory-picker.js");
     }
     loadScript(mobile ? "/assets/mobile/app.js" : "/assets/desktop/app.js");

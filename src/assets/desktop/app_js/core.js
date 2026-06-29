@@ -198,6 +198,27 @@ function appIcon(name) {
   const iconName = String(name || "").replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`);
   return `<span class="app-icon app-icon-${iconName}" aria-hidden="true"></span>`;
 }
+const lazyScripts = new Map();
+function loadLazyScript(src, ready) {
+  if (ready && ready()) return Promise.resolve(true);
+  if (lazyScripts.has(src)) return lazyScripts.get(src);
+  const promise = new Promise((resolve) => {
+    const script = document.createElement("script");
+    script.async = true;
+    script.src = src;
+    script.onload = () => resolve(!ready || ready());
+    script.onerror = () => resolve(false);
+    document.body.appendChild(script);
+  });
+  lazyScripts.set(src, promise);
+  return promise;
+}
+function loadGitUiModule() {
+  return loadLazyScript("/assets/desktop/git-ui.js", () => !!window.HerdrGitUi);
+}
+function loadFileBrowserModule() {
+  return loadLazyScript("/assets/desktop/file-browser.js", () => !!window.HerdrFileBrowser);
+}
 function shellMode() {
   if (window.HerdrGitUi && window.HerdrGitUi.isVisible && window.HerdrGitUi.isVisible()) return "git";
   if (window.HerdrFileBrowser && window.HerdrFileBrowser.isOpen && window.HerdrFileBrowser.isOpen()) return "files";
@@ -223,7 +244,7 @@ function showTerminalShellMode() {
   const shell = el("terminalShell");
   if (shell) shell.style.display = "";
   syncShellModeButtons();
-  if (state.terminalId && !term && typeof Terminal !== "undefined") connectTerminal();
+  if (state.terminalId && !term) connectTerminal();
   fitTerminalShell();
 }
 const headTitle = document.querySelector(".head strong");
