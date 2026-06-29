@@ -177,19 +177,28 @@
   display: grid;
   place-items: center;
 }
-.head #newWs,
-.head #openWorktrees,
 .head .shell-action.active,
 .head .no-sleep-control.active {
   background: var(--accent-1);
   color: var(--accent-fg);
   border: 1px solid var(--accent-1);
 }
+.head #newWs,
+.head #openWorktrees,
 .head .shell-action,
 .head .no-sleep-control {
   background: var(--accent-2);
   color: var(--accent-1);
   border: 1px solid var(--accent-2-border);
+}
+.head #gitWorkspaceToggle.open,
+.head #newWs:active,
+.head #newWs:focus-visible,
+.head #openWorktrees:active,
+.head #openWorktrees:focus-visible {
+  background: var(--accent-1);
+  border-color: var(--accent-1);
+  color: var(--accent-fg);
 }
 .head .shell-action:hover,
 .head .no-sleep-control:hover,

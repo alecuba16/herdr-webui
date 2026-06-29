@@ -79,6 +79,11 @@ body.light {
   border-color: var(--accent);
   color: var(--accent-fg);
 }
+.mobile-btn.active {
+  border-color: var(--accent);
+  color: var(--fg);
+  background: color-mix(in srgb, var(--accent), transparent 78%);
+}
 .mobile-screen {
   min-height: 0;
   overflow: auto;
@@ -201,7 +206,7 @@ body.light {
 }
 .mobile-nav {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(6, 1fr);
   gap: 6px;
   padding: 8px max(8px, env(safe-area-inset-right))
     max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
@@ -214,6 +219,7 @@ body.light {
   border-radius: 12px;
   background: transparent;
   color: var(--muted);
+  font-size: 11px;
   font-weight: 700;
 }
 .mobile-nav button.active {
@@ -272,7 +278,8 @@ body.light {
   color: var(--muted);
 }
 .mobile-form input,
-.mobile-form select {
+.mobile-form select,
+.mobile-form textarea {
   min-height: 44px;
   width: 100%;
   border: 1px solid var(--border2);
@@ -280,6 +287,10 @@ body.light {
   background: var(--panel2);
   color: var(--fg);
   padding: 9px 11px;
+}
+.mobile-form textarea {
+  min-height: 120px;
+  resize: vertical;
 }
 .mobile-wide {
   width: 100%;
@@ -326,6 +337,196 @@ body.light {
 .mobile-worktree-row small {
   color: var(--muted);
   margin-top: 4px;
+}
+.mobile-git {
+  display: grid;
+  gap: 12px;
+}
+.mobile-git-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--panel);
+}
+.mobile-git-summary h2 {
+  margin: 0 0 4px;
+  color: var(--muted);
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.mobile-git-summary strong,
+.mobile-git-summary span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mobile-git-summary span {
+  color: var(--muted);
+  font-size: 12px;
+}
+.mobile-git-tabs,
+.mobile-git-actions {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+.mobile-git-actions {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 8px 0;
+  background: var(--bg);
+}
+.mobile-git-actions .mobile-btn {
+  flex: 0 0 auto;
+}
+.mobile-btn.danger,
+.mobile-git button.danger {
+  border-color: #f38ba8;
+  color: #f38ba8;
+}
+.mobile-git-section {
+  display: grid;
+  gap: 8px;
+}
+.mobile-git-section h3,
+.mobile-git-form h3 {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.mobile-git-section h3 span {
+  color: var(--fg);
+}
+.mobile-git-file-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--panel);
+}
+.mobile-git-file-head div {
+  min-width: 0;
+}
+.mobile-git-file-head strong,
+.mobile-git-file-head span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mobile-git-file-head span {
+  color: var(--muted);
+  font-size: 12px;
+}
+.mobile-diff {
+  display: grid;
+  gap: 12px;
+}
+.mobile-hunk {
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--panel);
+  overflow: hidden;
+}
+.mobile-hunk header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+}
+.mobile-hunk header span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mobile-hunk header button,
+.mobile-git-conflict button,
+.mobile-git-stash button {
+  min-height: 34px;
+  border: 1px solid var(--border2);
+  border-radius: 10px;
+  background: var(--panel2);
+  color: var(--fg);
+}
+.mobile-hunk pre {
+  margin: 0;
+  padding: 10px;
+  overflow-x: auto;
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.mobile-hunk pre span {
+  display: block;
+  min-width: max-content;
+  white-space: pre;
+}
+.mobile-hunk pre .add {
+  color: #a6e3a1;
+  background: color-mix(in srgb, #a6e3a1, transparent 88%);
+}
+.mobile-hunk pre .delete {
+  color: #f38ba8;
+  background: color-mix(in srgb, #f38ba8, transparent 88%);
+}
+.mobile-git-conflict,
+.mobile-git-stash {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) repeat(3, auto);
+  gap: 8px;
+  align-items: center;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--panel);
+}
+.mobile-git-stash span {
+  color: var(--muted);
+  font-size: 12px;
+  grid-column: 1 / -1;
+}
+.mobile-blame {
+  display: grid;
+  gap: 1px;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--border);
+}
+.mobile-blame div {
+  display: grid;
+  grid-template-columns: 56px minmax(160px, 1fr);
+  gap: 10px;
+  min-width: max-content;
+  padding: 8px 10px;
+  background: var(--panel);
+  font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.mobile-blame span {
+  color: var(--muted);
+  text-align: right;
+}
+.mobile-git-editor textarea {
+  min-height: 50dvh;
+  white-space: pre;
+  overflow: auto;
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 @media (min-width: 600px) and (max-width: 900px) {
   .mobile-app {

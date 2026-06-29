@@ -104,6 +104,7 @@ function context() {
 describe("app bundle load", () => {
   let source;
   let gitUiSource;
+  let gitSettingsSource;
 
   beforeEach(() => {
     const desktopAppSource = [
@@ -124,6 +125,7 @@ describe("app bundle load", () => {
       "\n" +
       desktopAppSource;
     gitUiSource = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
+    gitSettingsSource = readFileSync(new URL("./desktop/git_ui/settings.js", import.meta.url), "utf8");
   });
 
   it("loads without initialization-order ReferenceError", () => {
@@ -140,6 +142,20 @@ describe("app bundle load", () => {
     match(gitUiSource, /Large diffs are not rendered by default\./);
     match(gitUiSource, /loadLargeDiff\(file\)/);
     ok(!gitUiSource.includes("Select a file from left list to render its changes."));
+  });
+
+  it("defines side-by-side and unified Git diff layouts", () => {
+    match(gitSettingsSource, /id=\"optGitUiDiffLayout\"/);
+    match(gitSettingsSource, /Unified \(GitHub-style\)/);
+    match(gitSettingsSource, /gitUiDiffLayout: "side-by-side"/);
+    match(gitUiSource, /function diffLayoutMode\(\)/);
+    match(gitUiSource, /function renderUnifiedLine\(/);
+    match(gitUiSource, /git-ui-unified-row/);
+    match(gitUiSource, /sideBySideRows\(chunk\)/);
+    match(gitUiSource, /renderUnifiedLine\(row, path, index, rows, rowIndex, contextArrows\)/);
+    match(gitUiSource, /restoreHunk\('\$\{arg\(path\)\}',\$\{hunkIndex\}\)/);
+    match(gitUiSource, /function contextArrowsForChunk\(chunks, index\)/);
+    match(gitUiSource, /const after = next \? hiddenGap\(chunk, next\) : false;/);
   });
 
   it("defines Git UI changes-list Escape navigation", () => {
@@ -224,6 +240,9 @@ describe("app bundle load", () => {
     match(source, /title: "Agents and alerts"/);
     match(source, /title: "Worktrees"/);
     match(source, /title: "Server"/);
+    match(source, /id="settingsSearch"/);
+    match(source, /function bindSettingsSearch\(\)/);
+    match(source, /No settings found\./);
   });
 
   it("defines keyboard shortcuts and terminal font settings", () => {

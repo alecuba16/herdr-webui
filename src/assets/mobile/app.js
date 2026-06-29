@@ -38,7 +38,8 @@
     mobileAttention,
     mobileSettings,
     mobileTerminal,
-    mobileWorktrees;
+    mobileWorktrees,
+    mobileGit;
 
   function el(id) {
     return document.getElementById(id);
@@ -266,7 +267,7 @@
     else if (state.screen === "panels") screen.innerHTML = renderPanels();
     else if (state.screen === "worktrees")
       screen.innerHTML = mobileWorktrees.renderScreen();
-    else if (state.screen === "git") renderGitScreen(screen);
+    else if (state.screen === "git") screen.innerHTML = mobileGit.renderScreen();
     else if (state.screen === "settings")
       screen.innerHTML = mobileSettings.render();
     else if (state.screen === "terminal") renderTerminalScreen(screen);
@@ -401,28 +402,7 @@
   }
 
   function renderGitScreen(screen) {
-    const status = state.gitStatus;
-    if (state.gitError) {
-      screen.innerHTML = `<section class="mobile-section"><h2>Git</h2><div class="mobile-error">${escapeHtml(state.gitError)}</div><button class="mobile-btn primary mobile-wide" onclick="HerdrMobile.loadGitStatus()">Retry</button></section>`;
-      return;
-    }
-    if (!status) {
-      screen.innerHTML = `<section class="mobile-section"><h2>Git</h2><div class="mobile-loading">Loading Git status</div></section>`;
-      loadGitStatus();
-      return;
-    }
-    const rows = [
-      ["Conflicts", status.conflicted || []],
-      ["Staged", status.staged || []],
-      ["Unstaged", status.unstaged || []],
-      ["Untracked", status.untracked || []],
-    ]
-      .map(
-        ([title, files]) =>
-          `<h3>${escapeHtml(title)}</h3>${files.length ? files.map((file) => `<div class="mobile-row"><strong>${escapeHtml(file)}</strong></div>`).join("") : '<div class="mobile-loading">None</div>'}`,
-      )
-      .join("");
-    screen.innerHTML = `<section class="mobile-section"><h2>Git</h2><p class="mobile-help">${escapeHtml(status.branch || "detached")} · ${escapeHtml(status.state || "")}</p><button class="mobile-btn primary mobile-wide" onclick="HerdrMobile.loadGitStatus()">Refresh</button>${rows}</section>`;
+    screen.innerHTML = mobileGit.renderScreen();
   }
 
   function renderTerminalTabsWithAdd() {
@@ -511,6 +491,7 @@
     state.screen = "terminal";
     state.gitStatus = null;
     state.gitError = "";
+    if (mobileGit) mobileGit.resetForWorkspace();
     history.pushState(null, "", selectionPath(id));
     mobileTerminal.destroy(true);
     refresh();
@@ -613,13 +594,21 @@
     selectionPath,
     state,
   });
+  mobileGit = globalThis.HerdrMobileGit.create({
+    api,
+    currentWorkspaceCwd,
+    escapeHtml,
+    jsArg,
+    render,
+  });
+  globalThis.HerdrMobileGit = mobileGit;
 
   globalThis.HerdrMobile = {
     selectWorkspace,
     selectAgent,
     selectTab,
     createPanel,
-    loadGitStatus,
+    loadGitStatus: mobileGit.refresh,
     loadWorktrees: mobileWorktrees.load,
     openWorktree: mobileWorktrees.open,
     createWorktree: mobileWorktrees.create,
