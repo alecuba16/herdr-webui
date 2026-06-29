@@ -659,6 +659,7 @@ fn app_router(state: WebState) -> Router {
         .route("/api/session/close", post(close_session))
         .route("/api/login", post(login))
         .route("/api/workspaces", get(workspaces).post(create_workspace))
+        .route("/api/app-state", get(app_state))
         .route(
             "/api/workspace-order",
             get(workspace_order).post(set_workspace_order),
@@ -1428,6 +1429,164 @@ fn proxy_request(api: &ApiClient, request: serde_json::Value) -> Response {
     }
 }
 
+fn api_request_value(
+    api: &ApiClient,
+    id: &str,
+    method: &str,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    api.request_value(json!({ "id": id, "method": method, "params": params }))
+}
+
+fn result_array(value: &serde_json::Value, key: &str) -> Vec<serde_json::Value> {
+    value
+        .get("result")
+        .and_then(|result| result.get(key))
+        .and_then(|items| items.as_array())
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn result_object(value: &serde_json::Value, key: &str) -> serde_json::Value {
+    value
+        .get("result")
+        .and_then(|result| result.get(key))
+        .cloned()
+        .unwrap_or(serde_json::Value::Null)
+}
+
+fn normalized_path_key(path: &str) -> String {
+    path.trim_end_matches('/').to_string()
+}
+
+fn value_str<'a>(value: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+    value.get(key).and_then(|value| value.as_str())
+}
+
+fn workspace_worktree_key(workspace: &serde_json::Value) -> String {
+    workspace
+        .get("worktree")
+        .and_then(|worktree| {
+            value_str(worktree, "repo_key")
+                .or_else(|| value_str(worktree, "repo_root"))
+                .or_else(|| value_str(worktree, "repo_name"))
+        })
+        .unwrap_or("")
+        .to_string()
+}
+
+fn worktree_source_workspace_ids(workspaces: &[serde_json::Value]) -> Vec<String> {
+    let mut by_key: Vec<(String, String)> = Vec::new();
+    for workspace in workspaces {
+        let Some(workspace_id) = value_str(workspace, "workspace_id") else {
+            continue;
+        };
+        let key = {
+            let key = workspace_worktree_key(workspace);
+            if key.is_empty() {
+                format!("workspace:{workspace_id}")
+            } else {
+                key
+            }
+        };
+        let is_parent_worktree = workspace
+            .get("worktree")
+            .and_then(|worktree| worktree.get("is_linked_worktree"))
+            .and_then(|value| value.as_bool())
+            == Some(false);
+        if let Some((_, id)) = by_key.iter_mut().find(|(existing, _)| existing == &key) {
+            if is_parent_worktree {
+                *id = workspace_id.to_string();
+            }
+        } else {
+            by_key.push((key, workspace_id.to_string()));
+        }
+    }
+    by_key.into_iter().map(|(_, id)| id).collect()
+}
+
+fn enrich_worktrees_result(result: &serde_json::Value) -> Vec<serde_json::Value> {
+    let source = result
+        .get("result")
+        .and_then(|result| result.get("source"))
+        .cloned()
+        .unwrap_or_default();
+    let source_workspace_id = source.get("source_workspace_id").cloned();
+    let source_repo_name = source.get("repo_name").cloned();
+    let source_repo_key = source.get("repo_key").cloned();
+    let source_repo_root = source.get("repo_root").cloned();
+    let source_cwd = source.get("source_checkout_path").cloned();
+    let default_worktree_directory = source.get("default_worktree_directory").cloned();
+    result_array(result, "worktrees")
+        .into_iter()
+        .map(|mut worktree| {
+            if let Some(object) = worktree.as_object_mut() {
+                if let Some(value) = source_workspace_id.clone() {
+                    object.insert("source_workspace_id".to_string(), value);
+                }
+                if let Some(value) = source_repo_name.clone() {
+                    object.insert("source_repo_name".to_string(), value);
+                }
+                if let Some(value) = source_repo_key.clone() {
+                    object.insert("source_repo_key".to_string(), value);
+                }
+                if let Some(value) = source_repo_root.clone() {
+                    object.insert("source_repo_root".to_string(), value);
+                }
+                if let Some(value) = source_cwd.clone() {
+                    object.insert("source_cwd".to_string(), value);
+                }
+                if let Some(value) = default_worktree_directory.clone() {
+                    object.insert("default_worktree_directory".to_string(), value);
+                }
+            }
+            worktree
+        })
+        .collect()
+}
+
+fn workspace_branches_from_worktree_results(
+    results: &[serde_json::Value],
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut branches = serde_json::Map::new();
+    for result in results {
+        let source = result
+            .get("result")
+            .and_then(|result| result.get("source"))
+            .cloned()
+            .unwrap_or_default();
+        let Some(source_id) = value_str(&source, "source_workspace_id") else {
+            continue;
+        };
+        let Some(source_path) = value_str(&source, "source_checkout_path") else {
+            continue;
+        };
+        let source_key = normalized_path_key(source_path);
+        let match_branch = result_array(result, "worktrees")
+            .into_iter()
+            .find(|worktree| {
+                value_str(worktree, "path")
+                    .map(|path| normalized_path_key(path) == source_key)
+                    .unwrap_or(false)
+            })
+            .and_then(|worktree| {
+                value_str(&worktree, "branch")
+                    .map(|branch| branch.to_string())
+                    .or_else(|| {
+                        (worktree
+                            .get("is_detached")
+                            .and_then(|value| value.as_bool())
+                            == Some(true))
+                        .then(|| "detached".to_string())
+                    })
+            });
+        if let Some(branch) = match_branch {
+            branches.insert(source_id.to_string(), json!(branch));
+        }
+    }
+    branches
+}
+
 async fn proxy_request_async(api: ApiClient, request: serde_json::Value) -> Response {
     match tokio::task::spawn_blocking(move || api.request_value(request)).await {
         Ok(Ok(value)) => Json(value).into_response(),
@@ -1452,6 +1611,131 @@ async fn workspaces(
         &api_for_headers(&state, &headers),
         json!({ "id": "web:workspace:list", "method": "workspace.list", "params": {} }),
     )
+}
+
+#[derive(Deserialize)]
+struct AppStateQuery {
+    workspace_id: Option<String>,
+    pane_id: Option<String>,
+}
+
+async fn app_state(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    Query(query): Query<AppStateQuery>,
+) -> Response {
+    if let Err(response) = require_auth(&state, &headers, remote) {
+        return response;
+    }
+    let api = api_for_headers(&state, &headers);
+    let order_key = workspace_order_key(&state, &headers);
+    let order = state
+        .workspace_orders
+        .lock()
+        .ok()
+        .and_then(|orders| orders.get(&order_key).cloned())
+        .unwrap_or_default();
+    let workspace_id = query.workspace_id.clone();
+    let pane_id = query.pane_id.clone();
+    match tokio::task::spawn_blocking(move || {
+        let workspaces_response = api_request_value(
+            &api,
+            "web:app-state:workspace:list",
+            "workspace.list",
+            json!({}),
+        )?;
+        let workspaces = result_array(&workspaces_response, "workspaces");
+
+        let worktree_results: Vec<serde_json::Value> = worktree_source_workspace_ids(&workspaces)
+            .into_iter()
+            .filter_map(|source_id| {
+                api_request_value(
+                    &api,
+                    "web:app-state:worktree:list",
+                    "worktree.list",
+                    json!({ "workspace_id": source_id, "cwd": null }),
+                )
+                .ok()
+            })
+            .collect();
+        let worktrees = worktree_results
+            .iter()
+            .flat_map(enrich_worktrees_result)
+            .collect::<Vec<_>>();
+        let workspace_branches = workspace_branches_from_worktree_results(&worktree_results);
+
+        let mut all_tabs = Vec::new();
+        let mut tabs = Vec::new();
+        let mut panes = Vec::new();
+        let mut agents = Vec::new();
+        let mut layout = serde_json::Value::Null;
+        if let Some(workspace_id) = workspace_id.as_deref() {
+            all_tabs = result_array(
+                &api_request_value(
+                    &api,
+                    "web:app-state:tab:list:all",
+                    "tab.list",
+                    json!({ "workspace_id": null }),
+                )?,
+                "tabs",
+            );
+            tabs = result_array(
+                &api_request_value(
+                    &api,
+                    "web:app-state:tab:list",
+                    "tab.list",
+                    json!({ "workspace_id": workspace_id }),
+                )?,
+                "tabs",
+            );
+            panes = result_array(
+                &api_request_value(
+                    &api,
+                    "web:app-state:pane:list",
+                    "pane.list",
+                    json!({ "workspace_id": workspace_id }),
+                )?,
+                "panes",
+            );
+            agents = result_array(
+                &api_request_value(&api, "web:app-state:agent:list", "agent.list", json!({}))?,
+                "agents",
+            );
+            if let Some(pane_id) = pane_id.as_deref() {
+                layout = api_request_value(
+                    &api,
+                    "web:app-state:pane:layout",
+                    "pane.layout",
+                    json!({ "pane_id": pane_id }),
+                )
+                .map(|value| result_object(&value, "layout"))
+                .unwrap_or(serde_json::Value::Null);
+            }
+        }
+
+        Ok::<_, String>(json!({
+            "workspaces": workspaces,
+            "worktrees": worktrees,
+            "workspace_branches": workspace_branches,
+            "workspace_order": order,
+            "all_tabs": all_tabs,
+            "tabs": tabs,
+            "panes": panes,
+            "agents": agents,
+            "layout": layout,
+        }))
+    })
+    .await
+    {
+        Ok(Ok(value)) => Json(value).into_response(),
+        Ok(Err(err)) => (StatusCode::BAD_GATEWAY, Json(json!({ "error": err }))).into_response(),
+        Err(err) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": err.to_string() })),
+        )
+            .into_response(),
+    }
 }
 
 fn workspace_order_key(state: &WebState, headers: &HeaderMap) -> String {

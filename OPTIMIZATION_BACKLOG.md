@@ -17,6 +17,8 @@ Goal: reduce CPU, memory, bundle parse cost, and maintenance risk across backend
 - Coalesce mobile event websocket refreshes so event bursts trigger one API refresh instead of one per message.
 - Add short browser cache headers for embedded static JS/CSS/SVG assets to reduce repeated transfer and parse on reload.
 - Grow xterm scrollback in blocks instead of allocating the max scrollback on terminal creation.
+- Add a backend app-state aggregate endpoint so desktop refresh gets workspaces, worktrees, tabs, panes, agents, workspace order, and pane layout with fewer browser-side requests.
+- Precompute Git diff line counts, editable hunk models, and change-set file counts in Rust.
 
 ## P0 Performance
 
