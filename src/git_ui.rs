@@ -1568,6 +1568,10 @@ mod tests {
         "127.0.0.1:1234".parse().unwrap()
     }
 
+    fn non_loopback() -> SocketAddr {
+        "192.0.2.1:1234".parse().unwrap()
+    }
+
     struct TempRepo {
         path: PathBuf,
     }
@@ -1701,6 +1705,21 @@ mod tests {
     }
 
     #[test]
+    fn parses_unified_diff_edge_shapes() {
+        assert!(parse_unified_diff("not a diff").is_empty());
+        assert!(parse_unified_diff("diff --git a/a b/b\nindex 1..2 100644\n").is_empty());
+
+        let malformed = "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@\n\n\\ No newline at end of file\n-old\n";
+        let files = parse_unified_diff(malformed);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "a.txt");
+        assert_eq!(files[0].chunks[0].old_start, 0);
+        assert_eq!(files[0].chunks[0].new_start, 0);
+        assert_eq!(files[0].editable_hunks[0].new_start, 0);
+        assert_eq!(files[0].deletions, 1);
+    }
+
+    #[test]
     fn builds_git_diff_args_for_scopes_and_compare() {
         let mut staged = query();
         staged.scope = Some("staged".to_string());
@@ -1778,6 +1797,598 @@ mod tests {
             confirmed: None,
         };
         assert!(git_ui_paths(&unsafe_path).is_err());
+    }
+
+    #[test]
+    fn git_ui_endpoint_validation_edges_work() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let state = test_state();
+            let headers = HeaderMap::new();
+            let connect = ConnectInfo(remote());
+            let missing = query();
+
+            let cases = [
+                git_ui_status(
+                    State(state.clone()),
+                    headers.clone(),
+                    connect,
+                    Query(missing),
+                )
+                .await,
+                git_ui_diff(
+                    State(state.clone()),
+                    headers.clone(),
+                    ConnectInfo(remote()),
+                    Query(query()),
+                )
+                .await,
+                git_ui_compare(
+                    State(state.clone()),
+                    headers.clone(),
+                    ConnectInfo(remote()),
+                    Query(query()),
+                )
+                .await,
+                git_ui_branches(
+                    State(state.clone()),
+                    headers.clone(),
+                    ConnectInfo(remote()),
+                    Query(query()),
+                )
+                .await,
+                git_ui_log(
+                    State(state.clone()),
+                    headers.clone(),
+                    ConnectInfo(remote()),
+                    Query(query()),
+                )
+                .await,
+                git_ui_blame(
+                    State(state.clone()),
+                    headers.clone(),
+                    ConnectInfo(remote()),
+                    Query(query()),
+                )
+                .await,
+                git_ui_file(
+                    State(state.clone()),
+                    headers.clone(),
+                    ConnectInfo(remote()),
+                    Query(query()),
+                )
+                .await,
+                git_ui_file_history(
+                    State(state.clone()),
+                    headers.clone(),
+                    ConnectInfo(remote()),
+                    Query(query()),
+                )
+                .await,
+                git_ui_stashes(
+                    State(state.clone()),
+                    headers.clone(),
+                    ConnectInfo(remote()),
+                    Query(query()),
+                )
+                .await,
+                git_ui_conflicts(
+                    State(state.clone()),
+                    headers.clone(),
+                    ConnectInfo(remote()),
+                    Query(query()),
+                )
+                .await,
+                git_ui_stage(
+                    State(state.clone()),
+                    headers.clone(),
+                    ConnectInfo(remote()),
+                    Json(GitUiPathsRequest {
+                        cwd: "/missing".to_string(),
+                        paths: vec![],
+                        confirmed: None,
+                    }),
+                )
+                .await,
+                git_ui_unstage(
+                    State(state.clone()),
+                    headers.clone(),
+                    ConnectInfo(remote()),
+                    Json(GitUiPathsRequest {
+                        cwd: "/missing".to_string(),
+                        paths: vec!["../bad".to_string()],
+                        confirmed: None,
+                    }),
+                )
+                .await,
+                git_ui_discard(
+                    State(state.clone()),
+                    headers.clone(),
+                    ConnectInfo(remote()),
+                    Json(GitUiPathsRequest {
+                        cwd: "/missing".to_string(),
+                        paths: vec!["file.txt".to_string()],
+                        confirmed: None,
+                    }),
+                )
+                .await,
+                git_ui_rename(
+                    State(state.clone()),
+                    headers.clone(),
+                    ConnectInfo(remote()),
+                    Json(GitUiRenameRequest {
+                        cwd: "/missing".to_string(),
+                        path: "../bad".to_string(),
+                        new_name: "next.txt".to_string(),
+                    }),
+                )
+                .await,
+                git_ui_stash(
+                    State(state.clone()),
+                    headers.clone(),
+                    ConnectInfo(remote()),
+                    Json(GitUiStashRequest {
+                        cwd: "/missing".to_string(),
+                        message: None,
+                        paths: Some(vec!["../bad".to_string()]),
+                        stash: None,
+                        pop: None,
+                        confirmed: None,
+                    }),
+                )
+                .await,
+                git_ui_stash_apply(
+                    State(state.clone()),
+                    headers.clone(),
+                    ConnectInfo(remote()),
+                    Json(GitUiStashRequest {
+                        cwd: "/missing".to_string(),
+                        message: None,
+                        paths: None,
+                        stash: Some("--bad".to_string()),
+                        pop: None,
+                        confirmed: None,
+                    }),
+                )
+                .await,
+                git_ui_stash_drop(
+                    State(state.clone()),
+                    headers.clone(),
+                    ConnectInfo(remote()),
+                    Json(GitUiStashRequest {
+                        cwd: "/missing".to_string(),
+                        message: None,
+                        paths: None,
+                        stash: Some("stash@{0}".to_string()),
+                        pop: None,
+                        confirmed: None,
+                    }),
+                )
+                .await,
+                git_ui_switch(
+                    State(state.clone()),
+                    headers.clone(),
+                    ConnectInfo(remote()),
+                    Json(GitUiSwitchRequest {
+                        cwd: "/missing".to_string(),
+                        branch: "--bad".to_string(),
+                        create: None,
+                        base: None,
+                    }),
+                )
+                .await,
+                git_ui_pull(
+                    State(state.clone()),
+                    headers.clone(),
+                    ConnectInfo(remote()),
+                    Json(GitUiPullRequest {
+                        cwd: "/missing".to_string(),
+                        target: "sideways".to_string(),
+                        strategy: "merge".to_string(),
+                        autostash: None,
+                    }),
+                )
+                .await,
+                git_ui_reset(
+                    State(state.clone()),
+                    headers.clone(),
+                    ConnectInfo(remote()),
+                    Json(GitUiResetRequest {
+                        cwd: "/missing".to_string(),
+                        mode: "sideways".to_string(),
+                        ref_name: "HEAD".to_string(),
+                        confirmation: None,
+                    }),
+                )
+                .await,
+                git_ui_rebase(
+                    State(state.clone()),
+                    headers.clone(),
+                    ConnectInfo(remote()),
+                    Json(GitUiRebaseRequest {
+                        cwd: "/missing".to_string(),
+                        upstream: "HEAD".to_string(),
+                        onto: None,
+                        confirmation: None,
+                    }),
+                )
+                .await,
+                git_ui_commit(
+                    State(state.clone()),
+                    headers.clone(),
+                    ConnectInfo(remote()),
+                    Json(GitUiCommitRequest {
+                        cwd: "/missing".to_string(),
+                        title: " ".to_string(),
+                        body: None,
+                        amend: None,
+                    }),
+                )
+                .await,
+                git_ui_apply_patch(
+                    State(state.clone()),
+                    headers.clone(),
+                    ConnectInfo(remote()),
+                    Json(GitUiApplyPatchRequest {
+                        cwd: "/missing".to_string(),
+                        patch: " ".to_string(),
+                        reverse: None,
+                        cached: None,
+                    }),
+                )
+                .await,
+                git_ui_conflict_resolve(
+                    State(state.clone()),
+                    headers.clone(),
+                    ConnectInfo(remote()),
+                    Json(GitUiConflictResolveRequest {
+                        cwd: "/missing".to_string(),
+                        path: "../bad".to_string(),
+                        mode: "ours".to_string(),
+                        content: None,
+                    }),
+                )
+                .await,
+                git_ui_conflict_action(
+                    State(state),
+                    headers,
+                    ConnectInfo(remote()),
+                    Json(GitUiConflictActionRequest {
+                        cwd: "/missing".to_string(),
+                        action: "sideways".to_string(),
+                    }),
+                )
+                .await,
+            ];
+
+            assert!(cases
+                .iter()
+                .all(|response| response.status().is_client_error()));
+
+            let temp = std::env::temp_dir()
+                .join(format!("herdr-webui-git-ui-nonrepo-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&temp);
+            fs::create_dir_all(&temp).unwrap();
+            assert!(git_ui_repo(temp.to_str().unwrap()).is_err());
+            assert!(git_ui_text(temp.to_str().unwrap(), &["status"]).is_err());
+            let _ = fs::remove_dir_all(temp);
+
+            let repo = TempRepo::new();
+            assert!(git_ui_text(repo.path.to_str().unwrap(), &["not-a-git-command"]).is_err());
+        });
+    }
+
+    #[test]
+    fn git_ui_routes_reject_unauthorized_requests() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let state = test_state();
+            state.auth.lock().unwrap().localhost_no_auth = false;
+            let headers = HeaderMap::new();
+            let cwd = "/repo".to_string();
+            let query_with_cwd = GitUiQuery {
+                cwd: Some(cwd.clone()),
+                file: Some("file.txt".to_string()),
+                ..query()
+            };
+
+            let cases = [
+                git_ui_status(
+                    State(state.clone()),
+                    headers.clone(),
+                    ConnectInfo(non_loopback()),
+                    Query(query_with_cwd),
+                )
+                .await,
+                git_ui_diff(
+                    State(state.clone()),
+                    headers.clone(),
+                    ConnectInfo(non_loopback()),
+                    Query(GitUiQuery {
+                        cwd: Some(cwd.clone()),
+                        ..query()
+                    }),
+                )
+                .await,
+                git_ui_compare(
+                    State(state.clone()),
+                    headers.clone(),
+                    ConnectInfo(non_loopback()),
+                    Query(GitUiQuery {
+                        cwd: Some(cwd.clone()),
+                        ..query()
+                    }),
+                )
+                .await,
+                git_ui_branches(
+                    State(state.clone()),
+                    headers.clone(),
+                    ConnectInfo(non_loopback()),
+                    Query(GitUiQuery {
+                        cwd: Some(cwd.clone()),
+                        ..query()
+                    }),
+                )
+                .await,
+                git_ui_log(
+                    State(state.clone()),
+                    headers.clone(),
+                    ConnectInfo(non_loopback()),
+                    Query(GitUiQuery {
+                        cwd: Some(cwd.clone()),
+                        ..query()
+                    }),
+                )
+                .await,
+                git_ui_blame(
+                    State(state.clone()),
+                    headers.clone(),
+                    ConnectInfo(non_loopback()),
+                    Query(GitUiQuery {
+                        cwd: Some(cwd.clone()),
+                        file: Some("file.txt".to_string()),
+                        ..query()
+                    }),
+                )
+                .await,
+                git_ui_file(
+                    State(state.clone()),
+                    headers.clone(),
+                    ConnectInfo(non_loopback()),
+                    Query(GitUiQuery {
+                        cwd: Some(cwd.clone()),
+                        file: Some("file.txt".to_string()),
+                        ..query()
+                    }),
+                )
+                .await,
+                git_ui_write_file(
+                    State(state.clone()),
+                    headers.clone(),
+                    ConnectInfo(non_loopback()),
+                    Json(GitUiWriteFileRequest {
+                        cwd: cwd.clone(),
+                        path: "file.txt".to_string(),
+                        content: "x".to_string(),
+                        expected_hash: None,
+                    }),
+                )
+                .await,
+                git_ui_file_history(
+                    State(state.clone()),
+                    headers.clone(),
+                    ConnectInfo(non_loopback()),
+                    Query(GitUiQuery {
+                        cwd: Some(cwd.clone()),
+                        file: Some("file.txt".to_string()),
+                        ..query()
+                    }),
+                )
+                .await,
+                git_ui_stashes(
+                    State(state.clone()),
+                    headers.clone(),
+                    ConnectInfo(non_loopback()),
+                    Query(GitUiQuery {
+                        cwd: Some(cwd.clone()),
+                        ..query()
+                    }),
+                )
+                .await,
+                git_ui_conflicts(
+                    State(state.clone()),
+                    headers.clone(),
+                    ConnectInfo(non_loopback()),
+                    Query(GitUiQuery {
+                        cwd: Some(cwd.clone()),
+                        ..query()
+                    }),
+                )
+                .await,
+                git_ui_stage(
+                    State(state.clone()),
+                    headers.clone(),
+                    ConnectInfo(non_loopback()),
+                    Json(GitUiPathsRequest {
+                        cwd: cwd.clone(),
+                        paths: vec!["file.txt".to_string()],
+                        confirmed: None,
+                    }),
+                )
+                .await,
+                git_ui_unstage(
+                    State(state.clone()),
+                    headers.clone(),
+                    ConnectInfo(non_loopback()),
+                    Json(GitUiPathsRequest {
+                        cwd: cwd.clone(),
+                        paths: vec!["file.txt".to_string()],
+                        confirmed: None,
+                    }),
+                )
+                .await,
+                git_ui_discard(
+                    State(state.clone()),
+                    headers.clone(),
+                    ConnectInfo(non_loopback()),
+                    Json(GitUiPathsRequest {
+                        cwd: cwd.clone(),
+                        paths: vec!["file.txt".to_string()],
+                        confirmed: Some(true),
+                    }),
+                )
+                .await,
+                git_ui_rename(
+                    State(state.clone()),
+                    headers.clone(),
+                    ConnectInfo(non_loopback()),
+                    Json(GitUiRenameRequest {
+                        cwd: cwd.clone(),
+                        path: "file.txt".to_string(),
+                        new_name: "next.txt".to_string(),
+                    }),
+                )
+                .await,
+                git_ui_stash(
+                    State(state.clone()),
+                    headers.clone(),
+                    ConnectInfo(non_loopback()),
+                    Json(GitUiStashRequest {
+                        cwd: cwd.clone(),
+                        message: None,
+                        paths: None,
+                        stash: None,
+                        pop: None,
+                        confirmed: None,
+                    }),
+                )
+                .await,
+                git_ui_stash_apply(
+                    State(state.clone()),
+                    headers.clone(),
+                    ConnectInfo(non_loopback()),
+                    Json(GitUiStashRequest {
+                        cwd: cwd.clone(),
+                        message: None,
+                        paths: None,
+                        stash: None,
+                        pop: None,
+                        confirmed: None,
+                    }),
+                )
+                .await,
+                git_ui_stash_drop(
+                    State(state.clone()),
+                    headers.clone(),
+                    ConnectInfo(non_loopback()),
+                    Json(GitUiStashRequest {
+                        cwd: cwd.clone(),
+                        message: None,
+                        paths: None,
+                        stash: None,
+                        pop: None,
+                        confirmed: Some(true),
+                    }),
+                )
+                .await,
+                git_ui_switch(
+                    State(state.clone()),
+                    headers.clone(),
+                    ConnectInfo(non_loopback()),
+                    Json(GitUiSwitchRequest {
+                        cwd: cwd.clone(),
+                        branch: "main".to_string(),
+                        create: None,
+                        base: None,
+                    }),
+                )
+                .await,
+                git_ui_pull(
+                    State(state.clone()),
+                    headers.clone(),
+                    ConnectInfo(non_loopback()),
+                    Json(GitUiPullRequest {
+                        cwd: cwd.clone(),
+                        target: "current".to_string(),
+                        strategy: "merge".to_string(),
+                        autostash: None,
+                    }),
+                )
+                .await,
+                git_ui_reset(
+                    State(state.clone()),
+                    headers.clone(),
+                    ConnectInfo(non_loopback()),
+                    Json(GitUiResetRequest {
+                        cwd: cwd.clone(),
+                        mode: "mixed".to_string(),
+                        ref_name: "HEAD".to_string(),
+                        confirmation: None,
+                    }),
+                )
+                .await,
+                git_ui_rebase(
+                    State(state.clone()),
+                    headers.clone(),
+                    ConnectInfo(non_loopback()),
+                    Json(GitUiRebaseRequest {
+                        cwd: cwd.clone(),
+                        upstream: "HEAD~1".to_string(),
+                        onto: None,
+                        confirmation: Some("rebase selected".to_string()),
+                    }),
+                )
+                .await,
+                git_ui_commit(
+                    State(state.clone()),
+                    headers.clone(),
+                    ConnectInfo(non_loopback()),
+                    Json(GitUiCommitRequest {
+                        cwd: cwd.clone(),
+                        title: "x".to_string(),
+                        body: None,
+                        amend: None,
+                    }),
+                )
+                .await,
+                git_ui_apply_patch(
+                    State(state.clone()),
+                    headers.clone(),
+                    ConnectInfo(non_loopback()),
+                    Json(GitUiApplyPatchRequest {
+                        cwd: cwd.clone(),
+                        patch: "diff --git a/a b/a".to_string(),
+                        reverse: None,
+                        cached: None,
+                    }),
+                )
+                .await,
+                git_ui_conflict_resolve(
+                    State(state.clone()),
+                    headers.clone(),
+                    ConnectInfo(non_loopback()),
+                    Json(GitUiConflictResolveRequest {
+                        cwd: cwd.clone(),
+                        path: "file.txt".to_string(),
+                        mode: "ours".to_string(),
+                        content: None,
+                    }),
+                )
+                .await,
+                git_ui_conflict_action(
+                    State(state),
+                    headers,
+                    ConnectInfo(non_loopback()),
+                    Json(GitUiConflictActionRequest {
+                        cwd,
+                        action: "abort-merge".to_string(),
+                    }),
+                )
+                .await,
+            ];
+
+            assert!(cases
+                .iter()
+                .all(|response| response.status() == StatusCode::UNAUTHORIZED));
+        });
     }
 
     #[test]

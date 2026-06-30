@@ -234,7 +234,7 @@ Search and shortcuts:
 ## Testing And Coverage
 
 - Rust coverage is measured with `cargo llvm-cov --summary-only`.
-- Current backend line coverage is about 80%; focused service/file-browser modules are near complete (`service.rs` about 99%, `file_browser.rs` about 99%).
+- Current backend line coverage is about 85%; focused service/file-browser modules are near complete (`service.rs` about 99%, `file_browser.rs` about 99%).
 - Remaining uncovered file-browser/service lines are mostly OS/filesystem race or platform branches that are intentionally not forced through destructive tests.
 - JavaScript smoke tests use Node's native test runner and syntax checks for desktop/mobile bundles.
 
