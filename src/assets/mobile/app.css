@@ -1,6 +1,10 @@
 * {
   box-sizing: border-box;
 }
+html {
+  height: 100%;
+  overflow: hidden;
+}
 body {
   --bg: #11111b;
   --fg: #cdd6f4;
@@ -16,6 +20,7 @@ body {
   color: var(--fg);
   font-family: ui-sans-serif, system-ui;
   height: 100dvh;
+  width: 100vw;
   overflow: hidden;
 }
 body.light {
@@ -31,11 +36,16 @@ body.light {
 }
 #app {
   height: 100dvh;
+  min-width: 0;
+  overflow: hidden;
 }
 .mobile-app {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
   height: 100dvh;
+  max-height: 100dvh;
+  min-width: 0;
+  overflow: hidden;
   background: var(--bg);
 }
 .mobile-header {
@@ -81,6 +91,7 @@ body.light {
 }
 .mobile-screen {
   min-height: 0;
+  min-width: 0;
   overflow: auto;
   padding: 12px;
 }
@@ -141,6 +152,7 @@ body.light {
   grid-template-rows: auto minmax(0, 1fr);
   height: 100%;
   min-height: 0;
+  min-width: 0;
   padding: 0;
 }
 .mobile-tabs {
@@ -175,6 +187,7 @@ body.light {
 .mobile-terminal-shell {
   position: relative;
   min-height: 0;
+  min-width: 0;
   overflow: auto;
   padding: 8px;
 }
@@ -220,16 +233,26 @@ body.light {
   background: #3b2028;
 }
 .mobile-nav {
-  display: grid;
-  grid-template-columns: repeat(6, 1fr);
+  display: flex;
   gap: 6px;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
   padding: 8px max(8px, env(safe-area-inset-right))
     max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
   border-top: 1px solid var(--border);
   background: var(--panel);
+  scrollbar-width: none;
+  white-space: nowrap;
+}
+.mobile-nav::-webkit-scrollbar {
+  display: none;
 }
 .mobile-nav button {
+  flex: 0 0 auto;
   min-height: 44px;
+  min-width: 74px;
+  padding: 0 10px;
   border: 0;
   border-radius: 12px;
   background: transparent;
