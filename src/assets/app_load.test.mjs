@@ -191,6 +191,18 @@ describe("app bundle load", () => {
     match(gitUiSource, /file-tree-spinner/);
   });
 
+  it("defines Git file rename and staged edit menu actions", () => {
+    const fileBrowserSource = readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8");
+    match(gitUiSource, /Rename file/);
+    match(gitUiSource, /Edit staged file/);
+    match(gitUiSource, /\/api\/git-ui\/rename/);
+    match(gitUiSource, /restageOnSave/);
+    match(gitUiSource, /Unstage .* edit it, then restage after saving/);
+    match(fileBrowserSource, /const oldScrollTop = oldSide \? oldSide\.scrollTop : 0;/);
+    match(fileBrowserSource, /nextSide\.scrollTop = oldScrollTop/);
+    match(fileBrowserSource, /state\.selected = path;/);
+  });
+
   it("renders shortcut editor with collision detection", () => {
     const ctx = context();
     vm.runInContext(source, ctx);

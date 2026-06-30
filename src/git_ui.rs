@@ -30,6 +30,7 @@ pub(crate) fn routes() -> Router<WebState> {
         .route("/api/git-ui/stage", post(git_ui_stage))
         .route("/api/git-ui/unstage", post(git_ui_unstage))
         .route("/api/git-ui/discard", post(git_ui_discard))
+        .route("/api/git-ui/rename", post(git_ui_rename))
         .route("/api/git-ui/stash", post(git_ui_stash))
         .route("/api/git-ui/stash-apply", post(git_ui_stash_apply))
         .route("/api/git-ui/stash-drop", post(git_ui_stash_drop))
@@ -65,6 +66,13 @@ struct GitUiPathsRequest {
     cwd: String,
     paths: Vec<String>,
     confirmed: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct GitUiRenameRequest {
+    cwd: String,
+    path: String,
+    new_name: String,
 }
 
 #[derive(Deserialize)]
@@ -246,6 +254,20 @@ fn safe_repo_path(path: &str) -> Result<&str, String> {
         || trimmed.contains('\0')
     {
         return Err("invalid repository path".to_string());
+    }
+    Ok(trimmed)
+}
+
+fn safe_git_file_name(name: &str) -> Result<&str, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty()
+        || trimmed.contains('\0')
+        || trimmed.contains('/')
+        || trimmed.contains('\\')
+        || trimmed == "."
+        || trimmed == ".."
+    {
+        return Err("invalid file name".to_string());
     }
     Ok(trimmed)
 }
@@ -1036,6 +1058,62 @@ async fn git_ui_discard(
         }
     }
     Json(json!({ "ok": true })).into_response()
+}
+
+async fn git_ui_rename(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    Json(body): Json<GitUiRenameRequest>,
+) -> Response {
+    if let Err(response) = git_ui_auth(&state, &headers, remote) {
+        return response;
+    }
+    let path = match safe_repo_path(&body.path) {
+        Ok(value) => value,
+        Err(err) => return git_json_error(StatusCode::BAD_REQUEST, err),
+    };
+    let new_name = match safe_git_file_name(&body.new_name) {
+        Ok(value) => value,
+        Err(err) => return git_json_error(StatusCode::BAD_REQUEST, err),
+    };
+    let parent = Path::new(path).parent().unwrap_or_else(|| Path::new(""));
+    let next_path = parent.join(new_name).to_string_lossy().replace('\\', "/");
+    if next_path == path {
+        return Json(json!({ "ok": true, "path": next_path })).into_response();
+    }
+    let repo = match git_ui_repo(&body.cwd) {
+        Ok(repo) => repo,
+        Err(err) => return git_json_error(StatusCode::BAD_REQUEST, err),
+    };
+    match git_ui_text(&repo, &["mv", "--", path, next_path.as_str()]) {
+        Ok(_) => Json(json!({ "ok": true, "path": next_path })).into_response(),
+        Err(_) => {
+            let root = match Path::new(&repo).canonicalize() {
+                Ok(value) => value,
+                Err(err) => return git_json_error(StatusCode::BAD_GATEWAY, err.to_string()),
+            };
+            let from = root.join(path);
+            let to = root.join(&next_path);
+            let from_parent = from.parent().unwrap_or(&root);
+            let to_parent = to.parent().unwrap_or(&root);
+            let from_parent = match from_parent.canonicalize() {
+                Ok(value) => value,
+                Err(err) => return git_json_error(StatusCode::BAD_GATEWAY, err.to_string()),
+            };
+            let to_parent = match to_parent.canonicalize() {
+                Ok(value) => value,
+                Err(err) => return git_json_error(StatusCode::BAD_GATEWAY, err.to_string()),
+            };
+            if !from_parent.starts_with(&root) || !to_parent.starts_with(&root) {
+                return git_json_error(StatusCode::BAD_REQUEST, "path escapes root");
+            }
+            if let Err(err) = fs::rename(&from, &to) {
+                return git_json_error(StatusCode::BAD_GATEWAY, err.to_string());
+            }
+            Json(json!({ "ok": true, "path": next_path })).into_response()
+        }
+    }
 }
 
 async fn git_ui_stash(
@@ -1958,6 +2036,23 @@ mod tests {
             .await;
             assert_eq!(commit.status(), StatusCode::OK);
             assert!(repo.git(&["log", "--oneline", "-1"]).contains("add new"));
+
+            let rename = git_ui_rename(
+                State(state.clone()),
+                HeaderMap::new(),
+                ConnectInfo(remote()),
+                Json(GitUiRenameRequest {
+                    cwd: cwd.clone(),
+                    path: "new.txt".to_string(),
+                    new_name: "renamed.txt".to_string(),
+                }),
+            )
+            .await;
+            assert_eq!(rename.status(), StatusCode::OK);
+            assert!(repo.path.join("renamed.txt").exists());
+            assert!(repo
+                .git(&["diff", "--cached", "--name-status"])
+                .contains("renamed.txt"));
 
             let compare = git_ui_compare(
                 State(state),

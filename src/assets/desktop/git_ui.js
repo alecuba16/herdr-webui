@@ -606,6 +606,8 @@
     if (!menu) return "";
     const actions = [];
     if (["S", "M", "?"].includes(menu.kind)) actions.push(`<button onclick="HerdrGitUi.menuAction('stash')">Stash file</button>`);
+    if (["S", "M"].includes(menu.kind)) actions.push(`<button onclick="HerdrGitUi.menuAction('edit')">${menu.kind === "S" ? "Edit staged file" : "Edit file"}</button>`);
+    if (["S", "M", "?"].includes(menu.kind)) actions.push(`<button onclick="HerdrGitUi.menuAction('rename')">Rename file</button>`);
     if (["M", "?"].includes(menu.kind)) actions.push(`<button onclick="HerdrGitUi.menuAction('discard')">Discard file</button>`);
     if (["M", "?"].includes(menu.kind)) actions.push(`<button onclick="HerdrGitUi.menuAction('stage')">Stage file</button>`);
     if (menu.kind === "S") actions.push(`<button onclick="HerdrGitUi.menuAction('unstage')">Unstage file</button>`);
@@ -1287,7 +1289,13 @@
     fileMenu(event, file, kind) {
       event.preventDefault();
       event.stopPropagation();
-      state.contextMenu = { x: event.clientX, y: event.clientY, file: decodeURIComponent(file), kind };
+      const view = active();
+      const decoded = decodeURIComponent(file);
+      if (view) {
+        view.file = decoded;
+        view.diffKind = kind;
+      }
+      state.contextMenu = { x: event.clientX, y: event.clientY, file: decoded, kind };
       render();
       return false;
     },
@@ -1299,6 +1307,8 @@
       if (action === "discard") this.discardFile(encodeURIComponent(menu.file));
       if (action === "stage") this.stageFile(encodeURIComponent(menu.file));
       if (action === "unstage") this.unstageFile(encodeURIComponent(menu.file));
+      if (action === "rename") this.renameFile(encodeURIComponent(menu.file));
+      if (action === "edit") this.editFileFromMenu(encodeURIComponent(menu.file), menu.kind);
     },
     toggleStageAll() {
       const view = active();
@@ -1347,6 +1357,63 @@
     },
     stageFile(path) { post("/api/git-ui/stage", { cwd: active().cwd, paths: [decodeURIComponent(path)] }); },
     unstageFile(path) { post("/api/git-ui/unstage", { cwd: active().cwd, paths: [decodeURIComponent(path)] }); },
+    async renameFile(path) {
+      const view = active();
+      path = decodeURIComponent(path);
+      if (!view || !path) return;
+      const currentName = path.split("/").filter(Boolean).pop() || path;
+      const newName = prompt("Rename file to", currentName);
+      if (!newName || newName === currentName) return;
+      if (!confirm(`Rename ${path} to ${newName}?`)) return;
+      view.mutating = true;
+      render();
+      try {
+        await api("/api/git-ui/rename", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ cwd: view.cwd, path, new_name: newName }),
+        });
+        await refresh();
+      } catch (err) {
+        view.error = err.message || String(err);
+        render();
+      } finally {
+        view.mutating = false;
+        render();
+      }
+    },
+    async editFileFromMenu(path, kind) {
+      const view = active();
+      path = decodeURIComponent(path);
+      if (!view || !path) return;
+      if (kind === "S") {
+        if (!confirm(`Unstage ${path}, edit it, then restage after saving?`)) return;
+        view.mutating = true;
+        render();
+        try {
+          await api("/api/git-ui/unstage", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ cwd: view.cwd, paths: [path] }),
+          });
+          await refresh();
+          const nextView = active();
+          nextView.file = path;
+          nextView.diffKind = "M";
+          await this.editSideBySide({ restageOnSave: true });
+        } catch (err) {
+          active().error = err.message || String(err);
+          render();
+        } finally {
+          active().mutating = false;
+          render();
+        }
+        return;
+      }
+      view.file = path;
+      view.diffKind = kind;
+      this.editSideBySide();
+    },
     restoreFile(path) { if (confirm("Restore this file change?")) post("/api/git-ui/discard", { cwd: active().cwd, paths: [decodeURIComponent(path)], confirmed: true }); },
     restoreHunk(path, index) { path = decodeURIComponent(path); if (confirm("Restore this hunk?")) applyHunk(path, index, { reverse: true }); },
     restoreDiffFile(path) {
@@ -1362,12 +1429,12 @@
     },
     discardFile(path) { path = decodeURIComponent(path); if (confirm(`Restore complete file ${path}?`)) post("/api/git-ui/discard", { cwd: active().cwd, paths: [path], confirmed: true }); },
     toggleBlame() { const view = active(); if (!view) return; view.showBlame = !view.showBlame; render(); },
-    async editSideBySide() {
+    async editSideBySide(options) {
       const view = active();
       if (!canEditCurrentFile(view)) return;
       const file = diffFile(view.file);
       const previousRef = comparesWorkingTree(view) ? (view.compareBase || "HEAD") : "HEAD";
-      view.sideEditor = { path: view.file, content: "", hunks: [], previousRef, hash: "", loading: true, saving: false, error: "" };
+      view.sideEditor = { path: view.file, content: "", hunks: [], previousRef, hash: "", loading: true, saving: false, error: "", restageOnSave: !!(options && options.restageOnSave) };
       render();
       try {
         const current = await api(`/api/git-ui/file?cwd=${encodeURIComponent(view.cwd)}&file=${encodeURIComponent(view.file)}&ref_name=working`);
@@ -1380,9 +1447,10 @@
           loading: false,
           saving: false,
           error: "",
+          restageOnSave: !!(options && options.restageOnSave),
         };
       } catch (err) {
-        view.sideEditor = { path: view.file, content: "", hunks: [], previousRef, hash: "", loading: false, saving: false, error: err.message || String(err) };
+        view.sideEditor = { path: view.file, content: "", hunks: [], previousRef, hash: "", loading: false, saving: false, error: err.message || String(err), restageOnSave: !!(options && options.restageOnSave) };
       }
       render();
     },
@@ -1406,6 +1474,13 @@
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ cwd: view.cwd, path: editor.path || view.file, content: sideEditorContent(editor), expected_hash: editor.hash || "" }),
         });
+        if (editor.restageOnSave) {
+          await api("/api/git-ui/stage", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ cwd: view.cwd, paths: [editor.path || view.file] }),
+          });
+        }
         view.sideEditor = null;
         await refresh();
       } catch (err) {

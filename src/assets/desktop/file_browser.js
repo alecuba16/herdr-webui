@@ -199,6 +199,8 @@
       (shell && shell.parentNode ? shell.parentNode : document.body).appendChild(panel);
     }
     syncTerminalVisibility();
+    const oldSide = panel.querySelector && panel.querySelector(".file-browser-side");
+    const oldScrollTop = oldSide ? oldSide.scrollTop : 0;
     const activeFile = currentFile();
     const entries = treeEntries();
     const search = state.search;
@@ -207,6 +209,8 @@
       ? Tree.renderEntries(search.results, { selectedPath: state.selected, callback: "HerdrFileBrowser", showMeta: true, dirClickMethod: "none", dirDoubleClickMethod: "enter", contextMethod: "menu", shiftSelectMode: true, highlightQuery: search.query })
       : Tree.renderEntries(entries, { selectedPath: state.selected, callback: "HerdrFileBrowser", showMeta: true, dirClickMethod: "none", dirDoubleClickMethod: "enter", contextMethod: "menu", shiftSelectMode: true });
     panel.innerHTML = `<aside class="file-browser-side ${activeFile ? "previewing" : ""}"><div class="file-browser-head"><div class="file-browser-title">Files</div><div class="file-browser-subtitle">${esc(state.path || state.cwd || "No workspace")}</div><div class="file-browser-actions"><button class="git-ui-btn" onclick="HerdrFileBrowser.refresh()">Refresh</button><button class="git-ui-btn" onclick="HerdrFileBrowser.close()">Close</button></div><label class="file-browser-search"><input id="fileBrowserSearch" value="${esc(search.query)}" placeholder="Search files" oninput="HerdrFileBrowser.search(this.value)">${search.searching ? '<span class="file-tree-spinner" title="Searching"></span>' : ""}</label></div>${state.error ? `<div class="file-browser-error">${esc(state.error)}</div>` : ""}${search.error ? `<div class="file-browser-error">${esc(search.error)}</div>` : ""}${treeHtml}</aside><main class="file-browser-main"><div class="file-browser-toolbar">${renderToolbar(activeFile)}</div><div class="file-browser-preview ${state.split ? "split" : ""}" id="fileBrowserPreview">${renderPreviewShell()}</div></main>${renderContextMenu()}`;
+    const nextSide = panel.querySelector && panel.querySelector(".file-browser-side");
+    if (nextSide) nextSide.scrollTop = oldScrollTop;
     mountEditors();
   }
 
@@ -419,7 +423,9 @@
     menu(event, encodedPath, kind) {
       event.preventDefault();
       event.stopPropagation();
-      state.contextMenu = { x: event.clientX, y: event.clientY, path: decodeURIComponent(encodedPath), kind };
+      const path = decodeURIComponent(encodedPath);
+      state.selected = path;
+      state.contextMenu = { x: event.clientX, y: event.clientY, path, kind };
       render();
       return false;
     },
