@@ -256,6 +256,10 @@
   const Actions = window.HerdrGitActions;
   const FileTree = window.HerdrFileTree;
 
+  function highlightPath(value, query) {
+    return FileTree && FileTree.highlight ? FileTree.highlight(value, query) : esc(value);
+  }
+
   function highlight(code, path) {
     return Syntax.highlight(code, path);
   }
@@ -367,6 +371,7 @@
         loadedLargeDiffFiles: {},
         collapsedDirs: {},
         expandedCompactDirs: {},
+        gitSearch: { query: "", applied: "", searching: false, timer: null },
         pendingLogScrollHash: "",
         temporaryHistoryCompare: false,
         sideEditor: null,
@@ -486,16 +491,34 @@
     return [...(s.conflicted || []), ...(s.staged || []), ...(s.unstaged || []), ...(s.untracked || [])].filter((v, i, a) => v && a.indexOf(v) === i);
   }
 
+  function gitSearchQuery(view) {
+    return ((view && view.gitSearch && view.gitSearch.applied) || "").trim();
+  }
+
+  function matchGitSearch(path, query) {
+    if (!query) return true;
+    const source = /[A-Z]/.test(query) ? String(path || "") : String(path || "").toLowerCase();
+    const target = /[A-Z]/.test(query) ? query : query.toLowerCase();
+    return source.includes(target);
+  }
+
+  function filteredGitFiles(files, view) {
+    const query = gitSearchQuery(view);
+    return query ? (files || []).filter((file) => matchGitSearch(file, query)) : (files || []);
+  }
+
   function section(title, files, kind) {
     const view = active() || {};
-    const list = files || [];
+    const all = files || [];
+    const list = filteredGitFiles(all, view);
     const collapsed = !!((view.collapsedSections || {})[title]);
     const action = sectionBulkAction(title, kind, list);
     const limit = largeSectionFileLimit();
     const limited = limit > 0 && list.length > limit && !((view.expandedLargeSections || {})[title]);
     const visibleList = limited ? list.slice(0, limit) : list;
     const largeNote = limited ? `<div class="git-ui-large-file-diff"><button class="git-ui-large-file-load" type="button" onclick="HerdrGitUi.expandLargeSection('${arg(title)}')"><strong>Show all ${esc(title.toLowerCase())} files</strong></button><p>Showing first ${limit} of ${list.length} files to keep browser responsive.</p></div>` : "";
-    return `<div class="git-ui-section"><div class="git-ui-section-head"><button class="git-ui-section-toggle" onclick="HerdrGitUi.toggleSection('${arg(title)}')"><span>${treeIcon(collapsed ? "chevron-right" : "chevron-down")}</span><strong>${esc(title)}</strong><em>${list.length}</em></button>${action}</div>${collapsed ? "" : `<div class="git-ui-list" role="tree" aria-label="${esc(title)} files">${visibleList.length ? renderFileTree(visibleList, kind, view) : `<div class="git-ui-empty-row">No ${esc(title.toLowerCase())} files</div>`}${largeNote}</div>`}</div>`;
+    const count = gitSearchQuery(view) ? `${list.length}/${all.length}` : list.length;
+    return `<div class="git-ui-section"><div class="git-ui-section-head"><button class="git-ui-section-toggle" onclick="HerdrGitUi.toggleSection('${arg(title)}')"><span>${treeIcon(collapsed ? "chevron-right" : "chevron-down")}</span><strong>${esc(title)}</strong><em>${esc(count)}</em></button>${action}</div>${collapsed ? "" : `<div class="git-ui-list" role="tree" aria-label="${esc(title)} files">${visibleList.length ? renderFileTree(visibleList, kind, view) : `<div class="git-ui-empty-row">No ${esc(title.toLowerCase())} files</div>`}${largeNote}</div>`}</div>`;
   }
 
   function sectionBulkAction(title, kind, files) {
@@ -524,9 +547,10 @@
         kind,
         selectedPath: view.file,
         selectedKind: view.diffKind,
-        collapsedDirs: view.collapsedDirs || {},
+        collapsedDirs: gitSearchQuery(view) ? {} : view.collapsedDirs || {},
         expandedCompactDirs: view.expandedCompactDirs || {},
         expandCompactMethod: "expandCompactDir",
+        highlightQuery: gitSearchQuery(view),
         metaForPath: fileSummary,
       });
     }
@@ -566,7 +590,7 @@
       if (entry.type === "dir") {
         const dirPath = path ? `${path}/${entry.name}` : entry.name;
         const collapsed = !!((view.collapsedDirs || {})[dirPath]);
-        return `<div class="git-ui-file git-ui-dir" role="treeitem" tabindex="0" aria-expanded="${collapsed ? "false" : "true"}" style="--level:${level}" onclick="HerdrGitUi.toggleDir('${arg(dirPath)}')" onkeydown="HerdrGitUi.activateTreeItem(event)"><span class="git-ui-tree-caret">${treeIcon(collapsed ? "chevron-right" : "chevron-down")}</span><span class="git-ui-tree-icon folder">${treeIcon("folder")}</span><span class="git-ui-path">${esc(entry.name)}</span></div>${collapsed ? "" : renderTreeNode(entry.child, dirPath, kind, view, level + 1)}`;
+        return `<div class="git-ui-file git-ui-dir" role="treeitem" tabindex="0" aria-expanded="${collapsed ? "false" : "true"}" style="--level:${level}" onclick="HerdrGitUi.toggleDir('${arg(dirPath)}')" onkeydown="HerdrGitUi.activateTreeItem(event)"><span class="git-ui-tree-caret">${treeIcon(collapsed ? "chevron-right" : "chevron-down")}</span><span class="git-ui-tree-icon folder">${treeIcon("folder")}</span><span class="git-ui-path">${highlightPath(entry.name, gitSearchQuery(view))}</span></div>${collapsed ? "" : renderTreeNode(entry.child, dirPath, kind, view, level + 1)}`;
       }
       return renderSideFile(entry.path, entry.name, kind, view, level);
     }).join("");
@@ -574,7 +598,7 @@
 
   function renderSideFile(file, name, kind, view, level) {
     const summary = fileSummary(file, kind);
-    return `<div class="git-ui-file ${view.file === file && view.diffKind === kind ? "active" : ""}" role="treeitem" tabindex="0" data-git-path="${esc(file)}" data-git-kind="${esc(kind)}" style="--level:${level}" onclick="HerdrGitUi.selectFile('${arg(file)}','${kind}')" onkeydown="HerdrGitUi.activateTreeItem(event)" oncontextmenu="return HerdrGitUi.fileMenu(event,'${arg(file)}','${kind}')"><span class="git-ui-tree-caret"></span><span class="git-ui-tree-icon file">${treeIcon("file")}</span><span class="git-ui-path" title="${esc(file)}">${esc(name)}</span><span class="git-ui-file-meta">${summary}</span></div>`;
+    return `<div class="git-ui-file ${view.file === file && view.diffKind === kind ? "active" : ""}" role="treeitem" tabindex="0" data-git-path="${esc(file)}" data-git-kind="${esc(kind)}" style="--level:${level}" onclick="HerdrGitUi.selectFile('${arg(file)}','${kind}')" onkeydown="HerdrGitUi.activateTreeItem(event)" oncontextmenu="return HerdrGitUi.fileMenu(event,'${arg(file)}','${kind}')"><span class="git-ui-tree-caret"></span><span class="git-ui-tree-icon file">${treeIcon("file")}</span><span class="git-ui-path" title="${esc(file)}">${highlightPath(name, gitSearchQuery(view))}</span><span class="git-ui-file-meta">${summary}</span></div>`;
   }
 
   function renderContextMenu() {
@@ -631,7 +655,8 @@
       ? `${(s.conflicted || []).length ? section("Conflicted", s.conflicted, "U") : ""}${section("Staged", s.staged, "S")}${section("Unstaged", s.unstaged, "M")}${section("Untracked", s.untracked, "?")}`
       : section("Compared", view.compareFilePaths && view.compareFilePaths.length ? view.compareFilePaths : ((view.diff && view.diff.files) || []).map((file) => file.path), "C");
     const stageLabel = (s.staged || []).length ? "Unstage all" : "Stage all";
-    return `<aside class="git-ui-side"><div class="git-ui-head"><div><div class="git-ui-title">Git</div><div class="git-ui-subtitle">${esc(s.state || "closed")} · ${esc(compactPath(s.repo_path))}</div><button class="git-ui-branch-pill" onclick="HerdrGitUi.openBranchModal()">${esc(s.branch || view.title || "No branch")}</button></div></div>${view.error ? `<div class="git-ui-error">${esc(view.error)}</div>` : ""}<div class="git-ui-toolbar"><div class="git-ui-tabs">${tabs.map((tab) => `<button class="git-ui-btn ${view.tab === tab.id ? "active" : ""}" onclick="HerdrGitUi.tab('${tab.id}')">${tab.label}</button>`).join("")}</div></div><div class="git-ui-toolbar"><div class="git-ui-toolbar-title">Worktree actions</div><div class="git-ui-actions"><button class="git-ui-btn primary" onclick="HerdrGitUi.tab('commit')">Commit</button><button class="git-ui-btn" onclick="HerdrGitUi.refresh()">Refresh</button><button class="git-ui-btn" onclick="HerdrGitUi.pull('current')">Pull current</button><button class="git-ui-btn" onclick="HerdrGitUi.pull('main')">Pull main/master</button><button class="git-ui-btn" onclick="HerdrGitUi.toggleStageAll()">${stageLabel}</button><button class="git-ui-btn" onclick="HerdrGitUi.compareCurrent()">Current changes</button><button class="git-ui-btn" onclick="HerdrGitUi.rebase()">Rebase</button><button class="git-ui-btn danger" onclick="HerdrGitUi.reset()">Reset</button></div></div>${fileSections}</aside>`;
+    const gitSearch = view.gitSearch || {};
+    return `<aside class="git-ui-side"><div class="git-ui-head"><div><div class="git-ui-title">Git</div><div class="git-ui-subtitle">${esc(s.state || "closed")} · ${esc(compactPath(s.repo_path))}</div><button class="git-ui-branch-pill" onclick="HerdrGitUi.openBranchModal()">${esc(s.branch || view.title || "No branch")}</button></div></div>${view.error ? `<div class="git-ui-error">${esc(view.error)}</div>` : ""}<div class="git-ui-toolbar"><div class="git-ui-tabs">${tabs.map((tab) => `<button class="git-ui-btn ${view.tab === tab.id ? "active" : ""}" onclick="HerdrGitUi.tab('${tab.id}')">${tab.label}</button>`).join("")}</div></div><div class="git-ui-toolbar"><div class="git-ui-toolbar-title">Worktree actions</div><div class="git-ui-actions"><button class="git-ui-btn primary" onclick="HerdrGitUi.tab('commit')">Commit</button><button class="git-ui-btn" onclick="HerdrGitUi.refresh()">Refresh</button><button class="git-ui-btn" onclick="HerdrGitUi.pull('current')">Pull current</button><button class="git-ui-btn" onclick="HerdrGitUi.pull('main')">Pull main/master</button><button class="git-ui-btn" onclick="HerdrGitUi.toggleStageAll()">${stageLabel}</button><button class="git-ui-btn" onclick="HerdrGitUi.compareCurrent()">Current changes</button><button class="git-ui-btn" onclick="HerdrGitUi.rebase()">Rebase</button><button class="git-ui-btn danger" onclick="HerdrGitUi.reset()">Reset</button></div><label class="file-browser-search"><input value="${esc(gitSearch.query || "")}" placeholder="Filter changed files" oninput="HerdrGitUi.searchChangedFiles(this.value)">${gitSearch.searching ? '<span class="file-tree-spinner" title="Filtering"></span>' : ""}</label></div>${fileSections}</aside>`;
   }
 
   function renderFileToolbar(activeTab) {
@@ -1303,6 +1328,22 @@
       const verb = action === "unstage" ? "Unstage" : "Stage";
       if (!confirm(`${verb} ${paths.length} ${title.toLowerCase()} file${paths.length === 1 ? "" : "s"}?`)) return;
       post(action === "unstage" ? "/api/git-ui/unstage" : "/api/git-ui/stage", { cwd: view.cwd, paths });
+    },
+    searchChangedFiles(value) {
+      const view = active();
+      if (!view) return;
+      view.gitSearch = view.gitSearch || { query: "", applied: "", searching: false, timer: null };
+      view.gitSearch.query = String(value || "");
+      if (view.gitSearch.timer) clearTimeout(view.gitSearch.timer);
+      view.gitSearch.searching = !!view.gitSearch.query.trim();
+      view.gitSearch.timer = setTimeout(() => {
+        const current = active();
+        if (!current || current !== view) return;
+        view.gitSearch.applied = view.gitSearch.query.trim();
+        view.gitSearch.searching = false;
+        render();
+      }, 160);
+      render();
     },
     stageFile(path) { post("/api/git-ui/stage", { cwd: active().cwd, paths: [decodeURIComponent(path)] }); },
     unstageFile(path) { post("/api/git-ui/unstage", { cwd: active().cwd, paths: [decodeURIComponent(path)] }); },

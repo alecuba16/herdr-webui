@@ -178,6 +178,19 @@ describe("app bundle load", () => {
     match(gitUiSource, /\["soft", "mixed", "hard"\]/);
   });
 
+  it("defines file tree search and Git change filtering UI", () => {
+    const fileTreeSource = readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8");
+    const fileBrowserSource = readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8");
+    match(fileTreeSource, /function highlight\(value, query\)/);
+    match(fileTreeSource, /herdr-tree-highlight/);
+    match(fileBrowserSource, /\/api\/file-browser\/search/);
+    match(fileBrowserSource, /state\.search\.inFlight/);
+    match(fileBrowserSource, /state\.search\.pending/);
+    match(gitUiSource, /searchChangedFiles\(value\)/);
+    match(gitUiSource, /Filter changed files/);
+    match(gitUiSource, /file-tree-spinner/);
+  });
+
   it("renders shortcut editor with collision detection", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
