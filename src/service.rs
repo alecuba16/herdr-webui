@@ -519,4 +519,77 @@ mod tests {
             "&lt;&amp;&gt;&quot;&apos;".to_string()
         );
     }
+
+    #[test]
+    fn service_paths_use_home_and_xdg_config_home() {
+        let _guard = crate::test_env_lock().lock().unwrap();
+        let root =
+            std::env::temp_dir().join(format!("herdr-webui-service-paths-{}", std::process::id()));
+        let home = root.join("home");
+        let xdg = root.join("xdg");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&xdg).unwrap();
+
+        let old_home = std::env::var_os("HOME");
+        let old_xdg = std::env::var_os("XDG_CONFIG_HOME");
+        std::env::set_var("HOME", &home);
+        std::env::set_var("XDG_CONFIG_HOME", &xdg);
+
+        assert_eq!(home_dir().unwrap(), home);
+        assert_eq!(local_bin_dir().unwrap(), home.join(".local/bin"));
+        assert_eq!(
+            install_bin_path().unwrap(),
+            home.join(".local/bin/herdr-webui")
+        );
+        assert_eq!(
+            mac_log_dir().unwrap(),
+            home.join("Library/Logs/herdr-webui")
+        );
+        assert_eq!(
+            mac_plist_path().unwrap(),
+            home.join("Library/LaunchAgents/herdr-web.plist")
+        );
+        assert_eq!(
+            linux_service_path().unwrap(),
+            xdg.join("systemd/user/herdr-web.service")
+        );
+        let missing = ensure_linux_service_exists().unwrap_err();
+        assert_eq!(missing.kind(), io::ErrorKind::NotFound);
+
+        if let Some(value) = old_home {
+            std::env::set_var("HOME", value);
+        } else {
+            std::env::remove_var("HOME");
+        }
+        if let Some(value) = old_xdg {
+            std::env::set_var("XDG_CONFIG_HOME", value);
+        } else {
+            std::env::remove_var("XDG_CONFIG_HOME");
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn service_command_targets_and_verbose_flag_are_derived() {
+        let _guard = crate::test_env_lock().lock().unwrap();
+        let old_verbose = std::env::var_os("HERDR_WEB_VERBOSE");
+
+        std::env::remove_var("HERDR_WEB_VERBOSE");
+        assert!(!service_verbose());
+        std::env::set_var("HERDR_WEB_VERBOSE", "yes");
+        assert!(service_verbose());
+        std::env::set_var("HERDR_WEB_VERBOSE", "0");
+        assert!(!service_verbose());
+
+        let domain = mac_domain();
+        assert!(domain.starts_with("gui/"));
+        assert_eq!(mac_service_target(), format!("{domain}/{INSTALL_LABEL}"));
+
+        if let Some(value) = old_verbose {
+            std::env::set_var("HERDR_WEB_VERBOSE", value);
+        } else {
+            std::env::remove_var("HERDR_WEB_VERBOSE");
+        }
+    }
 }

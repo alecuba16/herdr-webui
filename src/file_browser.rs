@@ -689,6 +689,57 @@ async fn file_browser_delete(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::to_bytes;
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+
+    fn test_state() -> WebState {
+        let bind = "127.0.0.1:8787".parse::<SocketAddr>().unwrap();
+        let (rebind_tx, _) = tokio::sync::watch::channel(bind);
+        WebState {
+            api_socket: None,
+            client_socket: None,
+            session_name: None,
+            herdr_bin: "herdr".to_string(),
+            auth: Arc::new(Mutex::new(crate::AuthConfig {
+                user: None,
+                password: None,
+                localhost_no_auth: true,
+                token: "test-token".to_string(),
+            })),
+            server_settings: Arc::new(Mutex::new(crate::RuntimeServerSettings {
+                bind,
+                user: None,
+                password: None,
+                localhost_no_auth: true,
+                no_sleep_auto_cooldown_seconds: 60,
+            })),
+            no_sleep: Arc::new(Mutex::new(crate::NoSleepState::default())),
+            rebind_tx,
+            workspace_orders: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    fn loopback() -> SocketAddr {
+        "127.0.0.1:1234".parse().unwrap()
+    }
+
+    fn temp_root(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "herdr-webui-file-browser-{name}-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        root.canonicalize().unwrap()
+    }
+
+    async fn response_json(response: Response) -> serde_json::Value {
+        let bytes = to_bytes(response.into_body(), 2 * 1024 * 1024)
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
 
     #[test]
     fn clean_relative_path_rejects_escape() {
@@ -771,6 +822,215 @@ mod tests {
         assert!(!entries
             .iter()
             .any(|entry| entry.path.contains("target/debug")));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn file_browser_tree_file_write_rename_and_delete_routes_work() {
+        let root = temp_root("routes");
+        fs::create_dir_all(root.join("src/nested")).unwrap();
+        fs::write(root.join("src/nested/app.rs"), "fn main() {}\n").unwrap();
+
+        let state = test_state();
+        let headers = HeaderMap::new();
+        let cwd = root.to_string_lossy().to_string();
+
+        let tree = response_json(
+            file_browser_tree(
+                State(state.clone()),
+                headers.clone(),
+                ConnectInfo(loopback()),
+                Query(FileBrowserQuery {
+                    cwd: cwd.clone(),
+                    path: Some("src".to_string()),
+                    dirs_only: Some(false),
+                    depth: Some(2),
+                    q: None,
+                    limit: None,
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(tree["path"], "src");
+        assert!(tree["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| { entry["path"] == "src/nested/app.rs" && entry["kind"] == "file" }));
+
+        let file = response_json(
+            file_browser_file(
+                State(state.clone()),
+                headers.clone(),
+                ConnectInfo(loopback()),
+                Query(FileBrowserQuery {
+                    cwd: cwd.clone(),
+                    path: Some("src/nested/app.rs".to_string()),
+                    dirs_only: None,
+                    depth: None,
+                    q: None,
+                    limit: None,
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(file["content"], "fn main() {}\n");
+        let hash = file["hash"].as_str().unwrap().to_string();
+
+        let written = response_json(
+            file_browser_write_file(
+                State(state.clone()),
+                headers.clone(),
+                ConnectInfo(loopback()),
+                Json(FileBrowserWriteRequest {
+                    cwd: cwd.clone(),
+                    path: "src/nested/app.rs".to_string(),
+                    content: "fn main() { println!(\"hi\"); }\n".to_string(),
+                    expected_hash: Some(hash),
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(written["ok"], true);
+        assert!(fs::read_to_string(root.join("src/nested/app.rs"))
+            .unwrap()
+            .contains("println!"));
+
+        let renamed = response_json(
+            file_browser_rename(
+                State(state.clone()),
+                headers.clone(),
+                ConnectInfo(loopback()),
+                Json(FileBrowserRenameRequest {
+                    cwd: cwd.clone(),
+                    path: "src/nested/app.rs".to_string(),
+                    new_name: "main.rs".to_string(),
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(renamed["path"], "src/nested/main.rs");
+        assert!(root.join("src/nested/main.rs").exists());
+
+        let deleted = response_json(
+            file_browser_delete(
+                State(state),
+                headers,
+                ConnectInfo(loopback()),
+                Json(FileBrowserDeleteRequest {
+                    cwd,
+                    path: "src/nested/main.rs".to_string(),
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(deleted["ok"], true);
+        assert!(!root.join("src/nested/main.rs").exists());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn file_browser_routes_report_edge_cases() {
+        let root = temp_root("edges");
+        fs::write(root.join("binary.bin"), [0, 159, 146, 150]).unwrap();
+        fs::write(
+            root.join("large.txt"),
+            vec![b'x'; (MAX_FILE_BYTES + 1) as usize],
+        )
+        .unwrap();
+        fs::write(root.join("conflict.txt"), "new").unwrap();
+
+        let state = test_state();
+        let headers = HeaderMap::new();
+        let cwd = root.to_string_lossy().to_string();
+
+        let binary = response_json(
+            file_browser_file(
+                State(state.clone()),
+                headers.clone(),
+                ConnectInfo(loopback()),
+                Query(FileBrowserQuery {
+                    cwd: cwd.clone(),
+                    path: Some("binary.bin".to_string()),
+                    dirs_only: None,
+                    depth: None,
+                    q: None,
+                    limit: None,
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(binary["binary"], true);
+
+        let large = response_json(
+            file_browser_file(
+                State(state.clone()),
+                headers.clone(),
+                ConnectInfo(loopback()),
+                Query(FileBrowserQuery {
+                    cwd: cwd.clone(),
+                    path: Some("large.txt".to_string()),
+                    dirs_only: None,
+                    depth: None,
+                    q: None,
+                    limit: None,
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(large["truncated"], true);
+
+        let conflict = file_browser_write_file(
+            State(state.clone()),
+            headers.clone(),
+            ConnectInfo(loopback()),
+            Json(FileBrowserWriteRequest {
+                cwd: cwd.clone(),
+                path: "conflict.txt".to_string(),
+                content: "edit".to_string(),
+                expected_hash: Some("stale".to_string()),
+            }),
+        )
+        .await;
+        assert_eq!(conflict.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            response_json(conflict).await["error"],
+            "file changed on disk; reload before saving"
+        );
+
+        let bad_rename = file_browser_rename(
+            State(state.clone()),
+            headers.clone(),
+            ConnectInfo(loopback()),
+            Json(FileBrowserRenameRequest {
+                cwd: cwd.clone(),
+                path: "conflict.txt".to_string(),
+                new_name: "../escape".to_string(),
+            }),
+        )
+        .await;
+        assert_eq!(bad_rename.status(), StatusCode::BAD_REQUEST);
+
+        let missing_delete = file_browser_delete(
+            State(state),
+            headers,
+            ConnectInfo(loopback()),
+            Json(FileBrowserDeleteRequest {
+                cwd,
+                path: "missing.txt".to_string(),
+            }),
+        )
+        .await;
+        assert_eq!(missing_delete.status(), StatusCode::BAD_REQUEST);
+
         let _ = fs::remove_dir_all(root);
     }
 }
