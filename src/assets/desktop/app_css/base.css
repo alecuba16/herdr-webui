@@ -10,6 +10,7 @@ body {
   --border2: #45475a;
   --muted: #a6adc8;
   --accent: #89b4fa;
+  --mono-font: "Herdr JetBrainsMono Nerd Font Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   margin: 0;
   background: var(--bg);
   color: var(--fg);

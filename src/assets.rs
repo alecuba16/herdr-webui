@@ -1,3 +1,4 @@
+use axum::body::Body;
 use axum::http::{header, HeaderValue};
 use axum::response::{Html, IntoResponse, Response};
 
@@ -59,6 +60,8 @@ const MOBILE_CSS: &str = include_str!("assets/mobile/app.css");
 const MOBILE_JS: &str = include_str!("assets/mobile/app.js");
 const XTERM_CSS: &str = include_str!("assets/xterm.css");
 const XTERM_JS: &str = include_str!("assets/xterm.min.js");
+const JETBRAINS_MONO_NERD_FONT: &[u8] =
+    include_bytes!("assets/fonts/JetBrainsMonoNerdFontMono-Regular.ttf");
 const HERDR_LOGO: &str = include_str!("assets/herdr-logo.svg");
 const ICON_HELP: &str = include_str!("assets/icons/help.svg");
 const ICON_SETTINGS: &str = include_str!("assets/icons/settings.svg");
@@ -88,6 +91,10 @@ pub(crate) async fn xterm_js() -> Response {
 
 pub(crate) async fn xterm_css() -> Response {
     static_text(XTERM_CSS, "text/css; charset=utf-8")
+}
+
+pub(crate) async fn jetbrains_mono_nerd_font() -> Response {
+    static_bytes(JETBRAINS_MONO_NERD_FONT, "font/ttf")
 }
 
 pub(crate) async fn desktop_js() -> Response {
@@ -208,6 +215,13 @@ fn static_text(body: &'static str, content_type: &'static str) -> Response {
         .headers_mut()
         .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
     response
+}
+
+fn static_bytes(body: &'static [u8], content_type: &'static str) -> Response {
+    Response::builder()
+        .header(header::CONTENT_TYPE, content_type)
+        .body(Body::from(body))
+        .expect("static asset response should be valid")
 }
 
 pub(crate) async fn favicon_svg() -> Response {

@@ -35,6 +35,12 @@
  *  Default styles for xterm.js
  */
 
+@font-face {
+    font-family: "Herdr JetBrainsMono Nerd Font Mono";
+    src: url("/assets/fonts/JetBrainsMonoNerdFontMono-Regular.ttf") format("truetype");
+    font-display: swap;
+}
+
 .xterm {
     cursor: text;
     position: relative;
