@@ -203,6 +203,7 @@ describe("app bundle load", () => {
     match(gitUiSource, /Unstage .* edit it, then restage after saving/);
     match(fileBrowserSource, /const oldScrollTop = oldSide \? oldSide\.scrollTop : 0;/);
     match(fileBrowserSource, /async function openPath\(cwd, path\)/);
+    match(fileBrowserSource, /function showForCwd\(cwd\)/);
     match(fileBrowserSource, /await loadTree\(parentPath\(path\)\);/);
     match(fileBrowserSource, /nextSide\.scrollTop = oldScrollTop/);
     match(fileBrowserSource, /state\.selected = path;/);
