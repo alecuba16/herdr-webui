@@ -317,6 +317,9 @@
   padding: 14px;
   width: min(520px, 100%);
 }
+.git-ui-modal.branch {
+  max-height: min(680px, calc(100vh - 48px));
+}
 .git-ui-modal-head,
 .git-ui-modal-actions {
   align-items: center;
@@ -336,7 +339,8 @@
   font-size: 12px;
   font-weight: 800;
 }
-.git-ui-branch-field select {
+.git-ui-branch-field select,
+.git-ui-branch-field input {
   background: var(--bg);
   border: 1px solid var(--border2);
   border-radius: 8px;
@@ -344,6 +348,50 @@
   font: inherit;
   min-height: 38px;
   padding: 7px 9px;
+}
+.git-ui-branch-list {
+  display: grid;
+  gap: 10px;
+  max-height: min(440px, 55vh);
+  overflow: auto;
+  padding-right: 2px;
+}
+.git-ui-branch-section {
+  display: grid;
+  gap: 6px;
+}
+.git-ui-branch-section h4 {
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  margin: 0;
+  text-transform: uppercase;
+}
+.git-ui-branch-option {
+  align-items: center;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--fg);
+  cursor: pointer;
+  display: flex;
+  font: inherit;
+  gap: 8px;
+  justify-content: space-between;
+  padding: 9px 10px;
+  text-align: left;
+}
+.git-ui-branch-option:hover {
+  border-color: var(--accent);
+}
+.git-ui-branch-option.active,
+.git-ui-branch-option:disabled {
+  color: var(--muted);
+  cursor: default;
+}
+.git-ui-branch-option small {
+  color: var(--muted);
+  font-size: 11px;
 }
 .git-ui-menu span {
   color: var(--muted);

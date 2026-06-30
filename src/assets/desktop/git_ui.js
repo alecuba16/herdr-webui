@@ -619,17 +619,33 @@
   function renderBranchModal() {
     const modal = state.branchModal;
     if (!modal) return "";
+    const view = active() || {};
+    const query = String(modal.query || "").trim().toLowerCase();
+    const local = filterBranches(modal.local || [], query);
+    const remote = filterBranches(modal.remote || [], query);
+    const branchList = modal.loading || modal.error ? "" : `<div class="git-ui-branch-list">${branchSection("Local", local, "local")}${branchSection("Remote", remote, "remote")}${!local.length && !remote.length ? '<div class="git-ui-muted">No matching branches.</div>' : ""}</div>`;
     const body = modal.loading
       ? `<div class="git-ui-loading"><span></span><strong>Loading branches</strong></div>`
       : modal.error
         ? `<div class="git-ui-error">${esc(modal.error)}</div>`
-        : `<label class="git-ui-branch-field"><span>Branch</span><select id="gitUiBranchSelect">${branchOptions("Local branches", modal.local || [])}${branchOptions("Remote branches", modal.remote || [])}</select></label>`;
-    return `<div class="git-ui-modal-backdrop"><div class="git-ui-modal"><div class="git-ui-modal-head"><strong>Switch branch</strong><button class="git-ui-btn" onclick="HerdrGitUi.closeBranchModal()">Cancel</button></div>${body}<div class="git-ui-modal-actions"><button class="git-ui-btn" onclick="HerdrGitUi.closeBranchModal()">Cancel</button><button class="git-ui-btn primary" onclick="HerdrGitUi.switchBranchFromModal()" ${modal.loading || modal.error ? "disabled" : ""}>Switch to</button></div></div></div>`;
+        : `<label class="git-ui-branch-field"><span>Search branches</span><input id="gitUiBranchFilter" value="${esc(modal.query || "")}" placeholder="Branch name" oninput="HerdrGitUi.filterBranchModal(this.value)"></label><div class="git-ui-muted">Current: ${esc(view.branch || "unknown")}. Remote branches create a local branch from same name.</div>${branchList}`;
+    return `<div class="git-ui-modal-backdrop"><div class="git-ui-modal branch"><div class="git-ui-modal-head"><div><strong>Switch branch</strong><div class="git-ui-muted">${esc(compactPath(view.repo_path || view.cwd || ""))}</div></div><button class="git-ui-btn" onclick="HerdrGitUi.closeBranchModal()">Close</button></div>${body}<div class="git-ui-modal-actions"><button class="git-ui-btn" onclick="HerdrGitUi.closeBranchModal()">Close</button></div></div></div>`;
   }
 
-  function branchOptions(label, branches) {
+  function filterBranches(branches, query) {
+    if (!query) return branches;
+    return branches.filter((branch) => String(branch.name || "").toLowerCase().includes(query));
+  }
+
+  function branchSection(label, branches, kind) {
     if (!branches.length) return "";
-    return `<optgroup label="${esc(label)}">${branches.map((branch) => `<option value="${branch.remote ? "remote:" : "local:"}${esc(branch.name)}" ${branch.current ? "selected" : ""}>${esc(branch.name)}${branch.current ? " (current)" : ""}</option>`).join("")}</optgroup>`;
+    return `<section class="git-ui-branch-section"><h4>${esc(label)}</h4>${branches.map((branch) => branchButton(branch, kind)).join("")}</section>`;
+  }
+
+  function branchButton(branch, kind) {
+    const remote = kind === "remote";
+    const label = branch.current ? `${branch.name} (current)` : branch.name;
+    return `<button class="git-ui-branch-option ${branch.current ? "active" : ""}" onclick="HerdrGitUi.switchBranch('${remote ? "remote" : "local"}','${arg(branch.name)}')" ${branch.current ? "disabled" : ""}><span>${esc(label)}</span>${remote ? `<small>${esc(localNameForRemote(branch.name))}</small>` : ""}</button>`;
   }
 
   function localNameForRemote(remote) {
@@ -1090,13 +1106,26 @@
     saveSideEditorFromDom();
     const version = ++state.renderVersion;
     const panel = ensurePanel();
+    const branchFilter = document.getElementById("gitUiBranchFilter");
+    const restoreBranchFilter = branchFilter && document.activeElement === branchFilter;
+    const branchFilterStart = restoreBranchFilter ? branchFilter.selectionStart : null;
+    const branchFilterEnd = restoreBranchFilter ? branchFilter.selectionEnd : null;
     panel.classList.toggle("mutating", !!((active() || {}).mutating));
     panel.innerHTML = renderSide() + renderMain() + renderContextMenu() + renderBranchModal();
+    restoreBranchFilterFocus(restoreBranchFilter, branchFilterStart, branchFilterEnd);
     mountSideEditors();
     const view = active() || {};
     if (view.tab === "log") renderLog(version).catch((e) => { view.error = e.message; render(); });
     if (view.tab === "stash") renderStash(version).catch((e) => { view.error = e.message; render(); });
     if (view.tab === "history") renderHistory().then((html) => replaceContent(version, html)).catch((e) => { view.error = e.message; render(); });
+  }
+
+  function restoreBranchFilterFocus(restore, start, end) {
+    if (!restore) return;
+    const input = document.getElementById("gitUiBranchFilter");
+    if (!input) return;
+    input.focus();
+    if (input.setSelectionRange && start != null && end != null) input.setSelectionRange(start, end);
   }
 
   function replaceContent(version, html) {
@@ -1581,19 +1610,32 @@
     async openBranchModal() {
       const view = active();
       if (!view) return;
-      state.branchModal = { loading: true, error: "", local: [], remote: [] };
+      state.branchModal = { loading: true, error: "", query: "", local: [], remote: [] };
       render();
       try {
         const data = await api(`/api/git-ui/branches?cwd=${encodeURIComponent(view.cwd)}`);
-        state.branchModal = { loading: false, error: "", local: data.local || [], remote: data.remote || [] };
+        state.branchModal = { loading: false, error: "", query: "", local: data.local || [], remote: data.remote || [] };
       } catch (err) {
-        state.branchModal = { loading: false, error: err.message || String(err), local: [], remote: [] };
+        state.branchModal = { loading: false, error: err.message || String(err), query: "", local: [], remote: [] };
       }
+      render();
+    },
+    filterBranchModal(value) {
+      if (!state.branchModal) return;
+      state.branchModal.query = String(value || "");
       render();
     },
     closeBranchModal() {
       state.branchModal = null;
       render();
+    },
+    switchBranch(kind, encodedBranch) {
+      const view = active();
+      const branch = decodeURIComponent(encodedBranch);
+      if (!view || !branch) return;
+      state.branchModal = null;
+      if (kind === "remote") post("/api/git-ui/switch", { cwd: view.cwd, branch: localNameForRemote(branch), create: true, base: branch });
+      else post("/api/git-ui/switch", { cwd: view.cwd, branch });
     },
     switchBranchFromModal() {
       const view = active();
