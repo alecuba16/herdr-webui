@@ -123,6 +123,17 @@ The Rust binary embeds frontend assets with `include_str!`, so release artifacts
 - Prefer moving behavior out of inline handlers into delegated JS listeners and shared CSS classes when touching UI code.
 - SVG icons should live under `src/assets/icons/` and be referenced from CSS or markup, not embedded inline in JS templates.
 
+## Mobile Layout Notes
+
+- Mobile uses a fixed `100dvh` app shell with three rows: header, scrollable content, and bottom navigation.
+- `html`, `body`, `#app`, and `.mobile-app` keep overflow hidden so only the intended content areas scroll.
+- Grid children that can contain wide terminal/file content set `min-width: 0` and `min-height: 0`; without these guards, CSS grid/flex intrinsic sizing can make the whole app overflow the viewport.
+- The bottom navigation is one horizontal scrolling row, not a wrapping grid. This avoids a two-line bottom bar when there are more tabs than fit on narrow screens.
+- Bottom navigation buttons use `flex: 0 0 auto` and a small minimum width so labels stay tappable while the bar can scroll sideways.
+- Terminal panel tabs also scroll horizontally, and terminal output scrolls inside `.mobile-terminal-shell` instead of pushing the app wider or taller.
+- Mobile terminal scrollback mirrors desktop behavior: scrolling up pauses follow, new output preserves the current viewport, and `Tail` jumps to latest output and resumes follow.
+- Mobile paste/input uses bounded WebSocket chunks with backpressure, matching the desktop large-paste protection.
+
 TODO:
 
 - Evaluate a small progressive templating layer, with `petite-vue` as the leading option, to reduce inline JavaScript and string-template complexity.
