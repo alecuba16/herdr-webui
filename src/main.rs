@@ -2876,6 +2876,7 @@ mod tests {
     #[test]
     fn derives_session_paths() {
         let _guard = env_lock().lock().unwrap();
+        let old_xdg = std::env::var_os("XDG_CONFIG_HOME");
         std::env::set_var("XDG_CONFIG_HOME", "/tmp/herdr-config");
 
         assert_eq!(session_dir(None), PathBuf::from("/tmp/herdr-config/herdr"));
@@ -2896,7 +2897,102 @@ mod tests {
             PathBuf::from("/tmp/herdr-config/herdr/sessions/work/herdr-client.sock")
         );
 
+        if let Some(value) = old_xdg {
+            std::env::set_var("XDG_CONFIG_HOME", value);
+        } else {
+            std::env::remove_var("XDG_CONFIG_HOME");
+        }
+    }
+
+    #[test]
+    fn derives_paths_from_home_when_xdg_is_unset() {
+        let _guard = env_lock().lock().unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "herdr-webui-home-paths-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let home = root.join("home");
+        fs::create_dir_all(&home).unwrap();
+        let old_home = std::env::var_os("HOME");
+        let old_xdg = std::env::var_os("XDG_CONFIG_HOME");
+        std::env::set_var("HOME", &home);
         std::env::remove_var("XDG_CONFIG_HOME");
+
+        assert_eq!(home_dir().unwrap(), home);
+        assert_eq!(config_dir(), home.join(".config/herdr"));
+        assert_eq!(
+            server_settings_path(),
+            home.join(".config/herdr-webui/webui-settings.json")
+        );
+        assert_eq!(
+            session_dir(Some("work")),
+            home.join(".config/herdr/sessions/work")
+        );
+
+        if let Some(value) = old_home {
+            std::env::set_var("HOME", value);
+        } else {
+            std::env::remove_var("HOME");
+        }
+        if let Some(value) = old_xdg {
+            std::env::set_var("XDG_CONFIG_HOME", value);
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn lists_known_sessions_from_config_dir() {
+        let _guard = env_lock().lock().unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "herdr-webui-known-sessions-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let config_home = root.join("xdg");
+        fs::create_dir_all(config_home.join("herdr/sessions/beta")).unwrap();
+        fs::create_dir_all(config_home.join("herdr/sessions/alpha")).unwrap();
+        fs::create_dir_all(config_home.join("herdr/sessions/default")).unwrap();
+        fs::write(config_home.join("herdr/sessions/not-a-dir"), "skip").unwrap();
+        let old_xdg = std::env::var_os("XDG_CONFIG_HOME");
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
+
+        let sessions = known_sessions();
+        let names = sessions
+            .iter()
+            .map(|session| session["name"].as_str().unwrap())
+            .collect::<Vec<_>>();
+
+        assert_eq!(names, vec!["default", "alpha", "beta"]);
+        assert!(sessions.iter().all(|session| session["running"] == false));
+        assert!(sessions[1]["api_socket"]
+            .as_str()
+            .unwrap()
+            .ends_with("sessions/alpha/herdr.sock"));
+
+        if let Some(value) = old_xdg {
+            std::env::set_var("XDG_CONFIG_HOME", value);
+        } else {
+            std::env::remove_var("XDG_CONFIG_HOME");
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn take_flag_removes_only_present_flag() {
+        let mut args = vec![
+            "--verbose".to_string(),
+            "--bind".to_string(),
+            "127.0.0.1:1".to_string(),
+        ];
+
+        assert!(take_flag(&mut args, "--verbose"));
+        assert!(!take_flag(&mut args, "--missing"));
+        assert_eq!(args, vec!["--bind", "127.0.0.1:1"]);
     }
 
     #[test]
