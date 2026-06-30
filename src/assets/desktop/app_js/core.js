@@ -851,10 +851,11 @@ if (settingsBody && !el("themeColorsApply"))
   settingsBody.insertAdjacentHTML("beforeend", themeCustomizerHtml());
 if (settingsBody) {
   for (const module of settingsModules) {
-    if (module.html && !el(`moduleSettings-${module.id}`)) {
+    const html = typeof module.renderSettings === "function" ? module.renderSettings() : module.html;
+    if (html && !el(`moduleSettings-${module.id}`)) {
       settingsBody.insertAdjacentHTML(
         "beforeend",
-        `<div id="moduleSettings-${module.id}">${module.html}</div>`,
+        `<div id="moduleSettings-${module.id}">${html}</div>`,
       );
     }
   }

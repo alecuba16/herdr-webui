@@ -256,6 +256,9 @@
           file.draft = value;
           file.dirty = value !== (file.content || "");
         },
+        onSave() {
+          if (file.editing && !file.saving) save(file.path);
+        },
       });
     }
   }

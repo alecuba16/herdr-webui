@@ -19,6 +19,121 @@
   }
 
   let codeMirrorPromise = null;
+  const EDITOR_SHORTCUT_PRESETS = {
+    default: {},
+    neovim: {
+      save: "Ctrl+S",
+      lineDown: "Alt+J",
+      lineUp: "Alt+K",
+      charLeft: "Alt+H",
+      charRight: "Alt+L",
+      wordLeft: "Alt+B",
+      wordRight: "Alt+W",
+      pageDown: "Ctrl+D",
+      pageUp: "Ctrl+U",
+      docStart: "Ctrl+G",
+      docEnd: "Ctrl+Shift+G",
+      deleteLine: "Ctrl+X",
+      indentMore: "Ctrl+]",
+      indentLess: "Ctrl+[",
+    },
+  };
+  const EDITOR_SHORTCUT_LABELS = {
+    save: "Save file",
+    lineDown: "Move line down",
+    lineUp: "Move line up",
+    charLeft: "Move left",
+    charRight: "Move right",
+    wordLeft: "Move word left",
+    wordRight: "Move word right",
+    pageDown: "Page down",
+    pageUp: "Page up",
+    docStart: "Document start",
+    docEnd: "Document end",
+    deleteLine: "Delete line",
+    indentMore: "Indent more",
+    indentLess: "Indent less",
+  };
+
+  function normalizeShortcut(value) {
+    const raw = String(value || "").trim();
+    if (!raw || raw.toLowerCase() === "off") return "off";
+    const parts = raw.replace(/-/g, "+").split("+").map((part) => part.trim()).filter(Boolean);
+    const key = parts.pop();
+    if (!key) return "off";
+    const mods = new Set(parts.map((part) => {
+      const lower = part.toLowerCase();
+      if (lower === "control") return "Ctrl";
+      if (lower === "cmd" || lower === "command" || lower === "meta") return "Meta";
+      if (lower === "option") return "Alt";
+      if (["ctrl", "alt", "shift"].includes(lower)) return lower[0].toUpperCase() + lower.slice(1);
+      return "";
+    }).filter(Boolean));
+    const cleanKey = key.length === 1 ? key.toUpperCase() : key;
+    return ["Ctrl", "Alt", "Shift", "Meta"].filter((mod) => mods.has(mod)).concat(cleanKey).join("+");
+  }
+
+  function normalizeShortcutMap(map, preset) {
+    const defaults = EDITOR_SHORTCUT_PRESETS[preset] || EDITOR_SHORTCUT_PRESETS.default;
+    const input = map && typeof map === "object" ? map : {};
+    return Object.fromEntries(Object.keys(EDITOR_SHORTCUT_LABELS).map((key) => [
+      key,
+      normalizeShortcut(input[key] || defaults[key] || "off"),
+    ]));
+  }
+
+  function ensureEditorSettingsModule() {
+    const modules = window.HerdrSettingsModules || (window.HerdrSettingsModules = []);
+    if (modules.some((module) => module.id === "editorShortcuts")) return;
+    modules.push({
+      id: "editorShortcuts",
+      title: "Editor shortcuts",
+      desc: "Code editor keyboard profile and custom key bindings.",
+      defaults: {
+        editorShortcutPreset: "default",
+        editorShortcuts: normalizeShortcutMap({}, "default"),
+      },
+      ids: ["optEditorShortcutPreset"].concat(Object.keys(EDITOR_SHORTCUT_LABELS).map((key) => `optEditorShortcut-${key}`)),
+      renderSettings() {
+        const rows = Object.entries(EDITOR_SHORTCUT_LABELS).map(([key, label]) => `<label class="option"><span>${esc(label)}<small>Use Ctrl/Alt/Shift/Meta+Key, or off.</small></span><input id="optEditorShortcut-${esc(key)}" data-editor-shortcut="${esc(key)}" placeholder="off"></label>`).join("");
+        return `<label class="option"><span>Shortcut preset<small>Default keeps CodeMirror keys. Neovim adds familiar movement/editing chords without full modal Vim.</small></span><select class="settings-select" id="optEditorShortcutPreset"><option value="default">Default</option><option value="neovim">Neovim-like</option></select></label>${rows}`;
+      },
+      normalize(options) {
+        if (!EDITOR_SHORTCUT_PRESETS[options.editorShortcutPreset]) options.editorShortcutPreset = "default";
+        options.editorShortcuts = normalizeShortcutMap(options.editorShortcuts, options.editorShortcutPreset);
+      },
+      apply(options) {
+        const preset = document.getElementById("optEditorShortcutPreset");
+        if (preset) preset.value = options.editorShortcutPreset || "default";
+        for (const key of Object.keys(EDITOR_SHORTCUT_LABELS)) {
+          const input = document.getElementById(`optEditorShortcut-${key}`);
+          if (input) input.value = (options.editorShortcuts || {})[key] || "off";
+        }
+      },
+      bind(ctx) {
+        const preset = ctx.el("optEditorShortcutPreset");
+        if (preset) preset.onchange = () => {
+          ctx.setOption("editorShortcutPreset", preset.value);
+          ctx.setOption("editorShortcuts", normalizeShortcutMap({}, preset.value));
+          ctx.saveOptions();
+          ctx.applyOptions();
+        };
+        for (const key of Object.keys(EDITOR_SHORTCUT_LABELS)) {
+          const input = ctx.el(`optEditorShortcut-${key}`);
+          if (!input) continue;
+          input.onchange = () => {
+            const shortcuts = Object.assign({}, ctx.getOption("editorShortcuts") || {});
+            shortcuts[key] = normalizeShortcut(input.value);
+            ctx.setOption("editorShortcuts", shortcuts);
+            ctx.saveOptions();
+            ctx.applyOptions();
+          };
+        }
+      },
+    });
+  }
+
+  ensureEditorSettingsModule();
 
   function loadCodeMirror() {
     if (window.HerdrCodeMirror && window.HerdrCodeMirror.create) return Promise.resolve(true);
