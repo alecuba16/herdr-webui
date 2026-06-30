@@ -134,6 +134,11 @@
   }
 
   function renderEntry(entry, selected, callback, opts) {
+    if (entry.kind === "more") {
+      const path = entry.path || "";
+      const level = Number(entry.level || 0);
+      return `<button class="herdr-tree-row dir more" role="treeitem" style="${indentStyle(level, opts)}" title="Load more" onclick="${callback}.${opts.moreMethod || "more"}('${arg(path)}')"><span class="herdr-tree-caret"></span><span class="herdr-tree-kind">${icon("open")}</span><span class="herdr-tree-name">${highlight(entry.name || "...", opts.highlightQuery)}</span></button>`;
+    }
     const kind = entry.kind === "dir" || entry.kind === "up" ? "dir" : "file";
     const path = entry.path || entry.name || "";
     const level = Number(entry.level || 0);

@@ -968,9 +968,6 @@ mod tests {
         std::env::set_var("HERDR_WEB_HERDR_BIN", "/tmp/herdr fake/bin");
 
         install_macos(config()).unwrap();
-        start_service().unwrap();
-        restart_service().unwrap();
-        stop_service().unwrap();
         start_macos_service().unwrap();
         restart_macos_service().unwrap();
         update_macos().unwrap();

@@ -18,7 +18,8 @@ Standalone browser UI for an official Herdr backend session.
 
 | WebUI | Herdr | Protocol | Status | Notes |
 | --- | --- | --- | --- | --- |
-| `0.0.55` | `0.7.1+` | `14` | Current | Adds lazy-loaded file explorer trees with Git-to-Files target reveal, removing the fixed visible-entry cap while keeping scroll performance. |
+| `0.0.56` | `0.7.1+` | `14` | Current | Improves file explorer search/folder browsing, child lazy-load controls, Git branch switching UX, and Linux release test stability. |
+| `0.0.55` | `0.7.1+` | `14` | Supported | Adds lazy-loaded file explorer trees with Git-to-Files target reveal, removing the fixed visible-entry cap while keeping scroll performance. |
 | `0.0.54` | `0.7.1+` | `14` | Supported | Fixes Git panel rename status paths so unstaging/stash actions use the renamed file path instead of the `old -> new` display string. |
 | `0.0.53` | `0.7.1+` | `14` | Supported | Expanded Rust coverage around Git UI, app-state helpers, service command runner, file-browser edge paths, and README coverage notes. |
 | `0.0.52` | `0.7.1+` | `14` | Supported | Mobile file edit/save/rename/delete, mobile Git stage/unstage/stash/discard/commit actions, Git changed files open directly in Files, backend file search, improved mobile nav/worktree guard, configurable shortcuts, combined workspace/worktree browser, deep worktree discovery. |
@@ -51,7 +52,7 @@ target/release/herdr-webui
 Runtime version behavior:
 
 - Local builds report `snapshot-<shortsha>`.
-- GitHub Actions tag builds report release tag, for example `v0.0.55`.
+- GitHub Actions tag builds report release tag, for example `v0.0.56`.
 - `Cargo.toml` keeps static package SemVer; runtime product version comes from `build.rs` and is exposed by `herdr-webui --version` and `/api/versions`.
 
 ## Run
