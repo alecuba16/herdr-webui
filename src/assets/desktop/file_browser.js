@@ -68,6 +68,25 @@
     await loadTree("");
   }
 
+  async function openPath(cwd, path) {
+    if (!cwd || !path) return;
+    if (window.HerdrGitUi) window.HerdrGitUi.hide();
+    state.cwd = cwd;
+    state.path = "";
+    state.selected = "";
+    state.files = [];
+    state.split = false;
+    state.children = {};
+    state.expanded = {};
+    state.loading = {};
+    state.contextMenu = null;
+    resetSearch();
+    state.open = true;
+    render();
+    await loadTree(parentPath(path));
+    await loadFile(path);
+  }
+
   function hide() {
     state.open = false;
     const panel = document.getElementById("fileBrowserPanel");
@@ -401,6 +420,7 @@
 
   window.HerdrFileBrowser = {
     open,
+    openPath,
     close: hide,
     hide,
     search: updateSearch,

@@ -605,6 +605,7 @@
     const menu = state.contextMenu;
     if (!menu) return "";
     const actions = [];
+    actions.push(`<button onclick="HerdrGitUi.menuAction('openFileExplorer')">Open in file explorer</button>`);
     if (["S", "M", "?"].includes(menu.kind)) actions.push(`<button onclick="HerdrGitUi.menuAction('stash')">Stash file</button>`);
     if (["S", "M"].includes(menu.kind)) actions.push(`<button onclick="HerdrGitUi.menuAction('edit')">${menu.kind === "S" ? "Edit staged file" : "Edit file"}</button>`);
     if (["S", "M", "?"].includes(menu.kind)) actions.push(`<button onclick="HerdrGitUi.menuAction('rename')">Rename file</button>`);
@@ -1309,6 +1310,7 @@
       if (action === "unstage") this.unstageFile(encodeURIComponent(menu.file));
       if (action === "rename") this.renameFile(encodeURIComponent(menu.file));
       if (action === "edit") this.editFileFromMenu(encodeURIComponent(menu.file), menu.kind);
+      if (action === "openFileExplorer") this.openInFileExplorer(encodeURIComponent(menu.file));
     },
     toggleStageAll() {
       const view = active();
@@ -1357,6 +1359,12 @@
     },
     stageFile(path) { post("/api/git-ui/stage", { cwd: active().cwd, paths: [decodeURIComponent(path)] }); },
     unstageFile(path) { post("/api/git-ui/unstage", { cwd: active().cwd, paths: [decodeURIComponent(path)] }); },
+    openInFileExplorer(path) {
+      const view = active();
+      path = decodeURIComponent(path);
+      if (!view || !path || !window.HerdrFileBrowser || !window.HerdrFileBrowser.openPath) return;
+      window.HerdrFileBrowser.openPath(view.cwd, path);
+    },
     async renameFile(path) {
       const view = active();
       path = decodeURIComponent(path);
