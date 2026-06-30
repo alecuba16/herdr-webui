@@ -1159,6 +1159,22 @@ mod tests {
         assert_eq!(dirs["entries"].as_array().unwrap().len(), 1);
         assert_eq!(dirs["entries"][0]["kind"], "dir");
 
+        let bad_tree_path = file_browser_tree(
+            State(state.clone()),
+            headers.clone(),
+            ConnectInfo(loopback()),
+            Query(FileBrowserQuery {
+                cwd: cwd.clone(),
+                path: Some("../bad".to_string()),
+                dirs_only: None,
+                depth: None,
+                q: None,
+                limit: None,
+            }),
+        )
+        .await;
+        assert_eq!(bad_tree_path.status(), StatusCode::BAD_REQUEST);
+
         let invalid_root = file_browser_tree(
             State(state.clone()),
             headers.clone(),
@@ -1209,6 +1225,31 @@ mod tests {
         )
         .await;
         assert_eq!(empty_search["entries"].as_array().unwrap().len(), 0);
+
+        let search = response_json(
+            file_browser_search(
+                State(state.clone()),
+                headers.clone(),
+                ConnectInfo(loopback()),
+                Query(FileBrowserQuery {
+                    cwd: cwd.clone(),
+                    path: Some("dir".to_string()),
+                    dirs_only: None,
+                    depth: None,
+                    q: Some("file".to_string()),
+                    limit: Some(10),
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(search["path"], "dir");
+        assert_eq!(search["visited"].as_u64().unwrap(), 3);
+        assert!(search["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["path"] == "dir/file.txt"));
 
         let search_not_dir = file_browser_search(
             State(state.clone()),
@@ -1345,6 +1386,299 @@ mod tests {
         assert_eq!(delete_dir["ok"], true);
         assert!(!root.join("dir/subdir").exists());
 
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn file_browser_tree_dirs_only_truncates() {
+        let root = temp_root("dirs-only-truncate");
+        for index in 0..(MAX_ENTRIES + 2) {
+            fs::create_dir_all(root.join(format!("dir-{index:04}"))).unwrap();
+        }
+        fs::write(root.join("file.txt"), "skip").unwrap();
+        let cwd = root.to_string_lossy().to_string();
+
+        let tree = response_json(
+            file_browser_tree(
+                State(test_state()),
+                HeaderMap::new(),
+                ConnectInfo(loopback()),
+                Query(FileBrowserQuery {
+                    cwd,
+                    path: None,
+                    dirs_only: Some(true),
+                    depth: Some(8),
+                    q: None,
+                    limit: None,
+                }),
+            )
+            .await,
+        )
+        .await;
+
+        assert_eq!(tree["entries"].as_array().unwrap().len(), MAX_ENTRIES);
+        assert_eq!(tree["truncated"], true);
+        assert!(tree["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|entry| entry["kind"] == "dir"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn file_browser_handlers_cover_remaining_early_returns() {
+        let root = temp_root("early-returns");
+        fs::write(root.join("file.txt"), "text").unwrap();
+        let cwd = root.to_string_lossy().to_string();
+        let missing_cwd = root.join("missing-root").to_string_lossy().to_string();
+        let headers = HeaderMap::new();
+        let state = test_state();
+
+        let search_query = |cwd: String, path: Option<&str>| FileBrowserQuery {
+            cwd,
+            path: path.map(str::to_string),
+            dirs_only: None,
+            depth: None,
+            q: Some("x".to_string()),
+            limit: None,
+        };
+        let file_query = |cwd: String, path: Option<&str>| FileBrowserQuery {
+            cwd,
+            path: path.map(str::to_string),
+            dirs_only: None,
+            depth: None,
+            q: None,
+            limit: None,
+        };
+
+        let cases = [
+            file_browser_search(
+                State(auth_required_state()),
+                headers.clone(),
+                ConnectInfo(remote()),
+                Query(search_query(cwd.clone(), None)),
+            )
+            .await,
+            file_browser_search(
+                State(state.clone()),
+                headers.clone(),
+                ConnectInfo(loopback()),
+                Query(search_query(missing_cwd.clone(), None)),
+            )
+            .await,
+            file_browser_search(
+                State(state.clone()),
+                headers.clone(),
+                ConnectInfo(loopback()),
+                Query(search_query(cwd.clone(), Some("../bad"))),
+            )
+            .await,
+            file_browser_search(
+                State(state.clone()),
+                headers.clone(),
+                ConnectInfo(loopback()),
+                Query(search_query(cwd.clone(), Some("missing/child"))),
+            )
+            .await,
+            file_browser_file(
+                State(auth_required_state()),
+                headers.clone(),
+                ConnectInfo(remote()),
+                Query(file_query(cwd.clone(), Some("file.txt"))),
+            )
+            .await,
+            file_browser_file(
+                State(state.clone()),
+                headers.clone(),
+                ConnectInfo(loopback()),
+                Query(file_query(missing_cwd.clone(), Some("file.txt"))),
+            )
+            .await,
+            file_browser_file(
+                State(state.clone()),
+                headers.clone(),
+                ConnectInfo(loopback()),
+                Query(file_query(cwd.clone(), Some("../bad"))),
+            )
+            .await,
+            file_browser_file(
+                State(state.clone()),
+                headers.clone(),
+                ConnectInfo(loopback()),
+                Query(file_query(cwd.clone(), Some("missing/file.txt"))),
+            )
+            .await,
+            file_browser_write_file(
+                State(auth_required_state()),
+                headers.clone(),
+                ConnectInfo(remote()),
+                Json(FileBrowserWriteRequest {
+                    cwd: cwd.clone(),
+                    path: "file.txt".to_string(),
+                    content: "x".to_string(),
+                    expected_hash: None,
+                }),
+            )
+            .await,
+            file_browser_write_file(
+                State(state.clone()),
+                headers.clone(),
+                ConnectInfo(loopback()),
+                Json(FileBrowserWriteRequest {
+                    cwd: missing_cwd.clone(),
+                    path: "file.txt".to_string(),
+                    content: "x".to_string(),
+                    expected_hash: None,
+                }),
+            )
+            .await,
+            file_browser_write_file(
+                State(state.clone()),
+                headers.clone(),
+                ConnectInfo(loopback()),
+                Json(FileBrowserWriteRequest {
+                    cwd: cwd.clone(),
+                    path: "".to_string(),
+                    content: "x".to_string(),
+                    expected_hash: None,
+                }),
+            )
+            .await,
+            file_browser_write_file(
+                State(state.clone()),
+                headers.clone(),
+                ConnectInfo(loopback()),
+                Json(FileBrowserWriteRequest {
+                    cwd: cwd.clone(),
+                    path: "../bad".to_string(),
+                    content: "x".to_string(),
+                    expected_hash: None,
+                }),
+            )
+            .await,
+            file_browser_write_file(
+                State(state.clone()),
+                headers.clone(),
+                ConnectInfo(loopback()),
+                Json(FileBrowserWriteRequest {
+                    cwd: cwd.clone(),
+                    path: "missing/file.txt".to_string(),
+                    content: "x".to_string(),
+                    expected_hash: None,
+                }),
+            )
+            .await,
+            file_browser_rename(
+                State(auth_required_state()),
+                headers.clone(),
+                ConnectInfo(remote()),
+                Json(FileBrowserRenameRequest {
+                    cwd: cwd.clone(),
+                    path: "file.txt".to_string(),
+                    new_name: "new.txt".to_string(),
+                }),
+            )
+            .await,
+            file_browser_rename(
+                State(state.clone()),
+                headers.clone(),
+                ConnectInfo(loopback()),
+                Json(FileBrowserRenameRequest {
+                    cwd: missing_cwd.clone(),
+                    path: "file.txt".to_string(),
+                    new_name: "new.txt".to_string(),
+                }),
+            )
+            .await,
+            file_browser_rename(
+                State(state.clone()),
+                headers.clone(),
+                ConnectInfo(loopback()),
+                Json(FileBrowserRenameRequest {
+                    cwd: cwd.clone(),
+                    path: "../bad".to_string(),
+                    new_name: "new.txt".to_string(),
+                }),
+            )
+            .await,
+            file_browser_rename(
+                State(state.clone()),
+                headers.clone(),
+                ConnectInfo(loopback()),
+                Json(FileBrowserRenameRequest {
+                    cwd: cwd.clone(),
+                    path: "file.txt".to_string(),
+                    new_name: "bad/name".to_string(),
+                }),
+            )
+            .await,
+            file_browser_rename(
+                State(state.clone()),
+                headers.clone(),
+                ConnectInfo(loopback()),
+                Json(FileBrowserRenameRequest {
+                    cwd: cwd.clone(),
+                    path: "missing/file.txt".to_string(),
+                    new_name: "new.txt".to_string(),
+                }),
+            )
+            .await,
+            file_browser_delete(
+                State(auth_required_state()),
+                headers.clone(),
+                ConnectInfo(remote()),
+                Json(FileBrowserDeleteRequest {
+                    cwd: cwd.clone(),
+                    path: "file.txt".to_string(),
+                }),
+            )
+            .await,
+            file_browser_delete(
+                State(state.clone()),
+                headers.clone(),
+                ConnectInfo(loopback()),
+                Json(FileBrowserDeleteRequest {
+                    cwd: missing_cwd,
+                    path: "file.txt".to_string(),
+                }),
+            )
+            .await,
+            file_browser_delete(
+                State(state.clone()),
+                headers.clone(),
+                ConnectInfo(loopback()),
+                Json(FileBrowserDeleteRequest {
+                    cwd: cwd.clone(),
+                    path: "".to_string(),
+                }),
+            )
+            .await,
+            file_browser_delete(
+                State(state.clone()),
+                headers.clone(),
+                ConnectInfo(loopback()),
+                Json(FileBrowserDeleteRequest {
+                    cwd: cwd.clone(),
+                    path: "../bad".to_string(),
+                }),
+            )
+            .await,
+            file_browser_delete(
+                State(state),
+                headers,
+                ConnectInfo(loopback()),
+                Json(FileBrowserDeleteRequest {
+                    cwd,
+                    path: "missing/file.txt".to_string(),
+                }),
+            )
+            .await,
+        ];
+
+        assert!(cases
+            .iter()
+            .all(|response| response.status().is_client_error()));
         let _ = fs::remove_dir_all(root);
     }
 }
