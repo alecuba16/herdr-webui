@@ -1,9 +1,26 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, ExitStatus, Output};
 
 use crate::{WebConfig, INSTALL_LABEL};
+
+trait ServiceCommandRunner {
+    fn output(&self, command: &str, args: &[&str]) -> io::Result<Output>;
+    fn status(&self, command: &str, args: &[&str]) -> io::Result<ExitStatus>;
+}
+
+struct RealServiceCommandRunner;
+
+impl ServiceCommandRunner for RealServiceCommandRunner {
+    fn output(&self, command: &str, args: &[&str]) -> io::Result<Output> {
+        Command::new(command).args(args).output()
+    }
+
+    fn status(&self, command: &str, args: &[&str]) -> io::Result<ExitStatus> {
+        Command::new(command).args(args).status()
+    }
+}
 
 pub fn install_macos(config: WebConfig) -> io::Result<()> {
     ensure_macos_user_context()?;
@@ -337,13 +354,21 @@ fn xml_escape(value: &str) -> String {
 }
 
 fn launchctl_quiet(args: &[&str]) -> io::Result<bool> {
-    let output = Command::new("launchctl").args(args).output()?;
+    launchctl_quiet_with(&RealServiceCommandRunner, args)
+}
+
+fn launchctl_quiet_with(runner: &impl ServiceCommandRunner, args: &[&str]) -> io::Result<bool> {
+    let output = runner.output("launchctl", args)?;
     log_command_output("launchctl", args, &output);
     Ok(output.status.success())
 }
 
 fn launchctl_required(args: &[&str]) -> io::Result<()> {
-    let output = Command::new("launchctl").args(args).output()?;
+    launchctl_required_with(&RealServiceCommandRunner, args)
+}
+
+fn launchctl_required_with(runner: &impl ServiceCommandRunner, args: &[&str]) -> io::Result<()> {
+    let output = runner.output("launchctl", args)?;
     log_command_output("launchctl", args, &output);
     if output.status.success() {
         return Ok(());
@@ -361,10 +386,14 @@ fn launchctl_required(args: &[&str]) -> io::Result<()> {
 }
 
 fn systemctl_user(args: &[&str]) -> io::Result<bool> {
-    let status = Command::new("systemctl")
-        .arg("--user")
-        .args(args)
-        .status()?;
+    systemctl_user_with(&RealServiceCommandRunner, args)
+}
+
+fn systemctl_user_with(runner: &impl ServiceCommandRunner, args: &[&str]) -> io::Result<bool> {
+    let all_args = std::iter::once("--user")
+        .chain(args.iter().copied())
+        .collect::<Vec<_>>();
+    let status = runner.status("systemctl", &all_args)?;
     if status.success() {
         Ok(true)
     } else {
@@ -464,6 +493,9 @@ unsafe fn libc_geteuid() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+    #[cfg(unix)]
+    use std::os::unix::process::ExitStatusExt;
 
     macro_rules! restore_env {
         ($key:literal, $value:expr) => {
@@ -534,6 +566,87 @@ mod tests {
             api_socket: None,
             client_socket: None,
         }
+    }
+
+    struct FakeRunner {
+        output: io::Result<Output>,
+        status: io::Result<ExitStatus>,
+        calls: RefCell<Vec<String>>,
+    }
+
+    impl FakeRunner {
+        #[cfg(unix)]
+        fn new(output_code: i32, stderr: &str, status_code: i32) -> Self {
+            Self {
+                output: Ok(Output {
+                    status: ExitStatus::from_raw(output_code << 8),
+                    stdout: Vec::new(),
+                    stderr: stderr.as_bytes().to_vec(),
+                }),
+                status: Ok(ExitStatus::from_raw(status_code << 8)),
+                calls: RefCell::new(Vec::new()),
+            }
+        }
+    }
+
+    impl ServiceCommandRunner for FakeRunner {
+        fn output(&self, command: &str, args: &[&str]) -> io::Result<Output> {
+            self.calls
+                .borrow_mut()
+                .push(format!("{command} {}", args.join(" ")));
+            self.output
+                .as_ref()
+                .map(|output| Output {
+                    status: output.status,
+                    stdout: output.stdout.clone(),
+                    stderr: output.stderr.clone(),
+                })
+                .map_err(|err| io::Error::new(err.kind(), err.to_string()))
+        }
+
+        fn status(&self, command: &str, args: &[&str]) -> io::Result<ExitStatus> {
+            self.calls
+                .borrow_mut()
+                .push(format!("{command} {}", args.join(" ")));
+            self.status
+                .as_ref()
+                .copied()
+                .map_err(|err| io::Error::new(err.kind(), err.to_string()))
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn command_helpers_use_injected_runner() {
+        let ok = FakeRunner::new(0, "", 0);
+        assert!(launchctl_quiet_with(&ok, &["kickstart"]).unwrap());
+        assert!(launchctl_required_with(&ok, &["bootstrap"]).is_ok());
+        assert!(systemctl_user_with(&ok, &["start", "herdr-web.service"]).unwrap());
+        assert_eq!(
+            ok.calls.borrow().as_slice(),
+            [
+                "launchctl kickstart",
+                "launchctl bootstrap",
+                "systemctl --user start herdr-web.service"
+            ]
+        );
+
+        let fail = FakeRunner::new(7, "bad", 7);
+        assert!(!launchctl_quiet_with(&fail, &["noop"]).unwrap());
+        assert!(launchctl_required_with(&fail, &["bootstrap"])
+            .unwrap_err()
+            .to_string()
+            .contains("bad"));
+        assert!(systemctl_user_with(&fail, &["stop", "herdr-web.service"])
+            .unwrap_err()
+            .to_string()
+            .contains("systemctl --user stop herdr-web.service failed"));
+
+        let empty = FakeRunner::new(7, "", 0);
+        assert!(launchctl_required_with(&empty, &["bootstrap"])
+            .unwrap_err()
+            .to_string()
+            .contains("exit status"));
     }
 
     #[test]
