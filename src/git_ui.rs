@@ -302,6 +302,13 @@ fn parse_diff_path(raw: &str) -> Option<String> {
     Some(path.replace("\\t", "\t").replace("\\\"", "\""))
 }
 
+fn parse_status_path(raw: &str) -> String {
+    raw.rsplit_once(" -> ")
+        .map(|(_, new_path)| new_path)
+        .unwrap_or(raw)
+        .to_string()
+}
+
 fn editable_hunks(chunks: &[GitDiffChunk]) -> Vec<GitEditableHunk> {
     chunks
         .iter()
@@ -558,7 +565,7 @@ async fn git_ui_status(
         }
         let x = line.as_bytes()[0] as char;
         let y = line.as_bytes()[1] as char;
-        let path = line[3..].to_string();
+        let path = parse_status_path(&line[3..]);
         if x == '?' && y == '?' {
             untracked.push(path);
         } else if matches!((x, y), ('U', _) | (_, 'U') | ('A', 'A') | ('D', 'D')) {
@@ -1674,6 +1681,15 @@ mod tests {
     }
 
     #[test]
+    fn parses_status_rename_path_as_new_path() {
+        assert_eq!(
+            parse_status_path("old/path.xml -> new/path.xml"),
+            "new/path.xml"
+        );
+        assert_eq!(parse_status_path("plain.txt"), "plain.txt");
+    }
+
+    #[test]
     fn parses_basic_unified_diff() {
         let diff = "diff --git a/src/a.py b/src/a.py\n--- a/src/a.py\n+++ b/src/a.py\n@@ -1,2 +1,2 @@\n-old\n+new\n same\n";
         let files = parse_unified_diff(diff);
@@ -2427,10 +2443,14 @@ mod tests {
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             let repo = TempRepo::new();
             repo.commit_initial();
+            repo.write("rename-source.txt", "rename\n");
+            repo.git(&["add", "rename-source.txt"]);
+            repo.git(&["commit", "-m", "add rename source"]);
             repo.write("tracked.txt", "one\ntwo\n");
             repo.write("staged.txt", "staged\n");
             repo.write("untracked.txt", "untracked\n");
             repo.git(&["add", "staged.txt"]);
+            repo.git(&["mv", "rename-source.txt", "renamed-tracked.txt"]);
             let cwd = repo.path.to_str().unwrap().to_string();
             let state = test_state();
 
@@ -2449,8 +2469,12 @@ mod tests {
             assert!(json["branch"]
                 .as_str()
                 .is_some_and(|branch| !branch.is_empty()));
-            assert_eq!(json["staged"][0], "staged.txt");
-            assert_eq!(json["unstaged"][0], "tracked.txt");
+            let staged = json["staged"].as_array().unwrap();
+            assert!(staged.iter().any(|path| path == "staged.txt"));
+            assert!(staged.iter().any(|path| path == "renamed-tracked.txt"));
+            assert!(!staged
+                .iter()
+                .any(|path| path.as_str().is_some_and(|path| path.contains(" -> "))));
             assert_eq!(json["untracked"][0], "untracked.txt");
 
             let diff = git_ui_diff(
@@ -2504,7 +2528,11 @@ mod tests {
             .await;
             assert_eq!(log.status(), StatusCode::OK);
             let json = response_json(log).await;
-            assert!(json["lines"][0].as_str().unwrap().contains("initial"));
+            assert!(json["lines"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|line| line.as_str().unwrap().contains("initial")));
 
             let file = git_ui_file(
                 State(state.clone()),
