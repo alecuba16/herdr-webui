@@ -32,6 +32,7 @@
     worktreePath: "",
     gitStatus: null,
     gitError: "",
+    gitMutating: false,
   };
 
   let eventWs,
@@ -432,6 +433,87 @@
     render();
   }
 
+  async function gitPost(path, body) {
+    if (state.gitMutating) return;
+    state.gitMutating = true;
+    state.gitError = "";
+    render();
+    try {
+      await api(path, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(Object.assign({ cwd: currentWorkspaceCwd() }, body || {})),
+      });
+      await loadGitStatus();
+    } catch (error) {
+      state.gitError = error.message || String(error);
+      render();
+    } finally {
+      state.gitMutating = false;
+      render();
+    }
+  }
+
+  function gitStatusPaths() {
+    const status = state.gitStatus || {};
+    return {
+      staged: status.staged || [],
+      unstaged: status.unstaged || [],
+      untracked: status.untracked || [],
+    };
+  }
+
+  function gitFileAction(action, encodedPath) {
+    const path = decodeURIComponent(encodedPath || "");
+    if (!path) return;
+    if (action === "stage") return gitPost("/api/git-ui/stage", { paths: [path] });
+    if (action === "unstage") return gitPost("/api/git-ui/unstage", { paths: [path] });
+    if (action === "discard") {
+      if (!confirm(`Discard changes in ${path}? This cannot be undone.`)) return;
+      return gitPost("/api/git-ui/discard", { paths: [path], confirmed: true });
+    }
+    if (action === "stash") {
+      const message = prompt(`Stash message for ${path}`, `herdr-webui stash ${path}`);
+      if (message === null) return;
+      return gitPost("/api/git-ui/stash", { message, paths: [path] });
+    }
+  }
+
+  function gitStageAll() {
+    const paths = gitStatusPaths();
+    const next = paths.unstaged.concat(paths.untracked);
+    if (!next.length) return;
+    return gitPost("/api/git-ui/stage", { paths: next });
+  }
+
+  function gitUnstageAll() {
+    const paths = gitStatusPaths().staged;
+    if (!paths.length) return;
+    return gitPost("/api/git-ui/unstage", { paths });
+  }
+
+  function gitStashAll() {
+    const message = prompt("Stash message", "herdr-webui stash");
+    if (message === null) return;
+    return gitPost("/api/git-ui/stash", { message });
+  }
+
+  function gitCommit() {
+    const title = prompt("Commit title", "");
+    if (!title) return;
+    const body = prompt("Commit body", "") || "";
+    return gitPost("/api/git-ui/commit", { title, body });
+  }
+
+  function renderGitFileRow(file, kind) {
+    const encoded = encodeURIComponent(file);
+    const encodedArg = jsArg(encoded);
+    const actions = kind === "staged"
+      ? `<button class="mobile-btn" onclick="HerdrMobile.gitFileAction('unstage', ${encodedArg})">Unstage</button>`
+      : `<button class="mobile-btn" onclick="HerdrMobile.gitFileAction('stage', ${encodedArg})">Stage</button><button class="mobile-btn" onclick="HerdrMobile.gitFileAction('stash', ${encodedArg})">Stash</button>${kind === "unstaged" ? `<button class="mobile-btn danger" onclick="HerdrMobile.gitFileAction('discard', ${encodedArg})">Discard</button>` : ""}`;
+    return `<div class="mobile-row mobile-git-row"><strong>${escapeHtml(file)}</strong><span class="mobile-row-actions">${actions}</span></div>`;
+  }
+
   function renderGitScreen(screen) {
     const status = state.gitStatus;
     if (state.gitError) {
@@ -445,16 +527,21 @@
     }
     const rows = [
       ["Conflicts", status.conflicted || []],
-      ["Staged", status.staged || []],
-      ["Unstaged", status.unstaged || []],
-      ["Untracked", status.untracked || []],
+      ["Staged", status.staged || [], "staged"],
+      ["Unstaged", status.unstaged || [], "unstaged"],
+      ["Untracked", status.untracked || [], "untracked"],
     ]
       .map(
-        ([title, files]) =>
-          `<h3>${escapeHtml(title)}</h3>${files.length ? files.map((file) => `<div class="mobile-row"><strong>${escapeHtml(file)}</strong></div>`).join("") : '<div class="mobile-loading">None</div>'}`,
+        ([title, files, kind]) =>
+          `<h3>${escapeHtml(title)}</h3>${files.length ? files.map((file) => kind ? renderGitFileRow(file, kind) : `<div class="mobile-row"><strong>${escapeHtml(file)}</strong></div>`).join("") : '<div class="mobile-loading">None</div>'}`,
       )
       .join("");
-    screen.innerHTML = `<section class="mobile-section"><h2>Git</h2><p class="mobile-help">${escapeHtml(status.branch || "detached")} · ${escapeHtml(status.state || "")}</p><button class="mobile-btn primary mobile-wide" onclick="HerdrMobile.loadGitStatus()">Refresh</button>${rows}</section>`;
+    const paths = gitStatusPaths();
+    const canStage = paths.unstaged.length || paths.untracked.length;
+    const canUnstage = paths.staged.length;
+    const canCommit = paths.staged.length;
+    const disabled = state.gitMutating ? "disabled" : "";
+    screen.innerHTML = `<section class="mobile-section"><h2>Git</h2><p class="mobile-help">${escapeHtml(status.branch || "detached")} · ${escapeHtml(status.state || "")}</p>${state.gitMutating ? '<div class="mobile-loading">Working</div>' : ""}<div class="mobile-actions mobile-actions-wrap"><button class="mobile-btn primary" onclick="HerdrMobile.loadGitStatus()" ${disabled}>Refresh</button><button class="mobile-btn" onclick="HerdrMobile.gitStageAll()" ${disabled} ${canStage ? "" : "disabled"}>Stage all</button><button class="mobile-btn" onclick="HerdrMobile.gitUnstageAll()" ${disabled} ${canUnstage ? "" : "disabled"}>Unstage all</button><button class="mobile-btn" onclick="HerdrMobile.gitStashAll()" ${disabled}>Stash</button><button class="mobile-btn primary" onclick="HerdrMobile.gitCommit()" ${disabled} ${canCommit ? "" : "disabled"}>Commit</button></div>${rows}</section>`;
   }
 
   function renderTerminalTabsWithAdd() {
@@ -674,6 +761,11 @@
     selectTab,
     createPanel,
     loadGitStatus,
+    gitFileAction,
+    gitStageAll,
+    gitUnstageAll,
+    gitStashAll,
+    gitCommit,
     filesToggle: mobileFileBrowser.toggle,
     filesSelect: mobileFileBrowser.select,
     filesUp: mobileFileBrowser.up,

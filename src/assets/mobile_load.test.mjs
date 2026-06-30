@@ -110,6 +110,18 @@ function context(pathname = "/") {
           status: 200,
           json: async () => ({ ok: true }),
         };
+      if (url.includes("/api/git-ui/status"))
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ branch: "main", state: "clean", conflicted: [], staged: ["ready.txt"], unstaged: ["edit.txt"], untracked: ["new.txt"] }),
+        };
+      if (url.includes("/api/git-ui/"))
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ ok: true }),
+        };
       if (url === "/api/tabs" && opt.method === "POST")
         return {
           ok: true,
@@ -372,5 +384,45 @@ describe("mobile bundle load", () => {
       cwd: "/tmp/alpha",
       path: "hello.txt",
     });
+  });
+
+  it("stages unstages stashes discards and commits from mobile Git", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
+    vm.runInContext(source, ctx);
+
+    await ctx.HerdrMobile.refresh();
+    ctx.HerdrMobile.showScreen("git");
+    await ctx.HerdrMobile.loadGitStatus();
+    const html = ctx.document.getElementById("mobileScreen").innerHTML;
+    ok(html.includes("HerdrMobile.gitStageAll"));
+    ok(html.includes("HerdrMobile.gitUnstageAll"));
+    ok(html.includes("HerdrMobile.gitCommit"));
+    ok(html.includes("HerdrMobile.gitFileAction('discard',"));
+
+    await ctx.HerdrMobile.gitStageAll();
+    await ctx.HerdrMobile.gitUnstageAll();
+    await ctx.HerdrMobile.gitFileAction("stash", encodeURIComponent("edit.txt"));
+    await ctx.HerdrMobile.gitFileAction("discard", encodeURIComponent("edit.txt"));
+    await ctx.HerdrMobile.gitCommit();
+
+    const stage = ctx.requests.find((request) => request.url === "/api/git-ui/stage");
+    ok(stage);
+    deepEqual(JSON.parse(stage.opt.body), { cwd: "/tmp/alpha", paths: ["edit.txt", "new.txt"] });
+
+    const unstage = ctx.requests.find((request) => request.url === "/api/git-ui/unstage");
+    ok(unstage);
+    deepEqual(JSON.parse(unstage.opt.body), { cwd: "/tmp/alpha", paths: ["ready.txt"] });
+
+    const stash = ctx.requests.find((request) => request.url === "/api/git-ui/stash");
+    ok(stash);
+    deepEqual(JSON.parse(stash.opt.body), { cwd: "/tmp/alpha", message: "renamed.txt", paths: ["edit.txt"] });
+
+    const discard = ctx.requests.find((request) => request.url === "/api/git-ui/discard");
+    ok(discard);
+    deepEqual(JSON.parse(discard.opt.body), { cwd: "/tmp/alpha", paths: ["edit.txt"], confirmed: true });
+
+    const commit = ctx.requests.find((request) => request.url === "/api/git-ui/commit");
+    ok(commit);
+    deepEqual(JSON.parse(commit.opt.body), { cwd: "/tmp/alpha", title: "renamed.txt", body: "renamed.txt" });
   });
 });

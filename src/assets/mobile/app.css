@@ -242,6 +242,15 @@ body.light {
 .mobile-actions-wrap {
   flex-wrap: wrap;
 }
+.mobile-git-row {
+  gap: 10px;
+}
+.mobile-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
 .mobile-help {
   color: var(--muted);
   font-size: 12px;
