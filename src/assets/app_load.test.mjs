@@ -194,11 +194,16 @@ describe("app bundle load", () => {
   it("defines Git file rename and staged edit menu actions", () => {
     const fileBrowserSource = readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8");
     match(gitUiSource, /Rename file/);
+    match(gitUiSource, /Open in file explorer/);
+    match(gitUiSource, /openInFileExplorer\(path\)/);
+    match(gitUiSource, /HerdrFileBrowser\.openPath\(view\.cwd, path\)/);
     match(gitUiSource, /Edit staged file/);
     match(gitUiSource, /\/api\/git-ui\/rename/);
     match(gitUiSource, /restageOnSave/);
     match(gitUiSource, /Unstage .* edit it, then restage after saving/);
     match(fileBrowserSource, /const oldScrollTop = oldSide \? oldSide\.scrollTop : 0;/);
+    match(fileBrowserSource, /async function openPath\(cwd, path\)/);
+    match(fileBrowserSource, /await loadTree\(parentPath\(path\)\);/);
     match(fileBrowserSource, /nextSide\.scrollTop = oldScrollTop/);
     match(fileBrowserSource, /state\.selected = path;/);
   });
