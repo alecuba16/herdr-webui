@@ -459,6 +459,39 @@ unsafe fn libc_geteuid() -> u32 {
 mod tests {
     use super::*;
 
+    fn service_test_root(name: &str) -> PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("herdr-webui-service-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[cfg(unix)]
+    fn fake_command(bin_dir: &Path, name: &str) {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::create_dir_all(bin_dir).unwrap();
+        let path = bin_dir.join(name);
+        fs::write(
+            &path,
+            "#!/bin/sh\necho \"$0 $@\" >> \"$HERDR_WEB_FAKE_COMMAND_LOG\"\nexit 0\n",
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).unwrap();
+    }
+
+    fn config() -> WebConfig {
+        WebConfig {
+            bind: "127.0.0.1:8787".parse().unwrap(),
+            session: Some("work".to_string()),
+            api_socket: None,
+            client_socket: None,
+        }
+    }
+
     #[test]
     fn linux_service_unit_contains_binary_and_flags() {
         let config = WebConfig {
@@ -591,5 +624,146 @@ mod tests {
         } else {
             std::env::remove_var("HERDR_WEB_VERBOSE");
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linux_service_lifecycle_uses_fake_systemctl() {
+        let _guard = crate::test_env_lock().lock().unwrap();
+        let root = service_test_root("linux-lifecycle");
+        let home = root.join("home");
+        let xdg = root.join("xdg");
+        let bin_dir = root.join("bin");
+        let log = root.join("commands.log");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&xdg).unwrap();
+        fake_command(&bin_dir, "systemctl");
+
+        let old_home = std::env::var_os("HOME");
+        let old_xdg = std::env::var_os("XDG_CONFIG_HOME");
+        let old_path = std::env::var_os("PATH");
+        let old_log = std::env::var_os("HERDR_WEB_FAKE_COMMAND_LOG");
+        std::env::set_var("HOME", &home);
+        std::env::set_var("XDG_CONFIG_HOME", &xdg);
+        std::env::set_var(
+            "PATH",
+            format!(
+                "{}:{}",
+                bin_dir.display(),
+                old_path
+                    .as_ref()
+                    .map(|value| value.to_string_lossy())
+                    .unwrap_or_default()
+            ),
+        );
+        std::env::set_var("HERDR_WEB_FAKE_COMMAND_LOG", &log);
+
+        install_linux(config()).unwrap();
+        start_linux_service().unwrap();
+        restart_linux_service().unwrap();
+        update_linux().unwrap();
+        stop_linux_service().unwrap();
+        uninstall_linux().unwrap();
+
+        let service = xdg.join("systemd/user/herdr-web.service");
+        assert!(!service.exists());
+        let commands = fs::read_to_string(&log).unwrap();
+        assert!(commands.contains("--user daemon-reload"));
+        assert!(commands.contains("--user enable --now herdr-web.service"));
+        assert!(commands.contains("--user start herdr-web.service"));
+        assert!(commands.contains("--user restart herdr-web.service"));
+        assert!(commands.contains("--user stop herdr-web.service"));
+        assert!(home.join(".local/bin/herdr-webui").exists());
+
+        if let Some(value) = old_home {
+            std::env::set_var("HOME", value);
+        } else {
+            std::env::remove_var("HOME");
+        }
+        if let Some(value) = old_xdg {
+            std::env::set_var("XDG_CONFIG_HOME", value);
+        } else {
+            std::env::remove_var("XDG_CONFIG_HOME");
+        }
+        if let Some(value) = old_path {
+            std::env::set_var("PATH", value);
+        } else {
+            std::env::remove_var("PATH");
+        }
+        if let Some(value) = old_log {
+            std::env::set_var("HERDR_WEB_FAKE_COMMAND_LOG", value);
+        } else {
+            std::env::remove_var("HERDR_WEB_FAKE_COMMAND_LOG");
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn macos_service_lifecycle_uses_fake_launchctl() {
+        let _guard = crate::test_env_lock().lock().unwrap();
+        let root = service_test_root("macos-lifecycle");
+        let home = root.join("home");
+        let bin_dir = root.join("bin");
+        let log = root.join("commands.log");
+        fs::create_dir_all(&home).unwrap();
+        fake_command(&bin_dir, "launchctl");
+
+        let old_home = std::env::var_os("HOME");
+        let old_path = std::env::var_os("PATH");
+        let old_log = std::env::var_os("HERDR_WEB_FAKE_COMMAND_LOG");
+        let old_herdr_bin = std::env::var_os("HERDR_WEB_HERDR_BIN");
+        std::env::set_var("HOME", &home);
+        std::env::set_var(
+            "PATH",
+            format!(
+                "{}:{}",
+                bin_dir.display(),
+                old_path
+                    .as_ref()
+                    .map(|value| value.to_string_lossy())
+                    .unwrap_or_default()
+            ),
+        );
+        std::env::set_var("HERDR_WEB_FAKE_COMMAND_LOG", &log);
+        std::env::set_var("HERDR_WEB_HERDR_BIN", "/tmp/herdr fake/bin");
+
+        install_macos(config()).unwrap();
+        start_macos_service().unwrap();
+        restart_macos_service().unwrap();
+        update_macos().unwrap();
+        stop_macos_service().unwrap();
+        uninstall_macos().unwrap();
+
+        let plist = home.join("Library/LaunchAgents/herdr-web.plist");
+        assert!(!plist.exists());
+        assert!(home.join("Library/Logs/herdr-webui").exists());
+        assert!(home.join(".local/bin/herdr-webui").exists());
+        let commands = fs::read_to_string(&log).unwrap();
+        assert!(commands.contains("bootout"));
+        assert!(commands.contains("bootstrap"));
+        assert!(commands.contains("kickstart -k"));
+
+        if let Some(value) = old_home {
+            std::env::set_var("HOME", value);
+        } else {
+            std::env::remove_var("HOME");
+        }
+        if let Some(value) = old_path {
+            std::env::set_var("PATH", value);
+        } else {
+            std::env::remove_var("PATH");
+        }
+        if let Some(value) = old_log {
+            std::env::set_var("HERDR_WEB_FAKE_COMMAND_LOG", value);
+        } else {
+            std::env::remove_var("HERDR_WEB_FAKE_COMMAND_LOG");
+        }
+        if let Some(value) = old_herdr_bin {
+            std::env::set_var("HERDR_WEB_HERDR_BIN", value);
+        } else {
+            std::env::remove_var("HERDR_WEB_HERDR_BIN");
+        }
+        let _ = fs::remove_dir_all(root);
     }
 }

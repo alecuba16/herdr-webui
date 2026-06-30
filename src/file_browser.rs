@@ -720,8 +720,18 @@ mod tests {
         }
     }
 
+    fn auth_required_state() -> WebState {
+        let state = test_state();
+        state.auth.lock().unwrap().localhost_no_auth = false;
+        state
+    }
+
     fn loopback() -> SocketAddr {
         "127.0.0.1:1234".parse().unwrap()
+    }
+
+    fn remote() -> SocketAddr {
+        "192.0.2.1:1234".parse().unwrap()
     }
 
     fn temp_root(name: &str) -> PathBuf {
@@ -745,7 +755,33 @@ mod tests {
     fn clean_relative_path_rejects_escape() {
         assert!(clean_relative_path(Some("../secret")).is_err());
         assert!(clean_relative_path(Some("a/../secret")).is_err());
+        assert!(clean_relative_path(Some("bad\0path")).is_err());
         assert_eq!(clean_relative_path(Some("/a/b")).unwrap(), "a/b");
+    }
+
+    #[test]
+    fn clean_file_name_and_path_helpers_validate_edges() {
+        assert_eq!(clean_file_name(" next.txt ").unwrap(), "next.txt");
+        for name in ["", ".", "..", "a/b", "a\\b", "bad\0name"] {
+            assert!(clean_file_name(name).is_err());
+        }
+
+        let root = temp_root("path-helpers");
+        fs::write(root.join("file.txt"), "abc").unwrap();
+        let outside = root.parent().unwrap().join("outside.txt");
+        fs::write(&outside, "outside").unwrap();
+
+        assert!(resolve_root(root.join("missing").to_str().unwrap()).is_err());
+        assert_eq!(relative_to_root(&root, &outside), "");
+        assert!(resolve_child(&root, "../outside.txt").is_err());
+        assert_eq!(file_hash(&root.join("missing.txt")).unwrap(), "");
+        assert_eq!(
+            file_hash(&root.join("file.txt")).unwrap(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+
+        let _ = fs::remove_file(outside);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -1030,6 +1066,242 @@ mod tests {
         )
         .await;
         assert_eq!(missing_delete.status(), StatusCode::BAD_REQUEST);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn file_browser_routes_cover_validation_and_auth_errors() {
+        let root = temp_root("validation");
+        fs::create_dir_all(root.join("dir/subdir")).unwrap();
+        fs::write(root.join("dir/file.txt"), "text").unwrap();
+        fs::write(root.join("dir/target.txt"), "taken").unwrap();
+        fs::write(root.join("target.txt"), "taken").unwrap();
+        let cwd = root.to_string_lossy().to_string();
+        let headers = HeaderMap::new();
+        let state = test_state();
+
+        let unauthorized = file_browser_tree(
+            State(auth_required_state()),
+            headers.clone(),
+            ConnectInfo(remote()),
+            Query(FileBrowserQuery {
+                cwd: cwd.clone(),
+                path: None,
+                dirs_only: None,
+                depth: None,
+                q: None,
+                limit: None,
+            }),
+        )
+        .await;
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+        let dirs = response_json(
+            file_browser_tree(
+                State(state.clone()),
+                headers.clone(),
+                ConnectInfo(loopback()),
+                Query(FileBrowserQuery {
+                    cwd: cwd.clone(),
+                    path: Some("dir".to_string()),
+                    dirs_only: Some(true),
+                    depth: Some(8),
+                    q: None,
+                    limit: None,
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(dirs["entries"].as_array().unwrap().len(), 1);
+        assert_eq!(dirs["entries"][0]["kind"], "dir");
+
+        let invalid_root = file_browser_tree(
+            State(state.clone()),
+            headers.clone(),
+            ConnectInfo(loopback()),
+            Query(FileBrowserQuery {
+                cwd: root.join("missing").to_string_lossy().to_string(),
+                path: None,
+                dirs_only: None,
+                depth: None,
+                q: None,
+                limit: None,
+            }),
+        )
+        .await;
+        assert_eq!(invalid_root.status(), StatusCode::BAD_REQUEST);
+
+        let file_as_tree = file_browser_tree(
+            State(state.clone()),
+            headers.clone(),
+            ConnectInfo(loopback()),
+            Query(FileBrowserQuery {
+                cwd: cwd.clone(),
+                path: Some("dir/file.txt".to_string()),
+                dirs_only: None,
+                depth: None,
+                q: None,
+                limit: None,
+            }),
+        )
+        .await;
+        assert_eq!(file_as_tree.status(), StatusCode::BAD_REQUEST);
+
+        let empty_search = response_json(
+            file_browser_search(
+                State(state.clone()),
+                headers.clone(),
+                ConnectInfo(loopback()),
+                Query(FileBrowserQuery {
+                    cwd: cwd.clone(),
+                    path: None,
+                    dirs_only: None,
+                    depth: None,
+                    q: Some("   ".to_string()),
+                    limit: None,
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(empty_search["entries"].as_array().unwrap().len(), 0);
+
+        let search_not_dir = file_browser_search(
+            State(state.clone()),
+            headers.clone(),
+            ConnectInfo(loopback()),
+            Query(FileBrowserQuery {
+                cwd: cwd.clone(),
+                path: Some("dir/file.txt".to_string()),
+                dirs_only: None,
+                depth: None,
+                q: Some("file".to_string()),
+                limit: Some(0),
+            }),
+        )
+        .await;
+        assert_eq!(search_not_dir.status(), StatusCode::BAD_REQUEST);
+
+        let missing_file_path = file_browser_file(
+            State(state.clone()),
+            headers.clone(),
+            ConnectInfo(loopback()),
+            Query(FileBrowserQuery {
+                cwd: cwd.clone(),
+                path: Some("".to_string()),
+                dirs_only: None,
+                depth: None,
+                q: None,
+                limit: None,
+            }),
+        )
+        .await;
+        assert_eq!(missing_file_path.status(), StatusCode::BAD_REQUEST);
+
+        let dir_as_file = file_browser_file(
+            State(state.clone()),
+            headers.clone(),
+            ConnectInfo(loopback()),
+            Query(FileBrowserQuery {
+                cwd: cwd.clone(),
+                path: Some("dir".to_string()),
+                dirs_only: None,
+                depth: None,
+                q: None,
+                limit: None,
+            }),
+        )
+        .await;
+        assert_eq!(dir_as_file.status(), StatusCode::BAD_REQUEST);
+
+        let write_dir = file_browser_write_file(
+            State(state.clone()),
+            headers.clone(),
+            ConnectInfo(loopback()),
+            Json(FileBrowserWriteRequest {
+                cwd: cwd.clone(),
+                path: "dir".to_string(),
+                content: "nope".to_string(),
+                expected_hash: None,
+            }),
+        )
+        .await;
+        assert_eq!(write_dir.status(), StatusCode::BAD_REQUEST);
+
+        let created = response_json(
+            file_browser_write_file(
+                State(state.clone()),
+                headers.clone(),
+                ConnectInfo(loopback()),
+                Json(FileBrowserWriteRequest {
+                    cwd: cwd.clone(),
+                    path: "dir/new.txt".to_string(),
+                    content: "new".to_string(),
+                    expected_hash: None,
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(created["ok"], true);
+        assert_eq!(fs::read_to_string(root.join("dir/new.txt")).unwrap(), "new");
+
+        let rename_missing_path = file_browser_rename(
+            State(state.clone()),
+            headers.clone(),
+            ConnectInfo(loopback()),
+            Json(FileBrowserRenameRequest {
+                cwd: cwd.clone(),
+                path: "".to_string(),
+                new_name: "x".to_string(),
+            }),
+        )
+        .await;
+        assert_eq!(rename_missing_path.status(), StatusCode::BAD_REQUEST);
+
+        let rename_missing_source = file_browser_rename(
+            State(state.clone()),
+            headers.clone(),
+            ConnectInfo(loopback()),
+            Json(FileBrowserRenameRequest {
+                cwd: cwd.clone(),
+                path: "missing.txt".to_string(),
+                new_name: "x".to_string(),
+            }),
+        )
+        .await;
+        assert_eq!(rename_missing_source.status(), StatusCode::BAD_REQUEST);
+
+        let rename_conflict = file_browser_rename(
+            State(state.clone()),
+            headers.clone(),
+            ConnectInfo(loopback()),
+            Json(FileBrowserRenameRequest {
+                cwd: cwd.clone(),
+                path: "dir/file.txt".to_string(),
+                new_name: "target.txt".to_string(),
+            }),
+        )
+        .await;
+        assert_eq!(rename_conflict.status(), StatusCode::CONFLICT);
+
+        let delete_dir = response_json(
+            file_browser_delete(
+                State(state),
+                headers,
+                ConnectInfo(loopback()),
+                Json(FileBrowserDeleteRequest {
+                    cwd,
+                    path: "dir/subdir".to_string(),
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(delete_dir["ok"], true);
+        assert!(!root.join("dir/subdir").exists());
 
         let _ = fs::remove_dir_all(root);
     }
