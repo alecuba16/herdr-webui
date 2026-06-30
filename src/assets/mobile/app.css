@@ -6,6 +6,7 @@ html {
   overflow: hidden;
 }
 body {
+  --herdr-mobile-viewport-height: 100dvh;
   --bg: #11111b;
   --fg: #cdd6f4;
   --panel: #181825;
@@ -19,7 +20,7 @@ body {
   background: var(--bg);
   color: var(--fg);
   font-family: ui-sans-serif, system-ui;
-  height: 100dvh;
+  height: var(--herdr-mobile-viewport-height);
   width: 100vw;
   overflow: hidden;
 }
@@ -35,15 +36,15 @@ body.light {
   --accent-fg: #eff1f5;
 }
 #app {
-  height: 100dvh;
+  height: var(--herdr-mobile-viewport-height);
   min-width: 0;
   overflow: hidden;
 }
 .mobile-app {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
-  height: 100dvh;
-  max-height: 100dvh;
+  height: var(--herdr-mobile-viewport-height);
+  max-height: var(--herdr-mobile-viewport-height);
   min-width: 0;
   overflow: hidden;
   background: var(--bg);
@@ -262,6 +263,14 @@ body.light {
 .mobile-nav button.active {
   background: var(--panel2);
   color: var(--fg);
+}
+body.mobile-keyboard-open .mobile-app {
+  grid-template-rows: minmax(0, 1fr);
+}
+body.mobile-keyboard-open .mobile-header,
+body.mobile-keyboard-open .mobile-nav,
+body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
+  display: none;
 }
 .mobile-actions {
   display: flex;
