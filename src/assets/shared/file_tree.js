@@ -17,6 +17,17 @@
     return parts[parts.length - 1] || String(path || "");
   }
 
+  function highlight(value, query) {
+    const text = String(value == null ? "" : value);
+    const needle = String(query || "").trim();
+    if (!needle) return esc(text);
+    const source = /[A-Z]/.test(needle) ? text : text.toLowerCase();
+    const target = /[A-Z]/.test(needle) ? needle : needle.toLowerCase();
+    const index = source.indexOf(target);
+    if (index < 0) return esc(text);
+    return `${esc(text.slice(0, index))}<mark class="herdr-tree-highlight">${esc(text.slice(index, index + needle.length))}</mark>${esc(text.slice(index + needle.length))}`;
+  }
+
   function icon(kind) {
     const safe = kind === "dir" ? "folder" : kind === "up" ? "folder-up" : kind === "open" ? "chevron-down" : kind === "closed" ? "chevron-right" : "file";
     return `<span class="herdr-tree-icon herdr-tree-icon-${safe}" aria-hidden="true"></span>`;
@@ -87,7 +98,7 @@
         const collapsed = !!((opts.collapsedDirs || {})[dirPath]);
         const keydown = opts.activateMethod ? ` onkeydown="${callback}.${opts.activateMethod}(event)"` : "";
         const dirClass = opts.dirClass ? ` ${opts.dirClass}` : "";
-        const name = renderCompactDirName(compact.parts, opts, callback);
+      const name = renderCompactDirName(compact.parts, opts, callback);
         return `<div class="herdr-tree-row dir${dirClass}" role="treeitem" tabindex="0" aria-expanded="${collapsed ? "false" : "true"}" style="${indentStyle(level, opts)}" onclick="${callback}.${opts.toggleMethod || "toggle"}('${arg(dirPath)}')"${keydown}><span class="herdr-tree-caret">${icon(collapsed ? "closed" : "open")}</span><span class="herdr-tree-kind">${icon("dir")}</span><span class="herdr-tree-name">${name}</span></div>${collapsed ? "" : renderPathNode(compact.child, dirPath, opts, level + 1)}`;
       }
       const selected = opts.selectedPath === entry.path && (!opts.selectedKind || opts.selectedKind === opts.kind);
@@ -97,7 +108,7 @@
       const context = opts.contextMethod ? ` oncontextmenu="return ${callback}.${opts.contextMethod}(event,'${arg(entry.path)}'${kindArg})"` : "";
       const data = opts.dataPrefix ? ` data-${opts.dataPrefix}-path="${esc(entry.path)}" data-${opts.dataPrefix}-kind="${esc(opts.kind || "")}"` : "";
       const rowClass = opts.rowClass ? ` ${opts.rowClass}` : "";
-      return `<div class="herdr-tree-row file${rowClass}${selected ? " active" : ""}" role="treeitem" tabindex="0"${data} style="${indentStyle(level, opts)}" title="${esc(entry.path)}" onclick="${callback}.${opts.selectMethod || "select"}('${arg(entry.path)}'${kindArg})"${keydown}${context}><span class="herdr-tree-caret"></span><span class="herdr-tree-kind">${icon("file")}</span><span class="herdr-tree-name">${esc(entry.name)}</span>${statusBadge(status)}${meta}</div>`;
+      return `<div class="herdr-tree-row file${rowClass}${selected ? " active" : ""}" role="treeitem" tabindex="0"${data} style="${indentStyle(level, opts)}" title="${esc(entry.path)}" onclick="${callback}.${opts.selectMethod || "select"}('${arg(entry.path)}'${kindArg})"${keydown}${context}><span class="herdr-tree-caret"></span><span class="herdr-tree-kind">${icon("file")}</span><span class="herdr-tree-name">${highlight(entry.name, opts.highlightQuery)}</span>${statusBadge(status)}${meta}</div>`;
     }).join("");
   }
 
@@ -118,8 +129,8 @@
   }
 
   function renderCompactDirName(parts, opts, callback) {
-    if (!parts || parts.length <= 1 || !opts.expandCompactMethod) return esc((parts && parts[0] && parts[0].name) || "");
-    return parts.map((part, index) => `<button type="button" class="herdr-tree-crumb" onclick="event.stopPropagation();${callback}.${opts.expandCompactMethod}('${arg(part.path)}')">${esc(part.name)}</button>${index < parts.length - 1 ? '<span class="herdr-tree-sep">/</span>' : ""}`).join("");
+    if (!parts || parts.length <= 1 || !opts.expandCompactMethod) return highlight((parts && parts[0] && parts[0].name) || "", opts.highlightQuery);
+    return parts.map((part, index) => `<button type="button" class="herdr-tree-crumb" onclick="event.stopPropagation();${callback}.${opts.expandCompactMethod}('${arg(part.path)}')">${highlight(part.name, opts.highlightQuery)}</button>${index < parts.length - 1 ? '<span class="herdr-tree-sep">/</span>' : ""}`).join("");
   }
 
   function renderEntry(entry, selected, callback, opts) {
@@ -137,7 +148,7 @@
     const action = entry.kind === "up" ? "up" : kind === "dir" ? dirClickMethod : selectMethod;
     const click = action ? ` onclick="${callback}.${action}('${arg(path)}'${kind === "file" && opts.shiftSelectMode ? `,event.shiftKey?'split':''` : ""})"` : "";
     const meta = opts.showMeta && entry.size != null ? `<span class="herdr-tree-meta">${formatBytes(entry.size)}</span>` : "";
-    return `<button class="herdr-tree-row ${kind}${entry.kind === "up" ? " up" : ""}${active}" role="treeitem" style="${indentStyle(level, opts)}" title="${esc(path)}"${click}${dbl}${context}>${caret}<span class="herdr-tree-kind">${icon(entry.kind === "up" ? "up" : kind)}</span><span class="herdr-tree-name">${esc(entry.name || basename(path))}</span>${statusBadge(entry.status)}${meta}</button>`;
+    return `<button class="herdr-tree-row ${kind}${entry.kind === "up" ? " up" : ""}${active}" role="treeitem" style="${indentStyle(level, opts)}" title="${esc(path)}"${click}${dbl}${context}>${caret}<span class="herdr-tree-kind">${icon(entry.kind === "up" ? "up" : kind)}</span><span class="herdr-tree-name">${highlight(entry.name || basename(path), opts.highlightQuery)}</span>${statusBadge(entry.status)}${meta}</button>`;
   }
 
   function buildGitEntries(files, status) {
@@ -162,6 +173,7 @@
     buildGitEntries,
     esc,
     formatBytes,
+    highlight,
     renderEntries,
     renderPathTree,
   };

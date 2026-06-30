@@ -17,10 +17,13 @@ use crate::{expand_user_path_string, require_auth, WebState};
 
 const MAX_ENTRIES: usize = 1000;
 const MAX_FILE_BYTES: u64 = 1024 * 1024;
+const MAX_SEARCH_RESULTS: usize = 200;
+const MAX_SEARCH_VISITS: usize = 20_000;
 
 pub(crate) fn routes() -> Router<WebState> {
     Router::new()
         .route("/api/file-browser/tree", get(file_browser_tree))
+        .route("/api/file-browser/search", get(file_browser_search))
         .route(
             "/api/file-browser/file",
             get(file_browser_file).post(file_browser_write_file),
@@ -41,6 +44,8 @@ struct FileBrowserQuery {
     path: Option<String>,
     dirs_only: Option<bool>,
     depth: Option<u8>,
+    q: Option<String>,
+    limit: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -223,6 +228,69 @@ fn sorted_directory_entries(dir: &Path) -> Result<Vec<DirectoryEntry>, String> {
     Ok(entries)
 }
 
+fn skip_search_dir(name: &str) -> bool {
+    matches!(
+        name,
+        ".git" | "node_modules" | "target" | ".venv" | "venv" | "vendor" | "dist" | "build"
+    )
+}
+
+fn smart_case_match(haystack: &str, needle: &str) -> bool {
+    if needle.chars().any(|ch| ch.is_uppercase()) {
+        haystack.contains(needle)
+    } else {
+        haystack.to_lowercase().contains(&needle.to_lowercase())
+    }
+}
+
+fn search_entries(
+    root: &Path,
+    dir: &Path,
+    query: &str,
+    limit: usize,
+    visits: &mut usize,
+    entries: &mut Vec<FileBrowserEntry>,
+) -> Result<bool, String> {
+    for entry in sorted_directory_entries(dir)? {
+        *visits += 1;
+        if *visits >= MAX_SEARCH_VISITS {
+            return Ok(true);
+        }
+        let is_dir = entry.metadata.is_dir();
+        let path = relative_to_root(root, &entry.path);
+        if smart_case_match(&entry.name, query) || smart_case_match(&path, query) {
+            entries.push(FileBrowserEntry {
+                name: entry.name.clone(),
+                path: path.clone(),
+                kind: if is_dir { "dir" } else { "file" }.to_string(),
+                size: if is_dir {
+                    None
+                } else {
+                    Some(entry.metadata.len())
+                },
+                modified_ms: entry
+                    .metadata
+                    .modified()
+                    .ok()
+                    .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+                    .map(|duration| duration.as_millis() as u64),
+                level: path.matches('/').count(),
+                expanded: false,
+            });
+            if entries.len() >= limit {
+                return Ok(true);
+            }
+        }
+        if is_dir && !skip_search_dir(&entry.name) {
+            let truncated = search_entries(root, &entry.path, query, limit, visits, entries)?;
+            if truncated {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
 fn push_tree_entries(
     build: &mut TreeBuild,
     dir: &Path,
@@ -358,6 +426,54 @@ async fn file_browser_tree(
         "path": relative_to_root(&root, &dir),
         "entries": build.entries,
         "truncated": build.truncated,
+    }))
+    .into_response()
+}
+
+async fn file_browser_search(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    Query(query): Query<FileBrowserQuery>,
+) -> Response {
+    if let Err(response) = file_browser_auth(&state, &headers, remote) {
+        return response;
+    }
+    let q = query.q.as_deref().unwrap_or("").trim();
+    if q.is_empty() {
+        return Json(json!({ "entries": [], "truncated": false })).into_response();
+    }
+    let root = match resolve_root(&query.cwd) {
+        Ok(root) => root,
+        Err(err) => return file_browser_json_error(StatusCode::BAD_REQUEST, err),
+    };
+    let rel = match clean_relative_path(query.path.as_deref()) {
+        Ok(rel) => rel,
+        Err(err) => return file_browser_json_error(StatusCode::BAD_REQUEST, err),
+    };
+    let dir = match resolve_child(&root, &rel) {
+        Ok(dir) => dir,
+        Err(err) => return file_browser_json_error(StatusCode::BAD_REQUEST, err),
+    };
+    if !dir.is_dir() {
+        return file_browser_json_error(StatusCode::BAD_REQUEST, "path is not a directory");
+    }
+    let limit = query
+        .limit
+        .unwrap_or(MAX_SEARCH_RESULTS)
+        .clamp(1, MAX_SEARCH_RESULTS);
+    let mut visits = 0;
+    let mut entries = Vec::new();
+    let truncated = match search_entries(&root, &dir, q, limit, &mut visits, &mut entries) {
+        Ok(value) => value,
+        Err(err) => return file_browser_json_error(StatusCode::BAD_GATEWAY, err),
+    };
+    Json(json!({
+        "root": root.to_string_lossy(),
+        "path": relative_to_root(&root, &dir),
+        "entries": entries,
+        "truncated": truncated,
+        "visited": visits,
     }))
     .into_response()
 }
@@ -627,6 +743,34 @@ mod tests {
         assert!(rows.contains(&("a/b/c", 2, false)));
         assert!(rows.contains(&("a/root.txt", 1, false)));
         assert!(rows.contains(&("a/b/child.txt", 2, false)));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn search_entries_matches_paths_and_skips_heavy_dirs() {
+        let root = std::env::temp_dir().join(format!(
+            "herdr-webui-file-browser-search-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("src/nested")).unwrap();
+        fs::create_dir_all(root.join("target/debug")).unwrap();
+        fs::write(root.join("src/nested/NeedleFile.rs"), "match").unwrap();
+        fs::write(root.join("target/debug/needle-hidden.rs"), "skip").unwrap();
+
+        let root = root.canonicalize().unwrap();
+        let mut visits = 0;
+        let mut entries = Vec::new();
+        let truncated =
+            search_entries(&root, &root, "needle", 20, &mut visits, &mut entries).unwrap();
+
+        assert!(!truncated);
+        assert!(entries
+            .iter()
+            .any(|entry| entry.path == "src/nested/NeedleFile.rs"));
+        assert!(!entries
+            .iter()
+            .any(|entry| entry.path.contains("target/debug")));
         let _ = fs::remove_dir_all(root);
     }
 }

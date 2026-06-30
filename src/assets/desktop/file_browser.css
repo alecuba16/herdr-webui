@@ -65,6 +65,33 @@
   gap: 6px;
   margin-top: 8px;
 }
+.file-browser-search {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+.file-browser-search input {
+  background: var(--bg);
+  border: 1px solid var(--border2);
+  border-radius: 8px;
+  color: var(--fg);
+  flex: 1 1 auto;
+  font: inherit;
+  font-size: 12px;
+  min-width: 0;
+  padding: 6px 8px;
+}
+.file-tree-spinner {
+  animation: file-tree-spin 0.8s linear infinite;
+  border: 2px solid var(--border2);
+  border-top-color: #f9e2af;
+  border-radius: 999px;
+  display: inline-block;
+  height: 14px;
+  width: 14px;
+}
+@keyframes file-tree-spin { to { transform: rotate(360deg); } }
 .file-browser-main {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -175,6 +202,12 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.herdr-tree-highlight {
+  background: #f9e2af;
+  border-radius: 3px;
+  color: #11111b;
+  padding: 0 1px;
 }
 .herdr-tree-crumb {
   background: transparent;

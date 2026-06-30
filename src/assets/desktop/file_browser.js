@@ -1,6 +1,6 @@
 (function () {
   const Tree = window.HerdrFileTree;
-  const state = { open: false, cwd: "", path: "", entries: [], children: {}, expanded: {}, loading: {}, selected: "", files: [], split: false, error: "", contextMenu: null };
+  const state = { open: false, cwd: "", path: "", entries: [], children: {}, expanded: {}, loading: {}, selected: "", files: [], split: false, error: "", contextMenu: null, search: { query: "", results: [], searching: false, error: "", timer: null, inFlight: "", pending: "" } };
 
   function esc(value) { return Tree.esc(value); }
   function arg(value) { return Tree.arg(value); }
@@ -62,6 +62,7 @@
     state.expanded = {};
     state.loading = {};
     state.contextMenu = null;
+    resetSearch();
     state.open = true;
     render();
     await loadTree("");
@@ -90,10 +91,60 @@
       state.children = {};
       state.expanded = {};
       state.loading = {};
+      resetSearch();
     } catch (error) {
       state.error = error.message || String(error);
     }
     render();
+  }
+
+  function resetSearch() {
+    if (state.search.timer) clearTimeout(state.search.timer);
+    state.search = { query: "", results: [], searching: false, error: "", timer: null, inFlight: "", pending: "" };
+  }
+
+  function updateSearch(value) {
+    state.search.query = String(value || "");
+    state.search.error = "";
+    if (state.search.timer) clearTimeout(state.search.timer);
+    if (!state.search.query.trim()) {
+      state.search.results = [];
+      state.search.searching = false;
+      state.search.pending = "";
+      render();
+      return;
+    }
+    state.search.searching = true;
+    state.search.timer = setTimeout(() => runSearch(state.search.query), 220);
+    render();
+  }
+
+  async function runSearch(query) {
+    const next = String(query || "").trim();
+    if (!next) return;
+    if (state.search.inFlight) {
+      state.search.pending = next;
+      return;
+    }
+    state.search.inFlight = next;
+    state.search.searching = true;
+    render();
+    try {
+      const data = await api(`/api/file-browser/search?cwd=${encodeURIComponent(state.cwd)}&path=${encodeURIComponent(state.path || "")}&q=${encodeURIComponent(next)}&limit=200`);
+      if (state.search.query.trim() === next) {
+        state.search.results = data.entries || [];
+        state.search.error = data.truncated ? "Results truncated" : "";
+      }
+    } catch (error) {
+      if (state.search.query.trim() === next) state.search.error = error.message || String(error);
+    } finally {
+      state.search.inFlight = "";
+      state.search.searching = false;
+      const pending = state.search.pending;
+      state.search.pending = "";
+      render();
+      if (pending && pending !== next && pending === state.search.query.trim()) runSearch(pending);
+    }
   }
 
   async function loadFile(path, mode) {
@@ -150,7 +201,12 @@
     syncTerminalVisibility();
     const activeFile = currentFile();
     const entries = treeEntries();
-    panel.innerHTML = `<aside class="file-browser-side ${activeFile ? "previewing" : ""}"><div class="file-browser-head"><div class="file-browser-title">Files</div><div class="file-browser-subtitle">${esc(state.path || state.cwd || "No workspace")}</div><div class="file-browser-actions"><button class="git-ui-btn" onclick="HerdrFileBrowser.refresh()">Refresh</button><button class="git-ui-btn" onclick="HerdrFileBrowser.close()">Close</button></div></div>${state.error ? `<div class="file-browser-error">${esc(state.error)}</div>` : ""}${Tree.renderEntries(entries, { selectedPath: state.selected, callback: "HerdrFileBrowser", showMeta: true, dirClickMethod: "none", dirDoubleClickMethod: "enter", contextMethod: "menu", shiftSelectMode: true })}</aside><main class="file-browser-main"><div class="file-browser-toolbar">${renderToolbar(activeFile)}</div><div class="file-browser-preview ${state.split ? "split" : ""}" id="fileBrowserPreview">${renderPreviewShell()}</div></main>${renderContextMenu()}`;
+    const search = state.search;
+    const searching = search.query.trim();
+    const treeHtml = searching
+      ? Tree.renderEntries(search.results, { selectedPath: state.selected, callback: "HerdrFileBrowser", showMeta: true, dirClickMethod: "none", dirDoubleClickMethod: "enter", contextMethod: "menu", shiftSelectMode: true, highlightQuery: search.query })
+      : Tree.renderEntries(entries, { selectedPath: state.selected, callback: "HerdrFileBrowser", showMeta: true, dirClickMethod: "none", dirDoubleClickMethod: "enter", contextMethod: "menu", shiftSelectMode: true });
+    panel.innerHTML = `<aside class="file-browser-side ${activeFile ? "previewing" : ""}"><div class="file-browser-head"><div class="file-browser-title">Files</div><div class="file-browser-subtitle">${esc(state.path || state.cwd || "No workspace")}</div><div class="file-browser-actions"><button class="git-ui-btn" onclick="HerdrFileBrowser.refresh()">Refresh</button><button class="git-ui-btn" onclick="HerdrFileBrowser.close()">Close</button></div><label class="file-browser-search"><input id="fileBrowserSearch" value="${esc(search.query)}" placeholder="Search files" oninput="HerdrFileBrowser.search(this.value)">${search.searching ? '<span class="file-tree-spinner" title="Searching"></span>' : ""}</label></div>${state.error ? `<div class="file-browser-error">${esc(state.error)}</div>` : ""}${search.error ? `<div class="file-browser-error">${esc(search.error)}</div>` : ""}${treeHtml}</aside><main class="file-browser-main"><div class="file-browser-toolbar">${renderToolbar(activeFile)}</div><div class="file-browser-preview ${state.split ? "split" : ""}" id="fileBrowserPreview">${renderPreviewShell()}</div></main>${renderContextMenu()}`;
     mountEditors();
   }
 
@@ -343,6 +399,7 @@
     open,
     close: hide,
     hide,
+    search: updateSearch,
     refresh() { loadTree(state.path); },
     up() { goUp(); },
     toggle(encodedPath) { toggleDir(decodeURIComponent(encodedPath)); },
