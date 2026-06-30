@@ -199,21 +199,25 @@ fn install_bin_path() -> io::Result<PathBuf> {
 fn copy_current_exe_to_install_path() -> io::Result<PathBuf> {
     let source = std::env::current_exe()?;
     let target = install_bin_path()?;
+    copy_exe_to_install_path(&source, &target)
+}
+
+fn copy_exe_to_install_path(source: &Path, target: &Path) -> io::Result<PathBuf> {
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent)?;
     }
     let same_file = source.canonicalize().ok() == target.canonicalize().ok();
     if !same_file {
-        fs::copy(&source, &target)?;
+        fs::copy(source, target)?;
     }
-    let mut permissions = fs::metadata(&target)?.permissions();
+    let mut permissions = fs::metadata(target)?.permissions();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         permissions.set_mode(0o755);
     }
-    fs::set_permissions(&target, permissions)?;
-    Ok(target)
+    fs::set_permissions(target, permissions)?;
+    Ok(target.to_path_buf())
 }
 
 fn mac_plist_path() -> io::Result<PathBuf> {
@@ -455,7 +459,11 @@ fn log_command_output(command: &str, args: &[&str], output: &std::process::Outpu
 }
 
 fn ensure_macos_user_context() -> io::Result<()> {
-    if unsafe { libc_geteuid() } == 0 {
+    ensure_macos_user_context_for_euid(unsafe { libc_geteuid() })
+}
+
+fn ensure_macos_user_context_for_euid(euid: u32) -> io::Result<()> {
+    if euid == 0 {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "macOS LaunchAgent commands must be run without sudo; run `herdr-webui install-mac` as your user",
@@ -761,6 +769,33 @@ mod tests {
 
         restore_env!("HOME", old_home);
         restore_env!("XDG_CONFIG_HOME", old_xdg);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn service_helpers_cover_copy_skip_and_root_guard() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = service_test_root("copy-helper");
+        let source = root.join("source-bin");
+        fs::write(&source, "bin").unwrap();
+
+        let copied = copy_exe_to_install_path(&source, &root.join("nested/herdr-webui")).unwrap();
+        assert_eq!(copied, root.join("nested/herdr-webui"));
+        assert_eq!(fs::read_to_string(&copied).unwrap(), "bin");
+        assert_eq!(
+            fs::metadata(&copied).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+
+        let skipped = copy_exe_to_install_path(&copied, &copied).unwrap();
+        assert_eq!(skipped, copied);
+
+        let root_error = ensure_macos_user_context_for_euid(0).unwrap_err();
+        assert_eq!(root_error.kind(), io::ErrorKind::PermissionDenied);
+        assert!(ensure_macos_user_context_for_euid(501).is_ok());
+
         let _ = fs::remove_dir_all(root);
     }
 

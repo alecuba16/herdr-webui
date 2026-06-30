@@ -400,4 +400,10 @@ mod tests {
         let err = write_message(&mut FailingWriter, &ClientMessage::Detach).unwrap_err();
         assert_eq!(err, "write failed");
     }
+
+    #[test]
+    fn failing_writer_flush_is_noop() {
+        let mut writer = FailingWriter;
+        writer.flush().unwrap();
+    }
 }
