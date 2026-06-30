@@ -15,7 +15,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{expand_user_path_string, require_auth, WebState};
 
-const MAX_ENTRIES: usize = 1000;
+const TREE_PAGE_SIZE: usize = 200;
 const MAX_FILE_BYTES: u64 = 1024 * 1024;
 const MAX_SEARCH_RESULTS: usize = 200;
 const MAX_SEARCH_VISITS: usize = 20_000;
@@ -46,6 +46,8 @@ struct FileBrowserQuery {
     depth: Option<u8>,
     q: Option<String>,
     limit: Option<usize>,
+    include: Option<String>,
+    offset: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -83,7 +85,6 @@ struct FileBrowserEntry {
 struct TreeBuild<'a> {
     root: &'a Path,
     entries: Vec<FileBrowserEntry>,
-    truncated: bool,
 }
 
 struct DirectoryEntry {
@@ -299,40 +300,108 @@ fn push_tree_entries(
     compact_single_child_dirs: bool,
 ) -> Result<(), String> {
     for entry in sorted_directory_entries(dir)? {
-        if build.entries.len() >= MAX_ENTRIES {
-            build.truncated = true;
-            break;
-        }
         let is_dir = entry.metadata.is_dir();
-        let mut name = entry.name;
-        let mut entry_path = entry.path;
+        let mut name = entry.name.clone();
+        let mut entry_path = entry.path.clone();
         if is_dir && compact_single_child_dirs {
             (name, entry_path) = compact_directory_entry(build.root, entry_path, name);
         }
         let expanded = is_dir && depth > 0 && !compact_single_child_dirs;
-        build.entries.push(FileBrowserEntry {
+        build.entries.push(tree_entry(
+            build.root,
             name,
-            path: relative_to_root(build.root, &entry_path),
-            kind: if is_dir { "dir" } else { "file" }.to_string(),
-            size: if is_dir {
-                None
-            } else {
-                Some(entry.metadata.len())
-            },
-            modified_ms: entry
-                .metadata
-                .modified()
-                .ok()
-                .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-                .map(|duration| duration.as_millis() as u64),
+            &entry_path,
+            &entry.metadata,
             level,
             expanded,
-        });
-        if expanded && !build.truncated {
+        ));
+        if expanded {
             push_tree_entries(build, &entry_path, level + 1, depth - 1, false)?;
         }
     }
     Ok(())
+}
+
+fn tree_entry(
+    root: &Path,
+    name: String,
+    path: &Path,
+    metadata: &fs::Metadata,
+    level: usize,
+    expanded: bool,
+) -> FileBrowserEntry {
+    let is_dir = metadata.is_dir();
+    FileBrowserEntry {
+        name,
+        path: relative_to_root(root, path),
+        kind: if is_dir { "dir" } else { "file" }.to_string(),
+        size: if is_dir { None } else { Some(metadata.len()) },
+        modified_ms: metadata
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+            .map(|duration| duration.as_millis() as u64),
+        level,
+        expanded,
+    }
+}
+
+fn paged_tree_entries(
+    root: &Path,
+    dir: &Path,
+    dirs_only: bool,
+    offset: usize,
+    limit: usize,
+) -> Result<(Vec<FileBrowserEntry>, bool), String> {
+    let mut entries = Vec::new();
+    let mut skipped = 0;
+    for entry in sorted_directory_entries(dir)? {
+        if dirs_only && !entry.metadata.is_dir() {
+            continue;
+        }
+        if skipped < offset {
+            skipped += 1;
+            continue;
+        }
+        if entries.len() >= limit {
+            return Ok((entries, true));
+        }
+        let is_dir = entry.metadata.is_dir();
+        let (name, path) = if is_dir && !dirs_only {
+            compact_directory_entry(root, entry.path, entry.name)
+        } else {
+            (entry.name, entry.path)
+        };
+        entries.push(tree_entry(root, name, &path, &entry.metadata, 0, false));
+    }
+    Ok((entries, false))
+}
+
+fn included_tree_entry(root: &Path, dir: &Path, include: Option<&str>) -> Option<FileBrowserEntry> {
+    let include = clean_relative_path(include).ok()?;
+    if include.is_empty() {
+        return None;
+    }
+    let path = resolve_child(root, &include).ok()?;
+    let parent = path.parent()?.canonicalize().ok()?;
+    if parent != dir.canonicalize().ok()? {
+        return None;
+    }
+    let metadata = fs::metadata(&path).ok()?;
+    let is_dir = metadata.is_dir();
+    Some(FileBrowserEntry {
+        name: path.file_name()?.to_string_lossy().to_string(),
+        path: relative_to_root(root, &path),
+        kind: if is_dir { "dir" } else { "file" }.to_string(),
+        size: if is_dir { None } else { Some(metadata.len()) },
+        modified_ms: metadata
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+            .map(|duration| duration.as_millis() as u64),
+        level: 0,
+        expanded: false,
+    })
 }
 
 fn file_hash(path: &Path) -> Result<String, String> {
@@ -386,46 +455,38 @@ async fn file_browser_tree(
     } else {
         query.depth.unwrap_or(0).min(8)
     };
-    let mut build = TreeBuild {
-        root: &root,
-        entries: Vec::new(),
-        truncated: false,
-    };
-    if dirs_only {
-        for entry in match sorted_directory_entries(&dir) {
-            Ok(entries) => entries,
+    let offset = query.offset.unwrap_or(0);
+    let limit = query.limit.unwrap_or(TREE_PAGE_SIZE).max(1);
+    let (mut entries, has_more) = if depth == 0 {
+        match paged_tree_entries(&root, &dir, dirs_only, offset, limit) {
+            Ok((page, more)) => (page, more),
             Err(err) => return file_browser_json_error(StatusCode::BAD_GATEWAY, err),
-        } {
-            if build.entries.len() >= MAX_ENTRIES {
-                build.truncated = true;
-                break;
-            }
-            if !entry.metadata.is_dir() {
-                continue;
-            }
-            build.entries.push(FileBrowserEntry {
-                name: entry.name,
-                path: relative_to_root(&root, &entry.path),
-                kind: "dir".to_string(),
-                size: None,
-                modified_ms: entry
-                    .metadata
-                    .modified()
-                    .ok()
-                    .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-                    .map(|duration| duration.as_millis() as u64),
-                level: 0,
-                expanded: false,
-            });
         }
-    } else if let Err(err) = push_tree_entries(&mut build, &dir, 0, depth, depth == 0) {
-        return file_browser_json_error(StatusCode::BAD_GATEWAY, err);
+    } else {
+        let mut build = TreeBuild {
+            root: &root,
+            entries: Vec::new(),
+        };
+        if let Err(err) = push_tree_entries(&mut build, &dir, 0, depth, false) {
+            return file_browser_json_error(StatusCode::BAD_GATEWAY, err);
+        }
+        (build.entries, false)
+    };
+    if !dirs_only {
+        if let Some(include) = included_tree_entry(&root, &dir, query.include.as_deref()) {
+            if !entries.iter().any(|entry| entry.path == include.path) {
+                entries.push(include);
+            }
+        }
     }
+    let next_offset = if has_more { Some(offset + limit) } else { None };
     Json(json!({
         "root": root.to_string_lossy(),
         "path": relative_to_root(&root, &dir),
-        "entries": build.entries,
-        "truncated": build.truncated,
+        "entries": entries,
+        "has_more": has_more,
+        "next_offset": next_offset,
+        "truncated": has_more,
     }))
     .into_response()
 }
@@ -870,7 +931,6 @@ mod tests {
         let mut build = TreeBuild {
             root: &root,
             entries: Vec::new(),
-            truncated: false,
         };
         push_tree_entries(&mut build, &root, 0, 2, false).unwrap();
         let rows: Vec<_> = build
@@ -921,7 +981,7 @@ mod tests {
         fs::create_dir_all(root.join("Alpha/Sub")).unwrap();
         fs::write(root.join("Alpha/Sub/Needle.txt"), "hit").unwrap();
         fs::write(root.join("alpha-lower.txt"), "hit").unwrap();
-        for index in 0..(MAX_ENTRIES + 2) {
+        for index in 0..(TREE_PAGE_SIZE + 2) {
             fs::create_dir_all(root.join(format!("many-{index:04}"))).unwrap();
         }
 
@@ -944,11 +1004,9 @@ mod tests {
         let mut build = TreeBuild {
             root: &root,
             entries: Vec::new(),
-            truncated: false,
         };
         push_tree_entries(&mut build, &root, 0, 0, true).unwrap();
-        assert!(build.truncated);
-        assert_eq!(build.entries.len(), MAX_ENTRIES);
+        assert!(build.entries.len() > TREE_PAGE_SIZE);
 
         assert!(matches!(
             sorted_directory_entries(&root.join("alpha-lower.txt")),
@@ -979,6 +1037,8 @@ mod tests {
                     depth: Some(2),
                     q: None,
                     limit: None,
+                    include: None,
+                    offset: None,
                 }),
             )
             .await,
@@ -1003,6 +1063,8 @@ mod tests {
                     depth: None,
                     q: None,
                     limit: None,
+                    include: None,
+                    offset: None,
                 }),
             )
             .await,
@@ -1054,7 +1116,7 @@ mod tests {
                 headers,
                 ConnectInfo(loopback()),
                 Json(FileBrowserDeleteRequest {
-                    cwd,
+                    cwd: cwd.clone(),
                     path: "src/nested/main.rs".to_string(),
                 }),
             )
@@ -1094,6 +1156,8 @@ mod tests {
                     depth: None,
                     q: None,
                     limit: None,
+                    include: None,
+                    offset: None,
                 }),
             )
             .await,
@@ -1113,6 +1177,8 @@ mod tests {
                     depth: None,
                     q: None,
                     limit: None,
+                    include: None,
+                    offset: None,
                 }),
             )
             .await,
@@ -1188,6 +1254,8 @@ mod tests {
                 depth: None,
                 q: None,
                 limit: None,
+                include: None,
+                offset: None,
             }),
         )
         .await;
@@ -1205,6 +1273,8 @@ mod tests {
                     depth: Some(8),
                     q: None,
                     limit: None,
+                    include: None,
+                    offset: None,
                 }),
             )
             .await,
@@ -1224,6 +1294,8 @@ mod tests {
                 depth: None,
                 q: None,
                 limit: None,
+                include: None,
+                offset: None,
             }),
         )
         .await;
@@ -1240,6 +1312,8 @@ mod tests {
                 depth: None,
                 q: None,
                 limit: None,
+                include: None,
+                offset: None,
             }),
         )
         .await;
@@ -1256,6 +1330,8 @@ mod tests {
                 depth: None,
                 q: None,
                 limit: None,
+                include: None,
+                offset: None,
             }),
         )
         .await;
@@ -1273,6 +1349,8 @@ mod tests {
                     depth: None,
                     q: Some("   ".to_string()),
                     limit: None,
+                    include: None,
+                    offset: None,
                 }),
             )
             .await,
@@ -1292,6 +1370,8 @@ mod tests {
                     depth: None,
                     q: Some("file".to_string()),
                     limit: Some(10),
+                    include: None,
+                    offset: None,
                 }),
             )
             .await,
@@ -1316,6 +1396,8 @@ mod tests {
                 depth: None,
                 q: Some("file".to_string()),
                 limit: Some(0),
+                include: None,
+                offset: None,
             }),
         )
         .await;
@@ -1332,6 +1414,8 @@ mod tests {
                 depth: None,
                 q: None,
                 limit: None,
+                include: None,
+                offset: None,
             }),
         )
         .await;
@@ -1348,6 +1432,8 @@ mod tests {
                 depth: None,
                 q: None,
                 limit: None,
+                include: None,
+                offset: None,
             }),
         )
         .await;
@@ -1430,7 +1516,7 @@ mod tests {
                 headers,
                 ConnectInfo(loopback()),
                 Json(FileBrowserDeleteRequest {
-                    cwd,
+                    cwd: cwd.clone(),
                     path: "dir/subdir".to_string(),
                 }),
             )
@@ -1444,9 +1530,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn file_browser_tree_dirs_only_truncates() {
-        let root = temp_root("dirs-only-truncate");
-        for index in 0..(MAX_ENTRIES + 2) {
+    async fn file_browser_tree_dirs_only_paginates() {
+        let root = temp_root("dirs-only-paginate");
+        for index in 0..(TREE_PAGE_SIZE + 2) {
             fs::create_dir_all(root.join(format!("dir-{index:04}"))).unwrap();
         }
         fs::write(root.join("file.txt"), "skip").unwrap();
@@ -1458,25 +1544,95 @@ mod tests {
                 HeaderMap::new(),
                 ConnectInfo(loopback()),
                 Query(FileBrowserQuery {
-                    cwd,
+                    cwd: cwd.clone(),
                     path: None,
                     dirs_only: Some(true),
                     depth: Some(8),
                     q: None,
                     limit: None,
+                    include: None,
+                    offset: None,
                 }),
             )
             .await,
         )
         .await;
 
-        assert_eq!(tree["entries"].as_array().unwrap().len(), MAX_ENTRIES);
+        assert_eq!(tree["entries"].as_array().unwrap().len(), TREE_PAGE_SIZE);
         assert_eq!(tree["truncated"], true);
+        assert_eq!(tree["has_more"], true);
+        assert_eq!(tree["next_offset"], TREE_PAGE_SIZE);
         assert!(tree["entries"]
             .as_array()
             .unwrap()
             .iter()
             .all(|entry| entry["kind"] == "dir"));
+
+        let next = response_json(
+            file_browser_tree(
+                State(test_state()),
+                HeaderMap::new(),
+                ConnectInfo(loopback()),
+                Query(FileBrowserQuery {
+                    cwd,
+                    path: None,
+                    dirs_only: Some(true),
+                    depth: Some(8),
+                    q: None,
+                    limit: None,
+                    include: None,
+                    offset: Some(TREE_PAGE_SIZE),
+                }),
+            )
+            .await,
+        )
+        .await;
+
+        assert_eq!(next["entries"].as_array().unwrap().len(), 2);
+        assert_eq!(next["has_more"], false);
+        assert_eq!(next["next_offset"], serde_json::Value::Null);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn file_browser_tree_includes_requested_entry_after_page() {
+        let root = temp_root("tree-include-after-page");
+        for index in 0..(TREE_PAGE_SIZE + 2) {
+            fs::write(root.join(format!("file-{index:04}.txt")), "text").unwrap();
+        }
+        let cwd = root.to_string_lossy().to_string();
+        let target = format!("file-{:04}.txt", TREE_PAGE_SIZE + 1);
+
+        let tree = response_json(
+            file_browser_tree(
+                State(test_state()),
+                HeaderMap::new(),
+                ConnectInfo(loopback()),
+                Query(FileBrowserQuery {
+                    cwd,
+                    path: None,
+                    dirs_only: None,
+                    depth: None,
+                    q: None,
+                    limit: None,
+                    include: Some(target.clone()),
+                    offset: None,
+                }),
+            )
+            .await,
+        )
+        .await;
+
+        assert_eq!(tree["has_more"], true);
+        assert_eq!(
+            tree["entries"].as_array().unwrap().len(),
+            TREE_PAGE_SIZE + 1
+        );
+        assert!(tree["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["path"] == target));
         let _ = fs::remove_dir_all(root);
     }
 
@@ -1496,6 +1652,8 @@ mod tests {
             depth: None,
             q: Some("x".to_string()),
             limit: None,
+            include: None,
+            offset: None,
         };
         let file_query = |cwd: String, path: Option<&str>| FileBrowserQuery {
             cwd,
@@ -1504,6 +1662,8 @@ mod tests {
             depth: None,
             q: None,
             limit: None,
+            include: None,
+            offset: None,
         };
 
         let cases = [
@@ -1784,6 +1944,8 @@ mod tests {
                 depth: None,
                 q: None,
                 limit: None,
+                include: None,
+                offset: None,
             }),
         )
         .await;
