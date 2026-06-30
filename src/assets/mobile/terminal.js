@@ -35,6 +35,20 @@
       } catch (_) {}
     }
 
+    function refreshAfterFontLoad(terminalKey) {
+      const fonts = globalThis.document && globalThis.document.fonts;
+      if (!fonts || !fonts.load) return;
+      Promise.all([
+        fonts.load('14px "Herdr JetBrainsMono Nerd Font Mono"'),
+        fonts.ready,
+      ])
+        .then(() => {
+          if (!term || connectedTerminalKey !== terminalKey) return;
+          applyFontFamily();
+        })
+        .catch(() => {});
+    }
+
     function size() {
       const shell = el("terminalShell");
       if (!shell) return { cols: 80, rows: 24 };
@@ -74,6 +88,7 @@
       }
       terminal.innerHTML = "";
       term.open(terminal);
+      refreshAfterFontLoad(terminalKey);
       if (!terminal.dataset.pasteHandler) {
         terminal.addEventListener(
           "paste",

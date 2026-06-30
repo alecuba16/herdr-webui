@@ -172,8 +172,9 @@ describe("resolveTerminalFontFamily", () => {
 
   it("includes Nerd Font fallbacks in the default stack", () => {
     const fallback = resolveTerminalFontFamily("");
+    assert.match(fallback, /Herdr JetBrainsMono Nerd Font Mono/);
     assert.match(fallback, /Symbols Nerd Font Mono/);
-    assert.match(fallback, /JetBrainsMono Nerd Font/);
+    assert.match(fallback, /JetBrainsMono Nerd Font Mono/);
     assert.match(fallback, /monospace/);
   });
 

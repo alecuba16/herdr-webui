@@ -30,11 +30,7 @@
   border-bottom-width: 2px;
   border-radius: 7px;
   padding: 3px 7px;
-  font:
-    12px ui-monospace,
-    SFMono-Regular,
-    Menlo,
-    monospace;
+  font: 12px var(--mono-font);
 }
 .shortcut-capture {
   display: flex;

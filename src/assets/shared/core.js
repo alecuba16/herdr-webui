@@ -90,7 +90,7 @@
   }
 
   const DEFAULT_TERMINAL_FONT_FAMILY =
-    "ui-monospace, SFMono-Regular, Menlo, 'JetBrainsMono Nerd Font', 'FiraCode Nerd Font', 'Hack Nerd Font', 'Cascadia Code NF', 'MesloLGS NF', 'Symbols Nerd Font Mono', monospace";
+    "'Herdr JetBrainsMono Nerd Font Mono', ui-monospace, SFMono-Regular, Menlo, 'JetBrainsMono Nerd Font Mono', 'JetBrainsMono Nerd Font', 'FiraCode Nerd Font', 'Hack Nerd Font', 'Cascadia Code NF', 'MesloLGS NF', 'Symbols Nerd Font Mono', monospace";
 
   function resolveTerminalFontFamily(value) {
     const trimmed = String(value == null ? "" : value).trim();
