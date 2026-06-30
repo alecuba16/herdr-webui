@@ -41,21 +41,33 @@
   font-size: 12px;
 }
 .git-ui-branch-pill {
+  align-items: center;
   background: rgba(56, 139, 253, 0.12);
   border: 1px solid rgba(56, 139, 253, 0.45);
   border-radius: 999px;
   color: var(--accent);
   cursor: pointer;
-  display: inline-block;
+  display: inline-flex;
   font: inherit;
   font-size: 12px;
   font-weight: 800;
+  gap: 6px;
   margin-top: 5px;
   max-width: 100%;
   overflow: hidden;
   padding: 3px 8px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.git-ui-branch-pill span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.git-ui-branch-pill b {
+  flex: none;
+  font-size: 11px;
+  line-height: 1;
 }
 .git-ui-branch-pill:hover {
   background: rgba(56, 139, 253, 0.2);
@@ -310,12 +322,14 @@
   background: var(--panel);
   border: 1px solid var(--border2);
   border-radius: 12px;
+  box-sizing: border-box;
   box-shadow: 0 20px 60px #0008;
   display: grid;
   gap: 12px;
   max-width: 520px;
+  min-width: 0;
   padding: 14px;
-  width: min(520px, 100%);
+  width: min(520px, calc(100vw - 48px));
 }
 .git-ui-modal-head,
 .git-ui-modal-actions {
@@ -325,11 +339,21 @@
   justify-content: space-between;
 }
 .git-ui-modal-actions {
+  flex-wrap: wrap;
   justify-content: flex-end;
 }
 .git-ui-branch-field {
   display: grid;
   gap: 6px;
+}
+.git-ui-inline-field {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.git-ui-inline-field input {
+  flex: 1;
+  min-width: 0;
 }
 .git-ui-branch-field span {
   color: var(--muted);

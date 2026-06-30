@@ -343,6 +343,7 @@
       state.cache[key] = {
         cwd: workspaceCwd(workspace),
         title: workspaceTitle(workspace),
+        titleKind: workspace.worktree ? "Worktree" : "Branch",
         tab: "changes",
         status: null,
         diff: null,
@@ -372,6 +373,7 @@
     } else {
       state.cache[key].cwd = workspaceCwd(workspace) || state.cache[key].cwd;
       state.cache[key].title = workspaceTitle(workspace);
+      state.cache[key].titleKind = workspace.worktree ? "Worktree" : "Branch";
     }
     state.open = true;
     state.visible = true;
@@ -585,12 +587,14 @@
   function renderBranchModal() {
     const modal = state.branchModal;
     if (!modal) return "";
+    const cwd = esc(modal.cwd || "");
     const body = modal.loading
       ? `<div class="git-ui-loading"><span></span><strong>Loading branches</strong></div>`
       : modal.error
         ? `<div class="git-ui-error">${esc(modal.error)}</div>`
         : `<label class="git-ui-branch-field"><span>Branch</span><select id="gitUiBranchSelect">${branchOptions("Local branches", modal.local || [])}${branchOptions("Remote branches", modal.remote || [])}</select></label>`;
-    return `<div class="git-ui-modal-backdrop"><div class="git-ui-modal"><div class="git-ui-modal-head"><strong>Switch branch</strong><button class="git-ui-btn" onclick="HerdrGitUi.closeBranchModal()">Cancel</button></div>${body}<div class="git-ui-modal-actions"><button class="git-ui-btn" onclick="HerdrGitUi.closeBranchModal()">Cancel</button><button class="git-ui-btn primary" onclick="HerdrGitUi.switchBranchFromModal()" ${modal.loading || modal.error ? "disabled" : ""}>Switch to</button></div></div></div>`;
+    const dir = `<label class="git-ui-branch-field"><span>Git directory</span><div class="git-ui-inline-field"><input id="gitUiBranchCwd" value="${cwd}" placeholder="/path/to/repo"><button class="git-ui-btn" onclick="HerdrDirectoryPicker.openInput('gitUiBranchCwd')">Browse</button><button class="git-ui-btn" onclick="HerdrGitUi.loadBranchModalCwd()" ${modal.loading ? "disabled" : ""}>Load</button></div></label>`;
+    return `<div class="git-ui-modal-backdrop"><div class="git-ui-modal"><div class="git-ui-modal-head"><strong>Switch branch</strong></div>${dir}${body}<div class="git-ui-modal-actions"><button class="git-ui-btn" onclick="HerdrGitUi.closeBranchModal()">Cancel</button><button class="git-ui-btn" onclick="HerdrGitUi.applyBranchModalCwd()" ${modal.loading || modal.error ? "disabled" : ""}>Use directory</button><button class="git-ui-btn primary" onclick="HerdrGitUi.switchBranchFromModal()" ${modal.loading || modal.error ? "disabled" : ""}>Switch to</button></div></div></div>`;
   }
 
   function branchOptions(label, branches) {
@@ -624,7 +628,8 @@
       ? `${(s.conflicted || []).length ? section("Conflicted", s.conflicted, "U") : ""}${section("Staged", s.staged, "S")}${section("Unstaged", s.unstaged, "M")}${section("Untracked", s.untracked, "?")}`
       : section("Compared", view.compareFilePaths && view.compareFilePaths.length ? view.compareFilePaths : ((view.diff && view.diff.files) || []).map((file) => file.path), "C");
     const stageLabel = (s.staged || []).length ? "Unstage all" : "Stage all";
-    return `<aside class="git-ui-side"><div class="git-ui-head"><div><div class="git-ui-title">Git</div><div class="git-ui-subtitle">${esc(s.state || "closed")} · ${esc(compactPath(s.repo_path))}</div><button class="git-ui-branch-pill" onclick="HerdrGitUi.openBranchModal()">${esc(s.branch || view.title || "No branch")}</button></div></div>${view.error ? `<div class="git-ui-error">${esc(view.error)}</div>` : ""}<div class="git-ui-toolbar"><div class="git-ui-tabs">${tabs.map((tab) => `<button class="git-ui-btn ${view.tab === tab.id ? "active" : ""}" onclick="HerdrGitUi.tab('${tab.id}')">${tab.label}</button>`).join("")}</div></div><div class="git-ui-toolbar"><div class="git-ui-toolbar-title">Worktree actions</div><div class="git-ui-actions"><button class="git-ui-btn primary" onclick="HerdrGitUi.tab('commit')">Commit</button><button class="git-ui-btn" onclick="HerdrGitUi.refresh()">Refresh</button><button class="git-ui-btn" onclick="HerdrGitUi.toggleStageAll()">${stageLabel}</button><button class="git-ui-btn" onclick="HerdrGitUi.compareCurrent()">Current changes</button><button class="git-ui-btn" onclick="HerdrGitUi.rebase()">Rebase</button><button class="git-ui-btn danger" onclick="HerdrGitUi.reset()">Reset</button></div></div>${fileSections}</aside>`;
+    const branchLabel = `${view.titleKind || "Branch"}: ${s.branch || view.title || "No branch"}`;
+    return `<aside class="git-ui-side"><div class="git-ui-head"><div><div class="git-ui-title">Git</div><div class="git-ui-subtitle">${esc(s.state || "closed")} · ${esc(compactPath(s.repo_path))}</div><button class="git-ui-branch-pill" title="Change Git directory or switch branch" onclick="HerdrGitUi.openBranchModal()"><span>${esc(branchLabel)}</span><b>↗</b></button></div></div>${view.error ? `<div class="git-ui-error">${esc(view.error)}</div>` : ""}<div class="git-ui-toolbar"><div class="git-ui-tabs">${tabs.map((tab) => `<button class="git-ui-btn ${view.tab === tab.id ? "active" : ""}" onclick="HerdrGitUi.tab('${tab.id}')">${tab.label}</button>`).join("")}</div></div><div class="git-ui-toolbar"><div class="git-ui-toolbar-title">Worktree actions</div><div class="git-ui-actions"><button class="git-ui-btn primary" onclick="HerdrGitUi.tab('commit')">Commit</button><button class="git-ui-btn" onclick="HerdrGitUi.refresh()">Refresh</button><button class="git-ui-btn" onclick="HerdrGitUi.toggleStageAll()">${stageLabel}</button><button class="git-ui-btn" onclick="HerdrGitUi.compareCurrent()">Current changes</button><button class="git-ui-btn" onclick="HerdrGitUi.rebase()">Rebase</button><button class="git-ui-btn danger" onclick="HerdrGitUi.reset()">Reset</button></div></div>${fileSections}</aside>`;
   }
 
   function renderFileToolbar(activeTab) {
@@ -1433,13 +1438,28 @@
     async openBranchModal() {
       const view = active();
       if (!view) return;
-      state.branchModal = { loading: true, error: "", local: [], remote: [] };
+      state.branchModal = { loading: true, error: "", local: [], remote: [], cwd: view.cwd };
       render();
       try {
         const data = await api(`/api/git-ui/branches?cwd=${encodeURIComponent(view.cwd)}`);
-        state.branchModal = { loading: false, error: "", local: data.local || [], remote: data.remote || [] };
+        state.branchModal = { loading: false, error: "", local: data.local || [], remote: data.remote || [], cwd: view.cwd };
       } catch (err) {
-        state.branchModal = { loading: false, error: err.message || String(err), local: [], remote: [] };
+        state.branchModal = { loading: false, error: err.message || String(err), local: [], remote: [], cwd: view.cwd };
+      }
+      render();
+    },
+    async loadBranchModalCwd() {
+      const modal = state.branchModal;
+      const input = document.getElementById("gitUiBranchCwd");
+      const cwd = input ? input.value.trim() : "";
+      if (!modal || !cwd) return;
+      state.branchModal = Object.assign({}, modal, { loading: true, error: "", cwd });
+      render();
+      try {
+        const data = await api(`/api/git-ui/branches?cwd=${encodeURIComponent(cwd)}`);
+        state.branchModal = { loading: false, error: "", local: data.local || [], remote: data.remote || [], cwd };
+      } catch (err) {
+        state.branchModal = { loading: false, error: err.message || String(err), local: [], remote: [], cwd };
       }
       render();
     },
@@ -1447,13 +1467,29 @@
       state.branchModal = null;
       render();
     },
+    applyBranchModalCwd() {
+      const view = active();
+      const input = document.getElementById("gitUiBranchCwd");
+      const cwd = (input && input.value.trim()) || (state.branchModal && state.branchModal.cwd) || "";
+      if (!view || !cwd) return;
+      state.branchModal = null;
+      view.cwd = cwd;
+      view.file = "";
+      view.status = null;
+      view.diff = null;
+      render();
+      refresh();
+    },
     switchBranchFromModal() {
       const view = active();
       const select = document.getElementById("gitUiBranchSelect");
       if (!view || !select || !select.value) return;
       const [kind, ...rest] = select.value.split(":");
       const branch = rest.join(":");
+      const input = document.getElementById("gitUiBranchCwd");
+      const modalCwd = (input && input.value.trim()) || (state.branchModal && state.branchModal.cwd) || view.cwd;
       state.branchModal = null;
+      view.cwd = modalCwd;
       if (kind === "remote") post("/api/git-ui/switch", { cwd: view.cwd, branch: localNameForRemote(branch), create: true, base: branch });
       else post("/api/git-ui/switch", { cwd: view.cwd, branch });
     },

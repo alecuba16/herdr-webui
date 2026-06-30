@@ -143,6 +143,7 @@
               base: state.worktreeBase,
               label: state.worktreeLabel,
               path: state.worktreePath,
+              pullBase: false,
             }),
           ),
         });

@@ -44,6 +44,11 @@
     load(parts.path || "");
   }
 
+  function openInput(inputId) {
+    const input = document.getElementById(inputId);
+    if (input) open(input);
+  }
+
   async function load(path) {
     state.path = path || "";
     state.error = "";
@@ -71,6 +76,11 @@
     return parts.join("/");
   }
 
+  function currentFolderName() {
+    const parts = String(state.path || "").split("/").filter(Boolean);
+    return parts[parts.length - 1] || state.root;
+  }
+
   function selectCurrent() {
     if (!state.input) return;
     state.input.value = joinPath(state.root, state.path);
@@ -87,12 +97,17 @@
       modal.className = "directory-picker-backdrop";
       document.body.appendChild(modal);
     }
-    const entries = (state.entries || []).map((entry) => Object.assign({}, entry, { expanded: false }));
-    modal.innerHTML = `<div class="directory-picker"><div class="directory-picker-head"><strong>Choose folder</strong><button class="git-ui-btn" onclick="HerdrDirectoryPicker.close()">Close</button></div><div class="directory-picker-path">${esc(joinPath(state.root, state.path))}</div><div class="directory-picker-actions"><button class="git-ui-btn" onclick="HerdrDirectoryPicker.home()">Home</button><button class="git-ui-btn" onclick="HerdrDirectoryPicker.root()">Root</button><button class="git-ui-btn" title="Go up to parent folder" ${state.path ? "" : "disabled"} onclick="HerdrDirectoryPicker.up()">↑ ..</button><button class="git-ui-btn primary" onclick="HerdrDirectoryPicker.selectCurrent()">Select this folder</button></div>${state.error ? `<div class="file-browser-error">${esc(state.error)}</div>` : ""}<div class="directory-picker-tree">${Tree.renderEntries(entries, { callback: "HerdrDirectoryPicker" })}</div></div>`;
+    const entries = [
+      ...(state.path ? [{ kind: "up", name: "..", path: parentPath(state.path), level: 0 }] : []),
+      { kind: "dir", name: `Current: ${currentFolderName()}`, path: state.path, expanded: true, level: 0 },
+      ...(state.entries || []).map((entry) => Object.assign({}, entry, { expanded: false, level: Number(entry.level || 0) + 1 })),
+    ];
+    modal.innerHTML = `<div class="directory-picker"><div class="directory-picker-head"><strong>Choose folder</strong><button class="git-ui-btn" onclick="HerdrDirectoryPicker.close()">Close</button></div><div class="directory-picker-path">${esc(joinPath(state.root, state.path))}</div><div class="directory-picker-actions"><button class="git-ui-btn" onclick="HerdrDirectoryPicker.home()">Home</button><button class="git-ui-btn" onclick="HerdrDirectoryPicker.root()">Root</button><button class="git-ui-btn" title="Go up to parent folder" ${state.path ? "" : "disabled"} onclick="HerdrDirectoryPicker.up()">↑ ..</button><button class="git-ui-btn primary" onclick="HerdrDirectoryPicker.selectCurrent()">Select this folder</button></div>${state.error ? `<div class="file-browser-error">${esc(state.error)}</div>` : ""}<div class="directory-picker-tree">${Tree.renderEntries(entries, { callback: "HerdrDirectoryPicker", selectedPath: state.path })}</div></div>`;
   }
 
   window.HerdrDirectoryPicker = {
     attach,
+    openInput,
     close,
     selectCurrent,
     toggle(encodedPath) { load(decodeURIComponent(encodedPath)); },

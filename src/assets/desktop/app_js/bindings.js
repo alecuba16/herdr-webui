@@ -288,6 +288,11 @@ el("worktreeCreateForm").onsubmit = async (e) => {
     sourcePath: el("worktreeCreateSource").value,
     originalSource: state.createWorktreeOriginalSource,
   });
+  const pullBase = el("worktreePullBase").checked;
+  if (pullBase && el("worktreeCreateSource").value.trim()) {
+    source.workspace_id = null;
+    source.cwd = el("worktreeCreateSource").value.trim();
+  }
   await submitWorktreeCreate({
     errEl: el("worktreeCreateError"),
     submitEl: el("worktreeCreateSubmit"),
@@ -297,6 +302,7 @@ el("worktreeCreateForm").onsubmit = async (e) => {
     base: el("worktreeBase").value,
     label: el("worktreeLabel").value,
     path: el("worktreePath").value,
+    pullBase,
   });
 };
 el("worktreeOpenClose").onclick = closeWorktreeOpenModal;
@@ -414,6 +420,8 @@ if (window.HerdrDirectoryPicker) {
     "worktreeNewPath",
   ].forEach((id) => window.HerdrDirectoryPicker.attach(id));
 }
+const terminalFollowButton = el("terminalFollowButton");
+if (terminalFollowButton) terminalFollowButton.onclick = scrollTerminalToBottom;
 function editableEventTarget(e) {
   const t = e.target;
   return (

@@ -37,6 +37,8 @@ let term,
   connectedTerminalId = null,
   connectedSize = "",
   termScrollBound = false,
+  terminalScrollFollowBound = false,
+  terminalFollowPaused = false,
   audioCtx = null,
   audioUnlocked = false,
   knownAttention = null,
@@ -349,6 +351,7 @@ function worktreeCreateModalHtml() {
               <label><span>Label</span><input id="worktreeLabel" placeholder="optional"></label>
               <label><span>Checkout path</span><input id="worktreePath" placeholder="backend default if blank"></label>
             </div>
+            <label class="option"><input type="checkbox" id="worktreePullBase"><span>Pull base branch before create<small>Runs a fast-forward Git update in the source repo first.</small></span></label>
             <div class="worktree-error" id="worktreeCreateError"></div>
             <div class="worktree-open-footer">
               <button type="button" class="tab add" id="worktreeCreateCancel">Cancel</button>
@@ -393,6 +396,7 @@ function worktreeOpenModalHtml() {
               <label><span>Label</span><input id="worktreeNewLabel" placeholder="optional"></label>
               <label><span>Checkout path</span><input id="worktreeNewPath" placeholder="select base branch or enter branch name"></label>
             </div>
+            <label class="option"><input type="checkbox" id="worktreeNewPullBase"><span>Pull base branch before create<small>Runs a fast-forward Git update in the source repo first.</small></span></label>
             <button class="btn" id="worktreeNewSubmit">New worktree</button>
           </form>
         </div>
