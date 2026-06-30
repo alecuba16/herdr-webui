@@ -75,6 +75,7 @@ const editorShortcutCommands = {
   indentMore,
   indentLess,
 };
+const editorLeaderUntil = new WeakMap();
 
 function editorShortcutOptions() {
   try {
@@ -103,20 +104,36 @@ function shortcutToCodeMirrorKey(value) {
   return mods.concat(cleanKey).join("-");
 }
 
+function editorLeaderKey(options) {
+  return shortcutToCodeMirrorKey(options.editorShortcutLeader || "Ctrl+B") || "Ctrl-b";
+}
+
+function setEditorLeaderActive(view) {
+  editorLeaderUntil.set(view, Date.now() + 5000);
+  return true;
+}
+
+function consumeIfEditorLeaderActive(view) {
+  if ((editorLeaderUntil.get(view) || 0) <= Date.now()) return false;
+  editorLeaderUntil.delete(view);
+  return true;
+}
+
 function editorShortcutKeymap(opts) {
-  const shortcuts = editorShortcutOptions().editorShortcuts || {}, seen = new Set(), bindings = [];
+  const options = editorShortcutOptions(), shortcuts = options.editorShortcuts || {}, seen = new Set(), bindings = [];
+  bindings.push({ key: editorLeaderKey(options), run: setEditorLeaderActive });
   if (shortcuts.save) {
     const key = shortcutToCodeMirrorKey(shortcuts.save);
     if (key) {
       seen.add(key);
-      bindings.push({ key, run(view) { if (!opts.onSave) return false; opts.onSave(view); return true; } });
+      bindings.push({ key, run(view) { if (!consumeIfEditorLeaderActive(view) || !opts.onSave) return false; opts.onSave(view); return true; } });
     }
   }
   for (const [name, command] of Object.entries(editorShortcutCommands)) {
     const key = shortcutToCodeMirrorKey(shortcuts[name]);
     if (!key || seen.has(key)) continue;
     seen.add(key);
-    bindings.push({ key, run: command });
+    bindings.push({ key, run(view) { return consumeIfEditorLeaderActive(view) && command(view); } });
   }
   return bindings;
 }

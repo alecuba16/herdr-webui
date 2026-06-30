@@ -22,20 +22,20 @@
   const EDITOR_SHORTCUT_PRESETS = {
     default: {},
     neovim: {
-      save: "Ctrl+S",
-      lineDown: "Alt+J",
-      lineUp: "Alt+K",
-      charLeft: "Alt+H",
-      charRight: "Alt+L",
-      wordLeft: "Alt+B",
-      wordRight: "Alt+W",
-      pageDown: "Ctrl+D",
-      pageUp: "Ctrl+U",
-      docStart: "Ctrl+G",
-      docEnd: "Ctrl+Shift+G",
-      deleteLine: "Ctrl+X",
-      indentMore: "Ctrl+]",
-      indentLess: "Ctrl+[",
+      save: "s",
+      lineDown: "j",
+      lineUp: "k",
+      charLeft: "h",
+      charRight: "l",
+      wordLeft: "b",
+      wordRight: "w",
+      pageDown: "d",
+      pageUp: "u",
+      docStart: "g",
+      docEnd: "Shift-G",
+      deleteLine: "x",
+      indentMore: "]",
+      indentLess: "[",
     },
   };
   const EDITOR_SHORTCUT_LABELS = {
@@ -91,24 +91,36 @@
       desc: "Code editor keyboard profile and custom key bindings.",
       defaults: {
         editorShortcutPreset: "default",
+        editorShortcutLeader: "Ctrl+B",
         editorShortcuts: normalizeShortcutMap({}, "default"),
       },
-      ids: ["optEditorShortcutPreset"].concat(Object.keys(EDITOR_SHORTCUT_LABELS).map((key) => `optEditorShortcut-${key}`)),
-      renderSettings() {
-        const rows = Object.entries(EDITOR_SHORTCUT_LABELS).map(([key, label]) => `<label class="option"><span>${esc(label)}<small>Use Ctrl/Alt/Shift/Meta+Key, or off.</small></span><input id="optEditorShortcut-${esc(key)}" data-editor-shortcut="${esc(key)}" placeholder="off"></label>`).join("");
-        return `<label class="option"><span>Shortcut preset<small>Default keeps CodeMirror keys. Neovim adds familiar movement/editing chords without full modal Vim.</small></span><select class="settings-select" id="optEditorShortcutPreset"><option value="default">Default</option><option value="neovim">Neovim-like</option></select></label>${rows}`;
+      shortcutGroups(options) {
+        const shortcuts = normalizeShortcutMap(options.editorShortcuts, options.editorShortcutPreset || "default");
+        return [{
+          scope: "editorShortcuts",
+          title: "Editor Leader Shortcuts",
+          desc: "Available while CodeMirror editor has focus.",
+          prefixLabel: options.editorShortcutLeader || "Ctrl+B",
+          prefixOption: "editorShortcutLeader",
+          keyFormat: "codemirror",
+          defaults: normalizeShortcutMap({}, options.editorShortcutPreset || "default"),
+          items: Object.entries(EDITOR_SHORTCUT_LABELS),
+          map: shortcuts,
+        }];
+      },
+      renderShortcutSettings() {
+        return `<label class="option"><span>Editor shortcut preset<small>Default keeps CodeMirror keys. Neovim-like uses leader then familiar movement/editing keys.</small></span><select class="settings-select" id="optEditorShortcutPreset"><option value="default">Default</option><option value="neovim">Neovim-like</option></select></label><label class="option"><span>Editor leader<small>Pressed inside editor before editor shortcuts. Defaults to general activator Ctrl+B.</small></span><span class="shortcut-capture"><input id="optEditorShortcutLeader" readonly><button type="button" class="tab add" id="optEditorShortcutLeaderCapture">Record</button></span></label>`;
       },
       normalize(options) {
         if (!EDITOR_SHORTCUT_PRESETS[options.editorShortcutPreset]) options.editorShortcutPreset = "default";
+        options.editorShortcutLeader = normalizeShortcut(options.editorShortcutLeader || "Ctrl+B");
         options.editorShortcuts = normalizeShortcutMap(options.editorShortcuts, options.editorShortcutPreset);
       },
       apply(options) {
         const preset = document.getElementById("optEditorShortcutPreset");
         if (preset) preset.value = options.editorShortcutPreset || "default";
-        for (const key of Object.keys(EDITOR_SHORTCUT_LABELS)) {
-          const input = document.getElementById(`optEditorShortcut-${key}`);
-          if (input) input.value = (options.editorShortcuts || {})[key] || "off";
-        }
+        const leader = document.getElementById("optEditorShortcutLeader");
+        if (leader) leader.value = options.editorShortcutLeader || "Ctrl+B";
       },
       bind(ctx) {
         const preset = ctx.el("optEditorShortcutPreset");
@@ -118,17 +130,25 @@
           ctx.saveOptions();
           ctx.applyOptions();
         };
-        for (const key of Object.keys(EDITOR_SHORTCUT_LABELS)) {
-          const input = ctx.el(`optEditorShortcut-${key}`);
-          if (!input) continue;
-          input.onchange = () => {
-            const shortcuts = Object.assign({}, ctx.getOption("editorShortcuts") || {});
-            shortcuts[key] = normalizeShortcut(input.value);
-            ctx.setOption("editorShortcuts", shortcuts);
+        const capture = ctx.el("optEditorShortcutLeaderCapture"), leader = ctx.el("optEditorShortcutLeader");
+        if (capture && leader) capture.onclick = () => {
+          capture.textContent = "Press keys...";
+          const listener = (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (event.stopImmediatePropagation) event.stopImmediatePropagation();
+            if (["Control", "Alt", "Shift", "Meta"].includes(event.key)) {
+              capture.textContent = "Record";
+              return;
+            }
+            const value = normalizeShortcut([event.ctrlKey && "Ctrl", event.altKey && "Alt", event.shiftKey && "Shift", event.metaKey && "Meta", event.key === " " ? "Space" : event.key].filter(Boolean).join("+"));
+            ctx.setOption("editorShortcutLeader", value || "Ctrl+B");
             ctx.saveOptions();
             ctx.applyOptions();
+            capture.textContent = "Record";
           };
-        }
+          window.addEventListener("keydown", listener, { once: true, capture: true });
+        };
       },
     });
   }

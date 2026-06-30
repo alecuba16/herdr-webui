@@ -244,7 +244,8 @@ describe("app bundle load", () => {
     match(source, /id="optTerminalFontFamily"/);
     match(source, /id="optWorktreeDiscoverDepth"/);
     match(source, /id="optEditorShortcutPreset"/);
-    match(source, /data-editor-shortcut/);
+    match(source, /id="optEditorShortcutLeader"/);
+    match(source, /activeShortcutEditorGroups/);
     match(source, /JetBrainsMono Nerd Font/);
     match(source, /handleGlobalShortcut/);
     match(source, /isShortcutPrefix/);
@@ -262,9 +263,10 @@ describe("app bundle load", () => {
 
     ok(module);
     equal(module.title, "Editor shortcuts");
-    match(module.renderSettings(), /id="optEditorShortcutPreset"/);
-    match(module.renderSettings(), /id="optEditorShortcut-save"/);
-    match(source, /module\.renderSettings/);
+    match(module.renderShortcutSettings(), /id="optEditorShortcutPreset"/);
+    match(module.renderShortcutSettings(), /id="optEditorShortcutLeader"/);
+    equal(module.shortcutGroups({ editorShortcutLeader: "Ctrl+B", editorShortcutPreset: "neovim", editorShortcuts: {} })[0].prefixLabel, "Ctrl+B");
+    match(source, /module\.shortcutGroups/);
   });
 
   it("normalizes configurable shortcut prefixes", () => {

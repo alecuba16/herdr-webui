@@ -68,6 +68,12 @@ el("shortcutsToggle").onclick = () => {
   applyOptions();
   el("shortcutsModal").style.display = "grid";
 };
+const openShortcutEditorFromSettings = el("openShortcutEditorFromSettings");
+if (openShortcutEditorFromSettings)
+  openShortcutEditorFromSettings.onclick = () => {
+    applyOptions();
+    el("shortcutsModal").style.display = "grid";
+  };
 el("shortcutsClose").onclick = () => {
   el("shortcutsModal").style.display = "none";
 };
