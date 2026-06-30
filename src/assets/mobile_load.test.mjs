@@ -1,5 +1,5 @@
 import { describe, it } from "node:test";
-import { doesNotThrow, equal, ok } from "node:assert/strict";
+import { deepEqual, doesNotThrow, equal, ok } from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 
@@ -60,6 +60,8 @@ function context(pathname = "/") {
       protocol: "http:",
       host: "127.0.0.1:8787",
     },
+    prompt: () => "renamed.txt",
+    confirm: () => true,
     localStorage: { getItem: () => null, setItem() {} },
     window: null,
     globalThis: null,
@@ -84,6 +86,30 @@ function context(pathname = "/") {
     },
     fetch: async (url, opt = {}) => {
       requests.push({ url, opt });
+      if (url.includes("/api/file-browser/tree"))
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ path: "", entries: [{ name: "hello.txt", path: "hello.txt", kind: "file", level: 0 }] }),
+        };
+      if (url.includes("/api/file-browser/file") && opt.method === "POST")
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ hash: "next-hash" }),
+        };
+      if (url.includes("/api/file-browser/file"))
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ path: "hello.txt", content: "hello", hash: "old-hash", binary: false, truncated: false, size: 5 }),
+        };
+      if (url.includes("/api/file-browser/rename") || url.includes("/api/file-browser/delete"))
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ ok: true }),
+        };
       if (url === "/api/tabs" && opt.method === "POST")
         return {
           ok: true,
@@ -92,7 +118,7 @@ function context(pathname = "/") {
         };
       const result = url.includes("workspaces")
         ? {
-            workspaces: [{ workspace_id: "w1", label: "alpha", pane_count: 1 }],
+            workspaces: [{ workspace_id: "w1", label: "alpha", pane_count: 1, cwd: "/tmp/alpha" }],
           }
         : url.includes("worktrees")
           ? {
@@ -300,5 +326,51 @@ describe("mobile bundle load", () => {
           JSON.parse(request.opt.body).workspace_id === "w1",
       ),
     );
+  });
+
+  it("edits saves renames and deletes files on mobile", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
+    vm.runInContext(source, ctx);
+
+    await ctx.HerdrMobile.refresh();
+    ctx.HerdrMobile.showScreen("files");
+    await ctx.HerdrMobile.filesRefresh();
+    await ctx.HerdrMobile.filesSelect(encodeURIComponent("hello.txt"));
+    let html = ctx.document.getElementById("mobileScreen").innerHTML;
+    ok(html.includes("HerdrMobile.filesEdit"));
+    ok(html.includes("HerdrMobile.filesRename"));
+    ok(html.includes("HerdrMobile.filesDelete"));
+
+    ctx.HerdrMobile.filesEdit();
+    html = ctx.document.getElementById("mobileScreen").innerHTML;
+    ok(html.includes("HerdrMobile.filesSave"));
+    await ctx.HerdrMobile.filesSave();
+
+    const save = ctx.requests.find((request) => request.url === "/api/file-browser/file" && request.opt.method === "POST");
+    ok(save);
+    deepEqual(JSON.parse(save.opt.body), {
+      cwd: "/tmp/alpha",
+      path: "hello.txt",
+      content: "hello",
+      expected_hash: "old-hash",
+    });
+
+    await ctx.HerdrMobile.filesRename();
+    const rename = ctx.requests.find((request) => request.url === "/api/file-browser/rename");
+    ok(rename);
+    deepEqual(JSON.parse(rename.opt.body), {
+      cwd: "/tmp/alpha",
+      path: "hello.txt",
+      new_name: "renamed.txt",
+    });
+
+    await ctx.HerdrMobile.filesSelect(encodeURIComponent("hello.txt"));
+    await ctx.HerdrMobile.filesDelete();
+    const remove = ctx.requests.find((request) => request.url === "/api/file-browser/delete");
+    ok(remove);
+    deepEqual(JSON.parse(remove.opt.body), {
+      cwd: "/tmp/alpha",
+      path: "hello.txt",
+    });
   });
 });
