@@ -316,7 +316,7 @@
   background: var(--panel);
   border: 0;
   color: var(--fg);
-  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font: 12px/1.5 var(--mono-font);
   margin: 0;
   min-height: 100%;
   overflow: auto;
@@ -397,7 +397,7 @@
 }
 .directory-picker-path {
   color: var(--muted);
-  font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font: 12px/1.4 var(--mono-font);
   overflow-wrap: anywhere;
   padding: 8px 10px;
 }

@@ -80,6 +80,7 @@ function connectTerminal() {
     });
     term.open(terminal);
     applyTerminalLinks();
+    refreshTerminalAfterFontLoad(target);
     applyTheme();
     term.onData(sendInputData);
     if (!terminalScrollFollowBound && term.onScroll) {
@@ -396,6 +397,22 @@ function focusTerminal(force = false) {
   try {
     term.focus();
   } catch (e) {}
+}
+function refreshTerminalAfterFontLoad(target) {
+  if (!document.fonts || !document.fonts.load) return;
+  Promise.all([
+    document.fonts.load('14px "Herdr JetBrainsMono Nerd Font Mono"'),
+    document.fonts.ready,
+  ])
+    .then(() => {
+      if (!term || connectedTerminalId !== target) return;
+      applyTerminalFont();
+      fitTerminalSurface();
+      try {
+        term.refresh(0, Math.max(0, (term.rows || 1) - 1));
+      } catch (_) {}
+    })
+    .catch(() => {});
 }
 function scheduleTerminalFrameWork() {
   if (Date.now() < pasteFrameUntil) return;

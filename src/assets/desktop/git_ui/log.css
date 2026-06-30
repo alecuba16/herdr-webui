@@ -1,6 +1,6 @@
 /* History graph */
 .git-ui-log {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--mono-font);
   font-size: 12px;
   white-space: pre-wrap;
 }
