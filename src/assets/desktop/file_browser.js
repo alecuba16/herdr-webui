@@ -52,24 +52,18 @@
       hide();
       return;
     }
-    if (window.HerdrGitUi) window.HerdrGitUi.hide();
-    state.cwd = cwd;
-    state.path = "";
-    state.selected = "";
-    state.files = [];
-    state.split = false;
-    state.children = {};
-    state.expanded = {};
-    state.loading = {};
-    state.contextMenu = null;
-    resetSearch();
-    state.open = true;
-    render();
+    showForCwd(cwd);
     await loadTree("");
   }
 
   async function openPath(cwd, path) {
     if (!cwd || !path) return;
+    showForCwd(cwd);
+    await loadTree(parentPath(path));
+    await loadFile(path);
+  }
+
+  function showForCwd(cwd) {
     if (window.HerdrGitUi) window.HerdrGitUi.hide();
     state.cwd = cwd;
     state.path = "";
@@ -83,8 +77,6 @@
     resetSearch();
     state.open = true;
     render();
-    await loadTree(parentPath(path));
-    await loadFile(path);
   }
 
   function hide() {
