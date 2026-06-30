@@ -135,28 +135,34 @@ pub fn uninstall_linux() -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 pub fn start_service() -> io::Result<()> {
-    if cfg!(target_os = "linux") {
-        start_linux_service()
-    } else {
-        start_macos_service()
-    }
+    start_linux_service()
 }
 
+#[cfg(not(target_os = "linux"))]
+pub fn start_service() -> io::Result<()> {
+    start_macos_service()
+}
+
+#[cfg(target_os = "linux")]
 pub fn stop_service() -> io::Result<()> {
-    if cfg!(target_os = "linux") {
-        stop_linux_service()
-    } else {
-        stop_macos_service()
-    }
+    stop_linux_service()
 }
 
+#[cfg(not(target_os = "linux"))]
+pub fn stop_service() -> io::Result<()> {
+    stop_macos_service()
+}
+
+#[cfg(target_os = "linux")]
 pub fn restart_service() -> io::Result<()> {
-    if cfg!(target_os = "linux") {
-        restart_linux_service()
-    } else {
-        restart_macos_service()
-    }
+    restart_linux_service()
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn restart_service() -> io::Result<()> {
+    restart_macos_service()
 }
 
 fn home_dir() -> io::Result<PathBuf> {
@@ -459,6 +465,16 @@ unsafe fn libc_geteuid() -> u32 {
 mod tests {
     use super::*;
 
+    macro_rules! restore_env {
+        ($key:literal, $value:expr) => {
+            if let Some(value) = $value {
+                std::env::set_var($key, value);
+            } else {
+                std::env::remove_var($key);
+            }
+        };
+    }
+
     fn service_test_root(name: &str) -> PathBuf {
         let root =
             std::env::temp_dir().join(format!("herdr-webui-service-{name}-{}", std::process::id()));
@@ -476,6 +492,34 @@ mod tests {
         fs::write(
             &path,
             "#!/bin/sh\necho \"$0 $@\" >> \"$HERDR_WEB_FAKE_COMMAND_LOG\"\nexit 0\n",
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).unwrap();
+    }
+
+    #[cfg(unix)]
+    fn fake_failing_command(bin_dir: &Path, name: &str, stderr: &str) {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::create_dir_all(bin_dir).unwrap();
+        let path = bin_dir.join(name);
+        fs::write(&path, format!("#!/bin/sh\necho '{stderr}' >&2\nexit 7\n")).unwrap();
+        let mut permissions = fs::metadata(&path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).unwrap();
+    }
+
+    #[cfg(unix)]
+    fn fake_launchctl_bootstrap_needed(bin_dir: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::create_dir_all(bin_dir).unwrap();
+        let path = bin_dir.join("launchctl");
+        fs::write(
+            &path,
+            "#!/bin/sh\necho \"$@\" >> \"$HERDR_WEB_FAKE_COMMAND_LOG\"\nif [ \"$1\" = \"kickstart\" ] && [ ! -f \"$HERDR_WEB_FAKE_COMMAND_LOG.kicked\" ]; then touch \"$HERDR_WEB_FAKE_COMMAND_LOG.kicked\"; exit 1; fi\nexit 0\n",
         )
         .unwrap();
         let mut permissions = fs::metadata(&path).unwrap().permissions();
@@ -520,6 +564,18 @@ mod tests {
         let unit = linux_service_unit(&config, Path::new("/tmp/herdr webui"));
 
         assert!(unit.contains("ExecStart='/tmp/herdr webui' --bind 127.0.0.1:8787 --session 'work session'\\''s path'"));
+    }
+
+    #[test]
+    fn linux_service_unit_includes_herdr_bin_environment() {
+        let _guard = crate::test_env_lock().lock().unwrap();
+        let old_herdr_bin = std::env::var_os("HERDR_WEB_HERDR_BIN");
+        std::env::set_var("HERDR_WEB_HERDR_BIN", "/tmp/herdr bin");
+
+        let unit = linux_service_unit(&config(), Path::new("/tmp/herdr-webui"));
+
+        assert!(unit.contains("Environment=HERDR_WEB_HERDR_BIN='/tmp/herdr bin'"));
+        restore_env!("HERDR_WEB_HERDR_BIN", old_herdr_bin);
     }
 
     #[test]
@@ -590,16 +646,8 @@ mod tests {
         let missing = ensure_linux_service_exists().unwrap_err();
         assert_eq!(missing.kind(), io::ErrorKind::NotFound);
 
-        if let Some(value) = old_home {
-            std::env::set_var("HOME", value);
-        } else {
-            std::env::remove_var("HOME");
-        }
-        if let Some(value) = old_xdg {
-            std::env::set_var("XDG_CONFIG_HOME", value);
-        } else {
-            std::env::remove_var("XDG_CONFIG_HOME");
-        }
+        restore_env!("HOME", old_home);
+        restore_env!("XDG_CONFIG_HOME", old_xdg);
         let _ = fs::remove_dir_all(root);
     }
 
@@ -619,11 +667,70 @@ mod tests {
         assert!(domain.starts_with("gui/"));
         assert_eq!(mac_service_target(), format!("{domain}/{INSTALL_LABEL}"));
 
-        if let Some(value) = old_verbose {
-            std::env::set_var("HERDR_WEB_VERBOSE", value);
-        } else {
-            std::env::remove_var("HERDR_WEB_VERBOSE");
-        }
+        restore_env!("HERDR_WEB_VERBOSE", old_verbose);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn service_failure_and_verbose_paths_are_reported() {
+        let _guard = crate::test_env_lock().lock().unwrap();
+        let root = service_test_root("failures");
+        let home = root.join("home");
+        let bin_dir = root.join("bin");
+        fs::create_dir_all(&home).unwrap();
+        fake_failing_command(&bin_dir, "launchctl", "launch bad");
+        fake_failing_command(&bin_dir, "systemctl", "system bad");
+
+        let old_home = std::env::var_os("HOME");
+        let old_path = std::env::var_os("PATH");
+        let old_verbose = std::env::var_os("HERDR_WEB_VERBOSE");
+        std::env::set_var("HOME", &home);
+        std::env::set_var(
+            "PATH",
+            format!(
+                "{}:{}",
+                bin_dir.display(),
+                old_path
+                    .as_ref()
+                    .map(|value| value.to_string_lossy())
+                    .unwrap_or_default()
+            ),
+        );
+        std::env::set_var("HERDR_WEB_VERBOSE", "1");
+
+        let missing = start_macos_service().unwrap_err();
+        assert_eq!(missing.kind(), io::ErrorKind::NotFound);
+
+        let quiet = launchctl_quiet(&["noop"]).unwrap();
+        assert!(!quiet);
+        let required = launchctl_required(&["bootstrap"]).unwrap_err();
+        assert!(required.to_string().contains("launch bad"));
+
+        fake_failing_command(&bin_dir, "launchctl", "");
+        let required = launchctl_required(&["bootstrap-empty"]).unwrap_err();
+        assert!(required.to_string().contains("exit status"));
+
+        let systemctl = systemctl_user(&["start", "herdr-web.service"]).unwrap_err();
+        assert!(systemctl
+            .to_string()
+            .contains("systemctl --user start herdr-web.service failed"));
+
+        log_macos_context("test", Some(&home.join("missing.plist")));
+        let output = std::process::Command::new(bin_dir.join("launchctl"))
+            .arg("noop")
+            .output()
+            .unwrap();
+        log_command_output("launchctl", &["noop"], &output);
+        let output = std::process::Command::new("sh")
+            .args(["-c", "echo out; echo err >&2"])
+            .output()
+            .unwrap();
+        log_command_output("sh", &["-c"], &output);
+
+        restore_env!("HOME", old_home);
+        restore_env!("PATH", old_path);
+        restore_env!("HERDR_WEB_VERBOSE", old_verbose);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[cfg(unix)]
@@ -675,26 +782,10 @@ mod tests {
         assert!(commands.contains("--user stop herdr-web.service"));
         assert!(home.join(".local/bin/herdr-webui").exists());
 
-        if let Some(value) = old_home {
-            std::env::set_var("HOME", value);
-        } else {
-            std::env::remove_var("HOME");
-        }
-        if let Some(value) = old_xdg {
-            std::env::set_var("XDG_CONFIG_HOME", value);
-        } else {
-            std::env::remove_var("XDG_CONFIG_HOME");
-        }
-        if let Some(value) = old_path {
-            std::env::set_var("PATH", value);
-        } else {
-            std::env::remove_var("PATH");
-        }
-        if let Some(value) = old_log {
-            std::env::set_var("HERDR_WEB_FAKE_COMMAND_LOG", value);
-        } else {
-            std::env::remove_var("HERDR_WEB_FAKE_COMMAND_LOG");
-        }
+        restore_env!("HOME", old_home);
+        restore_env!("XDG_CONFIG_HOME", old_xdg);
+        restore_env!("PATH", old_path);
+        restore_env!("HERDR_WEB_FAKE_COMMAND_LOG", old_log);
         let _ = fs::remove_dir_all(root);
     }
 
@@ -729,6 +820,9 @@ mod tests {
         std::env::set_var("HERDR_WEB_HERDR_BIN", "/tmp/herdr fake/bin");
 
         install_macos(config()).unwrap();
+        start_service().unwrap();
+        restart_service().unwrap();
+        stop_service().unwrap();
         start_macos_service().unwrap();
         restart_macos_service().unwrap();
         update_macos().unwrap();
@@ -744,26 +838,51 @@ mod tests {
         assert!(commands.contains("bootstrap"));
         assert!(commands.contains("kickstart -k"));
 
-        if let Some(value) = old_home {
-            std::env::set_var("HOME", value);
-        } else {
-            std::env::remove_var("HOME");
-        }
-        if let Some(value) = old_path {
-            std::env::set_var("PATH", value);
-        } else {
-            std::env::remove_var("PATH");
-        }
-        if let Some(value) = old_log {
-            std::env::set_var("HERDR_WEB_FAKE_COMMAND_LOG", value);
-        } else {
-            std::env::remove_var("HERDR_WEB_FAKE_COMMAND_LOG");
-        }
-        if let Some(value) = old_herdr_bin {
-            std::env::set_var("HERDR_WEB_HERDR_BIN", value);
-        } else {
-            std::env::remove_var("HERDR_WEB_HERDR_BIN");
-        }
+        restore_env!("HOME", old_home);
+        restore_env!("PATH", old_path);
+        restore_env!("HERDR_WEB_FAKE_COMMAND_LOG", old_log);
+        restore_env!("HERDR_WEB_HERDR_BIN", old_herdr_bin);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn macos_start_bootstraps_when_kickstart_fails() {
+        let _guard = crate::test_env_lock().lock().unwrap();
+        let root = service_test_root("macos-bootstrap");
+        let home = root.join("home");
+        let bin_dir = root.join("bin");
+        let log = root.join("commands.log");
+        fs::create_dir_all(home.join("Library/LaunchAgents")).unwrap();
+        fs::write(home.join("Library/LaunchAgents/herdr-web.plist"), "plist").unwrap();
+        fake_launchctl_bootstrap_needed(&bin_dir);
+
+        let old_home = std::env::var_os("HOME");
+        let old_path = std::env::var_os("PATH");
+        let old_log = std::env::var_os("HERDR_WEB_FAKE_COMMAND_LOG");
+        std::env::set_var("HOME", &home);
+        std::env::set_var(
+            "PATH",
+            format!(
+                "{}:{}",
+                bin_dir.display(),
+                old_path
+                    .as_ref()
+                    .map(|value| value.to_string_lossy())
+                    .unwrap_or_default()
+            ),
+        );
+        std::env::set_var("HERDR_WEB_FAKE_COMMAND_LOG", &log);
+
+        start_macos_service().unwrap();
+
+        let commands = fs::read_to_string(&log).unwrap();
+        assert!(commands.contains("kickstart -k"));
+        assert!(commands.contains("bootstrap"));
+
+        restore_env!("HOME", old_home);
+        restore_env!("PATH", old_path);
+        restore_env!("HERDR_WEB_FAKE_COMMAND_LOG", old_log);
         let _ = fs::remove_dir_all(root);
     }
 }

@@ -861,6 +861,48 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    #[test]
+    fn search_and_tree_helpers_cover_limits_and_case_rules() {
+        let root = temp_root("limits");
+        fs::create_dir_all(root.join("Alpha/Sub")).unwrap();
+        fs::write(root.join("Alpha/Sub/Needle.txt"), "hit").unwrap();
+        fs::write(root.join("alpha-lower.txt"), "hit").unwrap();
+        for index in 0..(MAX_ENTRIES + 2) {
+            fs::create_dir_all(root.join(format!("many-{index:04}"))).unwrap();
+        }
+
+        let mut visits = 0;
+        let mut entries = Vec::new();
+        let truncated =
+            search_entries(&root, &root, "Needle", 1, &mut visits, &mut entries).unwrap();
+        assert!(truncated);
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].path.ends_with("Needle.txt"));
+
+        let mut visits = MAX_SEARCH_VISITS - 1;
+        let mut entries = Vec::new();
+        assert!(search_entries(&root, &root, "missing", 200, &mut visits, &mut entries).unwrap());
+
+        assert!(smart_case_match("Alpha", "Alpha"));
+        assert!(!smart_case_match("alpha", "Alpha"));
+        assert!(smart_case_match("Alpha", "alpha"));
+
+        let mut build = TreeBuild {
+            root: &root,
+            entries: Vec::new(),
+            truncated: false,
+        };
+        push_tree_entries(&mut build, &root, 0, 0, true).unwrap();
+        assert!(build.truncated);
+        assert_eq!(build.entries.len(), MAX_ENTRIES);
+
+        assert!(matches!(
+            sorted_directory_entries(&root.join("alpha-lower.txt")),
+            Err(err) if !err.is_empty()
+        ));
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[tokio::test]
     async fn file_browser_tree_file_write_rename_and_delete_routes_work() {
         let root = temp_root("routes");
