@@ -83,8 +83,7 @@ function connectTerminal() {
     term.onData(sendInputData);
     if (!terminalScrollFollowBound && term.onScroll) {
       term.onScroll(() => {
-        terminalFollowPaused = !terminalAtBottom();
-        updateTerminalFollowButton();
+        setTerminalFollowPaused(!terminalAtBottom());
       });
       terminalScrollFollowBound = true;
     }
@@ -112,6 +111,11 @@ function connectTerminal() {
           !e.metaKey &&
           (e.key === "PageUp" || e.key === "PageDown")
         ) {
+          if (terminalUsesNormalBuffer()) {
+            e.preventDefault();
+            scrollLocalTerminal(e.key === "PageUp" ? "up" : "down", Math.max(1, (state.termRows || rows) - 1));
+            return false;
+          }
           sendBackendScroll(
             e.key === "PageUp" ? "up" : "down",
             Math.max(1, (state.termRows || rows) - 1),
@@ -132,9 +136,9 @@ function connectTerminal() {
           return;
         }
         if (terminalUsesNormalBuffer()) {
+          if (e.deltaY < 0 || e.deltaX < 0 || !terminalAtBottom()) setTerminalFollowPaused(true);
           requestAnimationFrame(() => {
-            terminalFollowPaused = !terminalAtBottom();
-            updateTerminalFollowButton();
+            setTerminalFollowPaused(!terminalAtBottom());
           });
           return;
         }
@@ -280,10 +284,15 @@ function terminalAtBottom() {
     return true;
   }
 }
+function setTerminalFollowPaused(paused) {
+  terminalFollowPaused = !!paused;
+  updateTerminalFollowButton();
+}
 function updateTerminalFollowButton() {
   const button = el("terminalFollowButton");
   if (!button) return;
   button.hidden = !terminalFollowPaused;
+  button.setAttribute("aria-hidden", terminalFollowPaused ? "false" : "true");
 }
 function writeTerminalFrame(data) {
   const shouldPreserve = terminalFollowPaused && !terminalAtBottom();
@@ -294,8 +303,7 @@ function writeTerminalFrame(data) {
         term.scrollToLine(viewportY);
       } catch (e) {}
     }
-    terminalFollowPaused = !terminalAtBottom();
-    updateTerminalFollowButton();
+    setTerminalFollowPaused(!terminalAtBottom());
   };
   try {
     term.write(data, done);
@@ -305,12 +313,18 @@ function writeTerminalFrame(data) {
   }
 }
 function scrollTerminalToBottom() {
-  terminalFollowPaused = false;
+  setTerminalFollowPaused(false);
   try {
     if (term) term.scrollToBottom();
   } catch (e) {}
-  updateTerminalFollowButton();
   focusTerminal(true);
+}
+function scrollLocalTerminal(direction, lines) {
+  try {
+    if (!term || !term.scrollLines) return;
+    term.scrollLines(direction === "up" ? -lines : lines);
+  } catch (e) {}
+  setTerminalFollowPaused(!terminalAtBottom());
 }
 function modalOpen() {
   return [

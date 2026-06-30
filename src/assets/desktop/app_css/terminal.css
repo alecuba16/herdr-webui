@@ -19,14 +19,15 @@
   color: var(--accent-fg, var(--bg));
   cursor: pointer;
   display: inline-grid;
-  font-size: 18px;
+  font-size: 13px;
   font-weight: 900;
   height: 38px;
   justify-content: center;
   line-height: 1;
   position: absolute;
   right: 22px;
-  width: 38px;
+  min-width: 38px;
+  padding: 0 13px;
   z-index: 8;
 }
 .terminal-follow-button[hidden] {
