@@ -1562,8 +1562,8 @@ impl HerdrWorktreeApi {
         })
     }
 
-    fn remove_request(workspace_id: String) -> serde_json::Value {
-        json!({ "id": "web:worktree:remove", "method": "worktree.remove", "params": { "workspace_id": workspace_id, "force": false } })
+    fn remove_request(workspace_id: String, force: bool) -> serde_json::Value {
+        json!({ "id": "web:worktree:remove", "method": "worktree.remove", "params": { "workspace_id": workspace_id, "force": force } })
     }
 }
 
@@ -1630,6 +1630,7 @@ struct CreateWorktreeRequest {
     base: Option<String>,
     path: Option<String>,
     label: Option<String>,
+    pull_base: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -1648,6 +1649,11 @@ struct RemoveWorktreePathRequest {
     force: Option<bool>,
 }
 
+#[derive(Deserialize)]
+struct RemoveWorktreeRequest {
+    force: Option<bool>,
+}
+
 async fn create_worktree(
     State(state): State<WebState>,
     headers: HeaderMap,
@@ -1660,6 +1666,23 @@ async fn create_worktree(
     let cwd = body.cwd.as_deref().map(expand_user_path_string);
     let path = body.path.as_deref().map(expand_user_path_string);
     let api = api_for_headers(&state, &headers);
+    if body.pull_base.unwrap_or(false) {
+        if let Some(cwd) = cwd.as_deref() {
+            let base = body
+                .base
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("HEAD");
+            if let Err(err) = pull_base_branch(cwd, base) {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "ok": false, "error": err })),
+                )
+                    .into_response();
+            }
+        }
+    }
     if let (Some(cwd), Some(path), Some(branch)) = (&cwd, &path, body.branch.as_deref()) {
         let branch = branch.trim();
         if !branch.is_empty() && git_branch_exists(cwd, branch).unwrap_or(false) {
@@ -1731,6 +1754,19 @@ fn git_branch_exists(repo: &str, branch: &str) -> Result<bool, String> {
         Ok(false)
     } else {
         Err(git_failure(output, "git show-ref"))
+    }
+}
+
+fn pull_base_branch(cwd: &str, base: &str) -> Result<(), String> {
+    let output = if base == "HEAD" {
+        run_git_capture(&["-C", cwd, "pull", "--ff-only"])?
+    } else {
+        run_git_capture(&["-C", cwd, "pull", "--ff-only", "origin", base])?
+    };
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(git_failure(output, "git pull"))
     }
 }
 
@@ -2049,11 +2085,15 @@ async fn remove_worktree(
     headers: HeaderMap,
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
     AxumPath(workspace_id): AxumPath<String>,
+    body: Option<Json<RemoveWorktreeRequest>>,
 ) -> Response {
     if let Err(response) = require_auth(&state, &headers, remote) {
         return response;
     }
-    let request = HerdrWorktreeApi::remove_request(workspace_id);
+    let request = HerdrWorktreeApi::remove_request(
+        workspace_id,
+        body.as_ref().and_then(|body| body.force).unwrap_or(false),
+    );
     proxy_request_async(api_for_headers(&state, &headers), request).await
 }
 
@@ -3133,6 +3173,7 @@ mod tests {
                 base: Some("main".into()),
                 path: Some("../worktrees/demo".into()),
                 label: Some("demo".into()),
+                pull_base: Some(false),
             },
             Some("/home/me/repo".into()),
             Some("/home/me/worktrees/demo".into()),

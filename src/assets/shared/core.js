@@ -116,7 +116,9 @@
       fallbackWorkspaceId = input.fallbackWorkspaceId || null;
     if (workspaceId) {
       const edited = sourcePath && sourcePath !== originalSource;
-      return { workspace_id: workspaceId, cwd: edited ? sourcePath : null };
+      return edited
+        ? { workspace_id: null, cwd: sourcePath }
+        : { workspace_id: workspaceId, cwd: null };
     }
     const wsId = discovered.workspace_id || (!sourcePath ? fallbackWorkspaceId : null);
     return {
@@ -162,6 +164,7 @@
       base: String(input.base || "").trim() || null,
       label: String(input.label || "").trim() || null,
       path: String(input.path || "").trim() || null,
+      pull_base: !!input.pullBase,
     };
   }
 

@@ -81,6 +81,13 @@ function connectTerminal() {
     term.open(terminal);
     applyTheme();
     term.onData(sendInputData);
+    if (!terminalScrollFollowBound && term.onScroll) {
+      term.onScroll(() => {
+        terminalFollowPaused = !terminalAtBottom();
+        updateTerminalFollowButton();
+      });
+      terminalScrollFollowBound = true;
+    }
     if (term.attachCustomKeyEventHandler)
       term.attachCustomKeyEventHandler((e) => {
         if (window.HerdrGitUi && window.HerdrGitUi.isVisible && window.HerdrGitUi.isVisible())
@@ -122,6 +129,13 @@ function connectTerminal() {
         if (e.altKey) {
           e.preventDefault();
           scrollBrowserOverflow(e.deltaX, e.deltaY);
+          return;
+        }
+        if (terminalUsesNormalBuffer()) {
+          requestAnimationFrame(() => {
+            terminalFollowPaused = !terminalAtBottom();
+            updateTerminalFollowButton();
+          });
           return;
         }
         if (!termWs || termWs.readyState !== 1) return;
@@ -197,8 +211,7 @@ function connectTerminal() {
   ws.onmessage = (e) => {
     if (termWs !== ws || connectedTerminalId !== target) return;
     setTerminalLoading(false);
-    if (typeof e.data === "string") term.write(e.data);
-    else term.write(new Uint8Array(e.data));
+    writeTerminalFrame(typeof e.data === "string" ? e.data : new Uint8Array(e.data));
     clearDismissedWorkingForTerminal(state.terminalId);
     scheduleTerminalFrameWork();
   };
@@ -211,6 +224,54 @@ function connectTerminal() {
       scheduleRefresh();
     }
   };
+}
+function terminalUsesNormalBuffer() {
+  try {
+    return !term || !term.buffer || !term.buffer.active || term.buffer.active.type !== "alternate";
+  } catch (e) {
+    return true;
+  }
+}
+function terminalAtBottom() {
+  try {
+    const buffer = term && term.buffer && term.buffer.active;
+    if (!buffer) return true;
+    return Math.max(0, buffer.baseY - buffer.viewportY) <= 1;
+  } catch (e) {
+    return true;
+  }
+}
+function updateTerminalFollowButton() {
+  const button = el("terminalFollowButton");
+  if (!button) return;
+  button.hidden = !terminalFollowPaused;
+}
+function writeTerminalFrame(data) {
+  const shouldPreserve = terminalFollowPaused && !terminalAtBottom();
+  const viewportY = shouldPreserve && term && term.buffer ? term.buffer.active.viewportY : null;
+  const done = () => {
+    if (shouldPreserve && Number.isFinite(viewportY)) {
+      try {
+        term.scrollToLine(viewportY);
+      } catch (e) {}
+    }
+    terminalFollowPaused = !terminalAtBottom();
+    updateTerminalFollowButton();
+  };
+  try {
+    term.write(data, done);
+  } catch (e) {
+    term.write(data);
+    done();
+  }
+}
+function scrollTerminalToBottom() {
+  terminalFollowPaused = false;
+  try {
+    if (term) term.scrollToBottom();
+  } catch (e) {}
+  updateTerminalFollowButton();
+  focusTerminal(true);
 }
 function modalOpen() {
   return [

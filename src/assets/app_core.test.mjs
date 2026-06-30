@@ -215,7 +215,7 @@ describe("resolveWorktreeSource", () => {
         sourcePath: "/repo/other",
         originalSource: "/repo/alpha",
       }),
-      { workspace_id: "ws1", cwd: "/repo/other" },
+      { workspace_id: null, cwd: "/repo/other" },
     );
   });
 
@@ -305,6 +305,7 @@ describe("buildWorktreeCreateBody", () => {
         base: "main",
         label: "my-label",
         path: "/repo/worktrees/x",
+        pullBase: true,
       }),
       {
         workspace_id: "ws1",
@@ -313,7 +314,19 @@ describe("buildWorktreeCreateBody", () => {
         base: "main",
         label: "my-label",
         path: "/repo/worktrees/x",
+        pull_base: true,
       },
+    );
+  });
+
+  it("uses cwd instead of workspace_id when source path is edited", () => {
+    assert.deepEqual(
+      resolveWorktreeSource({
+        workspaceId: "ws1",
+        sourcePath: "/repo",
+        originalSource: "",
+      }),
+      { workspace_id: null, cwd: "/repo" },
     );
   });
 
@@ -333,6 +346,7 @@ describe("buildWorktreeCreateBody", () => {
         base: null,
         label: null,
         path: null,
+        pull_base: false,
       },
     );
   });

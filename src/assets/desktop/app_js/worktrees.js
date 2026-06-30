@@ -71,7 +71,8 @@ function openWorktreeCreateModal(id) {
   const w = state.workspaces.find((x) => x.workspace_id === id);
   if (!w || isLinkedWorktree(w)) return;
   state.createWorktreeWorkspace = id;
-  const sourcePath = (w.worktree && w.worktree.checkout_path) || "";
+  const sourcePath =
+    (w.worktree && w.worktree.checkout_path) || w.cwd || w.path || "";
   state.createWorktreeOriginalSource = sourcePath;
   state.createWorktreeSource = null;
   state.createWorktreeDefaultPath = "";
@@ -80,6 +81,7 @@ function openWorktreeCreateModal(id) {
   el("worktreeBase").value = "";
   el("worktreeLabel").value = "";
   el("worktreePath").value = "";
+  el("worktreePullBase").checked = false;
   el("worktreeCreateError").textContent = "";
   setCreateWorktreeLoading(false);
   el("worktreeCreateModal").style.display = "grid";
@@ -126,6 +128,7 @@ function openWorktreeOpenModal() {
   el("worktreeNewBase").value = "";
   el("worktreeNewLabel").value = "";
   el("worktreeNewPath").value = "";
+  el("worktreeNewPullBase").checked = false;
   syncWorktreeBranchOptions([]);
   renderWorktreeOpenList();
   el("worktreeOpenError").textContent = "";
@@ -169,6 +172,7 @@ function openWorktreesForRepo(keyToken) {
   el("worktreeNewBase").value = "";
   el("worktreeNewLabel").value = "";
   el("worktreeNewPath").value = "";
+  el("worktreeNewPullBase").checked = false;
   state.openWorktreeDefaultPath = "";
   state.openWorktreeBaseBranchName = "";
   state.openWorktreeBranchSourceKey = "";
@@ -365,7 +369,8 @@ async function submitWorktreeCreate(input) {
     branch = String(input.branch || "").trim(),
     base = String(input.base || "").trim(),
     label = String(input.label || "").trim(),
-    path = String(input.path || "").trim();
+    path = String(input.path || "").trim(),
+    pullBase = !!input.pullBase;
   errEl.textContent = "";
   const error = validateWorktreeCreateHelper({
     branch,
@@ -385,7 +390,7 @@ async function submitWorktreeCreate(input) {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(
-        buildWorktreeCreateBody({ source, branch, base, label, path }),
+        buildWorktreeCreateBody({ source, branch, base, label, path, pullBase }),
       ),
     });
     closeFn();
@@ -585,8 +590,44 @@ async function removeDiscoveredWorktree(index) {
     await discoverWorktrees();
     refresh();
   } catch (ex) {
-    err.textContent = ex.message || String(ex);
+    const message = ex.message || String(ex);
+    if (await confirmForceWorktreeRemove(message)) {
+      await forceRemoveDiscoveredWorktree(row);
+      await discoverWorktrees();
+      refresh();
+      return;
+    }
+    err.textContent = message;
   }
+}
+async function confirmForceWorktreeRemove(message) {
+  return askQuestion({
+    title: "Force remove worktree?",
+    message: `Git refused to remove this worktree:\n\n${message}\n\nForce delete it anyway?`,
+    confirmText: "Force delete",
+    danger: true,
+  });
+}
+async function forceRemoveDiscoveredWorktree(row) {
+  if (row.open_workspace_id)
+    await api(
+      `/api/workspaces/${encodeURIComponent(row.open_workspace_id)}/worktree-remove`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ force: true }),
+      },
+    );
+  else
+    await api("/api/worktrees/remove-path", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        repo_root: row.source_repo_root,
+        path: row.path,
+        force: true,
+      }),
+    });
 }
 async function createDiscoveredWorktree() {
   const err = el("worktreeOpenError"),
@@ -595,6 +636,7 @@ async function createDiscoveredWorktree() {
     base = el("worktreeNewBase").value.trim(),
     label = el("worktreeNewLabel").value.trim(),
     path = el("worktreeNewPath").value.trim(),
+    pullBase = el("worktreeNewPullBase").checked,
     submit = el("worktreeNewSubmit");
   err.textContent = "";
   if (!branch && !options.generateWorktreeNames) {
@@ -617,12 +659,13 @@ async function createDiscoveredWorktree() {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        workspace_id: workspaceId,
+        workspace_id: cwd ? null : workspaceId,
         cwd,
         branch: branch || null,
         base: base || null,
         label: label || null,
         path: path || null,
+        pull_base: pullBase,
       }),
     });
     closeWorktreeOpenModal();
@@ -739,9 +782,19 @@ async function removeWorktree(id) {
     danger: true,
   })))
     return;
-  await api(`/api/workspaces/${encodeURIComponent(id)}/worktree-remove`, {
-    method: "POST",
-  });
+  try {
+    await api(`/api/workspaces/${encodeURIComponent(id)}/worktree-remove`, {
+      method: "POST",
+    });
+  } catch (ex) {
+    const message = ex.message || String(ex);
+    if (!(await confirmForceWorktreeRemove(message))) return;
+    await api(`/api/workspaces/${encodeURIComponent(id)}/worktree-remove`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ force: true }),
+    });
+  }
   if (state.ws === id) {
     state.ws = null;
     state.tab = null;

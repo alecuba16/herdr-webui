@@ -1,8 +1,8 @@
 /* Entry button */
 .git-workspace-toggle {
-  background: var(--border);
-  color: var(--muted);
-  border-color: var(--border2);
+  background: var(--accent-2, rgba(56, 139, 253, 0.14));
+  color: var(--accent-1, var(--accent));
+  border-color: var(--accent-2-border, var(--accent));
   font-weight: 800;
 }
 .git-workspace-toggle.closed {
@@ -17,7 +17,7 @@
 }
 .git-workspace-toggle.nogit,
 .git-workspace-toggle.unknown {
-  background: var(--border);
-  color: var(--muted);
-  border-color: var(--border2);
+  background: var(--accent-2, rgba(56, 139, 253, 0.14));
+  color: var(--accent-1, var(--accent));
+  border-color: var(--accent-2-border, var(--accent));
 }
