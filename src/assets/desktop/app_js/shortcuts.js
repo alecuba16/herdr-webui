@@ -209,7 +209,7 @@ function runPrefixedShortcut(e) {
       return true;
     },
     newWorkspace: () => {
-      openWorkspaceCreateModal();
+      openWorktreeOpenModal();
       return true;
     },
     newPanel: () => {

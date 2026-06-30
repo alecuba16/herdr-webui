@@ -19,6 +19,7 @@
 
   function workspaceCwd(workspace) {
     if (!workspace) return "";
+    if (window.HerdrWorkspacePath) return window.HerdrWorkspacePath(workspace);
     if (workspace.worktree && workspace.worktree.checkout_path) return workspace.worktree.checkout_path;
     return workspace.cwd || workspace.path || "";
   }
@@ -400,7 +401,7 @@
     },
     save(encodedPath) { saveFile(decodeURIComponent(encodedPath)); },
     reload(encodedPath) { reloadFile(decodeURIComponent(encodedPath)).catch((error) => { state.error = error.message || String(error); render(); }); },
-    isOpen() { return state.open; },
+    isVisible() { return state.open; },
     isWorkspaceVisible(workspace) { return state.open && state.cwd === workspaceCwd(workspace); },
     syncTerminalVisibility,
   };

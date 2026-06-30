@@ -200,6 +200,39 @@ describe("app bundle load", () => {
     match(html, /id="workspaceCreateSubmit"/);
   });
 
+  it("renders unified workspace and worktree opener", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    const html = ctx.worktreeOpenModalHtml();
+
+    match(html, /<h2>Open workspace<\/h2>/);
+    match(html, /id="worktreeDiscoverPath"/);
+    match(html, /id="worktreeWorkspaceLabel"/);
+    match(html, /id="worktreeWorkspaceSubmit"/);
+    match(html, /id="worktreeOpenList"/);
+    match(html, /id="worktreeNewSection"/);
+    ok(!source.includes('id = "openWorktrees"'));
+  });
+
+  it("resolves workspace path from pane cwd when workspace metadata is missing", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    vm.runInContext(`state.panes = [
+      {
+        workspace_id: "ws1",
+        cwd: "/repo/from-pane",
+        foreground_cwd: "/repo/from-foreground",
+      },
+    ];`, ctx);
+
+    equal(ctx.workspacePath({ workspace_id: "ws1" }), "/repo/from-foreground");
+    equal(
+      ctx.workspacePath({ workspace_id: "ws1", cwd: "/repo/from-workspace" }),
+      "/repo/from-workspace",
+    );
+  });
+
   it("renders server access settings fields", () => {
     const ctx = context();
     vm.runInContext(source, ctx);

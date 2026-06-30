@@ -387,7 +387,7 @@ function syncFileWorkspaceToggle() {
     return;
   }
   const workspace = state.workspaces.find((w) => w.workspace_id === state.ws);
-  const hasPath = !!(workspace && ((workspace.worktree && workspace.worktree.checkout_path) || workspace.cwd || workspace.path));
+  const hasPath = !!workspacePath(workspace);
   button.disabled = !hasPath;
   button.title = hasPath ? "Show file browser" : "No workspace path available";
   syncShellModeButtons();

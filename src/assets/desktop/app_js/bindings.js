@@ -382,6 +382,13 @@ el("worktreeNewForm").onsubmit = (e) => {
   e.preventDefault();
   createDiscoveredWorktree();
 };
+el("worktreeWorkspaceSubmit").onclick = createWorkspaceFromSmartModal;
+el("worktreeWorkspaceLabel").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    createWorkspaceFromSmartModal();
+  }
+});
 el("worktreeNewBase").addEventListener("input", syncBranchNameFromBase);
 el("worktreeNewBase").addEventListener("change", syncBranchNameFromBase);
 el("worktreeNewBranch").addEventListener("input", () => {
@@ -395,11 +402,21 @@ function worktreePathInputChanged() {
     state.openWorktreeSuggestionLocked = false;
     return;
   }
+  syncSmartWorkspaceLabel();
   const value = el("worktreeDiscoverPath").value.trim();
+  const currentSource = worktreeSourceKey(state.openWorktreeSource);
+  if (currentSource && currentSource !== value) {
+    state.openWorktreeSource = null;
+    state.openWorktreeRows = [];
+    state.openWorktreeAllRows = [];
+    state.openWorktreeBranchSourceKey = "";
+    syncWorktreeBranchOptions([]);
+  }
   const idx = (state.openWorktreeRows || []).findIndex(
     (w) => textValue(w.path) === value && w.is_linked_worktree,
   );
   state.openWorktreeSelected = idx >= 0 ? idx : null;
+  renderWorktreeOpenList();
   scheduleWorktreeAutodiscover();
 }
 el("worktreeDiscoverPath").addEventListener("input", worktreePathInputChanged);
@@ -409,6 +426,8 @@ el("worktreeDiscoverPath").addEventListener("keydown", (e) => {
     e.preventDefault();
     state.openWorktreeSuggestionLocked = true;
     renderPathOptions("worktreePathOptions", []);
+    syncSmartWorkspaceLabel();
+    discoverWorktrees();
   }
 });
 if (window.HerdrDirectoryPicker) {
