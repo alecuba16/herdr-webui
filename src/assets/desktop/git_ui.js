@@ -226,6 +226,47 @@
     return ((file && file.chunks) || []).reduce((sum, chunk) => sum + ((chunk.lines || []).length), 0);
   }
 
+  function loadedLargeDiffPreviewLimit() {
+    return 1200;
+  }
+
+  function previewDiffFile(file, limit) {
+    let remaining = Math.max(0, limit);
+    const chunks = [];
+    for (const chunk of (file && file.chunks) || []) {
+      if (remaining <= 0) break;
+      const lines = previewChunkLines(chunk.lines || [], remaining);
+      if (!lines.length) break;
+      remaining -= lines.length;
+      chunks.push(Object.assign({}, chunk, { lines }));
+    }
+    return Object.assign({}, file, { chunks, preview_large_diff: true });
+  }
+
+  function diffFileKey(fileOrPath, kind) {
+    const path = typeof fileOrPath === "string" ? fileOrPath : (fileOrPath && fileOrPath.path) || "";
+    const diffKind = typeof fileOrPath === "string" ? kind || "" : (fileOrPath && fileOrPath.diff_kind) || "";
+    return `${diffKind}:${path}`;
+  }
+
+  function previewChunkLines(lines, limit) {
+    const out = [];
+    for (let i = 0; i < lines.length && out.length < limit; i++) {
+      const line = lines[i];
+      if (line.line_type !== "delete") {
+        out.push(line);
+        continue;
+      }
+      const group = [];
+      while (lines[i] && lines[i].line_type === "delete") group.push(lines[i++]);
+      while (lines[i] && lines[i].line_type === "add") group.push(lines[i++]);
+      i--;
+      if (out.length + group.length > limit) break;
+      out.push(...group);
+    }
+    return out;
+  }
+
   function changeSetFileCount(status) {
     const seen = new Set([...(status.conflicted || []), ...(status.staged || []), ...(status.unstaged || []), ...(status.untracked || [])].filter(Boolean));
     return seen.size;
@@ -749,16 +790,34 @@
     const mode = currentMode();
     const view = active() || {};
     const collapsed = !!(view.collapsedFiles || {})[file.path];
-    const large = diffFileLineCount(file) > LARGE_FILE_DIFF_LINE_LIMIT;
+    const lineCount = diffFileLineCount(file);
+    const large = lineCount > LARGE_FILE_DIFF_LINE_LIMIT;
     const loadedLarge = !!(view.loadedLargeDiffFiles || {})[file.path];
+    const renderFullLarge = !!(view.fullLargeDiffFiles || {})[diffFileKey(file)];
     const left = mode === "changes" ? fileDiffLeftLabel(file) : (view.compareBase || "base");
     const right = mode === "readonly-compare" ? (view.compareTarget || "target") : "current";
     if (view.showBlame && (!large || loadedLarge)) ensureBlame(file.path);
     const restore = mode === "changes" && file.diff_kind !== "S" && (view.diffScope || "all") !== "staged"
       ? `<button class="git-ui-btn danger" title="Restore complete file" onclick="HerdrGitUi.discardFile('${arg(file.path)}')">Restore file</button>`
       : "";
-    const body = collapsed ? "" : file.hidden_large_change ? renderLargeChangePlaceholder(file) : large && !loadedLarge ? renderLargeDiffPlaceholder(file) : (file.chunks || []).map((chunk, index) => renderChunk(file, chunk, index)).join("");
+    const body = collapsed
+      ? ""
+      : file.hidden_large_change
+        ? renderLargeChangePlaceholder(file)
+        : large && !loadedLarge
+          ? renderLargeDiffPlaceholder(file)
+          : renderDiffFileBody(file, lineCount, large, renderFullLarge);
     return `<div class="git-ui-diff-file" data-git-path="${esc(file.path)}"><div class="git-ui-diff-file-head"><button class="git-ui-file-collapse" title="${collapsed ? "Show file" : "Collapse file"}" onclick="HerdrGitUi.toggleFile('${arg(file.path)}')">${collapsed ? "+" : "−"}</button><strong>${esc(file.path)}</strong><span class="git-ui-muted">${esc(left)} → ${esc(right)}</span><span class="git-ui-diff-file-actions"><span class="git-ui-badge add">+${file.additions || 0}</span> <span class="git-ui-badge del">-${file.deletions || 0}</span>${restore}</span></div>${body}</div>`;
+  }
+
+  function renderDiffFileBody(file, lineCount, large, renderFullLarge) {
+    const limit = loadedLargeDiffPreviewLimit();
+    const preview = large && !renderFullLarge && lineCount > limit;
+    const renderedFile = preview ? previewDiffFile(file, limit) : file;
+    const body = (renderedFile.chunks || []).map((chunk, index) => renderChunk(renderedFile, chunk, index)).join("");
+    if (!preview) return body;
+    const renderedCount = diffFileLineCount(renderedFile);
+    return `${body}<div class="git-ui-large-file-diff"><button class="git-ui-large-file-load" type="button" onclick="HerdrGitUi.renderFullLargeDiff('${arg(file.path)}','${arg(file.diff_kind || "")}')"><strong>Render full diff</strong></button><p>Showing ${renderedCount} preview lines from complete change groups out of ${lineCount} lines to reduce browser CPU and memory.</p></div>`;
   }
 
   function fileDiffLeftLabel(file) {
@@ -828,7 +887,9 @@
   function renderChunk(file, chunk, index) {
     const path = file.path;
     const scope = (active() || {}).diffScope || "all";
-    const hunkButton = scope === "staged"
+    const hunkButton = file.preview_large_diff
+      ? `<span class="git-ui-muted">render full diff for hunk actions</span>`
+      : scope === "staged"
       ? `<button class="git-ui-btn" title="Unstage this hunk" onclick="HerdrGitUi.unstageHunk('${arg(path)}',${index})">Unstage hunk</button>`
       : scope === "working"
         ? `<button class="git-ui-btn" title="Stage this hunk" onclick="HerdrGitUi.stageHunk('${arg(path)}',${index})">Stage hunk</button>`
@@ -837,7 +898,7 @@
       ? `<span class="git-ui-hunk-actions">${hunkButton}</span>`
       : `<span class="git-ui-muted">read only</span>`;
     const rows = markChangeGroups(sideBySideRows(chunk));
-    return `<div class="git-ui-hunk"><div class="git-ui-hunk-head"><span>${esc(chunk.header)}</span>${actions}</div>${rows.map((row, rowIndex) => renderLine(row, path, index, rows, rowIndex)).join("")}</div>`;
+    return `<div class="git-ui-hunk"><div class="git-ui-hunk-head"><span>${esc(chunk.header)}</span>${actions}</div>${rows.map((row, rowIndex) => renderLine(row, path, index, rows, rowIndex, !!file.preview_large_diff)).join("")}</div>`;
   }
 
   function sideBySideRows(chunk) {
@@ -862,7 +923,7 @@
     return rows;
   }
 
-  function renderLine(row, path, hunkIndex, rows, rowIndex) {
+  function renderLine(row, path, hunkIndex, rows, rowIndex, previewLargeDiff) {
     const view = active() || {};
     const scope = view.diffScope || "all";
     const oldLine = row.oldLine;
@@ -878,7 +939,7 @@
     const newAuthor = blameName(path, newNo);
     const status = view.status || {};
     const hasWorkingPath = scope === "working" || (scope === "all" && ([...(status.unstaged || []), ...(status.untracked || [])].includes(path)));
-    const blockButton = currentMode() === "changes" && hasWorkingPath && (add || del) && isFirstChange(rows, rowIndex)
+    const blockButton = !previewLargeDiff && currentMode() === "changes" && hasWorkingPath && (add || del) && isFirstChange(rows, rowIndex)
       ? `<button class="git-ui-line-action" title="Restore this block" onclick="HerdrGitUi.restoreHunk('${arg(path)}',${hunkIndex})">&gt;&gt;</button>`
       : `<span class="git-ui-line-action-spacer"></span>`;
     const contextControls = rowIndex === 0
@@ -1238,12 +1299,21 @@
             const nextFiles = ((data && data.files) || []).map((diffFile) => Object.assign({}, diffFile, { diff_kind: diffKind }));
             const existing = (view.diff.files || []).filter((diffFile) => !(diffFile.path === path && (!diffKind || diffFile.diff_kind === diffKind)));
             view.diff.files = existing.concat(nextFiles);
+            view.loadedLargeDiffFiles = Object.assign({}, view.loadedLargeDiffFiles || {}, { [path]: true });
           })
           .catch((e) => { view.error = e.message || String(e); })
           .finally(() => render());
         return;
       }
       view.loadedLargeDiffFiles = Object.assign({}, view.loadedLargeDiffFiles || {}, { [path]: true });
+      render();
+    },
+    renderFullLargeDiff(file, kind) {
+      const view = active();
+      if (!view) return;
+      const path = decodeURIComponent(file);
+      const diffKind = kind ? decodeURIComponent(kind) : "";
+      view.fullLargeDiffFiles = Object.assign({}, view.fullLargeDiffFiles || {}, { [diffFileKey(path, diffKind)]: true });
       render();
     },
     activateTreeItem(event) {

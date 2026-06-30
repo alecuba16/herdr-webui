@@ -50,8 +50,7 @@ let settingsBackdropDown = false,
   shortcutsBackdropDown = false;
 el("settingsToggle").onclick = () => {
   el("settingsModal").style.display = "grid";
-  applyOptions();
-  loadServerSettings();
+  prepareSettingsModalOpen();
 };
 el("settingsClose").onclick = () => {
   el("settingsModal").style.display = "none";
@@ -483,6 +482,7 @@ document.addEventListener("keydown", (e) => {
 window.onpopstate = refresh;
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) {
+    clearTimeout(noSleepPollTimer);
     hiddenTimer = setTimeout(() => {
       if (eventWs) eventWs.close();
       if (termWs) termWs.close();
@@ -496,7 +496,6 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 window.addEventListener("focus", loadNoSleep);
-setInterval(loadNoSleep, 5000);
 document.addEventListener("pointerdown", unlockAudio, { once: true });
 document.addEventListener("keydown", unlockAudio, { once: true });
 setupSessionChrome();

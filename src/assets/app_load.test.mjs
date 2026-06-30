@@ -254,6 +254,10 @@ describe("app bundle load", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
 
+    match(source, /id=\"settingsSearch\"/);
+    match(source, /function setupSettingsSearch\(\)/);
+    match(source, /function filterSettings\(\)/);
+    match(source, /settings-filter-hidden/);
     match(source, /title: "Appearance"/);
     match(source, /title: "Terminal input"/);
     match(source, /title: "Agents and alerts"/);

@@ -60,8 +60,7 @@ function showShortcutsModal() {
 }
 function showSettingsModal() {
   el("settingsModal").style.display = "grid";
-  applyOptions();
-  loadServerSettings();
+  prepareSettingsModalOpen();
 }
 function currentWorkspace() {
   return state.workspaces.find((w) => w.workspace_id === state.ws) || null;
