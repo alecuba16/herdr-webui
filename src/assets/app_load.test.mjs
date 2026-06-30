@@ -120,6 +120,8 @@ describe("app bundle load", () => {
     source =
       readFileSync(new URL("./shared/core.js", import.meta.url), "utf8") +
       "\n" +
+      readFileSync(new URL("./shared/editor.js", import.meta.url), "utf8") +
+      "\n" +
       readFileSync(new URL("./desktop/search.js", import.meta.url), "utf8") +
       "\n" +
       desktopAppSource;
@@ -241,6 +243,8 @@ describe("app bundle load", () => {
     match(source, /DEFAULT_GLOBAL_SHORTCUT_PREFIX/);
     match(source, /id="optTerminalFontFamily"/);
     match(source, /id="optWorktreeDiscoverDepth"/);
+    match(source, /id="optEditorShortcutPreset"/);
+    match(source, /data-editor-shortcut/);
     match(source, /JetBrainsMono Nerd Font/);
     match(source, /handleGlobalShortcut/);
     match(source, /isShortcutPrefix/);
@@ -248,6 +252,19 @@ describe("app bundle load", () => {
     match(source, /selectRelativeAgent\(1\)/);
     match(source, /selectRelativeAgent\(-1\)/);
     match(source, /terminalFontFamily/);
+  });
+
+  it("registers editor settings as a dynamic settings module", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    const module = ctx.window.HerdrSettingsModules.find((item) => item.id === "editorShortcuts");
+
+    ok(module);
+    equal(module.title, "Editor shortcuts");
+    match(module.renderSettings(), /id="optEditorShortcutPreset"/);
+    match(module.renderSettings(), /id="optEditorShortcut-save"/);
+    match(source, /module\.renderSettings/);
   });
 
   it("normalizes configurable shortcut prefixes", () => {

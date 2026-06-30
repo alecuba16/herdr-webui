@@ -1,4 +1,4 @@
-import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
+import { cursorCharLeft, cursorCharRight, cursorDocEnd, cursorDocStart, cursorGroupLeft, cursorGroupRight, cursorLineDown, cursorLineUp, cursorPageDown, cursorPageUp, defaultKeymap, deleteLine, history, historyKeymap, indentLess, indentMore } from "@codemirror/commands";
 import { MergeView } from "@codemirror/merge";
 import { css } from "@codemirror/lang-css";
 import { go } from "@codemirror/lang-go";
@@ -58,6 +58,67 @@ function languageForPath(path) {
   if (ext === "java") return java();
   if (["sql", "psql"].includes(ext)) return sql();
   return null;
+}
+
+const editorShortcutCommands = {
+  lineDown: cursorLineDown,
+  lineUp: cursorLineUp,
+  charLeft: cursorCharLeft,
+  charRight: cursorCharRight,
+  wordLeft: cursorGroupLeft,
+  wordRight: cursorGroupRight,
+  pageDown: cursorPageDown,
+  pageUp: cursorPageUp,
+  docStart: cursorDocStart,
+  docEnd: cursorDocEnd,
+  deleteLine,
+  indentMore,
+  indentLess,
+};
+
+function editorShortcutOptions() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function shortcutToCodeMirrorKey(value) {
+  const text = String(value || "").trim();
+  if (!text || text.toLowerCase() === "off") return "";
+  const parts = text.replace(/-/g, "+").split("+").map((part) => part.trim()).filter(Boolean);
+  const key = parts.pop();
+  if (!key) return "";
+  const mods = parts.map((part) => {
+    const lower = part.toLowerCase();
+    if (lower === "control") return "Ctrl";
+    if (lower === "cmd" || lower === "command" || lower === "meta") return "Meta";
+    if (lower === "option") return "Alt";
+    if (["ctrl", "alt", "shift"].includes(lower)) return lower[0].toUpperCase() + lower.slice(1);
+    return "";
+  }).filter(Boolean);
+  const cleanKey = key.length === 1 ? key.toLowerCase() : key;
+  return mods.concat(cleanKey).join("-");
+}
+
+function editorShortcutKeymap(opts) {
+  const shortcuts = editorShortcutOptions().editorShortcuts || {}, seen = new Set(), bindings = [];
+  if (shortcuts.save) {
+    const key = shortcutToCodeMirrorKey(shortcuts.save);
+    if (key) {
+      seen.add(key);
+      bindings.push({ key, run(view) { if (!opts.onSave) return false; opts.onSave(view); return true; } });
+    }
+  }
+  for (const [name, command] of Object.entries(editorShortcutCommands)) {
+    const key = shortcutToCodeMirrorKey(shortcuts[name]);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    bindings.push({ key, run: command });
+  }
+  return bindings;
 }
 
 class TextMarker extends GutterMarker {
@@ -168,7 +229,7 @@ function editorExtensions(opts) {
     bracketMatching(),
     indentOnInput(),
     syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
-    keymap.of([...defaultKeymap, ...historyKeymap]),
+    keymap.of([...editorShortcutKeymap(opts), ...defaultKeymap, ...historyKeymap]),
     theme,
     EditorView.lineWrapping,
     EditorView.editable.of(opts.readonly === false),
