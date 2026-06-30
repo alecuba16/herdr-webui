@@ -278,6 +278,12 @@ pub(crate) struct WebState {
     workspace_orders: Arc<Mutex<HashMap<String, Vec<String>>>>,
 }
 
+#[cfg(test)]
+pub(crate) fn test_env_lock() -> &'static std::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+}
+
 #[derive(Clone)]
 struct ApiClient {
     socket_path: PathBuf,
@@ -2666,7 +2672,7 @@ mod tests {
     use axum::http::{Method, Request};
     use serde_json::Value;
     use std::io::Cursor;
-    use std::sync::{Mutex as StdMutex, OnceLock};
+    use std::sync::Mutex as StdMutex;
     use std::thread;
     use tower::ServiceExt;
 
@@ -2718,8 +2724,7 @@ mod tests {
     }
 
     fn env_lock() -> &'static StdMutex<()> {
-        static LOCK: OnceLock<StdMutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| StdMutex::new(()))
+        crate::test_env_lock()
     }
 
     #[cfg(unix)]
