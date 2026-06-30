@@ -79,6 +79,10 @@ body.light {
   border-color: var(--accent);
   color: var(--accent-fg);
 }
+.mobile-btn.danger {
+  border-color: #f38ba8;
+  color: #f38ba8;
+}
 .mobile-btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
@@ -234,6 +238,9 @@ body.light {
   display: flex;
   gap: 8px;
   margin: 8px 0 10px;
+}
+.mobile-actions-wrap {
+  flex-wrap: wrap;
 }
 .mobile-help {
   color: var(--muted);
