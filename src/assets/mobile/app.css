@@ -79,6 +79,10 @@ body.light {
   border-color: var(--accent);
   color: var(--accent-fg);
 }
+.mobile-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
 .mobile-screen {
   min-height: 0;
   overflow: auto;
@@ -200,15 +204,21 @@ body.light {
   background: #3b2028;
 }
 .mobile-nav {
-  display: grid;
-  grid-template-columns: repeat(6, 1fr);
+  display: flex;
   gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
   padding: 8px max(8px, env(safe-area-inset-right))
     max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
   border-top: 1px solid var(--border);
   background: var(--panel);
 }
+.mobile-nav::-webkit-scrollbar {
+  display: none;
+}
 .mobile-nav button {
+  flex: 0 0 74px;
+  min-width: 74px;
   min-height: 44px;
   border: 0;
   border-radius: 12px;
