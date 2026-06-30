@@ -202,7 +202,7 @@ function appIcon(name) {
 }
 function shellMode() {
   if (window.HerdrGitUi && window.HerdrGitUi.isVisible && window.HerdrGitUi.isVisible()) return "git";
-  if (window.HerdrFileBrowser && window.HerdrFileBrowser.isOpen && window.HerdrFileBrowser.isOpen()) return "files";
+  if (window.HerdrFileBrowser && window.HerdrFileBrowser.isVisible && window.HerdrFileBrowser.isVisible()) return "files";
   return "terminal";
 }
 function syncShellModeButtons() {
@@ -217,8 +217,21 @@ function syncShellModeButtons() {
     const active = mode === value;
     button.classList.toggle("active", active);
     button.setAttribute("aria-pressed", active ? "true" : "false");
+    button.setAttribute("aria-selected", active ? "true" : "false");
   }
 }
+function workspacePath(workspace) {
+  if (!workspace) return "";
+  if (workspace.worktree && workspace.worktree.checkout_path)
+    return workspace.worktree.checkout_path;
+  if (workspace.cwd) return workspace.cwd;
+  if (workspace.path) return workspace.path;
+  const pane = (state.panes || []).find(
+    (p) => p.workspace_id === workspace.workspace_id,
+  );
+  return (pane && (pane.foreground_cwd || pane.cwd)) || "";
+}
+window.HerdrWorkspacePath = workspacePath;
 function showTerminalShellMode() {
   if (window.HerdrGitUi) window.HerdrGitUi.hide();
   if (window.HerdrFileBrowser) window.HerdrFileBrowser.hide();
@@ -368,19 +381,32 @@ function worktreeOpenModalHtml() {
       <div class="modal">
         <div class="settings-head">
           <div>
-            <h2>Worktrees</h2>
-            <p>Type a repo path to open existing linked worktrees or create a new one.</p>
+            <h2>Open workspace</h2>
+            <p>Pick a folder. Git repos show worktrees; normal folders can be opened as workspaces.</p>
           </div>
           <button class="mini settings-close" id="worktreeOpenClose" title="Close">✕</button>
         </div>
         <div class="worktree-open-controls">
           <label>
-            <span>Repo or worktrees folder</span>
+            <span>Folder</span>
             <input id="worktreeDiscoverPath" placeholder="~/Documents/code/repo-or-worktrees">
+          </label>
+          <label>
+            <span>Workspace name</span>
+            <input id="worktreeWorkspaceLabel" placeholder="project name">
           </label>
           <div class="worktree-loading" id="worktreeLoading">Discovering worktrees...</div>
         </div>
         <div class="worktree-open-list" id="worktreeOpenList"></div>
+        <div class="worktree-new" id="worktreeWorkspaceSection">
+          <div class="worktree-new-head">
+            <strong>Create workspace</strong>
+            <small id="worktreeWorkspaceHint">Opens this folder directly and ignores Git worktrees.</small>
+          </div>
+          <div class="worktree-form">
+            <button type="button" class="btn" id="worktreeWorkspaceSubmit">Create workspace</button>
+          </div>
+        </div>
         <div class="worktree-new" id="worktreeNewSection">
           <div class="worktree-new-head">
             <strong>Create a new worktree</strong>
@@ -455,9 +481,9 @@ function shortcutsModalHtml() {
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then ?</kbd><span>Open this shortcuts reference.</span></div>
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then S</kbd><span>Open Settings.</span></div>
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then B</kbd><span>Show or hide the workspace/agents sidebar.</span></div>
-          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then N</kbd><span>Create workspace.</span></div>
+          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then N</kbd><span>Open or create workspace.</span></div>
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then P</kbd><span>Create panel in current workspace.</span></div>
-          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then W</kbd><span>Open Worktrees browser.</span></div>
+          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then W</kbd><span>Open workspace/worktrees browser.</span></div>
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then T</kbd><span>Create worktree from current workspace.</span></div>
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then X</kbd><span>Close current panel.</span></div>
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then Shift+X</kbd><span>Close current workspace or linked worktree.</span></div>
@@ -490,9 +516,9 @@ const shortcutEditorGroups = [
       ["help", "Shortcut window"],
       ["settings", "Settings"],
       ["sidebar", "Toggle sidebar"],
-      ["newWorkspace", "New workspace"],
+      ["newWorkspace", "Open/create workspace"],
       ["newPanel", "New panel"],
-      ["openWorktrees", "Open worktrees"],
+      ["openWorktrees", "Open workspace/worktrees"],
       ["createWorktree", "Create worktree"],
       ["closePanel", "Close panel"],
       ["closeWorkspace", "Close workspace/worktree"],
@@ -1574,53 +1600,57 @@ function setupSessionChrome() {
     head.insertBefore(wrap.firstChild, el("newWs"));
     syncNoSleepControls();
   }
-  if (!el("openWorktrees")) {
-    const newWsButton = el("newWs");
-    const b = document.createElement("button");
-    b.className = "btn worktree-open-trigger";
-    b.id = "openWorktrees";
-    b.title = "Open or create worktrees";
-    b.textContent = "♧";
-    newWsButton.insertAdjacentElement("afterend", b);
-    b.onclick = () => openWorktreeOpenModal();
+  let shellModeGroup = el("shellModeGroup");
+  if (!shellModeGroup) {
+    shellModeGroup = document.createElement("span");
+    shellModeGroup.id = "shellModeGroup";
+    shellModeGroup.className = "shell-mode-group";
+    shellModeGroup.setAttribute("role", "tablist");
+    shellModeGroup.setAttribute("aria-label", "Workspace view");
+    el("newWs").insertAdjacentElement("afterend", shellModeGroup);
   }
   if (!el("terminalWorkspaceToggle")) {
-    const openWorktrees = el("openWorktrees");
     const t = document.createElement("button");
     t.className = "btn worktree-open-trigger shell-action shell-icon-button";
     t.id = "terminalWorkspaceToggle";
     t.title = "Show terminal";
     t.innerHTML = appIcon("terminal");
     t.setAttribute("aria-label", "Show terminal");
-    openWorktrees.insertAdjacentElement("afterend", t);
+    t.setAttribute("role", "tab");
+    shellModeGroup.appendChild(t);
     t.onclick = () => showTerminalShellMode();
+  } else if (el("terminalWorkspaceToggle").parentNode !== shellModeGroup) {
+    shellModeGroup.appendChild(el("terminalWorkspaceToggle"));
   }
   if (!gitUiEnabled()) {
     const existingGitToggle = el("gitWorkspaceToggle");
     if (existingGitToggle) existingGitToggle.remove();
     if (window.HerdrGitUi) window.HerdrGitUi.hide();
   } else if (!el("gitWorkspaceToggle")) {
-    const openWorktrees = el("openWorktrees");
     const b = document.createElement("button");
     b.className = "btn worktree-open-trigger shell-action shell-icon-button git-workspace-toggle unknown";
     b.id = "gitWorkspaceToggle";
     b.title = "Show Git drawer";
     b.innerHTML = appIcon("git");
     b.setAttribute("aria-label", "Show Git drawer");
-    const terminalToggle = el("terminalWorkspaceToggle") || openWorktrees;
-    terminalToggle.insertAdjacentElement("afterend", b);
+    b.setAttribute("role", "tab");
+    shellModeGroup.appendChild(b);
     b.onclick = () => openWorkspaceGitUi(state.ws);
+  } else if (el("gitWorkspaceToggle").parentNode !== shellModeGroup) {
+    shellModeGroup.appendChild(el("gitWorkspaceToggle"));
   }
   if (!el("fileWorkspaceToggle")) {
-    const gitToggle = el("gitWorkspaceToggle") || el("terminalWorkspaceToggle") || el("openWorktrees");
     const b = document.createElement("button");
     b.className = "btn worktree-open-trigger shell-action shell-icon-button";
     b.id = "fileWorkspaceToggle";
     b.title = "Show file browser";
     b.innerHTML = appIcon("file");
     b.setAttribute("aria-label", "Show file browser");
-    gitToggle.insertAdjacentElement("afterend", b);
+    b.setAttribute("role", "tab");
+    shellModeGroup.appendChild(b);
     b.onclick = () => openWorkspaceFileBrowser(state.ws);
+  } else if (el("fileWorkspaceToggle").parentNode !== shellModeGroup) {
+    shellModeGroup.appendChild(el("fileWorkspaceToggle"));
   }
   syncShellModeButtons();
   const side = document.querySelector(".side");

@@ -267,6 +267,7 @@
 
   function workspaceCwd(workspace) {
     if (!workspace) return "";
+    if (window.HerdrWorkspacePath) return window.HerdrWorkspacePath(workspace);
     if (workspace.worktree && workspace.worktree.checkout_path) return workspace.worktree.checkout_path;
     if (workspace.cwd) return workspace.cwd;
     if (workspace.path) return workspace.path;
@@ -326,8 +327,8 @@
     const shell = document.getElementById("terminalShell");
     if (!shell) return;
     const fileBrowser = window.HerdrFileBrowser;
-    const fileOpen = !!(fileBrowser && fileBrowser.isOpen && fileBrowser.isOpen());
-    shell.style.display = show || fileOpen ? "none" : "";
+    const fileVisible = !!(fileBrowser && fileBrowser.isVisible && fileBrowser.isVisible());
+    shell.style.display = show || fileVisible ? "none" : "";
     if (window.syncShellModeButtons) window.syncShellModeButtons();
   }
 
@@ -1173,7 +1174,6 @@
     close,
     refresh,
     refreshVisible() { if (state.visible) render(); },
-    isOpen() { return state.open; },
     isVisible() { return state.visible; },
     isWorkspaceVisible(key) { return state.visible && state.activeKey === key; },
     workspaceStatus,

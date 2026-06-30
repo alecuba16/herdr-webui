@@ -71,8 +71,7 @@ function openWorktreeCreateModal(id) {
   const w = state.workspaces.find((x) => x.workspace_id === id);
   if (!w || isLinkedWorktree(w)) return;
   state.createWorktreeWorkspace = id;
-  const sourcePath =
-    (w.worktree && w.worktree.checkout_path) || w.cwd || w.path || "";
+  const sourcePath = workspacePath(w);
   state.createWorktreeOriginalSource = sourcePath;
   state.createWorktreeSource = null;
   state.createWorktreeDefaultPath = "";
@@ -118,12 +117,16 @@ function openWorktreeOpenModal() {
   state.openWorktreeSelected = null;
   state.openWorktreeSuggestionLocked = false;
   state.openWorktreeSource = null;
+  state.openWorktreeDiscoveryError = "";
   state.openWorktreeRows = [];
   state.openWorktreeAllRows = [];
   state.openWorktreeBranches = [];
   state.openWorktreeBranchSourceKey = "";
   state.openWorktreeDefaultPath = "";
   state.openWorktreeBaseBranchName = "";
+  el("worktreeDiscoverPath").value = "";
+  el("worktreeWorkspaceLabel").value = "";
+  state.workspaceCreateSuggestedLabel = "";
   el("worktreeNewBranch").value = "";
   el("worktreeNewBase").value = "";
   el("worktreeNewLabel").value = "";
@@ -143,6 +146,7 @@ function openWorktreesForRepo(keyToken) {
     rows = allRows.filter((w) => w.is_linked_worktree);
   const source = allRows[0] || rows[0] || {};
   state.openWorktreeSelected = null;
+  state.openWorktreeDiscoveryError = "";
   state.openWorktreeSource = {
     workspace_id: source.source_workspace_id || null,
     cwd: source.source_cwd || null,
@@ -180,6 +184,7 @@ function openWorktreesForRepo(keyToken) {
   el("worktreeOpenError").textContent = "";
   el("worktreeDiscoverPath").value =
     source.source_cwd || source.source_repo_root || "";
+  syncSmartWorkspaceLabel();
   renderWorktreeOpenList();
   el("worktreeOpenModal").style.display = "grid";
   loadWorktreeBranchOptions();
@@ -452,9 +457,19 @@ function scheduleWorktreeAutodiscover() {
   );
 }
 function updateWorktreeNewVisibility() {
-  const section = el("worktreeNewSection");
+  const section = el("worktreeNewSection"),
+    workspaceSection = el("worktreeWorkspaceSection"),
+    hint = el("worktreeWorkspaceHint"),
+    hasPath = !!el("worktreeDiscoverPath").value.trim();
   if (section)
     section.style.display = state.openWorktreeSource ? "block" : "none";
+  if (workspaceSection)
+    workspaceSection.style.display = hasPath ? "block" : "none";
+  if (hint) {
+    hint.textContent = state.openWorktreeSource
+      ? "Opens this Git repo folder directly and ignores linked worktrees."
+      : "Only workspace creation is available for non-Git folders.";
+  }
 }
 function worktreeOpenRowTitle(w) {
   const pathName = (w.path || "").split(/[\\/]/).filter(Boolean).pop();
@@ -468,7 +483,13 @@ function renderWorktreeOpenList() {
   syncWorktreePathOptions(rows);
   updateWorktreeNewVisibility();
   if (!rows.length) {
-    list.innerHTML = `<div class="worktree-open-empty">${state.openWorktreeSource ? "No linked worktrees found. Create a new one below." : "Enter a repo path or worktrees folder. Discovery starts automatically."}</div>`;
+    const path = el("worktreeDiscoverPath").value.trim();
+    let message = "Enter a folder. Git repos are discovered automatically.";
+    if (state.openWorktreeSource)
+      message = "Git repo found. No linked worktrees found; create a new worktree or open the repo as a workspace.";
+    else if (path)
+      message = "No Git worktrees available for this folder. Create a workspace instead.";
+    list.innerHTML = `<div class="worktree-open-empty">${message}</div>`;
     return;
   }
   list.innerHTML = rows
@@ -491,6 +512,7 @@ async function discoverWorktrees() {
     const r = await api(url);
     const source = (r.result || {}).source || {};
     const sourceCwd = textValue(source.source_checkout_path) || path || null;
+    state.openWorktreeDiscoveryError = "";
     const previousSourceKey = worktreeSourceKey(state.openWorktreeSource);
     state.openWorktreeSource = {
       workspace_id: source.source_workspace_id || null,
@@ -522,14 +544,54 @@ async function discoverWorktrees() {
     syncWorktreeCheckoutPath();
   } catch (ex) {
     state.openWorktreeSource = null;
+    state.openWorktreeDiscoveryError = ex.message || String(ex);
     state.openWorktreeRows = [];
     state.openWorktreeAllRows = [];
     state.openWorktreeBranchSourceKey = "";
     syncWorktreeBranchOptions([]);
     renderWorktreeOpenList();
-    err.textContent = ex.message || String(ex);
+    err.textContent = "";
   } finally {
     setWorktreeLoading(false);
+  }
+}
+function syncSmartWorkspaceLabel() {
+  const pathInput = el("worktreeDiscoverPath"),
+    labelInput = el("worktreeWorkspaceLabel");
+  if (!pathInput || !labelInput) return;
+  const previous = state.workspaceCreateSuggestedLabel || "",
+    next = pathBasename(pathInput.value.trim()) || "workspace";
+  if (!labelInput.value.trim() || labelInput.value.trim() === previous)
+    labelInput.value = next;
+  state.workspaceCreateSuggestedLabel = next;
+}
+async function createWorkspaceFromSmartModal() {
+  const err = el("worktreeOpenError"),
+    submit = el("worktreeWorkspaceSubmit"),
+    cwd = el("worktreeDiscoverPath").value.trim(),
+    label = el("worktreeWorkspaceLabel").value.trim();
+  err.textContent = "";
+  if (!cwd) {
+    err.textContent = "Folder is required.";
+    return;
+  }
+  if (!label) {
+    err.textContent = "Workspace name is required.";
+    return;
+  }
+  submit.disabled = true;
+  try {
+    const r = await api("/api/workspaces", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ label, cwd }),
+    });
+    closeWorktreeOpenModal();
+    go(r.result.workspace.workspace_id);
+  } catch (ex) {
+    err.textContent = ex.message || String(ex);
+  } finally {
+    submit.disabled = false;
   }
 }
 async function openDiscoveredWorktree(index) {

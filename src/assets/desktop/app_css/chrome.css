@@ -168,9 +168,9 @@
   flex: none;
 }
 .head #newWs,
-.head #openWorktrees,
 .head #terminalWorkspaceToggle,
 .head #gitWorkspaceToggle,
+.head #fileWorkspaceToggle,
 .head .shell-action {
   width: 34px;
   height: 34px;
@@ -178,32 +178,92 @@
   display: grid;
   place-items: center;
 }
+.shell-mode-group {
+  align-items: center;
+  background: transparent;
+  border: 1px solid var(--accent-2-border);
+  border-radius: 11px;
+  display: inline-flex;
+  gap: 0;
+  height: 34px;
+  overflow: hidden;
+  padding: 0;
+}
 .head #newWs,
-.head #openWorktrees,
 .head .no-sleep-control.active {
   background: var(--accent-2);
   color: var(--accent-1);
   border: 1px solid var(--accent-2-border);
 }
-.head .shell-action,
 .head .no-sleep-control {
   background: var(--accent-2);
   color: var(--accent-1);
   border: 1px solid var(--accent-2-border);
 }
-.head .shell-action.active,
+.head .shell-mode-group .shell-action,
+.head .shell-mode-group .git-workspace-toggle,
+.head .shell-mode-group .git-workspace-toggle.closed,
+.head .shell-mode-group .git-workspace-toggle.nogit,
+.head .shell-mode-group .git-workspace-toggle.unknown {
+  background: var(--accent-2);
+  border: 0;
+  border-radius: 0;
+  color: var(--accent-1);
+  height: 34px;
+  width: 30px;
+}
+.head .shell-mode-group .shell-action + .shell-action {
+  border-left: 1px solid var(--accent-2-border);
+}
+.head .shell-mode-group .shell-action:first-child {
+  border-bottom-left-radius: 10px;
+  border-top-left-radius: 10px;
+}
+.head .shell-mode-group .shell-action:last-child {
+  border-bottom-right-radius: 10px;
+  border-top-right-radius: 10px;
+}
+.head > .shell-action,
+.head .no-sleep-control {
+  background: var(--accent-2);
+  color: var(--accent-1);
+  border: 1px solid var(--accent-2-border);
+}
+.head .shell-mode-group .shell-action.active,
+.head .shell-mode-group .git-workspace-toggle.active,
+.head .shell-mode-group .git-workspace-toggle.open {
+  background: var(--accent-1);
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--accent-1), transparent 74%);
+  color: var(--accent-fg);
+}
+.head > .shell-action.active,
 .head .no-sleep-control.active {
   background: var(--accent-1);
   color: var(--accent-fg);
   border: 1px solid var(--accent-1);
 }
-.head .shell-action:hover,
+.head .shell-mode-group .shell-action:hover,
+.head .shell-mode-group .shell-action:focus,
+.head .shell-mode-group .git-workspace-toggle:hover,
+.head .shell-mode-group .git-workspace-toggle:focus {
+  background: var(--control-hover);
+  border-color: var(--accent);
+  color: var(--accent-1);
+}
+.head .shell-mode-group .shell-action.active:hover,
+.head .shell-mode-group .shell-action.active:focus,
+.head .shell-mode-group .git-workspace-toggle.active:hover,
+.head .shell-mode-group .git-workspace-toggle.active:focus,
+.head .shell-mode-group .git-workspace-toggle.open:hover,
+.head .shell-mode-group .git-workspace-toggle.open:focus {
+  background: var(--accent-1);
+  color: var(--accent-fg);
+}
+.head > .shell-action:hover,
 .head #newWs:hover,
-.head #openWorktrees:hover,
 .head .no-sleep-control:hover,
-.head .shell-action:focus,
+.head > .shell-action:focus,
 .head #newWs:focus,
-.head #openWorktrees:focus,
 .head .no-sleep-control:focus {
   background: var(--control-hover);
   border-color: var(--accent);

@@ -1448,10 +1448,87 @@ async fn workspaces(
     if let Err(response) = require_auth(&state, &headers, remote) {
         return response;
     }
-    proxy_request(
-        &api_for_headers(&state, &headers),
+    let api = api_for_headers(&state, &headers);
+    match api.request_value(
         json!({ "id": "web:workspace:list", "method": "workspace.list", "params": {} }),
-    )
+    ) {
+        Ok(mut value) => {
+            if let Ok(panes) = api.request_value(json!({ "id": "web:pane:list:workspace-cwds", "method": "pane.list", "params": { "workspace_id": null } })) {
+                enrich_workspace_cwds(&mut value, &panes);
+            }
+            Json(value).into_response()
+        }
+        Err(err) => (StatusCode::BAD_GATEWAY, Json(json!({ "error": err }))).into_response(),
+    }
+}
+
+fn enrich_workspace_cwds(workspaces: &mut serde_json::Value, panes: &serde_json::Value) {
+    use std::collections::HashMap;
+
+    let mut cwd_by_workspace = HashMap::<String, (Option<String>, Option<String>)>::new();
+    let pane_items = panes
+        .pointer("/result/panes")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten();
+    for pane in pane_items {
+        let Some(workspace_id) = pane
+            .get("workspace_id")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        cwd_by_workspace
+            .entry(workspace_id.to_string())
+            .or_insert_with(|| {
+                (
+                    pane.get("cwd")
+                        .and_then(serde_json::Value::as_str)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string),
+                    pane.get("foreground_cwd")
+                        .and_then(serde_json::Value::as_str)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string),
+                )
+            });
+    }
+
+    let workspace_items = workspaces
+        .pointer_mut("/result/workspaces")
+        .and_then(serde_json::Value::as_array_mut)
+        .into_iter()
+        .flatten();
+    for workspace in workspace_items {
+        let Some(workspace_id) = workspace
+            .get("workspace_id")
+            .and_then(serde_json::Value::as_str)
+        else {
+            continue;
+        };
+        let Some((cwd, foreground_cwd)) = cwd_by_workspace.get(workspace_id) else {
+            continue;
+        };
+        if workspace
+            .get("cwd")
+            .and_then(serde_json::Value::as_str)
+            .is_none()
+        {
+            if let Some(cwd) = cwd {
+                workspace["cwd"] = json!(cwd);
+            }
+        }
+        if workspace
+            .get("foreground_cwd")
+            .and_then(serde_json::Value::as_str)
+            .is_none()
+        {
+            if let Some(foreground_cwd) = foreground_cwd {
+                workspace["foreground_cwd"] = json!(foreground_cwd);
+            }
+        }
+    }
 }
 
 fn workspace_order_key(state: &WebState, headers: &HeaderMap) -> String {
@@ -3120,6 +3197,35 @@ mod tests {
 
         headers.insert("x-herdr-session", HeaderValue::from_static("work"));
         assert_eq!(workspace_order_key(&state, &headers), "work");
+    }
+
+    #[test]
+    fn enriches_workspace_cwd_from_panes() {
+        let mut workspaces = json!({
+            "result": {
+                "workspaces": [
+                    { "workspace_id": "ws1", "label": "repo" },
+                    { "workspace_id": "ws2", "label": "keeps", "cwd": "/already" }
+                ]
+            }
+        });
+        let panes = json!({
+            "result": {
+                "panes": [
+                    { "workspace_id": "ws1", "cwd": "/repo", "foreground_cwd": "/repo/sub" },
+                    { "workspace_id": "ws2", "cwd": "/ignored", "foreground_cwd": "/ignored/sub" }
+                ]
+            }
+        });
+
+        enrich_workspace_cwds(&mut workspaces, &panes);
+
+        assert_eq!(workspaces["result"]["workspaces"][0]["cwd"], "/repo");
+        assert_eq!(
+            workspaces["result"]["workspaces"][0]["foreground_cwd"],
+            "/repo/sub"
+        );
+        assert_eq!(workspaces["result"]["workspaces"][1]["cwd"], "/already");
     }
 
     #[test]
