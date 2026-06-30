@@ -727,6 +727,10 @@ fn app_router(state: WebState) -> Router {
         .route("/assets/mobile/app.js", get(mobile_js))
         .route("/assets/xterm.js", get(xterm_js))
         .route("/assets/xterm.css", get(xterm_css))
+        .route(
+            "/assets/fonts/JetBrainsMonoNerdFontMono-Regular.ttf",
+            get(jetbrains_mono_nerd_font),
+        )
         .route("/assets/icons/help.svg", get(icon_help_svg))
         .route("/assets/icons/settings.svg", get(icon_settings_svg))
         .route("/assets/icons/theme-auto.svg", get(icon_theme_auto_svg))
@@ -3618,6 +3622,18 @@ mod tests {
             )
             .await
             .unwrap();
+        let font = app
+            .clone()
+            .oneshot(
+                request(
+                    Method::GET,
+                    "/assets/fonts/JetBrainsMonoNerdFontMono-Regular.ttf",
+                )
+                .body(Body::empty())
+                .unwrap(),
+            )
+            .await
+            .unwrap();
         let app_js = app
             .clone()
             .oneshot(
@@ -3773,6 +3789,7 @@ mod tests {
 
         assert_eq!(js.status(), StatusCode::OK);
         assert_eq!(css.status(), StatusCode::OK);
+        assert_eq!(font.status(), StatusCode::OK);
         assert_eq!(app_js.status(), StatusCode::OK);
         assert_eq!(app_boot_js.status(), StatusCode::OK);
         assert_eq!(app_core_js.status(), StatusCode::OK);
@@ -3798,6 +3815,7 @@ mod tests {
             .to_str()
             .unwrap()
             .contains("text/css"));
+        assert_eq!(font.headers()[header::CONTENT_TYPE], "font/ttf");
         assert!(app_js.headers()[header::CONTENT_TYPE]
             .to_str()
             .unwrap()
@@ -3866,6 +3884,13 @@ mod tests {
                 > 1000
         );
         assert!(to_bytes(css.into_body(), 1024 * 1024).await.unwrap().len() > 100);
+        assert!(
+            to_bytes(font.into_body(), 4 * 1024 * 1024)
+                .await
+                .unwrap()
+                .len()
+                > 2 * 1024 * 1024
+        );
         assert!(
             to_bytes(app_js.into_body(), 1024 * 1024)
                 .await
