@@ -168,6 +168,16 @@ describe("app bundle load", () => {
     match(source, /HerdrGitUi\.isVisible\(\)\)\n\s+return false;/);
   });
 
+  it("defines Git pull actions and reset mode prompts", () => {
+    match(gitUiSource, /Pull current/);
+    match(gitUiSource, /Pull main\/master/);
+    match(gitUiSource, /pull\(target\) \{/);
+    match(gitUiSource, /\/api\/git-ui\/pull/);
+    match(gitUiSource, /Strategy: merge, rebase, ff-only/);
+    match(gitUiSource, /Mode: soft, mixed, hard/);
+    match(gitUiSource, /\["soft", "mixed", "hard"\]/);
+  });
+
   it("renders shortcut editor with collision detection", () => {
     const ctx = context();
     vm.runInContext(source, ctx);

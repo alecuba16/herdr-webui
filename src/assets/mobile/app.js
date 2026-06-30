@@ -505,6 +505,18 @@
     return gitPost("/api/git-ui/commit", { title, body });
   }
 
+  function gitPull(target) {
+    const status = state.gitStatus || {};
+    const label = target === "main" ? "origin main/master" : "current branch upstream";
+    const strategy = prompt(`Pull ${label}. Strategy: merge, rebase, ff-only`, "rebase");
+    if (!strategy) return;
+    const normalized = String(strategy).trim().toLowerCase();
+    if (!["merge", "rebase", "ff-only"].includes(normalized)) return alert("Pull strategy must be merge, rebase, or ff-only");
+    const autostash = confirm("Autostash local changes before pull? Cancel keeps current worktree as-is.");
+    if (target === "main" && !confirm(`Pull ${label} into ${status.branch || "current branch"}?`)) return;
+    return gitPost("/api/git-ui/pull", { target, strategy: normalized, autostash });
+  }
+
   function renderGitFileRow(file, kind) {
     const encoded = encodeURIComponent(file);
     const encodedArg = jsArg(encoded);
@@ -541,7 +553,7 @@
     const canUnstage = paths.staged.length;
     const canCommit = paths.staged.length;
     const disabled = state.gitMutating ? "disabled" : "";
-    screen.innerHTML = `<section class="mobile-section"><h2>Git</h2><p class="mobile-help">${escapeHtml(status.branch || "detached")} · ${escapeHtml(status.state || "")}</p>${state.gitMutating ? '<div class="mobile-loading">Working</div>' : ""}<div class="mobile-actions mobile-actions-wrap"><button class="mobile-btn primary" onclick="HerdrMobile.loadGitStatus()" ${disabled}>Refresh</button><button class="mobile-btn" onclick="HerdrMobile.gitStageAll()" ${disabled} ${canStage ? "" : "disabled"}>Stage all</button><button class="mobile-btn" onclick="HerdrMobile.gitUnstageAll()" ${disabled} ${canUnstage ? "" : "disabled"}>Unstage all</button><button class="mobile-btn" onclick="HerdrMobile.gitStashAll()" ${disabled}>Stash</button><button class="mobile-btn primary" onclick="HerdrMobile.gitCommit()" ${disabled} ${canCommit ? "" : "disabled"}>Commit</button></div>${rows}</section>`;
+    screen.innerHTML = `<section class="mobile-section"><h2>Git</h2><p class="mobile-help">${escapeHtml(status.branch || "detached")} · ${escapeHtml(status.state || "")}</p>${state.gitMutating ? '<div class="mobile-loading">Working</div>' : ""}<div class="mobile-actions mobile-actions-wrap"><button class="mobile-btn primary" onclick="HerdrMobile.loadGitStatus()" ${disabled}>Refresh</button><button class="mobile-btn" onclick="HerdrMobile.gitPull('current')" ${disabled}>Pull current</button><button class="mobile-btn" onclick="HerdrMobile.gitPull('main')" ${disabled}>Pull main/master</button><button class="mobile-btn" onclick="HerdrMobile.gitStageAll()" ${disabled} ${canStage ? "" : "disabled"}>Stage all</button><button class="mobile-btn" onclick="HerdrMobile.gitUnstageAll()" ${disabled} ${canUnstage ? "" : "disabled"}>Unstage all</button><button class="mobile-btn" onclick="HerdrMobile.gitStashAll()" ${disabled}>Stash</button><button class="mobile-btn primary" onclick="HerdrMobile.gitCommit()" ${disabled} ${canCommit ? "" : "disabled"}>Commit</button></div>${rows}</section>`;
   }
 
   function renderTerminalTabsWithAdd() {
@@ -766,6 +778,7 @@
     gitUnstageAll,
     gitStashAll,
     gitCommit,
+    gitPull,
     filesToggle: mobileFileBrowser.toggle,
     filesSelect: mobileFileBrowser.select,
     filesUp: mobileFileBrowser.up,

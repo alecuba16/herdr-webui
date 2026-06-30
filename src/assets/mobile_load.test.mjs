@@ -60,8 +60,9 @@ function context(pathname = "/") {
       protocol: "http:",
       host: "127.0.0.1:8787",
     },
-    prompt: () => "renamed.txt",
+    prompt: (message) => String(message || "").startsWith("Pull ") ? "rebase" : "renamed.txt",
     confirm: () => true,
+    alert() {},
     localStorage: { getItem: () => null, setItem() {} },
     window: null,
     globalThis: null,
@@ -397,6 +398,7 @@ describe("mobile bundle load", () => {
     ok(html.includes("HerdrMobile.gitStageAll"));
     ok(html.includes("HerdrMobile.gitUnstageAll"));
     ok(html.includes("HerdrMobile.gitCommit"));
+    ok(html.includes("HerdrMobile.gitPull"));
     ok(html.includes("HerdrMobile.gitFileAction('discard',"));
 
     await ctx.HerdrMobile.gitStageAll();
@@ -404,6 +406,8 @@ describe("mobile bundle load", () => {
     await ctx.HerdrMobile.gitFileAction("stash", encodeURIComponent("edit.txt"));
     await ctx.HerdrMobile.gitFileAction("discard", encodeURIComponent("edit.txt"));
     await ctx.HerdrMobile.gitCommit();
+    await ctx.HerdrMobile.gitPull("current");
+    await ctx.HerdrMobile.gitPull("main");
 
     const stage = ctx.requests.find((request) => request.url === "/api/git-ui/stage");
     ok(stage);
@@ -424,5 +428,10 @@ describe("mobile bundle load", () => {
     const commit = ctx.requests.find((request) => request.url === "/api/git-ui/commit");
     ok(commit);
     deepEqual(JSON.parse(commit.opt.body), { cwd: "/tmp/alpha", title: "renamed.txt", body: "renamed.txt" });
+
+    const pulls = ctx.requests.filter((request) => request.url === "/api/git-ui/pull");
+    equal(pulls.length, 2);
+    deepEqual(JSON.parse(pulls[0].opt.body), { cwd: "/tmp/alpha", target: "current", strategy: "rebase", autostash: true });
+    deepEqual(JSON.parse(pulls[1].opt.body), { cwd: "/tmp/alpha", target: "main", strategy: "rebase", autostash: true });
   });
 });

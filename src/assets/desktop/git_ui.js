@@ -631,7 +631,7 @@
       ? `${(s.conflicted || []).length ? section("Conflicted", s.conflicted, "U") : ""}${section("Staged", s.staged, "S")}${section("Unstaged", s.unstaged, "M")}${section("Untracked", s.untracked, "?")}`
       : section("Compared", view.compareFilePaths && view.compareFilePaths.length ? view.compareFilePaths : ((view.diff && view.diff.files) || []).map((file) => file.path), "C");
     const stageLabel = (s.staged || []).length ? "Unstage all" : "Stage all";
-    return `<aside class="git-ui-side"><div class="git-ui-head"><div><div class="git-ui-title">Git</div><div class="git-ui-subtitle">${esc(s.state || "closed")} · ${esc(compactPath(s.repo_path))}</div><button class="git-ui-branch-pill" onclick="HerdrGitUi.openBranchModal()">${esc(s.branch || view.title || "No branch")}</button></div></div>${view.error ? `<div class="git-ui-error">${esc(view.error)}</div>` : ""}<div class="git-ui-toolbar"><div class="git-ui-tabs">${tabs.map((tab) => `<button class="git-ui-btn ${view.tab === tab.id ? "active" : ""}" onclick="HerdrGitUi.tab('${tab.id}')">${tab.label}</button>`).join("")}</div></div><div class="git-ui-toolbar"><div class="git-ui-toolbar-title">Worktree actions</div><div class="git-ui-actions"><button class="git-ui-btn primary" onclick="HerdrGitUi.tab('commit')">Commit</button><button class="git-ui-btn" onclick="HerdrGitUi.refresh()">Refresh</button><button class="git-ui-btn" onclick="HerdrGitUi.toggleStageAll()">${stageLabel}</button><button class="git-ui-btn" onclick="HerdrGitUi.compareCurrent()">Current changes</button><button class="git-ui-btn" onclick="HerdrGitUi.rebase()">Rebase</button><button class="git-ui-btn danger" onclick="HerdrGitUi.reset()">Reset</button></div></div>${fileSections}</aside>`;
+    return `<aside class="git-ui-side"><div class="git-ui-head"><div><div class="git-ui-title">Git</div><div class="git-ui-subtitle">${esc(s.state || "closed")} · ${esc(compactPath(s.repo_path))}</div><button class="git-ui-branch-pill" onclick="HerdrGitUi.openBranchModal()">${esc(s.branch || view.title || "No branch")}</button></div></div>${view.error ? `<div class="git-ui-error">${esc(view.error)}</div>` : ""}<div class="git-ui-toolbar"><div class="git-ui-tabs">${tabs.map((tab) => `<button class="git-ui-btn ${view.tab === tab.id ? "active" : ""}" onclick="HerdrGitUi.tab('${tab.id}')">${tab.label}</button>`).join("")}</div></div><div class="git-ui-toolbar"><div class="git-ui-toolbar-title">Worktree actions</div><div class="git-ui-actions"><button class="git-ui-btn primary" onclick="HerdrGitUi.tab('commit')">Commit</button><button class="git-ui-btn" onclick="HerdrGitUi.refresh()">Refresh</button><button class="git-ui-btn" onclick="HerdrGitUi.pull('current')">Pull current</button><button class="git-ui-btn" onclick="HerdrGitUi.pull('main')">Pull main/master</button><button class="git-ui-btn" onclick="HerdrGitUi.toggleStageAll()">${stageLabel}</button><button class="git-ui-btn" onclick="HerdrGitUi.compareCurrent()">Current changes</button><button class="git-ui-btn" onclick="HerdrGitUi.rebase()">Rebase</button><button class="git-ui-btn danger" onclick="HerdrGitUi.reset()">Reset</button></div></div>${fileSections}</aside>`;
   }
 
   function renderFileToolbar(activeTab) {
@@ -1555,8 +1555,24 @@
       if (!ref) return;
       const mode = prompt("Mode: soft, mixed, hard", "soft");
       if (!mode) return;
-      const confirmation = mode === "hard" ? prompt('Type "reset hard" to confirm') : "";
-      post("/api/git-ui/reset", { cwd: active().cwd, ref_name: ref, mode, confirmation });
+      const normalized = String(mode).trim().toLowerCase();
+      if (!["soft", "mixed", "hard"].includes(normalized)) return alert("Reset mode must be soft, mixed, or hard");
+      const confirmation = normalized === "hard" ? prompt('Type "reset hard" to confirm') : "";
+      if (confirmation === null) return;
+      post("/api/git-ui/reset", { cwd: active().cwd, ref_name: ref, mode: normalized, confirmation });
+    },
+    pull(target) {
+      const view = active();
+      if (!view) return;
+      const label = target === "main" ? "origin main/master" : "current branch upstream";
+      const strategy = prompt(`Pull ${label}. Strategy: merge, rebase, ff-only`, "rebase");
+      if (!strategy) return;
+      const normalized = String(strategy).trim().toLowerCase();
+      if (!["merge", "rebase", "ff-only"].includes(normalized)) return alert("Pull strategy must be merge, rebase, or ff-only");
+      const autostash = confirm("Autostash local changes before pull? Cancel keeps current worktree as-is.");
+      const confirmation = target === "main" ? confirm(`Pull ${label} into ${((view.status || {}).branch) || "current branch"}?`) : true;
+      if (!confirmation) return;
+      post("/api/git-ui/pull", { cwd: view.cwd, target, strategy: normalized, autostash });
     },
     rebase() {
       const view = active();
@@ -1572,9 +1588,9 @@
     resetSelected(mode) {
       const view = active();
       const ref = ((view && view.selectedLogCommits) || [])[0];
-      if (!ref || !["soft", "hard"].includes(mode)) return;
+      if (!ref || !["soft", "mixed", "hard"].includes(mode)) return;
       const label = ref.slice(0, 12);
-      const confirmation = mode === "hard" ? prompt(`Hard reset to ${label}. Type "reset hard" to confirm`) : (confirm(`Soft reset to ${label}?`) ? "" : null);
+      const confirmation = mode === "hard" ? prompt(`Hard reset to ${label}. Type "reset hard" to confirm`) : (confirm(`${mode[0].toUpperCase()}${mode.slice(1)} reset to ${label}?`) ? "" : null);
       if (confirmation === null) return;
       post("/api/git-ui/reset", { cwd: view.cwd, ref_name: ref, mode, confirmation });
     },

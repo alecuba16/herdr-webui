@@ -34,6 +34,7 @@ pub(crate) fn routes() -> Router<WebState> {
         .route("/api/git-ui/stash-apply", post(git_ui_stash_apply))
         .route("/api/git-ui/stash-drop", post(git_ui_stash_drop))
         .route("/api/git-ui/switch", post(git_ui_switch))
+        .route("/api/git-ui/pull", post(git_ui_pull))
         .route("/api/git-ui/reset", post(git_ui_reset))
         .route("/api/git-ui/rebase", post(git_ui_rebase))
         .route("/api/git-ui/commit", post(git_ui_commit))
@@ -90,6 +91,14 @@ struct GitUiResetRequest {
     mode: String,
     ref_name: String,
     confirmation: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct GitUiPullRequest {
+    cwd: String,
+    target: String,
+    strategy: String,
+    autostash: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -1184,6 +1193,66 @@ fn git_ui_default_base_ref(cwd: &str) -> Result<String, String> {
     Err("could not find main or master ref".to_string())
 }
 
+fn git_ui_default_remote_base_ref(cwd: &str) -> Result<String, String> {
+    for candidate in ["main", "master"] {
+        let remote_ref = format!("refs/remotes/origin/{candidate}");
+        if git_ui_text(cwd, &["show-ref", "--verify", remote_ref.as_str()]).is_ok() {
+            return Ok(candidate.to_string());
+        }
+    }
+    Err("could not find origin/main or origin/master".to_string())
+}
+
+fn git_ui_pull_args(body: &GitUiPullRequest, branch: Option<&str>) -> Result<Vec<String>, String> {
+    let mut args = vec!["pull".to_string()];
+    match body.strategy.trim() {
+        "merge" => args.push("--no-rebase".to_string()),
+        "rebase" => args.push("--rebase".to_string()),
+        "ff-only" => args.push("--ff-only".to_string()),
+        _ => return Err("invalid pull strategy".to_string()),
+    }
+    if body.autostash.unwrap_or(false) {
+        args.push("--autostash".to_string());
+    }
+    match body.target.trim() {
+        "current" => {}
+        "main" => {
+            let branch = branch.ok_or_else(|| "main/master branch is required".to_string())?;
+            args.push("origin".to_string());
+            args.push(safe_git_token(branch, "branch")?.to_string());
+        }
+        _ => return Err("invalid pull target".to_string()),
+    }
+    Ok(args)
+}
+
+async fn git_ui_pull(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    Json(body): Json<GitUiPullRequest>,
+) -> Response {
+    if let Err(response) = git_ui_auth(&state, &headers, remote) {
+        return response;
+    }
+    let branch = if body.target.trim() == "main" {
+        match git_ui_default_remote_base_ref(&body.cwd) {
+            Ok(value) => Some(value),
+            Err(err) => return git_json_error(StatusCode::BAD_REQUEST, err),
+        }
+    } else {
+        None
+    };
+    let args = match git_ui_pull_args(&body, branch.as_deref()) {
+        Ok(value) => value,
+        Err(err) => return git_json_error(StatusCode::BAD_REQUEST, err),
+    };
+    match git_ui_text_strings(&body.cwd, &args) {
+        Ok(text) => Json(json!({ "ok": true, "message": text, "branch": branch })).into_response(),
+        Err(err) => git_json_error(StatusCode::BAD_GATEWAY, err),
+    }
+}
+
 async fn git_ui_rebase(
     State(state): State<WebState>,
     headers: HeaderMap,
@@ -1631,6 +1700,37 @@ mod tests {
             confirmed: None,
         };
         assert!(git_ui_paths(&unsafe_path).is_err());
+    }
+
+    #[test]
+    fn builds_git_pull_args_for_targets_and_strategies() {
+        let current = GitUiPullRequest {
+            cwd: "/repo".to_string(),
+            target: "current".to_string(),
+            strategy: "rebase".to_string(),
+            autostash: Some(true),
+        };
+        assert_eq!(
+            git_ui_pull_args(&current, None).unwrap(),
+            vec!["pull", "--rebase", "--autostash"]
+        );
+
+        let main = GitUiPullRequest {
+            cwd: "/repo".to_string(),
+            target: "main".to_string(),
+            strategy: "ff-only".to_string(),
+            autostash: None,
+        };
+        assert_eq!(
+            git_ui_pull_args(&main, Some("main")).unwrap(),
+            vec!["pull", "--ff-only", "origin", "main"]
+        );
+
+        let invalid = GitUiPullRequest {
+            strategy: "squash".to_string(),
+            ..main
+        };
+        assert!(git_ui_pull_args(&invalid, Some("main")).is_err());
     }
 
     #[test]
