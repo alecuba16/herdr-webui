@@ -204,8 +204,15 @@ describe("app bundle load", () => {
     match(fileBrowserSource, /const oldScrollTop = oldSide \? oldSide\.scrollTop : 0;/);
     match(fileBrowserSource, /async function openPath\(cwd, path\)/);
     match(fileBrowserSource, /function showForCwd\(cwd\)/);
-    match(fileBrowserSource, /await loadTree\(parentPath\(path\)\);/);
+    match(fileBrowserSource, /await loadTree\(parentPath\(path\), \{ include: path \}\);/);
+    match(fileBrowserSource, /&include=\$\{encodeURIComponent\(options\.include\)\}/);
+    match(fileBrowserSource, /const TREE_PAGE_SIZE = 200;/);
+    match(fileBrowserSource, /offset=\$\{encodeURIComponent\(state\.nextOffset\)\}/);
+    match(fileBrowserSource, /function handleTreeScroll\(event\)/);
+    match(fileBrowserSource, /loadMoreTree\(\)/);
     match(fileBrowserSource, /nextSide\.scrollTop = oldScrollTop/);
+    match(fileBrowserSource, /scrollIntoView\(\{ block: "center" \}\)/);
+    ok(!fileBrowserSource.includes("Showing first 1000 entries."));
     match(fileBrowserSource, /state\.selected = path;/);
   });
 
