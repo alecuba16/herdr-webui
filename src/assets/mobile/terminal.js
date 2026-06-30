@@ -4,7 +4,12 @@
       termWs,
       openedTerminalElement = null,
       connectedTerminalKey = "",
-      connectedTerminalSize = "";
+      connectedTerminalSize = "",
+      terminalFollowPaused = false,
+      terminalScrollFollowBound = false,
+      inputFlushTimer = null,
+      inputQueue = [];
+    const inputEncoder = new TextEncoder();
 
     function terminalFontFamily() {
       try {
@@ -69,8 +74,14 @@
           scrollback: 10000,
         });
         term.onData((data) => {
-          if (termWs && termWs.readyState === 1) termWs.send(data);
+          sendInputData(data);
         });
+        if (!terminalScrollFollowBound && term.onScroll) {
+          term.onScroll(() => {
+            setTerminalFollowPaused(!terminalAtBottom());
+          });
+          terminalScrollFollowBound = true;
+        }
       }
       terminal.innerHTML = "";
       term.open(terminal);
@@ -87,7 +98,7 @@
               text,
               !!(term && term.modes && term.modes.bracketedPasteMode),
             );
-            termWs.send(paste);
+            sendInputData(paste);
           },
           true,
         );
@@ -97,6 +108,7 @@
       try {
         term.resize(nextSize.cols, nextSize.rows);
       } catch (_) {}
+      updateTerminalFollowButton();
       const ws = new WebSocket(
         wsUrl(
           `/ws/terminal?terminal_id=${encodeURIComponent(state.terminalId)}&cols=${nextSize.cols}&rows=${nextSize.rows}`,
@@ -106,8 +118,9 @@
       ws.binaryType = "arraybuffer";
       ws.onmessage = (event) => {
         if (termWs !== ws) return;
-        if (typeof event.data === "string") term.write(event.data);
-        else term.write(new Uint8Array(event.data));
+        writeTerminalFrame(
+          typeof event.data === "string" ? event.data : new Uint8Array(event.data),
+        );
       };
       ws.onclose = () => {
         if (termWs === ws) {
@@ -128,6 +141,11 @@
       }
       connectedTerminalKey = "";
       connectedTerminalSize = "";
+      inputQueue = [];
+      if (inputFlushTimer) {
+        clearTimeout(inputFlushTimer);
+        inputFlushTimer = null;
+      }
       if (clear && term) term.clear();
     }
 
@@ -140,9 +158,97 @@
         term = null;
       }
       openedTerminalElement = null;
+      terminalScrollFollowBound = false;
+      setTerminalFollowPaused(false);
     }
 
-    return { connect, destroy, disconnect, applyFontFamily };
+    function terminalAtBottom() {
+      try {
+        const buffer = term && term.buffer && term.buffer.active;
+        if (!buffer) return true;
+        return Math.max(0, buffer.baseY - buffer.viewportY) <= 1;
+      } catch (_) {
+        return true;
+      }
+    }
+
+    function setTerminalFollowPaused(paused) {
+      terminalFollowPaused = !!paused;
+      updateTerminalFollowButton();
+    }
+
+    function updateTerminalFollowButton() {
+      const button = el("mobileTerminalFollowButton");
+      if (!button) return;
+      button.hidden = !terminalFollowPaused;
+      button.setAttribute &&
+        button.setAttribute("aria-hidden", terminalFollowPaused ? "false" : "true");
+    }
+
+    function writeTerminalFrame(data) {
+      const shouldPreserve = terminalFollowPaused && !terminalAtBottom();
+      const viewportY =
+        shouldPreserve && term && term.buffer ? term.buffer.active.viewportY : null;
+      const done = () => {
+        if (shouldPreserve && Number.isFinite(viewportY)) {
+          try {
+            term.scrollToLine(viewportY);
+          } catch (_) {}
+        }
+        setTerminalFollowPaused(!terminalAtBottom());
+      };
+      try {
+        term.write(data, done);
+      } catch (_) {
+        term.write(data);
+        done();
+      }
+    }
+
+    function scrollToBottom() {
+      setTerminalFollowPaused(false);
+      try {
+        if (term) term.scrollToBottom();
+      } catch (_) {}
+      try {
+        if (term) term.focus();
+      } catch (_) {}
+    }
+
+    function sendInputData(data) {
+      if (!termWs || termWs.readyState !== 1 || !data) return;
+      const bytes = typeof data === "string" ? inputEncoder.encode(data) : data;
+      const chunkSize = 16 * 1024;
+      if (
+        bytes.length <= 64 * 1024 &&
+        inputQueue.length === 0 &&
+        termWs.bufferedAmount < 1024 * 1024
+      ) {
+        termWs.send(bytes);
+        return;
+      }
+      for (let i = 0; i < bytes.length; i += chunkSize)
+        inputQueue.push(bytes.slice(i, i + chunkSize));
+      scheduleInputFlush();
+    }
+
+    function scheduleInputFlush() {
+      if (inputFlushTimer) return;
+      inputFlushTimer = setTimeout(flushInputQueue, 4);
+    }
+
+    function flushInputQueue() {
+      inputFlushTimer = null;
+      if (!termWs || termWs.readyState !== 1) {
+        inputQueue = [];
+        return;
+      }
+      while (inputQueue.length && termWs.bufferedAmount < 65536)
+        termWs.send(inputQueue.shift());
+      if (inputQueue.length) scheduleInputFlush();
+    }
+
+    return { connect, destroy, disconnect, applyFontFamily, scrollToBottom };
   }
 
   globalThis.HerdrMobileTerminal = { create: createMobileTerminal };
