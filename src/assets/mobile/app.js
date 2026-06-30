@@ -48,6 +48,37 @@
     return document.getElementById(id);
   }
 
+  let largestVisualViewportHeight = 0,
+    terminalResizeTimer = null;
+
+  function updateMobileViewport() {
+    const viewport = window.visualViewport;
+    const height = Math.max(
+      240,
+      Math.floor(
+        (viewport && viewport.height) ||
+          window.innerHeight ||
+          (document.documentElement && document.documentElement.clientHeight) ||
+          0,
+      ),
+    );
+    largestVisualViewportHeight = Math.max(largestVisualViewportHeight, height);
+    document.body.style.setProperty("--herdr-mobile-viewport-height", `${height}px`);
+    document.body.classList.toggle(
+      "mobile-keyboard-open",
+      state.screen === "terminal" && largestVisualViewportHeight - height > 120,
+    );
+  }
+
+  function scheduleTerminalResize() {
+    updateMobileViewport();
+    if (terminalResizeTimer) clearTimeout(terminalResizeTimer);
+    terminalResizeTimer = setTimeout(() => {
+      terminalResizeTimer = null;
+      if (state.screen === "terminal") mobileTerminal.connect();
+    }, 80);
+  }
+
   function selectionPath(ws, tab, pane) {
     return mobileSelectionPath(state.session, ws, tab, pane);
   }
@@ -254,6 +285,7 @@
 
   function render() {
     if (!el("mobileScreen")) renderShell();
+    updateMobileViewport();
     applyTreeIndent();
     const workspace = currentWorkspace();
     el("mobileTitle").textContent = workspaceTitle(workspace);
@@ -691,6 +723,7 @@
   };
 
   renderShell();
+  updateMobileViewport();
   applyTheme();
   parseRoute(true);
   render();
@@ -700,9 +733,9 @@
     parseRoute(true);
     refresh();
   });
-  window.addEventListener("resize", () => {
-    if (state.screen === "terminal") mobileTerminal.connect();
-  });
+  window.addEventListener("resize", scheduleTerminalResize);
+  if (window.visualViewport)
+    window.visualViewport.addEventListener("resize", scheduleTerminalResize);
   document.addEventListener("visibilitychange", syncBrowserFavicon);
   document.addEventListener("pointerdown", mobileAttention.unlockAudio, {
     once: true,
