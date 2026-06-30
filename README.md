@@ -14,7 +14,7 @@ Compatibility:
 
 | WebUI | Herdr | Protocol | Status | Notes |
 | --- | --- | --- | --- | --- |
-| `0.1.0` | `0.7.1` | `14` | Current | Unifies workspace/worktree opening, enriches workspace cwd metadata from backend pane data, and improves Git/File/terminal switch styling and activation. |
+| `0.1.0` | `0.7.1` | `14` | Current | Unifies workspace/worktree opening, enriches workspace cwd metadata from backend pane data, restores Settings search, and reduces browser CPU/memory load for terminal output, large paste, no-sleep polling, and large Git diffs. |
 | `0.0.57` | `0.7.1` | `14` | Tested | Fixes worktree creation source handling, adds optional base-branch pull, improves worktree deletion, Git directory loading, directory picker navigation, and terminal scroll follow controls. |
 | `0.0.49` | `0.7.1` | `14` | Tested | Adds file browser/editor, shared file trees, CodeMirror editing, large Git change-set placeholders, browser notifications, themed favicons, and local snapshot versioning. |
 | `0.0.46` | `0.7.1` | `14` | Tested | Adds configurable WebUI/Git prefix shortcuts, keeps Git drawer keyboard input isolated, and raises Rust line coverage above 70%. |
@@ -118,6 +118,8 @@ The Rust binary embeds frontend assets with `include_str!`, so release artifacts
 
 - Desktop and mobile UI are embedded vanilla HTML/CSS/JS assets. The main shell has no frontend build step; the optional CodeMirror editor bundle is generated from `src/assets/vendor/codemirror_entry.mjs` and checked in.
 - Desktop shell and Git UI assets are split into plain JS/CSS modules and concatenated by `src/assets.rs`; public URLs stay `/assets/desktop/app.js`, `/assets/desktop/app.css`, `/assets/desktop/git-ui.js`, and `/assets/desktop/git-ui.css`.
+- Desktop terminal output is frame-batched in the browser so bursts of WebSocket terminal frames are coalesced before xterm rendering. Pending frames are flushed before reconnect or close to avoid dropping final output.
+- Large terminal paste input is chunked with WebSocket backpressure instead of being sent as one very large browser frame.
 - Prefer moving behavior out of inline handlers into delegated JS listeners and shared CSS classes when touching UI code.
 - SVG icons should live under `src/assets/icons/` and be referenced from CSS or markup, not embedded inline in JS templates.
 
@@ -166,6 +168,13 @@ Sidebar:
 - The footer shows the Herdr brand, current session, shortcut help, and settings.
 - Theme colors are browser-local and expose shared accent variables used by shell controls and the embedded Git UI.
 - No-sleep supports Off, Auto, 1 hour, 2 hours, 4 hours, and Infinite from a compact dropdown.
+- No-sleep status polling is adaptive: WebUI does not keep polling while no-sleep is Off and the server is healthy. Active modes and transient errors still retry so the control stays accurate without idle browser/network churn.
+
+Settings:
+
+- The Settings modal includes a `Search settings` field in the header.
+- Settings search filters grouped settings sections and individual option rows locally in the browser.
+- Opening Settings clears the previous search, refreshes option values, reloads server settings, and focuses the search box.
 
 Panels:
 
@@ -207,7 +216,8 @@ Git UI:
 - File lists are shown as a collapsible folder tree with file-level line counts. Settings can switch the file list to filename-only mode with the full path in the tooltip.
 - Right-click a file for actions such as stash, discard, stage, or unstage. Section-level bulk actions stage or unstage grouped files with confirmation.
 - Commit drafts are stored in browser `localStorage` per workspace/worktree/ref.
-- Large diffs are protected by browser-local Git UI limits. In large change sets, the all-changes view shows GitHub-like file shells and each file body has a `Load diff` button that fetches that file on demand. Individual files over 500 diff lines also show a per-file `Load diff` placeholder. In selected-file view, the configured line limit can still hide very large renders until you explicitly load them. Set the line-limit setting to `0` to disable the selected-file line limit.
+- Large diffs are protected by browser-local Git UI limits. In large change sets, the all-changes view shows GitHub-like file shells and each file body has a `Load diff` button that fetches that file on demand. Individual files over 500 diff lines also show a per-file `Load diff` placeholder. In selected-file view, the configured line limit can still hide very large renders until you explicitly load them. After explicit load, very large files render a safe preview of complete change groups first and offer `Render full diff` for the complete DOM-heavy view. Set the line-limit setting to `0` to disable the selected-file line limit.
+- Hunk stage/unstage and block restore actions are disabled in large-diff preview mode so hidden lines are not mutated accidentally. Render the full diff to enable those actions.
 - Diffs support per-file collapse, collapse/show all, visual change grouping, inline word highlights, context expansion, hunk stage/unstage/restore actions, and per-file blame from the Changes file view.
 - Syntax highlighting is embedded and modular for common project files including JSON, YAML, Python, Java, Rust, Go, JavaScript, TypeScript, CSS, Kotlin, shell, Makefiles, and HTML.
 - Side-by-side hunk editing lets you edit current hunk text, save back to the working tree with a hash guard, and refresh the diff.
@@ -263,6 +273,13 @@ Terminal paste:
 - Pasted text is sanitized before reaching the terminal. Newlines (`\r\n`, `\r`, `\n`) are converted to spaces, and trailing spaces are trimmed.
 - This prevents pasted multiline text from auto-submitting terminal input via implicit Enter.
 - Both desktop and mobile terminals capture paste events in the capture phase before xterm or native handlers process them.
+- Desktop paste sends small input directly and chunks larger paste payloads into bounded frames with WebSocket backpressure, reducing browser main-thread stalls from large clipboard pastes.
+
+Terminal rendering performance:
+
+- Desktop terminal output from Herdr is queued and coalesced once per animation frame before being written to xterm.
+- This reduces CPU use for rapid terminal refresh workloads, spinner-like carriage-return updates, and command output bursts.
+- Browser scroll-follow state and terminal resize/focus work are also scheduled with the terminal frame batch instead of every raw WebSocket message.
 
 Terminal scroll:
 
