@@ -6,19 +6,19 @@ Standalone browser UI for an official Herdr backend session.
 
 ## Highlights
 
-- Desktop and mobile UI with terminal attach, workspace navigation, agent status, Git, and file browsing.
+- Desktop and mobile UI with terminal attach, workspace navigation, agent status, Git, file browsing, and Git-to-file-explorer handoff.
 - Desktop Git UI with status, diffs, commit, log, stash, blame, file history, conflict tools, branch switch, hunk actions, and guarded destructive operations.
-- File explorer/editor backed by authenticated Rust routes with path safety, hash guards, rename, delete, split panes, and shared file trees.
+- File explorer/editor backed by authenticated Rust routes with path safety, bounded backend search, hash guards, rename, delete, split panes, and shared file trees.
 - CodeMirror 6 editor bundle loaded lazily for file editing, previews, syntax highlighting, and side-by-side hunk merge editing.
 - Settings search, shortcut editor, theme colors, terminal font/scroll controls, browser notifications, no-sleep controls, and consistent squared rounded buttons.
-- Backend-offloaded app state and Git metadata to reduce browser CPU/RAM on large workspaces.
+- Backend-offloaded app state, Git metadata, file search, and file tree data to reduce browser CPU/RAM on large workspaces.
 - Embedded assets: release binary contains frontend HTML/CSS/JS.
 
 ## Compatibility
 
 | WebUI | Herdr | Protocol | Status | Notes |
 | --- | --- | --- | --- | --- |
-| `0.0.52` | `0.7.1+` | `14` | Current | Mobile file edit/save/rename/delete, mobile Git stage/unstage/stash/discard/commit actions, improved mobile nav/worktree guard, configurable shortcuts, combined workspace/worktree browser, deep worktree discovery. |
+| `0.0.52` | `0.7.1+` | `14` | Current | Mobile file edit/save/rename/delete, mobile Git stage/unstage/stash/discard/commit actions, Git changed files open directly in Files, backend file search, improved mobile nav/worktree guard, configurable shortcuts, combined workspace/worktree browser, deep worktree discovery. |
 | `0.0.51` | `0.7.1+` | `14` | Supported | Combined workspace/worktree browser, configurable deep worktree discovery, Settings search/UX refresh, squared rounded buttons, CodeMirror merge hunk editing, lazy assets, backend app-state/Git metadata, file explorer/editor. |
 | `0.0.50` | `0.7.1+` | `14` | Supported | Settings search/UX refresh, squared rounded buttons, CodeMirror merge hunk editing, lazy assets, backend app-state/Git metadata, file explorer/editor. |
 | `0.0.49` | `0.7.1` | `14` | Tested | File browser/editor, shared file trees, CodeMirror editing, large Git change-set placeholders, browser notifications, themed favicons, local snapshot versioning. |
@@ -189,6 +189,7 @@ Search and shortcuts:
 - Desktop workspaces and linked worktrees open Files as foreground mode. Git, Files, and terminal modes are mutually exclusive.
 - Rust routes under `/api/file-browser/*` list trees, read files, save files, rename entries, and delete files/folders.
 - Backend canonicalizes paths and rejects traversal outside allowed roots unless parent-folder traversal is explicitly enabled.
+- Search runs in Rust with result and visit limits, skips heavy directories such as `.git`, `node_modules`, `target`, `.venv`, `dist`, and `build`, and uses smart-case matching.
 - Folders lazy-load and default collapsed. `...` row moves to parent.
 - Text files can be previewed or edited. Saves use hash guard to avoid overwriting changed files.
 - Shift-click or context-menu `Open in split` opens another split preview pane.
@@ -203,6 +204,7 @@ Search and shortcuts:
 - Large change sets render lightweight file shells first; individual file diffs load on demand.
 - Git endpoints precompute change counts, diff line counts, and editable hunk models.
 - File lists use compact folder trees with line counts; Settings can switch to filename-only mode.
+- Changed-file context menus can open the same path in Files without leaving the single-page app.
 - Diffs support collapse, word highlights, context expansion, hunk actions, per-file blame, and side-by-side current/previous views.
 - Hunk editing uses CodeMirror `MergeView`: previous side read-only, current side editable, then saved back with hash guard.
 - Mutating/destructive operations require confirmation and validate paths/refs before running Git.
@@ -226,7 +228,15 @@ Search and shortcuts:
 - CodeMirror bundle is generated from `src/assets/vendor/codemirror_entry.mjs` into checked-in `codemirror.bundle.js`.
 - `/api/app-state` aggregates desktop refresh data to reduce request fan-out and repeated browser-side derivation.
 - Git and file-browser backend routes do cheap view-model work in Rust so browser renders less and computes less.
+- Service command execution is behind a small runner abstraction so macOS `launchctl` and Linux `systemctl` behavior is testable without invoking real services.
 - Prefer backend JSON/view-model endpoints over HTMX/WASM/framework rewrites for heavy data paths. Terminal, editor, Git drawer, keyboard routing, and websocket lifecycle stay in explicit JavaScript controllers.
+
+## Testing And Coverage
+
+- Rust coverage is measured with `cargo llvm-cov --summary-only`.
+- Current backend line coverage is about 80%; focused service/file-browser modules are near complete (`service.rs` about 99%, `file_browser.rs` about 99%).
+- Remaining uncovered file-browser/service lines are mostly OS/filesystem race or platform branches that are intentionally not forced through destructive tests.
+- JavaScript smoke tests use Node's native test runner and syntax checks for desktop/mobile bundles.
 
 ## Project Layout
 
@@ -236,7 +246,7 @@ src/assets.rs                       Embedded asset routes and concatenation
 src/file_browser.rs                 File browser API and path safety
 src/git_ui.rs                       Git API routes, diff parsing, metadata models
 src/protocol.rs                     Terminal attach wire protocol
-src/service.rs                      macOS/Linux service helpers
+src/service.rs                      macOS/Linux service helpers and injectable command runner
 src/assets/app.html                 Static HTML shell
 src/assets/desktop/app_js/          Desktop shell JS modules
 src/assets/desktop/app_css/         Desktop shell CSS modules

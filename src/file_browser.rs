@@ -692,6 +692,8 @@ mod tests {
     use axum::body::to_bytes;
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
+    #[cfg(unix)]
+    use std::{os::unix::fs as unix_fs, os::unix::fs::PermissionsExt};
 
     fn test_state() -> WebState {
         let bind = "127.0.0.1:8787".parse::<SocketAddr>().unwrap();
@@ -798,6 +800,58 @@ mod tests {
 
         assert_eq!(name, "grand/parent/child/");
         assert_eq!(relative_to_root(&root, &path), "grand/parent/child");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_helpers_handle_symlink_and_permission_edges() {
+        let root = temp_root("dir-helper-edges");
+        fs::create_dir_all(root.join("many/a")).unwrap();
+        fs::create_dir_all(root.join("many/b")).unwrap();
+        let (name, path) = compact_directory_entry(&root, root.join("many"), "many".to_string());
+        assert_eq!(name, "many/");
+        assert_eq!(relative_to_root(&root, &path), "many");
+
+        let outside = temp_root("dir-helper-outside");
+        fs::create_dir_all(outside.join("child")).unwrap();
+        unix_fs::symlink(&outside, root.join("linked-outside")).unwrap();
+        let (name, path) =
+            compact_directory_entry(&root, root.join("linked-outside"), "linked".to_string());
+        assert_eq!(name, "linked/");
+        assert_eq!(path, root.join("linked-outside"));
+
+        unix_fs::symlink(root.join("missing-target"), root.join("broken-link")).unwrap();
+        let entries = sorted_directory_entries(&root).unwrap();
+        assert!(entries.iter().any(|entry| entry.name == "broken-link"));
+
+        fs::set_permissions(root.join("many"), fs::Permissions::from_mode(0o000)).unwrap();
+        let (name, path) = compact_directory_entry(&root, root.join("many"), "many".to_string());
+        fs::set_permissions(root.join("many"), fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(name, "many/");
+        assert_eq!(relative_to_root(&root, &path), "many");
+
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(outside);
+    }
+
+    #[test]
+    fn search_entries_records_directory_matches_without_size() {
+        let root = temp_root("dir-search-match");
+        fs::create_dir_all(root.join("NeedleDir/child")).unwrap();
+        let mut visits = 0;
+        let mut entries = Vec::new();
+
+        let truncated =
+            search_entries(&root, &root, "NeedleDir", 10, &mut visits, &mut entries).unwrap();
+
+        assert!(!truncated);
+        let dir = entries
+            .iter()
+            .find(|entry| entry.path == "NeedleDir")
+            .unwrap();
+        assert_eq!(dir.kind, "dir");
+        assert_eq!(dir.size, None);
         let _ = fs::remove_dir_all(root);
     }
 
@@ -1679,6 +1733,151 @@ mod tests {
         assert!(cases
             .iter()
             .all(|response| response.status().is_client_error()));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn file_browser_routes_report_permission_failures() {
+        let root = temp_root("permission-failures");
+        fs::write(root.join("unreadable.txt"), "secret").unwrap();
+        fs::create_dir_all(root.join("hash-dir")).unwrap();
+        fs::write(root.join("hash-dir/file.txt"), "secret").unwrap();
+        fs::create_dir_all(root.join("create-blocked")).unwrap();
+        fs::create_dir_all(root.join("rename-blocked")).unwrap();
+        fs::write(root.join("rename-blocked/file.txt"), "x").unwrap();
+        fs::create_dir_all(root.join("delete-file-blocked")).unwrap();
+        fs::write(root.join("delete-file-blocked/file.txt"), "x").unwrap();
+        fs::create_dir_all(root.join("delete-dir-blocked/dir/child")).unwrap();
+
+        fs::set_permissions(
+            root.join("unreadable.txt"),
+            fs::Permissions::from_mode(0o000),
+        )
+        .unwrap();
+        fs::set_permissions(
+            root.join("hash-dir/file.txt"),
+            fs::Permissions::from_mode(0o000),
+        )
+        .unwrap();
+        for path in [
+            "create-blocked",
+            "rename-blocked",
+            "delete-file-blocked",
+            "delete-dir-blocked",
+        ] {
+            fs::set_permissions(root.join(path), fs::Permissions::from_mode(0o555)).unwrap();
+        }
+
+        let state = test_state();
+        let headers = HeaderMap::new();
+        let cwd = root.to_string_lossy().to_string();
+
+        let unreadable = file_browser_file(
+            State(state.clone()),
+            headers.clone(),
+            ConnectInfo(loopback()),
+            Query(FileBrowserQuery {
+                cwd: cwd.clone(),
+                path: Some("unreadable.txt".to_string()),
+                dirs_only: None,
+                depth: None,
+                q: None,
+                limit: None,
+            }),
+        )
+        .await;
+        let unreadable_status = unreadable.status();
+
+        let hash_error = file_browser_write_file(
+            State(state.clone()),
+            headers.clone(),
+            ConnectInfo(loopback()),
+            Json(FileBrowserWriteRequest {
+                cwd: cwd.clone(),
+                path: "hash-dir/file.txt".to_string(),
+                content: "x".to_string(),
+                expected_hash: None,
+            }),
+        )
+        .await;
+        let hash_error_status = hash_error.status();
+
+        let create_error = file_browser_write_file(
+            State(state.clone()),
+            headers.clone(),
+            ConnectInfo(loopback()),
+            Json(FileBrowserWriteRequest {
+                cwd: cwd.clone(),
+                path: "create-blocked/file.txt".to_string(),
+                content: "x".to_string(),
+                expected_hash: None,
+            }),
+        )
+        .await;
+        let create_error_status = create_error.status();
+
+        let rename_error = file_browser_rename(
+            State(state.clone()),
+            headers.clone(),
+            ConnectInfo(loopback()),
+            Json(FileBrowserRenameRequest {
+                cwd: cwd.clone(),
+                path: "rename-blocked/file.txt".to_string(),
+                new_name: "next.txt".to_string(),
+            }),
+        )
+        .await;
+        let rename_error_status = rename_error.status();
+
+        let delete_file_error = file_browser_delete(
+            State(state.clone()),
+            headers.clone(),
+            ConnectInfo(loopback()),
+            Json(FileBrowserDeleteRequest {
+                cwd: cwd.clone(),
+                path: "delete-file-blocked/file.txt".to_string(),
+            }),
+        )
+        .await;
+        let delete_file_error_status = delete_file_error.status();
+
+        let delete_dir_error = file_browser_delete(
+            State(state),
+            headers,
+            ConnectInfo(loopback()),
+            Json(FileBrowserDeleteRequest {
+                cwd,
+                path: "delete-dir-blocked/dir".to_string(),
+            }),
+        )
+        .await;
+        let delete_dir_error_status = delete_dir_error.status();
+
+        fs::set_permissions(
+            root.join("unreadable.txt"),
+            fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        fs::set_permissions(
+            root.join("hash-dir/file.txt"),
+            fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        for path in [
+            "create-blocked",
+            "rename-blocked",
+            "delete-file-blocked",
+            "delete-dir-blocked",
+        ] {
+            fs::set_permissions(root.join(path), fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        assert_eq!(unreadable_status, StatusCode::BAD_GATEWAY);
+        assert_eq!(hash_error_status, StatusCode::BAD_GATEWAY);
+        assert_eq!(create_error_status, StatusCode::BAD_GATEWAY);
+        assert_eq!(rename_error_status, StatusCode::BAD_GATEWAY);
+        assert_eq!(delete_file_error_status, StatusCode::BAD_GATEWAY);
+        assert_eq!(delete_dir_error_status, StatusCode::BAD_GATEWAY);
         let _ = fs::remove_dir_all(root);
     }
 }
