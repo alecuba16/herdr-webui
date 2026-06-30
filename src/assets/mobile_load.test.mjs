@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import { doesNotThrow, equal, ok } from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { TextEncoder } from "node:util";
 import vm from "node:vm";
 
 function element(id = "") {
@@ -9,12 +10,14 @@ function element(id = "") {
     classList: { toggle() {}, add() {}, remove() {} },
     dataset: {},
     style: { setProperty() {} },
+    hidden: false,
     innerHTML: "",
     textContent: "",
     clientWidth: 360,
     clientHeight: 520,
     appendChild() {},
     addEventListener() {},
+    setAttribute() {},
     querySelectorAll() {
       return [];
     },
@@ -35,8 +38,10 @@ function context(pathname = "/") {
   };
   const ctx = {
     console,
+    TextEncoder,
     Uint8Array,
     setTimeout() {},
+    clearTimeout() {},
     document: {
       body: element("body"),
       createElement: () => element(),
@@ -64,12 +69,34 @@ function context(pathname = "/") {
     window: null,
     globalThis: null,
     Terminal: class {
+      constructor() {
+        this.buffer = { active: { baseY: 0, viewportY: 0 } };
+        this.writes = [];
+        this.scrolledToLine = null;
+        this.scrolledToBottom = false;
+        this.onScrollCallback = null;
+        ctx.lastTerminal = this;
+      }
       onData() {}
+      onScroll(callback) {
+        this.onScrollCallback = callback;
+      }
       open() {
         terminalStats.opened += 1;
       }
       resize() {}
-      write() {}
+      write(data, callback) {
+        this.writes.push(data);
+        if (callback) callback();
+      }
+      scrollToLine(line) {
+        this.scrolledToLine = line;
+      }
+      scrollToBottom() {
+        this.scrolledToBottom = true;
+        this.buffer.active.viewportY = this.buffer.active.baseY;
+      }
+      focus() {}
       clear() {}
       dispose() {
         terminalStats.disposed += 1;
@@ -78,6 +105,8 @@ function context(pathname = "/") {
     WebSocket: class {
       constructor() {
         this.readyState = 1;
+        this.bufferedAmount = 0;
+        ctx.lastSocket = this;
       }
       send() {}
       close() {}
@@ -243,6 +272,23 @@ describe("mobile bundle load", () => {
     equal(ctx.terminalStats.disposed, 1);
     ctx.HerdrMobile.showScreen("terminal");
     ok(ctx.terminalStats.opened >= 2);
+  });
+
+  it("shows mobile terminal tail button and preserves scrollback on output", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    ctx.HerdrMobile.showScreen("terminal");
+    ok(source.includes("mobileTerminalFollowButton"));
+    equal(typeof ctx.HerdrMobile.scrollTerminalToBottom, "function");
+    ctx.lastTerminal.buffer.active.baseY = 50;
+    ctx.lastTerminal.buffer.active.viewportY = 20;
+    ctx.lastTerminal.onScrollCallback();
+    ok(ctx.document.getElementById("mobileTerminalFollowButton").hidden === false);
+    ctx.lastSocket.onmessage({ data: "new output" });
+    equal(ctx.lastTerminal.scrolledToLine, 20);
+    ctx.HerdrMobile.scrollTerminalToBottom();
+    ok(ctx.lastTerminal.scrolledToBottom);
   });
 
   it("renders mobile worktree path input and discovers by cwd", async () => {

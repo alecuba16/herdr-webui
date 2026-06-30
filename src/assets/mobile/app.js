@@ -399,7 +399,7 @@
   function renderTerminal() {
     if (!state.terminalId)
       return '<div class="mobile-loading">No terminal selected</div>';
-    return `<div class="mobile-terminal-screen"><div class="mobile-tabs" id="mobileTerminalTabs">${renderTerminalTabsWithAdd()}</div><div class="mobile-terminal-shell" id="terminalShell"><div class="mobile-terminal" id="terminal"></div></div></div>`;
+    return `<div class="mobile-terminal-screen"><div class="mobile-tabs" id="mobileTerminalTabs">${renderTerminalTabsWithAdd()}</div><div class="mobile-terminal-shell" id="terminalShell"><button class="mobile-terminal-follow-button" id="mobileTerminalFollowButton" type="button" hidden title="Go to latest terminal output and resume follow" aria-label="Go to latest terminal output and resume follow" onclick="HerdrMobile.scrollTerminalToBottom()">↓ Tail</button><div class="mobile-terminal" id="terminal"></div></div></div>`;
   }
 
   function currentWorkspaceCwd() {
@@ -677,6 +677,7 @@
     setLayoutPreference: mobileSettings.setLayoutPreference,
     setTerminalFontFamily: mobileSettings.setTerminalFontFamily,
     applyTerminalFontFamily: mobileTerminal.applyFontFamily,
+    scrollTerminalToBottom: mobileTerminal.scrollToBottom,
     currentScreen,
     currentSelection,
     refresh,

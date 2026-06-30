@@ -287,6 +287,7 @@ Terminal scroll:
 - Small trackpad wheel deltas are accumulated before sending scroll commands, preventing tiny events from each scrolling a full line batch.
 - In normal terminal scrollback, scrolling up pauses follow mode and keeps the same viewport position even when new output arrives.
 - When follow mode is paused, a `Tail` button appears. Clicking it scrolls to the latest output and re-enables follow mode.
+- Mobile terminal uses the same scrollback follow behavior and `Tail` button as desktop.
 - In alternate-screen terminal apps, wheel and PageUp/PageDown scroll events are sent to the backend terminal application instead of local browser scrollback.
 
 Terminal font:
