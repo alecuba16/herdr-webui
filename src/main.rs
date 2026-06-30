@@ -2816,6 +2816,67 @@ mod tests {
     }
 
     #[test]
+    fn print_help_and_no_sleep_guard_paths_are_exercised() {
+        print_help();
+
+        #[cfg(unix)]
+        {
+            let child = Command::new("sh").args(["-c", "sleep 1"]).spawn().unwrap();
+            drop(NoSleepGuard { child });
+        }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn start_no_sleep_guard_uses_platform_command() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _guard = env_lock().lock().unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "herdr-webui-no-sleep-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let bin = root.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let command = if cfg!(target_os = "macos") {
+            "caffeinate"
+        } else {
+            "systemd-inhibit"
+        };
+        let path = bin.join(command);
+        fs::write(&path, "#!/bin/sh\nsleep 1\n").unwrap();
+        let mut permissions = fs::metadata(&path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&path, permissions).unwrap();
+
+        let old_path = std::env::var_os("PATH");
+        std::env::set_var(
+            "PATH",
+            format!(
+                "{}:{}",
+                bin.display(),
+                old_path
+                    .as_ref()
+                    .map(|value| value.to_string_lossy())
+                    .unwrap_or_default()
+            ),
+        );
+
+        let guard = start_no_sleep_guard().unwrap();
+        drop(guard);
+
+        if let Some(value) = old_path {
+            std::env::set_var("PATH", value);
+        } else {
+            std::env::remove_var("PATH");
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn rejects_invalid_config_flags() {
         let missing = ["--bind"].map(String::from);
         let invalid_bind = ["--bind", "not-a-socket"].map(String::from);
@@ -2833,6 +2894,82 @@ mod tests {
             WebConfig::parse(&unknown).unwrap_err().kind(),
             io::ErrorKind::InvalidInput
         );
+    }
+
+    #[test]
+    fn settings_helpers_cover_validation_and_parse_errors() {
+        let _guard = env_lock().lock().unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "herdr-webui-settings-errors-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let xdg = root.join("xdg");
+        fs::create_dir_all(&xdg).unwrap();
+        let old_xdg = std::env::var_os("XDG_CONFIG_HOME");
+        let old_home = std::env::var_os("HOME");
+        std::env::set_var("XDG_CONFIG_HOME", &xdg);
+
+        let mut settings = default_runtime_server_settings("127.0.0.1:8787".parse().unwrap());
+        settings.localhost_no_auth = false;
+        assert_eq!(
+            validate_runtime_server_settings(&settings)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        settings.localhost_no_auth = true;
+        settings.no_sleep_auto_cooldown_seconds = 3601;
+        assert_eq!(
+            validate_runtime_server_settings(&settings)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+
+        fs::create_dir_all(server_settings_path().parent().unwrap()).unwrap();
+        fs::write(server_settings_path(), "not json").unwrap();
+        assert_eq!(
+            load_runtime_server_settings("127.0.0.1:8787".parse().unwrap())
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
+        fs::write(server_settings_path(), r#"{"bind":"not-a-bind"}"#).unwrap();
+        assert_eq!(
+            load_runtime_server_settings("127.0.0.1:8787".parse().unwrap())
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+        fs::write(
+            server_settings_path(),
+            r#"{"bind":"127.0.0.1:9999","user":"","password":"","localhost_no_auth":true,"no_sleep_auto_cooldown_seconds":12}"#,
+        )
+        .unwrap();
+        let parsed = load_runtime_server_settings("127.0.0.1:8787".parse().unwrap()).unwrap();
+        assert_eq!(parsed.user, None);
+        assert_eq!(parsed.password, None);
+        assert_eq!(parsed.no_sleep_auto_cooldown_seconds, 12);
+
+        std::env::remove_var("XDG_CONFIG_HOME");
+        std::env::remove_var("HOME");
+        assert_eq!(home_dir().unwrap_err().kind(), io::ErrorKind::NotFound);
+        assert!(server_settings_path().ends_with("herdr-webui/webui-settings.json"));
+
+        if let Some(value) = old_xdg {
+            std::env::set_var("XDG_CONFIG_HOME", value);
+        } else {
+            std::env::remove_var("XDG_CONFIG_HOME");
+        }
+        if let Some(value) = old_home {
+            std::env::set_var("HOME", value);
+        } else {
+            std::env::remove_var("HOME");
+        }
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -3532,6 +3669,65 @@ mod tests {
     }
 
     #[test]
+    fn app_state_worktree_helpers_enrich_and_match_branches() {
+        let workspaces = vec![
+            json!({
+                "workspace_id": "parent",
+                "worktree": {
+                    "repo_key": "repo-1",
+                    "repo_root": "/repo",
+                    "repo_name": "repo",
+                    "is_linked_worktree": false
+                }
+            }),
+            json!({
+                "workspace_id": "linked",
+                "worktree": {
+                    "repo_key": "repo-1",
+                    "is_linked_worktree": true
+                }
+            }),
+            json!({ "workspace_id": "plain" }),
+        ];
+
+        assert_eq!(
+            worktree_source_workspace_ids(&workspaces),
+            vec!["parent".to_string(), "plain".to_string()]
+        );
+
+        let result = json!({
+            "result": {
+                "source": {
+                    "source_workspace_id": "parent",
+                    "repo_name": "repo",
+                    "repo_key": "repo-1",
+                    "repo_root": "/repo",
+                    "source_checkout_path": "/repo",
+                    "default_worktree_directory": "/worktrees"
+                },
+                "worktrees": [
+                    { "path": "/repo", "branch": "main" },
+                    { "path": "/worktrees/feature", "branch": "feature" },
+                    { "path": "/worktrees/detached", "is_detached": true }
+                ]
+            }
+        });
+
+        let enriched = enrich_worktrees_result(&result);
+        assert_eq!(enriched.len(), 3);
+        assert_eq!(enriched[0]["source_workspace_id"], "parent");
+        assert_eq!(enriched[0]["source_repo_name"], "repo");
+        assert_eq!(enriched[0]["default_worktree_directory"], "/worktrees");
+
+        let branches = workspace_branches_from_worktree_results(&[result]);
+        assert_eq!(branches.get("parent").unwrap(), "main");
+
+        assert_eq!(normalized_path_key("/repo/"), "/repo");
+        assert_eq!(result_object(&json!({"result":{"x":{"a":1}}}), "x")["a"], 1);
+        assert!(result_object(&json!({}), "missing").is_null());
+    }
+
+    #[test]
     fn round_trips_framed_protocol_messages() {
         let msg = ClientMessage::AttachScroll {
             source: AttachScrollSource::Wheel,
@@ -3680,6 +3876,49 @@ mod tests {
 
         handle.join().unwrap();
         let _ = fs::remove_file(socket);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn api_client_subscribe_reads_events_until_eof() {
+        use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+
+        let path = std::env::temp_dir().join(format!(
+            "herdr-webui-event-test-{}.sock",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_file(&path);
+        let name = path.clone().to_fs_name::<GenericFilePath>().unwrap();
+        let listener = ListenerOptions::new()
+            .name(name)
+            .try_overwrite(true)
+            .create_sync()
+            .unwrap();
+        let handle = thread::spawn(move || {
+            let mut stream = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(request["method"], "event.subscribe");
+            stream.write_all(b"{\"ok\":true}\n").unwrap();
+            stream.write_all(b"{\"event\":\"one\"}\n").unwrap();
+            stream.flush().unwrap();
+        });
+
+        let mut events = ApiClient {
+            socket_path: path.clone(),
+        }
+        .subscribe(json!({ "id": "test", "method": "event.subscribe", "params": {} }))
+        .unwrap();
+        assert_eq!(events.next_value().unwrap().unwrap()["event"], "one");
+        assert!(events.next_value().unwrap().is_none());
+
+        handle.join().unwrap();
+        let _ = fs::remove_file(path);
     }
 
     #[tokio::test]
