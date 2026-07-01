@@ -60,3 +60,26 @@
 @keyframes git-ui-spin {
   to { transform: rotate(360deg); }
 }
+.git-ui-cleanup {
+  display: grid;
+  gap: 12px;
+}
+.git-ui-cleanup-repo {
+  border: 1px solid var(--border2);
+  border-radius: 12px;
+  padding: 12px;
+}
+.git-ui-cleanup-repo h3,
+.git-ui-cleanup-repo h4 {
+  margin: 0 0 10px;
+}
+.git-ui-cleanup-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+@media (max-width: 900px) {
+  .git-ui-cleanup-grid {
+    grid-template-columns: 1fr;
+  }
+}

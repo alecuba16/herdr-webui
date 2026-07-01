@@ -131,8 +131,8 @@ The Rust binary embeds frontend assets with `include_str!`, so release artifacts
 ## Desktop And Mobile Parity
 
 - Both layouts support workspace selection, agent list/attention status, panel selection/creation, linked worktree listing/creation/opening, terminal attach, terminal paste sanitization, terminal scrollback follow/Tail behavior, Files browsing, Git status viewing, Settings, theme choice, browser notifications, local attention tone volume, file tree indentation, and layout preference.
-- Desktop is the full power-user layout. It includes the embedded Git drawer with mutations, diffs, log, stash, blame, file history, hunk actions, conflict actions, shortcuts, and the editable file browser with split panes.
-- Mobile is intentionally narrower. It keeps navigation, agents, worktrees, terminal, Files preview, and Git status usable on small screens, but does not yet expose desktop Git mutations/diffs/log/stash/blame/history or file editing/split panes.
+- Desktop is the full power-user layout. It includes the embedded Git drawer with mutations, diffs, log, stash, cleanup, blame, file history, hunk actions, conflict actions, shortcuts, and the editable file browser with split panes.
+- Mobile is intentionally narrower. It keeps navigation, agents, worktrees, terminal, Files preview, and Git status usable on small screens, but does not yet expose desktop Git mutations/diffs/log/stash/cleanup/blame/history or file editing/split panes.
 - When adding a desktop feature, decide explicitly whether mobile needs full parity, read-only parity, or documentation as desktop-only. Keep this section updated so mobile gaps are intentional.
 
 ## Mobile Layout Notes
@@ -249,7 +249,11 @@ Git UI:
 - Mobile includes a Git tab for the selected workspace or worktree with grouped status lists.
 - The desktop drawer is embedded in the WebUI binary; it uses the system `git` CLI through Rust API routes and does not require a separate Node, React, or Vite runtime.
 - When the drawer is hidden, WebUI blanks the drawer DOM and invalidates pending renders to reduce browser work.
-- The drawer shows worktree actions, grouped file status, staged/unstaged/untracked/conflicted files, commit form, log, stash list, file history, conflicts, blame, hunk editing, and side-by-side diffs.
+- The drawer shows worktree actions, grouped file status, staged/unstaged/untracked/conflicted files, commit form, log, stash list, cleanup tools, file history, conflicts, blame, hunk editing, and side-by-side diffs.
+- The `cleanup` tab scans a chosen directory for nested Git repositories, lists each repository's local branches and Git worktrees, and exposes branch delete/force-delete plus worktree remove/force-remove actions.
+- Cleanup scanning treats directories containing a `.git` directory or file as repositories and stops descending into that repository. It has a safety cap on traversed directories and reports when results are truncated, so users can choose a smaller scan root for complete results.
+- Cleanup branch deletion is local-only and maps to `git branch -d` or `git branch -D`. Current branches are disabled in the UI, and the backend requires explicit confirmation before deletion.
+- Cleanup worktree removal maps to `git worktree remove` or `git worktree remove --force`. The primary worktree for a repository is protected by the backend and cannot be removed from the cleanup tab.
 - File lists are shown as a collapsible folder tree with file-level line counts. Settings can switch the file list to filename-only mode with the full path in the tooltip.
 - Right-click a file for actions such as stash, discard, stage, or unstage. Section-level bulk actions stage or unstage grouped files with confirmation.
 - Commit drafts are stored in browser `localStorage` per workspace/worktree/ref.
@@ -266,7 +270,7 @@ Git UI:
 - Desktop Git shortcuts use the same configured WebUI prefix (`Ctrl+B` by default) while the drawer is focused. Defaults avoid the global WebUI prefix keys: prefix then `1` changes list, `2`/`C` commit, `3`/`L` log, `4` stash, `R` refresh, `G` stage or unstage all, `Y` stage focused/selected file, `U` unstage focused/selected file, `D` discard focused/selected file, `Z` stash focused/selected file, `H` selected-file history, `M` selected-file blame, `E` edit selected file, `O` current compare, `V` branch switch, `I` focus file list, `0` show Git shortcut help. `Enter` or `Space` activate focused file and folder rows without prefix.
 - Stashes can be listed, applied, popped, dropped with confirmation, or created from all changes or a single file.
 - Mutating/destructive operations are guarded: discard, hard reset, rebase, stash drop, and section bulk changes require confirmation; backend paths and refs are validated before running Git.
-- Git API routes cover status, diff, compare, branches, log, blame, file read/write, file history, stashes, conflicts, stage, unstage, discard, stash, switch, reset, rebase, commit, apply-patch, and conflict actions.
+- Git API routes cover status, diff, compare, branches, cleanup scan, branch deletion, worktree removal, log, blame, file read/write, file history, stashes, conflicts, stage, unstage, discard, stash, switch, reset, rebase, commit, apply-patch, and conflict actions.
 
 Panel and workspace close:
 

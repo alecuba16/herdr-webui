@@ -408,6 +408,10 @@
         loadedLargeDiffFiles: {},
         collapsedDirs: {},
         expandedCompactDirs: {},
+        cleanupRoot: workspaceCwd(workspace),
+        cleanupResult: null,
+        cleanupLoading: false,
+        cleanupError: "",
         pendingLogScrollHash: "",
         temporaryHistoryCompare: false,
         sideEditor: null,
@@ -665,7 +669,7 @@
   function renderSide() {
     const view = active() || {};
     const s = view.status || {};
-    const tabs = [{ id: "changes", label: "changes" }, { id: "log", label: "log" }, { id: "stash", label: "stash" }];
+    const tabs = [{ id: "changes", label: "changes" }, { id: "log", label: "log" }, { id: "stash", label: "stash" }, { id: "cleanup", label: "cleanup" }];
     const fileSections = currentMode() === "changes"
       ? `${(s.conflicted || []).length ? section("Conflicted", s.conflicted, "U") : ""}${section("Staged", s.staged, "S")}${section("Unstaged", s.unstaged, "M")}${section("Untracked", s.untracked, "?")}`
       : section("Compared", view.compareFilePaths && view.compareFilePaths.length ? view.compareFilePaths : ((view.diff && view.diff.files) || []).map((file) => file.path), "C");
@@ -1086,6 +1090,39 @@
     replaceContent(version, `<div class="git-ui-actions"><button class="git-ui-btn" onclick="HerdrGitUi.stash()">Stash push</button></div><div class="git-ui-list">${(data.stashes || []).map((s) => `<div class="git-ui-file"><span>${esc(s.name)} ${esc(s.message)}</span><span><button class="git-ui-btn" onclick="HerdrGitUi.applyStash('${arg(s.name)}',false)">Apply</button><button class="git-ui-btn" onclick="HerdrGitUi.applyStash('${arg(s.name)}',true)">Pop</button><button class="git-ui-btn danger" onclick="HerdrGitUi.dropStash('${arg(s.name)}')">Drop</button></span></div>`).join("")}</div>`);
   }
 
+  function renderCleanup() {
+    const view = active() || {};
+    const root = esc(view.cleanupRoot || view.cwd || "");
+    const result = view.cleanupResult || {};
+    const repos = result.repos || [];
+    const truncated = result.truncated ? `<div class="git-ui-error">Scan stopped at safety limit; choose a smaller directory for complete results.</div>` : "";
+    const body = view.cleanupLoading
+      ? `<div class="git-ui-loading"><span></span><strong>Scanning Git repositories</strong></div>`
+      : repos.length
+        ? repos.map(renderCleanupRepo).join("")
+        : `<div class="git-ui-empty-row">No scanned repositories yet. Choose a directory and scan.</div>`;
+    return `<div class="git-ui-cleanup"><div class="git-ui-toolbar-title">Git branch and worktree cleanup</div><p class="git-ui-muted">Scan a folder for Git repositories, then remove local branches or linked worktrees. Force actions map to <code>git branch -D</code> and <code>git worktree remove --force</code>.</p><label class="git-ui-branch-field"><span>Directory to scan</span><div class="git-ui-inline-field"><input id="gitUiCleanupRoot" value="${root}" placeholder="/path/to/projects"><button class="git-ui-btn" onclick="HerdrDirectoryPicker.openInput('gitUiCleanupRoot')">Browse</button><button class="git-ui-btn primary" onclick="HerdrGitUi.scanCleanup()" ${view.cleanupLoading ? "disabled" : ""}>Scan</button></div></label>${view.cleanupError ? `<div class="git-ui-error">${esc(view.cleanupError)}</div>` : ""}${truncated}<div class="git-ui-list">${body}</div></div>`;
+  }
+
+  function renderCleanupRepo(repo, repoIndex) {
+    if (repo.error) return `<section class="git-ui-cleanup-repo"><h3>${esc(compactPath(repo.path))}</h3><div class="git-ui-error">${esc(repo.error)}</div></section>`;
+    const branches = (repo.branches || []).map((branch) => renderCleanupBranch(repoIndex, branch)).join("") || `<div class="git-ui-empty-row">No local branches</div>`;
+    const worktrees = (repo.worktrees || []).map((worktree, index) => renderCleanupWorktree(repoIndex, index, worktree)).join("") || `<div class="git-ui-empty-row">No worktrees</div>`;
+    return `<section class="git-ui-cleanup-repo"><h3>${esc(compactPath(repo.path))}</h3><div class="git-ui-cleanup-grid"><div><h4>Branches</h4>${branches}</div><div><h4>Worktrees</h4>${worktrees}</div></div></section>`;
+  }
+
+  function renderCleanupBranch(repoIndex, branch) {
+    const disabled = branch.current ? "disabled" : "";
+    const meta = [branch.current ? "current" : "", branch.checked_out ? "checked out" : ""].filter(Boolean).join(" · ");
+    return `<div class="git-ui-file"><span><strong>${esc(branch.name)}</strong>${meta ? `<small>${esc(meta)}</small>` : ""}</span><span><button class="git-ui-btn danger" onclick="HerdrGitUi.deleteCleanupBranch(${repoIndex},'${arg(branch.name)}',false)" ${disabled}>Delete</button><button class="git-ui-btn danger" onclick="HerdrGitUi.deleteCleanupBranch(${repoIndex},'${arg(branch.name)}',true)" ${disabled}>Force</button></span></div>`;
+  }
+
+  function renderCleanupWorktree(repoIndex, index, worktree) {
+    const meta = [worktree.branch || (worktree.detached ? "detached" : ""), worktree.prunable ? "prunable" : "", worktree.primary ? "primary" : ""].filter(Boolean).join(" · ");
+    const disabled = worktree.primary ? "disabled" : "";
+    return `<div class="git-ui-file"><span><strong>${esc(compactPath(worktree.path))}</strong>${meta ? `<small>${esc(meta)}</small>` : ""}</span><span><button class="git-ui-btn danger" onclick="HerdrGitUi.deleteCleanupWorktree(${repoIndex},${index},false)" ${disabled}>Remove</button><button class="git-ui-btn danger" onclick="HerdrGitUi.deleteCleanupWorktree(${repoIndex},${index},true)" ${disabled}>Force</button></span></div>`;
+  }
+
   async function renderHistory() {
     const view = active();
     if (!view.file) return `${renderFileToolbar("history")}<div class="git-ui-muted">Select file first.</div>`;
@@ -1115,6 +1152,7 @@
     if (view.tab === "conflicts") body = renderConflicts();
     if (view.tab === "log") body = `<div class="git-ui-muted">Loading log...</div>`;
     if (view.tab === "stash") body = `<div class="git-ui-muted">Loading stashes...</div>`;
+    if (view.tab === "cleanup") body = renderCleanup();
     if (view.tab === "history") body = `<div class="git-ui-muted">Loading history...</div>`;
     return `<main class="git-ui-main"><div class="git-ui-content">${body}</div></main>`;
   }
@@ -1240,7 +1278,7 @@
     workspaceStatus,
     statusLabel() { return state.open ? (state.visible ? "open" : "hidden") : "closed"; },
     tab(tab) {
-      if (!["changes", "log", "stash", "commit", "conflicts", "history"].includes(tab)) return;
+      if (!["changes", "log", "stash", "cleanup", "commit", "conflicts", "history"].includes(tab)) return;
       saveDraftFromDom();
       if (tab === "changes") {
         this.showChangesList();
@@ -1502,6 +1540,55 @@
     },
     applyStash(stash, pop) { post("/api/git-ui/stash-apply", { cwd: active().cwd, stash: decodeURIComponent(stash), pop }); },
     dropStash(stash) { stash = decodeURIComponent(stash); if (confirm(`Drop ${stash}?`)) post("/api/git-ui/stash-drop", { cwd: active().cwd, stash, confirmed: true }); },
+    async scanCleanup() {
+      const view = active();
+      if (!view) return;
+      const input = document.getElementById("gitUiCleanupRoot");
+      const root = (input && input.value.trim()) || view.cleanupRoot || view.cwd;
+      if (!root) return;
+      view.cleanupRoot = root;
+      view.cleanupLoading = true;
+      view.cleanupError = "";
+      render();
+      try {
+        view.cleanupResult = await api(`/api/git-ui/cleanup-scan?root=${encodeURIComponent(root)}`);
+      } catch (err) {
+        view.cleanupError = err.message || String(err);
+      } finally {
+        view.cleanupLoading = false;
+        render();
+      }
+    },
+    async deleteCleanupBranch(repoIndex, branch, force) {
+      const view = active();
+      const repo = view && view.cleanupResult && (view.cleanupResult.repos || [])[repoIndex];
+      branch = decodeURIComponent(branch);
+      if (!repo || !branch) return;
+      const label = force ? "force delete" : "delete";
+      if (!confirm(`${label} branch ${branch} in ${repo.path}?`)) return;
+      try {
+        await api("/api/git-ui/branch-delete", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ cwd: repo.path, branch, force, confirmed: true }) });
+        await this.scanCleanup();
+      } catch (err) {
+        view.cleanupError = err.message || String(err);
+        render();
+      }
+    },
+    async deleteCleanupWorktree(repoIndex, worktreeIndex, force) {
+      const view = active();
+      const repo = view && view.cleanupResult && (view.cleanupResult.repos || [])[repoIndex];
+      const worktree = repo && (repo.worktrees || [])[worktreeIndex];
+      if (!repo || !worktree || !worktree.path) return;
+      const label = force ? "force remove" : "remove";
+      if (!confirm(`${label} worktree ${worktree.path}?`)) return;
+      try {
+        await api("/api/git-ui/worktree-remove", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ cwd: repo.path, path: worktree.path, force, confirmed: true }) });
+        await this.scanCleanup();
+      } catch (err) {
+        view.cleanupError = err.message || String(err);
+        render();
+      }
+    },
     saveDraft() {
       saveDraftFromDom();
     },
