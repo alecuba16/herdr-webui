@@ -14,7 +14,8 @@ Compatibility:
 
 | WebUI | Herdr | Protocol | Status | Notes |
 | --- | --- | --- | --- | --- |
-| `0.1.6` | `0.7.1` | `14` | Current | Adds Files search focus/typing UX, terminal URL links, current-panel close affordances, Git file filtering, cleanup layout fixes, and bulk cleanup refinements. |
+| `0.1.7` | `0.7.1` | `14` | Current | Improves Git cleanup results with nested repo lists, aligned visible checkboxes, group/repo selection, hidden primary worktrees, and stable scroll while selecting. |
+| `0.1.6` | `0.7.1` | `14` | Tested | Adds Files search focus/typing UX, terminal URL links, current-panel close affordances, Git file filtering, cleanup layout fixes, and bulk cleanup refinements. |
 | `0.1.5` | `0.7.1` | `14` | Tested | Adds Git branch/worktree cleanup, separate worktree and exploration default directories, and safer bulk cleanup selection. |
 | `0.1.4` | `0.7.1` | `14` | Tested | Adds configurable default directory and local notification tone volume, documents browser notification permission handling, and keeps desktop/mobile Settings parity for these options. |
 | `0.1.3` | `0.7.1` | `14` | Tested | Lazy-loads CodeMirror, desktop Git UI, and desktop file browser JavaScript so initial terminal loads avoid unused heavy feature bundles. |
@@ -251,8 +252,8 @@ Git UI:
 - The drawer blanks hidden DOM to reduce browser work and owns keyboard input while visible so terminal keystrokes do not leak through.
 - Core views cover status, commit, log, stash, cleanup, file history, conflicts, blame, hunk editing, side-by-side diffs, branch switching, and worktree actions.
 - File lists are collapsible trees with optional filename-only mode, line counts, filtering, yellow match highlighting, and stable scroll while filtering/expanding. Right-click and section actions support stage/unstage/discard/stash with confirmations.
-- Cleanup scans `Exploration default directory` or a chosen root for Git repositories, does not follow symlinked directories, caps traversal, and reports truncation. It lists local branches and worktrees with checkbox multi-select, one confirmation modal, and full-height repository cards.
-- Cleanup uses safe delete first: `git branch -d` or `git worktree remove`. It retries force only when Git says force is required. Current branches and primary worktrees are protected.
+- Cleanup scans `Exploration default directory` or a chosen root for Git repositories, does not follow symlinked directories, caps traversal, and reports truncation. Results render as a nested repo list (`repo -> branches/worktrees -> items`) with checkbox multi-select and one confirmation modal.
+- Cleanup uses safe delete first: `git branch -d` or `git worktree remove`. It retries force only when Git says force is required. Current branches are disabled, and primary/main worktrees are hidden from cleanup results.
 - Large diffs use placeholders, per-file lazy loading, selected-file line limits, and safe previews before full DOM-heavy render. Mutating hunk/block actions are disabled while hidden lines are omitted.
 - Diffs include collapse/show-all, change grouping, inline word highlights, context expansion, hunk stage/unstage/restore, blame, syntax highlighting for common languages, and side-by-side hunk editing with hash guard saves.
 - Log supports single-commit compare/reset/rebase and shift-click two-commit compare. File history can show a temporary read-only commit diff or jump to the log commit.
