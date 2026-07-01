@@ -201,6 +201,39 @@
     };
   }
 
+  function escapeHtml(value) {
+    return String(value == null ? "" : value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function pathBasename(path) {
+    const parts = String(path || "").split("/").filter(Boolean);
+    return parts[parts.length - 1] || String(path || "");
+  }
+
+  async function gitApi(url, options) {
+    const res = await fetch(
+      url,
+      Object.assign({ credentials: "same-origin" }, options || {}),
+    );
+    if (!res.ok) {
+      let msg;
+      try {
+        const data = await res.json();
+        msg = data.error || `HTTP ${res.status}`;
+      } catch {
+        msg = `HTTP ${res.status}`;
+      }
+      throw new Error(msg);
+    }
+    const body = await res.json();
+    if (body.error) throw new Error(body.error);
+    return body;
+  }
+
   const helpers = {
     branchPathSlug,
     normalizeAbsolutePath,
@@ -215,6 +248,9 @@
     terminalWheelScrollBatch,
     terminalPasteInput,
     tabActivityLabel,
+    escapeHtml,
+    pathBasename,
+    gitApi,
   };
   root.HerdrAppHelpers = helpers;
   if (typeof module !== "undefined" && module.exports) module.exports = helpers;

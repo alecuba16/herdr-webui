@@ -10,8 +10,8 @@ use axum::Json;
 use serde::Deserialize;
 use serde_json::json;
 
+use super::{git_json_error, git_ui_repo, git_ui_text, safe_git_token, safe_repo_path};
 use crate::{git_failure, require_auth, WebState};
-use super::{git_json_error, git_ui_repo, git_ui_text, safe_repo_path, safe_git_token};
 
 #[derive(Deserialize)]
 pub(super) struct GitUiBlameQuery {

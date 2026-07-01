@@ -14,20 +14,13 @@ Compatibility:
 
 | WebUI | Herdr | Protocol | Status | Notes |
 | --- | --- | --- | --- | --- |
-<<<<<<< HEAD
-| `0.1.8` | `0.7.1` | `14` | Current | Adds mobile read-only Git file diffs with horizontally scrollable hunks so long diff lines stay inside the mobile app shell. |
+| `0.1.8` | `0.7.1` | `14` | Current | Adds mobile read-only Git file diffs with horizontally scrollable hunks so long diff lines stay inside the mobile app shell. Bundles JetBrainsMono Nerd Font Mono for terminal icons and shared monospace UI rendering. |
 | `0.1.7` | `0.7.1` | `14` | Tested | Improves Git cleanup results with nested repo lists, aligned visible checkboxes, group/repo selection, hidden primary worktrees, and stable scroll while selecting. |
 | `0.1.6` | `0.7.1` | `14` | Tested | Adds Files search focus/typing UX, terminal URL links, current-panel close affordances, Git file filtering, cleanup layout fixes, and bulk cleanup refinements. |
 | `0.1.5` | `0.7.1` | `14` | Tested | Adds Git branch/worktree cleanup, separate worktree and exploration default directories, and safer bulk cleanup selection. |
 | `0.1.4` | `0.7.1` | `14` | Tested | Adds configurable default directory and local notification tone volume, documents browser notification permission handling, and keeps desktop/mobile Settings parity for these options. |
 | `0.1.3` | `0.7.1` | `14` | Tested | Lazy-loads CodeMirror, desktop Git UI, and desktop file browser JavaScript so initial terminal loads avoid unused heavy feature bundles. |
 | `0.1.0` | `0.7.1` | `14` | Tested | Unifies workspace/worktree opening, enriches workspace cwd metadata from backend pane data, restores Settings search, and reduces browser CPU/memory load for terminal output, large paste, no-sleep polling, and large Git diffs. |
-||||||| parent of d46dbcb (feat: bundle Nerd Font for web terminal)
-| `0.1.0` | `0.7.1` | `14` | Current | Unifies workspace/worktree opening, enriches workspace cwd metadata from backend pane data, and improves Git/File/terminal switch styling and activation. |
-=======
-| `0.1.1` | `0.7.1` | `14` | Current | Bundles JetBrainsMono Nerd Font Mono for terminal icons and shared monospace UI rendering. |
-| `0.1.0` | `0.7.1` | `14` | Tested | Unifies workspace/worktree opening, enriches workspace cwd metadata from backend pane data, and improves Git/File/terminal switch styling and activation. |
->>>>>>> d46dbcb (feat: bundle Nerd Font for web terminal)
 | `0.0.57` | `0.7.1` | `14` | Tested | Fixes worktree creation source handling, adds optional base-branch pull, improves worktree deletion, Git directory loading, directory picker navigation, and terminal scroll follow controls. |
 | `0.0.49` | `0.7.1` | `14` | Tested | Adds file browser/editor, shared file trees, CodeMirror editing, large Git change-set placeholders, browser notifications, themed favicons, and local snapshot versioning. |
 | `0.0.46` | `0.7.1` | `14` | Tested | Adds configurable WebUI/Git prefix shortcuts, keeps Git drawer keyboard input isolated, and raises Rust line coverage above 70%. |

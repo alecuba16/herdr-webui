@@ -92,7 +92,6 @@ function terminalLinksEnabled() {
         })
         .catch(() => {});
     }
-    }
 
     function size() {
       const shell = el("terminalShell");

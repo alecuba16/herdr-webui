@@ -7,8 +7,8 @@ use axum::Json;
 use serde::Deserialize;
 use serde_json::json;
 
+use super::{git_json_error, git_ui_text, safe_git_token, safe_repo_path, GitUiCwdQuery};
 use crate::{require_auth, WebState};
-use super::{git_json_error, git_ui_text, safe_repo_path, safe_git_token, GitUiCwdQuery};
 
 #[derive(Deserialize)]
 pub(super) struct GitUiStashPushRequest {
@@ -89,7 +89,11 @@ pub(super) async fn git_ui_stash(
     if let Err(response) = require_auth(&state, &headers, remote) {
         return response;
     }
-    let msg = body.message.as_deref().unwrap_or("herdr-webui stash").to_string();
+    let msg = body
+        .message
+        .as_deref()
+        .unwrap_or("herdr-webui stash")
+        .to_string();
     let safe_paths = match body.paths.as_ref() {
         Some(paths) if !paths.is_empty() => {
             let safe = paths
