@@ -118,10 +118,20 @@ The Rust binary embeds frontend assets with `include_str!`, so release artifacts
 
 - Desktop and mobile UI are embedded vanilla HTML/CSS/JS assets. The main shell has no frontend build step; the optional CodeMirror editor bundle is generated from `src/assets/vendor/codemirror_entry.mjs` and checked in.
 - Desktop shell and Git UI assets are split into plain JS/CSS modules and concatenated by `src/assets.rs`; public URLs stay `/assets/desktop/app.js`, `/assets/desktop/app.css`, `/assets/desktop/git-ui.js`, and `/assets/desktop/git-ui.css`.
+- CodeMirror, desktop Git UI, and desktop file browser JavaScript are lazy-loaded. Initial desktop/mobile terminal loads should not download editor or Git/File feature code until those features are opened.
+- The shared editor uses lightweight read-only previews by default and loads CodeMirror only for editable file views.
 - Desktop terminal output is frame-batched in the browser so bursts of WebSocket terminal frames are coalesced before xterm rendering. Pending frames are flushed before reconnect or close to avoid dropping final output.
 - Large terminal paste input is chunked with WebSocket backpressure instead of being sent as one very large browser frame.
+- Blocking browser confirmation dialogs count as input delay in Chrome traces. Git bulk section actions defer their API/render work until after the confirmation returns so dialog wait time is not mixed with mutation/render cost.
 - Prefer moving behavior out of inline handlers into delegated JS listeners and shared CSS classes when touching UI code.
 - SVG icons should live under `src/assets/icons/` and be referenced from CSS or markup, not embedded inline in JS templates.
+
+## Desktop And Mobile Parity
+
+- Both layouts support workspace selection, agent list/attention status, panel selection/creation, linked worktree listing/creation/opening, terminal attach, terminal paste sanitization, terminal scrollback follow/Tail behavior, Files browsing, Git status viewing, Settings, theme choice, browser notifications, file tree indentation, and layout preference.
+- Desktop is the full power-user layout. It includes the embedded Git drawer with mutations, diffs, log, stash, blame, file history, hunk actions, conflict actions, shortcuts, and the editable file browser with split panes.
+- Mobile is intentionally narrower. It keeps navigation, agents, worktrees, terminal, Files preview, and Git status usable on small screens, but does not yet expose desktop Git mutations/diffs/log/stash/blame/history or file editing/split panes.
+- When adding a desktop feature, decide explicitly whether mobile needs full parity, read-only parity, or documentation as desktop-only. Keep this section updated so mobile gaps are intentional.
 
 ## Mobile Layout Notes
 

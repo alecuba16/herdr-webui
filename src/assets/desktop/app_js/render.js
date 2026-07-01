@@ -371,10 +371,42 @@ function syncGitWorkspaceToggle() {
   syncShellModeButtons();
 }
 
-function openWorkspaceGitUi(id) {
+async function loadDesktopFeature(src) {
+  if (window.HerdrLoadScript) {
+    await window.HerdrLoadScript(src);
+    return;
+  }
+  await new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.async = true;
+    script.src = src;
+    script.onload = resolve;
+    script.onerror = () => reject(Error("Failed to load " + src));
+    document.body.appendChild(script);
+  });
+}
+
+async function ensureGitUiLoaded() {
+  if (window.HerdrGitUi) return;
+  await loadDesktopFeature("/assets/desktop/directory-picker.js");
+  await loadDesktopFeature("/assets/desktop/git-ui.js");
+}
+
+async function ensureFileBrowserLoaded() {
+  if (window.HerdrFileBrowser) return;
+  await loadDesktopFeature("/assets/desktop/file-browser.js");
+}
+
+async function openWorkspaceGitUi(id) {
   if (!gitUiEnabled()) return;
   const workspace = state.workspaces.find((w) => w.workspace_id === id);
-  if (!workspace || !window.HerdrGitUi) return;
+  if (!workspace) return;
+  try {
+    await ensureGitUiLoaded();
+  } catch (error) {
+    alert(error.message || String(error));
+    return;
+  }
   if (window.HerdrFileBrowser) window.HerdrFileBrowser.hide();
   window.HerdrGitUi.open(workspace);
   render();
@@ -393,9 +425,15 @@ function syncFileWorkspaceToggle() {
   syncShellModeButtons();
 }
 
-function openWorkspaceFileBrowser(id) {
+async function openWorkspaceFileBrowser(id) {
   const workspace = state.workspaces.find((w) => w.workspace_id === id);
-  if (!workspace || !window.HerdrFileBrowser) return;
+  if (!workspace) return;
+  try {
+    await ensureFileBrowserLoaded();
+  } catch (error) {
+    alert(error.message || String(error));
+    return;
+  }
   if (window.HerdrGitUi) window.HerdrGitUi.hide();
   window.HerdrFileBrowser.open(workspace).catch((error) => alert(error.message || String(error)));
   render();

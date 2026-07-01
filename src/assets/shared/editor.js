@@ -1,4 +1,6 @@
 (function () {
+  let codeMirrorPromise = null;
+
   function esc(value) {
     return String(value == null ? "" : value)
       .replace(/&/g, "&amp;")
@@ -37,6 +39,13 @@
     parent.innerHTML = readonly ? previewHtml(opts) : editHtml(opts);
     const textarea = parent.querySelector("textarea");
     if (textarea && opts.onChange) textarea.addEventListener("input", () => opts.onChange(textarea.value));
+    if (!readonly) {
+      ensureCodeMirror().then(() => {
+        if (!window.HerdrCodeMirror || !window.HerdrCodeMirror.create) return;
+        const value = textarea ? textarea.value : opts.content;
+        create(Object.assign({}, opts, { content: value }));
+      }).catch(() => {});
+    }
     return {
       getValue() {
         const node = parent.querySelector("textarea");
@@ -63,5 +72,20 @@
     return `<div class="herdr-editor">${head}<textarea spellcheck="false">${esc(opts.content || "")}</textarea></div>`;
   }
 
-  window.HerdrEditor = { create, highlight, languageFor };
+  function ensureCodeMirror() {
+    if (window.HerdrCodeMirror && window.HerdrCodeMirror.create)
+      return Promise.resolve(window.HerdrCodeMirror);
+    if (codeMirrorPromise) return codeMirrorPromise;
+    codeMirrorPromise = new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.async = true;
+      script.src = "/assets/vendor/codemirror.js";
+      script.onload = () => resolve(window.HerdrCodeMirror || null);
+      script.onerror = () => reject(Error("Failed to load CodeMirror"));
+      document.body.appendChild(script);
+    });
+    return codeMirrorPromise;
+  }
+
+  window.HerdrEditor = { create, highlight, languageFor, ensureCodeMirror };
 })();
