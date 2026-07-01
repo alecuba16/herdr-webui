@@ -192,12 +192,21 @@ describe("app bundle load", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
 
-    match(gitUiSource, /label: "cleanup"/);
+    match(gitUiSource, /git-ui-cleanup-tab-icon/);
     match(gitUiSource, /scanCleanup/);
+    match(gitUiSource, /selectAllCleanup/);
+    match(gitUiSource, /Delete selected/);
     match(gitUiSource, /\/api\/git-ui\/cleanup-scan/);
     match(gitUiSource, /\/api\/git-ui\/branch-delete/);
     match(gitUiSource, /\/api\/git-ui\/worktree-remove/);
     match(gitUiSource, /HerdrDirectoryPicker\.openInput\('gitUiCleanupRoot'\)/);
+  });
+
+  it("defines file explorer and Git file filters", () => {
+    match(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), /q=\$\{encodeURIComponent\(state\.filter\.trim\(\)\)\}/);
+    match(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), /setTimeout\(\(\) => \{/);
+    match(gitUiSource, /placeholder="Filter files"/);
+    match(gitUiSource, /filterFiles/);
   });
 
   it("renders new workspace modal with manual folder field", () => {
@@ -287,6 +296,7 @@ describe("app bundle load", () => {
     match(source, /id="optGlobalShortcutPrefixCapture"/);
     match(source, /DEFAULT_GLOBAL_SHORTCUT_PREFIX/);
     match(source, /id="optTerminalFontFamily"/);
+    match(source, /id="optTerminalLinks"/);
     match(source, /JetBrainsMono Nerd Font/);
     match(source, /handleGlobalShortcut/);
     match(source, /isShortcutPrefix/);
@@ -294,6 +304,9 @@ describe("app bundle load", () => {
     match(source, /selectRelativeAgent\(1\)/);
     match(source, /selectRelativeAgent\(-1\)/);
     match(source, /terminalFontFamily/);
+    match(source, /applyTerminalLinks/);
+    match(source, /registerLinkProvider/);
+    match(source, /buffer\.viewportY/);
   });
 
   it("normalizes configurable shortcut prefixes", () => {
@@ -602,6 +615,50 @@ describe("app bundle load", () => {
     equal(result.terminalId, "term_2");
   });
 
+  it("replaces stale route after selected panel disappears", async () => {
+    const ctx = context();
+    const replaced = [];
+    ctx.location.pathname = "/session/default/workspace/ws1/tab/old/pane/oldpane";
+    ctx.history.replaceState = (_state, _title, url) => replaced.push(url);
+    ctx.Terminal = class {
+      open() {}
+      onData() {}
+      onScroll() {}
+      loadAddon() {}
+      clear() {}
+      focus() {}
+      resize() {}
+      dispose() {}
+    };
+    ctx.fetch = async (url) => {
+      const text = String(url);
+      const result = text.includes("workspaces")
+        ? { workspaces: [{ workspace_id: "ws1", label: "repo" }] }
+        : text.includes("workspace-order")
+          ? { order: [] }
+          : text.includes("worktrees")
+            ? { source: {}, worktrees: [] }
+            : text.includes("tabs")
+              ? { tabs: [{ workspace_id: "ws1", tab_id: "new", number: 1 }] }
+              : text.includes("panes")
+                ? { panes: [{ workspace_id: "ws1", tab_id: "new", pane_id: "newpane", terminal_id: "term2" }] }
+                : text.includes("pane-layout")
+                  ? { layout: { panes: [] } }
+                  : { agents: [] };
+      return { ok: true, status: 200, json: async () => ({ result }) };
+    };
+    vm.runInContext(source, ctx);
+
+    const result = await vm.runInContext(
+      "refreshSeq = 1; refreshOnline(1).then(() => ({ tab: state.tab, pane: state.pane }))",
+      ctx,
+    );
+
+    equal(result.tab, "new");
+    equal(result.pane, "newpane");
+    ok(replaced.some((url) => String(url).includes("/tab/new/pane/newpane")));
+  });
+
   it("clears selected pane when no fallback pane remains", () => {
     const ctx = context();
     const replaced = [];
@@ -765,7 +822,7 @@ describe("app bundle load", () => {
     match(source, /tabActivityLabel/);
   });
 
-  it("renders current panel as label with add button", () => {
+  it("renders current panel as label with add and close buttons", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
     const html = vm.runInContext(
@@ -778,6 +835,8 @@ describe("app bundle load", () => {
 
     match(html, /panel-label/);
     match(html, /panel-add/);
+    match(html, /panel-close/);
+    match(html, /Close current panel/);
     ok(!html.includes("panelSelector"));
   });
 
@@ -946,20 +1005,27 @@ describe("app bundle load", () => {
     equal(ctx.document.getElementById("workspaceCreateLabel").value, "project");
   });
 
-  it("prefills workspace and worktree open paths from default directory", () => {
+  it("keeps exploration and worktree default directories separate", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
 
     ctx.openWorkspaceCreateModal();
     equal(ctx.document.getElementById("workspaceCreatePath").value, "");
 
-    ctx.document.getElementById("optWorktreeDefaultDirectory").value = "/tmp/code";
+    ctx.document.getElementById("optWorktreeDefaultDirectory").value = "/tmp/worktrees";
     ctx.document.getElementById("optWorktreeDefaultDirectory").oninput();
+    ctx.document.getElementById("optExplorationDefaultDirectory").value = "/tmp/code";
+    ctx.document.getElementById("optExplorationDefaultDirectory").oninput();
     ctx.openWorkspaceCreateModal();
     equal(ctx.document.getElementById("workspaceCreatePath").value, "/tmp/code");
 
     ctx.openWorktreeOpenModal();
 
     equal(ctx.document.getElementById("worktreeDiscoverPath").value, "/tmp/code");
+
+    vm.runInContext('state.openWorktreeSource = { repo_name: "repo", repo_root: "/src/repo" }', ctx);
+    ctx.document.getElementById("worktreeNewBranch").value = "feature/x";
+    ctx.syncWorktreeCheckoutPath();
+    equal(ctx.document.getElementById("worktreeNewPath").value, "/tmp/worktrees/repo/feature-x");
   });
 });

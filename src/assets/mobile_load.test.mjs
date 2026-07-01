@@ -28,7 +28,7 @@ function context(pathname = "/") {
   const elements = new Map();
   const localStorage = new Map();
   const historyCalls = [];
-  const terminalStats = { disposed: 0, opened: 0 };
+  const terminalStats = { disposed: 0, linkDisposed: 0, linksRegistered: 0, opened: 0 };
   const requests = [];
   const navButtons = ["home", "agents", "panels", "worktrees", "files", "git", "terminal"].map(
     (screen) => Object.assign(element(), { dataset: { screen } }),
@@ -89,6 +89,14 @@ function context(pathname = "/") {
         terminalStats.opened += 1;
       }
       resize() {}
+      registerLinkProvider() {
+        terminalStats.linksRegistered += 1;
+        return {
+          dispose() {
+            terminalStats.linkDisposed += 1;
+          },
+        };
+      }
       write(data, callback) {
         this.writes.push(data);
         if (callback) callback();
@@ -224,12 +232,17 @@ describe("mobile bundle load", () => {
     ok(settingsHtml.includes("Appearance"));
     ok(settingsHtml.includes("Layout"));
     ok(settingsHtml.includes("Terminal font"));
+    ok(settingsHtml.includes("Terminal links"));
     ok(settingsHtml.includes("HerdrMobile.setTerminalFontFamily"));
+    ok(settingsHtml.includes("HerdrMobile.setTerminalLinks"));
     equal(typeof ctx.HerdrMobile.setTerminalFontFamily, "function");
+    equal(typeof ctx.HerdrMobile.setTerminalLinks, "function");
     equal(typeof ctx.HerdrMobile.applyTerminalFontFamily, "function");
+    equal(typeof ctx.HerdrMobile.applyTerminalLinks, "function");
     doesNotThrow(() =>
       ctx.HerdrMobile.setTerminalFontFamily("Hack Nerd Font, monospace"),
     );
+    doesNotThrow(() => ctx.HerdrMobile.setTerminalLinks(false));
     doesNotThrow(() => ctx.HerdrMobile.showScreen("worktrees"));
     doesNotThrow(() =>
       ctx.HerdrMobile.updateWorktreeField("worktreeBranch", "feature/mobile"),
@@ -311,8 +324,10 @@ describe("mobile bundle load", () => {
     await ctx.HerdrMobile.refresh();
     ctx.HerdrMobile.showScreen("terminal");
     ok(ctx.terminalStats.opened >= 1);
+    ok(ctx.terminalStats.linksRegistered >= 1);
     ctx.HerdrMobile.showScreen("agents");
     equal(ctx.terminalStats.disposed, 1);
+    equal(ctx.terminalStats.linkDisposed, 1);
     ctx.HerdrMobile.showScreen("terminal");
     ok(ctx.terminalStats.opened >= 2);
   });
@@ -347,11 +362,15 @@ describe("mobile bundle load", () => {
     );
   });
 
-  it("stores mobile default directory and prefills worktree discovery path", async () => {
+  it("stores mobile exploration default directory and prefills worktree discovery path", async () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
     vm.runInContext(source, ctx);
 
-    ctx.HerdrMobile.setDefaultDirectory("/tmp/code");
+    ctx.HerdrMobile.setWorktreeDefaultDirectory("/tmp/worktrees");
+    ctx.HerdrMobile.setExplorationDefaultDirectory("/tmp/code");
+    ctx.HerdrMobile.showScreen("settings");
+    ok(ctx.document.getElementById("mobileScreen").innerHTML.includes("Worktree default directory"));
+    ok(ctx.document.getElementById("mobileScreen").innerHTML.includes("Exploration default directory"));
     ctx.HerdrMobile.showScreen("worktrees");
 
     equal(ctx.HerdrMobile.currentScreen(), "worktrees");
@@ -406,5 +425,16 @@ describe("mobile bundle load", () => {
           JSON.parse(request.opt.body).workspace_id === "w1",
       ),
     );
+  });
+
+  it("renders mobile close current panel controls", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    ctx.HerdrMobile.showScreen("panels");
+    let html = ctx.document.getElementById("mobileScreen").innerHTML;
+    ok(html.includes("Close current panel"));
+    ok(source.includes("mobile-tab-close"));
+    equal(typeof ctx.HerdrMobile.closeCurrentPanel, "function");
   });
 });

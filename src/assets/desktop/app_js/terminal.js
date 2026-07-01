@@ -79,6 +79,7 @@ function connectTerminal() {
       scrollback: 10000,
     });
     term.open(terminal);
+    applyTerminalLinks();
     applyTheme();
     term.onData(sendInputData);
     if (!terminalScrollFollowBound && term.onScroll) {
@@ -228,6 +229,37 @@ function connectTerminal() {
     }
   };
 }
+function applyTerminalLinks() {
+  if (terminalLinkProvider && terminalLinkProvider.dispose) {
+    try { terminalLinkProvider.dispose(); } catch (e) {}
+  }
+  terminalLinkProvider = null;
+  if (!term || options.terminalLinks === false || !term.registerLinkProvider) return;
+  terminalLinkProvider = term.registerLinkProvider({ provideLinks: provideTerminalLinks });
+}
+function provideTerminalLinks(lineNumber, callback) {
+  try {
+    const buffer = term && term.buffer && term.buffer.active;
+    const y = buffer ? Math.max(0, (buffer.viewportY || 0) + lineNumber - 1) : 0;
+    const line = buffer && (buffer.getLine(y) || buffer.getLine(lineNumber - 1) || buffer.getLine(lineNumber));
+    const text = line && line.translateToString ? line.translateToString(true) : "";
+    const links = [];
+    const re = /https?:\/\/[^\s<>"]+/g;
+    let match;
+    while ((match = re.exec(text))) {
+      const url = match[0].replace(/[),.;]+$/g, "");
+      if (!url) continue;
+      links.push({
+        range: { start: { x: match.index + 1, y: lineNumber }, end: { x: match.index + url.length, y: lineNumber } },
+        text: url,
+        activate: (_event, text) => window.open(text, "_blank", "noopener,noreferrer"),
+      });
+    }
+    callback(links);
+  } catch (e) {
+    callback([]);
+  }
+}
 function enqueueTerminalFrame(data) {
   terminalWriteQueue.push({ terminalId: connectedTerminalId, data });
   if (terminalWriteFlushPending) return;
@@ -238,8 +270,7 @@ function flushTerminalFrames() {
   terminalWriteFlushPending = false;
   if (!terminalWriteQueue.length || !term) return;
   const terminalId = connectedTerminalId;
-  const frames = terminalWriteQueue.filter((frame) => frame.terminalId === terminalId).map((frame) => frame.data);
-  terminalWriteQueue = terminalWriteQueue.filter((frame) => frame.terminalId !== terminalId);
+  const frames = takeTerminalFrames(terminalId);
   if (!frames.length) return;
   const data = coalesceTerminalFrames(frames);
   writeTerminalFrame(data);
@@ -248,17 +279,25 @@ function flushTerminalFrames() {
 }
 function flushTerminalFramesFor(terminalId) {
   if (!terminalWriteQueue.length || !term || !terminalId) return;
-  const frames = terminalWriteQueue.filter((frame) => frame.terminalId === terminalId).map((frame) => frame.data);
-  terminalWriteQueue = terminalWriteQueue.filter((frame) => frame.terminalId !== terminalId);
+  const frames = takeTerminalFrames(terminalId);
   if (!frames.length) return;
   writeTerminalFrame(coalesceTerminalFrames(frames));
   clearDismissedWorkingForTerminal(terminalId);
   scheduleTerminalFrameWork();
 }
+function takeTerminalFrames(terminalId) {
+  const frames = [];
+  const remaining = [];
+  for (const frame of terminalWriteQueue) {
+    if (frame.terminalId === terminalId) frames.push(frame.data);
+    else remaining.push(frame);
+  }
+  terminalWriteQueue = remaining;
+  return frames;
+}
 function coalesceTerminalFrames(frames) {
   if (frames.every((frame) => typeof frame === "string")) return frames.join("");
-  const encoder = new TextEncoder();
-  const bytes = frames.map((frame) => typeof frame === "string" ? encoder.encode(frame) : frame);
+  const bytes = frames.map((frame) => typeof frame === "string" ? inputEncoder.encode(frame) : frame);
   const size = bytes.reduce((sum, frame) => sum + frame.length, 0);
   const merged = new Uint8Array(size);
   let offset = 0;

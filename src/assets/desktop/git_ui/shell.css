@@ -64,6 +64,36 @@
   display: grid;
   gap: 12px;
 }
+.git-ui-cleanup > .git-ui-list {
+  max-height: none;
+  overflow: visible;
+}
+.git-ui-cleanup-tab {
+  align-items: center;
+  display: inline-flex;
+  gap: 3px;
+}
+.git-ui-cleanup-tab-icon {
+  background: currentColor;
+  display: inline-block;
+  height: 14px;
+  line-height: 1;
+  mask-position: center;
+  mask-repeat: no-repeat;
+  mask-size: contain;
+  width: 14px;
+}
+.git-ui-cleanup-tab-icon.trash {
+  mask-image: url("/assets/icons/trash.svg");
+}
+.git-ui-cleanup-tab-icon.broom {
+  mask-image: url("/assets/icons/broom.svg");
+  margin-left: -2px;
+  transform: rotate(-18deg);
+}
+.git-ui-cleanup-bulk {
+  align-items: center;
+}
 .git-ui-cleanup-repo {
   border: 1px solid var(--border2);
   border-radius: 12px;
@@ -77,6 +107,32 @@
   display: grid;
   gap: 12px;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.git-ui-cleanup-row > span:first-child {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+.git-ui-cleanup-row input {
+  flex: none;
+}
+.git-ui-cleanup-row small {
+  color: var(--muted);
+  display: block;
+  margin-top: 2px;
+}
+.git-ui-cleanup-confirm-list {
+  background: var(--bg);
+  border: 1px solid var(--border2);
+  border-radius: 8px;
+  color: var(--fg);
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  margin: 0;
+  max-height: 260px;
+  overflow: auto;
+  padding: 10px;
+  white-space: pre-wrap;
 }
 @media (max-width: 900px) {
   .git-ui-cleanup-grid {

@@ -90,6 +90,11 @@ body.light {
   border-color: var(--accent);
   color: var(--accent-fg);
 }
+.mobile-btn.danger,
+.mobile-tab-close {
+  border-color: #f38ba8;
+  color: #f38ba8;
+}
 .mobile-screen {
   min-height: 0;
   min-width: 0;
@@ -110,6 +115,63 @@ body.light {
   font-size: 12px;
   letter-spacing: 0.1em;
   text-transform: uppercase;
+}
+.mobile-files-head {
+  align-items: flex-start;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+.mobile-files-list-head {
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  margin: 0 -12px 8px;
+  padding: 8px 12px;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.mobile-file-filter {
+  align-items: center;
+  background: var(--panel);
+  border: 1px solid var(--border2);
+  border-radius: 12px;
+  display: flex;
+  gap: 8px;
+  padding: 8px 10px;
+}
+.mobile-file-filter input {
+  background: transparent;
+  border: 0;
+  color: var(--fg);
+  font: inherit;
+  min-width: 0;
+  outline: 0;
+  width: 100%;
+}
+.mobile-file-search-icon {
+  background: currentColor;
+  color: var(--muted);
+  display: inline-block;
+  flex: none;
+  height: 14px;
+  mask: url("/assets/icons/search.svg") center / contain no-repeat;
+  width: 14px;
+}
+.mobile-file-search-icon.searching {
+  animation: mobile-spin 900ms linear infinite;
+}
+.mobile-file-result-count {
+  margin: 6px 2px 0;
+}
+.herdr-tree-hit {
+  background: #f9e2af;
+  border-radius: 3px;
+  color: #11111b;
+  padding: 0 2px;
+}
+@keyframes mobile-spin {
+  to { transform: rotate(360deg); }
 }
 .mobile-row {
   display: block;
@@ -182,6 +244,10 @@ body.light {
   color: var(--accent-fg);
 }
 .mobile-tab-add {
+  min-width: 44px;
+  font-weight: 900;
+}
+.mobile-tab-close {
   min-width: 44px;
   font-weight: 900;
 }
