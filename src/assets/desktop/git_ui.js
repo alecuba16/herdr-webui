@@ -1137,10 +1137,20 @@
   }
 
   function renderCleanupRepo(repo, repoIndex) {
-    if (repo.error) return `<section class="git-ui-cleanup-repo"><h3>${esc(compactPath(repo.path))}</h3><div class="git-ui-error">${esc(repo.error)}</div></section>`;
-    const branches = (repo.branches || []).map((branch) => renderCleanupBranch(repoIndex, branch)).join("") || `<div class="git-ui-empty-row">No local branches</div>`;
-    const worktrees = (repo.worktrees || []).map((worktree, index) => renderCleanupWorktree(repoIndex, index, worktree)).join("") || `<div class="git-ui-empty-row">No worktrees</div>`;
-    return `<section class="git-ui-cleanup-repo"><h3>${esc(compactPath(repo.path))}</h3><div class="git-ui-cleanup-grid"><div><h4>Branches</h4>${branches}</div><div><h4>Worktrees</h4>${worktrees}</div></div></section>`;
+    const name = repo.path ? repo.path.split(/[\\/]+/).filter(Boolean).pop() || repo.path : "Repository";
+    const repoItems = cleanupRepoItems(repoIndex);
+    const repoState = cleanupSelectionState(repoItems);
+    const title = `<label class="git-ui-cleanup-repo-title"><input type="checkbox" data-state="${repoState}" onchange="HerdrGitUi.toggleCleanupRepo('${repoIndex}',this.checked)" ${repoState === "checked" ? "checked" : ""} ${repoItems.length ? "" : "disabled"}><span>${treeIcon("folder")}</span><strong>${esc(name)}</strong><small title="${esc(repo.path || "")}">${esc(repo.path || "")}</small></label>`;
+    if (repo.error) return `<section class="git-ui-cleanup-repo">${title}<div class="git-ui-error">${esc(repo.error)}</div></section>`;
+    const branches = (repo.branches || []).map((branch) => renderCleanupBranch(repoIndex, branch)).join("") || `<div class="git-ui-empty-row git-ui-cleanup-empty">No local branches</div>`;
+    const worktrees = (repo.worktrees || []).map((worktree, index) => worktree.primary ? "" : renderCleanupWorktree(repoIndex, index, worktree)).join("") || `<div class="git-ui-empty-row git-ui-cleanup-empty">No linked worktrees</div>`;
+    return `<section class="git-ui-cleanup-repo">${title}<div class="git-ui-cleanup-group">${renderCleanupGroupTitle(repoIndex, "branch", "Branches")}${branches}</div><div class="git-ui-cleanup-group">${renderCleanupGroupTitle(repoIndex, "worktree", "Worktrees")}${worktrees}</div></section>`;
+  }
+
+  function renderCleanupGroupTitle(repoIndex, type, label) {
+    const items = cleanupRepoItems(repoIndex, type);
+    const state = cleanupSelectionState(items);
+    return `<label class="git-ui-cleanup-group-title"><input type="checkbox" data-state="${state}" onchange="HerdrGitUi.toggleCleanupGroup('${repoIndex}','${type}',this.checked)" ${state === "checked" ? "checked" : ""} ${items.length ? "" : "disabled"}><span>${esc(label)}</span></label>`;
   }
 
   function renderCleanupBranch(repoIndex, branch) {
@@ -1148,7 +1158,7 @@
     const key = cleanupItemKey("branch", repoIndex, branch.name);
     const checked = cleanupSelected(key) ? "checked" : "";
     const meta = [branch.current ? "current" : "", branch.checked_out ? "checked out" : ""].filter(Boolean).join(" · ");
-    return `<label class="git-ui-file git-ui-cleanup-row"><span><input type="checkbox" onchange="HerdrGitUi.toggleCleanupSelection('${arg(key)}',this.checked)" ${checked} ${disabled}><span><strong>${esc(branch.name)}</strong>${meta ? `<small>${esc(meta)}</small>` : ""}</span></span><span class="git-ui-muted">branch</span></label>`;
+    return `<label class="git-ui-cleanup-row"><input type="checkbox" onchange="HerdrGitUi.toggleCleanupSelection('${arg(key)}',this.checked)" ${checked} ${disabled}><span class="git-ui-cleanup-indent"></span><span><strong>${esc(branch.name)}</strong>${meta ? `<small>${esc(meta)}</small>` : ""}</span></label>`;
   }
 
   function renderCleanupWorktree(repoIndex, index, worktree) {
@@ -1156,7 +1166,7 @@
     const disabled = worktree.primary ? "disabled" : "";
     const key = cleanupItemKey("worktree", repoIndex, String(index));
     const checked = cleanupSelected(key) ? "checked" : "";
-    return `<label class="git-ui-file git-ui-cleanup-row"><span><input type="checkbox" onchange="HerdrGitUi.toggleCleanupSelection('${arg(key)}',this.checked)" ${checked} ${disabled}><span><strong>${esc(compactPath(worktree.path))}</strong>${meta ? `<small>${esc(meta)}</small>` : ""}</span></span><span class="git-ui-muted">worktree</span></label>`;
+    return `<label class="git-ui-cleanup-row"><input type="checkbox" onchange="HerdrGitUi.toggleCleanupSelection('${arg(key)}',this.checked)" ${checked} ${disabled}><span class="git-ui-cleanup-indent"></span><span><strong>${esc(compactPath(worktree.path))}</strong>${meta ? `<small>${esc(meta)}</small>` : ""}</span></label>`;
   }
 
   function cleanupItemKey(type, repoIndex, id) {
@@ -1170,6 +1180,14 @@
     return !!(view.cleanupSelected && view.cleanupSelected[key]);
   }
 
+  function cleanupSelectionState(items) {
+    if (!items || !items.length) return "unchecked";
+    const selected = items.filter((item) => cleanupSelected(item.key)).length;
+    if (selected === 0) return "unchecked";
+    if (selected === items.length) return "checked";
+    return "mixed";
+  }
+
   function cleanupSelectableItems(view = active() || {}) {
     const items = [];
     for (const repo of (((view.cleanupResult || {}).repos) || [])) {
@@ -1177,6 +1195,25 @@
       for (const branch of repo.branches || []) {
         if (!branch.current) items.push({ type: "branch", repo: repo.path, name: branch.name, key: `branch|${repo.path}|${branch.name}` });
       }
+      (repo.worktrees || []).forEach((worktree, index) => {
+        if (!worktree.primary) items.push({ type: "worktree", repo: repo.path, path: worktree.path, key: `worktree|${repo.path}|${index}` });
+      });
+    }
+    return items;
+  }
+
+  function cleanupRepoItems(repoIndex, type) {
+    const view = active() || {};
+    const repos = ((view.cleanupResult || {}).repos) || [];
+    const repo = repos[Number(repoIndex)];
+    if (!repo || repo.error) return [];
+    const items = [];
+    if (!type || type === "branch") {
+      for (const branch of repo.branches || []) {
+        if (!branch.current) items.push({ type: "branch", repo: repo.path, name: branch.name, key: `branch|${repo.path}|${branch.name}` });
+      }
+    }
+    if (!type || type === "worktree") {
       (repo.worktrees || []).forEach((worktree, index) => {
         if (!worktree.primary) items.push({ type: "worktree", repo: repo.path, path: worktree.path, key: `worktree|${repo.path}|${index}` });
       });
@@ -1260,14 +1297,21 @@
   function render() {
     if (!state.visible) return;
     saveSideEditorFromDom();
+    const activeView = active() || {};
+    const currentContent = document.querySelector(".git-ui-content");
+    if (currentContent && activeView.tab === "cleanup")
+      activeView.contentScrollTop = currentContent.scrollTop;
     const version = ++state.renderVersion;
     const panel = ensurePanel();
-    panel.classList.toggle("mutating", !!((active() || {}).mutating));
+    panel.classList.toggle("mutating", !!activeView.mutating);
     panel.innerHTML = renderSide() + renderMain() + renderContextMenu() + renderBranchModal() + renderCleanupConfirm();
     const side = panel.querySelector(".git-ui-side");
     if (side) side.scrollTop = state.sideScrollTop || 0;
+    const nextContent = panel.querySelector(".git-ui-content");
+    if (nextContent && activeView.tab === "cleanup")
+      nextContent.scrollTop = activeView.contentScrollTop || 0;
     mountSideEditors();
-    const view = active() || {};
+    const view = activeView;
     if (view.tab === "log") renderLog(version).catch((e) => { view.error = e.message; render(); });
     if (view.tab === "stash") renderStash(version).catch((e) => { view.error = e.message; render(); });
     if (view.tab === "history") renderHistory().then((html) => replaceContent(version, html)).catch((e) => { view.error = e.message; render(); });
@@ -1683,6 +1727,26 @@
       view.cleanupSelected = Object.assign({}, view.cleanupSelected || {});
       if (checked) view.cleanupSelected[key] = true;
       else delete view.cleanupSelected[key];
+      render();
+    },
+    toggleCleanupGroup(repoIndex, type, checked) {
+      const view = active();
+      if (!view) return;
+      view.cleanupSelected = Object.assign({}, view.cleanupSelected || {});
+      for (const item of cleanupRepoItems(repoIndex, type)) {
+        if (checked) view.cleanupSelected[item.key] = true;
+        else delete view.cleanupSelected[item.key];
+      }
+      render();
+    },
+    toggleCleanupRepo(repoIndex, checked) {
+      const view = active();
+      if (!view) return;
+      view.cleanupSelected = Object.assign({}, view.cleanupSelected || {});
+      for (const item of cleanupRepoItems(repoIndex)) {
+        if (checked) view.cleanupSelected[item.key] = true;
+        else delete view.cleanupSelected[item.key];
+      }
       render();
     },
     selectAllCleanup() {
