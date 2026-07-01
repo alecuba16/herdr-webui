@@ -188,6 +188,18 @@ describe("app bundle load", () => {
     equal(gitKeys.filter((key) => webuiKeys.has(key)).join(","), "");
   });
 
+  it("defines Git cleanup tab and maintenance endpoints", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    match(gitUiSource, /label: "cleanup"/);
+    match(gitUiSource, /scanCleanup/);
+    match(gitUiSource, /\/api\/git-ui\/cleanup-scan/);
+    match(gitUiSource, /\/api\/git-ui\/branch-delete/);
+    match(gitUiSource, /\/api\/git-ui\/worktree-remove/);
+    match(gitUiSource, /HerdrDirectoryPicker\.openInput\('gitUiCleanupRoot'\)/);
+  });
+
   it("renders new workspace modal with manual folder field", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
