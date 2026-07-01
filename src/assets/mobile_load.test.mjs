@@ -131,9 +131,45 @@ function context(pathname = "/") {
           status: 200,
           json: async () => ({ result: { tab: { tab_id: "w1:t3" } } }),
         };
+      if (String(url).startsWith("/api/git-ui/status"))
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            branch: "feature/mobile",
+            state: "dirty",
+            conflicted: [],
+            staged: ["src/staged.js"],
+            unstaged: ["src/mobile.js"],
+            untracked: [],
+          }),
+        };
+      if (String(url).startsWith("/api/git-ui/diff"))
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            files: [
+              {
+                path: "src/mobile.js",
+                additions: 1,
+                deletions: 1,
+                chunks: [
+                  {
+                    header: "@@ -1 +1 @@",
+                    lines: [
+                      { line_type: "delete", content: "old" },
+                      { line_type: "add", content: "new" },
+                    ],
+                  },
+                ],
+              },
+            ],
+          }),
+        };
       const result = url.includes("workspaces")
         ? {
-            workspaces: [{ workspace_id: "w1", label: "alpha", pane_count: 1 }],
+            workspaces: [{ workspace_id: "w1", label: "alpha", pane_count: 1, cwd: "/tmp/alpha" }],
           }
         : url.includes("worktrees")
           ? {
@@ -347,6 +383,33 @@ describe("mobile bundle load", () => {
     equal(ctx.lastTerminal.scrolledToLine, 20);
     ctx.HerdrMobile.scrollTerminalToBottom();
     ok(ctx.lastTerminal.scrolledToBottom);
+  });
+
+  it("opens mobile Git file diff with scrollable hunk markup", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    ctx.HerdrMobile.showScreen("git");
+    await ctx.HerdrMobile.loadGitStatus();
+
+    let html = ctx.document.getElementById("mobileScreen").innerHTML;
+    ok(html.includes("HerdrMobile.selectGitFile"));
+    ok(html.includes("src/mobile.js"));
+
+    await ctx.HerdrMobile.selectGitFile("src/mobile.js", "M");
+
+    html = ctx.document.getElementById("mobileScreen").innerHTML;
+    ok(html.includes("mobile-hunk"));
+    ok(html.includes("@@ -1 +1 @@"));
+    ok(html.includes("+new"));
+    const css = readFileSync(new URL("./mobile/app.css", import.meta.url), "utf8");
+    ok(css.includes(".mobile-hunk pre"));
+    ok(css.includes("overflow-x: auto"));
+    ok(
+      ctx.requests.some((request) =>
+        String(request.url).includes("/api/git-ui/diff?cwd=%2Ftmp%2Falpha"),
+      ),
+    );
   });
 
   it("renders mobile worktree path input and discovers by cwd", async () => {

@@ -423,6 +423,89 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
   border-radius: 12px;
   overflow: hidden;
 }
+.mobile-git {
+  display: grid;
+  gap: 10px;
+}
+.mobile-git-file strong,
+.mobile-git-file span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mobile-git-file span {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 4px;
+}
+.mobile-git-file-head {
+  align-items: center;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: auto minmax(0, 1fr);
+  padding: 12px;
+}
+.mobile-git-file-head div {
+  min-width: 0;
+}
+.mobile-git-file-head strong,
+.mobile-git-file-head span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mobile-git-file-head span {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 4px;
+}
+.mobile-diff {
+  display: grid;
+  gap: 12px;
+}
+.mobile-hunk {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  margin: 0;
+  overflow: hidden;
+}
+.mobile-hunk header {
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+  padding: 8px 10px;
+}
+.mobile-hunk header span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mobile-hunk pre {
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  margin: 0;
+  overflow-x: auto;
+  padding: 10px;
+}
+.mobile-hunk pre span {
+  display: block;
+  min-width: max-content;
+  white-space: pre;
+}
+.mobile-hunk pre .add {
+  background: color-mix(in srgb, #a6e3a1, transparent 88%);
+  color: #a6e3a1;
+}
+.mobile-hunk pre .delete {
+  background: color-mix(in srgb, #f38ba8, transparent 88%);
+  color: #f38ba8;
+}
 .herdr-editor-mount {
   min-height: 55vh;
 }
