@@ -14,7 +14,8 @@ Compatibility:
 
 | WebUI | Herdr | Protocol | Status | Notes |
 | --- | --- | --- | --- | --- |
-| `0.1.7` | `0.7.1` | `14` | Current | Improves Git cleanup results with nested repo lists, aligned visible checkboxes, group/repo selection, hidden primary worktrees, and stable scroll while selecting. |
+| `0.1.8` | `0.7.1` | `14` | Current | Adds mobile read-only Git file diffs with horizontally scrollable hunks so long diff lines stay inside the mobile app shell. |
+| `0.1.7` | `0.7.1` | `14` | Tested | Improves Git cleanup results with nested repo lists, aligned visible checkboxes, group/repo selection, hidden primary worktrees, and stable scroll while selecting. |
 | `0.1.6` | `0.7.1` | `14` | Tested | Adds Files search focus/typing UX, terminal URL links, current-panel close affordances, Git file filtering, cleanup layout fixes, and bulk cleanup refinements. |
 | `0.1.5` | `0.7.1` | `14` | Tested | Adds Git branch/worktree cleanup, separate worktree and exploration default directories, and safer bulk cleanup selection. |
 | `0.1.4` | `0.7.1` | `14` | Tested | Adds configurable default directory and local notification tone volume, documents browser notification permission handling, and keeps desktop/mobile Settings parity for these options. |
@@ -135,9 +136,9 @@ The Rust binary embeds frontend assets with `include_str!`, so release artifacts
 
 ## Desktop And Mobile Parity
 
-- Both layouts support workspace selection, agent list/attention status, panel selection/creation/closing, linked worktree listing/creation/opening, terminal attach, terminal paste sanitization, terminal scrollback follow/Tail behavior, terminal links, Files browsing with backend search/filter, Git status viewing with file filtering, Settings, theme choice, browser notifications, local attention tone volume, file tree indentation, and layout preference.
+- Both layouts support workspace selection, agent list/attention status, panel selection/creation/closing, linked worktree listing/creation/opening, terminal attach, terminal paste sanitization, terminal scrollback follow/Tail behavior, terminal links, Files browsing with backend search/filter, Git status viewing with file filtering, read-only Git file diffs, Settings, theme choice, browser notifications, local attention tone volume, file tree indentation, and layout preference.
 - Desktop is the full power-user layout. It includes the embedded Git drawer with mutations, diffs, log, stash, cleanup, blame, file history, hunk actions, conflict actions, shortcuts, and the editable file browser with split panes.
-- Mobile is intentionally narrower. It keeps navigation, agents, worktrees, terminal, Files preview, and Git status usable on small screens, but does not yet expose desktop Git mutations/diffs/log/stash/cleanup/blame/history or file editing/split panes.
+- Mobile is intentionally narrower. It keeps navigation, agents, worktrees, terminal, Files preview, Git status, and read-only Git file diffs usable on small screens, but does not yet expose desktop Git mutations/log/stash/cleanup/blame/history or file editing/split panes.
 - When adding a desktop feature, decide explicitly whether mobile needs full parity, read-only parity, or documentation as desktop-only. Keep this section updated so mobile gaps are intentional.
 
 ## Mobile Layout Notes
@@ -151,6 +152,7 @@ The Rust binary embeds frontend assets with `include_str!`, so release artifacts
 - Mobile terminal tabs include `+` to create a panel and `✕` to close the current panel. The Panels screen also exposes `Close current panel` for discoverability.
 - Mobile terminal scrollback mirrors desktop behavior: scrolling up pauses follow, new output preserves the current viewport, and `Tail` jumps to latest output and resumes follow.
 - Mobile paste/input uses bounded WebSocket chunks with backpressure, matching the desktop large-paste protection.
+- Mobile Git file diffs render hunks inside horizontally scrollable code blocks so long lines do not widen the app shell.
 
 TODO:
 
