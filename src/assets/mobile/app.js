@@ -417,15 +417,16 @@
   function renderPanels() {
     if (!state.ws)
       return '<div class="mobile-loading">Select workspace first</div>';
+    const close = state.tab ? `<button class="mobile-btn danger mobile-wide" onclick="HerdrMobile.closeCurrentPanel()">Close current panel</button>` : "";
     const rows = state.tabs.length
       ? state.tabs
           .map(
             (tab) =>
-              `<button class="mobile-row${tab.tab_id === state.tab ? " active" : ""}" onclick="HerdrMobile.selectTab(${jsArg(tab.tab_id)})"><strong>${escapeHtml(tabTitle(tab))}</strong><span>${escapeHtml((state.panes || []).filter((pane) => pane.tab_id === tab.tab_id).length)} panes · ${escapeHtml(tab.tab_id)}</span></button>`,
+              `<button class="mobile-row${tab.tab_id === state.tab ? " active" : ""}" onclick="HerdrMobile.selectTab(${jsArg(tab.tab_id)})"><strong>${escapeHtml(tabTitle(tab))}${tab.tab_id === state.tab ? " · current" : ""}</strong><span>${escapeHtml((state.panes || []).filter((pane) => pane.tab_id === tab.tab_id).length)} panes · ${escapeHtml(tab.tab_id)}</span></button>`,
           )
           .join("")
       : '<div class="mobile-loading">No panels</div>';
-    return `<section class="mobile-section"><h2>Panels</h2><button class="mobile-btn primary mobile-wide" onclick="HerdrMobile.createPanel()">New panel</button>${rows}</section>`;
+    return `<section class="mobile-section"><h2>Panels</h2><button class="mobile-btn primary mobile-wide" onclick="HerdrMobile.createPanel()">New panel</button>${close}${rows}</section>`;
   }
 
   function renderTerminal() {
@@ -489,7 +490,8 @@
   }
 
   function renderTerminalTabsWithAdd() {
-    return `${renderTerminalTabs()}<button class="mobile-tab mobile-tab-add" onclick="HerdrMobile.createPanel()">+</button>`;
+    const close = state.tab ? `<button class="mobile-tab mobile-tab-close" title="Close current panel" onclick="HerdrMobile.closeCurrentPanel()">✕</button>` : "";
+    return `${renderTerminalTabs()}<button class="mobile-tab mobile-tab-add" title="New panel" onclick="HerdrMobile.createPanel()">+</button>${close}`;
   }
 
   function renderTerminalTabs() {
@@ -519,10 +521,18 @@
     const seq = ++refreshSeq;
     state.error = "";
     parseRoute(false);
+    const routeWs = state.ws,
+      routeTab = state.tab,
+      routePane = state.pane;
     try {
       const workspaces = await api("/api/workspaces");
       if (seq !== refreshSeq) return;
       state.workspaces = workspaces.result.workspaces || [];
+      if (state.ws && !state.workspaces.some((workspace) => workspace.workspace_id === state.ws)) {
+        state.ws = null;
+        state.tab = null;
+        state.pane = null;
+      }
       if (!state.ws && state.workspaces[0])
         state.ws = state.workspaces[0].workspace_id;
       if (state.ws) {
@@ -553,6 +563,12 @@
         }
         const pane = currentPane();
         state.terminalId = pane && pane.terminal_id;
+        if (
+          routeWs &&
+          (routeWs !== state.ws || routeTab !== state.tab || routePane !== state.pane)
+        ) {
+          mobileTerminal.destroy(true);
+        }
         if (state.ws && state.tab && state.pane)
           history.replaceState(
             null,
@@ -628,6 +644,28 @@
     }
   }
 
+  async function closeCurrentPanel() {
+    if (!state.tab) return;
+    const tab = state.tabs.find((item) => item.tab_id === state.tab) || { tab_id: state.tab, workspace_id: state.ws };
+    const label = tabTitle(tab);
+    if (!confirm(`Close panel "${label}"?`)) return;
+    try {
+      const workspaceTabs = state.tabs.filter((item) => item.workspace_id === state.ws);
+      if (workspaceTabs.length > 1) {
+        await api(`/api/tabs/${encodeURIComponent(state.tab)}/close`, { method: "POST" });
+      } else if (state.ws) {
+        await api(`/api/workspaces/${encodeURIComponent(state.ws)}/close`, { method: "POST" });
+      }
+      state.tab = null;
+      state.pane = null;
+      mobileTerminal.destroy(true);
+      await refresh();
+    } catch (error) {
+      state.error = error.message || String(error);
+      render();
+    }
+  }
+
   function currentScreen() {
     return state.screen;
   }
@@ -692,6 +730,7 @@
     selectAgent,
     selectTab,
     createPanel,
+    closeCurrentPanel,
     loadGitStatus,
     filesToggle: mobileFileBrowser.toggle,
     filesSelect: mobileFileBrowser.select,
@@ -699,18 +738,24 @@
     filesRefresh: mobileFileBrowser.refresh,
     filesBackToTree: mobileFileBrowser.backToTree,
     filesRefreshFile: mobileFileBrowser.refreshFile,
+    filesFilter: mobileFileBrowser.filter,
+    filesLoadMore: mobileFileBrowser.loadMore,
+    filesScroll: mobileFileBrowser.scroll,
     loadWorktrees: mobileWorktrees.load,
     openWorktree: mobileWorktrees.open,
     createWorktree: mobileWorktrees.create,
     updateWorktreeField: mobileWorktrees.updateField,
     setThemeMode: mobileSettings.setThemeMode,
     setBrowserNotifications: mobileSettings.setBrowserNotifications,
-    setDefaultDirectory: mobileSettings.setDefaultDirectory,
+    setExplorationDefaultDirectory: mobileSettings.setExplorationDefaultDirectory,
     setFileBrowserDepth: mobileSettings.setFileBrowserDepth,
     setLayoutPreference: mobileSettings.setLayoutPreference,
     setNotificationVolume: mobileSettings.setNotificationVolume,
     setTerminalFontFamily: mobileSettings.setTerminalFontFamily,
+    setTerminalLinks: mobileSettings.setTerminalLinks,
+    setWorktreeDefaultDirectory: mobileSettings.setWorktreeDefaultDirectory,
     applyTerminalFontFamily: mobileTerminal.applyFontFamily,
+    applyTerminalLinks: mobileTerminal.applyLinks,
     scrollTerminalToBottom: mobileTerminal.scrollToBottom,
     currentScreen,
     currentSelection,

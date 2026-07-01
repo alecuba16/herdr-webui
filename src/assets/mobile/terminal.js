@@ -7,6 +7,7 @@
       connectedTerminalSize = "",
       terminalFollowPaused = false,
       terminalScrollFollowBound = false,
+      terminalLinkProvider = null,
       inputFlushTimer = null,
       inputQueue = [];
     const inputEncoder = new TextEncoder();
@@ -38,6 +39,44 @@
       try {
         term.refresh(0, Math.max(0, (term.rows || 1) - 1));
       } catch (_) {}
+    }
+
+    function terminalLinksEnabled() {
+      try {
+        const parsed = JSON.parse((globalThis.localStorage && globalThis.localStorage.getItem("herdr-web-options")) || "{}");
+        return parsed.terminalLinks !== false;
+      } catch (_) {
+        return true;
+      }
+    }
+
+    function applyLinks() {
+      if (terminalLinkProvider && terminalLinkProvider.dispose) {
+        try { terminalLinkProvider.dispose(); } catch (_) {}
+      }
+      terminalLinkProvider = null;
+      if (!term || !terminalLinksEnabled() || !term.registerLinkProvider) return;
+      terminalLinkProvider = term.registerLinkProvider({ provideLinks });
+    }
+
+    function provideLinks(lineNumber, callback) {
+      try {
+        const buffer = term && term.buffer && term.buffer.active;
+        const y = buffer ? Math.max(0, (buffer.viewportY || 0) + lineNumber - 1) : 0;
+        const line = buffer && (buffer.getLine(y) || buffer.getLine(lineNumber - 1) || buffer.getLine(lineNumber));
+        const text = line && line.translateToString ? line.translateToString(true) : "";
+        const links = [];
+        const re = /https?:\/\/[^\s<>"]+/g;
+        let match;
+        while ((match = re.exec(text))) {
+          const url = match[0].replace(/[),.;]+$/g, "");
+          if (!url) continue;
+          links.push({ range: { start: { x: match.index + 1, y: lineNumber }, end: { x: match.index + url.length, y: lineNumber } }, text: url, activate: (_event, text) => globalThis.open(text, "_blank", "noopener,noreferrer") });
+        }
+        callback(links);
+      } catch (_) {
+        callback([]);
+      }
     }
 
     function size() {
@@ -76,6 +115,7 @@
         term.onData((data) => {
           sendInputData(data);
         });
+        applyLinks();
         if (!terminalScrollFollowBound && term.onScroll) {
           term.onScroll(() => {
             setTerminalFollowPaused(!terminalAtBottom());
@@ -152,6 +192,10 @@
     function destroy(clear) {
       disconnect(clear);
       if (term) {
+        if (terminalLinkProvider && terminalLinkProvider.dispose) {
+          try { terminalLinkProvider.dispose(); } catch (_) {}
+        }
+        terminalLinkProvider = null;
         try {
           term.dispose();
         } catch (_) {}
@@ -248,7 +292,7 @@
       if (inputQueue.length) scheduleInputFlush();
     }
 
-    return { connect, destroy, disconnect, applyFontFamily, scrollToBottom };
+    return { connect, destroy, disconnect, applyFontFamily, applyLinks, scrollToBottom };
   }
 
   globalThis.HerdrMobileTerminal = { create: createMobileTerminal };

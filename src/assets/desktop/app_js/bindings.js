@@ -161,6 +161,11 @@ el("optTerminalFontFamily").oninput = () => {
   applyTerminalFont();
   fitTerminalShell();
 };
+el("optTerminalLinks").onchange = () => {
+  options.terminalLinks = el("optTerminalLinks").checked;
+  saveOptions();
+  applyTerminalLinks();
+};
 el("optAgentSortMode").onchange = () => {
   options.agentSortMode = el("optAgentSortMode").value;
   saveOptions();
@@ -251,6 +256,10 @@ el("optWorktreeDefaultDirectory").oninput = () => {
   options.worktreeDefaultDirectory = el("optWorktreeDefaultDirectory").value.trim();
   saveOptions();
   syncWorktreeCheckoutPath();
+};
+el("optExplorationDefaultDirectory").oninput = () => {
+  options.explorationDefaultDirectory = el("optExplorationDefaultDirectory").value.trim();
+  saveOptions();
 };
 el("optSound").onchange = () => {
   options.sound = el("optSound").checked;

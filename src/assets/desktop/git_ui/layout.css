@@ -78,6 +78,40 @@
   flex-wrap: wrap;
   gap: 6px;
 }
+.git-ui-file-filter {
+  align-items: center;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: 6px;
+  padding: 8px 10px;
+}
+.git-ui-file-filter input {
+  background: var(--panel2);
+  border: 1px solid var(--border2);
+  border-radius: 8px;
+  color: var(--fg);
+  font: inherit;
+  min-width: 0;
+  outline: 0;
+  padding: 5px 7px;
+  width: 100%;
+}
+.git-ui-file-filter-icon {
+  background: currentColor;
+  color: var(--muted);
+  display: inline-block;
+  flex: none;
+  height: 14px;
+  mask: url("/assets/icons/search.svg") center / contain no-repeat;
+  width: 14px;
+}
+.herdr-tree-hit {
+  background: #f9e2af;
+  border-radius: 3px;
+  color: #11111b;
+  padding: 0 2px;
+}
 .git-ui-action-group {
   align-items: center;
   border: 1px solid var(--border);
