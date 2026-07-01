@@ -124,7 +124,7 @@ function openWorktreeOpenModal() {
   state.openWorktreeBranchSourceKey = "";
   state.openWorktreeDefaultPath = "";
   state.openWorktreeBaseBranchName = "";
-  el("worktreeDiscoverPath").value = "";
+  el("worktreeDiscoverPath").value = defaultDirectoryOption();
   el("worktreeWorkspaceLabel").value = "";
   state.workspaceCreateSuggestedLabel = "";
   el("worktreeNewBranch").value = "";
@@ -330,10 +330,13 @@ function joinPath(...parts) {
   return clean.join("/");
 }
 function worktreeRootForSource(source) {
-  let root = String(options.worktreeDefaultDirectory || "").trim();
+  let root = defaultDirectoryOption();
   if (!root) root = source.default_worktree_directory || "../worktrees";
   if (root.startsWith("~") || root.startsWith("/")) return root;
   return normalizeAbsolutePath(joinPath(source.repo_root, root));
+}
+function defaultDirectoryOption() {
+  return String(options.worktreeDefaultDirectory || "").trim();
 }
 function defaultWorktreeCheckoutPath() {
   const source = state.openWorktreeSource || {},

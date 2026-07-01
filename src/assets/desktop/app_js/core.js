@@ -901,6 +901,7 @@ const defaultOptions = {
   overflow: true,
   fitToBrowser: false,
   sound: true,
+  notificationVolume: 0.24,
   browserNotifications: false,
   soundScope: "current",
   shiftEnterNewline: true,
@@ -922,7 +923,7 @@ const defaultOptions = {
   showTabActivity: false,
   worktreeAutoDiscoverSeconds: 3,
   generateWorktreeNames: false,
-  worktreeDefaultDirectory: "../worktrees",
+  worktreeDefaultDirectory: "",
   themeColors: themeColorDefaults,
   ...moduleOptionDefaults,
 };
@@ -978,6 +979,15 @@ function normalizeOptions(value) {
   );
   if (!["all", "current"].includes(next.soundScope))
     next.soundScope = defaultOptions.soundScope;
+  next.notificationVolume = Math.max(
+    0,
+    Math.min(
+      1,
+      Number.isFinite(Number(next.notificationVolume))
+        ? Number(next.notificationVolume)
+        : defaultOptions.notificationVolume,
+    ),
+  );
   next.browserNotifications = next.browserNotifications === true;
   if (!["default", "drag", "state"].includes(next.workspaceSort))
     next.workspaceSort = defaultOptions.workspaceSort;
@@ -995,9 +1005,7 @@ function normalizeOptions(value) {
     ),
   );
   next.generateWorktreeNames = next.generateWorktreeNames === true;
-  next.worktreeDefaultDirectory =
-    String(next.worktreeDefaultDirectory || "").trim() ||
-    defaultOptions.worktreeDefaultDirectory;
+  next.worktreeDefaultDirectory = String(next.worktreeDefaultDirectory || "").trim();
   next.themeColors = normalizeThemeColors(next.themeColors, themeColorDefaults);
   for (const module of settingsModules) {
     if (typeof module.normalize === "function") module.normalize(next);
@@ -1241,7 +1249,7 @@ if (soundSetting && !el("optAgentSortMode"))
     .closest("label")
     .insertAdjacentHTML(
       "afterend",
-      '<label class="option"><input type="checkbox" id="optGlobalShortcutsEnabled"><span>Global keyboard shortcuts<small>Enable prefix WebUI navigation shortcuts listed under ?.</small></span></label><label class="option"><span>Shortcut prefix<small>Click Record, press desired key combination, then use it before WebUI shortcuts.</small></span><span class="shortcut-capture"><input id="optGlobalShortcutPrefix" readonly><button type="button" class="tab add" id="optGlobalShortcutPrefixCapture">Record</button></span></label><label class="option"><span>Search shortcut<small>Optional direct shortcut. Leave disabled if it conflicts with terminal apps.</small></span><span class="shortcut-capture"><input id="optSearchShortcut" readonly><button type="button" class="tab add" id="optSearchShortcutCapture">Record</button><button type="button" class="tab add" id="optSearchShortcutClear">Clear</button></span></label><label class="option"><span>Terminal font<small>Use installed monospaced font family, including Nerd Fonts used by Neovim.</small></span><input id="optTerminalFontFamily" list="terminalFontPresets" placeholder="&quot;MesloLGS Nerd Font Mono&quot;, monospace"><datalist id="terminalFontPresets"><option value="&quot;MesloLGS Nerd Font Mono&quot;, &quot;MesloLGS NF&quot;, monospace"><option value="&quot;MesloLGS Nerd Font&quot;, &quot;MesloLGS NF&quot;, monospace"><option value="&quot;JetBrainsMono Nerd Font Mono&quot;, &quot;JetBrainsMono Nerd Font&quot;, monospace"><option value="&quot;Hack Nerd Font Mono&quot;, &quot;Hack Nerd Font&quot;, monospace"><option value="&quot;FiraCode Nerd Font Mono&quot;, &quot;FiraCode Nerd Font&quot;, monospace"><option value="&quot;CaskaydiaCove Nerd Font Mono&quot;, &quot;CaskaydiaCove Nerd Font&quot;, monospace"><option value="ui-monospace,SFMono-Regular,Menlo,monospace"></datalist></label><label class="option"><span>Close panel shortcut<small>Stored in browser storage and available after reopening the tab.</small></span><select class="settings-select" id="optCloseShortcut"><option value="off">Disabled</option><option value="altw">Option+W</option><option value="shiftspacew">Shift+Space then W</option></select></label><label class="option"><span>Agent sorting<small>Sort agents by attention priority, or show them in default order.</small></span><select class="settings-select" id="optAgentSortMode"><option value="off">Default order</option><option value="attention">Attention (blocked first)</option><option value="attention_inverted">Attention (working first)</option></select></label><label class="option"><span>Parent workspace close<small>Close panels only (keeps linked worktrees running) or full close with re-open (stops processes, re-opens worktrees with fresh shells).</small></span><select class="settings-select" id="optParentCloseMode"><option value="panels">Close panels only</option><option value="close">Full close + re-open worktrees</option></select></label><label class="option"><input type="checkbox" id="optStuckWorkingEnabled"><span>Ignore stuck working agents<small>Dismiss working agents that appear stuck. Clears automatically on status changes and terminal output.</small></span></label><label class="option"><span>Ignore stuck working for<small>Minutes to keep a local dismissed-working override before showing working again.</small></span><input id="optWorkingDismissMinutes" type="number" min="1" max="1440" step="1"></label><label class="option"><input type="checkbox" id="optShowTabActivity"><span>Show panel last update<small>Display local last-change age on top panel tabs. Updates on refreshes, events, and selected terminal output; no timer polling.</small></span></label><label class="option"><span>Workspace sorting<small>Default tree order, shared drag-and-drop order, or attention state priority.</small></span><select class="settings-select" id="optWorkspaceSort"><option value="default">Default</option><option value="drag">Drag&drop</option><option value="state">State</option></select></label><label class="option"><span>Notification scope<small>Choose whether alerts fire in every open tab or only the tab viewing the agent panel.</small></span><select class="settings-select" id="optSoundScope"><option value="current">Current agent tab</option><option value="all">All tabs</option></select></label><label class="option"><input type="checkbox" id="optGenerateWorktreeNames"><span>Generate worktree branch names<small>Allow blank Branch name in Worktrees modal. Herdr generates worktree/&lt;name&gt;.</small></span></label><label class="option"><span>Default worktree directory<small>Relative paths resolve from repo root. Example: ../worktrees.</small></span><input id="optWorktreeDefaultDirectory" placeholder="../worktrees"></label><label class="option"><span>Scroll speed<small><span id="scrollLinesValue">3</span> terminal lines per wheel step.</small></span><input type="range" id="optScrollLines" min="1" max="20" step="1"></label><label class="option"><span>Worktree autodiscover<small>Seconds to wait after path input stops. Set 0 for immediate.</small></span><input type="number" id="optWorktreeAutoDiscover" min="0" max="30" step="0.5"></label>',
+      '<label class="option"><input type="checkbox" id="optGlobalShortcutsEnabled"><span>Global keyboard shortcuts<small>Enable prefix WebUI navigation shortcuts listed under ?.</small></span></label><label class="option"><span>Shortcut prefix<small>Click Record, press desired key combination, then use it before WebUI shortcuts.</small></span><span class="shortcut-capture"><input id="optGlobalShortcutPrefix" readonly><button type="button" class="tab add" id="optGlobalShortcutPrefixCapture">Record</button></span></label><label class="option"><span>Search shortcut<small>Optional direct shortcut. Leave disabled if it conflicts with terminal apps.</small></span><span class="shortcut-capture"><input id="optSearchShortcut" readonly><button type="button" class="tab add" id="optSearchShortcutCapture">Record</button><button type="button" class="tab add" id="optSearchShortcutClear">Clear</button></span></label><label class="option"><span>Terminal font<small>Use installed monospaced font family, including Nerd Fonts used by Neovim.</small></span><input id="optTerminalFontFamily" list="terminalFontPresets" placeholder="&quot;MesloLGS Nerd Font Mono&quot;, monospace"><datalist id="terminalFontPresets"><option value="&quot;MesloLGS Nerd Font Mono&quot;, &quot;MesloLGS NF&quot;, monospace"><option value="&quot;MesloLGS Nerd Font&quot;, &quot;MesloLGS NF&quot;, monospace"><option value="&quot;JetBrainsMono Nerd Font Mono&quot;, &quot;JetBrainsMono Nerd Font&quot;, monospace"><option value="&quot;Hack Nerd Font Mono&quot;, &quot;Hack Nerd Font&quot;, monospace"><option value="&quot;FiraCode Nerd Font Mono&quot;, &quot;FiraCode Nerd Font&quot;, monospace"><option value="&quot;CaskaydiaCove Nerd Font Mono&quot;, &quot;CaskaydiaCove Nerd Font&quot;, monospace"><option value="ui-monospace,SFMono-Regular,Menlo,monospace"></datalist></label><label class="option"><span>Close panel shortcut<small>Stored in browser storage and available after reopening the tab.</small></span><select class="settings-select" id="optCloseShortcut"><option value="off">Disabled</option><option value="altw">Option+W</option><option value="shiftspacew">Shift+Space then W</option></select></label><label class="option"><span>Agent sorting<small>Sort agents by attention priority, or show them in default order.</small></span><select class="settings-select" id="optAgentSortMode"><option value="off">Default order</option><option value="attention">Attention (blocked first)</option><option value="attention_inverted">Attention (working first)</option></select></label><label class="option"><span>Parent workspace close<small>Close panels only (keeps linked worktrees running) or full close with re-open (stops processes, re-opens worktrees with fresh shells).</small></span><select class="settings-select" id="optParentCloseMode"><option value="panels">Close panels only</option><option value="close">Full close + re-open worktrees</option></select></label><label class="option"><input type="checkbox" id="optStuckWorkingEnabled"><span>Ignore stuck working agents<small>Dismiss working agents that appear stuck. Clears automatically on status changes and terminal output.</small></span></label><label class="option"><span>Ignore stuck working for<small>Minutes to keep a local dismissed-working override before showing working again.</small></span><input id="optWorkingDismissMinutes" type="number" min="1" max="1440" step="1"></label><label class="option"><input type="checkbox" id="optShowTabActivity"><span>Show panel last update<small>Display local last-change age on top panel tabs. Updates on refreshes, events, and selected terminal output; no timer polling.</small></span></label><label class="option"><span>Workspace sorting<small>Default tree order, shared drag-and-drop order, or attention state priority.</small></span><select class="settings-select" id="optWorkspaceSort"><option value="default">Default</option><option value="drag">Drag&drop</option><option value="state">State</option></select></label><label class="option"><span>Notification scope<small>Choose whether alerts fire in every open tab or only the tab viewing the agent panel.</small></span><select class="settings-select" id="optSoundScope"><option value="current">Current agent tab</option><option value="all">All tabs</option></select></label><label class="option"><span>Notification volume<small><span id="notificationVolumeValue">24</span>% for local attention tone.</small></span><input type="range" id="optNotificationVolume" min="0" max="100" step="1"></label><label class="option"><input type="checkbox" id="optGenerateWorktreeNames"><span>Generate worktree branch names<small>Allow blank Branch name in Worktrees modal. Herdr generates worktree/&lt;name&gt;.</small></span></label><label class="option"><span>Default directory<small>Prefills new/open workspace and worktree paths. Relative worktree paths resolve from repo root. Example: ../worktrees.</small></span><input id="optWorktreeDefaultDirectory" placeholder="../worktrees"></label><label class="option"><span>Scroll speed<small><span id="scrollLinesValue">3</span> terminal lines per wheel step.</small></span><input type="range" id="optScrollLines" min="1" max="20" step="1"></label><label class="option"><span>Worktree autodiscover<small>Seconds to wait after path input stops. Set 0 for immediate.</small></span><input type="number" id="optWorktreeAutoDiscover" min="0" max="30" step="0.5"></label>',
     );
 const showTabActivitySetting = el("optShowTabActivity");
 if (showTabActivitySetting && !el("optTreeIndentPx"))
@@ -1279,6 +1287,7 @@ function groupSettingsSections() {
         "optSound",
         "optBrowserNotifications",
         "optSoundScope",
+        "optNotificationVolume",
         "optGlobalShortcutsEnabled",
         "optGlobalShortcutPrefix",
         "optSearchShortcut",
@@ -1292,7 +1301,7 @@ function groupSettingsSections() {
     },
     {
       title: "Worktrees",
-      desc: "Discovery, naming, and default worktree locations.",
+      desc: "Discovery, naming, and default workspace/worktree locations.",
       ids: [
         "optWorkspaceSort",
         "optGenerateWorktreeNames",
@@ -1408,6 +1417,8 @@ function applyOptions() {
     workingDismissMinutes = el("optWorkingDismissMinutes"),
     workspaceSort = el("optWorkspaceSort"),
     soundScope = el("optSoundScope"),
+    notificationVolume = el("optNotificationVolume"),
+    notificationVolumeValue = el("notificationVolumeValue"),
     scrollLines = el("optScrollLines"),
     treeIndentPx = el("optTreeIndentPx"),
     fileBrowserAllowParent = el("optFileBrowserAllowParent"),
@@ -1449,6 +1460,12 @@ function applyOptions() {
     workingDismissMinutes.value = String(options.workingDismissMinutes || 30);
   if (workspaceSort) workspaceSort.value = options.workspaceSort || "default";
   if (soundScope) soundScope.value = options.soundScope || "current";
+  if (notificationVolume)
+    notificationVolume.value = String(Math.round((options.notificationVolume ?? 0.24) * 100));
+  if (notificationVolumeValue)
+    notificationVolumeValue.textContent = String(
+      Math.round((options.notificationVolume ?? 0.24) * 100),
+    );
   if (scrollLines) scrollLines.value = String(options.scrollLines || 3);
   if (treeIndentPx) treeIndentPx.value = String(options.treeIndentPx ?? 14);
   if (fileBrowserAllowParent)
@@ -2501,12 +2518,15 @@ function playAttentionSound() {
   o.frequency.setValueAtTime(880, audioCtx.currentTime);
   o.frequency.setValueAtTime(660, audioCtx.currentTime + 0.08);
   g.gain.setValueAtTime(0.0001, audioCtx.currentTime);
-  g.gain.exponentialRampToValueAtTime(0.12, audioCtx.currentTime + 0.01);
+  g.gain.exponentialRampToValueAtTime(attentionSoundVolume(), audioCtx.currentTime + 0.01);
   g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.22);
   o.connect(g);
   g.connect(audioCtx.destination);
   o.start();
   o.stop(audioCtx.currentTime + 0.24);
+}
+function attentionSoundVolume() {
+  return Math.max(0.0001, Math.min(1, Number(options.notificationVolume) || 0));
 }
 function tabTitle(t) {
   return t.label || `tab ${t.number}`;

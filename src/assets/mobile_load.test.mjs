@@ -26,6 +26,7 @@ function element(id = "") {
 
 function context(pathname = "/") {
   const elements = new Map();
+  const localStorage = new Map();
   const historyCalls = [];
   const terminalStats = { disposed: 0, opened: 0 };
   const requests = [];
@@ -65,7 +66,10 @@ function context(pathname = "/") {
       protocol: "http:",
       host: "127.0.0.1:8787",
     },
-    localStorage: { getItem: () => null, setItem() {} },
+    localStorage: {
+      getItem: (key) => localStorage.get(key) || null,
+      setItem: (key, value) => localStorage.set(key, String(value)),
+    },
     window: null,
     globalThis: null,
     Terminal: class {
@@ -232,6 +236,45 @@ describe("mobile bundle load", () => {
     );
   });
 
+  it("requests mobile browser notification permission before enabling notifications", async () => {
+    const ctx = context();
+    let requested = false;
+    ctx.Notification = {
+      permission: "default",
+      async requestPermission() {
+        requested = true;
+        this.permission = "granted";
+        return "granted";
+      },
+    };
+    vm.runInContext(source, ctx);
+
+    await ctx.HerdrMobile.setBrowserNotifications(true);
+
+    equal(requested, true);
+    equal(
+      JSON.parse(ctx.localStorage.getItem("herdr-web-options")).browserNotifications,
+      true,
+    );
+  });
+
+  it("uses louder mobile attention sound gain", () => {
+    ok(source.includes("notificationVolume: 0.24"));
+    ok(source.includes("notificationVolume(parsed.notificationVolume)"));
+  });
+
+  it("stores mobile notification volume from Settings", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    ctx.HerdrMobile.setNotificationVolume("70");
+
+    equal(
+      JSON.parse(ctx.localStorage.getItem("herdr-web-options")).notificationVolume,
+      0.7,
+    );
+  });
+
   it("does not force terminal screen after user selects another mobile tab", async () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
     vm.runInContext(source, ctx);
@@ -300,6 +343,23 @@ describe("mobile bundle load", () => {
     ok(
       ctx.requests.some(
         (request) => request.url === "/api/worktrees?cwd=~%2Fcode%2Frepo",
+      ),
+    );
+  });
+
+  it("stores mobile default directory and prefills worktree discovery path", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
+    vm.runInContext(source, ctx);
+
+    ctx.HerdrMobile.setDefaultDirectory("/tmp/code");
+    ctx.HerdrMobile.showScreen("worktrees");
+
+    equal(ctx.HerdrMobile.currentScreen(), "worktrees");
+    ok(ctx.document.getElementById("mobileScreen").innerHTML.includes('value="/tmp/code"'));
+    await ctx.HerdrMobile.loadWorktrees();
+    ok(
+      ctx.requests.some(
+        (request) => request.url === "/api/worktrees?cwd=%2Ftmp%2Fcode",
       ),
     );
   });

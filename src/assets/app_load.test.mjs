@@ -805,6 +805,47 @@ describe("app bundle load", () => {
     doesNotThrow(() => ctx.unlockAudio());
   });
 
+  it("requests browser notification permission before enabling notifications", async () => {
+    const ctx = context();
+    let requested = false;
+    ctx.Notification = {
+      permission: "default",
+      async requestPermission() {
+        requested = true;
+        this.permission = "granted";
+        return "granted";
+      },
+    };
+    vm.runInContext(source, ctx);
+
+    await ctx.setBrowserNotifications(true);
+
+    equal(requested, true);
+    equal(
+      JSON.parse(ctx.localStorage.getItem("herdr-web-options")).browserNotifications,
+      true,
+    );
+  });
+
+  it("uses louder attention sound gain", () => {
+    match(source, /notificationVolume: 0\.24/);
+    match(source, /function attentionSoundVolume\(\)/);
+  });
+
+  it("stores desktop notification volume from Settings", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    ctx.document.getElementById("optNotificationVolume").value = "65";
+    ctx.document.getElementById("optNotificationVolume").oninput();
+
+    equal(
+      JSON.parse(ctx.localStorage.getItem("herdr-web-options")).notificationVolume,
+      0.65,
+    );
+    equal(ctx.document.getElementById("notificationVolumeValue").textContent, "65");
+  });
+
   it("requires credentials for non-local server bind", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
@@ -891,5 +932,22 @@ describe("app bundle load", () => {
     ctx.workspaceCreatePathChanged();
 
     equal(ctx.document.getElementById("workspaceCreateLabel").value, "project");
+  });
+
+  it("prefills workspace and worktree open paths from default directory", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    ctx.openWorkspaceCreateModal();
+    equal(ctx.document.getElementById("workspaceCreatePath").value, "");
+
+    ctx.document.getElementById("optWorktreeDefaultDirectory").value = "/tmp/code";
+    ctx.document.getElementById("optWorktreeDefaultDirectory").oninput();
+    ctx.openWorkspaceCreateModal();
+    equal(ctx.document.getElementById("workspaceCreatePath").value, "/tmp/code");
+
+    ctx.openWorktreeOpenModal();
+
+    equal(ctx.document.getElementById("worktreeDiscoverPath").value, "/tmp/code");
   });
 });

@@ -204,6 +204,16 @@ el("optSoundScope").onchange = () => {
   saveOptions();
   applyOptions();
 };
+const optNotificationVolume = el("optNotificationVolume");
+if (optNotificationVolume)
+  optNotificationVolume.oninput = () => {
+    options.notificationVolume = Math.max(
+      0,
+      Math.min(100, Number(optNotificationVolume.value) || 0),
+    ) / 100;
+    saveOptions();
+    applyOptions();
+  };
 el("optScrollLines").oninput = () => {
   options.scrollLines = Math.max(
     1,
@@ -238,8 +248,7 @@ el("optGenerateWorktreeNames").onchange = () => {
   applyOptions();
 };
 el("optWorktreeDefaultDirectory").oninput = () => {
-  options.worktreeDefaultDirectory =
-    el("optWorktreeDefaultDirectory").value.trim() || "../worktrees";
+  options.worktreeDefaultDirectory = el("optWorktreeDefaultDirectory").value.trim();
   saveOptions();
   syncWorktreeCheckoutPath();
 };

@@ -14,7 +14,9 @@ Compatibility:
 
 | WebUI | Herdr | Protocol | Status | Notes |
 | --- | --- | --- | --- | --- |
-| `0.1.0` | `0.7.1` | `14` | Current | Unifies workspace/worktree opening, enriches workspace cwd metadata from backend pane data, restores Settings search, and reduces browser CPU/memory load for terminal output, large paste, no-sleep polling, and large Git diffs. |
+| `0.1.4` | `0.7.1` | `14` | Current | Adds configurable default directory and local notification tone volume, documents browser notification permission handling, and keeps desktop/mobile Settings parity for these options. |
+| `0.1.3` | `0.7.1` | `14` | Tested | Lazy-loads CodeMirror, desktop Git UI, and desktop file browser JavaScript so initial terminal loads avoid unused heavy feature bundles. |
+| `0.1.0` | `0.7.1` | `14` | Tested | Unifies workspace/worktree opening, enriches workspace cwd metadata from backend pane data, restores Settings search, and reduces browser CPU/memory load for terminal output, large paste, no-sleep polling, and large Git diffs. |
 | `0.0.57` | `0.7.1` | `14` | Tested | Fixes worktree creation source handling, adds optional base-branch pull, improves worktree deletion, Git directory loading, directory picker navigation, and terminal scroll follow controls. |
 | `0.0.49` | `0.7.1` | `14` | Tested | Adds file browser/editor, shared file trees, CodeMirror editing, large Git change-set placeholders, browser notifications, themed favicons, and local snapshot versioning. |
 | `0.0.46` | `0.7.1` | `14` | Tested | Adds configurable WebUI/Git prefix shortcuts, keeps Git drawer keyboard input isolated, and raises Rust line coverage above 70%. |
@@ -109,7 +111,7 @@ Use `--verbose`, `-v`, or `HERDR_WEB_VERBOSE=1` with macOS service commands to p
 - `src/assets/shared/file_tree.js` and `src/assets/shared/editor.js`: shared file-tree renderer and lightweight editor abstraction.
 - `src/assets/vendor/codemirror_entry.mjs`: CodeMirror bundle source entry; `src/assets/vendor/codemirror.bundle.js` is the checked-in generated browser bundle.
 - `.github/workflows/webui-ci.yml`: WebUI CI.
-- `.github/workflows/webui-release.yml`: WebUI release builds for `v0.0.*` tags.
+- `.github/workflows/webui-release.yml`: WebUI release builds for SemVer `v*.*.*` tags.
 - `Makefile`: local build, run, install, update, uninstall commands.
 
 The Rust binary embeds frontend assets with `include_str!`, so release artifacts do not need external static files next to the binary.
@@ -128,7 +130,7 @@ The Rust binary embeds frontend assets with `include_str!`, so release artifacts
 
 ## Desktop And Mobile Parity
 
-- Both layouts support workspace selection, agent list/attention status, panel selection/creation, linked worktree listing/creation/opening, terminal attach, terminal paste sanitization, terminal scrollback follow/Tail behavior, Files browsing, Git status viewing, Settings, theme choice, browser notifications, file tree indentation, and layout preference.
+- Both layouts support workspace selection, agent list/attention status, panel selection/creation, linked worktree listing/creation/opening, terminal attach, terminal paste sanitization, terminal scrollback follow/Tail behavior, Files browsing, Git status viewing, Settings, theme choice, browser notifications, local attention tone volume, file tree indentation, and layout preference.
 - Desktop is the full power-user layout. It includes the embedded Git drawer with mutations, diffs, log, stash, blame, file history, hunk actions, conflict actions, shortcuts, and the editable file browser with split panes.
 - Mobile is intentionally narrower. It keeps navigation, agents, worktrees, terminal, Files preview, and Git status usable on small screens, but does not yet expose desktop Git mutations/diffs/log/stash/blame/history or file editing/split panes.
 - When adding a desktop feature, decide explicitly whether mobile needs full parity, read-only parity, or documentation as desktop-only. Keep this section updated so mobile gaps are intentional.
@@ -195,7 +197,20 @@ Settings:
 
 - The Settings modal includes a `Search settings` field in the header.
 - Settings search filters grouped settings sections and individual option rows locally in the browser.
+- The default directory setting is stored in browser `localStorage`. It prefills desktop new/open workspace paths, desktop worktree discovery paths, desktop generated worktree checkout paths, and mobile worktree discovery paths.
+- The notification volume setting is stored in browser `localStorage` as `notificationVolume`, a decimal gain from `0` to `1`. Desktop and mobile expose it as a 0-100 slider and default it to `0.24`.
 - Opening Settings clears the previous search, refreshes option values, reloads server settings, and focuses the search box.
+
+Notifications and attention sounds:
+
+- Agents entering `blocked` or `done` are treated as attention events. WebUI tracks known attention agents locally and only alerts for newly attentioned agents.
+- The local attention tone is generated with Web Audio using a short two-note sine tone. Browsers require a user gesture before audio can play, so WebUI unlocks audio after interaction and skips sound until the audio context is running.
+- The `Sound` toggle disables the local attention tone. `Notification volume` controls the tone gain only; set `Sound` off for full mute.
+- `Notification volume` is clamped to `0-100%` in Settings and `0-1` in stored options. A saved `0%` uses a near-silent Web Audio gain floor because exponential ramps cannot target absolute zero.
+- `Notification scope` controls whether local tone alerts fire for all new attention events or only for the currently selected agent panel.
+- `Browser notifications` asks the browser for Notification API permission only when enabled from Settings and the current permission is `default`. WebUI stores the option as enabled only when permission returns `granted`.
+- Browser notifications are sent only when the option is enabled, the browser supports the Notification API, and permission is still `granted`. If permission is denied or unavailable, the Settings checkbox is disabled or returns to off.
+- Desktop browser notifications include the agent status, workspace context, favicon attention icon, and a click handler that focuses WebUI and navigates to the agent panel. Mobile browser notifications include the agent status and agent label/body, using the same permission gate.
 
 Panels:
 
@@ -208,6 +223,7 @@ Worktrees:
 
 - With Herdr `0.7.1` and newer, WebUI uses Herdr's native `worktree.create` support for existing local branches and deferred Git work.
 - With Herdr `0.7.0`, WebUI keeps a legacy fallback for creating a checkout from an existing branch when a checkout path is supplied.
+- Desktop worktree creation uses the default directory setting to generate checkout paths from repo name and branch. Relative defaults resolve from the repo root, for example `../worktrees`.
 - WebUI subscribes to `worktree.created`, `worktree.opened`, and `worktree.removed` and refreshes workspace/agent state quickly after these events.
 - `worktree.removed` events from Herdr `0.7.1` may include a workspace snapshot. This is additive; WebUI refreshes from the backend state instead of relying only on the event payload.
 - Linked worktree cards use the branch name as the main title and show a custom worktree label as a small label chip when one exists.
@@ -401,4 +417,4 @@ Run those commands from the directory containing the downloaded `herdr-webui` bi
 
 ## Release Policy
 
-WebUI releases use `v0.0.x` tags and GitHub Release notes. Root Herdr releases are not produced by this repository.
+WebUI releases use SemVer `v*.*.*` tags and GitHub Release notes. Root Herdr releases are not produced by this repository.
