@@ -50,10 +50,16 @@
           sound: parsed.sound !== false,
           browserNotifications: parsed.browserNotifications === true,
           soundScope: parsed.soundScope === "all" ? "all" : "current",
+          notificationVolume: notificationVolume(parsed.notificationVolume),
         };
       } catch (_) {
-        return { sound: true, browserNotifications: false, soundScope: "current" };
+        return { sound: true, browserNotifications: false, soundScope: "current", notificationVolume: 0.24 };
       }
+    }
+
+    function notificationVolume(value) {
+      const volume = Number(value);
+      return Math.max(0.0001, Math.min(1, Number.isFinite(volume) ? volume : 0.24));
     }
 
     function shouldPlay(agents) {
@@ -128,7 +134,10 @@
       oscillator.frequency.setValueAtTime(880, audioCtx.currentTime);
       oscillator.frequency.setValueAtTime(660, audioCtx.currentTime + 0.08);
       gain.gain.setValueAtTime(0.0001, audioCtx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.12, audioCtx.currentTime + 0.01);
+      gain.gain.exponentialRampToValueAtTime(
+        options().notificationVolume,
+        audioCtx.currentTime + 0.01,
+      );
       gain.gain.exponentialRampToValueAtTime(
         0.0001,
         audioCtx.currentTime + 0.22,

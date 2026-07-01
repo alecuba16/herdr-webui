@@ -1,6 +1,7 @@
 (function () {
   const LAYOUT_KEY = "herdr-web-layout";
   const MOBILE_QUERY = "(max-width: 760px)";
+  const scriptLoads = {};
 
   function readLayoutPreference() {
     try {
@@ -28,10 +29,16 @@
   }
 
   function loadScript(src) {
+    if (scriptLoads[src]) return scriptLoads[src];
     const script = document.createElement("script");
     script.async = false;
     script.src = src;
     document.body.appendChild(script);
+    scriptLoads[src] = new Promise((resolve, reject) => {
+      script.onload = resolve;
+      script.onerror = () => reject(Error("Failed to load " + src));
+    });
+    return scriptLoads[src];
   }
 
   function loadLayout() {
@@ -49,7 +56,6 @@
     }
     loadScript("/assets/shared/core.js");
     loadScript("/assets/shared/file-tree.js");
-    loadScript("/assets/vendor/codemirror.js");
     loadScript("/assets/shared/editor.js");
     if (mobile) {
       loadScript("/assets/mobile/core.js");
@@ -60,8 +66,6 @@
       loadScript("/assets/mobile/settings.js");
     } else {
       loadScript("/assets/desktop/search.js");
-      loadScript("/assets/desktop/git-ui.js");
-      loadScript("/assets/desktop/file-browser.js");
       loadScript("/assets/desktop/directory-picker.js");
     }
     loadScript(mobile ? "/assets/mobile/app.js" : "/assets/desktop/app.js");
@@ -81,5 +85,6 @@
     else if (media.addListener) media.addListener(onChange);
   }
 
+  window.HerdrLoadScript = loadScript;
   loadLayout();
 })();

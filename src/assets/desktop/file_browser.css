@@ -24,6 +24,12 @@
   border-bottom: 1px solid var(--border);
   padding: 10px;
 }
+.file-browser-head {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
 .file-browser-toolbar {
   align-items: center;
   display: flex;
@@ -61,9 +67,68 @@
 }
 .file-browser-actions {
   display: flex;
+  flex: 0 0 auto;
   flex-wrap: wrap;
   gap: 6px;
-  margin-top: 8px;
+}
+.file-browser-list-head {
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  padding: 8px;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.file-browser-filter {
+  align-items: center;
+  background: var(--bg);
+  border: 1px solid var(--border2);
+  border-radius: 10px;
+  display: flex;
+  gap: 6px;
+  padding: 5px 7px;
+}
+.file-browser-filter input {
+  background: transparent;
+  border: 0;
+  color: var(--fg);
+  font: inherit;
+  min-width: 0;
+  outline: 0;
+  width: 100%;
+}
+.file-browser-search-icon,
+.mobile-file-search-icon,
+.git-ui-file-filter-icon {
+  background: currentColor;
+  color: var(--muted);
+  display: inline-block;
+  flex: none;
+  height: 14px;
+  mask: url("/assets/icons/search.svg") center / contain no-repeat;
+  width: 14px;
+}
+.file-browser-search-icon.searching,
+.mobile-file-search-icon.searching {
+  animation: file-browser-spin 900ms linear infinite;
+}
+@keyframes file-browser-spin {
+  to { transform: rotate(360deg); }
+}
+.file-browser-searching,
+.file-browser-more {
+  margin: 8px;
+}
+.file-browser-result-count {
+  color: var(--muted);
+  font-size: 12px;
+  padding: 6px 2px 0;
+}
+.herdr-tree-hit {
+  background: #f9e2af;
+  border-radius: 3px;
+  color: #11111b;
+  padding: 0 2px;
 }
 .file-browser-main {
   display: grid;

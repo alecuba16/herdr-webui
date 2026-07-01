@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import { doesNotThrow, equal, ok } from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { TextEncoder } from "node:util";
 import vm from "node:vm";
 
 function element(id = "") {
@@ -9,12 +10,14 @@ function element(id = "") {
     classList: { toggle() {}, add() {}, remove() {} },
     dataset: {},
     style: { setProperty() {} },
+    hidden: false,
     innerHTML: "",
     textContent: "",
     clientWidth: 360,
     clientHeight: 520,
     appendChild() {},
     addEventListener() {},
+    setAttribute() {},
     querySelectorAll() {
       return [];
     },
@@ -23,8 +26,9 @@ function element(id = "") {
 
 function context(pathname = "/") {
   const elements = new Map();
+  const localStorage = new Map();
   const historyCalls = [];
-  const terminalStats = { disposed: 0, opened: 0 };
+  const terminalStats = { disposed: 0, linkDisposed: 0, linksRegistered: 0, opened: 0 };
   const requests = [];
   const navButtons = ["home", "agents", "panels", "worktrees", "files", "git", "terminal"].map(
     (screen) => Object.assign(element(), { dataset: { screen } }),
@@ -35,8 +39,10 @@ function context(pathname = "/") {
   };
   const ctx = {
     console,
+    TextEncoder,
     Uint8Array,
     setTimeout() {},
+    clearTimeout() {},
     document: {
       body: element("body"),
       createElement: () => element(),
@@ -60,16 +66,49 @@ function context(pathname = "/") {
       protocol: "http:",
       host: "127.0.0.1:8787",
     },
-    localStorage: { getItem: () => null, setItem() {} },
+    localStorage: {
+      getItem: (key) => localStorage.get(key) || null,
+      setItem: (key, value) => localStorage.set(key, String(value)),
+    },
     window: null,
     globalThis: null,
     Terminal: class {
+      constructor() {
+        this.buffer = { active: { baseY: 0, viewportY: 0 } };
+        this.writes = [];
+        this.scrolledToLine = null;
+        this.scrolledToBottom = false;
+        this.onScrollCallback = null;
+        ctx.lastTerminal = this;
+      }
       onData() {}
+      onScroll(callback) {
+        this.onScrollCallback = callback;
+      }
       open() {
         terminalStats.opened += 1;
       }
       resize() {}
-      write() {}
+      registerLinkProvider() {
+        terminalStats.linksRegistered += 1;
+        return {
+          dispose() {
+            terminalStats.linkDisposed += 1;
+          },
+        };
+      }
+      write(data, callback) {
+        this.writes.push(data);
+        if (callback) callback();
+      }
+      scrollToLine(line) {
+        this.scrolledToLine = line;
+      }
+      scrollToBottom() {
+        this.scrolledToBottom = true;
+        this.buffer.active.viewportY = this.buffer.active.baseY;
+      }
+      focus() {}
       clear() {}
       dispose() {
         terminalStats.disposed += 1;
@@ -78,6 +117,8 @@ function context(pathname = "/") {
     WebSocket: class {
       constructor() {
         this.readyState = 1;
+        this.bufferedAmount = 0;
+        ctx.lastSocket = this;
       }
       send() {}
       close() {}
@@ -90,9 +131,45 @@ function context(pathname = "/") {
           status: 200,
           json: async () => ({ result: { tab: { tab_id: "w1:t3" } } }),
         };
+      if (String(url).startsWith("/api/git-ui/status"))
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            branch: "feature/mobile",
+            state: "dirty",
+            conflicted: [],
+            staged: ["src/staged.js"],
+            unstaged: ["src/mobile.js"],
+            untracked: [],
+          }),
+        };
+      if (String(url).startsWith("/api/git-ui/diff"))
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            files: [
+              {
+                path: "src/mobile.js",
+                additions: 1,
+                deletions: 1,
+                chunks: [
+                  {
+                    header: "@@ -1 +1 @@",
+                    lines: [
+                      { line_type: "delete", content: "old" },
+                      { line_type: "add", content: "new" },
+                    ],
+                  },
+                ],
+              },
+            ],
+          }),
+        };
       const result = url.includes("workspaces")
         ? {
-            workspaces: [{ workspace_id: "w1", label: "alpha", pane_count: 1 }],
+            workspaces: [{ workspace_id: "w1", label: "alpha", pane_count: 1, cwd: "/tmp/alpha" }],
           }
         : url.includes("worktrees")
           ? {
@@ -191,15 +268,59 @@ describe("mobile bundle load", () => {
     ok(settingsHtml.includes("Appearance"));
     ok(settingsHtml.includes("Layout"));
     ok(settingsHtml.includes("Terminal font"));
+    ok(settingsHtml.includes("Terminal links"));
     ok(settingsHtml.includes("HerdrMobile.setTerminalFontFamily"));
+    ok(settingsHtml.includes("HerdrMobile.setTerminalLinks"));
     equal(typeof ctx.HerdrMobile.setTerminalFontFamily, "function");
+    equal(typeof ctx.HerdrMobile.setTerminalLinks, "function");
     equal(typeof ctx.HerdrMobile.applyTerminalFontFamily, "function");
+    equal(typeof ctx.HerdrMobile.applyTerminalLinks, "function");
     doesNotThrow(() =>
       ctx.HerdrMobile.setTerminalFontFamily("Hack Nerd Font, monospace"),
     );
+    doesNotThrow(() => ctx.HerdrMobile.setTerminalLinks(false));
     doesNotThrow(() => ctx.HerdrMobile.showScreen("worktrees"));
     doesNotThrow(() =>
       ctx.HerdrMobile.updateWorktreeField("worktreeBranch", "feature/mobile"),
+    );
+  });
+
+  it("requests mobile browser notification permission before enabling notifications", async () => {
+    const ctx = context();
+    let requested = false;
+    ctx.Notification = {
+      permission: "default",
+      async requestPermission() {
+        requested = true;
+        this.permission = "granted";
+        return "granted";
+      },
+    };
+    vm.runInContext(source, ctx);
+
+    await ctx.HerdrMobile.setBrowserNotifications(true);
+
+    equal(requested, true);
+    equal(
+      JSON.parse(ctx.localStorage.getItem("herdr-web-options")).browserNotifications,
+      true,
+    );
+  });
+
+  it("uses louder mobile attention sound gain", () => {
+    ok(source.includes("notificationVolume: 0.24"));
+    ok(source.includes("notificationVolume(parsed.notificationVolume)"));
+  });
+
+  it("stores mobile notification volume from Settings", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    ctx.HerdrMobile.setNotificationVolume("70");
+
+    equal(
+      JSON.parse(ctx.localStorage.getItem("herdr-web-options")).notificationVolume,
+      0.7,
     );
   });
 
@@ -239,10 +360,56 @@ describe("mobile bundle load", () => {
     await ctx.HerdrMobile.refresh();
     ctx.HerdrMobile.showScreen("terminal");
     ok(ctx.terminalStats.opened >= 1);
+    ok(ctx.terminalStats.linksRegistered >= 1);
     ctx.HerdrMobile.showScreen("agents");
     equal(ctx.terminalStats.disposed, 1);
+    equal(ctx.terminalStats.linkDisposed, 1);
     ctx.HerdrMobile.showScreen("terminal");
     ok(ctx.terminalStats.opened >= 2);
+  });
+
+  it("shows mobile terminal tail button and preserves scrollback on output", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    ctx.HerdrMobile.showScreen("terminal");
+    ok(source.includes("mobileTerminalFollowButton"));
+    equal(typeof ctx.HerdrMobile.scrollTerminalToBottom, "function");
+    ctx.lastTerminal.buffer.active.baseY = 50;
+    ctx.lastTerminal.buffer.active.viewportY = 20;
+    ctx.lastTerminal.onScrollCallback();
+    ok(ctx.document.getElementById("mobileTerminalFollowButton").hidden === false);
+    ctx.lastSocket.onmessage({ data: "new output" });
+    equal(ctx.lastTerminal.scrolledToLine, 20);
+    ctx.HerdrMobile.scrollTerminalToBottom();
+    ok(ctx.lastTerminal.scrolledToBottom);
+  });
+
+  it("opens mobile Git file diff with scrollable hunk markup", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    ctx.HerdrMobile.showScreen("git");
+    await ctx.HerdrMobile.loadGitStatus();
+
+    let html = ctx.document.getElementById("mobileScreen").innerHTML;
+    ok(html.includes("HerdrMobile.selectGitFile"));
+    ok(html.includes("src/mobile.js"));
+
+    await ctx.HerdrMobile.selectGitFile("src/mobile.js", "M");
+
+    html = ctx.document.getElementById("mobileScreen").innerHTML;
+    ok(html.includes("mobile-hunk"));
+    ok(html.includes("@@ -1 +1 @@"));
+    ok(html.includes("+new"));
+    const css = readFileSync(new URL("./mobile/app.css", import.meta.url), "utf8");
+    ok(css.includes(".mobile-hunk pre"));
+    ok(css.includes("overflow-x: auto"));
+    ok(
+      ctx.requests.some((request) =>
+        String(request.url).includes("/api/git-ui/diff?cwd=%2Ftmp%2Falpha"),
+      ),
+    );
   });
 
   it("renders mobile worktree path input and discovers by cwd", async () => {
@@ -254,6 +421,27 @@ describe("mobile bundle load", () => {
     ok(
       ctx.requests.some(
         (request) => request.url === "/api/worktrees?cwd=~%2Fcode%2Frepo",
+      ),
+    );
+  });
+
+  it("stores mobile exploration default directory and prefills worktree discovery path", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
+    vm.runInContext(source, ctx);
+
+    ctx.HerdrMobile.setWorktreeDefaultDirectory("/tmp/worktrees");
+    ctx.HerdrMobile.setExplorationDefaultDirectory("/tmp/code");
+    ctx.HerdrMobile.showScreen("settings");
+    ok(ctx.document.getElementById("mobileScreen").innerHTML.includes("Worktree default directory"));
+    ok(ctx.document.getElementById("mobileScreen").innerHTML.includes("Exploration default directory"));
+    ctx.HerdrMobile.showScreen("worktrees");
+
+    equal(ctx.HerdrMobile.currentScreen(), "worktrees");
+    ok(ctx.document.getElementById("mobileScreen").innerHTML.includes('value="/tmp/code"'));
+    await ctx.HerdrMobile.loadWorktrees();
+    ok(
+      ctx.requests.some(
+        (request) => request.url === "/api/worktrees?cwd=%2Ftmp%2Fcode",
       ),
     );
   });
@@ -300,5 +488,16 @@ describe("mobile bundle load", () => {
           JSON.parse(request.opt.body).workspace_id === "w1",
       ),
     );
+  });
+
+  it("renders mobile close current panel controls", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    ctx.HerdrMobile.showScreen("panels");
+    let html = ctx.document.getElementById("mobileScreen").innerHTML;
+    ok(html.includes("Close current panel"));
+    ok(source.includes("mobile-tab-close"));
+    equal(typeof ctx.HerdrMobile.closeCurrentPanel, "function");
   });
 });

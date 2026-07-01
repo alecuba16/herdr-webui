@@ -1,7 +1,12 @@
 * {
   box-sizing: border-box;
 }
+html {
+  height: 100%;
+  overflow: hidden;
+}
 body {
+  --herdr-mobile-viewport-height: 100dvh;
   --bg: #11111b;
   --fg: #cdd6f4;
   --panel: #181825;
@@ -15,7 +20,8 @@ body {
   background: var(--bg);
   color: var(--fg);
   font-family: ui-sans-serif, system-ui;
-  height: 100dvh;
+  height: var(--herdr-mobile-viewport-height);
+  width: 100vw;
   overflow: hidden;
 }
 body.light {
@@ -30,12 +36,17 @@ body.light {
   --accent-fg: #eff1f5;
 }
 #app {
-  height: 100dvh;
+  height: var(--herdr-mobile-viewport-height);
+  min-width: 0;
+  overflow: hidden;
 }
 .mobile-app {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
-  height: 100dvh;
+  height: var(--herdr-mobile-viewport-height);
+  max-height: var(--herdr-mobile-viewport-height);
+  min-width: 0;
+  overflow: hidden;
   background: var(--bg);
 }
 .mobile-header {
@@ -79,8 +90,14 @@ body.light {
   border-color: var(--accent);
   color: var(--accent-fg);
 }
+.mobile-btn.danger,
+.mobile-tab-close {
+  border-color: #f38ba8;
+  color: #f38ba8;
+}
 .mobile-screen {
   min-height: 0;
+  min-width: 0;
   overflow: auto;
   padding: 12px;
 }
@@ -98,6 +115,63 @@ body.light {
   font-size: 12px;
   letter-spacing: 0.1em;
   text-transform: uppercase;
+}
+.mobile-files-head {
+  align-items: flex-start;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+.mobile-files-list-head {
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  margin: 0 -12px 8px;
+  padding: 8px 12px;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.mobile-file-filter {
+  align-items: center;
+  background: var(--panel);
+  border: 1px solid var(--border2);
+  border-radius: 12px;
+  display: flex;
+  gap: 8px;
+  padding: 8px 10px;
+}
+.mobile-file-filter input {
+  background: transparent;
+  border: 0;
+  color: var(--fg);
+  font: inherit;
+  min-width: 0;
+  outline: 0;
+  width: 100%;
+}
+.mobile-file-search-icon {
+  background: currentColor;
+  color: var(--muted);
+  display: inline-block;
+  flex: none;
+  height: 14px;
+  mask: url("/assets/icons/search.svg") center / contain no-repeat;
+  width: 14px;
+}
+.mobile-file-search-icon.searching {
+  animation: mobile-spin 900ms linear infinite;
+}
+.mobile-file-result-count {
+  margin: 6px 2px 0;
+}
+.herdr-tree-hit {
+  background: #f9e2af;
+  border-radius: 3px;
+  color: #11111b;
+  padding: 0 2px;
+}
+@keyframes mobile-spin {
+  to { transform: rotate(360deg); }
 }
 .mobile-row {
   display: block;
@@ -141,6 +215,7 @@ body.light {
   grid-template-rows: auto minmax(0, 1fr);
   height: 100%;
   min-height: 0;
+  min-width: 0;
   padding: 0;
 }
 .mobile-tabs {
@@ -172,11 +247,36 @@ body.light {
   min-width: 44px;
   font-weight: 900;
 }
+.mobile-tab-close {
+  min-width: 44px;
+  font-weight: 900;
+}
 .mobile-terminal-shell {
   position: relative;
   min-height: 0;
+  min-width: 0;
   overflow: auto;
   padding: 8px;
+}
+.mobile-terminal-follow-button {
+  align-items: center;
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  bottom: 18px;
+  box-shadow: 0 10px 28px #0008;
+  color: var(--accent-fg);
+  display: inline-grid;
+  font-size: 13px;
+  font-weight: 900;
+  min-height: 38px;
+  padding: 0 13px;
+  position: absolute;
+  right: 18px;
+  z-index: 4;
+}
+.mobile-terminal-follow-button[hidden] {
+  display: none;
 }
 .mobile-terminal {
   width: max-content;
@@ -200,16 +300,26 @@ body.light {
   background: #3b2028;
 }
 .mobile-nav {
-  display: grid;
-  grid-template-columns: repeat(6, 1fr);
+  display: flex;
   gap: 6px;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
   padding: 8px max(8px, env(safe-area-inset-right))
     max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
   border-top: 1px solid var(--border);
   background: var(--panel);
+  scrollbar-width: none;
+  white-space: nowrap;
+}
+.mobile-nav::-webkit-scrollbar {
+  display: none;
 }
 .mobile-nav button {
+  flex: 0 0 auto;
   min-height: 44px;
+  min-width: 74px;
+  padding: 0 10px;
   border: 0;
   border-radius: 12px;
   background: transparent;
@@ -219,6 +329,14 @@ body.light {
 .mobile-nav button.active {
   background: var(--panel2);
   color: var(--fg);
+}
+body.mobile-keyboard-open .mobile-app {
+  grid-template-rows: minmax(0, 1fr);
+}
+body.mobile-keyboard-open .mobile-header,
+body.mobile-keyboard-open .mobile-nav,
+body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
+  display: none;
 }
 .mobile-actions {
   display: flex;
@@ -304,6 +422,89 @@ body.light {
   border: 1px solid var(--border);
   border-radius: 12px;
   overflow: hidden;
+}
+.mobile-git {
+  display: grid;
+  gap: 10px;
+}
+.mobile-git-file strong,
+.mobile-git-file span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mobile-git-file span {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 4px;
+}
+.mobile-git-file-head {
+  align-items: center;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: auto minmax(0, 1fr);
+  padding: 12px;
+}
+.mobile-git-file-head div {
+  min-width: 0;
+}
+.mobile-git-file-head strong,
+.mobile-git-file-head span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mobile-git-file-head span {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 4px;
+}
+.mobile-diff {
+  display: grid;
+  gap: 12px;
+}
+.mobile-hunk {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  margin: 0;
+  overflow: hidden;
+}
+.mobile-hunk header {
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+  padding: 8px 10px;
+}
+.mobile-hunk header span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mobile-hunk pre {
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  margin: 0;
+  overflow-x: auto;
+  padding: 10px;
+}
+.mobile-hunk pre span {
+  display: block;
+  min-width: max-content;
+  white-space: pre;
+}
+.mobile-hunk pre .add {
+  background: color-mix(in srgb, #a6e3a1, transparent 88%);
+  color: #a6e3a1;
+}
+.mobile-hunk pre .delete {
+  background: color-mix(in srgb, #f38ba8, transparent 88%);
+  color: #f38ba8;
 }
 .herdr-editor-mount {
   min-height: 55vh;

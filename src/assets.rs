@@ -70,6 +70,9 @@ const ICON_CHEVRON_DOWN: &str = include_str!("assets/icons/chevron-down.svg");
 const ICON_FOLDER: &str = include_str!("assets/icons/folder.svg");
 const ICON_FOLDER_UP: &str = include_str!("assets/icons/folder-up.svg");
 const ICON_FILE: &str = include_str!("assets/icons/file.svg");
+const ICON_TRASH: &str = include_str!("assets/icons/trash.svg");
+const ICON_BROOM: &str = include_str!("assets/icons/broom.svg");
+const ICON_SEARCH: &str = include_str!("assets/icons/search.svg");
 
 pub(crate) fn app_html() -> Response {
     Html(APP_HTML).into_response()
@@ -289,6 +292,18 @@ pub(crate) async fn icon_file_svg() -> Response {
     static_svg(ICON_FILE)
 }
 
+pub(crate) async fn icon_trash_svg() -> Response {
+    static_svg(ICON_TRASH)
+}
+
+pub(crate) async fn icon_broom_svg() -> Response {
+    static_svg(ICON_BROOM)
+}
+
+pub(crate) async fn icon_search_svg() -> Response {
+    static_svg(ICON_SEARCH)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -337,5 +352,8 @@ mod tests {
         assert_eq!(content_type(&icon_folder_svg().await), svg);
         assert_eq!(content_type(&icon_folder_up_svg().await), svg);
         assert_eq!(content_type(&icon_file_svg().await), svg);
+        assert_eq!(content_type(&icon_trash_svg().await), svg);
+        assert_eq!(content_type(&icon_broom_svg().await), svg);
+        assert_eq!(content_type(&icon_search_svg().await), svg);
     }
 }

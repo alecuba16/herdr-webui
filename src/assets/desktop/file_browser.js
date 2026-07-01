@@ -1,6 +1,6 @@
 (function () {
   const Tree = window.HerdrFileTree;
-  const state = { open: false, cwd: "", path: "", entries: [], children: {}, expanded: {}, loading: {}, selected: "", files: [], split: false, error: "", contextMenu: null };
+  const state = { open: false, cwd: "", path: "", entries: [], children: {}, expanded: {}, loading: {}, selected: "", files: [], split: false, error: "", contextMenu: null, filter: "", filterTimer: null, filterLoading: false, filterOffset: 0, filterDone: true, filterScrollTop: 0 };
 
   function esc(value) { return Tree.esc(value); }
   function arg(value) { return Tree.arg(value); }
@@ -63,6 +63,9 @@
     state.expanded = {};
     state.loading = {};
     state.contextMenu = null;
+    state.filter = "";
+    state.filterOffset = 0;
+    state.filterDone = true;
     state.open = true;
     render();
     await loadTree("");
@@ -81,7 +84,29 @@
     return data.entries || [];
   }
 
-  async function loadTree(path) {
+  async function fetchFilteredEntries(append = false) {
+    if (!state.cwd || !state.filter.trim()) return;
+    const offset = append ? state.filterOffset : 0;
+    state.filterLoading = true;
+    renderPreservingScroll();
+    try {
+      const data = await api(`/api/file-browser/tree?cwd=${encodeURIComponent(state.cwd)}&path=${encodeURIComponent(state.path || "")}&q=${encodeURIComponent(state.filter.trim())}&offset=${offset}&limit=100`);
+      const entries = data.entries || [];
+      state.entries = append ? state.entries.concat(entries) : entries;
+      state.filterOffset = offset + entries.length;
+      state.filterDone = !data.truncated || entries.length === 0;
+      state.children = {};
+      state.expanded = {};
+      state.loading = {};
+    } catch (error) {
+      state.error = error.message || String(error);
+      state.filterDone = true;
+    }
+    state.filterLoading = false;
+    renderPreservingScroll();
+  }
+
+  async function loadTree(path, preserveFocus = false) {
     if (!state.cwd) return;
     try {
       state.error = "";
@@ -91,10 +116,37 @@
       state.children = {};
       state.expanded = {};
       state.loading = {};
+      state.filterOffset = 0;
+      state.filterDone = !state.filter.trim();
     } catch (error) {
       state.error = error.message || String(error);
     }
+    if (preserveFocus) renderPreservingScroll();
+    else render();
+  }
+
+  function renderPreservingScroll() {
+    const side = document.querySelector(".file-browser-side");
+    const top = side ? side.scrollTop : state.filterScrollTop || 0;
+    const active = document.activeElement;
+    const refocusFilter = active && active.id === "fileBrowserFilter";
+    const refocusSide = !refocusFilter && side && active === side;
+    const selectionStart = refocusFilter ? active.selectionStart : null;
+    const selectionEnd = refocusFilter ? active.selectionEnd : null;
     render();
+    const next = document.querySelector(".file-browser-side");
+    if (next) next.scrollTop = top;
+    if (refocusFilter) {
+      const input = document.getElementById("fileBrowserFilter");
+      if (input) {
+        input.focus({ preventScroll: true });
+        const start = selectionStart == null ? input.value.length : Math.min(selectionStart, input.value.length);
+        const end = selectionEnd == null ? start : Math.min(selectionEnd, input.value.length);
+        input.setSelectionRange(start, end);
+      }
+    } else if (refocusSide && next) {
+      next.focus({ preventScroll: true });
+    }
   }
 
   async function loadFile(path, mode) {
@@ -151,7 +203,10 @@
     syncTerminalVisibility();
     const activeFile = currentFile();
     const entries = treeEntries();
-    panel.innerHTML = `<aside class="file-browser-side ${activeFile ? "previewing" : ""}"><div class="file-browser-head"><div class="file-browser-title">Files</div><div class="file-browser-subtitle">${esc(state.path || state.cwd || "No workspace")}</div><div class="file-browser-actions"><button class="git-ui-btn" onclick="HerdrFileBrowser.refresh()">Refresh</button><button class="git-ui-btn" onclick="HerdrFileBrowser.close()">Close</button></div></div>${state.error ? `<div class="file-browser-error">${esc(state.error)}</div>` : ""}${Tree.renderEntries(entries, { selectedPath: state.selected, callback: "HerdrFileBrowser", showMeta: true, dirClickMethod: "none", dirDoubleClickMethod: "enter", contextMethod: "menu", shiftSelectMode: true })}</aside><main class="file-browser-main"><div class="file-browser-toolbar">${renderToolbar(activeFile)}</div><div class="file-browser-preview ${state.split ? "split" : ""}" id="fileBrowserPreview">${renderPreviewShell()}</div></main>${renderContextMenu()}`;
+    const resultCount = entries.filter((entry) => entry.kind === "file").length;
+    const count = state.filter.trim() ? `<div class="file-browser-result-count">${resultCount} result${resultCount === 1 ? "" : "s"}</div>` : "";
+    const filter = `<div class="file-browser-list-head"><label class="file-browser-filter"><span class="file-browser-search-icon ${state.filterLoading ? "searching" : ""}" aria-hidden="true"></span><input id="fileBrowserFilter" value="${esc(state.filter)}" placeholder="Type here or focus list and type" oninput="HerdrFileBrowser.filter(this.value)"></label>${count}</div>`;
+    panel.innerHTML = `<aside class="file-browser-side ${activeFile ? "previewing" : ""}" tabindex="0" onkeydown="HerdrFileBrowser.typeToFilter(event)" onscroll="HerdrFileBrowser.sideScroll(this)"><div class="file-browser-head"><div><div class="file-browser-title">Files</div><div class="file-browser-subtitle">${esc(state.path || state.cwd || "No workspace")}</div></div><div class="file-browser-actions"><button class="git-ui-btn" onclick="HerdrFileBrowser.refresh()">Refresh</button><button class="git-ui-btn" onclick="HerdrFileBrowser.close()">Close</button></div></div>${state.error ? `<div class="file-browser-error">${esc(state.error)}</div>` : ""}${filter}${Tree.renderEntries(entries, { selectedPath: state.selected, callback: "HerdrFileBrowser", showMeta: true, dirClickMethod: "none", dirDoubleClickMethod: "enter", contextMethod: "menu", shiftSelectMode: true, filterTerm: state.filter })}${state.filterLoading ? `<div class="file-browser-searching">Searching...</div>` : ""}${state.filter.trim() && !state.filterDone ? `<button class="git-ui-btn file-browser-more" onclick="HerdrFileBrowser.loadMore()">Load more</button>` : ""}</aside><main class="file-browser-main"><div class="file-browser-toolbar">${renderToolbar(activeFile)}</div><div class="file-browser-preview ${state.split ? "split" : ""}" id="fileBrowserPreview">${renderPreviewShell()}</div></main>${renderContextMenu()}`;
     mountEditors();
   }
 
@@ -165,9 +220,27 @@
   }
 
   function treeEntries() {
+    if (state.filter.trim()) return searchTreeEntries(state.entries);
     const entries = flattenEntries(state.entries, 0);
     if (state.path || (allowParentBrowse() && parentDirectory(state.cwd) !== state.cwd)) entries.unshift({ kind: "up", name: "...", path: parentPath(state.path), expanded: false });
     return entries;
+  }
+
+  function searchTreeEntries(entries) {
+    const rows = [];
+    const seenDirs = new Set();
+    for (const entry of entries || []) {
+      const parts = String(entry.path || entry.name || "").split("/").filter(Boolean);
+      let prefix = "";
+      for (let i = 0; i < parts.length - 1; i++) {
+        prefix = prefix ? `${prefix}/${parts[i]}` : parts[i];
+        if (seenDirs.has(prefix)) continue;
+        seenDirs.add(prefix);
+        rows.push({ kind: "dir", name: parts[i], path: prefix, level: i, expanded: true });
+      }
+      rows.push(Object.assign({}, entry, { name: parts[parts.length - 1] || entry.name, level: Math.max(0, parts.length - 1), expanded: false }));
+    }
+    return rows;
   }
 
   async function goUp() {
@@ -199,13 +272,13 @@
   async function toggleDir(path) {
     if (state.expanded[path]) {
       state.expanded[path] = false;
-      render();
+      renderPreservingScroll();
       return;
     }
     state.expanded[path] = true;
     if (!state.children[path] && !state.loading[path]) {
       state.loading[path] = true;
-      render();
+      renderPreservingScroll();
       try {
         state.children[path] = await fetchEntries(path);
       } catch (error) {
@@ -214,7 +287,7 @@
       }
       delete state.loading[path];
     }
-    render();
+    renderPreservingScroll();
   }
 
   function renderToolbar(file) {
@@ -342,6 +415,44 @@
     close: hide,
     hide,
     refresh() { loadTree(state.path); },
+    filter(value) {
+      state.filter = String(value || "");
+      clearTimeout(state.filterTimer);
+      state.filterTimer = setTimeout(() => {
+        if (state.filter.trim()) fetchFilteredEntries(false);
+        else loadTree(state.path, true);
+      }, 500);
+    },
+    loadMore() { fetchFilteredEntries(true); },
+    sideScroll(node) {
+      state.filterScrollTop = node.scrollTop;
+      if (!state.filter.trim() || state.filterLoading || state.filterDone) return;
+      if (node.scrollTop + node.clientHeight >= node.scrollHeight - 80) fetchFilteredEntries(true);
+    },
+    typeToFilter(event) {
+      if (!event || event.metaKey || event.ctrlKey || event.altKey || event.defaultPrevented) return;
+      if (event.target && event.target.closest && event.target.closest("input, textarea, select")) return;
+      if (event.key === "Backspace") {
+        event.preventDefault();
+        this.filter(state.filter.slice(0, -1));
+        const input = document.getElementById("fileBrowserFilter");
+        if (input) {
+          input.value = state.filter;
+          input.focus({ preventScroll: true });
+          input.setSelectionRange(input.value.length, input.value.length);
+        }
+        return;
+      }
+      if (event.key.length !== 1) return;
+      event.preventDefault();
+      this.filter(state.filter + event.key);
+      const input = document.getElementById("fileBrowserFilter");
+      if (input) {
+        input.value = state.filter;
+        input.focus({ preventScroll: true });
+        input.setSelectionRange(input.value.length, input.value.length);
+      }
+    },
     up() { goUp(); },
     toggle(encodedPath) { toggleDir(decodeURIComponent(encodedPath)); },
     enter(encodedPath) { loadTree(decodeURIComponent(encodedPath)); },

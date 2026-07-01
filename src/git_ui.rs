@@ -1,7 +1,8 @@
+use std::collections::VecDeque;
 use std::fs;
 use std::io::Write;
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use axum::extract::{ConnectInfo, Query, State};
@@ -20,6 +21,9 @@ pub(crate) fn routes() -> Router<WebState> {
         .route("/api/git-ui/diff", get(git_ui_diff))
         .route("/api/git-ui/compare", get(git_ui_compare))
         .route("/api/git-ui/branches", get(git_ui_branches))
+        .route("/api/git-ui/cleanup-scan", get(git_ui_cleanup_scan))
+        .route("/api/git-ui/branch-delete", post(git_ui_branch_delete))
+        .route("/api/git-ui/worktree-remove", post(git_ui_worktree_remove))
         .route("/api/git-ui/log", get(git_ui_log))
         .route("/api/git-ui/blame", get(git_ui_blame))
         .route("/api/git-ui/file", get(git_ui_file).post(git_ui_write_file))
@@ -56,6 +60,7 @@ struct GitUiQuery {
     ref_name: Option<String>,
     all: Option<bool>,
     context: Option<usize>,
+    root: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -81,6 +86,22 @@ struct GitUiSwitchRequest {
     branch: String,
     create: Option<bool>,
     base: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct GitUiBranchDeleteRequest {
+    cwd: String,
+    branch: String,
+    force: Option<bool>,
+    confirmed: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct GitUiWorktreeRemoveRequest {
+    cwd: String,
+    path: String,
+    force: Option<bool>,
+    confirmed: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -170,6 +191,32 @@ struct GitFileSummary {
     additions: Option<usize>,
     deletions: Option<usize>,
 }
+
+#[derive(Serialize)]
+struct GitCleanupBranch {
+    name: String,
+    current: bool,
+    checked_out: bool,
+}
+
+#[derive(Serialize)]
+struct GitCleanupWorktree {
+    path: String,
+    branch: Option<String>,
+    detached: bool,
+    prunable: bool,
+    primary: bool,
+}
+
+#[derive(Serialize)]
+struct GitCleanupRepo {
+    path: String,
+    branches: Vec<GitCleanupBranch>,
+    worktrees: Vec<GitCleanupWorktree>,
+    error: Option<String>,
+}
+
+const GIT_CLEANUP_SCAN_LIMIT: usize = 1500;
 
 fn git_json_error(status: StatusCode, error: impl Into<String>) -> Response {
     (status, Json(json!({ "error": error.into() }))).into_response()
@@ -606,6 +653,240 @@ async fn git_ui_branches(
     let mut branches = local.clone();
     branches.extend(remote.clone());
     Json(json!({ "branches": branches, "local": local, "remote": remote })).into_response()
+}
+
+async fn git_ui_cleanup_scan(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    Query(query): Query<GitUiQuery>,
+) -> Response {
+    if let Err(response) = git_ui_auth(&state, &headers, remote) {
+        return response;
+    }
+    let Some(root) = query.root.as_deref().or(query.cwd.as_deref()) else {
+        return git_json_error(StatusCode::BAD_REQUEST, "root is required");
+    };
+    match git_cleanup_scan(root) {
+        Ok((repos, truncated)) => Json(json!({
+            "root": expand_user_path_string(root),
+            "repos": repos,
+            "truncated": truncated,
+        }))
+        .into_response(),
+        Err(err) => git_json_error(StatusCode::BAD_REQUEST, err),
+    }
+}
+
+fn git_cleanup_scan(root: &str) -> Result<(Vec<GitCleanupRepo>, bool), String> {
+    let root = PathBuf::from(expand_user_path_string(root));
+    if !root.is_dir() {
+        return Err("root directory does not exist".to_string());
+    }
+    let (repo_paths, truncated) = discover_git_repos(&root)?;
+    let repos = repo_paths
+        .into_iter()
+        .map(|path| cleanup_repo(&path))
+        .collect::<Vec<_>>();
+    Ok((repos, truncated))
+}
+
+fn discover_git_repos(root: &Path) -> Result<(Vec<PathBuf>, bool), String> {
+    let mut repos = Vec::new();
+    let mut queue = VecDeque::from([root.to_path_buf()]);
+    let mut visited = 0usize;
+    let mut truncated = false;
+    while let Some(dir) = queue.pop_front() {
+        visited += 1;
+        if visited > GIT_CLEANUP_SCAN_LIMIT {
+            truncated = true;
+            break;
+        }
+        let git_marker = dir.join(".git");
+        if git_marker.is_dir() || git_marker.is_file() {
+            repos.push(dir);
+            continue;
+        }
+        let entries = match fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(err) if dir == root => return Err(err.to_string()),
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name();
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if name.to_string_lossy() == ".git" || !file_type.is_dir() {
+                continue;
+            }
+            queue.push_back(path);
+        }
+    }
+    repos.sort();
+    Ok((repos, truncated))
+}
+
+fn cleanup_repo(path: &Path) -> GitCleanupRepo {
+    let repo = path.to_string_lossy().to_string();
+    match cleanup_repo_details(&repo) {
+        Ok((branches, worktrees)) => GitCleanupRepo {
+            path: repo,
+            branches,
+            worktrees,
+            error: None,
+        },
+        Err(error) => GitCleanupRepo {
+            path: repo,
+            branches: Vec::new(),
+            worktrees: Vec::new(),
+            error: Some(error),
+        },
+    }
+}
+
+fn cleanup_repo_details(
+    cwd: &str,
+) -> Result<(Vec<GitCleanupBranch>, Vec<GitCleanupWorktree>), String> {
+    let worktrees = cleanup_worktrees(cwd)?;
+    let checked_out = worktrees
+        .iter()
+        .filter_map(|worktree| worktree.branch.as_deref())
+        .collect::<std::collections::HashSet<_>>();
+    let text = git_ui_text(cwd, &["branch", "--format=%(refname:short)%00%(HEAD)"])?;
+    let branches = text
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.split('\0');
+            let name = parts.next()?.trim();
+            if name.is_empty() {
+                return None;
+            }
+            Some(GitCleanupBranch {
+                name: name.to_string(),
+                current: parts.next() == Some("*"),
+                checked_out: checked_out.contains(name),
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok((branches, worktrees))
+}
+
+fn cleanup_worktrees(cwd: &str) -> Result<Vec<GitCleanupWorktree>, String> {
+    let root = git_ui_text(cwd, &["rev-parse", "--show-toplevel"])?
+        .trim()
+        .to_string();
+    let text = git_ui_text(cwd, &["worktree", "list", "--porcelain"])?;
+    let mut rows = Vec::new();
+    let mut current: Option<GitCleanupWorktree> = None;
+    for line in text.lines().chain(std::iter::once("")) {
+        if line.is_empty() {
+            if let Some(row) = current.take() {
+                rows.push(row);
+            }
+            continue;
+        }
+        if let Some(path) = line.strip_prefix("worktree ") {
+            if let Some(row) = current.take() {
+                rows.push(row);
+            }
+            current = Some(GitCleanupWorktree {
+                path: path.to_string(),
+                branch: None,
+                detached: false,
+                prunable: false,
+                primary: path == root,
+            });
+        } else if let Some(branch) = line.strip_prefix("branch ") {
+            if let Some(row) = current.as_mut() {
+                row.branch = Some(
+                    branch
+                        .strip_prefix("refs/heads/")
+                        .unwrap_or(branch)
+                        .to_string(),
+                );
+            }
+        } else if line == "detached" {
+            if let Some(row) = current.as_mut() {
+                row.detached = true;
+            }
+        } else if line.starts_with("prunable") {
+            if let Some(row) = current.as_mut() {
+                row.prunable = true;
+            }
+        }
+    }
+    Ok(rows)
+}
+
+async fn git_ui_branch_delete(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    Json(body): Json<GitUiBranchDeleteRequest>,
+) -> Response {
+    if let Err(response) = git_ui_auth(&state, &headers, remote) {
+        return response;
+    }
+    if !body.confirmed.unwrap_or(false) {
+        return git_json_error(
+            StatusCode::BAD_REQUEST,
+            "branch deletion requires confirmation",
+        );
+    }
+    let branch = match safe_git_token(&body.branch, "branch") {
+        Ok(value) => value,
+        Err(err) => return git_json_error(StatusCode::BAD_REQUEST, err),
+    };
+    let delete_flag = if body.force.unwrap_or(false) {
+        "-D"
+    } else {
+        "-d"
+    };
+    match git_ui_text(&body.cwd, &["branch", delete_flag, "--", branch]) {
+        Ok(text) => Json(json!({ "ok": true, "message": text })).into_response(),
+        Err(err) => git_json_error(StatusCode::BAD_GATEWAY, err),
+    }
+}
+
+async fn git_ui_worktree_remove(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    Json(body): Json<GitUiWorktreeRemoveRequest>,
+) -> Response {
+    if let Err(response) = git_ui_auth(&state, &headers, remote) {
+        return response;
+    }
+    if !body.confirmed.unwrap_or(false) {
+        return git_json_error(
+            StatusCode::BAD_REQUEST,
+            "worktree removal requires confirmation",
+        );
+    }
+    let path = expand_user_path_string(&body.path);
+    let repo = match git_ui_text(&body.cwd, &["rev-parse", "--show-toplevel"]) {
+        Ok(value) => value.trim().to_string(),
+        Err(err) => return git_json_error(StatusCode::BAD_GATEWAY, err),
+    };
+    let requested_path = fs::canonicalize(&path).unwrap_or_else(|_| PathBuf::from(&path));
+    let primary_path = fs::canonicalize(&repo).unwrap_or_else(|_| PathBuf::from(&repo));
+    if requested_path == primary_path {
+        return git_json_error(
+            StatusCode::BAD_REQUEST,
+            "primary worktree cannot be removed here",
+        );
+    }
+    let args = if body.force.unwrap_or(false) {
+        vec!["worktree", "remove", "--force", path.as_str()]
+    } else {
+        vec!["worktree", "remove", path.as_str()]
+    };
+    match git_ui_text(&body.cwd, &args) {
+        Ok(text) => Json(json!({ "ok": true, "message": text })).into_response(),
+        Err(err) => git_json_error(StatusCode::BAD_GATEWAY, err),
+    }
 }
 
 async fn git_ui_log(
@@ -1319,6 +1600,7 @@ mod tests {
             ref_name: None,
             all: None,
             context: None,
+            root: None,
         }
     }
 
@@ -1686,6 +1968,130 @@ mod tests {
             let json = response_json(blame).await;
             assert!(json["text"].as_str().unwrap().contains("\tone"));
         });
+    }
+
+    #[test]
+    fn git_ui_cleanup_scan_and_delete_routes_work() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let repo = TempRepo::new();
+            repo.commit_initial();
+            repo.git(&["branch", "cleanup/delete-me"]);
+            let cwd = repo.path.to_str().unwrap().to_string();
+            let state = test_state();
+
+            let scan = git_ui_cleanup_scan(
+                State(state.clone()),
+                HeaderMap::new(),
+                ConnectInfo(remote()),
+                Query(GitUiQuery {
+                    root: Some(cwd.clone()),
+                    ..query()
+                }),
+            )
+            .await;
+            assert_eq!(scan.status(), StatusCode::OK);
+            let json = response_json(scan).await;
+            assert_eq!(json["repos"][0]["path"], cwd);
+            assert!(json["repos"][0]["branches"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|branch| branch["name"] == "cleanup/delete-me"));
+            assert!(json["repos"][0]["worktrees"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|worktree| worktree["primary"] == true));
+
+            let missing_confirmation = git_ui_branch_delete(
+                State(state.clone()),
+                HeaderMap::new(),
+                ConnectInfo(remote()),
+                Json(GitUiBranchDeleteRequest {
+                    cwd: cwd.clone(),
+                    branch: "cleanup/delete-me".to_string(),
+                    force: Some(true),
+                    confirmed: None,
+                }),
+            )
+            .await;
+            assert_eq!(missing_confirmation.status(), StatusCode::BAD_REQUEST);
+
+            let deleted = git_ui_branch_delete(
+                State(state.clone()),
+                HeaderMap::new(),
+                ConnectInfo(remote()),
+                Json(GitUiBranchDeleteRequest {
+                    cwd: cwd.clone(),
+                    branch: "cleanup/delete-me".to_string(),
+                    force: Some(true),
+                    confirmed: Some(true),
+                }),
+            )
+            .await;
+            assert_eq!(deleted.status(), StatusCode::OK);
+            assert!(!repo
+                .git(&["branch", "--list", "cleanup/delete-me"])
+                .contains("cleanup/delete-me"));
+
+            let worktree_path = repo.path.parent().unwrap().join(format!(
+                "{}-worktree",
+                repo.path.file_name().unwrap().to_string_lossy()
+            ));
+            let worktree_path_text = worktree_path.to_string_lossy().to_string();
+            repo.git(&[
+                "worktree",
+                "add",
+                "-b",
+                "cleanup/wt",
+                &worktree_path_text,
+                "main",
+            ]);
+
+            let removed_worktree = git_ui_worktree_remove(
+                State(state.clone()),
+                HeaderMap::new(),
+                ConnectInfo(remote()),
+                Json(GitUiWorktreeRemoveRequest {
+                    cwd: cwd.clone(),
+                    path: worktree_path_text.clone(),
+                    force: Some(false),
+                    confirmed: Some(true),
+                }),
+            )
+            .await;
+            assert_eq!(removed_worktree.status(), StatusCode::OK);
+            assert!(!worktree_path.exists());
+
+            let protected = git_ui_worktree_remove(
+                State(state),
+                HeaderMap::new(),
+                ConnectInfo(remote()),
+                Json(GitUiWorktreeRemoveRequest {
+                    cwd,
+                    path: repo.path.to_string_lossy().to_string(),
+                    force: Some(true),
+                    confirmed: Some(true),
+                }),
+            )
+            .await;
+            assert_eq!(protected.status(), StatusCode::BAD_REQUEST);
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_cleanup_scan_does_not_follow_symlinked_directories() {
+        let root = TempRepo::new();
+        root.commit_initial();
+        let outside = TempRepo::new();
+        outside.commit_initial();
+        std::os::unix::fs::symlink(&outside.path, root.path.join("linked-outside")).unwrap();
+
+        let (repos, truncated) = git_cleanup_scan(root.path.to_str().unwrap()).unwrap();
+        assert!(!truncated);
+        assert_eq!(repos.len(), 1);
+        assert_eq!(repos[0].path, root.path.to_string_lossy());
     }
 
     #[test]
