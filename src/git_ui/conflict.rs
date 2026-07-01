@@ -9,8 +9,10 @@ use axum::Json;
 use serde::Deserialize;
 use serde_json::json;
 
+use super::{
+    git_json_error, git_ui_output, git_ui_repo, git_ui_text, safe_repo_path, GitUiCwdQuery,
+};
 use crate::{require_auth, WebState};
-use super::{git_json_error, git_ui_output, git_ui_repo, git_ui_text, safe_repo_path, GitUiCwdQuery};
 
 #[derive(Deserialize)]
 pub(super) struct GitUiConflictResolveRequest {

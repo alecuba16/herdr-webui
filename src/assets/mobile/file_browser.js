@@ -3,10 +3,18 @@
     const Tree = globalThis.HerdrFileTree;
     const Editor = globalThis.HerdrEditor;
     const state = deps.state;
-    const local = { path: "", entries: [], selected: "", file: null, error: "", loading: false, filter: "", filterTimer: null, filterOffset: 0, filterDone: true, scrollTop: 0 };
+    const local = { path: "", entries: [], selected: "", file: null, error: "", loading: false, filter: "", filterTimer: null, filterOffset: 0, filterDone: true, scrollTop: 0, cwdOverride: "" };
 
     function cwd() {
-      return deps.currentWorkspaceCwd() || "";
+      return local.cwdOverride || deps.currentWorkspaceCwd() || "";
+    }
+
+    function parentDirectory(path) {
+      const value = String(path || "").replace(/\/+$/, "");
+      if (!value || value === "/") return value || "/";
+      const index = value.lastIndexOf("/");
+      if (index <= 0) return "/";
+      return value.slice(0, index);
     }
 
     async function load(path, preserveFocus = false) {
@@ -116,7 +124,9 @@
     function treeEntries() {
       if (local.filter.trim()) return searchTreeEntries(local.entries);
       const entries = local.entries.map((entry) => Object.assign({}, entry));
-      if (!local.filter.trim() && local.path) entries.unshift({ kind: "up", name: "...", path: parentPath(local.path), expanded: false });
+      const currentRoot = local.cwdOverride || deps.currentWorkspaceCwd() || "";
+      const canGoUp = local.path || (currentRoot && parentDirectory(currentRoot) !== currentRoot);
+      if (!local.filter.trim() && canGoUp) entries.unshift({ kind: "up", name: "...", path: parentPath(local.path), expanded: false });
       return entries;
     }
 
@@ -170,10 +180,23 @@
         local.file = null;
         local.error = "";
         local.filter = "";
+        local.cwdOverride = "";
       },
       toggle(encodedPath) { load(decodeURIComponent(encodedPath)); },
       select(encodedPath) { openFile(decodeURIComponent(encodedPath)); },
-      up() { load(parentPath(local.path)); },
+      up() {
+        if (local.path) { load(parentPath(local.path)); return; }
+        const wsCwd = deps.currentWorkspaceCwd() || "";
+        const currentRoot = local.cwdOverride || wsCwd;
+        if (!currentRoot) return;
+        const parent = parentDirectory(currentRoot);
+        if (!parent || parent === currentRoot) return;
+        local.cwdOverride = parent;
+        local.path = "";
+        local.entries = [];
+        local.selected = "";
+        load("");
+      },
       refresh() { load(local.path); },
       filter(value) {
         local.filter = String(value || "");

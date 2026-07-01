@@ -7,8 +7,8 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use super::{git_json_error, git_ui_text_strings, safe_git_token, safe_repo_path};
 use crate::{require_auth, WebState};
-use super::{git_json_error, git_ui_text_strings, safe_repo_path, safe_git_token};
 
 #[derive(Deserialize)]
 pub(super) struct GitUiDiffQuery {
@@ -53,7 +53,8 @@ pub(super) struct GitDiffFile {
 struct GitFileSummary {
     additions: Option<usize>,
     deletions: Option<usize>,
-}pub(super) fn parse_diff_path(raw: &str) -> Option<String> {
+}
+pub(super) fn parse_diff_path(raw: &str) -> Option<String> {
     let mut path = raw.trim();
     if path == "/dev/null" {
         return None;
@@ -219,7 +220,10 @@ pub(super) fn parse_numstat(text: &str) -> serde_json::Map<String, serde_json::V
     summaries
 }
 
-pub(super) fn git_ui_diff_args(query: &GitUiDiffQuery, compare: bool) -> Result<Vec<String>, String> {
+pub(super) fn git_ui_diff_args(
+    query: &GitUiDiffQuery,
+    compare: bool,
+) -> Result<Vec<String>, String> {
     let mut args = vec![
         "diff".to_string(),
         "--no-ext-diff".to_string(),

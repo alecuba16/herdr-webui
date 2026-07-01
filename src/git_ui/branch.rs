@@ -7,8 +7,8 @@ use axum::Json;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::{require_auth, WebState};
 use super::{git_json_error, git_ui_text, list_local_branches, safe_git_token, GitUiCwdQuery};
+use crate::{require_auth, WebState};
 
 #[derive(Deserialize)]
 pub(super) struct GitUiSwitchRequest {
@@ -51,7 +51,10 @@ fn git_ui_branches_blocking(cwd: String) -> Result<Response, (StatusCode, String
         .collect::<Vec<_>>();
     let mut branches = local_json.clone();
     branches.extend(remote.clone());
-    Ok(Json(json!({ "branches": branches, "local": local_json, "remote": remote })).into_response())
+    Ok(
+        Json(json!({ "branches": branches, "local": local_json, "remote": remote }))
+            .into_response(),
+    )
 }
 
 pub(super) async fn git_ui_branches(
@@ -107,10 +110,8 @@ pub(super) async fn git_ui_branch_delete(
     };
     let force = body.force.unwrap_or(false);
     let cwd = body.cwd;
-    match tokio::task::spawn_blocking(move || {
-        git_ui_branch_delete_blocking(cwd, branch, force)
-    })
-    .await
+    match tokio::task::spawn_blocking(move || git_ui_branch_delete_blocking(cwd, branch, force))
+        .await
     {
         Ok(Ok(response)) => response,
         Ok(Err((status, msg))) => git_json_error(status, msg),
@@ -150,7 +151,12 @@ pub(super) async fn git_ui_switch(
             Ok(v) => v,
             Err(err) => return git_json_error(StatusCode::BAD_REQUEST, err),
         };
-        vec!["switch".to_string(), "-c".to_string(), branch.to_string(), base.to_string()]
+        vec![
+            "switch".to_string(),
+            "-c".to_string(),
+            branch.to_string(),
+            base.to_string(),
+        ]
     } else {
         vec!["switch".to_string(), branch.to_string()]
     };

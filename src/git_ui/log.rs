@@ -9,8 +9,8 @@ use axum::Json;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::{git_failure, require_auth, WebState};
 use super::{git_json_error, git_ui_repo, git_ui_text, safe_git_token};
+use crate::{git_failure, require_auth, WebState};
 
 #[derive(Deserialize)]
 pub(super) struct GitUiLogQuery {
@@ -51,6 +51,36 @@ pub(super) struct GitUiApplyPatchRequest {
     pub(super) cached: Option<bool>,
 }
 
+/// Reconstruct a git log graph line so it no longer contains the null-byte
+/// (`%x00`) separators emitted by `--format=%H%x00%an%x00%ar%x00%s`.
+///
+/// Commit lines become a human-readable `--oneline`-style string
+/// (`<graph_prefix><short-hash> <message>`). Graph-only and empty lines are
+/// passed through unchanged, since they never contain null bytes.
+fn reconstruct_log_line(line: &str) -> String {
+    let raw = line.trim();
+    if raw.is_empty() {
+        return line.to_owned();
+    }
+    let start = match raw.find(|c: char| c.is_ascii_hexdigit()) {
+        Some(start) => start,
+        None => return line.to_owned(),
+    };
+    let end = raw[start..]
+        .find(|c: char| !c.is_ascii_hexdigit())
+        .map(|e| start + e)
+        .unwrap_or(raw.len());
+    if end - start < 7 {
+        return line.to_owned();
+    }
+    let hash = &raw[start..end];
+    let parts: Vec<&str> = raw[end..].split('\0').collect();
+    let message = parts.get(3).map(|s| s.trim()).unwrap_or("");
+    let graph_prefix = &raw[..start];
+    let short = &hash[..8.min(hash.len())];
+    format!("{}{} {}", graph_prefix, short, message)
+}
+
 fn git_ui_log_blocking(
     cwd: String,
     max: String,
@@ -71,30 +101,39 @@ fn git_ui_log_blocking(
     match git_ui_text(&cwd, &args) {
         Ok(text) => {
             let lines = text.lines().map(ToOwned::to_owned).collect::<Vec<_>>();
-            let commits = lines.iter().filter_map(|line| {
-                let raw = line.trim();
-                if raw.is_empty() {
-                    return None;
-                }
-                let start = match raw.find(|c: char| c.is_ascii_hexdigit()) {
-                    Some(start) => start,
-                    None => return None,
-                };
-                let end = raw[start..]
-                    .find(|c: char| !c.is_ascii_hexdigit())
-                    .map(|e| start + e)
-                    .unwrap_or(raw.len());
-                if end - start < 7 {
-                    return None;
-                }
-                let hash = raw[start..end].to_string();
-                let parts: Vec<&str> = raw[end..].split('\0').collect();
-                let author = parts.get(1).map(|s| s.trim()).unwrap_or("").to_string();
-                let date = parts.get(2).map(|s| s.trim()).unwrap_or("").to_string();
-                let message = parts.get(3).map(|s| s.trim()).unwrap_or("").to_string();
-                Some(json!({ "hash": hash, "author": author, "date": date, "message": message, "raw": line }))
-            }).collect::<Vec<_>>();
-            Ok(Json(json!({ "commits": commits, "lines": lines })).into_response())
+            let commits = lines
+                .iter()
+                .filter_map(|line| {
+                    let raw = line.trim();
+                    if raw.is_empty() {
+                        return None;
+                    }
+                    let start = match raw.find(|c: char| c.is_ascii_hexdigit()) {
+                        Some(start) => start,
+                        None => return None,
+                    };
+                    let end = raw[start..]
+                        .find(|c: char| !c.is_ascii_hexdigit())
+                        .map(|e| start + e)
+                        .unwrap_or(raw.len());
+                    if end - start < 7 {
+                        return None;
+                    }
+                    let hash = raw[start..end].to_string();
+                    let parts: Vec<&str> = raw[end..].split('\0').collect();
+                    let author = parts.get(1).map(|s| s.trim()).unwrap_or("").to_string();
+                    let date = parts.get(2).map(|s| s.trim()).unwrap_or("").to_string();
+                    let message = parts.get(3).map(|s| s.trim()).unwrap_or("").to_string();
+                    Some(
+                        json!({ "hash": hash, "author": author, "date": date, "message": message }),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let display_lines = lines
+                .iter()
+                .map(|line| reconstruct_log_line(line))
+                .collect::<Vec<_>>();
+            Ok(Json(json!({ "commits": commits, "lines": display_lines })).into_response())
         }
         Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
     }
@@ -332,8 +371,10 @@ pub(super) async fn git_ui_apply_patch(
     let patch = body.patch;
     let reverse = body.reverse.unwrap_or(false);
     let cached = body.cached.unwrap_or(false);
-    match tokio::task::spawn_blocking(move || git_ui_apply_patch_blocking(cwd, patch, reverse, cached))
-        .await
+    match tokio::task::spawn_blocking(move || {
+        git_ui_apply_patch_blocking(cwd, patch, reverse, cached)
+    })
+    .await
     {
         Ok(Ok(response)) => response,
         Ok(Err((status, msg))) => git_json_error(status, msg),

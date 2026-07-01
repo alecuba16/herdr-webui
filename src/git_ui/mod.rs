@@ -13,13 +13,13 @@ use serde_json::json;
 
 use crate::{expand_user_path_string, git_failure, require_auth, WebState};
 
-mod cleanup;
-mod diff;
 mod branch;
-mod stash;
+mod cleanup;
 mod conflict;
+mod diff;
 mod file;
 mod log;
+mod stash;
 
 macro_rules! check_auth {
     ($state:expr, $headers:expr, $remote:expr) => {
@@ -35,13 +35,28 @@ pub(crate) fn routes() -> Router<WebState> {
         .route("/api/git-ui/diff", get(diff::git_ui_diff))
         .route("/api/git-ui/compare", get(diff::git_ui_compare))
         .route("/api/git-ui/branches", get(branch::git_ui_branches))
-        .route("/api/git-ui/cleanup-scan", get(cleanup::git_ui_cleanup_scan))
-        .route("/api/git-ui/branch-delete", post(branch::git_ui_branch_delete))
-        .route("/api/git-ui/worktree-remove", post(cleanup::git_ui_worktree_remove))
-        .route("/api/git-ui/worktree-prune", post(cleanup::git_ui_worktree_prune))
+        .route(
+            "/api/git-ui/cleanup-scan",
+            get(cleanup::git_ui_cleanup_scan),
+        )
+        .route(
+            "/api/git-ui/branch-delete",
+            post(branch::git_ui_branch_delete),
+        )
+        .route(
+            "/api/git-ui/worktree-remove",
+            post(cleanup::git_ui_worktree_remove),
+        )
+        .route(
+            "/api/git-ui/worktree-prune",
+            post(cleanup::git_ui_worktree_prune),
+        )
         .route("/api/git-ui/log", get(log::git_ui_log))
         .route("/api/git-ui/blame", get(file::git_ui_blame))
-        .route("/api/git-ui/file", get(file::git_ui_file).post(file::git_ui_write_file))
+        .route(
+            "/api/git-ui/file",
+            get(file::git_ui_file).post(file::git_ui_write_file),
+        )
         .route("/api/git-ui/file-history", get(file::git_ui_file_history))
         .route("/api/git-ui/stashes", get(stash::git_ui_stashes))
         .route("/api/git-ui/conflicts", get(conflict::git_ui_conflicts))
@@ -60,7 +75,10 @@ pub(crate) fn routes() -> Router<WebState> {
             "/api/git-ui/conflict-resolve",
             post(conflict::git_ui_conflict_resolve),
         )
-        .route("/api/git-ui/conflict-action", post(conflict::git_ui_conflict_action))
+        .route(
+            "/api/git-ui/conflict-action",
+            post(conflict::git_ui_conflict_action),
+        )
 }
 
 #[derive(Deserialize)]
@@ -365,7 +383,11 @@ fn git_ui_unstage_blocking(
     cwd: String,
     paths: Vec<String>,
 ) -> Result<Response, (StatusCode, String)> {
-    let mut args = vec!["restore".to_string(), "--staged".to_string(), "--".to_string()];
+    let mut args = vec![
+        "restore".to_string(),
+        "--staged".to_string(),
+        "--".to_string(),
+    ];
     args.extend(paths);
     match git_ui_text_strings(&cwd, &args) {
         Ok(_) => Ok(Json(json!({ "ok": true })).into_response()),
@@ -450,14 +472,14 @@ async fn git_ui_discard(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use super::cleanup::*;
-    use super::diff::*;
     use super::branch::*;
-    use super::stash::*;
+    use super::cleanup::*;
     use super::conflict::*;
+    use super::diff::*;
     use super::file::*;
     use super::log::*;
+    use super::stash::*;
+    use super::*;
     use crate::{AuthConfig, NoSleepState, RuntimeServerSettings};
     use axum::body::to_bytes;
     use serde_json::Value;
@@ -857,12 +879,18 @@ mod tests {
             let upstream = std::env::temp_dir().join(format!(
                 "herdr-webui-git-ui-upstream-{}-{}",
                 std::process::id(),
-                SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
             ));
             let work = std::env::temp_dir().join(format!(
                 "herdr-webui-git-ui-work-{}-{}",
                 std::process::id(),
-                SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
             ));
             repo.git(&[
                 "clone",
@@ -900,7 +928,12 @@ mod tests {
             // Advance upstream by one commit so local also falls behind.
             Command::new("git")
                 .current_dir(repo.path.as_os_str())
-                .args(["clone", "-q", upstream.to_str().unwrap(), work.to_str().unwrap()])
+                .args([
+                    "clone",
+                    "-q",
+                    upstream.to_str().unwrap(),
+                    work.to_str().unwrap(),
+                ])
                 .output()
                 .unwrap();
             Command::new("git")
@@ -1654,7 +1687,10 @@ mod tests {
         let scan_root = std::env::temp_dir().join(format!(
             "herdr-test-dedup-{}-{}",
             std::process::id(),
-            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
         fs::create_dir_all(&scan_root).unwrap();
         let base_path = scan_root.join("base");
@@ -1694,7 +1730,13 @@ mod tests {
         fs::create_dir_all(scan_root.join("worktrees")).unwrap();
         Command::new("git")
             .current_dir(&base_path)
-            .args(["worktree", "add", "-b", "feature", worktree_dir.to_str().unwrap()])
+            .args([
+                "worktree",
+                "add",
+                "-b",
+                "feature",
+                worktree_dir.to_str().unwrap(),
+            ])
             .output()
             .unwrap();
         let (repos, truncated) = discover_git_repos(&scan_root).unwrap();
@@ -1711,7 +1753,10 @@ mod tests {
                 canon == base_canonical
             })
             .count();
-        assert_eq!(count, 1, "base repo should appear exactly once, got: {repo_paths:?}");
+        assert_eq!(
+            count, 1,
+            "base repo should appear exactly once, got: {repo_paths:?}"
+        );
         let wt_canonical = fs::canonicalize(&worktree_dir).unwrap();
         let wt_str = wt_canonical.to_string_lossy().to_string();
         assert!(
@@ -1725,14 +1770,19 @@ mod tests {
     fn resolve_worktree_base_finds_base_repo_from_git_file() {
         let base = TempRepo::new();
         base.commit_initial();
-        let worktree_dir = base
-            .path
-            .parent()
-            .unwrap()
-            .join(format!("wt-r-{}", base.path.file_name().unwrap().to_string_lossy()));
+        let worktree_dir = base.path.parent().unwrap().join(format!(
+            "wt-r-{}",
+            base.path.file_name().unwrap().to_string_lossy()
+        ));
         Command::new("git")
             .current_dir(&base.path)
-            .args(["worktree", "add", "-b", "dev", worktree_dir.to_str().unwrap()])
+            .args([
+                "worktree",
+                "add",
+                "-b",
+                "dev",
+                worktree_dir.to_str().unwrap(),
+            ])
             .output()
             .unwrap();
         let git_file = worktree_dir.join(".git");

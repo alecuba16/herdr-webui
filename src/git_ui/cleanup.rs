@@ -10,8 +10,8 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::{expand_user_path_string, require_auth, WebState};
-use super::{git_json_error, git_ui_text, list_local_branches, safe_git_token};
+use super::{git_json_error, git_ui_output, git_ui_text, list_local_branches, safe_git_token};
+use crate::{expand_user_path_string, git_failure, require_auth, WebState};
 
 #[derive(Deserialize)]
 pub(super) struct GitUiCleanupQuery {
@@ -92,9 +92,7 @@ pub(super) async fn git_ui_cleanup_scan(
         return git_json_error(StatusCode::BAD_REQUEST, "root is required");
     };
     let root_owned = root.to_string();
-    match tokio::task::spawn_blocking(move || git_cleanup_scan(&root_owned))
-        .await
-    {
+    match tokio::task::spawn_blocking(move || git_cleanup_scan(&root_owned)).await {
         Ok(Ok((repos, truncated))) => Json(json!({
             "root": expand_user_path_string(root),
             "repos": repos,
@@ -173,10 +171,7 @@ pub(super) fn discover_git_repos(root: &Path) -> Result<(Vec<PathBuf>, bool), St
             if name.to_string_lossy() == ".git" || !file_type.is_dir() {
                 continue;
             }
-            if SKIP_DIRS
-                .iter()
-                .any(|skip| name.to_string_lossy() == *skip)
-            {
+            if SKIP_DIRS.iter().any(|skip| name.to_string_lossy() == *skip) {
                 continue;
             }
             queue.push_back((path, depth + 1));
@@ -341,10 +336,8 @@ pub(super) async fn git_ui_worktree_remove(
     let force = body.force.unwrap_or(false);
     let path = body.path;
     let cwd = body.cwd;
-    match tokio::task::spawn_blocking(move || {
-        git_ui_worktree_remove_blocking(cwd, path, force)
-    })
-    .await
+    match tokio::task::spawn_blocking(move || git_ui_worktree_remove_blocking(cwd, path, force))
+        .await
     {
         Ok(Ok(response)) => response,
         Ok(Err((status, msg))) => git_json_error(status, msg),
@@ -357,10 +350,19 @@ fn git_ui_worktree_prune_blocking(
     args: Vec<String>,
 ) -> Result<Response, (StatusCode, String)> {
     let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
-    match git_ui_text(&cwd, &refs) {
-        Ok(text) => {
-            let pruned: Vec<&str> = text.lines().filter(|l| !l.is_empty()).collect();
-            Ok(Json(json!({ "ok": true, "pruned": pruned, "message": text })).into_response())
+    match git_ui_output(&cwd, &refs) {
+        Ok(output) => {
+            if !output.status.success() {
+                return Err((
+                    StatusCode::BAD_GATEWAY,
+                    git_failure(output, "git worktree prune"),
+                ));
+            }
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+            // git writes "Removing worktrees/<name>: <reason>" to stderr
+            let pruned: Vec<&str> = stderr.lines().filter(|l| !l.is_empty()).collect();
+            Ok(Json(json!({ "ok": true, "pruned": pruned, "message": stdout })).into_response())
         }
         Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
     }
@@ -375,7 +377,11 @@ pub(super) async fn git_ui_worktree_prune(
     if let Err(response) = require_auth(&state, &headers, remote) {
         return response;
     }
-    let mut args = vec!["worktree".to_string(), "prune".to_string()];
+    let mut args = vec![
+        "worktree".to_string(),
+        "prune".to_string(),
+        "--verbose".to_string(),
+    ];
     if body.dry_run.unwrap_or(false) {
         args.push("--dry-run".to_string());
     }
