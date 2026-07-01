@@ -16,6 +16,9 @@ use sha2::{Digest, Sha256};
 use crate::{expand_user_path_string, require_auth, WebState};
 
 const MAX_ENTRIES: usize = 1000;
+const MAX_SEARCH_VISITS: usize = 20_000;
+const DEFAULT_SEARCH_LIMIT: usize = 100;
+const MAX_SEARCH_LIMIT: usize = 500;
 const MAX_FILE_BYTES: u64 = 1024 * 1024;
 
 pub(crate) fn routes() -> Router<WebState> {
@@ -41,6 +44,9 @@ struct FileBrowserQuery {
     path: Option<String>,
     dirs_only: Option<bool>,
     depth: Option<u8>,
+    q: Option<String>,
+    offset: Option<usize>,
+    limit: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -267,6 +273,67 @@ fn push_tree_entries(
     Ok(())
 }
 
+fn push_search_entries(
+    build: &mut TreeBuild,
+    dir: &Path,
+    needle: &str,
+    offset: usize,
+    limit: usize,
+    visited: &mut usize,
+    matched: &mut usize,
+) -> Result<(), String> {
+    if build.entries.len() >= limit || *visited >= MAX_SEARCH_VISITS {
+        build.truncated = true;
+        return Ok(());
+    }
+    for entry in sorted_directory_entries(dir)? {
+        *visited += 1;
+        if *visited >= MAX_SEARCH_VISITS {
+            build.truncated = true;
+            break;
+        }
+        let is_dir = entry.metadata.is_dir();
+        if entry.sort_name.contains(needle)
+            || relative_to_root(build.root, &entry.path)
+                .to_lowercase()
+                .contains(needle)
+        {
+            if *matched >= offset && build.entries.len() < limit {
+                build.entries.push(FileBrowserEntry {
+                    name: entry.name.clone(),
+                    path: relative_to_root(build.root, &entry.path),
+                    kind: if is_dir { "dir" } else { "file" }.to_string(),
+                    size: if is_dir {
+                        None
+                    } else {
+                        Some(entry.metadata.len())
+                    },
+                    modified_ms: entry
+                        .metadata
+                        .modified()
+                        .ok()
+                        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+                        .map(|duration| duration.as_millis() as u64),
+                    level: 0,
+                    expanded: false,
+                });
+            }
+            *matched += 1;
+            if build.entries.len() >= limit {
+                build.truncated = true;
+                break;
+            }
+        }
+        if is_dir {
+            push_search_entries(build, &entry.path, needle, offset, limit, visited, matched)?;
+            if build.truncated || build.entries.len() >= limit {
+                break;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn file_hash(path: &Path) -> Result<String, String> {
     if !path.exists() {
         return Ok(String::new());
@@ -318,12 +385,32 @@ async fn file_browser_tree(
     } else {
         query.depth.unwrap_or(0).min(8)
     };
+    let search = query.q.as_deref().unwrap_or("").trim().to_lowercase();
     let mut build = TreeBuild {
         root: &root,
         entries: Vec::new(),
         truncated: false,
     };
-    if dirs_only {
+    if !search.is_empty() {
+        let mut visited = 0usize;
+        let mut matched = 0usize;
+        let limit = query
+            .limit
+            .unwrap_or(DEFAULT_SEARCH_LIMIT)
+            .clamp(1, MAX_SEARCH_LIMIT);
+        let offset = query.offset.unwrap_or(0);
+        if let Err(err) = push_search_entries(
+            &mut build,
+            &dir,
+            &search,
+            offset,
+            limit,
+            &mut visited,
+            &mut matched,
+        ) {
+            return file_browser_json_error(StatusCode::BAD_GATEWAY, err);
+        }
+    } else if dirs_only {
         for entry in match sorted_directory_entries(&dir) {
             Ok(entries) => entries,
             Err(err) => return file_browser_json_error(StatusCode::BAD_GATEWAY, err),
@@ -358,6 +445,7 @@ async fn file_browser_tree(
         "path": relative_to_root(&root, &dir),
         "entries": build.entries,
         "truncated": build.truncated,
+        "query": search,
     }))
     .into_response()
 }
@@ -627,6 +715,39 @@ mod tests {
         assert!(rows.contains(&("a/b/c", 2, false)));
         assert!(rows.contains(&("a/root.txt", 1, false)));
         assert!(rows.contains(&("a/b/child.txt", 2, false)));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn push_search_entries_filters_and_paginates() {
+        let root = std::env::temp_dir().join(format!(
+            "herdr-webui-file-browser-search-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("src/nested")).unwrap();
+        fs::write(root.join("src/app.rs"), "app").unwrap();
+        fs::write(root.join("src/nested/app_test.rs"), "test").unwrap();
+        fs::write(root.join("README.md"), "readme").unwrap();
+
+        let root = root.canonicalize().unwrap();
+        let mut build = TreeBuild {
+            root: &root,
+            entries: Vec::new(),
+            truncated: false,
+        };
+        let mut visited = 0;
+        let mut matched = 0;
+        push_search_entries(&mut build, &root, "app", 0, 2, &mut visited, &mut matched).unwrap();
+
+        let paths = build
+            .entries
+            .iter()
+            .map(|entry| entry.path.as_str())
+            .collect::<Vec<_>>();
+        assert!(paths.contains(&"src/app.rs"));
+        assert!(paths.contains(&"src/nested/app_test.rs"));
+        assert!(matched >= 2);
         let _ = fs::remove_dir_all(root);
     }
 }

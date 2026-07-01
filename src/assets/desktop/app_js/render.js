@@ -257,11 +257,12 @@ function renderPanelField() {
     currentLabel = current ? tabTitle(current) : "No panel";
   const hasSwitcher = tabs.length > 1;
   if (current && state.editingTab === current.tab_id)
-    return `<div class="panel-field"><input class="panel-label panel-rename-input tab-rename-input" value="${escapeAttr(state.editingTabValue)}" onmousedown="event.stopPropagation()" onclick="event.stopPropagation()" onblur="commitTabRename('${current.tab_id}')" oninput="state.editingTabValue=this.value" onkeydown="tabRenameKey(event,'${current.tab_id}')"><button class="mini panel-add" title="New panel" onclick="event.preventDefault();event.stopPropagation();newTab()">+</button></div>`;
+    return `<div class="panel-field"><input class="panel-label panel-rename-input tab-rename-input" value="${escapeAttr(state.editingTabValue)}" onmousedown="event.stopPropagation()" onclick="event.stopPropagation()" onblur="commitTabRename('${current.tab_id}')" oninput="state.editingTabValue=this.value" onkeydown="tabRenameKey(event,'${current.tab_id}')"><button class="mini panel-add" title="New panel" onclick="event.preventDefault();event.stopPropagation();newTab()">+</button><button class="mini warn panel-close" title="Close current panel" onclick="event.preventDefault();event.stopPropagation();closeTab('${current.tab_id}')">✕</button></div>`;
   const menu = hasSwitcher && state.panelMenuOpen ? `<div class="panel-menu">${tabs.map((tab) => `<button class="panel-menu-item${tab.tab_id === state.tab ? " active" : ""}" onclick="event.preventDefault();event.stopPropagation();state.panelMenuOpen=false;go(state.ws,decodeURIComponent('${encodeURIComponent(tab.tab_id)}'))">${escapeHtml(tabTitle(tab))}</button>`).join("")}</div>` : "";
   const caret = hasSwitcher ? '<span class="panel-caret">▼</span>' : "";
   const click = hasSwitcher ? "togglePanelMenu()" : "";
-  return `<div class="panel-field"><button class="panel-label" title="Current panel: ${escapeAttr(currentLabel)}. Double-click to rename." onclick="event.preventDefault();event.stopPropagation();${click}" ondblclick="event.preventDefault();event.stopPropagation();state.panelMenuOpen=false;${current ? `startTabRename('${current.tab_id}','${escapeAttr(currentLabel)}')` : ""}"><span>${escapeHtml(currentLabel)}</span>${caret}</button>${menu}<button class="mini panel-add" title="New panel" onclick="event.preventDefault();event.stopPropagation();newTab()">+</button></div>`;
+  const close = current ? `<button class="mini warn panel-close" title="Close current panel" onclick="event.preventDefault();event.stopPropagation();closeTab('${current.tab_id}')">✕</button>` : "";
+  return `<div class="panel-field"><button class="panel-label" title="Current panel: ${escapeAttr(currentLabel)}. Double-click to rename." onclick="event.preventDefault();event.stopPropagation();${click}" ondblclick="event.preventDefault();event.stopPropagation();state.panelMenuOpen=false;${current ? `startTabRename('${current.tab_id}','${escapeAttr(currentLabel)}')` : ""}"><span>${escapeHtml(currentLabel)}</span>${caret}</button>${menu}<button class="mini panel-add" title="New panel" onclick="event.preventDefault();event.stopPropagation();newTab()">+</button>${close}</div>`;
 }
 
 function togglePanelMenu() {
@@ -371,10 +372,42 @@ function syncGitWorkspaceToggle() {
   syncShellModeButtons();
 }
 
-function openWorkspaceGitUi(id) {
+async function loadDesktopFeature(src) {
+  if (window.HerdrLoadScript) {
+    await window.HerdrLoadScript(src);
+    return;
+  }
+  await new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.async = true;
+    script.src = src;
+    script.onload = resolve;
+    script.onerror = () => reject(Error("Failed to load " + src));
+    document.body.appendChild(script);
+  });
+}
+
+async function ensureGitUiLoaded() {
+  if (window.HerdrGitUi) return;
+  await loadDesktopFeature("/assets/desktop/directory-picker.js");
+  await loadDesktopFeature("/assets/desktop/git-ui.js");
+}
+
+async function ensureFileBrowserLoaded() {
+  if (window.HerdrFileBrowser) return;
+  await loadDesktopFeature("/assets/desktop/file-browser.js");
+}
+
+async function openWorkspaceGitUi(id) {
   if (!gitUiEnabled()) return;
   const workspace = state.workspaces.find((w) => w.workspace_id === id);
-  if (!workspace || !window.HerdrGitUi) return;
+  if (!workspace) return;
+  try {
+    await ensureGitUiLoaded();
+  } catch (error) {
+    alert(error.message || String(error));
+    return;
+  }
   if (window.HerdrFileBrowser) window.HerdrFileBrowser.hide();
   window.HerdrGitUi.open(workspace);
   render();
@@ -393,9 +426,15 @@ function syncFileWorkspaceToggle() {
   syncShellModeButtons();
 }
 
-function openWorkspaceFileBrowser(id) {
+async function openWorkspaceFileBrowser(id) {
   const workspace = state.workspaces.find((w) => w.workspace_id === id);
-  if (!workspace || !window.HerdrFileBrowser) return;
+  if (!workspace) return;
+  try {
+    await ensureFileBrowserLoaded();
+  } catch (error) {
+    alert(error.message || String(error));
+    return;
+  }
   if (window.HerdrGitUi) window.HerdrGitUi.hide();
   window.HerdrFileBrowser.open(workspace).catch((error) => alert(error.message || String(error)));
   render();

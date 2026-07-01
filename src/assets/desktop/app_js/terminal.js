@@ -79,12 +79,12 @@ function connectTerminal() {
       scrollback: 10000,
     });
     term.open(terminal);
+    applyTerminalLinks();
     applyTheme();
     term.onData(sendInputData);
     if (!terminalScrollFollowBound && term.onScroll) {
       term.onScroll(() => {
-        terminalFollowPaused = !terminalAtBottom();
-        updateTerminalFollowButton();
+        setTerminalFollowPaused(!terminalAtBottom());
       });
       terminalScrollFollowBound = true;
     }
@@ -112,6 +112,11 @@ function connectTerminal() {
           !e.metaKey &&
           (e.key === "PageUp" || e.key === "PageDown")
         ) {
+          if (terminalUsesNormalBuffer()) {
+            e.preventDefault();
+            scrollLocalTerminal(e.key === "PageUp" ? "up" : "down", Math.max(1, (state.termRows || rows) - 1));
+            return false;
+          }
           sendBackendScroll(
             e.key === "PageUp" ? "up" : "down",
             Math.max(1, (state.termRows || rows) - 1),
@@ -132,9 +137,9 @@ function connectTerminal() {
           return;
         }
         if (terminalUsesNormalBuffer()) {
+          if (e.deltaY < 0 || e.deltaX < 0 || !terminalAtBottom()) setTerminalFollowPaused(true);
           requestAnimationFrame(() => {
-            terminalFollowPaused = !terminalAtBottom();
-            updateTerminalFollowButton();
+            setTerminalFollowPaused(!terminalAtBottom());
           });
           return;
         }
@@ -211,12 +216,11 @@ function connectTerminal() {
   ws.onmessage = (e) => {
     if (termWs !== ws || connectedTerminalId !== target) return;
     setTerminalLoading(false);
-    writeTerminalFrame(typeof e.data === "string" ? e.data : new Uint8Array(e.data));
-    clearDismissedWorkingForTerminal(state.terminalId);
-    scheduleTerminalFrameWork();
+    enqueueTerminalFrame(typeof e.data === "string" ? e.data : new Uint8Array(e.data));
   };
   ws.onclose = () => {
     if (termWs === ws) {
+      flushTerminalFramesFor(target);
       termWs = null;
       connectedTerminalId = null;
       connectedSize = "";
@@ -224,6 +228,84 @@ function connectTerminal() {
       scheduleRefresh();
     }
   };
+}
+function applyTerminalLinks() {
+  if (terminalLinkProvider && terminalLinkProvider.dispose) {
+    try { terminalLinkProvider.dispose(); } catch (e) {}
+  }
+  terminalLinkProvider = null;
+  if (!term || options.terminalLinks === false || !term.registerLinkProvider) return;
+  terminalLinkProvider = term.registerLinkProvider({ provideLinks: provideTerminalLinks });
+}
+function provideTerminalLinks(lineNumber, callback) {
+  try {
+    const buffer = term && term.buffer && term.buffer.active;
+    const y = buffer ? Math.max(0, (buffer.viewportY || 0) + lineNumber - 1) : 0;
+    const line = buffer && (buffer.getLine(y) || buffer.getLine(lineNumber - 1) || buffer.getLine(lineNumber));
+    const text = line && line.translateToString ? line.translateToString(true) : "";
+    const links = [];
+    const re = /https?:\/\/[^\s<>"]+/g;
+    let match;
+    while ((match = re.exec(text))) {
+      const url = match[0].replace(/[),.;]+$/g, "");
+      if (!url) continue;
+      links.push({
+        range: { start: { x: match.index + 1, y: lineNumber }, end: { x: match.index + url.length, y: lineNumber } },
+        text: url,
+        activate: (_event, text) => window.open(text, "_blank", "noopener,noreferrer"),
+      });
+    }
+    callback(links);
+  } catch (e) {
+    callback([]);
+  }
+}
+function enqueueTerminalFrame(data) {
+  terminalWriteQueue.push({ terminalId: connectedTerminalId, data });
+  if (terminalWriteFlushPending) return;
+  terminalWriteFlushPending = true;
+  requestAnimationFrame(flushTerminalFrames);
+}
+function flushTerminalFrames() {
+  terminalWriteFlushPending = false;
+  if (!terminalWriteQueue.length || !term) return;
+  const terminalId = connectedTerminalId;
+  const frames = takeTerminalFrames(terminalId);
+  if (!frames.length) return;
+  const data = coalesceTerminalFrames(frames);
+  writeTerminalFrame(data);
+  clearDismissedWorkingForTerminal(state.terminalId);
+  scheduleTerminalFrameWork();
+}
+function flushTerminalFramesFor(terminalId) {
+  if (!terminalWriteQueue.length || !term || !terminalId) return;
+  const frames = takeTerminalFrames(terminalId);
+  if (!frames.length) return;
+  writeTerminalFrame(coalesceTerminalFrames(frames));
+  clearDismissedWorkingForTerminal(terminalId);
+  scheduleTerminalFrameWork();
+}
+function takeTerminalFrames(terminalId) {
+  const frames = [];
+  const remaining = [];
+  for (const frame of terminalWriteQueue) {
+    if (frame.terminalId === terminalId) frames.push(frame.data);
+    else remaining.push(frame);
+  }
+  terminalWriteQueue = remaining;
+  return frames;
+}
+function coalesceTerminalFrames(frames) {
+  if (frames.every((frame) => typeof frame === "string")) return frames.join("");
+  const bytes = frames.map((frame) => typeof frame === "string" ? inputEncoder.encode(frame) : frame);
+  const size = bytes.reduce((sum, frame) => sum + frame.length, 0);
+  const merged = new Uint8Array(size);
+  let offset = 0;
+  for (const frame of bytes) {
+    merged.set(frame, offset);
+    offset += frame.length;
+  }
+  return merged;
 }
 function terminalUsesNormalBuffer() {
   try {
@@ -241,10 +323,15 @@ function terminalAtBottom() {
     return true;
   }
 }
+function setTerminalFollowPaused(paused) {
+  terminalFollowPaused = !!paused;
+  updateTerminalFollowButton();
+}
 function updateTerminalFollowButton() {
   const button = el("terminalFollowButton");
   if (!button) return;
   button.hidden = !terminalFollowPaused;
+  button.setAttribute("aria-hidden", terminalFollowPaused ? "false" : "true");
 }
 function writeTerminalFrame(data) {
   const shouldPreserve = terminalFollowPaused && !terminalAtBottom();
@@ -255,8 +342,7 @@ function writeTerminalFrame(data) {
         term.scrollToLine(viewportY);
       } catch (e) {}
     }
-    terminalFollowPaused = !terminalAtBottom();
-    updateTerminalFollowButton();
+    setTerminalFollowPaused(!terminalAtBottom());
   };
   try {
     term.write(data, done);
@@ -266,12 +352,18 @@ function writeTerminalFrame(data) {
   }
 }
 function scrollTerminalToBottom() {
-  terminalFollowPaused = false;
+  setTerminalFollowPaused(false);
   try {
     if (term) term.scrollToBottom();
   } catch (e) {}
-  updateTerminalFollowButton();
   focusTerminal(true);
+}
+function scrollLocalTerminal(direction, lines) {
+  try {
+    if (!term || !term.scrollLines) return;
+    term.scrollLines(direction === "up" ? -lines : lines);
+  } catch (e) {}
+  setTerminalFollowPaused(!terminalAtBottom());
 }
 function modalOpen() {
   return [
@@ -393,7 +485,7 @@ async function pasteClipboard() {
 function sendInputData(data) {
   if (!termWs || termWs.readyState !== 1 || !data) return;
   const bytes = inputEncoder.encode(data);
-  const chunkSize = 2048;
+  const chunkSize = 16 * 1024;
   if (
     bytes.length <= chunkSize &&
     inputQueue.length === 0 &&
@@ -435,7 +527,7 @@ function pasteToTerminal(text) {
   const bytes = inputEncoder.encode(input);
   pasteFrameUntil = Date.now() + 250;
   if (
-    bytes.length <= 32 * 1024 * 1024 &&
+    bytes.length <= 64 * 1024 &&
     inputQueue.length === 0 &&
     termWs.bufferedAmount < 1024 * 1024
   ) {
@@ -508,18 +600,29 @@ function fitTerminalShell() {
   const main = document.querySelector(".main");
   const tabsEl = document.querySelector(".tabs");
   const shell = el("terminalShell");
-  if (!main || !tabsEl || !shell) return;
+  if (!main || !tabsEl || !shell) return null;
   const m = main.getBoundingClientRect();
   const t = tabsEl.getBoundingClientRect();
-  shell.style.width = Math.max(0, Math.floor(m.width)) + "px";
-  shell.style.height = Math.max(0, Math.floor(m.height - t.height)) + "px";
+  const width = Math.max(0, Math.floor(m.width));
+  const height = Math.max(0, Math.floor(m.height - t.height));
+  shell.style.width = width + "px";
+  shell.style.height = height + "px";
+  return { width, height };
 }
 function browserTerminalSize() {
-  fitTerminalShell();
   const shell = el("terminalShell");
   if (!shell) return null;
-  const width = Math.max(80, shell.clientWidth - 16);
-  const height = Math.max(24, shell.clientHeight - 16);
+  const reserveWidth = Math.max(0, shell.offsetWidth - shell.clientWidth);
+  const reserveHeight = Math.max(0, shell.offsetHeight - shell.clientHeight);
+  const shellSize = fitTerminalShell();
+  const width = Math.max(
+    80,
+    (shellSize ? shellSize.width - reserveWidth : shell.clientWidth) - 16,
+  );
+  const height = Math.max(
+    24,
+    (shellSize ? shellSize.height - reserveHeight : shell.clientHeight) - 16,
+  );
   const dims =
     term &&
     term._core &&

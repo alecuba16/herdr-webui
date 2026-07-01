@@ -188,6 +188,27 @@ describe("app bundle load", () => {
     equal(gitKeys.filter((key) => webuiKeys.has(key)).join(","), "");
   });
 
+  it("defines Git cleanup tab and maintenance endpoints", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    match(gitUiSource, /git-ui-cleanup-tab-icon/);
+    match(gitUiSource, /scanCleanup/);
+    match(gitUiSource, /selectAllCleanup/);
+    match(gitUiSource, /Delete selected/);
+    match(gitUiSource, /\/api\/git-ui\/cleanup-scan/);
+    match(gitUiSource, /\/api\/git-ui\/branch-delete/);
+    match(gitUiSource, /\/api\/git-ui\/worktree-remove/);
+    match(gitUiSource, /HerdrDirectoryPicker\.openInput\('gitUiCleanupRoot'\)/);
+  });
+
+  it("defines file explorer and Git file filters", () => {
+    match(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), /q=\$\{encodeURIComponent\(state\.filter\.trim\(\)\)\}/);
+    match(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), /setTimeout\(\(\) => \{/);
+    match(gitUiSource, /placeholder="Filter files"/);
+    match(gitUiSource, /filterFiles/);
+  });
+
   it("renders new workspace modal with manual folder field", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
@@ -254,6 +275,10 @@ describe("app bundle load", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
 
+    match(source, /id=\"settingsSearch\"/);
+    match(source, /function setupSettingsSearch\(\)/);
+    match(source, /function filterSettings\(\)/);
+    match(source, /settings-filter-hidden/);
     match(source, /title: "Appearance"/);
     match(source, /title: "Terminal input"/);
     match(source, /title: "Agents and alerts"/);
@@ -271,6 +296,7 @@ describe("app bundle load", () => {
     match(source, /id="optGlobalShortcutPrefixCapture"/);
     match(source, /DEFAULT_GLOBAL_SHORTCUT_PREFIX/);
     match(source, /id="optTerminalFontFamily"/);
+    match(source, /id="optTerminalLinks"/);
     match(source, /JetBrainsMono Nerd Font/);
     match(source, /handleGlobalShortcut/);
     match(source, /isShortcutPrefix/);
@@ -278,6 +304,9 @@ describe("app bundle load", () => {
     match(source, /selectRelativeAgent\(1\)/);
     match(source, /selectRelativeAgent\(-1\)/);
     match(source, /terminalFontFamily/);
+    match(source, /applyTerminalLinks/);
+    match(source, /registerLinkProvider/);
+    match(source, /buffer\.viewportY/);
   });
 
   it("normalizes configurable shortcut prefixes", () => {
@@ -586,6 +615,50 @@ describe("app bundle load", () => {
     equal(result.terminalId, "term_2");
   });
 
+  it("replaces stale route after selected panel disappears", async () => {
+    const ctx = context();
+    const replaced = [];
+    ctx.location.pathname = "/session/default/workspace/ws1/tab/old/pane/oldpane";
+    ctx.history.replaceState = (_state, _title, url) => replaced.push(url);
+    ctx.Terminal = class {
+      open() {}
+      onData() {}
+      onScroll() {}
+      loadAddon() {}
+      clear() {}
+      focus() {}
+      resize() {}
+      dispose() {}
+    };
+    ctx.fetch = async (url) => {
+      const text = String(url);
+      const result = text.includes("workspaces")
+        ? { workspaces: [{ workspace_id: "ws1", label: "repo" }] }
+        : text.includes("workspace-order")
+          ? { order: [] }
+          : text.includes("worktrees")
+            ? { source: {}, worktrees: [] }
+            : text.includes("tabs")
+              ? { tabs: [{ workspace_id: "ws1", tab_id: "new", number: 1 }] }
+              : text.includes("panes")
+                ? { panes: [{ workspace_id: "ws1", tab_id: "new", pane_id: "newpane", terminal_id: "term2" }] }
+                : text.includes("pane-layout")
+                  ? { layout: { panes: [] } }
+                  : { agents: [] };
+      return { ok: true, status: 200, json: async () => ({ result }) };
+    };
+    vm.runInContext(source, ctx);
+
+    const result = await vm.runInContext(
+      "refreshSeq = 1; refreshOnline(1).then(() => ({ tab: state.tab, pane: state.pane }))",
+      ctx,
+    );
+
+    equal(result.tab, "new");
+    equal(result.pane, "newpane");
+    ok(replaced.some((url) => String(url).includes("/tab/new/pane/newpane")));
+  });
+
   it("clears selected pane when no fallback pane remains", () => {
     const ctx = context();
     const replaced = [];
@@ -749,7 +822,7 @@ describe("app bundle load", () => {
     match(source, /tabActivityLabel/);
   });
 
-  it("renders current panel as label with add button", () => {
+  it("renders current panel as label with add and close buttons", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
     const html = vm.runInContext(
@@ -762,6 +835,8 @@ describe("app bundle load", () => {
 
     match(html, /panel-label/);
     match(html, /panel-add/);
+    match(html, /panel-close/);
+    match(html, /Close current panel/);
     ok(!html.includes("panelSelector"));
   });
 
@@ -799,6 +874,47 @@ describe("app bundle load", () => {
     vm.runInContext(source, ctx);
 
     doesNotThrow(() => ctx.unlockAudio());
+  });
+
+  it("requests browser notification permission before enabling notifications", async () => {
+    const ctx = context();
+    let requested = false;
+    ctx.Notification = {
+      permission: "default",
+      async requestPermission() {
+        requested = true;
+        this.permission = "granted";
+        return "granted";
+      },
+    };
+    vm.runInContext(source, ctx);
+
+    await ctx.setBrowserNotifications(true);
+
+    equal(requested, true);
+    equal(
+      JSON.parse(ctx.localStorage.getItem("herdr-web-options")).browserNotifications,
+      true,
+    );
+  });
+
+  it("uses louder attention sound gain", () => {
+    match(source, /notificationVolume: 0\.24/);
+    match(source, /function attentionSoundVolume\(\)/);
+  });
+
+  it("stores desktop notification volume from Settings", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    ctx.document.getElementById("optNotificationVolume").value = "65";
+    ctx.document.getElementById("optNotificationVolume").oninput();
+
+    equal(
+      JSON.parse(ctx.localStorage.getItem("herdr-web-options")).notificationVolume,
+      0.65,
+    );
+    equal(ctx.document.getElementById("notificationVolumeValue").textContent, "65");
   });
 
   it("requires credentials for non-local server bind", () => {
@@ -887,5 +1003,29 @@ describe("app bundle load", () => {
     ctx.workspaceCreatePathChanged();
 
     equal(ctx.document.getElementById("workspaceCreateLabel").value, "project");
+  });
+
+  it("keeps exploration and worktree default directories separate", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    ctx.openWorkspaceCreateModal();
+    equal(ctx.document.getElementById("workspaceCreatePath").value, "");
+
+    ctx.document.getElementById("optWorktreeDefaultDirectory").value = "/tmp/worktrees";
+    ctx.document.getElementById("optWorktreeDefaultDirectory").oninput();
+    ctx.document.getElementById("optExplorationDefaultDirectory").value = "/tmp/code";
+    ctx.document.getElementById("optExplorationDefaultDirectory").oninput();
+    ctx.openWorkspaceCreateModal();
+    equal(ctx.document.getElementById("workspaceCreatePath").value, "/tmp/code");
+
+    ctx.openWorktreeOpenModal();
+
+    equal(ctx.document.getElementById("worktreeDiscoverPath").value, "/tmp/code");
+
+    vm.runInContext('state.openWorktreeSource = { repo_name: "repo", repo_root: "/src/repo" }', ctx);
+    ctx.document.getElementById("worktreeNewBranch").value = "feature/x";
+    ctx.syncWorktreeCheckoutPath();
+    equal(ctx.document.getElementById("worktreeNewPath").value, "/tmp/worktrees/repo/feature-x");
   });
 });

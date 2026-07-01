@@ -50,8 +50,7 @@ let settingsBackdropDown = false,
   shortcutsBackdropDown = false;
 el("settingsToggle").onclick = () => {
   el("settingsModal").style.display = "grid";
-  applyOptions();
-  loadServerSettings();
+  prepareSettingsModalOpen();
 };
 el("settingsClose").onclick = () => {
   el("settingsModal").style.display = "none";
@@ -162,6 +161,11 @@ el("optTerminalFontFamily").oninput = () => {
   applyTerminalFont();
   fitTerminalShell();
 };
+el("optTerminalLinks").onchange = () => {
+  options.terminalLinks = el("optTerminalLinks").checked;
+  saveOptions();
+  applyTerminalLinks();
+};
 el("optAgentSortMode").onchange = () => {
   options.agentSortMode = el("optAgentSortMode").value;
   saveOptions();
@@ -205,6 +209,16 @@ el("optSoundScope").onchange = () => {
   saveOptions();
   applyOptions();
 };
+const optNotificationVolume = el("optNotificationVolume");
+if (optNotificationVolume)
+  optNotificationVolume.oninput = () => {
+    options.notificationVolume = Math.max(
+      0,
+      Math.min(100, Number(optNotificationVolume.value) || 0),
+    ) / 100;
+    saveOptions();
+    applyOptions();
+  };
 el("optScrollLines").oninput = () => {
   options.scrollLines = Math.max(
     1,
@@ -239,10 +253,13 @@ el("optGenerateWorktreeNames").onchange = () => {
   applyOptions();
 };
 el("optWorktreeDefaultDirectory").oninput = () => {
-  options.worktreeDefaultDirectory =
-    el("optWorktreeDefaultDirectory").value.trim() || "../worktrees";
+  options.worktreeDefaultDirectory = el("optWorktreeDefaultDirectory").value.trim();
   saveOptions();
   syncWorktreeCheckoutPath();
+};
+el("optExplorationDefaultDirectory").oninput = () => {
+  options.explorationDefaultDirectory = el("optExplorationDefaultDirectory").value.trim();
+  saveOptions();
 };
 el("optSound").onchange = () => {
   options.sound = el("optSound").checked;
@@ -483,6 +500,7 @@ document.addEventListener("keydown", (e) => {
 window.onpopstate = refresh;
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) {
+    clearTimeout(noSleepPollTimer);
     hiddenTimer = setTimeout(() => {
       if (eventWs) eventWs.close();
       if (termWs) termWs.close();
@@ -496,7 +514,6 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 window.addEventListener("focus", loadNoSleep);
-setInterval(loadNoSleep, 5000);
 document.addEventListener("pointerdown", unlockAudio, { once: true });
 document.addEventListener("keydown", unlockAudio, { once: true });
 setupSessionChrome();

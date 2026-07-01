@@ -1,6 +1,6 @@
 function openWorkspaceCreateModal() {
   state.workspaceCreateSuggestedLabel = "";
-  el("workspaceCreatePath").value = "";
+  el("workspaceCreatePath").value = explorationDefaultDirectoryOption();
   el("workspaceCreateLabel").value = "";
   el("workspaceCreateError").textContent = "";
   el("workspaceCreateModal").style.display = "grid";

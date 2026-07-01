@@ -30,8 +30,13 @@
     worktreeBase: "",
     worktreeLabel: "",
     worktreePath: "",
+    gitCwd: "",
     gitStatus: null,
     gitError: "",
+    gitFile: "",
+    gitKind: "",
+    gitDiff: null,
+    gitDiffError: "",
   };
 
   let eventWs,
@@ -46,6 +51,37 @@
 
   function el(id) {
     return document.getElementById(id);
+  }
+
+  let largestVisualViewportHeight = 0,
+    terminalResizeTimer = null;
+
+  function updateMobileViewport() {
+    const viewport = window.visualViewport;
+    const height = Math.max(
+      240,
+      Math.floor(
+        (viewport && viewport.height) ||
+          window.innerHeight ||
+          (document.documentElement && document.documentElement.clientHeight) ||
+          0,
+      ),
+    );
+    largestVisualViewportHeight = Math.max(largestVisualViewportHeight, height);
+    document.body.style.setProperty("--herdr-mobile-viewport-height", `${height}px`);
+    document.body.classList.toggle(
+      "mobile-keyboard-open",
+      state.screen === "terminal" && largestVisualViewportHeight - height > 120,
+    );
+  }
+
+  function scheduleTerminalResize() {
+    updateMobileViewport();
+    if (terminalResizeTimer) clearTimeout(terminalResizeTimer);
+    terminalResizeTimer = setTimeout(() => {
+      terminalResizeTimer = null;
+      if (state.screen === "terminal") mobileTerminal.connect();
+    }, 80);
   }
 
   function selectionPath(ws, tab, pane) {
@@ -254,6 +290,7 @@
 
   function render() {
     if (!el("mobileScreen")) renderShell();
+    updateMobileViewport();
     applyTreeIndent();
     const workspace = currentWorkspace();
     el("mobileTitle").textContent = workspaceTitle(workspace);
@@ -385,21 +422,22 @@
   function renderPanels() {
     if (!state.ws)
       return '<div class="mobile-loading">Select workspace first</div>';
+    const close = state.tab ? `<button class="mobile-btn danger mobile-wide" onclick="HerdrMobile.closeCurrentPanel()">Close current panel</button>` : "";
     const rows = state.tabs.length
       ? state.tabs
           .map(
             (tab) =>
-              `<button class="mobile-row${tab.tab_id === state.tab ? " active" : ""}" onclick="HerdrMobile.selectTab(${jsArg(tab.tab_id)})"><strong>${escapeHtml(tabTitle(tab))}</strong><span>${escapeHtml((state.panes || []).filter((pane) => pane.tab_id === tab.tab_id).length)} panes · ${escapeHtml(tab.tab_id)}</span></button>`,
+              `<button class="mobile-row${tab.tab_id === state.tab ? " active" : ""}" onclick="HerdrMobile.selectTab(${jsArg(tab.tab_id)})"><strong>${escapeHtml(tabTitle(tab))}${tab.tab_id === state.tab ? " · current" : ""}</strong><span>${escapeHtml((state.panes || []).filter((pane) => pane.tab_id === tab.tab_id).length)} panes · ${escapeHtml(tab.tab_id)}</span></button>`,
           )
           .join("")
       : '<div class="mobile-loading">No panels</div>';
-    return `<section class="mobile-section"><h2>Panels</h2><button class="mobile-btn primary mobile-wide" onclick="HerdrMobile.createPanel()">New panel</button>${rows}</section>`;
+    return `<section class="mobile-section"><h2>Panels</h2><button class="mobile-btn primary mobile-wide" onclick="HerdrMobile.createPanel()">New panel</button>${close}${rows}</section>`;
   }
 
   function renderTerminal() {
     if (!state.terminalId)
       return '<div class="mobile-loading">No terminal selected</div>';
-    return `<div class="mobile-terminal-screen"><div class="mobile-tabs" id="mobileTerminalTabs">${renderTerminalTabsWithAdd()}</div><div class="mobile-terminal-shell" id="terminalShell"><div class="mobile-terminal" id="terminal"></div></div></div>`;
+    return `<div class="mobile-terminal-screen"><div class="mobile-tabs" id="mobileTerminalTabs">${renderTerminalTabsWithAdd()}</div><div class="mobile-terminal-shell" id="terminalShell"><button class="mobile-terminal-follow-button" id="mobileTerminalFollowButton" type="button" hidden title="Go to latest terminal output and resume follow" aria-label="Go to latest terminal output and resume follow" onclick="HerdrMobile.scrollTerminalToBottom()">↓ Tail</button><div class="mobile-terminal" id="terminal"></div></div></div>`;
   }
 
   function currentWorkspaceCwd() {
@@ -413,6 +451,7 @@
 
   async function loadGitStatus() {
     const cwd = currentWorkspaceCwd();
+    resetGitForCwd(cwd);
     if (!cwd) {
       state.gitError = "No checkout path for selected workspace";
       state.gitStatus = null;
@@ -431,7 +470,53 @@
     render();
   }
 
+  function resetGitForCwd(cwd) {
+    if (state.gitCwd === cwd) return;
+    state.gitCwd = cwd;
+    state.gitStatus = null;
+    state.gitError = "";
+    state.gitFile = "";
+    state.gitKind = "";
+    state.gitDiff = null;
+    state.gitDiffError = "";
+  }
+
+  async function selectGitFile(file, kind) {
+    state.gitFile = file;
+    state.gitKind = kind;
+    state.gitDiff = null;
+    state.gitDiffError = "";
+    render();
+    await loadGitDiff();
+  }
+
+  function backGitFiles() {
+    state.gitFile = "";
+    state.gitKind = "";
+    state.gitDiff = null;
+    state.gitDiffError = "";
+    render();
+  }
+
+  async function loadGitDiff() {
+    const cwd = currentWorkspaceCwd();
+    resetGitForCwd(cwd);
+    if (!cwd || !state.gitFile) return;
+    const scope = state.gitKind === "S" ? "staged" : "working";
+    try {
+      state.gitDiffError = "";
+      state.gitDiff = await api(
+        `/api/git-ui/diff?cwd=${encodeURIComponent(cwd)}&file=${encodeURIComponent(state.gitFile)}&scope=${encodeURIComponent(scope)}&context=3`,
+      );
+    } catch (error) {
+      state.gitDiffError = error.message || String(error);
+      state.gitDiff = null;
+    }
+    render();
+  }
+
   function renderGitScreen(screen) {
+    resetGitForCwd(currentWorkspaceCwd());
     const status = state.gitStatus;
     if (state.gitError) {
       screen.innerHTML = `<section class="mobile-section"><h2>Git</h2><div class="mobile-error">${escapeHtml(state.gitError)}</div><button class="mobile-btn primary mobile-wide" onclick="HerdrMobile.loadGitStatus()">Retry</button></section>`;
@@ -442,22 +527,53 @@
       loadGitStatus();
       return;
     }
+    if (state.gitFile) {
+      screen.innerHTML = renderGitFileDetail(status);
+      if (!state.gitDiff && !state.gitDiffError) loadGitDiff();
+      return;
+    }
     const rows = [
-      ["Conflicts", status.conflicted || []],
-      ["Staged", status.staged || []],
-      ["Unstaged", status.unstaged || []],
-      ["Untracked", status.untracked || []],
+      ["Conflicts", status.conflicted || [], "U"],
+      ["Staged", status.staged || [], "S"],
+      ["Unstaged", status.unstaged || [], "M"],
+      ["Untracked", status.untracked || [], "?"],
     ]
       .map(
-        ([title, files]) =>
-          `<h3>${escapeHtml(title)}</h3>${files.length ? files.map((file) => `<div class="mobile-row"><strong>${escapeHtml(file)}</strong></div>`).join("") : '<div class="mobile-loading">None</div>'}`,
+        ([title, files, kind]) =>
+          `<h3>${escapeHtml(title)}</h3>${files.length ? files.map((file) => `<button class="mobile-row mobile-git-file" onclick="HerdrMobile.selectGitFile(${jsArg(file)},'${kind}')"><strong>${escapeHtml(pathBasename(file))}</strong><span>${escapeHtml(file)}</span></button>`).join("") : '<div class="mobile-loading">None</div>'}`,
       )
       .join("");
-    screen.innerHTML = `<section class="mobile-section"><h2>Git</h2><p class="mobile-help">${escapeHtml(status.branch || "detached")} · ${escapeHtml(status.state || "")}</p><button class="mobile-btn primary mobile-wide" onclick="HerdrMobile.loadGitStatus()">Refresh</button>${rows}</section>`;
+    screen.innerHTML = `<section class="mobile-section mobile-git"><h2>Git</h2><p class="mobile-help">${escapeHtml(status.branch || "detached")} · ${escapeHtml(status.state || "")}</p><button class="mobile-btn primary mobile-wide" onclick="HerdrMobile.loadGitStatus()">Refresh</button>${rows}</section>`;
+  }
+
+  function renderGitFileDetail(status) {
+    const file = currentGitDiffFile();
+    const stats = file ? `+${file.additions || 0} -${file.deletions || 0}` : "No diff loaded";
+    const error = state.gitDiffError ? `<div class="mobile-error">${escapeHtml(state.gitDiffError)}</div>` : "";
+    const diff = file ? renderGitDiffFile(file) : `<div class="mobile-loading">${state.gitDiffError ? "No diff" : "Loading diff"}</div>`;
+    return `<section class="mobile-section mobile-git"><div class="mobile-git-file-head"><button class="mobile-btn" onclick="HerdrMobile.backGitFiles()">Files</button><div><strong>${escapeHtml(state.gitFile)}</strong><span>${escapeHtml((status.branch || "detached") + " · " + stats)}</span></div></div>${error}${diff}</section>`;
+  }
+
+  function currentGitDiffFile() {
+    const files = (state.gitDiff && state.gitDiff.files) || [];
+    return files.find((file) => file.path === state.gitFile) || files[0] || null;
+  }
+
+  function renderGitDiffFile(file) {
+    const chunks = file.chunks || [];
+    if (!chunks.length) return `<div class="mobile-loading">No diff hunks</div>`;
+    return `<div class="mobile-diff">${chunks.map((chunk) => `<article class="mobile-hunk"><header><span>${escapeHtml(chunk.header || "hunk")}</span></header><pre>${(chunk.lines || []).map(renderGitDiffLine).join("\n")}</pre></article>`).join("")}</div>`;
+  }
+
+  function renderGitDiffLine(line) {
+    const type = line.line_type || "normal";
+    const prefix = type === "add" ? "+" : type === "delete" ? "-" : " ";
+    return `<span class="${escapeHtml(type)}">${escapeHtml(prefix + (line.content || ""))}</span>`;
   }
 
   function renderTerminalTabsWithAdd() {
-    return `${renderTerminalTabs()}<button class="mobile-tab mobile-tab-add" onclick="HerdrMobile.createPanel()">+</button>`;
+    const close = state.tab ? `<button class="mobile-tab mobile-tab-close" title="Close current panel" onclick="HerdrMobile.closeCurrentPanel()">✕</button>` : "";
+    return `${renderTerminalTabs()}<button class="mobile-tab mobile-tab-add" title="New panel" onclick="HerdrMobile.createPanel()">+</button>${close}`;
   }
 
   function renderTerminalTabs() {
@@ -487,10 +603,18 @@
     const seq = ++refreshSeq;
     state.error = "";
     parseRoute(false);
+    const routeWs = state.ws,
+      routeTab = state.tab,
+      routePane = state.pane;
     try {
       const workspaces = await api("/api/workspaces");
       if (seq !== refreshSeq) return;
       state.workspaces = workspaces.result.workspaces || [];
+      if (state.ws && !state.workspaces.some((workspace) => workspace.workspace_id === state.ws)) {
+        state.ws = null;
+        state.tab = null;
+        state.pane = null;
+      }
       if (!state.ws && state.workspaces[0])
         state.ws = state.workspaces[0].workspace_id;
       if (state.ws) {
@@ -521,6 +645,12 @@
         }
         const pane = currentPane();
         state.terminalId = pane && pane.terminal_id;
+        if (
+          routeWs &&
+          (routeWs !== state.ws || routeTab !== state.tab || routePane !== state.pane)
+        ) {
+          mobileTerminal.destroy(true);
+        }
         if (state.ws && state.tab && state.pane)
           history.replaceState(
             null,
@@ -544,6 +674,9 @@
     state.screen = "terminal";
     state.gitStatus = null;
     state.gitError = "";
+    state.gitFile = "";
+    state.gitDiff = null;
+    state.gitDiffError = "";
     mobileFileBrowser.reset();
     history.pushState(null, "", selectionPath(id));
     mobileTerminal.destroy(true);
@@ -590,6 +723,28 @@
         mobileTerminal.destroy(true);
       }
       refresh();
+    } catch (error) {
+      state.error = error.message || String(error);
+      render();
+    }
+  }
+
+  async function closeCurrentPanel() {
+    if (!state.tab) return;
+    const tab = state.tabs.find((item) => item.tab_id === state.tab) || { tab_id: state.tab, workspace_id: state.ws };
+    const label = tabTitle(tab);
+    if (!confirm(`Close panel "${label}"?`)) return;
+    try {
+      const workspaceTabs = state.tabs.filter((item) => item.workspace_id === state.ws);
+      if (workspaceTabs.length > 1) {
+        await api(`/api/tabs/${encodeURIComponent(state.tab)}/close`, { method: "POST" });
+      } else if (state.ws) {
+        await api(`/api/workspaces/${encodeURIComponent(state.ws)}/close`, { method: "POST" });
+      }
+      state.tab = null;
+      state.pane = null;
+      mobileTerminal.destroy(true);
+      await refresh();
     } catch (error) {
       state.error = error.message || String(error);
       render();
@@ -660,23 +815,35 @@
     selectAgent,
     selectTab,
     createPanel,
+    closeCurrentPanel,
     loadGitStatus,
+    selectGitFile,
+    backGitFiles,
     filesToggle: mobileFileBrowser.toggle,
     filesSelect: mobileFileBrowser.select,
     filesUp: mobileFileBrowser.up,
     filesRefresh: mobileFileBrowser.refresh,
     filesBackToTree: mobileFileBrowser.backToTree,
     filesRefreshFile: mobileFileBrowser.refreshFile,
+    filesFilter: mobileFileBrowser.filter,
+    filesLoadMore: mobileFileBrowser.loadMore,
+    filesScroll: mobileFileBrowser.scroll,
     loadWorktrees: mobileWorktrees.load,
     openWorktree: mobileWorktrees.open,
     createWorktree: mobileWorktrees.create,
     updateWorktreeField: mobileWorktrees.updateField,
     setThemeMode: mobileSettings.setThemeMode,
     setBrowserNotifications: mobileSettings.setBrowserNotifications,
+    setExplorationDefaultDirectory: mobileSettings.setExplorationDefaultDirectory,
     setFileBrowserDepth: mobileSettings.setFileBrowserDepth,
     setLayoutPreference: mobileSettings.setLayoutPreference,
+    setNotificationVolume: mobileSettings.setNotificationVolume,
     setTerminalFontFamily: mobileSettings.setTerminalFontFamily,
+    setTerminalLinks: mobileSettings.setTerminalLinks,
+    setWorktreeDefaultDirectory: mobileSettings.setWorktreeDefaultDirectory,
     applyTerminalFontFamily: mobileTerminal.applyFontFamily,
+    applyTerminalLinks: mobileTerminal.applyLinks,
+    scrollTerminalToBottom: mobileTerminal.scrollToBottom,
     currentScreen,
     currentSelection,
     refresh,
@@ -690,6 +857,7 @@
   };
 
   renderShell();
+  updateMobileViewport();
   applyTheme();
   parseRoute(true);
   render();
@@ -699,9 +867,9 @@
     parseRoute(true);
     refresh();
   });
-  window.addEventListener("resize", () => {
-    if (state.screen === "terminal") mobileTerminal.connect();
-  });
+  window.addEventListener("resize", scheduleTerminalResize);
+  if (window.visualViewport)
+    window.visualViewport.addEventListener("resize", scheduleTerminalResize);
   document.addEventListener("visibilitychange", syncBrowserFavicon);
   document.addEventListener("pointerdown", mobileAttention.unlockAudio, {
     once: true,
