@@ -461,6 +461,36 @@ body.light .chip.label {
   gap: 8px;
   padding: 0 20px 20px;
 }
+.help-section {
+  padding: 14px 20px 4px;
+  border-bottom: 1px solid var(--border);
+}
+.help-section h3,
+.shortcut-section-title {
+  margin: 0 0 6px;
+  font-size: 14px;
+}
+.help-grid {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+.help-row {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+.help-row:last-child {
+  border-bottom: 0;
+}
+.help-row span {
+  color: var(--muted);
+}
+.shortcut-section-title {
+  padding: 14px 20px 0;
+}
 .shortcuts-list {
   display: grid;
   gap: 8px;

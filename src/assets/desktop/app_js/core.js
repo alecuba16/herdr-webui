@@ -477,17 +477,24 @@ function shortcutsModalHtml() {
           </div>
           <button class="mini settings-close" id="shortcutsCloseTop" title="Close">✕</button>
         </div>
+        <section class="help-section">
+          <h3>Functionality map</h3>
+          <p class="settings-note">Main Herdr areas and what each control does.</p>
+          <div class="help-grid">
+            <div class="help-row"><strong>Sidebar</strong><span>Workspaces show open roots/worktrees; agents list status. Click to open; double-click names to rename. Colored badges show blocked, done, working, and idle.</span></div>
+            <div class="help-row"><strong>Header</strong><span>＋ opens/creates workspace; ? opens this help; gear opens Settings; moon/theme toggles color mode; sidebar chevron hides/shows navigation.</span></div>
+            <div class="help-row"><strong>Panels/Tabs</strong><span>Top panel switcher changes terminal panel; + creates panel; ✕ closes current panel; double-click panel label to rename.</span></div>
+            <div class="help-row"><strong>Terminal</strong><span>Native xterm wheel scrolls scrollback; PageUp/PageDown scroll; Shift+Enter sends newline; Tail resumes follow; terminal links open in browser when enabled.</span></div>
+            <div class="help-row"><strong>Files</strong><span>Files selector opens browser/editor; ... goes up; search filters tree; Save writes current file; Git colors mark modified, new, deleted, and conflict paths.</span></div>
+            <div class="help-row"><strong>Git</strong><span>Git selector opens repo tools for diff, stage/unstage, discard, commit, stash, branches, cleanup, and worktree prune; unified/side-by-side diff is in Settings.</span></div>
+            <div class="help-row"><strong>Worktrees</strong><span>Row actions create linked worktree, open existing worktree, close panels/workspace, or remove linked worktree after confirmation.</span></div>
+            <div class="help-row"><strong>Search</strong><span>Prefix then / opens palette for workspaces, repos, worktrees, labels, agents, and panels.</span></div>
+            <div class="help-row"><strong>Settings</strong><span>Configure shortcuts, terminal font/links, themes, file browser, Git UI, worktree defaults, and notification/no-sleep behavior.</span></div>
+          </div>
+        </section>
         <div id="shortcutEditor"></div>
+        <h3 class="shortcut-section-title">Keyboard shortcuts</h3>
         <div class="shortcuts-list">
-          <div class="shortcut-row"><kbd>Sidebar</kbd><span>Workspace list, agents list, and status colors. Click workspace/agent to open; double-click names to rename.</span></div>
-          <div class="shortcut-row"><kbd>Header</kbd><span>＋ opens/creates workspace, ? opens help, ⚙ opens settings, theme toggles color, chevron hides/shows sidebar.</span></div>
-          <div class="shortcut-row"><kbd>Panels</kbd><span>+ creates panel, ✕ closes panel, panel menu selects panels, double-click renames.</span></div>
-          <div class="shortcut-row"><kbd>Terminal</kbd><span>Wheel scrolls xterm scrollback; PageUp/PageDown scroll; Shift+Enter newline; ↓ Tail resumes follow.</span></div>
-          <div class="shortcut-row"><kbd>Files</kbd><span>Top selector opens Files. ... goes up, search filters, Save writes edited file, Git colors show status.</span></div>
-          <div class="shortcut-row"><kbd>Git</kbd><span>Top selector opens Git to review diffs, stage/unstage, discard, commit, stash, branch, cleanup, and prune worktrees.</span></div>
-          <div class="shortcut-row"><kbd>Worktrees</kbd><span>Workspace row actions create/open worktrees, close panels/workspace, or remove linked worktree from disk after confirm.</span></div>
-          <div class="shortcut-row"><kbd>Search</kbd><span>Prefix then / opens palette for workspaces, repos, worktrees, labels, agents, and panels.</span></div>
-          <div class="shortcut-row"><kbd>Settings</kbd><span>Configure terminal font, links, shortcuts, theme, file browser, Git UI, and worktree defaults.</span></div>
           <div class="shortcut-row"><kbd id="closeShortcutCurrent">Disabled</kbd><span>Close current Herdr panel. Configure in Settings.</span></div>
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())}</kbd><span>Open WebUI shortcut prefix overlay. Next shortcut key is handled by WebUI and not sent to terminal. Esc cancels.</span></div>
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then /</kbd><span>Search workspaces, repos, worktrees, labels, agents, and panels.</span></div>

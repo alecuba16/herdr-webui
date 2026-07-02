@@ -211,8 +211,11 @@ describe("app bundle load", () => {
 
     match(html, /id="shortcutEditor"/);
     match(html, /Help &amp; Shortcuts/);
-    match(html, /Workspace list, agents list, and status colors/);
-    match(html, /Top selector opens Git to review diffs, stage\/unstage, discard, commit, stash, branch, cleanup, and prune worktrees/);
+    match(html, /Functionality map/);
+    match(html, /Keyboard shortcuts/);
+    match(html, /Workspaces show open roots\/worktrees; agents list status/);
+    match(html, /terminal links open in browser when enabled/);
+    match(html, /Git selector opens repo tools for diff, stage\/unstage, discard, commit, stash, branches, cleanup, and worktree prune/);
     match(html, /Prefix then \/ opens palette for workspaces, repos, worktrees, labels, agents, and panels/);
     match(source, /DEFAULT_WEBUI_SHORTCUTS/);
     match(source, /removeWorktreeAlt: "Backspace"/);
