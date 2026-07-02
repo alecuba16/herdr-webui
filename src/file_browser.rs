@@ -356,7 +356,10 @@ fn file_hash(path: &Path) -> Result<String, String> {
         .collect::<String>())
 }
 
-fn collect_git_status(root: &Path) -> Option<serde_json::Map<String, serde_json::Value>> {
+fn collect_git_status(
+    root: &Path,
+    dir: &Path,
+) -> Option<serde_json::Map<String, serde_json::Value>> {
     let output = std::process::Command::new("git")
         .arg("-C")
         .arg(root)
@@ -366,6 +369,25 @@ fn collect_git_status(root: &Path) -> Option<serde_json::Map<String, serde_json:
     if !output.status.success() {
         return None;
     }
+    // Find the git repo root to compute the relative path from repo root to browsed dir
+    let repo_root_output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .ok()?;
+    if !repo_root_output.status.success() {
+        return None;
+    }
+    let repo_root = PathBuf::from(String::from_utf8_lossy(&repo_root_output.stdout).trim());
+    // Compute the relative path from repo root to the browsed directory
+    let prefix = dir
+        .strip_prefix(&repo_root)
+        .ok()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let prefix_trim = prefix.trim_end_matches('/');
+
     let text = String::from_utf8_lossy(&output.stdout);
     let mut map = serde_json::Map::new();
     for line in text.lines() {
@@ -385,6 +407,20 @@ fn collect_git_status(root: &Path) -> Option<serde_json::Map<String, serde_json:
             &path[1..path.len() - 1]
         } else {
             path
+        };
+        // Adjust path to be relative to the browsed directory
+        let adjusted = if prefix_trim.is_empty() {
+            // Browsing the repo root — paths are already relative to it
+            path.to_string()
+        } else {
+            // Browsing a subdirectory — strip the prefix
+            let full_prefix = format!("{}/", prefix_trim);
+            if let Some(stripped) = path.strip_prefix(&full_prefix) {
+                stripped.to_string()
+            } else {
+                // Path is outside the browsed directory — skip it
+                continue;
+            }
         };
         let status = match xy {
             "??" => "untracked",
@@ -410,10 +446,7 @@ fn collect_git_status(root: &Path) -> Option<serde_json::Map<String, serde_json:
                 }
             }
         };
-        map.insert(
-            path.to_string(),
-            serde_json::Value::String(status.to_string()),
-        );
+        map.insert(adjusted, serde_json::Value::String(status.to_string()));
     }
     if map.is_empty() {
         return None;
@@ -507,7 +540,7 @@ async fn file_browser_tree(
         return file_browser_json_error(StatusCode::BAD_GATEWAY, err);
     }
     let git_status = if query.include_git_status.unwrap_or(false) {
-        collect_git_status(&root)
+        collect_git_status(&root, &dir)
     } else {
         None
     };
@@ -826,7 +859,7 @@ mod tests {
     #[test]
     fn collect_git_status_returns_none_for_non_git_dir() {
         let temp = std::env::temp_dir();
-        let result = collect_git_status(&temp);
+        let result = collect_git_status(&temp, &temp);
         // temp_dir might be inside a git repo on some machines, so just test it doesn't panic
         let _ = result;
     }

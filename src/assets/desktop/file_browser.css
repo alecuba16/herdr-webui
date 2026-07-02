@@ -71,13 +71,28 @@
   flex-wrap: wrap;
   gap: 6px;
 }
-.git-ui-btn-icon {
+.file-browser-refresh {
   align-items: center;
+  background: transparent;
+  border: 1px solid var(--border2);
+  border-radius: 50%;
+  color: var(--muted);
+  cursor: pointer;
   display: inline-flex;
+  height: 28px;
   justify-content: center;
-  padding: 5px;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease, transform 120ms ease;
+  width: 28px;
 }
-.git-ui-btn-icon .herdr-tree-icon {
+.file-browser-refresh:hover {
+  background: var(--control-hover, var(--panel2));
+  border-color: var(--accent-1, var(--accent));
+  color: var(--accent-1, var(--accent));
+}
+.file-browser-refresh:active {
+  transform: rotate(180deg);
+}
+.file-browser-refresh .herdr-tree-icon {
   height: 14px;
   width: 14px;
 }

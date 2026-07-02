@@ -36,17 +36,8 @@
     return 14;
   }
 
-  function statusBadge(status) {
-    if (!status) return "";
-    const map = {
-      added: "+",
-      modified: "✎",
-      deleted: "−",
-      conflict: "!",
-      staged: "S",
-      untracked: "+",
-    };
-    return `<span class="herdr-tree-status ${esc(status)}">${esc(map[status] || status)}</span>`;
+  function statusBadge(_status) {
+    return "";
   }
 
   function highlight(value, term) {
