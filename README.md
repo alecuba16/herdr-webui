@@ -14,7 +14,8 @@ Compatibility:
 
 | WebUI | Herdr | Protocol | Status | Notes |
 | --- | --- | --- | --- | --- |
-| `0.2.3` | `0.7.1` | `14` | Current | Expands Help & Shortcuts with a separated Functionality map section and more detailed area rows. |
+| `0.2.4` | `0.7.1+` | `15` with `14` fallback | Current | Prefers Herdr direct attach protocol 15 and retries protocol 14 when an older compatible server rejects the initial handshake. |
+| `0.2.3` | `0.7.1` | `14` | Tested | Expands Help & Shortcuts with a separated Functionality map section and more detailed area rows. |
 | `0.2.2` | `0.7.1` | `14` | Tested | Renames the `?` modal to Help & Shortcuts, with a functionality map and action flows for creating workspaces/panels, opening Files/Git, worktree actions, terminal scroll/follow, search palette, and settings. |
 | `0.2.1` | `0.7.1` | `14` | Tested | Restores native xterm.js wheel scrolling by removing the custom shell wheel handler, enables xterm viewport scrolling, uses dynamic terminal shell sizing without inline height/width, removes the custom terminal context menu, and deduplicates terminal CSS/JS into modular helpers. |
 | `0.2.0` | `0.7.1` | `14` | Tested | Unifies file browser go-up and search across desktop, mobile, and directory picker with shared tree helpers. Adds Git status colors to file browser entries (yellow modified, green new, red deleted, blue changed directories) with theme-aware contrast for light and dark. Adds unified Git diff layout (GitHub-style) with staged hunk restore. Fixes tab/panel rename focus loss during terminal updates. Fixes terminal wheel scroll in normal buffer mode. Replaces file browser Refresh text button with animated icon button. Splits Git UI into modules for maintainability. Fixes worktree duplication in cleanup. Adds worktree prune endpoint, ahead/behind upstream status, structured log output, and error warnings collection. Bundles JetBrainsMono Nerd Font Mono. |
@@ -32,7 +33,14 @@ Compatibility:
 | `0.0.45` | `0.7.1` | `14` | Tested | Improves embedded Git UI navigation with Escape handling, all-changes return behavior, split frontend assets, scoped file history controls, keyboard-owned drawer input, and per-file large diff loading. |
 | `0.0.45` | `0.7.0` | `14` | Minimum supported | Uses WebUI's legacy existing-branch worktree fallback when needed. |
 
-Newer Herdr builds may work when protocol stays compatible, but WebUI reports them as untested.
+Newer Herdr builds may work when protocol stays compatible, but WebUI reports them as untested. WebUI 0.2.4 prefers protocol 15 for current Herdr builds and retries protocol 14 for compatible older Herdr 0.7.x servers.
+
+## 0.2.4 Release Notes
+
+### Compatibility
+
+- WebUI now prefers Herdr direct attach protocol 15 and automatically retries protocol 14 when a compatible older Herdr server rejects the initial protocol 15 handshake.
+- `/api/versions` reports the current WebUI protocol and the minimum fallback protocol so clients can display the supported range.
 
 ## 0.2.3 Release Notes
 
@@ -479,9 +487,9 @@ make uninstall-linux
 
 ## FAQ
 
-### `herdr rejected terminal connection: client version 14 is newer than server version 13; please upgrade the herdr server`
+### `herdr rejected terminal connection: client version 15 is newer than server version 13; please upgrade the herdr server`
 
-This means WebUI is using a newer terminal attach protocol than the Herdr server process handling the session.
+This means WebUI is using a newer terminal attach protocol than the Herdr server process handling the session. WebUI retries protocol 14 automatically when a protocol 15 handshake reaches a compatible protocol 14 server, so seeing this error usually means the running Herdr server is older than WebUI's fallback range or failed after the fallback retry.
 
 Check two things:
 
