@@ -104,6 +104,7 @@ function context() {
 describe("app bundle load", () => {
   let source;
   let gitUiSource;
+  let gitSettingsSource;
 
   beforeEach(() => {
     const desktopAppSource = [
@@ -124,6 +125,7 @@ describe("app bundle load", () => {
       "\n" +
       desktopAppSource;
     gitUiSource = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
+    gitSettingsSource = readFileSync(new URL("./desktop/git_ui/settings.js", import.meta.url), "utf8");
   });
 
   it("loads without initialization-order ReferenceError", () => {
@@ -1027,5 +1029,19 @@ describe("app bundle load", () => {
     ctx.document.getElementById("worktreeNewBranch").value = "feature/x";
     ctx.syncWorktreeCheckoutPath();
     equal(ctx.document.getElementById("worktreeNewPath").value, "/tmp/worktrees/repo/feature-x");
+  });
+
+  it("defines side-by-side and unified Git diff layouts", () => {
+    match(gitSettingsSource, /id="optGitUiDiffLayout"/);
+    match(gitSettingsSource, /Unified \(GitHub-style\)/);
+    match(gitSettingsSource, /gitUiDiffLayout: "side-by-side"/);
+    match(gitUiSource, /function diffLayoutMode\(\)/);
+    match(gitUiSource, /function renderUnifiedLine\(/);
+    match(gitUiSource, /git-ui-unified-row/);
+    match(gitUiSource, /sideBySideRows\(chunk\)/);
+    match(gitUiSource, /renderUnifiedLine\(row, path, index, rows, rowIndex, contextArrows\)/);
+    match(gitUiSource, /restoreHunk\('\$\{arg\(path\)\}',\$\{hunkIndex\}\)/);
+    match(gitUiSource, /function contextArrowsForChunk\(chunks, index\)/);
+    match(gitUiSource, /const after = next \? hiddenGap\(chunk, next\) : false;/);
   });
 });

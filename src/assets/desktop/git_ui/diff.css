@@ -290,6 +290,56 @@
   font-size: 12px;
   line-height: 1.45;
 }
+.git-ui-unified-row {
+  display: grid;
+  grid-template-columns: 26px 74px 34px minmax(0, 1fr);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.git-ui-unified-lines {
+  background: var(--panel);
+  border-left: 1px solid var(--border);
+  color: var(--muted);
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  padding: 1px 8px;
+  text-align: right;
+  user-select: none;
+}
+.git-ui-unified-action {
+  align-items: center;
+  background: var(--panel);
+  border-left: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+  display: flex;
+  justify-content: center;
+}
+.git-ui-code-unified {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  gap: 0;
+}
+.git-ui-unified-author {
+  color: var(--muted);
+  display: inline-block;
+  max-width: 110px;
+  overflow: hidden;
+  padding-right: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.git-ui-unified-sign {
+  display: inline-block;
+  padding-right: 8px;
+  user-select: none;
+}
+.git-ui-unified-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .git-ui-context-cell {
   background: var(--panel);
   border-right: 1px solid var(--border);
@@ -377,7 +427,10 @@
 }
 .git-ui-change-start .git-ui-code-old,
 .git-ui-change-start .git-ui-code-new,
-.git-ui-change-start .git-ui-line-pair {
+.git-ui-change-start .git-ui-line-pair,
+.git-ui-change-start .git-ui-code-unified,
+.git-ui-change-start .git-ui-unified-lines,
+.git-ui-change-start .git-ui-unified-action {
   border-top: 1px solid var(--border2);
 }
 .git-ui-change-end .git-ui-code-old,

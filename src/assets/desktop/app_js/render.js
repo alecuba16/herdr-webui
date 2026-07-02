@@ -23,9 +23,11 @@ function render() {
   const workspaceRenameActive = !!document.querySelector(
     ".workspace-rename-input",
   );
+  const tabRenameActive = !!document.querySelector(".tab-rename-input");
   if (
     workspacesHtml !== lastWorkspacesHtml &&
-    !(state.editingWorkspace && workspaceRenameActive)
+    !(state.editingWorkspace && workspaceRenameActive) &&
+    !(state.editingTab && tabRenameActive)
   ) {
     workspaces.innerHTML = workspacesHtml;
     lastWorkspacesHtml = workspacesHtml;
@@ -49,7 +51,6 @@ function render() {
   if (themeHead) themeHead.innerHTML = themeToggleIcon();
   const pane = state.panes.find((p) => p.pane_id === state.pane);
   const tabsHtml = "";
-  const tabRenameActive = !!document.querySelector(".tab-rename-input");
   if (tabsHtml !== lastTabsHtml && !(state.editingTab && tabRenameActive)) {
     tabs.innerHTML = tabsHtml;
     lastTabsHtml = tabsHtml;
