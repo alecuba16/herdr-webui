@@ -296,6 +296,10 @@ body.light {
   min-height: max-content;
   white-space: nowrap;
 }
+.mobile-terminal .xterm-viewport {
+  overflow: hidden !important;
+  height: 100% !important;
+}
 .mobile-loading {
   display: grid;
   place-items: center;

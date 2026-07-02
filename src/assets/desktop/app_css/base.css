@@ -599,6 +599,6 @@ body.light {
   display: block;
 }
 .terminal .xterm-viewport {
-  overflow: visible !important;
+  overflow: hidden !important;
   height: 100% !important;
 }
