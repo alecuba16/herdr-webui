@@ -1273,8 +1273,13 @@ function groupSettingsSections() {
     {
       title: "Appearance",
       desc: "Theme mode and color palette.",
-      ids: ["optTheme", "optTreeIndentPx", "optFileBrowserAllowParent", "optFileBrowserGitStatus"],
+      ids: ["optTheme"],
       blocks: ["themeColorsApply"],
+    },
+    {
+      title: "File browser",
+      desc: "Tree display, navigation, and Git status colors.",
+      ids: ["optTreeIndentPx", "optFileBrowserAllowParent", "optFileBrowserGitStatus"],
     },
     {
       title: "Terminal input",

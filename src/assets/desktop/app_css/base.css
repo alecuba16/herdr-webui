@@ -10,6 +10,11 @@ body {
   --border2: #45475a;
   --muted: #a6adc8;
   --accent: #89b4fa;
+  --git-modified-color: #e9d07a;
+  --git-added-color: #a6e3a1;
+  --git-deleted-color: #f38ba8;
+  --git-changed-color: #89b4fa;
+  --git-conflict-color: #fab387;
   --mono-font: "Herdr JetBrainsMono Nerd Font Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   margin: 0;
   background: var(--bg);
@@ -27,6 +32,11 @@ body.light {
   --border2: #9ca0b0;
   --muted: #6c6f85;
   --accent: #1e66f5;
+  --git-modified-color: #8a6d00;
+  --git-added-color: #2a8c2f;
+  --git-deleted-color: #cc2b3e;
+  --git-changed-color: #3a6ee8;
+  --git-conflict-color: #c45c00;
 }
 #app {
   display: grid;
