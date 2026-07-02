@@ -472,17 +472,26 @@ function shortcutsModalHtml() {
       <div class="modal">
         <div class="settings-head">
           <div>
-            <h2>Shortcuts</h2>
-            <p>Browser/WebUI shortcuts. Terminal apps may handle their own keybindings inside the pane.</p>
+            <h2>Help &amp; Shortcuts</h2>
+            <p>Quick functionality map and browser/WebUI shortcuts. Terminal apps may handle their own keybindings inside the pane.</p>
           </div>
           <button class="mini settings-close" id="shortcutsCloseTop" title="Close">✕</button>
         </div>
         <div id="shortcutEditor"></div>
         <div class="shortcuts-list">
+          <div class="shortcut-row"><kbd>Sidebar</kbd><span>Workspace list, agents list, and status colors. Click workspace/agent to open; double-click names to rename.</span></div>
+          <div class="shortcut-row"><kbd>Header</kbd><span>＋ opens/creates workspace, ? opens help, ⚙ opens settings, theme toggles color, chevron hides/shows sidebar.</span></div>
+          <div class="shortcut-row"><kbd>Panels</kbd><span>+ creates panel, ✕ closes panel, panel menu selects panels, double-click renames.</span></div>
+          <div class="shortcut-row"><kbd>Terminal</kbd><span>Wheel scrolls xterm scrollback; PageUp/PageDown scroll; Shift+Enter newline; ↓ Tail resumes follow.</span></div>
+          <div class="shortcut-row"><kbd>Files</kbd><span>Top selector opens Files. ... goes up, search filters, Save writes edited file, Git colors show status.</span></div>
+          <div class="shortcut-row"><kbd>Git</kbd><span>Top selector opens Git to review diffs, stage/unstage, discard, commit, stash, branch, cleanup, and prune worktrees.</span></div>
+          <div class="shortcut-row"><kbd>Worktrees</kbd><span>Workspace row actions create/open worktrees, close panels/workspace, or remove linked worktree from disk after confirm.</span></div>
+          <div class="shortcut-row"><kbd>Search</kbd><span>Prefix then / opens palette for workspaces, repos, worktrees, labels, agents, and panels.</span></div>
+          <div class="shortcut-row"><kbd>Settings</kbd><span>Configure terminal font, links, shortcuts, theme, file browser, Git UI, and worktree defaults.</span></div>
           <div class="shortcut-row"><kbd id="closeShortcutCurrent">Disabled</kbd><span>Close current Herdr panel. Configure in Settings.</span></div>
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())}</kbd><span>Open WebUI shortcut prefix overlay. Next shortcut key is handled by WebUI and not sent to terminal. Esc cancels.</span></div>
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then /</kbd><span>Search workspaces, repos, worktrees, labels, agents, and panels.</span></div>
-          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then ?</kbd><span>Open this shortcuts reference.</span></div>
+          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then ?</kbd><span>Open this help and shortcuts reference.</span></div>
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then S</kbd><span>Open Settings.</span></div>
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then B</kbd><span>Show or hide the workspace/agents sidebar.</span></div>
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then N</kbd><span>Open or create workspace.</span></div>
