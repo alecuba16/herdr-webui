@@ -1,6 +1,10 @@
 * {
   box-sizing: border-box;
 }
+html {
+  height: 100%;
+  overflow: hidden;
+}
 body {
   --bg: #11111b;
   --fg: #cdd6f4;
@@ -566,39 +570,5 @@ body.light {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-}
-.terminal-shell {
   position: relative;
-  flex: 1 1 auto;
-  min-width: 0;
-  min-height: 0;
-  max-width: 100%;
-  max-height: 100%;
-  padding: 8px;
-  overflow: auto;
-  background: var(--bg);
-  scrollbar-gutter: stable both-edges;
-}
-.terminal-shell.no-overflow {
-  overflow: hidden;
-}
-.terminal {
-  display: block;
-  width: max-content;
-  height: max-content;
-  min-width: max-content;
-  min-height: max-content;
-  white-space: nowrap;
-}
-.terminal .xterm {
-  display: block;
-  min-width: max-content;
-  min-height: max-content;
-}
-.terminal .xterm-screen {
-  display: block;
-}
-.terminal .xterm-viewport {
-  overflow: hidden !important;
-  height: 100% !important;
 }
