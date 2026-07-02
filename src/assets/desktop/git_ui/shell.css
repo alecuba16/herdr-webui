@@ -1,7 +1,7 @@
 /* Shell */
 .git-ui-panel {
-  --git-add-color: #1db910;
-  --git-del-color: #f38ba8;
+  --git-add-color: var(--git-added-color);
+  --git-del-color: var(--git-deleted-color);
   --git-syn-com: var(--muted);
   --git-syn-fn: var(--accent);
   --git-syn-kw: var(--fg);

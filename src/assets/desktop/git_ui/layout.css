@@ -487,9 +487,9 @@
   min-width: 14px;
   text-align: center;
 }
-.git-ui-file-icon.add { color: #a6e3a1; }
-.git-ui-file-icon.del { color: #f38ba8; }
-.git-ui-file-icon.edit { color: #E06C00; }
+.git-ui-file-icon.add { color: var(--git-added-color); }
+.git-ui-file-icon.del { color: var(--git-deleted-color); }
+.git-ui-file-icon.edit { color: var(--git-modified-color); }
 .git-ui-file-counts {
   font-size: 10px;
   font-style: normal;
