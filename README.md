@@ -14,7 +14,8 @@ Compatibility:
 
 | WebUI | Herdr | Protocol | Status | Notes |
 | --- | --- | --- | --- | --- |
-| `0.1.9` | `0.7.1` | `14` | Current | Splits Git UI into modules, fixes worktree duplication in cleanup, unifies file tree go-up and search across desktop/mobile/directory picker, adds directory picker search, adds worktree prune endpoint and ahead/behind upstream status, bundles JetBrainsMono Nerd Font Mono, and colors file browser entries by Git status with directory propagation. |
+| `0.2.0` | `0.7.1` | `14` | Current | Unifies file browser go-up and search across desktop, mobile, and directory picker with shared tree helpers. Adds Git status colors to file browser entries (yellow modified, green new, red deleted, blue changed directories) with theme-aware contrast for light and dark. Adds directory picker search. Replaces file browser Refresh text button with animated icon button. Splits Git UI into modules for maintainability. Fixes worktree duplication in cleanup. Adds worktree prune endpoint, ahead/behind upstream status, structured log output, and error warnings collection. Bundles JetBrainsMono Nerd Font Mono. |
+| `0.1.9` | `0.7.1` | `14` | Tested | Splits Git UI into modules, fixes worktree duplication in cleanup, unifies file tree go-up and search across desktop/mobile/directory picker, adds directory picker search, adds worktree prune endpoint and ahead/behind upstream status, and bundles JetBrainsMono Nerd Font Mono. |
 | `0.1.8` | `0.7.1` | `14` | Tested | Adds mobile read-only Git file diffs with horizontally scrollable hunks so long diff lines stay inside the mobile app shell. Bundles JetBrainsMono Nerd Font Mono for terminal icons and shared monospace UI rendering. |
 | `0.1.7` | `0.7.1` | `14` | Tested | Improves Git cleanup results with nested repo lists, aligned visible checkboxes, group/repo selection, hidden primary worktrees, and stable scroll while selecting. |
 | `0.1.6` | `0.7.1` | `14` | Tested | Adds Files search focus/typing UX, terminal URL links, current-panel close affordances, Git file filtering, cleanup layout fixes, and bulk cleanup refinements. |
@@ -29,6 +30,48 @@ Compatibility:
 | `0.0.45` | `0.7.0` | `14` | Minimum supported | Uses WebUI's legacy existing-branch worktree fallback when needed. |
 
 Newer Herdr builds may work when protocol stays compatible, but WebUI reports them as untested.
+
+## 0.2.0 Release Notes
+
+### File browser
+
+- Unified file tree navigation helpers (`parentPath`, `parentDirectory`, `upEntry`, `searchTreeEntries`) shared across desktop file browser, mobile file browser, and directory picker via `window.HerdrFileTree`.
+- The `...` go-up entry is always visible when a parent directory exists, on desktop, mobile, and the directory picker. No longer gated behind a setting.
+- The directory picker includes debounced search and the same go-up behavior as the file browser, with home-to-root transition from `~` to `/`.
+- File browser Refresh button replaced with a rounded icon button that spins while loading.
+- File browser Close button removed; file browser is toggled via the tabbed selector.
+- File browser title row right-justifies actions; path subtitle wraps below on its own line.
+
+### Git status colors in file browser
+
+- File browser entries are colored by Git status when the current directory is inside a Git repository.
+- Yellow for modified files, green for new and untracked files, red for deleted files, orange for conflicts.
+- Directories containing any changed files are marked blue, with propagation up to all parent directories.
+- Colors are theme-aware: dark themes use pastel colors, light themes use saturated colors with appropriate contrast.
+- Toggle in Settings under `File browser` → `File browser git status colors` (enabled by default).
+- Git status paths are adjusted server-side so they match the browsed subdirectory, not the repo root.
+
+### Git UI improvements
+
+- `src/git_ui.rs` (2981 lines) split into `src/git_ui/` module: `mod.rs`, `cleanup.rs`, `diff.rs`, `branch.rs`, `stash.rs`, `conflict.rs`, `file.rs`, `log.rs`.
+- Worktree dedup in cleanup: linked worktrees resolve to their base repository and no longer appear as separate entries.
+- Worktree prune endpoint (`POST /api/git-ui/worktree-prune`) with dry-run and expiry options, capturing pruned paths from Git verbose output.
+- Git status reports `ahead` and `behind` counts relative to upstream using porcelain v2 branch tracking.
+- Status and conflict endpoints collect non-fatal Git warnings instead of silently dropping errors.
+- Git log returns structured commit data (`hash`, `author`, `date`, `message`) alongside graph lines, with null-byte separators handled server-side.
+- All 28 Git UI handlers wrapped in `spawn_blocking`.
+- Auth checks unified via `check_auth!` macro.
+
+### Terminal
+
+- Bundles `JetBrainsMonoNerdFontMono-Regular.ttf` for terminal icons and shared monospace UI rendering.
+- Font loaded via `@font-face` and served from `/assets/fonts/`.
+- Desktop and mobile terminal refresh font family after Nerd Font loads.
+
+### Settings
+
+- New `File browser` settings section with tree indentation, parent folders toggle, and Git status colors toggle.
+- `fileBrowserGitStatus` stored in browser `localStorage`, defaults to enabled.
 
 ## Build
 
@@ -246,7 +289,7 @@ File browser:
 
 - Desktop workspaces and linked worktrees include a file explorer opened from the sidebar Files button. Git, Files, and terminal views are mutually exclusive foreground modes.
 - Desktop uses authenticated `/api/file-browser/*` routes for tree, preview, edit/save with hash guard, rename, delete, and contextual open/split/copy actions. Mobile has read-only browse/preview parity.
-- Folders are lazy-loaded and collapsed by default. Double-click enters a folder as root; `...` moves upward and is always visible when a parent directory exists, on desktop, mobile, and the directory picker.
+- Folders are lazy-loaded and collapsed by default. Double-click enters a folder as root; `...` moves upward and is always visible when a parent directory exists, on desktop, mobile, and the directory picker. The file browser Refresh button is a rounded icon that spins while loading.
 - Files open in the active preview pane; Shift-click or context `Open in split` opens another pane. Dirty edited files ask before closing.
 - Desktop and mobile Files include debounced backend search through `/api/file-browser/tree?q=&offset=&limit=`. Search is bounded, paginated, highlights matches, shows parent folder context as an expanded tree, and preserves scroll/focus while results render.
 - File search is attached to the file list. Focusing the list and typing starts filtering, moves focus to the filter input, and keeps typing uninterrupted across loading, Backspace, and clearing.
