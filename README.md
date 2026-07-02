@@ -14,7 +14,8 @@ Compatibility:
 
 | WebUI | Herdr | Protocol | Status | Notes |
 | --- | --- | --- | --- | --- |
-| `0.1.8` | `0.7.1` | `14` | Current | Adds mobile read-only Git file diffs with horizontally scrollable hunks so long diff lines stay inside the mobile app shell. Bundles JetBrainsMono Nerd Font Mono for terminal icons and shared monospace UI rendering. |
+| `0.1.9` | `0.7.1` | `14` | Current | Splits Git UI into modules, fixes worktree duplication in cleanup, unifies file tree go-up and search across desktop/mobile/directory picker, adds directory picker search, adds worktree prune endpoint and ahead/behind upstream status, and bundles JetBrainsMono Nerd Font Mono. |
+| `0.1.8` | `0.7.1` | `14` | Tested | Adds mobile read-only Git file diffs with horizontally scrollable hunks so long diff lines stay inside the mobile app shell. Bundles JetBrainsMono Nerd Font Mono for terminal icons and shared monospace UI rendering. |
 | `0.1.7` | `0.7.1` | `14` | Tested | Improves Git cleanup results with nested repo lists, aligned visible checkboxes, group/repo selection, hidden primary worktrees, and stable scroll while selecting. |
 | `0.1.6` | `0.7.1` | `14` | Tested | Adds Files search focus/typing UX, terminal URL links, current-panel close affordances, Git file filtering, cleanup layout fixes, and bulk cleanup refinements. |
 | `0.1.5` | `0.7.1` | `14` | Tested | Adds Git branch/worktree cleanup, separate worktree and exploration default directories, and safer bulk cleanup selection. |
@@ -101,6 +102,7 @@ Use `--verbose`, `-v`, or `HERDR_WEB_VERBOSE=1` with macOS service commands to p
 - `src/assets.rs`: embedded frontend asset responses.
 - `src/compat.rs`: backend compatibility checks.
 - `src/file_browser.rs`: authenticated file-browser API for trees, file read/write, rename, and delete.
+- `src/git_ui/mod.rs` and `src/git_ui/`: embedded Git UI API split into modules (cleanup, diff, branch, stash, conflict, file, log) for maintainability.
 - `src/protocol.rs`: Herdr direct terminal attach wire types and frame codec.
 - `src/service.rs`: OS service helpers.
 - `src/assets/`: embedded HTML/CSS/JS and frontend tests.
@@ -133,12 +135,13 @@ The Rust binary embeds frontend assets with `include_str!`, so release artifacts
 - File search inputs preserve focus and cursor selection while async results render. Prefer `renderPreservingScroll`/focus-preserving render paths when refreshing filter-driven lists so typing does not get interrupted by DOM replacement.
 - Prefer moving behavior out of inline handlers into delegated JS listeners and shared CSS classes when touching UI code.
 - SVG icons should live under `src/assets/icons/` and be referenced from CSS or markup, not embedded inline in JS templates.
+- File tree navigation helpers (`parentPath`, `parentDirectory`, `upEntry`, `searchTreeEntries`) are shared via `window.HerdrFileTree` and used by desktop file browser, mobile file browser, and directory picker so go-up and search behavior stays consistent across all three.
 
 ## Desktop And Mobile Parity
 
 - Both layouts support workspace selection, agent list/attention status, panel selection/creation/closing, linked worktree listing/creation/opening, terminal attach, terminal paste sanitization, terminal scrollback follow/Tail behavior, terminal links, Files browsing with backend search/filter, Git status viewing with file filtering, read-only Git file diffs, Settings, theme choice, browser notifications, local attention tone volume, file tree indentation, and layout preference.
 - Desktop is the full power-user layout. It includes the embedded Git drawer with mutations, diffs, log, stash, cleanup, blame, file history, hunk actions, conflict actions, shortcuts, and the editable file browser with split panes.
-- Mobile is intentionally narrower. It keeps navigation, agents, worktrees, terminal, Files preview, Git status, and read-only Git file diffs usable on small screens, but does not yet expose desktop Git mutations/log/stash/cleanup/blame/history or file editing/split panes.
+- Mobile is intentionally narrower. It keeps navigation, agents, worktrees, terminal, Files preview with go-up navigation, Git status, and read-only Git file diffs usable on small screens, but does not yet expose desktop Git mutations/log/stash/cleanup/blame/history or file editing/split panes.
 - When adding a desktop feature, decide explicitly whether mobile needs full parity, read-only parity, or documentation as desktop-only. Keep this section updated so mobile gaps are intentional.
 
 ## Mobile Layout Notes
@@ -242,10 +245,11 @@ File browser:
 
 - Desktop workspaces and linked worktrees include a file explorer opened from the sidebar Files button. Git, Files, and terminal views are mutually exclusive foreground modes.
 - Desktop uses authenticated `/api/file-browser/*` routes for tree, preview, edit/save with hash guard, rename, delete, and contextual open/split/copy actions. Mobile has read-only browse/preview parity.
-- Folders are lazy-loaded and collapsed by default. Double-click enters a folder as root; `...` moves upward, optionally above the workspace root when `File browser parent folders` is enabled.
+- Folders are lazy-loaded and collapsed by default. Double-click enters a folder as root; `...` moves upward and is always visible when a parent directory exists, on desktop, mobile, and the directory picker.
 - Files open in the active preview pane; Shift-click or context `Open in split` opens another pane. Dirty edited files ask before closing.
 - Desktop and mobile Files include debounced backend search through `/api/file-browser/tree?q=&offset=&limit=`. Search is bounded, paginated, highlights matches, shows parent folder context as an expanded tree, and preserves scroll/focus while results render.
 - File search is attached to the file list. Focusing the list and typing starts filtering, moves focus to the filter input, and keeps typing uninterrupted across loading, Backspace, and clearing.
+- The directory picker (Browse buttons in Git UI) includes the same debounced search and always-visible `...` go-up entry as the file browser. Go-up transitions from home (`~`) to filesystem root (`/`) when at the top of the home directory.
 - File tree indentation is configurable with `Tree indentation` and shared with Git file trees.
 
 Git UI:
@@ -255,9 +259,14 @@ Git UI:
 - Core views cover status, commit, log, stash, cleanup, file history, conflicts, blame, hunk editing, side-by-side diffs, branch switching, and worktree actions.
 - File lists are collapsible trees with optional filename-only mode, line counts, filtering, yellow match highlighting, and stable scroll while filtering/expanding. Right-click and section actions support stage/unstage/discard/stash with confirmations.
 - Cleanup scans `Exploration default directory` or a chosen root for Git repositories, does not follow symlinked directories, caps traversal, and reports truncation. Results render as a nested repo list (`repo -> branches/worktrees -> items`) with checkbox multi-select and one confirmation modal.
+- Cleanup deduplicates worktrees: linked worktrees that share a base repository resolve to that repository and no longer appear as separate entries.
+- Cleanup supports worktree pruning via a dedicated API endpoint with dry-run and expiry options, capturing pruned paths from Git verbose output.
 - Cleanup uses safe delete first: `git branch -d` or `git worktree remove`. It retries force only when Git says force is required. Current branches are disabled, and primary/main worktrees are hidden from cleanup results.
 - Large diffs use placeholders, per-file lazy loading, selected-file line limits, and safe previews before full DOM-heavy render. Mutating hunk/block actions are disabled while hidden lines are omitted.
 - Diffs include collapse/show-all, change grouping, inline word highlights, context expansion, hunk stage/unstage/restore, blame, syntax highlighting for common languages, and side-by-side hunk editing with hash guard saves.
+- Git status reports `ahead` and `behind` counts relative to the upstream branch using porcelain v2 branch tracking.
+- Status and conflict endpoints collect non-fatal Git warnings instead of silently dropping errors, returning a `warnings` array so the UI can surface partial failures.
+- Git log returns structured commit data (`hash`, `author`, `date`, `message`) alongside graph lines, with null-byte separators handled server-side so desktop graph rendering stays clean.
 - Log supports single-commit compare/reset/rebase and shift-click two-commit compare. File history can show a temporary read-only commit diff or jump to the log commit.
 - Git shortcuts share the WebUI prefix (`Ctrl+B` by default) and have collision-checked recording. Main defaults: `1` changes, `2`/`C` commit, `3`/`L` log, `4` stash, `R` refresh, `G` stage/unstage all, `Y/U/D/Z` selected file actions, `H/M/E/O/V/I/0` history/blame/edit/compare/branch/focus/help.
 - Mutating/destructive operations require confirmation and backend path/ref validation. API routes cover status, diff/compare, branches, cleanup, log, blame, file read/write/history, stashes, conflicts, stage/unstage/discard/stash, switch/reset/rebase/commit, apply-patch, and conflict actions.
