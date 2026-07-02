@@ -61,12 +61,15 @@ impl BackendCompatibility {
 pub(crate) fn backend_compatibility(
     backend: Option<&str>,
     protocol: Option<u32>,
-    expected_protocol: u32,
+    min_supported_protocol: u32,
+    max_supported_protocol: u32,
     min_backend_version: &str,
     max_tested_backend_version: &str,
 ) -> BackendCompatibility {
     match protocol {
-        Some(protocol) if protocol != expected_protocol => {
+        Some(protocol)
+            if !(min_supported_protocol..=max_supported_protocol).contains(&protocol) =>
+        {
             return BackendCompatibility::ProtocolMismatch
         }
         Some(_) => {}
