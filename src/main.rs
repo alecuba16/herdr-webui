@@ -38,7 +38,8 @@ const HERDR_WEBUI_VERSION: &str = env!("HERDR_WEBUI_VERSION");
 const INSTALL_LABEL: &str = "herdr-web";
 const MAX_FRAME_SIZE: usize = 2 * 1024 * 1024;
 const MAX_GRAPHICS_FRAME_SIZE: usize = 32 * 1024 * 1024;
-const PROTOCOL_VERSION: u32 = 14;
+const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 14;
+const PROTOCOL_VERSION: u32 = 15;
 const MIN_BACKEND_VERSION: &str = "0.7.0";
 const MAX_TESTED_BACKEND_VERSION: &str = "0.7.1";
 
@@ -51,6 +52,7 @@ fn backend_compatibility_for_supported_range(
     backend_compatibility(
         backend,
         protocol,
+        MIN_SUPPORTED_PROTOCOL_VERSION,
         PROTOCOL_VERSION,
         MIN_BACKEND_VERSION,
         MAX_TESTED_BACKEND_VERSION,
@@ -1309,6 +1311,7 @@ async fn versions(
         "backend": backend.version,
         "session": session_display_name(session.as_deref()),
         "protocol_version": PROTOCOL_VERSION,
+        "min_protocol_version": MIN_SUPPORTED_PROTOCOL_VERSION,
         "backend_protocol_version": backend.protocol,
         "min_backend": MIN_BACKEND_VERSION,
         "max_tested_backend": MAX_TESTED_BACKEND_VERSION,
@@ -2371,47 +2374,14 @@ async fn terminal_socket(path: PathBuf, query: TerminalQuery, mut socket: WebSoc
     let (in_tx, in_rx) = std::sync::mpsc::channel::<ClientMessage>();
 
     std::thread::spawn(move || {
-        let Ok(mut stream) = connect_local_stream(&path) else {
-            let _ = out_tx.send(b"failed to connect to herdr client socket\r\n".to_vec());
-            return;
-        };
-        let hello = ClientMessage::Hello {
-            version: PROTOCOL_VERSION,
-            cols,
-            rows,
-            cell_width_px: 0,
-            cell_height_px: 0,
-            requested_encoding: RenderEncoding::TerminalAnsi,
-            keybindings: ClientKeybindings::Server,
-            launch_mode: ClientLaunchMode::TerminalAttach,
-        };
-        if write_message(&mut stream, &hello).is_err() {
-            let _ = out_tx.send(b"failed to send herdr handshake\r\n".to_vec());
-            return;
-        }
-        let Ok(ServerMessage::Welcome { error, .. }) =
-            read_message::<_, ServerMessage>(&mut stream, MAX_FRAME_SIZE)
-        else {
-            let _ = out_tx.send(b"failed to read herdr handshake\r\n".to_vec());
-            return;
-        };
-        if let Some(error) = error {
-            let _ = out_tx
-                .send(format!("herdr rejected terminal connection: {error}\r\n").into_bytes());
-            return;
-        }
-        if write_message(
-            &mut stream,
-            &ClientMessage::AttachTerminal {
-                terminal_id,
-                takeover: true,
-            },
-        )
-        .is_err()
-        {
-            let _ = out_tx.send(b"failed to attach herdr terminal\r\n".to_vec());
-            return;
-        }
+        let mut stream =
+            match connect_terminal_attach_with_protocol_fallback(&path, &terminal_id, cols, rows) {
+                Ok(stream) => stream,
+                Err(error) => {
+                    let _ = out_tx.send(error.user_message().into_bytes());
+                    return;
+                }
+            };
 
         let Ok(mut writer) = stream.try_clone() else {
             let _ = out_tx.send(b"failed to clone herdr terminal socket\r\n".to_vec());
@@ -2498,6 +2468,97 @@ async fn terminal_socket(path: PathBuf, query: TerminalQuery, mut socket: WebSoc
         }
     }
     let _ = in_tx.send(ClientMessage::Detach);
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TerminalAttachError {
+    Connect,
+    SendHandshake,
+    ReadHandshake,
+    Rejected(String),
+    Attach,
+}
+
+impl TerminalAttachError {
+    fn user_message(&self) -> String {
+        match self {
+            Self::Connect => "failed to connect to herdr client socket\r\n".to_string(),
+            Self::SendHandshake => "failed to send herdr handshake\r\n".to_string(),
+            Self::ReadHandshake => "failed to read herdr handshake\r\n".to_string(),
+            Self::Rejected(error) => format!("herdr rejected terminal connection: {error}\r\n"),
+            Self::Attach => "failed to attach herdr terminal\r\n".to_string(),
+        }
+    }
+}
+
+fn connect_terminal_attach_with_protocol_fallback(
+    path: &Path,
+    terminal_id: &str,
+    cols: u16,
+    rows: u16,
+) -> Result<LocalStream, TerminalAttachError> {
+    match connect_terminal_attach(path, terminal_id, PROTOCOL_VERSION, cols, rows) {
+        Err(TerminalAttachError::Rejected(error))
+            if should_retry_legacy_protocol(PROTOCOL_VERSION, &error) =>
+        {
+            connect_terminal_attach(
+                path,
+                terminal_id,
+                MIN_SUPPORTED_PROTOCOL_VERSION,
+                cols,
+                rows,
+            )
+        }
+        result => result,
+    }
+}
+
+fn connect_terminal_attach(
+    path: &Path,
+    terminal_id: &str,
+    protocol_version: u32,
+    cols: u16,
+    rows: u16,
+) -> Result<LocalStream, TerminalAttachError> {
+    let mut stream = connect_local_stream(path).map_err(|_| TerminalAttachError::Connect)?;
+    let hello = ClientMessage::Hello {
+        version: protocol_version,
+        cols,
+        rows,
+        cell_width_px: 0,
+        cell_height_px: 0,
+        requested_encoding: RenderEncoding::TerminalAnsi,
+        keybindings: ClientKeybindings::Server,
+        launch_mode: ClientLaunchMode::TerminalAttach,
+    };
+    write_message(&mut stream, &hello).map_err(|_| TerminalAttachError::SendHandshake)?;
+
+    match read_message::<_, ServerMessage>(&mut stream, MAX_FRAME_SIZE)
+        .map_err(|_| TerminalAttachError::ReadHandshake)?
+    {
+        ServerMessage::Welcome {
+            error: Some(error), ..
+        } => return Err(TerminalAttachError::Rejected(error)),
+        ServerMessage::Welcome { error: None, .. } => {}
+        _ => return Err(TerminalAttachError::ReadHandshake),
+    }
+
+    write_message(
+        &mut stream,
+        &ClientMessage::AttachTerminal {
+            terminal_id: terminal_id.to_owned(),
+            takeover: true,
+        },
+    )
+    .map_err(|_| TerminalAttachError::Attach)?;
+    Ok(stream)
+}
+
+fn should_retry_legacy_protocol(protocol_version: u32, error: &str) -> bool {
+    protocol_version == PROTOCOL_VERSION
+        && PROTOCOL_VERSION > MIN_SUPPORTED_PROTOCOL_VERSION
+        && error.contains("client version")
+        && error.contains("newer than server version")
 }
 
 #[cfg(test)]
@@ -3167,6 +3228,13 @@ mod tests {
             BackendCompatibility::TooOld
         );
         assert_eq!(
+            backend_compatibility_for_supported_range(
+                Some("0.7.0"),
+                Some(MIN_SUPPORTED_PROTOCOL_VERSION),
+            ),
+            BackendCompatibility::Compatible
+        );
+        assert_eq!(
             backend_compatibility_for_supported_range(Some("0.7.0"), Some(PROTOCOL_VERSION)),
             BackendCompatibility::Compatible
         );
@@ -3194,6 +3262,26 @@ mod tests {
             backend_compatibility_for_supported_range(Some("0.7.0"), Some(PROTOCOL_VERSION + 1)),
             BackendCompatibility::ProtocolMismatch
         );
+    }
+
+    #[test]
+    fn terminal_protocol_fallback_retries_only_newer_client_mismatch() {
+        assert!(should_retry_legacy_protocol(
+            PROTOCOL_VERSION,
+            "client version 15 is newer than server version 14; please upgrade the herdr server",
+        ));
+        assert!(!should_retry_legacy_protocol(
+            MIN_SUPPORTED_PROTOCOL_VERSION,
+            "client version 14 is newer than server version 13; please upgrade the herdr server",
+        ));
+        assert!(!should_retry_legacy_protocol(
+            PROTOCOL_VERSION,
+            "client version 15 is older than the minimum supported version 16",
+        ));
+        assert!(!should_retry_legacy_protocol(
+            PROTOCOL_VERSION,
+            "invalid local keybindings",
+        ));
     }
 
     #[test]
@@ -3444,6 +3532,7 @@ mod tests {
         assert_eq!(body["min_backend"], MIN_BACKEND_VERSION);
         assert_eq!(body["max_tested_backend"], MAX_TESTED_BACKEND_VERSION);
         assert_eq!(body["protocol_version"], PROTOCOL_VERSION);
+        assert_eq!(body["min_protocol_version"], MIN_SUPPORTED_PROTOCOL_VERSION);
         assert_eq!(body["backend_protocol_version"], PROTOCOL_VERSION);
         assert_eq!(body["compatibility"]["status"], "compatible");
         assert_eq!(body["compatibility"]["compatible"], true);
