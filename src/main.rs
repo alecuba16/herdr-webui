@@ -41,7 +41,7 @@ const MAX_GRAPHICS_FRAME_SIZE: usize = 32 * 1024 * 1024;
 const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 14;
 const PROTOCOL_VERSION: u32 = 15;
 const MIN_BACKEND_VERSION: &str = "0.7.0";
-const MAX_TESTED_BACKEND_VERSION: &str = "0.7.1";
+const MAX_TESTED_BACKEND_VERSION: &str = "0.7.2";
 
 type LocalStream = interprocess::local_socket::Stream;
 
@@ -3243,7 +3243,7 @@ mod tests {
             BackendCompatibility::Compatible
         );
         assert_eq!(
-            backend_compatibility_for_supported_range(Some("0.7.2"), Some(PROTOCOL_VERSION)),
+            backend_compatibility_for_supported_range(Some("0.7.3"), Some(PROTOCOL_VERSION)),
             BackendCompatibility::UntestedNewer
         );
         assert_eq!(
