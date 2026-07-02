@@ -76,6 +76,7 @@ const ICON_FILE: &str = include_str!("assets/icons/file.svg");
 const ICON_TRASH: &str = include_str!("assets/icons/trash.svg");
 const ICON_BROOM: &str = include_str!("assets/icons/broom.svg");
 const ICON_SEARCH: &str = include_str!("assets/icons/search.svg");
+const ICON_REFRESH: &str = include_str!("assets/icons/refresh.svg");
 
 pub(crate) fn app_html() -> Response {
     Html(APP_HTML).into_response()
@@ -316,6 +317,10 @@ pub(crate) async fn icon_broom_svg() -> Response {
 
 pub(crate) async fn icon_search_svg() -> Response {
     static_svg(ICON_SEARCH)
+}
+
+pub(crate) async fn icon_refresh_svg() -> Response {
+    static_svg(ICON_REFRESH)
 }
 
 #[cfg(test)]
