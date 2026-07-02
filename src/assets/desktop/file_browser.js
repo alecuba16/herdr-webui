@@ -1,6 +1,6 @@
 (function () {
   const Tree = window.HerdrFileTree;
-  const state = { open: false, cwd: "", path: "", entries: [], children: {}, expanded: {}, loading: {}, selected: "", files: [], split: false, error: "", contextMenu: null, filter: "", filterTimer: null, filterLoading: false, filterOffset: 0, filterDone: true, filterScrollTop: 0, gitStatus: null };
+  const state = { open: false, cwd: "", path: "", entries: [], children: {}, expanded: {}, loading: {}, selected: "", files: [], split: false, error: "", contextMenu: null, filter: "", filterTimer: null, filterLoading: false, filterOffset: 0, filterDone: true, filterScrollTop: 0, gitStatus: null, refreshing: false };
 
   function esc(value) { return Tree.esc(value); }
   function arg(value) { return Tree.arg(value); }
@@ -100,6 +100,8 @@
 
   async function loadTree(path, preserveFocus = false) {
     if (!state.cwd) return;
+    state.refreshing = true;
+    render();
     try {
       state.error = "";
       const data = await api(`/api/file-browser/tree?cwd=${encodeURIComponent(state.cwd)}&path=${encodeURIComponent(path || "")}&depth=0${gitStatusEnabled() ? "&include_git_status=true" : ""}`);
@@ -114,6 +116,7 @@
     } catch (error) {
       state.error = error.message || String(error);
     }
+    state.refreshing = false;
     if (preserveFocus) renderPreservingScroll();
     else render();
   }
@@ -193,7 +196,7 @@
     const resultCount = entries.filter((entry) => entry.kind === "file").length;
     const count = state.filter.trim() ? `<div class="file-browser-result-count">${resultCount} result${resultCount === 1 ? "" : "s"}</div>` : "";
     const filter = `<div class="file-browser-list-head"><label class="file-browser-filter"><span class="file-browser-search-icon ${state.filterLoading ? "searching" : ""}" aria-hidden="true"></span><input id="fileBrowserFilter" value="${esc(state.filter)}" placeholder="Type here or focus list and type" oninput="HerdrFileBrowser.filter(this.value)"></label>${count}</div>`;
-    panel.innerHTML = `<aside class="file-browser-side ${activeFile ? "previewing" : ""}" tabindex="0" onkeydown="HerdrFileBrowser.typeToFilter(event)" onscroll="HerdrFileBrowser.sideScroll(this)"><div class="file-browser-head"><div class="file-browser-title-row"><div class="file-browser-title">Files</div><div class="file-browser-actions"><button class="file-browser-refresh" title="Refresh" onclick="HerdrFileBrowser.refresh()"><span class="herdr-tree-icon herdr-tree-icon-refresh" aria-hidden="true"></span></button></div></div><div class="file-browser-subtitle">${esc(state.path || state.cwd || "No workspace")}</div></div>${state.error ? `<div class="file-browser-error">${esc(state.error)}</div>` : ""}${filter}${Tree.renderEntries(entries, { selectedPath: state.selected, callback: "HerdrFileBrowser", showMeta: true, dirClickMethod: "none", dirDoubleClickMethod: "enter", contextMethod: "menu", shiftSelectMode: true, filterTerm: state.filter })}${state.filterLoading ? `<div class="file-browser-searching">Searching...</div>` : ""}${state.filter.trim() && !state.filterDone ? `<button class="git-ui-btn file-browser-more" onclick="HerdrFileBrowser.loadMore()">Load more</button>` : ""}</aside><main class="file-browser-main"><div class="file-browser-toolbar">${renderToolbar(activeFile)}</div><div class="file-browser-preview ${state.split ? "split" : ""}" id="fileBrowserPreview">${renderPreviewShell()}</div></main>${renderContextMenu()}`;
+    panel.innerHTML = `<aside class="file-browser-side ${activeFile ? "previewing" : ""}" tabindex="0" onkeydown="HerdrFileBrowser.typeToFilter(event)" onscroll="HerdrFileBrowser.sideScroll(this)"><div class="file-browser-head"><div class="file-browser-title-row"><div class="file-browser-title">Files</div><div class="file-browser-actions"><button class="file-browser-refresh${state.refreshing ? " refreshing" : ""}" title="Refresh" onclick="HerdrFileBrowser.refresh()"><span class="herdr-tree-icon herdr-tree-icon-refresh" aria-hidden="true"></span></button></div></div><div class="file-browser-subtitle">${esc(state.path || state.cwd || "No workspace")}</div></div>${state.error ? `<div class="file-browser-error">${esc(state.error)}</div>` : ""}${filter}${Tree.renderEntries(entries, { selectedPath: state.selected, callback: "HerdrFileBrowser", showMeta: true, dirClickMethod: "none", dirDoubleClickMethod: "enter", contextMethod: "menu", shiftSelectMode: true, filterTerm: state.filter })}${state.filterLoading ? `<div class="file-browser-searching">Searching...</div>` : ""}${state.filter.trim() && !state.filterDone ? `<button class="git-ui-btn file-browser-more" onclick="HerdrFileBrowser.loadMore()">Load more</button>` : ""}</aside><main class="file-browser-main"><div class="file-browser-toolbar">${renderToolbar(activeFile)}</div><div class="file-browser-preview ${state.split ? "split" : ""}" id="fileBrowserPreview">${renderPreviewShell()}</div></main>${renderContextMenu()}`;
     mountEditors();
   }
 
