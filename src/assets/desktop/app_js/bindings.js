@@ -238,6 +238,10 @@ el("optFileBrowserAllowParent").onchange = () => {
   saveOptions();
   applyOptions();
 };
+el("optFileBrowserGitStatus").onchange = () => {
+  options.fileBrowserGitStatus = el("optFileBrowserGitStatus").checked;
+  saveOptions();
+};
 el("optWorktreeAutoDiscover").oninput = () => {
   options.worktreeAutoDiscoverSeconds = Math.max(
     0,

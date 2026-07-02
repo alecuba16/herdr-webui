@@ -273,6 +273,12 @@
 .herdr-tree-status.untracked { color: #1db910; }
 .herdr-tree-status.deleted { color: #f38ba8; }
 .herdr-tree-status.conflict { color: #fab387; }
+.herdr-tree-row.git-modified { color: #f9e2af; }
+.herdr-tree-row.git-added,
+.herdr-tree-row.git-untracked { color: #a6e3a1; }
+.herdr-tree-row.git-deleted { color: #f38ba8; }
+.herdr-tree-row.git-changed { color: #89b4fa; }
+.herdr-tree-row.git-conflict { color: #fab387; }
 .herdr-tree-icon {
   background: currentColor;
   display: inline-block;
@@ -375,8 +381,8 @@
   border: 1px solid var(--border2);
   border-radius: 14px;
   box-shadow: 0 18px 60px #0009;
-  display: grid;
-  grid-template-rows: auto auto auto minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
   max-height: min(720px, 88vh);
   max-width: min(760px, 92vw);
   min-height: 420px;
@@ -401,7 +407,22 @@
   overflow-wrap: anywhere;
   padding: 8px 10px;
 }
+.directory-picker-search {
+  border-bottom: 1px solid var(--border);
+  padding: 8px 10px;
+}
+.directory-picker-search input {
+  background: var(--bg);
+  border: 1px solid var(--border2);
+  border-radius: 10px;
+  color: var(--fg);
+  font: inherit;
+  outline: 0;
+  padding: 6px 8px;
+  width: 100%;
+}
 .directory-picker-tree {
+  flex: 1;
   min-height: 0;
   overflow: auto;
 }
