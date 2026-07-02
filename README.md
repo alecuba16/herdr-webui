@@ -14,7 +14,8 @@ Compatibility:
 
 | WebUI | Herdr | Protocol | Status | Notes |
 | --- | --- | --- | --- | --- |
-| `0.2.2` | `0.7.1` | `14` | Current | Renames the `?` modal to Help & Shortcuts, with a functionality map and action flows for creating workspaces/panels, opening Files/Git, worktree actions, terminal scroll/follow, search palette, and settings. |
+| `0.2.3` | `0.7.1` | `14` | Current | Expands Help & Shortcuts with a separated Functionality map section and more detailed area rows. |
+| `0.2.2` | `0.7.1` | `14` | Tested | Renames the `?` modal to Help & Shortcuts, with a functionality map and action flows for creating workspaces/panels, opening Files/Git, worktree actions, terminal scroll/follow, search palette, and settings. |
 | `0.2.1` | `0.7.1` | `14` | Tested | Restores native xterm.js wheel scrolling by removing the custom shell wheel handler, enables xterm viewport scrolling, uses dynamic terminal shell sizing without inline height/width, removes the custom terminal context menu, and deduplicates terminal CSS/JS into modular helpers. |
 | `0.2.0` | `0.7.1` | `14` | Tested | Unifies file browser go-up and search across desktop, mobile, and directory picker with shared tree helpers. Adds Git status colors to file browser entries (yellow modified, green new, red deleted, blue changed directories) with theme-aware contrast for light and dark. Adds unified Git diff layout (GitHub-style) with staged hunk restore. Fixes tab/panel rename focus loss during terminal updates. Fixes terminal wheel scroll in normal buffer mode. Replaces file browser Refresh text button with animated icon button. Splits Git UI into modules for maintainability. Fixes worktree duplication in cleanup. Adds worktree prune endpoint, ahead/behind upstream status, structured log output, and error warnings collection. Bundles JetBrainsMono Nerd Font Mono. |
 | `0.1.9` | `0.7.1` | `14` | Tested | Splits Git UI into modules, fixes worktree duplication in cleanup, unifies file tree go-up and search across desktop/mobile/directory picker, adds directory picker search, adds worktree prune endpoint and ahead/behind upstream status, and bundles JetBrainsMono Nerd Font Mono. |
@@ -32,6 +33,14 @@ Compatibility:
 | `0.0.45` | `0.7.0` | `14` | Minimum supported | Uses WebUI's legacy existing-branch worktree fallback when needed. |
 
 Newer Herdr builds may work when protocol stays compatible, but WebUI reports them as untested.
+
+## 0.2.3 Release Notes
+
+### Help & Shortcuts
+
+- Functionality map is separated from Keyboard shortcuts.
+- More detailed rows for Sidebar, Header, Panels, Terminal, Files, Git, Worktrees, Search, and Settings.
+- Added CSS layout for the expanded help section.
 
 ## 0.2.2 Release Notes
 
