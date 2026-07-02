@@ -14,7 +14,8 @@ Compatibility:
 
 | WebUI | Herdr | Protocol | Status | Notes |
 | --- | --- | --- | --- | --- |
-| `0.2.4` | `0.7.1+` | `15` with `14` fallback | Current | Prefers Herdr direct attach protocol 15 and retries protocol 14 when an older compatible server rejects the initial handshake. |
+| `0.2.5` | `0.7.2` | `15` with `14` fallback | Current | Marks Herdr 0.7.2 protocol 15 as tested while preserving protocol 14 fallback for older compatible servers. |
+| `0.2.4` | `0.7.1+` | `15` with `14` fallback | Tested | Prefers Herdr direct attach protocol 15 and retries protocol 14 when an older compatible server rejects the initial handshake. |
 | `0.2.3` | `0.7.1` | `14` | Tested | Expands Help & Shortcuts with a separated Functionality map section and more detailed area rows. |
 | `0.2.2` | `0.7.1` | `14` | Tested | Renames the `?` modal to Help & Shortcuts, with a functionality map and action flows for creating workspaces/panels, opening Files/Git, worktree actions, terminal scroll/follow, search palette, and settings. |
 | `0.2.1` | `0.7.1` | `14` | Tested | Restores native xterm.js wheel scrolling by removing the custom shell wheel handler, enables xterm viewport scrolling, uses dynamic terminal shell sizing without inline height/width, removes the custom terminal context menu, and deduplicates terminal CSS/JS into modular helpers. |
@@ -33,7 +34,13 @@ Compatibility:
 | `0.0.45` | `0.7.1` | `14` | Tested | Improves embedded Git UI navigation with Escape handling, all-changes return behavior, split frontend assets, scoped file history controls, keyboard-owned drawer input, and per-file large diff loading. |
 | `0.0.45` | `0.7.0` | `14` | Minimum supported | Uses WebUI's legacy existing-branch worktree fallback when needed. |
 
-Newer Herdr builds may work when protocol stays compatible, but WebUI reports them as untested. WebUI 0.2.4 prefers protocol 15 for current Herdr builds and retries protocol 14 for compatible older Herdr 0.7.x servers.
+Newer Herdr builds may work when protocol stays compatible, but WebUI reports them as untested. WebUI 0.2.5 treats Herdr 0.7.2 protocol 15 as tested and retries protocol 14 for compatible older Herdr 0.7.x servers.
+
+## 0.2.5 Release Notes
+
+### Compatibility
+
+- Marks Herdr 0.7.2 as the maximum tested backend so current protocol 15 installs report as compatible.
 
 ## 0.2.4 Release Notes
 
