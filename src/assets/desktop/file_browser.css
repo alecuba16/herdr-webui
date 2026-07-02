@@ -71,6 +71,16 @@
   flex-wrap: wrap;
   gap: 6px;
 }
+.git-ui-btn-icon {
+  align-items: center;
+  display: inline-flex;
+  justify-content: center;
+  padding: 5px;
+}
+.git-ui-btn-icon .herdr-tree-icon {
+  height: 14px;
+  width: 14px;
+}
 .file-browser-list-head {
   background: var(--panel);
   border-bottom: 1px solid var(--border);
@@ -293,6 +303,7 @@
 .herdr-tree-icon-folder { mask-image: url("/assets/icons/folder.svg"); }
 .herdr-tree-icon-folder-up { mask-image: url("/assets/icons/folder-up.svg"); }
 .herdr-tree-icon-file { mask-image: url("/assets/icons/file.svg"); }
+.herdr-tree-icon-refresh { mask-image: url("/assets/icons/refresh.svg"); }
 .herdr-editor {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
