@@ -33,29 +33,6 @@
     return normalized;
   }
 
-  function terminalWheelScrollBatch(remainder, delta, deltaMode, speed, rows) {
-    const mode = Number(deltaMode) || 0,
-      lineSpeed = Math.max(1, Math.min(20, Number(speed) || 3)),
-      rowCount = Math.max(1, Number(rows) || 30);
-    const units =
-      mode === 1
-        ? Number(delta) / 3
-        : mode === 2
-          ? (Number(delta) * Math.max(1, rowCount - 1)) / 3
-          : Number(delta) / 100;
-    const next = (Number(remainder) || 0) + units * lineSpeed;
-    const whole = Math.trunc(Math.abs(next));
-    if (!Number.isFinite(next) || whole < 1)
-      return { direction: null, lines: 0, remainder: Number.isFinite(next) ? next : 0 };
-    const lines = Math.min(whole, 120),
-      sign = Math.sign(next);
-    return {
-      direction: sign < 0 ? "up" : "down",
-      lines,
-      remainder: next - sign * lines,
-    };
-  }
-
   function tabActivityLabel(updatedAt, now) {
     const age = Math.max(0, Number(now) - Number(updatedAt));
     if (!Number.isFinite(age)) return "";
@@ -245,7 +222,6 @@
     validateWorktreeCreate,
     buildWorktreeCreateBody,
     createFaviconNotifier,
-    terminalWheelScrollBatch,
     terminalPasteInput,
     tabActivityLabel,
     escapeHtml,

@@ -116,8 +116,15 @@ el("serverSettingsLoad").onclick = loadServerSettings;
 el("serverSettingsApply").onclick = applyServerSettings;
 el("optOverflow").onchange = () => {
   options.overflow = el("optOverflow").checked;
+  options.terminalOverflowOptIn = true;
   saveOptions();
   applyOptions();
+  const refitTerminal = () => {
+    if (typeof fitTerminalShell === "function") fitTerminalShell();
+    if (typeof fitTerminalSurface === "function") fitTerminalSurface();
+  };
+  if (typeof requestAnimationFrame === "function") requestAnimationFrame(refitTerminal);
+  else refitTerminal();
 };
 el("optFit").onchange = () => {
   options.fitToBrowser = el("optFit").checked;
@@ -471,10 +478,6 @@ function editableEventTarget(e) {
 }
 el("copyMenu").onclick = copySelection;
 el("pasteMenu").onclick = pasteClipboard;
-el("terminalShell").addEventListener("contextmenu", (e) => {
-  e.preventDefault();
-  showClipboardMenu(e.clientX, e.clientY);
-});
 document.addEventListener("click", (e) => {
   const menu = el("clipboardMenu");
   if (menu && !menu.contains(e.target)) hideClipboardMenu();

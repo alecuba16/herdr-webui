@@ -58,7 +58,6 @@ let term,
   terminalWriteQueue = [],
   terminalWriteFlushPending = false,
   pasteFrameUntil = 0,
-  wheelScrollRemainder = 0,
   shortcutPrefixUntil = 0,
   shortcutPrefixTimer = null,
   searchFramePending = false,
@@ -136,7 +135,6 @@ const {
   createFaviconNotifier,
   terminalPasteInput,
   tabActivityLabel,
-  terminalWheelScrollBatch,
 } = globalThis.HerdrAppHelpers;
 const browserFavicon = createFaviconNotifier(document);
 let browserFaviconError = false;
@@ -245,6 +243,7 @@ function showTerminalShellMode() {
   syncShellModeButtons();
   if (state.terminalId && !term && typeof Terminal !== "undefined") connectTerminal();
   fitTerminalShell();
+  if (typeof requestAnimationFrame === "function") requestAnimationFrame(fitTerminalShell);
 }
 const headTitle = document.querySelector(".head strong");
 if (headTitle) {
@@ -899,7 +898,8 @@ function normalizeShortcutPrefix(value, fallback = DEFAULT_GLOBAL_SHORTCUT_PREFI
 let themeMode = normalizeThemeMode(localStorage.getItem("herdr-web-theme")),
   lastEffectiveTheme = null;
 const defaultOptions = {
-  overflow: true,
+  overflow: false,
+  terminalOverflowOptIn: false,
   fitToBrowser: false,
   sound: true,
   notificationVolume: 0.24,
@@ -933,9 +933,12 @@ const defaultOptions = {
 };
 function loadOptions() {
   try {
+    const stored = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
+    if (stored.overflow === true && stored.terminalOverflowOptIn !== true)
+      stored.overflow = false;
     return {
       ...defaultOptions,
-      ...JSON.parse(localStorage.getItem("herdr-web-options") || "{}"),
+      ...stored,
     };
   } catch (_) {
     return { ...defaultOptions };
@@ -2105,7 +2108,6 @@ function setTerminalLoading(show) {
   if (loading) loading.classList.toggle("show", !!show);
 }
 function resetTerminalConnection(clear = false, destroy = false) {
-  wheelScrollRemainder = 0;
   if (inputFlushTimer) {
     clearTimeout(inputFlushTimer);
     inputFlushTimer = null;

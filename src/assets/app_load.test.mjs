@@ -154,6 +154,41 @@ describe("app bundle load", () => {
     match(gitUiSource, /function isChangesListView\(view\)/);
   });
 
+  it("defaults and migrates terminal overflow scrollbars off", () => {
+    match(source, /const defaultOptions = \{\n\s+overflow: false,/);
+    match(source, /stored\.overflow === true && stored\.terminalOverflowOptIn !== true/);
+    match(source, /options\.terminalOverflowOptIn = true;/);
+  });
+
+  it("refits terminal when overflow toggle changes", () => {
+    match(source, /el\("optOverflow"\)\.onchange = \(\) => \{[\s\S]*?applyOptions\(\);[\s\S]*?requestAnimationFrame\(refitTerminal\)/);
+    match(source, /if \(typeof fitTerminalShell === "function"\) fitTerminalShell\(\);/);
+    match(source, /if \(typeof fitTerminalSurface === "function"\) fitTerminalSurface\(\);/);
+  });
+
+  it("keeps terminal surface min sizes mode-aware", () => {
+    match(source, /if \(options\.overflow\) \{\n\s+terminal\.style\.width = width \+ "px";/);
+    match(source, /terminal\.style\.minWidth = "0";\n\s+terminal\.style\.minHeight = "0";/);
+    match(source, /x\.style\.minWidth = "0";\n\s+x\.style\.minHeight = "0";/);
+    match(source, /shellStyle\.display === "none" \|\|\n\s+shellStyle\.visibility === "hidden" \|\|\n\s+\(shellRects && shellRects\.length === 0\)/);
+    match(source, /function fitTerminalShell\(\) \{[\s\S]*?shell\.clientWidth \|\| rect\.width[\s\S]*?shell\.clientHeight \|\| rect\.height[\s\S]*?\};\n\}/);
+    match(source, /function browserTerminalSize\(\) \{[\s\S]*?const shellSize = fitTerminalShell\(\);\n\s+if \(!shellSize\) return null;/);
+    ok(!source.includes('document.querySelector(".tabs")'));
+    ok(!source.includes('shell.style.width ='));
+    ok(!source.includes('shell.style.height ='));
+  });
+
+  it("keeps xterm native wheel scrolling enabled", () => {
+    const terminalCss = readFileSync(new URL("./desktop/app_css/terminal.css", import.meta.url), "utf8");
+
+    match(terminalCss, /\.terminal \.xterm-viewport \{[\s\S]*?overflow-y: scroll !important;/);
+    ok(!terminalCss.match(/\.terminal \.xterm-viewport \{[\s\S]*?overflow: hidden !important;/));
+    ok(!source.includes('el("terminalShell").addEventListener("contextmenu"'));
+    ok(!source.match(/el\("terminalShell"\)\.addEventListener\(\s*["']wheel["']/));
+    match(source, /term\.attachCustomWheelEventHandler\(\(e\) => \{[\s\S]*?if \(e\.altKey\) \{[\s\S]*?if \(typeof e\.preventDefault === "function"\) e\.preventDefault\(\);[\s\S]*?scrollBrowserOverflow\(e\.deltaX, e\.deltaY\);[\s\S]*?return false;[\s\S]*?return true;[\s\S]*?\}\);/);
+    match(source, /function scrollLocalTerminal\(direction, lines\) \{[\s\S]*?term\.scrollLines\(direction === "up" \? -lines : lines\);[\s\S]*?term\.scrollToLine\(nextLine\);[\s\S]*?return true;/);
+  });
+
   it("keeps Git UI keyboard input away from the terminal", () => {
     match(gitUiSource, /Git drawer owns keyboard while visible/);
     match(gitUiSource, /event\.stopImmediatePropagation/);

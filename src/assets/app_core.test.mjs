@@ -16,7 +16,6 @@ const {
   createFaviconNotifier,
   tabActivityLabel,
   terminalPasteInput,
-  terminalWheelScrollBatch,
 } = require("./shared/core.js");
 
 describe("createFaviconNotifier", () => {
@@ -99,39 +98,6 @@ describe("tabActivityLabel", () => {
     assert.equal(tabActivityLabel(now - 5 * 60_000, now), "5m ago");
     assert.equal(tabActivityLabel(now - 61 * 60_000, now), ">1h");
     assert.equal(tabActivityLabel(now - 25 * 60 * 60_000, now), ">1d");
-  });
-});
-
-describe("terminalWheelScrollBatch", () => {
-  it("accumulates small pixel deltas before scrolling", () => {
-    const first = terminalWheelScrollBatch(0, 10, 0, 3, 30);
-    assert.equal(first.lines, 0);
-    assert.equal(first.direction, null);
-
-    const second = terminalWheelScrollBatch(first.remainder, 30, 0, 3, 30);
-    assert.equal(second.lines, 1);
-    assert.equal(second.direction, "down");
-  });
-
-  it("uses the configured line speed per wheel step", () => {
-    assert.deepEqual(terminalWheelScrollBatch(0, 100, 0, 1, 30), {
-      direction: "down",
-      lines: 1,
-      remainder: 0,
-    });
-    assert.deepEqual(terminalWheelScrollBatch(0, -100, 0, 5, 30), {
-      direction: "up",
-      lines: 5,
-      remainder: 0,
-    });
-  });
-
-  it("normalizes line-mode mouse wheel deltas", () => {
-    assert.deepEqual(terminalWheelScrollBatch(0, 3, 1, 4, 30), {
-      direction: "down",
-      lines: 4,
-      remainder: 0,
-    });
   });
 });
 

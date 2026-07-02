@@ -79,6 +79,15 @@ function connectTerminal() {
       scrollback: 10000,
     });
     term.open(terminal);
+    if (term.attachCustomWheelEventHandler)
+      term.attachCustomWheelEventHandler((e) => {
+        if (e.altKey) {
+          if (typeof e.preventDefault === "function") e.preventDefault();
+          scrollBrowserOverflow(e.deltaX, e.deltaY);
+          return false;
+        }
+        return true;
+      });
     applyTerminalLinks();
     applyTheme();
     term.onData(sendInputData);
@@ -127,59 +136,6 @@ function connectTerminal() {
       });
   }
   if (!termScrollBound) {
-    el("terminalShell").addEventListener(
-      "wheel",
-      (e) => {
-        if (wheelOnShellScrollbar(e)) return;
-        if (e.altKey) {
-          e.preventDefault();
-          scrollBrowserOverflow(e.deltaX, e.deltaY);
-          return;
-        }
-        if (terminalUsesNormalBuffer()) {
-          if (!term || !term.scrollLines) return;
-          e.preventDefault();
-          const delta =
-            Math.abs(e.deltaY) >= Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
-          const scroll = terminalWheelScrollBatch(
-            wheelScrollRemainder,
-            delta,
-            e.deltaMode,
-            options.scrollLines,
-            state.termRows || rows,
-          );
-          wheelScrollRemainder = scroll.remainder;
-          if (scroll.lines) {
-            scrollLocalTerminal(scroll.direction, scroll.lines);
-          }
-          if (e.deltaY < 0 || e.deltaX < 0 || !terminalAtBottom()) setTerminalFollowPaused(true);
-          requestAnimationFrame(() => {
-            setTerminalFollowPaused(!terminalAtBottom());
-          });
-          return;
-        }
-        if (!termWs || termWs.readyState !== 1) return;
-        e.preventDefault();
-        const delta =
-          Math.abs(e.deltaY) >= Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
-        const scroll = terminalWheelScrollBatch(
-          wheelScrollRemainder,
-          delta,
-          e.deltaMode,
-          options.scrollLines,
-          state.termRows || rows,
-        );
-        wheelScrollRemainder = scroll.remainder;
-        if (!scroll.lines) return;
-        sendBackendScroll(
-          scroll.direction,
-          scroll.lines,
-          mouseCell(e),
-          mouseModifiers(e),
-        );
-      },
-      { passive: false },
-    );
     el("terminalShell").addEventListener(
       "paste",
       (e) => {
@@ -374,11 +330,29 @@ function scrollTerminalToBottom() {
   focusTerminal(true);
 }
 function scrollLocalTerminal(direction, lines) {
+  let scrolled = false;
   try {
-    if (!term || !term.scrollLines) return;
-    term.scrollLines(direction === "up" ? -lines : lines);
+    if (!term) return false;
+    if (typeof term.scrollLines === "function") {
+      term.scrollLines(direction === "up" ? -lines : lines);
+      scrolled = true;
+    } else if (typeof term.scrollToLine === "function" && term.buffer && term.buffer.active) {
+      const buffer = term.buffer.active;
+      const maxLine = Math.max(0, Number(buffer.baseY) || 0);
+      const currentLine = Math.max(0, Number(buffer.viewportY) || 0);
+      const nextLine = Math.max(
+        0,
+        Math.min(maxLine, currentLine + (direction === "up" ? -lines : lines)),
+      );
+      term.scrollToLine(nextLine);
+      scrolled = true;
+    } else {
+      return false;
+    }
   } catch (e) {}
+  if (!scrolled) return false;
   setTerminalFollowPaused(!terminalAtBottom());
+  return true;
 }
 function modalOpen() {
   return [
@@ -435,41 +409,6 @@ function sendBackendScroll(direction, lines, cell, modifiers = 0) {
         modifiers,
       }),
     );
-}
-function mouseCell(e) {
-  const screen = terminal.querySelector(".xterm-screen");
-  const rowsEl = terminal.querySelector(".xterm-rows");
-  if (!screen || !rowsEl) return null;
-  const rect = screen.getBoundingClientRect();
-  if (
-    e.clientX < rect.left ||
-    e.clientX > rect.right ||
-    e.clientY < rect.top ||
-    e.clientY > rect.bottom
-  )
-    return null;
-  const colWidth = rect.width / (state.termCols || 100);
-  const rowHeight = rect.height / (state.termRows || 30);
-  if (!colWidth || !rowHeight) return null;
-  return {
-    column: Math.max(
-      0,
-      Math.min(
-        (state.termCols || 100) - 1,
-        Math.floor((e.clientX - rect.left) / colWidth),
-      ),
-    ),
-    row: Math.max(
-      0,
-      Math.min(
-        (state.termRows || 30) - 1,
-        Math.floor((e.clientY - rect.top) / rowHeight),
-      ),
-    ),
-  };
-}
-function mouseModifiers(e) {
-  return (e.shiftKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.altKey ? 4 : 0);
 }
 async function copySelection() {
   const text = term && term.getSelection ? term.getSelection() : "";
@@ -591,14 +530,25 @@ function fitTerminalSurface() {
     17;
   const width = Math.ceil(cellWidth * cols);
   const height = Math.ceil(rowHeight * rows);
-  terminal.style.width = width + "px";
-  terminal.style.height = height + "px";
-  terminal.style.minWidth = width + "px";
-  terminal.style.minHeight = height + "px";
-  x.style.width = width + "px";
-  x.style.height = height + "px";
-  x.style.minWidth = width + "px";
-  x.style.minHeight = height + "px";
+  if (options.overflow) {
+    terminal.style.width = width + "px";
+    terminal.style.height = height + "px";
+    terminal.style.minWidth = width + "px";
+    terminal.style.minHeight = height + "px";
+    x.style.width = width + "px";
+    x.style.height = height + "px";
+    x.style.minWidth = width + "px";
+    x.style.minHeight = height + "px";
+  } else {
+    terminal.style.width = "100%";
+    terminal.style.height = "100%";
+    terminal.style.minWidth = "0";
+    terminal.style.minHeight = "0";
+    x.style.width = "100%";
+    x.style.height = "100%";
+    x.style.minWidth = "0";
+    x.style.minHeight = "0";
+  }
   screen.style.width = width + "px";
   screen.style.height = height + "px";
   if (viewport) viewport.style.height = height + "px";
@@ -612,32 +562,30 @@ function fitTerminalSurface() {
   }
 }
 function fitTerminalShell() {
-  const main = document.querySelector(".main");
-  const tabsEl = document.querySelector(".tabs");
   const shell = el("terminalShell");
-  if (!main || !tabsEl || !shell) return null;
-  const m = main.getBoundingClientRect();
-  const t = tabsEl.getBoundingClientRect();
-  const width = Math.max(0, Math.floor(m.width));
-  const height = Math.max(0, Math.floor(m.height - t.height));
-  shell.style.width = width + "px";
-  shell.style.height = height + "px";
-  return { width, height };
+  if (!shell) return null;
+  const shellStyle =
+    typeof getComputedStyle === "function" ? getComputedStyle(shell) : { display: "", visibility: "" };
+  const shellRects = typeof shell.getClientRects === "function" ? shell.getClientRects() : null;
+  if (
+    shellStyle.display === "none" ||
+    shellStyle.visibility === "hidden" ||
+    (shellRects && shellRects.length === 0)
+  )
+    return null;
+  const rect = shell.getBoundingClientRect();
+  return {
+    width: Math.max(0, Math.floor(shell.clientWidth || rect.width)),
+    height: Math.max(0, Math.floor(shell.clientHeight || rect.height)),
+  };
 }
 function browserTerminalSize() {
   const shell = el("terminalShell");
   if (!shell) return null;
-  const reserveWidth = Math.max(0, shell.offsetWidth - shell.clientWidth);
-  const reserveHeight = Math.max(0, shell.offsetHeight - shell.clientHeight);
   const shellSize = fitTerminalShell();
-  const width = Math.max(
-    80,
-    (shellSize ? shellSize.width - reserveWidth : shell.clientWidth) - 16,
-  );
-  const height = Math.max(
-    24,
-    (shellSize ? shellSize.height - reserveHeight : shell.clientHeight) - 16,
-  );
+  if (!shellSize) return null;
+  const width = Math.max(80, shellSize.width - 16);
+  const height = Math.max(24, shellSize.height - 16);
   const dims =
     term &&
     term._core &&
@@ -705,16 +653,6 @@ function scrollBrowserOverflow(dx, dy) {
   const maxLeft = Math.max(0, shell.scrollWidth - shell.clientWidth);
   shell.scrollTop = Math.max(0, Math.min(maxTop, shell.scrollTop + dy));
   shell.scrollLeft = Math.max(0, Math.min(maxLeft, shell.scrollLeft + dx));
-}
-function wheelOnShellScrollbar(e) {
-  const shell = el("terminalShell");
-  if (!shell) return false;
-  const r = shell.getBoundingClientRect();
-  const vertical =
-    shell.scrollHeight > shell.clientHeight && e.clientX >= r.right - 14;
-  const horizontal =
-    shell.scrollWidth > shell.clientWidth && e.clientY >= r.bottom - 14;
-  return vertical || horizontal;
 }
 function wsUrl(path) {
   const sep = path.includes("?") ? "&" : "?";

@@ -14,7 +14,8 @@ Compatibility:
 
 | WebUI | Herdr | Protocol | Status | Notes |
 | --- | --- | --- | --- | --- |
-| `0.2.0` | `0.7.1` | `14` | Current | Unifies file browser go-up and search across desktop, mobile, and directory picker with shared tree helpers. Adds Git status colors to file browser entries (yellow modified, green new, red deleted, blue changed directories) with theme-aware contrast for light and dark. Adds unified Git diff layout (GitHub-style) with staged hunk restore. Fixes tab/panel rename focus loss during terminal updates. Fixes terminal wheel scroll in normal buffer mode. Replaces file browser Refresh text button with animated icon button. Splits Git UI into modules for maintainability. Fixes worktree duplication in cleanup. Adds worktree prune endpoint, ahead/behind upstream status, structured log output, and error warnings collection. Bundles JetBrainsMono Nerd Font Mono. |
+| `0.2.1` | `0.7.1` | `14` | Current | Restores native xterm.js wheel scrolling by removing the custom shell wheel handler, enables xterm viewport scrolling, uses dynamic terminal shell sizing without inline height/width, removes the custom terminal context menu, and deduplicates terminal CSS/JS into modular helpers. |
+| `0.2.0` | `0.7.1` | `14` | Tested | Unifies file browser go-up and search across desktop, mobile, and directory picker with shared tree helpers. Adds Git status colors to file browser entries (yellow modified, green new, red deleted, blue changed directories) with theme-aware contrast for light and dark. Adds unified Git diff layout (GitHub-style) with staged hunk restore. Fixes tab/panel rename focus loss during terminal updates. Fixes terminal wheel scroll in normal buffer mode. Replaces file browser Refresh text button with animated icon button. Splits Git UI into modules for maintainability. Fixes worktree duplication in cleanup. Adds worktree prune endpoint, ahead/behind upstream status, structured log output, and error warnings collection. Bundles JetBrainsMono Nerd Font Mono. |
 | `0.1.9` | `0.7.1` | `14` | Tested | Splits Git UI into modules, fixes worktree duplication in cleanup, unifies file tree go-up and search across desktop/mobile/directory picker, adds directory picker search, adds worktree prune endpoint and ahead/behind upstream status, and bundles JetBrainsMono Nerd Font Mono. |
 | `0.1.8` | `0.7.1` | `14` | Tested | Adds mobile read-only Git file diffs with horizontally scrollable hunks so long diff lines stay inside the mobile app shell. Bundles JetBrainsMono Nerd Font Mono for terminal icons and shared monospace UI rendering. |
 | `0.1.7` | `0.7.1` | `14` | Tested | Improves Git cleanup results with nested repo lists, aligned visible checkboxes, group/repo selection, hidden primary worktrees, and stable scroll while selecting. |
@@ -30,6 +31,16 @@ Compatibility:
 | `0.0.45` | `0.7.0` | `14` | Minimum supported | Uses WebUI's legacy existing-branch worktree fallback when needed. |
 
 Newer Herdr builds may work when protocol stays compatible, but WebUI reports them as untested.
+
+## 0.2.1 Release Notes
+
+### Terminal
+
+- Restored native xterm.js wheel scrolling by removing the custom terminal shell wheel handler.
+- Enabled xterm viewport scrolling so terminal scrollback uses xterm's own viewport behavior.
+- Switched terminal shells to dynamic sizing with no inline shell height or width.
+- Removed the custom terminal context menu so browser/xterm defaults handle context actions.
+- Deduplicated terminal CSS and JavaScript into shared modular helpers for desktop and mobile.
 
 ## 0.2.0 Release Notes
 
