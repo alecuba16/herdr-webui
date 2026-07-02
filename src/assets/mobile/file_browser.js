@@ -3,18 +3,17 @@
     const Tree = globalThis.HerdrFileTree;
     const Editor = globalThis.HerdrEditor;
     const state = deps.state;
-    const local = { path: "", entries: [], selected: "", file: null, error: "", loading: false, filter: "", filterTimer: null, filterOffset: 0, filterDone: true, scrollTop: 0, cwdOverride: "" };
+    const local = { path: "", entries: [], selected: "", file: null, error: "", loading: false, filter: "", filterTimer: null, filterOffset: 0, filterDone: true, scrollTop: 0, cwdOverride: "", gitStatus: null };
 
     function cwd() {
       return local.cwdOverride || deps.currentWorkspaceCwd() || "";
     }
 
-    function parentDirectory(path) {
-      const value = String(path || "").replace(/\/+$/, "");
-      if (!value || value === "/") return value || "/";
-      const index = value.lastIndexOf("/");
-      if (index <= 0) return "/";
-      return value.slice(0, index);
+    function gitStatusEnabled() {
+      try {
+        const parsed = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
+        return parsed.fileBrowserGitStatus !== false;
+      } catch (_) { return true; }
     }
 
     async function load(path, preserveFocus = false) {
@@ -30,9 +29,10 @@
       else deps.render();
       try {
         const depth = fileBrowserDepth();
-        const data = await deps.api(`/api/file-browser/tree?cwd=${encodeURIComponent(root)}&path=${encodeURIComponent(path || "")}&depth=${depth}`);
+        const data = await deps.api(`/api/file-browser/tree?cwd=${encodeURIComponent(root)}&path=${encodeURIComponent(path || "")}&depth=${depth}${gitStatusEnabled() ? "&include_git_status=true" : ""}`);
         local.path = data.path || "";
         local.entries = data.entries || [];
+        local.gitStatus = data.git_status || null;
         local.file = null;
         local.filterOffset = 0;
         local.filterDone = !local.filter.trim();
@@ -51,9 +51,10 @@
       renderPreservingFocus();
       try {
         const offset = append ? local.filterOffset : 0;
-        const data = await deps.api(`/api/file-browser/tree?cwd=${encodeURIComponent(root)}&path=${encodeURIComponent(local.path || "")}&q=${encodeURIComponent(local.filter.trim())}&offset=${offset}&limit=100`);
+        const data = await deps.api(`/api/file-browser/tree?cwd=${encodeURIComponent(root)}&path=${encodeURIComponent(local.path || "")}&q=${encodeURIComponent(local.filter.trim())}&offset=${offset}&limit=100${gitStatusEnabled() ? "&include_git_status=true" : ""}`);
         const entries = data.entries || [];
         local.entries = append ? local.entries.concat(entries) : entries;
+        local.gitStatus = data.git_status || null;
         local.filterOffset = offset + entries.length;
         local.filterDone = !data.truncated || entries.length === 0;
         local.error = "";
@@ -79,12 +80,6 @@
       }
       local.loading = false;
       deps.render();
-    }
-
-    function parentPath(path) {
-      const parts = String(path || "").split("/").filter(Boolean);
-      parts.pop();
-      return parts.join("/");
     }
 
     function renderScreen() {
@@ -122,29 +117,15 @@
     }
 
     function treeEntries() {
-      if (local.filter.trim()) return searchTreeEntries(local.entries);
+      if (local.filter.trim()) {
+        const entries = Tree.searchTreeEntries(local.entries);
+        return Tree.applyGitStatus(entries, local.gitStatus);
+      }
       const entries = local.entries.map((entry) => Object.assign({}, entry));
       const currentRoot = local.cwdOverride || deps.currentWorkspaceCwd() || "";
-      const canGoUp = local.path || (currentRoot && parentDirectory(currentRoot) !== currentRoot);
-      if (!local.filter.trim() && canGoUp) entries.unshift({ kind: "up", name: "...", path: parentPath(local.path), expanded: false });
-      return entries;
-    }
-
-    function searchTreeEntries(entries) {
-      const rows = [];
-      const seenDirs = new Set();
-      for (const entry of entries || []) {
-        const parts = String(entry.path || entry.name || "").split("/").filter(Boolean);
-        let prefix = "";
-        for (let i = 0; i < parts.length - 1; i++) {
-          prefix = prefix ? `${prefix}/${parts[i]}` : parts[i];
-          if (seenDirs.has(prefix)) continue;
-          seenDirs.add(prefix);
-          rows.push({ kind: "dir", name: parts[i], path: prefix, level: i, expanded: true });
-        }
-        rows.push(Object.assign({}, entry, { name: parts[parts.length - 1] || entry.name, level: Math.max(0, parts.length - 1), expanded: false }));
-      }
-      return rows;
+      const canGoUp = local.path || (currentRoot && Tree.parentDirectory(currentRoot) !== currentRoot);
+      if (!local.filter.trim() && canGoUp) entries.unshift(Tree.upEntry(local.path, 0));
+      return Tree.applyGitStatus(entries, local.gitStatus);
     }
 
     function fileBrowserDepth() {
@@ -185,11 +166,11 @@
       toggle(encodedPath) { load(decodeURIComponent(encodedPath)); },
       select(encodedPath) { openFile(decodeURIComponent(encodedPath)); },
       up() {
-        if (local.path) { load(parentPath(local.path)); return; }
+        if (local.path) { load(Tree.parentPath(local.path)); return; }
         const wsCwd = deps.currentWorkspaceCwd() || "";
         const currentRoot = local.cwdOverride || wsCwd;
         if (!currentRoot) return;
-        const parent = parentDirectory(currentRoot);
+        const parent = Tree.parentDirectory(currentRoot);
         if (!parent || parent === currentRoot) return;
         local.cwdOverride = parent;
         local.path = "";

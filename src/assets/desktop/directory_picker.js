@@ -1,8 +1,15 @@
 (function () {
   const Tree = window.HerdrFileTree;
-  const state = { input: null, root: "~", path: "", entries: [], error: "" };
+  const state = { input: null, root: "~", path: "", entries: [], error: "", filter: "", filterTimer: null, gitStatus: null };
 
   function esc(value) { return Tree.esc(value); }
+
+  function gitStatusEnabled() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
+      return parsed.fileBrowserGitStatus !== false;
+    } catch (_) { return true; }
+  }
 
   function splitPath(value) {
     const text = String(value || "").trim();
@@ -51,12 +58,28 @@
 
   async function load(path) {
     state.path = path || "";
+    state.filter = "";
+    clearTimeout(state.filterTimer);
     state.error = "";
     render();
     try {
-      const data = await api(`/api/file-browser/tree?cwd=${encodeURIComponent(state.root)}&path=${encodeURIComponent(state.path)}&dirs_only=true`);
+      const data = await api(`/api/file-browser/tree?cwd=${encodeURIComponent(state.root)}&path=${encodeURIComponent(state.path)}&dirs_only=true${gitStatusEnabled() ? "&include_git_status=true" : ""}`);
       state.path = data.path || "";
       state.entries = data.entries || [];
+      state.gitStatus = data.git_status || null;
+    } catch (error) {
+      state.error = error.message || String(error);
+      state.entries = [];
+    }
+    render();
+  }
+
+  async function search() {
+    if (!state.filter.trim()) { load(state.path); return; }
+    try {
+      const data = await api(`/api/file-browser/tree?cwd=${encodeURIComponent(state.root)}&path=${encodeURIComponent(state.path)}&q=${encodeURIComponent(state.filter.trim())}&limit=100${gitStatusEnabled() ? "&include_git_status=true" : ""}`);
+      state.entries = data.entries || [];
+      state.gitStatus = data.git_status || null;
     } catch (error) {
       state.error = error.message || String(error);
       state.entries = [];
@@ -97,12 +120,29 @@
       modal.className = "directory-picker-backdrop";
       document.body.appendChild(modal);
     }
-    const entries = [
-      ...(state.path ? [{ kind: "up", name: "..", path: parentPath(state.path), level: 0 }] : []),
-      { kind: "dir", name: `Current: ${currentFolderName()}`, path: state.path, expanded: true, level: 0 },
-      ...(state.entries || []).map((entry) => Object.assign({}, entry, { expanded: false, level: Number(entry.level || 0) + 1 })),
-    ];
-    modal.innerHTML = `<div class="directory-picker"><div class="directory-picker-head"><strong>Choose folder</strong><button class="git-ui-btn" onclick="HerdrDirectoryPicker.close()">Close</button></div><div class="directory-picker-path">${esc(joinPath(state.root, state.path))}</div><div class="directory-picker-actions"><button class="git-ui-btn" onclick="HerdrDirectoryPicker.home()">Home</button><button class="git-ui-btn" onclick="HerdrDirectoryPicker.root()">Root</button><button class="git-ui-btn" title="Go up to parent folder" ${state.path ? "" : "disabled"} onclick="HerdrDirectoryPicker.up()">↑ ..</button><button class="git-ui-btn primary" onclick="HerdrDirectoryPicker.selectCurrent()">Select this folder</button></div>${state.error ? `<div class="file-browser-error">${esc(state.error)}</div>` : ""}<div class="directory-picker-tree">${Tree.renderEntries(entries, { callback: "HerdrDirectoryPicker", selectedPath: state.path })}</div></div>`;
+    const active = document.activeElement;
+    const refocus = active && active.id === "directoryPickerSearchInput";
+    const selStart = refocus ? active.selectionStart : null;
+    const selEnd = refocus ? active.selectionEnd : null;
+    const filtering = !!state.filter.trim();
+    const canGoUp = state.path || state.root !== "/";
+    const entries = Tree.applyGitStatus(filtering
+      ? Tree.searchTreeEntries(state.entries)
+      : [
+          ...(canGoUp ? [Tree.upEntry(state.path, 0)] : []),
+          { kind: "dir", name: `Current: ${currentFolderName()}`, path: state.path, expanded: true, level: 0 },
+          ...(state.entries || []).map((entry) => Object.assign({}, entry, { expanded: false, level: Number(entry.level || 0) + 1 })),
+        ], state.gitStatus);
+    modal.innerHTML = `<div class="directory-picker"><div class="directory-picker-head"><strong>Choose folder</strong><button class="git-ui-btn" onclick="HerdrDirectoryPicker.close()">Close</button></div><div class="directory-picker-path">${esc(joinPath(state.root, state.path))}</div><div class="directory-picker-actions"><button class="git-ui-btn" onclick="HerdrDirectoryPicker.home()">Home</button><button class="git-ui-btn" onclick="HerdrDirectoryPicker.root()">Root</button><button class="git-ui-btn primary" onclick="HerdrDirectoryPicker.selectCurrent()">Select this folder</button></div>${state.error ? `<div class="file-browser-error">${esc(state.error)}</div>` : ""}<div class="directory-picker-search"><input id="directoryPickerSearchInput" type="text" placeholder="Type to search..." value="${esc(state.filter)}" oninput="HerdrDirectoryPicker.filter(this.value)"></div><div class="directory-picker-tree">${Tree.renderEntries(entries, { callback: "HerdrDirectoryPicker", selectedPath: state.path })}</div></div>`;
+    if (refocus) {
+      const input = document.getElementById("directoryPickerSearchInput");
+      if (input) {
+        input.focus({ preventScroll: true });
+        const start = selStart == null ? input.value.length : Math.min(selStart, input.value.length);
+        const end = selEnd == null ? start : Math.min(selEnd, input.value.length);
+        input.setSelectionRange(start, end);
+      }
+    }
   }
 
   window.HerdrDirectoryPicker = {
@@ -112,8 +152,25 @@
     selectCurrent,
     toggle(encodedPath) { load(decodeURIComponent(encodedPath)); },
     select(encodedPath) { load(decodeURIComponent(encodedPath)); },
-    up() { load(parentPath(state.path)); },
+    up(encodedPath) {
+      const target = decodeURIComponent(encodedPath || "");
+      if (target) { load(target); return; }
+      if (state.root === "~" && !state.path) {
+        state.root = "/";
+        state.path = "";
+        state.entries = [];
+        load("");
+        return;
+      }
+      if (state.root === "/" && !state.path) return;
+      load(parentPath(state.path));
+    },
     home() { state.root = "~"; load(""); },
     root() { state.root = "/"; load(""); },
+    filter(value) {
+      state.filter = String(value || "");
+      clearTimeout(state.filterTimer);
+      state.filterTimer = setTimeout(() => search(), 200);
+    },
   };
 })();

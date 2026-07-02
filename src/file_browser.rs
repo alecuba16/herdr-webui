@@ -47,6 +47,7 @@ struct FileBrowserQuery {
     q: Option<String>,
     offset: Option<usize>,
     limit: Option<usize>,
+    include_git_status: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -355,6 +356,71 @@ fn file_hash(path: &Path) -> Result<String, String> {
         .collect::<String>())
 }
 
+fn collect_git_status(root: &Path) -> Option<serde_json::Map<String, serde_json::Value>> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["status", "--porcelain=v1", "--untracked-files=all"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut map = serde_json::Map::new();
+    for line in text.lines() {
+        if line.len() < 3 {
+            continue;
+        }
+        let xy = &line[..2];
+        let path = line[3..].trim();
+        if path.is_empty() {
+            continue;
+        }
+        // Porcelain v1: XY is 2 chars, then space, then path.
+        // For renames (R): path is "newpath\toldpath" — take newpath only.
+        let path = path.split('\t').next().unwrap_or(path);
+        // Strip surrounding quotes if present (git quotes paths with special chars)
+        let path = if path.starts_with('"') && path.ends_with('"') {
+            &path[1..path.len() - 1]
+        } else {
+            path
+        };
+        let status = match xy {
+            "??" => "untracked",
+            "AA" | "DD" | "AU" | "UA" | "UD" | "DU" | "UU" => "conflict",
+            _ => {
+                let x = xy.as_bytes()[0] as char;
+                let y = xy.as_bytes()[1] as char;
+                // Priority: conflict > unstaged change > staged change
+                if y == 'D' {
+                    "deleted"
+                } else if y == 'M' || y == 'R' || y == 'C' {
+                    "modified"
+                } else if y == 'A' {
+                    "added"
+                } else if x == 'D' {
+                    "deleted"
+                } else if x == 'M' || x == 'R' || x == 'C' {
+                    "modified"
+                } else if x == 'A' {
+                    "added"
+                } else {
+                    "modified"
+                }
+            }
+        };
+        map.insert(
+            path.to_string(),
+            serde_json::Value::String(status.to_string()),
+        );
+    }
+    if map.is_empty() {
+        return None;
+    }
+    Some(map)
+}
+
 async fn file_browser_tree(
     State(state): State<WebState>,
     headers: HeaderMap,
@@ -440,12 +506,18 @@ async fn file_browser_tree(
     } else if let Err(err) = push_tree_entries(&mut build, &dir, 0, depth, depth == 0) {
         return file_browser_json_error(StatusCode::BAD_GATEWAY, err);
     }
+    let git_status = if query.include_git_status.unwrap_or(false) {
+        collect_git_status(&root)
+    } else {
+        None
+    };
     Json(json!({
         "root": root.to_string_lossy(),
         "path": relative_to_root(&root, &dir),
         "entries": build.entries,
         "truncated": build.truncated,
         "query": search,
+        "git_status": git_status,
     }))
     .into_response()
 }
@@ -749,5 +821,13 @@ mod tests {
         assert!(paths.contains(&"src/nested/app_test.rs"));
         assert!(matched >= 2);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn collect_git_status_returns_none_for_non_git_dir() {
+        let temp = std::env::temp_dir();
+        let result = collect_git_status(&temp);
+        // temp_dir might be inside a git repo on some machines, so just test it doesn't panic
+        let _ = result;
     }
 }

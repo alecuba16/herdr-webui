@@ -106,7 +106,7 @@
       const context = opts.contextMethod ? ` oncontextmenu="return ${callback}.${opts.contextMethod}(event,'${arg(entry.path)}'${kindArg})"` : "";
       const data = opts.dataPrefix ? ` data-${opts.dataPrefix}-path="${esc(entry.path)}" data-${opts.dataPrefix}-kind="${esc(opts.kind || "")}"` : "";
       const rowClass = opts.rowClass ? ` ${opts.rowClass}` : "";
-      return `<div class="herdr-tree-row file${rowClass}${selected ? " active" : ""}" role="treeitem" tabindex="0"${data} style="${indentStyle(level, opts)}" title="${esc(entry.path)}" onclick="${callback}.${opts.selectMethod || "select"}('${arg(entry.path)}'${kindArg})"${keydown}${context}><span class="herdr-tree-caret"></span><span class="herdr-tree-kind">${icon("file")}</span><span class="herdr-tree-name">${highlight(entry.name, opts.filterTerm)}</span>${statusBadge(status)}${meta}</div>`;
+      return `<div class="herdr-tree-row file${rowClass}${selected ? " active" : ""}${status ? ` git-${status}` : ""}" role="treeitem" tabindex="0"${data} style="${indentStyle(level, opts)}" title="${esc(entry.path)}" onclick="${callback}.${opts.selectMethod || "select"}('${arg(entry.path)}'${kindArg})"${keydown}${context}><span class="herdr-tree-caret"></span><span class="herdr-tree-kind">${icon("file")}</span><span class="herdr-tree-name">${highlight(entry.name, opts.filterTerm)}</span>${statusBadge(status)}${meta}</div>`;
     }).join("");
   }
 
@@ -146,7 +146,7 @@
     const action = entry.kind === "up" ? "up" : kind === "dir" ? dirClickMethod : selectMethod;
     const click = action ? ` onclick="${callback}.${action}('${arg(path)}'${kind === "file" && opts.shiftSelectMode ? `,event.shiftKey?'split':''` : ""})"` : "";
     const meta = opts.showMeta && entry.size != null ? `<span class="herdr-tree-meta">${formatBytes(entry.size)}</span>` : "";
-    return `<button class="herdr-tree-row ${kind}${entry.kind === "up" ? " up" : ""}${active}" role="treeitem" style="${indentStyle(level, opts)}" title="${esc(path)}"${click}${dbl}${context}>${caret}<span class="herdr-tree-kind">${icon(entry.kind === "up" ? "up" : kind)}</span><span class="herdr-tree-name">${highlight(entry.name || basename(path), opts.filterTerm)}</span>${statusBadge(entry.status)}${meta}</button>`;
+    return `<button class="herdr-tree-row ${kind}${entry.kind === "up" ? " up" : ""}${active}${entry.status ? ` git-${entry.status}` : ""}" role="treeitem" style="${indentStyle(level, opts)}" title="${esc(path)}"${click}${dbl}${context}>${caret}<span class="herdr-tree-kind">${icon(entry.kind === "up" ? "up" : kind)}</span><span class="herdr-tree-name">${highlight(entry.name || basename(path), opts.filterTerm)}</span>${statusBadge(entry.status)}${meta}</button>`;
   }
 
   function buildGitEntries(files, status) {
@@ -165,14 +165,79 @@
     return `${Math.round(value / 1024 / 102.4) / 10} MB`;
   }
 
+  function parentPath(path) {
+    const parts = String(path || "").split("/").filter(Boolean);
+    parts.pop();
+    return parts.join("/");
+  }
+
+  function parentDirectory(path) {
+    const value = String(path || "").replace(/\/+$/, "");
+    if (!value || value === "/") return value || "/";
+    const index = value.lastIndexOf("/");
+    if (index <= 0) return "/";
+    return value.slice(0, index);
+  }
+
+  function upEntry(path, level) {
+    return { kind: "up", name: "...", path: parentPath(path || ""), level: level || 0, expanded: false };
+  }
+
+  function searchTreeEntries(entries) {
+    const rows = [];
+    const seenDirs = new Set();
+    for (const entry of entries || []) {
+      const parts = String(entry.path || entry.name || "").split("/").filter(Boolean);
+      let prefix = "";
+      for (let i = 0; i < parts.length - 1; i++) {
+        prefix = prefix ? `${prefix}/${parts[i]}` : parts[i];
+        if (seenDirs.has(prefix)) continue;
+        seenDirs.add(prefix);
+        rows.push({ kind: "dir", name: parts[i], path: prefix, level: i, expanded: true });
+      }
+      rows.push(Object.assign({}, entry, { name: parts[parts.length - 1] || entry.name, level: Math.max(0, parts.length - 1), expanded: false }));
+    }
+    return rows;
+  }
+
+  function applyGitStatus(entries, gitStatus) {
+    if (!gitStatus || typeof gitStatus !== "object") return entries;
+    const changedDirs = new Set();
+    for (const file of Object.keys(gitStatus)) {
+      const parts = file.split("/").filter(Boolean);
+      for (let i = 1; i < parts.length; i++) {
+        changedDirs.add(parts.slice(0, i).join("/"));
+      }
+    }
+    return (entries || []).map((entry) => {
+      const next = Object.assign({}, entry);
+      const path = String(entry.path || entry.name || "");
+      if (entry.kind === "dir") {
+        if (changedDirs.has(path)) {
+          next.status = "changed";
+        }
+      } else {
+        if (gitStatus[path]) {
+          next.status = gitStatus[path];
+        }
+      }
+      return next;
+    });
+  }
+
   window.HerdrFileTree = {
+    applyGitStatus,
     arg,
     basename,
     buildGitEntries,
     esc,
     formatBytes,
     highlight,
+    parentDirectory,
+    parentPath,
     renderEntries,
     renderPathTree,
+    searchTreeEntries,
+    upEntry,
   };
 })();

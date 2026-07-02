@@ -921,7 +921,8 @@ const defaultOptions = {
   workspaceSort: "default",
   scrollLines: 3,
   treeIndentPx: 14,
-  fileBrowserAllowParent: false,
+  fileBrowserAllowParent: true,
+  fileBrowserGitStatus: true,
   showTabActivity: false,
   worktreeAutoDiscoverSeconds: 3,
   generateWorktreeNames: false,
@@ -997,7 +998,8 @@ function normalizeOptions(value) {
     next.workspaceSort = defaultOptions.workspaceSort;
   next.scrollLines = Math.max(1, Math.min(20, Number(next.scrollLines) || 3));
   next.treeIndentPx = Math.max(0, Math.min(40, Number(next.treeIndentPx) || 14));
-  next.fileBrowserAllowParent = next.fileBrowserAllowParent === true;
+  next.fileBrowserAllowParent = next.fileBrowserAllowParent !== false;
+  next.fileBrowserGitStatus = next.fileBrowserGitStatus !== false;
   next.showTabActivity = next.showTabActivity === true;
   next.worktreeAutoDiscoverSeconds = Math.max(
     0,
@@ -1262,7 +1264,7 @@ if (showTabActivitySetting && !el("optTreeIndentPx"))
     .closest("label")
     .insertAdjacentHTML(
       "afterend",
-      '<label class="option"><span>Tree indentation<small>Pixels added per folder level in file trees.</small></span><input id="optTreeIndentPx" type="number" min="0" max="40" step="1"></label><label class="option"><input type="checkbox" id="optFileBrowserAllowParent"><span>File browser parent folders<small>Allow Files to go above the workspace/worktree directory with the ... row.</small></span></label>',
+      '<label class="option"><span>Tree indentation<small>Pixels added per folder level in file trees.</small></span><input id="optTreeIndentPx" type="number" min="0" max="40" step="1"></label><label class="option"><input type="checkbox" id="optFileBrowserAllowParent"><span>File browser parent folders<small>Allow Files to go above the workspace/worktree directory with the ... row.</small></span></label><label class="option"><input type="checkbox" id="optFileBrowserGitStatus"><span>File browser git status colors<small>Color files and directories in the file browser by Git status: yellow for modified, green for new, red for deleted, blue for directories with changes.</small></span></label>',
     );
 groupSettingsSections();
 function groupSettingsSections() {
@@ -1271,7 +1273,7 @@ function groupSettingsSections() {
     {
       title: "Appearance",
       desc: "Theme mode and color palette.",
-      ids: ["optTheme", "optTreeIndentPx", "optFileBrowserAllowParent"],
+      ids: ["optTheme", "optTreeIndentPx", "optFileBrowserAllowParent", "optFileBrowserGitStatus"],
       blocks: ["themeColorsApply"],
     },
     {
@@ -1430,6 +1432,7 @@ function applyOptions() {
     scrollLines = el("optScrollLines"),
     treeIndentPx = el("optTreeIndentPx"),
     fileBrowserAllowParent = el("optFileBrowserAllowParent"),
+    fileBrowserGitStatus = el("optFileBrowserGitStatus"),
     scrollLinesValue = el("scrollLinesValue"),
     showTabActivity = el("optShowTabActivity"),
     worktreeAutoDiscover = el("optWorktreeAutoDiscover"),
@@ -1481,6 +1484,8 @@ function applyOptions() {
   if (treeIndentPx) treeIndentPx.value = String(options.treeIndentPx ?? 14);
   if (fileBrowserAllowParent)
     fileBrowserAllowParent.checked = !!options.fileBrowserAllowParent;
+  if (fileBrowserGitStatus)
+    fileBrowserGitStatus.checked = !!options.fileBrowserGitStatus;
   document.body.style.setProperty("--herdr-tree-indent", `${options.treeIndentPx ?? 14}px`);
   if (scrollLinesValue)
     scrollLinesValue.textContent = String(options.scrollLines || 3);
