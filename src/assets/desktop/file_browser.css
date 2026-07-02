@@ -25,10 +25,25 @@
   padding: 10px;
 }
 .file-browser-head {
+  align-items: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.file-browser-title-row {
   align-items: center;
   display: flex;
-  gap: 10px;
   justify-content: space-between;
+  min-width: 0;
+}
+.file-browser-title {
+  font-weight: 800;
+}
+.file-browser-subtitle {
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  word-break: break-all;
 }
 .file-browser-toolbar {
   align-items: center;
@@ -60,7 +75,6 @@
 .file-browser-title {
   font-weight: 800;
 }
-.file-browser-subtitle,
 .file-browser-empty {
   color: var(--muted);
   font-size: 12px;
