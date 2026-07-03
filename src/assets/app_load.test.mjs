@@ -182,9 +182,9 @@ describe("app bundle load", () => {
     ok(!source.includes('terminal.querySelector(".xterm-rows")'));
     ok(!source.includes('shell.style.width ='));
     ok(!source.includes("fontFamily: terminalFontFamily()"));
-    ok(!source.includes("theme: terminalTheme()"));
-    ok(!source.includes("term.options.theme = terminalTheme()"));
-    ok(!source.includes("term.setOption(\"theme\", terminalTheme())"));
+    match(source, /theme: terminalTheme\(\)/);
+    match(source, /term\.options\.theme = terminalTheme\(\)/);
+    match(source, /term\.setOption\("theme", terminalTheme\(\)\)/);
   });
 
   it("keeps terminal scrollback available from wheel and touch", () => {

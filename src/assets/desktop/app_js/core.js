@@ -1751,6 +1751,15 @@ function applyTheme() {
   const themeSelect = el("optTheme");
   if (themeSelect) themeSelect.value = themeMode;
   localStorage.setItem("herdr-web-theme", themeMode);
+  if (term) {
+    try {
+      term.options.theme = terminalTheme();
+    } catch (e) {
+      try {
+        term.setOption("theme", terminalTheme());
+      } catch (_) {}
+    }
+  }
   fitTerminalShell();
 }
 function applyThemeColorVars(mode) {

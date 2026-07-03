@@ -74,6 +74,7 @@ function connectTerminal() {
   if (!term) {
     term = new Terminal({
       convertEol: false,
+      theme: terminalTheme(),
       scrollback: 10000,
     });
     term.open(terminal);
