@@ -81,12 +81,6 @@ function connectTerminal() {
     applyTerminalLinks();
     applyTheme();
     term.onData(sendInputData);
-    if (!terminalScrollFollowBound && term.onScroll) {
-      term.onScroll(() => {
-        setTerminalFollowPaused(!terminalAtBottom());
-      });
-      terminalScrollFollowBound = true;
-    }
     if (term.attachCustomKeyEventHandler)
       term.attachCustomKeyEventHandler((e) => {
         if (window.HerdrGitUi && window.HerdrGitUi.isVisible && window.HerdrGitUi.isVisible())
@@ -141,11 +135,6 @@ function connectTerminal() {
     shell.addEventListener("mousedown", () =>
       setTimeout(focusTerminal, 0),
     );
-    shell.addEventListener("wheel", handleTerminalWheel, { passive: false });
-    shell.addEventListener("touchstart", handleTerminalTouchStart, { passive: true });
-    shell.addEventListener("touchmove", handleTerminalTouchMove, { passive: false });
-    shell.addEventListener("touchend", handleTerminalTouchEnd, { passive: true });
-    shell.addEventListener("touchcancel", handleTerminalTouchEnd, { passive: true });
     termScrollBound = true;
   }
   try {
@@ -257,91 +246,14 @@ function coalesceTerminalFrames(frames) {
   return merged;
 }
 
-function terminalScrollLines(deltaY) {
-  if (!term || !Number.isFinite(deltaY) || deltaY === 0) return false;
-  const rowHeight = terminalCellHeight();
-  const lines = Math.max(1, Math.round(Math.abs(deltaY) / rowHeight));
-  try {
-    term.scrollLines(deltaY > 0 ? lines : -lines);
-    setTerminalFollowPaused(!terminalAtBottom());
-    return true;
-  } catch (e) {
-    return false;
-  }
-}
-function terminalCellHeight() {
-  const dims =
-    term &&
-    term._core &&
-    term._core._renderService &&
-    term._core._renderService.dimensions &&
-    term._core._renderService.dimensions.css &&
-    term._core._renderService.dimensions.css.cell;
-  return Math.max(1, (dims && dims.height) || 17);
-}
-function handleTerminalWheel(e) {
-  if (e.ctrlKey || e.metaKey) return;
-  const rowHeight = terminalCellHeight();
-  const pageHeight = Math.max(rowHeight, (state.termRows || 30) * rowHeight);
-  const deltaY =
-    e.deltaMode === 1 ? e.deltaY * rowHeight : e.deltaMode === 2 ? e.deltaY * pageHeight : e.deltaY;
-  if (!terminalScrollLines(deltaY)) return;
-  e.preventDefault();
-}
-function handleTerminalTouchStart(e) {
-  terminalTouchLastY = e.touches && e.touches.length === 1 ? e.touches[0].clientY : null;
-}
-function handleTerminalTouchMove(e) {
-  if (!e.touches || e.touches.length !== 1 || terminalTouchLastY === null) return;
-  const y = e.touches[0].clientY;
-  const deltaY = terminalTouchLastY - y;
-  terminalTouchLastY = y;
-  if (!terminalScrollLines(deltaY)) return;
-  e.preventDefault();
-}
-function handleTerminalTouchEnd() {
-  terminalTouchLastY = null;
-}
-
-function terminalAtBottom() {
-  try {
-    const buffer = term && term.buffer && term.buffer.active;
-    if (!buffer) return true;
-    return Math.max(0, buffer.baseY - buffer.viewportY) <= 1;
-  } catch (e) {
-    return true;
-  }
-}
-function setTerminalFollowPaused(paused) {
-  terminalFollowPaused = !!paused;
-  updateTerminalFollowButton();
-}
-function updateTerminalFollowButton() {
-  const button = el("terminalFollowButton");
-  if (!button) return;
-  button.hidden = !terminalFollowPaused;
-  button.setAttribute("aria-hidden", terminalFollowPaused ? "false" : "true");
-}
 function writeTerminalFrame(data) {
-  const shouldPreserve = terminalFollowPaused && !terminalAtBottom();
-  const viewportY = shouldPreserve && term && term.buffer ? term.buffer.active.viewportY : null;
-  const done = () => {
-    if (shouldPreserve && Number.isFinite(viewportY)) {
-      try {
-        term.scrollToLine(viewportY);
-      } catch (e) {}
-    }
-    setTerminalFollowPaused(!terminalAtBottom());
-  };
   try {
-    term.write(data, done);
+    term.write(data);
   } catch (e) {
     term.write(data);
-    done();
   }
 }
 function scrollTerminalToBottom() {
-  setTerminalFollowPaused(false);
   try {
     if (term) term.scrollToBottom();
   } catch (e) {}
