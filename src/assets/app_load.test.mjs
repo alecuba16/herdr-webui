@@ -175,6 +175,7 @@ describe("app bundle load", () => {
     match(source, /shellStyle\.display === "none" \|\|\n\s+shellStyle\.visibility === "hidden" \|\|\n\s+\(shellRects && shellRects\.length === 0\)/);
     match(source, /function fitTerminalShell\(\) \{[\s\S]*?shell\.clientWidth \|\| rect\.width[\s\S]*?shell\.clientHeight \|\| rect\.height[\s\S]*?\};\n\}/);
     match(source, /function browserTerminalSize\(\) \{[\s\S]*?const shellSize = fitTerminalShell\(\);\n\s+if \(!shellSize\) return null;/);
+    ok(!source.includes('terminal.style.height = "100%"'));
     ok(!source.includes('terminal.querySelector(".xterm-screen")'));
     ok(!source.includes('terminal.querySelector(".xterm-viewport")'));
     ok(!source.includes('terminal.querySelector(".xterm-rows")'));
