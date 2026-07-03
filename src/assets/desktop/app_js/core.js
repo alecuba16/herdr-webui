@@ -965,6 +965,16 @@ const agentStatusGroups = [
   ["other", "Others", "gray"],
 ];
 const agentStatusGroupKeys = agentStatusGroups.map(([key]) => key);
+const agentStatusGroupByKey = Object.fromEntries(
+  agentStatusGroups.map((group) => [group[0], group]),
+);
+const workingFirstAgentStatusOrder = [
+  "blocked",
+  "working",
+  "other",
+  "done",
+  "idle",
+];
 function normalizeAgentStatusOrder(value) {
   const seen = new Set();
   const order = [];
@@ -990,16 +1000,17 @@ function loadOptions() {
     const stored = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
     if (stored.overflow === true && stored.terminalOverflowOptIn !== true)
       stored.overflow = false;
-    return {
-      ...defaultOptions,
-      ...stored,
-    };
+    return stored;
   } catch (_) {
     return { ...defaultOptions };
   }
 }
 function normalizeOptions(value) {
   const next = { ...defaultOptions, ...(value || {}) };
+  const hasStoredAgentStatusOrder = Object.prototype.hasOwnProperty.call(
+    value || {},
+    "agentStatusOrder",
+  );
   delete next.shiftEnter;
   if (next.captureCmdW === true || next.closeShortcut === true)
     next.closeShortcut = "altw";
@@ -1031,14 +1042,8 @@ function normalizeOptions(value) {
   if (!["off", "attention", "attention_inverted"].includes(next.agentSortMode))
     next.agentSortMode = defaultOptions.agentSortMode;
   next.agentStatusOrder = normalizeAgentStatusOrder(next.agentStatusOrder);
-  if (next.agentSortMode === "attention_inverted")
-    next.agentStatusOrder = normalizeAgentStatusOrder([
-      "blocked",
-      "working",
-      "other",
-      "done",
-      "idle",
-    ]);
+  if (next.agentSortMode === "attention_inverted" && !hasStoredAgentStatusOrder)
+    next.agentStatusOrder = normalizeAgentStatusOrder(workingFirstAgentStatusOrder);
   if (!["panels", "close"].includes(next.parentCloseMode))
     next.parentCloseMode = defaultOptions.parentCloseMode;
   next.stuckWorkingEnabled = next.stuckWorkingEnabled !== false;
@@ -1542,13 +1547,7 @@ function applyOptions() {
     closeShortcutCurrent.textContent = closeShortcutLabel();
   if (sortAgents) sortAgents.value = options.agentSortMode || "off";
   if (sidebarWorkspacePercent)
-    sidebarWorkspacePercent.value = String(
-      Math.round(options.sidebarWorkspacePercent ?? 68),
-    );
-  document.body.style.setProperty(
-    "--sidebar-workspace-percent",
-    `${options.sidebarWorkspacePercent ?? 68}%`,
-  );
+    applySidebarWorkspacePercent(options.sidebarWorkspacePercent ?? 68);
   renderAgentStatusOrderSettings();
   if (parentCloseMode)
     parentCloseMode.value = options.parentCloseMode || "panels";
@@ -1615,10 +1614,9 @@ function renderAgentStatusOrderSettings() {
   if (!list || !container) return;
   const disabled = options.agentSortMode === "off";
   container.classList.toggle("disabled", disabled);
-  const byKey = Object.fromEntries(agentStatusGroups.map((group) => [group[0], group]));
   list.innerHTML = normalizeAgentStatusOrder(options.agentStatusOrder)
     .map((key, index, order) => {
-      const [, label, color] = byKey[key] || [key, key, "gray"];
+      const [, label, color] = agentStatusGroupByKey[key] || [key, key, "gray"];
       return `<div class="agent-sort-row" data-status="${escapeAttr(key)}"><span class="agent-sort-chip ${escapeAttr(color)}">${escapeHtml(label)}</span><span class="agent-sort-buttons"><button type="button" class="mini" ${index === 0 ? "disabled" : ""} onclick="moveAgentStatusGroup('${escapeAttr(key)}',-1)">↑</button><button type="button" class="mini" ${index === order.length - 1 ? "disabled" : ""} onclick="moveAgentStatusGroup('${escapeAttr(key)}',1)">↓</button></span></div>`;
     })
     .join("");
@@ -1638,14 +1636,17 @@ function moveAgentStatusGroup(key, delta) {
 function setSidebarWorkspacePercent(value) {
   options.sidebarWorkspacePercent = normalizeSidebarWorkspacePercent(value);
   saveOptions();
-  applyOptions();
+  applySidebarWorkspacePercent(options.sidebarWorkspacePercent);
 }
-function previewSidebarWorkspacePercent(value) {
+function applySidebarWorkspacePercent(value) {
   const percent = normalizeSidebarWorkspacePercent(value);
   document.body.style.setProperty("--sidebar-workspace-percent", `${percent}%`);
   const input = el("optSidebarWorkspacePercent");
   if (input) input.value = String(percent);
   return percent;
+}
+function previewSidebarWorkspacePercent(value) {
+  return applySidebarWorkspacePercent(value);
 }
 function syncThemeColorInputs() {
   for (const mode of ["dark", "light"]) {

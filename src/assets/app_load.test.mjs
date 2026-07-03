@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { beforeEach, describe, it } from "node:test";
-import { doesNotThrow, equal, match, ok } from "node:assert/strict";
+import { deepEqual, doesNotThrow, equal, match, ok } from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 
@@ -855,6 +855,46 @@ describe("app bundle load", () => {
       ),
       -1,
     );
+  });
+
+  it("preserves custom agent status order when saving settings", () => {
+    const ctx = context();
+    ctx.localStorage.setItem(
+      "herdr-web-options",
+      JSON.stringify({
+        agentSortMode: "attention_inverted",
+        agentStatusOrder: ["working", "blocked", "idle", "done", "other"],
+      }),
+    );
+    vm.runInContext(source, ctx);
+
+    equal(
+      Math.sign(
+        ctx.agentAttentionCompare(
+          { agent_status: "working" },
+          { agent_status: "blocked" },
+        ),
+      ),
+      -1,
+    );
+    vm.runInContext("saveOptions()", ctx);
+    const saved = JSON.parse(ctx.localStorage.getItem("herdr-web-options"));
+    deepEqual(saved.agentStatusOrder, [
+      "working",
+      "blocked",
+      "idle",
+      "done",
+      "other",
+    ]);
+  });
+
+  it("normalizes sidebar split percent to whole bounded values", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    equal(ctx.normalizeSidebarWorkspacePercent(33.6), 34);
+    equal(ctx.normalizeSidebarWorkspacePercent(10), 20);
+    equal(ctx.normalizeSidebarWorkspacePercent(90), 80);
   });
 
   it("defines tab activity setting and badge", () => {

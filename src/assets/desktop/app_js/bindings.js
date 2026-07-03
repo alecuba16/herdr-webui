@@ -175,6 +175,8 @@ el("optTerminalLinks").onchange = () => {
 };
 el("optAgentSortMode").onchange = () => {
   options.agentSortMode = el("optAgentSortMode").value;
+  if (options.agentSortMode === "attention_inverted")
+    options.agentStatusOrder = normalizeAgentStatusOrder(workingFirstAgentStatusOrder);
   saveOptions();
   applyOptions();
   render();
