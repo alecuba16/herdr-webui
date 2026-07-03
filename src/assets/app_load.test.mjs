@@ -196,12 +196,18 @@ describe("app bundle load", () => {
     ok(!terminalCss.match(/\.terminal \.xterm-rows[\s\S]*?height: 100% !important;/));
     ok(!terminalCss.match(/\.terminal \.xterm-rows[\s\S]*?overflow: hidden !important;/));
     ok(!source.includes('el("terminalShell").addEventListener("contextmenu"'));
-    match(source, /el\("terminalShell"\)\.addEventListener\("wheel", handleTerminalWheel, \{\n\s+passive: false,\n\s+\}\);/);
-    match(source, /el\("terminalShell"\)\.addEventListener\("touchmove", handleTerminalTouchMove, \{\n\s+passive: false,\n\s+\}\);/);
-    match(source, /function handleTerminalWheel\(event\) \{[\s\S]*?!terminalUsesNormalBuffer\(\)[\s\S]*?closest\("\.xterm"\)[\s\S]*?HerdrTerminalScroll\.wheelLines\(term, event, state\.termRows \|\| 24\)/);
-    match(source, /function handleTerminalTouchMove\(event\) \{[\s\S]*?!terminalUsesNormalBuffer\(\)[\s\S]*?HerdrTerminalScroll\.touchLines\(term, dy\)/);
-    match(source, /term\.attachCustomWheelEventHandler\(\(e\) => \{[\s\S]*?if \(e\.altKey\) \{[\s\S]*?if \(typeof e\.preventDefault === "function"\) e\.preventDefault\(\);[\s\S]*?scrollBrowserOverflow\(e\.deltaX, e\.deltaY\);[\s\S]*?return false;[\s\S]*?return true;[\s\S]*?\}\);/);
-    match(source, /function scrollLocal\(term, direction, lines, afterScroll\) \{[\s\S]*?term\.scrollLines\(direction === "up" \? -lines : lines\);[\s\S]*?term\.scrollToLine\(nextLine\);[\s\S]*?return true;/);
+    ok(!source.includes('el("terminalShell").addEventListener("wheel"'));
+    ok(!source.includes('el("terminalShell").addEventListener("touchstart"'));
+    ok(!source.includes('el("terminalShell").addEventListener("touchmove"'));
+    ok(!source.includes("attachCustomWheelEventHandler"));
+    ok(!source.includes("handleTerminalWheel"));
+    ok(!source.includes("handleTerminalTouch"));
+    ok(!source.includes("scrollLocalTerminal"));
+    ok(!source.includes("sendBackendScroll"));
+    match(source, /term\.onScroll\(\(\) => \{\n\s+setTerminalFollowPaused\(!terminalAtBottom\(\)\);\n\s+\}\);/);
+    match(source, /const shouldPreserve = terminalFollowPaused && !terminalAtBottom\(\);/);
+    match(source, /term\.scrollToLine\(viewportY\);/);
+    match(source, /function scrollTerminalToBottom\(\) \{[\s\S]*?term\.scrollToBottom\(\);/);
   });
 
   it("keeps Git UI keyboard input away from the terminal", () => {

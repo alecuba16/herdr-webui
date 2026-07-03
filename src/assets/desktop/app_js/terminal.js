@@ -78,15 +78,6 @@ function connectTerminal() {
       scrollback: 10000,
     });
     term.open(terminal);
-    if (term.attachCustomWheelEventHandler)
-      term.attachCustomWheelEventHandler((e) => {
-        if (e.altKey) {
-          if (typeof e.preventDefault === "function") e.preventDefault();
-          scrollBrowserOverflow(e.deltaX, e.deltaY);
-          return false;
-        }
-        return true;
-      });
     applyTerminalLinks();
     applyTheme();
     term.onData(sendInputData);
@@ -111,27 +102,6 @@ function connectTerminal() {
           !e.metaKey
         ) {
           pasteToTerminal(shiftEnterSequence());
-          return false;
-        }
-        if (
-          e.type === "keydown" &&
-          !e.altKey &&
-          !e.ctrlKey &&
-          !e.metaKey &&
-          (e.key === "PageUp" || e.key === "PageDown")
-        ) {
-          if (terminalUsesNormalBuffer()) {
-            e.preventDefault();
-            scrollLocalTerminal(
-              e.key === "PageUp" ? "up" : "down",
-              Math.max(1, (state.termRows || rows) - 1),
-            );
-            return false;
-          }
-          sendBackendScroll(
-            e.key === "PageUp" ? "up" : "down",
-            Math.max(1, (state.termRows || rows) - 1),
-          );
           return false;
         }
         return true;
@@ -170,15 +140,6 @@ function connectTerminal() {
     el("terminalShell").addEventListener("mousedown", () =>
       setTimeout(focusTerminal, 0),
     );
-    el("terminalShell").addEventListener("wheel", handleTerminalWheel, {
-      passive: false,
-    });
-    el("terminalShell").addEventListener("touchstart", handleTerminalTouchStart, {
-      passive: true,
-    });
-    el("terminalShell").addEventListener("touchmove", handleTerminalTouchMove, {
-      passive: false,
-    });
     termScrollBound = true;
   }
   try {
@@ -289,9 +250,6 @@ function coalesceTerminalFrames(frames) {
   }
   return merged;
 }
-function terminalUsesNormalBuffer() {
-  return HerdrTerminalScroll.usesNormalBuffer(term);
-}
 function terminalAtBottom() {
   try {
     const buffer = term && term.buffer && term.buffer.active;
@@ -336,42 +294,6 @@ function scrollTerminalToBottom() {
   } catch (e) {}
   focusTerminal(true);
 }
-function scrollLocalTerminal(direction, lines) {
-  return HerdrTerminalScroll.scrollLocal(term, direction, lines, () => {
-    setTerminalFollowPaused(!terminalAtBottom());
-  });
-}
-function handleTerminalWheel(event) {
-  if (!event || event.altKey || !event.deltaY || !terminalUsesNormalBuffer()) return;
-  if (event.target && event.target.closest && event.target.closest(".xterm")) return;
-  if (
-    scrollLocalTerminal(
-      event.deltaY < 0 ? "up" : "down",
-      HerdrTerminalScroll.wheelLines(term, event, state.termRows || 24),
-    )
-  ) {
-    event.preventDefault();
-    event.stopPropagation();
-  }
-}
-function handleTerminalTouchStart(event) {
-  const touch = event && event.touches && event.touches[0];
-  handleTerminalTouchStart.lastY = touch ? touch.clientY : null;
-}
-function handleTerminalTouchMove(event) {
-  const touch = event && event.touches && event.touches[0];
-  if (!touch || !terminalUsesNormalBuffer()) return;
-  const lastY = handleTerminalTouchStart.lastY;
-  handleTerminalTouchStart.lastY = touch.clientY;
-  if (!Number.isFinite(lastY)) return;
-  const dy = lastY - touch.clientY;
-  if (Math.abs(dy) < 4) return;
-  const lines = HerdrTerminalScroll.touchLines(term, dy);
-  if (scrollLocalTerminal(dy < 0 ? "up" : "down", lines)) {
-    event.preventDefault();
-    event.stopPropagation();
-  }
-}
 function modalOpen() {
   return [
     "settingsModal",
@@ -414,19 +336,6 @@ function scheduleTerminalFrameWork() {
     fitTerminalSurface();
     focusTerminal();
   });
-}
-function sendBackendScroll(direction, lines, cell, modifiers = 0) {
-  if (termWs && termWs.readyState === 1)
-    termWs.send(
-      JSON.stringify({
-        type: "scroll",
-        direction,
-        lines,
-        column: cell && cell.column,
-        row: cell && cell.row,
-        modifiers,
-      }),
-    );
 }
 async function copySelection() {
   const text = term && term.getSelection ? term.getSelection() : "";
