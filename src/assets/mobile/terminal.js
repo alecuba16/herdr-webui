@@ -159,6 +159,12 @@ function terminalLinksEnabled() {
         );
         terminal.dataset.pasteHandler = "1";
       }
+      if (!terminal.dataset.scrollHandler) {
+        terminal.addEventListener("wheel", handleWheel, { passive: false });
+        terminal.addEventListener("touchstart", handleTouchStart, { passive: true });
+        terminal.addEventListener("touchmove", handleTouchMove, { passive: false });
+        terminal.dataset.scrollHandler = "1";
+      }
       openedTerminalElement = terminal;
       try {
         term.resize(nextSize.cols, nextSize.rows);
@@ -228,6 +234,49 @@ function terminalLinksEnabled() {
         return Math.max(0, buffer.baseY - buffer.viewportY) <= 1;
       } catch (_) {
         return true;
+      }
+    }
+
+    function terminalUsesNormalBuffer() {
+      return HerdrTerminalScroll.usesNormalBuffer(term);
+    }
+
+    function scrollLocalTerminal(direction, lines) {
+      return HerdrTerminalScroll.scrollLocal(term, direction, lines, () => {
+        setTerminalFollowPaused(!terminalAtBottom());
+      });
+    }
+
+    function handleWheel(event) {
+      if (!event || event.altKey || !event.deltaY || !terminalUsesNormalBuffer()) return;
+      const lines = HerdrTerminalScroll.wheelLines(
+        term,
+        event,
+        (term && term.rows) || 24,
+      );
+      if (scrollLocalTerminal(event.deltaY < 0 ? "up" : "down", lines)) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    }
+
+    function handleTouchStart(event) {
+      const touch = event && event.touches && event.touches[0];
+      handleTouchStart.lastY = touch ? touch.clientY : null;
+    }
+
+    function handleTouchMove(event) {
+      const touch = event && event.touches && event.touches[0];
+      if (!touch || !terminalUsesNormalBuffer()) return;
+      const lastY = handleTouchStart.lastY;
+      handleTouchStart.lastY = touch.clientY;
+      if (!Number.isFinite(lastY)) return;
+      const dy = lastY - touch.clientY;
+      if (Math.abs(dy) < 4) return;
+      const lines = HerdrTerminalScroll.touchLines(term, dy);
+      if (scrollLocalTerminal(dy < 0 ? "up" : "down", lines)) {
+        event.preventDefault();
+        event.stopPropagation();
       }
     }
 

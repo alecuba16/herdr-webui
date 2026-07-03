@@ -703,6 +703,10 @@ fn app_router(state: WebState) -> Router {
         .route("/assets/shared/file-tree.js", get(shared_file_tree_js))
         .route("/assets/vendor/codemirror.js", get(vendor_codemirror_js))
         .route("/assets/shared/editor.js", get(shared_editor_js))
+        .route(
+            "/assets/shared/terminal-scroll.js",
+            get(shared_terminal_scroll_js),
+        )
         .route("/assets/desktop/git-ui.js", get(desktop_git_ui_js))
         .route(
             "/assets/desktop/file-browser.js",

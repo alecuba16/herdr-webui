@@ -10,6 +10,7 @@ const LOGIN_JS: &str = include_str!("assets/login.js");
 const SHARED_CORE_JS: &str = include_str!("assets/shared/core.js");
 const SHARED_FILE_TREE_JS: &str = include_str!("assets/shared/file_tree.js");
 const SHARED_EDITOR_JS: &str = include_str!("assets/shared/editor.js");
+const SHARED_TERMINAL_SCROLL_JS: &str = include_str!("assets/shared/terminal_scroll.js");
 const VENDOR_CODEMIRROR_JS: &str = include_str!("assets/vendor/codemirror.bundle.js");
 const APP_BOOT_JS: &str = include_str!("assets/app_boot.js");
 const DESKTOP_CSS: &str = concat!(
@@ -120,6 +121,13 @@ pub(crate) async fn shared_file_tree_js() -> Response {
 
 pub(crate) async fn shared_editor_js() -> Response {
     static_text(SHARED_EDITOR_JS, "application/javascript; charset=utf-8")
+}
+
+pub(crate) async fn shared_terminal_scroll_js() -> Response {
+    static_text(
+        SHARED_TERMINAL_SCROLL_JS,
+        "application/javascript; charset=utf-8",
+    )
 }
 
 pub(crate) async fn vendor_codemirror_js() -> Response {
@@ -348,6 +356,7 @@ mod tests {
             javascript
         );
         assert_eq!(content_type(&shared_file_tree_js().await), javascript);
+        assert_eq!(content_type(&shared_terminal_scroll_js().await), javascript);
         assert_eq!(content_type(&shared_editor_js().await), javascript);
         assert_eq!(content_type(&vendor_codemirror_js().await), javascript);
         assert_eq!(content_type(&mobile_file_browser_js().await), javascript);
