@@ -435,16 +435,21 @@
 }
 .git-ui-change-end .git-ui-code-old,
 .git-ui-change-end .git-ui-code-new,
-.git-ui-change-end .git-ui-line-pair {
+.git-ui-change-end .git-ui-line-pair,
+.git-ui-change-end .git-ui-code-unified,
+.git-ui-change-end .git-ui-unified-lines,
+.git-ui-change-end .git-ui-unified-action {
   border-bottom: 1px solid var(--border2);
 }
 .git-ui-add .git-ui-code-new,
-.git-ui-change .git-ui-code-new {
+.git-ui-change .git-ui-code-new,
+.git-ui-add .git-ui-code-unified {
   background: rgba(46, 160, 67, 0.18);
   border-left: 4px solid #1b7c3d;
 }
 .git-ui-del .git-ui-code-old,
-.git-ui-change .git-ui-code-old {
+.git-ui-change .git-ui-code-old,
+.git-ui-del .git-ui-code-unified {
   background: rgba(248, 81, 73, 0.18);
   border-left: 4px solid #da3633;
 }
