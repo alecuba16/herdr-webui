@@ -39,6 +39,8 @@ let term,
   connectedSize = "",
   termScrollBound = false,
   terminalTouchLastY = null,
+  terminalWheelDeltaPixels = 0,
+  terminalScrollbackOffsetEstimate = 0,
   audioCtx = null,
   audioUnlocked = false,
   knownAttention = null,
@@ -2231,6 +2233,7 @@ function resetTerminalConnection(clear = false, destroy = false) {
   if (terminalWriteQueue.length && typeof flushTerminalFrames === "function") flushTerminalFrames();
   terminalWriteQueue = [];
   terminalWriteFlushPending = false;
+  setTerminalFollowPaused(false);
   if (termWs) {
     termWs.onclose = null;
     try {

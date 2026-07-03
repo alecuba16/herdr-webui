@@ -266,20 +266,37 @@ function terminalUsesNormalBuffer() {
 }
 function terminalWheelLines(e) {
   const rowHeight = terminalCellHeight();
-  if (e.deltaMode === 1) return e.deltaY;
-  if (e.deltaMode === 2) return e.deltaY * (state.termRows || 30);
-  return e.deltaY / rowHeight;
+  const stepLines = Math.max(1, Number(options.scrollLines) || 1);
+  if (e.deltaMode === 1) return e.deltaY > 0 ? stepLines : -stepLines;
+  if (e.deltaMode === 2) return e.deltaY > 0 ? (state.termRows || 30) : -(state.termRows || 30);
+  terminalWheelDeltaPixels += e.deltaY;
+  if (Math.abs(terminalWheelDeltaPixels) < rowHeight) return 0;
+  const steps = Math.trunc(terminalWheelDeltaPixels / rowHeight);
+  terminalWheelDeltaPixels -= steps * rowHeight;
+  return steps * stepLines;
 }
 function scrollTerminalLines(lines) {
   if (!term || !Number.isFinite(lines) || lines === 0) return false;
-  if (sendBackendScroll(lines)) return true;
+  if (sendBackendScroll(lines)) {
+    updateTerminalScrollbackEstimate(lines);
+    return true;
+  }
   if (!terminalUsesNormalBuffer()) return false;
   try {
     term.scrollLines(Math.trunc(lines));
+    setTerminalFollowPaused(!terminalAtBottom());
     return true;
   } catch (e) {
     return false;
   }
+}
+function updateTerminalScrollbackEstimate(lines) {
+  const count = Math.max(1, Math.abs(Math.trunc(lines)));
+  terminalScrollbackOffsetEstimate = Math.max(
+    0,
+    terminalScrollbackOffsetEstimate + (lines < 0 ? count : -count),
+  );
+  setTerminalFollowPaused(terminalScrollbackOffsetEstimate > 0);
 }
 function sendBackendScroll(lines) {
   if (!termWs || termWs.readyState !== 1 || !Number.isFinite(lines) || lines === 0) return false;
@@ -298,6 +315,11 @@ function sendBackendScroll(lines) {
 function handleTerminalWheel(e) {
   if (e.ctrlKey || e.metaKey) return;
   const lines = terminalWheelLines(e);
+  if (!lines) {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    return;
+  }
   const signedLines = lines > 0 ? Math.max(1, Math.ceil(lines)) : Math.min(-1, Math.floor(lines));
   if (!scrollTerminalLines(signedLines)) return;
   e.preventDefault();
@@ -321,6 +343,23 @@ function handleTerminalTouchEnd() {
   terminalTouchLastY = null;
 }
 
+function terminalAtBottom() {
+  try {
+    const buffer = term && term.buffer && term.buffer.active;
+    if (!buffer) return true;
+    return Math.max(0, buffer.baseY - buffer.viewportY) <= 1;
+  } catch (e) {
+    return true;
+  }
+}
+function setTerminalFollowPaused(paused) {
+  terminalScrollbackOffsetEstimate = paused ? terminalScrollbackOffsetEstimate : 0;
+  const button = el("terminalFollowButton");
+  if (!button) return;
+  button.hidden = !paused;
+  button.setAttribute("aria-hidden", paused ? "false" : "true");
+}
+
 function writeTerminalFrame(data) {
   try {
     term.write(data);
@@ -329,6 +368,8 @@ function writeTerminalFrame(data) {
   }
 }
 function scrollTerminalToBottom() {
+  sendBackendScroll(65535);
+  setTerminalFollowPaused(false);
   try {
     if (term) term.scrollToBottom();
   } catch (e) {}
