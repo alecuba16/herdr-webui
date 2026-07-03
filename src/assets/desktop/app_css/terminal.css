@@ -28,16 +28,9 @@
   min-width: 0;
   min-height: 0;
 }
-.terminal .xterm-screen,
-.terminal .xterm-rows,
-.terminal .xterm-rows > div {
-  overflow: hidden !important;
-}
 .terminal .xterm-screen {
   display: block;
-}
-.terminal .xterm-rows {
-  height: 100% !important;
+  overflow: hidden;
 }
 .terminal .xterm-viewport {
   overflow-y: scroll !important;
@@ -46,7 +39,6 @@
 .terminal .xterm-viewport::-webkit-scrollbar {
   display: none;
 }
-.terminal .xterm-rows,
 .terminal .xterm-rows > div {
   width: 100% !important;
 }

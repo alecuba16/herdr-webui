@@ -86,14 +86,6 @@ function connectTerminal() {
           scrollBrowserOverflow(e.deltaX, e.deltaY);
           return false;
         }
-        if (e.deltaY && terminalUsesNormalBuffer()) {
-          if (typeof e.preventDefault === "function") e.preventDefault();
-          scrollLocalTerminal(
-            e.deltaY < 0 ? "up" : "down",
-            HerdrTerminalScroll.wheelLines(term, e, state.termRows || 24),
-          );
-          return false;
-        }
         return true;
       });
     applyTerminalLinks();
@@ -352,6 +344,7 @@ function scrollLocalTerminal(direction, lines) {
 }
 function handleTerminalWheel(event) {
   if (!event || event.altKey || !event.deltaY || !terminalUsesNormalBuffer()) return;
+  if (event.target && event.target.closest && event.target.closest(".xterm")) return;
   if (
     scrollLocalTerminal(
       event.deltaY < 0 ? "up" : "down",
@@ -580,7 +573,6 @@ function fitTerminalSurface() {
   if (viewport) viewport.style.height = height + "px";
   if (rowsEl) {
     rowsEl.style.width = width + "px";
-    rowsEl.style.height = height + "px";
   }
   if (helper) {
     helper.style.width = width + "px";
