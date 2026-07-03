@@ -135,6 +135,11 @@ function connectTerminal() {
     shell.addEventListener("mousedown", () =>
       setTimeout(focusTerminal, 0),
     );
+    terminal.addEventListener("wheel", handleTerminalWheel, { passive: false });
+    terminal.addEventListener("touchstart", handleTerminalTouchStart, { passive: true });
+    terminal.addEventListener("touchmove", handleTerminalTouchMove, { passive: false });
+    terminal.addEventListener("touchend", handleTerminalTouchEnd, { passive: true });
+    terminal.addEventListener("touchcancel", handleTerminalTouchEnd, { passive: true });
     termScrollBound = true;
   }
   try {
@@ -244,6 +249,55 @@ function coalesceTerminalFrames(frames) {
     offset += frame.length;
   }
   return merged;
+}
+
+function terminalCellHeight() {
+  const dims =
+    term &&
+    term._core &&
+    term._core._renderService &&
+    term._core._renderService.dimensions &&
+    term._core._renderService.dimensions.css &&
+    term._core._renderService.dimensions.css.cell;
+  return Math.max(1, (dims && dims.height) || 17);
+}
+function terminalWheelLines(e) {
+  const rowHeight = terminalCellHeight();
+  if (e.deltaMode === 1) return e.deltaY;
+  if (e.deltaMode === 2) return e.deltaY * (state.termRows || 30);
+  return e.deltaY / rowHeight;
+}
+function scrollTerminalLines(lines) {
+  if (!term || !Number.isFinite(lines) || lines === 0) return false;
+  try {
+    term.scrollLines(Math.trunc(lines));
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+function handleTerminalWheel(e) {
+  if (e.ctrlKey || e.metaKey) return;
+  const lines = terminalWheelLines(e);
+  const signedLines = lines > 0 ? Math.max(1, Math.ceil(lines)) : Math.min(-1, Math.floor(lines));
+  if (!scrollTerminalLines(signedLines)) return;
+  e.preventDefault();
+}
+function handleTerminalTouchStart(e) {
+  terminalTouchLastY = e.touches && e.touches.length === 1 ? e.touches[0].clientY : null;
+}
+function handleTerminalTouchMove(e) {
+  if (!e.touches || e.touches.length !== 1 || terminalTouchLastY === null) return;
+  const y = e.touches[0].clientY;
+  const deltaY = terminalTouchLastY - y;
+  terminalTouchLastY = y;
+  const lines = deltaY / terminalCellHeight();
+  const signedLines = lines > 0 ? Math.max(1, Math.ceil(lines)) : Math.min(-1, Math.floor(lines));
+  if (!scrollTerminalLines(signedLines)) return;
+  e.preventDefault();
+}
+function handleTerminalTouchEnd() {
+  terminalTouchLastY = null;
 }
 
 function writeTerminalFrame(data) {
