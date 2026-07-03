@@ -959,7 +959,17 @@ async function closeTab(id) {
     const panes = panesForTab(id);
     if (panes.length) await closePaneById(panes[0].pane_id);
   }
-  if (state.tab === id) state.tab = null;
-  state.pane = null;
+  if (typeof removeClosedTabFromState === "function") removeClosedTabFromState(id);
+  if (state.tab === id && typeof selectFallbackTabAfterClosed === "function") {
+    resetTerminalConnection(true);
+    selectFallbackTabAfterClosed(id);
+    replaceSelectionHistory();
+    render();
+    if (typeof Terminal !== "undefined") connectTerminal();
+  } else if (state.tab === id) {
+    state.tab = null;
+    state.pane = null;
+    render();
+  }
   refresh();
 }

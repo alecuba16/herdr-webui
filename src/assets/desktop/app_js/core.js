@@ -2507,6 +2507,7 @@ function forgetClosedSelection(kind, data) {
       .catch(() => {});
   }
   if (kind === "pane.closed" || kind === "pane.exited") {
+    if (data && data.pane_id) removeClosedPaneFromState(data.pane_id);
     if (data && data.pane_id && data.pane_id === state.pane) {
       resetTerminalConnection(true, true);
       selectFallbackPaneAfterClosed(data.pane_id);
@@ -2515,14 +2516,41 @@ function forgetClosedSelection(kind, data) {
       if (typeof Terminal !== "undefined") connectTerminal();
     }
   } else if (kind === "tab.closed") {
+    if (data && data.tab_id) removeClosedTabFromState(data.tab_id);
     if (data && data.tab_id && data.tab_id === state.tab) {
       resetTerminalConnection(true);
-      state.tab = null;
-      state.pane = null;
-      state.terminalId = null;
+      selectFallbackTabAfterClosed(data.tab_id);
       render();
+      replaceSelectionHistory();
+      if (typeof Terminal !== "undefined") connectTerminal();
     }
   }
+}
+
+function removeClosedPaneFromState(paneId) {
+  state.panes = (state.panes || []).filter((pane) => pane.pane_id !== paneId);
+  state.agents = (state.agents || []).filter((agent) => agent.pane_id !== paneId);
+}
+
+function removeClosedTabFromState(tabId) {
+  state.tabs = (state.tabs || []).filter((tab) => tab.tab_id !== tabId);
+  state.allTabs = (state.allTabs || []).filter((tab) => tab.tab_id !== tabId);
+  state.panes = (state.panes || []).filter((pane) => pane.tab_id !== tabId);
+  state.agents = (state.agents || []).filter((agent) => agent.tab_id !== tabId);
+}
+
+function selectFallbackTabAfterClosed(closedTabId) {
+  const nextTab =
+    (state.tabs || []).find((tab) => tab.tab_id !== closedTabId && tab.focused) ||
+    (state.tabs || []).find((tab) => tab.tab_id !== closedTabId) ||
+    null;
+  state.tab = nextTab && nextTab.tab_id;
+  const nextPane =
+    (state.panes || []).find((pane) => pane.tab_id === state.tab && pane.focused) ||
+    (state.panes || []).find((pane) => pane.tab_id === state.tab) ||
+    null;
+  state.pane = nextPane && nextPane.pane_id;
+  state.terminalId = (nextPane && nextPane.terminal_id) || null;
 }
 
 function selectFallbackPaneAfterClosed(closedPaneId) {
