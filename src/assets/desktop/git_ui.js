@@ -478,6 +478,7 @@
     const view = active();
     if (!view) return;
     saveSideEditorFromDom();
+    resetCompareState(view);
     if (!view.cwd) {
       view.error = "No checkout path found for this workspace. Open a linked worktree or add cwd metadata first.";
       view.loading = false;
@@ -564,6 +565,18 @@
   function currentMode() {
     const view = active() || {};
     return view.mode || "changes";
+  }
+
+  function resetCompareState(view) {
+    if (!view || currentMode() === "changes") return;
+    view.mode = "changes";
+    view.compareBase = "";
+    view.compareTarget = "";
+    view.temporaryHistoryCompare = false;
+    view.file = "";
+    view.diffKind = "";
+    view.diffScope = "all";
+    view.tab = "changes";
   }
 
   function canMutateDiff() {
@@ -784,7 +797,6 @@
 
   function renderFileToolbar(activeTab) {
     const view = active() || {};
-    if (!view.file) return "";
     const conflicts = ((((view.status || {}).conflicted) || []).length > 0);
     const compare = currentMode() !== "changes"
       ? `<span class="git-ui-compare-state">Comparing ${esc(view.compareBase || "base")} → ${esc(view.compareTarget || "target")}</span><button class="git-ui-btn" onclick="HerdrGitUi.latestChanges()">Back to latest changes</button>`
@@ -793,7 +805,8 @@
     const collapsible = activeTab === "changes" && files.length > 0;
     const collapsed = files.filter((file) => view.collapsedFiles && view.collapsedFiles[file.path]).length;
     const collapse = collapsible ? `<button class="git-ui-btn" onclick="HerdrGitUi.${collapsed === files.length ? "expandAllFiles" : "collapseAllFiles"}()">${collapsed === files.length ? "Show all" : "Collapse all"}</button>` : "";
-    const blame = activeTab === "changes" ? `<button class="git-ui-btn ${view.showBlame ? "active" : ""}" onclick="HerdrGitUi.toggleBlame()">Blame</button>` : "";
+    const history = view.file ? `<button class="git-ui-btn ${activeTab === "history" ? "active" : ""}" onclick="HerdrGitUi.tab('history')">History</button>` : "";
+    const blame = activeTab === "changes" && view.file ? `<button class="git-ui-btn ${view.showBlame ? "active" : ""}" onclick="HerdrGitUi.toggleBlame()">Blame</button>` : "";
     const layout = diffLayoutMode();
     const layoutToggle = `<button class="git-ui-btn" title="Switch diff layout" onclick="HerdrGitUi.toggleDiffLayout()">${layout === "unified" ? "Side-by-side" : "Unified"}</button>`;
     const sideEditor = view.sideEditor && view.sideEditor.path === view.file
@@ -801,7 +814,7 @@
       : activeTab === "changes" && canEditCurrentFile(view)
         ? `<button class="git-ui-btn" onclick="HerdrGitUi.editSideBySide()">Edit side-by-side</button>`
         : "";
-    return `<div class="git-ui-log-head"><span class="git-ui-toolbar-title">File view</span><button class="git-ui-btn ${activeTab === "changes" ? "active" : ""}" onclick="HerdrGitUi.latestChanges()">Changes</button><button class="git-ui-btn ${activeTab === "history" ? "active" : ""}" onclick="HerdrGitUi.tab('history')">History</button>${blame}${layoutToggle}${sideEditor}${conflicts ? `<button class="git-ui-btn ${activeTab === "conflicts" ? "active" : ""}" onclick="HerdrGitUi.tab('conflicts')">Conflicts</button>` : ""}${collapse}${compare}</div>`;
+    return `<div class="git-ui-log-head"><span class="git-ui-toolbar-title">${view.file ? "File view" : "Diff view"}</span><button class="git-ui-btn ${activeTab === "changes" ? "active" : ""}" onclick="HerdrGitUi.latestChanges()">Changes</button>${history}${blame}${layoutToggle}${sideEditor}${conflicts ? `<button class="git-ui-btn ${activeTab === "conflicts" ? "active" : ""}" onclick="HerdrGitUi.tab('conflicts')">Conflicts</button>` : ""}${collapse}${compare}</div>`;
   }
 
   function canEditCurrentFile(view) {
