@@ -223,6 +223,60 @@ body.light .chip.label {
 .option select {
   margin-left: auto;
 }
+.agent-sort-order {
+  display: grid;
+  gap: 10px;
+}
+.agent-sort-order.disabled {
+  opacity: 0.65;
+}
+.agent-sort-order small {
+  color: var(--muted);
+  display: block;
+  font-size: 12px;
+  margin-top: 3px;
+}
+.agent-sort-list {
+  display: grid;
+  gap: 6px;
+}
+.agent-sort-row {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+.agent-sort-chip {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 5px 9px;
+}
+.agent-sort-chip.green {
+  background: #22c55e26;
+  color: #22c55e;
+}
+.agent-sort-chip.yellow {
+  background: #f59e0b26;
+  color: #f59e0b;
+}
+.agent-sort-chip.red {
+  background: #ef444426;
+  color: #ef4444;
+}
+.agent-sort-chip.blue {
+  background: #3b82f626;
+  color: #3b82f6;
+}
+.agent-sort-chip.gray {
+  background: color-mix(in srgb, var(--muted), transparent 78%);
+  color: var(--muted);
+}
+.agent-sort-buttons {
+  display: inline-flex;
+  gap: 5px;
+}
 .modal-actions {
   position: sticky;
   bottom: 0;

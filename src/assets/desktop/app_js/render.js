@@ -568,14 +568,13 @@ function agentAttentionCompare(a, b) {
   return aRank - bRank;
 }
 function agentAttentionRank(a) {
-  const status = statusClass(a.agent_status);
-  if (status === "blocked") return 0;
-  if (options.agentSortMode === "attention_inverted") {
-    if (isWorkingDismissed(a)) return 2;
-    return { working: 1, unknown: 3, done: 4, idle: 5 }[status] ?? 3;
-  }
-  if (isWorkingDismissed(a)) return 4;
-  return { idle: 1, done: 2, unknown: 3, working: 5 }[status] ?? 3;
+  const status = isWorkingDismissed(a) ? "idle" : statusClass(a.agent_status);
+  const group = ["idle", "working", "blocked", "done"].includes(status)
+    ? status
+    : "other";
+  const order = normalizeAgentStatusOrder(options.agentStatusOrder);
+  const rank = order.indexOf(group);
+  return rank >= 0 ? rank : order.length;
 }
 function agentToken(cls, value) {
   const s = String(value || "");

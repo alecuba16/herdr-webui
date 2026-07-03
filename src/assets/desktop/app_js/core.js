@@ -280,7 +280,15 @@ if (sectionEl && !el("workspacePane")) {
   agentsScroll.appendChild(agentsEl);
   agentsPane.appendChild(agentsScroll);
   if (oldAgentsHeader) oldAgentsHeader.remove();
+  const resizeHandle = document.createElement("div");
+  resizeHandle.id = "sidebarSplitHandle";
+  resizeHandle.className = "sidebar-split-handle";
+  resizeHandle.title = "Drag to resize workspace and agents panels";
+  resizeHandle.setAttribute("role", "separator");
+  resizeHandle.setAttribute("aria-orientation", "horizontal");
+  resizeHandle.tabIndex = 0;
   split.appendChild(workspacePane);
+  split.appendChild(resizeHandle);
   split.appendChild(agentsPane);
   sectionEl.appendChild(split);
   if (versionsEl) {
@@ -481,7 +489,7 @@ function shortcutsModalHtml() {
           <h3>Functionality map</h3>
           <p class="settings-note">Main Herdr areas and what each control does.</p>
           <div class="help-grid">
-            <div class="help-row"><strong>Sidebar</strong><span>Workspaces show open roots/worktrees; agents list status. Click to open; double-click names to rename. Colored badges show blocked, done, working, and idle.</span></div>
+            <div class="help-row"><strong>Sidebar</strong><span>Workspaces show open roots/worktrees; agents list status. Click to open; double-click names to rename. Drag the workspace/agents separator to resize by percent. Colored badges show blocked, done, working, and idle.</span></div>
             <div class="help-row"><strong>Header</strong><span>＋ opens/creates workspace; ? opens this help; gear opens Settings; moon/theme toggles color mode; sidebar chevron hides/shows navigation.</span></div>
             <div class="help-row"><strong>Panels/Tabs</strong><span>Top panel switcher changes terminal panel; + creates panel; ✕ closes current panel; double-click panel label to rename.</span></div>
             <div class="help-row"><strong>Terminal</strong><span>Native xterm wheel scrolls scrollback; PageUp/PageDown scroll; Shift+Enter sends newline; Tail resumes follow; terminal links open in browser when enabled.</span></div>
@@ -489,7 +497,7 @@ function shortcutsModalHtml() {
             <div class="help-row"><strong>Git</strong><span>Git selector opens repo tools for diff, stage/unstage, discard, commit, stash, branches, cleanup, and worktree prune; unified/side-by-side diff is in Settings.</span></div>
             <div class="help-row"><strong>Worktrees</strong><span>Row actions create linked worktree, open existing worktree, close panels/workspace, or remove linked worktree after confirmation.</span></div>
             <div class="help-row"><strong>Search</strong><span>Prefix then / opens palette for workspaces, repos, worktrees, labels, agents, and panels.</span></div>
-            <div class="help-row"><strong>Settings</strong><span>Configure shortcuts, terminal font/links, themes, file browser, Git UI, worktree defaults, and notification/no-sleep behavior.</span></div>
+            <div class="help-row"><strong>Settings</strong><span>Configure shortcuts, terminal font/links, themes, file browser, Git UI, worktree defaults, agent group order, sidebar split percent, and notification/no-sleep behavior.</span></div>
           </div>
         </section>
         <div id="shortcutEditor"></div>
@@ -931,6 +939,8 @@ const defaultOptions = {
   terminalFontFamily: "ui-monospace,SFMono-Regular,Menlo,monospace",
   terminalLinks: true,
   agentSortMode: "off",
+  agentStatusOrder: ["blocked", "idle", "done", "other", "working"],
+  sidebarWorkspacePercent: 68,
   parentCloseMode: "panels",
   stuckWorkingEnabled: true,
   workingDismissMinutes: 30,
@@ -947,21 +957,60 @@ const defaultOptions = {
   themeColors: themeColorDefaults,
   ...moduleOptionDefaults,
 };
+const agentStatusGroups = [
+  ["idle", "Idle", "green"],
+  ["working", "Working", "yellow"],
+  ["blocked", "Blocked", "red"],
+  ["done", "Done", "blue"],
+  ["other", "Others", "gray"],
+];
+const agentStatusGroupKeys = agentStatusGroups.map(([key]) => key);
+const agentStatusGroupByKey = Object.fromEntries(
+  agentStatusGroups.map((group) => [group[0], group]),
+);
+const workingFirstAgentStatusOrder = [
+  "blocked",
+  "working",
+  "other",
+  "done",
+  "idle",
+];
+function normalizeAgentStatusOrder(value) {
+  const seen = new Set();
+  const order = [];
+  for (const key of Array.isArray(value) ? value : []) {
+    if (agentStatusGroupKeys.includes(key) && !seen.has(key)) {
+      seen.add(key);
+      order.push(key);
+    }
+  }
+  for (const key of defaultOptions.agentStatusOrder) {
+    if (!seen.has(key)) order.push(key);
+  }
+  return order;
+}
+function normalizeSidebarWorkspacePercent(value) {
+  return Math.round(Math.max(
+    20,
+    Math.min(80, Number.isFinite(Number(value)) ? Number(value) : 68),
+  ));
+}
 function loadOptions() {
   try {
     const stored = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
     if (stored.overflow === true && stored.terminalOverflowOptIn !== true)
       stored.overflow = false;
-    return {
-      ...defaultOptions,
-      ...stored,
-    };
+    return stored;
   } catch (_) {
     return { ...defaultOptions };
   }
 }
 function normalizeOptions(value) {
   const next = { ...defaultOptions, ...(value || {}) };
+  const hasStoredAgentStatusOrder = Object.prototype.hasOwnProperty.call(
+    value || {},
+    "agentStatusOrder",
+  );
   delete next.shiftEnter;
   if (next.captureCmdW === true || next.closeShortcut === true)
     next.closeShortcut = "altw";
@@ -992,11 +1041,17 @@ function normalizeOptions(value) {
   next.terminalLinks = next.terminalLinks !== false;
   if (!["off", "attention", "attention_inverted"].includes(next.agentSortMode))
     next.agentSortMode = defaultOptions.agentSortMode;
+  next.agentStatusOrder = normalizeAgentStatusOrder(next.agentStatusOrder);
+  if (next.agentSortMode === "attention_inverted" && !hasStoredAgentStatusOrder)
+    next.agentStatusOrder = normalizeAgentStatusOrder(workingFirstAgentStatusOrder);
   if (!["panels", "close"].includes(next.parentCloseMode))
     next.parentCloseMode = defaultOptions.parentCloseMode;
   next.stuckWorkingEnabled = next.stuckWorkingEnabled !== false;
   if (next.sortAgentsByStatus === true) next.agentSortMode = "attention";
   delete next.sortAgentsByStatus;
+  next.sidebarWorkspacePercent = normalizeSidebarWorkspacePercent(
+    next.sidebarWorkspacePercent,
+  );
   next.workingDismissMinutes = Math.max(
     1,
     Math.min(1440, Number(next.workingDismissMinutes) || 30),
@@ -1275,7 +1330,7 @@ if (soundSetting && !el("optAgentSortMode"))
     .closest("label")
     .insertAdjacentHTML(
       "afterend",
-      '<label class="option"><input type="checkbox" id="optGlobalShortcutsEnabled"><span>Global keyboard shortcuts<small>Enable prefix WebUI navigation shortcuts listed under ?.</small></span></label><label class="option"><span>Shortcut prefix<small>Click Record, press desired key combination, then use it before WebUI shortcuts.</small></span><span class="shortcut-capture"><input id="optGlobalShortcutPrefix" readonly><button type="button" class="tab add" id="optGlobalShortcutPrefixCapture">Record</button></span></label><label class="option"><span>Search shortcut<small>Optional direct shortcut. Leave disabled if it conflicts with terminal apps.</small></span><span class="shortcut-capture"><input id="optSearchShortcut" readonly><button type="button" class="tab add" id="optSearchShortcutCapture">Record</button><button type="button" class="tab add" id="optSearchShortcutClear">Clear</button></span></label><label class="option"><span>Terminal font<small>Use installed monospaced font family, including Nerd Fonts used by Neovim.</small></span><input id="optTerminalFontFamily" list="terminalFontPresets" placeholder="&quot;MesloLGS Nerd Font Mono&quot;, monospace"><datalist id="terminalFontPresets"><option value="&quot;MesloLGS Nerd Font Mono&quot;, &quot;MesloLGS NF&quot;, monospace"><option value="&quot;MesloLGS Nerd Font&quot;, &quot;MesloLGS NF&quot;, monospace"><option value="&quot;JetBrainsMono Nerd Font Mono&quot;, &quot;JetBrainsMono Nerd Font&quot;, monospace"><option value="&quot;Hack Nerd Font Mono&quot;, &quot;Hack Nerd Font&quot;, monospace"><option value="&quot;FiraCode Nerd Font Mono&quot;, &quot;FiraCode Nerd Font&quot;, monospace"><option value="&quot;CaskaydiaCove Nerd Font Mono&quot;, &quot;CaskaydiaCove Nerd Font&quot;, monospace"><option value="ui-monospace,SFMono-Regular,Menlo,monospace"></datalist></label><label class="option"><input type="checkbox" id="optTerminalLinks"><span>Terminal links<small>Detect http/https URLs in terminal output and open them in a new tab when clicked.</small></span></label><label class="option"><span>Close panel shortcut<small>Stored in browser storage and available after reopening the tab.</small></span><select class="settings-select" id="optCloseShortcut"><option value="off">Disabled</option><option value="altw">Option+W</option><option value="shiftspacew">Shift+Space then W</option></select></label><label class="option"><span>Agent sorting<small>Sort agents by attention priority, or show them in default order.</small></span><select class="settings-select" id="optAgentSortMode"><option value="off">Default order</option><option value="attention">Attention (blocked first)</option><option value="attention_inverted">Attention (working first)</option></select></label><label class="option"><span>Parent workspace close<small>Close panels only (keeps linked worktrees running) or full close with re-open (stops processes, re-opens worktrees with fresh shells).</small></span><select class="settings-select" id="optParentCloseMode"><option value="panels">Close panels only</option><option value="close">Full close + re-open worktrees</option></select></label><label class="option"><input type="checkbox" id="optStuckWorkingEnabled"><span>Ignore stuck working agents<small>Dismiss working agents that appear stuck. Clears automatically on status changes and terminal output.</small></span></label><label class="option"><span>Ignore stuck working for<small>Minutes to keep a local dismissed-working override before showing working again.</small></span><input id="optWorkingDismissMinutes" type="number" min="1" max="1440" step="1"></label><label class="option"><input type="checkbox" id="optShowTabActivity"><span>Show panel last update<small>Display local last-change age on top panel tabs. Updates on refreshes, events, and selected terminal output; no timer polling.</small></span></label><label class="option"><span>Workspace sorting<small>Default tree order, shared drag-and-drop order, or attention state priority.</small></span><select class="settings-select" id="optWorkspaceSort"><option value="default">Default</option><option value="drag">Drag&drop</option><option value="state">State</option></select></label><label class="option"><span>Notification scope<small>Choose whether alerts fire in every open tab or only the tab viewing the agent panel.</small></span><select class="settings-select" id="optSoundScope"><option value="current">Current agent tab</option><option value="all">All tabs</option></select></label><label class="option"><span>Notification volume<small><span id="notificationVolumeValue">24</span>% for local attention tone.</small></span><input type="range" id="optNotificationVolume" min="0" max="100" step="1"></label><label class="option"><input type="checkbox" id="optGenerateWorktreeNames"><span>Generate worktree branch names<small>Allow blank Branch name in Worktrees modal. Herdr generates worktree/&lt;name&gt;.</small></span></label><label class="option"><span>Worktree default directory<small>Base directory for generated worktree checkout paths. Relative paths resolve from repo root. Example: ../worktrees.</small></span><input id="optWorktreeDefaultDirectory" placeholder="../worktrees"></label><label class="option"><span>Exploration default directory<small>Prefills new/open workspace, worktree discovery, and Git cleanup scan paths.</small></span><input id="optExplorationDefaultDirectory" placeholder="~/Documents/code"></label><label class="option"><span>Scroll speed<small><span id="scrollLinesValue">3</span> terminal lines per wheel step.</small></span><input type="range" id="optScrollLines" min="1" max="20" step="1"></label><label class="option"><span>Worktree autodiscover<small>Seconds to wait after path input stops. Set 0 for immediate.</small></span><input type="number" id="optWorktreeAutoDiscover" min="0" max="30" step="0.5"></label>',
+      '<label class="option"><input type="checkbox" id="optGlobalShortcutsEnabled"><span>Global keyboard shortcuts<small>Enable prefix WebUI navigation shortcuts listed under ?.</small></span></label><label class="option"><span>Shortcut prefix<small>Click Record, press desired key combination, then use it before WebUI shortcuts.</small></span><span class="shortcut-capture"><input id="optGlobalShortcutPrefix" readonly><button type="button" class="tab add" id="optGlobalShortcutPrefixCapture">Record</button></span></label><label class="option"><span>Search shortcut<small>Optional direct shortcut. Leave disabled if it conflicts with terminal apps.</small></span><span class="shortcut-capture"><input id="optSearchShortcut" readonly><button type="button" class="tab add" id="optSearchShortcutCapture">Record</button><button type="button" class="tab add" id="optSearchShortcutClear">Clear</button></span></label><label class="option"><span>Terminal font<small>Use installed monospaced font family, including Nerd Fonts used by Neovim.</small></span><input id="optTerminalFontFamily" list="terminalFontPresets" placeholder="&quot;MesloLGS Nerd Font Mono&quot;, monospace"><datalist id="terminalFontPresets"><option value="&quot;MesloLGS Nerd Font Mono&quot;, &quot;MesloLGS NF&quot;, monospace"><option value="&quot;MesloLGS Nerd Font&quot;, &quot;MesloLGS NF&quot;, monospace"><option value="&quot;JetBrainsMono Nerd Font Mono&quot;, &quot;JetBrainsMono Nerd Font&quot;, monospace"><option value="&quot;Hack Nerd Font Mono&quot;, &quot;Hack Nerd Font&quot;, monospace"><option value="&quot;FiraCode Nerd Font Mono&quot;, &quot;FiraCode Nerd Font&quot;, monospace"><option value="&quot;CaskaydiaCove Nerd Font Mono&quot;, &quot;CaskaydiaCove Nerd Font&quot;, monospace"><option value="ui-monospace,SFMono-Regular,Menlo,monospace"></datalist></label><label class="option"><input type="checkbox" id="optTerminalLinks"><span>Terminal links<small>Detect http/https URLs in terminal output and open them in a new tab when clicked.</small></span></label><label class="option"><span>Close panel shortcut<small>Stored in browser storage and available after reopening the tab.</small></span><select class="settings-select" id="optCloseShortcut"><option value="off">Disabled</option><option value="altw">Option+W</option><option value="shiftspacew">Shift+Space then W</option></select></label><label class="option"><span>Agent sorting<small>Turn on status group sorting for the agents sidebar.</small></span><select class="settings-select" id="optAgentSortMode"><option value="off">Default order</option><option value="attention">Custom group order</option><option value="attention_inverted">Working-first preset</option></select></label><div class="option agent-sort-order" id="optAgentStatusOrder"><div><strong>Agent group order</strong><small>Move status groups with arrows. Idle green, working yellow, blocked red, done blue, others gray. Saved in this browser.</small></div><div class="agent-sort-list" id="agentStatusOrderList"></div></div><label class="option"><span>Workspace panel size<small>Percent of sidebar height used by Workspaces. Drag separator or type a percent.</small></span><input id="optSidebarWorkspacePercent" type="number" min="20" max="80" step="1"></label><label class="option"><span>Parent workspace close<small>Close panels only (keeps linked worktrees running) or full close with re-open (stops processes, re-opens worktrees with fresh shells).</small></span><select class="settings-select" id="optParentCloseMode"><option value="panels">Close panels only</option><option value="close">Full close + re-open worktrees</option></select></label><label class="option"><input type="checkbox" id="optStuckWorkingEnabled"><span>Ignore stuck working agents<small>Dismiss working agents that appear stuck. Clears automatically on status changes and terminal output.</small></span></label><label class="option"><span>Ignore stuck working for<small>Minutes to keep a local dismissed-working override before showing working again.</small></span><input id="optWorkingDismissMinutes" type="number" min="1" max="1440" step="1"></label><label class="option"><input type="checkbox" id="optShowTabActivity"><span>Show panel last update<small>Display local last-change age on top panel tabs. Updates on refreshes, events, and selected terminal output; no timer polling.</small></span></label><label class="option"><span>Workspace sorting<small>Default tree order, shared drag-and-drop order, or attention state priority.</small></span><select class="settings-select" id="optWorkspaceSort"><option value="default">Default</option><option value="drag">Drag&drop</option><option value="state">State</option></select></label><label class="option"><span>Notification scope<small>Choose whether alerts fire in every open tab or only the tab viewing the agent panel.</small></span><select class="settings-select" id="optSoundScope"><option value="current">Current agent tab</option><option value="all">All tabs</option></select></label><label class="option"><span>Notification volume<small><span id="notificationVolumeValue">24</span>% for local attention tone.</small></span><input type="range" id="optNotificationVolume" min="0" max="100" step="1"></label><label class="option"><input type="checkbox" id="optGenerateWorktreeNames"><span>Generate worktree branch names<small>Allow blank Branch name in Worktrees modal. Herdr generates worktree/&lt;name&gt;.</small></span></label><label class="option"><span>Worktree default directory<small>Base directory for generated worktree checkout paths. Relative paths resolve from repo root. Example: ../worktrees.</small></span><input id="optWorktreeDefaultDirectory" placeholder="../worktrees"></label><label class="option"><span>Exploration default directory<small>Prefills new/open workspace, worktree discovery, and Git cleanup scan paths.</small></span><input id="optExplorationDefaultDirectory" placeholder="~/Documents/code"></label><label class="option"><span>Scroll speed<small><span id="scrollLinesValue">3</span> terminal lines per wheel step.</small></span><input type="range" id="optScrollLines" min="1" max="20" step="1"></label><label class="option"><span>Worktree autodiscover<small>Seconds to wait after path input stops. Set 0 for immediate.</small></span><input type="number" id="optWorktreeAutoDiscover" min="0" max="30" step="0.5"></label>',
     );
 const showTabActivitySetting = el("optShowTabActivity");
 if (showTabActivitySetting && !el("optTreeIndentPx"))
@@ -1324,6 +1379,8 @@ function groupSettingsSections() {
         "optGlobalShortcutPrefix",
         "optSearchShortcut",
         "optAgentSortMode",
+        "optAgentStatusOrder",
+        "optSidebarWorkspacePercent",
         "optParentCloseMode",
         "optStuckWorkingEnabled",
         "optWorkingDismissMinutes",
@@ -1358,7 +1415,7 @@ function groupSettingsSections() {
     const nodes = [];
     for (const id of def.ids || []) {
       const control = el(id);
-      const row = control && control.closest("label.option");
+      const row = control && control.closest(".option");
       if (row && !nodes.includes(row)) nodes.push(row);
     }
     for (const id of def.blocks || []) {
@@ -1446,6 +1503,7 @@ function applyOptions() {
     themeSelect = el("optTheme"),
     closeShortcut = el("optCloseShortcut"),
     sortAgents = el("optAgentSortMode"),
+    sidebarWorkspacePercent = el("optSidebarWorkspacePercent"),
     parentCloseMode = el("optParentCloseMode"),
     stuckWorkingEnabled = el("optStuckWorkingEnabled"),
     workingDismissMinutes = el("optWorkingDismissMinutes"),
@@ -1490,6 +1548,9 @@ function applyOptions() {
   if (closeShortcutCurrent)
     closeShortcutCurrent.textContent = closeShortcutLabel();
   if (sortAgents) sortAgents.value = options.agentSortMode || "off";
+  if (sidebarWorkspacePercent)
+    applySidebarWorkspacePercent(options.sidebarWorkspacePercent ?? 68);
+  renderAgentStatusOrderSettings();
   if (parentCloseMode)
     parentCloseMode.value = options.parentCloseMode || "panels";
   if (stuckWorkingEnabled)
@@ -1548,6 +1609,46 @@ function applyOptions() {
       if (typeof Terminal !== "undefined") connectTerminal();
     }
   }
+}
+function renderAgentStatusOrderSettings() {
+  const list = el("agentStatusOrderList"),
+    container = el("optAgentStatusOrder");
+  if (!list || !container) return;
+  const disabled = options.agentSortMode === "off";
+  container.classList.toggle("disabled", disabled);
+  list.innerHTML = normalizeAgentStatusOrder(options.agentStatusOrder)
+    .map((key, index, order) => {
+      const [, label, color] = agentStatusGroupByKey[key] || [key, key, "gray"];
+      return `<div class="agent-sort-row" data-status="${escapeAttr(key)}"><span class="agent-sort-chip ${escapeAttr(color)}">${escapeHtml(label)}</span><span class="agent-sort-buttons"><button type="button" class="mini" ${index === 0 ? "disabled" : ""} onclick="moveAgentStatusGroup('${escapeAttr(key)}',-1)">↑</button><button type="button" class="mini" ${index === order.length - 1 ? "disabled" : ""} onclick="moveAgentStatusGroup('${escapeAttr(key)}',1)">↓</button></span></div>`;
+    })
+    .join("");
+}
+function moveAgentStatusGroup(key, delta) {
+  const order = normalizeAgentStatusOrder(options.agentStatusOrder);
+  const index = order.indexOf(key);
+  const nextIndex = index + delta;
+  if (index < 0 || nextIndex < 0 || nextIndex >= order.length) return;
+  [order[index], order[nextIndex]] = [order[nextIndex], order[index]];
+  options.agentStatusOrder = order;
+  if (options.agentSortMode === "off") options.agentSortMode = "attention";
+  saveOptions();
+  applyOptions();
+  render();
+}
+function setSidebarWorkspacePercent(value) {
+  options.sidebarWorkspacePercent = normalizeSidebarWorkspacePercent(value);
+  saveOptions();
+  applySidebarWorkspacePercent(options.sidebarWorkspacePercent);
+}
+function applySidebarWorkspacePercent(value) {
+  const percent = normalizeSidebarWorkspacePercent(value);
+  document.body.style.setProperty("--sidebar-workspace-percent", `${percent}%`);
+  const input = el("optSidebarWorkspacePercent");
+  if (input) input.value = String(percent);
+  return percent;
+}
+function previewSidebarWorkspacePercent(value) {
+  return applySidebarWorkspacePercent(value);
 }
 function syncThemeColorInputs() {
   for (const mode of ["dark", "light"]) {

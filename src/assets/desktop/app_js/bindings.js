@@ -175,10 +175,56 @@ el("optTerminalLinks").onchange = () => {
 };
 el("optAgentSortMode").onchange = () => {
   options.agentSortMode = el("optAgentSortMode").value;
+  if (options.agentSortMode === "attention_inverted")
+    options.agentStatusOrder = normalizeAgentStatusOrder(workingFirstAgentStatusOrder);
   saveOptions();
   applyOptions();
   render();
 };
+const optSidebarWorkspacePercent = el("optSidebarWorkspacePercent");
+if (optSidebarWorkspacePercent)
+  optSidebarWorkspacePercent.oninput = () => {
+    setSidebarWorkspacePercent(optSidebarWorkspacePercent.value);
+  };
+const sidebarSplitHandle = el("sidebarSplitHandle");
+if (sidebarSplitHandle) {
+  let pendingSidebarWorkspacePercent = null;
+  const resizeFromClientY = (clientY) => {
+    const split = sidebarSplitHandle.parentElement;
+    if (!split) return;
+    const rect = split.getBoundingClientRect();
+    const percent = ((clientY - rect.top) / rect.height) * 100;
+    pendingSidebarWorkspacePercent = previewSidebarWorkspacePercent(percent);
+  };
+  sidebarSplitHandle.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    sidebarSplitHandle.setPointerCapture(e.pointerId);
+    sidebarSplitHandle.classList.add("dragging");
+    resizeFromClientY(e.clientY);
+  });
+  sidebarSplitHandle.addEventListener("pointermove", (e) => {
+    if (!sidebarSplitHandle.hasPointerCapture(e.pointerId)) return;
+    resizeFromClientY(e.clientY);
+  });
+  const stopResize = (e) => {
+    if (sidebarSplitHandle.hasPointerCapture(e.pointerId))
+      sidebarSplitHandle.releasePointerCapture(e.pointerId);
+    sidebarSplitHandle.classList.remove("dragging");
+    if (pendingSidebarWorkspacePercent !== null) {
+      setSidebarWorkspacePercent(pendingSidebarWorkspacePercent);
+      pendingSidebarWorkspacePercent = null;
+    }
+  };
+  sidebarSplitHandle.addEventListener("pointerup", stopResize);
+  sidebarSplitHandle.addEventListener("pointercancel", stopResize);
+  sidebarSplitHandle.addEventListener("keydown", (e) => {
+    if (!["ArrowUp", "ArrowDown"].includes(e.key)) return;
+    e.preventDefault();
+    setSidebarWorkspacePercent(
+      (options.sidebarWorkspacePercent || 68) + (e.key === "ArrowDown" ? 2 : -2),
+    );
+  });
+}
 el("optParentCloseMode").onchange = () => {
   options.parentCloseMode = el("optParentCloseMode").value;
   saveOptions();
