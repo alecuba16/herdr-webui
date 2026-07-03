@@ -191,6 +191,66 @@
     return rows;
   }
 
+  function normalizeSearchKind(kind) {
+    return kind === "dir" ? "dir" : "file";
+  }
+
+  function toggleSearchKind(kind) {
+    return normalizeSearchKind(kind) === "dir" ? "file" : "dir";
+  }
+
+  function searchKindLabel(kind) {
+    return normalizeSearchKind(kind) === "dir" ? "Folders" : "Files";
+  }
+
+  function searchKindNoun(kind) {
+    return normalizeSearchKind(kind) === "dir" ? "folder" : "file";
+  }
+
+  function searchKindQuery(kind) {
+    return `search_kind=${encodeURIComponent(normalizeSearchKind(kind))}`;
+  }
+
+  function searchTreeEntriesByKind(entries, kind) {
+    const normalized = normalizeSearchKind(kind);
+    return searchTreeEntries(entries).filter((entry) => entry.kind === normalized);
+  }
+
+  function replacePathPrefix(value, from, to) {
+    if (value === from) return to;
+    return String(value || "").startsWith(`${from}/`) ? `${to}${String(value).slice(String(from).length)}` : value;
+  }
+
+  function removePathFromEntries(entries, path) {
+    return (entries || []).filter((entry) => entry.path !== path && !String(entry.path || "").startsWith(`${path}/`));
+  }
+
+  function renamePathInEntries(entries, from, to, nextName) {
+    return (entries || []).map((entry) => {
+      if (entry.path !== from && !String(entry.path || "").startsWith(`${from}/`)) return entry;
+      const next = Object.assign({}, entry, { path: replacePathPrefix(entry.path, from, to) });
+      if (entry.path === from) next.name = nextName;
+      return next;
+    });
+  }
+
+  function remapPathMap(map, from, to, mapper) {
+    const next = {};
+    for (const [key, value] of Object.entries(map || {})) {
+      next[replacePathPrefix(key, from, to)] = mapper ? mapper(value) : value;
+    }
+    return next;
+  }
+
+  function prunePathMap(map, path, mapper) {
+    const next = {};
+    for (const [key, value] of Object.entries(map || {})) {
+      if (key === path || key.startsWith(`${path}/`)) continue;
+      next[key] = mapper ? mapper(value) : value;
+    }
+    return next;
+  }
+
   function applyGitStatus(entries, gitStatus) {
     if (!gitStatus || typeof gitStatus !== "object") return entries;
     const changedDirs = new Set();
@@ -228,7 +288,18 @@
     parentPath,
     renderEntries,
     renderPathTree,
+    normalizeSearchKind,
+    prunePathMap,
+    remapPathMap,
+    removePathFromEntries,
+    renamePathInEntries,
+    replacePathPrefix,
+    searchKindLabel,
+    searchKindNoun,
+    searchKindQuery,
     searchTreeEntries,
+    searchTreeEntriesByKind,
+    toggleSearchKind,
     upEntry,
   };
 })();

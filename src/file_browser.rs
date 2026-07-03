@@ -45,6 +45,7 @@ struct FileBrowserQuery {
     dirs_only: Option<bool>,
     depth: Option<u8>,
     q: Option<String>,
+    search_kind: Option<String>,
     offset: Option<usize>,
     limit: Option<usize>,
     include_git_status: Option<bool>,
@@ -282,6 +283,7 @@ fn push_search_entries(
     limit: usize,
     visited: &mut usize,
     matched: &mut usize,
+    search_kind: Option<&str>,
 ) -> Result<(), String> {
     if build.entries.len() >= limit || *visited >= MAX_SEARCH_VISITS {
         build.truncated = true;
@@ -294,16 +296,19 @@ fn push_search_entries(
             break;
         }
         let is_dir = entry.metadata.is_dir();
-        if entry.sort_name.contains(needle)
-            || relative_to_root(build.root, &entry.path)
-                .to_lowercase()
-                .contains(needle)
+        let kind = if is_dir { "dir" } else { "file" };
+        let kind_matches = search_kind.map_or(true, |wanted| wanted == kind);
+        if kind_matches
+            && (entry.sort_name.contains(needle)
+                || relative_to_root(build.root, &entry.path)
+                    .to_lowercase()
+                    .contains(needle))
         {
             if *matched >= offset && build.entries.len() < limit {
                 build.entries.push(FileBrowserEntry {
                     name: entry.name.clone(),
                     path: relative_to_root(build.root, &entry.path),
-                    kind: if is_dir { "dir" } else { "file" }.to_string(),
+                    kind: kind.to_string(),
                     size: if is_dir {
                         None
                     } else {
@@ -326,7 +331,16 @@ fn push_search_entries(
             }
         }
         if is_dir {
-            push_search_entries(build, &entry.path, needle, offset, limit, visited, matched)?;
+            push_search_entries(
+                build,
+                &entry.path,
+                needle,
+                offset,
+                limit,
+                visited,
+                matched,
+                search_kind,
+            )?;
             if build.truncated || build.entries.len() >= limit {
                 break;
             }
@@ -498,6 +512,10 @@ async fn file_browser_tree(
             .unwrap_or(DEFAULT_SEARCH_LIMIT)
             .clamp(1, MAX_SEARCH_LIMIT);
         let offset = query.offset.unwrap_or(0);
+        let search_kind = query
+            .search_kind
+            .as_deref()
+            .filter(|kind| *kind == "file" || *kind == "dir");
         if let Err(err) = push_search_entries(
             &mut build,
             &dir,
@@ -506,6 +524,7 @@ async fn file_browser_tree(
             limit,
             &mut visited,
             &mut matched,
+            search_kind,
         ) {
             return file_browser_json_error(StatusCode::BAD_GATEWAY, err);
         }
@@ -831,6 +850,7 @@ mod tests {
         ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("src/nested")).unwrap();
+        fs::create_dir_all(root.join("app_dir")).unwrap();
         fs::write(root.join("src/app.rs"), "app").unwrap();
         fs::write(root.join("src/nested/app_test.rs"), "test").unwrap();
         fs::write(root.join("README.md"), "readme").unwrap();
@@ -843,7 +863,17 @@ mod tests {
         };
         let mut visited = 0;
         let mut matched = 0;
-        push_search_entries(&mut build, &root, "app", 0, 2, &mut visited, &mut matched).unwrap();
+        push_search_entries(
+            &mut build,
+            &root,
+            "app",
+            0,
+            2,
+            &mut visited,
+            &mut matched,
+            Some("file"),
+        )
+        .unwrap();
 
         let paths = build
             .entries
@@ -853,6 +883,7 @@ mod tests {
         assert!(paths.contains(&"src/app.rs"));
         assert!(paths.contains(&"src/nested/app_test.rs"));
         assert!(matched >= 2);
+        assert!(!paths.contains(&"app_dir"));
         let _ = fs::remove_dir_all(root);
     }
 
