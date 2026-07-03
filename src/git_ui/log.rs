@@ -9,7 +9,7 @@ use axum::Json;
 use serde::Deserialize;
 use serde_json::json;
 
-use super::{git_json_error, git_ui_repo, git_ui_text, safe_git_token};
+use super::{git_json_error, git_ui_repo, git_ui_text, git_ui_text_strings, safe_git_token};
 use crate::{git_failure, require_auth, WebState};
 
 #[derive(Deserialize)]
@@ -41,6 +41,14 @@ pub(super) struct GitUiCommitRequest {
     pub(super) title: String,
     pub(super) body: Option<String>,
     pub(super) amend: Option<bool>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct GitUiPullPushRequest {
+    pub(super) cwd: String,
+    pub(super) mode: Option<String>,
+    pub(super) branch: Option<String>,
+    pub(super) pull_first: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -313,6 +321,117 @@ pub(super) async fn git_ui_commit(
         git_ui_commit_blocking(cwd, title, commit_body, amend)
     })
     .await
+    {
+        Ok(Ok(response)) => response,
+        Ok(Err((status, msg))) => git_json_error(status, msg),
+        Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    }
+}
+
+fn git_ui_pull_blocking(
+    cwd: String,
+    mode: String,
+    branch: Option<String>,
+) -> Result<Response, (StatusCode, String)> {
+    let mut args = vec!["pull".to_string()];
+    match mode.as_str() {
+        "regular" => {}
+        "rebase" => args.push("--rebase".to_string()),
+        "ff-only" => args.push("--ff-only".to_string()),
+        "no-ff" => args.push("--no-ff".to_string()),
+        "force" => args.push("--force".to_string()),
+        _ => return Err((StatusCode::BAD_REQUEST, "invalid pull mode".to_string())),
+    }
+    if let Some(branch) = branch.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+        args.push("origin".to_string());
+        args.push(branch.to_string());
+    }
+    match git_ui_text_strings(&cwd, &args) {
+        Ok(text) => Ok(Json(json!({ "ok": true, "message": text })).into_response()),
+        Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
+    }
+}
+
+pub(super) async fn git_ui_pull(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    Json(body): Json<GitUiPullPushRequest>,
+) -> Response {
+    if let Err(response) = require_auth(&state, &headers, remote) {
+        return response;
+    }
+    let mode = body.mode.unwrap_or_else(|| "regular".to_string());
+    let branch = match body
+        .branch
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        Some(value) => match safe_git_token(value, "branch") {
+            Ok(v) => Some(v.to_string()),
+            Err(err) => return git_json_error(StatusCode::BAD_REQUEST, err),
+        },
+        None => None,
+    };
+    let cwd = body.cwd;
+    match tokio::task::spawn_blocking(move || git_ui_pull_blocking(cwd, mode, branch)).await {
+        Ok(Ok(response)) => response,
+        Ok(Err((status, msg))) => git_json_error(status, msg),
+        Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    }
+}
+
+fn git_ui_push_blocking(
+    cwd: String,
+    mode: String,
+    branch: Option<String>,
+    pull_first: bool,
+) -> Result<Response, (StatusCode, String)> {
+    if pull_first {
+        git_ui_text(&cwd, &["pull", "--ff-only"]).map_err(|err| (StatusCode::BAD_GATEWAY, err))?;
+    }
+    let mut args = vec!["push".to_string()];
+    match mode.as_str() {
+        "regular" => {}
+        "force" => args.push("--force".to_string()),
+        "force-with-lease" => args.push("--force-with-lease".to_string()),
+        _ => return Err((StatusCode::BAD_REQUEST, "invalid push mode".to_string())),
+    }
+    if let Some(branch) = branch.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+        args.push("origin".to_string());
+        args.push(branch.to_string());
+    }
+    match git_ui_text_strings(&cwd, &args) {
+        Ok(text) => Ok(Json(json!({ "ok": true, "message": text })).into_response()),
+        Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
+    }
+}
+
+pub(super) async fn git_ui_push(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    Json(body): Json<GitUiPullPushRequest>,
+) -> Response {
+    if let Err(response) = require_auth(&state, &headers, remote) {
+        return response;
+    }
+    let mode = body.mode.unwrap_or_else(|| "regular".to_string());
+    let branch = match body
+        .branch
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        Some(value) => match safe_git_token(value, "branch") {
+            Ok(v) => Some(v.to_string()),
+            Err(err) => return git_json_error(StatusCode::BAD_REQUEST, err),
+        },
+        None => None,
+    };
+    let cwd = body.cwd;
+    let pull_first = body.pull_first.unwrap_or(false);
+    match tokio::task::spawn_blocking(move || git_ui_push_blocking(cwd, mode, branch, pull_first))
+        .await
     {
         Ok(Ok(response)) => response,
         Ok(Err((status, msg))) => git_json_error(status, msg),

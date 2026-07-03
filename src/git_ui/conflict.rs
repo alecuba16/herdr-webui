@@ -153,6 +153,7 @@ pub(super) async fn git_ui_conflict_action(
     let args = match body.action.as_str() {
         "merge-abort" => vec!["merge", "--abort"],
         "rebase-continue" => vec!["rebase", "--continue"],
+        "rebase-skip" => vec!["rebase", "--skip"],
         "rebase-abort" => vec!["rebase", "--abort"],
         "cherry-pick-continue" => vec!["cherry-pick", "--continue"],
         "cherry-pick-abort" => vec!["cherry-pick", "--abort"],

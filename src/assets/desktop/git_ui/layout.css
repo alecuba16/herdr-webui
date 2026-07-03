@@ -28,12 +28,49 @@
   gap: 8px;
   justify-content: flex-start;
 }
+.git-ui-head-main {
+  min-width: 0;
+  width: 100%;
+}
+.git-ui-title-row {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
 .git-ui-title {
   font-weight: 800;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.git-ui-refresh-icon {
+  align-items: center;
+  background: var(--panel2);
+  border: 1px solid var(--border2);
+  border-radius: 999px;
+  color: var(--accent);
+  cursor: pointer;
+  display: inline-flex;
+  flex: none;
+  height: 28px;
+  justify-content: center;
+  width: 28px;
+}
+.git-ui-refresh-icon span {
+  background: currentColor;
+  display: inline-block;
+  height: 15px;
+  mask: url("/assets/icons/refresh.svg") center / contain no-repeat;
+  width: 15px;
+}
+.git-ui-refresh-icon.spinning span {
+  animation: git-ui-refresh-spin 2s linear;
+}
+@keyframes git-ui-refresh-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(720deg); }
 }
 .git-ui-subtitle,
 .git-ui-muted {
@@ -120,6 +157,15 @@
   flex-wrap: wrap;
   gap: 6px;
   padding: 6px;
+}
+.git-ui-check-row {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  margin: 8px 0;
+}
+.git-ui-conflict-actions {
+  margin: 8px 0;
 }
 .git-ui-btn {
   background: var(--panel2);
