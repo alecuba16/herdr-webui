@@ -178,13 +178,16 @@ describe("app bundle load", () => {
     ok(!source.includes('shell.style.height ='));
   });
 
-  it("keeps xterm native wheel scrolling enabled", () => {
+  it("keeps terminal scrollback available from wheel and touch", () => {
     const terminalCss = readFileSync(new URL("./desktop/app_css/terminal.css", import.meta.url), "utf8");
 
     match(terminalCss, /\.terminal \.xterm-viewport \{[\s\S]*?overflow-y: scroll !important;/);
     ok(!terminalCss.match(/\.terminal \.xterm-viewport \{[\s\S]*?overflow: hidden !important;/));
     ok(!source.includes('el("terminalShell").addEventListener("contextmenu"'));
-    ok(!source.match(/el\("terminalShell"\)\.addEventListener\(\s*["']wheel["']/));
+    match(source, /el\("terminalShell"\)\.addEventListener\("wheel", handleTerminalWheel, \{\n\s+passive: false,\n\s+\}\);/);
+    match(source, /el\("terminalShell"\)\.addEventListener\("touchmove", handleTerminalTouchMove, \{\n\s+passive: false,\n\s+\}\);/);
+    match(source, /function handleTerminalWheel\(event\) \{[\s\S]*?!terminalUsesNormalBuffer\(\)[\s\S]*?scrollLocalTerminal\(event\.deltaY < 0 \? "up" : "down"/);
+    match(source, /function handleTerminalTouchMove\(event\) \{[\s\S]*?!terminalUsesNormalBuffer\(\)[\s\S]*?scrollLocalTerminal\(dy < 0 \? "up" : "down"/);
     match(source, /term\.attachCustomWheelEventHandler\(\(e\) => \{[\s\S]*?if \(e\.altKey\) \{[\s\S]*?if \(typeof e\.preventDefault === "function"\) e\.preventDefault\(\);[\s\S]*?scrollBrowserOverflow\(e\.deltaX, e\.deltaY\);[\s\S]*?return false;[\s\S]*?return true;[\s\S]*?\}\);/);
     match(source, /function scrollLocalTerminal\(direction, lines\) \{[\s\S]*?term\.scrollLines\(direction === "up" \? -lines : lines\);[\s\S]*?term\.scrollToLine\(nextLine\);[\s\S]*?return true;/);
   });

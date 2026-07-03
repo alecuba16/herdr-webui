@@ -86,6 +86,11 @@ function connectTerminal() {
           scrollBrowserOverflow(e.deltaX, e.deltaY);
           return false;
         }
+        if (e.deltaY && terminalUsesNormalBuffer()) {
+          if (typeof e.preventDefault === "function") e.preventDefault();
+          scrollLocalTerminal(e.deltaY < 0 ? "up" : "down", terminalWheelLines(e));
+          return false;
+        }
         return true;
       });
     applyTerminalLinks();
@@ -168,6 +173,15 @@ function connectTerminal() {
     el("terminalShell").addEventListener("mousedown", () =>
       setTimeout(focusTerminal, 0),
     );
+    el("terminalShell").addEventListener("wheel", handleTerminalWheel, {
+      passive: false,
+    });
+    el("terminalShell").addEventListener("touchstart", handleTerminalTouchStart, {
+      passive: true,
+    });
+    el("terminalShell").addEventListener("touchmove", handleTerminalTouchMove, {
+      passive: false,
+    });
     termScrollBound = true;
   }
   try {
@@ -353,6 +367,59 @@ function scrollLocalTerminal(direction, lines) {
   if (!scrolled) return false;
   setTerminalFollowPaused(!terminalAtBottom());
   return true;
+}
+function terminalWheelLines(event) {
+  const rowHeight =
+    term &&
+    term._core &&
+    term._core._renderService &&
+    term._core._renderService.dimensions &&
+    term._core._renderService.dimensions.css &&
+    term._core._renderService.dimensions.css.cell &&
+    term._core._renderService.dimensions.css.cell.height;
+  const unit =
+    event.deltaMode === 1
+      ? 1
+      : event.deltaMode === 2
+        ? state.termRows || 24
+        : Math.max(1, rowHeight || 17);
+  return Math.max(1, Math.round(Math.abs(event.deltaY) / unit));
+}
+function handleTerminalWheel(event) {
+  if (!event || event.altKey || !event.deltaY || !terminalUsesNormalBuffer()) return;
+  if (scrollLocalTerminal(event.deltaY < 0 ? "up" : "down", terminalWheelLines(event))) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
+}
+function handleTerminalTouchStart(event) {
+  const touch = event && event.touches && event.touches[0];
+  handleTerminalTouchStart.lastY = touch ? touch.clientY : null;
+}
+function handleTerminalTouchMove(event) {
+  const touch = event && event.touches && event.touches[0];
+  if (!touch || !terminalUsesNormalBuffer()) return;
+  const lastY = handleTerminalTouchStart.lastY;
+  handleTerminalTouchStart.lastY = touch.clientY;
+  if (!Number.isFinite(lastY)) return;
+  const dy = lastY - touch.clientY;
+  if (Math.abs(dy) < 4) return;
+  const rowHeight =
+    term &&
+    term._core &&
+    term._core._renderService &&
+    term._core._renderService.dimensions &&
+    term._core._renderService.dimensions.css &&
+    term._core._renderService.dimensions.css.cell &&
+    term._core._renderService.dimensions.css.cell.height;
+  const lines = Math.max(
+    1,
+    Math.round(Math.abs(dy) / Math.max(1, rowHeight || 17)),
+  );
+  if (scrollLocalTerminal(dy < 0 ? "up" : "down", lines)) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
 }
 function modalOpen() {
   return [

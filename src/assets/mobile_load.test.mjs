@@ -374,6 +374,9 @@ describe("mobile bundle load", () => {
     await ctx.HerdrMobile.refresh();
     ctx.HerdrMobile.showScreen("terminal");
     ok(source.includes("mobileTerminalFollowButton"));
+    ok(source.includes('terminal.addEventListener("wheel", handleWheel, { passive: false })'));
+    ok(source.includes('terminal.addEventListener("touchmove", handleTouchMove, { passive: false })'));
+    ok(source.includes("function scrollLocalTerminal(direction, lines)"));
     equal(typeof ctx.HerdrMobile.scrollTerminalToBottom, "function");
     ctx.lastTerminal.buffer.active.baseY = 50;
     ctx.lastTerminal.buffer.active.viewportY = 20;
