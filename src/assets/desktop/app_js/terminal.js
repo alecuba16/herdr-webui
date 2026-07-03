@@ -86,6 +86,14 @@ function connectTerminal() {
           scrollBrowserOverflow(e.deltaX, e.deltaY);
           return false;
         }
+        if (e.deltaY && terminalUsesNormalBuffer()) {
+          if (typeof e.preventDefault === "function") e.preventDefault();
+          scrollLocalTerminal(
+            e.deltaY < 0 ? "up" : "down",
+            HerdrTerminalScroll.wheelLines(term, e, state.termRows || 24),
+          );
+          return false;
+        }
         return true;
       });
     applyTerminalLinks();
@@ -123,7 +131,10 @@ function connectTerminal() {
         ) {
           if (terminalUsesNormalBuffer()) {
             e.preventDefault();
-            scrollLocalTerminal(e.key === "PageUp" ? "up" : "down", Math.max(1, (state.termRows || rows) - 1));
+            scrollLocalTerminal(
+              e.key === "PageUp" ? "up" : "down",
+              Math.max(1, (state.termRows || rows) - 1),
+            );
             return false;
           }
           sendBackendScroll(
@@ -168,6 +179,15 @@ function connectTerminal() {
     el("terminalShell").addEventListener("mousedown", () =>
       setTimeout(focusTerminal, 0),
     );
+    el("terminalShell").addEventListener("wheel", handleTerminalWheel, {
+      passive: false,
+    });
+    el("terminalShell").addEventListener("touchstart", handleTerminalTouchStart, {
+      passive: true,
+    });
+    el("terminalShell").addEventListener("touchmove", handleTerminalTouchMove, {
+      passive: false,
+    });
     termScrollBound = true;
   }
   try {
@@ -279,11 +299,7 @@ function coalesceTerminalFrames(frames) {
   return merged;
 }
 function terminalUsesNormalBuffer() {
-  try {
-    return !term || !term.buffer || !term.buffer.active || term.buffer.active.type !== "alternate";
-  } catch (e) {
-    return true;
-  }
+  return HerdrTerminalScroll.usesNormalBuffer(term);
 }
 function terminalAtBottom() {
   try {
@@ -330,29 +346,39 @@ function scrollTerminalToBottom() {
   focusTerminal(true);
 }
 function scrollLocalTerminal(direction, lines) {
-  let scrolled = false;
-  try {
-    if (!term) return false;
-    if (typeof term.scrollLines === "function") {
-      term.scrollLines(direction === "up" ? -lines : lines);
-      scrolled = true;
-    } else if (typeof term.scrollToLine === "function" && term.buffer && term.buffer.active) {
-      const buffer = term.buffer.active;
-      const maxLine = Math.max(0, Number(buffer.baseY) || 0);
-      const currentLine = Math.max(0, Number(buffer.viewportY) || 0);
-      const nextLine = Math.max(
-        0,
-        Math.min(maxLine, currentLine + (direction === "up" ? -lines : lines)),
-      );
-      term.scrollToLine(nextLine);
-      scrolled = true;
-    } else {
-      return false;
-    }
-  } catch (e) {}
-  if (!scrolled) return false;
-  setTerminalFollowPaused(!terminalAtBottom());
-  return true;
+  return HerdrTerminalScroll.scrollLocal(term, direction, lines, () => {
+    setTerminalFollowPaused(!terminalAtBottom());
+  });
+}
+function handleTerminalWheel(event) {
+  if (!event || event.altKey || !event.deltaY || !terminalUsesNormalBuffer()) return;
+  if (
+    scrollLocalTerminal(
+      event.deltaY < 0 ? "up" : "down",
+      HerdrTerminalScroll.wheelLines(term, event, state.termRows || 24),
+    )
+  ) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
+}
+function handleTerminalTouchStart(event) {
+  const touch = event && event.touches && event.touches[0];
+  handleTerminalTouchStart.lastY = touch ? touch.clientY : null;
+}
+function handleTerminalTouchMove(event) {
+  const touch = event && event.touches && event.touches[0];
+  if (!touch || !terminalUsesNormalBuffer()) return;
+  const lastY = handleTerminalTouchStart.lastY;
+  handleTerminalTouchStart.lastY = touch.clientY;
+  if (!Number.isFinite(lastY)) return;
+  const dy = lastY - touch.clientY;
+  if (Math.abs(dy) < 4) return;
+  const lines = HerdrTerminalScroll.touchLines(term, dy);
+  if (scrollLocalTerminal(dy < 0 ? "up" : "down", lines)) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
 }
 function modalOpen() {
   return [

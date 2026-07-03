@@ -57,6 +57,7 @@
     loadScript("/assets/shared/core.js");
     loadScript("/assets/shared/file-tree.js");
     loadScript("/assets/shared/editor.js");
+    loadScript("/assets/shared/terminal-scroll.js");
     if (mobile) {
       loadScript("/assets/mobile/core.js");
       loadScript("/assets/mobile/attention.js");

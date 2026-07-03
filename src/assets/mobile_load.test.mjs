@@ -239,6 +239,8 @@ describe("mobile bundle load", () => {
     "\n" +
     readFileSync(new URL("./shared/editor.js", import.meta.url), "utf8") +
     "\n" +
+    readFileSync(new URL("./shared/terminal_scroll.js", import.meta.url), "utf8") +
+    "\n" +
     readFileSync(new URL("./mobile/core.js", import.meta.url), "utf8") +
     "\n" +
     readFileSync(new URL("./mobile/attention.js", import.meta.url), "utf8") +
@@ -374,6 +376,10 @@ describe("mobile bundle load", () => {
     await ctx.HerdrMobile.refresh();
     ctx.HerdrMobile.showScreen("terminal");
     ok(source.includes("mobileTerminalFollowButton"));
+    ok(source.includes('terminal.addEventListener("wheel", handleWheel, { passive: false })'));
+    ok(source.includes('terminal.addEventListener("touchmove", handleTouchMove, { passive: false })'));
+    ok(source.includes("function scrollLocal(term, direction, lines, afterScroll)"));
+    ok(source.includes("HerdrTerminalScroll.scrollLocal(term, direction, lines"));
     equal(typeof ctx.HerdrMobile.scrollTerminalToBottom, "function");
     ctx.lastTerminal.buffer.active.baseY = 50;
     ctx.lastTerminal.buffer.active.viewportY = 20;
