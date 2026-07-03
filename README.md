@@ -14,7 +14,8 @@ Compatibility:
 
 | WebUI | Herdr | Protocol | Status | Notes |
 | --- | --- | --- | --- | --- |
-| `0.2.7` | `0.7.2` | `15` with `14` fallback | Current | Fixes panel close reconciliation, restores reliable terminal scroll/follow behavior, and routes large terminal paste as semantic backend paste events with bounded WebSocket frames. |
+| `0.2.8` | `0.7.2` | `15` with `14` fallback | Current | Restores terminal paste compatibility while keeping the performance fix: paste avoids xterm synchronous parsing and is sent as bounded WebSocket input chunks with backpressure. |
+| `0.2.7` | `0.7.2` | `15` with `14` fallback | Superseded | Fixes panel close reconciliation and terminal scroll/follow behavior. Superseded by 0.2.8 for terminal paste compatibility. |
 | `0.2.6` | `0.7.2` | `15` with `14` fallback | Tested | Adds configurable agent sorting and sidebar split, shared desktop/mobile terminal scrollback, file/folder browser search with editor readability improvements, and Git pull/push/rebase plus diff layout controls. |
 | `0.2.5` | `0.7.2` | `15` with `14` fallback | Tested | Marks Herdr 0.7.2 protocol 15 as tested while preserving protocol 14 fallback for older compatible servers. |
 | `0.2.4` | `0.7.1+` | `15` with `14` fallback | Tested | Prefers Herdr direct attach protocol 15 and retries protocol 14 when an older compatible server rejects the initial handshake. |
@@ -36,7 +37,17 @@ Compatibility:
 | `0.0.45` | `0.7.1` | `14` | Tested | Improves embedded Git UI navigation with Escape handling, all-changes return behavior, split frontend assets, scoped file history controls, keyboard-owned drawer input, and per-file large diff loading. |
 | `0.0.45` | `0.7.0` | `14` | Minimum supported | Uses WebUI's legacy existing-branch worktree fallback when needed. |
 
-Newer Herdr builds may work when protocol stays compatible, but WebUI reports them as untested. WebUI 0.2.7 treats Herdr 0.7.2 protocol 15 as tested and retries protocol 14 for compatible older Herdr 0.7.x servers.
+Newer Herdr builds may work when protocol stays compatible, but WebUI reports them as untested. WebUI 0.2.8 treats Herdr 0.7.2 protocol 15 as tested and retries protocol 14 for compatible older Herdr 0.7.x servers.
+
+## 0.2.8 Release Notes
+
+### Terminal paste
+
+- Restores browser paste in desktop and mobile terminals when the connected Herdr backend does not process semantic paste input events.
+- Keeps the large-paste performance fix by continuing to capture browser `paste` events before xterm native paste handling, avoiding xterm's synchronous `terminal.paste(text)` path.
+- Sends pasted text through the existing bounded raw input queue with 16 KiB chunks and WebSocket backpressure, so large clipboards do not become one huge browser frame.
+- Preserves pasted newlines while normalizing CRLF/CR to LF before forwarding to the terminal.
+- Leaves server-side semantic paste message parsing in place for compatible clients, but WebUI's browser terminal path now uses the backend-compatible raw input transport.
 
 ## 0.2.7 Release Notes
 
@@ -56,9 +67,7 @@ Newer Herdr builds may work when protocol stays compatible, but WebUI reports th
 
 ### Terminal paste
 
-- Large terminal paste now uses semantic WebSocket paste messages rather than xterm `paste()` or key-by-key raw input, avoiding browser main-thread stalls for large clipboards.
-- Paste payloads are split into bounded 512 KiB frames so they stay below Herdr's backend payload limits while preserving UTF-16 surrogate pairs.
-- The server maps paste messages to Herdr direct attach `ClientInputEvent::Paste` events, so multiline text and bracketed paste behavior are handled by the backend terminal state.
+- Large terminal paste avoids xterm `paste()` and sends bounded WebSocket input chunks so very large clipboards do not freeze the browser.
 - Desktop and mobile paste paths share this behavior. Normal typed input, Shift+Enter, scroll, and resize keep their existing paths.
 
 ## 0.2.6 Release Notes
@@ -280,7 +289,7 @@ The Rust binary embeds frontend assets with `include_str!`, so release artifacts
 - CodeMirror, desktop Git UI, and desktop file browser JavaScript are lazy-loaded. Initial desktop/mobile terminal loads should not download editor or Git/File feature code until those features are opened.
 - The shared editor uses lightweight read-only previews by default and loads CodeMirror only for editable file views.
 - Desktop terminal output is frame-batched in the browser so bursts of WebSocket terminal frames are coalesced before xterm rendering. Pending frames are flushed before reconnect or close to avoid dropping final output.
-- Large terminal paste input is sent as semantic paste events instead of xterm `paste()` calls or key-by-key raw input. Browser frames are bounded so very large clipboards do not block the renderer or exceed backend payload limits.
+- Large terminal paste input bypasses xterm `paste()` and uses bounded WebSocket input chunks with backpressure, so very large clipboards do not block the renderer or become one huge browser frame.
 - Terminal links are optional in Settings. When enabled, desktop and mobile xterm instances detect `http`/`https` URLs and open them in a new browser tab.
 - Blocking browser confirmation dialogs count as input delay in Chrome traces. Git bulk section actions defer their API/render work until after the confirmation returns so dialog wait time is not mixed with mutation/render cost.
 - File search inputs preserve focus and cursor selection while async results render. Prefer `renderPreservingScroll`/focus-preserving render paths when refreshing filter-driven lists so typing does not get interrupted by DOM replacement.
@@ -290,7 +299,7 @@ The Rust binary embeds frontend assets with `include_str!`, so release artifacts
 
 ## Desktop And Mobile Parity
 
-- Both layouts support workspace selection, agent list/attention status, panel selection/creation/closing, linked worktree listing/creation/opening, terminal attach, semantic terminal paste, terminal scrollback follow/Tail behavior, terminal links, Files browsing with backend search/filter, Git status viewing with file filtering, read-only Git file diffs, Settings, theme choice, browser notifications, local attention tone volume, file tree indentation, and layout preference.
+- Both layouts support workspace selection, agent list/attention status, panel selection/creation/closing, linked worktree listing/creation/opening, terminal attach, bounded terminal paste, terminal scrollback follow/Tail behavior, terminal links, Files browsing with backend search/filter, Git status viewing with file filtering, read-only Git file diffs, Settings, theme choice, browser notifications, local attention tone volume, file tree indentation, and layout preference.
 - Desktop is the full power-user layout. It includes the embedded Git drawer with mutations, diffs, log, stash, cleanup, blame, file history, hunk actions, conflict actions, shortcuts, and the editable file browser with split panes.
 - Mobile is intentionally narrower. It keeps navigation, agents, worktrees, terminal, Files preview with go-up navigation, Git status, and read-only Git file diffs usable on small screens, but does not yet expose desktop Git mutations/log/stash/cleanup/blame/history or file editing/split panes.
 - When adding a desktop feature, decide explicitly whether mobile needs full parity, read-only parity, or documentation as desktop-only. Keep this section updated so mobile gaps are intentional.
@@ -305,7 +314,7 @@ The Rust binary embeds frontend assets with `include_str!`, so release artifacts
 - Terminal panel tabs also scroll horizontally, and terminal output scrolls inside `.mobile-terminal-shell` instead of pushing the app wider or taller.
 - Mobile terminal tabs include `+` to create a panel and `✕` to close the current panel. The Panels screen also exposes `Close current panel` for discoverability.
 - Mobile terminal scrollback mirrors desktop behavior: scrolling up pauses follow, new output preserves the current viewport, and `Tail` jumps to latest output and resumes follow.
-- Mobile paste uses the same semantic paste WebSocket message as desktop. Normal typed input still uses bounded raw WebSocket chunks with backpressure.
+- Mobile paste uses the same bounded WebSocket input queue as desktop, with backpressure for large clipboards.
 - Mobile Git file diffs render hunks inside horizontally scrollable code blocks so long lines do not widen the app shell.
 
 TODO:
@@ -468,11 +477,11 @@ Terminal paste:
 
 - Both desktop and mobile terminals capture browser `paste` events in the capture phase before xterm or native handlers process them.
 - WebUI intentionally does not call xterm.js `terminal.paste(text)`. xterm parses that string synchronously on the browser main thread, which can freeze the UI for large code snippets.
-- The browser sends `{"type":"paste","text":"..."}` text WebSocket messages to `/ws/terminal`. Payloads are split into 512 KiB chunks to stay under Herdr's 1 MiB input-event limit; chunk boundaries avoid splitting UTF-16 surrogate pairs.
-- `terminal_text_messages()` in `src/main.rs` maps those JSON messages to `ClientMessage::InputEvents { events: [ClientInputEvent::Paste { text }] }` before forwarding them over the Herdr direct terminal attach protocol.
-- Herdr's backend paste path preserves multiline text and applies bracketed paste wrapping based on the real terminal runtime state. WebUI no longer guesses bracketed-paste mode from xterm state and no longer converts pasted newlines to spaces.
-- Raw typed input, Shift+Enter, scroll, and resize messages keep their existing raw-input/JSON paths. Only clipboard paste uses the semantic paste event path.
-- The served bundles containing this logic are `/assets/desktop/app.js` for desktop and `/assets/mobile/terminal.js` for mobile. The shared helper in `/assets/shared/core.js` normalizes CRLF/CR to LF when used by fallback code.
+- Browser paste is normalized through the shared helper in `/assets/shared/core.js`, preserving newlines while converting CRLF/CR to LF.
+- Pasted text is sent through the same binary raw-input WebSocket path as typed input, but with bounded 16 KiB chunks and backpressure instead of one large frame.
+- WebUI still accepts `{"type":"paste","text":"..."}` text WebSocket messages in `terminal_text_messages()` and maps them to semantic Herdr paste events for compatible clients. The browser terminal path uses bounded raw input for backend compatibility.
+- Raw typed input, Shift+Enter, scroll, and resize messages keep their existing paths.
+- The served bundles containing this logic are `/assets/desktop/app.js` for desktop and `/assets/mobile/terminal.js` for mobile.
 
 Terminal rendering performance:
 

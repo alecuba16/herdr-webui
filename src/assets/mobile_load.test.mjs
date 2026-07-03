@@ -1,5 +1,5 @@
 import { describe, it } from "node:test";
-import { doesNotThrow, equal, ok } from "node:assert/strict";
+import { doesNotThrow, equal, match, ok } from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { TextEncoder } from "node:util";
 import vm from "node:vm";
@@ -389,6 +389,15 @@ describe("mobile bundle load", () => {
     equal(ctx.lastTerminal.scrolledToLine, 20);
     ctx.HerdrMobile.scrollTerminalToBottom();
     ok(ctx.lastTerminal.scrolledToBottom);
+  });
+
+  it("captures mobile terminal paste before xterm native paste", () => {
+    match(source, /addEventListener\(\s*"paste"/);
+    match(source, /stopImmediatePropagation\(\)/);
+    match(source, /sendPasteToTerminal\(text\)/);
+    match(source, /sendInputData\(terminalPasteInput\(text, false\)\)/);
+    ok(!source.includes('JSON.stringify({ type: "paste"'));
+    ok(!source.includes('.paste(text)'));
   });
 
   it("opens mobile Git file diff with scrollable hunk markup", async () => {
