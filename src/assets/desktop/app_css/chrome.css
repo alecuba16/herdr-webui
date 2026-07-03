@@ -148,13 +148,54 @@
   padding: 0 10px 8px;
 }
 .sidebar-pane.workspaces-pane {
-  flex: 1 1 auto;
-  min-height: 45%;
+  flex: 0 0 var(--sidebar-workspace-percent, 68%);
+  min-height: 20%;
 }
 .sidebar-pane.agents-pane {
-  flex: 0 1 32%;
+  flex: 1 1 auto;
   min-height: 110px;
   margin-top: auto;
+}
+.sidebar-split-handle {
+  align-items: center;
+  display: flex;
+  flex: 0 0 18px;
+  justify-content: center;
+  cursor: row-resize;
+  margin: -3px 10px 2px;
+  position: relative;
+}
+.sidebar-split-handle::before {
+  background: var(--border);
+  border-radius: 999px;
+  content: "";
+  display: block;
+  height: 2px;
+  left: 22px;
+  position: absolute;
+  right: 22px;
+  top: 8px;
+}
+.sidebar-split-handle::after {
+  color: var(--muted);
+  content: "↕";
+  font-size: 13px;
+  line-height: 1;
+  opacity: 0;
+  transform: scale(0.9);
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+.sidebar-split-handle:hover::before,
+.sidebar-split-handle.dragging::before,
+.sidebar-split-handle:focus-visible::before {
+  background: var(--accent);
+}
+.sidebar-split-handle:hover::after,
+.sidebar-split-handle.dragging::after,
+.sidebar-split-handle:focus-visible::after {
+  color: var(--accent);
+  opacity: 1;
+  transform: scale(1);
 }
 .sidebar-scroll {
   min-height: 0;
