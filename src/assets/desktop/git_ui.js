@@ -792,6 +792,7 @@
     const collapsible = activeTab === "changes" && files.length > 0;
     const collapsed = files.filter((file) => view.collapsedFiles && view.collapsedFiles[file.path]).length;
     const collapse = collapsible ? `<button class="git-ui-btn" onclick="HerdrGitUi.${collapsed === files.length ? "expandAllFiles" : "collapseAllFiles"}()">${collapsed === files.length ? "Show all" : "Collapse all"}</button>` : "";
+    const changes = currentMode() === "changes" ? `<button class="git-ui-btn ${activeTab === "changes" ? "active" : ""}" onclick="HerdrGitUi.latestChanges()">Changes</button>` : "";
     const history = view.file ? `<button class="git-ui-btn ${activeTab === "history" ? "active" : ""}" onclick="HerdrGitUi.tab('history')">History</button>` : "";
     const blame = activeTab === "changes" && view.file ? `<button class="git-ui-btn ${view.showBlame ? "active" : ""}" onclick="HerdrGitUi.toggleBlame()">Blame</button>` : "";
     const layout = diffLayoutMode();
@@ -801,7 +802,7 @@
       : activeTab === "changes" && canEditCurrentFile(view)
         ? `<button class="git-ui-btn" onclick="HerdrGitUi.editSideBySide()">Edit side-by-side</button>`
         : "";
-    return `<div class="git-ui-log-head"><span class="git-ui-toolbar-title">${view.file ? "File view" : "Diff view"}</span><button class="git-ui-btn ${activeTab === "changes" ? "active" : ""}" onclick="HerdrGitUi.latestChanges()">Changes</button>${history}${blame}${layoutToggle}${sideEditor}${conflicts ? `<button class="git-ui-btn ${activeTab === "conflicts" ? "active" : ""}" onclick="HerdrGitUi.tab('conflicts')">Conflicts</button>` : ""}${collapse}${compare}</div>`;
+    return `<div class="git-ui-log-head"><span class="git-ui-toolbar-title">${view.file ? "File view" : "Diff view"}</span>${changes}${history}${blame}${layoutToggle}${sideEditor}${conflicts ? `<button class="git-ui-btn ${activeTab === "conflicts" ? "active" : ""}" onclick="HerdrGitUi.tab('conflicts')">Conflicts</button>` : ""}${collapse}${compare}</div>`;
   }
 
   function canEditCurrentFile(view) {
