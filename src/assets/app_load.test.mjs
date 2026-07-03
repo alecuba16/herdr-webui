@@ -251,7 +251,7 @@ describe("app bundle load", () => {
     match(html, /Functionality map/);
     match(html, /Keyboard shortcuts/);
     match(html, /Workspaces show open roots\/worktrees; agents list status/);
-    match(html, /terminal links open in browser when enabled/);
+    match(html, /Wheel, touch, and PageUp\/PageDown scroll the Herdr backend first, with xterm local scroll as fallback/);
     match(html, /Git selector opens repo tools for diff, stage\/unstage, discard, commit, commit & push, pull, push\/force-push, rebase, conflicts, stash, branches, cleanup, and worktree prune; file view can toggle unified\/side-by-side diffs/);
     match(html, /Prefix then \/ opens palette for workspaces, repos, worktrees, labels, agents, and panels/);
     match(source, /DEFAULT_WEBUI_SHORTCUTS/);
@@ -1077,7 +1077,7 @@ describe("app bundle load", () => {
   it("captures terminal paste before xterm native paste", () => {
     match(source, /addEventListener\(\s*"paste"/);
     match(source, /stopImmediatePropagation\(\)/);
-    match(source, /pasteToTerminal\(text\)/);
+    match(source, /sendPasteToTerminal\(text\)/);
   });
 
   it("renders no-sleep control options", () => {
