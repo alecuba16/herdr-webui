@@ -171,7 +171,8 @@ describe("app bundle load", () => {
   it("keeps terminal surface min sizes mode-aware", () => {
     match(source, /if \(options\.overflow\) \{\n\s+terminal\.style\.width = width \+ "px";/);
     match(source, /terminal\.style\.minWidth = "0";\n\s+terminal\.style\.minHeight = "0";/);
-    match(source, /x\.style\.minWidth = "0";\n\s+x\.style\.minHeight = "0";/);
+    ok(!source.includes('terminal.querySelector(".xterm")'));
+    ok(!source.includes('x.style.'));
     match(source, /shellStyle\.display === "none" \|\|\n\s+shellStyle\.visibility === "hidden" \|\|\n\s+\(shellRects && shellRects\.length === 0\)/);
     match(source, /function fitTerminalShell\(\) \{[\s\S]*?shell\.clientWidth \|\| rect\.width[\s\S]*?shell\.clientHeight \|\| rect\.height[\s\S]*?\};\n\}/);
     match(source, /function browserTerminalSize\(\) \{[\s\S]*?const shellSize = fitTerminalShell\(\);\n\s+if \(!shellSize\) return null;/);
@@ -180,13 +181,18 @@ describe("app bundle load", () => {
     ok(!source.includes('terminal.querySelector(".xterm-viewport")'));
     ok(!source.includes('terminal.querySelector(".xterm-rows")'));
     ok(!source.includes('shell.style.width ='));
-    ok(!source.includes('shell.style.height ='));
+    ok(!source.includes("fontFamily: terminalFontFamily()"));
+    ok(!source.includes("theme: terminalTheme()"));
+    ok(!source.includes("term.options.theme = terminalTheme()"));
+    ok(!source.includes("term.setOption(\"theme\", terminalTheme())"));
   });
 
   it("keeps terminal scrollback available from wheel and touch", () => {
     const terminalCss = readFileSync(new URL("./desktop/app_css/terminal.css", import.meta.url), "utf8");
 
-    ok(!terminalCss.includes(".terminal .xterm-viewport"));
+    ok(!terminalCss.includes(".terminal .xterm"));
+    ok(!terminalCss.includes("xterm-selection"));
+    ok(!terminalCss.includes("xterm-cursor"));
     ok(!terminalCss.match(/\.terminal \.xterm-rows[\s\S]*?height: 100% !important;/));
     ok(!terminalCss.match(/\.terminal \.xterm-rows[\s\S]*?overflow: hidden !important;/));
     ok(!source.includes('el("terminalShell").addEventListener("contextmenu"'));
