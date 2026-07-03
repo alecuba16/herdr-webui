@@ -96,6 +96,7 @@ function context() {
     prompt: () => null,
     confirm: () => true,
   };
+  ctx.terminal = getElement("terminal");
   ctx.window = ctx;
   ctx.globalThis = ctx;
   return vm.createContext(ctx);
@@ -205,6 +206,10 @@ describe("app bundle load", () => {
     match(desktopTerminalSource, /terminal\.addEventListener\("touchmove", handleTerminalTouchMove, \{ passive: false, capture: true \}\);/);
     match(desktopTerminalSource, /terminal\.addEventListener\("touchend", handleTerminalTouchEnd, \{ passive: true, capture: true \}\);/);
     ok(!desktopTerminalSource.includes("attachCustomWheelEventHandler"));
+    match(desktopTerminalSource, /e\.key === "PageUp" \|\| e\.key === "PageDown"/);
+    match(desktopTerminalSource, /scrollTerminalLines\(\n\s+e\.key === "PageUp"/);
+    ok(!desktopTerminalSource.includes("scrollBrowserOverflow"));
+    ok(!source.includes("Option+Wheel"));
     match(desktopTerminalSource, /const stepLines = Math\.max\(1, Number\(options\.scrollLines\) \|\| 1\);/);
     match(desktopTerminalSource, /terminalWheelDeltaPixels \+= e\.deltaY;[\s\S]*?Math\.abs\(terminalWheelDeltaPixels\) < rowHeight/);
     match(desktopTerminalSource, /function scrollTerminalLines\(lines\) \{[\s\S]*?if \(sendBackendScroll\(lines\)\) \{[\s\S]*?updateTerminalScrollbackEstimate\(lines\);[\s\S]*?!terminalUsesNormalBuffer\(\)[\s\S]*?term\.scrollLines\(Math\.trunc\(lines\)\);/);

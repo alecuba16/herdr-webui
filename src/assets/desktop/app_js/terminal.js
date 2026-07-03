@@ -98,6 +98,20 @@ function connectTerminal() {
           pasteToTerminal(shiftEnterSequence());
           return false;
         }
+        if (
+          e.type === "keydown" &&
+          !e.altKey &&
+          !e.ctrlKey &&
+          !e.metaKey &&
+          (e.key === "PageUp" || e.key === "PageDown")
+        ) {
+          scrollTerminalLines(
+            e.key === "PageUp"
+              ? -Math.max(1, (state.termRows || rows) - 1)
+              : Math.max(1, (state.termRows || rows) - 1),
+          );
+          return false;
+        }
         return true;
       });
   }
@@ -641,14 +655,6 @@ window.addEventListener("resize", () => {
 window.addEventListener("focus", () =>
   requestAnimationFrame(fitFocusedTerminal),
 );
-function scrollBrowserOverflow(dx, dy) {
-  const shell = el("terminalShell");
-  if (!shell) return;
-  const maxTop = Math.max(0, shell.scrollHeight - shell.clientHeight);
-  const maxLeft = Math.max(0, shell.scrollWidth - shell.clientWidth);
-  shell.scrollTop = Math.max(0, Math.min(maxTop, shell.scrollTop + dy));
-  shell.scrollLeft = Math.max(0, Math.min(maxLeft, shell.scrollLeft + dx));
-}
 function wsUrl(path) {
   const sep = path.includes("?") ? "&" : "?";
   const session =
