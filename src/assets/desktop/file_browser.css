@@ -124,6 +124,11 @@
   top: 0;
   z-index: 1;
 }
+.file-browser-filter-row {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+}
 .file-browser-filter {
   align-items: center;
   background: var(--bg);
@@ -141,6 +146,23 @@
   min-width: 0;
   outline: 0;
   width: 100%;
+}
+.file-browser-kind-toggle {
+  background: var(--panel2);
+  border: 1px solid var(--border2);
+  border-radius: 9px;
+  color: var(--fg);
+  cursor: pointer;
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: 12px;
+  padding: 6px 8px;
+}
+.file-browser-kind-toggle:hover,
+.file-browser-kind-toggle:focus {
+  border-color: var(--accent);
+  color: var(--accent);
+  outline: 0;
 }
 .file-browser-search-icon,
 .mobile-file-search-icon,
@@ -365,7 +387,7 @@
 }
 .herdr-editor-code,
 .herdr-editor textarea {
-  background: var(--panel);
+  background: var(--editor-bg, var(--panel2));
   border: 0;
   color: var(--fg);
   font: 12px/1.5 var(--mono-font);

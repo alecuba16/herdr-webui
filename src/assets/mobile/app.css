@@ -11,6 +11,7 @@ body {
   --fg: #cdd6f4;
   --panel: #181825;
   --panel2: #1e1e2e;
+  --editor-bg: #1e1e2e;
   --border: #313244;
   --border2: #45475a;
   --muted: #a6adc8;
@@ -35,6 +36,7 @@ body.light {
   --fg: #4c4f69;
   --panel: #e6e9ef;
   --panel2: #ccd0da;
+  --editor-bg: #dce0e8;
   --border: #bcc0cc;
   --border2: #9ca0b0;
   --muted: #6c6f85;
@@ -172,6 +174,21 @@ body.light {
 .mobile-file-search-icon.searching {
   animation: mobile-spin 900ms linear infinite;
 }
+
+.mobile-file-filter-row {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+}
+.mobile-file-filter-row .mobile-file-filter {
+  flex: 1 1 auto;
+}
+.mobile-file-kind-toggle {
+  flex: 0 0 auto;
+  padding-left: 8px;
+  padding-right: 8px;
+}
+
 .mobile-file-result-count {
   margin: 6px 2px 0;
 }
@@ -545,7 +562,7 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
 }
 .herdr-editor-code,
 .herdr-editor textarea {
-  background: var(--panel2);
+  background: var(--editor-bg, var(--panel2));
   color: var(--fg);
   font: 12px/1.5 var(--mono-font);
   margin: 0;

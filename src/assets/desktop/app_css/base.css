@@ -10,6 +10,7 @@ body {
   --fg: #cdd6f4;
   --panel: #181825;
   --panel2: #1e1e2e;
+  --editor-bg: #1e1e2e;
   --border: #313244;
   --border2: #45475a;
   --muted: #a6adc8;
@@ -32,6 +33,7 @@ body.light {
   --fg: #4c4f69;
   --panel: #e6e9ef;
   --panel2: #ccd0da;
+  --editor-bg: #dce0e8;
   --border: #bcc0cc;
   --border2: #9ca0b0;
   --muted: #6c6f85;

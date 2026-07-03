@@ -17,7 +17,7 @@ import { Decoration, drawSelection, dropCursor, EditorView, GutterMarker, gutter
 
 const theme = EditorView.theme({
   "&": {
-    backgroundColor: "var(--panel)",
+    backgroundColor: "var(--editor-bg, var(--panel2))",
     color: "var(--fg)",
     height: "100%",
   },
@@ -27,7 +27,7 @@ const theme = EditorView.theme({
     lineHeight: "1.5",
   },
   ".cm-gutters": {
-    backgroundColor: "var(--panel)",
+    backgroundColor: "var(--editor-bg, var(--panel2))",
     borderRight: "1px solid var(--border)",
     color: "var(--muted)",
   },

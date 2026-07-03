@@ -45,6 +45,8 @@ Newer Herdr builds may work when protocol stays compatible, but WebUI reports th
 ### Sidebar and agents
 
 - Agents sidebar sorting is configurable in Settings → Agents and alerts. Status groups can be reordered with up/down controls and are saved in browser-local settings.
+- File browser search now supports file or folder mode with `Alt+F` / `Alt+D` switching. Folder search uses breadth-first backend traversal so shallow matching folders are found before deep unrelated trees exhaust the search cap. File/folder searches keep parent breadcrumbs, match highlighting, scroll/focus preservation, and paginated loading.
+- File browser rename/delete updates the visible tree in place where possible instead of forcing a full list reload. The editor uses a dedicated `--editor-bg` theme color so syntax highlighting, especially YAML in dark mode, stays readable independently from panel surfaces.
 - Agent status groups use explicit colors in settings: idle green, working yellow, blocked red, done blue, and others gray.
 - The Workspaces/Agents sidebar split is resizable by dragging the separator, snaps to whole percent values, and can also be set directly in Settings → Agents and alerts.
 
@@ -356,6 +358,7 @@ File browser:
 - Folders are lazy-loaded and collapsed by default. Double-click enters a folder as root; `...` moves upward and is always visible when a parent directory exists, on desktop, mobile, and the directory picker. The file browser Refresh button is a rounded icon that spins while loading.
 - Files open in the active preview pane; Shift-click or context `Open in split` opens another pane. Dirty edited files ask before closing.
 - Desktop and mobile Files include debounced backend search through `/api/file-browser/tree?q=&offset=&limit=`. Search is bounded, paginated, highlights matches, shows parent folder context as an expanded tree, and preserves scroll/focus while results render.
+- Search can be scoped to files or folders from the search pill. Files are the default; `Alt+F` switches to files and `Alt+D` switches to folders. Folder search uses breadth-first traversal so nearby matching folders are returned before deep unrelated trees exhaust the search visit cap.
 - File search is attached to the file list. Focusing the list and typing starts filtering, moves focus to the filter input, and keeps typing uninterrupted across loading, Backspace, and clearing.
 - File browser Git status colors are enabled by default and can be toggled in Settings under `File browser git status colors`. When enabled, the file tree queries Git status for the current directory and colors file entries: yellow for modified, green for new and untracked, red for deleted, and orange for conflicts. Directories containing any changed files are marked blue, propagating up to all parent directories so changed subtrees are visible from any level.
 - The directory picker (Browse buttons in Git UI) includes the same debounced search and always-visible `...` go-up entry as the file browser. Go-up transitions from home (`~`) to filesystem root (`/`) when at the top of the home directory.
