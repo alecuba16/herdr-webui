@@ -493,7 +493,7 @@ function shortcutsModalHtml() {
             <div class="help-row"><strong>Sidebar</strong><span>Workspaces show open roots/worktrees; agents list status. Click to open; double-click names to rename. Drag the workspace/agents separator to resize by percent. Colored badges show blocked, done, working, and idle.</span></div>
             <div class="help-row"><strong>Header</strong><span>＋ opens/creates workspace; ? opens this help; gear opens Settings; moon/theme toggles color mode; sidebar chevron hides/shows navigation.</span></div>
             <div class="help-row"><strong>Panels/Tabs</strong><span>Top panel switcher changes terminal panel; + creates panel; ✕ closes current panel; double-click panel label to rename.</span></div>
-            <div class="help-row"><strong>Terminal</strong><span>Native xterm wheel scrolls scrollback; PageUp/PageDown scroll; Shift+Enter sends newline; Tail resumes follow; terminal links open in browser when enabled.</span></div>
+            <div class="help-row"><strong>Terminal</strong><span>Wheel and PageUp/PageDown scroll the terminal backend; Shift+Enter sends newline; Tail jumps to latest output; terminal links open in browser when enabled.</span></div>
             <div class="help-row"><strong>Files</strong><span>Files selector opens browser/editor; ... goes up; search filters tree; Save writes current file; Git colors mark modified, new, deleted, and conflict paths.</span></div>
             <div class="help-row"><strong>Git</strong><span>Git selector opens repo tools for diff, stage/unstage, discard, commit, commit & push, pull, push/force-push, rebase, conflicts, stash, branches, cleanup, and worktree prune; file view can toggle unified/side-by-side diffs.</span></div>
             <div class="help-row"><strong>Worktrees</strong><span>Row actions create linked worktree, open existing worktree, close panels/workspace, or remove linked worktree after confirmation.</span></div>
@@ -525,7 +525,6 @@ function shortcutsModalHtml() {
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then . / ,</kbd><span>Focus next or previous visible UI control.</span></div>
           <div class="shortcut-row"><kbd>Shift+Enter</kbd><span>Send configured newline sequence to terminal.</span></div>
           <div class="shortcut-row"><kbd>PageUp/PageDown</kbd><span>Scroll Herdr terminal backend.</span></div>
-          <div class="shortcut-row"><kbd>Option+Wheel</kbd><span>Scroll browser overflow instead of terminal backend.</span></div>
           <div class="shortcut-row"><kbd>Cmd/Ctrl+C</kbd><span>Copy selected terminal text.</span></div>
           <div class="shortcut-row"><kbd>Cmd/Ctrl+V</kbd><span>Paste clipboard into terminal.</span></div>
           <div class="shortcut-row"><kbd>Double-click</kbd><span>Rename workspaces and panels.</span></div>
