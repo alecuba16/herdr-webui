@@ -468,21 +468,23 @@ async function pasteClipboard() {
   if (text) pasteToTerminal(text);
   hideClipboardMenu();
 }
-function sendInputData(data) {
+function sendInputData(data, options = {}) {
   if (!termWs || termWs.readyState !== 1 || !data) return;
   const bytes = inputEncoder.encode(data);
-  const chunkSize = 16 * 1024;
+  const chunkSize = options.chunkSize || 16 * 1024;
+  const maxBufferedAmount = options.maxBufferedAmount || 65536;
   if (
     bytes.length <= chunkSize &&
     inputQueue.length === 0 &&
-    termWs.bufferedAmount < 65536
+    termWs.bufferedAmount < maxBufferedAmount
   ) {
     termWs.send(bytes);
     return;
   }
   for (let i = 0; i < bytes.length; i += chunkSize)
     inputQueue.push(bytes.slice(i, i + chunkSize));
-  scheduleInputFlush();
+  inputQueueMaxBufferedAmount = Math.max(inputQueueMaxBufferedAmount, maxBufferedAmount);
+  flushInputQueue();
 }
 function scheduleInputFlush() {
   if (inputFlushTimer) return;
@@ -492,11 +494,13 @@ function flushInputQueue() {
   inputFlushTimer = null;
   if (!termWs || termWs.readyState !== 1) {
     inputQueue = [];
+    inputQueueMaxBufferedAmount = 65536;
     return;
   }
-  while (inputQueue.length && termWs.bufferedAmount < 65536)
+  while (inputQueue.length && termWs.bufferedAmount < inputQueueMaxBufferedAmount)
     termWs.send(inputQueue.shift());
   if (inputQueue.length) scheduleInputFlush();
+  else inputQueueMaxBufferedAmount = 65536;
 }
 function finishPasteFrameSoon() {
   setTimeout(() => {
@@ -521,7 +525,7 @@ function pasteToTerminal(text) {
     finishPasteFrameSoon();
     return;
   }
-  sendInputData(input);
+  sendInputData(input, { chunkSize: 256 * 1024, maxBufferedAmount: 1024 * 1024 });
   finishPasteFrameSoon();
 }
 function showClipboardMenu(x, y) {
