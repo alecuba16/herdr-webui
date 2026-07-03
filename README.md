@@ -14,7 +14,8 @@ Compatibility:
 
 | WebUI | Herdr | Protocol | Status | Notes |
 | --- | --- | --- | --- | --- |
-| `0.2.5` | `0.7.2` | `15` with `14` fallback | Current | Marks Herdr 0.7.2 protocol 15 as tested while preserving protocol 14 fallback for older compatible servers. Adds Git drawer pull/push modals, commit & push, force-push retry flow, rebase branch selector with optional pre-pull, conflict HEAD/branch resolution labels, and rebase continue/skip/abort controls. |
+| `0.2.6` | `0.7.2` | `15` with `14` fallback | Current | Adds configurable agent sorting and sidebar split, shared desktop/mobile terminal scrollback, file/folder browser search with editor readability improvements, and Git pull/push/rebase plus diff layout controls. |
+| `0.2.5` | `0.7.2` | `15` with `14` fallback | Tested | Marks Herdr 0.7.2 protocol 15 as tested while preserving protocol 14 fallback for older compatible servers. |
 | `0.2.4` | `0.7.1+` | `15` with `14` fallback | Tested | Prefers Herdr direct attach protocol 15 and retries protocol 14 when an older compatible server rejects the initial handshake. |
 | `0.2.3` | `0.7.1` | `14` | Tested | Expands Help & Shortcuts with a separated Functionality map section and more detailed area rows. |
 | `0.2.2` | `0.7.1` | `14` | Tested | Renames the `?` modal to Help & Shortcuts, with a functionality map and action flows for creating workspaces/panels, opening Files/Git, worktree actions, terminal scroll/follow, search palette, and settings. |
@@ -34,21 +35,22 @@ Compatibility:
 | `0.0.45` | `0.7.1` | `14` | Tested | Improves embedded Git UI navigation with Escape handling, all-changes return behavior, split frontend assets, scoped file history controls, keyboard-owned drawer input, and per-file large diff loading. |
 | `0.0.45` | `0.7.0` | `14` | Minimum supported | Uses WebUI's legacy existing-branch worktree fallback when needed. |
 
-Newer Herdr builds may work when protocol stays compatible, but WebUI reports them as untested. WebUI 0.2.5 treats Herdr 0.7.2 protocol 15 as tested and retries protocol 14 for compatible older Herdr 0.7.x servers.
+Newer Herdr builds may work when protocol stays compatible, but WebUI reports them as untested. WebUI 0.2.6 treats Herdr 0.7.2 protocol 15 as tested and retries protocol 14 for compatible older Herdr 0.7.x servers.
 
-## 0.2.5 Release Notes
-
-### Compatibility
-
-- Marks Herdr 0.7.2 as the maximum tested backend so current protocol 15 installs report as compatible.
+## 0.2.6 Release Notes
 
 ### Sidebar and agents
 
 - Agents sidebar sorting is configurable in Settings → Agents and alerts. Status groups can be reordered with up/down controls and are saved in browser-local settings.
-- File browser search now supports file or folder mode with `Alt+F` / `Alt+D` switching. Folder search uses breadth-first backend traversal so shallow matching folders are found before deep unrelated trees exhaust the search cap. File/folder searches keep parent breadcrumbs, match highlighting, scroll/focus preservation, and paginated loading.
-- File browser rename/delete updates the visible tree in place where possible instead of forcing a full list reload. The editor uses a dedicated `--editor-bg` theme color so syntax highlighting, especially YAML in dark mode, stays readable independently from panel surfaces.
 - Agent status groups use explicit colors in settings: idle green, working yellow, blocked red, done blue, and others gray.
 - The Workspaces/Agents sidebar split is resizable by dragging the separator, snaps to whole percent values, and can also be set directly in Settings → Agents and alerts.
+
+### File browser and editor
+
+- File browser search now supports file or folder mode with `Alt+F` / `Alt+D` switching. Folder search uses breadth-first backend traversal so shallow matching folders are found before deep unrelated trees exhaust the search cap.
+- File/folder searches keep parent breadcrumbs, match highlighting, scroll/focus preservation, and paginated loading.
+- File browser rename/delete updates the visible tree in place where possible instead of forcing a full list reload.
+- The editor uses a dedicated `--editor-bg` theme color so syntax highlighting, especially YAML in dark mode, stays readable independently from panel surfaces.
 
 ### Git UI
 
@@ -56,13 +58,21 @@ Newer Herdr builds may work when protocol stays compatible, but WebUI reports th
 - Commit view adds `Commit & Push`; if the push is rejected, WebUI opens the force-push modal so the user can choose a safer force-with-lease retry or explicit force push.
 - Rebase now opens a branch selector and includes a `First pull selected branch before rebasing` checkbox before running the rebase.
 - Conflict resolution buttons use clearer `Use HEAD`, `Use branch`, and `Mark resolved` labels. Conflict view also exposes rebase continue, skip, and abort controls.
+- Git diffs can be toggled between side-by-side and unified layouts globally. Unified diffs preserve add/delete highlighting and compare mode stays selected across refreshes.
 - The Git drawer refresh control moved beside the Git title as a rounded icon and spins for two seconds after pressing. Styling uses theme variables so light/dark/custom themes inherit the right colors.
+
 ### Terminal
 
 - Terminal scrollback wheel/touch behavior is centralized in `src/assets/shared/terminal_scroll.js` as `window.HerdrTerminalScroll`.
 - The helper owns normal-buffer detection, xterm row-height lookup, wheel/touch delta-to-line conversion, and local scrollback movement through `term.scrollLines()` or `term.scrollToLine()` fallback.
 - Desktop and mobile terminal modules keep only DOM event binding and follow-button state updates, so scroll mechanics stay shared while platform-specific event wiring remains local.
 - Alternate-screen terminal apps still receive scroll input because local scrollback handling is gated to xterm's normal buffer.
+
+## 0.2.5 Release Notes
+
+### Compatibility
+
+- Marks Herdr 0.7.2 as the maximum tested backend so current protocol 15 installs report as compatible.
 
 ## 0.2.4 Release Notes
 

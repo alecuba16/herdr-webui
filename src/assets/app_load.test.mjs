@@ -135,7 +135,8 @@ describe("app bundle load", () => {
   });
 
   it("keeps file history header scoped to selected files", () => {
-    match(gitUiSource, /function renderFileToolbar\(activeTab\) \{\n\s+const view = active\(\) \|\| \{\};\n\s+if \(!view\.file\) return "";/);
+    match(gitUiSource, /function renderFileToolbar\(activeTab\) \{\n\s+const view = active\(\) \|\| \{\};/);
+    match(gitUiSource, /const history = view\.file \? `<button class="git-ui-btn \$\{activeTab === "history" \? "active" : ""\}" onclick="HerdrGitUi\.tab\('history'\)">History<\/button>` : "";/);
     equal([...gitUiSource.matchAll(/git-ui-log-head/g)].length, 1);
   });
 
