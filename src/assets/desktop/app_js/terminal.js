@@ -261,6 +261,9 @@ function terminalCellHeight() {
     term._core._renderService.dimensions.css.cell;
   return Math.max(1, (dims && dims.height) || 17);
 }
+function terminalUsesNormalBuffer() {
+  return !term || !term.buffer || !term.buffer.active || term.buffer.active.type !== "alternate";
+}
 function terminalWheelLines(e) {
   const rowHeight = terminalCellHeight();
   if (e.deltaMode === 1) return e.deltaY;
@@ -269,8 +272,22 @@ function terminalWheelLines(e) {
 }
 function scrollTerminalLines(lines) {
   if (!term || !Number.isFinite(lines) || lines === 0) return false;
+  if (!terminalUsesNormalBuffer()) return sendBackendScroll(lines);
   try {
     term.scrollLines(Math.trunc(lines));
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+function sendBackendScroll(lines) {
+  if (!termWs || termWs.readyState !== 1 || !Number.isFinite(lines) || lines === 0) return false;
+  try {
+    termWs.send(JSON.stringify({
+      type: "scroll",
+      direction: lines < 0 ? "up" : "down",
+      lines: Math.max(1, Math.abs(Math.trunc(lines))),
+    }));
     return true;
   } catch (e) {
     return false;
