@@ -63,10 +63,11 @@ Newer Herdr builds may work when protocol stays compatible, but WebUI reports th
 
 ### Terminal
 
-- Terminal scrollback wheel/touch behavior is centralized in `src/assets/shared/terminal_scroll.js` as `window.HerdrTerminalScroll`.
-- The helper owns normal-buffer detection, xterm row-height lookup, wheel/touch delta-to-line conversion, and local scrollback movement through `term.scrollLines()` or `term.scrollToLine()` fallback.
-- Desktop and mobile terminal modules keep only DOM event binding and follow-button state updates, so scroll mechanics stay shared while platform-specific event wiring remains local.
-- Alternate-screen terminal apps still receive scroll input because local scrollback handling is gated to xterm's normal buffer.
+- Desktop terminal scrolling now prefers Herdr backend scroll messages over local xterm scrollback. Wheel, touch, PageUp, and PageDown send `{type:"scroll"}` over the terminal WebSocket first, then fall back to local `term.scrollLines()` only when the backend path is unavailable.
+- The desktop terminal shell keeps browser scrolling disabled with `.terminal-shell { overflow: hidden; }` and leaves xterm internals to the vendor stylesheet. `fitTerminalSurface()` resets stale shell scroll offsets during reconnect/resize so tab switches attach at the live bottom instead of a browser-scrolled offset.
+- The Tail button appears after the user scrolls up. Pressing it sends a backend tail burst, hides the button, focuses the terminal, and resumes the latest output view without any write-time viewport preservation.
+- Settings → Terminal → Scroll speed controls desktop wheel sensitivity. Trackpad pixel deltas are accumulated to row height before scroll messages are sent, which avoids one backend scroll for every tiny trackpad event.
+- Mobile keeps its existing shared `src/assets/shared/terminal_scroll.js` local-scroll helper and follow-button path. Desktop and mobile remain separate because desktop needs backend-first scrolling for Herdr/Jcode terminal rendering while mobile still uses xterm local scrollback behavior.
 
 ## 0.2.5 Release Notes
 
