@@ -149,11 +149,7 @@ function terminalLinksEnabled() {
             if (!text || !termWs || termWs.readyState !== 1) return;
             event.preventDefault();
             event.stopImmediatePropagation();
-            const paste = globalThis.HerdrAppHelpers.terminalPasteInput(
-              text,
-              !!(term && term.modes && term.modes.bracketedPasteMode),
-            );
-            sendInputData(paste);
+            sendPasteToTerminal(text);
           },
           true,
         );
@@ -338,6 +334,22 @@ function terminalLinksEnabled() {
       for (let i = 0; i < bytes.length; i += chunkSize)
         inputQueue.push(bytes.slice(i, i + chunkSize));
       scheduleInputFlush();
+    }
+
+    function sendPasteToTerminal(text) {
+      if (!termWs || termWs.readyState !== 1 || !text) return;
+      const chunkSize = 512 * 1024;
+      for (let i = 0; i < text.length;) {
+        let end = Math.min(i + chunkSize, text.length);
+        if (end < text.length && isHighSurrogate(text.charCodeAt(end - 1))) end -= 1;
+        if (end <= i) end = Math.min(i + chunkSize, text.length);
+        termWs.send(JSON.stringify({ type: "paste", text: text.slice(i, end) }));
+        i = end;
+      }
+    }
+
+    function isHighSurrogate(code) {
+      return code >= 0xd800 && code <= 0xdbff;
     }
 
     function scheduleInputFlush() {

@@ -2429,39 +2429,8 @@ async fn terminal_socket(path: PathBuf, query: TerminalQuery, mut socket: WebSoc
                         if in_tx.send(ClientMessage::Input { data: data.to_vec() }).is_err() { break; }
                     }
                     Some(Ok(Message::Text(text))) => {
-                        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
-                            if value.get("type").and_then(|value| value.as_str()) == Some("resize") {
-                                let cols = value.get("cols").and_then(|value| value.as_u64()).unwrap_or(100).min(u16::MAX as u64) as u16;
-                                let rows = value.get("rows").and_then(|value| value.as_u64()).unwrap_or(30).min(u16::MAX as u64) as u16;
-                                let _ = in_tx.send(ClientMessage::Resize { cols: cols.max(1), rows: rows.max(1), cell_width_px: 0, cell_height_px: 0 });
-                            } else if value.get("type").and_then(|value| value.as_str()) == Some("scroll") {
-                                let direction = match value.get("direction").and_then(|value| value.as_str()) {
-                                    Some("up") => AttachScrollDirection::Up,
-                                    Some("down") => AttachScrollDirection::Down,
-                                    _ => AttachScrollDirection::Down,
-                                };
-                                let lines = value.get("lines").and_then(|value| value.as_u64()).unwrap_or(3).clamp(1, u16::MAX as u64) as u16;
-                                let column = value.get("column").and_then(|value| value.as_u64()).and_then(|value| u16::try_from(value).ok());
-                                let row = value.get("row").and_then(|value| value.as_u64()).and_then(|value| u16::try_from(value).ok());
-                                let modifiers = value.get("modifiers").and_then(|value| value.as_u64()).and_then(|value| u8::try_from(value).ok()).unwrap_or(0);
-                                let _ = in_tx.send(ClientMessage::AttachScroll {
-                                    source: AttachScrollSource::Wheel,
-                                    direction,
-                                    lines,
-                                    column,
-                                    row,
-                                    modifiers,
-                                });
-                            } else if value.get("type").and_then(|value| value.as_str()) == Some("key") {
-                                if value.get("code").and_then(|value| value.as_str()) == Some("Enter") {
-                                    let modifiers = value.get("modifiers").and_then(|value| value.as_u64()).and_then(|value| u8::try_from(value).ok()).unwrap_or(0);
-                                    let _ = in_tx.send(ClientMessage::InputEvents { events: vec![ClientInputEvent::Key { code: ClientKeyCode::Enter, modifiers, kind: ClientKeyKind::Press }] });
-                                }
-                            } else if let Some(input) = value.get("input").and_then(|value| value.as_str()) {
-                                let _ = in_tx.send(ClientMessage::Input { data: input.as_bytes().to_vec() });
-                            }
-                        } else {
-                            let _ = in_tx.send(ClientMessage::Input { data: text.to_string().into_bytes() });
+                        for message in terminal_text_messages(&text) {
+                            if in_tx.send(message).is_err() { break; }
                         }
                     }
                     Some(Ok(Message::Close(_))) | None => break,
@@ -2472,6 +2441,101 @@ async fn terminal_socket(path: PathBuf, query: TerminalQuery, mut socket: WebSoc
         }
     }
     let _ = in_tx.send(ClientMessage::Detach);
+}
+
+fn terminal_text_messages(text: &str) -> Vec<ClientMessage> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+        return vec![ClientMessage::Input {
+            data: text.as_bytes().to_vec(),
+        }];
+    };
+    match value.get("type").and_then(|value| value.as_str()) {
+        Some("resize") => {
+            let cols = value
+                .get("cols")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(100)
+                .min(u16::MAX as u64) as u16;
+            let rows = value
+                .get("rows")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(30)
+                .min(u16::MAX as u64) as u16;
+            vec![ClientMessage::Resize {
+                cols: cols.max(1),
+                rows: rows.max(1),
+                cell_width_px: 0,
+                cell_height_px: 0,
+            }]
+        }
+        Some("scroll") => {
+            let direction = match value.get("direction").and_then(|value| value.as_str()) {
+                Some("up") => AttachScrollDirection::Up,
+                Some("down") => AttachScrollDirection::Down,
+                _ => AttachScrollDirection::Down,
+            };
+            let lines = value
+                .get("lines")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(3)
+                .clamp(1, u16::MAX as u64) as u16;
+            let column = value
+                .get("column")
+                .and_then(|value| value.as_u64())
+                .and_then(|value| u16::try_from(value).ok());
+            let row = value
+                .get("row")
+                .and_then(|value| value.as_u64())
+                .and_then(|value| u16::try_from(value).ok());
+            let modifiers = value
+                .get("modifiers")
+                .and_then(|value| value.as_u64())
+                .and_then(|value| u8::try_from(value).ok())
+                .unwrap_or(0);
+            vec![ClientMessage::AttachScroll {
+                source: AttachScrollSource::Wheel,
+                direction,
+                lines,
+                column,
+                row,
+                modifiers,
+            }]
+        }
+        Some("key") if value.get("code").and_then(|value| value.as_str()) == Some("Enter") => {
+            let modifiers = value
+                .get("modifiers")
+                .and_then(|value| value.as_u64())
+                .and_then(|value| u8::try_from(value).ok())
+                .unwrap_or(0);
+            vec![ClientMessage::InputEvents {
+                events: vec![ClientInputEvent::Key {
+                    code: ClientKeyCode::Enter,
+                    modifiers,
+                    kind: ClientKeyKind::Press,
+                }],
+            }]
+        }
+        Some("paste") => value
+            .get("text")
+            .and_then(|value| value.as_str())
+            .map(|text| {
+                vec![ClientMessage::InputEvents {
+                    events: vec![ClientInputEvent::Paste {
+                        text: text.to_string(),
+                    }],
+                }]
+            })
+            .unwrap_or_default(),
+        _ => value
+            .get("input")
+            .and_then(|value| value.as_str())
+            .map(|input| {
+                vec![ClientMessage::Input {
+                    data: input.as_bytes().to_vec(),
+                }]
+            })
+            .unwrap_or_default(),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3286,6 +3350,38 @@ mod tests {
             PROTOCOL_VERSION,
             "invalid local keybindings",
         ));
+    }
+
+    #[test]
+    fn terminal_text_messages_maps_paste_to_semantic_input_event() {
+        let messages = terminal_text_messages(
+            r#"{"type":"paste","text":"fn main() {\n    println!(\"hi\");\n}\n"}"#,
+        );
+
+        assert_eq!(
+            messages,
+            vec![ClientMessage::InputEvents {
+                events: vec![ClientInputEvent::Paste {
+                    text: "fn main() {\n    println!(\"hi\");\n}\n".to_string(),
+                }],
+            }]
+        );
+    }
+
+    #[test]
+    fn terminal_text_messages_keeps_legacy_input_json_and_plain_text() {
+        assert_eq!(
+            terminal_text_messages(r#"{"input":"abc"}"#),
+            vec![ClientMessage::Input {
+                data: b"abc".to_vec()
+            }]
+        );
+        assert_eq!(
+            terminal_text_messages("plain"),
+            vec![ClientMessage::Input {
+                data: b"plain".to_vec()
+            }]
+        );
     }
 
     #[test]

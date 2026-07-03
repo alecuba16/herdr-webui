@@ -55,6 +55,7 @@ let term,
   tabActivity = {},
   closeChordUntil = 0,
   inputQueue = [],
+  inputQueueMaxBufferedAmount = 65536,
   inputFlushTimer = null,
   terminalWriteQueue = [],
   terminalWriteFlushPending = false,
@@ -2229,6 +2230,7 @@ function resetTerminalConnection(clear = false, destroy = false) {
     inputFlushTimer = null;
   }
   inputQueue = [];
+  inputQueueMaxBufferedAmount = 65536;
   if (terminalWriteQueue.length && typeof flushTerminalFrames === "function") flushTerminalFrames();
   terminalWriteQueue = [];
   terminalWriteFlushPending = false;
