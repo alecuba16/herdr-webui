@@ -1,6 +1,6 @@
 (function () {
   const Tree = window.HerdrFileTree;
-  const state = { open: false, cwd: "", path: "", entries: [], children: {}, expanded: {}, loading: {}, selected: "", files: [], split: false, error: "", contextMenu: null, filter: "", filterTimer: null, filterLoading: false, filterOffset: 0, filterDone: true, filterScrollTop: 0, gitStatus: null, refreshing: false };
+  const state = { open: false, cwd: "", path: "", entries: [], children: {}, expanded: {}, loading: {}, selected: "", files: [], split: false, error: "", contextMenu: null, filter: "", filterTimer: null, filterLoading: false, filterOffset: 0, filterDone: true, filterScrollTop: 0, filterKind: "file", gitStatus: null, refreshing: false };
 
   function esc(value) { return Tree.esc(value); }
   function arg(value) { return Tree.arg(value); }
@@ -57,6 +57,7 @@
     state.filter = "";
     state.filterOffset = 0;
     state.filterDone = true;
+    state.filterKind = "file";
     state.open = true;
     render();
     await loadTree("");
@@ -81,7 +82,7 @@
     state.filterLoading = true;
     renderPreservingScroll();
     try {
-      const data = await api(`/api/file-browser/tree?cwd=${encodeURIComponent(state.cwd)}&path=${encodeURIComponent(state.path || "")}&q=${encodeURIComponent(state.filter.trim())}&offset=${offset}&limit=100${gitStatusEnabled() ? "&include_git_status=true" : ""}`);
+      const data = await api(`/api/file-browser/tree?cwd=${encodeURIComponent(state.cwd)}&path=${encodeURIComponent(state.path || "")}&q=${encodeURIComponent(state.filter.trim())}&${Tree.searchKindQuery(state.filterKind)}&offset=${offset}&limit=100${gitStatusEnabled() ? "&include_git_status=true" : ""}`);
       const entries = data.entries || [];
       state.entries = append ? state.entries.concat(entries) : entries;
       state.gitStatus = data.git_status || null;
@@ -193,9 +194,11 @@
     syncTerminalVisibility();
     const activeFile = currentFile();
     const entries = treeEntries();
-    const resultCount = entries.filter((entry) => entry.kind === "file").length;
-    const count = state.filter.trim() ? `<div class="file-browser-result-count">${resultCount} result${resultCount === 1 ? "" : "s"}</div>` : "";
-    const filter = `<div class="file-browser-list-head"><label class="file-browser-filter"><span class="file-browser-search-icon ${state.filterLoading ? "searching" : ""}" aria-hidden="true"></span><input id="fileBrowserFilter" value="${esc(state.filter)}" placeholder="Type here or focus list and type" oninput="HerdrFileBrowser.filter(this.value)"></label>${count}</div>`;
+    const resultCount = entries.length;
+    const noun = Tree.searchKindNoun(state.filterKind);
+    const label = Tree.searchKindLabel(state.filterKind);
+    const count = state.filter.trim() ? `<div class="file-browser-result-count">${resultCount} ${noun} result${resultCount === 1 ? "" : "s"}</div>` : "";
+    const filter = `<div class="file-browser-list-head"><div class="file-browser-filter-row"><label class="file-browser-filter"><span class="file-browser-search-icon ${state.filterLoading ? "searching" : ""}" aria-hidden="true"></span><input id="fileBrowserFilter" value="${esc(state.filter)}" placeholder="Type to search ${noun}s (Alt+F/Alt+D)" oninput="HerdrFileBrowser.filter(this.value)"></label><button class="file-browser-kind-toggle" title="Search ${noun}s. Alt+F files, Alt+D folders" onclick="HerdrFileBrowser.toggleFilterKind()">${label}</button></div>${count}</div>`;
     panel.innerHTML = `<aside class="file-browser-side ${activeFile ? "previewing" : ""}" tabindex="0" onkeydown="HerdrFileBrowser.typeToFilter(event)" onscroll="HerdrFileBrowser.sideScroll(this)"><div class="file-browser-head"><div class="file-browser-title-row"><div class="file-browser-title">Files</div><div class="file-browser-actions"><button class="file-browser-refresh${state.refreshing ? " refreshing" : ""}" title="Refresh" onclick="HerdrFileBrowser.refresh()"><span class="herdr-tree-icon herdr-tree-icon-refresh" aria-hidden="true"></span></button></div></div><div class="file-browser-subtitle">${esc(state.path || state.cwd || "No workspace")}</div></div>${state.error ? `<div class="file-browser-error">${esc(state.error)}</div>` : ""}${filter}${Tree.renderEntries(entries, { selectedPath: state.selected, callback: "HerdrFileBrowser", showMeta: true, dirClickMethod: "none", dirDoubleClickMethod: "enter", contextMethod: "menu", shiftSelectMode: true, filterTerm: state.filter })}${state.filterLoading ? `<div class="file-browser-searching">Searching...</div>` : ""}${state.filter.trim() && !state.filterDone ? `<button class="git-ui-btn file-browser-more" onclick="HerdrFileBrowser.loadMore()">Load more</button>` : ""}</aside><main class="file-browser-main"><div class="file-browser-toolbar">${renderToolbar(activeFile)}</div><div class="file-browser-preview ${state.split ? "split" : ""}" id="fileBrowserPreview">${renderPreviewShell()}</div></main>${renderContextMenu()}`;
     mountEditors();
   }
@@ -211,7 +214,7 @@
 
   function treeEntries() {
     if (state.filter.trim()) {
-      const entries = Tree.searchTreeEntries(state.entries);
+      const entries = Tree.searchTreeEntriesByKind(state.entries, state.filterKind, state.filter);
       return Tree.applyGitStatus(entries, state.gitStatus);
     }
     const entries = flattenEntries(state.entries, 0);
@@ -359,6 +362,42 @@
     return parts[parts.length - 1] || path || "";
   }
 
+  function mutateTreeForRename(from, to, nextName) {
+    state.entries = Tree.renamePathInEntries(state.entries, from, to, nextName);
+    state.children = Tree.remapPathMap(state.children, from, to, (entries) => Tree.renamePathInEntries(entries, from, to, nextName));
+    state.expanded = Tree.remapPathMap(state.expanded, from, to);
+    state.loading = Tree.remapPathMap(state.loading, from, to);
+    state.files = state.files.map((file) => Object.assign(file, { path: Tree.replacePathPrefix(file.path, from, to) }));
+    if (state.selected) state.selected = Tree.replacePathPrefix(state.selected, from, to);
+  }
+
+  function mutateTreeForDelete(path) {
+    state.entries = Tree.removePathFromEntries(state.entries, path);
+    state.children = Tree.prunePathMap(state.children, path, (entries) => Tree.removePathFromEntries(entries, path));
+    state.expanded = Tree.prunePathMap(state.expanded, path);
+    state.loading = Tree.prunePathMap(state.loading, path);
+    state.files = state.files.filter((file) => file.path !== path && !file.path.startsWith(`${path}/`));
+    if (state.selected === path || state.selected.startsWith(`${path}/`)) state.selected = (state.files[state.files.length - 1] || {}).path || "";
+    if (state.files.length < 2) state.split = false;
+  }
+
+  async function refreshParentAfterMutation(path) {
+    if (state.filter.trim()) {
+      await fetchFilteredEntries(false);
+      return;
+    }
+    const parent = Tree.parentPath(path);
+    if (parent === state.path) {
+      renderPreservingScroll();
+      return;
+    }
+    if (state.expanded[parent]) {
+      try { state.children[parent] = await fetchEntries(parent); }
+      catch (error) { state.error = error.message || String(error); }
+    }
+    renderPreservingScroll();
+  }
+
   async function renamePath(path) {
     const nextName = prompt("Rename to", fileName(path));
     if (!nextName || nextName === fileName(path)) return;
@@ -368,9 +407,10 @@
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ cwd: state.cwd, path, new_name: nextName }),
     });
-    state.files = state.files.filter((file) => file.path !== path && !file.path.startsWith(`${path}/`));
-    if (state.selected === path || state.selected.startsWith(`${path}/`)) state.selected = "";
-    await loadTree(state.path);
+    const parent = Tree.parentPath(path);
+    const to = parent ? `${parent}/${nextName}` : nextName;
+    mutateTreeForRename(path, to, nextName);
+    await refreshParentAfterMutation(to);
   }
 
   async function deletePath(path) {
@@ -380,9 +420,8 @@
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ cwd: state.cwd, path }),
     });
-    state.files = state.files.filter((file) => file.path !== path && !file.path.startsWith(`${path}/`));
-    if (state.selected === path || state.selected.startsWith(`${path}/`)) state.selected = "";
-    await loadTree(state.path);
+    mutateTreeForDelete(path);
+    await refreshParentAfterMutation(path);
   }
 
   window.HerdrFileBrowser = {
@@ -390,6 +429,12 @@
     close: hide,
     hide,
     refresh() { loadTree(state.path); },
+    setFilterKind(kind) {
+      state.filterKind = Tree.normalizeSearchKind(kind);
+      if (state.filter.trim()) fetchFilteredEntries(false);
+      else renderPreservingScroll();
+    },
+    toggleFilterKind() { this.setFilterKind(Tree.toggleSearchKind(state.filterKind)); },
     filter(value) {
       state.filter = String(value || "");
       clearTimeout(state.filterTimer);
@@ -405,7 +450,10 @@
       if (node.scrollTop + node.clientHeight >= node.scrollHeight - 80) fetchFilteredEntries(true);
     },
     typeToFilter(event) {
-      if (!event || event.metaKey || event.ctrlKey || event.altKey || event.defaultPrevented) return;
+      if (!event || event.metaKey || event.ctrlKey || event.defaultPrevented) return;
+      if (event.altKey && event.key && event.key.toLowerCase() === "f") { event.preventDefault(); this.setFilterKind("file"); return; }
+      if (event.altKey && event.key && event.key.toLowerCase() === "d") { event.preventDefault(); this.setFilterKind("dir"); return; }
+      if (event.altKey || event.defaultPrevented) return;
       if (event.target && event.target.closest && event.target.closest("input, textarea, select")) return;
       if (event.key === "Backspace") {
         event.preventDefault();

@@ -3,7 +3,7 @@
     const Tree = globalThis.HerdrFileTree;
     const Editor = globalThis.HerdrEditor;
     const state = deps.state;
-    const local = { path: "", entries: [], selected: "", file: null, error: "", loading: false, filter: "", filterTimer: null, filterOffset: 0, filterDone: true, scrollTop: 0, cwdOverride: "", gitStatus: null };
+    const local = { path: "", entries: [], selected: "", file: null, error: "", loading: false, filter: "", filterTimer: null, filterOffset: 0, filterDone: true, filterKind: "file", scrollTop: 0, cwdOverride: "", gitStatus: null };
 
     function cwd() {
       return local.cwdOverride || deps.currentWorkspaceCwd() || "";
@@ -51,7 +51,7 @@
       renderPreservingFocus();
       try {
         const offset = append ? local.filterOffset : 0;
-        const data = await deps.api(`/api/file-browser/tree?cwd=${encodeURIComponent(root)}&path=${encodeURIComponent(local.path || "")}&q=${encodeURIComponent(local.filter.trim())}&offset=${offset}&limit=100${gitStatusEnabled() ? "&include_git_status=true" : ""}`);
+        const data = await deps.api(`/api/file-browser/tree?cwd=${encodeURIComponent(root)}&path=${encodeURIComponent(local.path || "")}&q=${encodeURIComponent(local.filter.trim())}&${Tree.searchKindQuery(local.filterKind)}&offset=${offset}&limit=100${gitStatusEnabled() ? "&include_git_status=true" : ""}`);
         const entries = data.entries || [];
         local.entries = append ? local.entries.concat(entries) : entries;
         local.gitStatus = data.git_status || null;
@@ -88,9 +88,11 @@
       if (local.file) return renderPreview();
       const tree = Tree.renderEntries(treeEntries(), { selectedPath: local.selected, callback: "HerdrMobileFiles", showMeta: true, filterTerm: local.filter });
       const more = local.filter.trim() && !local.filterDone ? `<button class="mobile-btn mobile-wide" onclick="HerdrMobile.filesLoadMore()">Load more</button>` : "";
-      const resultCount = treeEntries().filter((entry) => entry.kind === "file").length;
-      const count = local.filter.trim() ? `<div class="mobile-help mobile-file-result-count">${resultCount} result${resultCount === 1 ? "" : "s"}</div>` : "";
-      return `<section class="mobile-section mobile-files" tabindex="0" onkeydown="HerdrMobile.filesTypeToFilter(event)" onscroll="HerdrMobile.filesScroll(this)"><div class="mobile-files-head"><div><h2>Files</h2><p class="mobile-help">${deps.escapeHtml(local.path || cwd())}</p></div><div class="mobile-actions"><button class="mobile-btn" onclick="HerdrMobile.filesRefresh()">Refresh</button></div></div>${local.error ? `<div class="mobile-error">${deps.escapeHtml(local.error)}</div>` : ""}<div class="mobile-files-list-head"><label class="mobile-file-filter"><span class="mobile-file-search-icon ${local.loading && local.filter.trim() ? "searching" : ""}" aria-hidden="true"></span><input id="mobileFileFilter" value="${deps.escapeHtml(local.filter)}" placeholder="Type here or focus list and type" oninput="HerdrMobile.filesFilter(this.value)"></label>${count}</div>${local.loading ? '<div class="mobile-loading">Loading</div>' : tree}${more}</section>`;
+      const resultCount = treeEntries().length;
+      const noun = Tree.searchKindNoun(local.filterKind);
+      const label = Tree.searchKindLabel(local.filterKind);
+      const count = local.filter.trim() ? `<div class="mobile-help mobile-file-result-count">${resultCount} ${noun} result${resultCount === 1 ? "" : "s"}</div>` : "";
+      return `<section class="mobile-section mobile-files" tabindex="0" onkeydown="HerdrMobile.filesTypeToFilter(event)" onscroll="HerdrMobile.filesScroll(this)"><div class="mobile-files-head"><div><h2>Files</h2><p class="mobile-help">${deps.escapeHtml(local.path || cwd())}</p></div><div class="mobile-actions"><button class="mobile-btn" onclick="HerdrMobile.filesRefresh()">Refresh</button></div></div>${local.error ? `<div class="mobile-error">${deps.escapeHtml(local.error)}</div>` : ""}<div class="mobile-files-list-head"><div class="mobile-file-filter-row"><label class="mobile-file-filter"><span class="mobile-file-search-icon ${local.loading && local.filter.trim() ? "searching" : ""}" aria-hidden="true"></span><input id="mobileFileFilter" value="${deps.escapeHtml(local.filter)}" placeholder="Search ${noun}s (Alt+F/Alt+D)" oninput="HerdrMobile.filesFilter(this.value)"></label><button class="mobile-btn mobile-file-kind-toggle" onclick="HerdrMobile.filesToggleFilterKind()">${label}</button></div>${count}</div>${local.loading ? '<div class="mobile-loading">Loading</div>' : tree}${more}</section>`;
     }
 
     function renderPreservingFocus() {
@@ -118,7 +120,7 @@
 
     function treeEntries() {
       if (local.filter.trim()) {
-        const entries = Tree.searchTreeEntries(local.entries);
+        const entries = Tree.searchTreeEntriesByKind(local.entries, local.filterKind, local.filter);
         return Tree.applyGitStatus(entries, local.gitStatus);
       }
       const entries = local.entries.map((entry) => Object.assign({}, entry));
@@ -161,10 +163,17 @@
         local.file = null;
         local.error = "";
         local.filter = "";
+        local.filterKind = "file";
         local.cwdOverride = "";
       },
       toggle(encodedPath) { load(decodeURIComponent(encodedPath)); },
       select(encodedPath) { openFile(decodeURIComponent(encodedPath)); },
+      setFilterKind(kind) {
+        local.filterKind = Tree.normalizeSearchKind(kind);
+        if (local.filter.trim()) loadFiltered(false);
+        else renderPreservingFocus();
+      },
+      toggleFilterKind() { this.setFilterKind(Tree.toggleSearchKind(local.filterKind)); },
       up() {
         if (local.path) { load(Tree.parentPath(local.path)); return; }
         const wsCwd = deps.currentWorkspaceCwd() || "";
@@ -194,7 +203,10 @@
         if (node.scrollTop + node.clientHeight >= node.scrollHeight - 80) loadFiltered(true);
       },
       typeToFilter(event) {
-        if (!event || event.metaKey || event.ctrlKey || event.altKey || event.defaultPrevented) return;
+        if (!event || event.metaKey || event.ctrlKey || event.defaultPrevented) return;
+        if (event.altKey && event.key && event.key.toLowerCase() === "f") { event.preventDefault(); this.setFilterKind("file"); return; }
+        if (event.altKey && event.key && event.key.toLowerCase() === "d") { event.preventDefault(); this.setFilterKind("dir"); return; }
+        if (event.altKey || event.defaultPrevented) return;
         if (event.target && event.target.closest && event.target.closest("input, textarea, select")) return;
         if (event.key === "Backspace") {
           event.preventDefault();

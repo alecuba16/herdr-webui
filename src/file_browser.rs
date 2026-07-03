@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::SocketAddr;
@@ -45,6 +46,7 @@ struct FileBrowserQuery {
     dirs_only: Option<bool>,
     depth: Option<u8>,
     q: Option<String>,
+    search_kind: Option<String>,
     offset: Option<usize>,
     limit: Option<usize>,
     include_git_status: Option<bool>,
@@ -282,53 +284,81 @@ fn push_search_entries(
     limit: usize,
     visited: &mut usize,
     matched: &mut usize,
+    search_kind: Option<&str>,
 ) -> Result<(), String> {
-    if build.entries.len() >= limit || *visited >= MAX_SEARCH_VISITS {
+    push_search_entries_with_visit_limit(
+        build,
+        dir,
+        needle,
+        offset,
+        limit,
+        visited,
+        matched,
+        search_kind,
+        MAX_SEARCH_VISITS,
+    )
+}
+
+fn push_search_entries_with_visit_limit(
+    build: &mut TreeBuild,
+    dir: &Path,
+    needle: &str,
+    offset: usize,
+    limit: usize,
+    visited: &mut usize,
+    matched: &mut usize,
+    search_kind: Option<&str>,
+    max_visits: usize,
+) -> Result<(), String> {
+    if build.entries.len() >= limit || *visited >= max_visits {
         build.truncated = true;
         return Ok(());
     }
-    for entry in sorted_directory_entries(dir)? {
-        *visited += 1;
-        if *visited >= MAX_SEARCH_VISITS {
-            build.truncated = true;
-            break;
-        }
-        let is_dir = entry.metadata.is_dir();
-        if entry.sort_name.contains(needle)
-            || relative_to_root(build.root, &entry.path)
-                .to_lowercase()
-                .contains(needle)
-        {
-            if *matched >= offset && build.entries.len() < limit {
-                build.entries.push(FileBrowserEntry {
-                    name: entry.name.clone(),
-                    path: relative_to_root(build.root, &entry.path),
-                    kind: if is_dir { "dir" } else { "file" }.to_string(),
-                    size: if is_dir {
-                        None
-                    } else {
-                        Some(entry.metadata.len())
-                    },
-                    modified_ms: entry
-                        .metadata
-                        .modified()
-                        .ok()
-                        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-                        .map(|duration| duration.as_millis() as u64),
-                    level: 0,
-                    expanded: false,
-                });
-            }
-            *matched += 1;
-            if build.entries.len() >= limit {
+    let mut queue = VecDeque::from([dir.to_path_buf()]);
+    while let Some(current_dir) = queue.pop_front() {
+        for entry in sorted_directory_entries(&current_dir)? {
+            *visited += 1;
+            if *visited >= max_visits {
                 build.truncated = true;
-                break;
+                return Ok(());
             }
-        }
-        if is_dir {
-            push_search_entries(build, &entry.path, needle, offset, limit, visited, matched)?;
-            if build.truncated || build.entries.len() >= limit {
-                break;
+            let is_dir = entry.metadata.is_dir();
+            let kind = if is_dir { "dir" } else { "file" };
+            let kind_matches = search_kind.map_or(true, |wanted| wanted == kind);
+            if kind_matches
+                && (entry.sort_name.contains(needle)
+                    || relative_to_root(build.root, &entry.path)
+                        .to_lowercase()
+                        .contains(needle))
+            {
+                if *matched >= offset && build.entries.len() < limit {
+                    build.entries.push(FileBrowserEntry {
+                        name: entry.name.clone(),
+                        path: relative_to_root(build.root, &entry.path),
+                        kind: kind.to_string(),
+                        size: if is_dir {
+                            None
+                        } else {
+                            Some(entry.metadata.len())
+                        },
+                        modified_ms: entry
+                            .metadata
+                            .modified()
+                            .ok()
+                            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+                            .map(|duration| duration.as_millis() as u64),
+                        level: 0,
+                        expanded: false,
+                    });
+                }
+                *matched += 1;
+                if build.entries.len() >= limit {
+                    build.truncated = true;
+                    return Ok(());
+                }
+            }
+            if is_dir {
+                queue.push_back(entry.path);
             }
         }
     }
@@ -498,6 +528,10 @@ async fn file_browser_tree(
             .unwrap_or(DEFAULT_SEARCH_LIMIT)
             .clamp(1, MAX_SEARCH_LIMIT);
         let offset = query.offset.unwrap_or(0);
+        let search_kind = query
+            .search_kind
+            .as_deref()
+            .filter(|kind| *kind == "file" || *kind == "dir");
         if let Err(err) = push_search_entries(
             &mut build,
             &dir,
@@ -506,6 +540,7 @@ async fn file_browser_tree(
             limit,
             &mut visited,
             &mut matched,
+            search_kind,
         ) {
             return file_browser_json_error(StatusCode::BAD_GATEWAY, err);
         }
@@ -831,6 +866,7 @@ mod tests {
         ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("src/nested")).unwrap();
+        fs::create_dir_all(root.join("app_dir")).unwrap();
         fs::write(root.join("src/app.rs"), "app").unwrap();
         fs::write(root.join("src/nested/app_test.rs"), "test").unwrap();
         fs::write(root.join("README.md"), "readme").unwrap();
@@ -843,7 +879,17 @@ mod tests {
         };
         let mut visited = 0;
         let mut matched = 0;
-        push_search_entries(&mut build, &root, "app", 0, 2, &mut visited, &mut matched).unwrap();
+        push_search_entries(
+            &mut build,
+            &root,
+            "app",
+            0,
+            2,
+            &mut visited,
+            &mut matched,
+            Some("file"),
+        )
+        .unwrap();
 
         let paths = build
             .entries
@@ -853,6 +899,73 @@ mod tests {
         assert!(paths.contains(&"src/app.rs"));
         assert!(paths.contains(&"src/nested/app_test.rs"));
         assert!(matched >= 2);
+        assert!(!paths.contains(&"app_dir"));
+
+        let mut dir_build = TreeBuild {
+            root: &root,
+            entries: Vec::new(),
+            truncated: false,
+        };
+        let mut visited = 0;
+        let mut matched = 0;
+        push_search_entries(
+            &mut dir_build,
+            &root,
+            "app",
+            0,
+            10,
+            &mut visited,
+            &mut matched,
+            Some("dir"),
+        )
+        .unwrap();
+        let dir_paths = dir_build
+            .entries
+            .iter()
+            .map(|entry| (entry.kind.as_str(), entry.path.as_str()))
+            .collect::<Vec<_>>();
+        assert!(dir_paths.contains(&("dir", "app_dir")));
+        assert!(!dir_paths.iter().any(|(_, path)| *path == "src"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn push_search_entries_reaches_shallow_sibling_before_deep_branch_limit() {
+        let root = std::env::temp_dir().join(format!(
+            "herdr-webui-file-browser-bfs-search-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("bulk/a/b/c/d/e/f/g/h/i/j")).unwrap();
+        fs::create_dir_all(root.join("projects/herdr")).unwrap();
+
+        let root = root.canonicalize().unwrap();
+        let mut build = TreeBuild {
+            root: &root,
+            entries: Vec::new(),
+            truncated: false,
+        };
+        let mut visited = 0;
+        let mut matched = 0;
+        push_search_entries_with_visit_limit(
+            &mut build,
+            &root,
+            "herdr",
+            0,
+            10,
+            &mut visited,
+            &mut matched,
+            Some("dir"),
+            6,
+        )
+        .unwrap();
+
+        let paths = build
+            .entries
+            .iter()
+            .map(|entry| entry.path.as_str())
+            .collect::<Vec<_>>();
+        assert!(paths.contains(&"projects/herdr"));
         let _ = fs::remove_dir_all(root);
     }
 
