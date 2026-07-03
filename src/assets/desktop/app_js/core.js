@@ -2395,12 +2395,25 @@ async function refreshOnline(seq) {
       const focused = state.tabs.find((t) => t.focused);
       state.tab = (focused || state.tabs[0] || {}).tab_id || null;
     }
+    if (
+      state.tab &&
+      !state.panes.some((p) => p.tab_id === state.tab) &&
+      state.panes.length
+    ) {
+      const pane =
+        state.panes.find((p) => p.focused) ||
+        state.panes.find((p) => p.workspace_id === state.ws) ||
+        state.panes[0];
+      state.tab = pane && pane.tab_id;
+      state.pane = pane && pane.pane_id;
+    }
     if (!state.panes.some((p) => p.pane_id === state.pane)) {
       const pane =
         state.panes.find((x) => x.tab_id === state.tab && x.focused) ||
         state.panes.find((x) => x.tab_id === state.tab) ||
         state.panes[0];
       state.pane = pane && pane.pane_id;
+      if (pane && pane.tab_id) state.tab = pane.tab_id;
     }
     const pane = state.panes.find((x) => x.pane_id === state.pane);
     state.terminalId = pane && pane.terminal_id;

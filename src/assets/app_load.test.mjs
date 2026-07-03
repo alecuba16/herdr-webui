@@ -708,6 +708,54 @@ describe("app bundle load", () => {
     ok(replaced.some((url) => String(url).includes("/tab/new/pane/newpane")));
   });
 
+  it("switches away from selected tab when refresh shows it has no pane", async () => {
+    const ctx = context();
+    const replaced = [];
+    ctx.location.pathname = "/session/default/workspace/ws1/tab/old/pane/oldpane";
+    ctx.history.replaceState = (_state, _title, url) => replaced.push(url);
+    ctx.Terminal = class {
+      open() {}
+      onData() {}
+      onScroll() {}
+      loadAddon() {}
+      clear() {}
+      focus() {}
+      resize() {}
+      dispose() {}
+    };
+    ctx.fetch = async (url) => {
+      const text = String(url);
+      const result = text.includes("workspaces")
+        ? { workspaces: [{ workspace_id: "ws1", label: "repo" }] }
+        : text.includes("workspace-order")
+          ? { order: [] }
+          : text.includes("worktrees")
+            ? { source: {}, worktrees: [] }
+            : text.includes("tabs")
+              ? { tabs: [
+                  { workspace_id: "ws1", tab_id: "old", number: 1 },
+                  { workspace_id: "ws1", tab_id: "new", number: 2, focused: true },
+                ] }
+              : text.includes("panes")
+                ? { panes: [{ workspace_id: "ws1", tab_id: "new", pane_id: "newpane", terminal_id: "term2", focused: true }] }
+                : text.includes("pane-layout")
+                  ? { layout: { panes: [] } }
+                  : { agents: [] };
+      return { ok: true, status: 200, json: async () => ({ result }) };
+    };
+    vm.runInContext(source, ctx);
+
+    const result = await vm.runInContext(
+      "refreshSeq = 1; refreshOnline(1).then(() => ({ tab: state.tab, pane: state.pane, terminalId: state.terminalId }))",
+      ctx,
+    );
+
+    equal(result.tab, "new");
+    equal(result.pane, "newpane");
+    equal(result.terminalId, "term2");
+    ok(replaced.some((url) => String(url).includes("/tab/new/pane/newpane")));
+  });
+
   it("clears selected pane when no fallback pane remains", () => {
     const ctx = context();
     const replaced = [];
