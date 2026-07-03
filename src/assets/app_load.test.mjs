@@ -205,14 +205,17 @@ describe("app bundle load", () => {
     match(desktopTerminalSource, /terminal\.addEventListener\("touchmove", handleTerminalTouchMove, \{ passive: false, capture: true \}\);/);
     match(desktopTerminalSource, /terminal\.addEventListener\("touchend", handleTerminalTouchEnd, \{ passive: true, capture: true \}\);/);
     ok(!desktopTerminalSource.includes("attachCustomWheelEventHandler"));
-    match(desktopTerminalSource, /function scrollTerminalLines\(lines\) \{[\s\S]*?sendBackendScroll\(lines\)\) return true;[\s\S]*?!terminalUsesNormalBuffer\(\)[\s\S]*?term\.scrollLines\(Math\.trunc\(lines\)\);/);
+    match(desktopTerminalSource, /const stepLines = Math\.max\(1, Number\(options\.scrollLines\) \|\| 1\);/);
+    match(desktopTerminalSource, /terminalWheelDeltaPixels \+= e\.deltaY;[\s\S]*?Math\.abs\(terminalWheelDeltaPixels\) < rowHeight/);
+    match(desktopTerminalSource, /function scrollTerminalLines\(lines\) \{[\s\S]*?if \(sendBackendScroll\(lines\)\) \{[\s\S]*?updateTerminalScrollbackEstimate\(lines\);[\s\S]*?!terminalUsesNormalBuffer\(\)[\s\S]*?term\.scrollLines\(Math\.trunc\(lines\)\);/);
     match(desktopTerminalSource, /function sendBackendScroll\(lines\) \{[\s\S]*?type: "scroll"[\s\S]*?direction: lines < 0 \? "up" : "down"/);
-    ok(!desktopTerminalSource.includes("terminalFollowPaused"));
-    ok(!desktopTerminalSource.includes("terminalAtBottom"));
+    match(desktopTerminalSource, /function setTerminalFollowPaused\(paused\) \{[\s\S]*?button\.hidden = !paused;/);
+    match(desktopTerminalSource, /function updateTerminalScrollbackEstimate\(lines\) \{[\s\S]*?terminalScrollbackOffsetEstimate[\s\S]*?setTerminalFollowPaused\(terminalScrollbackOffsetEstimate > 0\);/);
     ok(!desktopTerminalSource.includes("term.onScroll"));
     ok(!desktopTerminalSource.includes("term.scrollToLine"));
+    ok(!desktopTerminalSource.includes("const shouldPreserve"));
     match(desktopTerminalSource, /shell\.scrollTop = 0;\n\s+shell\.scrollLeft = 0;/);
-    match(desktopTerminalSource, /function scrollTerminalToBottom\(\) \{[\s\S]*?term\.scrollToBottom\(\);/);
+    match(desktopTerminalSource, /function scrollTerminalToBottom\(\) \{[\s\S]*?sendBackendScroll\(65535\);[\s\S]*?setTerminalFollowPaused\(false\);[\s\S]*?term\.scrollToBottom\(\);/);
   });
 
   it("keeps Git UI keyboard input away from the terminal", () => {
