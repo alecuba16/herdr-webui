@@ -398,6 +398,11 @@ function hideClipboardMenu() {
 function fitTerminalSurface() {
   const cols = state.termCols || 100,
     rows = state.termRows || 30;
+  const shell = el("terminalShell");
+  if (shell) {
+    shell.scrollTop = 0;
+    shell.scrollLeft = 0;
+  }
   const dims =
     term &&
     term._core &&

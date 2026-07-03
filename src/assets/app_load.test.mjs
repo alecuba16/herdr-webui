@@ -195,6 +195,8 @@ describe("app bundle load", () => {
     ok(!terminalCss.includes(".terminal .xterm"));
     ok(!terminalCss.includes("xterm-selection"));
     ok(!terminalCss.includes("xterm-cursor"));
+    match(terminalCss, /\.terminal-shell \{[\s\S]*?overflow: hidden;/);
+    match(terminalCss, /\.terminal \{[\s\S]*?height: 100%;/);
     ok(!terminalCss.match(/\.terminal \.xterm-rows[\s\S]*?height: 100% !important;/));
     ok(!terminalCss.match(/\.terminal \.xterm-rows[\s\S]*?overflow: hidden !important;/));
     ok(!source.includes('el("terminalShell").addEventListener("contextmenu"'));
@@ -212,6 +214,7 @@ describe("app bundle load", () => {
     ok(!desktopTerminalSource.includes("terminalAtBottom"));
     ok(!desktopTerminalSource.includes("term.onScroll"));
     ok(!desktopTerminalSource.includes("term.scrollToLine"));
+    match(desktopTerminalSource, /shell\.scrollTop = 0;\n\s+shell\.scrollLeft = 0;/);
     match(desktopTerminalSource, /function scrollTerminalToBottom\(\) \{[\s\S]*?term\.scrollToBottom\(\);/);
   });
 
