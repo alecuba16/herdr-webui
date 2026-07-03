@@ -216,7 +216,7 @@ function connectTerminal() {
       connectedTerminalId = null;
       connectedSize = "";
       setTerminalLoading(false);
-      scheduleRefresh();
+      scheduleRefreshBurst();
     }
   };
 }
