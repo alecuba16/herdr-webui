@@ -2510,6 +2510,9 @@ function scheduleRefresh(delay = 500) {
   clearTimeout(refreshTimer);
   refreshTimer = setTimeout(refresh, delay);
 }
+function scheduleRefreshBurst(delays = [50, 250, 1000]) {
+  for (const delay of delays) setTimeout(refresh, delay);
+}
 function eventNeedsFastRefresh(kind) {
   return FAST_REFRESH_EVENTS.has(kind);
 }
