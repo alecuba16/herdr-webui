@@ -135,11 +135,11 @@ function connectTerminal() {
     shell.addEventListener("mousedown", () =>
       setTimeout(focusTerminal, 0),
     );
-    terminal.addEventListener("wheel", handleTerminalWheel, { passive: false });
-    terminal.addEventListener("touchstart", handleTerminalTouchStart, { passive: true });
-    terminal.addEventListener("touchmove", handleTerminalTouchMove, { passive: false });
-    terminal.addEventListener("touchend", handleTerminalTouchEnd, { passive: true });
-    terminal.addEventListener("touchcancel", handleTerminalTouchEnd, { passive: true });
+    terminal.addEventListener("wheel", handleTerminalWheel, { passive: false, capture: true });
+    terminal.addEventListener("touchstart", handleTerminalTouchStart, { passive: true, capture: true });
+    terminal.addEventListener("touchmove", handleTerminalTouchMove, { passive: false, capture: true });
+    terminal.addEventListener("touchend", handleTerminalTouchEnd, { passive: true, capture: true });
+    terminal.addEventListener("touchcancel", handleTerminalTouchEnd, { passive: true, capture: true });
     termScrollBound = true;
   }
   try {
@@ -282,6 +282,7 @@ function handleTerminalWheel(e) {
   const signedLines = lines > 0 ? Math.max(1, Math.ceil(lines)) : Math.min(-1, Math.floor(lines));
   if (!scrollTerminalLines(signedLines)) return;
   e.preventDefault();
+  e.stopImmediatePropagation();
 }
 function handleTerminalTouchStart(e) {
   terminalTouchLastY = e.touches && e.touches.length === 1 ? e.touches[0].clientY : null;
@@ -295,6 +296,7 @@ function handleTerminalTouchMove(e) {
   const signedLines = lines > 0 ? Math.max(1, Math.ceil(lines)) : Math.min(-1, Math.floor(lines));
   if (!scrollTerminalLines(signedLines)) return;
   e.preventDefault();
+  e.stopImmediatePropagation();
 }
 function handleTerminalTouchEnd() {
   terminalTouchLastY = null;
