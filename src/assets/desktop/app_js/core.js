@@ -38,8 +38,9 @@ let term,
   connectedTerminalId = null,
   connectedSize = "",
   termScrollBound = false,
-  terminalScrollFollowBound = false,
-  terminalFollowPaused = false,
+  terminalTouchLastY = null,
+  terminalWheelDeltaPixels = 0,
+  terminalScrollbackOffsetEstimate = 0,
   audioCtx = null,
   audioUnlocked = false,
   knownAttention = null,
@@ -492,12 +493,12 @@ function shortcutsModalHtml() {
             <div class="help-row"><strong>Sidebar</strong><span>Workspaces show open roots/worktrees; agents list status. Click to open; double-click names to rename. Drag the workspace/agents separator to resize by percent. Colored badges show blocked, done, working, and idle.</span></div>
             <div class="help-row"><strong>Header</strong><span>＋ opens/creates workspace; ? opens this help; gear opens Settings; moon/theme toggles color mode; sidebar chevron hides/shows navigation.</span></div>
             <div class="help-row"><strong>Panels/Tabs</strong><span>Top panel switcher changes terminal panel; + creates panel; ✕ closes current panel; double-click panel label to rename.</span></div>
-            <div class="help-row"><strong>Terminal</strong><span>Native xterm wheel scrolls scrollback; PageUp/PageDown scroll; Shift+Enter sends newline; Tail resumes follow; terminal links open in browser when enabled.</span></div>
+            <div class="help-row"><strong>Terminal</strong><span>Wheel, touch, and PageUp/PageDown scroll the Herdr backend first, with xterm local scroll as fallback. Tail appears after scrolling up and jumps back to latest output. Scroll speed is configurable in Settings → Terminal.</span></div>
             <div class="help-row"><strong>Files</strong><span>Files selector opens browser/editor; ... goes up; search filters tree; Save writes current file; Git colors mark modified, new, deleted, and conflict paths.</span></div>
             <div class="help-row"><strong>Git</strong><span>Git selector opens repo tools for diff, stage/unstage, discard, commit, commit & push, pull, push/force-push, rebase, conflicts, stash, branches, cleanup, and worktree prune; file view can toggle unified/side-by-side diffs.</span></div>
             <div class="help-row"><strong>Worktrees</strong><span>Row actions create linked worktree, open existing worktree, close panels/workspace, or remove linked worktree after confirmation.</span></div>
             <div class="help-row"><strong>Search</strong><span>Prefix then / opens palette for workspaces, repos, worktrees, labels, agents, and panels.</span></div>
-            <div class="help-row"><strong>Settings</strong><span>Configure shortcuts, terminal font/links, themes, file browser, Git UI, worktree defaults, agent group order, sidebar split percent, and notification/no-sleep behavior.</span></div>
+            <div class="help-row"><strong>Settings</strong><span>Configure shortcuts, terminal font/links/scroll speed, themes, file browser, Git UI, worktree defaults, agent group order, sidebar split percent, and notification/no-sleep behavior.</span></div>
           </div>
         </section>
         <div id="shortcutEditor"></div>
@@ -524,7 +525,6 @@ function shortcutsModalHtml() {
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then . / ,</kbd><span>Focus next or previous visible UI control.</span></div>
           <div class="shortcut-row"><kbd>Shift+Enter</kbd><span>Send configured newline sequence to terminal.</span></div>
           <div class="shortcut-row"><kbd>PageUp/PageDown</kbd><span>Scroll Herdr terminal backend.</span></div>
-          <div class="shortcut-row"><kbd>Option+Wheel</kbd><span>Scroll browser overflow instead of terminal backend.</span></div>
           <div class="shortcut-row"><kbd>Cmd/Ctrl+C</kbd><span>Copy selected terminal text.</span></div>
           <div class="shortcut-row"><kbd>Cmd/Ctrl+V</kbd><span>Paste clipboard into terminal.</span></div>
           <div class="shortcut-row"><kbd>Double-click</kbd><span>Rename workspaces and panels.</span></div>
@@ -1752,7 +1752,6 @@ function applyTheme() {
   if (themeSelect) themeSelect.value = themeMode;
   localStorage.setItem("herdr-web-theme", themeMode);
   if (term) {
-    applyTerminalFont();
     try {
       term.options.theme = terminalTheme();
     } catch (e) {
@@ -2233,6 +2232,7 @@ function resetTerminalConnection(clear = false, destroy = false) {
   if (terminalWriteQueue.length && typeof flushTerminalFrames === "function") flushTerminalFrames();
   terminalWriteQueue = [];
   terminalWriteFlushPending = false;
+  setTerminalFollowPaused(false);
   if (termWs) {
     termWs.onclose = null;
     try {
@@ -2395,12 +2395,25 @@ async function refreshOnline(seq) {
       const focused = state.tabs.find((t) => t.focused);
       state.tab = (focused || state.tabs[0] || {}).tab_id || null;
     }
+    if (
+      state.tab &&
+      !state.panes.some((p) => p.tab_id === state.tab) &&
+      state.panes.length
+    ) {
+      const pane =
+        state.panes.find((p) => p.focused) ||
+        state.panes.find((p) => p.workspace_id === state.ws) ||
+        state.panes[0];
+      state.tab = pane && pane.tab_id;
+      state.pane = pane && pane.pane_id;
+    }
     if (!state.panes.some((p) => p.pane_id === state.pane)) {
       const pane =
         state.panes.find((x) => x.tab_id === state.tab && x.focused) ||
         state.panes.find((x) => x.tab_id === state.tab) ||
         state.panes[0];
       state.pane = pane && pane.pane_id;
+      if (pane && pane.tab_id) state.tab = pane.tab_id;
     }
     const pane = state.panes.find((x) => x.pane_id === state.pane);
     state.terminalId = pane && pane.terminal_id;
@@ -2497,6 +2510,9 @@ function scheduleRefresh(delay = 500) {
   clearTimeout(refreshTimer);
   refreshTimer = setTimeout(refresh, delay);
 }
+function scheduleRefreshBurst(delays = [50, 250, 1000]) {
+  for (const delay of delays) setTimeout(refresh, delay);
+}
 function eventNeedsFastRefresh(kind) {
   return FAST_REFRESH_EVENTS.has(kind);
 }
@@ -2507,22 +2523,59 @@ function forgetClosedSelection(kind, data) {
       .catch(() => {});
   }
   if (kind === "pane.closed" || kind === "pane.exited") {
+    const closedPane = data && data.pane_id
+      ? (state.panes || []).find((pane) => pane.pane_id === data.pane_id)
+      : null;
+    if (data && data.pane_id) removeClosedPaneFromState(data.pane_id);
+    const closedLastPaneInTab =
+      closedPane &&
+      closedPane.tab_id &&
+      !(state.panes || []).some((pane) => pane.tab_id === closedPane.tab_id);
+    if (closedLastPaneInTab) removeClosedTabFromState(closedPane.tab_id);
     if (data && data.pane_id && data.pane_id === state.pane) {
       resetTerminalConnection(true, true);
-      selectFallbackPaneAfterClosed(data.pane_id);
+      if (closedLastPaneInTab) selectFallbackTabAfterClosed(closedPane.tab_id);
+      else selectFallbackPaneAfterClosed(data.pane_id);
       render();
       replaceSelectionHistory();
       if (typeof Terminal !== "undefined") connectTerminal();
     }
   } else if (kind === "tab.closed") {
+    if (data && data.tab_id) removeClosedTabFromState(data.tab_id);
     if (data && data.tab_id && data.tab_id === state.tab) {
       resetTerminalConnection(true);
-      state.tab = null;
-      state.pane = null;
-      state.terminalId = null;
+      selectFallbackTabAfterClosed(data.tab_id);
       render();
+      replaceSelectionHistory();
+      if (typeof Terminal !== "undefined") connectTerminal();
     }
   }
+}
+
+function removeClosedPaneFromState(paneId) {
+  state.panes = (state.panes || []).filter((pane) => pane.pane_id !== paneId);
+  state.agents = (state.agents || []).filter((agent) => agent.pane_id !== paneId);
+}
+
+function removeClosedTabFromState(tabId) {
+  state.tabs = (state.tabs || []).filter((tab) => tab.tab_id !== tabId);
+  state.allTabs = (state.allTabs || []).filter((tab) => tab.tab_id !== tabId);
+  state.panes = (state.panes || []).filter((pane) => pane.tab_id !== tabId);
+  state.agents = (state.agents || []).filter((agent) => agent.tab_id !== tabId);
+}
+
+function selectFallbackTabAfterClosed(closedTabId) {
+  const nextTab =
+    (state.tabs || []).find((tab) => tab.tab_id !== closedTabId && tab.focused) ||
+    (state.tabs || []).find((tab) => tab.tab_id !== closedTabId) ||
+    null;
+  state.tab = nextTab && nextTab.tab_id;
+  const nextPane =
+    (state.panes || []).find((pane) => pane.tab_id === state.tab && pane.focused) ||
+    (state.panes || []).find((pane) => pane.tab_id === state.tab) ||
+    null;
+  state.pane = nextPane && nextPane.pane_id;
+  state.terminalId = (nextPane && nextPane.terminal_id) || null;
 }
 
 function selectFallbackPaneAfterClosed(closedPaneId) {

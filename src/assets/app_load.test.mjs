@@ -96,6 +96,7 @@ function context() {
     prompt: () => null,
     confirm: () => true,
   };
+  ctx.terminal = getElement("terminal");
   ctx.window = ctx;
   ctx.globalThis = ctx;
   return vm.createContext(ctx);
@@ -105,8 +106,10 @@ describe("app bundle load", () => {
   let source;
   let gitUiSource;
   let gitSettingsSource;
+  let desktopTerminalSource;
 
   beforeEach(() => {
+    desktopTerminalSource = readFileSync(new URL("./desktop/app_js/terminal.js", import.meta.url), "utf8");
     const desktopAppSource = [
       "./desktop/app_js/core.js",
       "./desktop/app_js/render.js",
@@ -172,27 +175,55 @@ describe("app bundle load", () => {
   it("keeps terminal surface min sizes mode-aware", () => {
     match(source, /if \(options\.overflow\) \{\n\s+terminal\.style\.width = width \+ "px";/);
     match(source, /terminal\.style\.minWidth = "0";\n\s+terminal\.style\.minHeight = "0";/);
-    match(source, /x\.style\.minWidth = "0";\n\s+x\.style\.minHeight = "0";/);
+    ok(!source.includes('terminal.querySelector(".xterm")'));
+    ok(!source.includes('x.style.'));
     match(source, /shellStyle\.display === "none" \|\|\n\s+shellStyle\.visibility === "hidden" \|\|\n\s+\(shellRects && shellRects\.length === 0\)/);
     match(source, /function fitTerminalShell\(\) \{[\s\S]*?shell\.clientWidth \|\| rect\.width[\s\S]*?shell\.clientHeight \|\| rect\.height[\s\S]*?\};\n\}/);
     match(source, /function browserTerminalSize\(\) \{[\s\S]*?const shellSize = fitTerminalShell\(\);\n\s+if \(!shellSize\) return null;/);
-    ok(!source.includes('document.querySelector(".tabs")'));
+    ok(!source.includes('terminal.style.height = "100%"'));
+    ok(!source.includes('terminal.querySelector(".xterm-screen")'));
+    ok(!source.includes('terminal.querySelector(".xterm-viewport")'));
+    ok(!source.includes('terminal.querySelector(".xterm-rows")'));
     ok(!source.includes('shell.style.width ='));
-    ok(!source.includes('shell.style.height ='));
+    ok(!source.includes("fontFamily: terminalFontFamily()"));
+    match(source, /theme: terminalTheme\(\)/);
+    match(source, /term\.options\.theme = terminalTheme\(\)/);
+    match(source, /term\.setOption\("theme", terminalTheme\(\)\)/);
   });
 
-  it("keeps terminal scrollback available from wheel and touch", () => {
+  it("keeps desktop terminal scrolling delegated to vanilla xterm", () => {
     const terminalCss = readFileSync(new URL("./desktop/app_css/terminal.css", import.meta.url), "utf8");
 
-    match(terminalCss, /\.terminal \.xterm-viewport \{[\s\S]*?overflow-y: scroll !important;/);
-    ok(!terminalCss.match(/\.terminal \.xterm-viewport \{[\s\S]*?overflow: hidden !important;/));
+    ok(!terminalCss.includes(".terminal .xterm"));
+    ok(!terminalCss.includes("xterm-selection"));
+    ok(!terminalCss.includes("xterm-cursor"));
+    match(terminalCss, /\.terminal-shell \{[\s\S]*?overflow: hidden;/);
+    match(terminalCss, /\.terminal \{[\s\S]*?height: 100%;/);
+    ok(!terminalCss.match(/\.terminal \.xterm-rows[\s\S]*?height: 100% !important;/));
+    ok(!terminalCss.match(/\.terminal \.xterm-rows[\s\S]*?overflow: hidden !important;/));
     ok(!source.includes('el("terminalShell").addEventListener("contextmenu"'));
-    match(source, /el\("terminalShell"\)\.addEventListener\("wheel", handleTerminalWheel, \{\n\s+passive: false,\n\s+\}\);/);
-    match(source, /el\("terminalShell"\)\.addEventListener\("touchmove", handleTerminalTouchMove, \{\n\s+passive: false,\n\s+\}\);/);
-    match(source, /function handleTerminalWheel\(event\) \{[\s\S]*?!terminalUsesNormalBuffer\(\)[\s\S]*?HerdrTerminalScroll\.wheelLines\(term, event, state\.termRows \|\| 24\)/);
-    match(source, /function handleTerminalTouchMove\(event\) \{[\s\S]*?!terminalUsesNormalBuffer\(\)[\s\S]*?HerdrTerminalScroll\.touchLines\(term, dy\)/);
-    match(source, /term\.attachCustomWheelEventHandler\(\(e\) => \{[\s\S]*?if \(e\.altKey\) \{[\s\S]*?if \(typeof e\.preventDefault === "function"\) e\.preventDefault\(\);[\s\S]*?scrollBrowserOverflow\(e\.deltaX, e\.deltaY\);[\s\S]*?return false;[\s\S]*?HerdrTerminalScroll\.wheelLines\(term, e, state\.termRows \|\| 24\)[\s\S]*?return true;[\s\S]*?\}\);/);
-    match(source, /function scrollLocal\(term, direction, lines, afterScroll\) \{[\s\S]*?term\.scrollLines\(direction === "up" \? -lines : lines\);[\s\S]*?term\.scrollToLine\(nextLine\);[\s\S]*?return true;/);
+    match(desktopTerminalSource, /terminal\.addEventListener\("wheel", handleTerminalWheel, \{ passive: false, capture: true \}\);/);
+    match(desktopTerminalSource, /terminal\.addEventListener\("touchstart", handleTerminalTouchStart, \{ passive: true, capture: true \}\);/);
+    match(desktopTerminalSource, /terminal\.addEventListener\("touchmove", handleTerminalTouchMove, \{ passive: false, capture: true \}\);/);
+    match(desktopTerminalSource, /terminal\.addEventListener\("touchend", handleTerminalTouchEnd, \{ passive: true, capture: true \}\);/);
+    ok(!desktopTerminalSource.includes("attachCustomWheelEventHandler"));
+    match(desktopTerminalSource, /e\.key === "PageUp" \|\| e\.key === "PageDown"/);
+    match(desktopTerminalSource, /scrollTerminalLines\(\n\s+e\.key === "PageUp"/);
+    ok(!desktopTerminalSource.includes("scrollBrowserOverflow"));
+    ok(!source.includes("Option+Wheel"));
+    match(desktopTerminalSource, /const stepLines = Math\.max\(1, Number\(options\.scrollLines\) \|\| 1\);/);
+    match(desktopTerminalSource, /terminalWheelDeltaPixels \+= e\.deltaY;[\s\S]*?Math\.abs\(terminalWheelDeltaPixels\) < rowHeight/);
+    match(desktopTerminalSource, /function scrollTerminalLines\(lines\) \{[\s\S]*?if \(sendBackendScroll\(lines\)\) \{[\s\S]*?updateTerminalScrollbackEstimate\(lines\);[\s\S]*?!terminalUsesNormalBuffer\(\)[\s\S]*?term\.scrollLines\(Math\.trunc\(lines\)\);/);
+    match(desktopTerminalSource, /function sendBackendScroll\(lines\) \{[\s\S]*?type: "scroll"[\s\S]*?direction: lines < 0 \? "up" : "down"/);
+    match(desktopTerminalSource, /function setTerminalFollowPaused\(paused\) \{[\s\S]*?button\.hidden = !paused;/);
+    match(desktopTerminalSource, /function updateTerminalScrollbackEstimate\(lines\) \{[\s\S]*?terminalScrollbackOffsetEstimate[\s\S]*?setTerminalFollowPaused\(terminalScrollbackOffsetEstimate > 0\);/);
+    ok(!desktopTerminalSource.includes("term.onScroll"));
+    ok(!desktopTerminalSource.includes("term.scrollToLine"));
+    ok(!desktopTerminalSource.includes("const shouldPreserve"));
+    match(desktopTerminalSource, /shell\.scrollTop = 0;\n\s+shell\.scrollLeft = 0;/);
+    match(desktopTerminalSource, /function sendBackendTail\(\) \{[\s\S]*?for \(let i = 0; i < 120; i \+= 1\)[\s\S]*?sendBackendScroll\(200\)/);
+    match(desktopTerminalSource, /function scrollTerminalToBottom\(focus = true\) \{[\s\S]*?sendBackendTail\(\);[\s\S]*?setTerminalFollowPaused\(false\);[\s\S]*?term\.scrollToBottom\(\);/);
+    match(desktopTerminalSource, /ws\.onopen = \(\) => \{[\s\S]*?scrollTerminalToBottom\(false\);/);
   });
 
   it("keeps Git UI keyboard input away from the terminal", () => {
@@ -709,6 +740,54 @@ describe("app bundle load", () => {
     ok(replaced.some((url) => String(url).includes("/tab/new/pane/newpane")));
   });
 
+  it("switches away from selected tab when refresh shows it has no pane", async () => {
+    const ctx = context();
+    const replaced = [];
+    ctx.location.pathname = "/session/default/workspace/ws1/tab/old/pane/oldpane";
+    ctx.history.replaceState = (_state, _title, url) => replaced.push(url);
+    ctx.Terminal = class {
+      open() {}
+      onData() {}
+      onScroll() {}
+      loadAddon() {}
+      clear() {}
+      focus() {}
+      resize() {}
+      dispose() {}
+    };
+    ctx.fetch = async (url) => {
+      const text = String(url);
+      const result = text.includes("workspaces")
+        ? { workspaces: [{ workspace_id: "ws1", label: "repo" }] }
+        : text.includes("workspace-order")
+          ? { order: [] }
+          : text.includes("worktrees")
+            ? { source: {}, worktrees: [] }
+            : text.includes("tabs")
+              ? { tabs: [
+                  { workspace_id: "ws1", tab_id: "old", number: 1 },
+                  { workspace_id: "ws1", tab_id: "new", number: 2, focused: true },
+                ] }
+              : text.includes("panes")
+                ? { panes: [{ workspace_id: "ws1", tab_id: "new", pane_id: "newpane", terminal_id: "term2", focused: true }] }
+                : text.includes("pane-layout")
+                  ? { layout: { panes: [] } }
+                  : { agents: [] };
+      return { ok: true, status: 200, json: async () => ({ result }) };
+    };
+    vm.runInContext(source, ctx);
+
+    const result = await vm.runInContext(
+      "refreshSeq = 1; refreshOnline(1).then(() => ({ tab: state.tab, pane: state.pane, terminalId: state.terminalId }))",
+      ctx,
+    );
+
+    equal(result.tab, "new");
+    equal(result.pane, "newpane");
+    equal(result.terminalId, "term2");
+    ok(replaced.some((url) => String(url).includes("/tab/new/pane/newpane")));
+  });
+
   it("clears selected pane when no fallback pane remains", () => {
     const ctx = context();
     const replaced = [];
@@ -749,6 +828,71 @@ describe("app bundle load", () => {
     );
 
     equal(terminal.innerHTML, "");
+  });
+
+  it("switches selected panel immediately when current tab closes", () => {
+    const ctx = context();
+    const replaced = [];
+    ctx.history.replaceState = (_state, _title, url) => replaced.push(url);
+    vm.runInContext(source, ctx);
+
+    const result = vm.runInContext(
+      `state.ws = "ws1";
+       state.tab = "tab_1";
+       state.pane = "pane_1";
+       state.terminalId = "term_1";
+       state.tabs = [
+         { workspace_id: "ws1", tab_id: "tab_1" },
+         { workspace_id: "ws1", tab_id: "tab_2", focused: true },
+       ];
+       state.allTabs = state.tabs.slice();
+       state.panes = [
+         { workspace_id: "ws1", tab_id: "tab_1", pane_id: "pane_1", terminal_id: "term_1" },
+         { workspace_id: "ws1", tab_id: "tab_2", pane_id: "pane_2", terminal_id: "term_2", focused: true },
+       ];
+       forgetClosedSelection("tab.closed", { tab_id: "tab_1" });
+       ({ tab: state.tab, pane: state.pane, terminalId: state.terminalId, tabs: state.tabs.map((tab) => tab.tab_id) });`,
+      ctx,
+    );
+
+    equal(result.tab, "tab_2");
+    equal(result.pane, "pane_2");
+    equal(result.terminalId, "term_2");
+    equal(JSON.stringify(result.tabs), JSON.stringify(["tab_2"]));
+    equal(replaced.at(-1), "/session/default/workspace/ws1/tab/tab_2/pane/pane_2");
+  });
+
+  it("switches selected panel immediately when terminal exit closes last pane", () => {
+    const ctx = context();
+    const replaced = [];
+    ctx.history.replaceState = (_state, _title, url) => replaced.push(url);
+    vm.runInContext(source, ctx);
+
+    const result = vm.runInContext(
+      `state.ws = "ws1";
+       state.tab = "tab_1";
+       state.pane = "pane_1";
+       state.terminalId = "term_1";
+       state.tabs = [
+         { workspace_id: "ws1", tab_id: "tab_1" },
+         { workspace_id: "ws1", tab_id: "tab_2", focused: true },
+       ];
+       state.allTabs = state.tabs.slice();
+       state.panes = [
+         { workspace_id: "ws1", tab_id: "tab_1", pane_id: "pane_1", terminal_id: "term_1" },
+         { workspace_id: "ws1", tab_id: "tab_2", pane_id: "pane_2", terminal_id: "term_2", focused: true },
+       ];
+       forgetClosedSelection("pane.exited", { pane_id: "pane_1" });
+       ({ tab: state.tab, pane: state.pane, terminalId: state.terminalId, tabs: state.tabs.map((tab) => tab.tab_id), panes: state.panes.map((pane) => pane.pane_id) });`,
+      ctx,
+    );
+
+    equal(result.tab, "tab_2");
+    equal(result.pane, "pane_2");
+    equal(result.terminalId, "term_2");
+    equal(JSON.stringify(result.tabs), JSON.stringify(["tab_2"]));
+    equal(JSON.stringify(result.panes), JSON.stringify(["pane_2"]));
+    equal(replaced.at(-1), "/session/default/workspace/ws1/tab/tab_2/pane/pane_2");
   });
 
   it("auto-closes pane when Herdr reports it exited", async () => {

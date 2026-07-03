@@ -74,37 +74,13 @@ function connectTerminal() {
   if (!term) {
     term = new Terminal({
       convertEol: false,
-      fontFamily: terminalFontFamily(),
       theme: terminalTheme(),
       scrollback: 10000,
     });
     term.open(terminal);
-    if (term.attachCustomWheelEventHandler)
-      term.attachCustomWheelEventHandler((e) => {
-        if (e.altKey) {
-          if (typeof e.preventDefault === "function") e.preventDefault();
-          scrollBrowserOverflow(e.deltaX, e.deltaY);
-          return false;
-        }
-        if (e.deltaY && terminalUsesNormalBuffer()) {
-          if (typeof e.preventDefault === "function") e.preventDefault();
-          scrollLocalTerminal(
-            e.deltaY < 0 ? "up" : "down",
-            HerdrTerminalScroll.wheelLines(term, e, state.termRows || 24),
-          );
-          return false;
-        }
-        return true;
-      });
     applyTerminalLinks();
     applyTheme();
     term.onData(sendInputData);
-    if (!terminalScrollFollowBound && term.onScroll) {
-      term.onScroll(() => {
-        setTerminalFollowPaused(!terminalAtBottom());
-      });
-      terminalScrollFollowBound = true;
-    }
     if (term.attachCustomKeyEventHandler)
       term.attachCustomKeyEventHandler((e) => {
         if (window.HerdrGitUi && window.HerdrGitUi.isVisible && window.HerdrGitUi.isVisible())
@@ -129,17 +105,10 @@ function connectTerminal() {
           !e.metaKey &&
           (e.key === "PageUp" || e.key === "PageDown")
         ) {
-          if (terminalUsesNormalBuffer()) {
-            e.preventDefault();
-            scrollLocalTerminal(
-              e.key === "PageUp" ? "up" : "down",
-              Math.max(1, (state.termRows || rows) - 1),
-            );
-            return false;
-          }
-          sendBackendScroll(
-            e.key === "PageUp" ? "up" : "down",
-            Math.max(1, (state.termRows || rows) - 1),
+          scrollTerminalLines(
+            e.key === "PageUp"
+              ? -Math.max(1, (state.termRows || rows) - 1)
+              : Math.max(1, (state.termRows || rows) - 1),
           );
           return false;
         }
@@ -176,18 +145,15 @@ function connectTerminal() {
       },
       true,
     );
-    el("terminalShell").addEventListener("mousedown", () =>
+    const shell = el("terminalShell");
+    shell.addEventListener("mousedown", () =>
       setTimeout(focusTerminal, 0),
     );
-    el("terminalShell").addEventListener("wheel", handleTerminalWheel, {
-      passive: false,
-    });
-    el("terminalShell").addEventListener("touchstart", handleTerminalTouchStart, {
-      passive: true,
-    });
-    el("terminalShell").addEventListener("touchmove", handleTerminalTouchMove, {
-      passive: false,
-    });
+    terminal.addEventListener("wheel", handleTerminalWheel, { passive: false, capture: true });
+    terminal.addEventListener("touchstart", handleTerminalTouchStart, { passive: true, capture: true });
+    terminal.addEventListener("touchmove", handleTerminalTouchMove, { passive: false, capture: true });
+    terminal.addEventListener("touchend", handleTerminalTouchEnd, { passive: true, capture: true });
+    terminal.addEventListener("touchcancel", handleTerminalTouchEnd, { passive: true, capture: true });
     termScrollBound = true;
   }
   try {
@@ -202,7 +168,10 @@ function connectTerminal() {
   termWs = ws;
   ws.binaryType = "arraybuffer";
   ws.onopen = () => {
-    if (termWs === ws) focusTerminal();
+    if (termWs === ws) {
+      scrollTerminalToBottom(false);
+      focusTerminal();
+    }
   };
   ws.onmessage = (e) => {
     if (termWs !== ws || connectedTerminalId !== target) return;
@@ -216,7 +185,7 @@ function connectTerminal() {
       connectedTerminalId = null;
       connectedSize = "";
       setTerminalLoading(false);
-      scheduleRefresh();
+      scheduleRefreshBurst();
     }
   };
 }
@@ -298,9 +267,106 @@ function coalesceTerminalFrames(frames) {
   }
   return merged;
 }
-function terminalUsesNormalBuffer() {
-  return HerdrTerminalScroll.usesNormalBuffer(term);
+
+function terminalCellHeight() {
+  const dims =
+    term &&
+    term._core &&
+    term._core._renderService &&
+    term._core._renderService.dimensions &&
+    term._core._renderService.dimensions.css &&
+    term._core._renderService.dimensions.css.cell;
+  return Math.max(1, (dims && dims.height) || 17);
 }
+function terminalUsesNormalBuffer() {
+  return !term || !term.buffer || !term.buffer.active || term.buffer.active.type !== "alternate";
+}
+function terminalWheelLines(e) {
+  const rowHeight = terminalCellHeight();
+  const stepLines = Math.max(1, Number(options.scrollLines) || 1);
+  if (e.deltaMode === 1) return e.deltaY > 0 ? stepLines : -stepLines;
+  if (e.deltaMode === 2) return e.deltaY > 0 ? (state.termRows || 30) : -(state.termRows || 30);
+  terminalWheelDeltaPixels += e.deltaY;
+  if (Math.abs(terminalWheelDeltaPixels) < rowHeight) return 0;
+  const steps = Math.trunc(terminalWheelDeltaPixels / rowHeight);
+  terminalWheelDeltaPixels -= steps * rowHeight;
+  return steps * stepLines;
+}
+function scrollTerminalLines(lines) {
+  if (!term || !Number.isFinite(lines) || lines === 0) return false;
+  if (sendBackendScroll(lines)) {
+    updateTerminalScrollbackEstimate(lines);
+    return true;
+  }
+  if (!terminalUsesNormalBuffer()) return false;
+  try {
+    term.scrollLines(Math.trunc(lines));
+    setTerminalFollowPaused(!terminalAtBottom());
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+function updateTerminalScrollbackEstimate(lines) {
+  const count = Math.max(1, Math.abs(Math.trunc(lines)));
+  terminalScrollbackOffsetEstimate = Math.max(
+    0,
+    terminalScrollbackOffsetEstimate + (lines < 0 ? count : -count),
+  );
+  setTerminalFollowPaused(terminalScrollbackOffsetEstimate > 0);
+}
+function sendBackendScroll(lines) {
+  if (!termWs || termWs.readyState !== 1 || !Number.isFinite(lines) || lines === 0) return false;
+  try {
+    const message = JSON.stringify({
+      type: "scroll",
+      direction: lines < 0 ? "up" : "down",
+      lines: Math.max(1, Math.abs(Math.trunc(lines))),
+    });
+    termWs.send(message);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+function sendBackendTail() {
+  let sent = false;
+  for (let i = 0; i < 120; i += 1) {
+    sent = sendBackendScroll(200) || sent;
+  }
+  return sent;
+}
+function handleTerminalWheel(e) {
+  if (e.ctrlKey || e.metaKey) return;
+  const lines = terminalWheelLines(e);
+  if (!lines) {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    return;
+  }
+  const signedLines = lines > 0 ? Math.max(1, Math.ceil(lines)) : Math.min(-1, Math.floor(lines));
+  if (!scrollTerminalLines(signedLines)) return;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+}
+function handleTerminalTouchStart(e) {
+  terminalTouchLastY = e.touches && e.touches.length === 1 ? e.touches[0].clientY : null;
+}
+function handleTerminalTouchMove(e) {
+  if (!e.touches || e.touches.length !== 1 || terminalTouchLastY === null) return;
+  const y = e.touches[0].clientY;
+  const deltaY = terminalTouchLastY - y;
+  terminalTouchLastY = y;
+  const lines = deltaY / terminalCellHeight();
+  const signedLines = lines > 0 ? Math.max(1, Math.ceil(lines)) : Math.min(-1, Math.floor(lines));
+  if (!scrollTerminalLines(signedLines)) return;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+}
+function handleTerminalTouchEnd() {
+  terminalTouchLastY = null;
+}
+
 function terminalAtBottom() {
   try {
     const buffer = term && term.buffer && term.buffer.active;
@@ -311,74 +377,27 @@ function terminalAtBottom() {
   }
 }
 function setTerminalFollowPaused(paused) {
-  terminalFollowPaused = !!paused;
-  updateTerminalFollowButton();
-}
-function updateTerminalFollowButton() {
+  terminalScrollbackOffsetEstimate = paused ? terminalScrollbackOffsetEstimate : 0;
   const button = el("terminalFollowButton");
   if (!button) return;
-  button.hidden = !terminalFollowPaused;
-  button.setAttribute("aria-hidden", terminalFollowPaused ? "false" : "true");
+  button.hidden = !paused;
+  button.setAttribute("aria-hidden", paused ? "false" : "true");
 }
+
 function writeTerminalFrame(data) {
-  const shouldPreserve = terminalFollowPaused && !terminalAtBottom();
-  const viewportY = shouldPreserve && term && term.buffer ? term.buffer.active.viewportY : null;
-  const done = () => {
-    if (shouldPreserve && Number.isFinite(viewportY)) {
-      try {
-        term.scrollToLine(viewportY);
-      } catch (e) {}
-    }
-    setTerminalFollowPaused(!terminalAtBottom());
-  };
   try {
-    term.write(data, done);
+    term.write(data);
   } catch (e) {
     term.write(data);
-    done();
   }
 }
-function scrollTerminalToBottom() {
+function scrollTerminalToBottom(focus = true) {
+  sendBackendTail();
   setTerminalFollowPaused(false);
   try {
     if (term) term.scrollToBottom();
   } catch (e) {}
-  focusTerminal(true);
-}
-function scrollLocalTerminal(direction, lines) {
-  return HerdrTerminalScroll.scrollLocal(term, direction, lines, () => {
-    setTerminalFollowPaused(!terminalAtBottom());
-  });
-}
-function handleTerminalWheel(event) {
-  if (!event || event.altKey || !event.deltaY || !terminalUsesNormalBuffer()) return;
-  if (
-    scrollLocalTerminal(
-      event.deltaY < 0 ? "up" : "down",
-      HerdrTerminalScroll.wheelLines(term, event, state.termRows || 24),
-    )
-  ) {
-    event.preventDefault();
-    event.stopPropagation();
-  }
-}
-function handleTerminalTouchStart(event) {
-  const touch = event && event.touches && event.touches[0];
-  handleTerminalTouchStart.lastY = touch ? touch.clientY : null;
-}
-function handleTerminalTouchMove(event) {
-  const touch = event && event.touches && event.touches[0];
-  if (!touch || !terminalUsesNormalBuffer()) return;
-  const lastY = handleTerminalTouchStart.lastY;
-  handleTerminalTouchStart.lastY = touch.clientY;
-  if (!Number.isFinite(lastY)) return;
-  const dy = lastY - touch.clientY;
-  if (Math.abs(dy) < 4) return;
-  const lines = HerdrTerminalScroll.touchLines(term, dy);
-  if (scrollLocalTerminal(dy < 0 ? "up" : "down", lines)) {
-    event.preventDefault();
-    event.stopPropagation();
-  }
+  if (focus) focusTerminal(true);
 }
 function modalOpen() {
   return [
@@ -422,19 +441,6 @@ function scheduleTerminalFrameWork() {
     fitTerminalSurface();
     focusTerminal();
   });
-}
-function sendBackendScroll(direction, lines, cell, modifiers = 0) {
-  if (termWs && termWs.readyState === 1)
-    termWs.send(
-      JSON.stringify({
-        type: "scroll",
-        direction,
-        lines,
-        column: cell && cell.column,
-        row: cell && cell.row,
-        modifiers,
-      }),
-    );
 }
 async function copySelection() {
   const text = term && term.getSelection ? term.getSelection() : "";
@@ -530,14 +536,13 @@ function hideClipboardMenu() {
   if (menu) menu.style.display = "none";
 }
 function fitTerminalSurface() {
-  const x = terminal.querySelector(".xterm");
-  const screen = terminal.querySelector(".xterm-screen");
-  const viewport = terminal.querySelector(".xterm-viewport");
-  const rowsEl = terminal.querySelector(".xterm-rows");
-  const helper = terminal.querySelector(".xterm-helper-textarea");
-  if (!x || !screen) return;
   const cols = state.termCols || 100,
     rows = state.termRows || 30;
+  const shell = el("terminalShell");
+  if (shell) {
+    shell.scrollTop = 0;
+    shell.scrollLeft = 0;
+  }
   const dims =
     term &&
     term._core &&
@@ -545,14 +550,11 @@ function fitTerminalSurface() {
     term._core._renderService.dimensions &&
     term._core._renderService.dimensions.css &&
     term._core._renderService.dimensions.css.cell;
-  const firstRow = rowsEl && rowsEl.firstElementChild;
   const cellWidth =
     (dims && dims.width) ||
-    (firstRow && firstRow.getBoundingClientRect().width) / cols ||
     9;
   const rowHeight =
     (dims && dims.height) ||
-    (firstRow && firstRow.getBoundingClientRect().height) ||
     17;
   const width = Math.ceil(cellWidth * cols);
   const height = Math.ceil(rowHeight * rows);
@@ -561,30 +563,11 @@ function fitTerminalSurface() {
     terminal.style.height = height + "px";
     terminal.style.minWidth = width + "px";
     terminal.style.minHeight = height + "px";
-    x.style.width = width + "px";
-    x.style.height = height + "px";
-    x.style.minWidth = width + "px";
-    x.style.minHeight = height + "px";
   } else {
     terminal.style.width = "100%";
-    terminal.style.height = "100%";
+    terminal.style.height = "";
     terminal.style.minWidth = "0";
     terminal.style.minHeight = "0";
-    x.style.width = "100%";
-    x.style.height = "100%";
-    x.style.minWidth = "0";
-    x.style.minHeight = "0";
-  }
-  screen.style.width = width + "px";
-  screen.style.height = height + "px";
-  if (viewport) viewport.style.height = height + "px";
-  if (rowsEl) {
-    rowsEl.style.width = width + "px";
-    rowsEl.style.height = height + "px";
-  }
-  if (helper) {
-    helper.style.width = width + "px";
-    helper.style.height = height + "px";
   }
 }
 function fitTerminalShell() {
@@ -672,14 +655,6 @@ window.addEventListener("resize", () => {
 window.addEventListener("focus", () =>
   requestAnimationFrame(fitFocusedTerminal),
 );
-function scrollBrowserOverflow(dx, dy) {
-  const shell = el("terminalShell");
-  if (!shell) return;
-  const maxTop = Math.max(0, shell.scrollHeight - shell.clientHeight);
-  const maxLeft = Math.max(0, shell.scrollWidth - shell.clientWidth);
-  shell.scrollTop = Math.max(0, Math.min(maxTop, shell.scrollTop + dy));
-  shell.scrollLeft = Math.max(0, Math.min(maxLeft, shell.scrollLeft + dx));
-}
 function wsUrl(path) {
   const sep = path.includes("?") ? "&" : "?";
   const session =
