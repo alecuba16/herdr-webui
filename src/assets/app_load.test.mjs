@@ -105,8 +105,10 @@ describe("app bundle load", () => {
   let source;
   let gitUiSource;
   let gitSettingsSource;
+  let desktopTerminalSource;
 
   beforeEach(() => {
+    desktopTerminalSource = readFileSync(new URL("./desktop/app_js/terminal.js", import.meta.url), "utf8");
     const desktopAppSource = [
       "./desktop/app_js/core.js",
       "./desktop/app_js/render.js",
@@ -187,7 +189,7 @@ describe("app bundle load", () => {
     match(source, /term\.setOption\("theme", terminalTheme\(\)\)/);
   });
 
-  it("keeps terminal scrollback available from wheel and touch", () => {
+  it("keeps desktop terminal scrolling delegated to vanilla xterm", () => {
     const terminalCss = readFileSync(new URL("./desktop/app_css/terminal.css", import.meta.url), "utf8");
 
     ok(!terminalCss.includes(".terminal .xterm"));
@@ -196,17 +198,21 @@ describe("app bundle load", () => {
     ok(!terminalCss.match(/\.terminal \.xterm-rows[\s\S]*?height: 100% !important;/));
     ok(!terminalCss.match(/\.terminal \.xterm-rows[\s\S]*?overflow: hidden !important;/));
     ok(!source.includes('el("terminalShell").addEventListener("contextmenu"'));
-    match(source, /shell\.addEventListener\("wheel", handleTerminalWheel, \{ passive: false \}\);/);
-    match(source, /shell\.addEventListener\("touchstart", handleTerminalTouchStart, \{ passive: true \}\);/);
-    match(source, /shell\.addEventListener\("touchmove", handleTerminalTouchMove, \{ passive: false \}\);/);
-    ok(!source.includes("attachCustomWheelEventHandler"));
-    ok(!source.includes("scrollLocalTerminal"));
-    match(source, /function terminalScrollLines\(deltaY\) \{[\s\S]*?term\.scrollLines\(deltaY > 0 \? lines : -lines\);/);
-    ok(!source.includes("sendBackendScroll"));
-    match(source, /term\.onScroll\(\(\) => \{\n\s+setTerminalFollowPaused\(!terminalAtBottom\(\)\);\n\s+\}\);/);
-    match(source, /const shouldPreserve = terminalFollowPaused && !terminalAtBottom\(\);/);
-    match(source, /term\.scrollToLine\(viewportY\);/);
-    match(source, /function scrollTerminalToBottom\(\) \{[\s\S]*?term\.scrollToBottom\(\);/);
+    ok(!desktopTerminalSource.includes('shell.addEventListener("wheel"'));
+    ok(!desktopTerminalSource.includes('shell.addEventListener("touchstart"'));
+    ok(!desktopTerminalSource.includes('shell.addEventListener("touchmove"'));
+    ok(!desktopTerminalSource.includes('shell.addEventListener("touchend"'));
+    ok(!desktopTerminalSource.includes("attachCustomWheelEventHandler"));
+    ok(!desktopTerminalSource.includes("handleTerminalWheel"));
+    ok(!desktopTerminalSource.includes("handleTerminalTouch"));
+    ok(!desktopTerminalSource.includes("terminalScrollLines"));
+    ok(!desktopTerminalSource.includes("scrollLocalTerminal"));
+    ok(!desktopTerminalSource.includes("sendBackendScroll"));
+    ok(!desktopTerminalSource.includes("terminalFollowPaused"));
+    ok(!desktopTerminalSource.includes("terminalAtBottom"));
+    ok(!desktopTerminalSource.includes("term.onScroll"));
+    ok(!desktopTerminalSource.includes("term.scrollToLine"));
+    match(desktopTerminalSource, /function scrollTerminalToBottom\(\) \{[\s\S]*?term\.scrollToBottom\(\);/);
   });
 
   it("keeps Git UI keyboard input away from the terminal", () => {
