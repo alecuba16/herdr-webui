@@ -120,7 +120,7 @@
 
     function treeEntries() {
       if (local.filter.trim()) {
-        const entries = Tree.searchTreeEntriesByKind(local.entries, local.filterKind);
+        const entries = Tree.searchTreeEntriesByKind(local.entries, local.filterKind, local.filter);
         return Tree.applyGitStatus(entries, local.gitStatus);
       }
       const entries = local.entries.map((entry) => Object.assign({}, entry));

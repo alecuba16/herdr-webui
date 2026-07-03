@@ -214,7 +214,7 @@
 
   function treeEntries() {
     if (state.filter.trim()) {
-      const entries = Tree.searchTreeEntriesByKind(state.entries, state.filterKind);
+      const entries = Tree.searchTreeEntriesByKind(state.entries, state.filterKind, state.filter);
       return Tree.applyGitStatus(entries, state.gitStatus);
     }
     const entries = flattenEntries(state.entries, 0);

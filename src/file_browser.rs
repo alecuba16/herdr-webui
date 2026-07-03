@@ -884,6 +884,32 @@ mod tests {
         assert!(paths.contains(&"src/nested/app_test.rs"));
         assert!(matched >= 2);
         assert!(!paths.contains(&"app_dir"));
+
+        let mut dir_build = TreeBuild {
+            root: &root,
+            entries: Vec::new(),
+            truncated: false,
+        };
+        let mut visited = 0;
+        let mut matched = 0;
+        push_search_entries(
+            &mut dir_build,
+            &root,
+            "app",
+            0,
+            10,
+            &mut visited,
+            &mut matched,
+            Some("dir"),
+        )
+        .unwrap();
+        let dir_paths = dir_build
+            .entries
+            .iter()
+            .map(|entry| (entry.kind.as_str(), entry.path.as_str()))
+            .collect::<Vec<_>>();
+        assert!(dir_paths.contains(&("dir", "app_dir")));
+        assert!(!dir_paths.iter().any(|(_, path)| *path == "src"));
         let _ = fs::remove_dir_all(root);
     }
 

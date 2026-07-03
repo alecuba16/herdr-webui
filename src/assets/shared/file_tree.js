@@ -211,9 +211,17 @@
     return `search_kind=${encodeURIComponent(normalizeSearchKind(kind))}`;
   }
 
-  function searchTreeEntriesByKind(entries, kind) {
+  function entryMatchesTerm(entry, term) {
+    const needle = String(term || "").trim().toLowerCase();
+    if (!needle) return true;
+    return String(entry.name || "").toLowerCase().includes(needle)
+      || String(entry.path || "").toLowerCase().includes(needle);
+  }
+
+  function searchTreeEntriesByKind(entries, kind, term) {
     const normalized = normalizeSearchKind(kind);
-    return searchTreeEntries(entries).filter((entry) => entry.kind === normalized);
+    if (normalized === "file") return searchTreeEntries(entries).filter((entry) => entry.kind === "file");
+    return searchTreeEntries((entries || []).filter((entry) => entry.kind === "dir" && entryMatchesTerm(entry, term)));
   }
 
   function replacePathPrefix(value, from, to) {

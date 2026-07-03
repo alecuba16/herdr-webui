@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { createRequire } from "node:module";
+import { readFileSync } from "node:fs";
+import vm from "node:vm";
 
 const require = createRequire(import.meta.url);
 const {
@@ -316,5 +318,26 @@ describe("buildWorktreeCreateBody", () => {
         pull_base: false,
       },
     );
+  });
+});
+
+describe("HerdrFileTree search helpers", () => {
+  function loadTree() {
+    const context = { window: {} };
+    const source = readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8");
+    vm.runInNewContext(source, context);
+    return context.window.HerdrFileTree;
+  }
+
+  it("filters folder search to actual partial matches while preserving parent breadcrumbs", () => {
+    const tree = loadTree();
+    const rows = tree.searchTreeEntriesByKind([
+      { kind: "dir", name: "alphaFolder", path: "alphaFolder" },
+      { kind: "dir", name: "nested", path: "alphaFolder/nested" },
+      { kind: "dir", name: "partialMatchDir", path: "beta/partialMatchDir" },
+    ], "dir", "partial");
+
+    assert.deepEqual(Array.from(rows, (entry) => entry.path), ["beta", "beta/partialMatchDir"]);
+    assert.equal(rows[1].name, "partialMatchDir");
   });
 });
