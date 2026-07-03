@@ -2507,10 +2507,19 @@ function forgetClosedSelection(kind, data) {
       .catch(() => {});
   }
   if (kind === "pane.closed" || kind === "pane.exited") {
+    const closedPane = data && data.pane_id
+      ? (state.panes || []).find((pane) => pane.pane_id === data.pane_id)
+      : null;
     if (data && data.pane_id) removeClosedPaneFromState(data.pane_id);
+    const closedLastPaneInTab =
+      closedPane &&
+      closedPane.tab_id &&
+      !(state.panes || []).some((pane) => pane.tab_id === closedPane.tab_id);
+    if (closedLastPaneInTab) removeClosedTabFromState(closedPane.tab_id);
     if (data && data.pane_id && data.pane_id === state.pane) {
       resetTerminalConnection(true, true);
-      selectFallbackPaneAfterClosed(data.pane_id);
+      if (closedLastPaneInTab) selectFallbackTabAfterClosed(closedPane.tab_id);
+      else selectFallbackPaneAfterClosed(data.pane_id);
       render();
       replaceSelectionHistory();
       if (typeof Terminal !== "undefined") connectTerminal();
