@@ -710,7 +710,7 @@
       return renderGitOpModalShell(force ? "Force push" : "Push changes", body, force ? "Force push" : "Push", force ? "danger" : "primary", "runPushFromModal");
     }
     if (modal.type === "rebase") {
-      const body = `${common}<label class="git-ui-branch-field"><span>Rebase commits after</span><input id="gitUiRebaseUpstream" value="HEAD~1" placeholder="HEAD~1"></label><label class="git-ui-check-row"><input id="gitUiRebasePullFirst" type="checkbox" checked><span>First pull selected branch before rebasing</span></label>${error}`;
+      const body = `${common}<label class="git-ui-branch-field"><span>Rebase commits after</span><input id="gitUiRebaseUpstream" value="HEAD" placeholder="HEAD"></label><label class="git-ui-check-row"><input id="gitUiRebasePullFirst" type="checkbox" checked><span>First pull selected branch before rebasing</span></label>${error}`;
       return renderGitOpModalShell("Rebase branch", body, "Rebase", "primary", "runRebaseFromModal");
     }
     return "";
