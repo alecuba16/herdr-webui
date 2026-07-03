@@ -272,7 +272,8 @@ function terminalWheelLines(e) {
 }
 function scrollTerminalLines(lines) {
   if (!term || !Number.isFinite(lines) || lines === 0) return false;
-  if (!terminalUsesNormalBuffer()) return sendBackendScroll(lines);
+  if (sendBackendScroll(lines)) return true;
+  if (!terminalUsesNormalBuffer()) return false;
   try {
     term.scrollLines(Math.trunc(lines));
     return true;
@@ -283,11 +284,12 @@ function scrollTerminalLines(lines) {
 function sendBackendScroll(lines) {
   if (!termWs || termWs.readyState !== 1 || !Number.isFinite(lines) || lines === 0) return false;
   try {
-    termWs.send(JSON.stringify({
+    const message = JSON.stringify({
       type: "scroll",
       direction: lines < 0 ? "up" : "down",
       lines: Math.max(1, Math.abs(Math.trunc(lines))),
-    }));
+    });
+    termWs.send(message);
     return true;
   } catch (e) {
     return false;
