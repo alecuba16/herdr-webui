@@ -478,7 +478,6 @@
     const view = active();
     if (!view) return;
     saveSideEditorFromDom();
-    resetCompareState(view);
     if (!view.cwd) {
       view.error = "No checkout path found for this workspace. Open a linked worktree or add cwd metadata first.";
       view.loading = false;
@@ -565,18 +564,6 @@
   function currentMode() {
     const view = active() || {};
     return view.mode || "changes";
-  }
-
-  function resetCompareState(view) {
-    if (!view || currentMode() === "changes") return;
-    view.mode = "changes";
-    view.compareBase = "";
-    view.compareTarget = "";
-    view.temporaryHistoryCompare = false;
-    view.file = "";
-    view.diffKind = "";
-    view.diffScope = "all";
-    view.tab = "changes";
   }
 
   function canMutateDiff() {
@@ -799,7 +786,7 @@
     const view = active() || {};
     const conflicts = ((((view.status || {}).conflicted) || []).length > 0);
     const compare = currentMode() !== "changes"
-      ? `<span class="git-ui-compare-state">Comparing ${esc(view.compareBase || "base")} → ${esc(view.compareTarget || "target")}</span><button class="git-ui-btn" onclick="HerdrGitUi.latestChanges()">Back to latest changes</button>`
+      ? `<span class="git-ui-compare-state">Comparing ${esc(view.compareBase || "base")} → ${esc(view.compareTarget || "target")}</span><button class="git-ui-btn" onclick="HerdrGitUi.latestChanges()">Return to current changes</button>`
       : "";
     const files = (view.diff && view.diff.files) || [];
     const collapsible = activeTab === "changes" && files.length > 0;
