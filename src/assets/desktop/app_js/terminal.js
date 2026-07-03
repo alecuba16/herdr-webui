@@ -95,7 +95,7 @@ function connectTerminal() {
           !e.ctrlKey &&
           !e.metaKey
         ) {
-          pasteToTerminal(shiftEnterSequence());
+          sendInputData(shiftEnterSequence());
           return false;
         }
         if (
@@ -123,7 +123,7 @@ function connectTerminal() {
         if (!text) return;
         e.preventDefault();
         e.stopImmediatePropagation();
-        pasteToTerminal(text);
+        sendPasteToTerminal(text);
       },
       true,
     );
@@ -465,7 +465,7 @@ async function pasteClipboard() {
   } catch (e) {
     text = prompt("Paste text") || "";
   }
-  if (text) pasteToTerminal(text);
+  if (text) sendPasteToTerminal(text);
   hideClipboardMenu();
 }
 function sendInputData(data, options = {}) {
@@ -485,6 +485,22 @@ function sendInputData(data, options = {}) {
     inputQueue.push(bytes.slice(i, i + chunkSize));
   inputQueueMaxBufferedAmount = Math.max(inputQueueMaxBufferedAmount, maxBufferedAmount);
   flushInputQueue();
+}
+function sendPasteToTerminal(text) {
+  if (!termWs || termWs.readyState !== 1 || !text) return;
+  const chunkSize = 512 * 1024;
+  pasteFrameUntil = Date.now() + 250;
+  for (let i = 0; i < text.length;) {
+    let end = Math.min(i + chunkSize, text.length);
+    if (end < text.length && isHighSurrogate(text.charCodeAt(end - 1))) end -= 1;
+    if (end <= i) end = Math.min(i + chunkSize, text.length);
+    termWs.send(JSON.stringify({ type: "paste", text: text.slice(i, end) }));
+    i = end;
+  }
+  finishPasteFrameSoon();
+}
+function isHighSurrogate(code) {
+  return code >= 0xd800 && code <= 0xdbff;
 }
 function scheduleInputFlush() {
   if (inputFlushTimer) return;
@@ -507,26 +523,6 @@ function finishPasteFrameSoon() {
     pasteFrameUntil = 0;
     scheduleTerminalFrameWork();
   }, 250);
-}
-function pasteToTerminal(text) {
-  if (!termWs || termWs.readyState !== 1 || !text) return;
-  const input = terminalPasteInput(
-    text,
-    !!(term && term.modes && term.modes.bracketedPasteMode),
-  );
-  const bytes = inputEncoder.encode(input);
-  pasteFrameUntil = Date.now() + 250;
-  if (
-    bytes.length <= 64 * 1024 &&
-    inputQueue.length === 0 &&
-    termWs.bufferedAmount < 1024 * 1024
-  ) {
-    termWs.send(bytes);
-    finishPasteFrameSoon();
-    return;
-  }
-  sendInputData(input, { chunkSize: 256 * 1024, maxBufferedAmount: 1024 * 1024 });
-  finishPasteFrameSoon();
 }
 function showClipboardMenu(x, y) {
   const menu = el("clipboardMenu");
