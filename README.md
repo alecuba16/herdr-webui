@@ -14,7 +14,7 @@ Compatibility:
 
 | WebUI | Herdr | Protocol | Status | Notes |
 | --- | --- | --- | --- | --- |
-| `0.2.5` | `0.7.2` | `15` with `14` fallback | Current | Marks Herdr 0.7.2 protocol 15 as tested while preserving protocol 14 fallback for older compatible servers. |
+| `0.2.5` | `0.7.2` | `15` with `14` fallback | Current | Marks Herdr 0.7.2 protocol 15 as tested while preserving protocol 14 fallback for older compatible servers. Adds Git drawer pull/push modals, commit & push, force-push retry flow, rebase branch selector with optional pre-pull, conflict HEAD/branch resolution labels, and rebase continue/skip/abort controls. |
 | `0.2.4` | `0.7.1+` | `15` with `14` fallback | Tested | Prefers Herdr direct attach protocol 15 and retries protocol 14 when an older compatible server rejects the initial handshake. |
 | `0.2.3` | `0.7.1` | `14` | Tested | Expands Help & Shortcuts with a separated Functionality map section and more detailed area rows. |
 | `0.2.2` | `0.7.1` | `14` | Tested | Renames the `?` modal to Help & Shortcuts, with a functionality map and action flows for creating workspaces/panels, opening Files/Git, worktree actions, terminal scroll/follow, search palette, and settings. |
@@ -50,6 +50,13 @@ Newer Herdr builds may work when protocol stays compatible, but WebUI reports th
 - Agent status groups use explicit colors in settings: idle green, working yellow, blocked red, done blue, and others gray.
 - The Workspaces/Agents sidebar split is resizable by dragging the separator, snaps to whole percent values, and can also be set directly in Settings → Agents and alerts.
 
+### Git UI
+
+- Git drawer actions now include pull and push modals. Pull supports regular, rebase, fast-forward-only, no-fast-forward, and force pull options. Push supports regular, force-with-lease, and force push options.
+- Commit view adds `Commit & Push`; if the push is rejected, WebUI opens the force-push modal so the user can choose a safer force-with-lease retry or explicit force push.
+- Rebase now opens a branch selector and includes a `First pull selected branch before rebasing` checkbox before running the rebase.
+- Conflict resolution buttons use clearer `Use HEAD`, `Use branch`, and `Mark resolved` labels. Conflict view also exposes rebase continue, skip, and abort controls.
+- The Git drawer refresh control moved beside the Git title as a rounded icon and spins for two seconds after pressing. Styling uses theme variables so light/dark/custom themes inherit the right colors.
 ### Terminal
 
 - Terminal scrollback wheel/touch behavior is centralized in `src/assets/shared/terminal_scroll.js` as `window.HerdrTerminalScroll`.
@@ -368,7 +375,7 @@ Git UI:
 
 - Desktop has an embedded Git drawer backed by Rust API routes and the system `git` CLI; no Node/React/Vite runtime is needed. Mobile has read-only grouped Git status.
 - The drawer blanks hidden DOM to reduce browser work and owns keyboard input while visible so terminal keystrokes do not leak through.
-- Core views cover status, commit, log, stash, cleanup, file history, conflicts, blame, hunk editing, side-by-side diffs, branch switching, and worktree actions.
+- Core views cover status, commit, commit & push, pull, push/force-push, log, stash, cleanup, file history, conflicts, blame, hunk editing, side-by-side diffs, branch switching, and worktree actions.
 - File lists are collapsible trees with optional filename-only mode, line counts, filtering, yellow match highlighting, and stable scroll while filtering/expanding. Right-click and section actions support stage/unstage/discard/stash with confirmations.
 - Cleanup scans `Exploration default directory` or a chosen root for Git repositories, does not follow symlinked directories, caps traversal, and reports truncation. Results render as a nested repo list (`repo -> branches/worktrees -> items`) with checkbox multi-select and one confirmation modal.
 - Cleanup deduplicates worktrees: linked worktrees that share a base repository resolve to that repository and no longer appear as separate entries.
@@ -379,9 +386,11 @@ Git UI:
 - Git status reports `ahead` and `behind` counts relative to the upstream branch using porcelain v2 branch tracking.
 - Status and conflict endpoints collect non-fatal Git warnings instead of silently dropping errors, returning a `warnings` array so the UI can surface partial failures.
 - Git log returns structured commit data (`hash`, `author`, `date`, `message`) alongside graph lines, with null-byte separators handled server-side so desktop graph rendering stays clean.
+- Pull, push, force-push, and rebase actions use modal flows with branch selectors. Rebase can pull the selected branch first, and commit view can commit then push with a force-push retry modal on rejection. The Git refresh action is a theme-aware spinning icon beside the Git title. File view includes an inline Unified/Side-by-side toggle, and unified diffs use the same intra-line word highlighting as side-by-side diffs.
+- Conflicts expose `Use HEAD`, `Use branch`, and `Mark resolved` per file, plus rebase continue, skip, and abort controls when resolving a rebase.
 - Log supports single-commit compare/reset/rebase and shift-click two-commit compare. File history can show a temporary read-only commit diff or jump to the log commit.
 - Git shortcuts share the WebUI prefix (`Ctrl+B` by default) and have collision-checked recording. Main defaults: `1` changes, `2`/`C` commit, `3`/`L` log, `4` stash, `R` refresh, `G` stage/unstage all, `Y/U/D/Z` selected file actions, `H/M/E/O/V/I/0` history/blame/edit/compare/branch/focus/help.
-- Mutating/destructive operations require confirmation and backend path/ref validation. API routes cover status, diff/compare, branches, cleanup, log, blame, file read/write/history, stashes, conflicts, stage/unstage/discard/stash, switch/reset/rebase/commit, apply-patch, and conflict actions.
+- Mutating/destructive operations require confirmation and backend path/ref validation. API routes cover status, diff/compare, branches, cleanup, log, blame, file read/write/history, stashes, conflicts, stage/unstage/discard/stash, switch/reset/rebase/pull/push/commit, apply-patch, and conflict actions.
 
 Panel and workspace close:
 

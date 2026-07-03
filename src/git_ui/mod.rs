@@ -69,6 +69,8 @@ pub(crate) fn routes() -> Router<WebState> {
         .route("/api/git-ui/switch", post(branch::git_ui_switch))
         .route("/api/git-ui/reset", post(log::git_ui_reset))
         .route("/api/git-ui/rebase", post(log::git_ui_rebase))
+        .route("/api/git-ui/pull", post(log::git_ui_pull))
+        .route("/api/git-ui/push", post(log::git_ui_push))
         .route("/api/git-ui/commit", post(log::git_ui_commit))
         .route("/api/git-ui/apply-patch", post(log::git_ui_apply_patch))
         .route(
