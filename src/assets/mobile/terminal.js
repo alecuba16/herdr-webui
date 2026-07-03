@@ -238,69 +238,22 @@ function terminalLinksEnabled() {
     }
 
     function terminalUsesNormalBuffer() {
-      try {
-        return (
-          !term ||
-          !term.buffer ||
-          !term.buffer.active ||
-          term.buffer.active.type !== "alternate"
-        );
-      } catch (_) {
-        return true;
-      }
+      return HerdrTerminalScroll.usesNormalBuffer(term);
     }
 
     function scrollLocalTerminal(direction, lines) {
-      let scrolled = false;
-      try {
-        if (!term) return false;
-        if (typeof term.scrollLines === "function") {
-          term.scrollLines(direction === "up" ? -lines : lines);
-          scrolled = true;
-        } else if (
-          typeof term.scrollToLine === "function" &&
-          term.buffer &&
-          term.buffer.active
-        ) {
-          const buffer = term.buffer.active;
-          const maxLine = Math.max(0, Number(buffer.baseY) || 0);
-          const currentLine = Math.max(0, Number(buffer.viewportY) || 0);
-          const nextLine = Math.max(
-            0,
-            Math.min(maxLine, currentLine + (direction === "up" ? -lines : lines)),
-          );
-          term.scrollToLine(nextLine);
-          scrolled = true;
-        } else {
-          return false;
-        }
-      } catch (_) {}
-      if (!scrolled) return false;
-      setTerminalFollowPaused(!terminalAtBottom());
-      return true;
-    }
-
-    function terminalRowHeight() {
-      return (
-        term &&
-        term._core &&
-        term._core._renderService &&
-        term._core._renderService.dimensions &&
-        term._core._renderService.dimensions.css &&
-        term._core._renderService.dimensions.css.cell &&
-        term._core._renderService.dimensions.css.cell.height
-      ) || 17;
+      return HerdrTerminalScroll.scrollLocal(term, direction, lines, () => {
+        setTerminalFollowPaused(!terminalAtBottom());
+      });
     }
 
     function handleWheel(event) {
       if (!event || event.altKey || !event.deltaY || !terminalUsesNormalBuffer()) return;
-      const unit =
-        event.deltaMode === 1
-          ? 1
-          : event.deltaMode === 2
-            ? (term && term.rows) || 24
-            : Math.max(1, terminalRowHeight());
-      const lines = Math.max(1, Math.round(Math.abs(event.deltaY) / unit));
+      const lines = HerdrTerminalScroll.wheelLines(
+        term,
+        event,
+        (term && term.rows) || 24,
+      );
       if (scrollLocalTerminal(event.deltaY < 0 ? "up" : "down", lines)) {
         event.preventDefault();
         event.stopPropagation();
@@ -320,10 +273,7 @@ function terminalLinksEnabled() {
       if (!Number.isFinite(lastY)) return;
       const dy = lastY - touch.clientY;
       if (Math.abs(dy) < 4) return;
-      const lines = Math.max(
-        1,
-        Math.round(Math.abs(dy) / Math.max(1, terminalRowHeight())),
-      );
+      const lines = HerdrTerminalScroll.touchLines(term, dy);
       if (scrollLocalTerminal(dy < 0 ? "up" : "down", lines)) {
         event.preventDefault();
         event.stopPropagation();

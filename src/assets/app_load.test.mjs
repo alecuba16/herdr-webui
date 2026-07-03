@@ -121,6 +121,8 @@ describe("app bundle load", () => {
     source =
       readFileSync(new URL("./shared/core.js", import.meta.url), "utf8") +
       "\n" +
+      readFileSync(new URL("./shared/terminal_scroll.js", import.meta.url), "utf8") +
+      "\n" +
       readFileSync(new URL("./desktop/search.js", import.meta.url), "utf8") +
       "\n" +
       desktopAppSource;
@@ -186,10 +188,10 @@ describe("app bundle load", () => {
     ok(!source.includes('el("terminalShell").addEventListener("contextmenu"'));
     match(source, /el\("terminalShell"\)\.addEventListener\("wheel", handleTerminalWheel, \{\n\s+passive: false,\n\s+\}\);/);
     match(source, /el\("terminalShell"\)\.addEventListener\("touchmove", handleTerminalTouchMove, \{\n\s+passive: false,\n\s+\}\);/);
-    match(source, /function handleTerminalWheel\(event\) \{[\s\S]*?!terminalUsesNormalBuffer\(\)[\s\S]*?scrollLocalTerminal\(event\.deltaY < 0 \? "up" : "down"/);
-    match(source, /function handleTerminalTouchMove\(event\) \{[\s\S]*?!terminalUsesNormalBuffer\(\)[\s\S]*?scrollLocalTerminal\(dy < 0 \? "up" : "down"/);
-    match(source, /term\.attachCustomWheelEventHandler\(\(e\) => \{[\s\S]*?if \(e\.altKey\) \{[\s\S]*?if \(typeof e\.preventDefault === "function"\) e\.preventDefault\(\);[\s\S]*?scrollBrowserOverflow\(e\.deltaX, e\.deltaY\);[\s\S]*?return false;[\s\S]*?return true;[\s\S]*?\}\);/);
-    match(source, /function scrollLocalTerminal\(direction, lines\) \{[\s\S]*?term\.scrollLines\(direction === "up" \? -lines : lines\);[\s\S]*?term\.scrollToLine\(nextLine\);[\s\S]*?return true;/);
+    match(source, /function handleTerminalWheel\(event\) \{[\s\S]*?!terminalUsesNormalBuffer\(\)[\s\S]*?HerdrTerminalScroll\.wheelLines\(term, event, state\.termRows \|\| 24\)/);
+    match(source, /function handleTerminalTouchMove\(event\) \{[\s\S]*?!terminalUsesNormalBuffer\(\)[\s\S]*?HerdrTerminalScroll\.touchLines\(term, dy\)/);
+    match(source, /term\.attachCustomWheelEventHandler\(\(e\) => \{[\s\S]*?if \(e\.altKey\) \{[\s\S]*?if \(typeof e\.preventDefault === "function"\) e\.preventDefault\(\);[\s\S]*?scrollBrowserOverflow\(e\.deltaX, e\.deltaY\);[\s\S]*?return false;[\s\S]*?HerdrTerminalScroll\.wheelLines\(term, e, state\.termRows \|\| 24\)[\s\S]*?return true;[\s\S]*?\}\);/);
+    match(source, /function scrollLocal\(term, direction, lines, afterScroll\) \{[\s\S]*?term\.scrollLines\(direction === "up" \? -lines : lines\);[\s\S]*?term\.scrollToLine\(nextLine\);[\s\S]*?return true;/);
   });
 
   it("keeps Git UI keyboard input away from the terminal", () => {
