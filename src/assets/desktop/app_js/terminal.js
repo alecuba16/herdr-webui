@@ -74,8 +74,6 @@ function connectTerminal() {
   if (!term) {
     term = new Terminal({
       convertEol: false,
-      fontFamily: terminalFontFamily(),
-      theme: terminalTheme(),
       scrollback: 10000,
     });
     term.open(terminal);
@@ -523,8 +521,6 @@ function hideClipboardMenu() {
   if (menu) menu.style.display = "none";
 }
 function fitTerminalSurface() {
-  const x = terminal.querySelector(".xterm");
-  if (!x) return;
   const cols = state.termCols || 100,
     rows = state.termRows || 30;
   const dims =
@@ -547,19 +543,11 @@ function fitTerminalSurface() {
     terminal.style.height = height + "px";
     terminal.style.minWidth = width + "px";
     terminal.style.minHeight = height + "px";
-    x.style.width = width + "px";
-    x.style.height = height + "px";
-    x.style.minWidth = width + "px";
-    x.style.minHeight = height + "px";
   } else {
     terminal.style.width = "100%";
     terminal.style.height = "";
     terminal.style.minWidth = "0";
     terminal.style.minHeight = "0";
-    x.style.width = "100%";
-    x.style.height = "100%";
-    x.style.minWidth = "0";
-    x.style.minHeight = "0";
   }
 }
 function fitTerminalShell() {

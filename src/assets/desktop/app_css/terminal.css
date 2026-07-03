@@ -21,14 +21,6 @@
   min-height: 0;
   white-space: nowrap;
 }
-.terminal .xterm {
-  display: block;
-  width: 100%;
-  height: 100%;
-  min-width: 0;
-  min-height: 0;
-}
-
 .terminal-shell::-webkit-scrollbar {
   width: 10px;
   height: 10px;
@@ -269,23 +261,4 @@ input {
 .session-line .tab,
 .session-line .mini {
   white-space: nowrap;
-}
-body:not(.light) .terminal .xterm-rows span[style*="rgb(16, 20, 25)"] {
-  color: #9399b2 !important;
-}
-.terminal .xterm-selection div {
-  background: #1e66f5aa !important;
-}
-body.light .terminal .xterm-selection div {
-  background: #1e66f599 !important;
-}
-.terminal .xterm-cursor-block {
-  background: #1e66f5 !important;
-  color: #fff !important;
-}
-.terminal .xterm-cursor-bar {
-  background: #1e66f5 !important;
-}
-.terminal .xterm-cursor-underline {
-  border-bottom-color: #1e66f5 !important;
 }
