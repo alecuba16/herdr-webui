@@ -186,17 +186,19 @@ if (optSidebarWorkspacePercent)
   };
 const sidebarSplitHandle = el("sidebarSplitHandle");
 if (sidebarSplitHandle) {
+  let pendingSidebarWorkspacePercent = null;
   const resizeFromClientY = (clientY) => {
     const split = sidebarSplitHandle.parentElement;
     if (!split) return;
     const rect = split.getBoundingClientRect();
     const percent = ((clientY - rect.top) / rect.height) * 100;
-    setSidebarWorkspacePercent(percent);
+    pendingSidebarWorkspacePercent = previewSidebarWorkspacePercent(percent);
   };
   sidebarSplitHandle.addEventListener("pointerdown", (e) => {
     e.preventDefault();
     sidebarSplitHandle.setPointerCapture(e.pointerId);
     sidebarSplitHandle.classList.add("dragging");
+    resizeFromClientY(e.clientY);
   });
   sidebarSplitHandle.addEventListener("pointermove", (e) => {
     if (!sidebarSplitHandle.hasPointerCapture(e.pointerId)) return;
@@ -206,6 +208,10 @@ if (sidebarSplitHandle) {
     if (sidebarSplitHandle.hasPointerCapture(e.pointerId))
       sidebarSplitHandle.releasePointerCapture(e.pointerId);
     sidebarSplitHandle.classList.remove("dragging");
+    if (pendingSidebarWorkspacePercent !== null) {
+      setSidebarWorkspacePercent(pendingSidebarWorkspacePercent);
+      pendingSidebarWorkspacePercent = null;
+    }
   };
   sidebarSplitHandle.addEventListener("pointerup", stopResize);
   sidebarSplitHandle.addEventListener("pointercancel", stopResize);

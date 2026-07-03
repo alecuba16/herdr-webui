@@ -980,10 +980,10 @@ function normalizeAgentStatusOrder(value) {
   return order;
 }
 function normalizeSidebarWorkspacePercent(value) {
-  return Math.max(
+  return Math.round(Math.max(
     20,
     Math.min(80, Number.isFinite(Number(value)) ? Number(value) : 68),
-  );
+  ));
 }
 function loadOptions() {
   try {
@@ -1639,6 +1639,13 @@ function setSidebarWorkspacePercent(value) {
   options.sidebarWorkspacePercent = normalizeSidebarWorkspacePercent(value);
   saveOptions();
   applyOptions();
+}
+function previewSidebarWorkspacePercent(value) {
+  const percent = normalizeSidebarWorkspacePercent(value);
+  document.body.style.setProperty("--sidebar-workspace-percent", `${percent}%`);
+  const input = el("optSidebarWorkspacePercent");
+  if (input) input.value = String(percent);
+  return percent;
 }
 function syncThemeColorInputs() {
   for (const mode of ["dark", "light"]) {
