@@ -28,20 +28,6 @@
   min-width: 0;
   min-height: 0;
 }
-.terminal .xterm-screen {
-  display: block;
-  overflow: hidden;
-}
-.terminal .xterm-viewport {
-  overflow-y: scroll !important;
-  scrollbar-width: none;
-}
-.terminal .xterm-viewport::-webkit-scrollbar {
-  display: none;
-}
-.terminal .xterm-rows > div {
-  width: 100% !important;
-}
 
 .terminal-shell::-webkit-scrollbar {
   width: 10px;
