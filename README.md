@@ -14,7 +14,8 @@ Compatibility:
 
 | WebUI | Herdr | Protocol | Status | Notes |
 | --- | --- | --- | --- | --- |
-| `0.2.6` | `0.7.2` | `15` with `14` fallback | Current | Adds configurable agent sorting and sidebar split, shared desktop/mobile terminal scrollback, file/folder browser search with editor readability improvements, and Git pull/push/rebase plus diff layout controls. |
+| `0.2.7` | `0.7.2` | `15` with `14` fallback | Current | Fixes panel close reconciliation, restores reliable terminal scroll/follow behavior, and routes large terminal paste as semantic backend paste events with bounded WebSocket frames. |
+| `0.2.6` | `0.7.2` | `15` with `14` fallback | Tested | Adds configurable agent sorting and sidebar split, shared desktop/mobile terminal scrollback, file/folder browser search with editor readability improvements, and Git pull/push/rebase plus diff layout controls. |
 | `0.2.5` | `0.7.2` | `15` with `14` fallback | Tested | Marks Herdr 0.7.2 protocol 15 as tested while preserving protocol 14 fallback for older compatible servers. |
 | `0.2.4` | `0.7.1+` | `15` with `14` fallback | Tested | Prefers Herdr direct attach protocol 15 and retries protocol 14 when an older compatible server rejects the initial handshake. |
 | `0.2.3` | `0.7.1` | `14` | Tested | Expands Help & Shortcuts with a separated Functionality map section and more detailed area rows. |
@@ -35,7 +36,30 @@ Compatibility:
 | `0.0.45` | `0.7.1` | `14` | Tested | Improves embedded Git UI navigation with Escape handling, all-changes return behavior, split frontend assets, scoped file history controls, keyboard-owned drawer input, and per-file large diff loading. |
 | `0.0.45` | `0.7.0` | `14` | Minimum supported | Uses WebUI's legacy existing-branch worktree fallback when needed. |
 
-Newer Herdr builds may work when protocol stays compatible, but WebUI reports them as untested. WebUI 0.2.6 treats Herdr 0.7.2 protocol 15 as tested and retries protocol 14 for compatible older Herdr 0.7.x servers.
+Newer Herdr builds may work when protocol stays compatible, but WebUI reports them as untested. WebUI 0.2.7 treats Herdr 0.7.2 protocol 15 as tested and retries protocol 14 for compatible older Herdr 0.7.x servers.
+
+## 0.2.7 Release Notes
+
+### Panel and workspace close
+
+- Closing the last panel in a workspace now closes the workspace through Herdr's `workspace.close` API instead of calling `tab.close`, which Herdr rejects for the last tab.
+- WebUI reconciles the active panel after panel or workspace close events so it switches to a valid remaining pane instead of keeping stale selected panel state.
+- When Herdr reports `pane.exited`, WebUI closes the pane through the backend and refreshes the active route so terminal exits do not leave dead panels selected.
+
+### Terminal scroll and follow
+
+- Desktop terminal scrolling now preserves browser/xterm layout ownership while explicitly handling wheel input where needed.
+- Scrolling up pauses follow mode, new output preserves the current viewport, and the `Tail` button jumps back to latest output and resumes follow.
+- Wheel scroll speed is configurable in Settings → Terminal input. Small trackpad deltas are accumulated before sending scroll commands.
+- Alternate-screen terminal apps receive wheel and PageUp/PageDown scroll events through the backend instead of local browser scrollback.
+- Mobile terminal mirrors the same scrollback follow behavior and `Tail` button as desktop.
+
+### Terminal paste
+
+- Large terminal paste now uses semantic WebSocket paste messages rather than xterm `paste()` or key-by-key raw input, avoiding browser main-thread stalls for large clipboards.
+- Paste payloads are split into bounded 512 KiB frames so they stay below Herdr's backend payload limits while preserving UTF-16 surrogate pairs.
+- The server maps paste messages to Herdr direct attach `ClientInputEvent::Paste` events, so multiline text and bracketed paste behavior are handled by the backend terminal state.
+- Desktop and mobile paste paths share this behavior. Normal typed input, Shift+Enter, scroll, and resize keep their existing paths.
 
 ## 0.2.6 Release Notes
 
