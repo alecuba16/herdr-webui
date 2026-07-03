@@ -196,13 +196,12 @@ describe("app bundle load", () => {
     ok(!terminalCss.match(/\.terminal \.xterm-rows[\s\S]*?height: 100% !important;/));
     ok(!terminalCss.match(/\.terminal \.xterm-rows[\s\S]*?overflow: hidden !important;/));
     ok(!source.includes('el("terminalShell").addEventListener("contextmenu"'));
-    ok(!source.includes('el("terminalShell").addEventListener("wheel"'));
-    ok(!source.includes('el("terminalShell").addEventListener("touchstart"'));
-    ok(!source.includes('el("terminalShell").addEventListener("touchmove"'));
+    match(source, /shell\.addEventListener\("wheel", handleTerminalWheel, \{ passive: false \}\);/);
+    match(source, /shell\.addEventListener\("touchstart", handleTerminalTouchStart, \{ passive: true \}\);/);
+    match(source, /shell\.addEventListener\("touchmove", handleTerminalTouchMove, \{ passive: false \}\);/);
     ok(!source.includes("attachCustomWheelEventHandler"));
-    ok(!source.includes("handleTerminalWheel"));
-    ok(!source.includes("handleTerminalTouch"));
     ok(!source.includes("scrollLocalTerminal"));
+    match(source, /function terminalScrollLines\(deltaY\) \{[\s\S]*?term\.scrollLines\(deltaY > 0 \? lines : -lines\);/);
     ok(!source.includes("sendBackendScroll"));
     match(source, /term\.onScroll\(\(\) => \{\n\s+setTerminalFollowPaused\(!terminalAtBottom\(\)\);\n\s+\}\);/);
     match(source, /const shouldPreserve = terminalFollowPaused && !terminalAtBottom\(\);/);
