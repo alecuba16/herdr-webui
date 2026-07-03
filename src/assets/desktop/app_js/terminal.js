@@ -553,7 +553,7 @@ function fitTerminalSurface() {
     x.style.minHeight = height + "px";
   } else {
     terminal.style.width = "100%";
-    terminal.style.height = "100%";
+    terminal.style.height = "";
     terminal.style.minWidth = "0";
     terminal.style.minHeight = "0";
     x.style.width = "100%";
