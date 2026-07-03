@@ -493,12 +493,12 @@ function shortcutsModalHtml() {
             <div class="help-row"><strong>Sidebar</strong><span>Workspaces show open roots/worktrees; agents list status. Click to open; double-click names to rename. Drag the workspace/agents separator to resize by percent. Colored badges show blocked, done, working, and idle.</span></div>
             <div class="help-row"><strong>Header</strong><span>＋ opens/creates workspace; ? opens this help; gear opens Settings; moon/theme toggles color mode; sidebar chevron hides/shows navigation.</span></div>
             <div class="help-row"><strong>Panels/Tabs</strong><span>Top panel switcher changes terminal panel; + creates panel; ✕ closes current panel; double-click panel label to rename.</span></div>
-            <div class="help-row"><strong>Terminal</strong><span>Wheel and PageUp/PageDown scroll the terminal backend; Shift+Enter sends newline; Tail jumps to latest output; terminal links open in browser when enabled.</span></div>
+            <div class="help-row"><strong>Terminal</strong><span>Wheel, touch, and PageUp/PageDown scroll the Herdr backend first, with xterm local scroll as fallback. Tail appears after scrolling up and jumps back to latest output. Scroll speed is configurable in Settings → Terminal.</span></div>
             <div class="help-row"><strong>Files</strong><span>Files selector opens browser/editor; ... goes up; search filters tree; Save writes current file; Git colors mark modified, new, deleted, and conflict paths.</span></div>
             <div class="help-row"><strong>Git</strong><span>Git selector opens repo tools for diff, stage/unstage, discard, commit, commit & push, pull, push/force-push, rebase, conflicts, stash, branches, cleanup, and worktree prune; file view can toggle unified/side-by-side diffs.</span></div>
             <div class="help-row"><strong>Worktrees</strong><span>Row actions create linked worktree, open existing worktree, close panels/workspace, or remove linked worktree after confirmation.</span></div>
             <div class="help-row"><strong>Search</strong><span>Prefix then / opens palette for workspaces, repos, worktrees, labels, agents, and panels.</span></div>
-            <div class="help-row"><strong>Settings</strong><span>Configure shortcuts, terminal font/links, themes, file browser, Git UI, worktree defaults, agent group order, sidebar split percent, and notification/no-sleep behavior.</span></div>
+            <div class="help-row"><strong>Settings</strong><span>Configure shortcuts, terminal font/links/scroll speed, themes, file browser, Git UI, worktree defaults, agent group order, sidebar split percent, and notification/no-sleep behavior.</span></div>
           </div>
         </section>
         <div id="shortcutEditor"></div>
