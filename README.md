@@ -42,6 +42,12 @@ Newer Herdr builds may work when protocol stays compatible, but WebUI reports th
 
 - Marks Herdr 0.7.2 as the maximum tested backend so current protocol 15 installs report as compatible.
 
+### Sidebar and agents
+
+- Agents sidebar sorting is configurable in Settings → Agents and alerts. Status groups can be reordered with up/down controls and are saved in browser-local settings.
+- Agent status groups use explicit colors in settings: idle green, working yellow, blocked red, done blue, and others gray.
+- The Workspaces/Agents sidebar split is resizable by dragging the separator, snaps to whole percent values, and can also be set directly in Settings → Agents and alerts.
+
 ## 0.2.4 Release Notes
 
 ### Compatibility
