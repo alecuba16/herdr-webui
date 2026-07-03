@@ -524,11 +524,7 @@ function hideClipboardMenu() {
 }
 function fitTerminalSurface() {
   const x = terminal.querySelector(".xterm");
-  const screen = terminal.querySelector(".xterm-screen");
-  const viewport = terminal.querySelector(".xterm-viewport");
-  const rowsEl = terminal.querySelector(".xterm-rows");
-  const helper = terminal.querySelector(".xterm-helper-textarea");
-  if (!x || !screen) return;
+  if (!x) return;
   const cols = state.termCols || 100,
     rows = state.termRows || 30;
   const dims =
@@ -538,14 +534,11 @@ function fitTerminalSurface() {
     term._core._renderService.dimensions &&
     term._core._renderService.dimensions.css &&
     term._core._renderService.dimensions.css.cell;
-  const firstRow = rowsEl && rowsEl.firstElementChild;
   const cellWidth =
     (dims && dims.width) ||
-    (firstRow && firstRow.getBoundingClientRect().width) / cols ||
     9;
   const rowHeight =
     (dims && dims.height) ||
-    (firstRow && firstRow.getBoundingClientRect().height) ||
     17;
   const width = Math.ceil(cellWidth * cols);
   const height = Math.ceil(rowHeight * rows);
@@ -567,16 +560,6 @@ function fitTerminalSurface() {
     x.style.height = "100%";
     x.style.minWidth = "0";
     x.style.minHeight = "0";
-  }
-  screen.style.width = width + "px";
-  screen.style.height = height + "px";
-  if (viewport) viewport.style.height = height + "px";
-  if (rowsEl) {
-    rowsEl.style.width = width + "px";
-  }
-  if (helper) {
-    helper.style.width = width + "px";
-    helper.style.height = height + "px";
   }
 }
 function fitTerminalShell() {
