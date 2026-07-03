@@ -154,7 +154,10 @@ function connectTerminal() {
   termWs = ws;
   ws.binaryType = "arraybuffer";
   ws.onopen = () => {
-    if (termWs === ws) focusTerminal();
+    if (termWs === ws) {
+      scrollTerminalToBottom(false);
+      focusTerminal();
+    }
   };
   ws.onmessage = (e) => {
     if (termWs !== ws || connectedTerminalId !== target) return;
@@ -312,6 +315,13 @@ function sendBackendScroll(lines) {
     return false;
   }
 }
+function sendBackendTail() {
+  let sent = false;
+  for (let i = 0; i < 120; i += 1) {
+    sent = sendBackendScroll(200) || sent;
+  }
+  return sent;
+}
 function handleTerminalWheel(e) {
   if (e.ctrlKey || e.metaKey) return;
   const lines = terminalWheelLines(e);
@@ -367,13 +377,13 @@ function writeTerminalFrame(data) {
     term.write(data);
   }
 }
-function scrollTerminalToBottom() {
-  sendBackendScroll(65535);
+function scrollTerminalToBottom(focus = true) {
+  sendBackendTail();
   setTerminalFollowPaused(false);
   try {
     if (term) term.scrollToBottom();
   } catch (e) {}
-  focusTerminal(true);
+  if (focus) focusTerminal(true);
 }
 function modalOpen() {
   return [

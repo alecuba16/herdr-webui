@@ -215,7 +215,9 @@ describe("app bundle load", () => {
     ok(!desktopTerminalSource.includes("term.scrollToLine"));
     ok(!desktopTerminalSource.includes("const shouldPreserve"));
     match(desktopTerminalSource, /shell\.scrollTop = 0;\n\s+shell\.scrollLeft = 0;/);
-    match(desktopTerminalSource, /function scrollTerminalToBottom\(\) \{[\s\S]*?sendBackendScroll\(65535\);[\s\S]*?setTerminalFollowPaused\(false\);[\s\S]*?term\.scrollToBottom\(\);/);
+    match(desktopTerminalSource, /function sendBackendTail\(\) \{[\s\S]*?for \(let i = 0; i < 120; i \+= 1\)[\s\S]*?sendBackendScroll\(200\)/);
+    match(desktopTerminalSource, /function scrollTerminalToBottom\(focus = true\) \{[\s\S]*?sendBackendTail\(\);[\s\S]*?setTerminalFollowPaused\(false\);[\s\S]*?term\.scrollToBottom\(\);/);
+    match(desktopTerminalSource, /ws\.onopen = \(\) => \{[\s\S]*?scrollTerminalToBottom\(false\);/);
   });
 
   it("keeps Git UI keyboard input away from the terminal", () => {
