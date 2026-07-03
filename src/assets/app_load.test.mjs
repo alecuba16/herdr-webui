@@ -200,10 +200,10 @@ describe("app bundle load", () => {
     ok(!terminalCss.match(/\.terminal \.xterm-rows[\s\S]*?height: 100% !important;/));
     ok(!terminalCss.match(/\.terminal \.xterm-rows[\s\S]*?overflow: hidden !important;/));
     ok(!source.includes('el("terminalShell").addEventListener("contextmenu"'));
-    match(desktopTerminalSource, /terminal\.addEventListener\("wheel", handleTerminalWheel, \{ passive: false \}\);/);
-    match(desktopTerminalSource, /terminal\.addEventListener\("touchstart", handleTerminalTouchStart, \{ passive: true \}\);/);
-    match(desktopTerminalSource, /terminal\.addEventListener\("touchmove", handleTerminalTouchMove, \{ passive: false \}\);/);
-    match(desktopTerminalSource, /terminal\.addEventListener\("touchend", handleTerminalTouchEnd, \{ passive: true \}\);/);
+    match(desktopTerminalSource, /terminal\.addEventListener\("wheel", handleTerminalWheel, \{ passive: false, capture: true \}\);/);
+    match(desktopTerminalSource, /terminal\.addEventListener\("touchstart", handleTerminalTouchStart, \{ passive: true, capture: true \}\);/);
+    match(desktopTerminalSource, /terminal\.addEventListener\("touchmove", handleTerminalTouchMove, \{ passive: false, capture: true \}\);/);
+    match(desktopTerminalSource, /terminal\.addEventListener\("touchend", handleTerminalTouchEnd, \{ passive: true, capture: true \}\);/);
     ok(!desktopTerminalSource.includes("attachCustomWheelEventHandler"));
     match(desktopTerminalSource, /function scrollTerminalLines\(lines\) \{[\s\S]*?term\.scrollLines\(Math\.trunc\(lines\)\);/);
     ok(!desktopTerminalSource.includes("scrollLocalTerminal"));
