@@ -205,9 +205,8 @@ describe("app bundle load", () => {
     match(desktopTerminalSource, /terminal\.addEventListener\("touchmove", handleTerminalTouchMove, \{ passive: false, capture: true \}\);/);
     match(desktopTerminalSource, /terminal\.addEventListener\("touchend", handleTerminalTouchEnd, \{ passive: true, capture: true \}\);/);
     ok(!desktopTerminalSource.includes("attachCustomWheelEventHandler"));
-    match(desktopTerminalSource, /function scrollTerminalLines\(lines\) \{[\s\S]*?term\.scrollLines\(Math\.trunc\(lines\)\);/);
-    ok(!desktopTerminalSource.includes("scrollLocalTerminal"));
-    ok(!desktopTerminalSource.includes("sendBackendScroll"));
+    match(desktopTerminalSource, /function scrollTerminalLines\(lines\) \{[\s\S]*?!terminalUsesNormalBuffer\(\)[\s\S]*?sendBackendScroll\(lines\)[\s\S]*?term\.scrollLines\(Math\.trunc\(lines\)\);/);
+    match(desktopTerminalSource, /function sendBackendScroll\(lines\) \{[\s\S]*?type: "scroll"[\s\S]*?direction: lines < 0 \? "up" : "down"/);
     ok(!desktopTerminalSource.includes("terminalFollowPaused"));
     ok(!desktopTerminalSource.includes("terminalAtBottom"));
     ok(!desktopTerminalSource.includes("term.onScroll"));
