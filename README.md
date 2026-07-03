@@ -48,6 +48,13 @@ Newer Herdr builds may work when protocol stays compatible, but WebUI reports th
 - Agent status groups use explicit colors in settings: idle green, working yellow, blocked red, done blue, and others gray.
 - The Workspaces/Agents sidebar split is resizable by dragging the separator, snaps to whole percent values, and can also be set directly in Settings → Agents and alerts.
 
+### Terminal
+
+- Terminal scrollback wheel/touch behavior is centralized in `src/assets/shared/terminal_scroll.js` as `window.HerdrTerminalScroll`.
+- The helper owns normal-buffer detection, xterm row-height lookup, wheel/touch delta-to-line conversion, and local scrollback movement through `term.scrollLines()` or `term.scrollToLine()` fallback.
+- Desktop and mobile terminal modules keep only DOM event binding and follow-button state updates, so scroll mechanics stay shared while platform-specific event wiring remains local.
+- Alternate-screen terminal apps still receive scroll input because local scrollback handling is gated to xterm's normal buffer.
+
 ## 0.2.4 Release Notes
 
 ### Compatibility
