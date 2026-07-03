@@ -750,6 +750,38 @@ describe("app bundle load", () => {
     equal(terminal.innerHTML, "");
   });
 
+  it("switches selected panel immediately when current tab closes", () => {
+    const ctx = context();
+    const replaced = [];
+    ctx.history.replaceState = (_state, _title, url) => replaced.push(url);
+    vm.runInContext(source, ctx);
+
+    const result = vm.runInContext(
+      `state.ws = "ws1";
+       state.tab = "tab_1";
+       state.pane = "pane_1";
+       state.terminalId = "term_1";
+       state.tabs = [
+         { workspace_id: "ws1", tab_id: "tab_1" },
+         { workspace_id: "ws1", tab_id: "tab_2", focused: true },
+       ];
+       state.allTabs = state.tabs.slice();
+       state.panes = [
+         { workspace_id: "ws1", tab_id: "tab_1", pane_id: "pane_1", terminal_id: "term_1" },
+         { workspace_id: "ws1", tab_id: "tab_2", pane_id: "pane_2", terminal_id: "term_2", focused: true },
+       ];
+       forgetClosedSelection("tab.closed", { tab_id: "tab_1" });
+       ({ tab: state.tab, pane: state.pane, terminalId: state.terminalId, tabs: state.tabs.map((tab) => tab.tab_id) });`,
+      ctx,
+    );
+
+    equal(result.tab, "tab_2");
+    equal(result.pane, "pane_2");
+    equal(result.terminalId, "term_2");
+    equal(JSON.stringify(result.tabs), JSON.stringify(["tab_2"]));
+    equal(replaced.at(-1), "/session/default/workspace/ws1/tab/tab_2/pane/pane_2");
+  });
+
   it("auto-closes pane when Herdr reports it exited", async () => {
     const requests = [];
     const ctx = context();
