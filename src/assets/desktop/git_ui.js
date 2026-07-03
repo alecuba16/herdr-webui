@@ -239,6 +239,12 @@
     return gitUiOptions().gitUiDiffLayout === "unified" ? "unified" : "side-by-side";
   }
 
+  function setGitUiOption(key, value) {
+    const options = gitUiOptions();
+    options[key] = value;
+    try { localStorage.setItem("herdr-web-options", JSON.stringify(options)); } catch (_) {}
+  }
+
   function diffLineCount(files) {
     return (files || []).reduce((total, file) => total + (file.chunks || []).reduce((sum, chunk) => sum + ((chunk.lines || []).length), 0), 0);
   }
@@ -788,12 +794,14 @@
     const collapsed = files.filter((file) => view.collapsedFiles && view.collapsedFiles[file.path]).length;
     const collapse = collapsible ? `<button class="git-ui-btn" onclick="HerdrGitUi.${collapsed === files.length ? "expandAllFiles" : "collapseAllFiles"}()">${collapsed === files.length ? "Show all" : "Collapse all"}</button>` : "";
     const blame = activeTab === "changes" ? `<button class="git-ui-btn ${view.showBlame ? "active" : ""}" onclick="HerdrGitUi.toggleBlame()">Blame</button>` : "";
+    const layout = diffLayoutMode();
+    const layoutToggle = `<button class="git-ui-btn" title="Switch diff layout" onclick="HerdrGitUi.toggleDiffLayout()">${layout === "unified" ? "Side-by-side" : "Unified"}</button>`;
     const sideEditor = view.sideEditor && view.sideEditor.path === view.file
       ? `<button class="git-ui-btn primary" ${view.sideEditor.saving ? "disabled" : ""} onclick="HerdrGitUi.saveSideEditor()">${view.sideEditor.saving ? "Saving..." : "Save edits"}</button><button class="git-ui-btn" onclick="HerdrGitUi.cancelSideEditor()">Cancel edits</button>`
       : activeTab === "changes" && canEditCurrentFile(view)
         ? `<button class="git-ui-btn" onclick="HerdrGitUi.editSideBySide()">Edit side-by-side</button>`
         : "";
-    return `<div class="git-ui-log-head"><span class="git-ui-toolbar-title">File view</span><button class="git-ui-btn ${activeTab === "changes" ? "active" : ""}" onclick="HerdrGitUi.latestChanges()">Changes</button><button class="git-ui-btn ${activeTab === "history" ? "active" : ""}" onclick="HerdrGitUi.tab('history')">History</button>${blame}${sideEditor}${conflicts ? `<button class="git-ui-btn ${activeTab === "conflicts" ? "active" : ""}" onclick="HerdrGitUi.tab('conflicts')">Conflicts</button>` : ""}${collapse}${compare}</div>`;
+    return `<div class="git-ui-log-head"><span class="git-ui-toolbar-title">File view</span><button class="git-ui-btn ${activeTab === "changes" ? "active" : ""}" onclick="HerdrGitUi.latestChanges()">Changes</button><button class="git-ui-btn ${activeTab === "history" ? "active" : ""}" onclick="HerdrGitUi.tab('history')">History</button>${blame}${layoutToggle}${sideEditor}${conflicts ? `<button class="git-ui-btn ${activeTab === "conflicts" ? "active" : ""}" onclick="HerdrGitUi.tab('conflicts')">Conflicts</button>` : ""}${collapse}${compare}</div>`;
   }
 
   function canEditCurrentFile(view) {
@@ -1106,7 +1114,38 @@
         ? `<button class="git-ui-context-arrow" title="Expand lines after; hunks merge when context overlaps" onclick="HerdrGitUi.expandContext()">↓</button>`
         : "";
     const sign = add ? "+" : del ? "-" : " ";
-    return `<div class="git-ui-unified-row ${cls}"><div class="git-ui-context-cell">${contextControls}</div><div class="git-ui-unified-lines"><span>${oldNo}</span><span>${newNo}</span></div><div class="git-ui-unified-action">${blockButton}</div><div class="git-ui-code git-ui-code-unified"><span class="git-ui-unified-author">${esc(author)}</span><span class="git-ui-unified-sign">${sign}</span><span class="git-ui-unified-text">${highlight(line.content || "", path)}</span></div></div>`;
+    const code = renderUnifiedDiffCode(line, rows, rowIndex, path);
+    return `<div class="git-ui-unified-row ${cls}"><div class="git-ui-context-cell">${contextControls}</div><div class="git-ui-unified-lines"><span>${oldNo}</span><span>${newNo}</span></div><div class="git-ui-unified-action">${blockButton}</div><div class="git-ui-code git-ui-code-unified"><span class="git-ui-unified-author">${esc(author)}</span><span class="git-ui-unified-sign">${sign}</span><span class="git-ui-unified-text">${code}</span></div></div>`;
+  }
+
+  function renderUnifiedDiffCode(line, rows, rowIndex, path) {
+    if (!line || !["delete", "add"].includes(line.line_type)) return highlight((line && line.content) || "", path);
+    const pair = unifiedChangePair(rows, rowIndex);
+    if (!pair) return highlight(line.content || "", path);
+    return renderDiffCode(pair.oldLine, pair.newLine, path, line.line_type === "delete" ? "old" : "new");
+  }
+
+  function unifiedChangePair(rows, rowIndex) {
+    const line = rows[rowIndex] && rows[rowIndex].line;
+    if (!line || !["delete", "add"].includes(line.line_type)) return null;
+    let start = rowIndex;
+    while (start > 0 && isChangedRow(rows[start - 1])) start--;
+    let end = rowIndex;
+    while (end + 1 < rows.length && isChangedRow(rows[end + 1])) end++;
+    const deletes = [];
+    const adds = [];
+    for (let i = start; i <= end; i++) {
+      const item = rows[i] && rows[i].line;
+      if (item && item.line_type === "delete") deletes.push({ line: item, rowIndex: i });
+      if (item && item.line_type === "add") adds.push({ line: item, rowIndex: i });
+    }
+    if (!deletes.length || !adds.length) return null;
+    const list = line.line_type === "delete" ? deletes : adds;
+    const index = Math.max(0, list.findIndex((item) => item.rowIndex === rowIndex));
+    const otherIndex = Math.min(index, (line.line_type === "delete" ? adds : deletes).length - 1);
+    return line.line_type === "delete"
+      ? { oldLine: line, newLine: adds[otherIndex].line }
+      : { oldLine: deletes[otherIndex].line, newLine: line };
   }
 
   function renderDiffCode(oldLine, newLine, path, side) {
@@ -1701,6 +1740,10 @@
     },
     discardFile(path) { path = decodeURIComponent(path); if (confirm(`Restore complete file ${path}? This discards staged and unstaged changes.`)) post("/api/git-ui/discard", { cwd: active().cwd, paths: [path], confirmed: true }); },
     toggleBlame() { const view = active(); if (!view) return; view.showBlame = !view.showBlame; render(); },
+    toggleDiffLayout() {
+      setGitUiOption("gitUiDiffLayout", diffLayoutMode() === "unified" ? "side-by-side" : "unified");
+      render();
+    },
     async editSideBySide() {
       const view = active();
       if (!canEditCurrentFile(view)) return;
