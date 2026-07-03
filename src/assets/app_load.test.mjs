@@ -1078,6 +1078,9 @@ describe("app bundle load", () => {
     match(source, /addEventListener\(\s*"paste"/);
     match(source, /stopImmediatePropagation\(\)/);
     match(source, /sendPasteToTerminal\(text\)/);
+    match(source, /sendInputData\(terminalPasteInput\(text, false\)/);
+    ok(!source.includes('JSON.stringify({ type: "paste"'));
+    ok(!source.includes('.paste(text)'));
   });
 
   it("renders no-sleep control options", () => {

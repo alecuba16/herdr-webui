@@ -488,19 +488,12 @@ function sendInputData(data, options = {}) {
 }
 function sendPasteToTerminal(text) {
   if (!termWs || termWs.readyState !== 1 || !text) return;
-  const chunkSize = 512 * 1024;
   pasteFrameUntil = Date.now() + 250;
-  for (let i = 0; i < text.length;) {
-    let end = Math.min(i + chunkSize, text.length);
-    if (end < text.length && isHighSurrogate(text.charCodeAt(end - 1))) end -= 1;
-    if (end <= i) end = Math.min(i + chunkSize, text.length);
-    termWs.send(JSON.stringify({ type: "paste", text: text.slice(i, end) }));
-    i = end;
-  }
+  sendInputData(terminalPasteInput(text, false), {
+    chunkSize: 16 * 1024,
+    maxBufferedAmount: 64 * 1024,
+  });
   finishPasteFrameSoon();
-}
-function isHighSurrogate(code) {
-  return code >= 0xd800 && code <= 0xdbff;
 }
 function scheduleInputFlush() {
   if (inputFlushTimer) return;
