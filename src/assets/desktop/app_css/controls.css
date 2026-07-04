@@ -160,3 +160,32 @@ a.tab.active:active {
 a.item {
   display: block;
 }
+.app-refresh-icon {
+  align-items: center;
+  background: var(--panel2);
+  border: 1px solid var(--border2);
+  border-radius: 999px;
+  color: var(--accent);
+  cursor: pointer;
+  display: inline-flex;
+  flex: none;
+  height: 28px;
+  justify-content: center;
+  padding: 0;
+  width: 28px;
+}
+.app-refresh-icon span {
+  background: currentColor;
+  display: inline-block;
+  height: 15px;
+  mask: url("/assets/icons/refresh.svg") center / contain no-repeat;
+  width: 15px;
+}
+.app-refresh-icon.spinning span,
+.app-refresh-icon.refreshing span {
+  animation: app-refresh-spin 2s linear;
+}
+@keyframes app-refresh-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(720deg); }
+}

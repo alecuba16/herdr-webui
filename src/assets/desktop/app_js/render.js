@@ -226,21 +226,12 @@ function renderWorkspaceContextActions() {
 function selectedWorkspaceActionButtons(w) {
   if (!w || w.workspace_id !== state.ws) return "";
   const key = selectedWorkspaceWorktreeKey(w),
-    rows = worktreeRowsForKey(key),
     linked = isLinkedWorktree(w),
-    hasOtherWorktrees = rows.some(
-      (row) => row.open_workspace_id !== w.workspace_id,
-    ),
     label = escapeHtml(workspaceDisplayTitle(w));
   const buttons = [];
-  if (!linked)
-    buttons.push(
-      `<span class="mini tree" data-workspace-action="create-worktree" title="Create a linked worktree from ${label}" onclick="event.preventDefault();event.stopPropagation();runWorkspaceContextAction('create-worktree',this)">♧+</span>`,
-    );
-  if (key && hasOtherWorktrees)
-    buttons.push(
-      `<span class="mini tree" data-workspace-action="open-worktrees" data-key="${escapeAttr(encodeURIComponent(key))}" title="Open or create other worktrees for this repo" onclick="event.preventDefault();event.stopPropagation();runWorkspaceContextAction('open-worktrees',this)">↗</span>`,
-    );
+  buttons.push(
+    `<span class="mini tree" data-workspace-action="open-worktrees" data-key="${escapeAttr(encodeURIComponent(key || ""))}" title="Open or create linked worktrees/workspaces for ${label}" onclick="event.preventDefault();event.stopPropagation();runWorkspaceContextAction('open-worktrees',this)">♧↗</span>`,
+  );
   buttons.push(
     `<span class="mini warn" data-workspace-action="close" title="Close selected ${linked ? "worktree" : "workspace"} and its panels" onclick="event.preventDefault();event.stopPropagation();runWorkspaceContextAction('close',this)">✕</span>`,
   );
@@ -444,7 +435,7 @@ function runWorkspaceContextAction(action, button) {
   const w = selectedWorkspace();
   if (!w) return;
   if (action === "create-worktree") openWorktreeCreateModal(w.workspace_id);
-  else if (action === "open-worktrees") openWorktreesForRepo(button.dataset.key || "");
+  else if (action === "open-worktrees") openWorktreesForWorkspace(w, button.dataset.key || "");
   else if (action === "close") closeWorkspace(w.workspace_id);
   else if (action === "remove-worktree") removeWorktree(w.workspace_id);
 }

@@ -14,7 +14,8 @@ Compatibility:
 
 | WebUI | Herdr | Protocol | Status | Notes |
 | --- | --- | --- | --- | --- |
-| `0.2.8` | `0.7.2` | `15` with `14` fallback | Current | Restores terminal paste compatibility while keeping the performance fix: paste avoids xterm synchronous parsing and is sent as bounded WebSocket input chunks with backpressure. |
+| `0.2.9` | `0.7.2` | `15` with `14` fallback | Current | Unifies workspace and worktree opening in one modal, adds always-discovered Git branches for worktree creation, shares refresh icon styling across Git/files/modals, and lets users continue worktree creation without pulling when fast-forward update detects diverging branches. |
+| `0.2.8` | `0.7.2` | `15` with `14` fallback | Superseded | Restores terminal paste compatibility while keeping the performance fix: paste avoids xterm synchronous parsing and is sent as bounded WebSocket input chunks with backpressure. |
 | `0.2.7` | `0.7.2` | `15` with `14` fallback | Superseded | Fixes panel close reconciliation and terminal scroll/follow behavior. Superseded by 0.2.8 for terminal paste compatibility. |
 | `0.2.6` | `0.7.2` | `15` with `14` fallback | Tested | Adds configurable agent sorting and sidebar split, shared desktop/mobile terminal scrollback, file/folder browser search with editor readability improvements, and Git pull/push/rebase plus diff layout controls. |
 | `0.2.5` | `0.7.2` | `15` with `14` fallback | Tested | Marks Herdr 0.7.2 protocol 15 as tested while preserving protocol 14 fallback for older compatible servers. |
@@ -37,7 +38,25 @@ Compatibility:
 | `0.0.45` | `0.7.1` | `14` | Tested | Improves embedded Git UI navigation with Escape handling, all-changes return behavior, split frontend assets, scoped file history controls, keyboard-owned drawer input, and per-file large diff loading. |
 | `0.0.45` | `0.7.0` | `14` | Minimum supported | Uses WebUI's legacy existing-branch worktree fallback when needed. |
 
-Newer Herdr builds may work when protocol stays compatible, but WebUI reports them as untested. WebUI 0.2.8 treats Herdr 0.7.2 protocol 15 as tested and retries protocol 14 for compatible older Herdr 0.7.x servers.
+Newer Herdr builds may work when protocol stays compatible, but WebUI reports them as untested. WebUI 0.2.9 treats Herdr 0.7.2 protocol 15 as tested and retries protocol 14 for compatible older Herdr 0.7.x servers.
+
+## 0.2.9 Release Notes
+
+### Workspace and worktree opening
+
+- Replaces separate workspace/worktree entry points with one `open-worktrees` action that opens the unified workspace/worktree modal.
+- Prefills the modal from the current workspace or linked worktree path and immediately discovers Git worktrees and branch options when the folder is a Git repo.
+- Keeps branch suggestions populated for Git repos so creating a linked worktree has base-branch options without needing a separate create modal.
+- Moves the workspace creation form below worktree creation and places the workspace name field inside the workspace section for clearer flow.
+
+### Worktree creation safety
+
+- Renames and compacts the pull-before-create checkbox to clarify that it only attempts a fast-forward base update.
+- When Git reports diverging branches or another fast-forward-only failure, WebUI now shows a confirmation modal to continue creating the worktree without pulling instead of suggesting merge or rebase commands.
+
+### Shared refresh controls
+
+- Extracts the refresh icon styling into an app-wide `app-refresh-icon` component and uses it in the Git drawer, file browser, and worktree modal refresh control.
 
 ## 0.2.8 Release Notes
 

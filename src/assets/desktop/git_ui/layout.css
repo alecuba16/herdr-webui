@@ -66,9 +66,9 @@
   width: 15px;
 }
 .git-ui-refresh-icon.spinning span {
-  animation: git-ui-refresh-spin 2s linear;
+  animation: app-refresh-spin 2s linear;
 }
-@keyframes git-ui-refresh-spin {
+@keyframes app-refresh-spin {
   from { transform: rotate(0deg); }
   to { transform: rotate(720deg); }
 }

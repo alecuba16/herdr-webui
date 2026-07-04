@@ -237,6 +237,13 @@ function workspacePath(workspace) {
   return (pane && (pane.foreground_cwd || pane.cwd)) || "";
 }
 window.HerdrWorkspacePath = workspacePath;
+function appRefreshIconButton({ className = "", title = "Refresh", label = "Refresh", spinning = false, onclick = "" } = {}) {
+  const classes = ["app-refresh-icon", className, spinning ? "spinning" : ""]
+    .filter(Boolean)
+    .join(" ");
+  const clickAttr = onclick ? ` onclick="${escapeAttr(onclick)}"` : "";
+  return `<button class="${escapeAttr(classes)}" title="${escapeAttr(title)}" aria-label="${escapeAttr(label)}"${clickAttr}><span></span></button>`;
+}
 function showTerminalShellMode() {
   if (window.HerdrGitUi) window.HerdrGitUi.hide();
   if (window.HerdrFileBrowser) window.HerdrFileBrowser.hide();
@@ -395,8 +402,8 @@ function worktreeOpenModalHtml() {
       <div class="modal">
         <div class="settings-head">
           <div>
-            <h2>Open workspace</h2>
-            <p>Pick a folder. Git repos show worktrees; normal folders can be opened as workspaces.</p>
+            <h2>Open workspace or worktree</h2>
+            <p>Pick a folder. Git repos show branches and worktrees; normal folders can be opened as workspaces.</p>
           </div>
           <button class="mini settings-close" id="worktreeOpenClose" title="Close">✕</button>
         </div>
@@ -405,22 +412,9 @@ function worktreeOpenModalHtml() {
             <span>Folder</span>
             <input id="worktreeDiscoverPath" placeholder="~/Documents/code/repo-or-worktrees">
           </label>
-          <label>
-            <span>Workspace name</span>
-            <input id="worktreeWorkspaceLabel" placeholder="project name">
-          </label>
           <div class="worktree-loading" id="worktreeLoading">Discovering worktrees...</div>
         </div>
         <div class="worktree-open-list" id="worktreeOpenList"></div>
-        <div class="worktree-new" id="worktreeWorkspaceSection">
-          <div class="worktree-new-head">
-            <strong>Create workspace</strong>
-            <small id="worktreeWorkspaceHint">Opens this folder directly and ignores Git worktrees.</small>
-          </div>
-          <div class="worktree-form">
-            <button type="button" class="btn" id="worktreeWorkspaceSubmit">Create workspace</button>
-          </div>
-        </div>
         <div class="worktree-new" id="worktreeNewSection">
           <div class="worktree-new-head">
             <strong>Create a new worktree</strong>
@@ -436,13 +430,23 @@ function worktreeOpenModalHtml() {
               <label><span>Label</span><input id="worktreeNewLabel" placeholder="optional"></label>
               <label><span>Checkout path</span><input id="worktreeNewPath" placeholder="select base branch or enter branch name"></label>
             </div>
-            <label class="option"><input type="checkbox" id="worktreeNewPullBase"><span>Pull base branch before create<small>Runs a fast-forward Git update in the source repo first.</small></span></label>
+            <label class="option worktree-pull-option"><input type="checkbox" id="worktreeNewPullBase"><span><strong>Update base first</strong><small>Fast-forward only. If the branch diverged, you can continue without pulling.</small></span></label>
             <button class="btn" id="worktreeNewSubmit">New worktree</button>
           </form>
         </div>
+        <div class="worktree-new" id="worktreeWorkspaceSection">
+          <div class="worktree-new-head">
+            <strong>Create workspace</strong>
+            <small id="worktreeWorkspaceHint">Opens this folder directly and ignores Git worktrees.</small>
+            <label class="worktree-workspace-name"><span>Workspace name</span><input id="worktreeWorkspaceLabel" placeholder="project name"></label>
+          </div>
+          <div class="worktree-form">
+            <button type="button" class="btn" id="worktreeWorkspaceSubmit">Create workspace</button>
+          </div>
+        </div>
         <div class="worktree-error" id="worktreeOpenError"></div>
         <div class="worktree-open-footer">
-          <button type="button" class="tab add" id="worktreeOpenRefresh">Refresh</button>
+          <button type="button" class="app-refresh-icon" id="worktreeOpenRefresh" title="Refresh" aria-label="Refresh worktrees"><span></span></button>
         </div>
       </div>
     </div>`;

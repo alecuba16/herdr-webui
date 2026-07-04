@@ -113,7 +113,7 @@ function closeWorktreeOpenModal() {
   const m = el("worktreeOpenModal");
   if (m) m.style.display = "none";
 }
-function openWorktreeOpenModal() {
+function resetWorktreeOpenModal(path = explorationDefaultDirectoryOption()) {
   state.openWorktreeSelected = null;
   state.openWorktreeSuggestionLocked = false;
   state.openWorktreeSource = null;
@@ -124,7 +124,7 @@ function openWorktreeOpenModal() {
   state.openWorktreeBranchSourceKey = "";
   state.openWorktreeDefaultPath = "";
   state.openWorktreeBaseBranchName = "";
-  el("worktreeDiscoverPath").value = explorationDefaultDirectoryOption();
+  el("worktreeDiscoverPath").value = path || "";
   el("worktreeWorkspaceLabel").value = "";
   state.workspaceCreateSuggestedLabel = "";
   el("worktreeNewBranch").value = "";
@@ -135,12 +135,22 @@ function openWorktreeOpenModal() {
   syncWorktreeBranchOptions([]);
   renderWorktreeOpenList();
   el("worktreeOpenError").textContent = "";
+  syncSmartWorkspaceLabel();
+}
+function openWorktreeOpenModal(path, discoverNow = false) {
+  resetWorktreeOpenModal(path);
   el("worktreeOpenModal").style.display = "grid";
+  if (discoverNow && el("worktreeDiscoverPath").value.trim()) discoverWorktrees();
   setTimeout(() => {
     el("worktreeDiscoverPath").focus();
   }, 0);
 }
-function openWorktreesForRepo(keyToken) {
+function openWorktreesForWorkspace(workspace, keyToken) {
+  const fallbackPath = workspacePath(workspace) || explorationDefaultDirectoryOption();
+  if (keyToken) openWorktreesForRepo(keyToken, fallbackPath);
+  else openWorktreeOpenModal(fallbackPath, true);
+}
+function openWorktreesForRepo(keyToken, fallbackPath = "") {
   const key = decodeURIComponent(keyToken),
     allRows = state.worktrees.filter((w) => worktreeRowGroupKey(w) === key),
     rows = allRows.filter((w) => w.is_linked_worktree);
@@ -183,11 +193,12 @@ function openWorktreesForRepo(keyToken) {
   syncWorktreeBranchOptions([]);
   el("worktreeOpenError").textContent = "";
   el("worktreeDiscoverPath").value =
-    source.source_cwd || source.source_repo_root || "";
+    source.source_cwd || source.source_repo_root || fallbackPath || "";
   syncSmartWorkspaceLabel();
   renderWorktreeOpenList();
   el("worktreeOpenModal").style.display = "grid";
-  loadWorktreeBranchOptions();
+  if (el("worktreeDiscoverPath").value.trim()) discoverWorktrees();
+  else loadWorktreeBranchOptions();
 }
 function validOpenWorktreeRows() {
   return (state.openWorktreeRows || state.worktrees || [])
@@ -412,10 +423,30 @@ async function submitWorktreeCreate(input) {
       result.root_pane && result.root_pane.pane_id,
     );
   } catch (ex) {
-    errEl.textContent = ex.message || String(ex);
+    const message = ex.message || String(ex);
+    if (pullBase && await confirmContinueWithoutPull(message)) {
+      await submitWorktreeCreate(Object.assign({}, input, { pullBase: false }));
+      return;
+    }
+    errEl.textContent = message;
   } finally {
     submitEl.disabled = false;
   }
+}
+function pullFastForwardFailed(message) {
+  const text = String(message || "").toLowerCase();
+  return (
+    text.includes("fast-forward") &&
+    (text.includes("diverging") || text.includes("not possible") || text.includes("fatal"))
+  );
+}
+async function confirmContinueWithoutPull(message) {
+  if (!pullFastForwardFailed(message)) return false;
+  return askQuestion({
+    title: "Base branch diverged",
+    message: `Git could not fast-forward the base branch before creating the worktree:\n\n${message}\n\nCreate the worktree without pulling first?`,
+    confirmText: "Create without pull",
+  });
 }
 function defaultBaseBranch() {
   const branches = state.openWorktreeBranches || [];
@@ -744,7 +775,13 @@ async function createDiscoveredWorktree() {
       result.root_pane && result.root_pane.pane_id,
     );
   } catch (ex) {
-    err.textContent = ex.message || String(ex);
+    const message = ex.message || String(ex);
+    if (pullBase && await confirmContinueWithoutPull(message)) {
+      el("worktreeNewPullBase").checked = false;
+      await createDiscoveredWorktree();
+      return;
+    }
+    err.textContent = message;
   } finally {
     submit.disabled = false;
   }
