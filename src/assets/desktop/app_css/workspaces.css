@@ -403,6 +403,37 @@ body.light .chip.label {
 .worktree-form input {
   font-size: 14px;
 }
+.worktree-pull-option {
+  align-items: center;
+  cursor: pointer;
+  grid-template-columns: auto minmax(0, 1fr);
+  margin: 2px 0 0;
+  padding: 8px 10px;
+}
+.worktree-pull-option input[type="checkbox"] {
+  height: 14px;
+  margin: 1px 0 0;
+  width: 14px;
+}
+.worktree-pull-option strong {
+  color: var(--fg);
+  display: block;
+  font-size: 12px;
+}
+.worktree-pull-option small {
+  font-size: 11px;
+  line-height: 1.35;
+}
+.worktree-workspace-name {
+  color: var(--muted);
+  display: grid;
+  font-size: 12px;
+  gap: 6px;
+  margin-top: 12px;
+}
+.worktree-workspace-name input {
+  font-size: 14px;
+}
 .worktree-source {
   display: inline-flex;
   align-items: center;
