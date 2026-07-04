@@ -423,10 +423,30 @@ async function submitWorktreeCreate(input) {
       result.root_pane && result.root_pane.pane_id,
     );
   } catch (ex) {
-    errEl.textContent = ex.message || String(ex);
+    const message = ex.message || String(ex);
+    if (pullBase && await confirmContinueWithoutPull(message)) {
+      await submitWorktreeCreate(Object.assign({}, input, { pullBase: false }));
+      return;
+    }
+    errEl.textContent = message;
   } finally {
     submitEl.disabled = false;
   }
+}
+function pullFastForwardFailed(message) {
+  const text = String(message || "").toLowerCase();
+  return (
+    text.includes("fast-forward") &&
+    (text.includes("diverging") || text.includes("not possible") || text.includes("fatal"))
+  );
+}
+async function confirmContinueWithoutPull(message) {
+  if (!pullFastForwardFailed(message)) return false;
+  return askQuestion({
+    title: "Base branch diverged",
+    message: `Git could not fast-forward the base branch before creating the worktree:\n\n${message}\n\nCreate the worktree without pulling first?`,
+    confirmText: "Create without pull",
+  });
 }
 function defaultBaseBranch() {
   const branches = state.openWorktreeBranches || [];
@@ -755,7 +775,13 @@ async function createDiscoveredWorktree() {
       result.root_pane && result.root_pane.pane_id,
     );
   } catch (ex) {
-    err.textContent = ex.message || String(ex);
+    const message = ex.message || String(ex);
+    if (pullBase && await confirmContinueWithoutPull(message)) {
+      el("worktreeNewPullBase").checked = false;
+      await createDiscoveredWorktree();
+      return;
+    }
+    err.textContent = message;
   } finally {
     submit.disabled = false;
   }

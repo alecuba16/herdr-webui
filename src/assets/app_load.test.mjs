@@ -314,9 +314,22 @@ describe("app bundle load", () => {
     match(html, /id="worktreeWorkspaceSubmit"/);
     match(html, /id="worktreeOpenList"/);
     match(html, /id="worktreeNewSection"/);
+    ok(html.indexOf('id="worktreeNewSection"') < html.indexOf('id="worktreeWorkspaceSection"'));
+    ok(html.indexOf('class="worktree-workspace-name"') < html.indexOf('id="worktreeWorkspaceLabel"'));
+    match(html, /class="option worktree-pull-option"/);
+    match(html, /Update base first/);
     match(html, /id="worktreeOpenRefresh"/);
     match(html, /class="app-refresh-icon"/);
     ok(!source.includes('id = "openWorktrees"'));
+  });
+
+  it("detects diverging fast-forward pull failures", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    ok(ctx.pullFastForwardFailed("fatal: Not possible to fast-forward, aborting."));
+    ok(ctx.pullFastForwardFailed("hint: Diverging branches can't be fast-forwarded"));
+    ok(!ctx.pullFastForwardFailed("network failed while fetching origin"));
   });
 
   it("resolves workspace path from pane cwd when workspace metadata is missing", () => {

@@ -412,22 +412,9 @@ function worktreeOpenModalHtml() {
             <span>Folder</span>
             <input id="worktreeDiscoverPath" placeholder="~/Documents/code/repo-or-worktrees">
           </label>
-          <label>
-            <span>Workspace name</span>
-            <input id="worktreeWorkspaceLabel" placeholder="project name">
-          </label>
           <div class="worktree-loading" id="worktreeLoading">Discovering worktrees...</div>
         </div>
         <div class="worktree-open-list" id="worktreeOpenList"></div>
-        <div class="worktree-new" id="worktreeWorkspaceSection">
-          <div class="worktree-new-head">
-            <strong>Create workspace</strong>
-            <small id="worktreeWorkspaceHint">Opens this folder directly and ignores Git worktrees.</small>
-          </div>
-          <div class="worktree-form">
-            <button type="button" class="btn" id="worktreeWorkspaceSubmit">Create workspace</button>
-          </div>
-        </div>
         <div class="worktree-new" id="worktreeNewSection">
           <div class="worktree-new-head">
             <strong>Create a new worktree</strong>
@@ -443,9 +430,19 @@ function worktreeOpenModalHtml() {
               <label><span>Label</span><input id="worktreeNewLabel" placeholder="optional"></label>
               <label><span>Checkout path</span><input id="worktreeNewPath" placeholder="select base branch or enter branch name"></label>
             </div>
-            <label class="option"><input type="checkbox" id="worktreeNewPullBase"><span>Pull base branch before create<small>Runs a fast-forward Git update in the source repo first.</small></span></label>
+            <label class="option worktree-pull-option"><input type="checkbox" id="worktreeNewPullBase"><span><strong>Update base first</strong><small>Fast-forward only. If the branch diverged, you can continue without pulling.</small></span></label>
             <button class="btn" id="worktreeNewSubmit">New worktree</button>
           </form>
+        </div>
+        <div class="worktree-new" id="worktreeWorkspaceSection">
+          <div class="worktree-new-head">
+            <strong>Create workspace</strong>
+            <small id="worktreeWorkspaceHint">Opens this folder directly and ignores Git worktrees.</small>
+            <label class="worktree-workspace-name"><span>Workspace name</span><input id="worktreeWorkspaceLabel" placeholder="project name"></label>
+          </div>
+          <div class="worktree-form">
+            <button type="button" class="btn" id="worktreeWorkspaceSubmit">Create workspace</button>
+          </div>
         </div>
         <div class="worktree-error" id="worktreeOpenError"></div>
         <div class="worktree-open-footer">
