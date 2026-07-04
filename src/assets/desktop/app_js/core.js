@@ -237,6 +237,13 @@ function workspacePath(workspace) {
   return (pane && (pane.foreground_cwd || pane.cwd)) || "";
 }
 window.HerdrWorkspacePath = workspacePath;
+function appRefreshIconButton({ className = "", title = "Refresh", label = "Refresh", spinning = false, onclick = "" } = {}) {
+  const classes = ["app-refresh-icon", className, spinning ? "spinning" : ""]
+    .filter(Boolean)
+    .join(" ");
+  const clickAttr = onclick ? ` onclick="${escapeAttr(onclick)}"` : "";
+  return `<button class="${escapeAttr(classes)}" title="${escapeAttr(title)}" aria-label="${escapeAttr(label)}"${clickAttr}><span></span></button>`;
+}
 function showTerminalShellMode() {
   if (window.HerdrGitUi) window.HerdrGitUi.hide();
   if (window.HerdrFileBrowser) window.HerdrFileBrowser.hide();
@@ -395,8 +402,8 @@ function worktreeOpenModalHtml() {
       <div class="modal">
         <div class="settings-head">
           <div>
-            <h2>Open workspace</h2>
-            <p>Pick a folder. Git repos show worktrees; normal folders can be opened as workspaces.</p>
+            <h2>Open workspace or worktree</h2>
+            <p>Pick a folder. Git repos show branches and worktrees; normal folders can be opened as workspaces.</p>
           </div>
           <button class="mini settings-close" id="worktreeOpenClose" title="Close">✕</button>
         </div>
@@ -442,7 +449,7 @@ function worktreeOpenModalHtml() {
         </div>
         <div class="worktree-error" id="worktreeOpenError"></div>
         <div class="worktree-open-footer">
-          <button type="button" class="tab add" id="worktreeOpenRefresh">Refresh</button>
+          <button type="button" class="app-refresh-icon" id="worktreeOpenRefresh" title="Refresh" aria-label="Refresh worktrees"><span></span></button>
         </div>
       </div>
     </div>`;

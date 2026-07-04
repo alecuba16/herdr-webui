@@ -113,7 +113,7 @@ function closeWorktreeOpenModal() {
   const m = el("worktreeOpenModal");
   if (m) m.style.display = "none";
 }
-function openWorktreeOpenModal() {
+function resetWorktreeOpenModal(path = explorationDefaultDirectoryOption()) {
   state.openWorktreeSelected = null;
   state.openWorktreeSuggestionLocked = false;
   state.openWorktreeSource = null;
@@ -124,7 +124,7 @@ function openWorktreeOpenModal() {
   state.openWorktreeBranchSourceKey = "";
   state.openWorktreeDefaultPath = "";
   state.openWorktreeBaseBranchName = "";
-  el("worktreeDiscoverPath").value = explorationDefaultDirectoryOption();
+  el("worktreeDiscoverPath").value = path || "";
   el("worktreeWorkspaceLabel").value = "";
   state.workspaceCreateSuggestedLabel = "";
   el("worktreeNewBranch").value = "";
@@ -135,12 +135,22 @@ function openWorktreeOpenModal() {
   syncWorktreeBranchOptions([]);
   renderWorktreeOpenList();
   el("worktreeOpenError").textContent = "";
+  syncSmartWorkspaceLabel();
+}
+function openWorktreeOpenModal(path, discoverNow = false) {
+  resetWorktreeOpenModal(path);
   el("worktreeOpenModal").style.display = "grid";
+  if (discoverNow && el("worktreeDiscoverPath").value.trim()) discoverWorktrees();
   setTimeout(() => {
     el("worktreeDiscoverPath").focus();
   }, 0);
 }
-function openWorktreesForRepo(keyToken) {
+function openWorktreesForWorkspace(workspace, keyToken) {
+  const fallbackPath = workspacePath(workspace) || explorationDefaultDirectoryOption();
+  if (keyToken) openWorktreesForRepo(keyToken, fallbackPath);
+  else openWorktreeOpenModal(fallbackPath, true);
+}
+function openWorktreesForRepo(keyToken, fallbackPath = "") {
   const key = decodeURIComponent(keyToken),
     allRows = state.worktrees.filter((w) => worktreeRowGroupKey(w) === key),
     rows = allRows.filter((w) => w.is_linked_worktree);
@@ -183,11 +193,12 @@ function openWorktreesForRepo(keyToken) {
   syncWorktreeBranchOptions([]);
   el("worktreeOpenError").textContent = "";
   el("worktreeDiscoverPath").value =
-    source.source_cwd || source.source_repo_root || "";
+    source.source_cwd || source.source_repo_root || fallbackPath || "";
   syncSmartWorkspaceLabel();
   renderWorktreeOpenList();
   el("worktreeOpenModal").style.display = "grid";
-  loadWorktreeBranchOptions();
+  if (el("worktreeDiscoverPath").value.trim()) discoverWorktrees();
+  else loadWorktreeBranchOptions();
 }
 function validOpenWorktreeRows() {
   return (state.openWorktreeRows || state.worktrees || [])

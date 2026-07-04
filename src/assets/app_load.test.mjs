@@ -308,12 +308,14 @@ describe("app bundle load", () => {
 
     const html = ctx.worktreeOpenModalHtml();
 
-    match(html, /<h2>Open workspace<\/h2>/);
+    match(html, /<h2>Open workspace or worktree<\/h2>/);
     match(html, /id="worktreeDiscoverPath"/);
     match(html, /id="worktreeWorkspaceLabel"/);
     match(html, /id="worktreeWorkspaceSubmit"/);
     match(html, /id="worktreeOpenList"/);
     match(html, /id="worktreeNewSection"/);
+    match(html, /id="worktreeOpenRefresh"/);
+    match(html, /class="app-refresh-icon"/);
     ok(!source.includes('id = "openWorktrees"'));
   });
 
