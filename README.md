@@ -14,7 +14,8 @@ Compatibility:
 
 | WebUI | Herdr | Protocol | Status | Notes |
 | --- | --- | --- | --- | --- |
-| `0.2.12` | `0.7.2` | `15` with `14` fallback | Current | Uses the same CodeMirror editor tooling for both sides of Git hunk editing, keeps the previous side read-only with line numbers on the right, and hides backing textareas so editable text is not duplicated below the highlighted editor. |
+| `0.2.13` | `0.7.3` | `16` with `15` and `14` fallback | Current | Adds protocol 16 support with descending fallback to 15 and 14, subscribes to `layout.updated` events for live pane layout snapshots, exposes a `session.snapshot` endpoint for single-request bootstrap, and deserializes the new `PrefixInputSource` server message without acting on it. The legacy per-endpoint polling bootstrap is moved to `legacy_polling.js` with a removal TODO. |
+| `0.2.12` | `0.7.2` | `15` with `14` fallback | Superseded | Uses the same CodeMirror editor tooling for both sides of Git hunk editing, keeps the previous side read-only with line numbers on the right, and hides backing textareas so editable text is not duplicated below the highlighted editor. |
 | `0.2.11` | `0.7.2` | `15` with `14` fallback | Superseded | Uses the bundled JetBrainsMono Nerd Font stack when creating desktop xterm terminals, migrates the old desktop monospace default, and refreshes terminal metrics after the font loads. |
 | `0.2.9` | `0.7.2` | `15` with `14` fallback | Superseded | Unifies workspace and worktree opening in one modal, adds always-discovered Git branches for worktree creation, shares refresh icon styling across Git/files/modals, and lets users continue worktree creation without pulling when fast-forward update detects diverging branches. |
 | `0.2.8` | `0.7.2` | `15` with `14` fallback | Superseded | Restores terminal paste compatibility while keeping the performance fix: paste avoids xterm synchronous parsing and is sent as bounded WebSocket input chunks with backpressure. |
@@ -40,9 +41,24 @@ Compatibility:
 | `0.0.45` | `0.7.1` | `14` | Tested | Improves embedded Git UI navigation with Escape handling, all-changes return behavior, split frontend assets, scoped file history controls, keyboard-owned drawer input, and per-file large diff loading. |
 | `0.0.45` | `0.7.0` | `14` | Minimum supported | Uses WebUI's legacy existing-branch worktree fallback when needed. |
 
-Newer Herdr builds may work when protocol stays compatible, but WebUI reports them as untested. WebUI 0.2.12 treats Herdr 0.7.2 protocol 15 as tested and retries protocol 14 for compatible older Herdr 0.7.x servers.
+Newer Herdr builds may work when protocol stays compatible, but WebUI reports them as untested. WebUI 0.2.13 treats Herdr 0.7.3 protocol 16 as tested and retries protocols 15 and 14 in descending order for compatible older Herdr 0.7.x servers.
 
-## 0.2.12 Release Notes
+## 0.2.13 Release Notes
+
+### Protocol 16 support
+
+- Bumps the direct terminal attach protocol to 16 to match Herdr 0.7.3 and adds the `ServerMessage::PrefixInputSource` variant to `src/protocol.rs` so the new macOS prefix-mode ASCII input-source switch deserializes without breaking the stream. The web client ignores it because it has no host keyboard to switch.
+- The terminal attach fallback now tries protocols 16, 15, and 14 in descending order. A protocol-15 Herdr server rejects a protocol-16 client with "newer than server version", and WebUI retries protocol 15, then 14, so a single WebUI build attaches to 0.7.3, 0.7.2, and 0.7.0+ servers.
+- `/api/versions` reports protocol 16, min protocol 14, and max tested backend 0.7.3.
+
+### Live layout snapshots
+
+- Subscribes to the new `layout.updated` socket event so the desktop frontend keeps a per-tab `PaneLayoutSnapshot` cache current after pane split, resize, swap, move, zoom, and focus changes. Terminal sizing reads the cached layout first and only falls back to the per-pane `pane.layout` request when no cache exists, which avoids an extra round trip on every refresh.
+- Exposes `/api/session-snapshot` proxying the backend `session.snapshot` method so the frontend can bootstrap workspaces, tabs, panes, layouts, and agents in one request.
+
+### Legacy polling bootstrap moved to `legacy_polling.js`
+
+- The pre-protocol-16 multi-request polling bootstrap (separate `workspace.list`, `tab.list`, `pane.list`, `agent.list`, and `pane.layout` requests plus the 5s events-socket polling snapshot) is moved to `src/assets/desktop/app_js/legacy_polling.js` with a deprecation annotation and a TODO to remove it once the official Herdr release with protocol 16 ships and `session.snapshot` + `layout.updated` are confirmed stable. The new snapshot-based bootstrap path lives in `core.js`.
 
 ### Git hunk editor compare alignment
 
@@ -633,9 +649,9 @@ make uninstall-linux
 
 ## FAQ
 
-### `herdr rejected terminal connection: client version 15 is newer than server version 13; please upgrade the herdr server`
+### `herdr rejected terminal connection: client version 16 is newer than server version 13; please upgrade the herdr server`
 
-This means WebUI is using a newer terminal attach protocol than the Herdr server process handling the session. WebUI retries protocol 14 automatically when a protocol 15 handshake reaches a compatible protocol 14 server, so seeing this error usually means the running Herdr server is older than WebUI's fallback range or failed after the fallback retry.
+This means WebUI is using a newer terminal attach protocol than the Herdr server process handling the session. WebUI retries protocols 16, 15, and 14 in descending order automatically when a newer handshake reaches a compatible older server, so seeing this error usually means the running Herdr server is older than WebUI's fallback range or failed after the fallback retries.
 
 Check two things:
 
