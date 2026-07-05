@@ -40,6 +40,16 @@ Compatibility:
 
 Newer Herdr builds may work when protocol stays compatible, but WebUI reports them as untested. WebUI 0.2.9 treats Herdr 0.7.2 protocol 15 as tested and retries protocol 14 for compatible older Herdr 0.7.x servers.
 
+## 0.2.10 Release Notes
+
+### HTTPS by default
+
+- Serves WebUI over HTTPS by default.
+- Generates and reuses a per-user app self-signed certificate at `~/.config/herdr/tls/self-signed-cert.pem` and `self-signed-key.pem` when no certificate files are available.
+- Keeps generated certificates independent from repos and worktrees, so restarts and reinstalls reuse the same local certificate until those files are deleted.
+- Adds `--https off|auto|self-signed|files` plus `--tls-cert` and `--tls-key` for opting out or using external certificates such as Let’s Encrypt files.
+- Persists TLS options in macOS LaunchAgent and Linux systemd install/update flows.
+
 ## 0.2.9 Release Notes
 
 ### Workspace and worktree opening
@@ -256,11 +266,11 @@ HERDR_WEB_HERDR_BIN=/opt/homebrew/bin/herdr make run-web-local
 ## CLI
 
 ```text
-herdr-webui [--verbose] [--bind HOST:PORT] [--session NAME] [--api-socket PATH] [--client-socket PATH]
+herdr-webui [--verbose] [--bind HOST:PORT] [--https off|auto|self-signed|files] [--tls-cert PATH --tls-key PATH] [--session NAME] [--api-socket PATH] [--client-socket PATH]
 herdr-webui --version
-herdr-webui install-mac [--verbose] [--bind HOST:PORT] [--session NAME]
+herdr-webui install-mac [--verbose] [--bind HOST:PORT] [--https off|auto|self-signed|files] [--tls-cert PATH --tls-key PATH] [--session NAME]
 herdr-webui update-mac [--verbose]
-herdr-webui install-linux [--bind HOST:PORT] [--session NAME]
+herdr-webui install-linux [--bind HOST:PORT] [--https off|auto|self-signed|files] [--tls-cert PATH --tls-key PATH] [--session NAME]
 herdr-webui update-linux
 herdr-webui start-mac | start [--verbose]
 herdr-webui stop-mac | stop [--verbose]
@@ -273,6 +283,26 @@ herdr-webui uninstall-linux
 ```
 
 Use `--verbose`, `-v`, or `HERDR_WEB_VERBOSE=1` with macOS service commands to print LaunchAgent diagnostics, including UID/EUID, launchctl domain, service target, plist path, and launchctl stderr.
+
+### HTTPS
+
+WebUI serves HTTPS by default. On startup it uses configured certificate files when available; otherwise it generates local self-signed certificates so local builds, installed services, and CI smoke runs work without external certificate tooling:
+
+```sh
+herdr-webui --https
+```
+
+The default mode is `auto`: WebUI checks whether configured certificate files are available; if not, it creates and reuses `~/.config/herdr/tls/self-signed-cert.pem` and `self-signed-key.pem` with `localhost`, `127.0.0.1`, and `::1` subject alternative names. Browsers will still warn because the fallback certificate is not trusted by the OS, but the transport is encrypted and works without network callbacks.
+
+Use existing certificates, including Let's Encrypt certificates managed outside WebUI, with:
+
+```sh
+herdr-webui --https files --tls-cert /path/fullchain.pem --tls-key /path/privkey.pem
+```
+
+Passing `--tls-cert` and `--tls-key` also enables `--https files` automatically. WebUI does not run ACME challenges itself, so GitHub Actions and local builds stay deterministic and do not need public DNS or port 80/443 access.
+
+If either configured cert file is missing when HTTPS starts, WebUI falls back to the generated self-signed certificate instead of failing startup. Use `--https off` to opt out and serve plain HTTP when you explicitly need it.
 
 ## Project Layout
 

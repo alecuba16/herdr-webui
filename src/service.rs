@@ -3,7 +3,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::{WebConfig, INSTALL_LABEL};
+use crate::{TlsMode, WebConfig, INSTALL_LABEL};
 
 pub fn install_macos(config: WebConfig) -> io::Result<()> {
     ensure_macos_user_context()?;
@@ -21,7 +21,7 @@ pub fn install_macos(config: WebConfig) -> io::Result<()> {
     launchctl_required(&["kickstart", "-k", &service])?;
     println!("Installed {INSTALL_LABEL} at {}", plist.display());
     println!("Installed binary at {}", install_bin.display());
-    println!("Open http://{}", config.bind);
+    println!("Open {}://{}", config.tls.scheme(), config.bind);
     Ok(())
 }
 
@@ -92,7 +92,7 @@ pub fn install_linux(config: WebConfig) -> io::Result<()> {
     systemctl_user(&["enable", "--now", &format!("{INSTALL_LABEL}.service")])?;
     println!("Installed {INSTALL_LABEL} at {}", service.display());
     println!("Installed binary at {}", install_bin.display());
-    println!("Open http://{}", config.bind);
+    println!("Open {}://{}", config.tls.scheme(), config.bind);
     Ok(())
 }
 
@@ -230,6 +230,7 @@ fn mac_plist_xml(config: &WebConfig, install_bin: &Path) -> io::Result<String> {
         args.push("    <string>--session</string>".to_string());
         args.push(format!("    <string>{}</string>", xml_escape(session)));
     }
+    append_mac_tls_args(config, &mut args);
     Ok(format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -284,6 +285,7 @@ fn linux_service_unit(config: &WebConfig, install_bin: &Path) -> String {
         exec.push_str(" --session ");
         exec.push_str(&systemd_escape_arg(session));
     }
+    append_systemd_tls_args(config, &mut exec);
     let env = std::env::var("HERDR_WEB_HERDR_BIN")
         .ok()
         .filter(|value| !value.is_empty())
@@ -297,6 +299,69 @@ fn linux_service_unit(config: &WebConfig, install_bin: &Path) -> String {
     format!(
         "[Unit]\nDescription=Herdr WebUI\nAfter=network.target\n\n[Service]\nType=simple\n{env}ExecStart={exec}\nRestart=always\nRestartSec=2\n\n[Install]\nWantedBy=default.target\n"
     )
+}
+
+fn append_mac_tls_args(config: &WebConfig, args: &mut Vec<String>) {
+    match config.tls.mode {
+        TlsMode::Off => {}
+        TlsMode::Auto => {
+            args.push("    <string>--https</string>".to_string());
+            args.push("    <string>auto</string>".to_string());
+            append_mac_tls_file_args(config, args);
+        }
+        TlsMode::SelfSigned => {
+            args.push("    <string>--https</string>".to_string());
+            args.push("    <string>self-signed</string>".to_string());
+        }
+        TlsMode::Files => {
+            args.push("    <string>--https</string>".to_string());
+            args.push("    <string>files</string>".to_string());
+            append_mac_tls_file_args(config, args);
+        }
+    }
+}
+
+fn append_mac_tls_file_args(config: &WebConfig, args: &mut Vec<String>) {
+    if let Some(cert) = &config.tls.cert_path {
+        args.push("    <string>--tls-cert</string>".to_string());
+        args.push(format!(
+            "    <string>{}</string>",
+            xml_escape(&cert.display().to_string())
+        ));
+    }
+    if let Some(key) = &config.tls.key_path {
+        args.push("    <string>--tls-key</string>".to_string());
+        args.push(format!(
+            "    <string>{}</string>",
+            xml_escape(&key.display().to_string())
+        ));
+    }
+}
+
+fn append_systemd_tls_args(config: &WebConfig, exec: &mut String) {
+    match config.tls.mode {
+        TlsMode::Off => {}
+        TlsMode::Auto => {
+            exec.push_str(" --https auto");
+            append_systemd_tls_file_args(config, exec);
+        }
+        TlsMode::SelfSigned => exec.push_str(" --https self-signed"),
+        TlsMode::Files => {
+            exec.push_str(" --https files");
+            append_systemd_tls_file_args(config, exec);
+        }
+    }
+}
+
+fn append_systemd_tls_file_args(config: &WebConfig, exec: &mut String) {
+    if let Some(cert) = &config.tls.cert_path {
+        exec.push_str(" --tls-cert ");
+        exec.push_str(&systemd_escape_arg(&cert.display().to_string()));
+    }
+    if let Some(key) = &config.tls.key_path {
+        exec.push_str(" --tls-key ");
+        exec.push_str(&systemd_escape_arg(&key.display().to_string()));
+    }
 }
 
 fn systemd_escape_arg(value: &str) -> String {
@@ -466,6 +531,11 @@ mod tests {
             session: Some("work".to_string()),
             api_socket: None,
             client_socket: None,
+            tls: crate::TlsConfig {
+                mode: TlsMode::Off,
+                cert_path: None,
+                key_path: None,
+            },
         };
 
         let unit = linux_service_unit(&config, Path::new("/tmp/herdr-webui"));
@@ -482,6 +552,11 @@ mod tests {
             session: Some("work session's path".to_string()),
             api_socket: None,
             client_socket: None,
+            tls: crate::TlsConfig {
+                mode: TlsMode::SelfSigned,
+                cert_path: None,
+                key_path: None,
+            },
         };
 
         let unit = linux_service_unit(&config, Path::new("/tmp/herdr webui"));
@@ -496,6 +571,11 @@ mod tests {
             session: Some("work".to_string()),
             api_socket: None,
             client_socket: None,
+            tls: crate::TlsConfig {
+                mode: TlsMode::Files,
+                cert_path: Some(PathBuf::from("/tmp/cert.pem")),
+                key_path: Some(PathBuf::from("/tmp/key.pem")),
+            },
         };
 
         let plist = mac_plist_xml(&config, Path::new("/tmp/herdr-webui")).unwrap();
@@ -505,6 +585,12 @@ mod tests {
         assert!(plist.contains("<string>127.0.0.1:8787</string>"));
         assert!(plist.contains("<string>--session</string>"));
         assert!(plist.contains("<string>work</string>"));
+        assert!(plist.contains("<string>--https</string>"));
+        assert!(plist.contains("<string>files</string>"));
+        assert!(plist.contains("<string>--tls-cert</string>"));
+        assert!(plist.contains("<string>/tmp/cert.pem</string>"));
+        assert!(plist.contains("<string>--tls-key</string>"));
+        assert!(plist.contains("<string>/tmp/key.pem</string>"));
     }
 
     #[test]
