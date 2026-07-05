@@ -2750,7 +2750,13 @@ fn connect_terminal_attach_with_protocol_fallback(
             result => return result,
         }
     }
-    connect_terminal_attach(path, terminal_id, MIN_SUPPORTED_PROTOCOL_VERSION, cols, rows)
+    connect_terminal_attach(
+        path,
+        terminal_id,
+        MIN_SUPPORTED_PROTOCOL_VERSION,
+        cols,
+        rows,
+    )
 }
 
 fn connect_terminal_attach(
