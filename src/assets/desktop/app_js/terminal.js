@@ -35,8 +35,14 @@ function connectEvents() {
         }
       }
       forgetClosedSelection(kind, data);
-      if (kind === "layout.updated") applyLayoutUpdated(data.layout || data);
-      scheduleRefresh(eventNeedsFastRefresh(kind) ? 50 : 500);
+      if (kind === "layout.updated") {
+        applyLayoutUpdated(data.layout || data);
+        // layout.updated is handled directly by applyLayoutUpdated which
+        // updates terminal sizing without a full refresh. Skip the refresh
+        // to avoid flicker and unnecessary re-fetches.
+      } else {
+        scheduleRefresh(eventNeedsFastRefresh(kind) ? 50 : 500);
+      }
     }
   };
   ws.onclose = () => {
@@ -575,7 +581,16 @@ function fitTerminalSurface() {
     terminal.style.minHeight = height + "px";
   } else {
     terminal.style.width = "100%";
-    terminal.style.height = "";
+    // Cap the terminal height to the shell's inner height so the last row
+    // is not scrolled off when the backend layout rows produce a surface
+    // taller than the shell. Use the shell client height minus the padding
+    // (8px top + 8px bottom = 16px) as the upper bound.
+    const shellHeight = shell ? Math.max(0, shell.clientHeight - 16) : 0;
+    if (shellHeight > 0 && height > shellHeight) {
+      terminal.style.height = shellHeight + "px";
+    } else {
+      terminal.style.height = "";
+    }
     terminal.style.minWidth = "0";
     terminal.style.minHeight = "0";
   }
