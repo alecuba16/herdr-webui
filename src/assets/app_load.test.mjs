@@ -1322,5 +1322,6 @@ describe("app bundle load", () => {
     match(gitDiffCss, /\.git-ui-hunk-old-mount \.cm-scroller \{\n\s+flex-direction: row-reverse;/);
     match(gitDiffCss, /\.git-ui-hunk-old-mount \.cm-gutters \{\n\s+border-left: 1px solid var\(--border\);\n\s+border-right: 0;/);
     match(gitDiffCss, /\.git-ui-hunk-current-mount \.cm-content/);
+    match(gitDiffCss, /\.git-ui-hunk-edit \{[\s\S]*?display: block;[\s\S]*?\.git-ui-hunk-editor textarea\.git-ui-hunk-edit-hidden \{\n\s+display: none;/);
   });
 });
