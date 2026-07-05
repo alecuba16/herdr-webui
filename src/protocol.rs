@@ -253,4 +253,11 @@ pub(crate) enum ServerMessage {
     MouseCapture {
         enabled: bool,
     },
+    /// Forwarded macOS prefix-mode ASCII input-source switch request. The
+    /// backend sends this to the foreground client so it can swap the host
+    /// keyboard layout; a web client has no host keyboard to switch, so we
+    /// only need to deserialize it without acting on it. Added in protocol 16.
+    PrefixInputSource {
+        active: bool,
+    },
 }
