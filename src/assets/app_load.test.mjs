@@ -1310,4 +1310,15 @@ describe("app bundle load", () => {
     match(gitUiSource, /function contextArrowsForChunk\(chunks, index\)/);
     match(gitUiSource, /const after = next \? hiddenGap\(chunk, next\) : false;/);
   });
+
+  it("uses the same editor mount tooling for previous and current hunk text", () => {
+    const gitDiffCss = readFileSync(new URL("./desktop/git_ui/diff.css", import.meta.url), "utf8");
+
+    match(gitUiSource, /git-ui-hunk-old-mount" data-hunk-index="\$\{hunk\.index\}" data-editor-side="old" data-readonly="true"/);
+    match(gitUiSource, /git-ui-hunk-current-mount" data-hunk-index="\$\{hunk\.index\}" data-editor-side="current" data-readonly="\$\{hunk\.newStart \? "false" : "true"\}"/);
+    match(gitUiSource, /const sourceClass = side === "old" \? "git-ui-hunk-old-hidden" : "git-ui-hunk-current-hidden";/);
+    ok(!gitUiSource.includes("<pre class=\"git-ui-editor-preview del\""));
+    match(gitDiffCss, /\.git-ui-hunk-old-mount \.cm-content/);
+    match(gitDiffCss, /\.git-ui-hunk-current-mount \.cm-content/);
+  });
 });

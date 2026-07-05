@@ -50,6 +50,9 @@
   overflow: hidden;
 }
 .git-ui-hunk-edit-mount .herdr-editor {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  height: 100%;
   min-height: 180px;
 }
 .git-ui-hunk-edit-mount .herdr-editor-head {
@@ -57,6 +60,20 @@
 }
 .git-ui-hunk-edit-mount .herdr-editor-mount {
   min-height: 180px;
+  overflow: hidden;
+}
+.git-ui-hunk-edit-mount .cm-editor {
+  height: 100%;
+}
+.git-ui-hunk-old-mount .cm-content,
+.git-ui-hunk-old-mount .herdr-editor-code {
+  background: rgba(248, 81, 73, 0.1);
+  border-left: 4px solid #da3633;
+}
+.git-ui-hunk-current-mount .cm-content,
+.git-ui-hunk-current-mount .herdr-editor-code {
+  background: rgba(46, 160, 67, 0.1);
+  border-left: 4px solid #1b7c3d;
 }
 .git-ui-split-editor {
   display: grid;
