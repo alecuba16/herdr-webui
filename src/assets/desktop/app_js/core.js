@@ -926,6 +926,7 @@ function normalizeShortcutPrefix(value, fallback = DEFAULT_GLOBAL_SHORTCUT_PREFI
 }
 let themeMode = normalizeThemeMode(localStorage.getItem("herdr-web-theme")),
   lastEffectiveTheme = null;
+const LEGACY_TERMINAL_FONT_FAMILY = "ui-monospace,SFMono-Regular,Menlo,monospace";
 const defaultOptions = {
   overflow: false,
   terminalOverflowOptIn: false,
@@ -941,7 +942,7 @@ const defaultOptions = {
   webuiShortcuts: DEFAULT_WEBUI_SHORTCUTS,
   gitShortcuts: DEFAULT_GIT_SHORTCUTS,
   searchShortcut: "off",
-  terminalFontFamily: "ui-monospace,SFMono-Regular,Menlo,monospace",
+  terminalFontFamily: HerdrAppHelpers.resolveTerminalFontFamily(""),
   terminalLinks: true,
   agentSortMode: "off",
   agentStatusOrder: ["blocked", "idle", "done", "other", "working"],
@@ -1040,9 +1041,13 @@ function normalizeOptions(value) {
     String(next.searchShortcut || "").toLowerCase() === "off"
       ? "off"
       : normalizeShortcutPrefix(next.searchShortcut, "off");
-  next.terminalFontFamily =
-    String(next.terminalFontFamily || "").trim().slice(0, 200) ||
-    defaultOptions.terminalFontFamily;
+  next.terminalFontFamily = String(next.terminalFontFamily || "").trim().slice(0, 260);
+  if (
+    !next.terminalFontFamily ||
+    next.terminalFontFamily === LEGACY_TERMINAL_FONT_FAMILY
+  ) {
+    next.terminalFontFamily = defaultOptions.terminalFontFamily;
+  }
   next.terminalLinks = next.terminalLinks !== false;
   if (!["off", "attention", "attention_inverted"].includes(next.agentSortMode))
     next.agentSortMode = defaultOptions.agentSortMode;
@@ -1728,17 +1733,21 @@ function shiftEnterSequence() {
   return "\n";
 }
 function terminalFontFamily() {
-  return options.terminalFontFamily || defaultOptions.terminalFontFamily;
+  return HerdrAppHelpers.resolveTerminalFontFamily(options.terminalFontFamily);
 }
 function applyTerminalFont() {
   if (!term) return;
+  const family = terminalFontFamily();
   try {
-    term.options.fontFamily = terminalFontFamily();
+    term.options.fontFamily = family;
   } catch (e) {
     try {
-      term.setOption("fontFamily", terminalFontFamily());
+      term.setOption("fontFamily", family);
     } catch (_) {}
   }
+  try {
+    term.refresh(0, Math.max(0, (term.rows || 1) - 1));
+  } catch (_) {}
 }
 function applyTheme() {
   themeMode = normalizeThemeMode(themeMode);
