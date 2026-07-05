@@ -75,9 +75,11 @@ function connectTerminal() {
     term = new Terminal({
       convertEol: false,
       theme: terminalTheme(),
+      fontFamily: terminalFontFamily(),
       scrollback: 10000,
     });
     term.open(terminal);
+    refreshTerminalAfterFontLoad(target);
     applyTerminalLinks();
     applyTheme();
     term.onData(sendInputData);
@@ -188,6 +190,20 @@ function connectTerminal() {
       scheduleRefreshBurst();
     }
   };
+}
+function refreshTerminalAfterFontLoad(terminalKey) {
+  const fonts = globalThis.document && globalThis.document.fonts;
+  if (!fonts || !fonts.load) return;
+  Promise.all([
+    fonts.load('14px "Herdr JetBrainsMono Nerd Font Mono"'),
+    fonts.ready,
+  ])
+    .then(() => {
+      if (!term || connectedTerminalId !== terminalKey) return;
+      applyTerminalFont();
+      fitTerminalSurface();
+    })
+    .catch(() => {});
 }
 function applyTerminalLinks() {
   if (terminalLinkProvider && terminalLinkProvider.dispose) {
