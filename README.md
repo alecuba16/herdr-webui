@@ -14,7 +14,9 @@ Compatibility:
 
 | WebUI | Herdr | Protocol | Status | Notes |
 | --- | --- | --- | --- | --- |
-| `0.2.9` | `0.7.2` | `15` with `14` fallback | Current | Unifies workspace and worktree opening in one modal, adds always-discovered Git branches for worktree creation, shares refresh icon styling across Git/files/modals, and lets users continue worktree creation without pulling when fast-forward update detects diverging branches. |
+| `0.2.12` | `0.7.2` | `15` with `14` fallback | Current | Uses the same CodeMirror editor tooling for both sides of Git hunk editing, keeps the previous side read-only with line numbers on the right, and hides backing textareas so editable text is not duplicated below the highlighted editor. |
+| `0.2.11` | `0.7.2` | `15` with `14` fallback | Superseded | Uses the bundled JetBrainsMono Nerd Font stack when creating desktop xterm terminals, migrates the old desktop monospace default, and refreshes terminal metrics after the font loads. |
+| `0.2.9` | `0.7.2` | `15` with `14` fallback | Superseded | Unifies workspace and worktree opening in one modal, adds always-discovered Git branches for worktree creation, shares refresh icon styling across Git/files/modals, and lets users continue worktree creation without pulling when fast-forward update detects diverging branches. |
 | `0.2.8` | `0.7.2` | `15` with `14` fallback | Superseded | Restores terminal paste compatibility while keeping the performance fix: paste avoids xterm synchronous parsing and is sent as bounded WebSocket input chunks with backpressure. |
 | `0.2.7` | `0.7.2` | `15` with `14` fallback | Superseded | Fixes panel close reconciliation and terminal scroll/follow behavior. Superseded by 0.2.8 for terminal paste compatibility. |
 | `0.2.6` | `0.7.2` | `15` with `14` fallback | Tested | Adds configurable agent sorting and sidebar split, shared desktop/mobile terminal scrollback, file/folder browser search with editor readability improvements, and Git pull/push/rebase plus diff layout controls. |
@@ -38,7 +40,15 @@ Compatibility:
 | `0.0.45` | `0.7.1` | `14` | Tested | Improves embedded Git UI navigation with Escape handling, all-changes return behavior, split frontend assets, scoped file history controls, keyboard-owned drawer input, and per-file large diff loading. |
 | `0.0.45` | `0.7.0` | `14` | Minimum supported | Uses WebUI's legacy existing-branch worktree fallback when needed. |
 
-Newer Herdr builds may work when protocol stays compatible, but WebUI reports them as untested. WebUI 0.2.9 treats Herdr 0.7.2 protocol 15 as tested and retries protocol 14 for compatible older Herdr 0.7.x servers.
+Newer Herdr builds may work when protocol stays compatible, but WebUI reports them as untested. WebUI 0.2.12 treats Herdr 0.7.2 protocol 15 as tested and retries protocol 14 for compatible older Herdr 0.7.x servers.
+
+## 0.2.12 Release Notes
+
+### Git hunk editor compare alignment
+
+- Uses the shared CodeMirror editor for both previous and current hunk panes so text metrics, wrapping, and syntax highlighting align.
+- Keeps the previous pane read-only and moves its line numbers to the right side to match side-by-side compare expectations.
+- Hides the backing textareas that store hunk values so the current pane does not show duplicated plain text below the highlighted editor.
 
 ## 0.2.11 Release Notes
 
