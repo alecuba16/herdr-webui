@@ -2454,16 +2454,23 @@ async fn events_socket(state: WebState, api: ApiClient, mut socket: WebSocket) {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
     let subscribe_api = api.clone();
     std::thread::spawn(move || {
+        // Detect the backend protocol so we only subscribe to layout.updated
+        // on protocol 16+. Older backends reject unknown subscription types
+        // and would fail the entire events.subscribe request.
+        let backend_protocol = subscribe_api.backend_info().protocol;
+        let mut subscriptions = vec![
+            json!({"type":"workspace.created"}), json!({"type":"workspace.updated"}), json!({"type":"workspace.renamed"}), json!({"type":"workspace.closed"}), json!({"type":"workspace.focused"}),
+            json!({"type":"worktree.created"}), json!({"type":"worktree.opened"}), json!({"type":"worktree.removed"}),
+            json!({"type":"tab.created"}), json!({"type":"tab.closed"}), json!({"type":"tab.focused"}), json!({"type":"tab.renamed"}),
+            json!({"type":"pane.created"}), json!({"type":"pane.closed"}), json!({"type":"pane.focused"}), json!({"type":"pane.moved"}), json!({"type":"pane.exited"}), json!({"type":"pane.agent_detected"}), json!({"type":"pane.agent_status_changed"}),
+        ];
+        if backend_protocol.unwrap_or(0) >= 16 {
+            subscriptions.push(json!({"type":"layout.updated"}));
+        }
         let request = json!({
             "id": "web:events",
             "method": "events.subscribe",
-            "params": { "subscriptions": [
-                {"type":"workspace.created"}, {"type":"workspace.updated"}, {"type":"workspace.renamed"}, {"type":"workspace.closed"}, {"type":"workspace.focused"},
-                {"type":"worktree.created"}, {"type":"worktree.opened"}, {"type":"worktree.removed"},
-                {"type":"tab.created"}, {"type":"tab.closed"}, {"type":"tab.focused"}, {"type":"tab.renamed"},
-                {"type":"pane.created"}, {"type":"pane.closed"}, {"type":"pane.focused"}, {"type":"pane.moved"}, {"type":"pane.exited"}, {"type":"pane.agent_detected"}, {"type":"pane.agent_status_changed"},
-                {"type":"layout.updated"}
-            ]}
+            "params": { "subscriptions": subscriptions }
         });
         let Ok(mut stream) = subscribe_api.subscribe(request) else {
             let _ = tx
