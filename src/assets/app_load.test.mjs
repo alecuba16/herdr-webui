@@ -185,7 +185,8 @@ describe("app bundle load", () => {
     ok(!source.includes('terminal.querySelector(".xterm-viewport")'));
     ok(!source.includes('terminal.querySelector(".xterm-rows")'));
     ok(!source.includes('shell.style.width ='));
-    ok(!source.includes("fontFamily: terminalFontFamily()"));
+    match(desktopTerminalSource, /fontFamily: terminalFontFamily\(\)/);
+    match(desktopTerminalSource, /refreshTerminalAfterFontLoad\(target\)/);
     match(source, /theme: terminalTheme\(\)/);
     match(source, /term\.options\.theme = terminalTheme\(\)/);
     match(source, /term\.setOption\("theme", terminalTheme\(\)\)/);
@@ -394,6 +395,8 @@ describe("app bundle load", () => {
     match(source, /id="optTerminalFontFamily"/);
     match(source, /id="optTerminalLinks"/);
     match(source, /JetBrainsMono Nerd Font/);
+    match(source, /LEGACY_TERMINAL_FONT_FAMILY/);
+    match(source, /HerdrAppHelpers\.resolveTerminalFontFamily\(""\)/);
     match(source, /handleGlobalShortcut/);
     match(source, /isShortcutPrefix/);
     match(source, /runPrefixedShortcut/);
@@ -403,6 +406,19 @@ describe("app bundle load", () => {
     match(source, /applyTerminalLinks/);
     match(source, /registerLinkProvider/);
     match(source, /buffer\.viewportY/);
+  });
+
+  it("migrates the old desktop monospace terminal default to the bundled Nerd Font", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    const normalized = vm.runInContext(
+      `normalizeOptions({ terminalFontFamily: "ui-monospace,SFMono-Regular,Menlo,monospace" }).terminalFontFamily`,
+      ctx,
+    );
+
+    match(normalized, /Herdr JetBrainsMono Nerd Font Mono/);
+    match(normalized, /Symbols Nerd Font Mono/);
   });
 
   it("normalizes configurable shortcut prefixes", () => {

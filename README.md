@@ -40,6 +40,14 @@ Compatibility:
 
 Newer Herdr builds may work when protocol stays compatible, but WebUI reports them as untested. WebUI 0.2.9 treats Herdr 0.7.2 protocol 15 as tested and retries protocol 14 for compatible older Herdr 0.7.x servers.
 
+## 0.2.11 Release Notes
+
+### Terminal Nerd Font icons
+
+- Uses the bundled JetBrainsMono Nerd Font stack when creating desktop xterm terminals so powerline and language icons render by default.
+- Migrates the old desktop monospace terminal default to the bundled Nerd Font stack while preserving custom user font-family settings.
+- Refreshes the desktop terminal after the web font loads so glyph metrics and icon rendering settle without reconnecting.
+
 ## 0.2.10 Release Notes
 
 ### HTTPS by default
