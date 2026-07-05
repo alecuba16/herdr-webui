@@ -125,7 +125,6 @@ const FAST_REFRESH_EVENTS = new Set([
   "worktree.created",
   "worktree.opened",
   "worktree.removed",
-  "layout.updated",
 ]);
 let sidebarCollapsed = storedFlag(SIDEBAR_COLLAPSED_KEY);
 let noSleepState = { mode: "off", until_ms: null, error: null, supported: true };
@@ -2639,12 +2638,35 @@ function applySnapshot(msg) {
 
 // Applies a layout.updated event payload. Replaces the cached layout for the
 // matching workspace/tab so the next render uses fresh pane rects without a
-// pane.layout round trip. Schedules a fast refresh so terminal sizing follows.
+// pane.layout round trip. Only triggers a terminal resize when the layout for
+// the currently focused tab changed, avoiding a full refresh storm.
 function applyLayoutUpdated(layout) {
   if (!layout || !layout.workspace_id || !layout.tab_id) return;
   const key = layout.workspace_id + "/" + layout.tab_id;
   state.layouts[key] = layout;
-  scheduleRefresh(50);
+  // Only act when the current tab's layout changed. A full refreshOnline
+  // re-fetches all tabs/panes/agents and can cause flicker, so we update
+  // terminal sizing directly instead.
+  if (state.ws === layout.workspace_id && state.tab === layout.tab_id && state.pane) {
+    const lp = layout.panes || [];
+    const selected = lp.find((x) => x.pane_id === state.pane);
+    if (selected && selected.rect) {
+      const prevCols = state.termCols;
+      const prevRows = state.termRows;
+      state.termCols = Math.max(1, selected.rect.width);
+      state.termRows = Math.max(1, selected.rect.height);
+      state.layoutCols = Math.max(1, (layout.area || {}).width || state.termCols);
+      state.layoutRows = Math.max(1, (layout.area || {}).height || state.termRows);
+      state.layoutPaneCount = lp.length;
+      // Only reconnect the terminal if the size actually changed.
+      if (prevCols !== state.termCols || prevRows !== state.termRows) {
+        if (typeof connectTerminal === "function") connectTerminal();
+      } else {
+        // Size unchanged, just update the surface dimensions.
+        if (typeof fitTerminalSurface === "function") fitTerminalSurface();
+      }
+    }
+  }
 }
 
 // Reads the cached layout snapshot for the current tab, if any. Returns null
