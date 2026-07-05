@@ -39,9 +39,9 @@ const INSTALL_LABEL: &str = "herdr-web";
 const MAX_FRAME_SIZE: usize = 2 * 1024 * 1024;
 const MAX_GRAPHICS_FRAME_SIZE: usize = 32 * 1024 * 1024;
 const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 14;
-const PROTOCOL_VERSION: u32 = 15;
+const PROTOCOL_VERSION: u32 = 16;
 const MIN_BACKEND_VERSION: &str = "0.7.0";
-const MAX_TESTED_BACKEND_VERSION: &str = "0.7.2";
+const MAX_TESTED_BACKEND_VERSION: &str = "0.7.3";
 
 type LocalStream = interprocess::local_socket::Stream;
 
@@ -840,6 +840,7 @@ fn app_router(state: WebState) -> Router {
         .route("/api/panes", get(panes))
         .route("/api/panes/{pane_id}/close", post(close_pane))
         .route("/api/pane-layout", get(pane_layout))
+        .route("/api/session-snapshot", get(session_snapshot))
         .route("/api/agents", get(agents))
         .route("/assets/desktop/app.css", get(desktop_css))
         .route("/assets/desktop/git-ui.css", get(desktop_git_ui_css))
@@ -2245,6 +2246,23 @@ async fn pane_layout(
     )
 }
 
+/// Returns the full backend `session.snapshot` response in one round trip so
+/// the frontend can bootstrap workspaces, tabs, panes, layouts, and agents
+/// without issuing separate list requests. Added with protocol 16 backends.
+async fn session_snapshot(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+) -> Response {
+    if let Err(response) = require_auth(&state, &headers, remote) {
+        return response;
+    }
+    proxy_request(
+        &api_for_headers(&state, &headers),
+        json!({ "id": "web:session:snapshot", "method": "session.snapshot", "params": {} }),
+    )
+}
+
 #[derive(Deserialize)]
 struct CreateWorkspaceRequest {
     cwd: Option<String>,
@@ -2443,7 +2461,8 @@ async fn events_socket(state: WebState, api: ApiClient, mut socket: WebSocket) {
                 {"type":"workspace.created"}, {"type":"workspace.updated"}, {"type":"workspace.renamed"}, {"type":"workspace.closed"}, {"type":"workspace.focused"},
                 {"type":"worktree.created"}, {"type":"worktree.opened"}, {"type":"worktree.removed"},
                 {"type":"tab.created"}, {"type":"tab.closed"}, {"type":"tab.focused"}, {"type":"tab.renamed"},
-                {"type":"pane.created"}, {"type":"pane.closed"}, {"type":"pane.focused"}, {"type":"pane.moved"}, {"type":"pane.exited"}, {"type":"pane.agent_detected"}, {"type":"pane.agent_status_changed"}
+                {"type":"pane.created"}, {"type":"pane.closed"}, {"type":"pane.focused"}, {"type":"pane.moved"}, {"type":"pane.exited"}, {"type":"pane.agent_detected"}, {"type":"pane.agent_status_changed"},
+                {"type":"layout.updated"}
             ]}
         });
         let Ok(mut stream) = subscribe_api.subscribe(request) else {
@@ -2716,20 +2735,28 @@ fn connect_terminal_attach_with_protocol_fallback(
     cols: u16,
     rows: u16,
 ) -> Result<LocalStream, TerminalAttachError> {
-    match connect_terminal_attach(path, terminal_id, PROTOCOL_VERSION, cols, rows) {
-        Err(TerminalAttachError::Rejected(error))
-            if should_retry_legacy_protocol(PROTOCOL_VERSION, &error) =>
-        {
-            connect_terminal_attach(
-                path,
-                terminal_id,
-                MIN_SUPPORTED_PROTOCOL_VERSION,
-                cols,
-                rows,
-            )
+    // Try protocols in descending order so a newer WebUI can attach to older
+    // compatible backends. The backend rejects mismatched versions with a
+    // Welcome error containing "newer than server version" when the client
+    // protocol is higher than the server protocol.
+    for protocol_version in (MIN_SUPPORTED_PROTOCOL_VERSION..=PROTOCOL_VERSION).rev() {
+        match connect_terminal_attach(path, terminal_id, protocol_version, cols, rows) {
+            Ok(stream) => return Ok(stream),
+            Err(TerminalAttachError::Rejected(error))
+                if should_retry_legacy_protocol(protocol_version, &error) =>
+            {
+                continue;
+            }
+            result => return result,
         }
-        result => result,
     }
+    connect_terminal_attach(
+        path,
+        terminal_id,
+        MIN_SUPPORTED_PROTOCOL_VERSION,
+        cols,
+        rows,
+    )
 }
 
 fn connect_terminal_attach(
@@ -2773,9 +2800,10 @@ fn connect_terminal_attach(
     Ok(stream)
 }
 
+/// Returns true when the rejected `protocol_version` is newer than the server
+/// and there is at least one older protocol version left to try.
 fn should_retry_legacy_protocol(protocol_version: u32, error: &str) -> bool {
-    protocol_version == PROTOCOL_VERSION
-        && PROTOCOL_VERSION > MIN_SUPPORTED_PROTOCOL_VERSION
+    protocol_version > MIN_SUPPORTED_PROTOCOL_VERSION
         && error.contains("client version")
         && error.contains("newer than server version")
 }
@@ -3535,6 +3563,10 @@ mod tests {
         );
         assert_eq!(
             backend_compatibility_for_supported_range(Some("0.7.3"), Some(PROTOCOL_VERSION)),
+            BackendCompatibility::Compatible
+        );
+        assert_eq!(
+            backend_compatibility_for_supported_range(Some("0.7.4"), Some(PROTOCOL_VERSION)),
             BackendCompatibility::UntestedNewer
         );
         assert_eq!(
@@ -3559,6 +3591,10 @@ mod tests {
     fn terminal_protocol_fallback_retries_only_newer_client_mismatch() {
         assert!(should_retry_legacy_protocol(
             PROTOCOL_VERSION,
+            "client version 16 is newer than server version 15; please upgrade the herdr server",
+        ));
+        assert!(should_retry_legacy_protocol(
+            PROTOCOL_VERSION - 1,
             "client version 15 is newer than server version 14; please upgrade the herdr server",
         ));
         assert!(!should_retry_legacy_protocol(
@@ -3567,7 +3603,7 @@ mod tests {
         ));
         assert!(!should_retry_legacy_protocol(
             PROTOCOL_VERSION,
-            "client version 15 is older than the minimum supported version 16",
+            "client version 16 is older than the minimum supported version 17",
         ));
         assert!(!should_retry_legacy_protocol(
             PROTOCOL_VERSION,
@@ -3747,6 +3783,18 @@ mod tests {
         let err = write_message(&mut FailingWriter, &ClientMessage::Detach).unwrap_err();
 
         assert!(err.contains("closed"));
+    }
+
+    #[test]
+    fn round_trips_prefix_input_source_server_message() {
+        for active in [true, false] {
+            let msg = ServerMessage::PrefixInputSource { active };
+            let mut bytes = Vec::new();
+            write_message(&mut bytes, &msg).unwrap();
+            let decoded: ServerMessage =
+                read_message(&mut Cursor::new(bytes), MAX_FRAME_SIZE).unwrap();
+            assert_eq!(decoded, msg);
+        }
     }
 
     #[test]

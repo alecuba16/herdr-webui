@@ -44,6 +44,7 @@ const DESKTOP_FILE_BROWSER_JS: &str = include_str!("assets/desktop/file_browser.
 const DESKTOP_DIRECTORY_PICKER_JS: &str = include_str!("assets/desktop/directory_picker.js");
 const DESKTOP_JS: &str = concat!(
     include_str!("assets/desktop/app_js/core.js"),
+    include_str!("assets/desktop/app_js/legacy_polling.js"),
     include_str!("assets/desktop/app_js/render.js"),
     include_str!("assets/desktop/app_js/terminal.js"),
     include_str!("assets/desktop/app_js/worktrees.js"),

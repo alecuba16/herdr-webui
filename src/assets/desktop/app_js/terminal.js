@@ -35,6 +35,7 @@ function connectEvents() {
         }
       }
       forgetClosedSelection(kind, data);
+      if (kind === "layout.updated") applyLayoutUpdated(data.layout || data);
       scheduleRefresh(eventNeedsFastRefresh(kind) ? 50 : 500);
     }
   };

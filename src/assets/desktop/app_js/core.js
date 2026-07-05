@@ -28,6 +28,13 @@ let state = {
   createWorktreeAutodiscoverTimer: null,
   createWorktreeDefaultPath: "",
   openWorktreeSuggestionLocked: false,
+  // Per-tab layout snapshots keyed by `${workspace_id}/${tab_id}`. Populated
+  // from session.snapshot and kept current by layout.updated events. Used to
+  // size the terminal without a per-pane pane.layout round trip.
+  layouts: {},
+  // True when the backend supports session.snapshot (protocol 16+). Set after
+  // the first successful snapshot; falls back to legacy polling when false.
+  supportsSessionSnapshot: false,
 };
 let term,
   termWs,
@@ -118,6 +125,7 @@ const FAST_REFRESH_EVENTS = new Set([
   "worktree.created",
   "worktree.opened",
   "worktree.removed",
+  "layout.updated",
 ]);
 let sidebarCollapsed = storedFlag(SIDEBAR_COLLAPSED_KEY);
 let noSleepState = { mode: "off", until_ms: null, error: null, supported: true };
@@ -2445,13 +2453,24 @@ async function refreshOnline(seq) {
     state.layoutRows = null;
     state.layoutPaneCount = 0;
     if (state.pane) {
-      try {
-        const l = await api(
-          "/api/pane-layout?pane_id=" + encodeURIComponent(state.pane),
-        );
-        if (seq !== refreshSeq) return;
-        const layout = (l.result || {}).layout || {},
-          lp = layout.panes || [];
+      // Prefer the cached layout snapshot (populated by session.snapshot or
+      // layout.updated events) to avoid a per-pane pane.layout round trip on
+      // every refresh. Fall back to the legacy request only when no cache
+      // exists for the current tab.
+      let layout = currentTabLayout();
+      if (!layout) {
+        try {
+          const l = await api(
+            "/api/pane-layout?pane_id=" + encodeURIComponent(state.pane),
+          );
+          if (seq !== refreshSeq) return;
+          layout = (l.result || {}).layout || null;
+        } catch (e) {
+          layout = null;
+        }
+      }
+      if (layout) {
+        const lp = layout.panes || [];
         const selected = lp.find((x) => x.pane_id === state.pane);
         if (selected && selected.rect) {
           state.termCols = Math.max(1, selected.rect.width);
@@ -2466,7 +2485,7 @@ async function refreshOnline(seq) {
           );
           state.layoutPaneCount = lp.length;
         }
-      } catch (e) {}
+      }
     }
     if (
       state.fitDefault ||
@@ -2611,15 +2630,28 @@ function selectFallbackPaneAfterClosed(closedPaneId) {
   state.pane = nextPane.pane_id;
   state.terminalId = nextPane.terminal_id || null;
 }
+// Delegate to the legacy polling snapshot helper (see legacy_polling.js).
+// The events socket pushes this every 5s for backends that do not support
+// session.snapshot. Kept as the fallback path.
 function applySnapshot(msg) {
-  const wr = msg.workspaces && msg.workspaces.result;
-  const ar = msg.agents && msg.agents.result;
-  if (wr && wr.workspaces) state.workspaces = wr.workspaces;
-  if (ar && ar.agents) {
-    state.agents = ar.agents;
-    handleAttentionSound();
-  }
-  render();
+  applyLegacyPollingSnapshot(msg);
+}
+
+// Applies a layout.updated event payload. Replaces the cached layout for the
+// matching workspace/tab so the next render uses fresh pane rects without a
+// pane.layout round trip. Schedules a fast refresh so terminal sizing follows.
+function applyLayoutUpdated(layout) {
+  if (!layout || !layout.workspace_id || !layout.tab_id) return;
+  const key = layout.workspace_id + "/" + layout.tab_id;
+  state.layouts[key] = layout;
+  scheduleRefresh(50);
+}
+
+// Reads the cached layout snapshot for the current tab, if any. Returns null
+// when no layout.updated or session.snapshot has populated it yet.
+function currentTabLayout() {
+  if (!state.ws || !state.tab) return null;
+  return state.layouts[state.ws + "/" + state.tab] || null;
 }
 function unlockAudio() {
   if (audioUnlocked) return;
