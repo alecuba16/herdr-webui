@@ -1319,6 +1319,8 @@ describe("app bundle load", () => {
     match(gitUiSource, /const sourceClass = side === "old" \? "git-ui-hunk-old-hidden" : "git-ui-hunk-current-hidden";/);
     ok(!gitUiSource.includes("<pre class=\"git-ui-editor-preview del\""));
     match(gitDiffCss, /\.git-ui-hunk-old-mount \.cm-content/);
+    match(gitDiffCss, /\.git-ui-hunk-old-mount \.cm-scroller \{\n\s+flex-direction: row-reverse;/);
+    match(gitDiffCss, /\.git-ui-hunk-old-mount \.cm-gutters \{\n\s+border-left: 1px solid var\(--border\);\n\s+border-right: 0;/);
     match(gitDiffCss, /\.git-ui-hunk-current-mount \.cm-content/);
   });
 });

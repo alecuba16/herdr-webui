@@ -70,6 +70,13 @@
   background: rgba(248, 81, 73, 0.1);
   border-left: 4px solid #da3633;
 }
+.git-ui-hunk-old-mount .cm-scroller {
+  flex-direction: row-reverse;
+}
+.git-ui-hunk-old-mount .cm-gutters {
+  border-left: 1px solid var(--border);
+  border-right: 0;
+}
 .git-ui-hunk-current-mount .cm-content,
 .git-ui-hunk-current-mount .herdr-editor-code {
   background: rgba(46, 160, 67, 0.1);
