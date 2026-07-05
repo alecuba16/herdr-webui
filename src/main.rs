@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::fs;
-use std::future::IntoFuture;
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -14,6 +13,7 @@ use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use axum_server::tls_rustls::RustlsConfig;
 use interprocess::TryClone as _;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -71,6 +71,22 @@ struct WebConfig {
     session: Option<String>,
     api_socket: Option<PathBuf>,
     client_socket: Option<PathBuf>,
+    tls: TlsConfig,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TlsConfig {
+    mode: TlsMode,
+    cert_path: Option<PathBuf>,
+    key_path: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum TlsMode {
+    Off,
+    Auto,
+    SelfSigned,
+    Files,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -176,6 +192,10 @@ impl WebConfig {
         let mut session = None;
         let mut api_socket = None;
         let mut client_socket = None;
+        let mut tls_mode = TlsMode::Auto;
+        let mut tls_mode_set = false;
+        let mut cert_path = None;
+        let mut key_path = None;
         let mut index = 0;
         while index < args.len() {
             match args[index].as_str() {
@@ -202,6 +222,27 @@ impl WebConfig {
                         Some(PathBuf::from(required_arg(args, index, "--client-socket")?));
                     index += 2;
                 }
+                "--https" => {
+                    if args
+                        .get(index + 1)
+                        .is_some_and(|value| !value.starts_with('-'))
+                    {
+                        tls_mode = parse_tls_mode(required_arg(args, index, "--https")?)?;
+                        index += 2;
+                    } else {
+                        tls_mode = TlsMode::Auto;
+                        index += 1;
+                    }
+                    tls_mode_set = true;
+                }
+                "--tls-cert" => {
+                    cert_path = Some(PathBuf::from(required_arg(args, index, "--tls-cert")?));
+                    index += 2;
+                }
+                "--tls-key" => {
+                    key_path = Some(PathBuf::from(required_arg(args, index, "--tls-key")?));
+                    index += 2;
+                }
                 "help" | "--help" | "-h" => {
                     print_help();
                     std::process::exit(0);
@@ -214,12 +255,33 @@ impl WebConfig {
                 }
             }
         }
+        if !tls_mode_set && (cert_path.is_some() || key_path.is_some()) {
+            tls_mode = TlsMode::Auto;
+        }
         Ok(Self {
             bind,
             session,
             api_socket,
             client_socket,
+            tls: TlsConfig {
+                mode: tls_mode,
+                cert_path,
+                key_path,
+            },
         })
+    }
+}
+
+fn parse_tls_mode(value: &str) -> io::Result<TlsMode> {
+    match value {
+        "off" => Ok(TlsMode::Off),
+        "auto" => Ok(TlsMode::Auto),
+        "self-signed" | "selfsigned" | "self" => Ok(TlsMode::SelfSigned),
+        "files" | "cert" => Ok(TlsMode::Files),
+        other => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid --https mode: {other}; use off, auto, self-signed, or files"),
+        )),
     }
 }
 
@@ -251,11 +313,11 @@ fn print_help() {
 }
 
 fn help_text() -> &'static str {
-    "herdr-webui [--verbose] [--bind HOST:PORT] [--session NAME] [--api-socket PATH] [--client-socket PATH]\n\
+    "herdr-webui [--verbose] [--bind HOST:PORT] [--https off|auto|self-signed|files] [--tls-cert PATH --tls-key PATH] [--session NAME] [--api-socket PATH] [--client-socket PATH]\n\
 herdr-webui --version\n\
-herdr-webui install-mac [--verbose] [--bind HOST:PORT] [--session NAME]\n\
+herdr-webui install-mac [--verbose] [--bind HOST:PORT] [--https off|auto|self-signed|files] [--tls-cert PATH --tls-key PATH] [--session NAME]\n\
 herdr-webui update-mac [--verbose]\n\
-herdr-webui install-linux [--bind HOST:PORT] [--session NAME]\n\
+herdr-webui install-linux [--bind HOST:PORT] [--https off|auto|self-signed|files] [--tls-cert PATH --tls-key PATH] [--session NAME]\n\
 herdr-webui update-linux\n\
 herdr-webui start-mac | start [--verbose]\n\
 herdr-webui stop-mac | stop [--verbose]\n\
@@ -586,12 +648,13 @@ async fn main() -> io::Result<()> {
         workspace_orders: Arc::new(Mutex::new(HashMap::new())),
     };
 
-    serve_rebindable(state, rebind_rx).await
+    serve_rebindable(state, rebind_rx, config.tls).await
 }
 
 async fn serve_rebindable(
     state: WebState,
     mut rebind_rx: tokio::sync::watch::Receiver<SocketAddr>,
+    tls: TlsConfig,
 ) -> io::Result<()> {
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         .map_err(io::Error::other)?;
@@ -603,21 +666,37 @@ async fn serve_rebindable(
         let listener = match tokio::net::TcpListener::bind(bind).await {
             Ok(listener) => listener,
             Err(err) => {
-                eprintln!("failed to bind http://{bind}: {err}");
+                eprintln!("failed to bind {}://{bind}: {err}", tls.scheme());
                 tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                 continue;
             }
         };
-        eprintln!("herdr-webui listening on http://{bind}");
+        eprintln!("herdr-webui listening on {}://{bind}", tls.scheme());
         let mut shutdown_rx = rebind_rx.clone();
-        let server = axum::serve(
-            listener,
-            app_router(state.clone()).into_make_service_with_connect_info::<SocketAddr>(),
-        )
-        .with_graceful_shutdown(async move {
-            let _ = shutdown_rx.changed().await;
-        })
-        .into_future();
+        let router = app_router(state.clone()).into_make_service_with_connect_info::<SocketAddr>();
+        let tls_config = tls.rustls_config().await?;
+        let server = async move {
+            match tls_config {
+                Some(tls_config) => {
+                    let handle = axum_server::Handle::new();
+                    let shutdown_handle = handle.clone();
+                    tokio::spawn(async move {
+                        let _ = shutdown_rx.changed().await;
+                        shutdown_handle.graceful_shutdown(None);
+                    });
+                    axum_server::from_tcp_rustls(listener.into_std()?, tls_config)
+                        .handle(handle)
+                        .serve(router)
+                        .await
+                }
+                None => axum::serve(listener, router)
+                    .with_graceful_shutdown(async move {
+                        let _ = shutdown_rx.changed().await;
+                    })
+                    .await
+                    .map_err(io::Error::other),
+            }
+        };
         tokio::pin!(server);
         tokio::select! {
             _ = sigterm.recv() => return Ok(()),
@@ -627,6 +706,78 @@ async fn serve_rebindable(
             }
         }
     }
+}
+
+impl TlsConfig {
+    fn scheme(&self) -> &'static str {
+        match self.mode {
+            TlsMode::Off => "http",
+            TlsMode::Auto | TlsMode::SelfSigned | TlsMode::Files => "https",
+        }
+    }
+
+    async fn rustls_config(&self) -> io::Result<Option<RustlsConfig>> {
+        match self.mode {
+            TlsMode::Off => Ok(None),
+            TlsMode::Auto | TlsMode::Files => {
+                if let Some((cert, key)) = self.available_cert_files() {
+                    return Ok(Some(RustlsConfig::from_pem_file(cert, key).await?));
+                }
+                if matches!(self.mode, TlsMode::Files) {
+                    eprintln!("configured TLS certificate files are not available; generating a self-signed certificate");
+                }
+                let (cert, key) = ensure_self_signed_cert()?;
+                Ok(Some(RustlsConfig::from_pem_file(cert, key).await?))
+            }
+            TlsMode::SelfSigned => {
+                let (cert, key) = ensure_self_signed_cert()?;
+                Ok(Some(RustlsConfig::from_pem_file(cert, key).await?))
+            }
+        }
+    }
+
+    fn available_cert_files(&self) -> Option<(&Path, &Path)> {
+        let cert = self.cert_path.as_deref()?;
+        let key = self.key_path.as_deref()?;
+        (cert.exists() && key.exists()).then_some((cert, key))
+    }
+}
+
+fn ensure_self_signed_cert() -> io::Result<(PathBuf, PathBuf)> {
+    let (cert_path, key_path) = self_signed_cert_paths(&config_dir());
+    if cert_path.exists() && key_path.exists() {
+        return Ok((cert_path, key_path));
+    }
+    let dir = cert_path.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "self-signed cert path has no parent directory",
+        )
+    })?;
+    fs::create_dir_all(&dir)?;
+    let subject_alt_names = vec![
+        "localhost".to_string(),
+        "127.0.0.1".to_string(),
+        "::1".to_string(),
+    ];
+    let certified = rcgen::generate_simple_self_signed(subject_alt_names)
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    fs::write(&cert_path, certified.cert.pem())?;
+    fs::write(&key_path, certified.key_pair.serialize_pem())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&key_path, fs::Permissions::from_mode(0o600))?;
+    }
+    Ok((cert_path, key_path))
+}
+
+fn self_signed_cert_paths(config_dir: &Path) -> (PathBuf, PathBuf) {
+    let dir = config_dir.join("tls");
+    (
+        dir.join("self-signed-cert.pem"),
+        dir.join("self-signed-key.pem"),
+    )
 }
 
 fn app_router(state: WebState) -> Router {
@@ -2734,6 +2885,14 @@ mod tests {
         assert_eq!(config.session, None);
         assert_eq!(config.api_socket, None);
         assert_eq!(config.client_socket, None);
+        assert_eq!(config.tls.mode, TlsMode::Auto);
+    }
+
+    #[test]
+    fn parses_https_off_opt_out() {
+        let args = ["--https", "off"].map(String::from);
+
+        assert_eq!(WebConfig::parse(&args).unwrap().tls.mode, TlsMode::Off);
     }
 
     #[test]
@@ -2747,6 +2906,12 @@ mod tests {
             "/tmp/api.sock",
             "--client-socket",
             "/tmp/client.sock",
+            "--https",
+            "files",
+            "--tls-cert",
+            "/tmp/cert.pem",
+            "--tls-key",
+            "/tmp/key.pem",
         ]
         .map(String::from);
 
@@ -2762,6 +2927,59 @@ mod tests {
             config.client_socket.as_deref(),
             Some(Path::new("/tmp/client.sock"))
         );
+        assert_eq!(config.tls.mode, TlsMode::Files);
+        assert_eq!(
+            config.tls.cert_path.as_deref(),
+            Some(Path::new("/tmp/cert.pem"))
+        );
+        assert_eq!(
+            config.tls.key_path.as_deref(),
+            Some(Path::new("/tmp/key.pem"))
+        );
+    }
+
+    #[test]
+    fn parses_https_modes_and_infers_auto_mode() {
+        let bare_https = ["--https"].map(String::from);
+        let auto = ["--https", "auto"].map(String::from);
+        let self_signed = ["--https", "self-signed"].map(String::from);
+        let files = ["--tls-cert", "/tmp/cert.pem", "--tls-key", "/tmp/key.pem"].map(String::from);
+
+        assert_eq!(
+            WebConfig::parse(&bare_https).unwrap().tls.mode,
+            TlsMode::Auto
+        );
+        assert_eq!(WebConfig::parse(&auto).unwrap().tls.mode, TlsMode::Auto);
+        assert_eq!(
+            WebConfig::parse(&self_signed).unwrap().tls.mode,
+            TlsMode::SelfSigned
+        );
+        assert_eq!(WebConfig::parse(&files).unwrap().tls.mode, TlsMode::Auto);
+    }
+
+    #[test]
+    fn tls_files_mode_allows_missing_paths_for_self_signed_fallback() {
+        let missing_key = ["--https", "files", "--tls-cert", "/tmp/cert.pem"].map(String::from);
+
+        let config = WebConfig::parse(&missing_key).unwrap();
+
+        assert_eq!(config.tls.mode, TlsMode::Files);
+        assert_eq!(
+            config.tls.cert_path.as_deref(),
+            Some(Path::new("/tmp/cert.pem"))
+        );
+        assert_eq!(config.tls.key_path, None);
+    }
+
+    #[test]
+    fn self_signed_cert_paths_are_stable_per_user_config() {
+        let config = Path::new("/home/alice/.config/herdr");
+
+        let (cert, key) = self_signed_cert_paths(config);
+
+        assert_eq!(cert, config.join("tls/self-signed-cert.pem"));
+        assert_eq!(key, config.join("tls/self-signed-key.pem"));
+        assert!(!cert.starts_with("/home/alice/project"));
     }
 
     #[test]
@@ -2785,6 +3003,7 @@ mod tests {
         let missing = ["--bind"].map(String::from);
         let invalid_bind = ["--bind", "not-a-socket"].map(String::from);
         let unknown = ["--unknown"].map(String::from);
+        let invalid_https = ["--https", "letsencrypt"].map(String::from);
 
         assert_eq!(
             WebConfig::parse(&missing).unwrap_err().kind(),
@@ -2796,6 +3015,10 @@ mod tests {
         );
         assert_eq!(
             WebConfig::parse(&unknown).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            WebConfig::parse(&invalid_https).unwrap_err().kind(),
             io::ErrorKind::InvalidInput
         );
     }
