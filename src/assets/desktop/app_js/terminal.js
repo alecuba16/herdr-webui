@@ -243,11 +243,37 @@ function provideTerminalLinks(lineNumber, callback) {
     callback([]);
   }
 }
+// Threshold below which a single frame is written immediately to xterm.js
+// instead of waiting for the next requestAnimationFrame. Small frames (a
+// few lines of output, a cursor move) have negligible render cost and the
+// RAF delay adds ~16ms of latency for no benefit. Above the threshold we
+// coalesce bursts to avoid overwhelming the renderer.
+const IMMEDIATE_WRITE_THRESHOLD = 8192;
+
 function enqueueTerminalFrame(data) {
+  // Fast path: when no flush is pending and the frame is small, write it
+  // directly. This avoids the requestAnimationFrame round-trip (~16ms) for
+  // the common case of a few characters or a cursor move.
+  if (
+    !terminalWriteFlushPending &&
+    terminalWriteQueue.length === 0 &&
+    term &&
+    frameSize(data) <= IMMEDIATE_WRITE_THRESHOLD
+  ) {
+    writeTerminalFrame(data);
+    clearDismissedWorkingForTerminal(state.terminalId);
+    // Layout fitting is not needed on every data frame; only after size
+    // changes (resize, connect, layout.updated) or paste. Skipping it here
+    // avoids forced reflow on every output frame.
+    return;
+  }
   terminalWriteQueue.push({ terminalId: connectedTerminalId, data });
   if (terminalWriteFlushPending) return;
   terminalWriteFlushPending = true;
   requestAnimationFrame(flushTerminalFrames);
+}
+function frameSize(data) {
+  return typeof data === "string" ? data.length : data.length;
 }
 function flushTerminalFrames() {
   terminalWriteFlushPending = false;
@@ -258,7 +284,8 @@ function flushTerminalFrames() {
   const data = coalesceTerminalFrames(frames);
   writeTerminalFrame(data);
   clearDismissedWorkingForTerminal(state.terminalId);
-  scheduleTerminalFrameWork();
+  // Layout fitting is handled by resize/connect/layout.updated paths,
+  // not on every data frame. See scheduleTerminalLayoutFit.
 }
 function flushTerminalFramesFor(terminalId) {
   if (!terminalWriteQueue.length || !term || !terminalId) return;
@@ -266,7 +293,6 @@ function flushTerminalFramesFor(terminalId) {
   if (!frames.length) return;
   writeTerminalFrame(coalesceTerminalFrames(frames));
   clearDismissedWorkingForTerminal(terminalId);
-  scheduleTerminalFrameWork();
 }
 function takeTerminalFrames(terminalId) {
   const frames = [];
@@ -454,8 +480,10 @@ function focusTerminal(force = false) {
     term.focus();
   } catch (e) {}
 }
-function scheduleTerminalFrameWork() {
-  if (Date.now() < pasteFrameUntil) return;
+// Called after paste, resize, connect, or layout changes to ensure the
+// terminal surface fits its shell. This is the only place layout reads
+// should happen -- never on every data frame.
+function scheduleTerminalLayoutFit() {
   if (terminalFramePending) return;
   terminalFramePending = true;
   requestAnimationFrame(() => {
@@ -537,7 +565,7 @@ function flushInputQueue() {
 function finishPasteFrameSoon() {
   setTimeout(() => {
     pasteFrameUntil = 0;
-    scheduleTerminalFrameWork();
+    scheduleTerminalLayoutFit();
   }, 250);
 }
 function showClipboardMenu(x, y) {
