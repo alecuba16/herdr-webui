@@ -35,6 +35,9 @@
     var resizeTimer = null;
     var linkProvider = null;
     var confirmVisible = false;
+    var focusGuardsInstalled = false;
+    var wheelBound = false;
+    var touchLastY = null;
 
     function open() {
       if (isOpen) return;
@@ -45,6 +48,7 @@
       if (modal) modal.style.display = "grid";
       var container = el(containerId);
       if (container) container.innerHTML = "";
+      installFocusGuards();
       createTerminalSession();
     }
 
@@ -58,6 +62,7 @@
       hideCloseConfirm();
       isOpen = false;
       closing = true;
+      removeFocusGuards();
       disconnectWs();
       disposeTerm();
       var modal = el(modalId);
@@ -175,6 +180,7 @@
           term.attachCustomKeyEventHandler(handleTerminalKeyEvent);
         }
         term.onData(function (data) { sendInput(data); });
+        bindScrollHandlers(container);
         try { term.focus(); } catch (e) {}
       }
       try { term.resize(cols, rows); } catch (e) {}
@@ -209,16 +215,25 @@
       var key = event.key || "";
       var code = event.code || "";
       if (key === "Tab" || code === "Tab") {
-        preventTerminalBrowserKey(event);
-        sendInput(event.shiftKey ? "\x1b[Z" : "\t");
+        sendTerminalOwnedKey(event, event.shiftKey ? "\x1b[Z" : "\t");
         return false;
       }
       if (!event.shiftKey && (key === "Delete" || code === "Delete")) {
+        sendTerminalOwnedKey(event, "\x1b[3~");
+        return false;
+      }
+      if (!event.shiftKey && (key === "PageUp" || key === "PageDown")) {
         preventTerminalBrowserKey(event);
-        sendInput("\x1b[3~");
+        scrollTerminalLines(key === "PageUp" ? -Math.max(1, (term && term.rows) || 24) : Math.max(1, (term && term.rows) || 24));
         return false;
       }
       return true;
+    }
+
+    function sendTerminalOwnedKey(event, data) {
+      preventTerminalBrowserKey(event);
+      focusTerminalSoon();
+      sendInput(data);
     }
 
     function preventTerminalBrowserKey(event) {
@@ -227,6 +242,144 @@
       if (event.stopImmediatePropagation) {
         try { event.stopImmediatePropagation(); } catch (e) {}
       }
+    }
+
+    function installFocusGuards() {
+      if (focusGuardsInstalled) return;
+      focusGuardsInstalled = true;
+      document.addEventListener("keydown", captureTempTerminalKeydown, true);
+      document.addEventListener("focusin", captureTempTerminalFocusIn, true);
+      document.addEventListener("pointerdown", captureTempTerminalPointerDown, true);
+    }
+
+    function removeFocusGuards() {
+      if (!focusGuardsInstalled) return;
+      focusGuardsInstalled = false;
+      document.removeEventListener("keydown", captureTempTerminalKeydown, true);
+      document.removeEventListener("focusin", captureTempTerminalFocusIn, true);
+      document.removeEventListener("pointerdown", captureTempTerminalPointerDown, true);
+    }
+
+    function tempModal() { return el(modalId); }
+
+    function targetInCloseConfirm(target) {
+      return !!(target && target.closest && target.closest(".temp-terminal-confirm"));
+    }
+
+    function targetIsCloseButton(target) {
+      return !!(target && target.closest && target.closest("#" + closeId));
+    }
+
+    function targetInTerminal(target) {
+      var container = el(containerId);
+      return !!(container && target && container.contains(target));
+    }
+
+    function shouldTerminalOwnDocumentKey(event) {
+      if (!isOpen || confirmVisible || !event || event.type !== "keydown") return false;
+      if (event.altKey || event.ctrlKey || event.metaKey) return false;
+      var target = event.target;
+      if (targetInCloseConfirm(target) || targetIsCloseButton(target)) return false;
+      if (targetInTerminal(target)) return false;
+      var key = event.key || "";
+      var code = event.code || "";
+      return key === "Tab" || code === "Tab" || (!event.shiftKey && (key === "Delete" || code === "Delete"));
+    }
+
+    function captureTempTerminalKeydown(event) {
+      if (!shouldTerminalOwnDocumentKey(event)) return;
+      if ((event.key || event.code) === "Tab" || event.code === "Tab")
+        sendTerminalOwnedKey(event, event.shiftKey ? "\x1b[Z" : "\t");
+      else
+        sendTerminalOwnedKey(event, "\x1b[3~");
+    }
+
+    function captureTempTerminalFocusIn(event) {
+      if (!isOpen || confirmVisible) return;
+      var modal = tempModal();
+      if (!modal || !event.target || modal.contains(event.target)) return;
+      focusTerminalSoon();
+    }
+
+    function captureTempTerminalPointerDown(event) {
+      if (!isOpen || confirmVisible) return;
+      var modal = tempModal();
+      if (!modal || !event.target) return;
+      if (targetIsCloseButton(event.target) || targetInTerminal(event.target)) return;
+      if (!modal.contains(event.target) || event.target === modal || (event.target.closest && event.target.closest(".temp-terminal-head"))) {
+        preventTerminalBrowserKey(event);
+        focusTerminalSoon();
+      }
+    }
+
+    function focusTerminalSoon() {
+      if (!term) return;
+      setTimeout(function () { if (isOpen && term && !confirmVisible) try { term.focus(); } catch (e) {} }, 0);
+    }
+
+    function bindScrollHandlers(container) {
+      if (!container || wheelBound) return;
+      wheelBound = true;
+      container.addEventListener("wheel", handleTerminalWheel, { passive: false, capture: true });
+      container.addEventListener("touchstart", handleTerminalTouchStart, { passive: true, capture: true });
+      container.addEventListener("touchmove", handleTerminalTouchMove, { passive: false, capture: true });
+      container.addEventListener("touchend", handleTerminalTouchEnd, { passive: true, capture: true });
+      container.addEventListener("touchcancel", handleTerminalTouchEnd, { passive: true, capture: true });
+    }
+
+    function terminalCellHeight() {
+      var dims = term && term._core && term._core._renderService && term._core._renderService.dimensions && term._core._renderService.dimensions.css && term._core._renderService.dimensions.css.cell;
+      return Math.max(1, (dims && dims.height) || 17);
+    }
+
+    function wheelLines(event) {
+      if (event.deltaMode === 1) return event.deltaY > 0 ? 3 : -3;
+      if (event.deltaMode === 2) return event.deltaY > 0 ? ((term && term.rows) || 24) : -((term && term.rows) || 24);
+      var lines = event.deltaY / terminalCellHeight();
+      if (Math.abs(lines) < 1) return lines > 0 ? 1 : -1;
+      return lines > 0 ? Math.ceil(lines) : Math.floor(lines);
+    }
+
+    function handleTerminalWheel(event) {
+      if (!isOpen || !term || event.ctrlKey || event.metaKey) return;
+      if (!scrollTerminalLines(wheelLines(event))) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      focusTerminalSoon();
+    }
+
+    function handleTerminalTouchStart(event) {
+      touchLastY = event.touches && event.touches.length === 1 ? event.touches[0].clientY : null;
+    }
+
+    function handleTerminalTouchMove(event) {
+      if (!event.touches || event.touches.length !== 1 || touchLastY === null) return;
+      var y = event.touches[0].clientY;
+      var deltaY = touchLastY - y;
+      touchLastY = y;
+      var lines = deltaY / terminalCellHeight();
+      var signed = lines > 0 ? Math.max(1, Math.ceil(lines)) : Math.min(-1, Math.floor(lines));
+      if (!scrollTerminalLines(signed)) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }
+
+    function handleTerminalTouchEnd() {
+      touchLastY = null;
+    }
+
+    function scrollTerminalLines(lines) {
+      if (!term || !Number.isFinite(lines) || lines === 0) return false;
+      var count = Math.max(1, Math.abs(Math.trunc(lines)));
+      var sent = false;
+      if (termWs && termWs.readyState === 1) {
+        try {
+          termWs.send(JSON.stringify({ type: "scroll", direction: lines < 0 ? "up" : "down", lines: count }));
+          sent = true;
+        } catch (e) {}
+      }
+      try { term.scrollLines(lines < 0 ? -count : count); } catch (e) {}
+      return sent || true;
     }
 
     function disconnectWs() {
@@ -244,6 +397,7 @@
         try { linkProvider.dispose(); } catch (e) {}
       }
       linkProvider = null;
+      touchLastY = null;
       if (term) {
         try { term.dispose(); } catch (e) {}
         term = null;
