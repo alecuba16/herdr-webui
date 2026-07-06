@@ -14,7 +14,8 @@ Compatibility:
 
 | WebUI | Herdr | Protocol | Status | Notes |
 | --- | --- | --- | --- | --- |
-| `0.2.18` | `0.7.3` | `16` with `15` and `14` fallback | Current | Hardens the backend bridge by bounding WebSocket event and terminal queues, sharing one 5-second legacy snapshot poller per Herdr API socket instead of one per browser tab, centralizing Herdr JSON request construction, and syncing protocol 16 terminal target messages (`ObserveTerminal`, `ControlTerminal`) into the local wire types. |
+| `0.2.22` | `0.7.3` | `16` with `15` and `14` fallback | Current | Brings the Herdr bridge improvements from 0.2.18 plus terminal viewport and scroll smoothing fixes: avoids clipping the xterm host after pane/tab switches, coalesces WebUI wheel/touch backend scrolls per animation frame, and replaces the reconnect tail-scroll burst with one bounded backend tail request. |
+| `0.2.18` | `0.7.3` | `16` with `15` and `14` fallback | Superseded | Hardens the backend bridge by bounding WebSocket event and terminal queues, sharing one 5-second legacy snapshot poller per Herdr API socket instead of one per browser tab, centralizing Herdr JSON request construction, and syncing protocol 16 terminal target messages (`ObserveTerminal`, `ControlTerminal`) into the local wire types. |
 | `0.2.13` | `0.7.3` | `16` with `15` and `14` fallback | Superseded | Adds protocol 16 support with descending fallback to 15 and 14, subscribes to `layout.updated` events for live pane layout snapshots, exposes a `session.snapshot` endpoint for single-request bootstrap, and deserializes the new `PrefixInputSource` server message without acting on it. The legacy per-endpoint polling bootstrap is moved to `legacy_polling.js` with a removal TODO. |
 | `0.2.12` | `0.7.2` | `15` with `14` fallback | Superseded | Uses the same CodeMirror editor tooling for both sides of Git hunk editing, keeps the previous side read-only with line numbers on the right, and hides backing textareas so editable text is not duplicated below the highlighted editor. |
 | `0.2.11` | `0.7.2` | `15` with `14` fallback | Superseded | Uses the bundled JetBrainsMono Nerd Font stack when creating desktop xterm terminals, migrates the old desktop monospace default, and refreshes terminal metrics after the font loads. |
@@ -42,7 +43,20 @@ Compatibility:
 | `0.0.45` | `0.7.1` | `14` | Tested | Improves embedded Git UI navigation with Escape handling, all-changes return behavior, split frontend assets, scoped file history controls, keyboard-owned drawer input, and per-file large diff loading. |
 | `0.0.45` | `0.7.0` | `14` | Minimum supported | Uses WebUI's legacy existing-branch worktree fallback when needed. |
 
-Newer Herdr builds may work when protocol stays compatible, but WebUI reports them as untested. WebUI 0.2.18 treats Herdr 0.7.3 protocol 16 as tested and retries protocols 15 and 14 in descending order for compatible older Herdr 0.7.x servers.
+Newer Herdr builds may work when protocol stays compatible, but WebUI reports them as untested. WebUI 0.2.22 treats Herdr 0.7.3 protocol 16 as tested and retries protocols 15 and 14 in descending order for compatible older Herdr 0.7.x servers.
+
+## 0.2.22 Release Notes
+
+### Terminal viewport and scroll stability
+
+- Stops capping the desktop terminal host height in normal mode. xterm now owns its own viewport height, which prevents the last rows from being visually clipped after pane or tab switches while xterm believes no scroll is needed.
+- Coalesces WebUI wheel and touch backend scroll requests once per animation frame. Trackpad bursts now collapse into one Herdr `AttachScroll` message instead of queuing many repaint-producing backend scroll commands.
+- Replaces the reconnect/follow tail behavior from 120 backend scroll messages with one bounded tail request, reducing repaint bursts when a terminal attaches or follows the bottom.
+
+### Validation
+
+- Verified live `w56:p2` API state and direct terminal attach behavior against Herdr 0.7.3 protocol 16.
+- Confirmed Herdr backend direct-attach resize/restore focused tests with Zig 0.15.2.
 
 ## 0.2.18 Release Notes
 
