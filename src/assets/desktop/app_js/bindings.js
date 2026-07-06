@@ -596,11 +596,6 @@ if (globalThis.HerdrTempTerminal && el("tempTerminalModal")) {
   const tempTerminalClose = el("tempTerminalClose");
   const tempTerminalModal = el("tempTerminalModal");
   if (tempTerminalToggle) tempTerminalToggle.onclick = () => tempTerminal.open();
-  if (tempTerminalClose) tempTerminalClose.onclick = () => tempTerminal.close();
-  if (tempTerminalModal) {
-    tempTerminalModal.addEventListener("click", (event) => {
-      if (event.target === tempTerminalModal) tempTerminal.close();
-    });
-  }
+  if (tempTerminalClose) tempTerminalClose.onclick = () => tempTerminal.requestClose();
   window.addEventListener("resize", () => tempTerminal.handleResize());
 }

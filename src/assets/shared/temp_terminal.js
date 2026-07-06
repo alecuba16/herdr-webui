@@ -34,6 +34,7 @@
     var writeFlushPending = false;
     var resizeTimer = null;
     var linkProvider = null;
+    var confirmVisible = false;
 
     function open() {
       if (isOpen) return;
@@ -47,8 +48,14 @@
       createTerminalSession();
     }
 
+    function requestClose() {
+      if (!isOpen) return;
+      showCloseConfirm();
+    }
+
     function close() {
       if (!isOpen) return;
+      hideCloseConfirm();
       isOpen = false;
       closing = true;
       disconnectWs();
@@ -59,6 +66,57 @@
       createdTabId = null;
       createdPaneId = null;
       createdWorkspaceId = null;
+    }
+
+    function showCloseConfirm() {
+      var modal = el(modalId);
+      if (!modal) return;
+      var confirm = modal.querySelector(".temp-terminal-confirm");
+      if (!confirm) {
+        confirm = document.createElement("div");
+        confirm.className = "temp-terminal-confirm";
+        confirm.innerHTML =
+          '<div class="temp-terminal-confirm-card" role="alertdialog" aria-modal="true" aria-labelledby="tempTerminalConfirmTitle" aria-describedby="tempTerminalConfirmMessage">' +
+          '<h3 id="tempTerminalConfirmTitle">Close temporary terminal?</h3>' +
+          '<p id="tempTerminalConfirmMessage">This will stop the temporary terminal session.</p>' +
+          '<div class="temp-terminal-confirm-actions">' +
+          '<button type="button" class="tab add temp-terminal-confirm-cancel">Cancel</button>' +
+          '<button type="button" class="btn temp-terminal-confirm-close">Close</button>' +
+          '</div></div>';
+        modal.appendChild(confirm);
+        confirm.querySelector(".temp-terminal-confirm-close").onclick = function () { close(); };
+        confirm.querySelector(".temp-terminal-confirm-cancel").onclick = hideCloseConfirm;
+      }
+      confirmVisible = true;
+      confirm.style.display = "grid";
+      document.addEventListener("keydown", closeConfirmKeydown, true);
+      var closeButton = confirm.querySelector(".temp-terminal-confirm-close");
+      if (closeButton) closeButton.focus();
+    }
+
+    function hideCloseConfirm() {
+      if (!confirmVisible) return;
+      confirmVisible = false;
+      document.removeEventListener("keydown", closeConfirmKeydown, true);
+      var modal = el(modalId);
+      var confirm = modal && modal.querySelector(".temp-terminal-confirm");
+      if (confirm) confirm.style.display = "none";
+      if (term) {
+        try { term.focus(); } catch (e) {}
+      }
+    }
+
+    function closeConfirmKeydown(event) {
+      if (!confirmVisible) return;
+      if (event.key === "Enter") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        close();
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        hideCloseConfirm();
+      }
     }
 
     function createTerminalSession() {
@@ -256,7 +314,7 @@
       }, 100);
     }
 
-    return { open: open, close: close, isVisible: isVisible, handleResize: handleResize, handlePaneExited: handlePaneExited };
+    return { open: open, requestClose: requestClose, close: close, isVisible: isVisible, handleResize: handleResize, handlePaneExited: handlePaneExited };
   }
 
   globalThis.HerdrTempTerminal = { create: createTempTerminal };

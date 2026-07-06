@@ -295,7 +295,7 @@
     el("mobileSettings").onclick = () => showScreen("settings");
     el("mobileTempTerminal").onclick = () => mobileTempTerminal && mobileTempTerminal.open();
     const tempClose = el("tempTerminalClose");
-    if (tempClose) tempClose.onclick = () => mobileTempTerminal && mobileTempTerminal.close();
+    if (tempClose) tempClose.onclick = () => mobileTempTerminal && mobileTempTerminal.requestClose();
     document.querySelectorAll(".mobile-nav button").forEach((button) => {
       button.onclick = () => showScreen(button.dataset.screen);
     });
