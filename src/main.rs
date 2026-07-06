@@ -2629,7 +2629,8 @@ async fn terminal_socket(
 
     loop {
         tokio::select! {
-            Some(bytes) = out_rx.recv() => {
+            message = out_rx.recv() => {
+                let Some(bytes) = message else { break; };
                 if socket.send(Message::Binary(bytes.into())).await.is_err() { break; }
             }
             message = socket.recv() => {

@@ -267,7 +267,7 @@
           <button class="mobile-btn" id="mobileBack" title="Home">←</button>
           <div class="mobile-context"><strong id="mobileTitle">Herdr</strong><span id="mobileMeta">Loading</span></div>
           <button class="mobile-btn" id="mobileSettings" title="Settings">⚙</button>
-          <button class="mobile-btn" id="mobileTempTerminal" title="Temporary terminal">▢</button>
+          <button class="mobile-btn temp-terminal-toggle" id="mobileTempTerminal" title="Temporary terminal" aria-label="Temporary terminal"><span class="temp-terminal-icon" aria-hidden="true"><span class="temp-terminal-icon-glyph"></span><span class="temp-terminal-icon-label">T</span></span></button>
         </header>
         <main class="mobile-screen" id="mobileScreen"></main>
         <nav class="mobile-nav">

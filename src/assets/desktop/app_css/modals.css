@@ -233,3 +233,36 @@
   gap: 8px;
   justify-content: flex-end;
 }
+.temp-terminal-toggle {
+  align-items: center;
+  display: inline-flex;
+  justify-content: center;
+}
+.temp-terminal-icon {
+  align-items: center;
+  color: currentColor;
+  display: inline-flex;
+  flex-direction: column;
+  gap: 0;
+  height: 18px;
+  justify-content: center;
+  line-height: 1;
+  width: 18px;
+}
+.temp-terminal-icon-glyph {
+  background: currentColor;
+  display: block;
+  height: 12px;
+  mask-image: url("/assets/icons/terminal.svg");
+  mask-position: center;
+  mask-repeat: no-repeat;
+  mask-size: contain;
+  width: 16px;
+}
+.temp-terminal-icon-label {
+  display: block;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: -0.5px;
+  margin-top: -1px;
+}
