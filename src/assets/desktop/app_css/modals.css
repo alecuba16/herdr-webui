@@ -150,6 +150,7 @@
   display: none;
   place-items: center;
   background: #000c;
+  overscroll-behavior: contain;
   z-index: 1200;
 }
 .temp-terminal-modal {
@@ -196,6 +197,7 @@
   overflow: hidden;
   position: relative;
   padding: 4px;
+  touch-action: none;
 }
 .temp-terminal-body .terminal {
   width: 100%;

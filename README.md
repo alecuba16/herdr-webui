@@ -14,7 +14,8 @@ Compatibility:
 
 | WebUI | Herdr | Protocol | Status | Notes |
 | --- | --- | --- | --- | --- |
-| `0.2.20` | `0.7.3` | `16` with `15` and `14` fallback | Current | Fixes temporary terminal keyboard ownership so Tab, Shift+Tab, and Delete reach the shell, centralizes desktop key routing in `keyboard.js`, disables create/open buttons while workspace/worktree requests are in flight, and includes the 0.2.19 temporary Git branch switching safety. |
+| `0.2.21` | `0.7.3` | `16` with `15` and `14` fallback | Current | Hardens the temporary terminal modal so focus cannot fall through to the background, captures Tab/Delete for the temporary shell even after focus slips, and adds wheel/touch/PageUp/PageDown scrolling for long temporary-terminal output. |
+| `0.2.20` | `0.7.3` | `16` with `15` and `14` fallback | Superseded | Fixes temporary terminal keyboard ownership so Tab, Shift+Tab, and Delete reach the shell, centralizes desktop key routing in `keyboard.js`, disables create/open buttons while workspace/worktree requests are in flight, and includes the 0.2.19 temporary Git branch switching safety. |
 | `0.2.19` | `0.7.3` | `16` with `15` and `14` fallback | Superseded | Allows temporary Git branch switches from the embedded Git UI by using `git switch --ignore-other-worktrees`, shows a warning when the panel branch differs from the workspace branch, and adds a one-click return to the workspace branch. |
 | `0.2.18` | `0.7.3` | `16` with `15` and `14` fallback | Superseded | Suppresses line-by-line terminal repaint during pane/tab switches by keeping the loading overlay visible until the large attach frame finishes parsing, then reveals the completed screen in one paint. |
 | `0.2.17` | `0.7.3` | `16` with `15` and `14` fallback | Superseded | Adds an ephemeral temporary terminal overlay. It creates a fresh temporary tab/pane, attaches xterm.js in a modal, and closes the server-side tab when the modal or backend session exits. |
@@ -48,7 +49,16 @@ Compatibility:
 | `0.0.45` | `0.7.1` | `14` | Tested | Improves embedded Git UI navigation with Escape handling, all-changes return behavior, split frontend assets, scoped file history controls, keyboard-owned drawer input, and per-file large diff loading. |
 | `0.0.45` | `0.7.0` | `14` | Minimum supported | Uses WebUI's legacy existing-branch worktree fallback when needed. |
 
-Newer Herdr builds may work when protocol stays compatible, but WebUI reports them as untested. WebUI 0.2.20 treats Herdr 0.7.3 protocol 16 as tested and retries protocols 15 and 14 in descending order for compatible older Herdr 0.7.x servers.
+Newer Herdr builds may work when protocol stays compatible, but WebUI reports them as untested. WebUI 0.2.21 treats Herdr 0.7.3 protocol 16 as tested and retries protocols 15 and 14 in descending order for compatible older Herdr 0.7.x servers.
+
+## 0.2.21 Release Notes
+
+### Temporary terminal focus and scroll
+
+- Installs temporary-terminal focus guards while the modal is open so pointer/focus changes on the backdrop or header refocus the xterm surface instead of allowing background UI to receive terminal keys.
+- Captures Tab and Delete at document level when focus has slipped outside the temporary terminal, then forwards the terminal escape/input sequence to the temporary shell and stops background handlers.
+- Adds temporary-terminal wheel, touch, PageUp, and PageDown scrolling. Scroll gestures send backend scroll messages first and use local xterm scrollback as fallback.
+- Contains overscroll/touch gestures inside the temporary terminal modal on desktop and mobile.
 
 ## 0.2.20 Release Notes
 
@@ -370,7 +380,7 @@ HERDR_WEB_HERDR_BIN=/opt/homebrew/bin/herdr make run-web-local
 
 ## Web UI Feature Notes
 
-- Temporary terminal: the terminal icon in the header opens an ephemeral terminal in a modal. WebUI creates a temporary Herdr tab/pane, attaches xterm.js to it, and closes the temporary server-side tab when the modal closes or the backend pane exits. Tab completion, Shift+Tab, and Delete are routed to the temporary shell instead of browser focus handling.
+- Temporary terminal: the terminal icon in the header opens an ephemeral terminal in a modal. WebUI creates a temporary Herdr tab/pane, attaches xterm.js to it, and closes the temporary server-side tab when the modal closes or the backend pane exits. Tab completion, Shift+Tab, and Delete are routed to the temporary shell instead of browser focus handling, even if focus has slipped to the backdrop. Wheel, touch, PageUp, and PageDown scroll long output inside the temporary session.
 - Keyboard routing: desktop global shortcuts, modal focus trapping, clipboard shortcuts, and terminal exceptions live in `src/assets/desktop/app_js/keyboard.js` so key behavior has one clear maintenance point.
 - Workspace/worktree creation: create/open buttons show loading text and are disabled while their API request is running, preventing accidental double-submit duplicate workspaces or worktrees.
 - Git UI temporary branch switches: existing branch switches use `git switch --ignore-other-worktrees` for short inspection, show a warning when the Git panel differs from the workspace branch, and provide a return-to-workspace-branch action.

@@ -107,9 +107,15 @@ describe("app bundle load", () => {
   let gitUiSource;
   let gitSettingsSource;
   let desktopTerminalSource;
+  let tempTerminalSource;
+  let desktopModalCss;
+  let mobileCss;
 
   beforeEach(() => {
     desktopTerminalSource = readFileSync(new URL("./desktop/app_js/terminal.js", import.meta.url), "utf8");
+    tempTerminalSource = readFileSync(new URL("./shared/temp_terminal.js", import.meta.url), "utf8");
+    desktopModalCss = readFileSync(new URL("./desktop/app_css/modals.css", import.meta.url), "utf8");
+    mobileCss = readFileSync(new URL("./mobile/app.css", import.meta.url), "utf8");
     const desktopAppSource = [
       "./desktop/app_js/core.js",
       "./desktop/app_js/render.js",
@@ -136,6 +142,20 @@ describe("app bundle load", () => {
 
   it("loads without initialization-order ReferenceError", () => {
     doesNotThrow(() => vm.runInContext(source, context()));
+  });
+
+  it("keeps temporary terminal focus and scroll ownership", () => {
+    match(tempTerminalSource, /document\.addEventListener\("keydown", captureTempTerminalKeydown, true\)/);
+    match(tempTerminalSource, /document\.addEventListener\("focusin", captureTempTerminalFocusIn, true\)/);
+    match(tempTerminalSource, /document\.addEventListener\("pointerdown", captureTempTerminalPointerDown, true\)/);
+    match(tempTerminalSource, /sendTerminalOwnedKey\(event, event\.shiftKey \? "\\x1b\[Z" : "\\t"\)/);
+    match(tempTerminalSource, /sendTerminalOwnedKey\(event, "\\x1b\[3~"\)/);
+    match(tempTerminalSource, /container\.addEventListener\("wheel", handleTerminalWheel, \{ passive: false, capture: true \}\)/);
+    match(tempTerminalSource, /type: "scroll", direction: lines < 0 \? "up" : "down", lines: count/);
+    match(desktopModalCss, /\.temp-terminal-backdrop \{[\s\S]*?overscroll-behavior: contain;/);
+    match(desktopModalCss, /\.temp-terminal-body \{[\s\S]*?touch-action: none;/);
+    match(mobileCss, /\.temp-terminal-backdrop \{[\s\S]*?overscroll-behavior: contain;/);
+    match(mobileCss, /\.temp-terminal-body \{[\s\S]*?touch-action: none;/);
   });
 
   it("keeps file history header scoped to selected files", () => {
