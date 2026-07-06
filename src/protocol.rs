@@ -96,6 +96,13 @@ pub(crate) enum ClientMessage {
     InputEvents {
         events: Vec<ClientInputEvent>,
     },
+    ObserveTerminal {
+        target: String,
+    },
+    ControlTerminal {
+        target: String,
+        takeover: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

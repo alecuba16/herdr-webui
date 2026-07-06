@@ -528,6 +528,7 @@ mod tests {
             no_sleep: Arc::new(Mutex::new(NoSleepState::default())),
             rebind_tx,
             workspace_orders: Arc::new(Mutex::new(HashMap::new())),
+            snapshot_pollers: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
