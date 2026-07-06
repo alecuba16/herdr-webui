@@ -14,7 +14,8 @@ Compatibility:
 
 | WebUI | Herdr | Protocol | Status | Notes |
 | --- | --- | --- | --- | --- |
-| `0.2.13` | `0.7.3` | `16` with `15` and `14` fallback | Current | Adds protocol 16 support with descending fallback to 15 and 14, subscribes to `layout.updated` events for live pane layout snapshots, exposes a `session.snapshot` endpoint for single-request bootstrap, and deserializes the new `PrefixInputSource` server message without acting on it. The legacy per-endpoint polling bootstrap is moved to `legacy_polling.js` with a removal TODO. |
+| `0.2.18` | `0.7.3` | `16` with `15` and `14` fallback | Current | Hardens the backend bridge by bounding WebSocket event and terminal queues, sharing one 5-second legacy snapshot poller per Herdr API socket instead of one per browser tab, centralizing Herdr JSON request construction, and syncing protocol 16 terminal target messages (`ObserveTerminal`, `ControlTerminal`) into the local wire types. |
+| `0.2.13` | `0.7.3` | `16` with `15` and `14` fallback | Superseded | Adds protocol 16 support with descending fallback to 15 and 14, subscribes to `layout.updated` events for live pane layout snapshots, exposes a `session.snapshot` endpoint for single-request bootstrap, and deserializes the new `PrefixInputSource` server message without acting on it. The legacy per-endpoint polling bootstrap is moved to `legacy_polling.js` with a removal TODO. |
 | `0.2.12` | `0.7.2` | `15` with `14` fallback | Superseded | Uses the same CodeMirror editor tooling for both sides of Git hunk editing, keeps the previous side read-only with line numbers on the right, and hides backing textareas so editable text is not duplicated below the highlighted editor. |
 | `0.2.11` | `0.7.2` | `15` with `14` fallback | Superseded | Uses the bundled JetBrainsMono Nerd Font stack when creating desktop xterm terminals, migrates the old desktop monospace default, and refreshes terminal metrics after the font loads. |
 | `0.2.9` | `0.7.2` | `15` with `14` fallback | Superseded | Unifies workspace and worktree opening in one modal, adds always-discovered Git branches for worktree creation, shares refresh icon styling across Git/files/modals, and lets users continue worktree creation without pulling when fast-forward update detects diverging branches. |
@@ -41,7 +42,20 @@ Compatibility:
 | `0.0.45` | `0.7.1` | `14` | Tested | Improves embedded Git UI navigation with Escape handling, all-changes return behavior, split frontend assets, scoped file history controls, keyboard-owned drawer input, and per-file large diff loading. |
 | `0.0.45` | `0.7.0` | `14` | Minimum supported | Uses WebUI's legacy existing-branch worktree fallback when needed. |
 
-Newer Herdr builds may work when protocol stays compatible, but WebUI reports them as untested. WebUI 0.2.13 treats Herdr 0.7.3 protocol 16 as tested and retries protocols 15 and 14 in descending order for compatible older Herdr 0.7.x servers.
+Newer Herdr builds may work when protocol stays compatible, but WebUI reports them as untested. WebUI 0.2.18 treats Herdr 0.7.3 protocol 16 as tested and retries protocols 15 and 14 in descending order for compatible older Herdr 0.7.x servers.
+
+## 0.2.18 Release Notes
+
+### Backend bridge resilience
+
+- Bounds the `/ws/events` queue and direct terminal attach input/output queues so a slow browser or backend cannot grow unbounded memory in the WebUI bridge.
+- Shares the legacy 5-second `agent.list` and `workspace.list` snapshot poller per Herdr API socket. Multiple browser tabs now subscribe to the same snapshot stream instead of each tab opening its own periodic backend requests.
+- Keeps no-sleep auto mode synced from the shared snapshot poller while preserving the existing per-mode auto loop behavior.
+
+### Herdr API and protocol drift reduction
+
+- Centralizes Herdr JSON request construction through a small server-side helper so proxied API calls use one request shape.
+- Adds protocol 16 `ClientMessage::ObserveTerminal` and `ClientMessage::ControlTerminal` wire variants, plus a round-trip test, so the local protocol mirror stays compatible with the current Herdr wire format.
 
 ## 0.2.13 Release Notes
 
@@ -372,6 +386,8 @@ The Rust binary embeds frontend assets with `include_str!`, so release artifacts
 - CodeMirror, desktop Git UI, and desktop file browser JavaScript are lazy-loaded. Initial desktop/mobile terminal loads should not download editor or Git/File feature code until those features are opened.
 - The shared editor uses lightweight read-only previews by default and loads CodeMirror only for editable file views.
 - Desktop terminal output is frame-batched in the browser so bursts of WebSocket terminal frames are coalesced before xterm rendering. Pending frames are flushed before reconnect or close to avoid dropping final output.
+- The server-side bridge uses bounded queues for event and terminal WebSocket forwarding. Slow clients apply backpressure instead of letting queued terminal frames or backend events grow without limit.
+- Browser tabs connected to the same Herdr API socket share one legacy backend snapshot poller for `agent.list` and `workspace.list`; tabs receive updates through a watch channel instead of each running its own 5-second polling loop.
 - Large terminal paste input bypasses xterm `paste()` and uses bounded WebSocket input chunks with backpressure, so very large clipboards do not block the renderer or become one huge browser frame.
 - Terminal links are optional in Settings. When enabled, desktop and mobile xterm instances detect `http`/`https` URLs and open them in a new browser tab.
 - Blocking browser confirmation dialogs count as input delay in Chrome traces. Git bulk section actions defer their API/render work until after the confirmation returns so dialog wait time is not mixed with mutation/render cost.
