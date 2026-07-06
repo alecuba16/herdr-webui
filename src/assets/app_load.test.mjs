@@ -117,6 +117,7 @@ describe("app bundle load", () => {
       "./desktop/app_js/worktrees.js",
       "./desktop/app_js/shortcuts.js",
       "./desktop/app_js/workspace_create.js",
+      "./desktop/app_js/keyboard.js",
       "./desktop/app_js/bindings.js",
     ]
       .map((path) => readFileSync(new URL(path, import.meta.url), "utf8"))

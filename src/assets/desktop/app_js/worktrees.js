@@ -406,7 +406,8 @@ async function submitWorktreeCreate(input) {
     errEl.textContent = error;
     return;
   }
-  submitEl.disabled = true;
+  if (actionButtonLoading(submitEl)) return;
+  setActionButtonLoading(submitEl, true, "Creating...");
   try {
     const r = await api("/api/worktrees", {
       method: "POST",
@@ -425,12 +426,13 @@ async function submitWorktreeCreate(input) {
   } catch (ex) {
     const message = ex.message || String(ex);
     if (pullBase && await confirmContinueWithoutPull(message)) {
+      setActionButtonLoading(submitEl, false);
       await submitWorktreeCreate(Object.assign({}, input, { pullBase: false }));
       return;
     }
     errEl.textContent = message;
   } finally {
-    submitEl.disabled = false;
+    setActionButtonLoading(submitEl, false);
   }
 }
 function pullFastForwardFailed(message) {
@@ -532,7 +534,7 @@ function renderWorktreeOpenList() {
   list.innerHTML = rows
     .map(
       (w, i) =>
-        `<div class="worktree-open-row ${state.openWorktreeSelected === i ? "selected" : ""}"><span><strong>${escapeHtml(worktreeOpenRowTitle(w))}</strong><small>${escapeHtml(w.branch || "detached")} · ${escapeHtml(w.path)}</small></span><span class="session-controls"><button class="mini danger" title="Remove worktree from disk" onclick="event.stopPropagation();removeDiscoveredWorktree(${i})">🗑</button><button class="btn" onclick="openDiscoveredWorktree(${i})">Open</button></span></div>`,
+        `<div class="worktree-open-row ${state.openWorktreeSelected === i ? "selected" : ""}"><span><strong>${escapeHtml(worktreeOpenRowTitle(w))}</strong><small>${escapeHtml(w.branch || "detached")} · ${escapeHtml(w.path)}</small></span><span class="session-controls"><button class="mini danger" title="Remove worktree from disk" onclick="event.stopPropagation();removeDiscoveredWorktree(${i})">🗑</button><button class="btn" data-worktree-open-index="${i}" onclick="openDiscoveredWorktree(${i})">Open</button></span></div>`,
     )
     .join("");
 }
@@ -616,7 +618,8 @@ async function createWorkspaceFromSmartModal() {
     err.textContent = "Workspace name is required.";
     return;
   }
-  submit.disabled = true;
+  if (actionButtonLoading(submit)) return;
+  setActionButtonLoading(submit, true, "Creating...");
   try {
     const r = await api("/api/workspaces", {
       method: "POST",
@@ -628,14 +631,17 @@ async function createWorkspaceFromSmartModal() {
   } catch (ex) {
     err.textContent = ex.message || String(ex);
   } finally {
-    submit.disabled = false;
+    setActionButtonLoading(submit, false);
   }
 }
 async function openDiscoveredWorktree(index) {
   const row = (state.openWorktreeRows || [])[index];
   if (!row || !row.is_linked_worktree) return;
+  const button = document.querySelector(`[data-worktree-open-index="${index}"]`);
+  if (actionButtonLoading(button)) return;
   const err = el("worktreeOpenError");
   err.textContent = "";
+  setActionButtonLoading(button, true, "Opening...");
   try {
     const r = await api("/api/worktrees/open", {
       method: "POST",
@@ -656,6 +662,8 @@ async function openDiscoveredWorktree(index) {
     );
   } catch (ex) {
     err.textContent = ex.message || String(ex);
+  } finally {
+    setActionButtonLoading(button, false);
   }
 }
 async function removeDiscoveredWorktree(index) {
@@ -743,7 +751,8 @@ async function createDiscoveredWorktree() {
       "Branch name is required. Enable Generate worktree branch names in Settings to leave it blank.";
     return;
   }
-  submit.disabled = true;
+  if (actionButtonLoading(submit)) return;
+  setActionButtonLoading(submit, true, "Creating...");
   try {
     if (sourcePath && !state.openWorktreeSource) await discoverWorktrees();
     const checkedOut = checkedOutWorktreeForBranch(branch);
@@ -778,12 +787,13 @@ async function createDiscoveredWorktree() {
     const message = ex.message || String(ex);
     if (pullBase && await confirmContinueWithoutPull(message)) {
       el("worktreeNewPullBase").checked = false;
+      setActionButtonLoading(submit, false);
       await createDiscoveredWorktree();
       return;
     }
     err.textContent = message;
   } finally {
-    submit.disabled = false;
+    setActionButtonLoading(submit, false);
   }
 }
 async function closeWorkspace(id) {
