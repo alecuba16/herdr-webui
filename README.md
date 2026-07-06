@@ -14,7 +14,14 @@ Compatibility:
 
 | WebUI | Herdr | Protocol | Status | Notes |
 | --- | --- | --- | --- | --- |
-| `0.2.13` | `0.7.3` | `16` with `15` and `14` fallback | Current | Adds protocol 16 support with descending fallback to 15 and 14, subscribes to `layout.updated` events for live pane layout snapshots, exposes a `session.snapshot` endpoint for single-request bootstrap, and deserializes the new `PrefixInputSource` server message without acting on it. The legacy per-endpoint polling bootstrap is moved to `legacy_polling.js` with a removal TODO. |
+| `0.2.20` | `0.7.3` | `16` with `15` and `14` fallback | Current | Fixes temporary terminal keyboard ownership so Tab, Shift+Tab, and Delete reach the shell, centralizes desktop key routing in `keyboard.js`, disables create/open buttons while workspace/worktree requests are in flight, and includes the 0.2.19 temporary Git branch switching safety. |
+| `0.2.19` | `0.7.3` | `16` with `15` and `14` fallback | Superseded | Allows temporary Git branch switches from the embedded Git UI by using `git switch --ignore-other-worktrees`, shows a warning when the panel branch differs from the workspace branch, and adds a one-click return to the workspace branch. |
+| `0.2.18` | `0.7.3` | `16` with `15` and `14` fallback | Superseded | Suppresses line-by-line terminal repaint during pane/tab switches by keeping the loading overlay visible until the large attach frame finishes parsing, then reveals the completed screen in one paint. |
+| `0.2.17` | `0.7.3` | `16` with `15` and `14` fallback | Superseded | Adds an ephemeral temporary terminal overlay. It creates a fresh temporary tab/pane, attaches xterm.js in a modal, and closes the server-side tab when the modal or backend session exits. |
+| `0.2.16` | `0.7.3` | `16` with `15` and `14` fallback | Superseded | Reduces terminal output latency by writing small frames immediately while still coalescing large bursts, and keeps mobile/desktop frame paths responsive. |
+| `0.2.15` | `0.7.3` | `16` with `15` and `14` fallback | Superseded | Fixes terminal flicker and last-line cutoff by tightening terminal surface sizing and reconnect rendering behavior. |
+| `0.2.14` | `0.7.3` | `16` with `15` and `14` fallback | Superseded | Subscribes to `layout.updated` only on protocol 16+ backends so older compatible servers keep using legacy polling without unknown-event assumptions. |
+| `0.2.13` | `0.7.3` | `16` with `15` and `14` fallback | Superseded | Adds protocol 16 support with descending fallback to 15 and 14, subscribes to `layout.updated` events for live pane layout snapshots, exposes a `session.snapshot` endpoint for single-request bootstrap, and deserializes the new `PrefixInputSource` server message without acting on it. The legacy per-endpoint polling bootstrap is moved to `legacy_polling.js` with a removal TODO. |
 | `0.2.12` | `0.7.2` | `15` with `14` fallback | Superseded | Uses the same CodeMirror editor tooling for both sides of Git hunk editing, keeps the previous side read-only with line numbers on the right, and hides backing textareas so editable text is not duplicated below the highlighted editor. |
 | `0.2.11` | `0.7.2` | `15` with `14` fallback | Superseded | Uses the bundled JetBrainsMono Nerd Font stack when creating desktop xterm terminals, migrates the old desktop monospace default, and refreshes terminal metrics after the font loads. |
 | `0.2.9` | `0.7.2` | `15` with `14` fallback | Superseded | Unifies workspace and worktree opening in one modal, adds always-discovered Git branches for worktree creation, shares refresh icon styling across Git/files/modals, and lets users continue worktree creation without pulling when fast-forward update detects diverging branches. |
@@ -41,7 +48,71 @@ Compatibility:
 | `0.0.45` | `0.7.1` | `14` | Tested | Improves embedded Git UI navigation with Escape handling, all-changes return behavior, split frontend assets, scoped file history controls, keyboard-owned drawer input, and per-file large diff loading. |
 | `0.0.45` | `0.7.0` | `14` | Minimum supported | Uses WebUI's legacy existing-branch worktree fallback when needed. |
 
-Newer Herdr builds may work when protocol stays compatible, but WebUI reports them as untested. WebUI 0.2.13 treats Herdr 0.7.3 protocol 16 as tested and retries protocols 15 and 14 in descending order for compatible older Herdr 0.7.x servers.
+Newer Herdr builds may work when protocol stays compatible, but WebUI reports them as untested. WebUI 0.2.20 treats Herdr 0.7.3 protocol 16 as tested and retries protocols 15 and 14 in descending order for compatible older Herdr 0.7.x servers.
+
+## 0.2.20 Release Notes
+
+### Temporary terminal keyboard handling
+
+- Adds a centralized desktop keyboard router in `src/assets/desktop/app_js/keyboard.js` so global shortcuts, modal focus trapping, clipboard shortcuts, and terminal exceptions are easier to find and maintain.
+- Lets the temporary terminal own Tab, Shift+Tab, and Delete. Tab completion, reverse-tab, and forward-delete now go to the temporary shell instead of being intercepted by browser focus navigation.
+- Keeps normal modal focus trapping for Settings, Search, Help, workspace, and worktree modals, while excluding the xterm surface inside the temporary terminal modal.
+- Prevents panel-close shortcuts from firing while a modal, including the temporary terminal modal, is visible.
+
+### Workspace and worktree creation feedback
+
+- Disables workspace/worktree create and open buttons while their API request is in flight, preventing accidental double-press duplicates.
+- Shows short loading labels such as `Creating...` and `Opening...`, with `aria-busy` on the active button.
+- Adds focused JS coverage for keyboard routing and loading-button state.
+
+## 0.2.19 Release Notes
+
+### Temporary Git branch switches
+
+- Git UI branch switching now uses `git switch --ignore-other-worktrees` for existing branches, allowing short-lived inspection of branches that are already checked out in another worktree.
+- The Git drawer records the workspace branch and shows a `Temporary branch` warning when the Git panel is currently on a different branch.
+- Adds a `Return to <branch>` action to switch back to the workspace branch after temporary inspection.
+- Refactors Git switch argument construction into a testable helper and adds route coverage for the temporary switch behavior.
+
+## 0.2.18 Release Notes
+
+### Pane switch repaint suppression
+
+- Keeps the terminal loading overlay visible during the initial large attach frame after pane/tab switches, then reveals the fully parsed terminal in one paint.
+- Uses xterm's write callback for large attach frames so users no longer see the screen repaint line by line.
+- Preserves the fast path for small live output frames so normal terminal latency stays low.
+
+## 0.2.17 Release Notes
+
+### Temporary terminal overlay
+
+- Adds a temporary terminal button that opens an ephemeral xterm.js session in a modal overlay from desktop and mobile layouts.
+- Creates a fresh Herdr tab/pane through the existing tab API, attaches to it over the terminal WebSocket, and discards all local state when the modal closes.
+- Closes the temporary server-side tab when the user confirms close, the WebSocket drops, or Herdr reports the temporary pane exited.
+- Provides a close confirmation dialog so users do not accidentally stop the temporary session.
+
+## 0.2.16 Release Notes
+
+### Terminal frame latency
+
+- Writes small terminal frames immediately instead of delaying every update until the next animation frame.
+- Keeps requestAnimationFrame coalescing for large bursts so high-volume output does not overwhelm the renderer.
+- Shares the low-latency frame behavior across desktop and mobile terminal paths.
+
+## 0.2.15 Release Notes
+
+### Terminal flicker and sizing
+
+- Reduces terminal flicker during reconnects and tab switches by tightening when loading state is hidden.
+- Fixes terminal surface height so the last row is not clipped under the shell padding.
+- Keeps terminal sizing mode-aware for overflow and fit-to-browser configurations.
+
+## 0.2.14 Release Notes
+
+### Protocol-aware layout events
+
+- Subscribes to live `layout.updated` events only when connected to protocol 16+ backends.
+- Keeps older protocol 14/15 backends on legacy polling, avoiding assumptions about events they do not emit.
 
 ## 0.2.13 Release Notes
 
@@ -296,6 +367,13 @@ Use a specific Herdr binary when WebUI launches backend sessions:
 ```sh
 HERDR_WEB_HERDR_BIN=/opt/homebrew/bin/herdr make run-web-local
 ```
+
+## Web UI Feature Notes
+
+- Temporary terminal: the terminal icon in the header opens an ephemeral terminal in a modal. WebUI creates a temporary Herdr tab/pane, attaches xterm.js to it, and closes the temporary server-side tab when the modal closes or the backend pane exits. Tab completion, Shift+Tab, and Delete are routed to the temporary shell instead of browser focus handling.
+- Keyboard routing: desktop global shortcuts, modal focus trapping, clipboard shortcuts, and terminal exceptions live in `src/assets/desktop/app_js/keyboard.js` so key behavior has one clear maintenance point.
+- Workspace/worktree creation: create/open buttons show loading text and are disabled while their API request is running, preventing accidental double-submit duplicate workspaces or worktrees.
+- Git UI temporary branch switches: existing branch switches use `git switch --ignore-other-worktrees` for short inspection, show a warning when the Git panel differs from the workspace branch, and provide a return-to-workspace-branch action.
 
 ## CLI
 
