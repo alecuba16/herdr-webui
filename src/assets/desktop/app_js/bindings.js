@@ -577,3 +577,30 @@ loadNoSleep();
 loadVersions();
 refresh();
 connectEvents();
+
+// Ephemeral temporary terminal overlay.
+if (globalThis.HerdrTempTerminal && el("tempTerminalModal")) {
+  tempTerminal = globalThis.HerdrTempTerminal.create({
+    el,
+    state,
+    wsUrl,
+    api,
+    modalId: "tempTerminalModal",
+    containerId: "tempTerminal",
+    buttonId: "tempTerminalToggle",
+    closeId: "tempTerminalClose",
+    fontFamilyFn: terminalFontFamily,
+    themeFn: terminalTheme,
+  });
+  const tempTerminalToggle = el("tempTerminalToggle");
+  const tempTerminalClose = el("tempTerminalClose");
+  const tempTerminalModal = el("tempTerminalModal");
+  if (tempTerminalToggle) tempTerminalToggle.onclick = () => tempTerminal.open();
+  if (tempTerminalClose) tempTerminalClose.onclick = () => tempTerminal.close();
+  if (tempTerminalModal) {
+    tempTerminalModal.addEventListener("click", (event) => {
+      if (event.target === tempTerminalModal) tempTerminal.close();
+    });
+  }
+  window.addEventListener("resize", () => tempTerminal.handleResize());
+}

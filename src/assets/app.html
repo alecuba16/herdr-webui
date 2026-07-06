@@ -16,7 +16,8 @@
           ><button class="mini" id="themeToggle" title="Toggle theme">☾</button
           ><button class="mini" id="shortcutsToggle" title="Shortcuts">?</button
           ><button class="mini" id="settingsToggle" title="Settings">⚙</button
-          ><button class="btn" id="newWs" title="Open or create workspace">＋</button>
+          ><button class="btn" id="newWs" title="Open or create workspace">＋</button
+          ><button class="mini" id="tempTerminalToggle" title="Temporary terminal">▢</button>
         </div>
         <div class="section">
           <div class="muted" id="versions">webui - · backend -</div>
@@ -108,6 +109,17 @@
         >
         <div class="modal-actions">
           <button class="btn" id="settingsClose">Close</button>
+        </div>
+      </div>
+    </div>
+    <div class="modal-backdrop temp-terminal-backdrop" id="tempTerminalModal">
+      <div class="temp-terminal-modal" role="dialog" aria-modal="true" aria-labelledby="tempTerminalTitle">
+        <div class="temp-terminal-head">
+          <h2 id="tempTerminalTitle">Temporary terminal</h2>
+          <button class="temp-terminal-close" id="tempTerminalClose" title="Close" aria-label="Close temporary terminal">✕</button>
+        </div>
+        <div class="temp-terminal-body">
+          <div class="terminal" id="tempTerminal"></div>
         </div>
       </div>
     </div>
