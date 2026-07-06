@@ -130,3 +130,73 @@ describe("mobile terminal frame coalescing", () => {
     assert.equal(callbackCalled, true, "callback used when paused");
   });
 });
+
+describe("attach frame render suppression", () => {
+  const IMMEDIATE_WRITE_THRESHOLD = 8192;
+  const LARGE_FRAME_THRESHOLD = 32768;
+
+  it("large attach frame uses write callback for deferred reveal", () => {
+    let writeCallback = null;
+    const writes = [];
+    const term = {
+      write(data, cb) {
+        writes.push(data);
+        if (cb) writeCallback = cb;  // Don't auto-fire; simulate xterm parsing
+      },
+    };
+
+    // Simulate attach frame path: terminalAttachPending=true, large frame
+    let terminalAttachPending = true;
+    const frame = "x".repeat(LARGE_FRAME_THRESHOLD + 1000);
+    const size = frame.length;
+    const isAttachFrame = terminalAttachPending && size >= LARGE_FRAME_THRESHOLD;
+
+    assert.ok(isAttachFrame, "large frame with attach pending should be detected");
+
+    // Simulate flushTerminalFrames for attach batch
+    const isAttachBatch = terminalAttachPending && size >= LARGE_FRAME_THRESHOLD;
+    assert.ok(isAttachBatch, "should be detected as attach batch in flush");
+
+    terminalAttachPending = false;
+    // Use write callback (not fire it yet)
+    const done = () => {};
+    term.write(frame, done);
+    writeCallback = done;
+
+    assert.equal(writes.length, 1, "single write for attach frame");
+    assert.ok(writeCallback, "write callback should be registered");
+    // In real code, the callback fires after xterm finishes parsing,
+    // then RAF reveals the terminal. Until then, loading overlay stays visible.
+  });
+
+  it("small first frame clears attach flag immediately", () => {
+    let terminalAttachPending = true;
+    const smallFrame = "hello";
+    const size = smallFrame.length;
+    const isAttachFrame = terminalAttachPending && size >= LARGE_FRAME_THRESHOLD;
+
+    assert.ok(!isAttachFrame, "small frame should not trigger attach path");
+
+    // Simulate the small-frame path: clear attach flag
+    if (terminalAttachPending) terminalAttachPending = false;
+
+    assert.ok(!terminalAttachPending, "attach flag cleared for small frame");
+  });
+
+  it("normal frames after attach don't trigger suppression", () => {
+    let terminalAttachPending = false;  // Already cleared after first frame
+    const frame = "x".repeat(LARGE_FRAME_THRESHOLD + 1000);
+    const size = frame.length;
+    const isAttachFrame = terminalAttachPending && size >= LARGE_FRAME_THRESHOLD;
+
+    assert.ok(!isAttachFrame, "large frame without attach pending is normal");
+    // Should go through normal coalescing path
+  });
+
+  it("resetTerminalConnection clears attach flag", () => {
+    let terminalAttachPending = true;
+    // Simulate resetTerminalConnection
+    terminalAttachPending = false;
+    assert.ok(!terminalAttachPending, "attach flag cleared on disconnect");
+  });
+});

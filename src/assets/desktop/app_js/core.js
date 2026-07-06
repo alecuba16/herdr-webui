@@ -2255,6 +2255,7 @@ function resetTerminalConnection(clear = false, destroy = false) {
   if (terminalWriteQueue.length && typeof flushTerminalFrames === "function") flushTerminalFrames();
   terminalWriteQueue = [];
   terminalWriteFlushPending = false;
+  terminalAttachPending = false;
   setTerminalFollowPaused(false);
   if (termWs) {
     termWs.onclose = null;
