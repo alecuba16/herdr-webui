@@ -859,6 +859,10 @@ fn app_router(state: WebState) -> Router {
             "/assets/shared/terminal-scroll.js",
             get(shared_terminal_scroll_js),
         )
+        .route(
+            "/assets/shared/temp-terminal.js",
+            get(shared_temp_terminal_js),
+        )
         .route("/assets/desktop/git-ui.js", get(desktop_git_ui_js))
         .route(
             "/assets/desktop/file-browser.js",
@@ -2537,6 +2541,7 @@ struct TerminalQuery {
     cols: Option<u16>,
     rows: Option<u16>,
     session: Option<String>,
+    temporary_tab_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -2559,10 +2564,22 @@ async fn terminal_ws(
         .as_deref()
         .map(|session| client_socket_path_for(Some(session)))
         .unwrap_or_else(|| client_socket_for_headers(&state, &headers));
-    ws.on_upgrade(move |socket| terminal_socket(client_socket_path, query, socket))
+    let api = query
+        .session
+        .as_deref()
+        .map(|session| ApiClient {
+            socket_path: api_socket_path_for(Some(session)),
+        })
+        .unwrap_or_else(|| api_for_headers(&state, &headers));
+    ws.on_upgrade(move |socket| terminal_socket(client_socket_path, api, query, socket))
 }
 
-async fn terminal_socket(path: PathBuf, query: TerminalQuery, mut socket: WebSocket) {
+async fn terminal_socket(
+    path: PathBuf,
+    api: ApiClient,
+    query: TerminalQuery,
+    mut socket: WebSocket,
+) {
     let terminal_id = query.terminal_id.clone();
     let cols = query.cols.unwrap_or(100).max(1);
     let rows = query.rows.unwrap_or(30).max(1);
@@ -2612,7 +2629,8 @@ async fn terminal_socket(path: PathBuf, query: TerminalQuery, mut socket: WebSoc
 
     loop {
         tokio::select! {
-            Some(bytes) = out_rx.recv() => {
+            message = out_rx.recv() => {
+                let Some(bytes) = message else { break; };
                 if socket.send(Message::Binary(bytes.into())).await.is_err() { break; }
             }
             message = socket.recv() => {
@@ -2633,6 +2651,15 @@ async fn terminal_socket(path: PathBuf, query: TerminalQuery, mut socket: WebSoc
         }
     }
     let _ = in_tx.send(ClientMessage::Detach);
+    if let Some(tab_id) = query
+        .temporary_tab_id
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        let _ = api.request_value(
+            json!({ "id": "web:temp-terminal:close", "method": "tab.close", "params": { "tab_id": tab_id } }),
+        );
+    }
 }
 
 fn terminal_text_messages(text: &str) -> Vec<ClientMessage> {

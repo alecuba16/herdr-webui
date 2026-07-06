@@ -456,6 +456,7 @@ function modalOpen() {
     "worktreeOpenModal",
     "shortcutsModal",
     "searchPalette",
+    "tempTerminalModal",
   ].some((id) => {
     const m = el(id);
     return m && m.style.display && m.style.display !== "none";
