@@ -350,6 +350,12 @@
     return workspace.label || "main/master";
   }
 
+  function workspaceBranchName(workspace) {
+    const branch = workspace && workspace.worktree && workspace.worktree.branch;
+    if (!branch || branch === "detached") return "";
+    return String(branch);
+  }
+
   function workspaceKey(workspace) {
     return (workspace && workspace.workspace_id) || workspaceCwd(workspace) || "default";
   }
@@ -402,6 +408,7 @@
 
   async function open(workspace) {
     const key = workspaceKey(workspace);
+    const expectedBranch = workspaceBranchName(workspace);
     if (state.visible && state.activeKey === key) {
       hide();
       return;
@@ -413,6 +420,7 @@
         cwd: workspaceCwd(workspace),
         title: workspaceTitle(workspace),
         titleKind: workspace.worktree ? "Worktree" : "Branch",
+        workspaceBranch: expectedBranch,
         tab: "changes",
         status: null,
         diff: null,
@@ -449,13 +457,14 @@
       state.cache[key].cwd = workspaceCwd(workspace) || state.cache[key].cwd;
       state.cache[key].title = workspaceTitle(workspace);
       state.cache[key].titleKind = workspace.worktree ? "Worktree" : "Branch";
+      state.cache[key].workspaceBranch = expectedBranch || state.cache[key].workspaceBranch || "";
     }
     state.open = true;
     state.visible = true;
     showPanel(true);
     requestAnimationFrame(() => ensurePanel().focus({ preventScroll: true }));
     render();
-    if (!active().status) await refresh();
+    await refresh();
   }
 
   function hide() {
@@ -692,6 +701,13 @@
     return `<div class="git-ui-modal-backdrop"><div class="git-ui-modal"><div class="git-ui-modal-head"><strong>Switch branch</strong></div>${dir}${body}<div class="git-ui-modal-actions"><button class="git-ui-btn" onclick="HerdrGitUi.closeBranchModal()">Cancel</button><button class="git-ui-btn" onclick="HerdrGitUi.applyBranchModalCwd()" ${modal.loading || modal.error ? "disabled" : ""}>Use directory</button><button class="git-ui-btn primary" onclick="HerdrGitUi.switchBranchFromModal()" ${modal.loading || modal.error ? "disabled" : ""}>Switch to</button></div></div></div>`;
   }
 
+  function branchMismatchBanner(view, status) {
+    const expected = view.workspaceBranch || "";
+    const current = status.branch || "";
+    if (!expected || !current || current === expected) return "";
+    return `<div class="git-ui-branch-warning"><div><strong>Temporary branch</strong><span>This panel is on ${esc(current)}, but the workspace branch is ${esc(expected)}.</span></div><button class="git-ui-btn primary" onclick="HerdrGitUi.returnToWorkspaceBranch()">Return to ${esc(expected)}</button></div>`;
+  }
+
   function renderCleanupConfirm() {
     const modal = state.cleanupConfirm;
     if (!modal) return "";
@@ -773,7 +789,7 @@
       : section("Compared", filterFiles(view.compareFilePaths && view.compareFilePaths.length ? view.compareFilePaths : ((view.diff && view.diff.files) || []).map((file) => file.path), filter), "C");
     const stageLabel = (s.staged || []).length ? "Unstage all" : "Stage all";
     const branchLabel = `${view.titleKind || "Branch"}: ${s.branch || view.title || "No branch"}`;
-    return `<aside class="git-ui-side" onscroll="HerdrGitUi.sideScroll(this)"><div class="git-ui-head"><div class="git-ui-head-main"><div class="git-ui-title-row"><div class="git-ui-title">Git</div>${appRefreshIconButton({ className: "git-ui-refresh-icon", title: "Refresh", label: "Refresh Git state", spinning: !!view.refreshAnimating, onclick: "HerdrGitUi.refreshWithSpin()" })}</div><div class="git-ui-subtitle">${esc(s.state || "closed")} · ${esc(compactPath(s.repo_path))}</div><button class="git-ui-branch-pill" title="Change Git directory or switch branch" onclick="HerdrGitUi.openBranchModal()"><span>${esc(branchLabel)}</span><b>↗</b></button></div></div>${view.error ? `<div class="git-ui-error">${esc(view.error)}</div>` : ""}<div class="git-ui-toolbar"><div class="git-ui-tabs">${tabs.map((tab) => `<button class="git-ui-btn ${tab.id === "cleanup" ? "git-ui-cleanup-tab" : ""} ${view.tab === tab.id ? "active" : ""}" onclick="HerdrGitUi.tab('${tab.id}')">${tab.label}</button>`).join("")}</div></div><label class="git-ui-file-filter"><span class="git-ui-file-filter-icon" aria-hidden="true"></span><input value="${esc(view.fileFilter || "")}" placeholder="Filter files" oninput="HerdrGitUi.filterFiles(this.value)"></label><div class="git-ui-toolbar"><div class="git-ui-toolbar-title">Worktree actions</div><div class="git-ui-actions"><button class="git-ui-btn primary" onclick="HerdrGitUi.tab('commit')">Commit</button><button class="git-ui-btn" onclick="HerdrGitUi.openPullModal()">Pull</button><button class="git-ui-btn" onclick="HerdrGitUi.openPushModal()">Push</button><button class="git-ui-btn danger" onclick="HerdrGitUi.openForcePushModal()">Force push</button><button class="git-ui-btn" onclick="HerdrGitUi.toggleStageAll()">${stageLabel}</button><button class="git-ui-btn" onclick="HerdrGitUi.compareCurrent()">Current changes</button><button class="git-ui-btn" onclick="HerdrGitUi.rebase()">Rebase</button><button class="git-ui-btn danger" onclick="HerdrGitUi.reset()">Reset</button></div></div>${fileSections}</aside>`;
+    return `<aside class="git-ui-side" onscroll="HerdrGitUi.sideScroll(this)"><div class="git-ui-head"><div class="git-ui-head-main"><div class="git-ui-title-row"><div class="git-ui-title">Git</div>${appRefreshIconButton({ className: "git-ui-refresh-icon", title: "Refresh", label: "Refresh Git state", spinning: !!view.refreshAnimating, onclick: "HerdrGitUi.refreshWithSpin()" })}</div><div class="git-ui-subtitle">${esc(s.state || "closed")} · ${esc(compactPath(s.repo_path))}</div><button class="git-ui-branch-pill" title="Change Git directory or switch branch" onclick="HerdrGitUi.openBranchModal()"><span>${esc(branchLabel)}</span><b>↗</b></button></div></div>${view.error ? `<div class="git-ui-error">${esc(view.error)}</div>` : ""}${branchMismatchBanner(view, s)}<div class="git-ui-toolbar"><div class="git-ui-tabs">${tabs.map((tab) => `<button class="git-ui-btn ${tab.id === "cleanup" ? "git-ui-cleanup-tab" : ""} ${view.tab === tab.id ? "active" : ""}" onclick="HerdrGitUi.tab('${tab.id}')">${tab.label}</button>`).join("")}</div></div><label class="git-ui-file-filter"><span class="git-ui-file-filter-icon" aria-hidden="true"></span><input value="${esc(view.fileFilter || "")}" placeholder="Filter files" oninput="HerdrGitUi.filterFiles(this.value)"></label><div class="git-ui-toolbar"><div class="git-ui-toolbar-title">Worktree actions</div><div class="git-ui-actions"><button class="git-ui-btn primary" onclick="HerdrGitUi.tab('commit')">Commit</button><button class="git-ui-btn" onclick="HerdrGitUi.openPullModal()">Pull</button><button class="git-ui-btn" onclick="HerdrGitUi.openPushModal()">Push</button><button class="git-ui-btn danger" onclick="HerdrGitUi.openForcePushModal()">Force push</button><button class="git-ui-btn" onclick="HerdrGitUi.toggleStageAll()">${stageLabel}</button><button class="git-ui-btn" onclick="HerdrGitUi.compareCurrent()">Current changes</button><button class="git-ui-btn" onclick="HerdrGitUi.rebase()">Rebase</button><button class="git-ui-btn danger" onclick="HerdrGitUi.reset()">Reset</button></div></div>${fileSections}</aside>`;
   }
 
   function filterFiles(files, filter) {
@@ -2138,6 +2154,12 @@
       view.diff = null;
       render();
       refresh();
+    },
+    returnToWorkspaceBranch() {
+      const view = active();
+      const branch = view && view.workspaceBranch;
+      if (!view || !branch) return;
+      post("/api/git-ui/switch", { cwd: view.cwd, branch });
     },
     switchBranchFromModal() {
       const view = active();
