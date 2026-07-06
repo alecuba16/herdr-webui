@@ -109,6 +109,31 @@
 .git-ui-branch-pill:hover {
   background: rgba(56, 139, 253, 0.2);
 }
+.git-ui-branch-warning {
+  align-items: flex-start;
+  background: rgba(249, 226, 175, 0.12);
+  border-bottom: 1px solid rgba(249, 226, 175, 0.35);
+  color: #f9e2af;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+}
+.git-ui-branch-warning div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.git-ui-branch-warning strong {
+  font-size: 12px;
+  font-weight: 900;
+}
+.git-ui-branch-warning span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
 .git-ui-tabs,
 .git-ui-actions {
   display: flex;
