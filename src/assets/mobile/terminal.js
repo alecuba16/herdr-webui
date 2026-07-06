@@ -9,8 +9,15 @@
       terminalScrollFollowBound = false,
       terminalLinkProvider = null,
       inputFlushTimer = null,
-      inputQueue = [];
-    const inputEncoder = new TextEncoder();
+      inputQueue = [],
+      writeQueue = [],
+      writeFlushPending = false,
+      inputEncoder = new TextEncoder();
+
+    // Below this size, a frame is written immediately instead of waiting for
+    // the next requestAnimationFrame. Small frames have negligible render
+    // cost and the RAF delay adds ~16ms of latency for no benefit.
+    const IMMEDIATE_WRITE_THRESHOLD = 8192;
 
     function terminalFontFamily() {
       try {
@@ -175,7 +182,7 @@ function terminalLinksEnabled() {
       ws.binaryType = "arraybuffer";
       ws.onmessage = (event) => {
         if (termWs !== ws) return;
-        writeTerminalFrame(
+        enqueueTerminalFrame(
           typeof event.data === "string" ? event.data : new Uint8Array(event.data),
         );
       };
@@ -199,6 +206,8 @@ function terminalLinksEnabled() {
       connectedTerminalKey = "";
       connectedTerminalSize = "";
       inputQueue = [];
+      writeQueue = [];
+      writeFlushPending = false;
       if (inputFlushTimer) {
         clearTimeout(inputFlushTimer);
         inputFlushTimer = null;
@@ -289,23 +298,72 @@ function terminalLinksEnabled() {
         button.setAttribute("aria-hidden", terminalFollowPaused ? "false" : "true");
     }
 
+    function enqueueTerminalFrame(data) {
+      const size = typeof data === "string" ? data.length : data.length;
+      // Fast path: when no flush is pending and the frame is small, write it
+      // directly. This avoids the requestAnimationFrame round-trip (~16ms).
+      if (
+        !writeFlushPending &&
+        writeQueue.length === 0 &&
+        term &&
+        size <= IMMEDIATE_WRITE_THRESHOLD
+      ) {
+        writeTerminalFrame(data);
+        return;
+      }
+      writeQueue.push(data);
+      if (writeFlushPending) return;
+      writeFlushPending = true;
+      requestAnimationFrame(flushTerminalFrames);
+    }
+
+    function flushTerminalFrames() {
+      writeFlushPending = false;
+      if (!writeQueue.length || !term) return;
+      const frames = writeQueue;
+      writeQueue = [];
+      const data = coalesceTerminalFrames(frames);
+      writeTerminalFrame(data);
+    }
+
+    function coalesceTerminalFrames(frames) {
+      if (frames.every((frame) => typeof frame === "string")) return frames.join("");
+      const bytes = frames.map((frame) =>
+        typeof frame === "string" ? inputEncoder.encode(frame) : frame,
+      );
+      const size = bytes.reduce((sum, frame) => sum + frame.length, 0);
+      const merged = new Uint8Array(size);
+      let offset = 0;
+      for (const frame of bytes) {
+        merged.set(frame, offset);
+        offset += frame.length;
+      }
+      return merged;
+    }
+
     function writeTerminalFrame(data) {
+      // Only use the scroll-preserving callback when follow is actually
+      // paused (user scrolled up). When following the bottom, skip the
+      // callback entirely to avoid per-write overhead.
       const shouldPreserve = terminalFollowPaused && !terminalAtBottom();
       const viewportY =
         shouldPreserve && term && term.buffer ? term.buffer.active.viewportY : null;
-      const done = () => {
-        if (shouldPreserve && Number.isFinite(viewportY)) {
-          try {
-            term.scrollToLine(viewportY);
-          } catch (_) {}
-        }
-        setTerminalFollowPaused(!terminalAtBottom());
-      };
+      const done = shouldPreserve
+        ? () => {
+            if (Number.isFinite(viewportY)) {
+              try {
+                term.scrollToLine(viewportY);
+              } catch (_) {}
+            }
+            setTerminalFollowPaused(!terminalAtBottom());
+          }
+        : null;
       try {
-        term.write(data, done);
+        if (done) term.write(data, done);
+        else term.write(data);
       } catch (_) {
         term.write(data);
-        done();
+        if (done) done();
       }
     }
 
