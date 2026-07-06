@@ -225,6 +225,9 @@ describe("app bundle load", () => {
     match(desktopTerminalSource, /function sendBackendTail\(\) \{[\s\S]*?for \(let i = 0; i < 120; i \+= 1\)[\s\S]*?sendBackendScroll\(200\)/);
     match(desktopTerminalSource, /function scrollTerminalToBottom\(focus = true\) \{[\s\S]*?sendBackendTail\(\);[\s\S]*?setTerminalFollowPaused\(false\);[\s\S]*?term\.scrollToBottom\(\);/);
     match(desktopTerminalSource, /ws\.onopen = \(\) => \{[\s\S]*?scrollTerminalToBottom\(false\);/);
+    ok(!desktopTerminalSource.includes("shellHeight"));
+    ok(!desktopTerminalSource.includes("terminal.style.height = shellHeight"));
+    match(desktopTerminalSource, /terminal\.style\.height = "";[\s\S]*?terminal\.style\.minWidth = "0";/);
   });
 
   it("keeps Git UI keyboard input away from the terminal", () => {

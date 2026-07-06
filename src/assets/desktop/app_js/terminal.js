@@ -666,16 +666,11 @@ function fitTerminalSurface() {
     terminal.style.minHeight = height + "px";
   } else {
     terminal.style.width = "100%";
-    // Cap the terminal height to the shell's inner height so the last row
-    // is not scrolled off when the backend layout rows produce a surface
-    // taller than the shell. Use the shell client height minus the padding
-    // (8px top + 8px bottom = 16px) as the upper bound.
-    const shellHeight = shell ? Math.max(0, shell.clientHeight - 16) : 0;
-    if (shellHeight > 0 && height > shellHeight) {
-      terminal.style.height = shellHeight + "px";
-    } else {
-      terminal.style.height = "";
-    }
+    // Do not cap the terminal element height in normal mode. xterm sizes its
+    // own viewport from the row count passed to term.resize(); clipping the
+    // host element makes xterm believe no scrollback is needed while the last
+    // rows are visually outside the shell after tab/pane switches.
+    terminal.style.height = "";
     terminal.style.minWidth = "0";
     terminal.style.minHeight = "0";
   }
