@@ -2241,6 +2241,25 @@ function parseRoute() {
   state.tab = p[i + 2] === "tab" ? expandScopedId(state.ws, p[i + 3]) : null;
   state.pane = p[i + 4] === "pane" ? expandScopedId(state.ws, p[i + 5]) : null;
 }
+function setActionButtonLoading(button, loading, loadingText) {
+  if (!button) return;
+  if (loading) {
+    if (!button.dataset.idleText) button.dataset.idleText = button.textContent;
+    button.dataset.busy = "true";
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+    if (loadingText) button.textContent = loadingText;
+    return;
+  }
+  button.disabled = false;
+  button.removeAttribute("aria-busy");
+  button.dataset.busy = "false";
+  if (button.dataset.idleText) button.textContent = button.dataset.idleText;
+  delete button.dataset.idleText;
+}
+function actionButtonLoading(button) {
+  return !!(button && button.dataset.busy === "true");
+}
 function setTerminalLoading(show) {
   const loading = el("terminalLoading");
   if (loading) loading.classList.toggle("show", !!show);

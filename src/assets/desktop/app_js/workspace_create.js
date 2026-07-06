@@ -40,7 +40,8 @@ async function createWorkspaceFromModal() {
     err.textContent = "Workspace name is required.";
     return;
   }
-  submit.disabled = true;
+  if (actionButtonLoading(submit)) return;
+  setActionButtonLoading(submit, true, "Creating...");
   try {
     const r = await api("/api/workspaces", {
       method: "POST",
@@ -53,7 +54,7 @@ async function createWorkspaceFromModal() {
   } catch (ex) {
     err.textContent = ex.message || String(ex);
   } finally {
-    submit.disabled = false;
+    setActionButtonLoading(submit, false);
   }
 }
 newWs.onclick = () => {

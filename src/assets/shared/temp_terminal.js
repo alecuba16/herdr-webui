@@ -171,6 +171,9 @@
           theme: themeFn(),
         });
         term.open(container);
+        if (term.attachCustomKeyEventHandler) {
+          term.attachCustomKeyEventHandler(handleTerminalKeyEvent);
+        }
         term.onData(function (data) { sendInput(data); });
         try { term.focus(); } catch (e) {}
       }
@@ -197,6 +200,33 @@
           close();
         }
       };
+    }
+
+    function handleTerminalKeyEvent(event) {
+      if (!event || event.type !== "keydown") return true;
+      if (confirmVisible) return false;
+      if (event.altKey || event.ctrlKey || event.metaKey) return true;
+      var key = event.key || "";
+      var code = event.code || "";
+      if (key === "Tab" || code === "Tab") {
+        preventTerminalBrowserKey(event);
+        sendInput(event.shiftKey ? "\x1b[Z" : "\t");
+        return false;
+      }
+      if (!event.shiftKey && (key === "Delete" || code === "Delete")) {
+        preventTerminalBrowserKey(event);
+        sendInput("\x1b[3~");
+        return false;
+      }
+      return true;
+    }
+
+    function preventTerminalBrowserKey(event) {
+      try { event.preventDefault(); } catch (e) {}
+      try { event.stopPropagation(); } catch (e) {}
+      if (event.stopImmediatePropagation) {
+        try { event.stopImmediatePropagation(); } catch (e) {}
+      }
     }
 
     function disconnectWs() {

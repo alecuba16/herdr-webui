@@ -404,46 +404,6 @@ document.addEventListener(
   },
   true,
 );
-document.addEventListener("keydown", (e) => {
-  if (e.key !== "Tab") return;
-  const modalIds = [
-    "settingsModal",
-    "worktreeCreateModal",
-    "worktreeOpenModal",
-    "workspaceCreateModal",
-    "shortcutsModal",
-    "searchPalette",
-  ];
-  const modal = modalIds
-    .map((id) => el(id))
-    .find((m) => m && m.style.display === "grid");
-  if (!modal) return;
-  const focusable = modal.querySelectorAll(
-    'input:not([type="hidden"]):not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled]), [tabindex]:not([tabindex="-1"])',
-  );
-  if (!focusable.length) {
-    e.preventDefault();
-    return;
-  }
-  const filtered = Array.from(focusable).filter(
-    (f) => f.offsetParent !== null || f === document.activeElement,
-  );
-  if (!filtered.length) return;
-  const active = document.activeElement;
-  const first = filtered[0],
-    last = filtered[filtered.length - 1];
-  if (e.shiftKey) {
-    if (active === first || !modal.contains(active)) {
-      e.preventDefault();
-      last.focus();
-    }
-  } else {
-    if (active === last || !modal.contains(active)) {
-      e.preventDefault();
-      first.focus();
-    }
-  }
-});
 el("worktreeOpenRefresh").onclick = async () => {
   await refresh();
   if (el("worktreeDiscoverPath").value.trim()) await discoverWorktrees();
@@ -528,28 +488,7 @@ document.addEventListener("click", (e) => {
   const menu = el("clipboardMenu");
   if (menu && !menu.contains(e.target)) hideClipboardMenu();
 });
-window.addEventListener("keydown", closeShortcutKeydown, true);
-window.addEventListener("keydown", handleGlobalShortcut, true);
-document.addEventListener("keydown", (e) => {
-  if (editableEventTarget(e)) return;
-  const copyKey =
-    (e.metaKey || e.ctrlKey) &&
-    !e.shiftKey &&
-    !e.altKey &&
-    e.key.toLowerCase() === "c";
-  const pasteKey =
-    (e.metaKey || e.ctrlKey) &&
-    !e.shiftKey &&
-    !e.altKey &&
-    e.key.toLowerCase() === "v";
-  if (copyKey && term && term.getSelection && term.getSelection()) {
-    e.preventDefault();
-    copySelection();
-  } else if (pasteKey) {
-    e.preventDefault();
-    pasteClipboard();
-  }
-});
+setupDesktopKeyboardHandling();
 window.onpopstate = refresh;
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) {
