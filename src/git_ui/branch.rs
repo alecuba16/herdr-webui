@@ -130,6 +130,32 @@ fn git_ui_switch_blocking(
     }
 }
 
+pub(super) fn git_ui_switch_args(
+    branch: &str,
+    create: bool,
+    base: Option<&str>,
+) -> Result<Vec<String>, String> {
+    let branch = safe_git_token(branch, "branch")?;
+    if branch.is_empty() {
+        return Err("branch is required".to_string());
+    }
+    if create {
+        let base = safe_git_token(base.unwrap_or("HEAD"), "base")?;
+        Ok(vec![
+            "switch".to_string(),
+            "-c".to_string(),
+            branch.to_string(),
+            base.to_string(),
+        ])
+    } else {
+        Ok(vec![
+            "switch".to_string(),
+            "--ignore-other-worktrees".to_string(),
+            branch.to_string(),
+        ])
+    }
+}
+
 pub(super) async fn git_ui_switch(
     State(state): State<WebState>,
     headers: HeaderMap,
@@ -139,26 +165,13 @@ pub(super) async fn git_ui_switch(
     if let Err(response) = require_auth(&state, &headers, remote) {
         return response;
     }
-    let branch = match safe_git_token(&body.branch, "branch") {
-        Ok(v) => v,
+    let args = match git_ui_switch_args(
+        &body.branch,
+        body.create.unwrap_or(false),
+        body.base.as_deref(),
+    ) {
+        Ok(args) => args,
         Err(err) => return git_json_error(StatusCode::BAD_REQUEST, err),
-    };
-    if branch.is_empty() {
-        return git_json_error(StatusCode::BAD_REQUEST, "branch is required");
-    }
-    let args: Vec<String> = if body.create.unwrap_or(false) {
-        let base = match safe_git_token(body.base.as_deref().unwrap_or("HEAD"), "base") {
-            Ok(v) => v,
-            Err(err) => return git_json_error(StatusCode::BAD_REQUEST, err),
-        };
-        vec![
-            "switch".to_string(),
-            "-c".to_string(),
-            branch.to_string(),
-            base.to_string(),
-        ]
-    } else {
-        vec!["switch".to_string(), branch.to_string()]
     };
     let cwd = body.cwd;
     match tokio::task::spawn_blocking(move || git_ui_switch_blocking(cwd, args)).await {
