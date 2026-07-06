@@ -412,13 +412,15 @@ function updateTerminalScrollbackEstimate(lines) {
   );
   setTerminalFollowPaused(terminalScrollbackOffsetEstimate > 0);
 }
-function sendBackendScroll(lines) {
+function sendBackendScrollNow(lines) {
   if (!termWs || termWs.readyState !== 1 || !Number.isFinite(lines) || lines === 0) return false;
+  const wholeLines = Math.trunc(lines);
+  if (wholeLines === 0) return false;
   try {
     const message = JSON.stringify({
       type: "scroll",
-      direction: lines < 0 ? "up" : "down",
-      lines: Math.max(1, Math.abs(Math.trunc(lines))),
+      direction: wholeLines < 0 ? "up" : "down",
+      lines: Math.max(1, Math.abs(wholeLines)),
     });
     termWs.send(message);
     return true;
@@ -426,12 +428,28 @@ function sendBackendScroll(lines) {
     return false;
   }
 }
-function sendBackendTail() {
-  let sent = false;
-  for (let i = 0; i < 120; i += 1) {
-    sent = sendBackendScroll(200) || sent;
+function flushBackendScroll() {
+  terminalBackendScrollFramePending = false;
+  const lines = terminalBackendScrollLines;
+  terminalBackendScrollLines = 0;
+  if (lines) sendBackendScrollNow(lines);
+}
+function sendBackendScroll(lines, immediate = false) {
+  if (!termWs || termWs.readyState !== 1 || !Number.isFinite(lines) || lines === 0) return false;
+  const wholeLines = Math.trunc(lines);
+  if (wholeLines === 0) return false;
+  if (immediate) return sendBackendScrollNow(wholeLines);
+  terminalBackendScrollLines += wholeLines;
+  if (terminalBackendScrollLines === 0) return true;
+  if (!terminalBackendScrollFramePending) {
+    terminalBackendScrollFramePending = true;
+    requestAnimationFrame(flushBackendScroll);
   }
-  return sent;
+  return true;
+}
+function sendBackendTail() {
+  terminalBackendScrollLines = 0;
+  return sendBackendScroll(65535, true);
 }
 function handleTerminalWheel(e) {
   if (e.ctrlKey || e.metaKey) return;

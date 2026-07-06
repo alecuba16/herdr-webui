@@ -48,6 +48,8 @@ let term,
   terminalTouchLastY = null,
   terminalWheelDeltaPixels = 0,
   terminalScrollbackOffsetEstimate = 0,
+  terminalBackendScrollLines = 0,
+  terminalBackendScrollFramePending = false,
   audioCtx = null,
   audioUnlocked = false,
   knownAttention = null,
@@ -2252,6 +2254,8 @@ function resetTerminalConnection(clear = false, destroy = false) {
   }
   inputQueue = [];
   inputQueueMaxBufferedAmount = 65536;
+  terminalBackendScrollLines = 0;
+  terminalBackendScrollFramePending = false;
   if (terminalWriteQueue.length && typeof flushTerminalFrames === "function") flushTerminalFrames();
   terminalWriteQueue = [];
   terminalWriteFlushPending = false;
