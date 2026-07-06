@@ -11,6 +11,7 @@ const SHARED_CORE_JS: &str = include_str!("assets/shared/core.js");
 const SHARED_FILE_TREE_JS: &str = include_str!("assets/shared/file_tree.js");
 const SHARED_EDITOR_JS: &str = include_str!("assets/shared/editor.js");
 const SHARED_TERMINAL_SCROLL_JS: &str = include_str!("assets/shared/terminal_scroll.js");
+const SHARED_TEMP_TERMINAL_JS: &str = include_str!("assets/shared/temp_terminal.js");
 const VENDOR_CODEMIRROR_JS: &str = include_str!("assets/vendor/codemirror.bundle.js");
 const APP_BOOT_JS: &str = include_str!("assets/app_boot.js");
 const DESKTOP_CSS: &str = concat!(
@@ -127,6 +128,13 @@ pub(crate) async fn shared_editor_js() -> Response {
 pub(crate) async fn shared_terminal_scroll_js() -> Response {
     static_text(
         SHARED_TERMINAL_SCROLL_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(crate) async fn shared_temp_terminal_js() -> Response {
+    static_text(
+        SHARED_TEMP_TERMINAL_JS,
         "application/javascript; charset=utf-8",
     )
 }

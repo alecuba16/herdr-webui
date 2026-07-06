@@ -722,3 +722,127 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
     grid-column: 1 / -1;
   }
 }
+
+/* Ephemeral temporary terminal overlay (mobile) */
+.temp-terminal-backdrop {
+  position: fixed;
+  inset: 0;
+  display: none;
+  place-items: center;
+  background: #000c;
+  z-index: 1200;
+}
+.temp-terminal-modal {
+  background: var(--panel, #1e1e2e);
+  border: 1px solid var(--border2, #45475a);
+  border-radius: 14px;
+  margin: auto;
+  width: 95vw;
+  height: 80vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.temp-terminal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border, #313244);
+  flex-shrink: 0;
+}
+.temp-terminal-head h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--fg, #cdd6f4);
+}
+.temp-terminal-close {
+  background: transparent;
+  border: 0;
+  color: var(--muted, #a6adc8);
+  font-size: 18px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+.temp-terminal-close:hover {
+  background: var(--border, #313244);
+  color: var(--fg, #cdd6f4);
+}
+.temp-terminal-body {
+  flex: 1;
+  overflow: hidden;
+  position: relative;
+  padding: 4px;
+}
+.temp-terminal-body .terminal {
+  width: 100%;
+  height: 100%;
+}
+.temp-terminal-modal {
+  position: relative;
+}
+.temp-terminal-confirm {
+  position: absolute;
+  inset: 0;
+  display: none;
+  place-items: center;
+  background: #0009;
+  z-index: 2;
+}
+.temp-terminal-confirm-card {
+  background: var(--panel, #1e1e2e);
+  border: 1px solid var(--border2, #45475a);
+  border-radius: 12px;
+  box-shadow: 0 14px 40px #000a;
+  max-width: min(360px, 84vw);
+  padding: 16px;
+}
+.temp-terminal-confirm-card h3 {
+  color: var(--fg, #cdd6f4);
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+.temp-terminal-confirm-card p {
+  color: var(--muted, #a6adc8);
+  margin: 0 0 14px;
+}
+.temp-terminal-confirm-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.temp-terminal-toggle {
+  align-items: center;
+  display: inline-flex;
+  justify-content: center;
+}
+.temp-terminal-icon {
+  align-items: center;
+  color: currentColor;
+  display: inline-flex;
+  flex-direction: column;
+  gap: 0;
+  height: 18px;
+  justify-content: center;
+  line-height: 1;
+  width: 18px;
+}
+.temp-terminal-icon-glyph {
+  background: currentColor;
+  display: block;
+  height: 12px;
+  mask-image: url("/assets/icons/terminal.svg");
+  mask-position: center;
+  mask-repeat: no-repeat;
+  mask-size: contain;
+  width: 16px;
+}
+.temp-terminal-icon-label {
+  display: block;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: -0.5px;
+  margin-top: -1px;
+}

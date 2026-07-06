@@ -71,7 +71,8 @@ let term,
   shortcutPrefixTimer = null,
   searchFramePending = false,
   searchResults = [],
-  searchSelectedIndex = 0;
+  searchSelectedIndex = 0,
+  tempTerminal = null;
 const SIDEBAR_COLLAPSED_KEY = "herdr-web-sidebar-collapsed";
 const DEFAULT_GLOBAL_SHORTCUT_PREFIX = "Ctrl+B";
 const DEFAULT_WEBUI_SHORTCUTS = {
@@ -2551,6 +2552,7 @@ function eventNeedsFastRefresh(kind) {
 }
 function forgetClosedSelection(kind, data) {
   if (kind === "pane.exited" && data && data.pane_id) {
+    if (tempTerminal && tempTerminal.handlePaneExited) tempTerminal.handlePaneExited(data.pane_id);
     closePaneById(data.pane_id)
       .then(() => scheduleRefresh(50))
       .catch(() => {});

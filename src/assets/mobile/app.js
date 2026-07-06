@@ -46,6 +46,7 @@
     mobileAttention,
     mobileSettings,
     mobileTerminal,
+    mobileTempTerminal,
     mobileFileBrowser,
     mobileWorktrees;
 
@@ -130,7 +131,12 @@
 
   function wsUrl(path) {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    return `${proto}//${location.host}${path}`;
+    const sep = path.includes("?") ? "&" : "?";
+    const session =
+      state.session && state.session !== "default"
+        ? sep + "session=" + encodeURIComponent(state.session)
+        : "";
+    return `${proto}//${location.host}${path}${session}`;
   }
 
   function currentWorkspace() {
@@ -261,6 +267,7 @@
           <button class="mobile-btn" id="mobileBack" title="Home">←</button>
           <div class="mobile-context"><strong id="mobileTitle">Herdr</strong><span id="mobileMeta">Loading</span></div>
           <button class="mobile-btn" id="mobileSettings" title="Settings">⚙</button>
+          <button class="mobile-btn temp-terminal-toggle" id="mobileTempTerminal" title="Temporary terminal" aria-label="Temporary terminal"><span class="temp-terminal-icon" aria-hidden="true"><span class="temp-terminal-icon-glyph"></span><span class="temp-terminal-icon-label">T</span></span></button>
         </header>
         <main class="mobile-screen" id="mobileScreen"></main>
         <nav class="mobile-nav">
@@ -272,9 +279,23 @@
           <button data-screen="git">Git</button>
           <button data-screen="terminal">Terminal</button>
         </nav>
+      </div>
+      <div class="temp-terminal-backdrop" id="tempTerminalModal">
+        <div class="temp-terminal-modal" role="dialog" aria-modal="true" aria-labelledby="tempTerminalTitle">
+          <div class="temp-terminal-head">
+            <h2 id="tempTerminalTitle">Temporary terminal</h2>
+            <button class="temp-terminal-close" id="tempTerminalClose" title="Close" aria-label="Close temporary terminal">✕</button>
+          </div>
+          <div class="temp-terminal-body">
+            <div class="terminal" id="tempTerminal"></div>
+          </div>
+        </div>
       </div>`;
     el("mobileBack").onclick = () => showScreen("home");
     el("mobileSettings").onclick = () => showScreen("settings");
+    el("mobileTempTerminal").onclick = () => mobileTempTerminal && mobileTempTerminal.open();
+    const tempClose = el("tempTerminalClose");
+    if (tempClose) tempClose.onclick = () => mobileTempTerminal && mobileTempTerminal.requestClose();
     document.querySelectorAll(".mobile-nav button").forEach((button) => {
       button.onclick = () => showScreen(button.dataset.screen);
     });
@@ -763,7 +784,17 @@
     if (eventWs || !globalThis.WebSocket) return;
     const ws = new WebSocket(wsUrl("/ws/events"));
     eventWs = ws;
-    ws.onmessage = () => refresh();
+    ws.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        const evt = msg && msg.event;
+        const kind = evt && (evt.event || evt.type);
+        const data = (evt && evt.data) || {};
+        if (kind === "pane.exited" && mobileTempTerminal && mobileTempTerminal.handlePaneExited)
+          mobileTempTerminal.handlePaneExited(data.pane_id);
+      } catch (_) {}
+      refresh();
+    };
     ws.onclose = () => {
       if (eventWs === ws) eventWs = null;
       setTimeout(connectEvents, 1500);
@@ -786,6 +817,23 @@
     window,
   });
   mobileTerminal = globalThis.HerdrMobileTerminal.create({ el, state, wsUrl });
+  mobileTempTerminal = globalThis.HerdrTempTerminal.create({
+    el,
+    state,
+    wsUrl,
+    api,
+    modalId: "tempTerminalModal",
+    containerId: "tempTerminal",
+    fontFamilyFn: () => {
+      try {
+        const parsed = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
+        return globalThis.HerdrAppHelpers.resolveTerminalFontFamily(parsed.terminalFontFamily);
+      } catch (_) {
+        return globalThis.HerdrAppHelpers.resolveTerminalFontFamily("");
+      }
+    },
+  });
+  window.addEventListener("resize", () => mobileTempTerminal.handleResize());
   mobileSettings = globalThis.HerdrMobileSettings.create({
     applyTheme,
     escapeHtml,
