@@ -42,6 +42,10 @@ const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 14;
 const PROTOCOL_VERSION: u32 = 16;
 const MIN_BACKEND_VERSION: &str = "0.7.0";
 const MAX_TESTED_BACKEND_VERSION: &str = "0.7.3";
+const EVENT_QUEUE_CAPACITY: usize = 256;
+const TERMINAL_OUTPUT_QUEUE_CAPACITY: usize = 8;
+const TERMINAL_INPUT_QUEUE_CAPACITY: usize = 128;
+const SNAPSHOT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
 type LocalStream = interprocess::local_socket::Stream;
 
@@ -340,6 +344,7 @@ pub(crate) struct WebState {
     no_sleep: Arc<Mutex<NoSleepState>>,
     rebind_tx: tokio::sync::watch::Sender<SocketAddr>,
     workspace_orders: Arc<Mutex<HashMap<String, Vec<String>>>>,
+    snapshot_pollers: Arc<Mutex<HashMap<PathBuf, tokio::sync::watch::Sender<serde_json::Value>>>>,
 }
 
 #[derive(Clone)]
@@ -348,6 +353,23 @@ struct ApiClient {
 }
 
 impl ApiClient {
+    fn request_method(
+        &self,
+        id: impl Into<String>,
+        method: &'static str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        self.request_value(herdr_request(id, method, params))
+    }
+
+    fn request_empty(
+        &self,
+        id: impl Into<String>,
+        method: &'static str,
+    ) -> Result<serde_json::Value, String> {
+        self.request_method(id, method, json!({}))
+    }
+
     fn request_value(&self, request: serde_json::Value) -> Result<serde_json::Value, String> {
         let mut stream = connect_local_stream(&self.socket_path).map_err(|err| err.to_string())?;
         stream
@@ -380,9 +402,7 @@ impl ApiClient {
     }
 
     fn backend_info(&self) -> BackendInfo {
-        let response = self
-            .request_value(json!({ "id": "web:ping", "method": "ping", "params": {} }))
-            .ok();
+        let response = self.request_empty("web:ping", "ping").ok();
         let version = response
             .as_ref()
             .and_then(|response| response.get("result"))
@@ -396,6 +416,87 @@ impl ApiClient {
             .and_then(|protocol| protocol.as_u64())
             .and_then(|protocol| u32::try_from(protocol).ok());
         BackendInfo { version, protocol }
+    }
+}
+
+fn herdr_request(
+    id: impl Into<String>,
+    method: &'static str,
+    params: serde_json::Value,
+) -> serde_json::Value {
+    json!({ "id": id.into(), "method": method, "params": params })
+}
+
+fn snapshot_receiver_for(
+    state: &WebState,
+    api: &ApiClient,
+) -> tokio::sync::watch::Receiver<serde_json::Value> {
+    let key = api.socket_path.clone();
+    let mut pollers = state
+        .snapshot_pollers
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
+    if let Some(sender) = pollers.get(&key) {
+        return sender.subscribe();
+    }
+
+    let (sender, receiver) = tokio::sync::watch::channel(json!({
+        "type": "snapshot",
+        "agents": null,
+        "workspaces": null,
+    }));
+    pollers.insert(key.clone(), sender.clone());
+    drop(pollers);
+
+    let state_for_task = state.clone();
+    let api_for_task = api.clone();
+    tokio::spawn(async move {
+        run_snapshot_poller(state_for_task, api_for_task, key, sender).await;
+    });
+    receiver
+}
+
+async fn run_snapshot_poller(
+    state: WebState,
+    api: ApiClient,
+    key: PathBuf,
+    sender: tokio::sync::watch::Sender<serde_json::Value>,
+) {
+    let mut interval = tokio::time::interval(SNAPSHOT_POLL_INTERVAL);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        interval.tick().await;
+        if sender.receiver_count() == 0 {
+            remove_snapshot_poller(&state, &key);
+            break;
+        }
+
+        let api_for_poll = api.clone();
+        let snapshot = tokio::task::spawn_blocking(move || {
+            let agents = api_for_poll
+                .request_empty("web:agent:list:poll", "agent.list")
+                .ok();
+            let workspaces = api_for_poll
+                .request_empty("web:workspace:list:poll", "workspace.list")
+                .ok();
+            json!({ "type": "snapshot", "agents": agents, "workspaces": workspaces })
+        })
+        .await
+        .unwrap_or_else(|err| json!({ "type": "error", "message": err.to_string() }));
+
+        if let Some(agents) = snapshot.get("agents") {
+            sync_auto_no_sleep_from_agents(&state, agents);
+        }
+        if sender.send(snapshot).is_err() {
+            remove_snapshot_poller(&state, &key);
+            break;
+        }
+    }
+}
+
+fn remove_snapshot_poller(state: &WebState, key: &Path) {
+    if let Ok(mut pollers) = state.snapshot_pollers.lock() {
+        pollers.remove(key);
     }
 }
 
@@ -646,6 +747,7 @@ async fn main() -> io::Result<()> {
         no_sleep: Arc::new(Mutex::new(NoSleepState::default())),
         rebind_tx,
         workspace_orders: Arc::new(Mutex::new(HashMap::new())),
+        snapshot_pollers: Arc::new(Mutex::new(HashMap::new())),
     };
 
     serve_rebindable(state, rebind_rx, config.tls).await
@@ -754,7 +856,7 @@ fn ensure_self_signed_cert() -> io::Result<(PathBuf, PathBuf)> {
             "self-signed cert path has no parent directory",
         )
     })?;
-    fs::create_dir_all(&dir)?;
+    fs::create_dir_all(dir)?;
     let subject_alt_names = vec![
         "localhost".to_string(),
         "127.0.0.1".to_string(),
@@ -1234,9 +1336,7 @@ async fn run_auto_no_sleep_loop(state: WebState, api: ApiClient, generation: u64
         if !should_continue {
             break;
         }
-        match api.request_value(
-            json!({ "id": "web:agent:list:no-sleep-auto", "method": "agent.list", "params": {} }),
-        ) {
+        match api.request_empty("web:agent:list:no-sleep-auto", "agent.list") {
             Ok(agents) => sync_auto_no_sleep_from_agents(&state, &agents),
             Err(err) => {
                 if let Ok(mut no_sleep) = state.no_sleep.lock() {
@@ -1316,7 +1416,7 @@ async fn update_no_sleep(
     let auto_agents = (body.mode == "auto")
         .then(|| {
             auto_api
-                .request_value(json!({ "id": "web:agent:list:no-sleep", "method": "agent.list", "params": {} }))
+                .request_empty("web:agent:list:no-sleep", "agent.list")
                 .ok()
         })
         .flatten();
@@ -1529,7 +1629,7 @@ async fn close_session(
     }
     proxy_request(
         &api_for_headers(&state, &headers),
-        json!({ "id": "web:server:stop", "method": "server.stop", "params": {} }),
+        herdr_request("web:server:stop", "server.stop", json!({})),
     )
 }
 
@@ -1620,11 +1720,13 @@ async fn workspaces(
         return response;
     }
     let api = api_for_headers(&state, &headers);
-    match api.request_value(
-        json!({ "id": "web:workspace:list", "method": "workspace.list", "params": {} }),
-    ) {
+    match api.request_empty("web:workspace:list", "workspace.list") {
         Ok(mut value) => {
-            if let Ok(panes) = api.request_value(json!({ "id": "web:pane:list:workspace-cwds", "method": "pane.list", "params": { "workspace_id": null } })) {
+            if let Ok(panes) = api.request_method(
+                "web:pane:list:workspace-cwds",
+                "pane.list",
+                json!({ "workspace_id": null }),
+            ) {
                 enrich_workspace_cwds(&mut value, &panes);
             }
             Json(value).into_response()
@@ -1811,7 +1913,11 @@ impl HerdrWorktreeApi {
     }
 
     fn remove_request(workspace_id: String, force: bool) -> serde_json::Value {
-        json!({ "id": "web:worktree:remove", "method": "worktree.remove", "params": { "workspace_id": workspace_id, "force": force } })
+        herdr_request(
+            "web:worktree:remove",
+            "worktree.remove",
+            json!({ "workspace_id": workspace_id, "force": force }),
+        )
     }
 }
 
@@ -1866,7 +1972,11 @@ async fn worktrees(
     let cwd = query.cwd.as_deref().map(expand_user_path_string);
     proxy_request(
         &api_for_headers(&state, &headers),
-        json!({ "id": "web:worktree:list", "method": "worktree.list", "params": { "workspace_id": query.workspace_id, "cwd": cwd } }),
+        herdr_request(
+            "web:worktree:list",
+            "worktree.list",
+            json!({ "workspace_id": query.workspace_id, "cwd": cwd }),
+        ),
     )
 }
 
@@ -2108,7 +2218,7 @@ async fn agents(
     }
     proxy_request(
         &api_for_headers(&state, &headers),
-        json!({ "id": "web:agent:list", "method": "agent.list", "params": {} }),
+        herdr_request("web:agent:list", "agent.list", json!({})),
     )
 }
 
@@ -2211,7 +2321,11 @@ async fn tabs(
     }
     proxy_request(
         &api_for_headers(&state, &headers),
-        json!({ "id": "web:tab:list", "method": "tab.list", "params": { "workspace_id": query.workspace_id } }),
+        herdr_request(
+            "web:tab:list",
+            "tab.list",
+            json!({ "workspace_id": query.workspace_id }),
+        ),
     )
 }
 
@@ -2226,7 +2340,11 @@ async fn panes(
     }
     proxy_request(
         &api_for_headers(&state, &headers),
-        json!({ "id": "web:pane:list", "method": "pane.list", "params": { "workspace_id": query.workspace_id } }),
+        herdr_request(
+            "web:pane:list",
+            "pane.list",
+            json!({ "workspace_id": query.workspace_id }),
+        ),
     )
 }
 
@@ -2246,7 +2364,11 @@ async fn pane_layout(
     }
     proxy_request(
         &api_for_headers(&state, &headers),
-        json!({ "id": "web:pane:layout", "method": "pane.layout", "params": { "pane_id": query.pane_id } }),
+        herdr_request(
+            "web:pane:layout",
+            "pane.layout",
+            json!({ "pane_id": query.pane_id }),
+        ),
     )
 }
 
@@ -2263,7 +2385,7 @@ async fn session_snapshot(
     }
     proxy_request(
         &api_for_headers(&state, &headers),
-        json!({ "id": "web:session:snapshot", "method": "session.snapshot", "params": {} }),
+        herdr_request("web:session:snapshot", "session.snapshot", json!({})),
     )
 }
 
@@ -2305,7 +2427,11 @@ async fn create_workspace(
     };
     proxy_request(
         &api_for_headers(&state, &headers),
-        json!({ "id": "web:workspace:create", "method": "workspace.create", "params": { "cwd": cwd, "focus": false, "label": body.label, "env": {} } }),
+        herdr_request(
+            "web:workspace:create",
+            "workspace.create",
+            json!({ "cwd": cwd, "focus": false, "label": body.label, "env": {} }),
+        ),
     )
 }
 
@@ -2326,7 +2452,11 @@ async fn rename_workspace(
     }
     proxy_request(
         &api_for_headers(&state, &headers),
-        json!({ "id": "web:workspace:rename", "method": "workspace.rename", "params": { "workspace_id": workspace_id, "label": body.label } }),
+        herdr_request(
+            "web:workspace:rename",
+            "workspace.rename",
+            json!({ "workspace_id": workspace_id, "label": body.label }),
+        ),
     )
 }
 
@@ -2341,7 +2471,11 @@ async fn close_workspace(
     }
     proxy_request(
         &api_for_headers(&state, &headers),
-        json!({ "id": "web:workspace:close", "method": "workspace.close", "params": { "workspace_id": workspace_id } }),
+        herdr_request(
+            "web:workspace:close",
+            "workspace.close",
+            json!({ "workspace_id": workspace_id }),
+        ),
     )
 }
 
@@ -2379,7 +2513,11 @@ async fn create_tab(
     }
     proxy_request(
         &api_for_headers(&state, &headers),
-        json!({ "id": "web:tab:create", "method": "tab.create", "params": { "workspace_id": body.workspace_id, "focus": false, "label": body.label, "env": {} } }),
+        herdr_request(
+            "web:tab:create",
+            "tab.create",
+            json!({ "workspace_id": body.workspace_id, "focus": false, "label": body.label, "env": {} }),
+        ),
     )
 }
 
@@ -2400,7 +2538,11 @@ async fn rename_tab(
     }
     proxy_request(
         &api_for_headers(&state, &headers),
-        json!({ "id": "web:tab:rename", "method": "tab.rename", "params": { "tab_id": tab_id, "label": body.label } }),
+        herdr_request(
+            "web:tab:rename",
+            "tab.rename",
+            json!({ "tab_id": tab_id, "label": body.label }),
+        ),
     )
 }
 
@@ -2415,7 +2557,7 @@ async fn close_tab(
     }
     proxy_request(
         &api_for_headers(&state, &headers),
-        json!({ "id": "web:tab:close", "method": "tab.close", "params": { "tab_id": tab_id } }),
+        herdr_request("web:tab:close", "tab.close", json!({ "tab_id": tab_id })),
     )
 }
 
@@ -2430,7 +2572,11 @@ async fn close_pane(
     }
     proxy_request(
         &api_for_headers(&state, &headers),
-        json!({ "id": "web:pane:close", "method": "pane.close", "params": { "pane_id": pane_id } }),
+        herdr_request(
+            "web:pane:close",
+            "pane.close",
+            json!({ "pane_id": pane_id }),
+        ),
     )
 }
 
@@ -2455,7 +2601,8 @@ async fn events_ws(
 }
 
 async fn events_socket(state: WebState, api: ApiClient, mut socket: WebSocket) {
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<serde_json::Value>(EVENT_QUEUE_CAPACITY);
+    let mut snapshot_rx = snapshot_receiver_for(&state, &api);
     let subscribe_api = api.clone();
     std::thread::spawn(move || {
         // Detect the backend protocol so we only subscribe to layout.updated
@@ -2486,46 +2633,46 @@ async fn events_socket(state: WebState, api: ApiClient, mut socket: WebSocket) {
         if backend_protocol.unwrap_or(0) >= 16 {
             subscriptions.push(json!({"type":"layout.updated"}));
         }
-        let request = json!({
-            "id": "web:events",
-            "method": "events.subscribe",
-            "params": { "subscriptions": subscriptions }
-        });
+        let request = herdr_request(
+            "web:events",
+            "events.subscribe",
+            json!({ "subscriptions": subscriptions }),
+        );
         let Ok(mut stream) = subscribe_api.subscribe(request) else {
-            let _ = tx
-                .send(json!({ "type": "error", "message": "failed to subscribe to Herdr events" }));
+            let _ = tx.blocking_send(
+                json!({ "type": "error", "message": "failed to subscribe to Herdr events" }),
+            );
             return;
         };
-        let _ = tx.send(json!({ "type": "ready" }));
+        let _ = tx.blocking_send(json!({ "type": "ready" }));
         loop {
             match stream.next_value() {
                 Ok(Some(value)) => {
-                    if tx.send(json!({ "type": "event", "event": value })).is_err() {
+                    if tx
+                        .blocking_send(json!({ "type": "event", "event": value }))
+                        .is_err()
+                    {
                         break;
                     }
                 }
                 Ok(None) => break,
                 Err(err) => {
-                    let _ = tx.send(json!({ "type": "error", "message": err.to_string() }));
+                    let _ =
+                        tx.blocking_send(json!({ "type": "error", "message": err.to_string() }));
                     break;
                 }
             }
         }
     });
 
-    let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
     loop {
         tokio::select! {
             Some(value) = rx.recv() => {
                 if socket.send(Message::Text(value.to_string().into())).await.is_err() { break; }
             }
-            _ = interval.tick() => {
-                let agents = api.request_value(json!({ "id": "web:agent:list:poll", "method": "agent.list", "params": {} })).ok();
-                if let Some(agents) = &agents {
-                    sync_auto_no_sleep_from_agents(&state, agents);
-                }
-                let workspaces = api.request_value(json!({ "id": "web:workspace:list:poll", "method": "workspace.list", "params": {} })).ok();
-                let value = json!({ "type": "snapshot", "agents": agents, "workspaces": workspaces });
+            changed = snapshot_rx.changed() => {
+                if changed.is_err() { break; }
+                let value = snapshot_rx.borrow().clone();
                 if socket.send(Message::Text(value.to_string().into())).await.is_err() { break; }
             }
             message = socket.recv() => {
@@ -2583,25 +2730,27 @@ async fn terminal_socket(
     let terminal_id = query.terminal_id.clone();
     let cols = query.cols.unwrap_or(100).max(1);
     let rows = query.rows.unwrap_or(30).max(1);
-    let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-    let (in_tx, in_rx) = std::sync::mpsc::channel::<ClientMessage>();
+    let (out_tx, mut out_rx) =
+        tokio::sync::mpsc::channel::<Vec<u8>>(TERMINAL_OUTPUT_QUEUE_CAPACITY);
+    let (in_tx, mut in_rx) =
+        tokio::sync::mpsc::channel::<ClientMessage>(TERMINAL_INPUT_QUEUE_CAPACITY);
 
     std::thread::spawn(move || {
         let mut stream =
             match connect_terminal_attach_with_protocol_fallback(&path, &terminal_id, cols, rows) {
                 Ok(stream) => stream,
                 Err(error) => {
-                    let _ = out_tx.send(error.user_message().into_bytes());
+                    let _ = out_tx.blocking_send(error.user_message().into_bytes());
                     return;
                 }
             };
 
         let Ok(mut writer) = stream.try_clone() else {
-            let _ = out_tx.send(b"failed to clone herdr terminal socket\r\n".to_vec());
+            let _ = out_tx.blocking_send(b"failed to clone herdr terminal socket\r\n".to_vec());
             return;
         };
         std::thread::spawn(move || {
-            for message in in_rx {
+            while let Some(message) = in_rx.blocking_recv() {
                 if write_message(&mut writer, &message).is_err() {
                     break;
                 }
@@ -2611,12 +2760,12 @@ async fn terminal_socket(
         loop {
             match read_message::<_, ServerMessage>(&mut stream, MAX_GRAPHICS_FRAME_SIZE) {
                 Ok(ServerMessage::Terminal(frame)) => {
-                    if out_tx.send(frame.bytes).is_err() {
+                    if out_tx.blocking_send(frame.bytes).is_err() {
                         break;
                     }
                 }
                 Ok(ServerMessage::Graphics { bytes }) => {
-                    if out_tx.send(bytes).is_err() {
+                    if out_tx.blocking_send(bytes).is_err() {
                         break;
                     }
                 }
@@ -2636,11 +2785,11 @@ async fn terminal_socket(
             message = socket.recv() => {
                 match message {
                     Some(Ok(Message::Binary(data))) => {
-                        if in_tx.send(ClientMessage::Input { data: data.to_vec() }).is_err() { break; }
+                        if in_tx.send(ClientMessage::Input { data: data.to_vec() }).await.is_err() { break; }
                     }
                     Some(Ok(Message::Text(text))) => {
                         for message in terminal_text_messages(&text) {
-                            if in_tx.send(message).is_err() { break; }
+                            if in_tx.send(message).await.is_err() { break; }
                         }
                     }
                     Some(Ok(Message::Close(_))) | None => break,
@@ -2650,14 +2799,16 @@ async fn terminal_socket(
             }
         }
     }
-    let _ = in_tx.send(ClientMessage::Detach);
+    let _ = in_tx.send(ClientMessage::Detach).await;
     if let Some(tab_id) = query
         .temporary_tab_id
         .as_deref()
         .filter(|value| !value.is_empty())
     {
-        let _ = api.request_value(
-            json!({ "id": "web:temp-terminal:close", "method": "tab.close", "params": { "tab_id": tab_id } }),
+        let _ = api.request_method(
+            "web:temp-terminal:close",
+            "tab.close",
+            json!({ "tab_id": tab_id }),
         );
     }
 }
@@ -2892,6 +3043,7 @@ mod tests {
             no_sleep: Arc::new(Mutex::new(NoSleepState::default())),
             rebind_tx,
             workspace_orders: Arc::new(Mutex::new(HashMap::new())),
+            snapshot_pollers: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -3813,6 +3965,27 @@ mod tests {
         let decoded: ClientMessage = read_message(&mut Cursor::new(bytes), MAX_FRAME_SIZE).unwrap();
 
         assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn round_trips_protocol_16_terminal_target_messages() {
+        let messages = [
+            ClientMessage::ObserveTerminal {
+                target: "pane-1".to_string(),
+            },
+            ClientMessage::ControlTerminal {
+                target: "pane-1".to_string(),
+                takeover: true,
+            },
+        ];
+
+        for msg in messages {
+            let mut bytes = Vec::new();
+            write_message(&mut bytes, &msg).unwrap();
+            let decoded: ClientMessage =
+                read_message(&mut Cursor::new(bytes), MAX_FRAME_SIZE).unwrap();
+            assert_eq!(decoded, msg);
+        }
     }
 
     #[test]
