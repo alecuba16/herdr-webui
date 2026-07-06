@@ -621,6 +621,18 @@ mod tests {
     }
 
     #[test]
+    fn git_switch_ignores_other_worktrees_for_temporary_existing_branch_switches() {
+        assert_eq!(
+            git_ui_switch_args("feature", false, None).unwrap(),
+            vec!["switch", "--ignore-other-worktrees", "feature"]
+        );
+        assert_eq!(
+            git_ui_switch_args("feature", true, Some("main")).unwrap(),
+            vec!["switch", "-c", "feature", "main"]
+        );
+    }
+
+    #[test]
     fn parses_diff_paths() {
         assert_eq!(
             parse_diff_path("a/src/main.rs").as_deref(),
@@ -1504,6 +1516,47 @@ mod tests {
             .await;
             assert_eq!(reverse.status(), StatusCode::OK);
             assert!(!repo.path.join("patched.txt").exists());
+        });
+    }
+
+    #[test]
+    fn git_ui_switch_allows_temporary_branch_checked_out_in_another_worktree() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let repo = TempRepo::new();
+            repo.commit_initial();
+            let worktree_path = repo.path.parent().unwrap().join(format!(
+                "{}-feature-wt",
+                repo.path.file_name().unwrap().to_string_lossy()
+            ));
+            let worktree_path_text = worktree_path.to_string_lossy().to_string();
+            repo.git(&[
+                "worktree",
+                "add",
+                "-b",
+                "feature",
+                &worktree_path_text,
+                "main",
+            ]);
+            let cwd = repo.path.to_str().unwrap().to_string();
+            let state = test_state();
+
+            let switch = git_ui_switch(
+                State(state),
+                HeaderMap::new(),
+                ConnectInfo(remote()),
+                Json(GitUiSwitchRequest {
+                    cwd: cwd.clone(),
+                    branch: "feature".to_string(),
+                    create: None,
+                    base: None,
+                }),
+            )
+            .await;
+
+            assert_eq!(switch.status(), StatusCode::OK);
+            assert_eq!(repo.git(&["branch", "--show-current"]).trim(), "feature");
+            repo.git(&["switch", "main"]);
+            repo.git(&["worktree", "remove", "--force", &worktree_path_text]);
         });
     }
 
