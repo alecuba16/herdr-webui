@@ -178,13 +178,17 @@ function connectTerminal() {
   ws.binaryType = "arraybuffer";
   ws.onopen = () => {
     if (termWs === ws) {
+      terminalAttachPending = true;
       scrollTerminalToBottom(false);
       focusTerminal();
     }
   };
   ws.onmessage = (e) => {
     if (termWs !== ws || connectedTerminalId !== target) return;
-    setTerminalLoading(false);
+    // Don't hide loading overlay here for attach frames; the write callback
+    // in flushTerminalFrames will reveal the terminal once parsing completes.
+    // For normal frames, hide it immediately.
+    if (!terminalAttachPending) setTerminalLoading(false);
     enqueueTerminalFrame(typeof e.data === "string" ? e.data : new Uint8Array(e.data));
   };
   ws.onclose = () => {
@@ -249,8 +253,37 @@ function provideTerminalLinks(lineNumber, callback) {
 // RAF delay adds ~16ms of latency for no benefit. Above the threshold we
 // coalesce bursts to avoid overwhelming the renderer.
 const IMMEDIATE_WRITE_THRESHOLD = 8192;
+// Frames above this size are likely full-screen repaints from the backend
+// (the initial attach frame). xterm.js parses these in 12ms time-slices with
+// setTimeout(0) between slices, and each slice triggers a browser paint of
+// the partially-parsed screen. We keep the loading overlay visible until
+// the write callback fires so the user sees a single clean reveal.
+const LARGE_FRAME_THRESHOLD = 32768;
+// Set true on WS open, cleared after the first large frame is fully written.
+let terminalAttachPending = false;
 
 function enqueueTerminalFrame(data) {
+  // Attach frame path: the first frame after connecting is a full-screen
+  // repaint from the backend (50KB-425KB depending on terminal size).
+  // xterm.js parses it in 12ms time-slices with setTimeout(0) between
+  // slices, and each slice triggers a browser paint of the partially-parsed
+  // screen -> the "line-by-line refresh" effect.
+  // We queue it via RAF and use the write callback to reveal only when done.
+  const isAttachFrame = terminalAttachPending && frameSize(data) >= LARGE_FRAME_THRESHOLD;
+  if (isAttachFrame) {
+    // Don't clear terminalAttachPending here; flushTerminalFrames uses it
+    // to decide whether to suppress the loading overlay until write completes.
+    terminalWriteQueue.push({ terminalId: connectedTerminalId, data });
+    if (terminalWriteFlushPending) return;
+    terminalWriteFlushPending = true;
+    requestAnimationFrame(flushTerminalFrames);
+    return;
+  }
+  // Clear the attach flag for small initial frames (e.g. empty terminal)
+  if (terminalAttachPending) {
+    terminalAttachPending = false;
+    setTerminalLoading(false);
+  }
   // Fast path: when no flush is pending and the frame is small, write it
   // directly. This avoids the requestAnimationFrame round-trip (~16ms) for
   // the common case of a few characters or a cursor move.
@@ -262,9 +295,6 @@ function enqueueTerminalFrame(data) {
   ) {
     writeTerminalFrame(data);
     clearDismissedWorkingForTerminal(state.terminalId);
-    // Layout fitting is not needed on every data frame; only after size
-    // changes (resize, connect, layout.updated) or paste. Skipping it here
-    // avoids forced reflow on every output frame.
     return;
   }
   terminalWriteQueue.push({ terminalId: connectedTerminalId, data });
@@ -282,10 +312,28 @@ function flushTerminalFrames() {
   const frames = takeTerminalFrames(terminalId);
   if (!frames.length) return;
   const data = coalesceTerminalFrames(frames);
+  // Check if any frame in this batch was an attach frame
+  const isAttachBatch = terminalAttachPending && frameSize(data) >= LARGE_FRAME_THRESHOLD;
+  if (isAttachBatch) {
+    terminalAttachPending = false;
+    writeTerminalFrame(data, () => {
+      clearDismissedWorkingForTerminal(state.terminalId);
+      // Wait one RAF so xterm renders the complete screen before revealing
+      requestAnimationFrame(() => {
+        setTerminalLoading(false);
+        scrollTerminalToBottom(false);
+        focusTerminal();
+      });
+    });
+    return;
+  }
+  // Clear attach flag if it was set but the coalesced frame ended up small
+  if (terminalAttachPending) {
+    terminalAttachPending = false;
+    setTerminalLoading(false);
+  }
   writeTerminalFrame(data);
   clearDismissedWorkingForTerminal(state.terminalId);
-  // Layout fitting is handled by resize/connect/layout.updated paths,
-  // not on every data frame. See scheduleTerminalLayoutFit.
 }
 function flushTerminalFramesFor(terminalId) {
   if (!terminalWriteQueue.length || !term || !terminalId) return;
@@ -433,7 +481,15 @@ function setTerminalFollowPaused(paused) {
   button.setAttribute("aria-hidden", paused ? "false" : "true");
 }
 
-function writeTerminalFrame(data) {
+function writeTerminalFrame(data, onDone) {
+  // For large frames (the initial attach repaint), use the write callback
+  // to know when xterm.js finishes parsing. This avoids the caller
+  // revealing the terminal while xterm's WriteBuffer is still in its
+  // 12ms time-slice loop, which would show partial renders.
+  if (onDone) {
+    try { term.write(data, onDone); return; }
+    catch (e) { term.write(data); onDone(); return; }
+  }
   try {
     term.write(data);
   } catch (e) {

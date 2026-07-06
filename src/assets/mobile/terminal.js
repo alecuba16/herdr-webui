@@ -18,6 +18,13 @@
     // the next requestAnimationFrame. Small frames have negligible render
     // cost and the RAF delay adds ~16ms of latency for no benefit.
     const IMMEDIATE_WRITE_THRESHOLD = 8192;
+    // Frames above this size are full-screen repaints from the backend
+    // (the initial attach frame). xterm.js parses these in 12ms time-slices
+    // with setTimeout(0) between slices, causing visible line-by-line
+    // repaints. We suppress the terminal reveal until the write callback fires.
+    const LARGE_FRAME_THRESHOLD = 32768;
+    // Set true on WS open, cleared after the first large frame is fully written.
+    let terminalAttachPending = false;
 
     function terminalFontFamily() {
       try {
@@ -180,6 +187,11 @@ function terminalLinksEnabled() {
       );
       termWs = ws;
       ws.binaryType = "arraybuffer";
+      ws.onopen = () => {
+        if (termWs === ws) {
+          terminalAttachPending = true;
+        }
+      };
       ws.onmessage = (event) => {
         if (termWs !== ws) return;
         enqueueTerminalFrame(
@@ -208,6 +220,7 @@ function terminalLinksEnabled() {
       inputQueue = [];
       writeQueue = [];
       writeFlushPending = false;
+      terminalAttachPending = false;
       if (inputFlushTimer) {
         clearTimeout(inputFlushTimer);
         inputFlushTimer = null;
@@ -300,6 +313,19 @@ function terminalLinksEnabled() {
 
     function enqueueTerminalFrame(data) {
       const size = typeof data === "string" ? data.length : data.length;
+      // Attach frame path: the first large frame after connecting is a
+      // full-screen repaint. Queue it via RAF and use the write callback
+      // to reveal only when parsing completes, avoiding line-by-line repaint.
+      const isAttachFrame = terminalAttachPending && size >= LARGE_FRAME_THRESHOLD;
+      if (isAttachFrame) {
+        writeQueue.push(data);
+        if (writeFlushPending) return;
+        writeFlushPending = true;
+        requestAnimationFrame(flushTerminalFrames);
+        return;
+      }
+      // Clear the attach flag for small initial frames (e.g. empty terminal)
+      if (terminalAttachPending) terminalAttachPending = false;
       // Fast path: when no flush is pending and the frame is small, write it
       // directly. This avoids the requestAnimationFrame round-trip (~16ms).
       if (
@@ -323,6 +349,25 @@ function terminalLinksEnabled() {
       const frames = writeQueue;
       writeQueue = [];
       const data = coalesceTerminalFrames(frames);
+      const isAttachBatch = terminalAttachPending && (typeof data === "string" ? data.length : data.length) >= LARGE_FRAME_THRESHOLD;
+      if (isAttachBatch) {
+        terminalAttachPending = false;
+        // Use write callback to reveal only after parsing completes
+        const done = () => {
+          requestAnimationFrame(() => {
+            scrollToBottom();
+          });
+        };
+        try {
+          term.write(data, done);
+        } catch (_) {
+          term.write(data);
+          done();
+        }
+        return;
+      }
+      // Clear attach flag if it was set but the coalesced frame ended up small
+      if (terminalAttachPending) terminalAttachPending = false;
       writeTerminalFrame(data);
     }
 
