@@ -60,11 +60,35 @@ pub(super) struct GitUiApplyPatchRequest {
 }
 
 /// Reconstruct a git log graph line so it no longer contains the null-byte
-/// (`%x00`) separators emitted by `--format=%H%x00%an%x00%ar%x00%s`.
+/// (`%x00`) separators emitted by `--format=%H%x00%an%x00%ar%x00%D%x00%s`.
 ///
 /// Commit lines become a human-readable `--oneline`-style string
-/// (`<graph_prefix><short-hash> <message>`). Graph-only and empty lines are
-/// passed through unchanged, since they never contain null bytes.
+/// (`<graph_prefix><short-hash> (<refs>) <message>`). Graph-only and empty
+/// lines are passed through unchanged, since they never contain null bytes.
+fn split_log_refs(refs: &str) -> Vec<String> {
+    refs.split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn log_refs_field<'a>(parts: &'a [&'a str]) -> &'a str {
+    if parts.len() > 4 {
+        parts.get(3).copied().unwrap_or("")
+    } else {
+        ""
+    }
+}
+
+fn log_message_field<'a>(parts: &'a [&'a str]) -> &'a str {
+    if parts.len() > 4 {
+        parts.get(4).copied().unwrap_or("")
+    } else {
+        parts.get(3).copied().unwrap_or("")
+    }
+}
+
 fn reconstruct_log_line(line: &str) -> String {
     let raw = line.trim();
     if raw.is_empty() {
@@ -83,10 +107,16 @@ fn reconstruct_log_line(line: &str) -> String {
     }
     let hash = &raw[start..end];
     let parts: Vec<&str> = raw[end..].split('\0').collect();
-    let message = parts.get(3).map(|s| s.trim()).unwrap_or("");
+    let refs = log_refs_field(&parts).trim();
+    let message = log_message_field(&parts).trim();
     let graph_prefix = &raw[..start];
     let short = &hash[..8.min(hash.len())];
-    format!("{}{} {}", graph_prefix, short, message)
+    match (refs.is_empty(), message.is_empty()) {
+        (true, true) => format!("{}{}", graph_prefix, short),
+        (true, false) => format!("{}{} {}", graph_prefix, short, message),
+        (false, true) => format!("{}{} ({})", graph_prefix, short, refs),
+        (false, false) => format!("{}{} ({}) {}", graph_prefix, short, refs, message),
+    }
 }
 
 fn git_ui_log_blocking(
@@ -101,7 +131,7 @@ fn git_ui_log_blocking(
         "--date=relative",
         "--max-count",
         &max,
-        "--format=%H%x00%an%x00%ar%x00%s",
+        "--format=%H%x00%an%x00%ar%x00%D%x00%s",
     ];
     if all {
         args.push("--all");
@@ -131,10 +161,16 @@ fn git_ui_log_blocking(
                     let parts: Vec<&str> = raw[end..].split('\0').collect();
                     let author = parts.get(1).map(|s| s.trim()).unwrap_or("").to_string();
                     let date = parts.get(2).map(|s| s.trim()).unwrap_or("").to_string();
-                    let message = parts.get(3).map(|s| s.trim()).unwrap_or("").to_string();
-                    Some(
-                        json!({ "hash": hash, "author": author, "date": date, "message": message }),
-                    )
+                    let refs_text = log_refs_field(&parts).trim().to_string();
+                    let refs = split_log_refs(&refs_text);
+                    let message = log_message_field(&parts).trim().to_string();
+                    Some(json!({
+                        "hash": hash,
+                        "author": author,
+                        "date": date,
+                        "message": message,
+                        "refs": refs,
+                    }))
                 })
                 .collect::<Vec<_>>();
             let display_lines = lines
@@ -144,6 +180,49 @@ fn git_ui_log_blocking(
             Ok(Json(json!({ "commits": commits, "lines": display_lines })).into_response())
         }
         Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{reconstruct_log_line, split_log_refs};
+
+    #[test]
+    fn reconstruct_log_line_keeps_branch_and_tag_decorations() {
+        let line = concat!(
+            "* 1234567890abcdef",
+            "\0Alice",
+            "\0",
+            "2 days ago",
+            "\0HEAD -> main, origin/main, tag: v1.0",
+            "\0Add feature"
+        );
+
+        assert_eq!(
+            reconstruct_log_line(line),
+            "* 12345678 (HEAD -> main, origin/main, tag: v1.0) Add feature"
+        );
+    }
+
+    #[test]
+    fn reconstruct_log_line_supports_legacy_lines_without_refs() {
+        let line = concat!(
+            "| * 1234567890abcdef",
+            "\0Alice",
+            "\0",
+            "2 days ago",
+            "\0Add feature"
+        );
+
+        assert_eq!(reconstruct_log_line(line), "| * 12345678 Add feature");
+    }
+
+    #[test]
+    fn split_log_refs_trims_empty_entries() {
+        assert_eq!(
+            split_log_refs(" main, tag: v1.0, , origin/main "),
+            vec!["main", "tag: v1.0", "origin/main"]
+        );
     }
 }
 

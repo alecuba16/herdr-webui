@@ -1193,7 +1193,8 @@
     const data = await api(`/api/git-ui/log?cwd=${encodeURIComponent(view.cwd)}&all=${view.logAll ? "true" : "false"}`);
     const selected = view.selectedLogCommits || [];
     const compare = Actions.selectedLogToolbar(selected);
-    replaceContent(version, `<div class="git-ui-log-scope-head"><span class="git-ui-toolbar-title">History scope</span><button class="git-ui-btn ${!view.logAll ? "active" : ""}" onclick="HerdrGitUi.setLogAll(false)">Current branch</button><button class="git-ui-btn ${view.logAll ? "active" : ""}" onclick="HerdrGitUi.setLogAll(true)">All branches</button>${compare}</div><div class="git-ui-log">${(data.lines || []).map(renderLogLine).join("")}</div>`);
+    const commitsByHash = logCommitMap(data.commits || []);
+    replaceContent(version, `<div class="git-ui-log-scope-head"><span class="git-ui-toolbar-title">History scope</span><button class="git-ui-btn ${!view.logAll ? "active" : ""}" onclick="HerdrGitUi.setLogAll(false)">Current branch</button><button class="git-ui-btn ${view.logAll ? "active" : ""}" onclick="HerdrGitUi.setLogAll(true)">All branches</button>${compare}</div><div class="git-ui-log">${(data.lines || []).map((line) => renderLogLine(line, commitsByHash)).join("")}</div>`);
     if (view.pendingLogScrollHash) {
       const hash = view.pendingLogScrollHash;
       view.pendingLogScrollHash = "";
@@ -1201,16 +1202,73 @@
     }
   }
 
-  function renderLogLine(line) {
+  function logCommitMap(commits) {
+    const map = {};
+    commits.forEach((commit) => {
+      const hash = String((commit && commit.hash) || "");
+      if (!hash) return;
+      map[hash] = commit;
+      map[hash.slice(0, 8)] = commit;
+      map[hash.slice(0, 12)] = commit;
+    });
+    return map;
+  }
+
+  function renderLogLine(line, commitsByHash) {
     const parsed = parseLogGraphLine(line);
     const graph = parsed.graph;
     const hash = parsed.hash;
     const detail = splitLogDecorations(parsed.message);
-    const labels = detail.labels.map((label) => `<span>${esc(label)}</span>`).join("");
+    const commit = (commitsByHash && commitsByHash[hash]) || {};
+    const refs = Array.isArray(commit.refs) && commit.refs.length ? commit.refs : detail.labels;
+    const labels = refs.map(renderLogRefLabel).join("");
     const selected = hash && (((active() || {}).selectedLogCommits || []).includes(hash));
     const click = hash ? ` onclick="HerdrGitUi.selectLogCommit(event,'${arg(hash)}')"` : "";
     const cls = hash ? (selected ? " selected" : "") : " graph-only";
-    return `<div class="git-ui-log-row${cls}" data-log-hash="${esc(hash)}" title="${esc(detail.message)}"${click}>${renderGraph(graph, !!hash)}<span class="git-ui-log-msg">${hash ? `<strong>${esc(hash)}</strong> ` : ""}${esc(detail.message)}</span><span class="git-ui-log-labels">${labels}</span></div>`;
+    const title = logLineTitle(hash, detail.message, commit, refs);
+    return `<div class="git-ui-log-row${cls}" data-log-hash="${esc(hash)}" title="${esc(title)}"${click}>${renderGraph(graph, !!hash)}<span class="git-ui-log-msg">${hash ? `<strong>${esc(hash)}</strong> ` : ""}${esc(detail.message)}</span><span class="git-ui-log-labels">${labels}</span></div>`;
+  }
+
+  function renderLogRefLabel(ref) {
+    const text = cleanLogRefLabel(ref);
+    return `<span class="git-ui-log-label ${esc(logRefKind(ref))}" title="${esc(logRefTitle(ref))}">${esc(text)}</span>`;
+  }
+
+  function cleanLogRefLabel(ref) {
+    return String(ref || "").trim();
+  }
+
+  function logRefKind(ref) {
+    const text = String(ref || "").trim();
+    if (/^tag:\s*/i.test(text)) return "tag";
+    if (/^HEAD\b/.test(text)) return "head";
+    if (text.includes("/")) return "remote";
+    return "branch";
+  }
+
+  function logRefTitle(ref) {
+    const text = String(ref || "").trim();
+    if (!text) return "Git ref";
+    const tag = text.match(/^tag:\s*(.+)$/i);
+    if (tag) return `Tag: ${tag[1]}`;
+    const head = text.match(/^HEAD\s*->\s*(.+)$/);
+    if (head) return `Current branch: ${head[1]}`;
+    if (text === "HEAD") return "HEAD";
+    if (text.includes("/")) return `Remote branch: ${text}`;
+    return `Branch: ${text}`;
+  }
+
+  function logLineTitle(hash, message, commit, refs) {
+    if (!hash) return message || "";
+    const lines = [`Commit: ${commit.hash || hash}`];
+    if (message) lines.push(`Message: ${message}`);
+    if (commit.author) lines.push(`Author: ${commit.author}`);
+    if (commit.date) lines.push(`Date: ${commit.date}`);
+    if (refs && refs.length) {
+      lines.push("Refs:");
+      refs.forEach((ref) => lines.push(`- ${logRefTitle(ref)}`));
+    }
+    return lines.join("\n");
   }
 
   function scrollToLogCommit(hash) {
