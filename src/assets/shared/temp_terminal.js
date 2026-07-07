@@ -35,6 +35,8 @@
     var resizeTimer = null;
     var linkProvider = null;
     var confirmVisible = false;
+    var scrollBound = false;
+    var touchLastY = null;
 
     function open() {
       if (isOpen) return;
@@ -167,6 +169,26 @@
         });
         term.open(container);
         term.onData(function (data) { sendInput(data); });
+        if (term.attachCustomKeyEventHandler) {
+          term.attachCustomKeyEventHandler(function (event) {
+            if (
+              event.type === "keydown" &&
+              !event.altKey &&
+              !event.ctrlKey &&
+              !event.metaKey &&
+              (event.key === "PageUp" || event.key === "PageDown")
+            ) {
+              scrollLines(
+                event.key === "PageUp"
+                  ? -Math.max(1, ((term && term.rows) || 24) - 1)
+                  : Math.max(1, ((term && term.rows) || 24) - 1)
+              );
+              return false;
+            }
+            return true;
+          });
+        }
+        bindScrollHandlers(container);
         try { term.focus(); } catch (e) {}
         refreshAfterFontLoad();
       }
@@ -228,6 +250,82 @@
         if (!term || !isOpen) return;
         fitTerminalToContainer(true);
       }).catch(function () {});
+    }
+
+    function bindScrollHandlers(container) {
+      if (scrollBound || !container) return;
+      container.addEventListener("wheel", handleWheel, { passive: false, capture: true });
+      container.addEventListener("touchstart", handleTouchStart, { passive: true, capture: true });
+      container.addEventListener("touchmove", handleTouchMove, { passive: false, capture: true });
+      container.addEventListener("touchend", handleTouchEnd, { passive: true, capture: true });
+      container.addEventListener("touchcancel", handleTouchEnd, { passive: true, capture: true });
+      scrollBound = true;
+    }
+
+    function sendBackendScroll(lines) {
+      if (!termWs || termWs.readyState !== 1 || !Number.isFinite(lines) || lines === 0) return false;
+      try {
+        termWs.send(JSON.stringify({
+          type: "scroll",
+          direction: lines < 0 ? "up" : "down",
+          lines: Math.max(1, Math.abs(Math.trunc(lines))),
+        }));
+        return true;
+      } catch (e) {
+        return false;
+      }
+    }
+
+    function terminalUsesNormalBuffer() {
+      return globalThis.HerdrTerminalScroll && globalThis.HerdrTerminalScroll.usesNormalBuffer(term);
+    }
+
+    function scrollLocal(direction, lines) {
+      return !!(
+        globalThis.HerdrTerminalScroll &&
+        terminalUsesNormalBuffer() &&
+        globalThis.HerdrTerminalScroll.scrollLocal(term, direction, lines)
+      );
+    }
+
+    function scrollLines(lines) {
+      if (!term || !Number.isFinite(lines) || lines === 0) return false;
+      var signedLines = lines > 0 ? Math.max(1, Math.ceil(lines)) : Math.min(-1, Math.floor(lines));
+      if (sendBackendScroll(signedLines)) return true;
+      return scrollLocal(signedLines < 0 ? "up" : "down", Math.max(1, Math.abs(signedLines)));
+    }
+
+    function handleWheel(event) {
+      if (!event || event.ctrlKey || event.metaKey || !event.deltaY) return;
+      var helper = globalThis.HerdrTerminalScroll;
+      if (!helper) return;
+      var lines = helper.wheelLines(term, event, (term && term.rows) || 24);
+      if (!scrollLines(event.deltaY < 0 ? -lines : lines)) return;
+      event.preventDefault();
+      if (event.stopImmediatePropagation) event.stopImmediatePropagation();
+      else event.stopPropagation();
+    }
+
+    function handleTouchStart(event) {
+      var touch = event && event.touches && event.touches.length === 1 ? event.touches[0] : null;
+      touchLastY = touch ? touch.clientY : null;
+    }
+
+    function handleTouchMove(event) {
+      var touch = event && event.touches && event.touches.length === 1 ? event.touches[0] : null;
+      if (!touch || touchLastY === null) return;
+      var deltaY = touchLastY - touch.clientY;
+      touchLastY = touch.clientY;
+      if (Math.abs(deltaY) < 4 || !globalThis.HerdrTerminalScroll) return;
+      var lines = globalThis.HerdrTerminalScroll.touchLines(term, deltaY);
+      if (!scrollLines(deltaY < 0 ? -lines : lines)) return;
+      event.preventDefault();
+      if (event.stopImmediatePropagation) event.stopImmediatePropagation();
+      else event.stopPropagation();
+    }
+
+    function handleTouchEnd() {
+      touchLastY = null;
     }
 
     function disconnectWs() {

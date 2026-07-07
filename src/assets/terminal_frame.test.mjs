@@ -142,6 +142,176 @@ describe("terminal viewport sizing", () => {
   });
 });
 
+describe("temporary terminal scrolling", () => {
+  async function createTempTerminalContext() {
+    const handlers = {};
+    const elements = new Map();
+    const sent = [];
+    const localScrolls = [];
+    const ctx = {
+      console,
+      TextEncoder,
+      Uint8Array,
+      requestAnimationFrame(fn) { fn(); },
+      setTimeout(fn) { fn(); return 1; },
+      clearTimeout() {},
+      getComputedStyle: () => ({
+        paddingLeft: "0px",
+        paddingRight: "0px",
+        paddingTop: "0px",
+        paddingBottom: "0px",
+      }),
+      document: {
+        fonts: null,
+        createElement() {
+          return element();
+        },
+      },
+      globalThis: null,
+      window: null,
+      lastTerminal: null,
+      keyHandler: null,
+      socket: null,
+    };
+    function element(id = "") {
+      return {
+        id,
+        clientWidth: 720,
+        clientHeight: 360,
+        innerHTML: "",
+        style: {},
+        addEventListener(type, handler) {
+          handlers[type] = handler;
+        },
+        appendChild() {},
+        querySelector() {
+          return null;
+        },
+        getBoundingClientRect() {
+          return { width: this.clientWidth, height: this.clientHeight };
+        },
+      };
+    }
+    function el(id) {
+      if (!elements.has(id)) elements.set(id, element(id));
+      return elements.get(id);
+    }
+    ctx.Terminal = class {
+      constructor() {
+        this.rows = 24;
+        this.cols = 80;
+        this.buffer = { active: { type: "normal", baseY: 100, viewportY: 100 } };
+        this._core = { _renderService: { dimensions: { css: { cell: { width: 9, height: 18 } } } } };
+        ctx.lastTerminal = this;
+      }
+      open() {}
+      onData() {}
+      focus() {}
+      resize(cols, rows) {
+        this.cols = cols;
+        this.rows = rows;
+      }
+      attachCustomKeyEventHandler(handler) {
+        ctx.keyHandler = handler;
+      }
+      scrollLines(lines) {
+        localScrolls.push(lines);
+      }
+      write() {}
+      dispose() {}
+    };
+    ctx.WebSocket = class {
+      constructor(url) {
+        this.url = url;
+        this.readyState = 1;
+        this.sent = sent;
+        ctx.socket = this;
+      }
+      send(data) {
+        sent.push(data);
+      }
+      close() {}
+    };
+    ctx.globalThis = ctx;
+    ctx.window = ctx;
+    const vmCtx = vm.createContext(ctx);
+    vm.runInContext(
+      readFileSync(new URL("./shared/terminal_scroll.js", import.meta.url), "utf8") +
+        "\n" +
+        readFileSync(new URL("./shared/temp_terminal.js", import.meta.url), "utf8"),
+      vmCtx,
+    );
+    const tempTerminal = ctx.HerdrTempTerminal.create({
+      el,
+      state: { ws: "w1" },
+      wsUrl: (path) => path,
+      api: async (url) => {
+        if (url === "/api/tabs") return { result: { tab: { tab_id: "w1:t1" } } };
+        return { result: { panes: [{ tab_id: "w1:t1", pane_id: "w1:p1", terminal_id: "term1" }] } };
+      },
+      modalId: "modal",
+      containerId: "terminal",
+    });
+    tempTerminal.open();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    return { ctx, handlers, sent, localScrolls };
+  }
+
+  it("sends backend scroll messages for wheel events", async () => {
+    const { handlers, sent } = await createTempTerminalContext();
+    let prevented = false;
+
+    handlers.wheel({
+      deltaY: 40,
+      deltaMode: 0,
+      preventDefault() { prevented = true; },
+      stopImmediatePropagation() {},
+    });
+
+    assert.equal(prevented, true);
+    assert.deepEqual(JSON.parse(sent.at(-1)), {
+      type: "scroll",
+      direction: "down",
+      lines: 2,
+    });
+  });
+
+  it("maps PageUp to backend scroll", async () => {
+    const { ctx, sent } = await createTempTerminalContext();
+
+    const handled = ctx.keyHandler({
+      type: "keydown",
+      key: "PageUp",
+      altKey: false,
+      ctrlKey: false,
+      metaKey: false,
+    });
+
+    assert.equal(handled, false);
+    assert.deepEqual(JSON.parse(sent.at(-1)), {
+      type: "scroll",
+      direction: "up",
+      lines: Math.max(1, ctx.lastTerminal.rows - 1),
+    });
+  });
+
+  it("falls back to local xterm scroll when backend is unavailable", async () => {
+    const { ctx, handlers, localScrolls } = await createTempTerminalContext();
+    ctx.socket.readyState = 0;
+
+    handlers.wheel({
+      deltaY: -40,
+      deltaMode: 0,
+      preventDefault() {},
+      stopImmediatePropagation() {},
+    });
+
+    assert.equal(localScrolls.at(-1), -2);
+  });
+});
+
 describe("mobile terminal frame coalescing", () => {
   it("skip scroll callback when following (not paused)", () => {
     let callbackCalled = false;
