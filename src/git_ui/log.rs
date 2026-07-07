@@ -183,49 +183,6 @@ fn git_ui_log_blocking(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{reconstruct_log_line, split_log_refs};
-
-    #[test]
-    fn reconstruct_log_line_keeps_branch_and_tag_decorations() {
-        let line = concat!(
-            "* 1234567890abcdef",
-            "\0Alice",
-            "\0",
-            "2 days ago",
-            "\0HEAD -> main, origin/main, tag: v1.0",
-            "\0Add feature"
-        );
-
-        assert_eq!(
-            reconstruct_log_line(line),
-            "* 12345678 (HEAD -> main, origin/main, tag: v1.0) Add feature"
-        );
-    }
-
-    #[test]
-    fn reconstruct_log_line_supports_legacy_lines_without_refs() {
-        let line = concat!(
-            "| * 1234567890abcdef",
-            "\0Alice",
-            "\0",
-            "2 days ago",
-            "\0Add feature"
-        );
-
-        assert_eq!(reconstruct_log_line(line), "| * 12345678 Add feature");
-    }
-
-    #[test]
-    fn split_log_refs_trims_empty_entries() {
-        assert_eq!(
-            split_log_refs(" main, tag: v1.0, , origin/main "),
-            vec!["main", "tag: v1.0", "origin/main"]
-        );
-    }
-}
-
 pub(super) async fn git_ui_log(
     State(state): State<WebState>,
     headers: HeaderMap,
@@ -577,5 +534,48 @@ pub(super) async fn git_ui_apply_patch(
         Ok(Ok(response)) => response,
         Ok(Err((status, msg))) => git_json_error(status, msg),
         Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{reconstruct_log_line, split_log_refs};
+
+    #[test]
+    fn reconstruct_log_line_keeps_branch_and_tag_decorations() {
+        let line = concat!(
+            "* 1234567890abcdef",
+            "\0Alice",
+            "\0",
+            "2 days ago",
+            "\0HEAD -> main, origin/main, tag: v1.0",
+            "\0Add feature"
+        );
+
+        assert_eq!(
+            reconstruct_log_line(line),
+            "* 12345678 (HEAD -> main, origin/main, tag: v1.0) Add feature"
+        );
+    }
+
+    #[test]
+    fn reconstruct_log_line_supports_legacy_lines_without_refs() {
+        let line = concat!(
+            "| * 1234567890abcdef",
+            "\0Alice",
+            "\0",
+            "2 days ago",
+            "\0Add feature"
+        );
+
+        assert_eq!(reconstruct_log_line(line), "| * 12345678 Add feature");
+    }
+
+    #[test]
+    fn split_log_refs_trims_empty_entries() {
+        assert_eq!(
+            split_log_refs(" main, tag: v1.0, , origin/main "),
+            vec!["main", "tag: v1.0", "origin/main"]
+        );
     }
 }
