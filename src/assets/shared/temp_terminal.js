@@ -158,11 +158,6 @@
     function connectTerminalWs(terminalId) {
       var container = el(containerId);
       if (!container) return;
-      var cols = 80, rows = 24;
-      if (container.clientWidth && container.clientHeight) {
-        cols = Math.max(40, Math.floor(container.clientWidth / 9));
-        rows = Math.max(10, Math.floor(container.clientHeight / 18));
-      }
       if (!term) {
         term = new Terminal({
           convertEol: false,
@@ -173,8 +168,10 @@
         term.open(container);
         term.onData(function (data) { sendInput(data); });
         try { term.focus(); } catch (e) {}
+        refreshAfterFontLoad();
       }
-      try { term.resize(cols, rows); } catch (e) {}
+      var size = fitTerminalToContainer(false);
+      var cols = size.cols, rows = size.rows;
       var url = wsUrl(
         "/ws/terminal?terminal_id=" + encodeURIComponent(terminalId) +
         "&cols=" + cols + "&rows=" + rows +
@@ -184,7 +181,10 @@
       termWs = ws;
       ws.binaryType = "arraybuffer";
       ws.onopen = function () {
-        if (termWs === ws && term) try { term.focus(); } catch (e) {}
+        if (termWs === ws && term) {
+          fitTerminalToContainer(true);
+          try { term.focus(); } catch (e) {}
+        }
       };
       ws.onmessage = function (event) {
         if (termWs !== ws) return;
@@ -197,6 +197,37 @@
           close();
         }
       };
+    }
+
+    function terminalFitSize() {
+      var container = el(containerId);
+      if (!container || !globalThis.HerdrTerminalScroll) return { cols: 80, rows: 24 };
+      return globalThis.HerdrTerminalScroll.fitSize(container, term, { minCols: 1, minRows: 1 });
+    }
+
+    function fitTerminalToContainer(sendResize) {
+      var size = terminalFitSize();
+      if (term) {
+        try { term.resize(size.cols, size.rows); } catch (e) {}
+      }
+      if (sendResize && termWs && termWs.readyState === 1) {
+        try {
+          termWs.send(JSON.stringify({ type: "resize", cols: size.cols, rows: size.rows }));
+        } catch (e) {}
+      }
+      return size;
+    }
+
+    function refreshAfterFontLoad() {
+      var fonts = globalThis.document && globalThis.document.fonts;
+      if (!fonts || !fonts.load) return;
+      Promise.all([
+        fonts.load('14px "Herdr JetBrainsMono Nerd Font Mono"'),
+        fonts.ready,
+      ]).then(function () {
+        if (!term || !isOpen) return;
+        fitTerminalToContainer(true);
+      }).catch(function () {});
     }
 
     function disconnectWs() {
@@ -301,16 +332,7 @@
       resizeTimer = setTimeout(function () {
         resizeTimer = null;
         if (!isOpen || !term) return;
-        var container = el(containerId);
-        if (!container) return;
-        var cols = Math.max(40, Math.floor(container.clientWidth / 9));
-        var rows = Math.max(10, Math.floor(container.clientHeight / 18));
-        try { term.resize(cols, rows); } catch (e) {}
-        if (termWs && termWs.readyState === 1) {
-          try {
-            termWs.send(JSON.stringify({ type: "resize", cols: cols, rows: rows }));
-          } catch (e) {}
-        }
+        fitTerminalToContainer(true);
       }, 100);
     }
 

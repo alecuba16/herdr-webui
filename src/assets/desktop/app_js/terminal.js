@@ -59,25 +59,7 @@ function connectTerminal() {
     return;
   }
   fitTerminalShell();
-  const cols = state.termCols || 100,
-    rows = state.termRows || 30,
-    size = `${cols}x${rows}`;
   const target = `${state.session}|${state.ws}|${state.tab}|${state.pane}|${state.terminalId}`;
-  if (
-    termWs &&
-    termWs.readyState === 1 &&
-    connectedTerminalId === target &&
-    connectedSize === size
-  ) {
-    setTerminalLoading(false);
-    fitTerminalSurface();
-    focusTerminal();
-    return;
-  }
-  resetTerminalConnection(true);
-  setTerminalLoading(true);
-  connectedTerminalId = target;
-  connectedSize = size;
   if (!term) {
     term = new Terminal({
       convertEol: false,
@@ -124,6 +106,29 @@ function connectTerminal() {
         return true;
       });
   }
+  const fit = browserTerminalSize();
+  if (fit && (options.fitToBrowser || shouldFitFocusedWebTerminal())) {
+    state.termCols = fit.cols;
+    state.termRows = fit.rows;
+  }
+  const cols = state.termCols || 100,
+    rows = state.termRows || 30,
+    size = `${cols}x${rows}`;
+  if (
+    termWs &&
+    termWs.readyState === 1 &&
+    connectedTerminalId === target &&
+    connectedSize === size
+  ) {
+    setTerminalLoading(false);
+    fitTerminalSurface();
+    focusTerminal();
+    return;
+  }
+  resetTerminalConnection(true);
+  setTerminalLoading(true);
+  connectedTerminalId = target;
+  connectedSize = size;
   if (!termScrollBound) {
     el("terminalShell").addEventListener(
       "paste",
@@ -212,6 +217,17 @@ function refreshTerminalAfterFontLoad(terminalKey) {
     .then(() => {
       if (!term || connectedTerminalId !== terminalKey) return;
       applyTerminalFont();
+      const fit = browserTerminalSize();
+      if (
+        fit &&
+        (options.fitToBrowser || shouldFitFocusedWebTerminal()) &&
+        (fit.cols !== state.termCols || fit.rows !== state.termRows)
+      ) {
+        state.termCols = fit.cols;
+        state.termRows = fit.rows;
+        connectTerminal();
+        return;
+      }
       fitTerminalSurface();
     })
     .catch(() => {});
@@ -366,14 +382,7 @@ function coalesceTerminalFrames(frames) {
 }
 
 function terminalCellHeight() {
-  const dims =
-    term &&
-    term._core &&
-    term._core._renderService &&
-    term._core._renderService.dimensions &&
-    term._core._renderService.dimensions.css &&
-    term._core._renderService.dimensions.css.cell;
-  return Math.max(1, (dims && dims.height) || 17);
+  return HerdrTerminalScroll.cellSize(term).height;
 }
 function terminalUsesNormalBuffer() {
   return !term || !term.buffer || !term.buffer.active || term.buffer.active.type !== "alternate";
@@ -663,18 +672,9 @@ function fitTerminalSurface() {
     shell.scrollLeft = 0;
   }
   const dims =
-    term &&
-    term._core &&
-    term._core._renderService &&
-    term._core._renderService.dimensions &&
-    term._core._renderService.dimensions.css &&
-    term._core._renderService.dimensions.css.cell;
-  const cellWidth =
-    (dims && dims.width) ||
-    9;
-  const rowHeight =
-    (dims && dims.height) ||
-    17;
+    HerdrTerminalScroll.cellSize(term);
+  const cellWidth = dims.width;
+  const rowHeight = dims.height;
   const width = Math.ceil(cellWidth * cols);
   const height = Math.ceil(rowHeight * rows);
   if (options.overflow) {
@@ -716,21 +716,8 @@ function browserTerminalSize() {
   if (!shell) return null;
   const shellSize = fitTerminalShell();
   if (!shellSize) return null;
-  const width = Math.max(80, shellSize.width - 16);
-  const height = Math.max(24, shellSize.height - 16);
-  const dims =
-    term &&
-    term._core &&
-    term._core._renderService &&
-    term._core._renderService.dimensions &&
-    term._core._renderService.dimensions.css &&
-    term._core._renderService.dimensions.css.cell;
-  const cellWidth = (dims && dims.width) || 9;
-  const cellHeight = (dims && dims.height) || 17;
-  return {
-    cols: Math.max(80, Math.floor(width / cellWidth)),
-    rows: Math.max(24, Math.floor(height / cellHeight)),
-  };
+  const fit = HerdrTerminalScroll.fitSize(shell, term, { minCols: 1, minRows: 1 });
+  return { cols: fit.cols, rows: fit.rows };
 }
 function shouldFitFocusedWebTerminal() {
   return !document.hidden && (!document.hasFocus || document.hasFocus());

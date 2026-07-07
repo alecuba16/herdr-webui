@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import vm from "node:vm";
+import { readFileSync } from "node:fs";
 
 // Minimal mock for the desktop terminal frame pipeline. We only test the
 // enqueue / coalesce / flush logic, not xterm.js itself.
@@ -78,6 +79,66 @@ describe("desktop terminal frame coalescing", () => {
     assert.equal(writes.length, 1, "10 frames should produce 1 write");
     assert.ok(coalesced.includes("line 0"));
     assert.ok(coalesced.includes("line 9"));
+  });
+});
+
+describe("terminal viewport sizing", () => {
+  function loadScrollHelpers(style = {}) {
+    const ctx = {
+      globalThis: null,
+      window: null,
+      getComputedStyle: () => ({
+        paddingLeft: "8px",
+        paddingRight: "8px",
+        paddingTop: "8px",
+        paddingBottom: "8px",
+        ...style,
+      }),
+    };
+    ctx.globalThis = ctx;
+    ctx.window = ctx;
+    vm.runInContext(
+      readFileSync(new URL("./shared/terminal_scroll.js", import.meta.url), "utf8"),
+      vm.createContext(ctx),
+    );
+    return ctx.HerdrTerminalScroll;
+  }
+
+  it("subtracts container padding before calculating rows", () => {
+    const helper = loadScrollHelpers();
+    const shell = { clientWidth: 900, clientHeight: 520 };
+    const term = {
+      _core: {
+        _renderService: {
+          dimensions: { css: { cell: { width: 9, height: 17 } } },
+        },
+      },
+    };
+
+    const fit = helper.fitSize(shell, term, { minCols: 1, minRows: 1 });
+
+    assert.equal(fit.contentWidth, 884);
+    assert.equal(fit.contentHeight, 504);
+    assert.equal(fit.cols, 98);
+    assert.equal(fit.rows, 29);
+    assert.ok(fit.height <= fit.contentHeight, "surface rows must fit visible content height");
+  });
+
+  it("uses actual xterm cell metrics instead of hard-coded row height", () => {
+    const helper = loadScrollHelpers({ paddingTop: "0px", paddingBottom: "0px" });
+    const container = { clientWidth: 720, clientHeight: 380 };
+    const term = {
+      _core: {
+        _renderService: {
+          dimensions: { css: { cell: { width: 10, height: 19 } } },
+        },
+      },
+    };
+
+    const fit = helper.fitSize(container, term, { minCols: 1, minRows: 1 });
+
+    assert.equal(fit.rows, 20);
+    assert.notEqual(fit.rows, Math.floor(container.clientHeight / 18));
   });
 });
 
