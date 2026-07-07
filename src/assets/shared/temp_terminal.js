@@ -163,6 +163,9 @@
       if (!term) {
         term = new Terminal({
           convertEol: false,
+          cursorBlink: false,
+          cursorInactiveStyle: "block",
+          cursorStyle: "block",
           fontFamily: fontFamilyFn(),
           scrollback: 5000,
           theme: themeFn(),

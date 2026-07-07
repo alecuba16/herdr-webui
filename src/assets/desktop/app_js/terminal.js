@@ -63,6 +63,9 @@ function connectTerminal() {
   if (!term) {
     term = new Terminal({
       convertEol: false,
+      cursorBlink: false,
+      cursorInactiveStyle: "block",
+      cursorStyle: "block",
       theme: terminalTheme(),
       fontFamily: terminalFontFamily(),
       scrollback: 10000,
@@ -272,9 +275,11 @@ const IMMEDIATE_WRITE_THRESHOLD = 8192;
 // Frames above this size are likely full-screen repaints from the backend
 // (the initial attach frame). xterm.js parses these in 12ms time-slices with
 // setTimeout(0) between slices, and each slice triggers a browser paint of
-// the partially-parsed screen. We keep the loading overlay visible until
-// the write callback fires so the user sees a single clean reveal.
+// the partially-parsed screen. Keep the loading overlay for only a short time:
+// waiting for the full write callback on a large scrollback can hide input for
+// several seconds when switching panels.
 const LARGE_FRAME_THRESHOLD = 32768;
+const ATTACH_REVEAL_TIMEOUT_MS = 250;
 // Set true on WS open, cleared after the first large frame is fully written.
 let terminalAttachPending = false;
 
@@ -332,15 +337,24 @@ function flushTerminalFrames() {
   const isAttachBatch = terminalAttachPending && frameSize(data) >= LARGE_FRAME_THRESHOLD;
   if (isAttachBatch) {
     terminalAttachPending = false;
-    writeTerminalFrame(data, () => {
+    let revealed = false;
+    let revealTimer = setTimeout(revealAttachFrame, ATTACH_REVEAL_TIMEOUT_MS);
+    function revealAttachFrame() {
+      if (revealed) return;
+      revealed = true;
+      if (revealTimer) {
+        clearTimeout(revealTimer);
+        revealTimer = null;
+      }
       clearDismissedWorkingForTerminal(state.terminalId);
-      // Wait one RAF so xterm renders the complete screen before revealing
+      // Wait one RAF so xterm has a chance to paint before revealing.
       requestAnimationFrame(() => {
         setTerminalLoading(false);
         scrollTerminalToBottom(false);
         focusTerminal();
       });
-    });
+    }
+    writeTerminalFrame(data, revealAttachFrame);
     return;
   }
   // Clear attach flag if it was set but the coalesced frame ended up small

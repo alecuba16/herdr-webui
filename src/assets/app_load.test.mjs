@@ -186,6 +186,10 @@ describe("app bundle load", () => {
     ok(!source.includes('terminal.querySelector(".xterm-rows")'));
     ok(!source.includes('shell.style.width ='));
     match(desktopTerminalSource, /fontFamily: terminalFontFamily\(\)/);
+    match(desktopTerminalSource, /cursorBlink: false/);
+    match(desktopTerminalSource, /cursorInactiveStyle: "block"/);
+    match(desktopTerminalSource, /cursorStyle: "block"/);
+    match(desktopTerminalSource, /ATTACH_REVEAL_TIMEOUT_MS = 250/);
     match(desktopTerminalSource, /refreshTerminalAfterFontLoad\(target\)/);
     match(source, /theme: terminalTheme\(\)/);
     match(source, /term\.options\.theme = terminalTheme\(\)/);

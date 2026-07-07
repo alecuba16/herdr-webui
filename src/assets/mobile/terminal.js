@@ -141,6 +141,9 @@ function terminalLinksEnabled() {
       if (!term) {
         term = new Terminal({
           convertEol: false,
+          cursorBlink: false,
+          cursorInactiveStyle: "block",
+          cursorStyle: "block",
           fontFamily: terminalFontFamily(),
           scrollback: 10000,
         });
