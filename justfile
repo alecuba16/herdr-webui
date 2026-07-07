@@ -9,7 +9,7 @@ lint: fmt
     cargo clippy --target-dir {{target_dir}} --all-targets -- -D warnings
 
 test-js:
-    node --test src/assets/app_core.test.mjs src/assets/app_load.test.mjs src/assets/app_boot.test.mjs src/assets/mobile_load.test.mjs
+    node --test src/assets/app_core.test.mjs src/assets/app_load.test.mjs src/assets/app_boot.test.mjs src/assets/mobile_load.test.mjs src/assets/terminal_frame.test.mjs
 
 test: test-js
     cargo test --target-dir {{target_dir}}

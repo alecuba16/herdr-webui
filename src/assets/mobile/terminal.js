@@ -103,6 +103,11 @@ function terminalLinksEnabled() {
         .then(() => {
           if (!term || connectedTerminalKey !== terminalKey) return;
           applyFontFamily();
+          const nextSize = size();
+          const terminalSizeKey = `${nextSize.cols}x${nextSize.rows}`;
+          if (terminalSizeKey !== connectedTerminalSize) {
+            connect();
+          }
         })
         .catch(() => {});
     }
@@ -110,10 +115,9 @@ function terminalLinksEnabled() {
     function size() {
       const shell = el("terminalShell");
       if (!shell) return { cols: 80, rows: 24 };
-      return {
-        cols: Math.max(40, Math.floor(shell.clientWidth / 9)),
-        rows: Math.max(10, Math.floor(shell.clientHeight / 18)),
-      };
+      if (globalThis.HerdrTerminalScroll)
+        return globalThis.HerdrTerminalScroll.fitSize(shell, term, { minCols: 1, minRows: 1 });
+      return { cols: 80, rows: 24 };
     }
 
     function connect() {

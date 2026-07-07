@@ -13,15 +13,66 @@
   }
 
   function rowHeight(term) {
-    return (
+    return cellSize(term).height;
+  }
+
+  function cellSize(term) {
+    const cell =
       term &&
       term._core &&
       term._core._renderService &&
       term._core._renderService.dimensions &&
       term._core._renderService.dimensions.css &&
-      term._core._renderService.dimensions.css.cell &&
-      term._core._renderService.dimensions.css.cell.height
-    ) || 17;
+      term._core._renderService.dimensions.css.cell;
+    return {
+      width: Math.max(1, (cell && cell.width) || 9),
+      height: Math.max(1, (cell && cell.height) || 17),
+    };
+  }
+
+  function cssPixels(value) {
+    const parsed = Number.parseFloat(value || "0");
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  function contentBoxSize(element) {
+    if (!element) return { width: 0, height: 0 };
+    const rect =
+      typeof element.getBoundingClientRect === "function"
+        ? element.getBoundingClientRect()
+        : { width: 0, height: 0 };
+    let width = Math.max(0, Number(element.clientWidth) || Number(rect.width) || 0);
+    let height = Math.max(0, Number(element.clientHeight) || Number(rect.height) || 0);
+    if (typeof getComputedStyle === "function") {
+      const style = getComputedStyle(element);
+      width -= cssPixels(style.paddingLeft) + cssPixels(style.paddingRight);
+      height -= cssPixels(style.paddingTop) + cssPixels(style.paddingBottom);
+    }
+    return {
+      width: Math.max(0, Math.floor(width)),
+      height: Math.max(0, Math.floor(height)),
+    };
+  }
+
+  function fitSize(element, term, options) {
+    const minCols = Math.max(1, (options && options.minCols) || 1);
+    const minRows = Math.max(1, (options && options.minRows) || 1);
+    const content = contentBoxSize(element);
+    const cell = cellSize(term);
+    const fitCols = Math.max(1, Math.floor(content.width / cell.width));
+    const fitRows = Math.max(1, Math.floor(content.height / cell.height));
+    const cols = Math.max(minCols, fitCols);
+    const rows = Math.max(minRows, fitRows);
+    return {
+      cols,
+      rows,
+      cellWidth: cell.width,
+      cellHeight: cell.height,
+      contentWidth: content.width,
+      contentHeight: content.height,
+      width: Math.ceil(cell.width * cols),
+      height: Math.ceil(cell.height * rows),
+    };
   }
 
   function wheelLines(term, event, pageRows) {
@@ -74,6 +125,9 @@
   const terminalScroll = {
     usesNormalBuffer,
     rowHeight,
+    cellSize,
+    contentBoxSize,
+    fitSize,
     wheelLines,
     touchLines,
     scrollLocal,
