@@ -366,8 +366,10 @@ describe("attach frame render suppression", () => {
   const IMMEDIATE_WRITE_THRESHOLD = 8192;
   const LARGE_FRAME_THRESHOLD = 32768;
 
-  it("large attach frame uses write callback for deferred reveal", () => {
+  it("large attach frame can reveal via timeout before write callback", () => {
     let writeCallback = null;
+    let timeoutCallback = null;
+    let revealed = false;
     const writes = [];
     const term = {
       write(data, cb) {
@@ -389,15 +391,18 @@ describe("attach frame render suppression", () => {
     assert.ok(isAttachBatch, "should be detected as attach batch in flush");
 
     terminalAttachPending = false;
-    // Use write callback (not fire it yet)
-    const done = () => {};
+    const done = () => { if (!revealed) revealed = true; };
+    timeoutCallback = done;
     term.write(frame, done);
     writeCallback = done;
 
     assert.equal(writes.length, 1, "single write for attach frame");
     assert.ok(writeCallback, "write callback should be registered");
-    // In real code, the callback fires after xterm finishes parsing,
-    // then RAF reveals the terminal. Until then, loading overlay stays visible.
+    assert.ok(timeoutCallback, "reveal timeout should be registered");
+    timeoutCallback();
+    assert.equal(revealed, true, "timeout can reveal before xterm finishes parsing");
+    writeCallback();
+    assert.equal(revealed, true, "write callback reveal remains idempotent");
   });
 
   it("small first frame clears attach flag immediately", () => {
