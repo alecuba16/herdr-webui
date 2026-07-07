@@ -14,7 +14,8 @@ Compatibility:
 
 | WebUI | Herdr | Protocol | Status | Notes |
 | --- | --- | --- | --- | --- |
-| `0.2.22` | `0.7.3` | `16` with `15` and `14` fallback | Current | Brings the Herdr bridge improvements from 0.2.18 plus terminal viewport and scroll smoothing fixes: avoids clipping the xterm host after pane/tab switches, coalesces WebUI wheel/touch backend scrolls per animation frame, and replaces the reconnect tail-scroll burst with one bounded backend tail request. |
+| `0.2.23` | `0.7.3` | `16` with `15` and `14` fallback | Current | Adds Git log branch and tag decorations so branch heads, remotes, HEAD, and release tags appear as hoverable badges on their latest commit while preserving terminal viewport and bridge stability improvements from 0.2.22. |
+| `0.2.22` | `0.7.3` | `16` with `15` and `14` fallback | Superseded | Brings the Herdr bridge improvements from 0.2.18 plus terminal viewport and scroll smoothing fixes: avoids clipping the xterm host after pane/tab switches, coalesces WebUI wheel/touch backend scrolls per animation frame, and replaces the reconnect tail-scroll burst with one bounded backend tail request. |
 | `0.2.18` | `0.7.3` | `16` with `15` and `14` fallback | Superseded | Hardens the backend bridge by bounding WebSocket event and terminal queues, sharing one 5-second legacy snapshot poller per Herdr API socket instead of one per browser tab, centralizing Herdr JSON request construction, and syncing protocol 16 terminal target messages (`ObserveTerminal`, `ControlTerminal`) into the local wire types. |
 | `0.2.13` | `0.7.3` | `16` with `15` and `14` fallback | Superseded | Adds protocol 16 support with descending fallback to 15 and 14, subscribes to `layout.updated` events for live pane layout snapshots, exposes a `session.snapshot` endpoint for single-request bootstrap, and deserializes the new `PrefixInputSource` server message without acting on it. The legacy per-endpoint polling bootstrap is moved to `legacy_polling.js` with a removal TODO. |
 | `0.2.12` | `0.7.2` | `15` with `14` fallback | Superseded | Uses the same CodeMirror editor tooling for both sides of Git hunk editing, keeps the previous side read-only with line numbers on the right, and hides backing textareas so editable text is not duplicated below the highlighted editor. |
@@ -43,7 +44,23 @@ Compatibility:
 | `0.0.45` | `0.7.1` | `14` | Tested | Improves embedded Git UI navigation with Escape handling, all-changes return behavior, split frontend assets, scoped file history controls, keyboard-owned drawer input, and per-file large diff loading. |
 | `0.0.45` | `0.7.0` | `14` | Minimum supported | Uses WebUI's legacy existing-branch worktree fallback when needed. |
 
-Newer Herdr builds may work when protocol stays compatible, but WebUI reports them as untested. WebUI 0.2.22 treats Herdr 0.7.3 protocol 16 as tested and retries protocols 15 and 14 in descending order for compatible older Herdr 0.7.x servers.
+Newer Herdr builds may work when protocol stays compatible, but WebUI reports them as untested. WebUI 0.2.23 treats Herdr 0.7.3 protocol 16 as tested and retries protocols 15 and 14 in descending order for compatible older Herdr 0.7.x servers.
+
+## 0.2.23 Release Notes
+
+### Git log branch and tag decorations
+
+- Adds structured ref metadata to the Git log API while keeping the existing graph-line display compatible.
+- Shows branch heads, remote refs, `HEAD`, and tags as compact badges on the commit where each ref currently points.
+- Adds hover details for commit rows, including full commit hash, author, relative date, message, and friendly ref descriptions.
+
+### Validation
+
+- `cargo fmt --check`
+- `cargo clippy --target-dir target --all-targets -- -D warnings`
+- `cargo test --target-dir target`
+- `node --test src/assets/app_core.test.mjs src/assets/app_load.test.mjs src/assets/app_boot.test.mjs src/assets/mobile_load.test.mjs`
+- `node --check src/assets/desktop/git_ui.js`
 
 ## 0.2.22 Release Notes
 
