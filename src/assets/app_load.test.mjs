@@ -255,6 +255,7 @@ describe("app bundle load", () => {
     match(html, /Wheel, touch, and PageUp\/PageDown scroll the Herdr backend first, with xterm local scroll as fallback/);
     match(html, /keeps parent folders visible so result paths stay clear/);
     match(html, /line numbers by default/);
+    match(html, /fold controls for supported languages/);
     match(html, /priority red deleted, yellow modified, green new/);
     match(html, /Git selector opens repo tools for diff, stage\/unstage, discard, commit, commit & push, pull, push\/force-push, rebase, conflicts, stash, branches, cleanup, and worktree prune; file view can toggle unified\/side-by-side diffs/);
     match(html, /Prefix then \/ opens palette for workspaces, repos, worktrees, labels, agents, and panels/);
@@ -290,6 +291,9 @@ describe("app bundle load", () => {
   it("defines file explorer and Git file filters", () => {
     match(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), /q=\$\{encodeURIComponent\(state\.filter\.trim\(\)\)\}/);
     match(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), /setTimeout\(\(\) => \{/);
+    const editorSource = readFileSync(new URL("./vendor/codemirror_entry.mjs", import.meta.url), "utf8");
+    match(editorSource, /foldGutter/);
+    match(editorSource, /foldKeymap/);
     match(source, /id="optFileBrowserLineNumbers"/);
     match(gitUiSource, /placeholder="Filter files"/);
     match(gitUiSource, /filterFiles/);
