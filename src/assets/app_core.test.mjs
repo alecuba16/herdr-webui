@@ -369,27 +369,28 @@ describe("HerdrFileTree search helpers", () => {
 });
 
 describe("HerdrEditor line number helpers", () => {
-  function createEditor(options) {
+  async function createFallbackEditor(options) {
     const parent = { innerHTML: "", querySelector() { return null; } };
-    const context = { window: {}, document: { createElement() { return {}; }, body: { appendChild() {} } }, Promise };
+    const context = { window: {}, document: { createElement() { return {}; }, body: { appendChild(script) { script.onerror(); } } }, Promise };
     const source = readFileSync(new URL("./shared/editor.js", import.meta.url), "utf8");
     vm.runInNewContext(source, context);
     context.window.HerdrEditor.create(Object.assign({ parent, path: "demo.txt", content: "a\nb", readonly: true }, options || {}));
+    await new Promise((resolve) => setTimeout(resolve, 0));
     return parent.innerHTML;
   }
 
-  it("shows line numbers by default in fallback previews", () => {
-    const html = createEditor();
+  it("shows line numbers by default in fallback previews after CodeMirror load failure", async () => {
+    const html = await createFallbackEditor();
     assert.match(html, /herdr-editor-numbered-code/);
     assert.match(html, />1<\/span><span>2<\/span>/);
   });
 
-  it("can hide line numbers in fallback previews", () => {
-    const html = createEditor({ lineNumbers: false });
+  it("can hide line numbers in fallback previews after CodeMirror load failure", async () => {
+    const html = await createFallbackEditor({ lineNumbers: false });
     assert.doesNotMatch(html, /herdr-editor-numbered-code/);
   });
 
-  it("auto-loads CodeMirror for read-only previews", async () => {
+  it("starts read-only previews with the CodeMirror shell and then mounts CodeMirror", async () => {
     const calls = [];
     const parent = {
       innerHTML: "",
@@ -420,6 +421,9 @@ describe("HerdrEditor line number helpers", () => {
     vm.runInNewContext(source, context);
 
     context.window.HerdrEditor.create({ parent, path: "demo.js", content: "const x = 1;", readonly: true, hideHeader: true, lineNumbers: true });
+    assert.match(parent.innerHTML, /herdr-editor cm/);
+    assert.match(parent.innerHTML, /herdr-editor-loading/);
+    assert.doesNotMatch(parent.innerHTML, /herdr-editor-numbered-code/);
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     assert.equal(calls.length, 1);
@@ -427,5 +431,46 @@ describe("HerdrEditor line number helpers", () => {
     assert.equal(calls[0].content, "const x = 1;");
     assert.equal(calls[0].lineNumbers, true);
     assert.match(parent.innerHTML, /herdr-editor cm/);
+  });
+
+  it("starts editable editors with the same CodeMirror shell", async () => {
+    const calls = [];
+    const parent = {
+      innerHTML: "",
+      querySelector(selector) {
+        if (selector === ".herdr-editor-mount" && this.innerHTML.includes("herdr-editor-mount")) return { className: "mount" };
+        return null;
+      },
+    };
+    const context = {
+      window: {},
+      document: {
+        createElement() { return {}; },
+        body: {
+          appendChild(script) {
+            context.window.HerdrCodeMirror = {
+              create(opts) {
+                calls.push(opts);
+                return { getValue() { return opts.content; }, setValue() {}, destroy() {} };
+              },
+            };
+            script.onload();
+          },
+        },
+      },
+      Promise,
+    };
+    const source = readFileSync(new URL("./shared/editor.js", import.meta.url), "utf8");
+    vm.runInNewContext(source, context);
+
+    context.window.HerdrEditor.create({ parent, path: "demo.js", content: "let x = 1;", readonly: false, hideHeader: true, lineNumbers: true });
+    assert.match(parent.innerHTML, /herdr-editor cm/);
+    assert.match(parent.innerHTML, /herdr-editor-loading/);
+    assert.doesNotMatch(parent.innerHTML, /<textarea/);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].readonly, false);
+    assert.equal(calls[0].content, "let x = 1;");
   });
 });

@@ -373,6 +373,13 @@
   min-height: 0;
   overflow: hidden;
 }
+.herdr-editor-loading {
+  background: var(--editor-bg, var(--panel2));
+  color: var(--muted);
+  font: 12px/1.5 var(--mono-font);
+  min-height: 100%;
+  padding: 12px;
+}
 .herdr-editor-head {
   align-items: center;
   border-bottom: 1px solid var(--border);

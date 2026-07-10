@@ -575,6 +575,13 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
 .herdr-editor-mount {
   min-height: 55vh;
 }
+.herdr-editor-loading {
+  background: var(--editor-bg, var(--panel2));
+  color: var(--muted);
+  font: 12px/1.5 var(--mono-font);
+  min-height: 55vh;
+  padding: 12px;
+}
 .herdr-editor-head {
   align-items: center;
   background: var(--panel);
