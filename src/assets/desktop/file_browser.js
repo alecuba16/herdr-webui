@@ -1,6 +1,12 @@
 (function () {
   const Tree = window.HerdrFileTree;
-  const state = { open: false, cwd: "", path: "", entries: [], children: {}, expanded: {}, loading: {}, selected: "", files: [], split: false, error: "", contextMenu: null, filter: "", filterTimer: null, filterLoading: false, filterOffset: 0, filterDone: true, filterScrollTop: 0, filterKind: "file", gitStatus: null, refreshing: false };
+  const stateCache = {};
+  let activeKey = "";
+  let state = createState();
+
+  function createState(initial) {
+    return Object.assign({ open: false, cwd: "", path: "", entries: [], children: {}, expanded: {}, loading: {}, selected: "", files: [], split: false, error: "", contextMenu: null, filter: "", filterTimer: null, filterLoading: false, filterOffset: 0, filterDone: true, filterScrollTop: 0, filterKind: "file", gitStatus: null, refreshing: false }, initial || {});
+  }
 
   function esc(value) { return Tree.esc(value); }
   function arg(value) { return Tree.arg(value); }
@@ -38,6 +44,37 @@
     return workspace.cwd || workspace.path || "";
   }
 
+  function workspaceKey(workspace) {
+    if (typeof workspace === "string") return workspace;
+    return (workspace && workspace.workspace_id) || workspaceCwd(workspace) || "default";
+  }
+
+  function stopTransientWork(stateToStop) {
+    if (!stateToStop) return;
+    if (stateToStop.filterTimer) clearTimeout(stateToStop.filterTimer);
+    stateToStop.filterTimer = null;
+    stateToStop.filterLoading = false;
+    stateToStop.refreshing = false;
+    stateToStop.loading = {};
+    stateToStop.contextMenu = null;
+  }
+
+  function activateState(key, cwd) {
+    stopTransientWork(state);
+    if (activeKey && activeKey !== key && stateCache[activeKey]) stateCache[activeKey].open = false;
+    activeKey = key;
+    if (!stateCache[key]) stateCache[key] = createState({ cwd });
+    state = stateCache[key];
+    state.cwd = cwd || state.cwd;
+    stopTransientWork(state);
+  }
+
+  function renderIfActive(target, preserveScroll) {
+    if (state !== target || !target.open) return;
+    if (preserveScroll) renderPreservingScroll();
+    else render();
+  }
+
   async function api(url, opt) {
     const res = await fetch(url, Object.assign({ credentials: "same-origin" }, opt || {}));
     const body = await res.json();
@@ -47,86 +84,92 @@
 
   async function open(workspace) {
     const cwd = workspaceCwd(workspace);
-    if (state.open && state.cwd === cwd) {
+    const key = workspaceKey(workspace);
+    if (state.open && activeKey === key) {
       hide();
       return;
     }
     if (window.HerdrGitUi) window.HerdrGitUi.hide();
-    state.cwd = cwd;
-    state.path = "";
-    state.selected = "";
-    state.files = [];
-    state.split = false;
-    state.children = {};
-    state.expanded = {};
-    state.loading = {};
-    state.contextMenu = null;
-    state.filter = "";
-    state.filterOffset = 0;
-    state.filterDone = true;
-    state.filterKind = "file";
+    activateState(key, cwd);
     state.open = true;
     render();
-    await loadTree("");
+    if (state.filter.trim()) await fetchFilteredEntries(false);
+    else await loadTree(state.path || "");
   }
 
   function hide() {
+    stopTransientWork(state);
     state.open = false;
     const panel = document.getElementById("fileBrowserPanel");
     if (panel) panel.remove();
     syncTerminalVisibility();
   }
 
-  async function fetchEntries(path) {
-    if (!state.cwd) return;
-    const data = await api(`/api/file-browser/tree?cwd=${encodeURIComponent(state.cwd)}&path=${encodeURIComponent(path || "")}&depth=0${gitStatusEnabled() ? "&include_git_status=true" : ""}`);
+  function forgetWorkspace(workspace) {
+    const key = workspaceKey(workspace);
+    const cached = stateCache[key];
+    stopTransientWork(cached);
+    delete stateCache[key];
+    if (activeKey !== key) return;
+    state.open = false;
+    activeKey = "";
+    state = createState();
+    const panel = document.getElementById("fileBrowserPanel");
+    if (panel) panel.remove();
+    syncTerminalVisibility();
+  }
+
+  async function fetchEntries(path, target = state) {
+    if (!target.cwd) return;
+    const data = await api(`/api/file-browser/tree?cwd=${encodeURIComponent(target.cwd)}&path=${encodeURIComponent(path || "")}&depth=0${gitStatusEnabled() ? "&include_git_status=true" : ""}`);
     return data.entries || [];
   }
 
   async function fetchFilteredEntries(append = false) {
-    if (!state.cwd || !state.filter.trim()) return;
-    const offset = append ? state.filterOffset : 0;
-    state.filterLoading = true;
-    renderPreservingScroll();
+    const target = state;
+    if (!target.cwd || !target.filter.trim()) return;
+    const offset = append ? target.filterOffset : 0;
+    target.filterLoading = true;
+    renderIfActive(target, true);
     try {
-      const data = await api(`/api/file-browser/tree?cwd=${encodeURIComponent(state.cwd)}&path=${encodeURIComponent(state.path || "")}&q=${encodeURIComponent(state.filter.trim())}&${Tree.searchKindQuery(state.filterKind)}&offset=${offset}&limit=100${gitStatusEnabled() ? "&include_git_status=true" : ""}`);
+      const data = await api(`/api/file-browser/tree?cwd=${encodeURIComponent(target.cwd)}&path=${encodeURIComponent(target.path || "")}&q=${encodeURIComponent(target.filter.trim())}&${Tree.searchKindQuery(target.filterKind)}&offset=${offset}&limit=100${gitStatusEnabled() ? "&include_git_status=true" : ""}`);
       const entries = data.entries || [];
-      state.entries = append ? state.entries.concat(entries) : entries;
-      state.gitStatus = data.git_status || null;
-      state.filterOffset = offset + entries.length;
-      state.filterDone = !data.truncated || entries.length === 0;
-      state.children = {};
-      state.expanded = {};
-      state.loading = {};
+      target.entries = append ? target.entries.concat(entries) : entries;
+      target.gitStatus = data.git_status || null;
+      target.filterOffset = offset + entries.length;
+      target.filterDone = !data.truncated || entries.length === 0;
+      target.children = {};
+      target.expanded = {};
+      target.loading = {};
     } catch (error) {
-      state.error = error.message || String(error);
-      state.filterDone = true;
+      target.error = error.message || String(error);
+      target.filterDone = true;
     }
-    state.filterLoading = false;
-    renderPreservingScroll();
+    target.filterLoading = false;
+    renderIfActive(target, true);
   }
 
   async function loadTree(path, preserveFocus = false) {
-    if (!state.cwd) return;
-    state.refreshing = true;
-    render();
+    const target = state;
+    if (!target.cwd) return;
+    target.refreshing = true;
+    renderIfActive(target);
     try {
-      state.error = "";
-      const data = await api(`/api/file-browser/tree?cwd=${encodeURIComponent(state.cwd)}&path=${encodeURIComponent(path || "")}&depth=0${gitStatusEnabled() ? "&include_git_status=true" : ""}`);
-      state.path = data.path || "";
-      state.entries = data.entries || [];
-      state.gitStatus = data.git_status || null;
-      state.children = {};
-      state.expanded = {};
-      state.loading = {};
-      state.filterOffset = 0;
-      state.filterDone = !state.filter.trim();
+      target.error = "";
+      const data = await api(`/api/file-browser/tree?cwd=${encodeURIComponent(target.cwd)}&path=${encodeURIComponent(path || "")}&depth=0${gitStatusEnabled() ? "&include_git_status=true" : ""}`);
+      target.path = data.path || "";
+      target.entries = data.entries || [];
+      target.gitStatus = data.git_status || null;
+      target.children = {};
+      target.expanded = {};
+      target.loading = {};
+      target.filterOffset = 0;
+      target.filterDone = !target.filter.trim();
     } catch (error) {
-      state.error = error.message || String(error);
+      target.error = error.message || String(error);
     }
-    state.refreshing = false;
-    if (preserveFocus) renderPreservingScroll();
-    else render();
+    target.refreshing = false;
+    renderIfActive(target, preserveFocus);
   }
 
   function renderPreservingScroll() {
@@ -154,38 +197,47 @@
   }
 
   async function loadFile(path, mode) {
+    const target = state;
     try {
-      state.error = "";
-      const replacePath = currentFilePath();
-      state.selected = path;
-      if (state.files.some((file) => file.path === path)) {
-        render();
+      target.error = "";
+      const replacePath = currentFilePathFor(target);
+      target.selected = path;
+      if (target.files.some((file) => file.path === path)) {
+        renderIfActive(target);
         return;
       }
-      render();
-      const file = await api(`/api/file-browser/file?cwd=${encodeURIComponent(state.cwd)}&path=${encodeURIComponent(path)}`);
+      renderIfActive(target);
+      const file = await api(`/api/file-browser/file?cwd=${encodeURIComponent(target.cwd)}&path=${encodeURIComponent(path)}`);
       const nextFile = Object.assign(file, { draft: file.content || "", editing: false, dirty: false, saving: false, error: "" });
       if (mode === "split") {
-        state.files.push(nextFile);
-        state.split = true;
+        target.files.push(nextFile);
+        target.split = true;
       } else {
-        const index = Math.max(0, state.files.findIndex((file) => file.path === replacePath));
-        if (state.files.length) state.files[index] = nextFile;
-        else state.files.push(nextFile);
+        const index = Math.max(0, target.files.findIndex((file) => file.path === replacePath));
+        if (target.files.length) target.files[index] = nextFile;
+        else target.files.push(nextFile);
       }
     } catch (error) {
-      state.error = error.message || String(error);
+      target.error = error.message || String(error);
     }
-    render();
+    renderIfActive(target);
+  }
+
+  function currentFileFor(target) {
+    return target.files.find((file) => file.path === target.selected) || target.files[target.files.length - 1] || null;
+  }
+
+  function currentFilePathFor(target) {
+    const file = currentFileFor(target);
+    return file ? file.path : "";
   }
 
   function currentFile() {
-    return state.files.find((file) => file.path === state.selected) || state.files[state.files.length - 1] || null;
+    return currentFileFor(state);
   }
 
   function currentFilePath() {
-    const file = currentFile();
-    return file ? file.path : "";
+    return currentFilePathFor(state);
   }
 
   function render() {
@@ -255,24 +307,25 @@
   }
 
   async function toggleDir(path) {
-    if (state.expanded[path]) {
-      state.expanded[path] = false;
-      renderPreservingScroll();
+    const target = state;
+    if (target.expanded[path]) {
+      target.expanded[path] = false;
+      renderIfActive(target, true);
       return;
     }
-    state.expanded[path] = true;
-    if (!state.children[path] && !state.loading[path]) {
-      state.loading[path] = true;
-      renderPreservingScroll();
+    target.expanded[path] = true;
+    if (!target.children[path] && !target.loading[path]) {
+      target.loading[path] = true;
+      renderIfActive(target, true);
       try {
-        state.children[path] = await fetchEntries(path);
+        target.children[path] = await fetchEntries(path, target);
       } catch (error) {
-        state.error = error.message || String(error);
-        state.expanded[path] = false;
+        target.error = error.message || String(error);
+        target.expanded[path] = false;
       }
-      delete state.loading[path];
+      delete target.loading[path];
     }
-    renderPreservingScroll();
+    renderIfActive(target, true);
   }
 
   function renderToolbar(file) {
@@ -436,6 +489,7 @@
     open,
     close: hide,
     hide,
+    forgetWorkspace,
     refresh() { loadTree(state.path); },
     setFilterKind(kind) {
       state.filterKind = Tree.normalizeSearchKind(kind);
@@ -544,7 +598,7 @@
     save(encodedPath) { saveFile(decodeURIComponent(encodedPath)); },
     reload(encodedPath) { reloadFile(decodeURIComponent(encodedPath)).catch((error) => { state.error = error.message || String(error); render(); }); },
     isVisible() { return state.open; },
-    isWorkspaceVisible(workspace) { return state.open && state.cwd === workspaceCwd(workspace); },
+    isWorkspaceVisible(workspace) { return state.open && activeKey === workspaceKey(workspace); },
     syncTerminalVisibility,
   };
 })();
