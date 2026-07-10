@@ -241,6 +241,8 @@ describe("mobile bundle load", () => {
     "\n" +
     readFileSync(new URL("./shared/terminal_scroll.js", import.meta.url), "utf8") +
     "\n" +
+    readFileSync(new URL("./shared/temp_terminal.js", import.meta.url), "utf8") +
+    "\n" +
     readFileSync(new URL("./mobile/core.js", import.meta.url), "utf8") +
     "\n" +
     readFileSync(new URL("./mobile/attention.js", import.meta.url), "utf8") +
@@ -271,10 +273,13 @@ describe("mobile bundle load", () => {
     ok(settingsHtml.includes("Layout"));
     ok(settingsHtml.includes("Terminal font"));
     ok(settingsHtml.includes("Terminal links"));
+    ok(settingsHtml.includes("Line numbers"));
     ok(settingsHtml.includes("HerdrMobile.setTerminalFontFamily"));
+    ok(settingsHtml.includes("HerdrMobile.setFileBrowserLineNumbers"));
     ok(settingsHtml.includes("HerdrMobile.setTerminalLinks"));
     equal(typeof ctx.HerdrMobile.setTerminalFontFamily, "function");
     equal(typeof ctx.HerdrMobile.setTerminalLinks, "function");
+    equal(typeof ctx.HerdrMobile.setFileBrowserLineNumbers, "function");
     equal(typeof ctx.HerdrMobile.applyTerminalFontFamily, "function");
     equal(typeof ctx.HerdrMobile.applyTerminalLinks, "function");
     doesNotThrow(() =>

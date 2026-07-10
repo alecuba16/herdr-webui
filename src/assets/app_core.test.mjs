@@ -340,4 +340,52 @@ describe("HerdrFileTree search helpers", () => {
     assert.deepEqual(Array.from(rows, (entry) => entry.path), ["beta", "beta/partialMatchDir"]);
     assert.equal(rows[1].name, "partialMatchDir");
   });
+
+  it("preserves parent breadcrumbs for filtered file results", () => {
+    const tree = loadTree();
+    const rows = tree.searchTreeEntriesByKind([
+      { kind: "file", name: "app.rs", path: "src/app.rs" },
+      { kind: "file", name: "app_test.rs", path: "src/nested/app_test.rs" },
+    ], "file", "app");
+
+    assert.deepEqual(Array.from(rows, (entry) => [entry.kind, entry.path]), [
+      ["dir", "src"],
+      ["file", "src/app.rs"],
+      ["dir", "src/nested"],
+      ["file", "src/nested/app_test.rs"],
+    ]);
+  });
+
+  it("uses backend-provided git status for directories", () => {
+    const tree = loadTree();
+    const rows = tree.applyGitStatus([
+      { kind: "dir", name: "src", path: "src" },
+      { kind: "file", name: "app.rs", path: "src/app.rs" },
+    ], { src: "deleted", "src/app.rs": "modified" });
+
+    assert.equal(rows[0].status, "deleted");
+    assert.equal(rows[1].status, "modified");
+  });
+});
+
+describe("HerdrEditor line number helpers", () => {
+  function createEditor(options) {
+    const parent = { innerHTML: "", querySelector() { return null; } };
+    const context = { window: {}, document: { createElement() { return {}; }, body: { appendChild() {} } }, Promise };
+    const source = readFileSync(new URL("./shared/editor.js", import.meta.url), "utf8");
+    vm.runInNewContext(source, context);
+    context.window.HerdrEditor.create(Object.assign({ parent, path: "demo.txt", content: "a\nb", readonly: true }, options || {}));
+    return parent.innerHTML;
+  }
+
+  it("shows line numbers by default in fallback previews", () => {
+    const html = createEditor();
+    assert.match(html, /herdr-editor-numbered-code/);
+    assert.match(html, />1<\/span><span>2<\/span>/);
+  });
+
+  it("can hide line numbers in fallback previews", () => {
+    const html = createEditor({ lineNumbers: false });
+    assert.doesNotMatch(html, /herdr-editor-numbered-code/);
+  });
 });

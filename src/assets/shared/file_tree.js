@@ -220,7 +220,7 @@
 
   function searchTreeEntriesByKind(entries, kind, term) {
     const normalized = normalizeSearchKind(kind);
-    if (normalized === "file") return searchTreeEntries(entries).filter((entry) => entry.kind === "file");
+    if (normalized === "file") return searchTreeEntries((entries || []).filter((entry) => entry.kind !== "dir"));
     return searchTreeEntries((entries || []).filter((entry) => entry.kind === "dir" && entryMatchesTerm(entry, term)));
   }
 
@@ -261,25 +261,10 @@
 
   function applyGitStatus(entries, gitStatus) {
     if (!gitStatus || typeof gitStatus !== "object") return entries;
-    const changedDirs = new Set();
-    for (const file of Object.keys(gitStatus)) {
-      const parts = file.split("/").filter(Boolean);
-      for (let i = 1; i < parts.length; i++) {
-        changedDirs.add(parts.slice(0, i).join("/"));
-      }
-    }
     return (entries || []).map((entry) => {
       const next = Object.assign({}, entry);
       const path = String(entry.path || entry.name || "");
-      if (entry.kind === "dir") {
-        if (changedDirs.has(path)) {
-          next.status = "changed";
-        }
-      } else {
-        if (gitStatus[path]) {
-          next.status = gitStatus[path];
-        }
-      }
+      if (gitStatus[path]) next.status = gitStatus[path];
       return next;
     });
   }

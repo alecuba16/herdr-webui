@@ -963,6 +963,7 @@ const defaultOptions = {
   treeIndentPx: 14,
   fileBrowserAllowParent: true,
   fileBrowserGitStatus: true,
+  fileBrowserLineNumbers: true,
   showTabActivity: false,
   worktreeAutoDiscoverSeconds: 3,
   generateWorktreeNames: false,
@@ -1092,6 +1093,7 @@ function normalizeOptions(value) {
   next.treeIndentPx = Math.max(0, Math.min(40, Number(next.treeIndentPx) || 14));
   next.fileBrowserAllowParent = next.fileBrowserAllowParent !== false;
   next.fileBrowserGitStatus = next.fileBrowserGitStatus !== false;
+  next.fileBrowserLineNumbers = next.fileBrowserLineNumbers !== false;
   next.showTabActivity = next.showTabActivity === true;
   next.worktreeAutoDiscoverSeconds = Math.max(
     0,
@@ -1356,7 +1358,7 @@ if (showTabActivitySetting && !el("optTreeIndentPx"))
     .closest("label")
     .insertAdjacentHTML(
       "afterend",
-      '<label class="option"><span>Tree indentation<small>Pixels added per folder level in file trees.</small></span><input id="optTreeIndentPx" type="number" min="0" max="40" step="1"></label><label class="option"><input type="checkbox" id="optFileBrowserAllowParent"><span>File browser parent folders<small>Allow Files to go above the workspace/worktree directory with the ... row.</small></span></label><label class="option"><input type="checkbox" id="optFileBrowserGitStatus"><span>File browser git status colors<small>Color files and directories in the file browser by Git status: yellow for modified, green for new, red for deleted, blue for directories with changes.</small></span></label>',
+      '<label class="option"><span>Tree indentation<small>Pixels added per folder level in file trees.</small></span><input id="optTreeIndentPx" type="number" min="0" max="40" step="1"></label><label class="option"><input type="checkbox" id="optFileBrowserAllowParent"><span>File browser parent folders<small>Allow Files to go above the workspace/worktree directory with the ... row.</small></span></label><label class="option"><input type="checkbox" id="optFileBrowserGitStatus"><span>File browser git status colors<small>Color files and directories in the file browser by Git status: red for deleted, yellow for modified, green for new.</small></span></label><label class="option"><input type="checkbox" id="optFileBrowserLineNumbers"><span>File browser line numbers<small>Show line numbers by default when previewing text files.</small></span></label>',
     );
 groupSettingsSections();
 function groupSettingsSections() {
@@ -1371,7 +1373,7 @@ function groupSettingsSections() {
     {
       title: "File browser",
       desc: "Tree display, navigation, and Git status colors.",
-      ids: ["optTreeIndentPx", "optFileBrowserAllowParent", "optFileBrowserGitStatus"],
+      ids: ["optTreeIndentPx", "optFileBrowserAllowParent", "optFileBrowserGitStatus", "optFileBrowserLineNumbers"],
     },
     {
       title: "Terminal input",
@@ -1533,6 +1535,7 @@ function applyOptions() {
     treeIndentPx = el("optTreeIndentPx"),
     fileBrowserAllowParent = el("optFileBrowserAllowParent"),
     fileBrowserGitStatus = el("optFileBrowserGitStatus"),
+    fileBrowserLineNumbers = el("optFileBrowserLineNumbers"),
     scrollLinesValue = el("scrollLinesValue"),
     showTabActivity = el("optShowTabActivity"),
     worktreeAutoDiscover = el("optWorktreeAutoDiscover"),
@@ -1589,6 +1592,8 @@ function applyOptions() {
     fileBrowserAllowParent.checked = !!options.fileBrowserAllowParent;
   if (fileBrowserGitStatus)
     fileBrowserGitStatus.checked = !!options.fileBrowserGitStatus;
+  if (fileBrowserLineNumbers)
+    fileBrowserLineNumbers.checked = !!options.fileBrowserLineNumbers;
   document.body.style.setProperty("--herdr-tree-indent", `${options.treeIndentPx ?? 14}px`);
   if (scrollLinesValue)
     scrollLinesValue.textContent = String(options.scrollLines || 3);

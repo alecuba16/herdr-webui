@@ -12,6 +12,13 @@
     } catch (_) { return true; }
   }
 
+  function lineNumbersEnabled() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
+      return parsed.fileBrowserLineNumbers !== false;
+    } catch (_) { return true; }
+  }
+
   document.addEventListener("click", () => {
     if (!state.contextMenu) return;
     state.contextMenu = null;
@@ -194,7 +201,7 @@
     syncTerminalVisibility();
     const activeFile = currentFile();
     const entries = treeEntries();
-    const resultCount = entries.length;
+    const resultCount = state.filter.trim() ? state.entries.length : entries.length;
     const noun = Tree.searchKindNoun(state.filterKind);
     const label = Tree.searchKindLabel(state.filterKind);
     const count = state.filter.trim() ? `<div class="file-browser-result-count">${resultCount} ${noun} result${resultCount === 1 ? "" : "s"}</div>` : "";
@@ -304,6 +311,7 @@
         content: file.editing ? file.draft : file.content || "",
         readonly: !file.editing,
         hideHeader: true,
+        lineNumbers: lineNumbersEnabled(),
         onChange(value) {
           file.draft = value;
           file.dirty = value !== (file.content || "");

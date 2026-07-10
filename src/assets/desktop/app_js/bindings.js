@@ -295,6 +295,10 @@ el("optFileBrowserGitStatus").onchange = () => {
   options.fileBrowserGitStatus = el("optFileBrowserGitStatus").checked;
   saveOptions();
 };
+el("optFileBrowserLineNumbers").onchange = () => {
+  options.fileBrowserLineNumbers = el("optFileBrowserLineNumbers").checked;
+  saveOptions();
+};
 el("optWorktreeAutoDiscover").oninput = () => {
   options.worktreeAutoDiscoverSeconds = Math.max(
     0,

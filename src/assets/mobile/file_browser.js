@@ -16,6 +16,13 @@
       } catch (_) { return true; }
     }
 
+    function lineNumbersEnabled() {
+      try {
+        const parsed = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
+        return parsed.fileBrowserLineNumbers !== false;
+      } catch (_) { return true; }
+    }
+
     async function load(path, preserveFocus = false) {
       const root = cwd();
       if (!root) {
@@ -88,7 +95,7 @@
       if (local.file) return renderPreview();
       const tree = Tree.renderEntries(treeEntries(), { selectedPath: local.selected, callback: "HerdrMobileFiles", showMeta: true, filterTerm: local.filter });
       const more = local.filter.trim() && !local.filterDone ? `<button class="mobile-btn mobile-wide" onclick="HerdrMobile.filesLoadMore()">Load more</button>` : "";
-      const resultCount = treeEntries().length;
+      const resultCount = local.filter.trim() ? local.entries.length : treeEntries().length;
       const noun = Tree.searchKindNoun(local.filterKind);
       const label = Tree.searchKindLabel(local.filterKind);
       const count = local.filter.trim() ? `<div class="mobile-help mobile-file-result-count">${resultCount} ${noun} result${resultCount === 1 ? "" : "s"}</div>` : "";
@@ -148,7 +155,7 @@
       else body = `<div id="mobileFilePreview"></div>`;
       setTimeout(() => {
         const parent = document.getElementById("mobileFilePreview");
-        if (parent && local.file) Editor.create({ parent, path: local.file.path, content: local.file.content || "", readonly: true, hideHeader: true });
+        if (parent && local.file) Editor.create({ parent, path: local.file.path, content: local.file.content || "", readonly: true, hideHeader: true, lineNumbers: lineNumbersEnabled() });
       }, 0);
       return `<section class="mobile-section mobile-files"><h2>Files</h2><div class="mobile-actions"><button class="mobile-btn" onclick="HerdrMobile.filesBackToTree()">Back</button><button class="mobile-btn" onclick="HerdrMobile.filesRefreshFile()">Refresh</button></div><p class="mobile-help">${deps.escapeHtml(file.path || "")}</p>${local.error ? `<div class="mobile-error">${deps.escapeHtml(local.error)}</div>` : ""}${body}</section>`;
     }
