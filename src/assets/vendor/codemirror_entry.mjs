@@ -196,7 +196,7 @@ function create(options) {
     EditorState.readOnly.of(opts.readonly !== false),
   ];
   if (opts.lineNumbers !== false) extensions.unshift(lineNumbers());
-  if (opts.readonly === false) extensions.push(highlightActiveLine());
+  extensions.push(highlightActiveLine());
   const language = languageForPath(opts.path);
   if (language) extensions.push(language);
   if (opts.onChange) {

@@ -388,4 +388,44 @@ describe("HerdrEditor line number helpers", () => {
     const html = createEditor({ lineNumbers: false });
     assert.doesNotMatch(html, /herdr-editor-numbered-code/);
   });
+
+  it("auto-loads CodeMirror for read-only previews", async () => {
+    const calls = [];
+    const parent = {
+      innerHTML: "",
+      querySelector(selector) {
+        if (selector === ".herdr-editor-mount" && this.innerHTML.includes("herdr-editor-mount")) return { className: "mount" };
+        return null;
+      },
+    };
+    const context = {
+      window: {},
+      document: {
+        createElement() { return {}; },
+        body: {
+          appendChild(script) {
+            context.window.HerdrCodeMirror = {
+              create(opts) {
+                calls.push(opts);
+                return { getValue() { return opts.content; }, setValue() {}, destroy() {} };
+              },
+            };
+            script.onload();
+          },
+        },
+      },
+      Promise,
+    };
+    const source = readFileSync(new URL("./shared/editor.js", import.meta.url), "utf8");
+    vm.runInNewContext(source, context);
+
+    context.window.HerdrEditor.create({ parent, path: "demo.js", content: "const x = 1;", readonly: true, hideHeader: true, lineNumbers: true });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].readonly, true);
+    assert.equal(calls[0].content, "const x = 1;");
+    assert.equal(calls[0].lineNumbers, true);
+    assert.match(parent.innerHTML, /herdr-editor cm/);
+  });
 });

@@ -254,8 +254,9 @@ describe("app bundle load", () => {
     match(html, /Workspaces show open roots\/worktrees; agents list status/);
     match(html, /Wheel, touch, and PageUp\/PageDown scroll the Herdr backend first, with xterm local scroll as fallback/);
     match(html, /keeps parent folders visible so result paths stay clear/);
-    match(html, /line numbers by default/);
-    match(html, /fold controls for supported languages/);
+    match(html, /same CodeMirror editor surface as edit mode but stay read-only until Edit is pressed/);
+    match(html, /line numbers show by default/);
+    match(html, /fold controls work for supported languages/);
     match(html, /syntax colors use dedicated high-contrast light\/dark editor palette tokens/);
     match(html, /priority red deleted, yellow modified, green new/);
     match(html, /Git selector opens repo tools for diff, stage\/unstage, discard, commit, commit & push, pull, push\/force-push, rebase, conflicts, stash, branches, cleanup, and worktree prune; file view can toggle unified\/side-by-side diffs/);

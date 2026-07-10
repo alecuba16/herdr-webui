@@ -39,13 +39,11 @@
     parent.innerHTML = readonly ? previewHtml(opts) : editHtml(opts);
     const textarea = parent.querySelector("textarea");
     if (textarea && opts.onChange) textarea.addEventListener("input", () => opts.onChange(textarea.value));
-    if (!readonly) {
-      ensureCodeMirror().then(() => {
-        if (!window.HerdrCodeMirror || !window.HerdrCodeMirror.create) return;
-        const value = textarea ? textarea.value : opts.content;
-        create(Object.assign({}, opts, { content: value }));
-      }).catch(() => {});
-    }
+    ensureCodeMirror().then(() => {
+      if (!window.HerdrCodeMirror || !window.HerdrCodeMirror.create) return;
+      const value = textarea ? textarea.value : opts.content;
+      create(Object.assign({}, opts, { content: value, readonly }));
+    }).catch(() => {});
     return {
       getValue() {
         const node = parent.querySelector("textarea");
