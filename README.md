@@ -148,7 +148,7 @@ Newer Herdr builds may work when protocol stays compatible, but WebUI reports th
 - File browser rename/delete updates the visible tree in place where possible instead of forcing a full list reload.
 - Text file previews show line numbers by default in desktop and mobile Files. Users can toggle this with Settings → File browser → File browser line numbers. The shared editor passes the option to CodeMirror when loaded and uses a lightweight numbered fallback for read-only previews.
 - CodeMirror-backed file editors expose a fold gutter and folding shortcuts for languages that provide fold ranges, including common brace/block-based modes like JavaScript, TypeScript, Rust, Go, JSON, CSS, HTML, XML, YAML, Java, SQL, Markdown, and Python.
-- The editor uses a dedicated `--editor-bg` theme color so syntax highlighting, especially YAML in dark mode, stays readable independently from panel surfaces.
+- The editor uses dedicated `--editor-bg` and `--editor-syntax-*` theme colors so syntax highlighting stays readable independently from panel surfaces. Dark mode uses a high-contrast Catppuccin-style palette: keywords mauve, functions blue, strings green, numbers peach, types yellow, comments light slate, properties cyan, and invalid tokens red. Light mode uses matching Latte-style colors.
 
 ### File browser Git status propagation
 

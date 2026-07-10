@@ -22,6 +22,20 @@ body {
   --git-changed-color: #89b4fa;
   --git-conflict-color: #fab387;
   --accent-fg: #11111b;
+  --editor-syntax-keyword: #cba6f7;
+  --editor-syntax-constant: #f38ba8;
+  --editor-syntax-number: #fab387;
+  --editor-syntax-string: #a6e3a1;
+  --editor-syntax-regexp: #eba0ac;
+  --editor-syntax-comment: #bac2de;
+  --editor-syntax-variable: #cdd6f4;
+  --editor-syntax-function: #89b4fa;
+  --editor-syntax-type: #f9e2af;
+  --editor-syntax-property: #89dceb;
+  --editor-syntax-tag: #f5c2e7;
+  --editor-syntax-operator: #cdd6f4;
+  --editor-syntax-meta: #b4befe;
+  --editor-syntax-invalid: #f38ba8;
   --mono-font: "Herdr JetBrainsMono Nerd Font Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   margin: 0;
   background: var(--bg);
@@ -47,6 +61,20 @@ body.light {
   --git-changed-color: #3a6ee8;
   --git-conflict-color: #c45c00;
   --accent-fg: #eff1f5;
+  --editor-syntax-keyword: #8839ef;
+  --editor-syntax-constant: #d20f39;
+  --editor-syntax-number: #fe640b;
+  --editor-syntax-string: #40a02b;
+  --editor-syntax-regexp: #e64553;
+  --editor-syntax-comment: #6c6f85;
+  --editor-syntax-variable: #4c4f69;
+  --editor-syntax-function: #1e66f5;
+  --editor-syntax-type: #df8e1d;
+  --editor-syntax-property: #04a5e5;
+  --editor-syntax-tag: #ea76cb;
+  --editor-syntax-operator: #4c4f69;
+  --editor-syntax-meta: #7287fd;
+  --editor-syntax-invalid: #d20f39;
 }
 #app {
   height: var(--herdr-mobile-viewport-height);
