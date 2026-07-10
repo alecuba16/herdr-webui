@@ -144,9 +144,16 @@ Newer Herdr builds may work when protocol stays compatible, but WebUI reports th
 ### File browser and editor
 
 - File browser search now supports file or folder mode with `Alt+F` / `Alt+D` switching. Folder search uses breadth-first backend traversal so shallow matching folders are found before deep unrelated trees exhaust the search cap.
-- File/folder searches keep parent breadcrumbs, match highlighting, scroll/focus preservation, and paginated loading.
+- File/folder searches keep parent breadcrumbs, match highlighting, scroll/focus preservation, and paginated loading. Filtered file results render the folder chain above matching files, not a flat list, so users can see each result path in context.
 - File browser rename/delete updates the visible tree in place where possible instead of forcing a full list reload.
+- Text file previews show line numbers by default in desktop and mobile Files. Users can toggle this with Settings → File browser → File browser line numbers. The shared editor passes the option to CodeMirror when loaded and uses a lightweight numbered fallback for read-only previews.
 - The editor uses a dedicated `--editor-bg` theme color so syntax highlighting, especially YAML in dark mode, stays readable independently from panel surfaces.
+
+### File browser Git status propagation
+
+- `src/file_browser.rs` computes Git file and directory status before sending tree/search data. It runs one `git status --porcelain=v1 --untracked-files=all` refresh per API request when status colors are enabled, normalizes paths from repo-relative to workspace-relative, and sends a status map consumed by desktop and mobile file trees.
+- Directory status is propagated on the backend by walking each changed path's parent folders. The priority is `deleted` red > `modified` yellow > `added`/`untracked` green, so one deleted file keeps every parent red even if sibling folders contain modified or new files.
+- Refreshing the file browser triggers a new backend tree request and recalculates the Git status map. The frontend only applies returned statuses, avoiding duplicate client-side propagation logic.
 
 ### Git UI
 
@@ -252,6 +259,7 @@ Newer Herdr builds may work when protocol stays compatible, but WebUI reports th
 
 - New `File browser` settings section with tree indentation, parent folders toggle, and Git status colors toggle.
 - `fileBrowserGitStatus` stored in browser `localStorage`, defaults to enabled.
+- `fileBrowserLineNumbers` stored in browser `localStorage`, defaults to enabled, and applies to desktop and mobile file previews.
 
 ## Build
 
