@@ -412,6 +412,7 @@ describe("HerdrEditor line number helpers", () => {
             context.window.HerdrCodeMirror = {
               create(opts) {
                 calls.push(opts);
+                opts.parent.innerHTML = `<div class="cm-content cm-lineWrapping" contenteditable="${opts.readonly === false ? "true" : "false"}"></div>`;
                 return { getValue() { return opts.content; }, setValue() {}, destroy() {} };
               },
             };
@@ -434,15 +435,20 @@ describe("HerdrEditor line number helpers", () => {
     assert.equal(calls[0].readonly, true);
     assert.equal(calls[0].content, "const x = 1;");
     assert.equal(calls[0].lineNumbers, true);
-    assert.match(parent.innerHTML, /herdr-editor cm/);
+    assert.match(parent.innerHTML, /cm-content/);
+    assert.doesNotMatch(parent.innerHTML, /herdr-editor-loading/);
   });
 
   it("starts editable editors with the same CodeMirror shell", async () => {
     const calls = [];
+    const mount = {
+      set innerHTML(value) { parent.innerHTML = String(value); },
+      get innerHTML() { return parent.innerHTML; },
+    };
     const parent = {
       innerHTML: "",
       querySelector(selector) {
-        if (selector === ".herdr-editor-mount" && this.innerHTML.includes("herdr-editor-mount")) return { className: "mount" };
+        if (selector === ".herdr-editor-mount" && this.innerHTML.includes("herdr-editor-mount")) return mount;
         return null;
       },
     };
@@ -455,6 +461,7 @@ describe("HerdrEditor line number helpers", () => {
             context.window.HerdrCodeMirror = {
               create(opts) {
                 calls.push(opts);
+                opts.parent.innerHTML = `<div class="cm-content cm-lineWrapping" contenteditable="${opts.readonly === false ? "true" : "false"}"></div>`;
                 return { getValue() { return opts.content; }, setValue() {}, destroy() {} };
               },
             };
@@ -476,6 +483,8 @@ describe("HerdrEditor line number helpers", () => {
     assert.equal(calls.length, 1);
     assert.equal(calls[0].readonly, false);
     assert.equal(calls[0].content, "let x = 1;");
+    assert.match(parent.innerHTML, /contenteditable="true"/);
+    assert.doesNotMatch(parent.innerHTML, /herdr-editor-loading/);
   });
 
   it("uses preloaded CodeMirror immediately for read-only file opens", () => {
