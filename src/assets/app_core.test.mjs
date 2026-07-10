@@ -526,3 +526,129 @@ describe("HerdrEditor line number helpers", () => {
     assert.doesNotMatch(parent.innerHTML, /herdr-editor-loading/);
   });
 });
+
+describe("desktop file browser editor integration", () => {
+  class FakeElement {
+    constructor(document, tag = "div") {
+      this.ownerDocument = document;
+      this.tag = tag;
+      this.children = [];
+      this.parentNode = null;
+      this.className = "";
+      this.style = {};
+      this.scrollTop = 0;
+      this.value = "";
+      this._id = "";
+      this._innerHTML = "";
+    }
+    set id(value) {
+      this._id = String(value || "");
+      if (this._id) this.ownerDocument.nodes.set(this._id, this);
+    }
+    get id() { return this._id; }
+    set innerHTML(value) {
+      this._innerHTML = String(value || "");
+      for (const match of this._innerHTML.matchAll(/id="([^"]+)"/g)) {
+        if (!this.ownerDocument.nodes.has(match[1])) {
+          const node = new FakeElement(this.ownerDocument);
+          node.id = match[1];
+          node.parentNode = this;
+        }
+      }
+    }
+    get innerHTML() { return this._innerHTML; }
+    appendChild(child) {
+      child.parentNode = this;
+      this.children.push(child);
+      if (child.id) this.ownerDocument.nodes.set(child.id, child);
+      return child;
+    }
+    remove() {
+      if (this.id) this.ownerDocument.nodes.delete(this.id);
+    }
+    focus() {}
+    setSelectionRange() {}
+  }
+
+  function createFakeDocument() {
+    const doc = {
+      nodes: new Map(),
+      activeElement: null,
+      addEventListener() {},
+      createElement(tag) { return new FakeElement(doc, tag); },
+      getElementById(id) {
+        if (!doc.nodes.has(id) && String(id || "").startsWith("fileBrowserEditor-")) {
+          const node = new FakeElement(doc);
+          node.id = id;
+        }
+        return doc.nodes.get(id) || null;
+      },
+      querySelector() { return null; },
+    };
+    doc.body = new FakeElement(doc, "body");
+    doc.head = new FakeElement(doc, "head");
+    return doc;
+  }
+
+  it("mounts previews as read-only, edit as editable, and cancel as read-only", async () => {
+    const document = createFakeDocument();
+    const editorCalls = [];
+    const context = {
+      window: {
+        addEventListener() {},
+        HerdrEditor: {
+          create(opts) {
+            editorCalls.push({ path: opts.path, content: opts.content, readonly: opts.readonly, lineNumbers: opts.lineNumbers });
+            opts.parent.innerHTML = `<div class="cm-content cm-lineWrapping" contenteditable="${opts.readonly === false ? "true" : "false"}" data-language="python"></div>`;
+            return { getValue() { return opts.content; }, setValue() {}, destroy() {} };
+          },
+        },
+        HerdrGitUi: { hide() {} },
+        HerdrWorkspacePath(workspace) { return workspace.cwd; },
+      },
+      document,
+      localStorage: { getItem() { return JSON.stringify({ fileBrowserLineNumbers: true, fileBrowserGitStatus: false }); } },
+      navigator: { clipboard: { writeText: async () => {} } },
+      fetch: async (url) => ({
+        ok: true,
+        async json() {
+          if (String(url).startsWith("/api/file-browser/file")) return { path: "src/demo.py", content: "print('x')", binary: false, truncated: false };
+          return { path: "", entries: [], git_status: null };
+        },
+      }),
+      confirm: () => true,
+      appRefreshIconButton: () => "<button>Refresh</button>",
+      encodeURIComponent,
+      decodeURIComponent,
+      Error,
+      JSON,
+      Math,
+      String,
+      setTimeout,
+      clearTimeout,
+    };
+    context.window.window = context.window;
+    context.window.document = document;
+    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
+    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
+
+    await context.window.HerdrFileBrowser.open({ cwd: "/repo" });
+    context.window.HerdrFileBrowser.select(encodeURIComponent("src/demo.py"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.equal(editorCalls.at(-1).path, "src/demo.py");
+    assert.equal(editorCalls.at(-1).readonly, true);
+    assert.equal(editorCalls.at(-1).lineNumbers, true);
+    assert.match(document.getElementById(editorCalls.at(-1).path ? "fileBrowserPanel" : "").innerHTML, /Edit/);
+
+    context.window.HerdrFileBrowser.edit(encodeURIComponent("src/demo.py"));
+    assert.equal(editorCalls.at(-1).readonly, false);
+    assert.equal(editorCalls.at(-1).content, "print('x')");
+    assert.match(document.getElementById("fileBrowserPanel").innerHTML, /Save/);
+
+    context.window.HerdrFileBrowser.cancelEdit(encodeURIComponent("src/demo.py"));
+    assert.equal(editorCalls.at(-1).readonly, true);
+    assert.equal(editorCalls.at(-1).content, "print('x')");
+    assert.match(document.getElementById("fileBrowserPanel").innerHTML, /Edit/);
+  });
+});
