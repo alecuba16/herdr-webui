@@ -28,6 +28,7 @@
     if (window.HerdrCodeMirror && window.HerdrCodeMirror.create) {
       parent.innerHTML = codeMirrorShellHtml(opts);
       const mount = parent.querySelector(".herdr-editor-mount");
+      if (mount) mount.innerHTML = "";
       const editor = window.HerdrCodeMirror.create(Object.assign({}, opts, { parent: mount }));
       return {
         getValue() { return editor.getValue(); },
