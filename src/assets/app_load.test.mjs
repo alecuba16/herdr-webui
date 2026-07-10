@@ -258,6 +258,7 @@ describe("app bundle load", () => {
     match(html, /line numbers show by default/);
     match(html, /fold controls work for supported languages/);
     match(html, /syntax colors use dedicated high-contrast light\/dark editor palette tokens/);
+    match(html, /Search, selected files, split panes, and unsaved edit drafts stay attached to each open workspace\/worktree while switching panels/);
     match(html, /priority red deleted, yellow modified, green new/);
     match(html, /Git selector opens repo tools for diff, stage\/unstage, discard, commit, commit & push, pull, push\/force-push, rebase, conflicts, stash, branches, cleanup, and worktree prune; file view can toggle unified\/side-by-side diffs/);
     match(html, /Prefix then \/ opens palette for workspaces, repos, worktrees, labels, agents, and panels/);
@@ -291,7 +292,7 @@ describe("app bundle load", () => {
   });
 
   it("defines file explorer and Git file filters", () => {
-    match(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), /q=\$\{encodeURIComponent\(state\.filter\.trim\(\)\)\}/);
+    match(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), /q=\$\{encodeURIComponent\(target\.filter\.trim\(\)\)\}/);
     match(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), /setTimeout\(\(\) => \{/);
     const editorSource = readFileSync(new URL("./vendor/codemirror_entry.mjs", import.meta.url), "utf8");
     match(editorSource, /foldGutter/);

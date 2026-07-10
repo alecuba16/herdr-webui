@@ -1587,6 +1587,15 @@
     open,
     hide,
     close,
+    forgetWorkspace(workspace) {
+      const key = typeof workspace === "string" ? workspace : workspaceKey(workspace);
+      if (!key) return;
+      if (state.activeKey === key) {
+        close();
+        return;
+      }
+      delete state.cache[key];
+    },
     refresh,
     refreshWithSpin() {
       const view = active();

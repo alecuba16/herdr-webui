@@ -651,4 +651,85 @@ describe("desktop file browser editor integration", () => {
     assert.equal(editorCalls.at(-1).content, "print('x')");
     assert.match(document.getElementById("fileBrowserPanel").innerHTML, /Edit/);
   });
+
+  it("keeps search and editing draft per workspace, then forgets closed workspace state", async () => {
+    const document = createFakeDocument();
+    const editorCalls = [];
+    const requests = [];
+    const context = {
+      window: {
+        addEventListener() {},
+        HerdrEditor: {
+          create(opts) {
+            editorCalls.push({ path: opts.path, content: opts.content, readonly: opts.readonly, lineNumbers: opts.lineNumbers, onChange: opts.onChange });
+            opts.parent.innerHTML = `<div class="cm-content cm-lineWrapping" contenteditable="${opts.readonly === false ? "true" : "false"}"></div>`;
+            return { getValue() { return opts.content; }, setValue() {}, destroy() {} };
+          },
+        },
+        HerdrGitUi: { hide() {} },
+        HerdrWorkspacePath(workspace) { return workspace.cwd; },
+      },
+      document,
+      localStorage: { getItem() { return JSON.stringify({ fileBrowserLineNumbers: true, fileBrowserGitStatus: false }); } },
+      navigator: { clipboard: { writeText: async () => {} } },
+      fetch: async (url) => {
+        const text = String(url);
+        requests.push(text);
+        return {
+          ok: true,
+          async json() {
+            if (text.startsWith("/api/file-browser/file")) {
+              const cwd = decodeURIComponent((text.match(/cwd=([^&]+)/) || [null, ""])[1]);
+              const path = decodeURIComponent((text.match(/path=([^&]+)/) || [null, ""])[1]);
+              return { path, content: cwd === "/repo-a" ? "print('a')" : "print('b')", binary: false, truncated: false };
+            }
+            if (text.includes("q=")) {
+              return { path: "", entries: [{ kind: "file", name: "demo.py", path: "src/demo.py", level: 1 }], git_status: null, truncated: false };
+            }
+            return { path: "", entries: [{ kind: "dir", name: "src", path: "src" }], git_status: null };
+          },
+        };
+      },
+      confirm: () => true,
+      appRefreshIconButton: () => "<button>Refresh</button>",
+      encodeURIComponent,
+      decodeURIComponent,
+      Error,
+      JSON,
+      Math,
+      String,
+      setTimeout(fn) { fn(); return 1; },
+      clearTimeout() {},
+    };
+    context.window.window = context.window;
+    context.window.document = document;
+    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
+    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
+
+    const workspaceA = { workspace_id: "ws-a", cwd: "/repo-a" };
+    const workspaceB = { workspace_id: "ws-b", cwd: "/repo-b" };
+
+    await context.window.HerdrFileBrowser.open(workspaceA);
+    context.window.HerdrFileBrowser.filter("demo");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    context.window.HerdrFileBrowser.select(encodeURIComponent("src/demo.py"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    context.window.HerdrFileBrowser.edit(encodeURIComponent("src/demo.py"));
+    editorCalls.at(-1).onChange("print('draft-a')");
+
+    await context.window.HerdrFileBrowser.open(workspaceB);
+    assert.doesNotMatch(document.getElementById("fileBrowserPanel").innerHTML, /value="demo"/);
+
+    await context.window.HerdrFileBrowser.open(workspaceA);
+    const restoredPanel = document.getElementById("fileBrowserPanel").innerHTML;
+    assert.match(restoredPanel, /value="demo"/);
+    assert.equal(editorCalls.at(-1).path, "src/demo.py");
+    assert.equal(editorCalls.at(-1).readonly, false);
+    assert.equal(editorCalls.at(-1).content, "print('draft-a')");
+    assert.ok(requests.some((url) => url.includes("q=demo")));
+
+    context.window.HerdrFileBrowser.forgetWorkspace(workspaceA);
+    await context.window.HerdrFileBrowser.open(workspaceA);
+    assert.doesNotMatch(document.getElementById("fileBrowserPanel").innerHTML, /value="demo"/);
+  });
 });

@@ -870,9 +870,12 @@ async function closePaneById(id) {
   await api(`/api/panes/${encodeURIComponent(id)}/close`, { method: "POST" });
 }
 async function closeWorkspaceById(id) {
+  const closingWorkspace = state.workspaces.find((workspace) => workspace.workspace_id === id) || id;
   await api(`/api/workspaces/${encodeURIComponent(id)}/close`, {
     method: "POST",
   });
+  if (window.HerdrFileBrowser && window.HerdrFileBrowser.forgetWorkspace) window.HerdrFileBrowser.forgetWorkspace(closingWorkspace);
+  if (window.HerdrGitUi && window.HerdrGitUi.forgetWorkspace) window.HerdrGitUi.forgetWorkspace(closingWorkspace);
   if (state.ws === id) {
     state.ws = null;
     state.tab = null;
