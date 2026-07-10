@@ -298,6 +298,8 @@ describe("app bundle load", () => {
     match(editorSource, /foldKeymap/);
     match(editorSource, /readableHighlightStyle/);
     match(editorSource, /--editor-syntax-keyword/);
+    match(editorSource, /languageNameForPath/);
+    match(editorSource, /EditorView\.contentAttributes\.of\(\{ "data-language": languageNameForPath\(opts\.path\) \}\)/);
     ok(!editorSource.includes("defaultHighlightStyle"));
     match(readFileSync(new URL("./desktop/app_css/base.css", import.meta.url), "utf8"), /--editor-syntax-string: #a6e3a1/);
     match(readFileSync(new URL("./mobile/app.css", import.meta.url), "utf8"), /--editor-syntax-string: #a6e3a1/);

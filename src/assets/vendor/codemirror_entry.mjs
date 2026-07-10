@@ -80,6 +80,26 @@ function languageForPath(path) {
   return null;
 }
 
+function languageNameForPath(path) {
+  const name = String(path || "").split("/").pop().toLowerCase();
+  if (["makefile", "gnumakefile", "bsdmakefile"].includes(name)) return "makefile";
+  const ext = name.split(".").pop();
+  if (["js", "jsx", "mjs", "cjs"].includes(ext)) return "javascript";
+  if (["ts", "tsx"].includes(ext)) return "typescript";
+  if (ext === "rs") return "rust";
+  if (["py", "pyw"].includes(ext)) return "python";
+  if (ext === "go") return "go";
+  if (ext === "json") return "json";
+  if (["html", "htm"].includes(ext)) return "html";
+  if (ext === "css") return "css";
+  if (["md", "markdown"].includes(ext)) return "markdown";
+  if (["yaml", "yml"].includes(ext)) return "yaml";
+  if (ext === "xml") return "xml";
+  if (ext === "java") return "java";
+  if (["sql", "psql"].includes(ext)) return "sql";
+  return ext || "text";
+}
+
 class TextMarker extends GutterMarker {
   constructor(text, className) {
     super();
@@ -192,6 +212,7 @@ function create(options) {
     keymap.of([...defaultKeymap, ...historyKeymap, ...foldKeymap]),
     theme,
     EditorView.lineWrapping,
+    EditorView.contentAttributes.of({ "data-language": languageNameForPath(opts.path) }),
     EditorView.editable.of(opts.readonly === false),
     EditorState.readOnly.of(opts.readonly !== false),
   ];
@@ -219,4 +240,4 @@ function create(options) {
   };
 }
 
-export { create, languageForPath };
+export { create, languageForPath, languageNameForPath };

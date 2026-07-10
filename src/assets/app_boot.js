@@ -56,6 +56,7 @@
     }
     loadScript("/assets/shared/core.js");
     loadScript("/assets/shared/file-tree.js");
+    loadScript("/assets/vendor/codemirror.js");
     loadScript("/assets/shared/editor.js");
     loadScript("/assets/shared/terminal-scroll.js");
     loadScript("/assets/shared/temp-terminal.js");

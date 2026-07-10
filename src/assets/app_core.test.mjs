@@ -392,10 +392,14 @@ describe("HerdrEditor line number helpers", () => {
 
   it("starts read-only previews with the CodeMirror shell and then mounts CodeMirror", async () => {
     const calls = [];
+    const mount = {
+      set innerHTML(value) { parent.innerHTML = String(value); },
+      get innerHTML() { return parent.innerHTML; },
+    };
     const parent = {
       innerHTML: "",
       querySelector(selector) {
-        if (selector === ".herdr-editor-mount" && this.innerHTML.includes("herdr-editor-mount")) return { className: "mount" };
+        if (selector === ".herdr-editor-mount" && this.innerHTML.includes("herdr-editor-mount")) return mount;
         return null;
       },
     };
@@ -472,5 +476,44 @@ describe("HerdrEditor line number helpers", () => {
     assert.equal(calls.length, 1);
     assert.equal(calls[0].readonly, false);
     assert.equal(calls[0].content, "let x = 1;");
+  });
+
+  it("uses preloaded CodeMirror immediately for read-only file opens", () => {
+    const calls = [];
+    const mount = {
+      set innerHTML(value) { parent.innerHTML = String(value); },
+      get innerHTML() { return parent.innerHTML; },
+    };
+    const parent = {
+      innerHTML: "",
+      querySelector(selector) {
+        if (selector === ".herdr-editor-mount" && this.innerHTML.includes("herdr-editor-mount")) return mount;
+        return null;
+      },
+    };
+    const context = {
+      window: {
+        HerdrCodeMirror: {
+          create(opts) {
+            calls.push(opts);
+            opts.parent.innerHTML = `<div spellcheck="false" autocorrect="off" autocapitalize="off" writingsuggestions="false" translate="no" contenteditable="false" style="tab-size: 4;" class="cm-content cm-lineWrapping" role="textbox" aria-multiline="true" data-language="python"></div>`;
+            return { getValue() { return opts.content; }, setValue() {}, destroy() {} };
+          },
+        },
+      },
+      document: { createElement() { return {}; }, body: { appendChild() { throw new Error("should not load CodeMirror dynamically"); } } },
+      Promise,
+    };
+    const source = readFileSync(new URL("./shared/editor.js", import.meta.url), "utf8");
+    vm.runInNewContext(source, context);
+
+    context.window.HerdrEditor.create({ parent, path: "demo.py", content: "print('x')", readonly: true, hideHeader: true, lineNumbers: true });
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].readonly, true);
+    assert.match(parent.innerHTML, /class="cm-content cm-lineWrapping"/);
+    assert.match(parent.innerHTML, /contenteditable="false"/);
+    assert.match(parent.innerHTML, /data-language="python"/);
+    assert.doesNotMatch(parent.innerHTML, /herdr-editor-loading/);
   });
 });
