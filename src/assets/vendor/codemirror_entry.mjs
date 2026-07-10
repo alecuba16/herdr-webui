@@ -11,7 +11,7 @@ import { rust } from "@codemirror/lang-rust";
 import { sql } from "@codemirror/lang-sql";
 import { xml } from "@codemirror/lang-xml";
 import { yaml } from "@codemirror/lang-yaml";
-import { bracketMatching, defaultHighlightStyle, indentOnInput, syntaxHighlighting } from "@codemirror/language";
+import { bracketMatching, defaultHighlightStyle, foldGutter, foldKeymap, indentOnInput, syntaxHighlighting } from "@codemirror/language";
 import { EditorState } from "@codemirror/state";
 import { Decoration, drawSelection, dropCursor, EditorView, GutterMarker, gutter, highlightActiveLine, highlightSpecialChars, keymap, lineNumbers, rectangularSelection, ViewPlugin, WidgetType } from "@codemirror/view";
 
@@ -167,7 +167,8 @@ function create(options) {
     bracketMatching(),
     indentOnInput(),
     syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
-    keymap.of([...defaultKeymap, ...historyKeymap]),
+    foldGutter(),
+    keymap.of([...defaultKeymap, ...historyKeymap, ...foldKeymap]),
     theme,
     EditorView.lineWrapping,
     EditorView.editable.of(opts.readonly === false),

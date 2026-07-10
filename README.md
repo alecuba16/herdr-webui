@@ -147,6 +147,7 @@ Newer Herdr builds may work when protocol stays compatible, but WebUI reports th
 - File/folder searches keep parent breadcrumbs, match highlighting, scroll/focus preservation, and paginated loading. Filtered file results render the folder chain above matching files, not a flat list, so users can see each result path in context.
 - File browser rename/delete updates the visible tree in place where possible instead of forcing a full list reload.
 - Text file previews show line numbers by default in desktop and mobile Files. Users can toggle this with Settings → File browser → File browser line numbers. The shared editor passes the option to CodeMirror when loaded and uses a lightweight numbered fallback for read-only previews.
+- CodeMirror-backed file editors expose a fold gutter and folding shortcuts for languages that provide fold ranges, including common brace/block-based modes like JavaScript, TypeScript, Rust, Go, JSON, CSS, HTML, XML, YAML, Java, SQL, Markdown, and Python.
 - The editor uses a dedicated `--editor-bg` theme color so syntax highlighting, especially YAML in dark mode, stays readable independently from panel surfaces.
 
 ### File browser Git status propagation
