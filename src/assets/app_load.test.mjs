@@ -256,6 +256,7 @@ describe("app bundle load", () => {
     match(html, /keeps parent folders visible so result paths stay clear/);
     match(html, /line numbers by default/);
     match(html, /fold controls for supported languages/);
+    match(html, /syntax colors use dedicated high-contrast light\/dark editor palette tokens/);
     match(html, /priority red deleted, yellow modified, green new/);
     match(html, /Git selector opens repo tools for diff, stage\/unstage, discard, commit, commit & push, pull, push\/force-push, rebase, conflicts, stash, branches, cleanup, and worktree prune; file view can toggle unified\/side-by-side diffs/);
     match(html, /Prefix then \/ opens palette for workspaces, repos, worktrees, labels, agents, and panels/);
@@ -294,6 +295,11 @@ describe("app bundle load", () => {
     const editorSource = readFileSync(new URL("./vendor/codemirror_entry.mjs", import.meta.url), "utf8");
     match(editorSource, /foldGutter/);
     match(editorSource, /foldKeymap/);
+    match(editorSource, /readableHighlightStyle/);
+    match(editorSource, /--editor-syntax-keyword/);
+    ok(!editorSource.includes("defaultHighlightStyle"));
+    match(readFileSync(new URL("./desktop/app_css/base.css", import.meta.url), "utf8"), /--editor-syntax-string: #a6e3a1/);
+    match(readFileSync(new URL("./mobile/app.css", import.meta.url), "utf8"), /--editor-syntax-string: #a6e3a1/);
     match(source, /id="optFileBrowserLineNumbers"/);
     match(gitUiSource, /placeholder="Filter files"/);
     match(gitUiSource, /filterFiles/);

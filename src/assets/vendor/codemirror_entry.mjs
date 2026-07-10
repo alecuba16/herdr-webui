@@ -11,9 +11,10 @@ import { rust } from "@codemirror/lang-rust";
 import { sql } from "@codemirror/lang-sql";
 import { xml } from "@codemirror/lang-xml";
 import { yaml } from "@codemirror/lang-yaml";
-import { bracketMatching, defaultHighlightStyle, foldGutter, foldKeymap, indentOnInput, syntaxHighlighting } from "@codemirror/language";
+import { bracketMatching, foldGutter, foldKeymap, HighlightStyle, indentOnInput, syntaxHighlighting } from "@codemirror/language";
 import { EditorState } from "@codemirror/state";
 import { Decoration, drawSelection, dropCursor, EditorView, GutterMarker, gutter, highlightActiveLine, highlightSpecialChars, keymap, lineNumbers, rectangularSelection, ViewPlugin, WidgetType } from "@codemirror/view";
+import { tags } from "@lezer/highlight";
 
 const theme = EditorView.theme({
   "&": {
@@ -38,6 +39,26 @@ const theme = EditorView.theme({
   },
   "&.cm-focused": { outline: "none" },
 });
+
+const readableHighlightStyle = HighlightStyle.define([
+  { tag: tags.keyword, color: "var(--editor-syntax-keyword)" },
+  { tag: [tags.atom, tags.bool, tags.null, tags.literal], color: "var(--editor-syntax-constant)" },
+  { tag: [tags.number, tags.integer, tags.float, tags.unit], color: "var(--editor-syntax-number)" },
+  { tag: [tags.string, tags.character, tags.attributeValue, tags.docString], color: "var(--editor-syntax-string)" },
+  { tag: [tags.escape, tags.regexp, tags.url, tags.link], color: "var(--editor-syntax-regexp)" },
+  { tag: [tags.comment, tags.lineComment, tags.blockComment, tags.docComment], color: "var(--editor-syntax-comment)", fontStyle: "italic" },
+  { tag: [tags.variableName, tags.name, tags.namespace, tags.self], color: "var(--editor-syntax-variable)" },
+  { tag: [tags.function(tags.variableName), tags.function(tags.propertyName), tags.labelName], color: "var(--editor-syntax-function)" },
+  { tag: [tags.className, tags.typeName, tags.definition(tags.typeName)], color: "var(--editor-syntax-type)" },
+  { tag: [tags.propertyName, tags.attributeName], color: "var(--editor-syntax-property)" },
+  { tag: [tags.tagName, tags.macroName], color: "var(--editor-syntax-tag)" },
+  { tag: [tags.operator, tags.operatorKeyword, tags.compareOperator, tags.logicOperator, tags.arithmeticOperator, tags.definitionOperator, tags.typeOperator], color: "var(--editor-syntax-operator)" },
+  { tag: [tags.meta, tags.annotation, tags.modifier, tags.processingInstruction], color: "var(--editor-syntax-meta)" },
+  { tag: tags.heading, color: "var(--editor-syntax-keyword)", fontWeight: "700" },
+  { tag: tags.strong, fontWeight: "700" },
+  { tag: tags.emphasis, fontStyle: "italic" },
+  { tag: tags.invalid, color: "var(--editor-syntax-invalid)", textDecoration: "underline wavy var(--editor-syntax-invalid)" },
+]);
 
 function languageForPath(path) {
   const name = String(path || "").split("/").pop().toLowerCase();
@@ -166,7 +187,7 @@ function create(options) {
     rectangularSelection(),
     bracketMatching(),
     indentOnInput(),
-    syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+    syntaxHighlighting(readableHighlightStyle, { fallback: true }),
     foldGutter(),
     keymap.of([...defaultKeymap, ...historyKeymap, ...foldKeymap]),
     theme,
