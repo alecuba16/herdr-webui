@@ -1057,4 +1057,81 @@ mod tests {
             Some("deleted")
         );
     }
+
+    #[test]
+    fn collect_git_status_propagates_directory_priority_from_git() {
+        let root = std::env::temp_dir().join(format!(
+            "herdr-webui-file-browser-git-status-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("src/changed")).unwrap();
+        fs::create_dir_all(root.join("src/deleted")).unwrap();
+        fs::create_dir_all(root.join("src/new")).unwrap();
+        fs::write(root.join("src/changed/file.rs"), "old").unwrap();
+        fs::write(root.join("src/deleted/file.rs"), "old").unwrap();
+        fs::write(root.join("src/new/file.rs"), "new").unwrap();
+
+        let init = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .arg("init")
+            .output();
+        if !init
+            .as_ref()
+            .map(|out| out.status.success())
+            .unwrap_or(false)
+        {
+            let _ = fs::remove_dir_all(&root);
+            return;
+        }
+        let add = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["add", "src/changed/file.rs", "src/deleted/file.rs"])
+            .status()
+            .unwrap();
+        assert!(add.success());
+        fs::write(root.join("src/changed/file.rs"), "new").unwrap();
+        fs::remove_file(root.join("src/deleted/file.rs")).unwrap();
+
+        let root = root.canonicalize().unwrap();
+        let status = collect_git_status(&root, &root).unwrap();
+
+        assert_eq!(
+            status.get("src").and_then(|value| value.as_str()),
+            Some("deleted")
+        );
+        assert_eq!(
+            status.get("src/changed").and_then(|value| value.as_str()),
+            Some("modified")
+        );
+        assert_eq!(
+            status
+                .get("src/changed/file.rs")
+                .and_then(|value| value.as_str()),
+            Some("modified")
+        );
+        assert_eq!(
+            status.get("src/deleted").and_then(|value| value.as_str()),
+            Some("deleted")
+        );
+        assert_eq!(
+            status
+                .get("src/deleted/file.rs")
+                .and_then(|value| value.as_str()),
+            Some("deleted")
+        );
+        assert_eq!(
+            status.get("src/new").and_then(|value| value.as_str()),
+            Some("added")
+        );
+        assert_eq!(
+            status
+                .get("src/new/file.rs")
+                .and_then(|value| value.as_str()),
+            Some("untracked")
+        );
+        let _ = fs::remove_dir_all(root);
+    }
 }
