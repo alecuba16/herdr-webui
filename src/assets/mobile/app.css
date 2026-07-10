@@ -571,6 +571,37 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
   padding: 12px;
   white-space: pre;
 }
+.herdr-editor-numbered-code {
+  background: var(--editor-bg, var(--panel2));
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  min-height: 55vh;
+  min-width: 0;
+  overflow: auto;
+}
+.herdr-editor-numbered-code .herdr-editor-code,
+.herdr-editor-lines {
+  min-height: 55vh;
+  overflow: visible;
+}
+.herdr-editor-numbered-code .herdr-editor-code {
+  padding-left: 10px;
+}
+.herdr-editor-lines {
+  background: var(--editor-bg, var(--panel2));
+  border-right: 1px solid var(--border);
+  color: var(--muted);
+  font: 12px/1.5 var(--mono-font);
+  margin: 0;
+  padding: 12px 8px;
+  text-align: right;
+  user-select: none;
+  white-space: pre;
+}
+.herdr-editor-lines span {
+  display: block;
+  min-width: 2.5ch;
+}
 .cm-herdr-blame-gutter .cm-gutterElement {
   color: var(--muted);
   font-size: 11px;

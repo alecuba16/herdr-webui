@@ -159,7 +159,6 @@ function buildHunkDecorations(view, hunks, actions) {
 function create(options) {
   const opts = options || {};
   const extensions = [
-    lineNumbers(),
     highlightSpecialChars(),
     history(),
     drawSelection(),
@@ -174,6 +173,7 @@ function create(options) {
     EditorView.editable.of(opts.readonly === false),
     EditorState.readOnly.of(opts.readonly !== false),
   ];
+  if (opts.lineNumbers !== false) extensions.unshift(lineNumbers());
   if (opts.readonly === false) extensions.push(highlightActiveLine());
   const language = languageForPath(opts.path);
   if (language) extensions.push(language);

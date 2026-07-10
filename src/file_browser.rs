@@ -386,9 +386,81 @@ fn file_hash(path: &Path) -> Result<String, String> {
         .collect::<String>())
 }
 
+fn git_status_priority(status: &str) -> u8 {
+    match status {
+        "deleted" => 3,
+        "modified" | "conflict" => 2,
+        "added" | "untracked" => 1,
+        _ => 0,
+    }
+}
+
+fn propagated_directory_status(status: &str) -> &'static str {
+    match status {
+        "deleted" => "deleted",
+        "added" | "untracked" => "added",
+        _ => "modified",
+    }
+}
+
+fn insert_git_status(
+    map: &mut serde_json::Map<String, serde_json::Value>,
+    path: impl Into<String>,
+    status: &str,
+) {
+    let path = path.into();
+    if path.is_empty() {
+        return;
+    }
+    let existing_priority = map
+        .get(&path)
+        .and_then(|value| value.as_str())
+        .map(git_status_priority)
+        .unwrap_or(0);
+    if git_status_priority(status) >= existing_priority {
+        map.insert(path, serde_json::Value::String(status.to_string()));
+    }
+}
+
+fn parse_porcelain_status(xy: &str) -> &'static str {
+    match xy {
+        "??" => "untracked",
+        "AA" | "DD" | "AU" | "UA" | "UD" | "DU" | "UU" => "conflict",
+        _ => {
+            let x = xy.as_bytes()[0] as char;
+            let y = xy.as_bytes()[1] as char;
+            if y == 'D' || x == 'D' {
+                "deleted"
+            } else if y == 'M' || y == 'R' || y == 'C' || x == 'M' || x == 'R' || x == 'C' {
+                "modified"
+            } else if y == 'A' || x == 'A' {
+                "added"
+            } else {
+                "modified"
+            }
+        }
+    }
+}
+
+fn propagate_git_status(
+    map: &mut serde_json::Map<String, serde_json::Value>,
+    path: &str,
+    status: &str,
+) {
+    insert_git_status(map, path, status);
+    let dir_status = propagated_directory_status(status);
+    let parts = path
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    for depth in 1..parts.len() {
+        insert_git_status(map, parts[..depth].join("/"), dir_status);
+    }
+}
+
 fn collect_git_status(
     root: &Path,
-    dir: &Path,
+    _dir: &Path,
 ) -> Option<serde_json::Map<String, serde_json::Value>> {
     let output = std::process::Command::new("git")
         .arg("-C")
@@ -399,7 +471,7 @@ fn collect_git_status(
     if !output.status.success() {
         return None;
     }
-    // Find the git repo root to compute the relative path from repo root to browsed dir
+    // Find the git repo root to compute paths relative to the workspace root.
     let repo_root_output = std::process::Command::new("git")
         .arg("-C")
         .arg(root)
@@ -410,11 +482,10 @@ fn collect_git_status(
         return None;
     }
     let repo_root = PathBuf::from(String::from_utf8_lossy(&repo_root_output.stdout).trim());
-    // Compute the relative path from repo root to the browsed directory
-    let prefix = dir
+    let prefix = root
         .strip_prefix(&repo_root)
         .ok()
-        .map(|p| p.to_string_lossy().to_string())
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
         .unwrap_or_default();
     let prefix_trim = prefix.trim_end_matches('/');
 
@@ -438,45 +509,22 @@ fn collect_git_status(
         } else {
             path
         };
-        // Adjust path to be relative to the browsed directory
+        let status = parse_porcelain_status(xy);
+        // Adjust path to be relative to the workspace root. This lets the same map
+        // color current rows, expanded children, and search results consistently.
         let adjusted = if prefix_trim.is_empty() {
-            // Browsing the repo root — paths are already relative to it
             path.to_string()
         } else {
-            // Browsing a subdirectory — strip the prefix
             let full_prefix = format!("{}/", prefix_trim);
             if let Some(stripped) = path.strip_prefix(&full_prefix) {
                 stripped.to_string()
+            } else if path == prefix_trim {
+                String::new()
             } else {
-                // Path is outside the browsed directory — skip it
                 continue;
             }
         };
-        let status = match xy {
-            "??" => "untracked",
-            "AA" | "DD" | "AU" | "UA" | "UD" | "DU" | "UU" => "conflict",
-            _ => {
-                let x = xy.as_bytes()[0] as char;
-                let y = xy.as_bytes()[1] as char;
-                // Priority: conflict > unstaged change > staged change
-                if y == 'D' {
-                    "deleted"
-                } else if y == 'M' || y == 'R' || y == 'C' {
-                    "modified"
-                } else if y == 'A' {
-                    "added"
-                } else if x == 'D' {
-                    "deleted"
-                } else if x == 'M' || x == 'R' || x == 'C' {
-                    "modified"
-                } else if x == 'A' {
-                    "added"
-                } else {
-                    "modified"
-                }
-            }
-        };
-        map.insert(adjusted, serde_json::Value::String(status.to_string()));
+        propagate_git_status(&mut map, &adjusted, status);
     }
     if map.is_empty() {
         return None;
@@ -975,5 +1023,38 @@ mod tests {
         let result = collect_git_status(&temp, &temp);
         // temp_dir might be inside a git repo on some machines, so just test it doesn't panic
         let _ = result;
+    }
+
+    #[test]
+    fn propagate_git_status_marks_parent_dirs_with_priority() {
+        let mut map = serde_json::Map::new();
+
+        propagate_git_status(&mut map, "src/new/file.rs", "untracked");
+        assert_eq!(
+            map.get("src").and_then(|value| value.as_str()),
+            Some("added")
+        );
+        assert_eq!(
+            map.get("src/new").and_then(|value| value.as_str()),
+            Some("added")
+        );
+
+        propagate_git_status(&mut map, "src/changed/file.rs", "modified");
+        assert_eq!(
+            map.get("src").and_then(|value| value.as_str()),
+            Some("modified")
+        );
+
+        propagate_git_status(&mut map, "src/deleted/file.rs", "deleted");
+        assert_eq!(
+            map.get("src").and_then(|value| value.as_str()),
+            Some("deleted")
+        );
+
+        propagate_git_status(&mut map, "src/another-new/file.rs", "untracked");
+        assert_eq!(
+            map.get("src").and_then(|value| value.as_str()),
+            Some("deleted")
+        );
     }
 }

@@ -886,6 +886,7 @@
     setBrowserNotifications: mobileSettings.setBrowserNotifications,
     setExplorationDefaultDirectory: mobileSettings.setExplorationDefaultDirectory,
     setFileBrowserDepth: mobileSettings.setFileBrowserDepth,
+    setFileBrowserLineNumbers: mobileSettings.setFileBrowserLineNumbers,
     setLayoutPreference: mobileSettings.setLayoutPreference,
     setNotificationVolume: mobileSettings.setNotificationVolume,
     setTerminalFontFamily: mobileSettings.setTerminalFontFamily,

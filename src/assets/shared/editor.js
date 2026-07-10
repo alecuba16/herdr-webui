@@ -64,7 +64,16 @@
   function previewHtml(opts) {
     const content = String(opts.content || "");
     const head = opts.hideHeader ? "" : `<div class="herdr-editor-head"><strong>${esc(opts.path || "Preview")}</strong><span>${esc(languageFor(opts.path))}</span></div>`;
-    return `<div class="herdr-editor readonly">${head}<pre class="herdr-editor-code"><code>${highlight(content, opts.path)}</code></pre></div>`;
+    const lineNumbers = opts.lineNumbers !== false;
+    const code = lineNumbers ? numberedPreviewHtml(content, opts.path) : `<pre class="herdr-editor-code"><code>${highlight(content, opts.path)}</code></pre>`;
+    return `<div class="herdr-editor readonly${lineNumbers ? " with-line-numbers" : ""}">${head}${code}</div>`;
+  }
+
+  function numberedPreviewHtml(content, path) {
+    const lines = String(content || "").split("\n");
+    const gutter = lines.map((_, index) => `<span>${index + 1}</span>`).join("");
+    const code = lines.map((line) => highlight(line, path)).join("\n");
+    return `<div class="herdr-editor-numbered-code"><pre class="herdr-editor-lines" aria-hidden="true">${gutter}</pre><pre class="herdr-editor-code"><code>${code}</code></pre></div>`;
   }
 
   function editHtml(opts) {

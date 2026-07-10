@@ -287,6 +287,7 @@ describe("app bundle load", () => {
   it("defines file explorer and Git file filters", () => {
     match(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), /q=\$\{encodeURIComponent\(state\.filter\.trim\(\)\)\}/);
     match(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), /setTimeout\(\(\) => \{/);
+    match(source, /id="optFileBrowserLineNumbers"/);
     match(gitUiSource, /placeholder="Filter files"/);
     match(gitUiSource, /filterFiles/);
   });
