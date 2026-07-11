@@ -426,6 +426,72 @@ describe("app bundle load", () => {
     equal(helper.normalizePathKind("dir", disabled), "dir");
   });
 
+  it("normalizes shared search settings order and bounds", () => {
+    const ctx = context();
+    ctx.localStorage.setItem("herdr-web-options", JSON.stringify({
+      searchSectionOrder: "content,files,content,unknown",
+      fileBrowserSearchPageSize: 9999,
+      fileContentSearchMinChars: 999,
+      fileContentSearchPageSize: 1,
+      fileContentSearchContextLines: -5,
+      fileContentSearchAutoCollapseFiles: 999,
+      fileContentSearchMatchesPerFile: 999,
+      fileContentSearchDefaultExpanded: false,
+    }));
+    vm.runInContext(readFileSync(new URL("./shared/workspace_search.js", import.meta.url), "utf8"), ctx);
+
+    const opts = ctx.HerdrWorkspaceSearch.settings();
+    equal(JSON.stringify(opts.searchSectionOrder), JSON.stringify(["content", "files", "workspaces"]));
+    equal(opts.pathPageSize, 500);
+    equal(opts.contentMinChars, 20);
+    equal(opts.contentPageSize, 10);
+    equal(opts.contextLines, 0);
+    equal(opts.autoCollapseFiles, 200);
+    equal(opts.matchesPerFile, 50);
+    equal(opts.defaultExpanded, false);
+  });
+
+  it("uses shared search settings to skip disabled APIs and clamp query params", async () => {
+    const ctx = context();
+    const urls = [];
+    ctx.fetch = async (url) => {
+      urls.push(String(url));
+      return { ok: true, statusText: "OK", json: async () => ({ entries: [], files: [], truncated: false }) };
+    };
+    vm.runInContext(readFileSync(new URL("./shared/workspace_search.js", import.meta.url), "utf8"), ctx);
+    const helper = ctx.HerdrWorkspaceSearch;
+
+    ctx.localStorage.setItem("herdr-web-options", JSON.stringify({ searchFilesEnabled: false, searchFoldersEnabled: false, searchContentEnabled: false }));
+    const disabledPath = await helper.searchPaths({ cwd: "/tmp/repo", query: "needle" });
+    equal(disabledPath.disabled, true);
+    equal(disabledPath.entries.length, 0);
+    equal(disabledPath.git_status, null);
+    equal(disabledPath.truncated, false);
+    const disabledContent = await helper.searchContent({ cwd: "/tmp/repo", query: "needle" });
+    equal(disabledContent.disabled, true);
+    equal(disabledContent.files.length, 0);
+    equal(disabledContent.total_files, 0);
+    equal(disabledContent.total_matches, 0);
+    equal(disabledContent.truncated, false);
+    equal(urls.length, 0);
+
+    ctx.localStorage.setItem("herdr-web-options", JSON.stringify({ fileBrowserGitStatus: false, fileBrowserSearchPageSize: 25, fileContentSearchPageSize: 15 }));
+    await helper.searchPaths({ cwd: "/tmp/a b", query: "hello world", kind: "file", offset: 5 });
+    match(urls[0], /^\/api\/file-browser\/tree\?/);
+    match(urls[0], /cwd=%2Ftmp%2Fa%20b/);
+    match(urls[0], /q=hello%20world/);
+    match(urls[0], /search_kind=file/);
+    match(urls[0], /offset=5/);
+    match(urls[0], /limit=25/);
+    ok(!urls[0].includes("include_git_status=true"));
+
+    await helper.searchContent({ cwd: "/tmp/repo", query: "needle", contextLines: 99, matchesPerFile: 0 });
+    match(urls[1], /^\/api\/file-browser\/content-search\?/);
+    match(urls[1], /context_lines=20/);
+    match(urls[1], /max_matches_per_file=1/);
+    match(urls[1], /limit=15/);
+  });
+
   it("renders new workspace modal with manual folder field", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
