@@ -225,13 +225,8 @@ function renderWorkspaceContextActions() {
 }
 function selectedWorkspaceActionButtons(w) {
   if (!w || w.workspace_id !== state.ws) return "";
-  const key = selectedWorkspaceWorktreeKey(w),
-    linked = isLinkedWorktree(w),
-    label = escapeHtml(workspaceDisplayTitle(w));
+  const linked = isLinkedWorktree(w);
   const buttons = [];
-  buttons.push(
-    `<span class="mini tree" data-workspace-action="open-worktrees" data-key="${escapeAttr(encodeURIComponent(key || ""))}" title="Open or create linked worktrees/workspaces for ${label}" onclick="event.preventDefault();event.stopPropagation();runWorkspaceContextAction('open-worktrees',this)">♧↗</span>`,
-  );
   buttons.push(
     `<span class="mini warn" data-workspace-action="close" title="Close selected ${linked ? "worktree" : "workspace"} and its panels" onclick="event.preventDefault();event.stopPropagation();runWorkspaceContextAction('close',this)">✕</span>`,
   );
