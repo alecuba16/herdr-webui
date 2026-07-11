@@ -179,6 +179,86 @@ Settings are stored in `localStorage` under `herdr-web-options`. Main defaults a
 
 Other modules can contribute defaults through the settings module registry.
 
+## Functionality detail sections
+
+Main user-facing functionality is documented in [Features](features.md). Technical ownership is split as follows:
+
+| Area | Backend owns | Frontend owns |
+| --- | --- | --- |
+| Terminal | Herdr protocol bridge, auth/session routing, WebSocket frame validation. | xterm attach, scroll-follow state, paste chunking, layout sizing. |
+| Workspaces/worktrees | Herdr API proxying, compatibility fallback, service-level validation. | List ordering, local labels, action menus, open/create/remove flows. |
+| Git UI | Git CLI commands, path/ref validation, diff/log/status parsing, cleanup scans. | Drawer rendering, shortcuts, staged/unstaged file interactions, diff controls. |
+| File explorer tree | Safe path cleaning, directory listing, pagination, Git status propagation. | Tree rendering, focus/type-to-filter UX, selected file state, scroll preservation. |
+| File content search | Traversal, text matching, caps, lazy file detail loads, snippet save validation. | Query input, grouped result rendering, expand/collapse state, editor mounting. |
+| Settings/help | Runtime server settings and safe defaults. | Browser-local options, settings grouping/search, in-app Help content. |
+
+This split keeps expensive or repository-sensitive work in Rust and keeps browser code focused on UI state and rendering.
+
+## Performance decisions
+
+### Backend-owned repository work
+
+- File listing, file/folder search, content search, Git status, Git comparisons, cleanup scans, diffs, and path validation run on the backend.
+- The browser never scans repository contents for search or Git state. It receives ready-to-render data with pagination/truncation markers.
+- Git status uses one porcelain scan per refresh. Directory status is propagated by walking parent paths for changed files with monotonic priority red > yellow > green.
+- Content search skips `.git`, `node_modules`, `target`, `dist`, `build`, `.venv`, and `venv`; caps traversal with `MAX_CONTENT_SEARCH_VISITS`; skips files above `MAX_CONTENT_SEARCH_FILE_BYTES`; skips binary/NUL data; clamps context and match counts.
+
+### Frontend rendering work
+
+- Shared modules avoid duplicate browser computation. `file_tree.js`, `file_icons.js`, `file_content_search.js`, `editor.js`, and terminal helpers are reused by desktop/mobile.
+- File content search groups are collapsed by default when result counts exceed the configured threshold. Full per-file matches are lazy-loaded only when needed.
+- CodeMirror is preloaded once and reused for preview, edit, Git hunk editing, and snippet editing. A numbered HTML fallback exists only for load failure.
+- Desktop terminal output is coalesced once per animation frame before xterm writes. Attach frames have suppression logic so large initial frames do not reveal partial output.
+- Large paste input bypasses xterm synchronous `paste()` and uses bounded WebSocket chunks with backpressure.
+- Git diff views use lazy file loading, context expansion, placeholders, and omitted-line guards for very large diffs.
+
+### State and refresh model
+
+- File explorer state is scoped by open workspace/worktree identity. Switching panels restores search, selected files, split panes, edit mode, and drafts without refetching unrelated UI state.
+- Closing a workspace/worktree forgets only UI cache. It does not mutate repository files or Herdr backend state.
+- Refresh retriggers backend calculations for Git status and tree/content search, which avoids stale derived state in the browser.
+
+## Styling and theme architecture
+
+### Color tokens
+
+- Desktop base tokens live in `src/assets/desktop/app_css/base.css`.
+- Mobile base tokens live in `src/assets/mobile/app.css`.
+- Shared cross-layout extension tokens live in `src/assets/shared/colors.css`.
+- New shared feature colors should use shared tokens first, existing base tokens second, and local hardcoded colors only when there is a strong reason.
+
+Current shared tokens cover:
+
+- `--herdr-focus-ring`,
+- `--herdr-search-hit-bg`,
+- `--herdr-search-hit-fg`,
+- `--herdr-search-match-bg`,
+- `--herdr-content-panel-bg`,
+- `--herdr-content-editor-min-height`.
+
+### Icon and status color rules
+
+- Normal file/folder icons are neutral grey and inherit row color.
+- Folders stay plain grey unless backend Git status marks the row changed.
+- Git status row color is semantic: deleted red, modified/conflict yellow, new/untracked green.
+- File icon type glyphs are generated from local CSS/JS maps, not external icon packs.
+
+### Editor visual rules
+
+- Preview and edit mode share the same CodeMirror shell.
+- Edit mode changes only editability and save controls.
+- Syntax colors use editor-specific theme tokens so code remains readable in both light and dark themes.
+
+## Code structure and maintainability
+
+- Rust backend modules own security-sensitive and expensive work: `file_browser.rs`, `git_ui/`, `protocol.rs`, `service.rs`, and `assets.rs`.
+- Desktop shell JS/CSS is split under `src/assets/desktop/app_js/` and `src/assets/desktop/app_css/`, then concatenated by `src/assets.rs`.
+- Desktop Git UI is split under `src/assets/desktop/git_ui/` by settings, syntax, actions, shell layout, diff layout, and log layout.
+- Shared browser modules live under `src/assets/shared/`. Shared modules should be preferred for behavior used by both desktop and mobile.
+- Mobile-specific behavior lives under `src/assets/mobile/`, but should call shared renderers/helpers instead of copying maps or algorithms.
+- Static asset routes are explicit in `src/main.rs`; new assets need route coverage in Rust tests and load-order coverage in JS tests.
+- Visible features must update three places together: user docs, Help modal, and tests.
+
 ## Help button coverage
 
 The in-app Help and Shortcuts modal documents user-facing behavior, including:
@@ -189,14 +269,6 @@ The in-app Help and Shortcuts modal documents user-facing behavior, including:
 - command palette behavior.
 
 When a visible feature is added, update `shortcutsModalHtml()` and tests in `src/assets/app_load.test.mjs`.
-
-## Performance decisions
-
-- Git status and content search are calculated in the backend with traversal/file-size caps.
-- Folder status is propagated with a simple parent walk per changed path.
-- File-tree icon classification and content-search rendering are shared modules, not copied into desktop and mobile code.
-- CodeMirror is loaded once and reused by editor creation calls.
-- Browser state is scoped by workspace/worktree to avoid recalculating or leaking edit state across panels.
 
 ## Safety decisions
 
