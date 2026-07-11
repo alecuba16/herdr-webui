@@ -126,8 +126,8 @@
 
 ### Git UI
 
-- Git drawer actions now include pull and push modals. Pull supports regular, rebase, fast-forward-only, no-fast-forward, and force pull options. Push supports regular, force-with-lease, and force push options.
-- Commit view adds `Commit & Push`; if the push is rejected, WebUI opens the force-push modal so the user can choose a safer force-with-lease retry or explicit force push.
+- Git drawer actions now include pull and push modals. Pull supports regular, rebase, fast-forward-only, no-fast-forward, and force pull options. Push starts regular and exposes force-with-lease or force only if Git rejects the push.
+- Commit view adds `Commit & Push`; if the push is rejected, WebUI reopens the Push modal with a safer force-with-lease retry or explicit force push.
 - Rebase now opens a branch selector and includes a `First pull selected branch before rebasing` checkbox before running the rebase.
 - Conflict resolution buttons use clearer `Use HEAD`, `Use branch`, and `Mark resolved` labels. Conflict view also exposes rebase continue, skip, and abort controls.
 - Git diffs can be toggled between side-by-side and unified layouts globally. Unified diffs preserve add/delete highlighting and compare mode stays selected across refreshes.
