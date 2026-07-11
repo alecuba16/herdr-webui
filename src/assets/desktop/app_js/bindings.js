@@ -304,13 +304,6 @@ el("optHeaderSearchEnabled").onchange = () => {
   saveOptions();
   applyOptions();
 };
-for (const [id, key] of [["optSearchWorkspacesEnabled", "searchWorkspacesEnabled"], ["optSearchFilesEnabled", "searchFilesEnabled"], ["optSearchFoldersEnabled", "searchFoldersEnabled"], ["optSearchContentEnabled", "searchContentEnabled"]]) {
-  const node = el(id);
-  if (node) node.onchange = () => {
-    options[key] = node.checked;
-    saveOptions();
-  };
-}
 el("optFileBrowserPathSearch").onchange = () => {
   options.fileBrowserPathSearch = el("optFileBrowserPathSearch").checked;
   saveOptions();
