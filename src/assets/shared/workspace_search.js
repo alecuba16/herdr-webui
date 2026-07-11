@@ -54,7 +54,7 @@
       contentMinChars: Math.max(1, Math.min(20, Number(parsed.fileContentSearchMinChars) || 3)),
       contentPageSize: Math.max(10, Math.min(500, Number(parsed.fileContentSearchPageSize) || 50)),
       contextLines: Math.max(0, Math.min(20, Number.isFinite(contextRaw) ? contextRaw : 2)),
-      autoCollapseFiles: Math.max(0, Math.min(200, Number.isFinite(autoCollapseRaw) ? autoCollapseRaw : 8)),
+      autoCollapseFiles: Math.max(0, Math.min(200, Number.isFinite(autoCollapseRaw) ? autoCollapseRaw : 0)),
       matchesPerFile: Math.max(1, Math.min(50, Number(parsed.fileContentSearchMatchesPerFile) || 5)),
     };
   }
@@ -84,14 +84,17 @@
     return apiJson(url);
   }
 
-  async function searchContent({ cwd, query, offset = 0, limit, path = "" }) {
+  async function searchContent({ cwd, query, offset = 0, limit, path = "", contextLines, matchesPerFile }) {
     const opts = settings();
     if (!opts.searchContentEnabled) return { files: [], total_files: 0, total_matches: 0, truncated: false, disabled: true };
-    const url = `/api/file-browser/content-search?cwd=${encodeURIComponent(cwd || "")}&path=${encodeURIComponent(path || "")}&q=${encodeURIComponent(String(query || "").trim())}&offset=${Number(offset) || 0}&limit=${Number(limit || opts.contentPageSize)}&context_lines=${opts.contextLines}&max_matches_per_file=${opts.matchesPerFile}`;
+    const context = Math.max(0, Math.min(20, Number.isFinite(Number(contextLines)) ? Number(contextLines) : opts.contextLines));
+    const perFile = Math.max(1, Math.min(50, Number.isFinite(Number(matchesPerFile)) ? Number(matchesPerFile) : opts.matchesPerFile));
+    const url = `/api/file-browser/content-search?cwd=${encodeURIComponent(cwd || "")}&path=${encodeURIComponent(path || "")}&q=${encodeURIComponent(String(query || "").trim())}&offset=${Number(offset) || 0}&limit=${Number(limit || opts.contentPageSize)}&context_lines=${context}&max_matches_per_file=${perFile}`;
     return apiJson(url);
   }
 
   function createContentState(initial) {
+    const opts = settings();
     return Object.assign({
       query: "",
       files: [],
@@ -103,6 +106,7 @@
       offset: 0,
       total_files: 0,
       total_matches: 0,
+      contextLines: opts.contextLines,
     }, initial || {});
   }
 
@@ -116,6 +120,7 @@
     state.offset = 0;
     state.total_files = 0;
     state.total_matches = 0;
+    state.contextLines = settings().contextLines;
   }
 
   function applyContentResults(state, data, append) {

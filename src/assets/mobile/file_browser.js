@@ -50,10 +50,10 @@
           minChars: Math.max(1, Math.min(20, Number(parsed.fileContentSearchMinChars) || DEFAULT_CONTENT_SEARCH_MIN_CHARS)),
           pageSize: Math.max(10, Math.min(500, Number(parsed.fileContentSearchPageSize) || 50)),
           contextLines: Math.max(0, Math.min(20, Number.isFinite(contextRaw) ? contextRaw : 2)),
-          autoCollapseFiles: Math.max(0, Math.min(200, Number.isFinite(autoCollapseRaw) ? autoCollapseRaw : 8)),
+          autoCollapseFiles: Math.max(0, Math.min(200, Number.isFinite(autoCollapseRaw) ? autoCollapseRaw : 0)),
           maxMatchesPerFile: Math.max(1, Math.min(50, Number(parsed.fileContentSearchMatchesPerFile) || 5)),
         };
-      } catch (_) { return { minChars: DEFAULT_CONTENT_SEARCH_MIN_CHARS, pageSize: 50, contextLines: 2, autoCollapseFiles: 8, maxMatchesPerFile: 5 }; }
+      } catch (_) { return { minChars: DEFAULT_CONTENT_SEARCH_MIN_CHARS, pageSize: 50, contextLines: 2, autoCollapseFiles: 0, maxMatchesPerFile: 5 }; }
     }
 
     function normalizeSearchScope(kind) {
@@ -392,10 +392,13 @@
       },
       async expandSnippet(encodedPath, _index, direction) {
         const path = decodeURIComponent(encodedPath);
-        const extra = local.contentSearch.contextLines + (direction === "up" || direction === "down" ? 2 : 2);
+        const currentContext = Number(local.contentSearch.contextLines || contentSearchOptions().contextLines || 2);
+        const extra = globalThis.HerdrLineContext && globalThis.HerdrLineContext.nextContextSize
+          ? globalThis.HerdrLineContext.nextContextSize(currentContext, { min: 3, max: 20 })
+          : Math.min(20, currentContext < 3 ? 3 : currentContext * 2);
         try {
           await loadContentSearchFile(path, extra);
-          local.contentSearch.contextLines = Math.min(20, extra);
+          local.contentSearch.contextLines = extra;
           deps.render();
         } catch (error) {
           local.contentSearch.error = error.message || String(error);

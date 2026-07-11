@@ -90,12 +90,14 @@ When a workspace or worktree closes, the cached state is forgotten. Async file f
 
 ### Unified header search
 
-The header search is the single search entry point on desktop and mobile. It can render these sections in a configurable order:
+The header search is the single search entry point on desktop and mobile. It can render these collapsible sections in a configurable order:
 
-- workspaces/worktrees/repos/agents/panels from browser state,
+- workspaces/worktrees/repos/agents/panels from browser state, shown only after a non-empty query,
 - file names for the focused workspace/worktree from backend tree search,
 - folder names for the focused workspace/worktree from backend tree search,
 - file-content matches for the focused workspace/worktree from backend content search.
+
+Workspace/worktree matching uses repo names/keys/roots, tags/labels, branch names, panel names, workspace labels, agent names, and IDs. An empty search does not show workspace/worktree rows, avoiding a noisy unfiltered list.
 
 `src/assets/shared/workspace_search.js` owns shared settings normalization, backend request helpers, parent-aware tree rendering for path results, content-result picker rendering, and match highlighting. Desktop `src/assets/desktop/search.js` and mobile `src/assets/mobile/app.js` own only controller state, keyboard/touch handling, and opening selected results. If a section is disabled in Settings, the controller does not request that data.
 
@@ -141,7 +143,7 @@ Performance limits:
 - binary/NUL content is skipped,
 - result page size, context lines, and matches per file are clamped server-side.
 
-Desktop and mobile use `src/assets/shared/file_content_search.js` for grouped rendering, highlight markup, expand/collapse controls, match-level `Open here`, Git-diff-style context arrows, and snippet editor mount IDs. Shared visual rules live in `src/assets/shared/content_search.css` and shared colors live in `src/assets/shared/colors.css`, so desktop/mobile do not duplicate the match highlight palette. The frontend does not scan repository content. It only sends queries, renders grouped results, and mounts editor instances for requested snippets or highlighted full-file opens.
+Desktop and mobile use `src/assets/shared/file_content_search.js` for grouped rendering, highlight markup, per-file disclosure arrows, merged line chunks, and Git-diff-style context arrows. File results are grouped once per file. Expanded files show matching lines by default, surrounding context lines when available, and up/down arrows that request more context. When expanded context overlaps adjacent matches, the renderer merges the rows into one continuous chunk. Shared visual rules live in `src/assets/shared/content_search.css` and shared colors live in `src/assets/shared/colors.css`, so desktop/mobile do not duplicate the match highlight palette. The frontend does not scan repository content. It only sends queries, renders grouped results, and mounts editor instances for highlighted full-file opens.
 
 ### Theme tokens
 

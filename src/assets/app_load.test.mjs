@@ -261,7 +261,7 @@ describe("app bundle load", () => {
     match(html, /use Settings to enable sections and sort their order/);
     match(html, /Content results show as grouped files with highlighted match text, colored matched-line context/);
     match(html, /Git-style arrow controls for more context above\/below/);
-    match(html, /Open here at the matched line with editor highlight/);
+    match(html, /opening at the matched line with editor highlight/);
     match(html, /same CodeMirror editor surface as edit mode but stay read-only until Edit is pressed/);
     match(html, /line numbers show by default/);
     match(html, /fold controls work for supported languages/);
@@ -316,20 +316,30 @@ describe("app bundle load", () => {
     match(appBootSource, /\/assets\/shared\/file-icons\.css/);
     match(appBootSource, /\/assets\/shared\/content-search\.css/);
     match(appBootSource, /\/assets\/shared\/colors\.css/);
+    match(appBootSource, /\/assets\/shared\/line-context\.js/);
     match(appBootSource, /\/assets\/shared\/file-content-search\.js/);
     const fileContentSearchSource = readFileSync(new URL("./shared/file_content_search.js", import.meta.url), "utf8");
+    const lineContextSource = readFileSync(new URL("./shared/line_context.js", import.meta.url), "utf8");
     const sharedColorsCss = readFileSync(new URL("./shared/colors.css", import.meta.url), "utf8");
     const sharedContentSearchCss = readFileSync(new URL("./shared/content_search.css", import.meta.url), "utf8");
     match(fileContentSearchSource, /HerdrContentSearch/);
-    match(fileContentSearchSource, /expandAll/);
+    match(lineContextSource, /HerdrLineContext/);
+    match(lineContextSource, /nextContextSize/);
+    match(lineContextSource, /pushMergedChunk/);
+    match(fileContentSearchSource, /lineChunks/);
+    match(fileContentSearchSource, /mergeChunk/);
+    ok(!fileContentSearchSource.includes("function renderMatch"));
+    ok(!fileContentSearchSource.includes("<article class=\"herdr-content-search-match"));
+    ok(!fileContentSearchSource.includes("expandAll"));
+    ok(!fileContentSearchSource.includes("Collapse all"));
     match(fileContentSearchSource, /herdr-content-search-hit/);
+    match(fileContentSearchSource, /herdr-content-search-context-cell/);
     match(fileContentSearchSource, /herdr-content-search-context-arrow/);
     match(fileContentSearchSource, /Show more above/);
     match(fileContentSearchSource, /Show more below/);
     ok(!fileContentSearchSource.includes("More above"));
     ok(!fileContentSearchSource.includes("More below"));
     match(fileContentSearchSource, /openMatch/);
-    match(fileContentSearchSource, /Open here/);
     match(sharedColorsCss, /--herdr-search-hit-bg/);
     match(sharedColorsCss, /--herdr-search-hit-border/);
     match(sharedColorsCss, /--herdr-search-hit-shadow/);
@@ -593,14 +603,16 @@ describe("app bundle load", () => {
     equal(html.includes("feature/demo"), false);
   });
 
-  it("searches labels agents repos and returns panel targets", () => {
+  it("searches workspaces only after a query using repo tags branches and panel names", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
 
     const results = vm.runInContext(
-      `state.workspaces = [{
+      `state.workspaceBranches = { ws1: "fallback/branch" };
+      state.workspaces = [{
         workspace_id: "ws1",
         label: "friendly label",
+        tags: ["backend", "urgent"],
         worktree: {
           is_linked_worktree: true,
           repo_name: "repo-name",
@@ -614,15 +626,27 @@ describe("app bundle load", () => {
       state.panes = [{ tab_id: "tab1", pane_id: "pane1" }];
       state.worktrees = [{ open_workspace_id: "ws1", path: "/tmp/worktrees/repo/feature", branch: "feature/demo", label: "repo label" }];
       state.agents = [{ workspace_id: "ws1", tab_id: "tab1", pane_id: "pane1", agent_status: "blocked", name: "deploy agent" }];
-      ({ label: searchCandidates("friendly")[0], agent: searchCandidates("deploy")[0], repo: searchCandidates("repo-name")[0] });`,
+      ({
+        empty: searchCandidates("").length,
+        label: searchCandidates("friendly")[0],
+        agent: searchCandidates("deploy")[0],
+        repo: searchCandidates("repo-name")[0],
+        tag: searchCandidates("backend").find((item) => item.ws === "ws1"),
+        branch: searchCandidates("feature/demo").find((item) => item.ws === "ws1"),
+        panelWorkspace: searchCandidates("main panel").find((item) => item.kind === "worktree" || item.kind === "workspace"),
+      });`,
       ctx,
     );
 
+    equal(results.empty, 0);
     equal(results.label.ws, "ws1");
     equal(results.label.tab, "tab1");
     equal(results.label.pane, "pane1");
     equal(results.agent.kind, "agent");
     equal(results.repo.ws, "ws1");
+    equal(results.tag.ws, "ws1");
+    equal(results.branch.ws, "ws1");
+    equal(results.panelWorkspace.ws, "ws1");
   });
 
   it("hides repo header actions when parent workspace card exists", () => {

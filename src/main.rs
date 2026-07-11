@@ -865,6 +865,10 @@ fn app_router(state: WebState) -> Router {
             get(shared_file_content_search_js),
         )
         .route(
+            "/assets/shared/line-context.js",
+            get(shared_line_context_js),
+        )
+        .route(
             "/assets/shared/workspace-search.js",
             get(shared_workspace_search_js),
         )
@@ -4234,6 +4238,15 @@ mod tests {
             )
             .await
             .unwrap();
+        let line_context_js = app
+            .clone()
+            .oneshot(
+                request(Method::GET, "/assets/shared/line-context.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         let desktop_search_js = app
             .clone()
             .oneshot(
@@ -4423,6 +4436,10 @@ mod tests {
             .unwrap()
             .contains("text/css"));
         assert!(file_content_search_js.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .contains("javascript"));
+        assert!(line_context_js.headers()[header::CONTENT_TYPE]
             .to_str()
             .unwrap()
             .contains("javascript"));

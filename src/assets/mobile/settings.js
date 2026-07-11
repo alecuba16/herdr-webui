@@ -129,7 +129,7 @@
 
     function contentSearchAutoCollapseFilesValue() {
       const value = Number(readOptions().fileContentSearchAutoCollapseFiles);
-      return Math.max(0, Math.min(200, Number.isFinite(value) ? value : 8));
+      return Math.max(0, Math.min(200, Number.isFinite(value) ? value : 0));
     }
 
     function contentSearchMatchesPerFileValue() {
@@ -243,7 +243,7 @@
     function setFileContentSearchAutoCollapseFiles(value) {
       const parsed = readOptions();
       const parsedValue = Number(value);
-      parsed.fileContentSearchAutoCollapseFiles = Math.max(0, Math.min(200, Number.isFinite(parsedValue) ? parsedValue : 8));
+      parsed.fileContentSearchAutoCollapseFiles = Math.max(0, Math.min(200, Number.isFinite(parsedValue) ? parsedValue : 0));
       writeOptions(parsed);
       if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
     }

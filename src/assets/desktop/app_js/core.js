@@ -507,7 +507,7 @@ function shortcutsModalHtml() {
             <div class="help-row"><strong>Header</strong><span>＋ opens/creates workspace; ? opens this help; gear opens Settings; moon/theme toggles color mode; sidebar chevron hides/shows navigation.</span></div>
             <div class="help-row"><strong>Panels/Tabs</strong><span>Top panel switcher changes terminal panel; + creates panel; ✕ closes current panel; double-click panel label to rename.</span></div>
             <div class="help-row"><strong>Terminal</strong><span>Wheel, touch, and PageUp/PageDown scroll the Herdr backend first, with xterm local scroll as fallback. Tail appears after scrolling up and jumps back to latest output. Scroll speed is configurable in Settings → Terminal.</span></div>
-            <div class="help-row"><strong>Files</strong><span>Files selector opens browser/editor; ... goes up; file rows use license-safe type glyphs while folders stay plain except for Git status colors. Header search (⌕, or prefix then /) is the single search entry point for workspaces/worktrees, file names, folder names, and file contents. File/folder and content search run in the backend for the focused workspace/worktree, lazy-load pages, preserve parent folders for path context, and use Settings to enable sections and sort their order. Content results show as grouped files with highlighted match text, colored matched-line context, collapse/expand all, Git-style arrow controls for more context above/below, lazy per-file loading, Open here at the matched line with editor highlight, full-file open, and hash-guarded editable snippets where supported. Text previews use the same CodeMirror editor surface as edit mode but stay read-only until Edit is pressed; line numbers show by default, fold controls work for supported languages, and syntax/search colors use shared theme tokens. Search selections, selected files, split panes, and unsaved edit drafts stay attached to each open workspace/worktree while switching panels; closing the workspace/worktree forgets them. Git colors are computed server-side and propagate up directories with priority red deleted, yellow modified, green new.</span></div>
+            <div class="help-row"><strong>Files</strong><span>Files selector opens browser/editor; ... goes up; file rows use license-safe type glyphs while folders stay plain except for Git status colors. Header search (⌕, or prefix then /) is the single search entry point for workspaces/worktrees, file names, folder names, and file contents. File/folder and content search run in the backend for the focused workspace/worktree, lazy-load pages, preserve parent folders for path context, and use Settings to enable sections and sort their order. Content results show as grouped files with highlighted match text, colored matched-line context, per-file disclosure arrows, Git-style arrow controls for more context above/below with overlap merging, lazy per-file loading, opening at the matched line with editor highlight, and full-file open. Text previews use the same CodeMirror editor surface as edit mode but stay read-only until Edit is pressed; line numbers show by default, fold controls work for supported languages, and syntax/search colors use shared theme tokens. Search selections, selected files, split panes, and unsaved edit drafts stay attached to each open workspace/worktree while switching panels; closing the workspace/worktree forgets them. Git colors are computed server-side and propagate up directories with priority red deleted, yellow modified, green new.</span></div>
             <div class="help-row"><strong>Git</strong><span>Git selector opens repo tools for diff, stage/unstage, discard, commit, commit & push, pull, push/force-push, rebase, conflicts, stash, branches, cleanup, and worktree prune; file view can toggle unified/side-by-side diffs.</span></div>
             <div class="help-row"><strong>Worktrees</strong><span>Row actions create linked worktree, open existing worktree, close panels/workspace, or remove linked worktree after confirmation.</span></div>
             <div class="help-row"><strong>Search</strong><span>Prefix then / or the header magnifier opens one palette for workspaces, repos, worktrees, labels, agents, panels, file/folder results, and file-content matches. In search, arrows move, Enter opens, Esc closes, Alt+F selects files, and Alt+D selects folders.</span></div>
@@ -974,7 +974,7 @@ const defaultOptions = {
   fileContentSearchMinChars: 3,
   fileContentSearchPageSize: 50,
   fileContentSearchContextLines: 2,
-  fileContentSearchAutoCollapseFiles: 8,
+  fileContentSearchAutoCollapseFiles: 0,
   fileContentSearchMatchesPerFile: 5,
   showTabActivity: false,
   worktreeAutoDiscoverSeconds: 3,
@@ -1118,7 +1118,7 @@ function normalizeOptions(value) {
   const fileContentSearchContextRaw = Number(next.fileContentSearchContextLines);
   next.fileContentSearchContextLines = Math.max(0, Math.min(20, Number.isFinite(fileContentSearchContextRaw) ? fileContentSearchContextRaw : 2));
   const fileContentSearchAutoCollapseRaw = Number(next.fileContentSearchAutoCollapseFiles);
-  next.fileContentSearchAutoCollapseFiles = Math.max(0, Math.min(200, Number.isFinite(fileContentSearchAutoCollapseRaw) ? fileContentSearchAutoCollapseRaw : 8));
+  next.fileContentSearchAutoCollapseFiles = Math.max(0, Math.min(200, Number.isFinite(fileContentSearchAutoCollapseRaw) ? fileContentSearchAutoCollapseRaw : 0));
   next.fileContentSearchMatchesPerFile = Math.max(1, Math.min(50, Number(next.fileContentSearchMatchesPerFile) || 5));
   next.showTabActivity = next.showTabActivity === true;
   next.worktreeAutoDiscoverSeconds = Math.max(
@@ -1653,7 +1653,7 @@ function applyOptions() {
   if (fileContentSearchContextLines)
     fileContentSearchContextLines.value = String(options.fileContentSearchContextLines ?? 2);
   if (fileContentSearchAutoCollapseFiles)
-    fileContentSearchAutoCollapseFiles.value = String(options.fileContentSearchAutoCollapseFiles ?? 8);
+    fileContentSearchAutoCollapseFiles.value = String(options.fileContentSearchAutoCollapseFiles ?? 0);
   if (fileContentSearchMatchesPerFile)
     fileContentSearchMatchesPerFile.value = String(options.fileContentSearchMatchesPerFile ?? 5);
   document.body.style.setProperty("--herdr-tree-indent", `${options.treeIndentPx ?? 14}px`);
