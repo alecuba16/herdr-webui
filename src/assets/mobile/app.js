@@ -325,6 +325,12 @@
     const workspace = currentWorkspace();
     el("mobileTitle").textContent = workspaceTitle(workspace);
     el("mobileMeta").textContent = contextMeta(workspace);
+    const searchButton = el("mobileSearch");
+    if (searchButton) {
+      const disabled = headerSearchDisabled();
+      searchButton.hidden = disabled;
+      searchButton.disabled = disabled;
+    }
     document.querySelectorAll(".mobile-nav button").forEach((button) => {
       button.classList.toggle("active", button.dataset.screen === state.screen);
       button.innerHTML = mobileNavLabel(button.dataset.screen);
@@ -348,6 +354,14 @@
     else if (state.screen === "terminal") renderTerminalScreen(screen);
     else screen.innerHTML = renderHome();
     syncBrowserFavicon();
+  }
+
+  function headerSearchDisabled() {
+    try {
+      return JSON.parse(localStorage.getItem("herdr-web-options") || "{}").headerSearchEnabled === false;
+    } catch (_) {
+      return false;
+    }
   }
 
   function applyTreeIndent() {
@@ -806,6 +820,7 @@
   };
 
   function openMobileSearch() {
+    if (headerSearchDisabled()) return;
     const sheet = el("mobileSearchSheet");
     const input = el("mobileSearchInput");
     if (!sheet || !input) return;
@@ -1256,11 +1271,13 @@
     setFileBrowserLineNumbers: mobileSettings.setFileBrowserLineNumbers,
     setFileBrowserPathSearch: mobileSettings.setFileBrowserPathSearch,
     setFileBrowserSearchPageSize: mobileSettings.setFileBrowserSearchPageSize,
+    setHeaderSearchEnabled: mobileSettings.setHeaderSearchEnabled,
     setSearchWorkspacesEnabled: mobileSettings.setSearchWorkspacesEnabled,
     setSearchFilesEnabled: mobileSettings.setSearchFilesEnabled,
     setSearchFoldersEnabled: mobileSettings.setSearchFoldersEnabled,
     setSearchContentEnabled: mobileSettings.setSearchContentEnabled,
     setSearchSectionOrder: mobileSettings.setSearchSectionOrder,
+    moveSearchSection: mobileSettings.moveSearchSection,
     setFileContentSearchMinChars: mobileSettings.setFileContentSearchMinChars,
     setFileContentSearchPageSize: mobileSettings.setFileContentSearchPageSize,
     setFileContentSearchAutoCollapseFiles: mobileSettings.setFileContentSearchAutoCollapseFiles,
