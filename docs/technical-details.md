@@ -39,6 +39,7 @@ The Rust binary embeds assets with `include_str!` or `include_bytes!`. Public ro
 - `/assets/app-boot.js`
 - `/assets/shared/core.js`
 - `/assets/shared/colors.css`
+- `/assets/shared/content-search.css`
 - `/assets/shared/file-icons.js`
 - `/assets/shared/file-icons.css`
 - `/assets/shared/file-tree.js`
@@ -49,7 +50,7 @@ The Rust binary embeds assets with `include_str!` or `include_bytes!`. Public ro
 - desktop assets under `/assets/desktop/...`
 - mobile assets under `/assets/mobile/...`
 
-`app_boot.js` loads layout CSS, then shared color tokens, shared icon CSS, shared JS, and finally layout-specific JS. File icon data is a shared module loaded before `file-tree.js`, so desktop and mobile use the same mappings. Content-search and workspace-search helpers are also shared, with desktop and mobile owning only controller state and backend calls.
+`app_boot.js` loads layout CSS, then shared color tokens, shared icon CSS, shared content-search CSS, shared JS, and finally layout-specific JS. File icon data is a shared module loaded before `file-tree.js`, so desktop and mobile use the same mappings. Content-search and workspace-search helpers are also shared, with desktop and mobile owning only controller state and backend calls.
 
 ## File explorer
 
@@ -140,11 +141,11 @@ Performance limits:
 - binary/NUL content is skipped,
 - result page size, context lines, and matches per file are clamped server-side.
 
-Desktop and mobile use `src/assets/shared/file_content_search.js` for grouped rendering, highlight markup, expand/collapse controls, match-level `Open here`, and snippet editor mount IDs. The frontend does not scan repository content. It only sends queries, renders grouped results, and mounts editor instances for requested snippets or highlighted full-file opens.
+Desktop and mobile use `src/assets/shared/file_content_search.js` for grouped rendering, highlight markup, expand/collapse controls, match-level `Open here`, Git-diff-style context arrows, and snippet editor mount IDs. Shared visual rules live in `src/assets/shared/content_search.css` and shared colors live in `src/assets/shared/colors.css`, so desktop/mobile do not duplicate the match highlight palette. The frontend does not scan repository content. It only sends queries, renders grouped results, and mounts editor instances for requested snippets or highlighted full-file opens.
 
 ### Theme tokens
 
-Shared theme extension tokens live in `src/assets/shared/colors.css`. New feature colors should use these or existing base variables instead of local hardcoded palettes. Current shared tokens cover focus rings, search hit foreground/background, content match row background, and editor-style panel background.
+Shared theme extension tokens live in `src/assets/shared/colors.css`. New feature colors should use these or existing base variables instead of local hardcoded palettes. Current shared tokens cover focus rings, search hit foreground/background/border/shadow, content match row background/border, and editor-style panel background.
 
 ### File preview and editing
 
@@ -282,7 +283,10 @@ Current shared tokens cover:
 - `--herdr-focus-ring`,
 - `--herdr-search-hit-bg`,
 - `--herdr-search-hit-fg`,
+- `--herdr-search-hit-border`,
+- `--herdr-search-hit-shadow`,
 - `--herdr-search-match-bg`,
+- `--herdr-search-match-border`,
 - `--herdr-content-panel-bg`,
 - `--herdr-content-editor-min-height`.
 
@@ -304,7 +308,7 @@ Current shared tokens cover:
 - Rust backend modules own security-sensitive and expensive work: `file_browser.rs`, `git_ui/`, `protocol.rs`, `service.rs`, and `assets.rs`.
 - Desktop shell JS/CSS is split under `src/assets/desktop/app_js/` and `src/assets/desktop/app_css/`, then concatenated by `src/assets.rs`.
 - Desktop Git UI is split under `src/assets/desktop/git_ui/` by settings, syntax, actions, shell layout, diff layout, and log layout.
-- Shared browser modules live under `src/assets/shared/`. Shared modules should be preferred for behavior used by both desktop and mobile.
+- Shared browser modules and shared CSS live under `src/assets/shared/`. Shared modules should be preferred for behavior or visual rules used by both desktop and mobile.
 - Mobile-specific behavior lives under `src/assets/mobile/`, but should call shared renderers/helpers instead of copying maps or algorithms.
 - Static asset routes are explicit in `src/main.rs`; new assets need route coverage in Rust tests and load-order coverage in JS tests.
 - Visible features must update three places together: user docs, Help modal, and tests.

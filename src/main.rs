@@ -855,6 +855,10 @@ fn app_router(state: WebState) -> Router {
         .route("/assets/shared/file-icons.js", get(shared_file_icons_js))
         .route("/assets/shared/file-icons.css", get(shared_file_icons_css))
         .route("/assets/shared/colors.css", get(shared_colors_css))
+        .route(
+            "/assets/shared/content-search.css",
+            get(shared_content_search_css),
+        )
         .route("/assets/shared/file-tree.js", get(shared_file_tree_js))
         .route(
             "/assets/shared/file-content-search.js",
@@ -4212,6 +4216,15 @@ mod tests {
             )
             .await
             .unwrap();
+        let shared_content_search_css = app
+            .clone()
+            .oneshot(
+                request(Method::GET, "/assets/shared/content-search.css")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         let file_content_search_js = app
             .clone()
             .oneshot(
@@ -4356,6 +4369,7 @@ mod tests {
         assert_eq!(file_icons_js.status(), StatusCode::OK);
         assert_eq!(file_icons_css.status(), StatusCode::OK);
         assert_eq!(shared_colors_css.status(), StatusCode::OK);
+        assert_eq!(shared_content_search_css.status(), StatusCode::OK);
         assert_eq!(file_content_search_js.status(), StatusCode::OK);
         assert_eq!(desktop_search_js.status(), StatusCode::OK);
         assert_eq!(app_css.status(), StatusCode::OK);
@@ -4401,6 +4415,10 @@ mod tests {
             .unwrap()
             .contains("text/css"));
         assert!(shared_colors_css.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .contains("text/css"));
+        assert!(shared_content_search_css.headers()[header::CONTENT_TYPE]
             .to_str()
             .unwrap()
             .contains("text/css"));

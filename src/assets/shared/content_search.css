@@ -1,0 +1,46 @@
+.herdr-content-search-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.herdr-content-search-context-controls {
+  align-items: center;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  display: inline-flex;
+  gap: 2px;
+  padding: 1px 3px;
+}
+.git-ui-context-arrow.herdr-content-search-context-arrow {
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1;
+  min-height: 22px;
+  min-width: 22px;
+  padding: 0 4px;
+}
+.git-ui-context-arrow.herdr-content-search-context-arrow:hover {
+  background: var(--panel2);
+  color: var(--accent);
+}
+.herdr-content-search-line.matched {
+  background: var(--herdr-search-match-bg);
+  box-shadow: inset 3px 0 0 var(--herdr-search-match-border);
+}
+.herdr-content-search-hit {
+  background: var(--herdr-search-hit-bg);
+  border: 1px solid var(--herdr-search-hit-border);
+  border-radius: 3px;
+  box-shadow: 0 0 0 2px var(--herdr-search-hit-shadow);
+  color: var(--herdr-search-hit-fg);
+  font-weight: 700;
+  padding: 0 2px;
+}

@@ -663,15 +663,6 @@
   padding-right: 8px;
   white-space: pre;
 }
-.herdr-content-search-line.matched {
-  background: var(--herdr-search-match-bg);
-}
-.herdr-content-search-hit {
-  background: var(--herdr-search-hit-bg);
-  border-radius: 3px;
-  color: var(--herdr-search-hit-fg);
-  padding: 0 2px;
-}
 .herdr-content-search-editor .herdr-editor-mount,
 .herdr-content-search-editor .herdr-editor-loading {
   min-height: var(--herdr-content-editor-min-height);
