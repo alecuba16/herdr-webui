@@ -77,7 +77,8 @@ Git status and path propagation depend on repository state, ignore rules, rename
 File explorer state is cached per open workspace/worktree identity. It preserves:
 
 - selected file,
-- file search query,
+- search query and scope,
+- content-search result tab state,
 - split pane sizes,
 - editing mode,
 - unsaved edit draft,
@@ -87,11 +88,21 @@ When a workspace or worktree closes, the cached state is forgotten. Async file f
 
 ### Content search
 
-The file explorer content Search view is backend-owned for repository traversal and matching. Routes:
+The file explorer has one search input controlled by the magnifier and tree focus. File and Folder scopes call backend tree search with configurable page size. Content scope uses backend-owned repository traversal and matching, rendering results in a closable desktop right-side tab or mobile inline panel. Routes:
 
 - `GET /api/file-browser/content-search`: bounded breadth-first scan from the current file tree root, grouped by file.
 - `GET /api/file-browser/content-search/file`: lazy full match load for one file when the group is expanded.
 - `POST /api/file-browser/content-search/snippet`: hash-guarded line-range save for an edited match snippet.
+
+Browser-local configurable values:
+
+- `fileBrowserPathSearch`: enables/disables backend File/Folder search from the unified search control,
+- `fileBrowserSearchPageSize`: file/folder result page size sent as `limit`,
+- `fileContentSearchMinChars`: minimum characters before content search runs,
+- `fileContentSearchPageSize`: content result file groups per lazy page,
+- `fileContentSearchContextLines`: default lines above/below each match,
+- `fileContentSearchAutoCollapseFiles`: file-count threshold for collapsed result groups,
+- `fileContentSearchMatchesPerFile`: initial matches included per file before lazy full-file expansion.
 
 Performance limits:
 
@@ -101,7 +112,7 @@ Performance limits:
 - binary/NUL content is skipped,
 - result page size, context lines, and matches per file are clamped server-side.
 
-Desktop and mobile use `src/assets/shared/file_content_search.js` for grouped rendering, highlight markup, expand/collapse controls, and snippet editor mount IDs. The frontend does not scan repository content. It only sends queries, renders grouped results, and mounts editor instances for requested snippets.
+Desktop and mobile use `src/assets/shared/file_content_search.js` for grouped rendering, highlight markup, expand/collapse controls, match-level `Open here`, and snippet editor mount IDs. The frontend does not scan repository content. It only sends queries, renders grouped results, and mounts editor instances for requested snippets or highlighted full-file opens.
 
 ### Theme tokens
 
@@ -135,6 +146,7 @@ Supported behavior:
 - fold gutter and folding keymaps for compatible languages,
 - default line numbers for text preview,
 - high-contrast syntax palette tokens for light and dark themes,
+- match-line highlight/scroll when opening a content-search result,
 - fallback numbered `<pre>` rendering if CodeMirror fails to load.
 
 ## Settings
@@ -167,6 +179,10 @@ Settings are stored in `localStorage` under `herdr-web-options`. Main defaults a
 | `fileBrowserAllowParent` | `true` | Show parent navigation. |
 | `fileBrowserGitStatus` | `true` | Show backend-provided Git colors. |
 | `fileBrowserLineNumbers` | `true` | Show line numbers in file previews. |
+| `fileBrowserPathSearch` | `true` | Enable backend file/folder search from the file explorer search control. |
+| `fileBrowserSearchPageSize` | `100` | File/folder search page size, clamped 10 to 500. |
+| `fileContentSearchMinChars` | `3` | Minimum characters before content search runs, clamped 1 to 20. |
+| `fileContentSearchPageSize` | `50` | Content-search file groups loaded per page, clamped 10 to 500. |
 | `fileContentSearchContextLines` | `2` | Default lines above/below each content-search match, clamped 0 to 20. |
 | `fileContentSearchAutoCollapseFiles` | `8` | Collapse result file groups when file count exceeds this value. 0 disables auto-collapse. |
 | `fileContentSearchMatchesPerFile` | `5` | Initial matches loaded per file before lazy expansion, clamped 1 to 50. |
@@ -188,8 +204,8 @@ Main user-facing functionality is documented in [Features](features.md). Technic
 | Terminal | Herdr protocol bridge, auth/session routing, WebSocket frame validation. | xterm attach, scroll-follow state, paste chunking, layout sizing. |
 | Workspaces/worktrees | Herdr API proxying, compatibility fallback, service-level validation. | List ordering, local labels, action menus, open/create/remove flows. |
 | Git UI | Git CLI commands, path/ref validation, diff/log/status parsing, cleanup scans. | Drawer rendering, shortcuts, staged/unstaged file interactions, diff controls. |
-| File explorer tree | Safe path cleaning, directory listing, pagination, Git status propagation. | Tree rendering, focus/type-to-filter UX, selected file state, scroll preservation. |
-| File content search | Traversal, text matching, caps, lazy file detail loads, snippet save validation. | Query input, grouped result rendering, expand/collapse state, editor mounting. |
+| File explorer tree | Safe path cleaning, directory listing, backend file/folder search, pagination, Git status propagation. | Tree rendering, focus/type-to-search UX, selected file state, scroll preservation. |
+| File content search | Traversal, text matching, caps, lazy file detail loads, snippet save validation. | Unified query scope, closable results tab, grouped result rendering, expand/collapse state, matched-line editor opening, editor mounting. |
 | Settings/help | Runtime server settings and safe defaults. | Browser-local options, settings grouping/search, in-app Help content. |
 
 This split keeps expensive or repository-sensitive work in Rust and keeps browser code focused on UI state and rendering.

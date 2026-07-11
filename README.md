@@ -30,7 +30,7 @@ The README is the project summary and documentation index. Detailed functionalit
 - Multi-workspace terminal UI with desktop and mobile layouts.
 - Workspace and linked worktree navigation with per-panel terminal state.
 - Git UI for status, diffs, staging, commits, stash, branches, cleanup, worktrees, conflicts, blame, and file history.
-- File explorer with backend Git status colors, parent-aware tree search, backend content search, type icons, read-only CodeMirror preview, edit mode, line numbers, and folding.
+- File explorer with backend Git status colors, parent-aware backend file/folder search, backend content search in a closable results tab, type icons, read-only CodeMirror preview, edit mode, line numbers, matched-line opening, and folding.
 - Per-workspace file explorer state while workspaces/worktrees are open, including selected files, filters, edit mode, split panes, and drafts.
 - Settings for keyboard shortcuts, theme colors, terminal behavior, notifications, worktree defaults, file browser behavior, and content-search defaults.
 - Help button documents visible features and shortcuts in-app.

@@ -735,11 +735,11 @@ describe("desktop file browser editor integration", () => {
     editorCalls.at(-1).onChange("print('draft-a')");
 
     await context.window.HerdrFileBrowser.open(workspaceB);
-    assert.doesNotMatch(document.getElementById("fileBrowserPanel").innerHTML, /fileBrowserFilter[^>]*>demo</);
+    assert.doesNotMatch(document.getElementById("fileBrowserPanel").innerHTML, /id="fileBrowserFilter" value="demo"/);
 
     await context.window.HerdrFileBrowser.open(workspaceA);
     const restoredPanel = document.getElementById("fileBrowserPanel").innerHTML;
-    assert.match(restoredPanel, /fileBrowserFilter[^>]*>demo</);
+    assert.match(restoredPanel, /id="fileBrowserFilter" value="demo"/);
     assert.equal(editorCalls.at(-1).path, "src/demo.py");
     assert.equal(editorCalls.at(-1).readonly, false);
     assert.equal(editorCalls.at(-1).content, "print('draft-a')");
@@ -747,6 +747,6 @@ describe("desktop file browser editor integration", () => {
 
     context.window.HerdrFileBrowser.forgetWorkspace(workspaceA);
     await context.window.HerdrFileBrowser.open(workspaceA);
-    assert.doesNotMatch(document.getElementById("fileBrowserPanel").innerHTML, /fileBrowserFilter[^>]*>demo</);
+    assert.doesNotMatch(document.getElementById("fileBrowserPanel").innerHTML, /id="fileBrowserFilter" value="demo"/);
   });
 });

@@ -299,6 +299,22 @@ el("optFileBrowserLineNumbers").onchange = () => {
   options.fileBrowserLineNumbers = el("optFileBrowserLineNumbers").checked;
   saveOptions();
 };
+el("optFileBrowserPathSearch").onchange = () => {
+  options.fileBrowserPathSearch = el("optFileBrowserPathSearch").checked;
+  saveOptions();
+};
+el("optFileBrowserSearchPageSize").oninput = () => {
+  options.fileBrowserSearchPageSize = Math.max(10, Math.min(500, Number(el("optFileBrowserSearchPageSize").value) || 100));
+  saveOptions();
+};
+el("optFileContentSearchMinChars").oninput = () => {
+  options.fileContentSearchMinChars = Math.max(1, Math.min(20, Number(el("optFileContentSearchMinChars").value) || 3));
+  saveOptions();
+};
+el("optFileContentSearchPageSize").oninput = () => {
+  options.fileContentSearchPageSize = Math.max(10, Math.min(500, Number(el("optFileContentSearchPageSize").value) || 50));
+  saveOptions();
+};
 el("optFileContentSearchContextLines").oninput = () => {
   const value = Number(el("optFileContentSearchContextLines").value);
   options.fileContentSearchContextLines = Math.max(0, Math.min(20, Number.isFinite(value) ? value : 2));
