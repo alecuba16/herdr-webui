@@ -20,9 +20,12 @@ function createSearchPaletteState() {
 }
 
 function openSearchPalette() {
+  try {
+    if (JSON.parse(localStorage.getItem("herdr-web-options") || "{}").headerSearchEnabled === false) return false;
+  } catch (_) {}
   const modal = el("searchPalette"),
     input = el("searchPaletteInput");
-  if (!modal || !input) return;
+  if (!modal || !input) return false;
   const previousScope = searchPaletteState.pathKind || "file";
   searchPaletteState = createSearchPaletteState();
   searchPaletteState.pathKind = previousScope;
@@ -30,6 +33,7 @@ function openSearchPalette() {
   modal.style.display = "grid";
   renderSearchPalette();
   setTimeout(() => input.focus(), 0);
+  return true;
 }
 
 function closeSearchPalette() {

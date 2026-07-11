@@ -299,6 +299,11 @@ el("optFileBrowserLineNumbers").onchange = () => {
   options.fileBrowserLineNumbers = el("optFileBrowserLineNumbers").checked;
   saveOptions();
 };
+el("optHeaderSearchEnabled").onchange = () => {
+  options.headerSearchEnabled = el("optHeaderSearchEnabled").checked;
+  saveOptions();
+  applyOptions();
+};
 for (const [id, key] of [["optSearchWorkspacesEnabled", "searchWorkspacesEnabled"], ["optSearchFilesEnabled", "searchFilesEnabled"], ["optSearchFoldersEnabled", "searchFoldersEnabled"], ["optSearchContentEnabled", "searchContentEnabled"]]) {
   const node = el(id);
   if (node) node.onchange = () => {
@@ -306,11 +311,6 @@ for (const [id, key] of [["optSearchWorkspacesEnabled", "searchWorkspacesEnabled
     saveOptions();
   };
 }
-const searchSectionOrder = el("optSearchSectionOrder");
-if (searchSectionOrder) searchSectionOrder.oninput = () => {
-  options.searchSectionOrder = searchSectionOrder.value.trim();
-  saveOptions();
-};
 el("optFileBrowserPathSearch").onchange = () => {
   options.fileBrowserPathSearch = el("optFileBrowserPathSearch").checked;
   saveOptions();

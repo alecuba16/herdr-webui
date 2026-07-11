@@ -950,6 +950,7 @@ const defaultOptions = {
   webuiShortcuts: DEFAULT_WEBUI_SHORTCUTS,
   gitShortcuts: DEFAULT_GIT_SHORTCUTS,
   searchShortcut: "off",
+  headerSearchEnabled: true,
   terminalFontFamily: HerdrAppHelpers.resolveTerminalFontFamily(""),
   terminalLinks: true,
   agentSortMode: "off",
@@ -1003,6 +1004,15 @@ const workingFirstAgentStatusOrder = [
   "done",
   "idle",
 ];
+const searchSectionGroups = [
+  ["workspaces", "Workspaces", "Workspaces, worktrees, panels, agents"],
+  ["files", "Files", "File path results for current workspace"],
+  ["content", "Content", "Text matches for current workspace"],
+];
+const searchSectionGroupKeys = searchSectionGroups.map(([key]) => key);
+const searchSectionGroupByKey = Object.fromEntries(
+  searchSectionGroups.map((group) => [group[0], group]),
+);
 function normalizeAgentStatusOrder(value) {
   const seen = new Set();
   const order = [];
@@ -1015,6 +1025,20 @@ function normalizeAgentStatusOrder(value) {
   for (const key of defaultOptions.agentStatusOrder) {
     if (!seen.has(key)) order.push(key);
   }
+  return order;
+}
+function normalizeSearchSectionOrder(value) {
+  const seen = new Set();
+  const order = [];
+  const parts = Array.isArray(value) ? value : String(value || "").split(",");
+  for (const part of parts) {
+    const key = String(part || "").trim().toLowerCase();
+    if (searchSectionGroupKeys.includes(key) && !seen.has(key)) {
+      seen.add(key);
+      order.push(key);
+    }
+  }
+  for (const key of searchSectionGroupKeys) if (!seen.has(key)) order.push(key);
   return order;
 }
 function normalizeSidebarWorkspacePercent(value) {
@@ -1063,6 +1087,7 @@ function normalizeOptions(value) {
     String(next.searchShortcut || "").toLowerCase() === "off"
       ? "off"
       : normalizeShortcutPrefix(next.searchShortcut, "off");
+  next.headerSearchEnabled = next.headerSearchEnabled !== false;
   next.terminalFontFamily = String(next.terminalFontFamily || "").trim().slice(0, 260);
   if (
     !next.terminalFontFamily ||
@@ -1111,7 +1136,7 @@ function normalizeOptions(value) {
   next.searchFilesEnabled = next.searchFilesEnabled !== false;
   next.searchFoldersEnabled = next.searchFoldersEnabled !== false;
   next.searchContentEnabled = next.searchContentEnabled !== false;
-  next.searchSectionOrder = String(next.searchSectionOrder || "workspaces,files,content").trim() || "workspaces,files,content";
+  next.searchSectionOrder = normalizeSearchSectionOrder(next.searchSectionOrder).join(",");
   next.fileBrowserPathSearch = next.fileBrowserPathSearch !== false;
   next.fileBrowserSearchPageSize = Math.max(10, Math.min(500, Number(next.fileBrowserSearchPageSize) || 100));
   next.fileContentSearchMinChars = Math.max(1, Math.min(20, Number(next.fileContentSearchMinChars) || 3));
@@ -1386,7 +1411,7 @@ if (showTabActivitySetting && !el("optTreeIndentPx"))
     .closest("label")
     .insertAdjacentHTML(
       "afterend",
-      '<label class="option"><span>Tree indentation<small>Pixels added per folder level in file trees.</small></span><input id="optTreeIndentPx" type="number" min="0" max="40" step="1"></label><label class="option"><input type="checkbox" id="optFileBrowserAllowParent"><span>File browser parent folders<small>Allow Files to go above the workspace/worktree directory with the ... row.</small></span></label><label class="option"><input type="checkbox" id="optFileBrowserGitStatus"><span>File browser git status colors<small>Color files and directories in the file browser by Git status: red for deleted, yellow for modified, green for new.</small></span></label><label class="option"><input type="checkbox" id="optFileBrowserLineNumbers"><span>File browser line numbers<small>Show line numbers by default when previewing text files.</small></span></label><label class="option"><input type="checkbox" id="optSearchWorkspacesEnabled"><span>Header search workspaces<small>Show workspaces, worktrees, panels, and agents in the header search.</small></span></label><label class="option"><input type="checkbox" id="optSearchFilesEnabled"><span>Header search files<small>Search file paths for the selected workspace/worktree.</small></span></label><label class="option"><input type="checkbox" id="optSearchFoldersEnabled"><span>Header search folders<small>Search folder paths for the selected workspace/worktree.</small></span></label><label class="option"><input type="checkbox" id="optSearchContentEnabled"><span>Header search file contents<small>Search text contents for the selected workspace/worktree.</small></span></label><label class="option"><span>Header search section order<small>Comma list using workspaces, files, content.</small></span><input id="optSearchSectionOrder" placeholder="workspaces,files,content"></label><label class="option"><input type="checkbox" id="optFileBrowserPathSearch"><span>File/folder backend search<small>Enable backend path search for the header search file and folder sections.</small></span></label><label class="option"><span>File/folder search page size<small>Backend result count loaded per lazy page.</small></span><input id="optFileBrowserSearchPageSize" type="number" min="10" max="500" step="10"></label><label class="option"><span>Content search minimum characters<small>Minimum typed characters before searching file contents.</small></span><input id="optFileContentSearchMinChars" type="number" min="1" max="20" step="1"></label><label class="option"><span>Content search page size<small>Backend file groups loaded per lazy page.</small></span><input id="optFileContentSearchPageSize" type="number" min="10" max="500" step="10"></label><label class="option"><span>Content search context lines<small>Default lines above and below each match.</small></span><input id="optFileContentSearchContextLines" type="number" min="0" max="20" step="1"></label><label class="option"><span>Content search auto-collapse<small>Collapse file groups when result files exceed this count. 0 means never auto-collapse.</small></span><input id="optFileContentSearchAutoCollapseFiles" type="number" min="0" max="200" step="1"></label><label class="option"><input type="checkbox" id="optFileContentSearchDefaultExpanded"><span>Content results expanded by default<small>Expand each file group when content results load. Auto-collapse can still collapse very large result sets.</small></span></label><label class="option"><span>Content search matches per file<small>Initial match count loaded per file before lazy expansion.</small></span><input id="optFileContentSearchMatchesPerFile" type="number" min="1" max="50" step="1"></label>',
+      '<label class="option"><span>Tree indentation<small>Pixels added per folder level in file trees.</small></span><input id="optTreeIndentPx" type="number" min="0" max="40" step="1"></label><label class="option"><input type="checkbox" id="optFileBrowserAllowParent"><span>File browser parent folders<small>Allow Files to go above the workspace/worktree directory with the ... row.</small></span></label><label class="option"><input type="checkbox" id="optFileBrowserGitStatus"><span>File browser git status colors<small>Color files and directories in the file browser by Git status: red for deleted, yellow for modified, green for new.</small></span></label><label class="option"><input type="checkbox" id="optFileBrowserLineNumbers"><span>File browser line numbers<small>Show line numbers by default when previewing text files.</small></span></label><label class="option"><input type="checkbox" id="optHeaderSearchEnabled"><span>Header search button and shortcut<small>Show the header magnifier and allow the configured search shortcut to open the palette.</small></span></label><label class="option"><input type="checkbox" id="optSearchWorkspacesEnabled"><span>Header search workspaces<small>Show workspaces, worktrees, panels, and agents in the header search.</small></span></label><label class="option"><input type="checkbox" id="optSearchFilesEnabled"><span>Header search files<small>Search file paths for the selected workspace/worktree.</small></span></label><label class="option"><input type="checkbox" id="optSearchFoldersEnabled"><span>Header search folders<small>Search folder paths for the selected workspace/worktree.</small></span></label><label class="option"><input type="checkbox" id="optSearchContentEnabled"><span>Header search file contents<small>Search text contents for the selected workspace/worktree.</small></span></label><div class="option" id="optSearchSectionOrder"><span>Header search section order<small>Use arrows to move result sections in the palette.</small></span><div id="searchSectionOrderList" class="agent-sort-list"></div></div><label class="option"><input type="checkbox" id="optFileBrowserPathSearch"><span>File/folder backend search<small>Enable backend path search for the header search file and folder sections.</small></span></label><label class="option"><span>File/folder search page size<small>Backend result count loaded per lazy page.</small></span><input id="optFileBrowserSearchPageSize" type="number" min="10" max="500" step="10"></label><label class="option"><span>Content search minimum characters<small>Minimum typed characters before searching file contents.</small></span><input id="optFileContentSearchMinChars" type="number" min="1" max="20" step="1"></label><label class="option"><span>Content search page size<small>Backend file groups loaded per lazy page.</small></span><input id="optFileContentSearchPageSize" type="number" min="10" max="500" step="10"></label><label class="option"><span>Content search context lines<small>Default lines above and below each match.</small></span><input id="optFileContentSearchContextLines" type="number" min="0" max="20" step="1"></label><label class="option"><span>Content search auto-collapse<small>Collapse file groups when result files exceed this count. 0 means never auto-collapse.</small></span><input id="optFileContentSearchAutoCollapseFiles" type="number" min="0" max="200" step="1"></label><label class="option"><input type="checkbox" id="optFileContentSearchDefaultExpanded"><span>Content results expanded by default<small>Expand each file group when content results load. Auto-collapse can still collapse very large result sets.</small></span></label><label class="option"><span>Content search matches per file<small>Initial match count loaded per file before lazy expansion.</small></span><input id="optFileContentSearchMatchesPerFile" type="number" min="1" max="50" step="1"></label>',
     );
 groupSettingsSections();
 function groupSettingsSections() {
@@ -1401,7 +1426,7 @@ function groupSettingsSections() {
     {
       title: "File browser",
       desc: "Tree display, navigation, and Git status colors.",
-      ids: ["optTreeIndentPx", "optFileBrowserAllowParent", "optFileBrowserGitStatus", "optFileBrowserLineNumbers", "optSearchWorkspacesEnabled", "optSearchFilesEnabled", "optSearchFoldersEnabled", "optSearchContentEnabled", "optSearchSectionOrder", "optFileBrowserPathSearch", "optFileBrowserSearchPageSize", "optFileContentSearchMinChars", "optFileContentSearchPageSize", "optFileContentSearchContextLines", "optFileContentSearchAutoCollapseFiles", "optFileContentSearchDefaultExpanded", "optFileContentSearchMatchesPerFile"],
+      ids: ["optTreeIndentPx", "optFileBrowserAllowParent", "optFileBrowserGitStatus", "optFileBrowserLineNumbers", "optHeaderSearchEnabled", "optSearchWorkspacesEnabled", "optSearchFilesEnabled", "optSearchFoldersEnabled", "optSearchContentEnabled", "optSearchSectionOrder", "optFileBrowserPathSearch", "optFileBrowserSearchPageSize", "optFileContentSearchMinChars", "optFileContentSearchPageSize", "optFileContentSearchContextLines", "optFileContentSearchAutoCollapseFiles", "optFileContentSearchDefaultExpanded", "optFileContentSearchMatchesPerFile"],
     },
     {
       title: "Terminal input",
@@ -1564,11 +1589,11 @@ function applyOptions() {
     fileBrowserAllowParent = el("optFileBrowserAllowParent"),
     fileBrowserGitStatus = el("optFileBrowserGitStatus"),
     fileBrowserLineNumbers = el("optFileBrowserLineNumbers"),
+    headerSearchEnabled = el("optHeaderSearchEnabled"),
     searchWorkspacesEnabled = el("optSearchWorkspacesEnabled"),
     searchFilesEnabled = el("optSearchFilesEnabled"),
     searchFoldersEnabled = el("optSearchFoldersEnabled"),
     searchContentEnabled = el("optSearchContentEnabled"),
-    searchSectionOrder = el("optSearchSectionOrder"),
     fileBrowserPathSearch = el("optFileBrowserPathSearch"),
     fileBrowserSearchPageSize = el("optFileBrowserSearchPageSize"),
     fileContentSearchMinChars = el("optFileContentSearchMinChars"),
@@ -1635,6 +1660,8 @@ function applyOptions() {
     fileBrowserGitStatus.checked = !!options.fileBrowserGitStatus;
   if (fileBrowserLineNumbers)
     fileBrowserLineNumbers.checked = !!options.fileBrowserLineNumbers;
+  if (headerSearchEnabled)
+    headerSearchEnabled.checked = options.headerSearchEnabled !== false;
   if (searchWorkspacesEnabled)
     searchWorkspacesEnabled.checked = options.searchWorkspacesEnabled !== false;
   if (searchFilesEnabled)
@@ -1643,8 +1670,7 @@ function applyOptions() {
     searchFoldersEnabled.checked = options.searchFoldersEnabled !== false;
   if (searchContentEnabled)
     searchContentEnabled.checked = options.searchContentEnabled !== false;
-  if (searchSectionOrder)
-    searchSectionOrder.value = options.searchSectionOrder || "workspaces,files,content";
+  renderSearchSectionOrderSettings();
   if (fileBrowserPathSearch)
     fileBrowserPathSearch.checked = options.fileBrowserPathSearch !== false;
   if (fileBrowserSearchPageSize)
@@ -1677,6 +1703,11 @@ function applyOptions() {
     explorationDefaultDirectory.value = options.explorationDefaultDirectory || "";
   for (const module of settingsModules) {
     if (typeof module.apply === "function") module.apply(options);
+  }
+  const searchButtonHead = el("searchButtonHead");
+  if (searchButtonHead) {
+    searchButtonHead.hidden = options.headerSearchEnabled === false;
+    searchButtonHead.disabled = options.headerSearchEnabled === false;
   }
   syncGitWorkspaceToggle();
   syncThemeColorInputs();
@@ -1724,6 +1755,29 @@ function moveAgentStatusGroup(key, delta) {
   saveOptions();
   applyOptions();
   render();
+}
+function renderSearchSectionOrderSettings() {
+  const list = el("searchSectionOrderList"),
+    container = el("optSearchSectionOrder");
+  if (!list || !container) return;
+  const disabled = options.headerSearchEnabled === false;
+  container.classList.toggle("disabled", disabled);
+  list.innerHTML = normalizeSearchSectionOrder(options.searchSectionOrder)
+    .map((key, index, order) => {
+      const [, label, desc] = searchSectionGroupByKey[key] || [key, key, ""];
+      return `<div class="agent-sort-row" data-section="${escapeAttr(key)}"><span class="agent-sort-chip gray"><strong>${escapeHtml(label)}</strong><small>${escapeHtml(desc)}</small></span><span class="agent-sort-buttons"><button type="button" class="mini" ${index === 0 ? "disabled" : ""} onclick="moveSearchSectionGroup('${escapeAttr(key)}',-1)">↑</button><button type="button" class="mini" ${index === order.length - 1 ? "disabled" : ""} onclick="moveSearchSectionGroup('${escapeAttr(key)}',1)">↓</button></span></div>`;
+    })
+    .join("");
+}
+function moveSearchSectionGroup(key, delta) {
+  const order = normalizeSearchSectionOrder(options.searchSectionOrder);
+  const index = order.indexOf(key);
+  const nextIndex = index + delta;
+  if (index < 0 || nextIndex < 0 || nextIndex >= order.length) return;
+  [order[index], order[nextIndex]] = [order[nextIndex], order[index]];
+  options.searchSectionOrder = order.join(",");
+  saveOptions();
+  applyOptions();
 }
 function setSidebarWorkspacePercent(value) {
   options.sidebarWorkspacePercent = normalizeSidebarWorkspacePercent(value);
@@ -1910,6 +1964,11 @@ function setupSessionChrome() {
     b.textContent = "⌕";
     head.insertBefore(b, el("newWs"));
     b.onclick = () => openSearchPalette();
+  }
+  const searchButton = el("searchButtonHead");
+  if (searchButton) {
+    searchButton.hidden = options.headerSearchEnabled === false;
+    searchButton.disabled = options.headerSearchEnabled === false;
   }
   if (!el("themeToggleHead")) {
     const b = document.createElement("button");
