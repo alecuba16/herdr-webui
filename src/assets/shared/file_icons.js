@@ -20,18 +20,9 @@
     "pyproject.toml": ["python", "PY"], "readme": ["md", "MD"], "readme.md": ["md", "MD"], "tsconfig.json": ["ts", "TS"], "vite.config.js": ["js", "JS"], "vite.config.ts": ["ts", "TS"],
   };
 
-  const FOLDER_ICON_BY_NAME = {
-    ".git": "git", ".github": "github", assets: "assets", docs: "docs", node_modules: "node", public: "public", src: "src", test: "test", tests: "test",
-  };
-
   function basename(path) {
     const parts = String(path || "").replace(/\/+$/, "").split("/").filter(Boolean);
     return parts[parts.length - 1] || String(path || "");
-  }
-
-  function folderType(pathOrName) {
-    const name = basename(pathOrName || "").toLowerCase();
-    return FOLDER_ICON_BY_NAME[name] || "";
   }
 
   function fileType(pathOrName) {
@@ -50,6 +41,5 @@
 
   window.HerdrFileIcons = {
     fileType,
-    folderType,
   };
 })();

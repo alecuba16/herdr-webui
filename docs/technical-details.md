@@ -91,13 +91,13 @@ Text files show line numbers by default. The setting can disable them.
 
 ### File icons
 
-File/folder icon logic is split into:
+File icon logic is split into:
 
-- `src/assets/shared/file_icons.js`: file name, extension, and folder type mapping.
-- `src/assets/shared/file_icons.css`: themeable colors and glyph styling.
+- `src/assets/shared/file_icons.js`: file name and extension mapping for file glyphs.
+- `src/assets/shared/file_icons.css`: neutral monochrome glyph styling that inherits row color. Normal rows stay grey; Git status rows can color the whole row.
 - `src/assets/shared/file_tree.js`: rendering only, with fallback when icon module is unavailable.
 
-No external icon assets are copied. The implementation uses local CSS and short glyph labels, inspired by editor file-type icon behavior but implemented in this project.
+No external icon assets are copied. The implementation uses local CSS and short glyph labels for files. Folders keep the plain folder SVG and only change color through backend Git status row classes.
 
 ## Editor
 
