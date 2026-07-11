@@ -256,9 +256,12 @@ describe("app bundle load", () => {
     match(html, /Workspaces show open roots\/worktrees; agents list status/);
     match(html, /Wheel, touch, and PageUp\/PageDown scroll the Herdr backend first, with xterm local scroll as fallback/);
     match(html, /file rows use license-safe type glyphs while folders stay plain except for Git status colors/);
-    match(html, /focusing the tree and typing starts file\/folder search without a permanent input/);
-    match(html, /keeps parent folders visible so result paths stay clear/);
-    match(html, /Content Search uses backend scanning, grouped file results, expand\/collapse all, lazy per-file match loading/);
+    match(html, /magnifier exposes one persisted search input with File, Folder, and Content scopes/);
+    match(html, /File\/folder search is backend-powered, lazy-loaded, configurable/);
+    match(html, /keeps parent folders visible so paths stay clear/);
+    match(html, /Content search starts after the configured minimum characters/);
+    match(html, /opens results in a closable right-side tab/);
+    match(html, /Open here at the matched line with editor highlight/);
     match(html, /same CodeMirror editor surface as edit mode but stay read-only until Edit is pressed/);
     match(html, /line numbers show by default/);
     match(html, /fold controls work for supported languages/);
@@ -298,7 +301,7 @@ describe("app bundle load", () => {
 
   it("defines file explorer and Git file filters", () => {
     match(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), /q=\$\{encodeURIComponent\(target\.filter\.trim\(\)\)\}/);
-    match(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), /setTimeout\(\(\) => \{/);
+    match(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), /showSearch\(\)/);
     const fileTreeSource = readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8");
     const fileIconSource = readFileSync(new URL("./shared/file_icons.js", import.meta.url), "utf8");
     const fileIconCss = readFileSync(new URL("./shared/file_icons.css", import.meta.url), "utf8");
@@ -317,6 +320,8 @@ describe("app bundle load", () => {
     match(fileContentSearchSource, /HerdrContentSearch/);
     match(fileContentSearchSource, /expandAll/);
     match(fileContentSearchSource, /herdr-content-search-hit/);
+    match(fileContentSearchSource, /openMatch/);
+    match(fileContentSearchSource, /Open here/);
     match(sharedColorsCss, /--herdr-search-hit-bg/);
     match(sharedColorsCss, /--herdr-content-panel-bg/);
     const editorSource = readFileSync(new URL("./vendor/codemirror_entry.mjs", import.meta.url), "utf8");
@@ -326,16 +331,26 @@ describe("app bundle load", () => {
     match(editorSource, /--editor-syntax-keyword/);
     match(editorSource, /languageNameForPath/);
     match(editorSource, /EditorView\.contentAttributes\.of\(\{ "data-language": languageNameForPath\(opts\.path\) \}\)/);
+    match(editorSource, /searchHighlightExtensions/);
+    match(editorSource, /scrollToSearchHighlight/);
     ok(!editorSource.includes("defaultHighlightStyle"));
     match(readFileSync(new URL("./desktop/app_css/base.css", import.meta.url), "utf8"), /--editor-syntax-string: #a6e3a1/);
     match(readFileSync(new URL("./mobile/app.css", import.meta.url), "utf8"), /--editor-syntax-string: #a6e3a1/);
     match(source, /id="optFileBrowserLineNumbers"/);
+    match(source, /id="optFileBrowserPathSearch"/);
+    match(source, /id="optFileBrowserSearchPageSize"/);
+    match(source, /id="optFileContentSearchMinChars"/);
+    match(source, /id="optFileContentSearchPageSize"/);
     match(source, /id="optFileContentSearchContextLines"/);
     match(source, /id="optFileContentSearchAutoCollapseFiles"/);
     match(source, /id="optFileContentSearchMatchesPerFile"/);
+    match(source, /fileBrowserSearchPageSize: 100/);
+    match(source, /fileContentSearchMinChars: 3/);
+    match(source, /fileContentSearchPageSize: 50/);
     match(source, /fileContentSearchContextLines: 2/);
     match(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), /\/api\/file-browser\/content-search/);
     match(readFileSync(new URL("./mobile/file_browser.js", import.meta.url), "utf8"), /HerdrMobileFilesContent/);
+    match(readFileSync(new URL("./mobile/settings.js", import.meta.url), "utf8"), /setFileBrowserPathSearch/);
     match(readFileSync(new URL("./mobile/settings.js", import.meta.url), "utf8"), /setFileContentSearchContextLines/);
     match(gitUiSource, /placeholder="Filter files"/);
     match(gitUiSource, /filterFiles/);

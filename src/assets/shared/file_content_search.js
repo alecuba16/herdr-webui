@@ -46,11 +46,12 @@
     const dirty = !!snippet.dirty;
     const saving = !!snippet.saving;
     const editorId = `${opts.idPrefix || "contentSearchSnippet"}-${hashId(key)}`;
+    const openHere = `<button class="git-ui-btn" onclick="${callback}.openMatch('${arg(file.path)}','${arg(match.id)}')">Open here</button>`;
     const editControls = editing
       ? `<button class="git-ui-btn primary" ${saving ? "disabled" : ""} onclick="${callback}.saveSnippet('${arg(file.path)}','${arg(match.id)}')">${saving ? "Saving..." : "Save"}</button><button class="git-ui-btn" onclick="${callback}.cancelSnippet('${arg(file.path)}','${arg(match.id)}')">Cancel</button>`
       : `<button class="git-ui-btn" onclick="${callback}.editSnippet('${arg(file.path)}','${arg(match.id)}')">Edit</button>`;
     return `<article class="herdr-content-search-match${dirty ? " dirty" : ""}" data-snippet-key="${esc(key)}" data-editor-id="${esc(editorId)}">
-      <header><strong>Line ${Number(match.line || 0)}</strong><span>${esc(file.path)}</span><div class="herdr-content-search-actions">${editControls}<button class="git-ui-btn" onclick="${callback}.expandSnippet('${arg(file.path)}','${arg(match.id)}','up')">More above</button><button class="git-ui-btn" onclick="${callback}.expandSnippet('${arg(file.path)}','${arg(match.id)}','down')">More below</button></div></header>
+      <header><strong>Line ${Number(match.line || 0)}</strong><span>${esc(file.path)}</span><div class="herdr-content-search-actions">${openHere}${editControls}<button class="git-ui-btn" onclick="${callback}.expandSnippet('${arg(file.path)}','${arg(match.id)}','up')">More above</button><button class="git-ui-btn" onclick="${callback}.expandSnippet('${arg(file.path)}','${arg(match.id)}','down')">More below</button></div></header>
       ${snippet.error ? `<div class="file-browser-error">${esc(snippet.error)}</div>` : ""}
       ${editing ? `<div id="${esc(editorId)}" class="herdr-content-search-editor"></div>` : linePreview(match, state.query)}
     </article>`;
@@ -77,6 +78,11 @@
     const files = state.files || [];
     const query = String(state.query || "");
     const summary = query ? `${Number(state.total_matches || 0)} matches in ${Number(state.total_files || files.length || 0)} files` : "Type a content query";
+    const head = opts.hideInput ? "" : `<div class="herdr-content-search-head">
+        <label class="file-browser-filter"><span class="file-browser-search-icon ${state.loading ? "searching" : ""}" aria-hidden="true"></span><input id="${esc(opts.inputId || "fileContentSearchInput")}" value="${esc(query)}" placeholder="Search file contents" oninput="${callback}.setQuery(this.value)" onkeydown="${callback}.inputKeydown(event)"></label>
+        <button class="git-ui-btn primary" onclick="${callback}.run()">Search</button>
+        <button class="git-ui-btn" onclick="${callback}.clear()">Clear</button>
+      </div>`;
     const body = !query
       ? `<div class="file-browser-empty">Search inside files from this workspace.</div>`
       : state.loading && !files.length
@@ -85,11 +91,7 @@
           ? files.map((file) => renderFile(file, state, opts)).join("")
           : `<div class="file-browser-empty">No content matches.</div>`;
     return `<div class="herdr-content-search">
-      <div class="herdr-content-search-head">
-        <label class="file-browser-filter"><span class="file-browser-search-icon ${state.loading ? "searching" : ""}" aria-hidden="true"></span><input id="${esc(opts.inputId || "fileContentSearchInput")}" value="${esc(query)}" placeholder="Search file contents" oninput="${callback}.setQuery(this.value)" onkeydown="${callback}.inputKeydown(event)"></label>
-        <button class="git-ui-btn primary" onclick="${callback}.run()">Search</button>
-        <button class="git-ui-btn" onclick="${callback}.clear()">Clear</button>
-      </div>
+      ${head}
       <div class="herdr-content-search-tools"><span>${esc(summary)}</span><button class="git-ui-btn" onclick="${callback}.expandAll()">Expand all</button><button class="git-ui-btn" onclick="${callback}.collapseAll()">Collapse all</button></div>
       ${state.error ? `<div class="file-browser-error">${esc(state.error)}</div>` : ""}
       <div class="herdr-content-search-results">${body}</div>

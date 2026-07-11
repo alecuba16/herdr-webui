@@ -37,6 +37,14 @@ const theme = EditorView.theme({
   ".cm-selectionBackground, &.cm-focused .cm-selectionBackground": {
     backgroundColor: "color-mix(in srgb, var(--accent), transparent 65%)",
   },
+  ".cm-herdr-search-line": {
+    backgroundColor: "var(--herdr-search-match-bg, color-mix(in srgb, var(--accent), transparent 88%))",
+  },
+  ".cm-herdr-search-hit": {
+    backgroundColor: "var(--herdr-search-hit-bg, color-mix(in srgb, var(--accent), transparent 70%))",
+    borderRadius: "3px",
+    color: "var(--herdr-search-hit-fg, var(--fg))",
+  },
   "&.cm-focused": { outline: "none" },
 });
 
@@ -179,6 +187,34 @@ function gitOverlayExtensions(opts) {
   return extensions;
 }
 
+function searchHighlightExtensions(opts) {
+  const highlight = opts.searchHighlight || null;
+  const lineNo = Math.max(1, Number(highlight && highlight.line) || 0);
+  if (!lineNo) return [];
+  return [ViewPlugin.fromClass(class {
+    constructor(view) { this.decorations = buildSearchHighlightDecorations(view, highlight, lineNo); }
+    update(update) {
+      if (update.docChanged || update.viewportChanged) this.decorations = buildSearchHighlightDecorations(update.view, highlight, lineNo);
+    }
+  }, { decorations: (plugin) => plugin.decorations })];
+}
+
+function buildSearchHighlightDecorations(view, highlight, lineNo) {
+  const decorations = [];
+  try {
+    const line = view.state.doc.line(Math.min(lineNo, view.state.doc.lines));
+    decorations.push(Decoration.line({ class: "cm-herdr-search-line" }).range(line.from));
+    const start = Number(highlight && highlight.from);
+    const end = Number(highlight && highlight.to);
+    if (Number.isFinite(start) && Number.isFinite(end) && end > start) {
+      const from = Math.min(line.to, line.from + Math.max(0, start));
+      const to = Math.min(line.to, line.from + Math.max(0, end));
+      if (to > from) decorations.push(Decoration.mark({ class: "cm-herdr-search-hit" }).range(from, to));
+    }
+  } catch (_) {}
+  return Decoration.set(decorations, true);
+}
+
 function buildHunkDecorations(view, hunks, actions) {
   const decorations = [];
   for (const hunk of hunks) {
@@ -226,10 +262,12 @@ function create(options) {
     }));
   }
   extensions.push(...gitOverlayExtensions(opts));
+  extensions.push(...searchHighlightExtensions(opts));
   const view = new EditorView({
     parent: opts.parent,
     state: EditorState.create({ doc: String(opts.content || ""), extensions }),
   });
+  scrollToSearchHighlight(view, opts.searchHighlight);
   return {
     view,
     getValue() { return view.state.doc.toString(); },
@@ -238,6 +276,19 @@ function create(options) {
     },
     destroy() { view.destroy(); },
   };
+}
+
+function scrollToSearchHighlight(view, highlight) {
+  const lineNo = Math.max(1, Number(highlight && highlight.line) || 0);
+  if (!lineNo) return;
+  const schedule = typeof requestAnimationFrame === "function" ? requestAnimationFrame : (callback) => setTimeout(callback, 0);
+  schedule(() => {
+    try {
+      const line = view.state.doc.line(Math.min(lineNo, view.state.doc.lines));
+      const from = Math.min(line.to, line.from + Math.max(0, Number(highlight.from) || 0));
+      view.dispatch({ selection: { anchor: from }, effects: EditorView.scrollIntoView(from, { y: "center" }) });
+    } catch (_) {}
+  });
 }
 
 export { create, languageForPath, languageNameForPath };
