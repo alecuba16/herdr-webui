@@ -48,7 +48,6 @@
       searchFoldersEnabled: parsed.searchFoldersEnabled !== false,
       searchContentEnabled: parsed.searchContentEnabled !== false,
       searchSectionOrder: normalizeSectionOrder(parsed.searchSectionOrder),
-      pathSearchEnabled: parsed.fileBrowserPathSearch !== false,
       pathPageSize: Math.max(10, Math.min(500, Number(parsed.fileBrowserSearchPageSize) || 100)),
       gitStatusEnabled: parsed.fileBrowserGitStatus !== false,
       contentMinChars: Math.max(1, Math.min(20, Number(parsed.fileContentSearchMinChars) || 3)),
@@ -83,7 +82,7 @@
     const opts = settings();
     const normalizedKind = Tree && Tree.normalizeSearchKind ? Tree.normalizeSearchKind(kind) : kind === "dir" ? "dir" : "file";
     const kindEnabled = normalizedKind === "dir" ? opts.searchFoldersEnabled : opts.searchFilesEnabled;
-    if (!opts.pathSearchEnabled || !kindEnabled) return { entries: [], git_status: null, truncated: false, disabled: true };
+    if (!kindEnabled) return { entries: [], git_status: null, truncated: false, disabled: true };
     const kindQuery = Tree && Tree.searchKindQuery ? Tree.searchKindQuery(normalizedKind) : `search_kind=${normalizedKind}`;
     const url = `/api/file-browser/tree?cwd=${encodeURIComponent(cwd || "")}&path=${encodeURIComponent(path || "")}&q=${encodeURIComponent(String(query || "").trim())}&${kindQuery}&offset=${Number(offset) || 0}&limit=${Number(limit || opts.pathPageSize)}${opts.gitStatusEnabled ? "&include_git_status=true" : ""}`;
     return apiJson(url);

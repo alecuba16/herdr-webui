@@ -256,11 +256,11 @@ function searchScore(text, needle) {
 function searchSettings() {
   return window.HerdrWorkspaceSearch && window.HerdrWorkspaceSearch.settings
     ? window.HerdrWorkspaceSearch.settings()
-    : { searchSectionOrder: ["workspaces", "files", "content"], searchWorkspacesEnabled: true, searchFilesEnabled: true, searchFoldersEnabled: true, searchContentEnabled: true, pathSearchEnabled: true };
+    : { searchSectionOrder: ["workspaces", "files", "content"], searchWorkspacesEnabled: true, searchFilesEnabled: true, searchFoldersEnabled: true, searchContentEnabled: true };
 }
 
 function pathSearchAvailable(opts = searchSettings()) {
-  return opts.pathSearchEnabled !== false && (opts.searchFilesEnabled !== false || opts.searchFoldersEnabled !== false);
+  return opts.searchFilesEnabled !== false || opts.searchFoldersEnabled !== false;
 }
 
 function normalizePalettePathKind(opts = searchSettings()) {
