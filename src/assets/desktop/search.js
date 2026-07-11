@@ -260,14 +260,19 @@ function searchSettings() {
 }
 
 function pathSearchAvailable(opts = searchSettings()) {
-  return opts.searchFilesEnabled !== false || opts.searchFoldersEnabled !== false;
+  const helper = window.HerdrWorkspaceSearch;
+  return helper && helper.pathSearchAvailable ? helper.pathSearchAvailable(opts) : opts.searchFilesEnabled !== false || opts.searchFoldersEnabled !== false;
 }
 
 function normalizePalettePathKind(opts = searchSettings()) {
-  if (searchPaletteState.pathKind === "dir" && opts.searchFoldersEnabled === false && opts.searchFilesEnabled !== false)
-    searchPaletteState.pathKind = "file";
-  if (searchPaletteState.pathKind !== "dir" && opts.searchFilesEnabled === false && opts.searchFoldersEnabled !== false)
-    searchPaletteState.pathKind = "dir";
+  const helper = window.HerdrWorkspaceSearch;
+  searchPaletteState.pathKind = helper && helper.normalizePathKind
+    ? helper.normalizePathKind(searchPaletteState.pathKind, opts)
+    : searchPaletteState.pathKind === "dir" && opts.searchFoldersEnabled === false && opts.searchFilesEnabled !== false
+      ? "file"
+      : searchPaletteState.pathKind !== "dir" && opts.searchFilesEnabled === false && opts.searchFoldersEnabled !== false
+        ? "dir"
+        : searchPaletteState.pathKind === "dir" ? "dir" : "file";
 }
 
 function scheduleSearch() {
@@ -298,7 +303,18 @@ async function runWorkspaceSearch(append = false) {
     renderSearchPalette();
     return;
   }
-  await Promise.allSettled([runPathSearch(seq, query, cwd, append && searchPaletteState.pathLoading === false), runContentSearchForPalette(seq, query, cwd, append && searchPaletteState.content.loading === false)]);
+  const tasks = [];
+  if (pathSearchAvailable(opts)) tasks.push(runPathSearch(seq, query, cwd, append && searchPaletteState.pathLoading === false));
+  else {
+    searchPaletteState.pathEntries = [];
+    searchPaletteState.pathGitStatus = null;
+    searchPaletteState.pathDone = true;
+    searchPaletteState.pathLoading = false;
+    searchPaletteState.pathError = "";
+  }
+  if (opts.searchContentEnabled !== false) tasks.push(runContentSearchForPalette(seq, query, cwd, append && searchPaletteState.content.loading === false));
+  else helper.resetContentState(searchPaletteState.content, query);
+  await Promise.allSettled(tasks);
   if (seq === searchPaletteState.requestSeq) renderSearchPalette();
 }
 
@@ -315,8 +331,8 @@ async function runPathSearch(seq, query, cwd, append) {
     searchPaletteState.pathEntries = append ? searchPaletteState.pathEntries.concat(entries) : entries;
     searchPaletteState.pathGitStatus = data.git_status || null;
     searchPaletteState.pathOffset = offset + entries.length;
-    searchPaletteState.pathDone = data.disabled || !data.truncated || entries.length === 0;
-    searchPaletteState.pathError = data.disabled ? "File and folder search is disabled in Settings." : "";
+    searchPaletteState.pathDone = !data.truncated || entries.length === 0;
+    searchPaletteState.pathError = "";
   } catch (error) {
     if (seq !== searchPaletteState.requestSeq) return;
     searchPaletteState.pathError = error.message || String(error);

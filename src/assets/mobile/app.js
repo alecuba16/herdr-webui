@@ -929,14 +929,19 @@
   }
 
   function mobilePathSearchAvailable(opts = mobileSearchSettings()) {
-    return opts.searchFilesEnabled !== false || opts.searchFoldersEnabled !== false;
+    const helper = globalThis.HerdrWorkspaceSearch;
+    return helper && helper.pathSearchAvailable ? helper.pathSearchAvailable(opts) : opts.searchFilesEnabled !== false || opts.searchFoldersEnabled !== false;
   }
 
   function normalizeMobilePathKind(opts = mobileSearchSettings()) {
-    if (mobileSearch.pathKind === "dir" && opts.searchFoldersEnabled === false && opts.searchFilesEnabled !== false)
-      mobileSearch.pathKind = "file";
-    if (mobileSearch.pathKind !== "dir" && opts.searchFilesEnabled === false && opts.searchFoldersEnabled !== false)
-      mobileSearch.pathKind = "dir";
+    const helper = globalThis.HerdrWorkspaceSearch;
+    mobileSearch.pathKind = helper && helper.normalizePathKind
+      ? helper.normalizePathKind(mobileSearch.pathKind, opts)
+      : mobileSearch.pathKind === "dir" && opts.searchFoldersEnabled === false && opts.searchFilesEnabled !== false
+        ? "file"
+        : mobileSearch.pathKind !== "dir" && opts.searchFilesEnabled === false && opts.searchFoldersEnabled !== false
+          ? "dir"
+          : mobileSearch.pathKind === "dir" ? "dir" : "file";
   }
 
   function scheduleMobileSearch() {
@@ -954,14 +959,27 @@
     const query = String(mobileSearch.query || "").trim();
     const cwd = currentWorkspaceCwd();
     const seq = ++mobileSearch.requestSeq;
-    normalizeMobilePathKind(helper.settings());
+    const opts = helper.settings();
+    normalizeMobilePathKind(opts);
     if (!query || !cwd) {
       mobileSearch.pathEntries = [];
       helper.resetContentState(mobileSearch.content, query);
       renderMobileSearch();
       return;
     }
-    await Promise.allSettled([runMobilePathSearch(seq, query, cwd, append), runMobileContentSearch(seq, query, cwd, append)]);
+    const tasks = [];
+    if (mobilePathSearchAvailable(opts)) tasks.push(runMobilePathSearch(seq, query, cwd, append));
+    else {
+      mobileSearch.pathEntries = [];
+      mobileSearch.pathGitStatus = null;
+      mobileSearch.pathOffset = 0;
+      mobileSearch.pathDone = true;
+      mobileSearch.pathLoading = false;
+      mobileSearch.pathError = "";
+    }
+    if (opts.searchContentEnabled !== false) tasks.push(runMobileContentSearch(seq, query, cwd, append));
+    else helper.resetContentState(mobileSearch.content, query);
+    await Promise.allSettled(tasks);
     if (seq === mobileSearch.requestSeq) renderMobileSearch();
   }
 
@@ -978,8 +996,8 @@
       mobileSearch.pathEntries = append ? mobileSearch.pathEntries.concat(entries) : entries;
       mobileSearch.pathGitStatus = data.git_status || null;
       mobileSearch.pathOffset = offset + entries.length;
-      mobileSearch.pathDone = data.disabled || !data.truncated || entries.length === 0;
-      mobileSearch.pathError = data.disabled ? "File and folder search is disabled in Settings." : "";
+      mobileSearch.pathDone = !data.truncated || entries.length === 0;
+      mobileSearch.pathError = "";
     } catch (error) {
       if (seq !== mobileSearch.requestSeq) return;
       mobileSearch.pathError = error.message || String(error);
