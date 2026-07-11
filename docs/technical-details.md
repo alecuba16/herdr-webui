@@ -172,7 +172,7 @@ No external icon assets are copied. The implementation uses local CSS and short 
 
 ### Git UI structure
 
-The Git sidebar separates exclusive view selection from action commands. Changes, log, stash, and cleanup render as a segmented toggle styled like the workspace shell-mode controls. Worktree actions remain in the toolbar below that toggle, and the file filter is rendered under the action toolbar so filtering applies to the visible file lists without visually competing with view switching. Cleanup uses `src/assets/icons/broom.svg` as a single shared mask icon instead of composing broom/trash glyphs in CSS.
+The Git sidebar separates exclusive view selection from action commands. Changes, log, stash, and cleanup render as a segmented toggle styled like the workspace shell-mode controls. Worktree actions remain in the toolbar below that toggle, and the file filter is rendered under the action toolbar so filtering applies to the visible file lists without visually competing with view switching. Cleanup is text-only in the segmented toggle to keep the Git selector visually simple.
 
 ## Editor
 

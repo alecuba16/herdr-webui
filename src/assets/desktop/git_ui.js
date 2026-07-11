@@ -763,10 +763,6 @@
     return `<span class="git-ui-file-summary"><span class="git-ui-file-icon ${cls}">${icon}</span>${counts}</span>`;
   }
 
-  function cleanupTabLabel() {
-    return `<span class="git-ui-cleanup-tab-icon" aria-hidden="true"></span><span>cleanup</span>`;
-  }
-
   function renderGitViewTabs(tabs, activeTab) {
     return `<div class="git-ui-view-toggle-group" role="tablist" aria-label="Git views">${tabs.map((tab) => `<button class="git-ui-view-toggle ${tab.id === "cleanup" ? "git-ui-cleanup-tab" : ""} ${activeTab === tab.id ? "active" : ""}" type="button" role="tab" aria-selected="${activeTab === tab.id ? "true" : "false"}" onclick="HerdrGitUi.tab('${tab.id}')">${tab.label}</button>`).join("")}</div>`;
   }
@@ -774,7 +770,7 @@
   function renderSide() {
     const view = active() || {};
     const s = view.status || {};
-    const tabs = [{ id: "changes", label: "changes" }, { id: "log", label: "log" }, { id: "stash", label: "stash" }, { id: "cleanup", label: cleanupTabLabel() }];
+    const tabs = [{ id: "changes", label: "changes" }, { id: "log", label: "log" }, { id: "stash", label: "stash" }, { id: "cleanup", label: "cleanup" }];
     const filter = String(view.fileFilter || "").trim();
     const fileSections = currentMode() === "changes"
       ? `${(s.conflicted || []).length ? section("Conflicted", filterFiles(s.conflicted, filter), "U") : ""}${section("Staged", filterFiles(s.staged, filter), "S")}${section("Unstaged", filterFiles(s.unstaged, filter), "M")}${section("Untracked", filterFiles(s.untracked, filter), "?")}`
