@@ -378,7 +378,7 @@ describe("HerdrFileTree search helpers", () => {
       { kind: "file", name: "unknown", path: "unknown" },
     ], { callback: "Tree" });
 
-    assert.match(html, /herdr-tree-icon-folder-src/);
+    assert.doesNotMatch(html, /herdr-tree-icon-folder-src/);
     assert.match(html, /herdr-tree-icon-filetype-react" data-glyph="TSX"/);
     assert.match(html, /herdr-tree-icon-filetype-rust" data-glyph="RS"/);
     assert.match(html, /herdr-tree-icon-file"/);

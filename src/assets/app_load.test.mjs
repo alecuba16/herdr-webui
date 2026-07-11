@@ -255,7 +255,7 @@ describe("app bundle load", () => {
     match(html, /Keyboard shortcuts/);
     match(html, /Workspaces show open roots\/worktrees; agents list status/);
     match(html, /Wheel, touch, and PageUp\/PageDown scroll the Herdr backend first, with xterm local scroll as fallback/);
-    match(html, /file\/folder rows use Zed-like, license-safe type icons/);
+    match(html, /file rows use license-safe type glyphs while folders stay plain except for Git status colors/);
     match(html, /keeps parent folders visible so result paths stay clear/);
     match(html, /same CodeMirror editor surface as edit mode but stay read-only until Edit is pressed/);
     match(html, /line numbers show by default/);
@@ -302,9 +302,10 @@ describe("app bundle load", () => {
     const fileIconCss = readFileSync(new URL("./shared/file_icons.css", import.meta.url), "utf8");
     match(fileIconSource, /FILE_ICON_BY_EXT/);
     match(fileIconSource, /FILE_ICON_BY_NAME/);
-    match(fileIconSource, /FOLDER_ICON_BY_NAME/);
+    ok(!fileIconSource.includes("FOLDER_ICON_BY_NAME"));
     match(fileTreeSource, /HerdrFileIcons/);
-    match(fileIconCss, /herdr-tree-icon-filetype-react/);
+    match(fileIconCss, /color: currentColor/);
+    ok(!fileIconCss.includes("--file-icon-color"));
     match(appBootSource, /\/assets\/shared\/file-icons\.js/);
     match(appBootSource, /\/assets\/shared\/file-icons\.css/);
     const editorSource = readFileSync(new URL("./vendor/codemirror_entry.mjs", import.meta.url), "utf8");

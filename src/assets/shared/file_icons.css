@@ -1,54 +1,16 @@
-.herdr-tree-icon-folder-src { color: #89b4fa; }
-.herdr-tree-icon-folder-test { color: #a6e3a1; }
-.herdr-tree-icon-folder-docs { color: #f9e2af; }
-.herdr-tree-icon-folder-assets { color: #f5c2e7; }
-.herdr-tree-icon-folder-node { color: #94e2d5; }
-.herdr-tree-icon-folder-git,
-.herdr-tree-icon-folder-github { color: #fab387; }
-.herdr-tree-icon-folder-public { color: #89dceb; }
 .herdr-tree-icon-filetype {
   align-items: center;
-  background: color-mix(in srgb, var(--file-icon-color, var(--accent)), transparent 18%);
+  background: color-mix(in srgb, currentColor, transparent 88%);
   border-radius: 4px;
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--file-icon-color, var(--accent)), transparent 45%);
-  color: var(--file-icon-fg, #11111b);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor, transparent 70%);
+  color: currentColor;
   display: inline-flex;
   font: 800 6.5px/1 var(--mono-font);
   justify-content: center;
   letter-spacing: -0.08em;
   mask-image: none;
+  opacity: 0.88;
   overflow: hidden;
   text-transform: uppercase;
 }
 .herdr-tree-icon-filetype::after { content: attr(data-glyph); }
-.herdr-tree-icon-filetype-js,
-.herdr-tree-icon-filetype-ts { --file-icon-color: #f9e2af; }
-.herdr-tree-icon-filetype-react { --file-icon-color: #89dceb; }
-.herdr-tree-icon-filetype-rust { --file-icon-color: #fab387; }
-.herdr-tree-icon-filetype-python { --file-icon-color: #89b4fa; }
-.herdr-tree-icon-filetype-go { --file-icon-color: #94e2d5; }
-.herdr-tree-icon-filetype-css { --file-icon-color: #cba6f7; }
-.herdr-tree-icon-filetype-html { --file-icon-color: #f38ba8; }
-.herdr-tree-icon-filetype-json,
-.herdr-tree-icon-filetype-yaml,
-.herdr-tree-icon-filetype-toml,
-.herdr-tree-icon-filetype-xml { --file-icon-color: #a6e3a1; }
-.herdr-tree-icon-filetype-md,
-.herdr-tree-icon-filetype-license { --file-icon-color: #b4befe; }
-.herdr-tree-icon-filetype-docker { --file-icon-color: #74c7ec; }
-.herdr-tree-icon-filetype-git,
-.herdr-tree-icon-filetype-shell,
-.herdr-tree-icon-filetype-env,
-.herdr-tree-icon-filetype-lock,
-.herdr-tree-icon-filetype-make { --file-icon-color: #bac2de; }
-.herdr-tree-icon-filetype-image { --file-icon-color: #f5c2e7; }
-.herdr-tree-icon-filetype-db,
-.herdr-tree-icon-filetype-sql { --file-icon-color: #89dceb; }
-.herdr-tree-icon-filetype-c,
-.herdr-tree-icon-filetype-cpp,
-.herdr-tree-icon-filetype-java,
-.herdr-tree-icon-filetype-kotlin,
-.herdr-tree-icon-filetype-lua,
-.herdr-tree-icon-filetype-npm,
-.herdr-tree-icon-filetype-php,
-.herdr-tree-icon-filetype-ruby { --file-icon-color: #fab387; }

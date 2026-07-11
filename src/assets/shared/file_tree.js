@@ -23,10 +23,7 @@
       return `<span class="herdr-tree-icon herdr-tree-icon-${safe}" aria-hidden="true"></span>`;
     }
     if (kind === "dir") {
-      const icons = window.HerdrFileIcons;
-      const folderType = icons && icons.folderType ? icons.folderType(pathOrName) : "";
-      const extra = folderType ? ` herdr-tree-icon-folder-${folderType}` : "";
-      return `<span class="herdr-tree-icon herdr-tree-icon-folder${extra}" aria-hidden="true"></span>`;
+      return `<span class="herdr-tree-icon herdr-tree-icon-folder" aria-hidden="true"></span>`;
     }
     const icons = window.HerdrFileIcons;
     const fileType = icons && icons.fileType ? icons.fileType(pathOrName) : null;
