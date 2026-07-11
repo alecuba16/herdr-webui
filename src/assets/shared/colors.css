@@ -1,0 +1,11 @@
+:root {
+  --herdr-focus-ring: color-mix(in srgb, var(--accent), transparent 45%);
+  --herdr-search-hit-bg: #f9e2af;
+  --herdr-search-hit-fg: #11111b;
+  --herdr-search-hit-border: color-mix(in srgb, var(--accent), transparent 35%);
+  --herdr-search-hit-shadow: color-mix(in srgb, var(--accent), transparent 72%);
+  --herdr-search-match-bg: color-mix(in srgb, var(--accent), transparent 90%);
+  --herdr-search-match-border: color-mix(in srgb, var(--accent), transparent 55%);
+  --herdr-content-panel-bg: var(--editor-bg, var(--panel2));
+  --herdr-content-editor-min-height: 140px;
+}

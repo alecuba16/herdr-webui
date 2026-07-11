@@ -1,23 +1,47 @@
+let searchPaletteState = createSearchPaletteState();
+
+function createSearchPaletteState() {
+  return {
+    query: "",
+    selectedIndex: 0,
+    results: [],
+    requestSeq: 0,
+    timer: null,
+    pathKind: "file",
+    pathEntries: [],
+    pathGitStatus: null,
+    pathOffset: 0,
+    pathDone: true,
+    pathLoading: false,
+    pathError: "",
+    content: window.HerdrWorkspaceSearch ? window.HerdrWorkspaceSearch.createContentState() : { query: "", files: [], expanded: {}, snippets: {}, loading: false, error: "", done: true, offset: 0, total_files: 0, total_matches: 0 },
+  };
+}
+
 function openSearchPalette() {
   const modal = el("searchPalette"),
     input = el("searchPaletteInput");
   if (!modal || !input) return;
-  searchResults = [];
-  searchSelectedIndex = 0;
+  const previousScope = searchPaletteState.pathKind || "file";
+  searchPaletteState = createSearchPaletteState();
+  searchPaletteState.pathKind = previousScope;
   input.value = "";
   modal.style.display = "grid";
-  renderSearchResults(searchCandidates(""));
+  renderSearchPalette();
   setTimeout(() => input.focus(), 0);
 }
+
 function closeSearchPalette() {
   const modal = el("searchPalette");
   if (modal) modal.style.display = "none";
-  searchResults = [];
-  searchSelectedIndex = 0;
+  if (searchPaletteState.timer) clearTimeout(searchPaletteState.timer);
+  searchPaletteState = createSearchPaletteState();
 }
+
 function textParts(...values) {
   return values.map((value) => textValue(value)).filter(Boolean);
 }
+
 function targetForWorkspace(wsId) {
   const tab =
     state.tabs.find((t) => t.workspace_id === wsId) ||
@@ -26,8 +50,14 @@ function targetForWorkspace(wsId) {
   const pane = tab && state.panes.find((p) => p.tab_id === tab.tab_id);
   return { ws: wsId, tab: tab && tab.tab_id, pane: pane && pane.pane_id };
 }
+
+function currentSearchWorkspace() {
+  return state.workspaces.find((workspace) => workspace.workspace_id === state.ws) || null;
+}
+
 function pushSearchCandidate(list, candidate) {
   if (!candidate || !candidate.ws) return;
+  candidate.type = candidate.type || "target";
   candidate.searchText = textParts(
     candidate.kind,
     candidate.title,
@@ -38,7 +68,10 @@ function pushSearchCandidate(list, candidate) {
     .toLowerCase();
   list.push(candidate);
 }
+
 function searchCandidates(query) {
+  const helper = window.HerdrWorkspaceSearch;
+  if (helper && helper.settings && helper.settings().searchWorkspacesEnabled === false) return [];
   const candidates = [],
     wsById = Object.fromEntries(
       state.workspaces.map((w) => [w.workspace_id, w]),
@@ -122,7 +155,7 @@ function searchCandidates(query) {
     });
   }
   const needle = String(query || "").trim().toLowerCase();
-  if (!needle) return candidates.slice(0, 30);
+  if (!needle) return candidates.slice(0, 12);
   return candidates
     .map((candidate) => ({
       ...candidate,
@@ -130,8 +163,9 @@ function searchCandidates(query) {
     }))
     .filter((candidate) => candidate.score >= 0)
     .sort((a, b) => a.score - b.score || a.title.localeCompare(b.title))
-    .slice(0, 30);
+    .slice(0, 12);
 }
+
 function searchScore(text, needle) {
   const index = text.indexOf(needle);
   if (index < 0) return -1;
@@ -139,43 +173,219 @@ function searchScore(text, needle) {
   if (text.startsWith(needle)) return 1;
   return 10 + index;
 }
-function scheduleSearch() {
-  if (searchFramePending) return;
-  searchFramePending = true;
-  requestAnimationFrame(() => {
-    searchFramePending = false;
-    renderSearchResults(searchCandidates(el("searchPaletteInput").value));
-  });
+
+function searchSettings() {
+  return window.HerdrWorkspaceSearch && window.HerdrWorkspaceSearch.settings
+    ? window.HerdrWorkspaceSearch.settings()
+    : { searchSectionOrder: ["workspaces", "files", "content"], searchWorkspacesEnabled: true, searchFilesEnabled: true, searchFoldersEnabled: true, searchContentEnabled: true, pathSearchEnabled: true };
 }
-function renderSearchResults(results) {
-  searchResults = results || [];
-  if (searchSelectedIndex >= searchResults.length)
-    searchSelectedIndex = Math.max(0, searchResults.length - 1);
-  const container = el("searchPaletteResults");
-  if (!container) return;
-  if (!searchResults.length) {
-    container.innerHTML = '<div class="search-empty">No matching panel targets.</div>';
+
+function pathSearchAvailable(opts = searchSettings()) {
+  return opts.pathSearchEnabled !== false && (opts.searchFilesEnabled !== false || opts.searchFoldersEnabled !== false);
+}
+
+function normalizePalettePathKind(opts = searchSettings()) {
+  if (searchPaletteState.pathKind === "dir" && opts.searchFoldersEnabled === false && opts.searchFilesEnabled !== false)
+    searchPaletteState.pathKind = "file";
+  if (searchPaletteState.pathKind !== "dir" && opts.searchFilesEnabled === false && opts.searchFoldersEnabled !== false)
+    searchPaletteState.pathKind = "dir";
+}
+
+function scheduleSearch() {
+  const input = el("searchPaletteInput");
+  const query = input ? input.value : "";
+  searchPaletteState.query = query;
+  searchPaletteState.selectedIndex = 0;
+  renderSearchPalette();
+  if (searchPaletteState.timer) clearTimeout(searchPaletteState.timer);
+  searchPaletteState.timer = setTimeout(() => runWorkspaceSearch(false), 180);
+}
+
+async function runWorkspaceSearch(append = false) {
+  const helper = window.HerdrWorkspaceSearch;
+  if (!helper) return;
+  const seq = ++searchPaletteState.requestSeq;
+  const query = String(searchPaletteState.query || "").trim();
+  const workspace = currentSearchWorkspace();
+  const cwd = helper.workspaceCwd(workspace);
+  const opts = helper.settings();
+  normalizePalettePathKind(opts);
+  if (!query || !cwd) {
+    searchPaletteState.pathEntries = [];
+    searchPaletteState.pathGitStatus = null;
+    searchPaletteState.pathDone = true;
+    searchPaletteState.pathLoading = false;
+    helper.resetContentState(searchPaletteState.content, query);
+    renderSearchPalette();
     return;
   }
-  container.innerHTML = searchResults
-    .map(
-      (result, index) =>
-        `<div class="search-result ${index === searchSelectedIndex ? "active" : ""}" onclick="chooseSearchResult(${index})"><span class="search-result-icon">${escapeHtml(result.icon)}</span><div><div class="search-result-title">${escapeHtml(result.title)}</div><div class="search-result-subtitle">${escapeHtml(result.subtitle || result.kind)}</div></div></div>`,
-    )
-    .join("");
+  await Promise.allSettled([runPathSearch(seq, query, cwd, append && searchPaletteState.pathLoading === false), runContentSearchForPalette(seq, query, cwd, append && searchPaletteState.content.loading === false)]);
+  if (seq === searchPaletteState.requestSeq) renderSearchPalette();
 }
+
+async function runPathSearch(seq, query, cwd, append) {
+  const helper = window.HerdrWorkspaceSearch;
+  const offset = append ? searchPaletteState.pathOffset : 0;
+  searchPaletteState.pathLoading = true;
+  searchPaletteState.pathError = "";
+  renderSearchPalette();
+  try {
+    const data = await helper.searchPaths({ cwd, query, kind: searchPaletteState.pathKind, offset });
+    if (seq !== searchPaletteState.requestSeq) return;
+    const entries = data.entries || [];
+    searchPaletteState.pathEntries = append ? searchPaletteState.pathEntries.concat(entries) : entries;
+    searchPaletteState.pathGitStatus = data.git_status || null;
+    searchPaletteState.pathOffset = offset + entries.length;
+    searchPaletteState.pathDone = data.disabled || !data.truncated || entries.length === 0;
+    searchPaletteState.pathError = data.disabled ? "File and folder search is disabled in Settings." : "";
+  } catch (error) {
+    if (seq !== searchPaletteState.requestSeq) return;
+    searchPaletteState.pathError = error.message || String(error);
+    searchPaletteState.pathDone = true;
+  } finally {
+    if (seq === searchPaletteState.requestSeq) searchPaletteState.pathLoading = false;
+  }
+}
+
+async function runContentSearchForPalette(seq, query, cwd, append) {
+  const helper = window.HerdrWorkspaceSearch;
+  const opts = helper.settings();
+  searchPaletteState.content.query = query;
+  if (query.length < opts.contentMinChars) {
+    helper.resetContentState(searchPaletteState.content, query);
+    searchPaletteState.content.error = query ? `Type at least ${opts.contentMinChars} characters to search contents.` : "";
+    return;
+  }
+  const offset = append ? searchPaletteState.content.offset : 0;
+  searchPaletteState.content.loading = true;
+  searchPaletteState.content.error = "";
+  renderSearchPalette();
+  try {
+    const data = await helper.searchContent({ cwd, query, offset });
+    if (seq !== searchPaletteState.requestSeq) return;
+    helper.applyContentResults(searchPaletteState.content, data, append);
+  } catch (error) {
+    if (seq !== searchPaletteState.requestSeq) return;
+    searchPaletteState.content.error = error.message || String(error);
+    searchPaletteState.content.done = true;
+  } finally {
+    if (seq === searchPaletteState.requestSeq) searchPaletteState.content.loading = false;
+  }
+}
+
+function activeWorkspaceLabel() {
+  const workspace = currentSearchWorkspace();
+  return workspace ? workspaceDisplayTitle(workspace) : "No workspace selected";
+}
+
+function buildSearchSelectionRows(targets, order, opts) {
+  const rows = [];
+  if (!order || !order.length) order = ["workspaces", "files", "content"];
+  for (const section of order) {
+    if (section === "workspaces" && opts.searchWorkspacesEnabled !== false) rows.push(...targets);
+    if (section === "files" && pathSearchAvailable(opts)) {
+      for (const entry of searchPaletteState.pathEntries || []) {
+        const kind = entry.kind === "dir" ? "dir" : "file";
+        if (kind !== searchPaletteState.pathKind) continue;
+        rows.push({ type: "path", kind, path: entry.path, title: entry.name || entry.path, workspace: currentSearchWorkspace() });
+      }
+    }
+    if (section === "content" && opts.searchContentEnabled !== false) {
+      for (const item of (window.HerdrWorkspaceSearch ? window.HerdrWorkspaceSearch.flattenContentMatches(searchPaletteState.content.files) : [])) {
+        rows.push({ type: "content", file: item.file, match: item.match, title: item.file.path, workspace: currentSearchWorkspace() });
+      }
+    }
+  }
+  return rows;
+}
+
+function selectedSearchRow() {
+  return searchPaletteState.results[searchPaletteState.selectedIndex] || null;
+}
+
+function renderSearchPalette() {
+  const query = searchPaletteState.query || "";
+  const opts = searchSettings();
+  normalizePalettePathKind(opts);
+  const order = opts.searchSectionOrder || ["workspaces", "files", "content"];
+  const targets = searchCandidates(query);
+  searchPaletteState.results = buildSearchSelectionRows(targets, order, opts);
+  if (searchPaletteState.selectedIndex >= searchPaletteState.results.length)
+    searchPaletteState.selectedIndex = Math.max(0, searchPaletteState.results.length - 1);
+  const container = el("searchPaletteResults");
+  if (!container) return;
+  const sections = {
+    workspaces: opts.searchWorkspacesEnabled === false ? "" : renderTargetSection(targets),
+    files: pathSearchAvailable(opts) ? renderWorkspacePathSection(opts) : "",
+    content: opts.searchContentEnabled === false ? "" : renderWorkspaceContentSection(),
+  };
+  container.innerHTML = order.map((key) => sections[key] || "").join("");
+}
+
+function renderTargetSection(targets) {
+  const body = targets.length
+    ? targets.map((result) => renderTargetResult(result, searchPaletteState.results.indexOf(result))).join("")
+    : '<div class="search-empty">No matching workspace, worktree, panel, or agent.</div>';
+  return `<section class="search-section"><div class="search-section-head"><strong>Workspaces, worktrees, panels</strong><span>${targets.length}</span></div>${body}</section>`;
+}
+
+function renderTargetResult(result, index) {
+  return `<div class="search-result ${index === searchPaletteState.selectedIndex ? "active" : ""}" onclick="chooseSearchResult(${index})"><span class="search-result-icon">${escapeHtml(result.icon)}</span><div><div class="search-result-title">${escapeHtml(result.title)}</div><div class="search-result-subtitle">${escapeHtml(result.subtitle || result.kind)}</div></div></div>`;
+}
+
+function renderWorkspacePathSection(opts = searchSettings()) {
+  const helper = window.HerdrWorkspaceSearch;
+  if (!helper) return "";
+  normalizePalettePathKind(opts);
+  const selected = selectedSearchRow();
+  const selectedPath = selected && selected.type === "path" ? selected.path : "";
+  const query = String(searchPaletteState.query || "").trim();
+  const kind = searchPaletteState.pathKind;
+  const noun = kind === "dir" ? "folders" : "files";
+  const tree = query
+    ? searchPaletteState.pathEntries.length
+      ? helper.renderPathTree(searchPaletteState.pathEntries, { query, kind, gitStatus: searchPaletteState.pathGitStatus, selectedPath, callback: "HerdrSearchPaletteTree" })
+      : `<div class="search-empty">${searchPaletteState.pathLoading ? "Searching..." : `No ${noun} found.`}</div>`
+    : '<div class="search-empty">Type to search files or folders in current workspace.</div>';
+  const more = query && !searchPaletteState.pathDone ? `<button class="git-ui-btn search-more" onclick="HerdrSearchPalette.loadMorePaths()">Load more ${noun}</button>` : "";
+  return `<section class="search-section search-path-section"><div class="search-section-head"><strong>Files and folders</strong><span>${escapeHtml(activeWorkspaceLabel())}</span></div><div class="search-scope-tabs"><button class="git-ui-btn ${kind === "file" ? "active" : ""}" ${opts.searchFilesEnabled === false ? "disabled" : ""} onclick="HerdrSearchPalette.setPathKind('file')">Files</button><button class="git-ui-btn ${kind === "dir" ? "active" : ""}" ${opts.searchFoldersEnabled === false ? "disabled" : ""} onclick="HerdrSearchPalette.setPathKind('dir')">Folders</button></div>${searchPaletteState.pathError ? `<div class="file-browser-error">${escapeHtml(searchPaletteState.pathError)}</div>` : ""}${tree}${searchPaletteState.pathLoading ? '<div class="file-browser-searching">Searching...</div>' : ""}${more}</section>`;
+}
+
+function renderWorkspaceContentSection() {
+  const helper = window.HerdrWorkspaceSearch;
+  if (!helper) return "";
+  const opts = helper.settings();
+  const query = String(searchPaletteState.query || "").trim();
+  const body = !opts.searchContentEnabled
+    ? '<div class="search-empty">File content search is disabled in Settings.</div>'
+    : query.length < opts.contentMinChars
+      ? `<div class="search-empty">Type at least ${opts.contentMinChars} characters to search file contents.</div>`
+      : helper.renderContentPicker(searchPaletteState.content, { callback: "HerdrSearchPaletteContent", idPrefix: "searchPaletteContent", disableSnippetEditing: true });
+  return `<section class="search-section search-content-section"><div class="search-section-head"><strong>File content</strong><span>${Number(searchPaletteState.content.total_matches || 0)} matches</span></div>${body}</section>`;
+}
+
 function moveSearchSelection(delta) {
-  if (!searchResults.length) return;
-  searchSelectedIndex =
-    (searchSelectedIndex + delta + searchResults.length) % searchResults.length;
-  renderSearchResults(searchResults);
+  if (!searchPaletteState.results.length) return;
+  searchPaletteState.selectedIndex =
+    (searchPaletteState.selectedIndex + delta + searchPaletteState.results.length) % searchPaletteState.results.length;
+  renderSearchPalette();
 }
-function chooseSearchResult(index = searchSelectedIndex) {
-  const result = searchResults[index];
+
+function chooseSearchResult(index = searchPaletteState.selectedIndex) {
+  const result = searchPaletteState.results[index];
   if (!result) return;
+  if (result.type === "path") {
+    openWorkspaceSearchPath(result.path, result.kind);
+    return;
+  }
+  if (result.type === "content") {
+    openWorkspaceSearchContent(result.file, result.match);
+    return;
+  }
   closeSearchPalette();
   go(result.ws, result.tab, result.pane);
 }
+
 function searchPaletteKeydown(e) {
   if (e.key === "Escape") {
     e.preventDefault();
@@ -189,5 +399,83 @@ function searchPaletteKeydown(e) {
   } else if (e.key === "Enter") {
     e.preventDefault();
     chooseSearchResult();
+  } else if (e.altKey && e.key && e.key.toLowerCase() === "f") {
+    e.preventDefault();
+    HerdrSearchPalette.setPathKind("file");
+  } else if (e.altKey && e.key && e.key.toLowerCase() === "d") {
+    e.preventDefault();
+    HerdrSearchPalette.setPathKind("dir");
   }
 }
+
+function openWorkspaceSearchPath(path, kind) {
+  const workspace = currentSearchWorkspace();
+  closeSearchPalette();
+  if (!workspace || !window.HerdrFileBrowser || !window.HerdrFileBrowser.openAt) return;
+  window.HerdrFileBrowser.openAt(workspace, path, { kind });
+}
+
+function openWorkspaceSearchContent(file, match) {
+  const helper = window.HerdrWorkspaceSearch;
+  const workspace = currentSearchWorkspace();
+  closeSearchPalette();
+  if (!workspace || !file || !window.HerdrFileBrowser || !window.HerdrFileBrowser.openAt) return;
+  window.HerdrFileBrowser.openAt(workspace, file.path, { kind: "file", highlight: helper.matchHighlight(match, searchPaletteState.query) });
+}
+
+const HerdrSearchPalette = {
+  setPathKind(kind) {
+    const opts = searchSettings();
+    if (kind === "dir" && opts.searchFoldersEnabled === false) return;
+    if (kind !== "dir" && opts.searchFilesEnabled === false) return;
+    searchPaletteState.pathKind = kind === "dir" ? "dir" : "file";
+    searchPaletteState.pathEntries = [];
+    searchPaletteState.pathOffset = 0;
+    searchPaletteState.pathDone = true;
+    renderSearchPalette();
+    runWorkspaceSearch(false);
+  },
+  loadMorePaths() { runPathSearch(++searchPaletteState.requestSeq, searchPaletteState.query, window.HerdrWorkspaceSearch.workspaceCwd(currentSearchWorkspace()), true).then(renderSearchPalette); },
+  loadMoreContent() { runContentSearchForPalette(++searchPaletteState.requestSeq, searchPaletteState.query, window.HerdrWorkspaceSearch.workspaceCwd(currentSearchWorkspace()), true).then(renderSearchPalette); },
+};
+
+const HerdrSearchPaletteTree = {
+  select(encodedPath) {
+    const path = decodeURIComponent(encodedPath);
+    const entry = (searchPaletteState.pathEntries || []).find((item) => item.path === path);
+    openWorkspaceSearchPath(path, entry && entry.kind === "dir" ? "dir" : searchPaletteState.pathKind);
+  },
+};
+
+const HerdrSearchPaletteContent = {
+  toggleFile(encodedPath) {
+    const path = decodeURIComponent(encodedPath);
+    searchPaletteState.content.expanded[path] = !searchPaletteState.content.expanded[path];
+    renderSearchPalette();
+  },
+  openFile(encodedPath) {
+    const path = decodeURIComponent(encodedPath);
+    openWorkspaceSearchPath(path, "file");
+  },
+  openMatch(encodedPath, encodedMatchId) {
+    const path = decodeURIComponent(encodedPath);
+    const file = (searchPaletteState.content.files || []).find((item) => item.path === path);
+    const match = window.HerdrContentSearch && window.HerdrContentSearch.findMatch(file, decodeURIComponent(encodedMatchId));
+    openWorkspaceSearchContent(file, match);
+  },
+  expandAll() {
+    for (const file of searchPaletteState.content.files || []) searchPaletteState.content.expanded[file.path] = true;
+    renderSearchPalette();
+  },
+  collapseAll() {
+    for (const file of searchPaletteState.content.files || []) searchPaletteState.content.expanded[file.path] = false;
+    renderSearchPalette();
+  },
+  loadMore() { HerdrSearchPalette.loadMoreContent(); },
+  loadFile(_encodedPath) {},
+  expandSnippet(_path, _match, _direction) {},
+};
+
+window.HerdrSearchPalette = HerdrSearchPalette;
+window.HerdrSearchPaletteTree = HerdrSearchPaletteTree;
+window.HerdrSearchPaletteContent = HerdrSearchPaletteContent;

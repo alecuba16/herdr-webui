@@ -29,7 +29,7 @@
   width: 100%;
 }
 .search-results {
-  max-height: min(62vh, 520px);
+  max-height: min(68vh, 640px);
   overflow: auto;
   padding: 8px;
 }
@@ -80,4 +80,50 @@
 }
 .search-help {
   border-top: 1px solid var(--border);
+}
+
+.search-section {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  margin: 0 0 10px;
+  overflow: hidden;
+}
+.search-section-head {
+  align-items: center;
+  background: var(--panel2);
+  border-bottom: 1px solid var(--border);
+  color: var(--fg);
+  display: flex;
+  font-size: 12px;
+  justify-content: space-between;
+  padding: 8px 10px;
+}
+.search-section-head span {
+  color: var(--muted);
+  font-size: 11px;
+}
+.search-scope-tabs {
+  display: flex;
+  gap: 6px;
+  padding: 8px 10px 0;
+}
+.search-path-section .herdr-file-tree {
+  padding: 6px;
+}
+.search-path-section .herdr-tree-row {
+  border-radius: 9px;
+}
+.search-path-section .herdr-tree-row.active,
+.search-path-section .herdr-tree-row:hover {
+  background: var(--panel2);
+}
+.search-content-section .herdr-content-search {
+  padding: 0 6px 8px;
+}
+.search-content-section .herdr-content-search-tools {
+  border-bottom: 0;
+  padding: 8px 4px;
+}
+.search-more {
+  margin: 8px 10px 10px;
 }

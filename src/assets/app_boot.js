@@ -54,8 +54,15 @@
       loadCss("/assets/desktop/shortcuts.css");
       loadCss("/assets/desktop/search.css");
     }
+    loadCss("/assets/shared/colors.css");
+    loadCss("/assets/shared/file-icons.css");
+    loadCss("/assets/shared/content-search.css");
     loadScript("/assets/shared/core.js");
+    loadScript("/assets/shared/file-icons.js");
     loadScript("/assets/shared/file-tree.js");
+    loadScript("/assets/shared/file-content-search.js");
+    loadScript("/assets/shared/workspace-search.js");
+    loadScript("/assets/vendor/codemirror.js");
     loadScript("/assets/shared/editor.js");
     loadScript("/assets/shared/terminal-scroll.js");
     loadScript("/assets/shared/temp-terminal.js");
