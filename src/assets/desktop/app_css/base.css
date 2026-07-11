@@ -187,6 +187,14 @@ body.light {
 .mini:hover {
   background: var(--border2);
 }
+.mini.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg);
+}
+.mini.active:hover {
+  background: color-mix(in srgb, var(--accent), var(--fg) 12%);
+}
 .no-sleep-control {
   max-width: 118px;
   appearance: none;

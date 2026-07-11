@@ -325,6 +325,12 @@
     const workspace = currentWorkspace();
     el("mobileTitle").textContent = workspaceTitle(workspace);
     el("mobileMeta").textContent = contextMeta(workspace);
+    const searchButton = el("mobileSearch");
+    if (searchButton) {
+      const disabled = headerSearchDisabled();
+      searchButton.hidden = disabled;
+      searchButton.disabled = disabled;
+    }
     document.querySelectorAll(".mobile-nav button").forEach((button) => {
       button.classList.toggle("active", button.dataset.screen === state.screen);
       button.innerHTML = mobileNavLabel(button.dataset.screen);
@@ -348,6 +354,14 @@
     else if (state.screen === "terminal") renderTerminalScreen(screen);
     else screen.innerHTML = renderHome();
     syncBrowserFavicon();
+  }
+
+  function headerSearchDisabled() {
+    try {
+      return JSON.parse(localStorage.getItem("herdr-web-options") || "{}").headerSearchEnabled === false;
+    } catch (_) {
+      return false;
+    }
   }
 
   function applyTreeIndent() {
@@ -806,6 +820,7 @@
   };
 
   function openMobileSearch() {
+    if (headerSearchDisabled()) return;
     const sheet = el("mobileSearchSheet");
     const input = el("mobileSearchInput");
     if (!sheet || !input) return;
@@ -973,7 +988,15 @@
     if (seq === mobileSearch.requestSeq) mobileSearch.pathLoading = false;
   }
 
-  async function runMobileContentSearch(seq, query, cwd, append) {
+  function renderMobileSearchPreservingScroll() {
+    const box = el("mobileSearchResults");
+    const top = box ? box.scrollTop : 0;
+    renderMobileSearch();
+    const next = el("mobileSearchResults");
+    if (next) next.scrollTop = top;
+  }
+
+  async function runMobileContentSearch(seq, query, cwd, append, options = {}) {
     const helper = globalThis.HerdrWorkspaceSearch;
     const opts = helper.settings();
     mobileSearch.content.query = query;
@@ -984,12 +1007,12 @@
     }
     mobileSearch.content.loading = true;
     mobileSearch.content.error = "";
-    renderMobileSearch();
+    (options.preserveScroll ? renderMobileSearchPreservingScroll : renderMobileSearch)();
     try {
       const offset = append ? mobileSearch.content.offset : 0;
       const data = await helper.searchContent({ cwd, query, offset, contextLines: mobileSearch.content.contextLines });
       if (seq !== mobileSearch.requestSeq) return;
-      helper.applyContentResults(mobileSearch.content, data, append);
+      helper.applyContentResults(mobileSearch.content, data, append, { preserveExpanded: !!options.preserveExpanded });
     } catch (error) {
       if (seq !== mobileSearch.requestSeq) return;
       mobileSearch.content.error = error.message || String(error);
@@ -1194,7 +1217,7 @@
     openMatch(encodedPath, encodedMatchId) { globalThis.HerdrMobileSearch.openContent(decodeURIComponent(encodedPath), decodeURIComponent(encodedMatchId)); },
     expandAll() { for (const file of mobileSearch.content.files || []) mobileSearch.content.expanded[file.path] = true; renderMobileSearch(); },
     collapseAll() { for (const file of mobileSearch.content.files || []) mobileSearch.content.expanded[file.path] = false; renderMobileSearch(); },
-    loadMore() { runMobileContentSearch(++mobileSearch.requestSeq, mobileSearch.query, currentWorkspaceCwd(), true).then(renderMobileSearch); },
+    loadMore() { runMobileContentSearch(++mobileSearch.requestSeq, mobileSearch.query, currentWorkspaceCwd(), true, { preserveScroll: true }).then(renderMobileSearchPreservingScroll); },
     loadFile(_path) {},
     expandSnippet(_path, _match, _direction) {
       const helper = globalThis.HerdrWorkspaceSearch;
@@ -1203,7 +1226,9 @@
       mobileSearch.content.contextLines = globalThis.HerdrLineContext && globalThis.HerdrLineContext.nextContextSize
         ? globalThis.HerdrLineContext.nextContextSize(current, { min: 3, max: 20 })
         : Math.min(20, current < 3 ? 3 : current * 2);
-      runMobileContentSearch(++mobileSearch.requestSeq, mobileSearch.query, currentWorkspaceCwd(), false).then(renderMobileSearch);
+      const path = decodeURIComponent(_path || "");
+      if (path) mobileSearch.content.expanded[path] = true;
+      runMobileContentSearch(++mobileSearch.requestSeq, mobileSearch.query, currentWorkspaceCwd(), false, { preserveExpanded: true, preserveScroll: true }).then(renderMobileSearchPreservingScroll);
     },
   };
 
@@ -1246,11 +1271,13 @@
     setFileBrowserLineNumbers: mobileSettings.setFileBrowserLineNumbers,
     setFileBrowserPathSearch: mobileSettings.setFileBrowserPathSearch,
     setFileBrowserSearchPageSize: mobileSettings.setFileBrowserSearchPageSize,
+    setHeaderSearchEnabled: mobileSettings.setHeaderSearchEnabled,
     setSearchWorkspacesEnabled: mobileSettings.setSearchWorkspacesEnabled,
     setSearchFilesEnabled: mobileSettings.setSearchFilesEnabled,
     setSearchFoldersEnabled: mobileSettings.setSearchFoldersEnabled,
     setSearchContentEnabled: mobileSettings.setSearchContentEnabled,
     setSearchSectionOrder: mobileSettings.setSearchSectionOrder,
+    moveSearchSection: mobileSettings.moveSearchSection,
     setFileContentSearchMinChars: mobileSettings.setFileContentSearchMinChars,
     setFileContentSearchPageSize: mobileSettings.setFileContentSearchPageSize,
     setFileContentSearchAutoCollapseFiles: mobileSettings.setFileContentSearchAutoCollapseFiles,

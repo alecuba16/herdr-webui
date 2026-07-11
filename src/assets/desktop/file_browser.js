@@ -269,6 +269,8 @@
   function renderPreservingScroll() {
     const side = document.querySelector(".file-browser-side");
     const top = side ? side.scrollTop : state.filterScrollTop || 0;
+    const contentPane = document.querySelector(".file-browser-content-pane-body");
+    const contentTop = contentPane ? contentPane.scrollTop : 0;
     const active = document.activeElement;
     const refocusFilter = active && active.id === "fileBrowserFilter";
     const refocusSide = !refocusFilter && side && active === side;
@@ -277,6 +279,8 @@
     render();
     const next = document.querySelector(".file-browser-side");
     if (next) next.scrollTop = top;
+    const nextContentPane = document.querySelector(".file-browser-content-pane-body");
+    if (nextContentPane) nextContentPane.scrollTop = contentTop;
     if (refocusFilter) {
       const input = document.getElementById("fileBrowserFilter");
       if (input) {
@@ -888,12 +892,12 @@
     toggleFile(encodedPath) {
       const path = decodeURIComponent(encodedPath);
       state.contentSearch.expanded[path] = !state.contentSearch.expanded[path];
-      render();
+      renderPreservingScroll();
     },
     async loadFile(encodedPath) {
       try { await loadContentSearchFile(decodeURIComponent(encodedPath)); }
       catch (error) { state.contentSearch.error = error.message || String(error); }
-      render();
+      renderPreservingScroll();
     },
     openFile(encodedPath) { loadFile(decodeURIComponent(encodedPath)); },
     openMatch(encodedPath, encodedMatchId) {
@@ -904,11 +908,11 @@
     },
     expandAll() {
       for (const file of state.contentSearch.files || []) state.contentSearch.expanded[file.path] = true;
-      render();
+      renderPreservingScroll();
     },
     collapseAll() {
       state.contentSearch.expanded = {};
-      render();
+      renderPreservingScroll();
     },
     editSnippet(encodedPath, encodedMatchId) {
       const path = decodeURIComponent(encodedPath);
@@ -965,7 +969,7 @@
       state.contentSearch.contextLines = nextContext;
       try { await loadContentSearchFile(path, nextContext); }
       catch (error) { state.contentSearch.error = error.message || String(error); }
-      render();
+      renderPreservingScroll();
     },
   };
 })();

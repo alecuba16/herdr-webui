@@ -126,6 +126,11 @@ body.light {
   color: var(--fg);
   font-weight: 800;
 }
+.mobile-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg);
+}
 .mobile-btn.primary {
   background: var(--accent);
   border-color: var(--accent);
