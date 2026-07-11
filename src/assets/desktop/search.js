@@ -20,9 +20,12 @@ function createSearchPaletteState() {
 }
 
 function openSearchPalette() {
+  try {
+    if (JSON.parse(localStorage.getItem("herdr-web-options") || "{}").headerSearchEnabled === false) return false;
+  } catch (_) {}
   const modal = el("searchPalette"),
     input = el("searchPaletteInput");
-  if (!modal || !input) return;
+  if (!modal || !input) return false;
   const previousScope = searchPaletteState.pathKind || "file";
   searchPaletteState = createSearchPaletteState();
   searchPaletteState.pathKind = previousScope;
@@ -30,6 +33,7 @@ function openSearchPalette() {
   modal.style.display = "grid";
   renderSearchPalette();
   setTimeout(() => input.focus(), 0);
+  return true;
 }
 
 function closeSearchPalette() {
@@ -322,7 +326,15 @@ async function runPathSearch(seq, query, cwd, append) {
   }
 }
 
-async function runContentSearchForPalette(seq, query, cwd, append) {
+function renderSearchPalettePreservingScroll() {
+  const container = el("searchPaletteResults");
+  const top = container ? container.scrollTop : 0;
+  renderSearchPalette();
+  const next = el("searchPaletteResults");
+  if (next) next.scrollTop = top;
+}
+
+async function runContentSearchForPalette(seq, query, cwd, append, options = {}) {
   const helper = window.HerdrWorkspaceSearch;
   const opts = helper.settings();
   searchPaletteState.content.query = query;
@@ -334,11 +346,11 @@ async function runContentSearchForPalette(seq, query, cwd, append) {
   const offset = append ? searchPaletteState.content.offset : 0;
   searchPaletteState.content.loading = true;
   searchPaletteState.content.error = "";
-  renderSearchPalette();
+  (options.preserveScroll ? renderSearchPalettePreservingScroll : renderSearchPalette)();
   try {
     const data = await helper.searchContent({ cwd, query, offset, contextLines: searchPaletteState.content.contextLines });
     if (seq !== searchPaletteState.requestSeq) return;
-    helper.applyContentResults(searchPaletteState.content, data, append);
+    helper.applyContentResults(searchPaletteState.content, data, append, { preserveExpanded: !!options.preserveExpanded });
   } catch (error) {
     if (seq !== searchPaletteState.requestSeq) return;
     searchPaletteState.content.error = error.message || String(error);
@@ -539,7 +551,7 @@ const HerdrSearchPalette = {
     runWorkspaceSearch(false);
   },
   loadMorePaths() { runPathSearch(++searchPaletteState.requestSeq, searchPaletteState.query, window.HerdrWorkspaceSearch.workspaceCwd(currentSearchWorkspace()), true).then(renderSearchPalette); },
-  loadMoreContent() { runContentSearchForPalette(++searchPaletteState.requestSeq, searchPaletteState.query, window.HerdrWorkspaceSearch.workspaceCwd(currentSearchWorkspace()), true).then(renderSearchPalette); },
+  loadMoreContent() { runContentSearchForPalette(++searchPaletteState.requestSeq, searchPaletteState.query, window.HerdrWorkspaceSearch.workspaceCwd(currentSearchWorkspace()), true, { preserveScroll: true }).then(renderSearchPalettePreservingScroll); },
 };
 
 const HerdrSearchPaletteTree = {
@@ -579,12 +591,14 @@ const HerdrSearchPaletteContent = {
   expandSnippet(_path, _match, _direction) {
     const helper = window.HerdrWorkspaceSearch;
     if (!helper) return;
+    const path = decodeURIComponent(_path || "");
     const opts = helper ? helper.settings() : { contextLines: 2 };
     const current = Number(searchPaletteState.content.contextLines ?? opts.contextLines ?? 2);
     searchPaletteState.content.contextLines = window.HerdrLineContext && window.HerdrLineContext.nextContextSize
       ? window.HerdrLineContext.nextContextSize(current, { min: 3, max: 20 })
       : Math.min(20, current < 3 ? 3 : current * 2);
-    runContentSearchForPalette(++searchPaletteState.requestSeq, searchPaletteState.query, helper.workspaceCwd(currentSearchWorkspace()), false).then(renderSearchPalette);
+    if (path) searchPaletteState.content.expanded[path] = true;
+    runContentSearchForPalette(++searchPaletteState.requestSeq, searchPaletteState.query, helper.workspaceCwd(currentSearchWorkspace()), false, { preserveExpanded: true, preserveScroll: true }).then(renderSearchPalettePreservingScroll);
   },
 };
 

@@ -128,8 +128,9 @@
     state.contextLines = settings().contextLines;
   }
 
-  function applyContentResults(state, data, append) {
+  function applyContentResults(state, data, append, options = {}) {
     const files = data.files || [];
+    const previousExpanded = state.expanded || {};
     state.files = append ? state.files.concat(files) : files;
     state.total_files = data.total_files || state.files.length;
     state.total_matches = data.total_matches || 0;
@@ -139,7 +140,11 @@
       const opts = settings();
       state.expanded = {};
       const expanded = defaultContentExpanded(opts, state.files.length);
-      for (const file of state.files) state.expanded[file.path] = expanded;
+      for (const file of state.files) {
+        state.expanded[file.path] = options.preserveExpanded && Object.prototype.hasOwnProperty.call(previousExpanded, file.path)
+          ? previousExpanded[file.path]
+          : expanded;
+      }
     } else {
       const expanded = defaultContentExpanded(settings(), state.files.length);
       for (const file of files) if (!Object.prototype.hasOwnProperty.call(state.expanded, file.path)) state.expanded[file.path] = expanded;
