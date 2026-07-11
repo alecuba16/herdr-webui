@@ -71,16 +71,6 @@
 .git-ui-cleanup-tab {
   align-items: center;
   display: inline-flex;
-  gap: 4px;
-}
-.git-ui-cleanup-tab-icon {
-  background: currentColor;
-  display: inline-block;
-  flex: none;
-  height: 16px;
-  line-height: 1;
-  mask: url("/assets/icons/broom.svg") center / contain no-repeat;
-  width: 16px;
 }
 .git-ui-cleanup-bulk {
   align-items: center;
