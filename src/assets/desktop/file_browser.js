@@ -33,15 +33,8 @@
   function pathSearchOptions() {
     try {
       const parsed = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
-      return {
-        enabled: parsed.fileBrowserPathSearch !== false,
-        pageSize: Math.max(10, Math.min(500, Number(parsed.fileBrowserSearchPageSize) || 100)),
-      };
-    } catch (_) { return { enabled: true, pageSize: 100 }; }
-  }
-
-  function pathSearchEnabled() {
-    return pathSearchOptions().enabled;
+      return { pageSize: Math.max(10, Math.min(500, Number(parsed.fileBrowserSearchPageSize) || 100)) };
+    } catch (_) { return { pageSize: 100 }; }
   }
 
   function contentSearchOptions() {
@@ -220,7 +213,7 @@
 
   async function fetchFilteredEntries(append = false) {
     const target = state;
-    if (!target.cwd || !target.filter.trim() || target.filterKind === "content" || !pathSearchEnabled()) return;
+    if (!target.cwd || !target.filter.trim() || target.filterKind === "content") return;
     const offset = append ? target.filterOffset : 0;
     const pageSize = pathSearchOptions().pageSize;
     target.filterLoading = true;
@@ -709,10 +702,6 @@
       state.contentSearch.query = state.filter;
       state.contentSearch.active = true;
       runContentSearch(append);
-    } else if (!pathSearchEnabled()) {
-      state.filterLoading = false;
-      state.filterDone = true;
-      renderPreservingScroll();
     } else {
       fetchFilteredEntries(append);
     }
@@ -772,7 +761,7 @@
     loadMore() { runUnifiedSearch(true); },
     sideScroll(node) {
       state.filterScrollTop = node.scrollTop;
-      if (state.filterKind === "content" || !state.filter.trim() || state.filterLoading || state.filterDone || !pathSearchEnabled()) return;
+      if (state.filterKind === "content" || !state.filter.trim() || state.filterLoading || state.filterDone) return;
       if (node.scrollTop + node.clientHeight >= node.scrollHeight - 80) fetchFilteredEntries(true);
     },
     typeToFilter(event) {
