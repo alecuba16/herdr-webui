@@ -310,6 +310,9 @@ describe("app bundle load", () => {
     match(gitUiSource, /↩ Current changes/);
     match(gitUiSource, /renderGitViewTabs/);
     match(gitUiSource, /git-ui-view-toggle/);
+    match(gitUiSource, /shortLogRefLabel/);
+    match(gitUiSource, /<span class="git-ui-log-labels">\$\{labels\}<\/span><span class="git-ui-log-msg">/);
+    match(readFileSync(new URL("./desktop/git_ui/log.css", import.meta.url), "utf8"), /writing-mode: vertical-rl/);
     ok(gitUiSource.indexOf("Worktree actions") < gitUiSource.indexOf("git-ui-file-filter"));
     match(readFileSync(new URL("./desktop/git_ui/layout.css", import.meta.url), "utf8"), /git-ui-view-toggle-group/);
     match(gitUiSource, /scanCleanup/);

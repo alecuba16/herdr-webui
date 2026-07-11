@@ -1214,11 +1214,20 @@
     const graph = parsed.graph;
     const hash = parsed.hash;
     const detail = splitLogDecorations(parsed.message);
-    const labels = detail.labels.map((label) => `<span>${esc(label)}</span>`).join("");
+    const labels = detail.labels.map((label) => `<span title="${esc(label)}">${esc(shortLogRefLabel(label))}</span>`).join("");
     const selected = hash && (((active() || {}).selectedLogCommits || []).includes(hash));
     const click = hash ? ` onclick="HerdrGitUi.selectLogCommit(event,'${arg(hash)}')"` : "";
     const cls = hash ? (selected ? " selected" : "") : " graph-only";
-    return `<div class="git-ui-log-row${cls}" data-log-hash="${esc(hash)}" title="${esc(detail.message)}"${click}>${renderGraph(graph, !!hash)}<span class="git-ui-log-msg">${hash ? `<strong>${esc(hash)}</strong> ` : ""}${esc(detail.message)}</span><span class="git-ui-log-labels">${labels}</span></div>`;
+    return `<div class="git-ui-log-row${cls}" data-log-hash="${esc(hash)}" title="${esc(detail.message)}"${click}>${renderGraph(graph, !!hash)}<span class="git-ui-log-labels">${labels}</span><span class="git-ui-log-msg">${hash ? `<strong>${esc(hash)}</strong> ` : ""}${esc(detail.message)}</span></div>`;
+  }
+
+  function shortLogRefLabel(label) {
+    return String(label || "")
+      .replace(/^HEAD ->\s*/, "")
+      .replace(/^refs\/heads\//, "")
+      .replace(/^refs\/remotes\//, "")
+      .replace(/^tag:\s*/, "tag ")
+      .trim();
   }
 
   function scrollToLogCommit(hash) {

@@ -836,6 +836,10 @@ mod tests {
             assert_eq!(log.status(), StatusCode::OK);
             let json = response_json(log).await;
             assert!(json["lines"][0].as_str().unwrap().contains("initial"));
+            assert!(json["lines"][0].as_str().unwrap().contains("("));
+            assert!(json["commits"][0]["refs"]
+                .as_str()
+                .is_some_and(|refs| refs.contains("HEAD") || !refs.is_empty()));
 
             let file = git_ui_file(
                 State(state.clone()),
