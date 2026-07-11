@@ -320,7 +320,8 @@ describe("app bundle load", () => {
     match(gitUiSource, /<span class="git-ui-log-body">\$\{labels\}<span class="git-ui-log-msg">/);
     const logCss = readFileSync(new URL("./desktop/git_ui/log.css", import.meta.url), "utf8");
     match(logCss, /git-ui-log-branch-shadow/);
-    match(logCss, /text-shadow/);
+    match(logCss, /box-shadow: 0 0 0 2px var\(--lane/);
+    match(gitUiSource, /var\(--git-lane-8\)/);
     ok(!logCss.includes("writing-mode: vertical-rl"));
     ok(gitUiSource.indexOf("Worktree actions") < gitUiSource.indexOf("git-ui-file-filter"));
     match(readFileSync(new URL("./desktop/git_ui/layout.css", import.meta.url), "utf8"), /git-ui-view-toggle-group/);

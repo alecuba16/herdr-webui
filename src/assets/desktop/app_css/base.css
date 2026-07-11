@@ -34,6 +34,15 @@ body {
   --editor-syntax-operator: #cdd6f4;
   --editor-syntax-meta: #b4befe;
   --editor-syntax-invalid: #f38ba8;
+  /* Git graph lane palette - gitgraph.js metro-inspired */
+  --git-lane-1: #89b4fa;
+  --git-lane-2: #a6e3a1;
+  --git-lane-3: #fab387;
+  --git-lane-4: #cba6f7;
+  --git-lane-5: #f5c2e7;
+  --git-lane-6: #89dceb;
+  --git-lane-7: #f9e2af;
+  --git-lane-8: #f38ba8;
   --mono-font: "Herdr JetBrainsMono Nerd Font Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   margin: 0;
   background: var(--bg);
@@ -71,6 +80,15 @@ body.light {
   --editor-syntax-operator: #4c4f69;
   --editor-syntax-meta: #7287fd;
   --editor-syntax-invalid: #d20f39;
+  /* Git graph lane palette - gitgraph.js metro-inspired */
+  --git-lane-1: #1e66f5;
+  --git-lane-2: #40a02b;
+  --git-lane-3: #fe640b;
+  --git-lane-4: #8839ef;
+  --git-lane-5: #ea76cb;
+  --git-lane-6: #04a5e5;
+  --git-lane-7: #df8e1d;
+  --git-lane-8: #d20f39;
 }
 #app {
   display: grid;
