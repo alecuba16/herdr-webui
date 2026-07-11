@@ -10,6 +10,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
+use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -90,6 +91,8 @@ struct FileContentSearchQuery {
     limit: Option<usize>,
     context_lines: Option<usize>,
     max_matches_per_file: Option<usize>,
+    match_case: Option<bool>,
+    regex: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -171,6 +174,53 @@ struct ContentSearchBuild {
     total_matches: usize,
     visited: usize,
     truncated: bool,
+}
+
+enum ContentMatcher {
+    Plain { needle: String, match_case: bool },
+    Regex(Regex),
+}
+
+impl ContentMatcher {
+    fn new(query: &str, match_case: bool, regex: bool) -> Result<Self, String> {
+        if query.is_empty() {
+            return Err("empty query".to_string());
+        }
+        if regex {
+            let compiled = RegexBuilder::new(query)
+                .case_insensitive(!match_case)
+                .build()
+                .map_err(|err| format!("invalid regex: {err}"))?;
+            return Ok(Self::Regex(compiled));
+        }
+        Ok(Self::Plain {
+            needle: if match_case {
+                query.to_string()
+            } else {
+                query.to_lowercase()
+            },
+            match_case,
+        })
+    }
+
+    fn find(&self, line: &str) -> Option<(usize, usize)> {
+        match self {
+            Self::Plain { needle, match_case } => {
+                let haystack = if *match_case {
+                    line.to_string()
+                } else {
+                    line.to_lowercase()
+                };
+                haystack
+                    .find(needle)
+                    .map(|start| (start, start + needle.len()))
+            }
+            Self::Regex(regex) => regex
+                .find(line)
+                .filter(|matched| matched.end() > matched.start())
+                .map(|matched| (matched.start(), matched.end())),
+        }
+    }
 }
 
 fn compact_directory_entry(root: &Path, dir: PathBuf, name: String) -> (String, PathBuf) {
@@ -482,6 +532,7 @@ fn content_search_file(
     root: &Path,
     file: &Path,
     query: &str,
+    matcher: &ContentMatcher,
     context_lines: usize,
     max_matches: usize,
 ) -> Result<Option<ContentSearchFile>, String> {
@@ -497,18 +548,13 @@ fn content_search_file(
         Ok(content) => content,
         Err(_) => return Ok(None),
     };
-    let needle = query.to_lowercase();
-    if needle.is_empty() {
-        return Ok(None);
-    }
     let rel = relative_to_root(root, file);
     let lines = content.lines().map(str::to_string).collect::<Vec<_>>();
     let mut matches = Vec::new();
     let mut match_count = 0usize;
     let qhash = query_hash(query);
     for (index, line) in lines.iter().enumerate() {
-        let lower = line.to_lowercase();
-        let Some(match_start) = lower.find(&needle) else {
+        let Some((match_start, match_end)) = matcher.find(line) else {
             continue;
         };
         match_count += 1;
@@ -528,7 +574,7 @@ fn content_search_file(
             line: line_number,
             column: match_start + 1,
             match_start,
-            match_end: match_start + query.len(),
+            match_end,
             start_line,
             end_line,
             content: snippet,
@@ -556,11 +602,14 @@ fn collect_content_search(
     root: &Path,
     dir: &Path,
     query: &str,
+    match_case: bool,
+    regex: bool,
     offset: usize,
     limit: usize,
     context_lines: usize,
     max_matches_per_file: usize,
 ) -> Result<ContentSearchBuild, String> {
+    let matcher = ContentMatcher::new(query, match_case, regex)?;
     let mut build = ContentSearchBuild {
         files: Vec::new(),
         total_files: 0,
@@ -586,6 +635,7 @@ fn collect_content_search(
                 root,
                 &entry.path,
                 query,
+                &matcher,
                 context_lines,
                 max_matches_per_file,
             )?
@@ -1064,17 +1114,28 @@ async fn file_browser_content_search(
         .clamp(1, MAX_CONTENT_SEARCH_LIMIT);
     let context_lines = content_search_context_lines(query.context_lines);
     let max_matches_per_file = content_search_matches_per_file(query.max_matches_per_file);
+    let match_case = query.match_case.unwrap_or(false);
+    let use_regex = query.regex.unwrap_or(false);
     let build = match collect_content_search(
         &root,
         &dir,
         search,
+        match_case,
+        use_regex,
         query.offset.unwrap_or(0),
         limit,
         context_lines,
         max_matches_per_file,
     ) {
         Ok(build) => build,
-        Err(err) => return file_browser_json_error(StatusCode::BAD_GATEWAY, err),
+        Err(err) => {
+            let status = if err.starts_with("invalid regex") {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::BAD_GATEWAY
+            };
+            return file_browser_json_error(status, err);
+        }
     };
     Json(json!({
         "root": root.to_string_lossy(),
@@ -1124,17 +1185,26 @@ async fn file_browser_content_search_file(
             .max_matches_per_file
             .or(Some(MAX_CONTENT_MATCHES_PER_FILE)),
     );
-    let result = match content_search_file(&root, &file, search, context_lines, max_matches) {
-        Ok(Some(result)) => result,
-        Ok(None) => {
-            return Json(json!({
-                "query": search,
-                "file": null,
-            }))
-            .into_response()
-        }
-        Err(err) => return file_browser_json_error(StatusCode::BAD_GATEWAY, err),
+    let matcher = match ContentMatcher::new(
+        search,
+        query.match_case.unwrap_or(false),
+        query.regex.unwrap_or(false),
+    ) {
+        Ok(matcher) => matcher,
+        Err(err) => return file_browser_json_error(StatusCode::BAD_REQUEST, err),
     };
+    let result =
+        match content_search_file(&root, &file, search, &matcher, context_lines, max_matches) {
+            Ok(Some(result)) => result,
+            Ok(None) => {
+                return Json(json!({
+                    "query": search,
+                    "file": null,
+                }))
+                .into_response()
+            }
+            Err(err) => return file_browser_json_error(StatusCode::BAD_GATEWAY, err),
+        };
     Json(json!({
         "query": search,
         "file": result,
@@ -1464,7 +1534,8 @@ mod tests {
         fs::write(root.join("README.md"), "Needle docs").unwrap();
 
         let root = root.canonicalize().unwrap();
-        let build = collect_content_search(&root, &root, "needle", 0, 10, 1, 1).unwrap();
+        let build =
+            collect_content_search(&root, &root, "needle", false, false, 0, 10, 1, 1).unwrap();
 
         assert_eq!(build.total_files, 2);
         assert_eq!(build.total_matches, 3);
@@ -1497,7 +1568,8 @@ mod tests {
         fs::write(root.join("ok.txt"), "needle visible").unwrap();
 
         let root = root.canonicalize().unwrap();
-        let build = collect_content_search(&root, &root, "needle", 0, 10, 0, 5).unwrap();
+        let build =
+            collect_content_search(&root, &root, "needle", false, false, 0, 10, 0, 5).unwrap();
         let paths = build
             .files
             .iter()
@@ -1506,6 +1578,60 @@ mod tests {
 
         assert_eq!(paths, vec!["ok.txt"]);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn content_search_supports_match_case_and_regex() {
+        let root = std::env::temp_dir().join(format!(
+            "herdr-webui-content-search-options-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("case.txt"), "Needle\nneedle\nneedle-42").unwrap();
+
+        let root = root.canonicalize().unwrap();
+        let case_sensitive =
+            collect_content_search(&root, &root, "Needle", true, false, 0, 10, 0, 5).unwrap();
+        assert_eq!(case_sensitive.total_matches, 1);
+        assert_eq!(case_sensitive.files[0].matches[0].text, "Needle");
+
+        let case_insensitive =
+            collect_content_search(&root, &root, "Needle", false, false, 0, 10, 0, 5).unwrap();
+        assert_eq!(case_insensitive.total_matches, 3);
+
+        let regex =
+            collect_content_search(&root, &root, "needle-\\d+", false, true, 0, 10, 0, 5).unwrap();
+        assert_eq!(regex.total_matches, 1);
+        assert_eq!(regex.files[0].matches[0].match_start, 0);
+        assert_eq!(regex.files[0].matches[0].match_end, "needle-42".len());
+
+        let invalid = collect_content_search(&root, &root, "[", false, true, 0, 10, 0, 5);
+        assert!(matches!(invalid, Err(message) if message.starts_with("invalid regex")));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn content_search_settings_clamp_defaults_and_bounds() {
+        assert_eq!(
+            content_search_context_lines(None),
+            DEFAULT_CONTENT_CONTEXT_LINES
+        );
+        assert_eq!(
+            content_search_context_lines(Some(MAX_CONTENT_CONTEXT_LINES + 10)),
+            MAX_CONTENT_CONTEXT_LINES
+        );
+        assert_eq!(content_search_context_lines(Some(0)), 0);
+
+        assert_eq!(
+            content_search_matches_per_file(None),
+            DEFAULT_CONTENT_MATCHES_PER_FILE
+        );
+        assert_eq!(content_search_matches_per_file(Some(0)), 1);
+        assert_eq!(
+            content_search_matches_per_file(Some(MAX_CONTENT_MATCHES_PER_FILE + 10)),
+            MAX_CONTENT_MATCHES_PER_FILE
+        );
     }
 
     #[test]

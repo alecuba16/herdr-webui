@@ -71,25 +71,16 @@
 .git-ui-cleanup-tab {
   align-items: center;
   display: inline-flex;
-  gap: 3px;
+  gap: 4px;
 }
 .git-ui-cleanup-tab-icon {
   background: currentColor;
   display: inline-block;
-  height: 14px;
+  flex: none;
+  height: 16px;
   line-height: 1;
-  mask-position: center;
-  mask-repeat: no-repeat;
-  mask-size: contain;
-  width: 14px;
-}
-.git-ui-cleanup-tab-icon.trash {
-  mask-image: url("/assets/icons/trash.svg");
-}
-.git-ui-cleanup-tab-icon.broom {
-  mask-image: url("/assets/icons/broom.svg");
-  margin-left: -2px;
-  transform: rotate(-18deg);
+  mask: url("/assets/icons/broom.svg") center / contain no-repeat;
+  width: 16px;
 }
 .git-ui-cleanup-bulk {
   align-items: center;

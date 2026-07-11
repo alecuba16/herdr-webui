@@ -9,6 +9,7 @@
 - Content search results group matches by file, lazy-load expanded matches when needed, open the complete file at the matching line, and support snippet editing with explicit save controls.
 - Match previews now use Git-diff-style arrow controls for expanding context above or below and stronger highlighted match text with shared theme tokens.
 - Content search styling is centralized in `src/assets/shared/content_search.css` and `src/assets/shared/colors.css`, keeping desktop and mobile CSS focused on layout instead of duplicated palette rules.
+- Adds Settings-backed match-case and regex modes for backend file-content search, plus a shared editor find bar with match-case/regex search and edit-mode replace controls.
 
 ## 0.2.13 Release Notes
 

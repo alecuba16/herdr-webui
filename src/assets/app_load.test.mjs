@@ -259,17 +259,22 @@ describe("app bundle load", () => {
     match(html, /Header search .* is the single search entry point for workspaces\/worktrees, file names, folder names, and file contents/);
     match(html, /File\/folder and content search run in the backend for the focused workspace\/worktree, lazy-load pages, preserve parent folders for path context/);
     match(html, /use Settings to enable sections and sort their order/);
-    match(html, /Content results show as grouped files with highlighted match text, colored matched-line context/);
+    match(html, /Content results show as grouped files with highlighted match text, match-case and regex options, colored matched-line context/);
     match(html, /configurable default expanded\/collapsed file groups/);
     match(html, /Git-style arrow controls for more context above\/below/);
     match(html, /opening at the matched line with editor highlight/);
     match(html, /same CodeMirror editor surface as edit mode but stay read-only until Edit is pressed/);
     match(html, /line numbers show by default/);
     match(html, /fold controls work for supported languages/);
+    match(html, /editor find supports match case and regex/);
+    match(html, /edit mode enables replace/);
     match(html, /syntax\/search colors use shared theme tokens/);
     match(html, /Search selections, selected files, split panes, and unsaved edit drafts stay attached to each open workspace\/worktree while switching panels/);
     match(html, /priority red deleted, yellow modified, green new/);
-    match(html, /Git selector opens repo tools for diff, stage\/unstage, discard, commit, commit & push, pull, push\/force-push, rebase, conflicts, stash, branches, cleanup, and worktree prune; file view can toggle unified\/side-by-side diffs/);
+    match(html, /Git selector opens repo tools for diff, stage\/unstage, discard, commit, commit & push, pull, push\/force-push, rebase, conflicts, stash, branches, cleanup, and worktree prune/);
+    match(html, /Changes, log, stash, and cleanup use one exclusive segmented toggle/);
+    match(html, /file filter sits below the action toolbar/);
+    match(html, /cleanup uses the shared broom icon/);
     match(html, /Prefix then \/ or the header magnifier opens one palette for workspaces, repos, worktrees, labels, agents, panels, file\/folder results, and file-content matches/);
     match(html, /Alt\+F selects files, Alt\+D selects folders, Alt\+1\/2\/3 toggles sections, and Alt\+↑\/↓ expands content context/);
     match(html, /Alt\+F\/Alt\+D inside the palette to switch file or folder search, Alt\+1\/2\/3 to collapse or expand search sections, and Alt\+↑\/↓ to expand selected content-match context/);
@@ -294,6 +299,11 @@ describe("app bundle load", () => {
     vm.runInContext(source, ctx);
 
     match(gitUiSource, /git-ui-cleanup-tab-icon/);
+    match(gitUiSource, /renderGitViewTabs/);
+    match(gitUiSource, /git-ui-view-toggle/);
+    ok(gitUiSource.indexOf("Worktree actions") < gitUiSource.indexOf("git-ui-file-filter"));
+    match(readFileSync(new URL("./desktop/git_ui/layout.css", import.meta.url), "utf8"), /git-ui-view-toggle-group/);
+    match(readFileSync(new URL("./icons/broom.svg", import.meta.url), "utf8"), /Broom sweeping dust icon/);
     match(gitUiSource, /scanCleanup/);
     match(gitUiSource, /selectAllCleanup/);
     match(gitUiSource, /Delete selected/);
@@ -358,6 +368,8 @@ describe("app bundle load", () => {
     match(sharedContentSearchCss, /herdr-content-search-hit/);
     match(sharedContentSearchCss, /font-weight: 700/);
     match(workspaceSearchSource, /preserveExpanded/);
+    match(workspaceSearchSource, /pathSearchAvailable/);
+    match(workspaceSearchSource, /normalizePathKind/);
     match(searchSource, /renderSearchPalettePreservingScroll/);
     const editorSource = readFileSync(new URL("./vendor/codemirror_entry.mjs", import.meta.url), "utf8");
     match(editorSource, /foldGutter/);
@@ -380,11 +392,15 @@ describe("app bundle load", () => {
     match(source, /id="optFileContentSearchAutoCollapseFiles"/);
     match(source, /id="optFileContentSearchDefaultExpanded"/);
     match(source, /id="optFileContentSearchMatchesPerFile"/);
+    match(source, /id="optFileContentSearchMatchCase"/);
+    match(source, /id="optFileContentSearchRegex"/);
     match(source, /fileBrowserSearchPageSize: 100/);
     match(source, /fileContentSearchMinChars: 3/);
     match(source, /fileContentSearchPageSize: 50/);
     match(source, /fileContentSearchContextLines: 2/);
     match(source, /fileContentSearchDefaultExpanded: true/);
+    match(source, /fileContentSearchMatchCase: false/);
+    match(source, /fileContentSearchRegex: false/);
     match(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), /\/api\/file-browser\/content-search/);
     match(readFileSync(new URL("./mobile/file_browser.js", import.meta.url), "utf8"), /HerdrMobileFilesContent/);
     ok(!readFileSync(new URL("./mobile/settings.js", import.meta.url), "utf8").includes("setFileBrowserPathSearch"));
@@ -407,6 +423,99 @@ describe("app bundle load", () => {
 
     helper.applyContentResults(state, { files: [{ path: "src/a.js" }], total_matches: 1 }, false);
     equal(state.expanded["src/a.js"], false);
+  });
+
+  it("normalizes shared path search settings", () => {
+    const ctx = context();
+    ctx.localStorage.setItem("herdr-web-options", JSON.stringify({ searchFilesEnabled: false, searchFoldersEnabled: true }));
+    vm.runInContext(readFileSync(new URL("./shared/workspace_search.js", import.meta.url), "utf8"), ctx);
+    const helper = ctx.HerdrWorkspaceSearch;
+
+    equal(helper.pathSearchAvailable(helper.settings()), true);
+    equal(helper.normalizePathKind("file", helper.settings()), "dir");
+
+    ctx.localStorage.setItem("herdr-web-options", JSON.stringify({ searchFilesEnabled: false, searchFoldersEnabled: false }));
+    const disabled = helper.settings();
+    equal(helper.pathSearchAvailable(disabled), false);
+    equal(helper.normalizePathKind("dir", disabled), "dir");
+  });
+
+  it("normalizes shared search settings order and bounds", () => {
+    const ctx = context();
+    ctx.localStorage.setItem("herdr-web-options", JSON.stringify({
+      searchSectionOrder: "content,files,content,unknown",
+      fileBrowserSearchPageSize: 9999,
+      fileContentSearchMinChars: 999,
+      fileContentSearchPageSize: 1,
+      fileContentSearchContextLines: -5,
+      fileContentSearchAutoCollapseFiles: 999,
+      fileContentSearchMatchesPerFile: 999,
+      fileContentSearchDefaultExpanded: false,
+      fileContentSearchMatchCase: true,
+      fileContentSearchRegex: true,
+    }));
+    vm.runInContext(readFileSync(new URL("./shared/workspace_search.js", import.meta.url), "utf8"), ctx);
+
+    const opts = ctx.HerdrWorkspaceSearch.settings();
+    equal(JSON.stringify(opts.searchSectionOrder), JSON.stringify(["content", "files", "workspaces"]));
+    equal(opts.pathPageSize, 500);
+    equal(opts.contentMinChars, 20);
+    equal(opts.contentPageSize, 10);
+    equal(opts.contextLines, 0);
+    equal(opts.autoCollapseFiles, 200);
+    equal(opts.matchesPerFile, 50);
+    equal(opts.defaultExpanded, false);
+    equal(opts.matchCase, true);
+    equal(opts.regex, true);
+  });
+
+  it("uses shared search settings to skip disabled APIs and clamp query params", async () => {
+    const ctx = context();
+    const urls = [];
+    ctx.fetch = async (url) => {
+      urls.push(String(url));
+      return { ok: true, statusText: "OK", json: async () => ({ entries: [], files: [], truncated: false }) };
+    };
+    vm.runInContext(readFileSync(new URL("./shared/workspace_search.js", import.meta.url), "utf8"), ctx);
+    const helper = ctx.HerdrWorkspaceSearch;
+
+    ctx.localStorage.setItem("herdr-web-options", JSON.stringify({ searchFilesEnabled: false, searchFoldersEnabled: false, searchContentEnabled: false }));
+    const disabledPath = await helper.searchPaths({ cwd: "/tmp/repo", query: "needle" });
+    equal(disabledPath.disabled, true);
+    equal(disabledPath.entries.length, 0);
+    equal(disabledPath.git_status, null);
+    equal(disabledPath.truncated, false);
+    const disabledContent = await helper.searchContent({ cwd: "/tmp/repo", query: "needle" });
+    equal(disabledContent.disabled, true);
+    equal(disabledContent.files.length, 0);
+    equal(disabledContent.total_files, 0);
+    equal(disabledContent.total_matches, 0);
+    equal(disabledContent.truncated, false);
+    equal(urls.length, 0);
+
+    ctx.localStorage.setItem("herdr-web-options", JSON.stringify({
+      fileBrowserGitStatus: false,
+      fileBrowserSearchPageSize: 25,
+      fileContentSearchPageSize: 15,
+      fileContentSearchMatchCase: true,
+      fileContentSearchRegex: true,
+    }));
+    await helper.searchPaths({ cwd: "/tmp/a b", query: "hello world", kind: "file", offset: 5 });
+    match(urls[0], /^\/api\/file-browser\/tree\?/);
+    match(urls[0], /cwd=%2Ftmp%2Fa%20b/);
+    match(urls[0], /q=hello%20world/);
+    match(urls[0], /search_kind=file/);
+    match(urls[0], /offset=5/);
+    match(urls[0], /limit=25/);
+    ok(!urls[0].includes("include_git_status=true"));
+
+    await helper.searchContent({ cwd: "/tmp/repo", query: "needle", contextLines: 99, matchesPerFile: 0 });
+    match(urls[1], /^\/api\/file-browser\/content-search\?/);
+    match(urls[1], /context_lines=20/);
+    match(urls[1], /max_matches_per_file=1/);
+    match(urls[1], /limit=15/);
+    match(urls[1], /match_case=true/);
+    match(urls[1], /regex=true/);
   });
 
   it("renders new workspace modal with manual folder field", () => {

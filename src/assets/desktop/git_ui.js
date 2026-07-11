@@ -763,17 +763,25 @@
     return `<span class="git-ui-file-summary"><span class="git-ui-file-icon ${cls}">${icon}</span>${counts}</span>`;
   }
 
+  function cleanupTabLabel() {
+    return `<span class="git-ui-cleanup-tab-icon" aria-hidden="true"></span><span>cleanup</span>`;
+  }
+
+  function renderGitViewTabs(tabs, activeTab) {
+    return `<div class="git-ui-view-toggle-group" role="tablist" aria-label="Git views">${tabs.map((tab) => `<button class="git-ui-view-toggle ${tab.id === "cleanup" ? "git-ui-cleanup-tab" : ""} ${activeTab === tab.id ? "active" : ""}" type="button" role="tab" aria-selected="${activeTab === tab.id ? "true" : "false"}" onclick="HerdrGitUi.tab('${tab.id}')">${tab.label}</button>`).join("")}</div>`;
+  }
+
   function renderSide() {
     const view = active() || {};
     const s = view.status || {};
-    const tabs = [{ id: "changes", label: "changes" }, { id: "log", label: "log" }, { id: "stash", label: "stash" }, { id: "cleanup", label: `<span class="git-ui-cleanup-tab-icon trash" aria-hidden="true"></span><span class="git-ui-cleanup-tab-icon broom" aria-hidden="true"></span><span>cleanup</span>` }];
+    const tabs = [{ id: "changes", label: "changes" }, { id: "log", label: "log" }, { id: "stash", label: "stash" }, { id: "cleanup", label: cleanupTabLabel() }];
     const filter = String(view.fileFilter || "").trim();
     const fileSections = currentMode() === "changes"
       ? `${(s.conflicted || []).length ? section("Conflicted", filterFiles(s.conflicted, filter), "U") : ""}${section("Staged", filterFiles(s.staged, filter), "S")}${section("Unstaged", filterFiles(s.unstaged, filter), "M")}${section("Untracked", filterFiles(s.untracked, filter), "?")}`
       : section("Compared", filterFiles(view.compareFilePaths && view.compareFilePaths.length ? view.compareFilePaths : ((view.diff && view.diff.files) || []).map((file) => file.path), filter), "C");
     const stageLabel = (s.staged || []).length ? "Unstage all" : "Stage all";
     const branchLabel = `${view.titleKind || "Branch"}: ${s.branch || view.title || "No branch"}`;
-    return `<aside class="git-ui-side" onscroll="HerdrGitUi.sideScroll(this)"><div class="git-ui-head"><div class="git-ui-head-main"><div class="git-ui-title-row"><div class="git-ui-title">Git</div>${appRefreshIconButton({ className: "git-ui-refresh-icon", title: "Refresh", label: "Refresh Git state", spinning: !!view.refreshAnimating, onclick: "HerdrGitUi.refreshWithSpin()" })}</div><div class="git-ui-subtitle">${esc(s.state || "closed")} · ${esc(compactPath(s.repo_path))}</div><button class="git-ui-branch-pill" title="Change Git directory or switch branch" onclick="HerdrGitUi.openBranchModal()"><span>${esc(branchLabel)}</span><b>↗</b></button></div></div>${view.error ? `<div class="git-ui-error">${esc(view.error)}</div>` : ""}<div class="git-ui-toolbar"><div class="git-ui-tabs">${tabs.map((tab) => `<button class="git-ui-btn ${tab.id === "cleanup" ? "git-ui-cleanup-tab" : ""} ${view.tab === tab.id ? "active" : ""}" onclick="HerdrGitUi.tab('${tab.id}')">${tab.label}</button>`).join("")}</div></div><label class="git-ui-file-filter"><span class="git-ui-file-filter-icon" aria-hidden="true"></span><input value="${esc(view.fileFilter || "")}" placeholder="Filter files" oninput="HerdrGitUi.filterFiles(this.value)"></label><div class="git-ui-toolbar"><div class="git-ui-toolbar-title">Worktree actions</div><div class="git-ui-actions"><button class="git-ui-btn primary" onclick="HerdrGitUi.tab('commit')">Commit</button><button class="git-ui-btn" onclick="HerdrGitUi.openPullModal()">Pull</button><button class="git-ui-btn" onclick="HerdrGitUi.openPushModal()">Push</button><button class="git-ui-btn danger" onclick="HerdrGitUi.openForcePushModal()">Force push</button><button class="git-ui-btn" onclick="HerdrGitUi.toggleStageAll()">${stageLabel}</button><button class="git-ui-btn" onclick="HerdrGitUi.compareCurrent()">Current changes</button><button class="git-ui-btn" onclick="HerdrGitUi.rebase()">Rebase</button><button class="git-ui-btn danger" onclick="HerdrGitUi.reset()">Reset</button></div></div>${fileSections}</aside>`;
+    return `<aside class="git-ui-side" onscroll="HerdrGitUi.sideScroll(this)"><div class="git-ui-head"><div class="git-ui-head-main"><div class="git-ui-title-row"><div class="git-ui-title">Git</div>${appRefreshIconButton({ className: "git-ui-refresh-icon", title: "Refresh", label: "Refresh Git state", spinning: !!view.refreshAnimating, onclick: "HerdrGitUi.refreshWithSpin()" })}</div><div class="git-ui-subtitle">${esc(s.state || "closed")} · ${esc(compactPath(s.repo_path))}</div><button class="git-ui-branch-pill" title="Change Git directory or switch branch" onclick="HerdrGitUi.openBranchModal()"><span>${esc(branchLabel)}</span><b>↗</b></button></div></div>${view.error ? `<div class="git-ui-error">${esc(view.error)}</div>` : ""}<div class="git-ui-toolbar git-ui-view-toolbar">${renderGitViewTabs(tabs, view.tab)}</div><div class="git-ui-toolbar"><div class="git-ui-toolbar-title">Worktree actions</div><div class="git-ui-actions"><button class="git-ui-btn primary" onclick="HerdrGitUi.tab('commit')">Commit</button><button class="git-ui-btn" onclick="HerdrGitUi.openPullModal()">Pull</button><button class="git-ui-btn" onclick="HerdrGitUi.openPushModal()">Push</button><button class="git-ui-btn danger" onclick="HerdrGitUi.openForcePushModal()">Force push</button><button class="git-ui-btn" onclick="HerdrGitUi.toggleStageAll()">${stageLabel}</button><button class="git-ui-btn" onclick="HerdrGitUi.compareCurrent()">Current changes</button><button class="git-ui-btn" onclick="HerdrGitUi.rebase()">Rebase</button><button class="git-ui-btn danger" onclick="HerdrGitUi.reset()">Reset</button></div></div><label class="git-ui-file-filter"><span class="git-ui-file-filter-icon" aria-hidden="true"></span><input value="${esc(view.fileFilter || "")}" placeholder="Filter files" oninput="HerdrGitUi.filterFiles(this.value)"></label>${fileSections}</aside>`;
   }
 
   function filterFiles(files, filter) {
@@ -1500,6 +1508,7 @@
         path: view.file || view.sideEditor.path || "",
         content: textarea.value,
         readonly: mount.dataset.readonly === "true",
+        hideFind: true,
         onChange: side === "old" ? null : function (value) { textarea.value = value; },
       });
     });

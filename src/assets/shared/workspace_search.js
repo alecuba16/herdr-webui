@@ -56,11 +56,23 @@
       autoCollapseFiles: Math.max(0, Math.min(200, Number.isFinite(autoCollapseRaw) ? autoCollapseRaw : 0)),
       defaultExpanded: parsed.fileContentSearchDefaultExpanded !== false,
       matchesPerFile: Math.max(1, Math.min(50, Number(parsed.fileContentSearchMatchesPerFile) || 5)),
+      matchCase: parsed.fileContentSearchMatchCase === true,
+      regex: parsed.fileContentSearchRegex === true,
     };
   }
 
   function defaultContentExpanded(opts, fileCount) {
     return !!(opts.defaultExpanded && !(opts.autoCollapseFiles > 0 && fileCount > opts.autoCollapseFiles));
+  }
+
+  function pathSearchAvailable(opts = settings()) {
+    return opts.searchFilesEnabled !== false || opts.searchFoldersEnabled !== false;
+  }
+
+  function normalizePathKind(kind, opts = settings()) {
+    if (kind === "dir" && opts.searchFoldersEnabled === false && opts.searchFilesEnabled !== false) return "file";
+    if (kind !== "dir" && opts.searchFilesEnabled === false && opts.searchFoldersEnabled !== false) return "dir";
+    return kind === "dir" ? "dir" : "file";
   }
 
   function workspaceCwd(workspace) {
@@ -88,12 +100,14 @@
     return apiJson(url);
   }
 
-  async function searchContent({ cwd, query, offset = 0, limit, path = "", contextLines, matchesPerFile }) {
+  async function searchContent({ cwd, query, offset = 0, limit, path = "", contextLines, matchesPerFile, matchCase, regex }) {
     const opts = settings();
     if (!opts.searchContentEnabled) return { files: [], total_files: 0, total_matches: 0, truncated: false, disabled: true };
     const context = Math.max(0, Math.min(20, Number.isFinite(Number(contextLines)) ? Number(contextLines) : opts.contextLines));
     const perFile = Math.max(1, Math.min(50, Number.isFinite(Number(matchesPerFile)) ? Number(matchesPerFile) : opts.matchesPerFile));
-    const url = `/api/file-browser/content-search?cwd=${encodeURIComponent(cwd || "")}&path=${encodeURIComponent(path || "")}&q=${encodeURIComponent(String(query || "").trim())}&offset=${Number(offset) || 0}&limit=${Number(limit || opts.contentPageSize)}&context_lines=${context}&max_matches_per_file=${perFile}`;
+    const useMatchCase = matchCase == null ? opts.matchCase : matchCase === true;
+    const useRegex = regex == null ? opts.regex : regex === true;
+    const url = `/api/file-browser/content-search?cwd=${encodeURIComponent(cwd || "")}&path=${encodeURIComponent(path || "")}&q=${encodeURIComponent(String(query || "").trim())}&offset=${Number(offset) || 0}&limit=${Number(limit || opts.contentPageSize)}&context_lines=${context}&max_matches_per_file=${perFile}&match_case=${useMatchCase ? "true" : "false"}&regex=${useRegex ? "true" : "false"}`;
     return apiJson(url);
   }
 
@@ -199,6 +213,8 @@
     arg,
     esc,
     settings,
+    pathSearchAvailable,
+    normalizePathKind,
     workspaceCwd,
     searchPaths,
     searchContent,

@@ -21,11 +21,13 @@
       const autoCollapse = contentSearchAutoCollapseFilesValue();
       const defaultExpanded = contentSearchDefaultExpandedValue();
       const matchesPerFile = contentSearchMatchesPerFileValue();
+      const matchCase = contentSearchMatchCaseValue();
+      const regex = contentSearchRegexValue();
       const worktreeDirectory = worktreeDefaultDirectoryValue();
       const explorationDirectory = explorationDefaultDirectoryValue();
       const volume = notificationVolumeValue();
       const links = terminalLinksEnabled();
-      return `<section class="mobile-section mobile-form"><h2>Settings</h2>${appearanceSection(theme)}${layoutSection(layout)}${filesSection(depth, lineNumbers, headerSearch, searchOrder, pathSearchPageSize, minChars, contentPageSize, contextLines, autoCollapse, defaultExpanded, matchesPerFile)}${workspacesSection(worktreeDirectory, explorationDirectory)}${alertsSection(notifications, volume)}${terminalSection(font, links)}${dataSection()}${state.error ? `<div class="mobile-error">${escapeHtml(state.error)}</div>` : ""}</section>`;
+      return `<section class="mobile-section mobile-form"><h2>Settings</h2>${appearanceSection(theme)}${layoutSection(layout)}${filesSection(depth, lineNumbers, headerSearch, searchOrder, pathSearchPageSize, minChars, contentPageSize, contextLines, autoCollapse, defaultExpanded, matchesPerFile, matchCase, regex)}${workspacesSection(worktreeDirectory, explorationDirectory)}${alertsSection(notifications, volume)}${terminalSection(font, links)}${dataSection()}${state.error ? `<div class="mobile-error">${escapeHtml(state.error)}</div>` : ""}</section>`;
     }
 
     function appearanceSection(theme) {
@@ -36,8 +38,8 @@
       return `<div class="mobile-settings-group"><h3>Layout</h3><label><span>Layout mode</span><select onchange="HerdrMobile.setLayoutPreference(this.value)"><option value="auto" ${layout === "auto" ? "selected" : ""}>Auto</option><option value="mobile" ${layout === "mobile" ? "selected" : ""}>Mobile</option><option value="desktop" ${layout === "desktop" ? "selected" : ""}>Desktop</option></select><small>Auto uses viewport width, not user agent.</small></label></div>`;
     }
 
-    function filesSection(depth, lineNumbers, headerSearch, searchOrder, pathSearchPageSize, minChars, contentPageSize, contextLines, autoCollapse, defaultExpanded, matchesPerFile) {
-      return `<div class="mobile-settings-group"><h3>Files and search</h3><label><span>Browser depth</span><input type="number" min="0" max="8" step="1" value="${depth}" onchange="HerdrMobile.setFileBrowserDepth(this.value)"></label><small>0 shows current folder only. 3 expands three folder levels.</small><label><input type="checkbox" ${lineNumbers ? "checked" : ""} onchange="HerdrMobile.setFileBrowserLineNumbers(this.checked)"><span>Line numbers</span><small>Show line numbers when previewing text files.</small></label><label><input type="checkbox" ${headerSearch ? "checked" : ""} onchange="HerdrMobile.setHeaderSearchEnabled(this.checked)"><span>Header search button</span><small>Show the search action and allow the palette to open.</small></label><div><span>Search section order</span>${renderSearchSectionOrder(searchOrder)}</div><small>Use arrows to move sections. Use Shown/Hidden to include or remove a section.</small><label><span>File/folder page size</span><input type="number" min="10" max="500" step="10" value="${pathSearchPageSize}" onchange="HerdrMobile.setFileBrowserSearchPageSize(this.value)"></label><label><span>Content minimum characters</span><input type="number" min="1" max="20" step="1" value="${minChars}" onchange="HerdrMobile.setFileContentSearchMinChars(this.value)"></label><label><span>Content page size</span><input type="number" min="10" max="500" step="10" value="${contentPageSize}" onchange="HerdrMobile.setFileContentSearchPageSize(this.value)"></label><label><span>Content context lines</span><input type="number" min="0" max="20" step="1" value="${contextLines}" onchange="HerdrMobile.setFileContentSearchContextLines(this.value)"></label><label><span>Content auto-collapse files</span><input type="number" min="0" max="200" step="1" value="${autoCollapse}" onchange="HerdrMobile.setFileContentSearchAutoCollapseFiles(this.value)"></label><label><input type="checkbox" ${defaultExpanded ? "checked" : ""} onchange="HerdrMobile.setFileContentSearchDefaultExpanded(this.checked)"><span>Content results expanded by default</span><small>Expand each file group when content results load.</small></label><label><span>Content matches per file</span><input type="number" min="1" max="50" step="1" value="${matchesPerFile}" onchange="HerdrMobile.setFileContentSearchMatchesPerFile(this.value)"></label></div>`;
+    function filesSection(depth, lineNumbers, headerSearch, searchOrder, pathSearchPageSize, minChars, contentPageSize, contextLines, autoCollapse, defaultExpanded, matchesPerFile, matchCase, regex) {
+      return `<div class="mobile-settings-group"><h3>Files and search</h3><label><span>Browser depth</span><input type="number" min="0" max="8" step="1" value="${depth}" onchange="HerdrMobile.setFileBrowserDepth(this.value)"></label><small>0 shows current folder only. 3 expands three folder levels.</small><label><input type="checkbox" ${lineNumbers ? "checked" : ""} onchange="HerdrMobile.setFileBrowserLineNumbers(this.checked)"><span>Line numbers</span><small>Show line numbers when previewing text files.</small></label><label><input type="checkbox" ${headerSearch ? "checked" : ""} onchange="HerdrMobile.setHeaderSearchEnabled(this.checked)"><span>Header search button</span><small>Show the search action and allow the palette to open.</small></label><div><span>Search section order</span>${renderSearchSectionOrder(searchOrder)}</div><small>Use arrows to move sections. Use Shown/Hidden to include or remove a section.</small><label><span>File/folder page size</span><input type="number" min="10" max="500" step="10" value="${pathSearchPageSize}" onchange="HerdrMobile.setFileBrowserSearchPageSize(this.value)"></label><label><span>Content minimum characters</span><input type="number" min="1" max="20" step="1" value="${minChars}" onchange="HerdrMobile.setFileContentSearchMinChars(this.value)"></label><label><span>Content page size</span><input type="number" min="10" max="500" step="10" value="${contentPageSize}" onchange="HerdrMobile.setFileContentSearchPageSize(this.value)"></label><label><span>Content context lines</span><input type="number" min="0" max="20" step="1" value="${contextLines}" onchange="HerdrMobile.setFileContentSearchContextLines(this.value)"></label><label><span>Content auto-collapse files</span><input type="number" min="0" max="200" step="1" value="${autoCollapse}" onchange="HerdrMobile.setFileContentSearchAutoCollapseFiles(this.value)"></label><label><input type="checkbox" ${defaultExpanded ? "checked" : ""} onchange="HerdrMobile.setFileContentSearchDefaultExpanded(this.checked)"><span>Content results expanded by default</span><small>Expand each file group when content results load.</small></label><label><span>Content matches per file</span><input type="number" min="1" max="50" step="1" value="${matchesPerFile}" onchange="HerdrMobile.setFileContentSearchMatchesPerFile(this.value)"></label><label><input type="checkbox" ${matchCase ? "checked" : ""} onchange="HerdrMobile.setFileContentSearchMatchCase(this.checked)"><span>Content search match case</span></label><label><input type="checkbox" ${regex ? "checked" : ""} onchange="HerdrMobile.setFileContentSearchRegex(this.checked)"><span>Content search regex</span></label></div>`;
     }
 
     function renderSearchSectionOrder(value) {
@@ -159,6 +161,14 @@
     function contentSearchMatchesPerFileValue() {
       const value = Number(readOptions().fileContentSearchMatchesPerFile);
       return Math.max(1, Math.min(50, Number.isFinite(value) ? value : 5));
+    }
+
+    function contentSearchMatchCaseValue() {
+      return readOptions().fileContentSearchMatchCase === true;
+    }
+
+    function contentSearchRegexValue() {
+      return readOptions().fileContentSearchRegex === true;
     }
 
     function worktreeDefaultDirectoryValue() {
@@ -307,6 +317,20 @@
       if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
     }
 
+    function setFileContentSearchMatchCase(value) {
+      const parsed = readOptions();
+      parsed.fileContentSearchMatchCase = !!value;
+      writeOptions(parsed);
+      if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
+    }
+
+    function setFileContentSearchRegex(value) {
+      const parsed = readOptions();
+      parsed.fileContentSearchRegex = !!value;
+      writeOptions(parsed);
+      if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
+    }
+
     function setTerminalFontFamily(value) {
       try {
         const parsed = readOptions();
@@ -362,6 +386,8 @@
       setFileContentSearchDefaultExpanded,
       setFileContentSearchContextLines,
       setFileContentSearchMatchesPerFile,
+      setFileContentSearchMatchCase,
+      setFileContentSearchRegex,
       setLayoutPreference,
       setNotificationVolume,
       setTerminalFontFamily,

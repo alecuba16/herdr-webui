@@ -46,8 +46,10 @@
           autoCollapseFiles: Math.max(0, Math.min(200, Number.isFinite(autoCollapseRaw) ? autoCollapseRaw : 0)),
           defaultExpanded: parsed.fileContentSearchDefaultExpanded !== false,
           maxMatchesPerFile: Math.max(1, Math.min(50, Number(parsed.fileContentSearchMatchesPerFile) || 5)),
+          matchCase: parsed.fileContentSearchMatchCase === true,
+          regex: parsed.fileContentSearchRegex === true,
         };
-      } catch (_) { return { minChars: DEFAULT_CONTENT_SEARCH_MIN_CHARS, pageSize: 50, contextLines: 2, autoCollapseFiles: 0, defaultExpanded: true, maxMatchesPerFile: 5 }; }
+      } catch (_) { return { minChars: DEFAULT_CONTENT_SEARCH_MIN_CHARS, pageSize: 50, contextLines: 2, autoCollapseFiles: 0, defaultExpanded: true, maxMatchesPerFile: 5, matchCase: false, regex: false }; }
     }
 
     function defaultContentExpanded(content, fileCount) {
@@ -162,6 +164,8 @@
       local.contentSearch.maxMatchesPerFile = opts.maxMatchesPerFile;
       local.contentSearch.autoCollapseFiles = opts.autoCollapseFiles;
       local.contentSearch.defaultExpanded = opts.defaultExpanded;
+      local.contentSearch.matchCase = opts.matchCase;
+      local.contentSearch.regex = opts.regex;
     }
 
     async function runContentSearch(append = false) {
@@ -183,7 +187,7 @@
       content.error = "";
       deps.render();
       try {
-        const data = await deps.api(`/api/file-browser/content-search?cwd=${encodeURIComponent(root)}&path=${encodeURIComponent(local.path || "")}&q=${encodeURIComponent(content.query.trim())}&offset=${offset}&limit=${content.pageSize}&context_lines=${content.contextLines}&max_matches_per_file=${content.maxMatchesPerFile}`);
+        const data = await deps.api(`/api/file-browser/content-search?cwd=${encodeURIComponent(root)}&path=${encodeURIComponent(local.path || "")}&q=${encodeURIComponent(content.query.trim())}&offset=${offset}&limit=${content.pageSize}&context_lines=${content.contextLines}&max_matches_per_file=${content.maxMatchesPerFile}&match_case=${content.matchCase ? "true" : "false"}&regex=${content.regex ? "true" : "false"}`);
         const files = data.files || [];
         content.files = append ? content.files.concat(files) : files;
         content.totalFiles = data.total_files || files.length;
@@ -246,7 +250,7 @@
       if (!root || !content.query.trim()) return;
       syncContentSearchOptions();
       const contextLines = Math.max(content.contextLines, Number(extraContext) || content.contextLines);
-      const data = await deps.api(`/api/file-browser/content-search/file?cwd=${encodeURIComponent(root)}&file=${encodeURIComponent(path)}&q=${encodeURIComponent(content.query.trim())}&context_lines=${contextLines}&max_matches_per_file=500`);
+      const data = await deps.api(`/api/file-browser/content-search/file?cwd=${encodeURIComponent(root)}&file=${encodeURIComponent(path)}&q=${encodeURIComponent(content.query.trim())}&context_lines=${contextLines}&max_matches_per_file=500&match_case=${content.matchCase ? "true" : "false"}&regex=${content.regex ? "true" : "false"}`);
       if (!data.file) return;
       const index = local.contentSearch.files.findIndex((file) => file.path === path);
       if (index >= 0) local.contentSearch.files[index] = data.file;
