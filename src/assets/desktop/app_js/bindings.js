@@ -336,6 +336,10 @@ el("optFileContentSearchAutoCollapseFiles").oninput = () => {
   options.fileContentSearchAutoCollapseFiles = Math.max(0, Math.min(200, Number(el("optFileContentSearchAutoCollapseFiles").value) || 0));
   saveOptions();
 };
+el("optFileContentSearchDefaultExpanded").onchange = () => {
+  options.fileContentSearchDefaultExpanded = el("optFileContentSearchDefaultExpanded").checked;
+  saveOptions();
+};
 el("optFileContentSearchMatchesPerFile").oninput = () => {
   options.fileContentSearchMatchesPerFile = Math.max(1, Math.min(50, Number(el("optFileContentSearchMatchesPerFile").value) || 5));
   saveOptions();

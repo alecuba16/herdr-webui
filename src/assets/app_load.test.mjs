@@ -260,6 +260,7 @@ describe("app bundle load", () => {
     match(html, /File\/folder and content search run in the backend for the focused workspace\/worktree, lazy-load pages, preserve parent folders for path context/);
     match(html, /use Settings to enable sections and sort their order/);
     match(html, /Content results show as grouped files with highlighted match text, colored matched-line context/);
+    match(html, /configurable default expanded\/collapsed file groups/);
     match(html, /Git-style arrow controls for more context above\/below/);
     match(html, /opening at the matched line with editor highlight/);
     match(html, /same CodeMirror editor surface as edit mode but stay read-only until Edit is pressed/);
@@ -270,7 +271,8 @@ describe("app bundle load", () => {
     match(html, /priority red deleted, yellow modified, green new/);
     match(html, /Git selector opens repo tools for diff, stage\/unstage, discard, commit, commit & push, pull, push\/force-push, rebase, conflicts, stash, branches, cleanup, and worktree prune; file view can toggle unified\/side-by-side diffs/);
     match(html, /Prefix then \/ or the header magnifier opens one palette for workspaces, repos, worktrees, labels, agents, panels, file\/folder results, and file-content matches/);
-    match(html, /Alt\+F selects files, and Alt\+D selects folders/);
+    match(html, /Alt\+F selects files, Alt\+D selects folders, Alt\+1\/2\/3 toggles sections, and Alt\+↑\/↓ expands content context/);
+    match(html, /Alt\+F\/Alt\+D inside the palette to switch file or folder search, Alt\+1\/2\/3 to collapse or expand search sections, and Alt\+↑\/↓ to expand selected content-match context/);
     match(source, /DEFAULT_WEBUI_SHORTCUTS/);
     match(source, /removeWorktreeAlt: "Backspace"/);
     match(source, /removeWorktreeAlt: \(\) =>/);
@@ -278,6 +280,7 @@ describe("app bundle load", () => {
     match(source, /function shortcutCollisionFor\(scope, action, key\)/);
     match(source, /data-shortcut-record/);
     match(source, /Shortcut conflict with:/);
+    match(source, /optFileContentSearchDefaultExpanded/);
   });
 
   it("keeps Git prefix shortcuts collision-free with WebUI prefix keys", () => {
@@ -319,6 +322,8 @@ describe("app bundle load", () => {
     match(appBootSource, /\/assets\/shared\/line-context\.js/);
     match(appBootSource, /\/assets\/shared\/file-content-search\.js/);
     const fileContentSearchSource = readFileSync(new URL("./shared/file_content_search.js", import.meta.url), "utf8");
+    const workspaceSearchSource = readFileSync(new URL("./shared/workspace_search.js", import.meta.url), "utf8");
+    const searchSource = readFileSync(new URL("./desktop/search.js", import.meta.url), "utf8");
     const lineContextSource = readFileSync(new URL("./shared/line_context.js", import.meta.url), "utf8");
     const sharedColorsCss = readFileSync(new URL("./shared/colors.css", import.meta.url), "utf8");
     const sharedContentSearchCss = readFileSync(new URL("./shared/content_search.css", import.meta.url), "utf8");
@@ -340,6 +345,10 @@ describe("app bundle load", () => {
     ok(!fileContentSearchSource.includes("More above"));
     ok(!fileContentSearchSource.includes("More below"));
     match(fileContentSearchSource, /openMatch/);
+    match(searchSource, /Alt\+↑|ArrowUp/);
+    match(searchSource, /Digit1/);
+    match(workspaceSearchSource, /fileContentSearchDefaultExpanded/);
+    match(readFileSync(new URL("./mobile/settings.js", import.meta.url), "utf8"), /setFileContentSearchDefaultExpanded/);
     match(sharedColorsCss, /--herdr-search-hit-bg/);
     match(sharedColorsCss, /--herdr-search-hit-border/);
     match(sharedColorsCss, /--herdr-search-hit-shadow/);
@@ -367,11 +376,13 @@ describe("app bundle load", () => {
     match(source, /id="optFileContentSearchPageSize"/);
     match(source, /id="optFileContentSearchContextLines"/);
     match(source, /id="optFileContentSearchAutoCollapseFiles"/);
+    match(source, /id="optFileContentSearchDefaultExpanded"/);
     match(source, /id="optFileContentSearchMatchesPerFile"/);
     match(source, /fileBrowserSearchPageSize: 100/);
     match(source, /fileContentSearchMinChars: 3/);
     match(source, /fileContentSearchPageSize: 50/);
     match(source, /fileContentSearchContextLines: 2/);
+    match(source, /fileContentSearchDefaultExpanded: true/);
     match(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), /\/api\/file-browser\/content-search/);
     match(readFileSync(new URL("./mobile/file_browser.js", import.meta.url), "utf8"), /HerdrMobileFilesContent/);
     match(readFileSync(new URL("./mobile/settings.js", import.meta.url), "utf8"), /setFileBrowserPathSearch/);

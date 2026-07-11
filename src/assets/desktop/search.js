@@ -378,6 +378,13 @@ function selectedSearchRow() {
   return searchPaletteState.results[searchPaletteState.selectedIndex] || null;
 }
 
+function expandSelectedSearchContent(direction) {
+  const result = selectedSearchRow();
+  if (!result || result.type !== "content" || !result.file || !result.match) return false;
+  HerdrSearchPaletteContent.expandSnippet(result.file.path, result.match.id, direction);
+  return true;
+}
+
 function renderSearchPalette() {
   const query = searchPaletteState.query || "";
   const opts = searchSettings();
@@ -468,6 +475,19 @@ function searchPaletteKeydown(e) {
   if (e.key === "Escape") {
     e.preventDefault();
     closeSearchPalette();
+  } else if (e.altKey && (e.key === "1" || e.code === "Digit1")) {
+    e.preventDefault();
+    HerdrSearchPalette.toggleSection("workspaces");
+  } else if (e.altKey && (e.key === "2" || e.code === "Digit2")) {
+    e.preventDefault();
+    HerdrSearchPalette.toggleSection("files");
+  } else if (e.altKey && (e.key === "3" || e.code === "Digit3")) {
+    e.preventDefault();
+    HerdrSearchPalette.toggleSection("content");
+  } else if (e.altKey && e.key === "ArrowUp") {
+    if (expandSelectedSearchContent("up")) e.preventDefault();
+  } else if (e.altKey && e.key === "ArrowDown") {
+    if (expandSelectedSearchContent("down")) e.preventDefault();
   } else if (e.key === "ArrowDown") {
     e.preventDefault();
     moveSearchSelection(1);
