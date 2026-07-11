@@ -4,8 +4,12 @@
   let activeKey = "";
   let state = createState();
 
+  function createContentSearchState() {
+    return { active: false, query: "", timer: null, files: [], expanded: {}, snippets: {}, loading: false, error: "", offset: 0, done: true, totalFiles: 0, totalMatches: 0, contextLines: 2, maxMatchesPerFile: 5, autoCollapseFiles: 8 };
+  }
+
   function createState(initial) {
-    return Object.assign({ open: false, cwd: "", path: "", entries: [], children: {}, expanded: {}, loading: {}, selected: "", files: [], split: false, error: "", contextMenu: null, filter: "", filterTimer: null, filterLoading: false, filterOffset: 0, filterDone: true, filterScrollTop: 0, filterKind: "file", gitStatus: null, refreshing: false }, initial || {});
+    return Object.assign({ open: false, cwd: "", path: "", entries: [], children: {}, expanded: {}, loading: {}, selected: "", files: [], split: false, error: "", contextMenu: null, filter: "", filterTimer: null, filterVisible: false, filterLoading: false, filterOffset: 0, filterDone: true, filterScrollTop: 0, filterKind: "file", gitStatus: null, refreshing: false, contentSearch: createContentSearchState() }, initial || {});
   }
 
   function esc(value) { return Tree.esc(value); }
@@ -23,6 +27,19 @@
       const parsed = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
       return parsed.fileBrowserLineNumbers !== false;
     } catch (_) { return true; }
+  }
+
+  function contentSearchOptions() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
+      const contextRaw = Number(parsed.fileContentSearchContextLines);
+      const autoCollapseRaw = Number(parsed.fileContentSearchAutoCollapseFiles);
+      return {
+        contextLines: Math.max(0, Math.min(20, Number.isFinite(contextRaw) ? contextRaw : 2)),
+        autoCollapseFiles: Math.max(0, Math.min(200, Number.isFinite(autoCollapseRaw) ? autoCollapseRaw : 8)),
+        maxMatchesPerFile: Math.max(1, Math.min(50, Number(parsed.fileContentSearchMatchesPerFile) || 5)),
+      };
+    } catch (_) { return { contextLines: 2, autoCollapseFiles: 8, maxMatchesPerFile: 5 }; }
   }
 
   document.addEventListener("click", () => {
@@ -240,6 +257,59 @@
     return currentFilePathFor(state);
   }
 
+  function syncContentSearchOptions(target = state) {
+    const opts = contentSearchOptions();
+    target.contentSearch.contextLines = opts.contextLines;
+    target.contentSearch.maxMatchesPerFile = opts.maxMatchesPerFile;
+    target.contentSearch.autoCollapseFiles = opts.autoCollapseFiles;
+  }
+
+  async function runContentSearch(append = false) {
+    const target = state;
+    const content = target.contentSearch;
+    if (!target.cwd || !content.query.trim()) return;
+    syncContentSearchOptions(target);
+    const offset = append ? content.offset : 0;
+    content.loading = true;
+    content.error = "";
+    renderIfActive(target, true);
+    try {
+      const data = await api(`/api/file-browser/content-search?cwd=${encodeURIComponent(target.cwd)}&path=${encodeURIComponent(target.path || "")}&q=${encodeURIComponent(content.query.trim())}&offset=${offset}&limit=50&context_lines=${content.contextLines}&max_matches_per_file=${content.maxMatchesPerFile}`);
+      const files = data.files || [];
+      content.files = append ? content.files.concat(files) : files;
+      content.totalFiles = data.total_files || files.length;
+      content.totalMatches = data.total_matches || 0;
+      content.offset = offset + files.length;
+      content.done = !data.truncated || files.length === 0;
+      if (!append) {
+        content.expanded = {};
+        const collapse = content.autoCollapseFiles > 0 && content.files.length > content.autoCollapseFiles;
+        for (const file of content.files) content.expanded[file.path] = !collapse;
+      }
+    } catch (error) {
+      content.error = error.message || String(error);
+      content.done = true;
+    }
+    content.loading = false;
+    renderIfActive(target, true);
+  }
+
+  function contentFile(path) {
+    return state.contentSearch.files.find((file) => file.path === path) || null;
+  }
+
+  async function loadContentSearchFile(path, extraContext) {
+    const content = state.contentSearch;
+    if (!state.cwd || !content.query.trim()) return;
+    syncContentSearchOptions(state);
+    const contextLines = Math.max(content.contextLines, Number(extraContext) || content.contextLines);
+    const data = await api(`/api/file-browser/content-search/file?cwd=${encodeURIComponent(state.cwd)}&file=${encodeURIComponent(path)}&q=${encodeURIComponent(content.query.trim())}&context_lines=${contextLines}&max_matches_per_file=500`);
+    if (!data.file) return;
+    const index = state.contentSearch.files.findIndex((file) => file.path === path);
+    if (index >= 0) state.contentSearch.files[index] = data.file;
+    state.contentSearch.expanded[path] = true;
+  }
+
   function render() {
     if (!state.open) return;
     let panel = document.getElementById("fileBrowserPanel");
@@ -256,10 +326,13 @@
     const resultCount = state.filter.trim() ? state.entries.length : entries.length;
     const noun = Tree.searchKindNoun(state.filterKind);
     const label = Tree.searchKindLabel(state.filterKind);
-    const count = state.filter.trim() ? `<div class="file-browser-result-count">${resultCount} ${noun} result${resultCount === 1 ? "" : "s"}</div>` : "";
-    const filter = `<div class="file-browser-list-head"><div class="file-browser-filter-row"><label class="file-browser-filter"><span class="file-browser-search-icon ${state.filterLoading ? "searching" : ""}" aria-hidden="true"></span><input id="fileBrowserFilter" value="${esc(state.filter)}" placeholder="Type to search ${noun}s (Alt+F/Alt+D)" oninput="HerdrFileBrowser.filter(this.value)"></label><button class="file-browser-kind-toggle" title="Search ${noun}s. Alt+F files, Alt+D folders" onclick="HerdrFileBrowser.toggleFilterKind()">${label}</button></div>${count}</div>`;
-    panel.innerHTML = `<aside class="file-browser-side ${activeFile ? "previewing" : ""}" tabindex="0" onkeydown="HerdrFileBrowser.typeToFilter(event)" onscroll="HerdrFileBrowser.sideScroll(this)"><div class="file-browser-head"><div class="file-browser-title-row"><div class="file-browser-title">Files</div><div class="file-browser-actions">${appRefreshIconButton({ className: "file-browser-refresh", title: "Refresh", label: "Refresh files", spinning: !!state.refreshing, onclick: "HerdrFileBrowser.refresh()" })}</div></div><div class="file-browser-subtitle">${esc(state.path || state.cwd || "No workspace")}</div></div>${state.error ? `<div class="file-browser-error">${esc(state.error)}</div>` : ""}${filter}${Tree.renderEntries(entries, { selectedPath: state.selected, callback: "HerdrFileBrowser", showMeta: true, dirClickMethod: "none", dirDoubleClickMethod: "enter", contextMethod: "menu", shiftSelectMode: true, filterTerm: state.filter })}${state.filterLoading ? `<div class="file-browser-searching">Searching...</div>` : ""}${state.filter.trim() && !state.filterDone ? `<button class="git-ui-btn file-browser-more" onclick="HerdrFileBrowser.loadMore()">Load more</button>` : ""}</aside><main class="file-browser-main"><div class="file-browser-toolbar">${renderToolbar(activeFile)}</div><div class="file-browser-preview ${state.split ? "split" : ""}" id="fileBrowserPreview">${renderPreviewShell()}</div></main>${renderContextMenu()}`;
+    const count = state.filter.trim() ? `<div class="file-browser-result-count">${resultCount} ${noun} result${resultCount === 1 ? "" : "s"}</div>` : `<div class="file-browser-result-count">Focus tree and type to filter</div>`;
+    const filterVisible = state.filterVisible || state.filter.trim();
+    const filter = filterVisible ? `<div class="file-browser-list-head"><div class="file-browser-filter-row"><span class="file-browser-filter"><span class="file-browser-search-icon ${state.filterLoading ? "searching" : ""}" aria-hidden="true"></span><span id="fileBrowserFilter" class="file-browser-filter-text">${esc(state.filter || `Type to search ${noun}s`)}</span></span><button class="file-browser-kind-toggle" title="Search ${noun}s. Alt+F files, Alt+D folders" onclick="HerdrFileBrowser.toggleFilterKind()">${label}</button><button class="file-browser-kind-toggle" title="Clear search" onclick="HerdrFileBrowser.clearFilter()">Clear</button></div>${count}</div>` : `<div class="file-browser-list-head compact"><div class="file-browser-result-count">Focus tree and type to filter files. Alt+D folders.</div></div>`;
+    const sideBody = state.contentSearch.active ? window.HerdrContentSearch.render({ query: state.contentSearch.query, files: state.contentSearch.files, expanded: state.contentSearch.expanded, snippets: state.contentSearch.snippets, loading: state.contentSearch.loading, error: state.contentSearch.error, done: state.contentSearch.done, total_files: state.contentSearch.totalFiles, total_matches: state.contentSearch.totalMatches }, { callback: "HerdrFileBrowserContent", inputId: "fileContentSearchInput" }) : `${filter}${Tree.renderEntries(entries, { selectedPath: state.selected, callback: "HerdrFileBrowser", showMeta: true, dirClickMethod: "none", dirDoubleClickMethod: "enter", contextMethod: "menu", shiftSelectMode: true, filterTerm: state.filter })}${state.filterLoading ? `<div class="file-browser-searching">Searching...</div>` : ""}${state.filter.trim() && !state.filterDone ? `<button class="git-ui-btn file-browser-more" onclick="HerdrFileBrowser.loadMore()">Load more</button>` : ""}`;
+    panel.innerHTML = `<aside class="file-browser-side ${activeFile ? "previewing" : ""} ${state.contentSearch.active ? "content-searching" : ""}" tabindex="0" onfocus="HerdrFileBrowser.focusTree()" onblur="HerdrFileBrowser.blurTree()" onkeydown="HerdrFileBrowser.typeToFilter(event)" onscroll="HerdrFileBrowser.sideScroll(this)"><div class="file-browser-head"><div class="file-browser-title-row"><div class="file-browser-title">Files</div><div class="file-browser-actions"><button class="file-browser-refresh ${state.contentSearch.active ? "active" : ""}" title="Search file contents" aria-label="Search file contents" onclick="HerdrFileBrowser.toggleContentSearch()"><span class="file-browser-search-icon" aria-hidden="true"></span></button>${appRefreshIconButton({ className: "file-browser-refresh", title: "Refresh", label: "Refresh files", spinning: !!state.refreshing, onclick: "HerdrFileBrowser.refresh()" })}</div></div><div class="file-browser-subtitle">${esc(state.path || state.cwd || "No workspace")}</div></div>${state.error ? `<div class="file-browser-error">${esc(state.error)}</div>` : ""}${sideBody}</aside><main class="file-browser-main"><div class="file-browser-toolbar">${renderToolbar(activeFile)}</div><div class="file-browser-preview ${state.split ? "split" : ""}" id="fileBrowserPreview">${renderPreviewShell()}</div></main>${renderContextMenu()}`;
     mountEditors();
+    mountContentSearchEditors();
   }
 
   function syncTerminalVisibility() {
@@ -370,6 +443,32 @@
           file.dirty = value !== (file.content || "");
         },
       });
+    }
+  }
+
+  function mountContentSearchEditors() {
+    if (!state.contentSearch.active) return;
+    for (const file of state.contentSearch.files || []) {
+      for (const match of file.matches || []) {
+        const key = window.HerdrContentSearch.snippetKey(file.path, match);
+        const snippet = state.contentSearch.snippets[key];
+        if (!snippet || !snippet.editing) continue;
+        const editorId = `contentSearchSnippet-${window.HerdrContentSearch.hashId(key)}`;
+        const parent = document.getElementById(editorId);
+        if (!parent) continue;
+        window.HerdrEditor.create({
+          parent,
+          path: file.path,
+          content: snippet.draft == null ? match.content || "" : snippet.draft,
+          readonly: false,
+          hideHeader: true,
+          lineNumbers: lineNumbersEnabled(),
+          onChange(value) {
+            snippet.draft = value;
+            snippet.dirty = value !== (match.content || "");
+          },
+        });
+      }
     }
   }
 
@@ -493,17 +592,33 @@
     refresh() { loadTree(state.path); },
     setFilterKind(kind) {
       state.filterKind = Tree.normalizeSearchKind(kind);
+      state.filterVisible = true;
       if (state.filter.trim()) fetchFilteredEntries(false);
       else renderPreservingScroll();
     },
     toggleFilterKind() { this.setFilterKind(Tree.toggleSearchKind(state.filterKind)); },
     filter(value) {
       state.filter = String(value || "");
+      state.filterVisible = !!state.filter || state.filterVisible;
       clearTimeout(state.filterTimer);
       state.filterTimer = setTimeout(() => {
         if (state.filter.trim()) fetchFilteredEntries(false);
         else loadTree(state.path, true);
       }, 500);
+    },
+    clearFilter() {
+      state.filter = "";
+      state.filterVisible = false;
+      clearTimeout(state.filterTimer);
+      loadTree(state.path, true);
+    },
+    focusTree() { if (!state.contentSearch.active) { state.filterVisible = true; renderPreservingScroll(); } },
+    blurTree() { if (!state.contentSearch.active && !state.filter.trim()) { state.filterVisible = false; renderPreservingScroll(); } },
+    toggleContentSearch() {
+      state.contentSearch.active = !state.contentSearch.active;
+      state.filterVisible = false;
+      render();
+      if (state.contentSearch.active) setTimeout(() => document.getElementById("fileContentSearchInput")?.focus(), 0);
     },
     loadMore() { fetchFilteredEntries(true); },
     sideScroll(node) {
@@ -517,26 +632,18 @@
       if (event.altKey && event.key && event.key.toLowerCase() === "d") { event.preventDefault(); this.setFilterKind("dir"); return; }
       if (event.altKey || event.defaultPrevented) return;
       if (event.target && event.target.closest && event.target.closest("input, textarea, select")) return;
+      if (state.contentSearch.active) return;
+      if (event.key === "Escape") { event.preventDefault(); this.clearFilter(); return; }
       if (event.key === "Backspace") {
         event.preventDefault();
         this.filter(state.filter.slice(0, -1));
-        const input = document.getElementById("fileBrowserFilter");
-        if (input) {
-          input.value = state.filter;
-          input.focus({ preventScroll: true });
-          input.setSelectionRange(input.value.length, input.value.length);
-        }
+        renderPreservingScroll();
         return;
       }
       if (event.key.length !== 1) return;
       event.preventDefault();
       this.filter(state.filter + event.key);
-      const input = document.getElementById("fileBrowserFilter");
-      if (input) {
-        input.value = state.filter;
-        input.focus({ preventScroll: true });
-        input.setSelectionRange(input.value.length, input.value.length);
-      }
+      renderPreservingScroll();
     },
     up() { goUp(); },
     toggle(encodedPath) { toggleDir(decodeURIComponent(encodedPath)); },
@@ -600,5 +707,109 @@
     isVisible() { return state.open; },
     isWorkspaceVisible(workspace) { return state.open && activeKey === workspaceKey(workspace); },
     syncTerminalVisibility,
+  };
+
+  window.HerdrFileBrowserContent = {
+    setQuery(value) {
+      state.contentSearch.query = String(value || "");
+      clearTimeout(state.contentSearch.timer);
+      state.contentSearch.timer = setTimeout(() => runContentSearch(false), 350);
+    },
+    inputKeydown(event) {
+      if ((event.metaKey || event.ctrlKey) && event.key && event.key.toLowerCase() === "s") {
+        event.preventDefault();
+        return;
+      }
+      if (event.key === "Enter") { event.preventDefault(); runContentSearch(false); }
+      if (event.key === "Escape") { event.preventDefault(); this.clear(); }
+    },
+    run() { runContentSearch(false); },
+    clear() {
+      const content = state.contentSearch;
+      content.query = "";
+      content.files = [];
+      content.expanded = {};
+      content.snippets = {};
+      content.error = "";
+      content.offset = 0;
+      content.done = true;
+      content.totalFiles = 0;
+      content.totalMatches = 0;
+      render();
+    },
+    loadMore() { runContentSearch(true); },
+    toggleFile(encodedPath) {
+      const path = decodeURIComponent(encodedPath);
+      state.contentSearch.expanded[path] = !state.contentSearch.expanded[path];
+      render();
+    },
+    async loadFile(encodedPath) {
+      try { await loadContentSearchFile(decodeURIComponent(encodedPath)); }
+      catch (error) { state.contentSearch.error = error.message || String(error); }
+      render();
+    },
+    openFile(encodedPath) { loadFile(decodeURIComponent(encodedPath)); },
+    expandAll() {
+      for (const file of state.contentSearch.files || []) state.contentSearch.expanded[file.path] = true;
+      render();
+    },
+    collapseAll() {
+      state.contentSearch.expanded = {};
+      render();
+    },
+    editSnippet(encodedPath, encodedMatchId) {
+      const path = decodeURIComponent(encodedPath);
+      const matchId = decodeURIComponent(encodedMatchId);
+      const file = contentFile(path);
+      const match = window.HerdrContentSearch.findMatch(file, matchId);
+      if (!file || !match) return;
+      const key = window.HerdrContentSearch.snippetKey(path, match);
+      state.contentSearch.snippets[key] = { editing: true, draft: match.content || "", dirty: false, saving: false, error: "" };
+      render();
+    },
+    cancelSnippet(encodedPath, encodedMatchId) {
+      const path = decodeURIComponent(encodedPath);
+      const matchId = decodeURIComponent(encodedMatchId);
+      const file = contentFile(path);
+      const match = window.HerdrContentSearch.findMatch(file, matchId);
+      if (!match) return;
+      delete state.contentSearch.snippets[window.HerdrContentSearch.snippetKey(path, match)];
+      render();
+    },
+    async saveSnippet(encodedPath, encodedMatchId) {
+      const path = decodeURIComponent(encodedPath);
+      const matchId = decodeURIComponent(encodedMatchId);
+      const file = contentFile(path);
+      const match = window.HerdrContentSearch.findMatch(file, matchId);
+      if (!file || !match) return;
+      const key = window.HerdrContentSearch.snippetKey(path, match);
+      const snippet = state.contentSearch.snippets[key];
+      if (!snippet || snippet.saving) return;
+      snippet.saving = true;
+      snippet.error = "";
+      render();
+      try {
+        const result = await api("/api/file-browser/content-search/snippet", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ cwd: state.cwd, path, expected_hash: file.hash || "", start_line: match.start_line, end_line: match.end_line, content: snippet.draft || "" }),
+        });
+        file.hash = result.hash || file.hash;
+        delete state.contentSearch.snippets[key];
+        await loadContentSearchFile(path);
+      } catch (error) {
+        snippet.error = error.message || String(error);
+      }
+      if (snippet) snippet.saving = false;
+      render();
+    },
+    async expandSnippet(encodedPath, _encodedMatchId, _direction) {
+      const path = decodeURIComponent(encodedPath);
+      const nextContext = Math.min(20, (state.contentSearch.contextLines || 2) + 1);
+      state.contentSearch.contextLines = nextContext;
+      try { await loadContentSearchFile(path, nextContext); }
+      catch (error) { state.contentSearch.error = error.message || String(error); }
+      render();
+    },
   };
 })();

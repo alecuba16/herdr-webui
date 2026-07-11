@@ -38,15 +38,17 @@ The Rust binary embeds assets with `include_str!` or `include_bytes!`. Public ro
 
 - `/assets/app-boot.js`
 - `/assets/shared/core.js`
+- `/assets/shared/colors.css`
 - `/assets/shared/file-icons.js`
 - `/assets/shared/file-icons.css`
 - `/assets/shared/file-tree.js`
+- `/assets/shared/file-content-search.js`
 - `/assets/vendor/codemirror.js`
 - `/assets/shared/editor.js`
 - desktop assets under `/assets/desktop/...`
 - mobile assets under `/assets/mobile/...`
 
-`app_boot.js` loads CSS first, then shared JS, then layout-specific JS. File icon data is a shared module loaded before `file-tree.js`, so desktop and mobile use the same mappings.
+`app_boot.js` loads layout CSS, then shared color tokens, shared icon CSS, shared JS, and finally layout-specific JS. File icon data is a shared module loaded before `file-tree.js`, so desktop and mobile use the same mappings. Content-search rendering is also shared, with desktop and mobile owning only controller state and backend calls.
 
 ## File explorer
 
@@ -82,6 +84,28 @@ File explorer state is cached per open workspace/worktree identity. It preserves
 - dirty flag.
 
 When a workspace or worktree closes, the cached state is forgotten. Async file fetches write back to the captured workspace state, so switching panels does not corrupt another workspace panel.
+
+### Content search
+
+The file explorer content Search view is backend-owned for repository traversal and matching. Routes:
+
+- `GET /api/file-browser/content-search`: bounded breadth-first scan from the current file tree root, grouped by file.
+- `GET /api/file-browser/content-search/file`: lazy full match load for one file when the group is expanded.
+- `POST /api/file-browser/content-search/snippet`: hash-guarded line-range save for an edited match snippet.
+
+Performance limits:
+
+- dependency/build folders such as `.git`, `node_modules`, `target`, `dist`, `build`, `.venv`, and `venv` are skipped,
+- traversal is capped by `MAX_CONTENT_SEARCH_VISITS`,
+- file reads are skipped above `MAX_CONTENT_SEARCH_FILE_BYTES`,
+- binary/NUL content is skipped,
+- result page size, context lines, and matches per file are clamped server-side.
+
+Desktop and mobile use `src/assets/shared/file_content_search.js` for grouped rendering, highlight markup, expand/collapse controls, and snippet editor mount IDs. The frontend does not scan repository content. It only sends queries, renders grouped results, and mounts editor instances for requested snippets.
+
+### Theme tokens
+
+Shared theme extension tokens live in `src/assets/shared/colors.css`. New feature colors should use these or existing base variables instead of local hardcoded palettes. Current shared tokens cover focus rings, search hit foreground/background, content match row background, and editor-style panel background.
 
 ### File preview and editing
 
@@ -143,6 +167,9 @@ Settings are stored in `localStorage` under `herdr-web-options`. Main defaults a
 | `fileBrowserAllowParent` | `true` | Show parent navigation. |
 | `fileBrowserGitStatus` | `true` | Show backend-provided Git colors. |
 | `fileBrowserLineNumbers` | `true` | Show line numbers in file previews. |
+| `fileContentSearchContextLines` | `2` | Default lines above/below each content-search match, clamped 0 to 20. |
+| `fileContentSearchAutoCollapseFiles` | `8` | Collapse result file groups when file count exceeds this value. 0 disables auto-collapse. |
+| `fileContentSearchMatchesPerFile` | `5` | Initial matches loaded per file before lazy expansion, clamped 1 to 50. |
 | `showTabActivity` | `false` | Show tab activity age. |
 | `worktreeAutoDiscoverSeconds` | `3` | Discovery interval, clamped 0 to 30. |
 | `generateWorktreeNames` | `false` | Auto-generate worktree names. |
@@ -157,7 +184,7 @@ Other modules can contribute defaults through the settings module registry.
 The in-app Help and Shortcuts modal documents user-facing behavior, including:
 
 - terminal shortcuts,
-- file explorer search, Git color priority, icons, read-only preview, line numbers, folding, and workspace state preservation,
+- file explorer tree search, content search, Git color priority, icons, read-only preview, line numbers, folding, and workspace state preservation,
 - Git UI actions and diff modes,
 - command palette behavior.
 
@@ -165,9 +192,9 @@ When a visible feature is added, update `shortcutsModalHtml()` and tests in `src
 
 ## Performance decisions
 
-- Git status is calculated once per refresh in the backend.
+- Git status and content search are calculated in the backend with traversal/file-size caps.
 - Folder status is propagated with a simple parent walk per changed path.
-- File-tree icon classification is a shared lookup module, not copied into desktop and mobile code.
+- File-tree icon classification and content-search rendering are shared modules, not copied into desktop and mobile code.
 - CodeMirror is loaded once and reused by editor creation calls.
 - Browser state is scoped by workspace/worktree to avoid recalculating or leaking edit state across panels.
 

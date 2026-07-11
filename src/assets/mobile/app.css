@@ -221,9 +221,9 @@ body.light {
   margin: 6px 2px 0;
 }
 .herdr-tree-hit {
-  background: #f9e2af;
+  background: var(--herdr-search-hit-bg);
   border-radius: 3px;
-  color: #11111b;
+  color: var(--herdr-search-hit-fg);
   padding: 0 2px;
 }
 @keyframes mobile-spin {
@@ -576,7 +576,7 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
   min-height: 55vh;
 }
 .herdr-editor-loading {
-  background: var(--editor-bg, var(--panel2));
+  background: var(--herdr-content-panel-bg);
   color: var(--muted);
   font: 12px/1.5 var(--mono-font);
   min-height: 55vh;
@@ -597,7 +597,7 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
 }
 .herdr-editor-code,
 .herdr-editor textarea {
-  background: var(--editor-bg, var(--panel2));
+  background: var(--herdr-content-panel-bg);
   color: var(--fg);
   font: 12px/1.5 var(--mono-font);
   margin: 0;
@@ -607,7 +607,7 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
   white-space: pre;
 }
 .herdr-editor-numbered-code {
-  background: var(--editor-bg, var(--panel2));
+  background: var(--herdr-content-panel-bg);
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   min-height: 55vh;
@@ -623,7 +623,7 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
   padding-left: 10px;
 }
 .herdr-editor-lines {
-  background: var(--editor-bg, var(--panel2));
+  background: var(--herdr-content-panel-bg);
   border-right: 1px solid var(--border);
   color: var(--muted);
   font: 12px/1.5 var(--mono-font);
@@ -912,3 +912,89 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
   letter-spacing: -0.5px;
   margin-top: -1px;
 }
+.mobile-file-filter-text {
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mobile-files:focus {
+  outline: 2px solid color-mix(in srgb, var(--accent), transparent 55%);
+  outline-offset: 2px;
+}
+.herdr-content-search {
+  display: grid;
+  gap: 10px;
+}
+.herdr-content-search-head,
+.herdr-content-search-tools,
+.herdr-content-search-file-actions,
+.herdr-content-search-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.herdr-content-search-head .file-browser-filter {
+  flex: 1 1 180px;
+}
+.herdr-content-search-file {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  overflow: hidden;
+}
+.herdr-content-search-file-head {
+  align-items: center;
+  background: var(--panel);
+  border: 0;
+  color: var(--fg);
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  padding: 10px;
+  text-align: left;
+  width: 100%;
+}
+.herdr-content-search-file-head strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.herdr-content-search-file-actions,
+.herdr-content-search-matches {
+  border-top: 1px solid var(--border);
+  display: grid;
+  gap: 8px;
+  padding: 8px;
+}
+.herdr-content-search-match {
+  border: 1px solid var(--border2);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.herdr-content-search-match header {
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+}
+.herdr-content-search-preview {
+  background: var(--herdr-content-panel-bg);
+  font: 12px/1.5 var(--mono-font);
+  overflow: auto;
+  padding: 8px 0;
+}
+.herdr-content-search-line {
+  display: grid;
+  grid-template-columns: 4ch minmax(0, 1fr);
+  min-width: max-content;
+}
+.herdr-content-search-line span {
+  color: var(--muted);
+  padding: 0 8px;
+  text-align: right;
+}
+.herdr-content-search-line code { white-space: pre; }
+.herdr-content-search-line.matched { background: var(--herdr-search-match-bg); }
+.herdr-content-search-hit { background: var(--herdr-search-hit-bg); border-radius: 3px; color: var(--herdr-search-hit-fg); padding: 0 2px; }

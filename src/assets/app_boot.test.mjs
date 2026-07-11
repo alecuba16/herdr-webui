@@ -66,17 +66,19 @@ describe("app boot", () => {
     equal(links[2].href, "/assets/desktop/file-browser.css");
     equal(links[3].href, "/assets/desktop/shortcuts.css");
     equal(links[4].href, "/assets/desktop/search.css");
-    equal(links[5].href, "/assets/shared/file-icons.css");
+    equal(links[5].href, "/assets/shared/colors.css");
+    equal(links[6].href, "/assets/shared/file-icons.css");
     equal(scripts[0].src, "/assets/shared/core.js");
     equal(scripts[1].src, "/assets/shared/file-icons.js");
     equal(scripts[2].src, "/assets/shared/file-tree.js");
-    equal(scripts[3].src, "/assets/vendor/codemirror.js");
-    equal(scripts[4].src, "/assets/shared/editor.js");
-    equal(scripts[5].src, "/assets/shared/terminal-scroll.js");
-    equal(scripts[6].src, "/assets/shared/temp-terminal.js");
-    equal(scripts[7].src, "/assets/desktop/search.js");
-    equal(scripts[8].src, "/assets/desktop/directory-picker.js");
-    equal(scripts[9].src, "/assets/desktop/app.js");
+    equal(scripts[3].src, "/assets/shared/file-content-search.js");
+    equal(scripts[4].src, "/assets/vendor/codemirror.js");
+    equal(scripts[5].src, "/assets/shared/editor.js");
+    equal(scripts[6].src, "/assets/shared/terminal-scroll.js");
+    equal(scripts[7].src, "/assets/shared/temp-terminal.js");
+    equal(scripts[8].src, "/assets/desktop/search.js");
+    equal(scripts[9].src, "/assets/desktop/directory-picker.js");
+    equal(scripts[10].src, "/assets/desktop/app.js");
   });
 
   it("loads mobile bundle for narrow screens", () => {
@@ -84,21 +86,23 @@ describe("app boot", () => {
     vm.runInContext(source, ctx);
     equal(ctx.document.documentElement.dataset.herdrLayout, "mobile");
     equal(links[0].href, "/assets/mobile/app.css");
-    equal(links[1].href, "/assets/shared/file-icons.css");
+    equal(links[1].href, "/assets/shared/colors.css");
+    equal(links[2].href, "/assets/shared/file-icons.css");
     equal(scripts[0].src, "/assets/shared/core.js");
     equal(scripts[1].src, "/assets/shared/file-icons.js");
     equal(scripts[2].src, "/assets/shared/file-tree.js");
-    equal(scripts[3].src, "/assets/vendor/codemirror.js");
-    equal(scripts[4].src, "/assets/shared/editor.js");
-    equal(scripts[5].src, "/assets/shared/terminal-scroll.js");
-    equal(scripts[6].src, "/assets/shared/temp-terminal.js");
-    equal(scripts[7].src, "/assets/mobile/core.js");
-    equal(scripts[8].src, "/assets/mobile/attention.js");
-    equal(scripts[9].src, "/assets/mobile/terminal.js");
-    equal(scripts[10].src, "/assets/mobile/worktrees.js");
-    equal(scripts[11].src, "/assets/mobile/file-browser.js");
-    equal(scripts[12].src, "/assets/mobile/settings.js");
-    equal(scripts[13].src, "/assets/mobile/app.js");
+    equal(scripts[3].src, "/assets/shared/file-content-search.js");
+    equal(scripts[4].src, "/assets/vendor/codemirror.js");
+    equal(scripts[5].src, "/assets/shared/editor.js");
+    equal(scripts[6].src, "/assets/shared/terminal-scroll.js");
+    equal(scripts[7].src, "/assets/shared/temp-terminal.js");
+    equal(scripts[8].src, "/assets/mobile/core.js");
+    equal(scripts[9].src, "/assets/mobile/attention.js");
+    equal(scripts[10].src, "/assets/mobile/terminal.js");
+    equal(scripts[11].src, "/assets/mobile/worktrees.js");
+    equal(scripts[12].src, "/assets/mobile/file-browser.js");
+    equal(scripts[13].src, "/assets/mobile/settings.js");
+    equal(scripts[14].src, "/assets/mobile/app.js");
   });
 
   it("honors explicit desktop override", () => {

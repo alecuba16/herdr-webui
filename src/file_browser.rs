@@ -21,6 +21,14 @@ const MAX_SEARCH_VISITS: usize = 20_000;
 const DEFAULT_SEARCH_LIMIT: usize = 100;
 const MAX_SEARCH_LIMIT: usize = 500;
 const MAX_FILE_BYTES: u64 = 1024 * 1024;
+const MAX_CONTENT_SEARCH_VISITS: usize = 20_000;
+const DEFAULT_CONTENT_SEARCH_LIMIT: usize = 50;
+const MAX_CONTENT_SEARCH_LIMIT: usize = 200;
+const DEFAULT_CONTENT_MATCHES_PER_FILE: usize = 5;
+const MAX_CONTENT_MATCHES_PER_FILE: usize = 500;
+const DEFAULT_CONTENT_CONTEXT_LINES: usize = 2;
+const MAX_CONTENT_CONTEXT_LINES: usize = 20;
+const MAX_CONTENT_SEARCH_FILE_BYTES: u64 = 1024 * 1024;
 
 pub(crate) fn routes() -> Router<WebState> {
     Router::new()
@@ -28,6 +36,18 @@ pub(crate) fn routes() -> Router<WebState> {
         .route(
             "/api/file-browser/file",
             get(file_browser_file).post(file_browser_write_file),
+        )
+        .route(
+            "/api/file-browser/content-search",
+            get(file_browser_content_search),
+        )
+        .route(
+            "/api/file-browser/content-search/file",
+            get(file_browser_content_search_file),
+        )
+        .route(
+            "/api/file-browser/content-search/snippet",
+            axum::routing::post(file_browser_save_content_snippet),
         )
         .route(
             "/api/file-browser/rename",
@@ -58,6 +78,28 @@ struct FileBrowserWriteRequest {
     path: String,
     content: String,
     expected_hash: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct FileContentSearchQuery {
+    cwd: String,
+    path: Option<String>,
+    file: Option<String>,
+    q: String,
+    offset: Option<usize>,
+    limit: Option<usize>,
+    context_lines: Option<usize>,
+    max_matches_per_file: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct FileContentSnippetSaveRequest {
+    cwd: String,
+    path: String,
+    expected_hash: String,
+    start_line: usize,
+    end_line: usize,
+    content: String,
 }
 
 #[derive(Deserialize)]
@@ -95,6 +137,40 @@ struct DirectoryEntry {
     sort_name: String,
     path: PathBuf,
     metadata: fs::Metadata,
+}
+
+#[derive(Clone, Serialize)]
+struct ContentSearchMatch {
+    id: String,
+    line: usize,
+    column: usize,
+    match_start: usize,
+    match_end: usize,
+    start_line: usize,
+    end_line: usize,
+    content: String,
+    before: Vec<String>,
+    text: String,
+    after: Vec<String>,
+}
+
+#[derive(Clone, Serialize)]
+struct ContentSearchFile {
+    path: String,
+    name: String,
+    size: u64,
+    hash: String,
+    match_count: usize,
+    matches: Vec<ContentSearchMatch>,
+    truncated: bool,
+}
+
+struct ContentSearchBuild {
+    files: Vec<ContentSearchFile>,
+    total_files: usize,
+    total_matches: usize,
+    visited: usize,
+    truncated: bool,
 }
 
 fn compact_directory_entry(root: &Path, dir: PathBuf, name: String) -> (String, PathBuf) {
@@ -363,6 +439,195 @@ fn push_search_entries_with_visit_limit(
         }
     }
     Ok(())
+}
+
+fn content_search_context_lines(value: Option<usize>) -> usize {
+    value
+        .unwrap_or(DEFAULT_CONTENT_CONTEXT_LINES)
+        .min(MAX_CONTENT_CONTEXT_LINES)
+}
+
+fn content_search_matches_per_file(value: Option<usize>) -> usize {
+    value
+        .unwrap_or(DEFAULT_CONTENT_MATCHES_PER_FILE)
+        .clamp(1, MAX_CONTENT_MATCHES_PER_FILE)
+}
+
+fn should_skip_content_dir(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    matches!(
+        name,
+        ".git" | "node_modules" | "target" | "dist" | "build" | ".venv" | "venv"
+    )
+}
+
+fn query_hash(query: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(query.as_bytes());
+    hasher
+        .finalize()
+        .iter()
+        .take(6)
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>()
+}
+
+fn basename_string(path: &str) -> String {
+    path.rsplit('/').next().unwrap_or(path).to_string()
+}
+
+fn content_search_file(
+    root: &Path,
+    file: &Path,
+    query: &str,
+    context_lines: usize,
+    max_matches: usize,
+) -> Result<Option<ContentSearchFile>, String> {
+    let metadata = fs::metadata(file).map_err(|err| err.to_string())?;
+    if !metadata.is_file() || metadata.len() > MAX_CONTENT_SEARCH_FILE_BYTES {
+        return Ok(None);
+    }
+    let bytes = fs::read(file).map_err(|err| err.to_string())?;
+    if bytes.iter().take(2048).any(|byte| *byte == 0) {
+        return Ok(None);
+    }
+    let content = match String::from_utf8(bytes) {
+        Ok(content) => content,
+        Err(_) => return Ok(None),
+    };
+    let needle = query.to_lowercase();
+    if needle.is_empty() {
+        return Ok(None);
+    }
+    let rel = relative_to_root(root, file);
+    let lines = content.lines().map(str::to_string).collect::<Vec<_>>();
+    let mut matches = Vec::new();
+    let mut match_count = 0usize;
+    let qhash = query_hash(query);
+    for (index, line) in lines.iter().enumerate() {
+        let lower = line.to_lowercase();
+        let Some(match_start) = lower.find(&needle) else {
+            continue;
+        };
+        match_count += 1;
+        if matches.len() >= max_matches {
+            continue;
+        }
+        let start = index.saturating_sub(context_lines);
+        let end = (index + context_lines + 1).min(lines.len());
+        let before = lines[start..index].to_vec();
+        let after = lines[(index + 1)..end].to_vec();
+        let snippet = lines[start..end].join("\n");
+        let line_number = index + 1;
+        let start_line = start + 1;
+        let end_line = end.max(start + 1);
+        matches.push(ContentSearchMatch {
+            id: format!("{}:{}:{}:{}", rel, start_line, line_number, qhash),
+            line: line_number,
+            column: match_start + 1,
+            match_start,
+            match_end: match_start + query.len(),
+            start_line,
+            end_line,
+            content: snippet,
+            before,
+            text: line.clone(),
+            after,
+        });
+    }
+    if match_count == 0 {
+        return Ok(None);
+    }
+    let hash = file_hash(file)?;
+    Ok(Some(ContentSearchFile {
+        path: rel.clone(),
+        name: basename_string(&rel),
+        size: metadata.len(),
+        hash,
+        match_count,
+        matches,
+        truncated: match_count > max_matches,
+    }))
+}
+
+fn collect_content_search(
+    root: &Path,
+    dir: &Path,
+    query: &str,
+    offset: usize,
+    limit: usize,
+    context_lines: usize,
+    max_matches_per_file: usize,
+) -> Result<ContentSearchBuild, String> {
+    let mut build = ContentSearchBuild {
+        files: Vec::new(),
+        total_files: 0,
+        total_matches: 0,
+        visited: 0,
+        truncated: false,
+    };
+    let mut queue = VecDeque::from([dir.to_path_buf()]);
+    while let Some(current_dir) = queue.pop_front() {
+        for entry in sorted_directory_entries(&current_dir)? {
+            build.visited += 1;
+            if build.visited >= MAX_CONTENT_SEARCH_VISITS {
+                build.truncated = true;
+                return Ok(build);
+            }
+            if entry.metadata.is_dir() {
+                if !should_skip_content_dir(&entry.path) {
+                    queue.push_back(entry.path);
+                }
+                continue;
+            }
+            let Some(result) = content_search_file(
+                root,
+                &entry.path,
+                query,
+                context_lines,
+                max_matches_per_file,
+            )?
+            else {
+                continue;
+            };
+            build.total_files += 1;
+            build.total_matches += result.match_count;
+            if build.total_files > offset && build.files.len() < limit {
+                build.files.push(result);
+            }
+            if build.files.len() >= limit {
+                build.truncated = true;
+                return Ok(build);
+            }
+        }
+    }
+    Ok(build)
+}
+
+fn replace_line_range(
+    content: &str,
+    start_line: usize,
+    end_line: usize,
+    replacement: &str,
+) -> Result<String, String> {
+    if start_line == 0 || end_line < start_line {
+        return Err("invalid line range".to_string());
+    }
+    let mut lines = content.split('\n').map(str::to_string).collect::<Vec<_>>();
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    if start_line > lines.len() || end_line > lines.len() {
+        return Err("line range outside file".to_string());
+    }
+    let replacement_lines = replacement
+        .split('\n')
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    lines.splice((start_line - 1)..end_line, replacement_lines);
+    Ok(lines.join("\n"))
 }
 
 fn file_hash(path: &Path) -> Result<String, String> {
@@ -765,6 +1030,171 @@ async fn file_browser_write_file(
     Json(json!({ "ok": true, "path": rel, "hash": hash })).into_response()
 }
 
+async fn file_browser_content_search(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    Query(query): Query<FileContentSearchQuery>,
+) -> Response {
+    if let Err(response) = file_browser_auth(&state, &headers, remote) {
+        return response;
+    }
+    let search = query.q.trim();
+    if search.is_empty() {
+        return file_browser_json_error(StatusCode::BAD_REQUEST, "query is required");
+    }
+    let root = match resolve_root(&query.cwd) {
+        Ok(root) => root,
+        Err(err) => return file_browser_json_error(StatusCode::BAD_REQUEST, err),
+    };
+    let rel = match clean_relative_path(query.path.as_deref()) {
+        Ok(rel) => rel,
+        Err(err) => return file_browser_json_error(StatusCode::BAD_REQUEST, err),
+    };
+    let dir = match resolve_child(&root, &rel) {
+        Ok(dir) => dir,
+        Err(err) => return file_browser_json_error(StatusCode::BAD_REQUEST, err),
+    };
+    if !dir.is_dir() {
+        return file_browser_json_error(StatusCode::BAD_REQUEST, "path is not a directory");
+    }
+    let limit = query
+        .limit
+        .unwrap_or(DEFAULT_CONTENT_SEARCH_LIMIT)
+        .clamp(1, MAX_CONTENT_SEARCH_LIMIT);
+    let context_lines = content_search_context_lines(query.context_lines);
+    let max_matches_per_file = content_search_matches_per_file(query.max_matches_per_file);
+    let build = match collect_content_search(
+        &root,
+        &dir,
+        search,
+        query.offset.unwrap_or(0),
+        limit,
+        context_lines,
+        max_matches_per_file,
+    ) {
+        Ok(build) => build,
+        Err(err) => return file_browser_json_error(StatusCode::BAD_GATEWAY, err),
+    };
+    Json(json!({
+        "root": root.to_string_lossy(),
+        "path": relative_to_root(&root, &dir),
+        "query": search,
+        "files": build.files,
+        "total_files": build.total_files,
+        "total_matches": build.total_matches,
+        "visited": build.visited,
+        "truncated": build.truncated,
+    }))
+    .into_response()
+}
+
+async fn file_browser_content_search_file(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    Query(query): Query<FileContentSearchQuery>,
+) -> Response {
+    if let Err(response) = file_browser_auth(&state, &headers, remote) {
+        return response;
+    }
+    let search = query.q.trim();
+    if search.is_empty() {
+        return file_browser_json_error(StatusCode::BAD_REQUEST, "query is required");
+    }
+    let root = match resolve_root(&query.cwd) {
+        Ok(root) => root,
+        Err(err) => return file_browser_json_error(StatusCode::BAD_REQUEST, err),
+    };
+    let rel = match clean_relative_path(query.file.as_deref().or(query.path.as_deref())) {
+        Ok(rel) if !rel.is_empty() => rel,
+        Ok(_) => return file_browser_json_error(StatusCode::BAD_REQUEST, "file is required"),
+        Err(err) => return file_browser_json_error(StatusCode::BAD_REQUEST, err),
+    };
+    let file = match resolve_child(&root, &rel) {
+        Ok(file) => file,
+        Err(err) => return file_browser_json_error(StatusCode::BAD_REQUEST, err),
+    };
+    if !file.is_file() {
+        return file_browser_json_error(StatusCode::BAD_REQUEST, "path is not a file");
+    }
+    let context_lines = content_search_context_lines(query.context_lines);
+    let max_matches = content_search_matches_per_file(
+        query
+            .max_matches_per_file
+            .or(Some(MAX_CONTENT_MATCHES_PER_FILE)),
+    );
+    let result = match content_search_file(&root, &file, search, context_lines, max_matches) {
+        Ok(Some(result)) => result,
+        Ok(None) => {
+            return Json(json!({
+                "query": search,
+                "file": null,
+            }))
+            .into_response()
+        }
+        Err(err) => return file_browser_json_error(StatusCode::BAD_GATEWAY, err),
+    };
+    Json(json!({
+        "query": search,
+        "file": result,
+    }))
+    .into_response()
+}
+
+async fn file_browser_save_content_snippet(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    Json(body): Json<FileContentSnippetSaveRequest>,
+) -> Response {
+    if let Err(response) = file_browser_auth(&state, &headers, remote) {
+        return response;
+    }
+    let root = match resolve_root(&body.cwd) {
+        Ok(root) => root,
+        Err(err) => return file_browser_json_error(StatusCode::BAD_REQUEST, err),
+    };
+    let rel = match clean_relative_path(Some(&body.path)) {
+        Ok(rel) if !rel.is_empty() => rel,
+        Ok(_) => return file_browser_json_error(StatusCode::BAD_REQUEST, "path is required"),
+        Err(err) => return file_browser_json_error(StatusCode::BAD_REQUEST, err),
+    };
+    let file = match resolve_child(&root, &rel) {
+        Ok(file) => file,
+        Err(err) => return file_browser_json_error(StatusCode::BAD_REQUEST, err),
+    };
+    if !file.is_file() {
+        return file_browser_json_error(StatusCode::BAD_REQUEST, "path is not a file");
+    }
+    let current_hash = match file_hash(&file) {
+        Ok(hash) => hash,
+        Err(err) => return file_browser_json_error(StatusCode::BAD_GATEWAY, err),
+    };
+    if current_hash != body.expected_hash {
+        return file_browser_json_error(
+            StatusCode::CONFLICT,
+            "file changed on disk; reload before saving",
+        );
+    }
+    let current = match fs::read_to_string(&file) {
+        Ok(content) => content,
+        Err(err) => return file_browser_json_error(StatusCode::BAD_GATEWAY, err.to_string()),
+    };
+    let next = match replace_line_range(&current, body.start_line, body.end_line, &body.content) {
+        Ok(next) => next,
+        Err(err) => return file_browser_json_error(StatusCode::BAD_REQUEST, err),
+    };
+    if let Err(err) = fs::write(&file, next.as_bytes()) {
+        return file_browser_json_error(StatusCode::BAD_GATEWAY, err.to_string());
+    }
+    let hash = match file_hash(&file) {
+        Ok(hash) => hash,
+        Err(err) => return file_browser_json_error(StatusCode::BAD_GATEWAY, err),
+    };
+    Json(json!({ "ok": true, "path": rel, "hash": hash })).into_response()
+}
+
 async fn file_browser_rename(
     State(state): State<WebState>,
     headers: HeaderMap,
@@ -1015,6 +1445,75 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(paths.contains(&"projects/herdr"));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn content_search_groups_matches_with_context_and_limits() {
+        let root = std::env::temp_dir().join(format!(
+            "herdr-webui-content-search-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("src/app.rs"),
+            "before\nneedle one\nafter\nneedle two\nend",
+        )
+        .unwrap();
+        fs::write(root.join("src/other.rs"), "nothing").unwrap();
+        fs::write(root.join("README.md"), "Needle docs").unwrap();
+
+        let root = root.canonicalize().unwrap();
+        let build = collect_content_search(&root, &root, "needle", 0, 10, 1, 1).unwrap();
+
+        assert_eq!(build.total_files, 2);
+        assert_eq!(build.total_matches, 3);
+        let app = build
+            .files
+            .iter()
+            .find(|file| file.path == "src/app.rs")
+            .unwrap();
+        assert_eq!(app.match_count, 2);
+        assert_eq!(app.matches.len(), 1);
+        assert!(app.truncated);
+        assert_eq!(app.matches[0].start_line, 1);
+        assert_eq!(app.matches[0].end_line, 3);
+        assert_eq!(app.matches[0].before, vec!["before".to_string()]);
+        assert_eq!(app.matches[0].after, vec!["after".to_string()]);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn content_search_skips_binary_large_and_dependency_dirs() {
+        let root = std::env::temp_dir().join(format!(
+            "herdr-webui-content-search-skip-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
+        fs::write(root.join("node_modules/pkg/hit.txt"), "needle").unwrap();
+        fs::write(root.join("binary.bin"), b"needle\0hidden").unwrap();
+        fs::write(root.join("ok.txt"), "needle visible").unwrap();
+
+        let root = root.canonicalize().unwrap();
+        let build = collect_content_search(&root, &root, "needle", 0, 10, 0, 5).unwrap();
+        let paths = build
+            .files
+            .iter()
+            .map(|file| file.path.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(paths, vec!["ok.txt"]);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn replace_line_range_replaces_inclusive_range() {
+        let next = replace_line_range("a\nb\nc\nd", 2, 3, "B\nC").unwrap();
+        assert_eq!(next, "a\nB\nC\nd");
+        assert!(replace_line_range("a", 0, 1, "x").is_err());
+        assert!(replace_line_range("a", 2, 2, "x").is_err());
     }
 
     #[test]

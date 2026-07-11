@@ -299,6 +299,19 @@ el("optFileBrowserLineNumbers").onchange = () => {
   options.fileBrowserLineNumbers = el("optFileBrowserLineNumbers").checked;
   saveOptions();
 };
+el("optFileContentSearchContextLines").oninput = () => {
+  const value = Number(el("optFileContentSearchContextLines").value);
+  options.fileContentSearchContextLines = Math.max(0, Math.min(20, Number.isFinite(value) ? value : 2));
+  saveOptions();
+};
+el("optFileContentSearchAutoCollapseFiles").oninput = () => {
+  options.fileContentSearchAutoCollapseFiles = Math.max(0, Math.min(200, Number(el("optFileContentSearchAutoCollapseFiles").value) || 0));
+  saveOptions();
+};
+el("optFileContentSearchMatchesPerFile").oninput = () => {
+  options.fileContentSearchMatchesPerFile = Math.max(1, Math.min(50, Number(el("optFileContentSearchMatchesPerFile").value) || 5));
+  saveOptions();
+};
 el("optWorktreeAutoDiscover").oninput = () => {
   options.worktreeAutoDiscoverSeconds = Math.max(
     0,
