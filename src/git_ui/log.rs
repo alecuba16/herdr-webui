@@ -83,10 +83,15 @@ fn reconstruct_log_line(line: &str) -> String {
     }
     let hash = &raw[start..end];
     let parts: Vec<&str> = raw[end..].split('\0').collect();
-    let message = parts.get(3).map(|s| s.trim()).unwrap_or("");
+    let refs = parts.get(3).map(|s| s.trim()).unwrap_or("");
+    let message = parts.get(4).map(|s| s.trim()).unwrap_or("");
     let graph_prefix = &raw[..start];
     let short = &hash[..8.min(hash.len())];
-    format!("{}{} {}", graph_prefix, short, message)
+    if refs.is_empty() {
+        format!("{}{} {}", graph_prefix, short, message)
+    } else {
+        format!("{}{} ({}) {}", graph_prefix, short, refs, message)
+    }
 }
 
 fn git_ui_log_blocking(
@@ -101,7 +106,7 @@ fn git_ui_log_blocking(
         "--date=relative",
         "--max-count",
         &max,
-        "--format=%H%x00%an%x00%ar%x00%s",
+        "--format=%H%x00%an%x00%ar%x00%D%x00%s",
     ];
     if all {
         args.push("--all");
@@ -131,9 +136,10 @@ fn git_ui_log_blocking(
                     let parts: Vec<&str> = raw[end..].split('\0').collect();
                     let author = parts.get(1).map(|s| s.trim()).unwrap_or("").to_string();
                     let date = parts.get(2).map(|s| s.trim()).unwrap_or("").to_string();
-                    let message = parts.get(3).map(|s| s.trim()).unwrap_or("").to_string();
+                    let refs = parts.get(3).map(|s| s.trim()).unwrap_or("").to_string();
+                    let message = parts.get(4).map(|s| s.trim()).unwrap_or("").to_string();
                     Some(
-                        json!({ "hash": hash, "author": author, "date": date, "message": message }),
+                        json!({ "hash": hash, "author": author, "date": date, "refs": refs, "message": message }),
                     )
                 })
                 .collect::<Vec<_>>();

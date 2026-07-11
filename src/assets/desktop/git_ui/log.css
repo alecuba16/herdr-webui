@@ -31,7 +31,7 @@
   align-items: center;
   border-radius: 8px;
   display: grid;
-  grid-template-columns: minmax(104px, auto) minmax(0, 1fr) auto;
+  grid-template-columns: minmax(104px, auto) auto minmax(0, 1fr);
   gap: 8px;
   min-height: 26px;
   padding: 3px 8px;
@@ -129,16 +129,22 @@
   display: inline-flex;
   flex-wrap: wrap;
   gap: 4px;
-  justify-content: flex-end;
+  justify-content: center;
+  min-width: 0;
 }
 .git-ui-log-labels span {
+  background: var(--panel2);
   border: 1px solid var(--border2);
   border-radius: 999px;
   color: var(--accent);
-  font-size: 11px;
-  max-width: 150px;
+  font-size: 10px;
+  line-height: 1;
+  max-height: 74px;
+  max-width: 30px;
   overflow: hidden;
-  padding: 1px 6px;
+  padding: 6px 2px;
   text-overflow: ellipsis;
+  text-orientation: mixed;
   white-space: nowrap;
+  writing-mode: vertical-rl;
 }
