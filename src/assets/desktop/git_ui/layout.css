@@ -333,19 +333,33 @@
   background: transparent;
   border: 0;
   color: inherit;
+  display: grid;
+  font: inherit;
+  gap: 6px;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  min-width: 0;
+  padding: 0;
+  text-align: left;
+  width: 100%;
+}
+.git-ui-section-collapse {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: inherit;
   cursor: pointer;
   display: grid;
   font: inherit;
   gap: 0;
-  grid-template-columns: 16px minmax(0, 1fr) auto;
+  grid-template-columns: 16px minmax(0, 1fr);
   min-width: 0;
   padding: 0;
   text-align: left;
 }
-.git-ui-section-toggle:hover {
+.git-ui-section-collapse:hover {
   color: var(--accent-1, var(--accent));
 }
-.git-ui-section-toggle strong {
+.git-ui-section-collapse strong {
   font-size: 12px;
   min-width: 0;
   overflow: hidden;
@@ -366,12 +380,12 @@
   color: var(--muted);
   cursor: pointer;
   font: inherit;
-  font-size: 13px;
-  font-weight: 900;
+  font-size: 11px;
+  font-weight: 700;
   height: 22px;
   line-height: 18px;
-  padding: 0;
-  width: 24px;
+  padding: 0 8px;
+  white-space: nowrap;
 }
 .git-ui-section-action:hover,
 .git-ui-section-action:focus {
