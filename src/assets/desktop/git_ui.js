@@ -1219,7 +1219,9 @@
     const rawLabels = labelsFromRefs.length ? labelsFromRefs : detail.labels;
     const labelText = rawLabels.map(shortLogRefLabel).filter(Boolean).join(" · ");
     const labelTitle = rawLabels.join(", ");
-    const labels = labelText ? `<span class="git-ui-log-branch-shadow" title="${esc(labelTitle)}">${esc(labelText)}</span>` : "";
+    const laneIdx = graph.indexOf("*");
+    const laneStyle = laneIdx >= 0 ? ` style="--lane:${laneColor(laneIdx)}"` : "";
+    const labels = labelText ? `<span class="git-ui-log-branch-shadow"${laneStyle} title="${esc(labelTitle)}">${esc(labelText)}</span>` : "";
     const selected = hash && (((active() || {}).selectedLogCommits || []).includes(hash));
     const click = hash ? ` onclick="HerdrGitUi.selectLogCommit(event,'${arg(hash)}')"` : "";
     const cls = hash ? (selected ? " selected" : "") : " graph-only";
@@ -1296,7 +1298,7 @@
   }
 
   function laneColor(index) {
-    return ["var(--accent)", "var(--muted)", "var(--border2)", "var(--fg)", "var(--border)", "var(--panel2)"][index % 6];
+    return ["var(--git-lane-1)", "var(--git-lane-2)", "var(--git-lane-3)", "var(--git-lane-4)", "var(--git-lane-5)", "var(--git-lane-6)", "var(--git-lane-7)", "var(--git-lane-8)"][index % 8];
   }
 
   async function renderStash(version) {
