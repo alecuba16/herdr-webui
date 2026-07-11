@@ -492,6 +492,8 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
 .herdr-editor {
   border: 1px solid var(--border);
   border-radius: 12px;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
   overflow: hidden;
 }
 .mobile-git {
@@ -597,6 +599,46 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
   padding: 8px 10px;
 }
 .herdr-editor-head span {
+  color: var(--muted);
+  font-size: 12px;
+}
+.herdr-editor-find {
+  align-items: center;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 7px;
+}
+.herdr-editor-find input[type="text"],
+.herdr-editor-find input:not([type]) {
+  background: var(--bg);
+  border: 1px solid var(--border2);
+  border-radius: 9px;
+  color: var(--fg);
+  font: 12px var(--font);
+  min-width: 90px;
+  padding: 6px 8px;
+}
+.herdr-editor-find button {
+  background: var(--panel2);
+  border: 1px solid var(--border2);
+  border-radius: 9px;
+  color: var(--fg);
+  font-size: 12px;
+  padding: 6px 8px;
+}
+.herdr-editor-find button:disabled,
+.herdr-editor-find input:disabled { opacity: 0.55; }
+.herdr-editor-find label {
+  align-items: center;
+  color: var(--muted);
+  display: inline-flex;
+  font-size: 12px;
+  gap: 3px;
+}
+.herdr-editor-find-status {
   color: var(--muted);
   font-size: 12px;
 }

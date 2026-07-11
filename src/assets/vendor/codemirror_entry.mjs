@@ -274,6 +274,19 @@ function create(options) {
     setValue(value) {
       view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: String(value == null ? "" : value) } });
     },
+    selectRange(from, to) {
+      const start = Math.max(0, Math.min(view.state.doc.length, Number(from) || 0));
+      const end = Math.max(start, Math.min(view.state.doc.length, Number(to) || start));
+      view.dispatch({ selection: { anchor: start, head: end }, effects: EditorView.scrollIntoView(start, { y: "center" }) });
+      view.focus();
+    },
+    replaceRange(from, to, value) {
+      const start = Math.max(0, Math.min(view.state.doc.length, Number(from) || 0));
+      const end = Math.max(start, Math.min(view.state.doc.length, Number(to) || start));
+      const insert = String(value == null ? "" : value);
+      view.dispatch({ changes: { from: start, to: end, insert }, selection: { anchor: start + insert.length } });
+      view.focus();
+    },
     destroy() { view.destroy(); },
   };
 }

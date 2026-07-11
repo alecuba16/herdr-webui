@@ -1500,6 +1500,7 @@
         path: view.file || view.sideEditor.path || "",
         content: textarea.value,
         readonly: mount.dataset.readonly === "true",
+        hideFind: true,
         onChange: side === "old" ? null : function (value) { textarea.value = value; },
       });
     });
