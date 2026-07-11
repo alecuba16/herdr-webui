@@ -1509,6 +1509,29 @@ mod tests {
     }
 
     #[test]
+    fn content_search_settings_clamp_defaults_and_bounds() {
+        assert_eq!(
+            content_search_context_lines(None),
+            DEFAULT_CONTENT_CONTEXT_LINES
+        );
+        assert_eq!(
+            content_search_context_lines(Some(MAX_CONTENT_CONTEXT_LINES + 10)),
+            MAX_CONTENT_CONTEXT_LINES
+        );
+        assert_eq!(content_search_context_lines(Some(0)), 0);
+
+        assert_eq!(
+            content_search_matches_per_file(None),
+            DEFAULT_CONTENT_MATCHES_PER_FILE
+        );
+        assert_eq!(content_search_matches_per_file(Some(0)), 1);
+        assert_eq!(
+            content_search_matches_per_file(Some(MAX_CONTENT_MATCHES_PER_FILE + 10)),
+            MAX_CONTENT_MATCHES_PER_FILE
+        );
+    }
+
+    #[test]
     fn replace_line_range_replaces_inclusive_range() {
         let next = replace_line_range("a\nb\nc\nd", 2, 3, "B\nC").unwrap();
         assert_eq!(next, "a\nB\nC\nd");
