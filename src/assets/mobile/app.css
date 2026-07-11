@@ -22,6 +22,20 @@ body {
   --git-changed-color: #89b4fa;
   --git-conflict-color: #fab387;
   --accent-fg: #11111b;
+  --editor-syntax-keyword: #cba6f7;
+  --editor-syntax-constant: #f38ba8;
+  --editor-syntax-number: #fab387;
+  --editor-syntax-string: #a6e3a1;
+  --editor-syntax-regexp: #eba0ac;
+  --editor-syntax-comment: #bac2de;
+  --editor-syntax-variable: #cdd6f4;
+  --editor-syntax-function: #89b4fa;
+  --editor-syntax-type: #f9e2af;
+  --editor-syntax-property: #89dceb;
+  --editor-syntax-tag: #f5c2e7;
+  --editor-syntax-operator: #cdd6f4;
+  --editor-syntax-meta: #b4befe;
+  --editor-syntax-invalid: #f38ba8;
   --mono-font: "Herdr JetBrainsMono Nerd Font Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   margin: 0;
   background: var(--bg);
@@ -47,6 +61,20 @@ body.light {
   --git-changed-color: #3a6ee8;
   --git-conflict-color: #c45c00;
   --accent-fg: #eff1f5;
+  --editor-syntax-keyword: #8839ef;
+  --editor-syntax-constant: #d20f39;
+  --editor-syntax-number: #fe640b;
+  --editor-syntax-string: #40a02b;
+  --editor-syntax-regexp: #e64553;
+  --editor-syntax-comment: #6c6f85;
+  --editor-syntax-variable: #4c4f69;
+  --editor-syntax-function: #1e66f5;
+  --editor-syntax-type: #df8e1d;
+  --editor-syntax-property: #04a5e5;
+  --editor-syntax-tag: #ea76cb;
+  --editor-syntax-operator: #4c4f69;
+  --editor-syntax-meta: #7287fd;
+  --editor-syntax-invalid: #d20f39;
 }
 #app {
   height: var(--herdr-mobile-viewport-height);
@@ -193,9 +221,9 @@ body.light {
   margin: 6px 2px 0;
 }
 .herdr-tree-hit {
-  background: #f9e2af;
+  background: var(--herdr-search-hit-bg);
   border-radius: 3px;
-  color: #11111b;
+  color: var(--herdr-search-hit-fg);
   padding: 0 2px;
 }
 @keyframes mobile-spin {
@@ -547,6 +575,13 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
 .herdr-editor-mount {
   min-height: 55vh;
 }
+.herdr-editor-loading {
+  background: var(--herdr-content-panel-bg);
+  color: var(--muted);
+  font: 12px/1.5 var(--mono-font);
+  min-height: 55vh;
+  padding: 12px;
+}
 .herdr-editor-head {
   align-items: center;
   background: var(--panel);
@@ -562,7 +597,7 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
 }
 .herdr-editor-code,
 .herdr-editor textarea {
-  background: var(--editor-bg, var(--panel2));
+  background: var(--herdr-content-panel-bg);
   color: var(--fg);
   font: 12px/1.5 var(--mono-font);
   margin: 0;
@@ -570,6 +605,37 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
   overflow: auto;
   padding: 12px;
   white-space: pre;
+}
+.herdr-editor-numbered-code {
+  background: var(--herdr-content-panel-bg);
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  min-height: 55vh;
+  min-width: 0;
+  overflow: auto;
+}
+.herdr-editor-numbered-code .herdr-editor-code,
+.herdr-editor-lines {
+  min-height: 55vh;
+  overflow: visible;
+}
+.herdr-editor-numbered-code .herdr-editor-code {
+  padding-left: 10px;
+}
+.herdr-editor-lines {
+  background: var(--herdr-content-panel-bg);
+  border-right: 1px solid var(--border);
+  color: var(--muted);
+  font: 12px/1.5 var(--mono-font);
+  margin: 0;
+  padding: 12px 8px;
+  text-align: right;
+  user-select: none;
+  white-space: pre;
+}
+.herdr-editor-lines span {
+  display: block;
+  min-width: 2.5ch;
 }
 .cm-herdr-blame-gutter .cm-gutterElement {
   color: var(--muted);
@@ -845,4 +911,161 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
   font-weight: 800;
   letter-spacing: -0.5px;
   margin-top: -1px;
+}
+.mobile-file-filter-text {
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mobile-file-filter input {
+  background: transparent;
+  border: 0;
+  color: var(--fg);
+  font: inherit;
+  min-width: 0;
+  outline: 0;
+  width: 100%;
+}
+.mobile-files:focus {
+  outline: 2px solid color-mix(in srgb, var(--accent), transparent 55%);
+  outline-offset: 2px;
+}
+.mobile-content-search-pane {
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 10px;
+}
+.mobile-content-search-head {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+.herdr-content-search {
+  display: grid;
+  gap: 10px;
+}
+.herdr-content-search-head,
+.herdr-content-search-tools,
+.herdr-content-search-file-actions,
+.herdr-content-search-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.herdr-content-search-head .file-browser-filter {
+  flex: 1 1 180px;
+}
+.herdr-content-search-file {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  overflow: hidden;
+}
+.herdr-content-search-file-head {
+  align-items: center;
+  background: var(--panel);
+  border: 0;
+  color: var(--fg);
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  padding: 10px;
+  text-align: left;
+  width: 100%;
+}
+.herdr-content-search-file-head strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.herdr-content-search-file-actions,
+.herdr-content-search-matches {
+  border-top: 1px solid var(--border);
+  display: grid;
+  gap: 8px;
+  padding: 8px;
+}
+.herdr-content-search-match {
+  border: 1px solid var(--border2);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.herdr-content-search-match header {
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+}
+.herdr-content-search-preview {
+  background: var(--herdr-content-panel-bg);
+  font: 12px/1.5 var(--mono-font);
+  overflow: auto;
+  padding: 8px 0;
+}
+.herdr-content-search-line {
+  display: grid;
+  grid-template-columns: 4ch minmax(0, 1fr);
+  min-width: max-content;
+}
+.herdr-content-search-line span {
+  color: var(--muted);
+  padding: 0 8px;
+  text-align: right;
+}
+.herdr-content-search-line code { white-space: pre; }
+
+.mobile-search-sheet {
+  background: color-mix(in srgb, var(--bg), transparent 12%);
+  inset: 0;
+  padding: 14px;
+  position: fixed;
+  z-index: 60;
+}
+.mobile-search-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  max-height: calc(var(--herdr-mobile-viewport-height, 100vh) - 28px);
+  overflow: hidden;
+}
+.mobile-search-head {
+  border-bottom: 1px solid var(--border);
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 10px;
+}
+.mobile-search-head input {
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--fg);
+  padding: 9px 10px;
+}
+.mobile-search-results {
+  overflow: auto;
+  padding: 10px;
+}
+.mobile-search-section {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  margin-bottom: 10px;
+  padding: 8px;
+}
+.mobile-search-section h3 {
+  font-size: 13px;
+  margin: 0 0 8px;
+}
+.mobile-search-section .herdr-file-tree {
+  margin: 0;
 }

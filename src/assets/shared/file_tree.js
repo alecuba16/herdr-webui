@@ -17,9 +17,18 @@
     return parts[parts.length - 1] || String(path || "");
   }
 
-  function icon(kind) {
-    const safe = kind === "dir" ? "folder" : kind === "up" ? "folder-up" : kind === "open" ? "chevron-down" : kind === "closed" ? "chevron-right" : "file";
-    return `<span class="herdr-tree-icon herdr-tree-icon-${safe}" aria-hidden="true"></span>`;
+  function icon(kind, pathOrName) {
+    if (kind === "open" || kind === "closed" || kind === "up") {
+      const safe = kind === "open" ? "chevron-down" : kind === "closed" ? "chevron-right" : "folder-up";
+      return `<span class="herdr-tree-icon herdr-tree-icon-${safe}" aria-hidden="true"></span>`;
+    }
+    if (kind === "dir") {
+      return `<span class="herdr-tree-icon herdr-tree-icon-folder" aria-hidden="true"></span>`;
+    }
+    const icons = window.HerdrFileIcons;
+    const fileType = icons && icons.fileType ? icons.fileType(pathOrName) : null;
+    if (fileType) return `<span class="herdr-tree-icon herdr-tree-icon-filetype herdr-tree-icon-filetype-${fileType.type}" data-glyph="${esc(fileType.glyph)}" aria-hidden="true"></span>`;
+    return `<span class="herdr-tree-icon herdr-tree-icon-file" aria-hidden="true"></span>`;
   }
 
   function indentStyle(level, opts) {
@@ -88,7 +97,7 @@
         const keydown = opts.activateMethod ? ` onkeydown="${callback}.${opts.activateMethod}(event)"` : "";
         const dirClass = opts.dirClass ? ` ${opts.dirClass}` : "";
         const name = renderCompactDirName(compact.parts, opts, callback);
-        return `<div class="herdr-tree-row dir${dirClass}" role="treeitem" tabindex="0" aria-expanded="${collapsed ? "false" : "true"}" style="${indentStyle(level, opts)}" onclick="${callback}.${opts.toggleMethod || "toggle"}('${arg(dirPath)}')"${keydown}><span class="herdr-tree-caret">${icon(collapsed ? "closed" : "open")}</span><span class="herdr-tree-kind">${icon("dir")}</span><span class="herdr-tree-name">${name}</span></div>${collapsed ? "" : renderPathNode(compact.child, dirPath, opts, level + 1)}`;
+        return `<div class="herdr-tree-row dir${dirClass}" role="treeitem" tabindex="0" aria-expanded="${collapsed ? "false" : "true"}" style="${indentStyle(level, opts)}" onclick="${callback}.${opts.toggleMethod || "toggle"}('${arg(dirPath)}')"${keydown}><span class="herdr-tree-caret">${icon(collapsed ? "closed" : "open")}</span><span class="herdr-tree-kind">${icon("dir", dirPath)}</span><span class="herdr-tree-name">${name}</span></div>${collapsed ? "" : renderPathNode(compact.child, dirPath, opts, level + 1)}`;
       }
       const selected = opts.selectedPath === entry.path && (!opts.selectedKind || opts.selectedKind === opts.kind);
       const meta = typeof opts.metaForPath === "function" ? opts.metaForPath(entry.path, opts.kind) : "";
@@ -97,7 +106,7 @@
       const context = opts.contextMethod ? ` oncontextmenu="return ${callback}.${opts.contextMethod}(event,'${arg(entry.path)}'${kindArg})"` : "";
       const data = opts.dataPrefix ? ` data-${opts.dataPrefix}-path="${esc(entry.path)}" data-${opts.dataPrefix}-kind="${esc(opts.kind || "")}"` : "";
       const rowClass = opts.rowClass ? ` ${opts.rowClass}` : "";
-      return `<div class="herdr-tree-row file${rowClass}${selected ? " active" : ""}${status ? ` git-${status}` : ""}" role="treeitem" tabindex="0"${data} style="${indentStyle(level, opts)}" title="${esc(entry.path)}" onclick="${callback}.${opts.selectMethod || "select"}('${arg(entry.path)}'${kindArg})"${keydown}${context}><span class="herdr-tree-caret"></span><span class="herdr-tree-kind">${icon("file")}</span><span class="herdr-tree-name">${highlight(entry.name, opts.filterTerm)}</span>${statusBadge(status)}${meta}</div>`;
+      return `<div class="herdr-tree-row file${rowClass}${selected ? " active" : ""}${status ? ` git-${status}` : ""}" role="treeitem" tabindex="0"${data} style="${indentStyle(level, opts)}" title="${esc(entry.path)}" onclick="${callback}.${opts.selectMethod || "select"}('${arg(entry.path)}'${kindArg})"${keydown}${context}><span class="herdr-tree-caret"></span><span class="herdr-tree-kind">${icon("file", entry.path || entry.name)}</span><span class="herdr-tree-name">${highlight(entry.name, opts.filterTerm)}</span>${statusBadge(status)}${meta}</div>`;
     }).join("");
   }
 
@@ -137,7 +146,7 @@
     const action = entry.kind === "up" ? "up" : kind === "dir" ? dirClickMethod : selectMethod;
     const click = action ? ` onclick="${callback}.${action}('${arg(path)}'${kind === "file" && opts.shiftSelectMode ? `,event.shiftKey?'split':''` : ""})"` : "";
     const meta = opts.showMeta && entry.size != null ? `<span class="herdr-tree-meta">${formatBytes(entry.size)}</span>` : "";
-    return `<button class="herdr-tree-row ${kind}${entry.kind === "up" ? " up" : ""}${active}${entry.status ? ` git-${entry.status}` : ""}" role="treeitem" style="${indentStyle(level, opts)}" title="${esc(path)}"${click}${dbl}${context}>${caret}<span class="herdr-tree-kind">${icon(entry.kind === "up" ? "up" : kind)}</span><span class="herdr-tree-name">${highlight(entry.name || basename(path), opts.filterTerm)}</span>${statusBadge(entry.status)}${meta}</button>`;
+    return `<button class="herdr-tree-row ${kind}${entry.kind === "up" ? " up" : ""}${active}${entry.status ? ` git-${entry.status}` : ""}" role="treeitem" style="${indentStyle(level, opts)}" title="${esc(path)}"${click}${dbl}${context}>${caret}<span class="herdr-tree-kind">${icon(entry.kind === "up" ? "up" : kind, path || entry.name)}</span><span class="herdr-tree-name">${highlight(entry.name || basename(path), opts.filterTerm)}</span>${statusBadge(entry.status)}${meta}</button>`;
   }
 
   function buildGitEntries(files, status) {
@@ -220,7 +229,7 @@
 
   function searchTreeEntriesByKind(entries, kind, term) {
     const normalized = normalizeSearchKind(kind);
-    if (normalized === "file") return searchTreeEntries(entries).filter((entry) => entry.kind === "file");
+    if (normalized === "file") return searchTreeEntries((entries || []).filter((entry) => entry.kind !== "dir"));
     return searchTreeEntries((entries || []).filter((entry) => entry.kind === "dir" && entryMatchesTerm(entry, term)));
   }
 
@@ -261,25 +270,10 @@
 
   function applyGitStatus(entries, gitStatus) {
     if (!gitStatus || typeof gitStatus !== "object") return entries;
-    const changedDirs = new Set();
-    for (const file of Object.keys(gitStatus)) {
-      const parts = file.split("/").filter(Boolean);
-      for (let i = 1; i < parts.length; i++) {
-        changedDirs.add(parts.slice(0, i).join("/"));
-      }
-    }
     return (entries || []).map((entry) => {
       const next = Object.assign({}, entry);
       const path = String(entry.path || entry.name || "");
-      if (entry.kind === "dir") {
-        if (changedDirs.has(path)) {
-          next.status = "changed";
-        }
-      } else {
-        if (gitStatus[path]) {
-          next.status = gitStatus[path];
-        }
-      }
+      if (gitStatus[path]) next.status = gitStatus[path];
       return next;
     });
   }

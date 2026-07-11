@@ -852,7 +852,22 @@ fn app_router(state: WebState) -> Router {
         .route("/assets/desktop/shortcuts.css", get(desktop_shortcuts_css))
         .route("/assets/app-boot.js", get(app_boot_js))
         .route("/assets/shared/core.js", get(shared_core_js))
+        .route("/assets/shared/file-icons.js", get(shared_file_icons_js))
+        .route("/assets/shared/file-icons.css", get(shared_file_icons_css))
+        .route("/assets/shared/colors.css", get(shared_colors_css))
+        .route(
+            "/assets/shared/content-search.css",
+            get(shared_content_search_css),
+        )
         .route("/assets/shared/file-tree.js", get(shared_file_tree_js))
+        .route(
+            "/assets/shared/file-content-search.js",
+            get(shared_file_content_search_js),
+        )
+        .route(
+            "/assets/shared/workspace-search.js",
+            get(shared_workspace_search_js),
+        )
         .route("/assets/vendor/codemirror.js", get(vendor_codemirror_js))
         .route("/assets/shared/editor.js", get(shared_editor_js))
         .route(
@@ -4174,6 +4189,51 @@ mod tests {
             )
             .await
             .unwrap();
+        let file_icons_js = app
+            .clone()
+            .oneshot(
+                request(Method::GET, "/assets/shared/file-icons.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let file_icons_css = app
+            .clone()
+            .oneshot(
+                request(Method::GET, "/assets/shared/file-icons.css")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let shared_colors_css = app
+            .clone()
+            .oneshot(
+                request(Method::GET, "/assets/shared/colors.css")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let shared_content_search_css = app
+            .clone()
+            .oneshot(
+                request(Method::GET, "/assets/shared/content-search.css")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let file_content_search_js = app
+            .clone()
+            .oneshot(
+                request(Method::GET, "/assets/shared/file-content-search.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         let desktop_search_js = app
             .clone()
             .oneshot(
@@ -4306,6 +4366,11 @@ mod tests {
         assert_eq!(app_js.status(), StatusCode::OK);
         assert_eq!(app_boot_js.status(), StatusCode::OK);
         assert_eq!(app_core_js.status(), StatusCode::OK);
+        assert_eq!(file_icons_js.status(), StatusCode::OK);
+        assert_eq!(file_icons_css.status(), StatusCode::OK);
+        assert_eq!(shared_colors_css.status(), StatusCode::OK);
+        assert_eq!(shared_content_search_css.status(), StatusCode::OK);
+        assert_eq!(file_content_search_js.status(), StatusCode::OK);
         assert_eq!(desktop_search_js.status(), StatusCode::OK);
         assert_eq!(app_css.status(), StatusCode::OK);
         assert_eq!(desktop_search_css.status(), StatusCode::OK);
@@ -4338,6 +4403,26 @@ mod tests {
             .unwrap()
             .contains("javascript"));
         assert!(app_core_js.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .contains("javascript"));
+        assert!(file_icons_js.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .contains("javascript"));
+        assert!(file_icons_css.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .contains("text/css"));
+        assert!(shared_colors_css.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .contains("text/css"));
+        assert!(shared_content_search_css.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .contains("text/css"));
+        assert!(file_content_search_js.headers()[header::CONTENT_TYPE]
             .to_str()
             .unwrap()
             .contains("javascript"));
@@ -4420,6 +4505,20 @@ mod tests {
         );
         assert!(
             to_bytes(app_core_js.into_body(), 1024 * 1024)
+                .await
+                .unwrap()
+                .len()
+                > 100
+        );
+        assert!(
+            to_bytes(file_icons_js.into_body(), 1024 * 1024)
+                .await
+                .unwrap()
+                .len()
+                > 100
+        );
+        assert!(
+            to_bytes(file_icons_css.into_body(), 1024 * 1024)
                 .await
                 .unwrap()
                 .len()

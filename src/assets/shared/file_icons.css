@@ -1,0 +1,16 @@
+.herdr-tree-icon-filetype {
+  align-items: center;
+  background: color-mix(in srgb, currentColor, transparent 88%);
+  border-radius: 4px;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor, transparent 70%);
+  color: currentColor;
+  display: inline-flex;
+  font: 800 6.5px/1 var(--mono-font);
+  justify-content: center;
+  letter-spacing: -0.08em;
+  mask-image: none;
+  opacity: 0.88;
+  overflow: hidden;
+  text-transform: uppercase;
+}
+.herdr-tree-icon-filetype::after { content: attr(data-glyph); }

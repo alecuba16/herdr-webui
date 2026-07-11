@@ -295,6 +295,51 @@ el("optFileBrowserGitStatus").onchange = () => {
   options.fileBrowserGitStatus = el("optFileBrowserGitStatus").checked;
   saveOptions();
 };
+el("optFileBrowserLineNumbers").onchange = () => {
+  options.fileBrowserLineNumbers = el("optFileBrowserLineNumbers").checked;
+  saveOptions();
+};
+for (const [id, key] of [["optSearchWorkspacesEnabled", "searchWorkspacesEnabled"], ["optSearchFilesEnabled", "searchFilesEnabled"], ["optSearchFoldersEnabled", "searchFoldersEnabled"], ["optSearchContentEnabled", "searchContentEnabled"]]) {
+  const node = el(id);
+  if (node) node.onchange = () => {
+    options[key] = node.checked;
+    saveOptions();
+  };
+}
+const searchSectionOrder = el("optSearchSectionOrder");
+if (searchSectionOrder) searchSectionOrder.oninput = () => {
+  options.searchSectionOrder = searchSectionOrder.value.trim();
+  saveOptions();
+};
+el("optFileBrowserPathSearch").onchange = () => {
+  options.fileBrowserPathSearch = el("optFileBrowserPathSearch").checked;
+  saveOptions();
+};
+el("optFileBrowserSearchPageSize").oninput = () => {
+  options.fileBrowserSearchPageSize = Math.max(10, Math.min(500, Number(el("optFileBrowserSearchPageSize").value) || 100));
+  saveOptions();
+};
+el("optFileContentSearchMinChars").oninput = () => {
+  options.fileContentSearchMinChars = Math.max(1, Math.min(20, Number(el("optFileContentSearchMinChars").value) || 3));
+  saveOptions();
+};
+el("optFileContentSearchPageSize").oninput = () => {
+  options.fileContentSearchPageSize = Math.max(10, Math.min(500, Number(el("optFileContentSearchPageSize").value) || 50));
+  saveOptions();
+};
+el("optFileContentSearchContextLines").oninput = () => {
+  const value = Number(el("optFileContentSearchContextLines").value);
+  options.fileContentSearchContextLines = Math.max(0, Math.min(20, Number.isFinite(value) ? value : 2));
+  saveOptions();
+};
+el("optFileContentSearchAutoCollapseFiles").oninput = () => {
+  options.fileContentSearchAutoCollapseFiles = Math.max(0, Math.min(200, Number(el("optFileContentSearchAutoCollapseFiles").value) || 0));
+  saveOptions();
+};
+el("optFileContentSearchMatchesPerFile").oninput = () => {
+  options.fileContentSearchMatchesPerFile = Math.max(1, Math.min(50, Number(el("optFileContentSearchMatchesPerFile").value) || 5));
+  saveOptions();
+};
 el("optWorktreeAutoDiscover").oninput = () => {
   options.worktreeAutoDiscoverSeconds = Math.max(
     0,
