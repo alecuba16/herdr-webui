@@ -107,9 +107,11 @@ describe("app bundle load", () => {
   let gitUiSource;
   let gitSettingsSource;
   let desktopTerminalSource;
+  let appBootSource;
 
   beforeEach(() => {
     desktopTerminalSource = readFileSync(new URL("./desktop/app_js/terminal.js", import.meta.url), "utf8");
+    appBootSource = readFileSync(new URL("./app_boot.js", import.meta.url), "utf8");
     const desktopAppSource = [
       "./desktop/app_js/core.js",
       "./desktop/app_js/render.js",
@@ -253,6 +255,7 @@ describe("app bundle load", () => {
     match(html, /Keyboard shortcuts/);
     match(html, /Workspaces show open roots\/worktrees; agents list status/);
     match(html, /Wheel, touch, and PageUp\/PageDown scroll the Herdr backend first, with xterm local scroll as fallback/);
+    match(html, /file\/folder rows use Zed-like, license-safe type icons/);
     match(html, /keeps parent folders visible so result paths stay clear/);
     match(html, /same CodeMirror editor surface as edit mode but stay read-only until Edit is pressed/);
     match(html, /line numbers show by default/);
@@ -294,6 +297,16 @@ describe("app bundle load", () => {
   it("defines file explorer and Git file filters", () => {
     match(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), /q=\$\{encodeURIComponent\(target\.filter\.trim\(\)\)\}/);
     match(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), /setTimeout\(\(\) => \{/);
+    const fileTreeSource = readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8");
+    const fileIconSource = readFileSync(new URL("./shared/file_icons.js", import.meta.url), "utf8");
+    const fileIconCss = readFileSync(new URL("./shared/file_icons.css", import.meta.url), "utf8");
+    match(fileIconSource, /FILE_ICON_BY_EXT/);
+    match(fileIconSource, /FILE_ICON_BY_NAME/);
+    match(fileIconSource, /FOLDER_ICON_BY_NAME/);
+    match(fileTreeSource, /HerdrFileIcons/);
+    match(fileIconCss, /herdr-tree-icon-filetype-react/);
+    match(appBootSource, /\/assets\/shared\/file-icons\.js/);
+    match(appBootSource, /\/assets\/shared\/file-icons\.css/);
     const editorSource = readFileSync(new URL("./vendor/codemirror_entry.mjs", import.meta.url), "utf8");
     match(editorSource, /foldGutter/);
     match(editorSource, /foldKeymap/);

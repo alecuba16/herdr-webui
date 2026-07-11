@@ -324,8 +324,10 @@ describe("buildWorktreeCreateBody", () => {
 describe("HerdrFileTree search helpers", () => {
   function loadTree() {
     const context = { window: {} };
-    const source = readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8");
-    vm.runInNewContext(source, context);
+    const iconSource = readFileSync(new URL("./shared/file_icons.js", import.meta.url), "utf8");
+    const treeSource = readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8");
+    vm.runInNewContext(iconSource, context);
+    vm.runInNewContext(treeSource, context);
     return context.window.HerdrFileTree;
   }
 
@@ -365,6 +367,21 @@ describe("HerdrFileTree search helpers", () => {
 
     assert.equal(rows[0].status, "deleted");
     assert.equal(rows[1].status, "modified");
+  });
+
+  it("renders folder and file type icons from names and extensions", () => {
+    const tree = loadTree();
+    const html = tree.renderEntries([
+      { kind: "dir", name: "src", path: "src", expanded: false },
+      { kind: "file", name: "app.tsx", path: "src/app.tsx" },
+      { kind: "file", name: "Cargo.toml", path: "Cargo.toml" },
+      { kind: "file", name: "unknown", path: "unknown" },
+    ], { callback: "Tree" });
+
+    assert.match(html, /herdr-tree-icon-folder-src/);
+    assert.match(html, /herdr-tree-icon-filetype-react" data-glyph="TSX"/);
+    assert.match(html, /herdr-tree-icon-filetype-rust" data-glyph="RS"/);
+    assert.match(html, /herdr-tree-icon-file"/);
   });
 });
 
