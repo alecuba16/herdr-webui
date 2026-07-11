@@ -61,10 +61,12 @@ File browser:
 - Files open in the active preview pane; Shift-click or context `Open in split` opens another pane. Dirty edited files ask before closing. The file explorer keeps an in-memory state per open workspace/worktree, including search text/scope, selected file, split panes, and unsaved edit drafts while switching panels. Closing that workspace/worktree forgets the cached state.
 - Desktop and mobile Files include debounced backend search through `/api/file-browser/tree?q=&offset=&limit=`. Search is bounded, paginated, highlights matches, shows parent folder context as an expanded tree, and preserves scroll/focus while results render.
 - Search can be scoped to files or folders from the search pill. Files are the default; `Alt+F` switches to files and `Alt+D` switches to folders. Folder search uses breadth-first traversal so nearby matching folders are returned before deep unrelated trees exhaust the search visit cap.
-- File search is attached to the file list. Focusing the list and typing starts filtering, moves focus to the filter input, and keeps typing uninterrupted across loading, Backspace, and clearing.
-- File browser Git status colors are enabled by default and can be toggled in Settings under `File browser git status colors`. When enabled, the file tree queries Git status for the current directory and colors file entries: yellow for modified, green for new and untracked, red for deleted, and orange for conflicts. Directories containing any changed files are marked blue, propagating up to all parent directories so changed subtrees are visible from any level.
+- File search is attached to the file list. Focusing the list and typing starts filtering with no always-visible input box; Backspace edits the query, Escape clears it, and the inline pill exposes file/folder scope switching.
+- The content Search button opens backend file-content search. Results are grouped by file, can be expanded/collapsed globally or per file, show highlighted line matches with configurable context, and lazy-load full per-file matches only when needed. Each match can open the full file or enable an editor-style snippet for safe hash-guarded save.
+- File browser Git status colors are enabled by default and can be toggled in Settings under `File browser git status colors`. When enabled, the backend colors file and directory entries by propagated Git status: red for deleted, yellow for modified/conflicted, and green for new/untracked, with priority red > yellow > green for parent folders.
 - The directory picker (Browse buttons in Git UI) includes the same debounced search and always-visible `...` go-up entry as the file browser. Go-up transitions from home (`~`) to filesystem root (`/`) when at the top of the home directory.
-- File tree indentation is configurable with `Tree indentation` and shared with Git file trees.
+
+- File tree indentation is configurable with `Tree indentation` and shared with Git file trees. Content search defaults are configurable with context lines, auto-collapse threshold, and initial matches per file.
 
 Git UI:
 

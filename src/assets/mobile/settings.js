@@ -12,11 +12,42 @@
       const notifications = browserNotificationsEnabled();
       const depth = fileBrowserDepthValue();
       const lineNumbers = fileBrowserLineNumbersEnabled();
+      const contextLines = contentSearchContextLinesValue();
+      const autoCollapse = contentSearchAutoCollapseFilesValue();
+      const matchesPerFile = contentSearchMatchesPerFileValue();
       const worktreeDirectory = worktreeDefaultDirectoryValue();
       const explorationDirectory = explorationDefaultDirectoryValue();
       const volume = notificationVolumeValue();
       const links = terminalLinksEnabled();
-      return `<section class="mobile-section mobile-form"><h2>Settings</h2><div class="mobile-settings-group"><h3>Appearance</h3><label><span>Theme</span><select onchange="HerdrMobile.setThemeMode(this.value)"><option value="auto" ${theme === "auto" ? "selected" : ""}>Auto</option><option value="dark" ${theme === "dark" ? "selected" : ""}>Dark</option><option value="light" ${theme === "light" ? "selected" : ""}>Light</option></select></label></div><div class="mobile-settings-group"><h3>Layout</h3><label><span>Layout mode</span><select onchange="HerdrMobile.setLayoutPreference(this.value)"><option value="auto" ${layout === "auto" ? "selected" : ""}>Auto</option><option value="mobile" ${layout === "mobile" ? "selected" : ""}>Mobile</option><option value="desktop" ${layout === "desktop" ? "selected" : ""}>Desktop</option></select><small>Auto uses viewport width, not user agent.</small></label></div><div class="mobile-settings-group"><h3>Files</h3><label><span>Browser depth</span><input type="number" min="0" max="8" step="1" value="${depth}" onchange="HerdrMobile.setFileBrowserDepth(this.value)"></label><small>0 shows current folder only. 3 expands three folder levels.</small><label><input type="checkbox" ${lineNumbers ? "checked" : ""} onchange="HerdrMobile.setFileBrowserLineNumbers(this.checked)"><span>Line numbers</span><small>Show line numbers when previewing text files.</small></label></div><div class="mobile-settings-group"><h3>Workspaces</h3><label><span>Worktree default directory</span><input placeholder="../worktrees" value="${escapeHtml(worktreeDirectory)}" onchange="HerdrMobile.setWorktreeDefaultDirectory(this.value)"></label><small>Base for generated worktree checkout paths.</small><label><span>Exploration default directory</span><input placeholder="~/Documents/code" value="${escapeHtml(explorationDirectory)}" onchange="HerdrMobile.setExplorationDefaultDirectory(this.value)"></label><small>Prefills worktree discovery paths.</small></div><div class="mobile-settings-group"><h3>Alerts</h3><label><input type="checkbox" ${notifications ? "checked" : ""} onchange="HerdrMobile.setBrowserNotifications(this.checked)"><span>Browser notifications</span><small>Show system notifications when an agent is blocked or done.</small></label><label><span>Notification volume (${volume}%)</span><input type="range" min="0" max="100" step="1" value="${volume}" onchange="HerdrMobile.setNotificationVolume(this.value)"></label><small>Controls the local attention tone volume.</small></div><div class="mobile-settings-group"><h3>Terminal</h3><label><span>Terminal font</span><input placeholder="JetBrainsMono Nerd Font, monospace" value="${escapeHtml(font)}" onchange="HerdrMobile.setTerminalFontFamily(this.value)"></label><label><input type="checkbox" ${links ? "checked" : ""} onchange="HerdrMobile.setTerminalLinks(this.checked)"><span>Terminal links</span><small>Detect http/https URLs and open them when tapped.</small></label><small>Add a Nerd Font family name so icon glyphs render. Leave blank for the default stack.</small></div><div class="mobile-settings-group"><h3>Data</h3><button class="mobile-btn primary mobile-wide" onclick="HerdrMobile.refresh()">Refresh data</button><button class="mobile-btn mobile-wide" onclick="location.reload()">Reload selected layout</button></div>${state.error ? `<div class="mobile-error">${escapeHtml(state.error)}</div>` : ""}</section>`;
+      return `<section class="mobile-section mobile-form"><h2>Settings</h2>${appearanceSection(theme)}${layoutSection(layout)}${filesSection(depth, lineNumbers, contextLines, autoCollapse, matchesPerFile)}${workspacesSection(worktreeDirectory, explorationDirectory)}${alertsSection(notifications, volume)}${terminalSection(font, links)}${dataSection()}${state.error ? `<div class="mobile-error">${escapeHtml(state.error)}</div>` : ""}</section>`;
+    }
+
+    function appearanceSection(theme) {
+      return `<div class="mobile-settings-group"><h3>Appearance</h3><label><span>Theme</span><select onchange="HerdrMobile.setThemeMode(this.value)"><option value="auto" ${theme === "auto" ? "selected" : ""}>Auto</option><option value="dark" ${theme === "dark" ? "selected" : ""}>Dark</option><option value="light" ${theme === "light" ? "selected" : ""}>Light</option></select></label></div>`;
+    }
+
+    function layoutSection(layout) {
+      return `<div class="mobile-settings-group"><h3>Layout</h3><label><span>Layout mode</span><select onchange="HerdrMobile.setLayoutPreference(this.value)"><option value="auto" ${layout === "auto" ? "selected" : ""}>Auto</option><option value="mobile" ${layout === "mobile" ? "selected" : ""}>Mobile</option><option value="desktop" ${layout === "desktop" ? "selected" : ""}>Desktop</option></select><small>Auto uses viewport width, not user agent.</small></label></div>`;
+    }
+
+    function filesSection(depth, lineNumbers, contextLines, autoCollapse, matchesPerFile) {
+      return `<div class="mobile-settings-group"><h3>Files</h3><label><span>Browser depth</span><input type="number" min="0" max="8" step="1" value="${depth}" onchange="HerdrMobile.setFileBrowserDepth(this.value)"></label><small>0 shows current folder only. 3 expands three folder levels.</small><label><input type="checkbox" ${lineNumbers ? "checked" : ""} onchange="HerdrMobile.setFileBrowserLineNumbers(this.checked)"><span>Line numbers</span><small>Show line numbers when previewing text files.</small></label><label><span>Content search context</span><input type="number" min="0" max="20" step="1" value="${contextLines}" onchange="HerdrMobile.setFileContentSearchContextLines(this.value)"></label><small>Default lines around each content match.</small><label><span>Content search auto-collapse</span><input type="number" min="0" max="200" step="1" value="${autoCollapse}" onchange="HerdrMobile.setFileContentSearchAutoCollapseFiles(this.value)"></label><small>Collapse file groups after this many files. 0 disables auto-collapse.</small><label><span>Matches per file</span><input type="number" min="1" max="50" step="1" value="${matchesPerFile}" onchange="HerdrMobile.setFileContentSearchMatchesPerFile(this.value)"></label><small>Initial matches loaded before lazy expansion.</small></div>`;
+    }
+
+    function workspacesSection(worktreeDirectory, explorationDirectory) {
+      return `<div class="mobile-settings-group"><h3>Workspaces</h3><label><span>Worktree default directory</span><input placeholder="../worktrees" value="${escapeHtml(worktreeDirectory)}" onchange="HerdrMobile.setWorktreeDefaultDirectory(this.value)"></label><small>Base for generated worktree checkout paths.</small><label><span>Exploration default directory</span><input placeholder="~/Documents/code" value="${escapeHtml(explorationDirectory)}" onchange="HerdrMobile.setExplorationDefaultDirectory(this.value)"></label><small>Prefills worktree discovery paths.</small></div>`;
+    }
+
+    function alertsSection(notifications, volume) {
+      return `<div class="mobile-settings-group"><h3>Alerts</h3><label><input type="checkbox" ${notifications ? "checked" : ""} onchange="HerdrMobile.setBrowserNotifications(this.checked)"><span>Browser notifications</span><small>Show system notifications when an agent is blocked or done.</small></label><label><span>Notification volume (${volume}%)</span><input type="range" min="0" max="100" step="1" value="${volume}" onchange="HerdrMobile.setNotificationVolume(this.value)"></label><small>Controls the local attention tone volume.</small></div>`;
+    }
+
+    function terminalSection(font, links) {
+      return `<div class="mobile-settings-group"><h3>Terminal</h3><label><span>Terminal font</span><input placeholder="JetBrainsMono Nerd Font, monospace" value="${escapeHtml(font)}" onchange="HerdrMobile.setTerminalFontFamily(this.value)"></label><label><input type="checkbox" ${links ? "checked" : ""} onchange="HerdrMobile.setTerminalLinks(this.checked)"><span>Terminal links</span><small>Detect http/https URLs and open them when tapped.</small></label><small>Add a Nerd Font family name so icon glyphs render. Leave blank for the default stack.</small></div>`;
+    }
+
+    function dataSection() {
+      return `<div class="mobile-settings-group"><h3>Data</h3><button class="mobile-btn primary mobile-wide" onclick="HerdrMobile.refresh()">Refresh data</button><button class="mobile-btn mobile-wide" onclick="location.reload()">Reload selected layout</button></div>`;
     }
 
     function readOptions() {
@@ -57,6 +88,21 @@
       return readOptions().fileBrowserLineNumbers !== false;
     }
 
+    function contentSearchContextLinesValue() {
+      const value = Number(readOptions().fileContentSearchContextLines);
+      return Math.max(0, Math.min(20, Number.isFinite(value) ? value : 2));
+    }
+
+    function contentSearchAutoCollapseFilesValue() {
+      const value = Number(readOptions().fileContentSearchAutoCollapseFiles);
+      return Math.max(0, Math.min(200, Number.isFinite(value) ? value : 8));
+    }
+
+    function contentSearchMatchesPerFileValue() {
+      const value = Number(readOptions().fileContentSearchMatchesPerFile);
+      return Math.max(1, Math.min(50, Number.isFinite(value) ? value : 5));
+    }
+
     function worktreeDefaultDirectoryValue() {
       return String(readOptions().worktreeDefaultDirectory || "").trim();
     }
@@ -91,10 +137,7 @@
 
     function setNotificationVolume(value) {
       const parsed = readOptions();
-      parsed.notificationVolume = Math.max(
-        0,
-        Math.min(100, Number(value) || 0),
-      ) / 100;
+      parsed.notificationVolume = Math.max(0, Math.min(100, Number(value) || 0)) / 100;
       writeOptions(parsed);
       if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
     }
@@ -113,16 +156,36 @@
       if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
     }
 
+    function setFileContentSearchContextLines(value) {
+      const parsed = readOptions();
+      const parsedValue = Number(value);
+      parsed.fileContentSearchContextLines = Math.max(0, Math.min(20, Number.isFinite(parsedValue) ? parsedValue : 2));
+      writeOptions(parsed);
+      if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
+    }
+
+    function setFileContentSearchAutoCollapseFiles(value) {
+      const parsed = readOptions();
+      const parsedValue = Number(value);
+      parsed.fileContentSearchAutoCollapseFiles = Math.max(0, Math.min(200, Number.isFinite(parsedValue) ? parsedValue : 8));
+      writeOptions(parsed);
+      if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
+    }
+
+    function setFileContentSearchMatchesPerFile(value) {
+      const parsed = readOptions();
+      parsed.fileContentSearchMatchesPerFile = Math.max(1, Math.min(50, Number(value) || 5));
+      writeOptions(parsed);
+      if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
+    }
+
     function setTerminalFontFamily(value) {
       try {
         const parsed = readOptions();
         parsed.terminalFontFamily = String(value || "").trim();
         writeOptions(parsed);
       } catch (_) {}
-      if (
-        globalThis.HerdrMobile &&
-        globalThis.HerdrMobile.applyTerminalFontFamily
-      )
+      if (globalThis.HerdrMobile && globalThis.HerdrMobile.applyTerminalFontFamily)
         globalThis.HerdrMobile.applyTerminalFontFamily();
     }
 
@@ -150,7 +213,22 @@
       if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
     }
 
-    return { render, setBrowserNotifications, setExplorationDefaultDirectory, setFileBrowserDepth, setFileBrowserLineNumbers, setLayoutPreference, setNotificationVolume, setTerminalFontFamily, setTerminalLinks, setThemeMode, setWorktreeDefaultDirectory };
+    return {
+      render,
+      setBrowserNotifications,
+      setExplorationDefaultDirectory,
+      setFileBrowserDepth,
+      setFileBrowserLineNumbers,
+      setFileContentSearchAutoCollapseFiles,
+      setFileContentSearchContextLines,
+      setFileContentSearchMatchesPerFile,
+      setLayoutPreference,
+      setNotificationVolume,
+      setTerminalFontFamily,
+      setTerminalLinks,
+      setThemeMode,
+      setWorktreeDefaultDirectory,
+    };
   }
 
   globalThis.HerdrMobileSettings = { create: createMobileSettings };

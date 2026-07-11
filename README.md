@@ -25,7 +25,7 @@ Open `http://127.0.0.1:8080` or use HTTPS options from the docs.
 
 - Multi-workspace terminal UI with desktop and mobile layouts.
 - Git UI for status, diffs, staging, commits, stash, branches, cleanup, and worktrees.
-- File explorer with backend Git status colors, parent-aware search, type icons, read-only CodeMirror preview, edit mode, line numbers, and folding.
+- File explorer with backend Git status colors, parent-aware tree search, backend content search, type icons, read-only CodeMirror preview, edit mode, line numbers, and folding.
 - Per-workspace file explorer state while workspaces/worktrees are open.
 - Configurable keyboard shortcuts, theme colors, terminal settings, and file browser behavior.
 

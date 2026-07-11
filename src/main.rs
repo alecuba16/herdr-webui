@@ -854,7 +854,12 @@ fn app_router(state: WebState) -> Router {
         .route("/assets/shared/core.js", get(shared_core_js))
         .route("/assets/shared/file-icons.js", get(shared_file_icons_js))
         .route("/assets/shared/file-icons.css", get(shared_file_icons_css))
+        .route("/assets/shared/colors.css", get(shared_colors_css))
         .route("/assets/shared/file-tree.js", get(shared_file_tree_js))
+        .route(
+            "/assets/shared/file-content-search.js",
+            get(shared_file_content_search_js),
+        )
         .route("/assets/vendor/codemirror.js", get(vendor_codemirror_js))
         .route("/assets/shared/editor.js", get(shared_editor_js))
         .route(
@@ -4194,6 +4199,24 @@ mod tests {
             )
             .await
             .unwrap();
+        let shared_colors_css = app
+            .clone()
+            .oneshot(
+                request(Method::GET, "/assets/shared/colors.css")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let file_content_search_js = app
+            .clone()
+            .oneshot(
+                request(Method::GET, "/assets/shared/file-content-search.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         let desktop_search_js = app
             .clone()
             .oneshot(
@@ -4328,6 +4351,8 @@ mod tests {
         assert_eq!(app_core_js.status(), StatusCode::OK);
         assert_eq!(file_icons_js.status(), StatusCode::OK);
         assert_eq!(file_icons_css.status(), StatusCode::OK);
+        assert_eq!(shared_colors_css.status(), StatusCode::OK);
+        assert_eq!(file_content_search_js.status(), StatusCode::OK);
         assert_eq!(desktop_search_js.status(), StatusCode::OK);
         assert_eq!(app_css.status(), StatusCode::OK);
         assert_eq!(desktop_search_css.status(), StatusCode::OK);
@@ -4371,6 +4396,14 @@ mod tests {
             .to_str()
             .unwrap()
             .contains("text/css"));
+        assert!(shared_colors_css.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .contains("text/css"));
+        assert!(file_content_search_js.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .contains("javascript"));
         assert!(desktop_search_js.headers()[header::CONTENT_TYPE]
             .to_str()
             .unwrap()

@@ -3,7 +3,10 @@
     const Tree = globalThis.HerdrFileTree;
     const Editor = globalThis.HerdrEditor;
     const state = deps.state;
-    const local = { path: "", entries: [], selected: "", file: null, error: "", loading: false, filter: "", filterTimer: null, filterOffset: 0, filterDone: true, filterKind: "file", scrollTop: 0, cwdOverride: "", gitStatus: null };
+    function createContentSearchState() {
+      return { active: false, query: "", timer: null, files: [], expanded: {}, snippets: {}, loading: false, error: "", offset: 0, done: true, totalFiles: 0, totalMatches: 0, contextLines: 2, maxMatchesPerFile: 5, autoCollapseFiles: 8 };
+    }
+    const local = { path: "", entries: [], selected: "", file: null, error: "", loading: false, filter: "", filterVisible: false, filterTimer: null, filterOffset: 0, filterDone: true, filterKind: "file", scrollTop: 0, cwdOverride: "", gitStatus: null, contentSearch: createContentSearchState() };
 
     function cwd() {
       return local.cwdOverride || deps.currentWorkspaceCwd() || "";
@@ -21,6 +24,19 @@
         const parsed = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
         return parsed.fileBrowserLineNumbers !== false;
       } catch (_) { return true; }
+    }
+
+    function contentSearchOptions() {
+      try {
+        const parsed = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
+        const contextRaw = Number(parsed.fileContentSearchContextLines);
+        const autoCollapseRaw = Number(parsed.fileContentSearchAutoCollapseFiles);
+        return {
+          contextLines: Math.max(0, Math.min(20, Number.isFinite(contextRaw) ? contextRaw : 2)),
+          autoCollapseFiles: Math.max(0, Math.min(200, Number.isFinite(autoCollapseRaw) ? autoCollapseRaw : 8)),
+          maxMatchesPerFile: Math.max(1, Math.min(50, Number(parsed.fileContentSearchMatchesPerFile) || 5)),
+        };
+      } catch (_) { return { contextLines: 2, autoCollapseFiles: 8, maxMatchesPerFile: 5 }; }
     }
 
     async function load(path, preserveFocus = false) {
@@ -89,6 +105,60 @@
       deps.render();
     }
 
+    function syncContentSearchOptions() {
+      const opts = contentSearchOptions();
+      local.contentSearch.contextLines = opts.contextLines;
+      local.contentSearch.maxMatchesPerFile = opts.maxMatchesPerFile;
+      local.contentSearch.autoCollapseFiles = opts.autoCollapseFiles;
+    }
+
+    async function runContentSearch(append = false) {
+      const root = cwd();
+      const content = local.contentSearch;
+      if (!root || !content.query.trim()) return;
+      syncContentSearchOptions();
+      const offset = append ? content.offset : 0;
+      content.loading = true;
+      content.error = "";
+      deps.render();
+      try {
+        const data = await deps.api(`/api/file-browser/content-search?cwd=${encodeURIComponent(root)}&path=${encodeURIComponent(local.path || "")}&q=${encodeURIComponent(content.query.trim())}&offset=${offset}&limit=50&context_lines=${content.contextLines}&max_matches_per_file=${content.maxMatchesPerFile}`);
+        const files = data.files || [];
+        content.files = append ? content.files.concat(files) : files;
+        content.totalFiles = data.total_files || files.length;
+        content.totalMatches = data.total_matches || 0;
+        content.offset = offset + files.length;
+        content.done = !data.truncated || files.length === 0;
+        if (!append) {
+          content.expanded = {};
+          const collapse = content.autoCollapseFiles > 0 && content.files.length > content.autoCollapseFiles;
+          for (const file of content.files) content.expanded[file.path] = !collapse;
+        }
+      } catch (error) {
+        content.error = error.message || String(error);
+        content.done = true;
+      }
+      content.loading = false;
+      deps.render();
+    }
+
+    function contentFile(path) {
+      return local.contentSearch.files.find((file) => file.path === path) || null;
+    }
+
+    async function loadContentSearchFile(path, extraContext) {
+      const root = cwd();
+      const content = local.contentSearch;
+      if (!root || !content.query.trim()) return;
+      syncContentSearchOptions();
+      const contextLines = Math.max(content.contextLines, Number(extraContext) || content.contextLines);
+      const data = await deps.api(`/api/file-browser/content-search/file?cwd=${encodeURIComponent(root)}&file=${encodeURIComponent(path)}&q=${encodeURIComponent(content.query.trim())}&context_lines=${contextLines}&max_matches_per_file=500`);
+      if (!data.file) return;
+      const index = local.contentSearch.files.findIndex((file) => file.path === path);
+      if (index >= 0) local.contentSearch.files[index] = data.file;
+      local.contentSearch.expanded[path] = true;
+    }
+
     function renderScreen() {
       if (!cwd()) return '<div class="mobile-loading">Select workspace with path first</div>';
       if (!local.entries.length && !local.loading && !local.error) load(local.path || "");
@@ -98,32 +168,146 @@
       const resultCount = local.filter.trim() ? local.entries.length : treeEntries().length;
       const noun = Tree.searchKindNoun(local.filterKind);
       const label = Tree.searchKindLabel(local.filterKind);
-      const count = local.filter.trim() ? `<div class="mobile-help mobile-file-result-count">${resultCount} ${noun} result${resultCount === 1 ? "" : "s"}</div>` : "";
-      return `<section class="mobile-section mobile-files" tabindex="0" onkeydown="HerdrMobile.filesTypeToFilter(event)" onscroll="HerdrMobile.filesScroll(this)"><div class="mobile-files-head"><div><h2>Files</h2><p class="mobile-help">${deps.escapeHtml(local.path || cwd())}</p></div><div class="mobile-actions"><button class="mobile-btn" onclick="HerdrMobile.filesRefresh()">Refresh</button></div></div>${local.error ? `<div class="mobile-error">${deps.escapeHtml(local.error)}</div>` : ""}<div class="mobile-files-list-head"><div class="mobile-file-filter-row"><label class="mobile-file-filter"><span class="mobile-file-search-icon ${local.loading && local.filter.trim() ? "searching" : ""}" aria-hidden="true"></span><input id="mobileFileFilter" value="${deps.escapeHtml(local.filter)}" placeholder="Search ${noun}s (Alt+F/Alt+D)" oninput="HerdrMobile.filesFilter(this.value)"></label><button class="mobile-btn mobile-file-kind-toggle" onclick="HerdrMobile.filesToggleFilterKind()">${label}</button></div>${count}</div>${local.loading ? '<div class="mobile-loading">Loading</div>' : tree}${more}</section>`;
+      const filterVisible = local.filterVisible || local.filter.trim();
+      const count = local.filter.trim() ? `<div class="mobile-help mobile-file-result-count">${resultCount} ${noun} result${resultCount === 1 ? "" : "s"}</div>` : `<div class="mobile-help mobile-file-result-count">Focus tree and type to filter</div>`;
+      const filter = filterVisible ? `<div class="mobile-files-list-head"><div class="mobile-file-filter-row"><span class="mobile-file-filter"><span class="mobile-file-search-icon ${local.loading && local.filter.trim() ? "searching" : ""}" aria-hidden="true"></span><span class="mobile-file-filter-text">${deps.escapeHtml(local.filter || `Type to search ${noun}s`)}</span></span><button class="mobile-btn mobile-file-kind-toggle" onclick="HerdrMobile.filesToggleFilterKind()">${label}</button><button class="mobile-btn mobile-file-kind-toggle" onclick="HerdrMobile.filesClearFilter()">Clear</button></div>${count}</div>` : `<div class="mobile-files-list-head"><div class="mobile-help mobile-file-result-count">Focus tree and type to filter files. Alt+D folders.</div></div>`;
+      const contentSearch = globalThis.HerdrContentSearch;
+      const body = local.contentSearch.active && contentSearch ? contentSearch.render({ query: local.contentSearch.query, files: local.contentSearch.files, expanded: local.contentSearch.expanded, snippets: local.contentSearch.snippets, loading: local.contentSearch.loading, error: local.contentSearch.error, done: local.contentSearch.done, total_files: local.contentSearch.totalFiles, total_matches: local.contentSearch.totalMatches }, { callback: "HerdrMobileFilesContent", inputId: "mobileFileContentSearchInput", idPrefix: "mobileContentSearchSnippet" }) : `${filter}${local.loading ? '<div class="mobile-loading">Loading</div>' : tree}${more}`;
+      setTimeout(mountContentSearchEditors, 0);
+      return `<section class="mobile-section mobile-files" tabindex="0" onfocus="HerdrMobile.filesFocusTree()" onblur="HerdrMobile.filesBlurTree()" onkeydown="HerdrMobile.filesTypeToFilter(event)" onscroll="HerdrMobile.filesScroll(this)"><div class="mobile-files-head"><div><h2>Files</h2><p class="mobile-help">${deps.escapeHtml(local.path || cwd())}</p></div><div class="mobile-actions"><button class="mobile-btn ${local.contentSearch.active ? "active" : ""}" onclick="HerdrMobile.filesToggleContentSearch()">Search</button><button class="mobile-btn" onclick="HerdrMobile.filesRefresh()">Refresh</button></div></div>${local.error ? `<div class="mobile-error">${deps.escapeHtml(local.error)}</div>` : ""}${body}</section>`;
     }
 
     function renderPreservingFocus() {
       const active = document.activeElement;
-      const input = document.getElementById("mobileFileFilter");
-      const section = input && input.closest ? input.closest(".mobile-files") : null;
-      const refocusInput = active && active.id === "mobileFileFilter";
-      const refocusSection = !refocusInput && section && active === section;
-      const selectionStart = refocusInput ? active.selectionStart : null;
-      const selectionEnd = refocusInput ? active.selectionEnd : null;
+      const section = active && active.closest ? active.closest(".mobile-files") : null;
+      const refocusContentSearch = active && active.id === "mobileFileContentSearchInput";
+      const refocusSection = section && active === section;
       deps.render();
       setTimeout(() => {
-        const nextInput = document.getElementById("mobileFileFilter");
-        const nextSection = nextInput && nextInput.closest ? nextInput.closest(".mobile-files") : null;
-        if (refocusInput && nextInput) {
+        const nextInput = document.getElementById("mobileFileContentSearchInput");
+        const nextSection = document.querySelector(".mobile-files");
+        if (refocusContentSearch && nextInput) {
           nextInput.focus({ preventScroll: true });
-          const start = selectionStart == null ? nextInput.value.length : Math.min(selectionStart, nextInput.value.length);
-          const end = selectionEnd == null ? start : Math.min(selectionEnd, nextInput.value.length);
-          nextInput.setSelectionRange(start, end);
         } else if (refocusSection && nextSection) {
           nextSection.focus({ preventScroll: true });
         }
       }, 0);
     }
+
+    function mountContentSearchEditors() {
+      if (!local.contentSearch.active || !globalThis.HerdrContentSearch) return;
+      for (const file of local.contentSearch.files || []) {
+        for (const match of file.matches || []) {
+          const key = globalThis.HerdrContentSearch.snippetKey(file.path, match);
+          const snippet = local.contentSearch.snippets[key];
+          if (!snippet || !snippet.editing) continue;
+          const parent = document.getElementById(`mobileContentSearchSnippet-${globalThis.HerdrContentSearch.hashId(key)}`);
+          if (!parent) continue;
+          Editor.create({ parent, path: file.path, content: snippet.draft == null ? match.content || "" : snippet.draft, readonly: false, hideHeader: true, lineNumbers: lineNumbersEnabled(), onChange(value) { snippet.draft = value; snippet.dirty = value !== (match.content || ""); } });
+        }
+      }
+    }
+
+    globalThis.HerdrMobileFilesContent = {
+      setQuery(value) {
+        local.contentSearch.query = String(value || "");
+        clearTimeout(local.contentSearch.timer);
+        local.contentSearch.timer = setTimeout(() => runContentSearch(false), 350);
+      },
+      inputKeydown(event) {
+        if (!event) return;
+        if (event.key === "Enter") { event.preventDefault(); runContentSearch(false); }
+        if (event.key === "Escape") { event.preventDefault(); this.clear(); }
+        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") event.preventDefault();
+      },
+      run() { runContentSearch(false); },
+      clear() {
+        local.contentSearch.query = "";
+        local.contentSearch.files = [];
+        local.contentSearch.expanded = {};
+        local.contentSearch.snippets = {};
+        local.contentSearch.error = "";
+        local.contentSearch.done = true;
+        local.contentSearch.offset = 0;
+        deps.render();
+      },
+      loadMore() { runContentSearch(true); },
+      toggleFile(encodedPath) {
+        const path = decodeURIComponent(encodedPath);
+        local.contentSearch.expanded[path] = !local.contentSearch.expanded[path];
+        deps.render();
+      },
+      async loadFile(encodedPath) {
+        const path = decodeURIComponent(encodedPath);
+        try {
+          await loadContentSearchFile(path);
+          deps.render();
+        } catch (error) {
+          local.contentSearch.error = error.message || String(error);
+          deps.render();
+        }
+      },
+      openFile(encodedPath) { openFile(decodeURIComponent(encodedPath)); },
+      expandAll() {
+        for (const file of local.contentSearch.files || []) local.contentSearch.expanded[file.path] = true;
+        deps.render();
+      },
+      collapseAll() {
+        for (const file of local.contentSearch.files || []) local.contentSearch.expanded[file.path] = false;
+        deps.render();
+      },
+      editSnippet(encodedPath, encodedMatchId) {
+        const path = decodeURIComponent(encodedPath);
+        const file = contentFile(path);
+        const match = globalThis.HerdrContentSearch && globalThis.HerdrContentSearch.findMatch(file, decodeURIComponent(encodedMatchId));
+        if (!match || !globalThis.HerdrContentSearch) return;
+        const key = globalThis.HerdrContentSearch.snippetKey(path, match);
+        local.contentSearch.snippets[key] = { editing: true, draft: match.content || "", dirty: false };
+        deps.render();
+      },
+      cancelSnippet(encodedPath, encodedMatchId) {
+        const path = decodeURIComponent(encodedPath);
+        const file = contentFile(path);
+        const match = globalThis.HerdrContentSearch && globalThis.HerdrContentSearch.findMatch(file, decodeURIComponent(encodedMatchId));
+        if (!match || !globalThis.HerdrContentSearch) return;
+        delete local.contentSearch.snippets[globalThis.HerdrContentSearch.snippetKey(path, match)];
+        deps.render();
+      },
+      async saveSnippet(encodedPath, encodedMatchId) {
+        const path = decodeURIComponent(encodedPath);
+        const file = contentFile(path);
+        const match = globalThis.HerdrContentSearch && globalThis.HerdrContentSearch.findMatch(file, decodeURIComponent(encodedMatchId));
+        if (!match || !globalThis.HerdrContentSearch) return;
+        const key = globalThis.HerdrContentSearch.snippetKey(path, match);
+        const snippet = local.contentSearch.snippets[key];
+        if (!snippet) return;
+        try {
+          await deps.api("/api/file-browser/content-search/snippet", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ cwd: cwd(), path, expected_hash: file.hash || "", start_line: match.start_line, end_line: match.end_line, content: snippet.draft == null ? "" : snippet.draft }),
+          });
+          delete local.contentSearch.snippets[key];
+          await loadContentSearchFile(path);
+          deps.render();
+        } catch (error) {
+          snippet.error = error.message || String(error);
+          deps.render();
+        }
+      },
+      async expandSnippet(encodedPath, _index, direction) {
+        const path = decodeURIComponent(encodedPath);
+        const extra = local.contentSearch.contextLines + (direction === "up" || direction === "down" ? 2 : 2);
+        try {
+          await loadContentSearchFile(path, extra);
+          local.contentSearch.contextLines = Math.min(20, extra);
+          deps.render();
+        } catch (error) {
+          local.contentSearch.error = error.message || String(error);
+          deps.render();
+        }
+      },
+    };
 
     function treeEntries() {
       if (local.filter.trim()) {
@@ -169,17 +353,20 @@
         local.selected = "";
         local.file = null;
         local.error = "";
-        local.filter = "";
-        local.filterKind = "file";
-        local.cwdOverride = "";
-      },
+          local.filter = "";
+          local.filterVisible = false;
+          local.filterKind = "file";
+          local.cwdOverride = "";
+          local.contentSearch = createContentSearchState();
+        },
       toggle(encodedPath) { load(decodeURIComponent(encodedPath)); },
       select(encodedPath) { openFile(decodeURIComponent(encodedPath)); },
-      setFilterKind(kind) {
-        local.filterKind = Tree.normalizeSearchKind(kind);
-        if (local.filter.trim()) loadFiltered(false);
-        else renderPreservingFocus();
-      },
+        setFilterKind(kind) {
+          local.filterKind = Tree.normalizeSearchKind(kind);
+          local.filterVisible = true;
+          if (local.filter.trim()) loadFiltered(false);
+          else renderPreservingFocus();
+        },
       toggleFilterKind() { this.setFilterKind(Tree.toggleSearchKind(local.filterKind)); },
       up() {
         if (local.path) { load(Tree.parentPath(local.path)); return; }
@@ -195,47 +382,66 @@
         load("");
       },
       refresh() { load(local.path); },
-      filter(value) {
-        local.filter = String(value || "");
-        clearTimeout(local.filterTimer);
-        local.filterTimer = setTimeout(() => {
-          if (local.filter.trim()) loadFiltered(false);
-          else load(local.path, true);
-        }, 500);
-      },
-      loadMore() { loadFiltered(true); },
+        filter(value) {
+          local.filter = String(value || "");
+          local.filterVisible = true;
+          clearTimeout(local.filterTimer);
+          local.filterTimer = setTimeout(() => {
+            if (local.filter.trim()) loadFiltered(false);
+            else load(local.path, true);
+          }, 500);
+        },
+        clearFilter() {
+          local.filter = "";
+          local.filterVisible = false;
+          clearTimeout(local.filterTimer);
+          load(local.path, true);
+        },
+        focusTree() {
+          if (local.contentSearch.active) return;
+          local.filterVisible = true;
+          renderPreservingFocus();
+        },
+        blurTree() {
+          if (local.contentSearch.active || local.filter.trim()) return;
+          local.filterVisible = false;
+          deps.render();
+        },
+        toggleContentSearch() {
+          local.contentSearch.active = !local.contentSearch.active;
+          local.filterVisible = false;
+          syncContentSearchOptions();
+          deps.render();
+        },
+        loadMore() { loadFiltered(true); },
       scroll(node) {
         local.scrollTop = node.scrollTop;
         if (!local.filter.trim() || local.loading || local.filterDone) return;
         if (node.scrollTop + node.clientHeight >= node.scrollHeight - 80) loadFiltered(true);
       },
-      typeToFilter(event) {
-        if (!event || event.metaKey || event.ctrlKey || event.defaultPrevented) return;
-        if (event.altKey && event.key && event.key.toLowerCase() === "f") { event.preventDefault(); this.setFilterKind("file"); return; }
-        if (event.altKey && event.key && event.key.toLowerCase() === "d") { event.preventDefault(); this.setFilterKind("dir"); return; }
-        if (event.altKey || event.defaultPrevented) return;
-        if (event.target && event.target.closest && event.target.closest("input, textarea, select")) return;
-        if (event.key === "Backspace") {
-          event.preventDefault();
-          this.filter(local.filter.slice(0, -1));
-          const input = document.getElementById("mobileFileFilter");
-          if (input) {
-            input.value = local.filter;
-            input.focus({ preventScroll: true });
-            input.setSelectionRange(input.value.length, input.value.length);
+        typeToFilter(event) {
+          if (local.contentSearch.active) return;
+          if (!event || event.metaKey || event.ctrlKey || event.defaultPrevented) return;
+          if (event.altKey && event.key && event.key.toLowerCase() === "f") { event.preventDefault(); this.setFilterKind("file"); return; }
+          if (event.altKey && event.key && event.key.toLowerCase() === "d") { event.preventDefault(); this.setFilterKind("dir"); return; }
+          if (event.altKey || event.defaultPrevented) return;
+          if (event.target && event.target.closest && event.target.closest("input, textarea, select")) return;
+          if (event.key === "Escape") {
+            if (local.filter.trim()) {
+              event.preventDefault();
+              this.clearFilter();
+            }
+            return;
           }
-          return;
-        }
-        if (event.key.length !== 1) return;
-        event.preventDefault();
-        this.filter(local.filter + event.key);
-        const input = document.getElementById("mobileFileFilter");
-        if (input) {
-          input.value = local.filter;
-          input.focus({ preventScroll: true });
-          input.setSelectionRange(input.value.length, input.value.length);
-        }
-      },
+          if (event.key === "Backspace") {
+            event.preventDefault();
+            this.filter(local.filter.slice(0, -1));
+            return;
+          }
+          if (event.key.length !== 1) return;
+          event.preventDefault();
+          this.filter(local.filter + event.key);
+        },
       backToTree() { local.file = null; deps.render(); },
       refreshFile() { if (local.file) openFile(local.file.path); },
     };
