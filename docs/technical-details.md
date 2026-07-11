@@ -135,7 +135,9 @@ Browser-local configurable values:
 - `fileContentSearchContextLines`: default lines above/below each match,
 - `fileContentSearchAutoCollapseFiles`: file-count threshold for collapsed result groups,
 - `fileContentSearchDefaultExpanded`: whether content result file groups expand when results load,
-- `fileContentSearchMatchesPerFile`: initial matches included per file before lazy full-file expansion.
+- `fileContentSearchMatchesPerFile`: initial matches included per file before lazy full-file expansion,
+- `fileContentSearchMatchCase`: whether backend content search treats case as significant,
+- `fileContentSearchRegex`: whether backend content search interprets the query as a regular expression.
 
 Performance limits:
 
@@ -143,9 +145,10 @@ Performance limits:
 - traversal is capped by `MAX_CONTENT_SEARCH_VISITS`,
 - file reads are skipped above `MAX_CONTENT_SEARCH_FILE_BYTES`,
 - binary/NUL content is skipped,
-- result page size, context lines, and matches per file are clamped server-side.
+- result page size, context lines, and matches per file are clamped server-side,
+- invalid regex queries return HTTP 400 before traversal.
 
-Desktop and mobile use `src/assets/shared/file_content_search.js` for grouped rendering, highlight markup, per-file disclosure arrows, merged line chunks, and Git-diff-style context arrows. File results are grouped once per file. New file groups honor `fileContentSearchDefaultExpanded`; when enabled they expand unless `fileContentSearchAutoCollapseFiles` collapses a large result set. Expanded files show matching lines by default, surrounding context lines when available, and up/down arrows that request more context. When expanded context overlaps adjacent matches, the renderer merges the rows into one continuous chunk. Shared visual rules live in `src/assets/shared/content_search.css` and shared colors live in `src/assets/shared/colors.css`, so desktop/mobile do not duplicate the match highlight palette. The frontend does not scan repository content. It only sends queries, renders grouped results, and mounts editor instances for highlighted full-file opens.
+Desktop and mobile pass `match_case` and `regex` to the backend routes. Backend matching is implemented once in Rust, so the browser does not scan file content or run repository-wide regexes. Desktop and mobile use `src/assets/shared/file_content_search.js` for grouped rendering, highlight markup, per-file disclosure arrows, merged line chunks, and Git-diff-style context arrows. File results are grouped once per file. New file groups honor `fileContentSearchDefaultExpanded`; when enabled they expand unless `fileContentSearchAutoCollapseFiles` collapses a large result set. Expanded files show matching lines by default, surrounding context lines when available, and up/down arrows that request more context. When expanded context overlaps adjacent matches, the renderer merges the rows into one continuous chunk. Shared visual rules live in `src/assets/shared/content_search.css` and shared colors live in `src/assets/shared/colors.css`, so desktop/mobile do not duplicate the match highlight palette. The frontend does not scan repository content. It only sends queries, renders grouped results, and mounts editor instances for highlighted full-file opens.
 
 ### Theme tokens
 
@@ -180,6 +183,8 @@ Supported behavior:
 - default line numbers for text preview,
 - high-contrast syntax palette tokens for light and dark themes,
 - match-line highlight/scroll when opening a content-search result,
+- find toolbar in read-only preview and edit mode, with next/previous, match-case, and regex search,
+- replace-one and replace-all controls in edit mode only,
 - fallback numbered `<pre>` rendering if CodeMirror fails to load.
 
 ## Settings
@@ -223,6 +228,8 @@ Settings are stored in `localStorage` under `herdr-web-options`. Main defaults a
 | `fileContentSearchContextLines` | `2` | Default lines above/below each content-search match, clamped 0 to 20. |
 | `fileContentSearchAutoCollapseFiles` | `8` | Collapse result file groups when file count exceeds this value. 0 disables auto-collapse. |
 | `fileContentSearchMatchesPerFile` | `5` | Initial matches loaded per file before lazy expansion, clamped 1 to 50. |
+| `fileContentSearchMatchCase` | `false` | Backend content search uses case-sensitive matching when enabled. |
+| `fileContentSearchRegex` | `false` | Backend content search treats the query as a Rust regex when enabled; invalid regex returns 400. |
 | `showTabActivity` | `false` | Show tab activity age. |
 | `worktreeAutoDiscoverSeconds` | `3` | Discovery interval, clamped 0 to 30. |
 | `generateWorktreeNames` | `false` | Auto-generate worktree names. |

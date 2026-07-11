@@ -333,6 +333,14 @@ el("optFileContentSearchMatchesPerFile").oninput = () => {
   options.fileContentSearchMatchesPerFile = Math.max(1, Math.min(50, Number(el("optFileContentSearchMatchesPerFile").value) || 5));
   saveOptions();
 };
+el("optFileContentSearchMatchCase").onchange = () => {
+  options.fileContentSearchMatchCase = el("optFileContentSearchMatchCase").checked;
+  saveOptions();
+};
+el("optFileContentSearchRegex").onchange = () => {
+  options.fileContentSearchRegex = el("optFileContentSearchRegex").checked;
+  saveOptions();
+};
 el("optWorktreeAutoDiscover").oninput = () => {
   options.worktreeAutoDiscoverSeconds = Math.max(
     0,
