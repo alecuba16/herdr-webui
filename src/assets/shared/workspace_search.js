@@ -55,8 +55,13 @@
       contentPageSize: Math.max(10, Math.min(500, Number(parsed.fileContentSearchPageSize) || 50)),
       contextLines: Math.max(0, Math.min(20, Number.isFinite(contextRaw) ? contextRaw : 2)),
       autoCollapseFiles: Math.max(0, Math.min(200, Number.isFinite(autoCollapseRaw) ? autoCollapseRaw : 0)),
+      defaultExpanded: parsed.fileContentSearchDefaultExpanded !== false,
       matchesPerFile: Math.max(1, Math.min(50, Number(parsed.fileContentSearchMatchesPerFile) || 5)),
     };
+  }
+
+  function defaultContentExpanded(opts, fileCount) {
+    return !!(opts.defaultExpanded && !(opts.autoCollapseFiles > 0 && fileCount > opts.autoCollapseFiles));
   }
 
   function workspaceCwd(workspace) {
@@ -133,8 +138,11 @@
     if (!append) {
       const opts = settings();
       state.expanded = {};
-      const collapse = opts.autoCollapseFiles > 0 && state.files.length > opts.autoCollapseFiles;
-      for (const file of state.files) state.expanded[file.path] = !collapse;
+      const expanded = defaultContentExpanded(opts, state.files.length);
+      for (const file of state.files) state.expanded[file.path] = expanded;
+    } else {
+      const expanded = defaultContentExpanded(settings(), state.files.length);
+      for (const file of files) if (!Object.prototype.hasOwnProperty.call(state.expanded, file.path)) state.expanded[file.path] = expanded;
     }
   }
 

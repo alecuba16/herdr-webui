@@ -108,7 +108,9 @@ Keyboard behavior:
 - Enter opens the selected target, path result, or content match,
 - Esc closes search,
 - `Alt+F` selects the file-name section,
-- `Alt+D` selects the folder-name section.
+- `Alt+D` selects the folder-name section,
+- `Alt+1`, `Alt+2`, and `Alt+3` toggle the workspaces, files, and content sections,
+- `Alt+↑` and `Alt+↓` request more content context above or below the selected content match.
 
 Opening a content match calls the file browser with path, line, and query highlight data. The file opens in the same read-only CodeMirror surface used by normal previews and scrolls to the matched line when supported.
 
@@ -133,6 +135,7 @@ Browser-local configurable values:
 - `fileContentSearchPageSize`: content result file groups per lazy page,
 - `fileContentSearchContextLines`: default lines above/below each match,
 - `fileContentSearchAutoCollapseFiles`: file-count threshold for collapsed result groups,
+- `fileContentSearchDefaultExpanded`: whether content result file groups expand when results load,
 - `fileContentSearchMatchesPerFile`: initial matches included per file before lazy full-file expansion.
 
 Performance limits:
@@ -143,7 +146,7 @@ Performance limits:
 - binary/NUL content is skipped,
 - result page size, context lines, and matches per file are clamped server-side.
 
-Desktop and mobile use `src/assets/shared/file_content_search.js` for grouped rendering, highlight markup, per-file disclosure arrows, merged line chunks, and Git-diff-style context arrows. File results are grouped once per file. Expanded files show matching lines by default, surrounding context lines when available, and up/down arrows that request more context. When expanded context overlaps adjacent matches, the renderer merges the rows into one continuous chunk. Shared visual rules live in `src/assets/shared/content_search.css` and shared colors live in `src/assets/shared/colors.css`, so desktop/mobile do not duplicate the match highlight palette. The frontend does not scan repository content. It only sends queries, renders grouped results, and mounts editor instances for highlighted full-file opens.
+Desktop and mobile use `src/assets/shared/file_content_search.js` for grouped rendering, highlight markup, per-file disclosure arrows, merged line chunks, and Git-diff-style context arrows. File results are grouped once per file. New file groups honor `fileContentSearchDefaultExpanded`; when enabled they expand unless `fileContentSearchAutoCollapseFiles` collapses a large result set. Expanded files show matching lines by default, surrounding context lines when available, and up/down arrows that request more context. When expanded context overlaps adjacent matches, the renderer merges the rows into one continuous chunk. Shared visual rules live in `src/assets/shared/content_search.css` and shared colors live in `src/assets/shared/colors.css`, so desktop/mobile do not duplicate the match highlight palette. The frontend does not scan repository content. It only sends queries, renders grouped results, and mounts editor instances for highlighted full-file opens.
 
 ### Theme tokens
 

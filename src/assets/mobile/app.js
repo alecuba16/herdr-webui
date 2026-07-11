@@ -1033,6 +1033,11 @@
 
   function mobileSearchKeydown(event) {
     if (event.key === "Escape") { event.preventDefault(); closeMobileSearch(); }
+    else if (event.altKey && (event.key === "1" || event.code === "Digit1")) { event.preventDefault(); HerdrMobileSearch.toggleSection("workspaces"); }
+    else if (event.altKey && (event.key === "2" || event.code === "Digit2")) { event.preventDefault(); HerdrMobileSearch.toggleSection("files"); }
+    else if (event.altKey && (event.key === "3" || event.code === "Digit3")) { event.preventDefault(); HerdrMobileSearch.toggleSection("content"); }
+    else if (event.altKey && event.key === "ArrowUp") { event.preventDefault(); HerdrMobileSearchContent.expandSnippet("", "", "up"); }
+    else if (event.altKey && event.key === "ArrowDown") { event.preventDefault(); HerdrMobileSearchContent.expandSnippet("", "", "down"); }
     else if (event.key === "Enter") { event.preventDefault(); openFirstMobileSearchResult(); }
     else if (event.altKey && event.key && event.key.toLowerCase() === "f") { event.preventDefault(); HerdrMobileSearch.setPathKind("file"); }
     else if (event.altKey && event.key && event.key.toLowerCase() === "d") { event.preventDefault(); HerdrMobileSearch.setPathKind("dir"); }
