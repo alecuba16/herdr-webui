@@ -372,7 +372,7 @@ describe("app bundle load", () => {
     match(readFileSync(new URL("./desktop/app_css/base.css", import.meta.url), "utf8"), /--editor-syntax-string: #a6e3a1/);
     match(readFileSync(new URL("./mobile/app.css", import.meta.url), "utf8"), /--editor-syntax-string: #a6e3a1/);
     match(source, /id="optFileBrowserLineNumbers"/);
-    match(source, /id="optFileBrowserPathSearch"/);
+    ok(!source.includes("optFileBrowserPathSearch"));
     match(source, /id="optFileBrowserSearchPageSize"/);
     match(source, /id="optFileContentSearchMinChars"/);
     match(source, /id="optFileContentSearchPageSize"/);
@@ -387,7 +387,7 @@ describe("app bundle load", () => {
     match(source, /fileContentSearchDefaultExpanded: true/);
     match(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), /\/api\/file-browser\/content-search/);
     match(readFileSync(new URL("./mobile/file_browser.js", import.meta.url), "utf8"), /HerdrMobileFilesContent/);
-    match(readFileSync(new URL("./mobile/settings.js", import.meta.url), "utf8"), /setFileBrowserPathSearch/);
+    ok(!readFileSync(new URL("./mobile/settings.js", import.meta.url), "utf8").includes("setFileBrowserPathSearch"));
     match(readFileSync(new URL("./mobile/settings.js", import.meta.url), "utf8"), /setFileContentSearchContextLines/);
     match(gitUiSource, /placeholder="Filter files"/);
     match(gitUiSource, /filterFiles/);

@@ -124,7 +124,6 @@ Content search uses backend-owned repository traversal and matching. Results ren
 
 Browser-local configurable values:
 
-- `fileBrowserPathSearch`: enables/disables backend File/Folder search from the unified search control,
 - `searchWorkspacesEnabled`: enables/disables workspace/worktree/panel results,
 - `searchFilesEnabled`: enables/disables file-name results,
 - `searchFoldersEnabled`: enables/disables folder-name results,
@@ -213,7 +212,6 @@ Settings are stored in `localStorage` under `herdr-web-options`. Main defaults a
 | `fileBrowserAllowParent` | `true` | Show parent navigation. |
 | `fileBrowserGitStatus` | `true` | Show backend-provided Git colors. |
 | `fileBrowserLineNumbers` | `true` | Show line numbers in file previews. |
-| `fileBrowserPathSearch` | `true` | Enable backend file/folder search from the file explorer search control. |
 | `searchWorkspacesEnabled` | `true` | Show workspace/worktree/panel results in unified header search. |
 | `searchFilesEnabled` | `true` | Show backend file-name results in unified header search. |
 | `searchFoldersEnabled` | `true` | Show backend folder-name results in unified header search. |

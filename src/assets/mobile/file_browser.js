@@ -30,15 +30,8 @@
     function pathSearchOptions() {
       try {
         const parsed = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
-        return {
-          enabled: parsed.fileBrowserPathSearch !== false,
-          pageSize: Math.max(10, Math.min(500, Number(parsed.fileBrowserSearchPageSize) || 100)),
-        };
-      } catch (_) { return { enabled: true, pageSize: 100 }; }
-    }
-
-    function pathSearchEnabled() {
-      return pathSearchOptions().enabled;
+        return { pageSize: Math.max(10, Math.min(500, Number(parsed.fileBrowserSearchPageSize) || 100)) };
+      } catch (_) { return { pageSize: 100 }; }
     }
 
     function contentSearchOptions() {
@@ -123,7 +116,7 @@
 
     async function loadFiltered(append = false) {
       const root = cwd();
-      if (!root || !local.filter.trim() || local.filterKind === "content" || !pathSearchEnabled()) return;
+      if (!root || !local.filter.trim() || local.filterKind === "content") return;
       local.loading = true;
       renderPreservingFocus();
       try {
@@ -228,10 +221,6 @@
         local.contentSearch.query = local.filter;
         local.contentSearch.active = true;
         runContentSearch(append);
-      } else if (!pathSearchEnabled()) {
-        local.loading = false;
-        local.filterDone = true;
-        renderPreservingFocus();
       } else {
         loadFiltered(append);
       }
@@ -533,7 +522,7 @@
         loadMore() { runUnifiedSearch(true); },
       scroll(node) {
         local.scrollTop = node.scrollTop;
-        if (local.filterKind === "content" || !local.filter.trim() || local.loading || local.filterDone || !pathSearchEnabled()) return;
+        if (local.filterKind === "content" || !local.filter.trim() || local.loading || local.filterDone) return;
         if (node.scrollTop + node.clientHeight >= node.scrollHeight - 80) loadFiltered(true);
       },
         typeToFilter(event) {

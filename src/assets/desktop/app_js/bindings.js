@@ -304,10 +304,6 @@ el("optHeaderSearchEnabled").onchange = () => {
   saveOptions();
   applyOptions();
 };
-el("optFileBrowserPathSearch").onchange = () => {
-  options.fileBrowserPathSearch = el("optFileBrowserPathSearch").checked;
-  saveOptions();
-};
 el("optFileBrowserSearchPageSize").oninput = () => {
   options.fileBrowserSearchPageSize = Math.max(10, Math.min(500, Number(el("optFileBrowserSearchPageSize").value) || 100));
   saveOptions();

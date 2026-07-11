@@ -925,11 +925,11 @@
   function mobileSearchSettings() {
     return globalThis.HerdrWorkspaceSearch && globalThis.HerdrWorkspaceSearch.settings
       ? globalThis.HerdrWorkspaceSearch.settings()
-      : { searchSectionOrder: ["workspaces", "files", "content"], searchWorkspacesEnabled: true, searchFilesEnabled: true, searchFoldersEnabled: true, searchContentEnabled: true, pathSearchEnabled: true };
+      : { searchSectionOrder: ["workspaces", "files", "content"], searchWorkspacesEnabled: true, searchFilesEnabled: true, searchFoldersEnabled: true, searchContentEnabled: true };
   }
 
   function mobilePathSearchAvailable(opts = mobileSearchSettings()) {
-    return opts.pathSearchEnabled !== false && (opts.searchFilesEnabled !== false || opts.searchFoldersEnabled !== false);
+    return opts.searchFilesEnabled !== false || opts.searchFoldersEnabled !== false;
   }
 
   function normalizeMobilePathKind(opts = mobileSearchSettings()) {
