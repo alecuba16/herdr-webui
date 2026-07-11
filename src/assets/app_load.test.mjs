@@ -289,7 +289,7 @@ describe("app bundle load", () => {
 
   it("keeps Git prefix shortcuts collision-free with WebUI prefix keys", () => {
     const webuiKeys = new Set([...source.matchAll(/case "([^"]+)":/g)].map((match) => match[1]));
-    const gitKeys = ["Digit1", "Digit2", "Digit3", "Digit4", "KeyC", "KeyL", "KeyR", "KeyG", "KeyY", "KeyU", "KeyD", "KeyZ", "KeyH", "KeyM", "KeyE", "KeyO", "KeyV", "KeyI", "Digit0"];
+    const gitKeys = ["Digit1", "Digit2", "Digit3", "Digit4", "KeyC", "KeyL", "KeyR", "KeyY", "KeyU", "KeyD", "KeyZ", "KeyH", "KeyM", "KeyE", "KeyO", "KeyV", "KeyI", "Digit0"];
     equal(gitKeys.filter((key) => webuiKeys.has(key)).join(","), "");
   });
 
@@ -298,6 +298,16 @@ describe("app bundle load", () => {
     vm.runInContext(source, ctx);
 
     ok(!gitUiSource.includes("git-ui-cleanup-tab-icon"));
+    ok(!gitUiSource.includes("toggleStageAll"));
+    ok(!gitUiSource.includes("Stage/unstage all"));
+    match(gitUiSource, /git-ui-section-collapse/);
+    match(gitUiSource, />add all<\/button>/);
+    ok(gitUiSource.includes("${action}<em>${list.length}</em>"));
+    match(gitUiSource, /function hasCommittableChanges\(status\)/);
+    match(gitUiSource, /commitButton = hasCommittableChanges\(s\)/);
+    match(gitUiSource, /tab === "commit" && !hasCommittableChanges\(view\.status\)/);
+    match(gitUiSource, /currentChangesButton = currentMode\(\) !== "changes"/);
+    match(gitUiSource, /↩ Current changes/);
     match(gitUiSource, /renderGitViewTabs/);
     match(gitUiSource, /git-ui-view-toggle/);
     ok(gitUiSource.indexOf("Worktree actions") < gitUiSource.indexOf("git-ui-file-filter"));
