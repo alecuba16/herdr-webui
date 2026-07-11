@@ -1871,7 +1871,9 @@
       const view = active();
       if (!view) return;
       const current = Math.max(0, Number(view.diffContext || 3));
-      view.diffContext = Math.min(200, current < 3 ? 3 : current * 2);
+      view.diffContext = window.HerdrLineContext && window.HerdrLineContext.nextContextSize
+        ? window.HerdrLineContext.nextContextSize(current, { min: 3, max: 200 })
+        : Math.min(200, current < 3 ? 3 : current * 2);
       loadDiff();
     },
     unstageHunk(path, index) { path = decodeURIComponent(path); applyHunk(path, index, { reverse: true, cached: true }); },
