@@ -6,7 +6,7 @@
   let state = createState();
 
   function createContentSearchState() {
-    return { active: false, query: "", timer: null, files: [], expanded: {}, snippets: {}, loading: false, error: "", offset: 0, done: true, totalFiles: 0, totalMatches: 0, contextLines: 2, maxMatchesPerFile: 5, autoCollapseFiles: 8 };
+    return { active: false, query: "", timer: null, files: [], expanded: {}, snippets: {}, loading: false, error: "", offset: 0, done: true, totalFiles: 0, totalMatches: 0, contextLines: 2, maxMatchesPerFile: 5, autoCollapseFiles: 0, defaultExpanded: true };
   }
 
   function createState(initial) {
@@ -53,10 +53,15 @@
         minChars: Math.max(1, Math.min(20, Number(parsed.fileContentSearchMinChars) || DEFAULT_CONTENT_SEARCH_MIN_CHARS)),
         pageSize: Math.max(10, Math.min(500, Number(parsed.fileContentSearchPageSize) || 50)),
         contextLines: Math.max(0, Math.min(20, Number.isFinite(contextRaw) ? contextRaw : 2)),
-        autoCollapseFiles: Math.max(0, Math.min(200, Number.isFinite(autoCollapseRaw) ? autoCollapseRaw : 8)),
+        autoCollapseFiles: Math.max(0, Math.min(200, Number.isFinite(autoCollapseRaw) ? autoCollapseRaw : 0)),
+        defaultExpanded: parsed.fileContentSearchDefaultExpanded !== false,
         maxMatchesPerFile: Math.max(1, Math.min(50, Number(parsed.fileContentSearchMatchesPerFile) || 5)),
       };
-    } catch (_) { return { minChars: DEFAULT_CONTENT_SEARCH_MIN_CHARS, pageSize: 50, contextLines: 2, autoCollapseFiles: 8, maxMatchesPerFile: 5 }; }
+    } catch (_) { return { minChars: DEFAULT_CONTENT_SEARCH_MIN_CHARS, pageSize: 50, contextLines: 2, autoCollapseFiles: 0, defaultExpanded: true, maxMatchesPerFile: 5 }; }
+  }
+
+  function defaultContentExpanded(content, fileCount) {
+    return !!(content.defaultExpanded && !(content.autoCollapseFiles > 0 && fileCount > content.autoCollapseFiles));
   }
 
   function normalizeSearchScope(kind) {
@@ -338,6 +343,7 @@
     target.contentSearch.contextLines = opts.contextLines;
     target.contentSearch.maxMatchesPerFile = opts.maxMatchesPerFile;
     target.contentSearch.autoCollapseFiles = opts.autoCollapseFiles;
+    target.contentSearch.defaultExpanded = opts.defaultExpanded;
   }
 
   async function runContentSearch(append = false) {
@@ -368,8 +374,11 @@
       content.done = !data.truncated || files.length === 0;
       if (!append) {
         content.expanded = {};
-        const collapse = content.autoCollapseFiles > 0 && content.files.length > content.autoCollapseFiles;
-        for (const file of content.files) content.expanded[file.path] = !collapse;
+        const expanded = defaultContentExpanded(content, content.files.length);
+        for (const file of content.files) content.expanded[file.path] = expanded;
+      } else {
+        const expanded = defaultContentExpanded(content, content.files.length);
+        for (const file of files) if (!Object.prototype.hasOwnProperty.call(content.expanded, file.path)) content.expanded[file.path] = expanded;
       }
     } catch (error) {
       content.error = error.message || String(error);
@@ -949,7 +958,10 @@
     },
     async expandSnippet(encodedPath, _encodedMatchId, _direction) {
       const path = decodeURIComponent(encodedPath);
-      const nextContext = Math.min(20, (state.contentSearch.contextLines || 2) + 1);
+      const currentContext = Number(state.contentSearch.contextLines || contentSearchOptions().contextLines || 2);
+      const nextContext = window.HerdrLineContext && window.HerdrLineContext.nextContextSize
+        ? window.HerdrLineContext.nextContextSize(currentContext, { min: 3, max: 20 })
+        : Math.min(20, currentContext < 3 ? 3 : currentContext * 2);
       state.contentSearch.contextLines = nextContext;
       try { await loadContentSearchFile(path, nextContext); }
       catch (error) { state.contentSearch.error = error.message || String(error); }

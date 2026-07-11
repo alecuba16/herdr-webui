@@ -60,6 +60,7 @@
     loadScript("/assets/shared/core.js");
     loadScript("/assets/shared/file-icons.js");
     loadScript("/assets/shared/file-tree.js");
+    loadScript("/assets/shared/line-context.js");
     loadScript("/assets/shared/file-content-search.js");
     loadScript("/assets/shared/workspace-search.js");
     loadScript("/assets/vendor/codemirror.js");

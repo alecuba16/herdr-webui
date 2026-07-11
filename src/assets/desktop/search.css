@@ -98,6 +98,18 @@
   justify-content: space-between;
   padding: 8px 10px;
 }
+.search-section-toggle {
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  width: 100%;
+}
+.search-section-toggle strong {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+}
 .search-section-head span {
   color: var(--muted);
   font-size: 11px;
