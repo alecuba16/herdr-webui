@@ -13,6 +13,7 @@ const SHARED_FILE_ICONS_CSS: &str = include_str!("assets/shared/file_icons.css")
 const SHARED_COLORS_CSS: &str = include_str!("assets/shared/colors.css");
 const SHARED_FILE_TREE_JS: &str = include_str!("assets/shared/file_tree.js");
 const SHARED_FILE_CONTENT_SEARCH_JS: &str = include_str!("assets/shared/file_content_search.js");
+const SHARED_WORKSPACE_SEARCH_JS: &str = include_str!("assets/shared/workspace_search.js");
 const SHARED_EDITOR_JS: &str = include_str!("assets/shared/editor.js");
 const SHARED_TERMINAL_SCROLL_JS: &str = include_str!("assets/shared/terminal_scroll.js");
 const SHARED_TEMP_TERMINAL_JS: &str = include_str!("assets/shared/temp_terminal.js");
@@ -143,6 +144,13 @@ pub(crate) async fn shared_file_tree_js() -> Response {
 pub(crate) async fn shared_file_content_search_js() -> Response {
     static_text(
         SHARED_FILE_CONTENT_SEARCH_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(crate) async fn shared_workspace_search_js() -> Response {
+    static_text(
+        SHARED_WORKSPACE_SEARCH_JS,
         "application/javascript; charset=utf-8",
     )
 }
@@ -391,6 +399,10 @@ mod tests {
             javascript
         );
         assert_eq!(content_type(&shared_file_tree_js().await), javascript);
+        assert_eq!(
+            content_type(&shared_workspace_search_js().await),
+            javascript
+        );
         assert_eq!(content_type(&shared_terminal_scroll_js().await), javascript);
         assert_eq!(content_type(&shared_editor_js().await), javascript);
         assert_eq!(content_type(&vendor_codemirror_js().await), javascript);

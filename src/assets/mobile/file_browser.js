@@ -259,20 +259,9 @@
       if (!cwd()) return '<div class="mobile-loading">Select workspace with path first</div>';
       if (!local.entries.length && !local.loading && !local.error) load(local.path || "");
       if (local.file) return renderPreview();
-      const treeSearchActive = local.filter.trim() && local.filterKind !== "content" && pathSearchEnabled();
-      const tree = Tree.renderEntries(treeEntries(), { selectedPath: local.selected, callback: "HerdrMobileFiles", showMeta: true, filterTerm: treeSearchActive ? local.filter : "" });
-      const more = treeSearchActive && !local.filterDone ? `<button class="mobile-btn mobile-wide" onclick="HerdrMobile.filesLoadMore()">Load more</button>` : "";
-      const resultCount = treeSearchActive ? local.entries.length : treeEntries().length;
-      const noun = searchScopeNoun(local.filterKind);
-      const label = searchScopeLabel(local.filterKind);
-      const filterVisible = local.filterVisible || local.filter.trim();
-      const count = local.filter.trim() ? local.filterKind === "content" ? `<div class="mobile-help mobile-file-result-count">${Number(local.contentSearch.totalMatches || 0)} content matches in ${Number(local.contentSearch.totalFiles || local.contentSearch.files.length || 0)} files</div>` : pathSearchEnabled() ? `<div class="mobile-help mobile-file-result-count">${resultCount} ${noun} result${resultCount === 1 ? "" : "s"}</div>` : `<div class="mobile-help mobile-file-result-count">File/folder search disabled in Settings.</div>` : `<div class="mobile-help mobile-file-result-count">Type to search ${noun}</div>`;
-      const filter = filterVisible ? `<div class="mobile-files-list-head"><div class="mobile-file-filter-row"><label class="mobile-file-filter"><span class="mobile-file-search-icon ${local.loading && local.filter.trim() || local.contentSearch.loading ? "searching" : ""}" aria-hidden="true"></span><input id="mobileFileFilter" value="${deps.escapeHtml(local.filter)}" placeholder="Search ${deps.escapeHtml(noun)}" oninput="HerdrMobile.filesFilter(this.value)" onkeydown="HerdrMobile.filesSearchKeydown(event)"></label><button class="mobile-btn mobile-file-kind-toggle" onclick="HerdrMobile.filesToggleFilterKind()">${label}</button><button class="mobile-btn mobile-file-kind-toggle" onclick="HerdrMobile.filesClearFilter()">Clear</button></div>${count}</div>` : `<div class="mobile-files-list-head"><div class="mobile-help mobile-file-result-count">Tap Search or focus tree and type to search files. Alt+D folders, Alt+C content.</div></div>`;
-      const contentSearch = globalThis.HerdrContentSearch;
-      const contentPane = local.contentSearch.active && contentSearch ? `<section class="mobile-content-search-pane"><div class="mobile-content-search-head"><strong>Content search</strong><button class="mobile-btn" onclick="HerdrMobile.filesCloseContentSearch()">Close</button></div>${contentSearch.render({ query: local.contentSearch.query, files: local.contentSearch.files, expanded: local.contentSearch.expanded, snippets: local.contentSearch.snippets, loading: local.contentSearch.loading, error: local.contentSearch.error, done: local.contentSearch.done, total_files: local.contentSearch.totalFiles, total_matches: local.contentSearch.totalMatches }, { callback: "HerdrMobileFilesContent", inputId: "mobileFileContentSearchInput", idPrefix: "mobileContentSearchSnippet", hideInput: true })}</section>` : "";
-      const body = `${filter}${local.loading ? '<div class="mobile-loading">Loading</div>' : tree}${more}${contentPane}`;
-      setTimeout(mountContentSearchEditors, 0);
-      return `<section class="mobile-section mobile-files" tabindex="0" onfocus="HerdrMobile.filesFocusTree()" onblur="HerdrMobile.filesBlurTree()" onkeydown="HerdrMobile.filesTypeToFilter(event)" onscroll="HerdrMobile.filesScroll(this)"><div class="mobile-files-head"><div><h2>Files</h2><p class="mobile-help">${deps.escapeHtml(local.path || cwd())}</p></div><div class="mobile-actions"><button class="mobile-btn ${filterVisible ? "active" : ""}" onclick="HerdrMobile.filesShowSearch()">Search</button><button class="mobile-btn" onclick="HerdrMobile.filesRefresh()">Refresh</button></div></div>${local.error ? `<div class="mobile-error">${deps.escapeHtml(local.error)}</div>` : ""}${body}</section>`;
+      const tree = Tree.renderEntries(treeEntries(), { selectedPath: local.selected, callback: "HerdrMobileFiles", showMeta: true });
+      const body = `<div class="mobile-files-list-head"><div class="mobile-help mobile-file-result-count">Use header search (⌕) to find workspaces, files, folders, or file contents.</div></div>${local.loading ? '<div class="mobile-loading">Loading</div>' : tree}`;
+      return `<section class="mobile-section mobile-files" tabindex="0"><div class="mobile-files-head"><div><h2>Files</h2><p class="mobile-help">${deps.escapeHtml(local.path || cwd())}</p></div><div class="mobile-actions"><button class="mobile-btn" onclick="HerdrMobile.filesRefresh()">Refresh</button></div></div>${local.error ? `<div class="mobile-error">${deps.escapeHtml(local.error)}</div>` : ""}${body}</section>`;
     }
 
     function renderPreservingFocus() {
@@ -416,10 +405,6 @@
     };
 
     function treeEntries() {
-      if (local.filter.trim() && local.filterKind !== "content" && pathSearchEnabled()) {
-        const entries = Tree.searchTreeEntriesByKind(local.entries, local.filterKind, local.filter);
-        return Tree.applyGitStatus(entries, local.gitStatus);
-      }
       const entries = local.entries.map((entry) => Object.assign({}, entry));
       const currentRoot = local.cwdOverride || deps.currentWorkspaceCwd() || "";
       const canGoUp = local.path || (currentRoot && Tree.parentDirectory(currentRoot) !== currentRoot);
@@ -562,6 +547,21 @@
           event.preventDefault();
           this.filter(local.filter + event.key);
         },
+      async openAt(path, opts) {
+        const options = opts || {};
+        local.filter = "";
+        local.filterVisible = false;
+        local.filterKind = "file";
+        local.contentSearch.active = false;
+        clearContentSearchResults();
+        if (options.kind === "dir") {
+          await load(path || "");
+          return;
+        }
+        const parent = Tree.parentPath(path || "");
+        await load(parent || "");
+        if (path) await openFile(path, options.highlight || null);
+      },
       backToTree() { local.file = null; deps.render(); },
       refreshFile() { if (local.file) openFile(local.file.path); },
     };

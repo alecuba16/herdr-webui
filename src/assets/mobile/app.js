@@ -266,10 +266,18 @@
         <header class="mobile-header">
           <button class="mobile-btn" id="mobileBack" title="Home">←</button>
           <div class="mobile-context"><strong id="mobileTitle">Herdr</strong><span id="mobileMeta">Loading</span></div>
+          <button class="mobile-btn" id="mobileSearch" title="Search">⌕</button>
           <button class="mobile-btn" id="mobileSettings" title="Settings">⚙</button>
           <button class="mobile-btn temp-terminal-toggle" id="mobileTempTerminal" title="Temporary terminal" aria-label="Temporary terminal"><span class="temp-terminal-icon" aria-hidden="true"><span class="temp-terminal-icon-glyph"></span><span class="temp-terminal-icon-label">T</span></span></button>
         </header>
         <main class="mobile-screen" id="mobileScreen"></main>
+        <div class="mobile-search-sheet" id="mobileSearchSheet" hidden>
+          <div class="mobile-search-card">
+            <div class="mobile-search-head"><input id="mobileSearchInput" placeholder="Search workspaces, files, folders, content" autocomplete="off" /><button class="mobile-btn" id="mobileSearchClose">✕</button></div>
+            <div class="mobile-search-results" id="mobileSearchResults"></div>
+            <div class="mobile-help">Enter opens · Alt+F files · Alt+D folders · Esc closes</div>
+          </div>
+        </div>
         <nav class="mobile-nav">
           <button data-screen="home">Workspaces</button>
           <button data-screen="agents">Agents</button>
@@ -292,6 +300,7 @@
         </div>
       </div>`;
     el("mobileBack").onclick = () => showScreen("home");
+    el("mobileSearch").onclick = openMobileSearch;
     el("mobileSettings").onclick = () => showScreen("settings");
     el("mobileTempTerminal").onclick = () => mobileTempTerminal && mobileTempTerminal.open();
     const tempClose = el("tempTerminalClose");
@@ -780,6 +789,204 @@
     return { ws: state.ws, tab: state.tab, pane: state.pane };
   }
 
+  const mobileSearch = {
+    query: "",
+    pathKind: "file",
+    timer: null,
+    requestSeq: 0,
+    targets: [],
+    pathEntries: [],
+    pathGitStatus: null,
+    pathLoading: false,
+    pathError: "",
+    pathDone: true,
+    pathOffset: 0,
+    content: globalThis.HerdrWorkspaceSearch ? globalThis.HerdrWorkspaceSearch.createContentState() : { query: "", files: [], expanded: {}, snippets: {}, loading: false, error: "", done: true, offset: 0, total_files: 0, total_matches: 0 },
+  };
+
+  function openMobileSearch() {
+    const sheet = el("mobileSearchSheet");
+    const input = el("mobileSearchInput");
+    if (!sheet || !input) return;
+    mobileSearch.query = "";
+    mobileSearch.targets = mobileSearchTargets("");
+    mobileSearch.pathEntries = [];
+    mobileSearch.pathError = "";
+    if (globalThis.HerdrWorkspaceSearch) globalThis.HerdrWorkspaceSearch.resetContentState(mobileSearch.content, "");
+    input.value = "";
+    sheet.hidden = false;
+    renderMobileSearch();
+    input.oninput = scheduleMobileSearch;
+    input.onkeydown = mobileSearchKeydown;
+    el("mobileSearchClose").onclick = closeMobileSearch;
+    setTimeout(() => input.focus(), 0);
+  }
+
+  function closeMobileSearch() {
+    const sheet = el("mobileSearchSheet");
+    if (sheet) sheet.hidden = true;
+    if (mobileSearch.timer) clearTimeout(mobileSearch.timer);
+  }
+
+  function mobileSearchTargets(query) {
+    const helper = globalThis.HerdrWorkspaceSearch;
+    if (helper && helper.settings && helper.settings().searchWorkspacesEnabled === false) return [];
+    const needle = String(query || "").trim().toLowerCase();
+    const rows = [];
+    for (const workspace of state.workspaces) {
+      const text = [workspaceTitle(workspace), workspaceMeta(workspace), workspace.workspace_id, workspace.worktree && workspace.worktree.checkout_path].filter(Boolean).join(" ").toLowerCase();
+      if (!needle || text.includes(needle)) rows.push({ type: "workspace", workspace, title: workspaceTitle(workspace), subtitle: workspaceMeta(workspace) });
+    }
+    for (const agent of state.agents) {
+      const title = agent.name || agent.display_agent || agent.agent || agent.terminal_id || "agent";
+      const text = [title, agent.workspace_id, agent.tab_id, agent.pane_id].filter(Boolean).join(" ").toLowerCase();
+      if (!needle || text.includes(needle)) rows.push({ type: "agent", agent, title, subtitle: agent.workspace_id || "agent" });
+    }
+    return rows.slice(0, 10);
+  }
+
+  function mobileSearchSettings() {
+    return globalThis.HerdrWorkspaceSearch && globalThis.HerdrWorkspaceSearch.settings
+      ? globalThis.HerdrWorkspaceSearch.settings()
+      : { searchSectionOrder: ["workspaces", "files", "content"], searchWorkspacesEnabled: true, searchFilesEnabled: true, searchFoldersEnabled: true, searchContentEnabled: true, pathSearchEnabled: true };
+  }
+
+  function mobilePathSearchAvailable(opts = mobileSearchSettings()) {
+    return opts.pathSearchEnabled !== false && (opts.searchFilesEnabled !== false || opts.searchFoldersEnabled !== false);
+  }
+
+  function normalizeMobilePathKind(opts = mobileSearchSettings()) {
+    if (mobileSearch.pathKind === "dir" && opts.searchFoldersEnabled === false && opts.searchFilesEnabled !== false)
+      mobileSearch.pathKind = "file";
+    if (mobileSearch.pathKind !== "dir" && opts.searchFilesEnabled === false && opts.searchFoldersEnabled !== false)
+      mobileSearch.pathKind = "dir";
+  }
+
+  function scheduleMobileSearch() {
+    const input = el("mobileSearchInput");
+    mobileSearch.query = input ? input.value : "";
+    mobileSearch.targets = mobileSearchTargets(mobileSearch.query);
+    renderMobileSearch();
+    if (mobileSearch.timer) clearTimeout(mobileSearch.timer);
+    mobileSearch.timer = setTimeout(() => runMobileWorkspaceSearch(false), 180);
+  }
+
+  async function runMobileWorkspaceSearch(append) {
+    const helper = globalThis.HerdrWorkspaceSearch;
+    if (!helper) return;
+    const query = String(mobileSearch.query || "").trim();
+    const cwd = currentWorkspaceCwd();
+    const seq = ++mobileSearch.requestSeq;
+    normalizeMobilePathKind(helper.settings());
+    if (!query || !cwd) {
+      mobileSearch.pathEntries = [];
+      helper.resetContentState(mobileSearch.content, query);
+      renderMobileSearch();
+      return;
+    }
+    await Promise.allSettled([runMobilePathSearch(seq, query, cwd, append), runMobileContentSearch(seq, query, cwd, append)]);
+    if (seq === mobileSearch.requestSeq) renderMobileSearch();
+  }
+
+  async function runMobilePathSearch(seq, query, cwd, append) {
+    const helper = globalThis.HerdrWorkspaceSearch;
+    mobileSearch.pathLoading = true;
+    mobileSearch.pathError = "";
+    renderMobileSearch();
+    try {
+      const offset = append ? mobileSearch.pathOffset : 0;
+      const data = await helper.searchPaths({ cwd, query, kind: mobileSearch.pathKind, offset });
+      if (seq !== mobileSearch.requestSeq) return;
+      const entries = data.entries || [];
+      mobileSearch.pathEntries = append ? mobileSearch.pathEntries.concat(entries) : entries;
+      mobileSearch.pathGitStatus = data.git_status || null;
+      mobileSearch.pathOffset = offset + entries.length;
+      mobileSearch.pathDone = data.disabled || !data.truncated || entries.length === 0;
+      mobileSearch.pathError = data.disabled ? "File and folder search is disabled in Settings." : "";
+    } catch (error) {
+      if (seq !== mobileSearch.requestSeq) return;
+      mobileSearch.pathError = error.message || String(error);
+      mobileSearch.pathDone = true;
+    }
+    if (seq === mobileSearch.requestSeq) mobileSearch.pathLoading = false;
+  }
+
+  async function runMobileContentSearch(seq, query, cwd, append) {
+    const helper = globalThis.HerdrWorkspaceSearch;
+    const opts = helper.settings();
+    mobileSearch.content.query = query;
+    if (query.length < opts.contentMinChars) {
+      helper.resetContentState(mobileSearch.content, query);
+      mobileSearch.content.error = query ? `Type at least ${opts.contentMinChars} characters to search contents.` : "";
+      return;
+    }
+    mobileSearch.content.loading = true;
+    mobileSearch.content.error = "";
+    renderMobileSearch();
+    try {
+      const offset = append ? mobileSearch.content.offset : 0;
+      const data = await helper.searchContent({ cwd, query, offset });
+      if (seq !== mobileSearch.requestSeq) return;
+      helper.applyContentResults(mobileSearch.content, data, append);
+    } catch (error) {
+      if (seq !== mobileSearch.requestSeq) return;
+      mobileSearch.content.error = error.message || String(error);
+      mobileSearch.content.done = true;
+    }
+    if (seq === mobileSearch.requestSeq) mobileSearch.content.loading = false;
+  }
+
+  function renderMobileSearch() {
+    const box = el("mobileSearchResults");
+    const helper = globalThis.HerdrWorkspaceSearch;
+    if (!box || !helper) return;
+    const opts = helper.settings();
+    normalizeMobilePathKind(opts);
+    const query = String(mobileSearch.query || "").trim();
+    const targetRows = mobileSearch.targets.length
+      ? mobileSearch.targets.map((row, index) => `<button class="mobile-row" onclick="HerdrMobileSearch.openTarget(${index})"><strong>${escapeHtml(row.title)}</strong><span>${escapeHtml(row.subtitle || row.type)}</span></button>`).join("")
+      : '<div class="mobile-loading">No workspace or agent matches.</div>';
+    const pathTree = query
+      ? mobileSearch.pathEntries.length
+        ? helper.renderPathTree(mobileSearch.pathEntries, { query, kind: mobileSearch.pathKind, gitStatus: mobileSearch.pathGitStatus, callback: "HerdrMobileSearchTree" })
+        : `<div class="mobile-loading">${mobileSearch.pathLoading ? "Searching..." : "No files or folders found."}</div>`
+      : '<div class="mobile-loading">Type to search files or folders.</div>';
+    const contentBody = !opts.searchContentEnabled
+      ? '<div class="mobile-loading">File content search is disabled in Settings.</div>'
+      : query.length < opts.contentMinChars
+        ? `<div class="mobile-loading">Type at least ${opts.contentMinChars} characters to search file contents.</div>`
+        : helper.renderContentPicker(mobileSearch.content, { callback: "HerdrMobileSearchContent", idPrefix: "mobileUnifiedSearchContent", disableSnippetEditing: true });
+    const sections = {
+      workspaces: opts.searchWorkspacesEnabled === false ? "" : `<section class="mobile-search-section"><h3>Workspaces and agents</h3>${targetRows}</section>`,
+      files: mobilePathSearchAvailable(opts) ? `<section class="mobile-search-section"><h3>Files and folders</h3><div class="mobile-actions"><button class="mobile-btn ${mobileSearch.pathKind === "file" ? "active" : ""}" ${opts.searchFilesEnabled === false ? "disabled" : ""} onclick="HerdrMobileSearch.setPathKind('file')">Files</button><button class="mobile-btn ${mobileSearch.pathKind === "dir" ? "active" : ""}" ${opts.searchFoldersEnabled === false ? "disabled" : ""} onclick="HerdrMobileSearch.setPathKind('dir')">Folders</button></div>${mobileSearch.pathError ? `<div class="mobile-error">${escapeHtml(mobileSearch.pathError)}</div>` : ""}${pathTree}</section>` : "",
+      content: opts.searchContentEnabled === false ? "" : `<section class="mobile-search-section"><h3>File content</h3>${contentBody}</section>`,
+    };
+    box.innerHTML = opts.searchSectionOrder.map((key) => sections[key] || "").join("");
+  }
+
+  function mobileSearchKeydown(event) {
+    if (event.key === "Escape") { event.preventDefault(); closeMobileSearch(); }
+    else if (event.key === "Enter") { event.preventDefault(); openFirstMobileSearchResult(); }
+    else if (event.altKey && event.key && event.key.toLowerCase() === "f") { event.preventDefault(); HerdrMobileSearch.setPathKind("file"); }
+    else if (event.altKey && event.key && event.key.toLowerCase() === "d") { event.preventDefault(); HerdrMobileSearch.setPathKind("dir"); }
+  }
+
+  function openFirstMobileSearchResult() {
+    const opts = mobileSearchSettings();
+    for (const section of opts.searchSectionOrder || ["workspaces", "files", "content"]) {
+      if (section === "workspaces" && opts.searchWorkspacesEnabled !== false && mobileSearch.targets[0]) { HerdrMobileSearch.openTarget(0); return; }
+      if (section === "files" && mobilePathSearchAvailable(opts)) {
+        const pathEntry = (mobileSearch.pathEntries || []).find((entry) => (entry.kind === "dir" ? "dir" : "file") === mobileSearch.pathKind);
+        if (pathEntry) { HerdrMobileSearch.openPath(pathEntry.path, pathEntry.kind); return; }
+      }
+      if (section === "content" && opts.searchContentEnabled !== false) {
+        const file = (mobileSearch.content.files || [])[0];
+        const match = file && (file.matches || [])[0];
+        if (file && match) { HerdrMobileSearch.openContent(file.path, match.id); return; }
+      }
+    }
+  }
+
   function connectEvents() {
     if (eventWs || !globalThis.WebSocket) return;
     const ws = new WebSocket(wsUrl("/ws/events"));
@@ -858,6 +1065,62 @@
     state,
   });
 
+  globalThis.HerdrMobileSearch = {
+    setPathKind(kind) {
+      const opts = mobileSearchSettings();
+      if (kind === "dir" && opts.searchFoldersEnabled === false) return;
+      if (kind !== "dir" && opts.searchFilesEnabled === false) return;
+      mobileSearch.pathKind = kind === "dir" ? "dir" : "file";
+      mobileSearch.pathEntries = [];
+      mobileSearch.pathOffset = 0;
+      renderMobileSearch();
+      runMobileWorkspaceSearch(false);
+    },
+    openTarget(index) {
+      const row = mobileSearch.targets[index];
+      if (!row) return;
+      closeMobileSearch();
+      if (row.type === "workspace") selectWorkspace(row.workspace.workspace_id);
+      else if (row.agent) selectAgent(row.agent.terminal_id || row.agent.agent || "");
+    },
+    openPath(path, kind) {
+      closeMobileSearch();
+      showScreen("files");
+      mobileFileBrowser.openAt(path, { kind: kind === "dir" ? "dir" : "file" });
+    },
+    openContent(path, matchId) {
+      const helper = globalThis.HerdrWorkspaceSearch;
+      const file = (mobileSearch.content.files || []).find((item) => item.path === path);
+      const match = globalThis.HerdrContentSearch && globalThis.HerdrContentSearch.findMatch(file, matchId);
+      closeMobileSearch();
+      showScreen("files");
+      mobileFileBrowser.openAt(path, { kind: "file", highlight: helper && helper.matchHighlight(match, mobileSearch.query) });
+    },
+  };
+
+  globalThis.HerdrMobileSearchTree = {
+    select(encodedPath) {
+      const path = decodeURIComponent(encodedPath);
+      const entry = (mobileSearch.pathEntries || []).find((item) => item.path === path);
+      globalThis.HerdrMobileSearch.openPath(path, entry && entry.kind === "dir" ? "dir" : mobileSearch.pathKind);
+    },
+  };
+
+  globalThis.HerdrMobileSearchContent = {
+    toggleFile(encodedPath) {
+      const path = decodeURIComponent(encodedPath);
+      mobileSearch.content.expanded[path] = !mobileSearch.content.expanded[path];
+      renderMobileSearch();
+    },
+    openFile(encodedPath) { globalThis.HerdrMobileSearch.openPath(decodeURIComponent(encodedPath), "file"); },
+    openMatch(encodedPath, encodedMatchId) { globalThis.HerdrMobileSearch.openContent(decodeURIComponent(encodedPath), decodeURIComponent(encodedMatchId)); },
+    expandAll() { for (const file of mobileSearch.content.files || []) mobileSearch.content.expanded[file.path] = true; renderMobileSearch(); },
+    collapseAll() { for (const file of mobileSearch.content.files || []) mobileSearch.content.expanded[file.path] = false; renderMobileSearch(); },
+    loadMore() { runMobileContentSearch(++mobileSearch.requestSeq, mobileSearch.query, currentWorkspaceCwd(), true).then(renderMobileSearch); },
+    loadFile(_path) {},
+    expandSnippet(_path, _match, _direction) {},
+  };
+
   globalThis.HerdrMobile = {
     selectWorkspace,
     selectAgent,
@@ -869,6 +1132,7 @@
     backGitFiles,
     filesToggle: mobileFileBrowser.toggle,
     filesSelect: mobileFileBrowser.select,
+    filesOpenAt: mobileFileBrowser.openAt,
     filesUp: mobileFileBrowser.up,
     filesRefresh: mobileFileBrowser.refresh,
     filesBackToTree: mobileFileBrowser.backToTree,
@@ -896,6 +1160,11 @@
     setFileBrowserLineNumbers: mobileSettings.setFileBrowserLineNumbers,
     setFileBrowserPathSearch: mobileSettings.setFileBrowserPathSearch,
     setFileBrowserSearchPageSize: mobileSettings.setFileBrowserSearchPageSize,
+    setSearchWorkspacesEnabled: mobileSettings.setSearchWorkspacesEnabled,
+    setSearchFilesEnabled: mobileSettings.setSearchFilesEnabled,
+    setSearchFoldersEnabled: mobileSettings.setSearchFoldersEnabled,
+    setSearchContentEnabled: mobileSettings.setSearchContentEnabled,
+    setSearchSectionOrder: mobileSettings.setSearchSectionOrder,
     setFileContentSearchMinChars: mobileSettings.setFileContentSearchMinChars,
     setFileContentSearchPageSize: mobileSettings.setFileContentSearchPageSize,
     setFileContentSearchAutoCollapseFiles: mobileSettings.setFileContentSearchAutoCollapseFiles,

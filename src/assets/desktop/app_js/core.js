@@ -507,10 +507,10 @@ function shortcutsModalHtml() {
             <div class="help-row"><strong>Header</strong><span>＋ opens/creates workspace; ? opens this help; gear opens Settings; moon/theme toggles color mode; sidebar chevron hides/shows navigation.</span></div>
             <div class="help-row"><strong>Panels/Tabs</strong><span>Top panel switcher changes terminal panel; + creates panel; ✕ closes current panel; double-click panel label to rename.</span></div>
             <div class="help-row"><strong>Terminal</strong><span>Wheel, touch, and PageUp/PageDown scroll the Herdr backend first, with xterm local scroll as fallback. Tail appears after scrolling up and jumps back to latest output. Scroll speed is configurable in Settings → Terminal.</span></div>
-            <div class="help-row"><strong>Files</strong><span>Files selector opens browser/editor; ... goes up; file rows use license-safe type glyphs while folders stay plain except for Git status colors. The magnifier exposes one persisted search input with File, Folder, and Content scopes for the focused workspace/worktree. File/folder search is backend-powered, lazy-loaded, configurable, and keeps parent folders visible so paths stay clear. Content search starts after the configured minimum characters, scans in the backend, opens results in a closable right-side tab, groups matches by file, supports collapse/expand all, lazy per-file match loading, highlighted context, Open here at the matched line with editor highlight, full-file open, and hash-guarded editable snippets. Text previews use the same CodeMirror editor surface as edit mode but stay read-only until Edit is pressed; line numbers show by default, fold controls work for supported languages, and syntax/search colors use shared theme tokens. Search, selected files, split panes, and unsaved edit drafts stay attached to each open workspace/worktree while switching panels; closing the workspace/worktree forgets them. Git colors are computed server-side and propagate up directories with priority red deleted, yellow modified, green new.</span></div>
+            <div class="help-row"><strong>Files</strong><span>Files selector opens browser/editor; ... goes up; file rows use license-safe type glyphs while folders stay plain except for Git status colors. Header search (⌕, or prefix then /) is the single search entry point for workspaces/worktrees, file names, folder names, and file contents. File/folder and content search run in the backend for the focused workspace/worktree, lazy-load pages, preserve parent folders for path context, and use Settings to enable sections and sort their order. Content results show as grouped files with highlighted context, collapse/expand all, lazy per-file loading, Open here at the matched line with editor highlight, full-file open, and hash-guarded editable snippets where supported. Text previews use the same CodeMirror editor surface as edit mode but stay read-only until Edit is pressed; line numbers show by default, fold controls work for supported languages, and syntax/search colors use shared theme tokens. Search selections, selected files, split panes, and unsaved edit drafts stay attached to each open workspace/worktree while switching panels; closing the workspace/worktree forgets them. Git colors are computed server-side and propagate up directories with priority red deleted, yellow modified, green new.</span></div>
             <div class="help-row"><strong>Git</strong><span>Git selector opens repo tools for diff, stage/unstage, discard, commit, commit & push, pull, push/force-push, rebase, conflicts, stash, branches, cleanup, and worktree prune; file view can toggle unified/side-by-side diffs.</span></div>
             <div class="help-row"><strong>Worktrees</strong><span>Row actions create linked worktree, open existing worktree, close panels/workspace, or remove linked worktree after confirmation.</span></div>
-            <div class="help-row"><strong>Search</strong><span>Prefix then / opens palette for workspaces, repos, worktrees, labels, agents, and panels.</span></div>
+            <div class="help-row"><strong>Search</strong><span>Prefix then / or the header magnifier opens one palette for workspaces, repos, worktrees, labels, agents, panels, file/folder results, and file-content matches. In search, arrows move, Enter opens, Esc closes, Alt+F selects files, and Alt+D selects folders.</span></div>
             <div class="help-row"><strong>Settings</strong><span>Configure shortcuts, terminal font/links/scroll speed, themes, file browser, Git UI, worktree defaults, agent group order, sidebar split percent, and notification/no-sleep behavior.</span></div>
           </div>
         </section>
@@ -519,7 +519,7 @@ function shortcutsModalHtml() {
         <div class="shortcuts-list">
           <div class="shortcut-row"><kbd id="closeShortcutCurrent">Disabled</kbd><span>Close current Herdr panel. Configure in Settings.</span></div>
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())}</kbd><span>Open WebUI shortcut prefix overlay. Next shortcut key is handled by WebUI and not sent to terminal. Esc cancels.</span></div>
-          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then /</kbd><span>Search workspaces, repos, worktrees, labels, agents, and panels.</span></div>
+          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then /</kbd><span>Open unified header search for workspaces, repos, agents, panels, files, folders, and file-content matches. Use Alt+F/Alt+D inside the palette to switch file or folder search.</span></div>
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then ?</kbd><span>Open this help and shortcuts reference.</span></div>
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then S</kbd><span>Open Settings.</span></div>
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then B</kbd><span>Show or hide the workspace/agents sidebar.</span></div>
@@ -964,6 +964,11 @@ const defaultOptions = {
   fileBrowserAllowParent: true,
   fileBrowserGitStatus: true,
   fileBrowserLineNumbers: true,
+  searchWorkspacesEnabled: true,
+  searchFilesEnabled: true,
+  searchFoldersEnabled: true,
+  searchContentEnabled: true,
+  searchSectionOrder: "workspaces,files,content",
   fileBrowserPathSearch: true,
   fileBrowserSearchPageSize: 100,
   fileContentSearchMinChars: 3,
@@ -1101,6 +1106,11 @@ function normalizeOptions(value) {
   next.fileBrowserAllowParent = next.fileBrowserAllowParent !== false;
   next.fileBrowserGitStatus = next.fileBrowserGitStatus !== false;
   next.fileBrowserLineNumbers = next.fileBrowserLineNumbers !== false;
+  next.searchWorkspacesEnabled = next.searchWorkspacesEnabled !== false;
+  next.searchFilesEnabled = next.searchFilesEnabled !== false;
+  next.searchFoldersEnabled = next.searchFoldersEnabled !== false;
+  next.searchContentEnabled = next.searchContentEnabled !== false;
+  next.searchSectionOrder = String(next.searchSectionOrder || "workspaces,files,content").trim() || "workspaces,files,content";
   next.fileBrowserPathSearch = next.fileBrowserPathSearch !== false;
   next.fileBrowserSearchPageSize = Math.max(10, Math.min(500, Number(next.fileBrowserSearchPageSize) || 100));
   next.fileContentSearchMinChars = Math.max(1, Math.min(20, Number(next.fileContentSearchMinChars) || 3));
@@ -1374,7 +1384,7 @@ if (showTabActivitySetting && !el("optTreeIndentPx"))
     .closest("label")
     .insertAdjacentHTML(
       "afterend",
-      '<label class="option"><span>Tree indentation<small>Pixels added per folder level in file trees.</small></span><input id="optTreeIndentPx" type="number" min="0" max="40" step="1"></label><label class="option"><input type="checkbox" id="optFileBrowserAllowParent"><span>File browser parent folders<small>Allow Files to go above the workspace/worktree directory with the ... row.</small></span></label><label class="option"><input type="checkbox" id="optFileBrowserGitStatus"><span>File browser git status colors<small>Color files and directories in the file browser by Git status: red for deleted, yellow for modified, green for new.</small></span></label><label class="option"><input type="checkbox" id="optFileBrowserLineNumbers"><span>File browser line numbers<small>Show line numbers by default when previewing text files.</small></span></label><label class="option"><input type="checkbox" id="optFileBrowserPathSearch"><span>File/folder backend search<small>Enable path search from the file explorer magnifier. Content search remains available.</small></span></label><label class="option"><span>File/folder search page size<small>Backend result count loaded per lazy page.</small></span><input id="optFileBrowserSearchPageSize" type="number" min="10" max="500" step="10"></label><label class="option"><span>Content search minimum characters<small>Minimum typed characters before searching file contents.</small></span><input id="optFileContentSearchMinChars" type="number" min="1" max="20" step="1"></label><label class="option"><span>Content search page size<small>Backend file groups loaded per lazy page.</small></span><input id="optFileContentSearchPageSize" type="number" min="10" max="500" step="10"></label><label class="option"><span>Content search context lines<small>Default lines above and below each match.</small></span><input id="optFileContentSearchContextLines" type="number" min="0" max="20" step="1"></label><label class="option"><span>Content search auto-collapse<small>Collapse file groups when result files exceed this count. 0 means never auto-collapse.</small></span><input id="optFileContentSearchAutoCollapseFiles" type="number" min="0" max="200" step="1"></label><label class="option"><span>Content search matches per file<small>Initial match count loaded per file before lazy expansion.</small></span><input id="optFileContentSearchMatchesPerFile" type="number" min="1" max="50" step="1"></label>',
+      '<label class="option"><span>Tree indentation<small>Pixels added per folder level in file trees.</small></span><input id="optTreeIndentPx" type="number" min="0" max="40" step="1"></label><label class="option"><input type="checkbox" id="optFileBrowserAllowParent"><span>File browser parent folders<small>Allow Files to go above the workspace/worktree directory with the ... row.</small></span></label><label class="option"><input type="checkbox" id="optFileBrowserGitStatus"><span>File browser git status colors<small>Color files and directories in the file browser by Git status: red for deleted, yellow for modified, green for new.</small></span></label><label class="option"><input type="checkbox" id="optFileBrowserLineNumbers"><span>File browser line numbers<small>Show line numbers by default when previewing text files.</small></span></label><label class="option"><input type="checkbox" id="optSearchWorkspacesEnabled"><span>Header search workspaces<small>Show workspaces, worktrees, panels, and agents in the header search.</small></span></label><label class="option"><input type="checkbox" id="optSearchFilesEnabled"><span>Header search files<small>Search file paths for the selected workspace/worktree.</small></span></label><label class="option"><input type="checkbox" id="optSearchFoldersEnabled"><span>Header search folders<small>Search folder paths for the selected workspace/worktree.</small></span></label><label class="option"><input type="checkbox" id="optSearchContentEnabled"><span>Header search file contents<small>Search text contents for the selected workspace/worktree.</small></span></label><label class="option"><span>Header search section order<small>Comma list using workspaces, files, content.</small></span><input id="optSearchSectionOrder" placeholder="workspaces,files,content"></label><label class="option"><input type="checkbox" id="optFileBrowserPathSearch"><span>File/folder backend search<small>Enable backend path search for the header search file and folder sections.</small></span></label><label class="option"><span>File/folder search page size<small>Backend result count loaded per lazy page.</small></span><input id="optFileBrowserSearchPageSize" type="number" min="10" max="500" step="10"></label><label class="option"><span>Content search minimum characters<small>Minimum typed characters before searching file contents.</small></span><input id="optFileContentSearchMinChars" type="number" min="1" max="20" step="1"></label><label class="option"><span>Content search page size<small>Backend file groups loaded per lazy page.</small></span><input id="optFileContentSearchPageSize" type="number" min="10" max="500" step="10"></label><label class="option"><span>Content search context lines<small>Default lines above and below each match.</small></span><input id="optFileContentSearchContextLines" type="number" min="0" max="20" step="1"></label><label class="option"><span>Content search auto-collapse<small>Collapse file groups when result files exceed this count. 0 means never auto-collapse.</small></span><input id="optFileContentSearchAutoCollapseFiles" type="number" min="0" max="200" step="1"></label><label class="option"><span>Content search matches per file<small>Initial match count loaded per file before lazy expansion.</small></span><input id="optFileContentSearchMatchesPerFile" type="number" min="1" max="50" step="1"></label>',
     );
 groupSettingsSections();
 function groupSettingsSections() {
@@ -1389,7 +1399,7 @@ function groupSettingsSections() {
     {
       title: "File browser",
       desc: "Tree display, navigation, and Git status colors.",
-      ids: ["optTreeIndentPx", "optFileBrowserAllowParent", "optFileBrowserGitStatus", "optFileBrowserLineNumbers", "optFileBrowserPathSearch", "optFileBrowserSearchPageSize", "optFileContentSearchMinChars", "optFileContentSearchPageSize", "optFileContentSearchContextLines", "optFileContentSearchAutoCollapseFiles", "optFileContentSearchMatchesPerFile"],
+      ids: ["optTreeIndentPx", "optFileBrowserAllowParent", "optFileBrowserGitStatus", "optFileBrowserLineNumbers", "optSearchWorkspacesEnabled", "optSearchFilesEnabled", "optSearchFoldersEnabled", "optSearchContentEnabled", "optSearchSectionOrder", "optFileBrowserPathSearch", "optFileBrowserSearchPageSize", "optFileContentSearchMinChars", "optFileContentSearchPageSize", "optFileContentSearchContextLines", "optFileContentSearchAutoCollapseFiles", "optFileContentSearchMatchesPerFile"],
     },
     {
       title: "Terminal input",
@@ -1552,6 +1562,11 @@ function applyOptions() {
     fileBrowserAllowParent = el("optFileBrowserAllowParent"),
     fileBrowserGitStatus = el("optFileBrowserGitStatus"),
     fileBrowserLineNumbers = el("optFileBrowserLineNumbers"),
+    searchWorkspacesEnabled = el("optSearchWorkspacesEnabled"),
+    searchFilesEnabled = el("optSearchFilesEnabled"),
+    searchFoldersEnabled = el("optSearchFoldersEnabled"),
+    searchContentEnabled = el("optSearchContentEnabled"),
+    searchSectionOrder = el("optSearchSectionOrder"),
     fileBrowserPathSearch = el("optFileBrowserPathSearch"),
     fileBrowserSearchPageSize = el("optFileBrowserSearchPageSize"),
     fileContentSearchMinChars = el("optFileContentSearchMinChars"),
@@ -1617,6 +1632,16 @@ function applyOptions() {
     fileBrowserGitStatus.checked = !!options.fileBrowserGitStatus;
   if (fileBrowserLineNumbers)
     fileBrowserLineNumbers.checked = !!options.fileBrowserLineNumbers;
+  if (searchWorkspacesEnabled)
+    searchWorkspacesEnabled.checked = options.searchWorkspacesEnabled !== false;
+  if (searchFilesEnabled)
+    searchFilesEnabled.checked = options.searchFilesEnabled !== false;
+  if (searchFoldersEnabled)
+    searchFoldersEnabled.checked = options.searchFoldersEnabled !== false;
+  if (searchContentEnabled)
+    searchContentEnabled.checked = options.searchContentEnabled !== false;
+  if (searchSectionOrder)
+    searchSectionOrder.value = options.searchSectionOrder || "workspaces,files,content";
   if (fileBrowserPathSearch)
     fileBrowserPathSearch.checked = options.fileBrowserPathSearch !== false;
   if (fileBrowserSearchPageSize)

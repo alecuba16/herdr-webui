@@ -860,6 +860,10 @@ fn app_router(state: WebState) -> Router {
             "/assets/shared/file-content-search.js",
             get(shared_file_content_search_js),
         )
+        .route(
+            "/assets/shared/workspace-search.js",
+            get(shared_workspace_search_js),
+        )
         .route("/assets/vendor/codemirror.js", get(vendor_codemirror_js))
         .route("/assets/shared/editor.js", get(shared_editor_js))
         .route(

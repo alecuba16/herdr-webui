@@ -159,9 +159,30 @@
     activateState(key, cwd);
     state.open = true;
     render();
-    if (state.filter.trim() && state.filterKind === "content") await runContentSearch(false);
-    else if (state.filter.trim()) await fetchFilteredEntries(false);
-    else await loadTree(state.path || "");
+    await loadTree(state.path || "");
+  }
+
+  async function openAt(workspace, path, opts) {
+    const options = opts || {};
+    const cwd = workspaceCwd(workspace);
+    const key = workspaceKey(workspace);
+    if (!cwd) return;
+    if (window.HerdrGitUi) window.HerdrGitUi.hide();
+    activateState(key, cwd);
+    state.open = true;
+    state.filter = "";
+    state.filterVisible = false;
+    state.filterKind = "file";
+    state.contentSearch.active = false;
+    clearContentSearchResults(state.contentSearch);
+    render();
+    if (options.kind === "dir") {
+      await loadTree(path || "");
+      return;
+    }
+    const parent = Tree.parentPath(path || "");
+    await loadTree(parent || "");
+    if (path) await loadFile(path, options.mode, options.highlight || null);
   }
 
   function hide() {
@@ -397,21 +418,8 @@
     syncTerminalVisibility();
     const activeFile = currentFile();
     const entries = treeEntries();
-    const treeSearchActive = state.filter.trim() && state.filterKind !== "content" && pathSearchEnabled();
-    const resultCount = treeSearchActive ? state.entries.length : entries.length;
-    const noun = searchScopeNoun(state.filterKind);
-    const label = searchScopeLabel(state.filterKind);
-    const count = state.filter.trim()
-      ? state.filterKind === "content"
-        ? `<div class="file-browser-result-count">${Number(state.contentSearch.totalMatches || 0)} content matches in ${Number(state.contentSearch.totalFiles || state.contentSearch.files.length || 0)} files</div>`
-        : pathSearchEnabled()
-          ? `<div class="file-browser-result-count">${resultCount} ${noun} result${resultCount === 1 ? "" : "s"}</div>`
-          : `<div class="file-browser-result-count">File/folder search disabled in Settings.</div>`
-      : `<div class="file-browser-result-count">Type to search ${noun}</div>`;
-    const filterVisible = state.filterVisible || state.filter.trim();
-    const filter = filterVisible ? `<div class="file-browser-list-head"><div class="file-browser-filter-row"><label class="file-browser-filter"><span class="file-browser-search-icon ${state.filterLoading || state.contentSearch.loading ? "searching" : ""}" aria-hidden="true"></span><input id="fileBrowserFilter" value="${esc(state.filter)}" placeholder="Search ${esc(noun)}" oninput="HerdrFileBrowser.filter(this.value)" onkeydown="HerdrFileBrowser.searchKeydown(event)"></label><button class="file-browser-kind-toggle" title="Search scope. Alt+F files, Alt+D folders, Alt+C content" onclick="HerdrFileBrowser.toggleFilterKind()">${label}</button><button class="file-browser-kind-toggle" title="Clear search" onclick="HerdrFileBrowser.clearFilter()">Clear</button></div>${count}</div>` : `<div class="file-browser-list-head compact"><div class="file-browser-result-count">Click magnifier or focus tree and type to search files. Alt+D folders, Alt+C content.</div></div>`;
-    const sideBody = `${filter}${Tree.renderEntries(entries, { selectedPath: state.selected, callback: "HerdrFileBrowser", showMeta: true, dirClickMethod: "none", dirDoubleClickMethod: "enter", contextMethod: "menu", shiftSelectMode: true, filterTerm: treeSearchActive ? state.filter : "" })}${state.filterLoading ? `<div class="file-browser-searching">Searching...</div>` : ""}${treeSearchActive && !state.filterDone ? `<button class="git-ui-btn file-browser-more" onclick="HerdrFileBrowser.loadMore()">Load more</button>` : ""}`;
-    panel.innerHTML = `<aside class="file-browser-side ${activeFile ? "previewing" : ""} ${state.contentSearch.active ? "content-searching" : ""}" tabindex="0" onfocus="HerdrFileBrowser.focusTree()" onblur="HerdrFileBrowser.blurTree()" onkeydown="HerdrFileBrowser.typeToFilter(event)" onscroll="HerdrFileBrowser.sideScroll(this)"><div class="file-browser-head"><div class="file-browser-title-row"><div class="file-browser-title">Files</div><div class="file-browser-actions"><button class="file-browser-refresh ${filterVisible ? "active" : ""}" title="Search files, folders, or contents" aria-label="Search files, folders, or contents" onclick="HerdrFileBrowser.showSearch()"><span class="file-browser-search-icon" aria-hidden="true"></span></button>${appRefreshIconButton({ className: "file-browser-refresh", title: "Refresh", label: "Refresh files", spinning: !!state.refreshing, onclick: "HerdrFileBrowser.refresh()" })}</div></div><div class="file-browser-subtitle">${esc(state.path || state.cwd || "No workspace")}</div></div>${state.error ? `<div class="file-browser-error">${esc(state.error)}</div>` : ""}${sideBody}</aside><main class="file-browser-main"><div class="file-browser-toolbar">${renderToolbar(activeFile)}</div><div class="file-browser-preview ${state.split || state.contentSearch.active ? "split" : ""}" id="fileBrowserPreview">${renderPreviewShell()}</div></main>${renderContextMenu()}`;
+    const sideBody = `${Tree.renderEntries(entries, { selectedPath: state.selected, callback: "HerdrFileBrowser", showMeta: true, dirClickMethod: "none", dirDoubleClickMethod: "enter", contextMethod: "menu", shiftSelectMode: true })}`;
+    panel.innerHTML = `<aside class="file-browser-side ${activeFile ? "previewing" : ""} ${state.contentSearch.active ? "content-searching" : ""}" tabindex="0"><div class="file-browser-head"><div class="file-browser-title-row"><div class="file-browser-title">Files</div><div class="file-browser-actions">${appRefreshIconButton({ className: "file-browser-refresh", title: "Refresh", label: "Refresh files", spinning: !!state.refreshing, onclick: "HerdrFileBrowser.refresh()" })}</div></div><div class="file-browser-subtitle">${esc(state.path || state.cwd || "No workspace")}</div><div class="file-browser-result-count">Use header search (⌕) to find workspaces, files, folders, or file contents.</div></div>${state.error ? `<div class="file-browser-error">${esc(state.error)}</div>` : ""}${sideBody}</aside><main class="file-browser-main"><div class="file-browser-toolbar">${renderToolbar(activeFile)}</div><div class="file-browser-preview ${state.split || state.contentSearch.active ? "split" : ""}" id="fileBrowserPreview">${renderPreviewShell()}</div></main>${renderContextMenu()}`;
     mountEditors();
     mountContentSearchEditors();
   }
@@ -426,10 +434,6 @@
   }
 
   function treeEntries() {
-    if (state.filter.trim() && state.filterKind !== "content" && pathSearchEnabled()) {
-      const entries = Tree.searchTreeEntriesByKind(state.entries, state.filterKind, state.filter);
-      return Tree.applyGitStatus(entries, state.gitStatus);
-    }
     const entries = flattenEntries(state.entries, 0);
     if (state.path || Tree.parentDirectory(state.cwd) !== state.cwd) entries.unshift(Tree.upEntry(state.path, 0));
     return Tree.applyGitStatus(entries, state.gitStatus);
@@ -703,6 +707,7 @@
 
   window.HerdrFileBrowser = {
     open,
+    openAt,
     close: hide,
     hide,
     forgetWorkspace,
