@@ -54,7 +54,7 @@
         : `<button class="git-ui-btn" onclick="${callback}.editSnippet('${arg(file.path)}','${arg(match.id)}')">Edit</button>`;
     const expandControls = opts.disableSnippetExpand
       ? ""
-      : `<button class="git-ui-btn" onclick="${callback}.expandSnippet('${arg(file.path)}','${arg(match.id)}','up')">More above</button><button class="git-ui-btn" onclick="${callback}.expandSnippet('${arg(file.path)}','${arg(match.id)}','down')">More below</button>`;
+      : `<span class="herdr-content-search-context-controls" aria-label="Expand match context"><button class="git-ui-context-arrow herdr-content-search-context-arrow" title="Show more above" aria-label="Show more above" onclick="${callback}.expandSnippet('${arg(file.path)}','${arg(match.id)}','up')">↑</button><button class="git-ui-context-arrow herdr-content-search-context-arrow" title="Show more below" aria-label="Show more below" onclick="${callback}.expandSnippet('${arg(file.path)}','${arg(match.id)}','down')">↓</button></span>`;
     return `<article class="herdr-content-search-match${dirty ? " dirty" : ""}" data-snippet-key="${esc(key)}" data-editor-id="${esc(editorId)}">
       <header><strong>Line ${Number(match.line || 0)}</strong><span>${esc(file.path)}</span><div class="herdr-content-search-actions">${openHere}${editControls}${expandControls}</div></header>
       ${snippet.error ? `<div class="file-browser-error">${esc(snippet.error)}</div>` : ""}

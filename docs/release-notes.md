@@ -1,5 +1,15 @@
 # Release notes
 
+## 0.2.28 Release Notes
+
+### Unified search and file explorer polish
+
+- Unifies the header search across workspaces, worktrees, files, folders, and file-content search. Search sections are enabled, ordered, and persisted through browser settings so desktop and mobile share the same behavior.
+- Moves file and folder filtering out of the file explorer input and into the shared header search. Backend file/folder/content APIs do the traversal and matching work, while the frontend renders filtered trees, grouped content results, and editor jumps.
+- Content search results group matches by file, lazy-load expanded matches when needed, open the complete file at the matching line, and support snippet editing with explicit save controls.
+- Match previews now use Git-diff-style arrow controls for expanding context above or below and stronger highlighted match text with shared theme tokens.
+- Content search styling is centralized in `src/assets/shared/content_search.css` and `src/assets/shared/colors.css`, keeping desktop and mobile CSS focused on layout instead of duplicated palette rules.
+
 ## 0.2.13 Release Notes
 
 ### Protocol 16 support

@@ -68,6 +68,7 @@ describe("app boot", () => {
     equal(links[4].href, "/assets/desktop/search.css");
     equal(links[5].href, "/assets/shared/colors.css");
     equal(links[6].href, "/assets/shared/file-icons.css");
+    equal(links[7].href, "/assets/shared/content-search.css");
     equal(scripts[0].src, "/assets/shared/core.js");
     equal(scripts[1].src, "/assets/shared/file-icons.js");
     equal(scripts[2].src, "/assets/shared/file-tree.js");
@@ -89,6 +90,7 @@ describe("app boot", () => {
     equal(links[0].href, "/assets/mobile/app.css");
     equal(links[1].href, "/assets/shared/colors.css");
     equal(links[2].href, "/assets/shared/file-icons.css");
+    equal(links[3].href, "/assets/shared/content-search.css");
     equal(scripts[0].src, "/assets/shared/core.js");
     equal(scripts[1].src, "/assets/shared/file-icons.js");
     equal(scripts[2].src, "/assets/shared/file-tree.js");

@@ -1020,8 +1020,6 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
   text-align: right;
 }
 .herdr-content-search-line code { white-space: pre; }
-.herdr-content-search-line.matched { background: var(--herdr-search-match-bg); }
-.herdr-content-search-hit { background: var(--herdr-search-hit-bg); border-radius: 3px; color: var(--herdr-search-hit-fg); padding: 0 2px; }
 
 .mobile-search-sheet {
   background: color-mix(in srgb, var(--bg), transparent 12%);
