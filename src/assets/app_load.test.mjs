@@ -358,6 +358,8 @@ describe("app bundle load", () => {
     match(sharedContentSearchCss, /herdr-content-search-hit/);
     match(sharedContentSearchCss, /font-weight: 700/);
     match(workspaceSearchSource, /preserveExpanded/);
+    match(workspaceSearchSource, /pathSearchAvailable/);
+    match(workspaceSearchSource, /normalizePathKind/);
     match(searchSource, /renderSearchPalettePreservingScroll/);
     const editorSource = readFileSync(new URL("./vendor/codemirror_entry.mjs", import.meta.url), "utf8");
     match(editorSource, /foldGutter/);
@@ -407,6 +409,21 @@ describe("app bundle load", () => {
 
     helper.applyContentResults(state, { files: [{ path: "src/a.js" }], total_matches: 1 }, false);
     equal(state.expanded["src/a.js"], false);
+  });
+
+  it("normalizes shared path search settings", () => {
+    const ctx = context();
+    ctx.localStorage.setItem("herdr-web-options", JSON.stringify({ searchFilesEnabled: false, searchFoldersEnabled: true }));
+    vm.runInContext(readFileSync(new URL("./shared/workspace_search.js", import.meta.url), "utf8"), ctx);
+    const helper = ctx.HerdrWorkspaceSearch;
+
+    equal(helper.pathSearchAvailable(helper.settings()), true);
+    equal(helper.normalizePathKind("file", helper.settings()), "dir");
+
+    ctx.localStorage.setItem("herdr-web-options", JSON.stringify({ searchFilesEnabled: false, searchFoldersEnabled: false }));
+    const disabled = helper.settings();
+    equal(helper.pathSearchAvailable(disabled), false);
+    equal(helper.normalizePathKind("dir", disabled), "dir");
   });
 
   it("renders new workspace modal with manual folder field", () => {

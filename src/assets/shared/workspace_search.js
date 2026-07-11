@@ -63,6 +63,16 @@
     return !!(opts.defaultExpanded && !(opts.autoCollapseFiles > 0 && fileCount > opts.autoCollapseFiles));
   }
 
+  function pathSearchAvailable(opts = settings()) {
+    return opts.searchFilesEnabled !== false || opts.searchFoldersEnabled !== false;
+  }
+
+  function normalizePathKind(kind, opts = settings()) {
+    if (kind === "dir" && opts.searchFoldersEnabled === false && opts.searchFilesEnabled !== false) return "file";
+    if (kind !== "dir" && opts.searchFilesEnabled === false && opts.searchFoldersEnabled !== false) return "dir";
+    return kind === "dir" ? "dir" : "file";
+  }
+
   function workspaceCwd(workspace) {
     if (!workspace) return "";
     if (globalThis.HerdrWorkspacePath) return globalThis.HerdrWorkspacePath(workspace);
@@ -199,6 +209,8 @@
     arg,
     esc,
     settings,
+    pathSearchAvailable,
+    normalizePathKind,
     workspaceCwd,
     searchPaths,
     searchContent,
