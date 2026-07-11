@@ -1201,7 +1201,8 @@
     const data = await api(`/api/git-ui/log?cwd=${encodeURIComponent(view.cwd)}&all=${view.logAll ? "true" : "false"}`);
     const selected = view.selectedLogCommits || [];
     const compare = Actions.selectedLogToolbar(selected);
-    replaceContent(version, `<div class="git-ui-log-scope-head"><span class="git-ui-toolbar-title">History scope</span><button class="git-ui-btn ${!view.logAll ? "active" : ""}" onclick="HerdrGitUi.setLogAll(false)">Current branch</button><button class="git-ui-btn ${view.logAll ? "active" : ""}" onclick="HerdrGitUi.setLogAll(true)">All branches</button>${compare}</div><div class="git-ui-log">${(data.lines || []).map(renderLogLine).join("")}</div>`);
+    const refsByHash = Object.fromEntries((data.commits || []).map((commit) => [String(commit.hash || "").slice(0, 8), String(commit.refs || "")]).filter(([hash]) => hash));
+    replaceContent(version, `<div class="git-ui-log-scope-head"><span class="git-ui-toolbar-title">History scope</span><button class="git-ui-btn ${!view.logAll ? "active" : ""}" onclick="HerdrGitUi.setLogAll(false)">Current branch</button><button class="git-ui-btn ${view.logAll ? "active" : ""}" onclick="HerdrGitUi.setLogAll(true)">All branches</button>${compare}</div><div class="git-ui-log">${(data.lines || []).map((line) => renderLogLine(line, refsByHash)).join("")}</div>`);
     if (view.pendingLogScrollHash) {
       const hash = view.pendingLogScrollHash;
       view.pendingLogScrollHash = "";
@@ -1209,13 +1210,15 @@
     }
   }
 
-  function renderLogLine(line) {
+  function renderLogLine(line, refsByHash) {
     const parsed = parseLogGraphLine(line);
     const graph = parsed.graph;
     const hash = parsed.hash;
     const detail = splitLogDecorations(parsed.message);
-    const labelText = detail.labels.map(shortLogRefLabel).filter(Boolean).join(" · ");
-    const labelTitle = detail.labels.join(", ");
+    const labelsFromRefs = hash ? splitRefLabels(refsByHash && refsByHash[hash.slice(0, 8)]) : [];
+    const rawLabels = labelsFromRefs.length ? labelsFromRefs : detail.labels;
+    const labelText = rawLabels.map(shortLogRefLabel).filter(Boolean).join(" · ");
+    const labelTitle = rawLabels.join(", ");
     const labels = labelText ? `<span class="git-ui-log-branch-shadow" title="${esc(labelTitle)}">${esc(labelText)}</span>` : "";
     const selected = hash && (((active() || {}).selectedLogCommits || []).includes(hash));
     const click = hash ? ` onclick="HerdrGitUi.selectLogCommit(event,'${arg(hash)}')"` : "";
@@ -1230,6 +1233,10 @@
       .replace(/^refs\/remotes\//, "")
       .replace(/^tag:\s*/, "tag ")
       .trim();
+  }
+
+  function splitRefLabels(value) {
+    return String(value || "").split(",").map((label) => label.trim()).filter(Boolean);
   }
 
   function scrollToLogCommit(hash) {

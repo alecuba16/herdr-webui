@@ -119,33 +119,32 @@
   color: var(--accent);
 }
 .git-ui-log-body {
-  align-items: center;
+  align-items: flex-start;
   display: flex;
+  flex-direction: column;
+  gap: 1px;
   min-width: 0;
-  position: relative;
 }
 .git-ui-log-branch-shadow {
-  color: var(--accent);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 16%, transparent), transparent 70%);
+  border-left: 2px solid color-mix(in srgb, var(--accent) 70%, var(--border2));
+  border-radius: 6px;
+  color: color-mix(in srgb, var(--accent) 78%, var(--fg));
+  display: block;
   font-size: 11px;
   font-weight: 800;
-  inset: 50% 0 auto 0;
   letter-spacing: 0.04em;
-  opacity: 0.22;
+  max-width: 100%;
+  opacity: 0.9;
   overflow: hidden;
-  pointer-events: none;
-  position: absolute;
+  padding: 1px 8px 1px 6px;
   text-overflow: ellipsis;
-  text-shadow: 0 0 12px color-mix(in srgb, var(--accent) 35%, transparent);
-  transform: translateY(-50%);
+  text-shadow: 0 0 10px color-mix(in srgb, var(--accent) 32%, transparent);
   white-space: nowrap;
-  z-index: 0;
 }
 .git-ui-log-msg {
   min-width: 0;
   overflow: hidden;
-  position: relative;
   text-overflow: ellipsis;
-  text-shadow: 0 1px 4px var(--panel), 0 0 10px var(--panel);
   white-space: nowrap;
-  z-index: 1;
 }
