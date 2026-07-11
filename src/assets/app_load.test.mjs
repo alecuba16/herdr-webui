@@ -271,7 +271,10 @@ describe("app bundle load", () => {
     match(html, /syntax\/search colors use shared theme tokens/);
     match(html, /Search selections, selected files, split panes, and unsaved edit drafts stay attached to each open workspace\/worktree while switching panels/);
     match(html, /priority red deleted, yellow modified, green new/);
-    match(html, /Git selector opens repo tools for diff, stage\/unstage, discard, commit, commit & push, pull, push\/force-push, rebase, conflicts, stash, branches, cleanup, and worktree prune; file view can toggle unified\/side-by-side diffs/);
+    match(html, /Git selector opens repo tools for diff, stage\/unstage, discard, commit, commit & push, pull, push\/force-push, rebase, conflicts, stash, branches, cleanup, and worktree prune/);
+    match(html, /Changes, log, stash, and cleanup use one exclusive segmented toggle/);
+    match(html, /file filter sits below the action toolbar/);
+    match(html, /cleanup uses the shared broom icon/);
     match(html, /Prefix then \/ or the header magnifier opens one palette for workspaces, repos, worktrees, labels, agents, panels, file\/folder results, and file-content matches/);
     match(html, /Alt\+F selects files, Alt\+D selects folders, Alt\+1\/2\/3 toggles sections, and Alt\+↑\/↓ expands content context/);
     match(html, /Alt\+F\/Alt\+D inside the palette to switch file or folder search, Alt\+1\/2\/3 to collapse or expand search sections, and Alt\+↑\/↓ to expand selected content-match context/);
@@ -296,6 +299,11 @@ describe("app bundle load", () => {
     vm.runInContext(source, ctx);
 
     match(gitUiSource, /git-ui-cleanup-tab-icon/);
+    match(gitUiSource, /renderGitViewTabs/);
+    match(gitUiSource, /git-ui-view-toggle/);
+    ok(gitUiSource.indexOf("Worktree actions") < gitUiSource.indexOf("git-ui-file-filter"));
+    match(readFileSync(new URL("./desktop/git_ui/layout.css", import.meta.url), "utf8"), /git-ui-view-toggle-group/);
+    match(readFileSync(new URL("./icons/broom.svg", import.meta.url), "utf8"), /Broom sweeping dust icon/);
     match(gitUiSource, /scanCleanup/);
     match(gitUiSource, /selectAllCleanup/);
     match(gitUiSource, /Delete selected/);

@@ -115,6 +115,52 @@
   flex-wrap: wrap;
   gap: 6px;
 }
+.git-ui-view-toolbar {
+  padding-bottom: 8px;
+}
+.git-ui-view-toggle-group {
+  align-items: stretch;
+  background: transparent;
+  border: 1px solid var(--accent-2-border);
+  border-radius: 11px;
+  display: inline-flex;
+  gap: 0;
+  min-width: 0;
+  overflow: hidden;
+  padding: 0;
+  width: 100%;
+}
+.git-ui-view-toggle {
+  align-items: center;
+  background: var(--accent-2);
+  border: 0;
+  border-radius: 0;
+  color: var(--accent-1);
+  cursor: pointer;
+  display: inline-flex;
+  flex: 1 1 0;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+  gap: 4px;
+  justify-content: center;
+  min-width: 0;
+  padding: 7px 8px;
+  text-transform: capitalize;
+}
+.git-ui-view-toggle + .git-ui-view-toggle {
+  border-left: 1px solid var(--accent-2-border);
+}
+.git-ui-view-toggle:hover,
+.git-ui-view-toggle:focus {
+  background: color-mix(in srgb, var(--accent-1), transparent 88%);
+  outline: 0;
+}
+.git-ui-view-toggle.active {
+  background: var(--accent-1);
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--accent-1), transparent 74%);
+  color: var(--accent-fg);
+}
 .git-ui-file-filter {
   align-items: center;
   background: var(--bg);
