@@ -400,11 +400,35 @@ describe("HerdrEditor line number helpers", () => {
     const html = await createFallbackEditor();
     assert.match(html, /herdr-editor-numbered-code/);
     assert.match(html, />1<\/span><span>2<\/span>/);
+    assert.match(html, /herdr-editor-find/);
+    assert.match(html, /herdr-editor-replace-query[^>]*disabled/);
   });
 
   it("can hide line numbers in fallback previews after CodeMirror load failure", async () => {
     const html = await createFallbackEditor({ lineNumbers: false });
     assert.doesNotMatch(html, /herdr-editor-numbered-code/);
+  });
+
+
+  it("supports match-case and regex range detection", () => {
+    const context = { window: {}, document: { createElement() { return {}; }, body: { appendChild() {} } }, Promise };
+    const source = readFileSync(new URL("./shared/editor.js", import.meta.url), "utf8");
+    vm.runInNewContext(source, context);
+
+    const helper = context.window.HerdrEditor;
+    assert.equal(helper.findRanges("Alpha alpha alpha-42", "alpha", { matchCase: false, regex: false }).ranges.length, 3);
+    assert.equal(helper.findRanges("Alpha alpha alpha-42", "alpha", { matchCase: true, regex: false }).ranges.length, 2);
+    const regexResult = helper.findRanges("Alpha alpha alpha-42", "alpha-\\d+", { matchCase: true, regex: true });
+    assert.equal(regexResult.ranges.length, 1);
+    assert.equal(regexResult.ranges[0].to, "Alpha alpha alpha-42".length);
+    assert.match(helper.findRanges("text", "[", { matchCase: false, regex: true }).error, /Invalid regex/);
+  });
+
+  it("enables replace controls only for editable fallback editors", async () => {
+    const html = await createFallbackEditor({ readonly: false });
+    assert.match(html, /<textarea/);
+    assert.match(html, /herdr-editor-find/);
+    assert.doesNotMatch(html, /herdr-editor-replace-query[^>]*disabled/);
   });
 
   it("starts read-only previews with the CodeMirror shell and then mounts CodeMirror", async () => {
