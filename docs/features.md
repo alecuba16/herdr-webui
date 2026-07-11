@@ -65,7 +65,6 @@ File browser:
 - The content Search button opens backend file-content search. Results are grouped by file, can be expanded/collapsed globally or per file, show highlighted line matches with configurable context, and lazy-load full per-file matches only when needed. Each match can open the full file or enable an editor-style snippet for safe hash-guarded save.
 - File browser Git status colors are enabled by default and can be toggled in Settings under `File browser git status colors`. When enabled, the backend colors file and directory entries by propagated Git status: red for deleted, yellow for modified/conflicted, and green for new/untracked, with priority red > yellow > green for parent folders.
 - The directory picker (Browse buttons in Git UI) includes the same debounced search and always-visible `...` go-up entry as the file browser. Go-up transitions from home (`~`) to filesystem root (`/`) when at the top of the home directory.
-
 - File tree indentation is configurable with `Tree indentation` and shared with Git file trees. Content search defaults are configurable with context lines, auto-collapse threshold, and initial matches per file.
 
 Git UI:
