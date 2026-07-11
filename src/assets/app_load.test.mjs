@@ -357,6 +357,8 @@ describe("app bundle load", () => {
     match(sharedContentSearchCss, /herdr-content-search-context-arrow/);
     match(sharedContentSearchCss, /herdr-content-search-hit/);
     match(sharedContentSearchCss, /font-weight: 700/);
+    match(workspaceSearchSource, /preserveExpanded/);
+    match(searchSource, /renderSearchPalettePreservingScroll/);
     const editorSource = readFileSync(new URL("./vendor/codemirror_entry.mjs", import.meta.url), "utf8");
     match(editorSource, /foldGutter/);
     match(editorSource, /foldKeymap/);
@@ -389,6 +391,22 @@ describe("app bundle load", () => {
     match(readFileSync(new URL("./mobile/settings.js", import.meta.url), "utf8"), /setFileContentSearchContextLines/);
     match(gitUiSource, /placeholder="Filter files"/);
     match(gitUiSource, /filterFiles/);
+  });
+
+  it("keeps content search file expansion when context is reloaded", () => {
+    const ctx = context();
+    ctx.localStorage.setItem("herdr-web-options", JSON.stringify({ fileContentSearchDefaultExpanded: false }));
+    vm.runInContext(readFileSync(new URL("./shared/workspace_search.js", import.meta.url), "utf8"), ctx);
+    const helper = ctx.HerdrWorkspaceSearch;
+
+    const state = helper.createContentState({ expanded: { "src/a.js": true, "src/b.js": false } });
+    helper.applyContentResults(state, { files: [{ path: "src/a.js" }, { path: "src/b.js" }], total_matches: 2 }, false, { preserveExpanded: true });
+
+    equal(state.expanded["src/a.js"], true);
+    equal(state.expanded["src/b.js"], false);
+
+    helper.applyContentResults(state, { files: [{ path: "src/a.js" }], total_matches: 1 }, false);
+    equal(state.expanded["src/a.js"], false);
   });
 
   it("renders new workspace modal with manual folder field", () => {
