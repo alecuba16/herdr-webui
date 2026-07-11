@@ -47,11 +47,16 @@
     const saving = !!snippet.saving;
     const editorId = `${opts.idPrefix || "contentSearchSnippet"}-${hashId(key)}`;
     const openHere = `<button class="git-ui-btn" onclick="${callback}.openMatch('${arg(file.path)}','${arg(match.id)}')">Open here</button>`;
-    const editControls = editing
-      ? `<button class="git-ui-btn primary" ${saving ? "disabled" : ""} onclick="${callback}.saveSnippet('${arg(file.path)}','${arg(match.id)}')">${saving ? "Saving..." : "Save"}</button><button class="git-ui-btn" onclick="${callback}.cancelSnippet('${arg(file.path)}','${arg(match.id)}')">Cancel</button>`
-      : `<button class="git-ui-btn" onclick="${callback}.editSnippet('${arg(file.path)}','${arg(match.id)}')">Edit</button>`;
+    const editControls = opts.disableSnippetEditing
+      ? ""
+      : editing
+        ? `<button class="git-ui-btn primary" ${saving ? "disabled" : ""} onclick="${callback}.saveSnippet('${arg(file.path)}','${arg(match.id)}')">${saving ? "Saving..." : "Save"}</button><button class="git-ui-btn" onclick="${callback}.cancelSnippet('${arg(file.path)}','${arg(match.id)}')">Cancel</button>`
+        : `<button class="git-ui-btn" onclick="${callback}.editSnippet('${arg(file.path)}','${arg(match.id)}')">Edit</button>`;
+    const expandControls = opts.disableSnippetExpand
+      ? ""
+      : `<button class="git-ui-btn" onclick="${callback}.expandSnippet('${arg(file.path)}','${arg(match.id)}','up')">More above</button><button class="git-ui-btn" onclick="${callback}.expandSnippet('${arg(file.path)}','${arg(match.id)}','down')">More below</button>`;
     return `<article class="herdr-content-search-match${dirty ? " dirty" : ""}" data-snippet-key="${esc(key)}" data-editor-id="${esc(editorId)}">
-      <header><strong>Line ${Number(match.line || 0)}</strong><span>${esc(file.path)}</span><div class="herdr-content-search-actions">${openHere}${editControls}<button class="git-ui-btn" onclick="${callback}.expandSnippet('${arg(file.path)}','${arg(match.id)}','up')">More above</button><button class="git-ui-btn" onclick="${callback}.expandSnippet('${arg(file.path)}','${arg(match.id)}','down')">More below</button></div></header>
+      <header><strong>Line ${Number(match.line || 0)}</strong><span>${esc(file.path)}</span><div class="herdr-content-search-actions">${openHere}${editControls}${expandControls}</div></header>
       ${snippet.error ? `<div class="file-browser-error">${esc(snippet.error)}</div>` : ""}
       ${editing ? `<div id="${esc(editorId)}" class="herdr-content-search-editor"></div>` : linePreview(match, state.query)}
     </article>`;

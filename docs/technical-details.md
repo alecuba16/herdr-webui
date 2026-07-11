@@ -43,18 +43,19 @@ The Rust binary embeds assets with `include_str!` or `include_bytes!`. Public ro
 - `/assets/shared/file-icons.css`
 - `/assets/shared/file-tree.js`
 - `/assets/shared/file-content-search.js`
+- `/assets/shared/workspace-search.js`
 - `/assets/vendor/codemirror.js`
 - `/assets/shared/editor.js`
 - desktop assets under `/assets/desktop/...`
 - mobile assets under `/assets/mobile/...`
 
-`app_boot.js` loads layout CSS, then shared color tokens, shared icon CSS, shared JS, and finally layout-specific JS. File icon data is a shared module loaded before `file-tree.js`, so desktop and mobile use the same mappings. Content-search rendering is also shared, with desktop and mobile owning only controller state and backend calls.
+`app_boot.js` loads layout CSS, then shared color tokens, shared icon CSS, shared JS, and finally layout-specific JS. File icon data is a shared module loaded before `file-tree.js`, so desktop and mobile use the same mappings. Content-search and workspace-search helpers are also shared, with desktop and mobile owning only controller state and backend calls.
 
 ## File explorer
 
 ### Search with folder context
 
-When filtering files, the UI does not flatten matching files into a pathless list. It rebuilds the parent directory chain for each match. This keeps the path visible without requiring the full tree to stay expanded.
+When searching files or folders from the header search, the UI does not flatten matching paths into a pathless list. It rebuilds the parent directory chain for each match. This keeps the path visible without requiring the full tree to stay expanded.
 
 ### Git status propagation
 
@@ -77,7 +78,7 @@ Git status and path propagation depend on repository state, ignore rules, rename
 File explorer state is cached per open workspace/worktree identity. It preserves:
 
 - selected file,
-- search query and scope,
+- search selections and last opened result,
 - content-search result tab state,
 - split pane sizes,
 - editing mode,
@@ -86,9 +87,31 @@ File explorer state is cached per open workspace/worktree identity. It preserves
 
 When a workspace or worktree closes, the cached state is forgotten. Async file fetches write back to the captured workspace state, so switching panels does not corrupt another workspace panel.
 
+### Unified header search
+
+The header search is the single search entry point on desktop and mobile. It can render these sections in a configurable order:
+
+- workspaces/worktrees/repos/agents/panels from browser state,
+- file names for the focused workspace/worktree from backend tree search,
+- folder names for the focused workspace/worktree from backend tree search,
+- file-content matches for the focused workspace/worktree from backend content search.
+
+`src/assets/shared/workspace_search.js` owns shared settings normalization, backend request helpers, parent-aware tree rendering for path results, content-result picker rendering, and match highlighting. Desktop `src/assets/desktop/search.js` and mobile `src/assets/mobile/app.js` own only controller state, keyboard/touch handling, and opening selected results. If a section is disabled in Settings, the controller does not request that data.
+
+Keyboard behavior:
+
+- prefix then `/` or the header magnifier opens search,
+- arrows move through visible results,
+- Enter opens the selected target, path result, or content match,
+- Esc closes search,
+- `Alt+F` selects the file-name section,
+- `Alt+D` selects the folder-name section.
+
+Opening a content match calls the file browser with path, line, and query highlight data. The file opens in the same read-only CodeMirror surface used by normal previews and scrolls to the matched line when supported.
+
 ### Content search
 
-The file explorer has one search input controlled by the magnifier and tree focus. File and Folder scopes call backend tree search with configurable page size. Content scope uses backend-owned repository traversal and matching, rendering results in a closable desktop right-side tab or mobile inline panel. Routes:
+Content search uses backend-owned repository traversal and matching. Results render in the unified header search and in the file explorer content-result renderer when a dedicated content panel is needed. Routes:
 
 - `GET /api/file-browser/content-search`: bounded breadth-first scan from the current file tree root, grouped by file.
 - `GET /api/file-browser/content-search/file`: lazy full match load for one file when the group is expanded.
@@ -97,6 +120,11 @@ The file explorer has one search input controlled by the magnifier and tree focu
 Browser-local configurable values:
 
 - `fileBrowserPathSearch`: enables/disables backend File/Folder search from the unified search control,
+- `searchWorkspacesEnabled`: enables/disables workspace/worktree/panel results,
+- `searchFilesEnabled`: enables/disables file-name results,
+- `searchFoldersEnabled`: enables/disables folder-name results,
+- `searchContentEnabled`: enables/disables file-content results,
+- `searchSectionOrder`: comma-separated section order. Valid values are `workspaces`, `files`, and `content`,
 - `fileBrowserSearchPageSize`: file/folder result page size sent as `limit`,
 - `fileContentSearchMinChars`: minimum characters before content search runs,
 - `fileContentSearchPageSize`: content result file groups per lazy page,
@@ -180,6 +208,11 @@ Settings are stored in `localStorage` under `herdr-web-options`. Main defaults a
 | `fileBrowserGitStatus` | `true` | Show backend-provided Git colors. |
 | `fileBrowserLineNumbers` | `true` | Show line numbers in file previews. |
 | `fileBrowserPathSearch` | `true` | Enable backend file/folder search from the file explorer search control. |
+| `searchWorkspacesEnabled` | `true` | Show workspace/worktree/panel results in unified header search. |
+| `searchFilesEnabled` | `true` | Show backend file-name results in unified header search. |
+| `searchFoldersEnabled` | `true` | Show backend folder-name results in unified header search. |
+| `searchContentEnabled` | `true` | Show backend file-content results in unified header search. |
+| `searchSectionOrder` | `workspaces,files,content` | Section order for unified header search. Invalid or missing values are normalized. |
 | `fileBrowserSearchPageSize` | `100` | File/folder search page size, clamped 10 to 500. |
 | `fileContentSearchMinChars` | `3` | Minimum characters before content search runs, clamped 1 to 20. |
 | `fileContentSearchPageSize` | `50` | Content-search file groups loaded per page, clamped 10 to 500. |
@@ -204,8 +237,9 @@ Main user-facing functionality is documented in [Features](features.md). Technic
 | Terminal | Herdr protocol bridge, auth/session routing, WebSocket frame validation. | xterm attach, scroll-follow state, paste chunking, layout sizing. |
 | Workspaces/worktrees | Herdr API proxying, compatibility fallback, service-level validation. | List ordering, local labels, action menus, open/create/remove flows. |
 | Git UI | Git CLI commands, path/ref validation, diff/log/status parsing, cleanup scans. | Drawer rendering, shortcuts, staged/unstaged file interactions, diff controls. |
-| File explorer tree | Safe path cleaning, directory listing, backend file/folder search, pagination, Git status propagation. | Tree rendering, focus/type-to-search UX, selected file state, scroll preservation. |
-| File content search | Traversal, text matching, caps, lazy file detail loads, snippet save validation. | Unified query scope, closable results tab, grouped result rendering, expand/collapse state, matched-line editor opening, editor mounting. |
+| File explorer tree | Safe path cleaning, directory listing, backend file/folder search, pagination, Git status propagation. | Tree rendering, selected file state, scroll preservation, open-at-path behavior. |
+| Unified search | Backend file/folder/content results, pagination, content-match caps. | Section ordering, keyboard/touch selection, visible result rendering, matched-line editor opening. |
+| File content search | Traversal, text matching, caps, lazy file detail loads, snippet save validation. | Grouped result rendering, expand/collapse state, editor mounting. |
 | Settings/help | Runtime server settings and safe defaults. | Browser-local options, settings grouping/search, in-app Help content. |
 
 This split keeps expensive or repository-sensitive work in Rust and keeps browser code focused on UI state and rendering.
@@ -221,7 +255,7 @@ This split keeps expensive or repository-sensitive work in Rust and keeps browse
 
 ### Frontend rendering work
 
-- Shared modules avoid duplicate browser computation. `file_tree.js`, `file_icons.js`, `file_content_search.js`, `editor.js`, and terminal helpers are reused by desktop/mobile.
+- Shared modules avoid duplicate browser computation. `file_tree.js`, `file_icons.js`, `workspace_search.js`, `file_content_search.js`, `editor.js`, and terminal helpers are reused by desktop/mobile.
 - File content search groups are collapsed by default when result counts exceed the configured threshold. Full per-file matches are lazy-loaded only when needed.
 - CodeMirror is preloaded once and reused for preview, edit, Git hunk editing, and snippet editing. A numbered HTML fallback exists only for load failure.
 - Desktop terminal output is coalesced once per animation frame before xterm writes. Attach frames have suppression logic so large initial frames do not reveal partial output.
@@ -230,7 +264,7 @@ This split keeps expensive or repository-sensitive work in Rust and keeps browse
 
 ### State and refresh model
 
-- File explorer state is scoped by open workspace/worktree identity. Switching panels restores search, selected files, split panes, edit mode, and drafts without refetching unrelated UI state.
+- File explorer state is scoped by open workspace/worktree identity. Switching panels restores selected files, last search selections, split panes, edit mode, and drafts without refetching unrelated UI state.
 - Closing a workspace/worktree forgets only UI cache. It does not mutate repository files or Herdr backend state.
 - Refresh retriggers backend calculations for Git status and tree/content search, which avoids stale derived state in the browser.
 
@@ -280,7 +314,7 @@ Current shared tokens cover:
 The in-app Help and Shortcuts modal documents user-facing behavior, including:
 
 - terminal shortcuts,
-- file explorer tree search, content search, Git color priority, icons, read-only preview, line numbers, folding, and workspace state preservation,
+- unified header search, file/folder/content search, Git color priority, icons, read-only preview, line numbers, folding, and workspace state preservation,
 - Git UI actions and diff modes,
 - command palette behavior.
 

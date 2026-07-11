@@ -669,7 +669,7 @@ describe("desktop file browser editor integration", () => {
     assert.match(document.getElementById("fileBrowserPanel").innerHTML, /Edit/);
   });
 
-  it("keeps search and editing draft per workspace, then forgets closed workspace state", async () => {
+  it("keeps editing draft per workspace, then forgets closed workspace state", async () => {
     const document = createFakeDocument();
     const editorCalls = [];
     const requests = [];
@@ -727,26 +727,23 @@ describe("desktop file browser editor integration", () => {
     const workspaceB = { workspace_id: "ws-b", cwd: "/repo-b" };
 
     await context.window.HerdrFileBrowser.open(workspaceA);
-    context.window.HerdrFileBrowser.filter("demo");
-    await new Promise((resolve) => setTimeout(resolve, 0));
     context.window.HerdrFileBrowser.select(encodeURIComponent("src/demo.py"));
     await new Promise((resolve) => setTimeout(resolve, 0));
     context.window.HerdrFileBrowser.edit(encodeURIComponent("src/demo.py"));
     editorCalls.at(-1).onChange("print('draft-a')");
 
     await context.window.HerdrFileBrowser.open(workspaceB);
-    assert.doesNotMatch(document.getElementById("fileBrowserPanel").innerHTML, /id="fileBrowserFilter" value="demo"/);
+    assert.doesNotMatch(document.getElementById("fileBrowserPanel").innerHTML, /print\('draft-a'\)/);
 
     await context.window.HerdrFileBrowser.open(workspaceA);
     const restoredPanel = document.getElementById("fileBrowserPanel").innerHTML;
-    assert.match(restoredPanel, /id="fileBrowserFilter" value="demo"/);
+    assert.match(restoredPanel, /Use header search/);
     assert.equal(editorCalls.at(-1).path, "src/demo.py");
     assert.equal(editorCalls.at(-1).readonly, false);
     assert.equal(editorCalls.at(-1).content, "print('draft-a')");
-    assert.ok(requests.some((url) => url.includes("q=demo")));
 
     context.window.HerdrFileBrowser.forgetWorkspace(workspaceA);
     await context.window.HerdrFileBrowser.open(workspaceA);
-    assert.doesNotMatch(document.getElementById("fileBrowserPanel").innerHTML, /id="fileBrowserFilter" value="demo"/);
+    assert.doesNotMatch(document.getElementById("fileBrowserPanel").innerHTML, /print\('draft-a'\)/);
   });
 });

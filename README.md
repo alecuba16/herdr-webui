@@ -30,9 +30,10 @@ The README is the project summary and documentation index. Detailed functionalit
 - Multi-workspace terminal UI with desktop and mobile layouts.
 - Workspace and linked worktree navigation with per-panel terminal state.
 - Git UI for status, diffs, staging, commits, stash, branches, cleanup, worktrees, conflicts, blame, and file history.
-- File explorer with backend Git status colors, parent-aware backend file/folder search, backend content search in a closable results tab, type icons, read-only CodeMirror preview, edit mode, line numbers, matched-line opening, and folding.
-- Per-workspace file explorer state while workspaces/worktrees are open, including selected files, filters, edit mode, split panes, and drafts.
-- Settings for keyboard shortcuts, theme colors, terminal behavior, notifications, worktree defaults, file browser behavior, and content-search defaults.
+- Unified header search for workspaces/worktrees, panels, file names, folder names, and file-content matches.
+- File explorer with backend Git status colors, parent-aware backend file/folder search, backend content search, type icons, read-only CodeMirror preview, edit mode, line numbers, matched-line opening, and folding.
+- Per-workspace file explorer state while workspaces/worktrees are open, including selected files, search selections, edit mode, split panes, and drafts.
+- Settings for keyboard shortcuts, theme colors, terminal behavior, notifications, worktree defaults, file browser behavior, enabled search sections, search section ordering, and content-search defaults.
 - Help button documents visible features and shortcuts in-app.
 
 See [Features](docs/features.md) for full behavior details.
@@ -42,7 +43,7 @@ See [Features](docs/features.md) for full behavior details.
 - Backend: Rust Axum server, explicit authenticated API routes, embedded assets, Herdr protocol bridge, Git/file-system operations.
 - Frontend: vanilla JS/CSS assets, no runtime framework, shared modules for tree rendering, icons, editor mounting, content search, terminal helpers, and theme tokens.
 - Editor: CodeMirror bundle is preloaded before shared editor code so file previews mount directly with final editor styling.
-- File explorer: expensive work is backend-owned: tree listing, Git status propagation, content search traversal, safe file read/write, and hash-guarded snippet/file saves.
+- File explorer/search: expensive work is backend-owned: tree listing, file/folder search, Git status propagation, content search traversal, safe file read/write, and hash-guarded snippet/file saves.
 - Static assets: compiled into the binary with `include_str!`/`include_bytes!` and served from stable `/assets/...` routes.
 
 See [Technical details](docs/technical-details.md) for routes, limits, data flow, and settings.

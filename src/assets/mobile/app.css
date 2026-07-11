@@ -1022,3 +1022,52 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
 .herdr-content-search-line code { white-space: pre; }
 .herdr-content-search-line.matched { background: var(--herdr-search-match-bg); }
 .herdr-content-search-hit { background: var(--herdr-search-hit-bg); border-radius: 3px; color: var(--herdr-search-hit-fg); padding: 0 2px; }
+
+.mobile-search-sheet {
+  background: color-mix(in srgb, var(--bg), transparent 12%);
+  inset: 0;
+  padding: 14px;
+  position: fixed;
+  z-index: 60;
+}
+.mobile-search-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  max-height: calc(var(--herdr-mobile-viewport-height, 100vh) - 28px);
+  overflow: hidden;
+}
+.mobile-search-head {
+  border-bottom: 1px solid var(--border);
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 10px;
+}
+.mobile-search-head input {
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--fg);
+  padding: 9px 10px;
+}
+.mobile-search-results {
+  overflow: auto;
+  padding: 10px;
+}
+.mobile-search-section {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  margin-bottom: 10px;
+  padding: 8px;
+}
+.mobile-search-section h3 {
+  font-size: 13px;
+  margin: 0 0 8px;
+}
+.mobile-search-section .herdr-file-tree {
+  margin: 0;
+}
