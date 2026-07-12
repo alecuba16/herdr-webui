@@ -3504,6 +3504,47 @@ mod tests {
     }
 
     #[test]
+    fn parses_backend_modes_and_session_targets() {
+        assert_eq!(
+            BackendMode::parse("external-herdr").unwrap(),
+            BackendMode::ExternalHerdr
+        );
+        assert_eq!(
+            BackendMode::parse("external").unwrap(),
+            BackendMode::ExternalHerdr
+        );
+        assert_eq!(
+            BackendMode::parse("herdr").unwrap(),
+            BackendMode::ExternalHerdr
+        );
+        assert_eq!(BackendMode::parse("builtin").unwrap(), BackendMode::Builtin);
+        assert_eq!(
+            BackendMode::parse("built-in").unwrap(),
+            BackendMode::Builtin
+        );
+        assert_eq!(BackendMode::parse("auto").unwrap(), BackendMode::Auto);
+        assert_eq!(BackendMode::Builtin.as_str(), "builtin");
+        assert_eq!(BackendMode::Auto.as_str(), "auto");
+        assert!(BackendMode::Builtin.is_builtin());
+        assert!(!BackendMode::ExternalHerdr.is_builtin());
+        assert!(BackendMode::parse("bad")
+            .unwrap_err()
+            .to_string()
+            .contains("invalid --backend-mode"));
+
+        assert_eq!(
+            SessionBackendTarget::parse("external"),
+            Some(SessionBackendTarget::ExternalHerdr)
+        );
+        assert_eq!(
+            SessionBackendTarget::parse("built-in"),
+            Some(SessionBackendTarget::Builtin)
+        );
+        assert_eq!(SessionBackendTarget::Builtin.as_str(), "builtin");
+        assert_eq!(SessionBackendTarget::parse("unknown"), None);
+    }
+
+    #[test]
     fn parses_https_off_opt_out() {
         let args = ["--https", "off"].map(String::from);
 

@@ -134,9 +134,13 @@ impl Palette {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
 
     #[test]
     fn parses_theme_names_and_aliases() {
+        assert_eq!("".parse::<TuiTheme>().unwrap(), TuiTheme::System);
+        assert_eq!(" auto ".parse::<TuiTheme>().unwrap(), TuiTheme::System);
+        assert_eq!("DARK".parse::<TuiTheme>().unwrap(), TuiTheme::Dark);
         assert_eq!("dark".parse::<TuiTheme>().unwrap(), TuiTheme::Dark);
         assert_eq!("light".parse::<TuiTheme>().unwrap(), TuiTheme::Light);
         assert_eq!("system".parse::<TuiTheme>().unwrap(), TuiTheme::System);
@@ -159,5 +163,54 @@ mod tests {
         let palette = Palette::system(TerminalTheme::Light);
         assert_eq!(palette.bg, Color::Reset);
         assert_eq!(palette.text, Color::Rgb(30, 41, 59));
+
+        let dark = Palette::system(TerminalTheme::Dark);
+        assert_eq!(dark.bg, Color::Reset);
+        assert_eq!(dark.text, Color::Rgb(205, 214, 244));
+    }
+
+    #[test]
+    fn theme_env_prefers_webui_setting_then_jcode_then_system() {
+        let _guard = env_lock().lock().unwrap();
+        let original_webui = std::env::var_os("HERDR_WEBUI_TUI_THEME");
+        let original_jcode = std::env::var_os("JCODE_THEME");
+
+        std::env::set_var("HERDR_WEBUI_TUI_THEME", "light");
+        std::env::set_var("JCODE_THEME", "dark");
+        assert_eq!(TuiTheme::from_env(), TuiTheme::Light);
+
+        std::env::remove_var("HERDR_WEBUI_TUI_THEME");
+        assert_eq!(TuiTheme::from_env(), TuiTheme::Dark);
+
+        std::env::set_var("JCODE_THEME", "invalid");
+        assert_eq!(TuiTheme::from_env(), TuiTheme::System);
+
+        restore_env_var("HERDR_WEBUI_TUI_THEME", original_webui);
+        restore_env_var("JCODE_THEME", original_jcode);
+    }
+
+    #[test]
+    fn palette_default_and_for_theme_use_dark_fallback() {
+        let default = Palette::default();
+        let dark = Palette::for_theme(TuiTheme::Dark);
+
+        assert_eq!(default.bg, dark.bg);
+        assert_eq!(default.accent, Color::Rgb(137, 180, 250));
+        assert_eq!(default.green, Color::Rgb(166, 227, 161));
+        assert_eq!(default.yellow, Color::Rgb(249, 226, 175));
+        assert_eq!(default.red, Color::Rgb(243, 139, 168));
+        assert_eq!(default.teal, Color::Rgb(148, 226, 213));
+    }
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn restore_env_var(key: &str, value: Option<std::ffi::OsString>) {
+        match value {
+            Some(value) => std::env::set_var(key, value),
+            None => std::env::remove_var(key),
+        }
     }
 }
