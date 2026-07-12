@@ -37,14 +37,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if cli.once {
-        let mut app = TuiApp::new(client, options.refresh_interval);
+        let mut app = TuiApp::new_with_theme(client, options.refresh_interval, options.theme);
         app.refresh()?;
         app.load_selected_terminal_history(120, 32);
         println!("{}", app.text_snapshot());
         return Ok(());
     }
 
-    run_interactive(client, options.refresh_interval)?;
+    run_interactive(client, options.refresh_interval, options.theme)?;
     Ok(())
 }
 
@@ -59,10 +59,11 @@ fn print_summary(client: &BackendClient) -> Result<(), Box<dyn std::error::Error
 fn run_interactive(
     client: BackendClient,
     refresh_interval: Duration,
+    theme: herdr_webui::tui::TuiTheme,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut terminal_guard = TerminalGuard::enter()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
-    let mut app = TuiApp::new(client, refresh_interval);
+    let mut app = TuiApp::new_with_theme(client, refresh_interval, theme);
     app.refresh()?;
     let mut live_terminal: Option<LiveTerminal> = None;
     let mut last_draw = Instant::now();
@@ -339,6 +340,10 @@ impl Cli {
                         .map_err(|_| format!("invalid --refresh-ms value: {value}"))?;
                     options.refresh_interval = Duration::from_millis(millis.max(50));
                 }
+                "--theme" => {
+                    let value = next_value(&mut args, "--theme")?;
+                    options.theme = value.parse()?;
+                }
                 other => return Err(format!("unknown argument: {other}\n{}", help_text())),
             }
         }
@@ -360,7 +365,7 @@ fn next_value(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<Str
 }
 
 fn help_text() -> String {
-    "Usage: herdr-webui-tui [--session NAME] [--api-socket PATH --terminal-socket PATH] [--summary|--once] [--refresh-ms MS]\n\nRuns a terminal UI against the built-in backend sockets.\n  --summary       print backend/session summary and exit\n  --once          print a text snapshot and exit\n  --session NAME  use built-in socket namespace, default: default"
+    "Usage: herdr-webui-tui [--session NAME] [--api-socket PATH --terminal-socket PATH] [--summary|--once] [--refresh-ms MS] [--theme dark|light|system]\n\nRuns a terminal UI against the built-in backend sockets.\n  --summary       print backend/session summary and exit\n  --once          print a text snapshot and exit\n  --session NAME  use built-in socket namespace, default: default\n  --theme MODE    color theme: system (terminal), dark, or light; default: HERDR_WEBUI_TUI_THEME/JCODE_THEME/system"
         .to_string()
 }
 
@@ -378,6 +383,12 @@ mod tests {
         .unwrap();
         assert!(cli.summary);
         assert_eq!(cli.options.refresh_interval, Duration::from_millis(250));
+    }
+
+    #[test]
+    fn parses_theme_flag() {
+        let cli = Cli::parse(["--theme".to_string(), "light".to_string()]).unwrap();
+        assert_eq!(cli.options.theme, herdr_webui::tui::TuiTheme::Light);
     }
 
     #[test]

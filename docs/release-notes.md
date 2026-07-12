@@ -1,5 +1,17 @@
 # Release notes
 
+## 0.2.39 Release Notes
+
+### Built-in backend and TUI foundation
+
+- Makes the built-in backend the default for fresh WebUI settings while keeping external Herdr as an explicit compatibility mode.
+- Adds the first-party `herdr-webui-tui` binary over the reusable `backend_client` layer and built-in sockets. It supports workspace/agent navigation, live terminal attach, input, paste, resize, detach, summary smoke output, and one-shot text snapshots.
+- Installs both `herdr-webui` and `herdr-webui-tui` from the macOS and Linux install/update targets.
+- Improves Jcode detection with Herdr `jcode-support` manifest-style screen detection, process-tree fallback, and active background-task markers so status remains `working` while tasks are still running.
+- Adds TUI terminal rewrite handling for Jcode progress/status lines plus ANSI SGR rendering for foreground/background colors, bold, dim, italic, and underline.
+- Adds TUI theme modes matching Jcode's `system`, `light`, and `dark` shape. `system` follows terminal background detection and falls back to dark when unsupported.
+- Documents current Herdr TUI parity gaps: layout mutation, scrollback copy/search, mouse/touch, worktree dialogs, configurable keymaps, notification integrations, true event hub, and durable built-in session persistence.
+
 ## 0.2.28 Release Notes
 
 ### Unified search and file explorer polish

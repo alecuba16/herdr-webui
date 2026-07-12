@@ -49,6 +49,7 @@ Binary output:
 
 ```text
 target/release/herdr-webui
+target/release/herdr-webui-tui
 ```
 
 Runtime version:
@@ -97,6 +98,7 @@ HERDR_WEB_HERDR_BIN=/opt/homebrew/bin/herdr herdr-webui --https off --backend-mo
 ```text
 herdr-webui [--verbose] [--bind HOST:PORT] [--https off|auto|self-signed|files] [--tls-cert PATH --tls-key PATH] [--session NAME] [--api-socket PATH] [--client-socket PATH] [--backend-mode <external-herdr|builtin|auto>]
 herdr-webui --version
+herdr-webui-tui [--session NAME] [--api-socket PATH --terminal-socket PATH] [--refresh-ms MS] [--theme dark|light|system] [--summary|--once]
 herdr-webui install-mac [--verbose] [--bind HOST:PORT] [--https off|auto|self-signed|files] [--tls-cert PATH --tls-key PATH] [--session NAME]
 herdr-webui update-mac [--verbose]
 herdr-webui install-linux [--bind HOST:PORT] [--https off|auto|self-signed|files] [--tls-cert PATH --tls-key PATH] [--session NAME]
@@ -119,6 +121,14 @@ Backend mode details:
 - `--backend-mode auto`: prefer a live compatible external API socket, otherwise start built-in.
 - Settings → Backend writes `backend_mode` and optional `builtin_shell` to `~/.config/herdr-webui/webui-settings.json`. Existing saved settings keep their saved mode until changed.
 - Current built-in MVP supports workspace/tab/pane basics, PTY terminal attach/input/resize/reconnect, agent/Jcode tail detection, and worktree list/open/create. It intentionally does not yet provide full Herdr parity for server-side scroll/search/selection, true event push, persistence after WebUI restart, or built-in worktree remove.
+
+TUI details:
+
+- `herdr-webui-tui` connects to the same built-in socket namespace as WebUI. Run it while the WebUI service is running.
+- `--summary` and `--once` are non-interactive and safe for smoke tests.
+- `--theme dark|light|system` controls TUI colors. `system` is default and follows terminal background detection when available; `HERDR_WEBUI_TUI_THEME` or `JCODE_THEME` can set the same value.
+- Interactive mode uses Ctrl-B for the help/menu overlay, Enter to attach the selected pane terminal, and Ctrl-G to detach.
+- WebUI and TUI can run in parallel against one built-in session. Output is shared through independent terminal attaches; avoid simultaneous input to the same pane from both clients.
 
 Use `--verbose`, `-v`, or `HERDR_WEB_VERBOSE=1` with macOS service commands to print LaunchAgent diagnostics, including UID/EUID, launchctl domain, service target, plist path, and launchctl stderr.
 
@@ -178,6 +188,8 @@ Update installed binary and restart service:
 make update-mac
 make update-linux
 ```
+
+The install and update targets build with `cargo build --release --bins` and install both `herdr-webui` and `herdr-webui-tui` into `~/.local/bin` unless `LOCAL_BIN_DIR` is overridden.
 
 Uninstall service:
 

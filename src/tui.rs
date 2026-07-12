@@ -3,14 +3,17 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Frame;
 use serde_json::Value;
 
 use crate::backend_client::{BackendClient, BackendClientError, TerminalOutput};
-use crate::terminal_text::{self, StripCarriageReturn, TerminalTextOptions};
+use crate::terminal_text::{self, StripCarriageReturn};
+use crate::tui_terminal::{styled_terminal_line, terminal_output_styled_lines_lossy, TuiTextSpan};
+use crate::tui_theme::Palette;
+pub use crate::tui_theme::TuiTheme;
 
 const SPINNERS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const TAIL_LINES: usize = 240;
@@ -93,6 +96,7 @@ pub struct TuiOptions {
     pub api_socket: Option<PathBuf>,
     pub terminal_socket: Option<PathBuf>,
     pub refresh_interval: Duration,
+    pub theme: TuiTheme,
 }
 
 impl Default for TuiOptions {
@@ -102,41 +106,7 @@ impl Default for TuiOptions {
             api_socket: None,
             terminal_socket: None,
             refresh_interval: Duration::from_millis(1000),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct Palette {
-    pub bg: Color,
-    pub panel_bg: Color,
-    pub panel_alt: Color,
-    pub border: Color,
-    pub text: Color,
-    pub muted: Color,
-    pub accent: Color,
-    pub green: Color,
-    pub yellow: Color,
-    pub red: Color,
-    pub teal: Color,
-    pub mauve: Color,
-}
-
-impl Default for Palette {
-    fn default() -> Self {
-        Self {
-            bg: Color::Rgb(24, 24, 37),
-            panel_bg: Color::Rgb(17, 17, 27),
-            panel_alt: Color::Rgb(30, 30, 46),
-            border: Color::Rgb(69, 71, 90),
-            text: Color::Rgb(205, 214, 244),
-            muted: Color::Rgb(127, 132, 156),
-            accent: Color::Rgb(137, 180, 250),
-            green: Color::Rgb(166, 227, 161),
-            yellow: Color::Rgb(249, 226, 175),
-            red: Color::Rgb(243, 139, 168),
-            teal: Color::Rgb(148, 226, 213),
-            mauve: Color::Rgb(203, 166, 247),
+            theme: TuiTheme::from_env(),
         }
     }
 }
@@ -150,12 +120,15 @@ pub struct TuiApp {
     pub sidebar_focus: SidebarFocus,
     pub mode: TuiMode,
     pub pane_tail: Vec<String>,
+    pane_tail_styles: Vec<Vec<TuiTextSpan>>,
     terminal_raw_output: String,
     terminal_raw_terminal_id: Option<String>,
     pub status: String,
     pub error: Option<String>,
     pub last_refresh: Option<Instant>,
     pub refresh_interval: Duration,
+    pub theme: TuiTheme,
+    palette: Palette,
     pub tick: u64,
     dirty: bool,
 }
@@ -188,6 +161,14 @@ impl TuiSnapshot {
 
 impl TuiApp {
     pub fn new(client: BackendClient, refresh_interval: Duration) -> Self {
+        Self::new_with_theme(client, refresh_interval, TuiTheme::Dark)
+    }
+
+    pub fn new_with_theme(
+        client: BackendClient,
+        refresh_interval: Duration,
+        theme: TuiTheme,
+    ) -> Self {
         Self {
             client,
             snapshot: TuiSnapshot::default(),
@@ -196,12 +177,15 @@ impl TuiApp {
             sidebar_focus: SidebarFocus::Workspaces,
             mode: TuiMode::Navigate,
             pane_tail: Vec::new(),
+            pane_tail_styles: Vec::new(),
             terminal_raw_output: String::new(),
             terminal_raw_terminal_id: None,
             status: "connecting".to_string(),
             error: None,
             last_refresh: None,
             refresh_interval,
+            theme,
+            palette: Palette::for_theme(theme),
             tick: 0,
             dirty: true,
         }
@@ -324,8 +308,8 @@ impl TuiApp {
         self.terminal_raw_output
             .push_str(&String::from_utf8_lossy(&output.bytes));
         trim_terminal_raw_output(&mut self.terminal_raw_output);
-        let text = terminal_output_text_lossy(&self.terminal_raw_output);
-        self.set_pane_tail_from_text(&text);
+        let lines = terminal_output_styled_lines_lossy(&self.terminal_raw_output);
+        self.set_pane_tail_from_styled_lines(lines);
         self.mark_dirty();
     }
 
@@ -508,6 +492,7 @@ impl TuiApp {
     pub fn refresh_tail(&mut self) {
         let Some(pane_id) = self.selected_pane().map(|pane| pane.id.clone()) else {
             self.pane_tail.clear();
+            self.pane_tail_styles.clear();
             self.reset_terminal_output_buffer();
             return;
         };
@@ -545,6 +530,21 @@ impl TuiApp {
             .into_iter()
             .rev()
             .collect();
+        self.pane_tail_styles = vec![Vec::new(); self.pane_tail.len()];
+    }
+
+    fn set_pane_tail_from_styled_lines(&mut self, lines: Vec<Vec<TuiTextSpan>>) {
+        let start = lines.len().saturating_sub(TAIL_LINES);
+        self.pane_tail_styles = lines[start..].to_vec();
+        self.pane_tail = self
+            .pane_tail_styles
+            .iter()
+            .map(|line| {
+                line.iter()
+                    .map(|span| span.text.as_str())
+                    .collect::<String>()
+            })
+            .collect();
     }
 
     pub fn should_quit(&self) -> bool {
@@ -560,7 +560,7 @@ pub fn build_client(options: &TuiOptions) -> BackendClient {
 }
 
 pub fn render(frame: &mut Frame<'_>, app: &TuiApp) {
-    let p = Palette::default();
+    let p = &app.palette;
     let area = frame.area();
     let [body, footer] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
     let sidebar_width = if body.width >= 100 {
@@ -570,11 +570,11 @@ pub fn render(frame: &mut Frame<'_>, app: &TuiApp) {
     };
     let [sidebar, main] =
         Layout::horizontal([Constraint::Length(sidebar_width), Constraint::Min(1)]).areas(body);
-    render_sidebar(frame, sidebar, app, &p);
-    render_main(frame, main, app, &p);
-    render_footer(frame, footer, app, &p);
+    render_sidebar(frame, sidebar, app, p);
+    render_main(frame, main, app, p);
+    render_footer(frame, footer, app, p);
     if app.mode == TuiMode::Help {
-        render_help(frame, area, &p);
+        render_help(frame, area, p);
     }
 }
 
@@ -764,19 +764,21 @@ fn render_pane(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
         )));
     } else {
         let max_tail = inner.height.saturating_sub(lines.len() as u16) as usize;
-        for line in app
-            .pane_tail
-            .iter()
-            .rev()
-            .take(max_tail)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-        {
-            lines.push(Line::from(Span::styled(
-                truncate(line, inner.width as usize),
-                Style::default().fg(p.text),
-            )));
+        let start = app.pane_tail.len().saturating_sub(max_tail);
+        for index in start..app.pane_tail.len() {
+            let width = inner.width as usize;
+            let line = app
+                .pane_tail_styles
+                .get(index)
+                .filter(|spans| !spans.is_empty())
+                .map(|spans| styled_terminal_line(spans, width, p.text))
+                .unwrap_or_else(|| {
+                    Line::from(Span::styled(
+                        truncate(&app.pane_tail[index], width),
+                        Style::default().fg(p.text),
+                    ))
+                });
+            lines.push(line);
         }
     }
 
@@ -1100,15 +1102,12 @@ fn trim_terminal_raw_output(value: &mut String) {
     value.drain(..drain_to);
 }
 
-fn terminal_output_text_lossy(value: &str) -> String {
-    terminal_text::terminal_text_lossy(value, TerminalTextOptions::tui_tail())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::backend::TestBackend;
+    use ratatui::style::Color;
     use ratatui::Terminal;
     use serde_json::json;
 
@@ -1297,5 +1296,43 @@ mod tests {
         });
 
         assert_eq!(app.pane_tail, vec!["prompt abc"]);
+    }
+
+    #[test]
+    fn terminal_output_styled_lines_parse_sgr_colors_and_styles() {
+        let lines = terminal_output_styled_lines_lossy(
+            "plain \u{1b}[31;1mred\u{1b}[0m \u{1b}[38;5;42midx\u{1b}[0m \u{1b}[48;2;1;2;3mbg\u{1b}[0m",
+        );
+        assert_eq!(lines.len(), 1);
+        let spans = &lines[0];
+        assert_eq!(
+            spans
+                .iter()
+                .map(|span| span.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["plain ", "red", " ", "idx", " ", "bg"]
+        );
+        assert_eq!(spans[1].style.fg, Some(Color::Indexed(1)));
+        assert!(spans[1].style.bold);
+        assert_eq!(spans[3].style.fg, Some(Color::Indexed(42)));
+        assert_eq!(spans[5].style.bg, Some(Color::Rgb(1, 2, 3)));
+    }
+
+    #[test]
+    fn terminal_output_ingest_preserves_color_spans_for_rendering() {
+        let client = BackendClient::builtin_session(None);
+        let mut app = TuiApp::new(client, Duration::from_secs(1));
+
+        app.ingest_terminal_output(&TerminalOutput {
+            seq: 1,
+            width: 120,
+            height: 32,
+            full: true,
+            bytes: b"ok \x1b[32mgreen\x1b[0m".to_vec(),
+        });
+
+        assert_eq!(app.pane_tail, vec!["ok green"]);
+        assert_eq!(app.pane_tail_styles[0][1].text, "green");
+        assert_eq!(app.pane_tail_styles[0][1].style.fg, Some(Color::Indexed(2)));
     }
 }

@@ -31,6 +31,7 @@ The built-in backend is the default runtime for new settings. External Herdr sta
 - `pane.read` returns terminal text after common TUI rewrites: carriage return, clear-line/display, cursor movement, OSC title skipping, and ANSI/control stripping. This keeps cleared Jcode toolbars/status cards from becoming stale plain text.
 - Agent detection first inspects known argv labels, then scans terminal child process trees with a short process-table cache, then falls back to terminal-screen markers. Jcode status follows the Herdr `jcode-support` manifest bottom-line rules plus active background-task markers so running tasks remain `working` even when an input prompt is visible.
 - Built-in `events.subscribe` is currently an acknowledgement plus snapshot-refresh fallback. A true event hub is the next architectural step for full Herdr parity.
+- Status detection must stay backend-core owned, not WebSocket-owned. The preferred evolution is: PTY/process/status detectors publish internal state-change events, then WebSocket, TUI, and smoke clients subscribe through an event hub. Coupling detection to the browser WebSocket would make TUI/headless clients second-class and would make status tests depend on a UI transport.
 - Unsafe destructive operations stay explicit. `worktree.remove` returns unsupported until validation, preview, and rollback rules are implemented.
 
 ### TUI/client modularity
@@ -40,6 +41,8 @@ The TUI is intentionally separated from backend internals:
 - `src/backend_client.rs` is the reusable client boundary. It knows socket paths, JSON request/response wrapping, terminal frame IO, and error types. It does not render UI.
 - `src/tui.rs` owns TUI domain models, snapshot parsing, selection state, key mapping, text snapshot rendering, and Ratatui widgets. It consumes `BackendClient` and backend JSON, but does not know `BuiltinBackendInner` internals.
 - `src/bin/herdr-webui-tui.rs` is a thin binary shell for CLI parsing, terminal raw mode, the event loop, and the live terminal reader/writer thread.
+- Terminal text parsing is split by responsibility. `src/terminal_text.rs` provides shared plain-text terminal rewrite handling for backend snapshots. `src/tui.rs` adds styled ANSI SGR parsing for Ratatui color spans because color/style state is a TUI rendering concern.
+- TUI theme selection is isolated in `src/tui_theme.rs`. The CLI accepts `dark`, `light`, or `system`, with `system` querying the terminal background before raw mode and falling back to dark for unsupported terminals or non-interactive smoke runs.
 - This separation keeps SOLID boundaries: backend runtime has one reason to change, client transport has one reason to change, TUI state/rendering has one reason to change, and the binary only wires them together.
 - New TUI features should add typed wrappers to `BackendClient` before adding UI controls. Avoid calling built-in backend internals from `tui.rs` or the binary.
 - Herdr-like feature parity should be implemented as original UI/controller code over this client layer, not by copying Herdr source.

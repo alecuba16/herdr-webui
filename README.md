@@ -16,6 +16,16 @@ Open `http://127.0.0.1:8787`. Fresh settings default to the built-in backend, so
 cargo run -- --https off --backend-mode external-herdr
 ```
 
+The installed package also includes a first-party terminal UI:
+
+```bash
+herdr-webui-tui
+herdr-webui-tui --summary
+herdr-webui-tui --once
+```
+
+`make install-mac`, `make update-mac`, `make install-linux`, and `make update-linux` install both `herdr-webui` and `herdr-webui-tui`. The browser WebUI and TUI can run in parallel against the same built-in backend session; both attach to the same terminal socket protocol. For predictable input, only type into one client for the same pane at a time.
+
 ## Documentation layout
 
 The README is the project summary and documentation index. Detailed functionality, technical decisions, performance boundaries, styling rules, and project structure live under `docs/`.
@@ -33,6 +43,7 @@ The README is the project summary and documentation index. Detailed functionalit
 ## Functionality summary
 
 - Multi-workspace terminal UI with desktop and mobile layouts, backed by the built-in backend by default.
+- First-party `herdr-webui-tui` for terminal-native workspace/agent navigation, live attach/input/resize/detach, ANSI colors/styles, `--theme dark|light|system`, Ctrl-B help/menu, and smoke-friendly summary/once modes.
 - Workspace and linked worktree navigation with per-panel terminal state.
 - Git UI for status, diffs, staging, commits, stash, branches, cleanup, worktrees, conflicts, blame, and file history.
 - Unified header search for workspaces/worktrees, panels, file names, folder names, and file-content matches, including match-case and regex options for content search.
