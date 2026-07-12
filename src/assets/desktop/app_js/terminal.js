@@ -391,6 +391,16 @@ function terminalWheelLines(e) {
 }
 function scrollTerminalLines(lines) {
   if (!term || !Number.isFinite(lines) || lines === 0) return false;
+  if (state.backendMode === "builtin") {
+    if (!terminalUsesNormalBuffer()) return false;
+    try {
+      term.scrollLines(Math.trunc(lines));
+      setTerminalFollowPaused(!terminalAtBottom());
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
   if (sendBackendScroll(lines)) {
     updateTerminalScrollbackEstimate(lines);
     return true;
@@ -413,6 +423,7 @@ function updateTerminalScrollbackEstimate(lines) {
   setTerminalFollowPaused(terminalScrollbackOffsetEstimate > 0);
 }
 function sendBackendScroll(lines) {
+  if (state.backendMode === "builtin") return false;
   if (!termWs || termWs.readyState !== 1 || !Number.isFinite(lines) || lines === 0) return false;
   try {
     const message = JSON.stringify({

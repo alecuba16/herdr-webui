@@ -7,7 +7,7 @@ The browser UI provides workspace navigation, top panel tabs, agent status, term
 Sidebar:
 
 - The sidebar can collapse via the divider; state is stored in browser `localStorage` and collapsed mode keeps compact blocked/working/idle/done counters.
-- The header exposes unified Search, Theme, No-sleep, Worktree, New workspace, Git, and Files controls. The footer exposes session info, shortcut help, and Settings.
+- The header exposes unified Search, Theme, No-sleep, Worktree, New workspace, Git, and Files controls. The footer exposes session info, shortcut help, Settings, and backend status. Built-in backend mode is shown as `built-in` instead of the internal built-in version string.
 - Theme colors are browser-local and shared with shell controls and embedded Git UI.
 - No-sleep supports Off, Auto, 1 hour, 2 hours, 4 hours, and Infinite from a compact dropdown.
 - No-sleep status polling is adaptive: WebUI does not keep polling while no-sleep is Off and the server is healthy. Active modes and transient errors still retry so the control stays accurate without idle browser/network churn.
@@ -22,7 +22,32 @@ Settings:
 - The terminal links setting is stored in browser `localStorage` as `terminalLinks`. It defaults to enabled and controls xterm URL link detection on desktop and mobile.
 - The file browser Git status colors setting is stored in browser `localStorage` as `fileBrowserGitStatus`. It defaults to enabled and controls whether the file browser tree shows Git status colors for files and directories.
 - Unified search settings are stored in browser `localStorage` under `herdr-web-options`. They enable/disable workspace, file, folder, and content sections independently, and `searchSectionOrder` controls the order of sections in the search palette.
-- Opening Settings clears the previous search, refreshes option values, reloads server settings, and focuses the search box.
+- Opening Settings clears the previous search, refreshes option values, reloads server settings, and focuses the search box. Settings → Backend controls `backend_mode`; fresh settings default to built-in, while external Herdr and auto modes remain available for compatibility.
+
+Built-in backend:
+
+- Fresh installs and fresh `webui-settings.json` files default to the built-in backend. External Herdr remains available as an explicit compatibility mode.
+- The footer shows `built-in` when `backend_mode` resolves to the built-in backend, rather than exposing the internal built-in version string as if it were an external Herdr daemon.
+- The built-in backend owns local workspace, tab, pane, agent, terminal, and worktree state inside the WebUI process. It uses local sockets for control and terminal attach so the browser UI and TUI client share one protocol path.
+- Control API coverage includes `ping`, `server.stop`, `session.snapshot`, `workspace.list/create/rename/close`, `tab.list/create/rename/close`, `pane.list/get/layout/close/read`, `agent.list/start`, `worktree.list/open/create`, and explicit unsupported errors for unsafe `worktree.remove`.
+- `ping` reports `builtin_backend: true`, `terminal_attach: true`, `terminal_server_scroll: false`, and `jcode_detection: true` so clients can choose safe feature paths.
+- `session.snapshot` returns focused workspace/tab/pane IDs plus workspace, tab, pane, and agent lists for fast WebUI and TUI bootstrap.
+- Terminals run through `portable-pty`, inherit a login-shell-like macOS/user `PATH`, set xterm-compatible terminal env, collect recent output, and expose attach/input/paste/resize/detach over the terminal socket.
+- Built-in terminal scroll is local xterm/TUI scroll only. Server-side scrollback, search, copy mode, and selection APIs are documented gaps.
+- Agent detection covers Herdr-style aliases for Jcode, Claude, OpenCode, Cursor, and Qoder CLI from direct argv, wrapped shells, and process trees. Jcode status detection follows the Herdr `jcode-support` manifest rules and also treats active Jcode background task cards as `working` so status does not jump to `idle` while a background task is still running.
+- Built-in events currently acknowledge subscription requests and rely on snapshot refresh fallback. A true event hub is still a parity gap.
+- State is runtime-local. Durable layout/session persistence beyond settings and browser state is not complete yet.
+
+Terminal UI:
+
+- `herdr-webui-tui` ships as a second binary beside `herdr-webui`. `make install-mac`, `make update-mac`, `make install-linux`, and `make update-linux` install both binaries into `~/.local/bin` by default.
+- The TUI uses the reusable `backend_client` layer and the built-in control/terminal sockets. It does not import browser code or built-in backend internals.
+- Summary modes are available for smoke checks: `herdr-webui-tui --summary` prints backend/session counts, and `herdr-webui-tui --once` prints a text snapshot plus selected pane output.
+- Interactive mode supports workspace/agent navigation, selected-pane attach, live terminal output, keyboard input, paste, resize, detach, refresh, and a Ctrl-B help/menu overlay.
+- Terminal rendering understands common ANSI rewrites and SGR styling. Jcode progress/status lines that rewrite the same terminal row stay on that row, and ANSI foreground/background colors plus bold, dim, italic, and underline render in the TUI.
+- TUI theme modes match the Jcode branch shape: `--theme dark`, `--theme light`, or `--theme system`. `system` is the default and means terminal-driven colors; the TUI queries the terminal background with OSC 11 through `terminal-colorsaurus` before raw mode, falls back to dark when detection is unavailable, and also accepts `HERDR_WEBUI_TUI_THEME` or `JCODE_THEME`.
+- WebUI and TUI may run at the same time against the same built-in backend session. Output fans out through separate terminal attaches. Avoid sending input to the same pane from both clients at once because the PTY receives both streams in arrival order.
+- The TUI is backend/protocol paired with Herdr-like workflows, but not full native Herdr TUI parity yet. Layout mutation, copy/search scrollback, mouse/touch, worktree dialogs, configurable keymaps, and notification integrations remain gaps.
 
 Notifications and attention sounds:
 
@@ -44,15 +69,16 @@ Panels:
 
 Worktrees:
 
-- With Herdr `0.7.1` and newer, WebUI uses Herdr's native `worktree.create` support for existing local branches and deferred Git work.
-- With Herdr `0.7.0`, WebUI keeps a legacy fallback for creating a checkout from an existing branch when a checkout path is supplied.
+- Built-in backend mode owns `worktree.list`, `worktree.open`, and `worktree.create` with local Git commands. Built-in `worktree.remove` is intentionally blocked until destructive safety validation lands.
+- With external Herdr `0.7.1` and newer, WebUI uses Herdr's native `worktree.create` support for existing local branches and deferred Git work.
+- With external Herdr `0.7.0`, WebUI keeps a legacy fallback for creating a checkout from an existing branch when a checkout path is supplied.
 - Desktop worktree creation uses `Worktree default directory` to generate checkout paths from repo name and branch. Relative defaults resolve from the repo root, for example `../worktrees`.
-- WebUI subscribes to `worktree.created`, `worktree.opened`, and `worktree.removed` and refreshes workspace/agent state quickly after these events.
+- With event-capable external Herdr backends, WebUI subscribes to `worktree.created`, `worktree.opened`, and `worktree.removed` and refreshes workspace/agent state quickly after these events. Built-in mode currently acks the event subscription and relies on snapshot refresh fallback until the event hub lands.
 - `worktree.removed` events from Herdr `0.7.1` may include a workspace snapshot. This is additive; WebUI refreshes from the backend state instead of relying only on the event payload.
 - Linked worktree cards use the branch name as the main title and show a custom worktree label as a small label chip when one exists.
 - Agent rows prefer the linked worktree custom label, so running agents are easier to scan across many branches.
 - Worktree groups avoid duplicate repo headers when the parent workspace card is already visible.
-- Removing a linked worktree is available from the worktree actions and from the keyboard prefix `Delete` shortcut.
+- Removing a linked worktree is available from the worktree actions and from the keyboard prefix `Delete` shortcut when the active backend supports safe removal. Built-in mode currently returns an explicit unsupported error for worktree remove until destructive validation is implemented.
 
 File browser:
 
@@ -92,10 +118,10 @@ Git UI:
 
 Panel and workspace close:
 
-- Closing the last panel in a workspace closes the workspace with Herdr's `workspace.close` API instead of calling `tab.close`, because Herdr rejects closing the last tab.
+- Closing the last panel in a workspace closes the workspace with the active backend `workspace.close` API instead of calling `tab.close`, because Herdr-compatible backends reject closing the last tab.
 - Closing a workspace or linked worktree uses `workspace.close` to close all panels in that workspace.
 - Closing a normal non-last panel still uses `tab.close`.
-- When Herdr reports `pane.exited`, WebUI closes that pane through Herdr's `pane.close` API and switches away from it after refresh.
+- When the active backend reports `pane.exited`, WebUI closes that pane through `pane.close` and switches away from it after refresh.
 
 Panel tab activity:
 
@@ -129,6 +155,7 @@ Parent workspace close with linked worktrees:
 
 Terminal paste:
 
+- Built-in backend terminal panes start the user's shell as a login shell with an enriched local PATH. This keeps Homebrew, `~/.local/bin`, pyenv, jenv, fzf, and jcode available when WebUI runs as a macOS LaunchAgent.
 - Both desktop and mobile terminals capture browser `paste` events in the capture phase before xterm or native handlers process them.
 - WebUI intentionally does not call xterm.js `terminal.paste(text)`. xterm parses that string synchronously on the browser main thread, which can freeze the UI for large code snippets.
 - Browser paste is normalized through the shared helper in `/assets/shared/core.js`, preserving newlines while converting CRLF/CR to LF.

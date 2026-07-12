@@ -1,6 +1,6 @@
 # Contributing to Herdr WebUI
 
-Herdr WebUI is a separate browser UI for official Herdr. Changes should keep that boundary clear: this repository does not ship or fork the Herdr backend.
+Herdr WebUI is a separate browser UI for official Herdr-compatible workflows. Changes should keep that boundary clear: this repository includes its own built-in WebUI backend for local terminal multiplexing, but it does not fork the official Herdr backend.
 
 ## Scope
 

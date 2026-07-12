@@ -1,22 +1,26 @@
 [package]
 name = "herdr-webui"
 # Static package version tracks the next WebUI SemVer; runtime builds use build.rs.
-version = "0.2.38"
+version = "0.2.39"
 edition = "2021"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/alecuba16/herdr-webui"
-description = "Web UI for an existing Herdr server"
+description = "Web UI with a built-in or external Herdr-compatible backend"
 
 [dependencies]
 axum = { version = "0.8", features = ["ws"] }
 axum-server = { version = "0.7", features = ["tls-rustls"] }
 bincode = { version = "2", features = ["serde"] }
+crossterm = "0.29"
 interprocess = "2.4.2"
+portable-pty = "0.9"
+ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
 rcgen = "0.13"
 regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
+terminal-colorsaurus = "1.0"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "signal"] }
 
 [dev-dependencies]

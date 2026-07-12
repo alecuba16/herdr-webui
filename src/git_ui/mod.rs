@@ -482,7 +482,7 @@ mod tests {
     use super::log::*;
     use super::stash::*;
     use super::*;
-    use crate::{AuthConfig, NoSleepState, RuntimeServerSettings};
+    use crate::{AuthConfig, BackendMode, NoSleepState, RuntimeServerSettings};
     use axum::body::to_bytes;
     use serde_json::Value;
     use std::collections::HashMap;
@@ -511,6 +511,8 @@ mod tests {
             api_socket: None,
             client_socket: None,
             session_name: None,
+            backend_mode: BackendMode::ExternalHerdr,
+            _builtin_backend: None,
             herdr_bin: "herdr".to_string(),
             auth: Arc::new(Mutex::new(AuthConfig {
                 user: None,
@@ -524,6 +526,8 @@ mod tests {
                 password: None,
                 localhost_no_auth: true,
                 no_sleep_auto_cooldown_seconds: 60,
+                backend_mode: BackendMode::ExternalHerdr,
+                builtin_shell: None,
             })),
             no_sleep: Arc::new(Mutex::new(NoSleepState::default())),
             rebind_tx,

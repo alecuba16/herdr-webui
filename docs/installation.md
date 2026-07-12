@@ -49,6 +49,7 @@ Binary output:
 
 ```text
 target/release/herdr-webui
+target/release/herdr-webui-tui
 ```
 
 Runtime version:
@@ -58,12 +59,6 @@ Runtime version:
 - `Cargo.toml` keeps the next static WebUI SemVer for package metadata; product version still comes from `build.rs` and is exposed by `herdr-webui --version` and `/api/versions`.
 
 ## Run Locally
-
-Start Herdr separately:
-
-```sh
-herdr server
-```
 
 Run WebUI without login on loopback:
 
@@ -77,17 +72,33 @@ Open:
 http://127.0.0.1:8787
 ```
 
-Use a specific Herdr binary when WebUI launches backend sessions:
+Fresh settings default to `backend_mode: builtin`. The built-in backend starts inside the WebUI process, creates local API/client sockets for the current session, spawns PTY shells with `portable-pty`, and does not require a separate `herdr server`.
+
+Use an external Herdr daemon only when you explicitly want daemon compatibility:
 
 ```sh
-HERDR_WEB_HERDR_BIN=/opt/homebrew/bin/herdr make run-web-local
+herdr server
+herdr-webui --https off --backend-mode external-herdr
+```
+
+Use auto mode to prefer a compatible external socket when one is already running and fall back to built-in otherwise:
+
+```sh
+herdr-webui --https off --backend-mode auto
+```
+
+Use a specific Herdr binary only for external session launch/close compatibility:
+
+```sh
+HERDR_WEB_HERDR_BIN=/opt/homebrew/bin/herdr herdr-webui --https off --backend-mode external-herdr
 ```
 
 ## CLI
 
 ```text
-herdr-webui [--verbose] [--bind HOST:PORT] [--https off|auto|self-signed|files] [--tls-cert PATH --tls-key PATH] [--session NAME] [--api-socket PATH] [--client-socket PATH]
+herdr-webui [--verbose] [--bind HOST:PORT] [--https off|auto|self-signed|files] [--tls-cert PATH --tls-key PATH] [--session NAME] [--api-socket PATH] [--client-socket PATH] [--backend-mode <external-herdr|builtin|auto>]
 herdr-webui --version
+herdr-webui-tui [--session NAME] [--api-socket PATH --terminal-socket PATH] [--refresh-ms MS] [--theme dark|light|system] [--summary|--once]
 herdr-webui install-mac [--verbose] [--bind HOST:PORT] [--https off|auto|self-signed|files] [--tls-cert PATH --tls-key PATH] [--session NAME]
 herdr-webui update-mac [--verbose]
 herdr-webui install-linux [--bind HOST:PORT] [--https off|auto|self-signed|files] [--tls-cert PATH --tls-key PATH] [--session NAME]
@@ -101,6 +112,23 @@ herdr-webui restart-linux | restart
 herdr-webui uninstall-mac [--verbose]
 herdr-webui uninstall-linux
 ```
+
+Backend mode details:
+
+- Default for fresh settings: `builtin`.
+- `--backend-mode builtin`: force the in-process built-in backend.
+- `--backend-mode external-herdr`: use external `herdr.sock` and `herdr-client.sock` paths, preserving named session behavior.
+- `--backend-mode auto`: prefer a live compatible external API socket, otherwise start built-in.
+- Settings → Backend writes `backend_mode` and optional `builtin_shell` to `~/.config/herdr-webui/webui-settings.json`. Existing saved settings keep their saved mode until changed.
+- Current built-in MVP supports workspace/tab/pane basics, PTY terminal attach/input/resize/reconnect, agent/Jcode tail detection, and worktree list/open/create. It intentionally does not yet provide full Herdr parity for server-side scroll/search/selection, true event push, persistence after WebUI restart, or built-in worktree remove.
+
+TUI details:
+
+- `herdr-webui-tui` connects to the same built-in socket namespace as WebUI. Run it while the WebUI service is running.
+- `--summary` and `--once` are non-interactive and safe for smoke tests.
+- `--theme dark|light|system` controls TUI colors. `system` is default and follows terminal background detection when available; `HERDR_WEBUI_TUI_THEME` or `JCODE_THEME` can set the same value.
+- Interactive mode uses Ctrl-B for the help/menu overlay, Enter to attach the selected pane terminal, and Ctrl-G to detach.
+- WebUI and TUI can run in parallel against one built-in session. Output is shared through independent terminal attaches; avoid simultaneous input to the same pane from both clients.
 
 Use `--verbose`, `-v`, or `HERDR_WEB_VERBOSE=1` with macOS service commands to print LaunchAgent diagnostics, including UID/EUID, launchctl domain, service target, plist path, and launchctl stderr.
 
@@ -160,6 +188,8 @@ Update installed binary and restart service:
 make update-mac
 make update-linux
 ```
+
+The install and update targets build with `cargo build --release --bins` and install both `herdr-webui` and `herdr-webui-tui` into `~/.local/bin` unless `LOCAL_BIN_DIR` is overridden.
 
 Uninstall service:
 
