@@ -596,7 +596,7 @@ describe("app bundle load", () => {
     match(html, /<h3>Backend<\/h3>/);
     match(html, /<h3>Power behavior<\/h3>/);
     match(html, /\.config\/herdr-webui\/webui-settings\.json/);
-    match(source, /el\("optBackendMode"\)\.value = settings\.backend_mode \|\| "external-herdr";/);
+    match(source, /el\("optBackendMode"\)\.value = settings\.backend_mode \|\| "builtin";/);
     match(source, /backend_mode: backendMode,/);
     match(source, /builtin_shell: builtinShell \|\| null,/);
   });

@@ -193,7 +193,7 @@ Supported behavior:
 
 ## Settings
 
-Settings are stored in `localStorage` under `herdr-web-options`. Main defaults are defined in `src/assets/desktop/app_js/core.js`.
+Browser-local settings are stored in `localStorage` under `herdr-web-options`. Runtime server settings are stored in `~/.config/herdr-webui/webui-settings.json`. Main browser defaults are defined in `src/assets/desktop/app_js/core.js`; fresh runtime server settings default to `backend_mode: builtin`.
 
 | Setting | Default | Notes |
 | --- | --- | --- |
@@ -249,8 +249,8 @@ Main user-facing functionality is documented in [Features](features.md). Technic
 
 | Area | Backend owns | Frontend owns |
 | --- | --- | --- |
-| Terminal | Herdr protocol bridge, auth/session routing, WebSocket frame validation. | xterm attach, scroll-follow state, paste chunking, layout sizing. |
-| Workspaces/worktrees | Herdr API proxying, compatibility fallback, service-level validation. | List ordering, local labels, action menus, open/create/remove flows. |
+| Terminal | Built-in PTY backend by default, external Herdr protocol bridge when selected, auth/session routing, WebSocket frame validation. | xterm attach, scroll-follow state, paste chunking, layout sizing. |
+| Workspaces/worktrees | Built-in workspace/worktree basics by default, external Herdr API proxying when selected, compatibility fallback, service-level validation. | List ordering, local labels, action menus, open/create/remove flows. |
 | Git UI | Git CLI commands, path/ref validation, diff/log/status parsing, cleanup scans. | Drawer rendering, shortcuts, staged/unstaged file interactions, diff controls. |
 | File explorer tree | Safe path cleaning, directory listing, backend file/folder search, pagination, Git status propagation. | Tree rendering, selected file state, scroll preservation, open-at-path behavior. |
 | Unified search | Backend file/folder/content results, pagination, content-match caps. | Section ordering, keyboard/touch selection, visible result rendering, matched-line editor opening. |

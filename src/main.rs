@@ -376,7 +376,8 @@ herdr-webui start-linux | start\n\
 herdr-webui stop-linux | stop\n\
 herdr-webui restart-linux | restart\n\
 herdr-webui uninstall-mac [--verbose]\n\
-herdr-webui uninstall-linux\n"
+herdr-webui uninstall-linux\n\
+Default backend mode for fresh settings is builtin. Use --backend-mode external-herdr for a separate Herdr daemon.\n"
 }
 
 #[derive(Clone)]
@@ -533,7 +534,7 @@ fn default_runtime_server_settings(bind: SocketAddr) -> RuntimeServerSettings {
         password: None,
         localhost_no_auth: true,
         no_sleep_auto_cooldown_seconds: 60,
-        backend_mode: BackendMode::ExternalHerdr,
+        backend_mode: BackendMode::Builtin,
         builtin_shell: None,
     }
 }
@@ -1665,7 +1666,7 @@ async fn update_server_settings(
         backend_mode: body
             .backend_mode
             .or_else(|| current.as_ref().map(|settings| settings.backend_mode))
-            .unwrap_or(BackendMode::ExternalHerdr),
+            .unwrap_or(BackendMode::Builtin),
         builtin_shell: match body.builtin_shell {
             Some(value) => value
                 .map(|value| value.trim().to_string())
@@ -3347,6 +3348,7 @@ mod tests {
         assert!(text.contains("herdr-webui restart-linux | restart"));
         assert!(text.contains("herdr-webui uninstall-linux"));
         assert!(text.contains("--backend-mode <external-herdr|builtin|auto>"));
+        assert!(text.contains("Default backend mode for fresh settings is builtin"));
     }
 
     #[test]
@@ -3596,7 +3598,7 @@ mod tests {
     }
 
     #[test]
-    fn default_runtime_server_settings_use_no_credentials_and_local_bypass() {
+    fn default_runtime_server_settings_use_no_credentials_local_bypass_and_builtin_backend() {
         let settings = default_runtime_server_settings("127.0.0.1:8787".parse().unwrap());
 
         assert_eq!(settings.bind, "127.0.0.1:8787".parse().unwrap());
@@ -3604,7 +3606,7 @@ mod tests {
         assert_eq!(settings.password, None);
         assert!(settings.localhost_no_auth);
         assert_eq!(settings.no_sleep_auto_cooldown_seconds, 60);
-        assert_eq!(settings.backend_mode, BackendMode::ExternalHerdr);
+        assert_eq!(settings.backend_mode, BackendMode::Builtin);
         assert_eq!(settings.builtin_shell, None);
     }
 
@@ -3630,6 +3632,7 @@ mod tests {
         assert!(raw.contains("localhost_no_auth"));
         assert!(raw.contains("no_sleep_auto_cooldown_seconds"));
         assert!(raw.contains("backend_mode"));
+        assert!(raw.contains(r#""backend_mode": "builtin""#));
         assert!(raw.contains("builtin_shell"));
 
         let _ = fs::remove_dir_all(config_home);
@@ -3658,7 +3661,7 @@ mod tests {
         assert_eq!(settings.password, None);
         assert!(settings.localhost_no_auth);
         assert_eq!(settings.no_sleep_auto_cooldown_seconds, 60);
-        assert_eq!(settings.backend_mode, BackendMode::ExternalHerdr);
+        assert_eq!(settings.backend_mode, BackendMode::Builtin);
         assert_eq!(settings.builtin_shell, None);
         let raw = fs::read_to_string(path).unwrap();
         assert!(raw.contains("localhost_no_auth"));
@@ -3666,6 +3669,7 @@ mod tests {
         assert!(raw.contains("password"));
         assert!(raw.contains("no_sleep_auto_cooldown_seconds"));
         assert!(raw.contains("backend_mode"));
+        assert!(raw.contains(r#""backend_mode": "builtin""#));
         assert!(raw.contains("builtin_shell"));
 
         let _ = fs::remove_dir_all(config_home);

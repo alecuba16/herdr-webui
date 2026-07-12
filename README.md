@@ -1,16 +1,20 @@
 # Herdr WebUI
 
-Herdr WebUI is a local browser UI for Herdr terminals, workspaces, worktrees, Git operations, and file browsing.
+Herdr WebUI is a local browser UI for built-in or external Herdr-compatible terminals, workspaces, worktrees, Git operations, and file browsing.
 
-It runs as a Rust Axum server, serves embedded frontend assets, and connects to the official Herdr backend protocol. It is not a Herdr fork and does not ship the Herdr terminal multiplexer. The UI supports desktop and mobile layouts.
+It runs as a Rust Axum server, serves embedded frontend assets, and starts a built-in terminal multiplexer backend by default. It can also connect to an external Herdr backend protocol for compatibility. The UI supports desktop and mobile layouts.
 
 ## Quick start
 
 ```bash
-cargo run -- --backend http://127.0.0.1:5100 --listen 127.0.0.1:8080
+cargo run -- --https off
 ```
 
-Open `http://127.0.0.1:8080` or use HTTPS options from the docs.
+Open `http://127.0.0.1:8787`. Fresh settings default to the built-in backend, so no separate Herdr daemon is required. To use an external Herdr daemon instead, start it separately and run:
+
+```bash
+cargo run -- --https off --backend-mode external-herdr
+```
 
 ## Documentation layout
 
@@ -27,7 +31,7 @@ The README is the project summary and documentation index. Detailed functionalit
 
 ## Functionality summary
 
-- Multi-workspace terminal UI with desktop and mobile layouts.
+- Multi-workspace terminal UI with desktop and mobile layouts, backed by the built-in backend by default.
 - Workspace and linked worktree navigation with per-panel terminal state.
 - Git UI for status, diffs, staging, commits, stash, branches, cleanup, worktrees, conflicts, blame, and file history.
 - Unified header search for workspaces/worktrees, panels, file names, folder names, and file-content matches, including match-case and regex options for content search.
@@ -40,7 +44,7 @@ See [Features](docs/features.md) for full behavior details.
 
 ## Technical summary
 
-- Backend: Rust Axum server, explicit authenticated API routes, embedded assets, Herdr protocol bridge, Git/file-system operations.
+- Backend: Rust Axum server, explicit authenticated API routes, embedded assets, built-in terminal multiplexer, external Herdr protocol bridge, Git/file-system operations.
 - Frontend: vanilla JS/CSS assets, no runtime framework, shared modules for tree rendering, icons, editor mounting, content search, terminal helpers, and theme tokens.
 - Editor: CodeMirror bundle is preloaded before shared editor code so file previews mount directly with final editor styling; shared editor code provides find in preview plus replace in edit mode.
 - File explorer/search: expensive work is backend-owned: tree listing, file/folder search, Git status propagation, content search traversal, safe file read/write, and hash-guarded snippet/file saves.
