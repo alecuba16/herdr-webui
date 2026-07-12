@@ -119,7 +119,7 @@ Backend mode details:
 - `--backend-mode builtin`: force the in-process built-in backend.
 - `--backend-mode external-herdr`: use external `herdr.sock` and `herdr-client.sock` paths, preserving named session behavior.
 - `--backend-mode auto`: prefer a live compatible external API socket, otherwise start built-in.
-- Settings → Backend writes `backend_mode` and optional `builtin_shell` to `~/.config/herdr-webui/webui-settings.json`. Existing saved settings keep their saved mode until changed.
+- Settings → Backend writes `backend_mode`, optional `builtin_shell`, `builtin_backend_enabled`, and `external_herdr_backend_enabled` to `~/.config/herdr-webui/webui-settings.json`. Existing saved settings keep their saved mode until changed. Disable a backend type to hide it from the session manager and prevent selecting, creating, or closing sessions through that backend; at least one backend type must remain enabled. External Herdr discovery is passive and does not execute `herdr` unless you explicitly launch/create an external session.
 - Current built-in MVP supports workspace/tab/pane basics, PTY terminal attach/input/resize/reconnect, agent/Jcode tail detection, and worktree list/open/create. It intentionally does not yet provide full Herdr parity for server-side scroll/search/selection, true event push, persistence after WebUI restart, or built-in worktree remove.
 
 TUI details:
