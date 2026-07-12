@@ -12,6 +12,7 @@ axum = { version = "0.8", features = ["ws"] }
 axum-server = { version = "0.7", features = ["tls-rustls"] }
 bincode = { version = "2", features = ["serde"] }
 interprocess = "2.4.2"
+portable-pty = "0.9"
 rcgen = "0.13"
 regex = "1"
 serde = { version = "1", features = ["derive"] }

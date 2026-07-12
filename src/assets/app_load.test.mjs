@@ -216,8 +216,8 @@ describe("app bundle load", () => {
     ok(!source.includes("Option+Wheel"));
     match(desktopTerminalSource, /const stepLines = Math\.max\(1, Number\(options\.scrollLines\) \|\| 1\);/);
     match(desktopTerminalSource, /terminalWheelDeltaPixels \+= e\.deltaY;[\s\S]*?Math\.abs\(terminalWheelDeltaPixels\) < rowHeight/);
-    match(desktopTerminalSource, /function scrollTerminalLines\(lines\) \{[\s\S]*?if \(sendBackendScroll\(lines\)\) \{[\s\S]*?updateTerminalScrollbackEstimate\(lines\);[\s\S]*?!terminalUsesNormalBuffer\(\)[\s\S]*?term\.scrollLines\(Math\.trunc\(lines\)\);/);
-    match(desktopTerminalSource, /function sendBackendScroll\(lines\) \{[\s\S]*?type: "scroll"[\s\S]*?direction: lines < 0 \? "up" : "down"/);
+    match(desktopTerminalSource, /function scrollTerminalLines\(lines\) \{[\s\S]*?state\.backendMode === "builtin"[\s\S]*?term\.scrollLines\(Math\.trunc\(lines\)\);[\s\S]*?if \(sendBackendScroll\(lines\)\) \{[\s\S]*?updateTerminalScrollbackEstimate\(lines\);[\s\S]*?!terminalUsesNormalBuffer\(\)[\s\S]*?term\.scrollLines\(Math\.trunc\(lines\)\);/);
+    match(desktopTerminalSource, /function sendBackendScroll\(lines\) \{[\s\S]*?state\.backendMode === "builtin"[\s\S]*?type: "scroll"[\s\S]*?direction: lines < 0 \? "up" : "down"/);
     match(desktopTerminalSource, /function setTerminalFollowPaused\(paused\) \{[\s\S]*?button\.hidden = !paused;/);
     match(desktopTerminalSource, /function updateTerminalScrollbackEstimate\(lines\) \{[\s\S]*?terminalScrollbackOffsetEstimate[\s\S]*?setTerminalFollowPaused\(terminalScrollbackOffsetEstimate > 0\);/);
     ok(!desktopTerminalSource.includes("term.onScroll"));
@@ -254,7 +254,7 @@ describe("app bundle load", () => {
     match(html, /Functionality map/);
     match(html, /Keyboard shortcuts/);
     match(html, /Workspaces show open roots\/worktrees; agents list status/);
-    match(html, /Wheel, touch, and PageUp\/PageDown scroll the Herdr backend first, with xterm local scroll as fallback/);
+    match(html, /Wheel, touch, and PageUp\/PageDown scroll the Herdr backend when available; built-in backend uses xterm local scroll/);
     match(html, /file rows use license-safe type glyphs while folders stay plain except for Git status colors/);
     match(html, /Header search .* is the single search entry point for workspaces\/worktrees, file names, folder names, and file contents/);
     match(html, /File\/folder and content search run in the backend for the focused workspace\/worktree, lazy-load pages, preserve parent folders for path context/);
@@ -588,11 +588,17 @@ describe("app bundle load", () => {
     match(html, /id="optServerUser"/);
     match(html, /id="optServerPassword"/);
     match(html, /id="optServerLocalBypass"/);
+    match(html, /id="optBackendMode"/);
+    match(html, /id="optBuiltinShell"/);
     match(html, /id="optNoSleepAutoCooldown"/);
     match(html, /id="serverSettingsApply"/);
     match(html, /<h3>Network access<\/h3>/);
+    match(html, /<h3>Backend<\/h3>/);
     match(html, /<h3>Power behavior<\/h3>/);
     match(html, /\.config\/herdr-webui\/webui-settings\.json/);
+    match(source, /el\("optBackendMode"\)\.value = settings\.backend_mode \|\| "external-herdr";/);
+    match(source, /backend_mode: backendMode,/);
+    match(source, /builtin_shell: builtinShell \|\| null,/);
   });
 
   it("defines grouped settings sections", () => {
