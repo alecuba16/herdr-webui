@@ -625,7 +625,7 @@ describe("app bundle load", () => {
       ctx.document.getElementById("versions").textContent,
       "webui 1.2.3 · backend built-in",
     );
-    equal(ctx.document.getElementById("footerSessionButton").textContent, "default");
+    equal(ctx.document.getElementById("footerSessionButton").textContent, "default · built-in");
 
     ctx.fetch = async (url) => {
       equal(url, "/api/versions");
@@ -670,6 +670,80 @@ describe("app bundle load", () => {
       ctx.document.getElementById("versions").textContent,
       "webui 1.2.3 · backend 0.7.3",
     );
+  });
+
+  it("filters OSC color query replies before terminal input reaches the backend", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    equal(
+      ctx.stripTerminalQueryReplies("\x1b]10;rgb:4c4c/4f4f/6969\x07hello\x1b]11;rgb:efef/f1f1/f5f5\x1b\\"),
+      "hello",
+    );
+    equal(ctx.stripTerminalQueryReplies("normal input"), "normal input");
+  });
+
+  it("renders backend-aware session manager and sends backend target headers", async () => {
+    const ctx = context();
+    const calls = [];
+    ctx.history = {
+      pushState(_state, _title, path) {
+        ctx.location.pathname = path;
+      },
+      replaceState(_state, _title, path) {
+        ctx.location.pathname = path;
+      },
+    };
+    ctx.fetch = async (url, opt = {}) => {
+      calls.push({ url, opt });
+      if (url === "/api/sessions") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            current_backend: "builtin",
+            sessions: [
+              { name: "default", backend: "builtin", backend_label: "built-in", running: true },
+              { name: "work", backend: "external-herdr", backend_label: "Herdr", running: true },
+            ],
+          }),
+        };
+      }
+      if (url === "/api/session/launch") {
+        return { ok: true, status: 200, json: async () => ({ ok: true }) };
+      }
+      if (url === "/api/versions") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            backend_mode: "builtin",
+            current_backend: opt.headers && opt.headers["x-herdr-backend"],
+            session: "work",
+            compatibility: { status: "compatible" },
+          }),
+        };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    };
+    vm.runInContext(source, ctx);
+
+    await ctx.showSessionManager();
+
+    const html = ctx.document.getElementById("sessionList").innerHTML;
+    match(html, /built-in/);
+    match(html, /Herdr/);
+    ctx.goSession("work", "external-herdr");
+    await ctx.launchBackend("work", "external-herdr");
+
+    equal(vm.runInContext("state.sessionBackend", ctx), "external-herdr");
+    equal(ctx.apiOptions({}).headers["x-herdr-backend"], "external-herdr");
+    equal(ctx.apiOptions({}).headers["x-herdr-session"], "work");
+    const launchCall = calls.find((call) => call.url === "/api/session/launch");
+    deepEqual(JSON.parse(launchCall.opt.body), {
+      session: "work",
+      backend: "external-herdr",
+    });
   });
 
   it("defines grouped settings sections", () => {

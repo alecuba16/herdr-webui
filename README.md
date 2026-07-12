@@ -43,6 +43,7 @@ The README is the project summary and documentation index. Detailed functionalit
 ## Functionality summary
 
 - Multi-workspace terminal UI with desktop and mobile layouts, backed by the built-in backend by default.
+- Backend-aware session manager that detects built-in and external Herdr sessions, switches between them, and can create or launch sessions in either backend.
 - First-party `herdr-webui-tui` for terminal-native workspace/agent navigation, live attach/input/resize/detach, ANSI colors/styles, `--theme dark|light|system`, Ctrl-B help/menu, and smoke-friendly summary/once modes.
 - Workspace and linked worktree navigation with per-panel terminal state.
 - Git UI for status, diffs, staging, commits, stash, branches, cleanup, worktrees, conflicts, blame, and file history.
@@ -68,7 +69,7 @@ See [Technical details](docs/technical-details.md) for routes, limits, data flow
 
 - Git status uses one porcelain scan per refresh and propagates parent folder state server-side with priority red > yellow > green.
 - Content search skips dependency/build folders, caps traversal, skips large or binary files, paginates file groups, lazy-loads per-file match details, and validates regex patterns before traversal.
-- Terminal output is frame-batched before xterm writes, and large paste input uses bounded WebSocket chunks with backpressure.
+- Terminal output is frame-batched before xterm writes, large paste input uses bounded WebSocket chunks with backpressure, and browser terminal query replies such as OSC 10/11 colors are filtered before they can leak into PTY input.
 - Large Git diffs use lazy loading, placeholders, context expansion, and server-side Git commands rather than browser-side repository scanning.
 - Path inputs are cleaned before file-system operations. Mutating Git/file actions use backend validation, hash guards, and confirmation where destructive.
 

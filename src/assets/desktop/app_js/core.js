@@ -36,6 +36,7 @@ let state = {
   // the first successful snapshot; falls back to legacy polling when false.
   supportsSessionSnapshot: false,
   backendMode: "builtin",
+  sessionBackend: localStorage.getItem("herdr-session-backend") || "builtin",
 };
 let term,
   termWs,
@@ -2120,34 +2121,52 @@ function setupSessionChrome() {
     m.className = "session-manager";
     m.id = "sessionManager";
     m.innerHTML =
-      '<div class="session-card"><div class="session-hero"><div><h1 id="sessionManagerTitle">Sessions</h1><p id="sessionManagerText">Choose a Herdr backend session to open.</p></div><div class="session-current"><span class="dot unknown"></span><span id="sessionCurrentLabel">default</span></div></div><div class="session-actions"><div class="session-list" id="sessionList"></div><div class="session-line session-new"><span><strong>Target another session</strong><small>Create or open a named target URL. Launch starts backend for current target.</small></span><span class="session-controls"><button class="btn" id="newSessionTarget">New target</button></span></div></div></div>';
+      '<div class="session-card"><div class="session-hero"><div><h1 id="sessionManagerTitle">Sessions</h1><p id="sessionManagerText">Choose a built-in or Herdr backend session to open.</p></div><div class="session-current"><span class="dot unknown"></span><span id="sessionCurrentLabel">default · built-in</span></div></div><div class="session-actions"><div class="session-list" id="sessionList"></div><div class="session-line session-new"><span><strong>Create or target session</strong><small>Choose where to create/open it. Built-in starts inside WebUI. Herdr starts external daemon.</small></span><span class="session-controls"><button class="btn" id="newBuiltinSessionTarget">New built-in</button><button class="tab add" id="newHerdrSessionTarget">New Herdr</button></span></div></div></div>';
     document.querySelector(".main").prepend(m);
-    el("newSessionTarget").onclick = () => {
-      const name = prompt("session name");
-      if (name) goSession(name);
-    };
+    el("newBuiltinSessionTarget").onclick = () => newSessionTarget("builtin");
+    el("newHerdrSessionTarget").onclick = () => newSessionTarget("external-herdr");
   }
+}
+function sessionBackendLabel(backend) {
+  return backend === "external-herdr" ? "Herdr" : "built-in";
+}
+function currentSessionBackend() {
+  return state.sessionBackend || state.backendMode || "builtin";
+}
+async function newSessionTarget(backend) {
+  const name = prompt(`${sessionBackendLabel(backend)} session name`);
+  if (!name) return;
+  await launchBackend(name, backend);
+  goSession(name, backend);
 }
 async function loadSessions() {
   try {
     const r = await api("/api/sessions");
     state.sessions = r.sessions || [];
+    state.sessionBackend = r.current_backend || currentSessionBackend();
   } catch (e) {
-    state.sessions = [{ name: state.session || "default", running: false }];
+    state.sessions = [{ name: state.session || "default", backend: currentSessionBackend(), running: false }];
   }
 }
 function renderSessionRows() {
   const list = state.sessions.length
     ? state.sessions
-    : [{ name: state.session || "default", running: state.backendOnline }];
+    : [{ name: state.session || "default", backend: currentSessionBackend(), running: state.backendOnline }];
   return list
     .map((s) => {
-      const active = s.name === state.session;
+      const backend = s.backend || "external-herdr";
+      const active = s.name === state.session && backend === currentSessionBackend();
       const status = `<span class="status-pill ${s.running ? "running" : "offline"}">${s.running ? "running" : "offline"}</span>`;
+      const backendPill = `<span class="status-pill">${escapeHtml(s.backend_label || sessionBackendLabel(backend))}</span>`;
       const controls = active
-        ? `<span class="session-controls"><button class="btn" onclick="event.stopPropagation();launchBackend()">Launch</button><button class="tab add" onclick="event.stopPropagation();refresh()">Retry</button><button class="tab add" onclick="event.stopPropagation();resetSession()">Reset workspaces</button><button class="mini danger" onclick="event.stopPropagation();closeCurrentSession()">Close</button></span>`
-        : `<span class="session-controls">${status}</span>`;
-      return `<div class="session-line ${active ? "active" : ""}" onclick="goSession('${escapeAttr(s.name)}')"><span><strong>${escapeHtml(s.name)}</strong><small>${active ? "current browser target" : s.running ? "click to switch to this running session" : "click to target this offline session"}</small></span>${controls}</div>`;
+        ? `<span class="session-controls">${backendPill}<button class="btn" onclick="event.stopPropagation();launchBackend('${escapeAttr(s.name)}','${escapeAttr(backend)}')">Launch</button><button class="tab add" onclick="event.stopPropagation();refresh()">Retry</button><button class="tab add" onclick="event.stopPropagation();resetSession()">Reset workspaces</button><button class="mini danger" onclick="event.stopPropagation();closeCurrentSession()">Close</button></span>`
+        : `<span class="session-controls">${backendPill}${status}</span>`;
+      const hint = active
+        ? "current browser target"
+        : s.running
+          ? `click to switch to this ${sessionBackendLabel(backend)} session`
+          : `click to target this offline ${sessionBackendLabel(backend)} session`;
+      return `<div class="session-line ${active ? "active" : ""}" onclick="goSession('${escapeAttr(s.name)}','${escapeAttr(backend)}')"><span><strong>${escapeHtml(s.name)}</strong><small>${escapeHtml(hint)}</small></span>${controls}</div>`;
     })
     .join("");
 }
@@ -2161,8 +2180,9 @@ async function showSessionManager(title, text) {
   if (titleEl) titleEl.textContent = title || "Session manager";
   if (textEl)
     textEl.textContent =
-      text || `Current target: ${state.session || "default"}`;
-  if (current) current.textContent = state.session || "default";
+      text || `Current target: ${state.session || "default"} · ${sessionBackendLabel(currentSessionBackend())}`;
+  if (current)
+    current.textContent = `${state.session || "default"} · ${sessionBackendLabel(currentSessionBackend())}`;
   if (list) list.innerHTML = renderSessionRows();
   if (manager) manager.style.display = "block";
 }
@@ -2170,14 +2190,20 @@ function hideSessionManager() {
   const manager = el("sessionManager");
   if (manager) manager.style.display = "none";
 }
-async function launchBackend() {
+async function launchBackend(session = state.session, backend = currentSessionBackend()) {
   const textEl = el("sessionManagerText");
-  if (textEl) textEl.textContent = "Launching Herdr session...";
+  if (textEl) textEl.textContent = `Launching ${sessionBackendLabel(backend)} session...`;
   try {
-    const r = await api("/api/session/launch", { method: "POST" });
+    const r = await api("/api/session/launch", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ session: session || "default", backend }),
+    });
     if (textEl)
       textEl.textContent = r.ok
-        ? `Launched pid ${r.pid}. Waiting for backend...`
+        ? r.pid
+          ? `Launched pid ${r.pid}. Waiting for backend...`
+          : `Launched ${sessionBackendLabel(backend)} session.`
         : r.error || "Launch failed";
     setTimeout(refresh, 1200);
   } catch (e) {
@@ -2185,11 +2211,15 @@ async function launchBackend() {
   }
 }
 async function closeCurrentSession() {
-  if (!confirm("Close current Herdr session?")) return;
+  if (!confirm(`Close current ${sessionBackendLabel(currentSessionBackend())} session?`)) return;
   try {
-    await api("/api/session/close", { method: "POST" });
+    await api("/api/session/close", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ session: state.session || "default", backend: currentSessionBackend() }),
+    });
     showSessionManager(
-      "Herdr session closed",
+      "Session closed",
       "Session stopped. You can launch it again.",
     );
     setTimeout(refresh, 800);
@@ -2235,6 +2265,9 @@ function apiOptions(opt) {
     next.headers || {},
     state.session && state.session !== "default"
       ? { "x-herdr-session": state.session }
+      : {},
+    currentSessionBackend()
+      ? { "x-herdr-backend": currentSessionBackend() }
       : {},
   );
   return next;
@@ -2337,6 +2370,13 @@ async function loadVersions() {
   try {
     const v = await api("/api/versions");
     state.backendMode = v.backend_mode || "builtin";
+    state.sessionBackend =
+      v.current_backend ||
+      (state.backendMode === "external" || state.backendMode === "external-herdr"
+        ? "external-herdr"
+        : state.backendMode === "builtin"
+          ? "builtin"
+          : state.sessionBackend || "builtin");
     const session = v.session || state.session || "default";
     const compat = v.compatibility || {},
       status =
@@ -2344,7 +2384,7 @@ async function loadVersions() {
           ? " · " + compat.status
           : "";
     const backendIsBuiltin =
-      state.backendMode === "builtin" ||
+      state.sessionBackend === "builtin" ||
       String(v.backend || "") === "builtin" ||
       String(v.backend || "").startsWith("builtin-");
     const backendLabel = backendIsBuiltin ? "built-in" : v.backend || "offline";
@@ -2353,11 +2393,11 @@ async function loadVersions() {
       versionsEl.title = `session ${session}${compat.message ? ` · ${compat.message}` : ""}`;
     }
     const button = el("footerSessionButton");
-    if (button) button.textContent = state.session || session;
+    if (button) button.textContent = `${state.session || session} · ${sessionBackendLabel(currentSessionBackend())}`;
   } catch (e) {
     if (versionsEl) versionsEl.textContent = "webui - · backend offline";
     const button = el("footerSessionButton");
-    if (button) button.textContent = state.session || "default";
+    if (button) button.textContent = `${state.session || "default"} · ${sessionBackendLabel(currentSessionBackend())}`;
   }
 }
 function sessionPrefix() {
@@ -2452,8 +2492,10 @@ function go(ws, tab, pane) {
   setTerminalLoading(true);
   refresh();
 }
-function goSession(name) {
+function goSession(name, backend = currentSessionBackend()) {
   state.session = name || "default";
+  state.sessionBackend = backend || "builtin";
+  localStorage.setItem("herdr-session-backend", state.sessionBackend);
   state.ws = null;
   state.tab = null;
   state.pane = null;
