@@ -523,6 +523,18 @@ unsafe fn libc_geteuid() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn test_config(tls: crate::TlsConfig) -> WebConfig {
+        WebConfig {
+            bind: "127.0.0.1:8787".parse().unwrap(),
+            session: Some("work".to_string()),
+            api_socket: None,
+            client_socket: None,
+            backend_mode: None,
+            tls,
+        }
+    }
 
     #[test]
     fn linux_service_unit_contains_binary_and_flags() {
@@ -607,5 +619,67 @@ mod tests {
             xml_escape("<&>\"'"),
             "&lt;&amp;&gt;&quot;&apos;".to_string()
         );
+    }
+
+    #[test]
+    fn service_files_include_env_and_all_tls_modes() {
+        let _guard = env_lock().lock().unwrap();
+        std::env::set_var("HERDR_WEB_HERDR_BIN", "herdr & helper");
+
+        let tls = crate::TlsConfig {
+            mode: TlsMode::Auto,
+            cert_path: Some(PathBuf::from("/tmp/cert path.pem")),
+            key_path: Some(PathBuf::from("/tmp/key path.pem")),
+        };
+        let mut config = test_config(tls);
+        config.session = Some("work <session>".to_string());
+
+        let plist = mac_plist_xml(&config, Path::new("/tmp/herdr-webui")).unwrap();
+        assert!(plist.contains("<key>HERDR_WEB_HERDR_BIN</key>"));
+        assert!(plist.contains("<string>herdr &amp; helper</string>"));
+        assert!(plist.contains("<string>work &lt;session&gt;</string>"));
+        assert!(plist.contains("<string>auto</string>"));
+        assert!(plist.contains("<string>/tmp/cert path.pem</string>"));
+        assert!(plist.contains("<string>/tmp/key path.pem</string>"));
+
+        let unit = linux_service_unit(&config, Path::new("/tmp/herdr webui"));
+        assert!(unit.contains("Environment=HERDR_WEB_HERDR_BIN='herdr & helper'"));
+        assert!(unit.contains("--https auto"));
+        assert!(unit.contains("--tls-cert '/tmp/cert path.pem'"));
+        assert!(unit.contains("--tls-key '/tmp/key path.pem'"));
+
+        config.tls.mode = TlsMode::Files;
+        let files_unit = linux_service_unit(&config, Path::new("/tmp/herdr-webui"));
+        assert!(files_unit.contains("--https files"));
+
+        std::env::remove_var("HERDR_WEB_HERDR_BIN");
+    }
+
+    #[test]
+    fn linux_service_exists_checks_config_home_path() {
+        let _guard = env_lock().lock().unwrap();
+        let base =
+            std::env::temp_dir().join(format!("herdr-webui-service-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        std::env::set_var("XDG_CONFIG_HOME", &base);
+
+        let missing = ensure_linux_service_exists().unwrap_err();
+        assert_eq!(missing.kind(), io::ErrorKind::NotFound);
+        assert!(missing
+            .to_string()
+            .contains("systemd user service not found"));
+
+        let service = linux_service_path().unwrap();
+        fs::create_dir_all(service.parent().unwrap()).unwrap();
+        fs::write(&service, "unit").unwrap();
+        ensure_linux_service_exists().unwrap();
+
+        std::env::remove_var("XDG_CONFIG_HOME");
+        let _ = fs::remove_dir_all(base);
+    }
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
     }
 }

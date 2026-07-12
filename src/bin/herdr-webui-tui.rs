@@ -377,12 +377,40 @@ mod tests {
     fn parses_cli_defaults_and_modes() {
         let cli = Cli::parse([
             "--summary".to_string(),
+            "--once".to_string(),
+            "--session".to_string(),
+            "work".to_string(),
             "--refresh-ms".to_string(),
             "250".to_string(),
         ])
         .unwrap();
         assert!(cli.summary);
+        assert!(cli.once);
+        assert_eq!(cli.options.session.as_deref(), Some("work"));
         assert_eq!(cli.options.refresh_interval, Duration::from_millis(250));
+    }
+
+    #[test]
+    fn parses_socket_overrides_and_clamps_refresh() {
+        let cli = Cli::parse([
+            "--api-socket".to_string(),
+            "/tmp/herdr.sock".to_string(),
+            "--terminal-socket".to_string(),
+            "/tmp/herdr-client.sock".to_string(),
+            "--refresh-ms".to_string(),
+            "1".to_string(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            cli.options.api_socket,
+            Some(PathBuf::from("/tmp/herdr.sock"))
+        );
+        assert_eq!(
+            cli.options.terminal_socket,
+            Some(PathBuf::from("/tmp/herdr-client.sock"))
+        );
+        assert_eq!(cli.options.refresh_interval, Duration::from_millis(50));
     }
 
     #[test]
@@ -396,5 +424,24 @@ mod tests {
         let err =
             Cli::parse(["--api-socket".to_string(), "/tmp/herdr.sock".to_string()]).unwrap_err();
         assert!(err.contains("must be provided together"));
+    }
+
+    #[test]
+    fn rejects_cli_help_missing_invalid_and_unknown_values() {
+        let help = Cli::parse(["--help".to_string()]).unwrap_err();
+        assert!(help.contains("Usage: herdr-webui-tui"));
+
+        let missing = Cli::parse(["--session".to_string()]).unwrap_err();
+        assert!(missing.contains("missing value for --session"));
+
+        let invalid_refresh =
+            Cli::parse(["--refresh-ms".to_string(), "fast".to_string()]).unwrap_err();
+        assert!(invalid_refresh.contains("invalid --refresh-ms value"));
+
+        let invalid_theme = Cli::parse(["--theme".to_string(), "blue".to_string()]).unwrap_err();
+        assert!(invalid_theme.contains("invalid theme 'blue'"));
+
+        let unknown = Cli::parse(["--webui-url".to_string()]).unwrap_err();
+        assert!(unknown.contains("unknown argument: --webui-url"));
     }
 }
