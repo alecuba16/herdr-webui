@@ -26,6 +26,7 @@ The README is the project summary and documentation index. Detailed functionalit
 | [Installation and local run](docs/installation.md) | Requirements, local run, HTTPS, auth, service install, update, FAQ. |
 | [Features](docs/features.md) | User-facing desktop and mobile functionality details. |
 | [Technical details](docs/technical-details.md) | Architecture, API decisions, file explorer internals, settings, performance, styling. |
+| [Future TUI backend API](docs/tui-backend-api.md) | Reusable Rust client layer over built-in backend sockets, TUI prototype scope, and parity gaps. |
 | [Development guide](docs/development.md) | Repo layout, frontend structure, parity rules, maintainability guidance. |
 | [Release notes](docs/release-notes.md) | Release policy and change history. |
 

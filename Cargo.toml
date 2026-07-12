@@ -5,7 +5,7 @@ version = "0.2.38"
 edition = "2021"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/alecuba16/herdr-webui"
-description = "Web UI for an existing Herdr server"
+description = "Web UI with a built-in or external Herdr-compatible backend"
 
 [dependencies]
 axum = { version = "0.8", features = ["ws"] }
