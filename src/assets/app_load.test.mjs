@@ -601,6 +601,77 @@ describe("app bundle load", () => {
     match(source, /builtin_shell: builtinShell \|\| null,/);
   });
 
+  it("labels the side footer backend as built-in for built-in backends", async () => {
+    const ctx = context();
+    ctx.fetch = async (url) => {
+      equal(url, "/api/versions");
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          webui: "1.2.3",
+          backend: "builtin-0.1.0",
+          backend_mode: "builtin",
+          session: "default",
+          compatibility: { status: "compatible" },
+        }),
+      };
+    };
+    vm.runInContext(source, ctx);
+
+    await ctx.loadVersions();
+
+    equal(
+      ctx.document.getElementById("versions").textContent,
+      "webui 1.2.3 · backend built-in",
+    );
+    equal(ctx.document.getElementById("footerSessionButton").textContent, "default");
+
+    ctx.fetch = async (url) => {
+      equal(url, "/api/versions");
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          webui: "1.2.3",
+          backend: "builtin-0.1.0",
+          backend_mode: "auto",
+          session: "default",
+          compatibility: { status: "compatible" },
+        }),
+      };
+    };
+
+    await ctx.loadVersions();
+
+    equal(
+      ctx.document.getElementById("versions").textContent,
+      "webui 1.2.3 · backend built-in",
+    );
+
+    ctx.fetch = async (url) => {
+      equal(url, "/api/versions");
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          webui: "1.2.3",
+          backend: "0.7.3",
+          backend_mode: "external",
+          session: "default",
+          compatibility: { status: "compatible" },
+        }),
+      };
+    };
+
+    await ctx.loadVersions();
+
+    equal(
+      ctx.document.getElementById("versions").textContent,
+      "webui 1.2.3 · backend 0.7.3",
+    );
+  });
+
   it("defines grouped settings sections", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
