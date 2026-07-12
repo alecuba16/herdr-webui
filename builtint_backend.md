@@ -812,23 +812,92 @@ Target initial thresholds:
 | Worktree destructive operations | Keep confirmations and backend safety checks. |
 | Codebase memory Herdr index timeout | Use direct code evidence for plan now; retry graph indexing before implementation. |
 
-## 9. Immediate next implementation checklist
+## 9. Implementation iteration 2026-07-12
 
-1. Add `src/backend` interface with external Herdr adapter.
-2. Move current `ApiClient` and terminal attach code into adapter.
-3. Add fake provider tests for existing routes.
-4. Add backend mode config fields and Settings UI.
-5. Add capabilities/status endpoint.
-6. Implement built-in in-memory workspace skeleton.
-7. Only then start PTY runtime work.
+Completed in this iteration:
+
+1. Added `src/builtin_backend.rs` with a local socket API and local socket terminal transport compatible with the current WebUI route and `/ws/terminal` bridge.
+2. Added built-in backend mode selection:
+   - persisted `backend_mode`,
+   - persisted `builtin_shell`,
+   - CLI `--backend-mode <external-herdr|builtin|auto>`,
+   - Settings UI controls,
+   - `/api/versions.backend_mode`.
+3. Kept external Herdr as the default and kept all existing socket behavior for `external-herdr`.
+4. Implemented built-in workspace/tab/pane lifecycle basics:
+   - default workspace and tab,
+   - list/create/rename/close workspace,
+   - list/create/rename/close tab,
+   - pane list/get/layout/close/read,
+   - session snapshot.
+5. Implemented PTY runtime MVP using `portable-pty`:
+   - spawn shell or agent argv,
+   - stream ANSI output,
+   - send input and paste events,
+   - resize,
+   - detach/reconnect without killing the PTY,
+   - bounded 8 MiB byte scrollback,
+   - full attach repaint.
+6. Hardened terminal transport basics:
+   - max frame size kept at 32 MiB,
+   - terminal subscribers use bounded sync queues,
+   - slow/full subscribers are disconnected instead of blocking PTY reader,
+   - drop path kills owned PTY child,
+   - built-in frontend scroll uses xterm local scroll and avoids sending backend scroll spam,
+   - built-in socket paths fall back to hashed temp paths when config paths exceed Unix socket limits,
+   - startup refuses to unlink an active existing socket, only stale sockets are reclaimed.
+7. Added worktree MVP:
+   - `worktree.list` via `git worktree list --porcelain`,
+   - `worktree.open`,
+   - `worktree.create` via `git worktree add -b`.
+8. Added agent detection/status MVP:
+   - argv aliases aligned with Herdr's current agent list plus Jcode,
+   - terminal-tail fallback for shell-launched Jcode/OpenCode,
+   - Jcode blocked/working/idle patterns ported from Herdr `jcode-support:src/detect/manifests/jcode.toml`,
+   - OpenCode blocked/working patterns aligned with Herdr `src/detect/manifests/opencode.toml`,
+   - detection scans a bounded 64 KiB ANSI-stripped tail, not full scrollback.
+9. Added tests:
+   - backend mode parsing/settings/API tests,
+   - built-in socket override test,
+   - Jcode/OpenCode detection pattern tests,
+   - Herdr agent alias tests,
+   - ANSI strip test,
+   - git worktree porcelain parse test,
+   - JS Settings UI and built-in scroll-path tests.
+
+Validation for this iteration:
+
+- `cargo test` passes: 106 tests.
+- `node --test src/assets/*.test.mjs` passes: 145 tests.
+- Live smoke passes: built-in mode starts with temp config, `/api/versions` reports compatible built-in backend, and direct built-in API socket `ping` returns `pong`.
+
+Intentional limitations still tracked:
+
+1. No full `BackendProvider` trait extraction yet. The built-in backend is socket-compatible, which reduces frontend disruption, but route handlers still know about external socket APIs.
+2. Built-in `events.subscribe` is an acked placeholder. UI still gets current state through existing route refresh paths, but true event push remains required for parity.
+3. Built-in scroll is browser/xterm-local only. Server-side scroll, selection extraction, terminal search, and diff render frames remain Phase 5.
+4. Foreground process detection is not yet Herdr-equivalent. Shell-launched agents are inferred from terminal tail. True foreground process inspection remains needed.
+5. Worktree remove is not implemented in the built-in API yet. Destructive built-in worktree operations must wait for confirmation and safety validation.
+6. Persistence is only settings-level. Built-in mux session/workspace persistence remains to be implemented.
+7. Future TUI can connect to the same local sockets, but a typed client library and event stream still need to be built.
+
+Next checklist:
+
+1. Extract `BackendProvider` and move external Herdr socket code behind an adapter.
+2. Add typed request/response/event structs shared by WebUI and future TUI.
+3. Implement built-in event hub and live event subscription.
+4. Add server-side scroll/copy/search/read parity.
+5. Add foreground process detection for all Herdr manifest agents.
+6. Add built-in worktree remove with safety checks.
+7. Add PTY stress tests for reconnect, large output, large paste, and multi-client attach.
 
 ## 10. Evidence map
 
 Codebase-memory status:
 
 - Indexed WebUI backend as `herdr-webui-backend` successfully before source inspection.
-- Herdr `jcode-support` graph indexing timed out at the tool boundary, so Herdr conclusions were verified by direct source reads from the existing worktree.
-- Requested “jcode branch” appears locally as `jcode-support` under `~/Documents/projects/worktrees/herdr/jcode-support`; `integration/jcode-reset` also exists but was not used for this plan.
+- Herdr `jcode-support` graph indexing timed out at the tool boundary, so Herdr conclusions were verified by direct source reads from the existing repo.
+- Requested “jcode branch” appears locally as `jcode-support` in `~/Documents/projects/herdr`; `integration/jcode-reset` also exists but was not used for this implementation.
 
 WebUI files inspected:
 
