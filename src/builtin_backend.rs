@@ -4,9 +4,9 @@ use std::fs;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use interprocess::local_socket::traits::ListenerExt as _;
 use interprocess::TryClone as _;
@@ -1003,6 +1003,7 @@ impl BuiltinState {
 
 struct TerminalRuntime {
     _id: String,
+    child_pid: Option<u32>,
     master: Mutex<Box<dyn MasterPty + Send>>,
     child: Mutex<Box<dyn Child + Send + Sync>>,
     writer: Mutex<Box<dyn Write + Send>>,
@@ -1027,9 +1028,24 @@ impl TerminalRuntime {
                 pixel_height: 0,
             })
             .map_err(|err| io::Error::other(err.to_string()))?;
-        let mut command = CommandBuilder::new(argv.first().cloned().unwrap_or_else(default_shell));
-        for arg in argv.iter().skip(1) {
-            command.arg(arg);
+        let program = argv.first().cloned().unwrap_or_else(default_shell);
+        let use_login_shell = argv.len() <= 1 && is_shell_program(&program);
+        let shell_for_env = if use_login_shell {
+            program.clone()
+        } else {
+            default_shell()
+        };
+        let mut command = if use_login_shell {
+            CommandBuilder::new_default_prog()
+        } else {
+            let mut command = CommandBuilder::new(program);
+            for arg in argv.iter().skip(1) {
+                command.arg(arg);
+            }
+            command
+        };
+        for (key, value) in terminal_environment(&shell_for_env) {
+            command.env(key, value);
         }
         command.cwd(cwd);
         command.env("TERM", "xterm-256color");
@@ -1037,6 +1053,7 @@ impl TerminalRuntime {
             .slave
             .spawn_command(command)
             .map_err(|err| io::Error::other(err.to_string()))?;
+        let child_pid = child.process_id();
         let mut reader = pair
             .master
             .try_clone_reader()
@@ -1047,6 +1064,7 @@ impl TerminalRuntime {
             .map_err(|err| io::Error::other(err.to_string()))?;
         let runtime = Arc::new(Self {
             _id: id,
+            child_pid,
             master: Mutex::new(pair.master),
             child: Mutex::new(child),
             writer: Mutex::new(writer),
@@ -1065,6 +1083,10 @@ impl TerminalRuntime {
             }
         });
         Ok(runtime)
+    }
+
+    fn child_pid(&self) -> Option<u32> {
+        self.child_pid
     }
 
     fn write_input(&self, bytes: &[u8]) -> io::Result<()> {
@@ -1299,13 +1321,20 @@ struct PaneAgentPresentation {
 }
 
 fn pane_agent_presentation(pane: &PaneRecord, data: &BuiltinData) -> PaneAgentPresentation {
-    let tail = data
-        .terminals
-        .get(&pane.terminal_id)
+    let terminal = data.terminals.get(&pane.terminal_id);
+    let tail = terminal
         .map(|terminal| terminal.history_tail_text(DETECTION_TAIL_BYTES))
         .unwrap_or_default();
-    let agent = detect_agent_label(&pane.argv).or_else(|| detect_agent_label_from_text(&tail));
-    let status = detect_agent_status(agent, &tail);
+    let process_agent = terminal
+        .and_then(|terminal| terminal.child_pid())
+        .and_then(detect_agent_label_from_process_tree);
+    let agent = detect_agent_label(&pane.argv)
+        .or(process_agent)
+        .or_else(|| detect_agent_label_from_text(&tail));
+    let status = match detect_agent_status(agent, &tail) {
+        "unknown" if agent.is_some() => "idle",
+        status => status,
+    };
     PaneAgentPresentation { agent, status }
 }
 
@@ -1515,10 +1544,151 @@ fn default_shell() -> String {
         .unwrap_or_else(|| {
             if cfg!(windows) {
                 "powershell.exe".to_string()
+            } else if cfg!(target_os = "macos") {
+                "/bin/zsh".to_string()
             } else {
                 "/bin/sh".to_string()
             }
         })
+}
+
+fn is_shell_program(program: &str) -> bool {
+    let name = Path::new(program)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(program)
+        .trim_start_matches('-')
+        .to_lowercase();
+    matches!(
+        name.as_str(),
+        "sh" | "bash" | "zsh" | "fish" | "ksh" | "csh" | "tcsh" | "dash"
+    )
+}
+
+fn terminal_environment(shell: &str) -> HashMap<String, String> {
+    let mut env = std::env::vars().collect::<HashMap<_, _>>();
+    let home = env
+        .get("HOME")
+        .cloned()
+        .or_else(default_home_dir)
+        .unwrap_or_else(|| "/".to_string());
+    env.entry("HOME".to_string())
+        .or_insert_with(|| home.clone());
+    if let Some(user) = default_user_name() {
+        env.entry("USER".to_string())
+            .or_insert_with(|| user.clone());
+        env.entry("LOGNAME".to_string()).or_insert(user);
+    }
+    env.insert("SHELL".to_string(), shell.to_string());
+    env.insert(
+        "PATH".to_string(),
+        enriched_terminal_path(env.get("PATH").map(String::as_str), &home),
+    );
+    env.insert("HERDR_WEBUI".to_string(), "1".to_string());
+    env
+}
+
+fn default_home_dir() -> Option<String> {
+    default_user_name().and_then(|user| {
+        if cfg!(target_os = "macos") {
+            Some(format!("/Users/{user}"))
+        } else if cfg!(unix) {
+            Some(format!("/home/{user}"))
+        } else {
+            None
+        }
+    })
+}
+
+fn default_user_name() -> Option<String> {
+    std::env::var("USER")
+        .ok()
+        .or_else(|| std::env::var("LOGNAME").ok())
+        .filter(|value| !value.trim().is_empty())
+}
+
+fn enriched_terminal_path(current_path: Option<&str>, home: &str) -> String {
+    let home_entries = [
+        ".local/bin",
+        "bin",
+        ".cargo/bin",
+        ".pyenv/bin",
+        ".pyenv/shims",
+        ".jenv/bin",
+        ".jenv/shims",
+        ".fzf/bin",
+        ".jcode/bin",
+    ]
+    .into_iter()
+    .map(|entry| format!("{home}/{entry}"));
+    let mac_path = macos_path_helper_path();
+    let common_entries = [
+        "/opt/homebrew/bin",
+        "/opt/homebrew/sbin",
+        "/usr/local/bin",
+        "/usr/local/sbin",
+        "/usr/bin",
+        "/bin",
+        "/usr/sbin",
+        "/sbin",
+        "/nix/var/nix/profiles/default/bin",
+    ];
+    let mut entries = Vec::new();
+    entries.extend(home_entries);
+    if let Some(path) = current_path {
+        entries.extend(path.split(':').map(str::to_string));
+    }
+    if let Some(path) = mac_path.as_deref() {
+        entries.extend(path.split(':').map(str::to_string));
+    }
+    entries.extend(common_entries.into_iter().map(str::to_string));
+    dedupe_path_entries(entries)
+}
+
+fn dedupe_path_entries(entries: impl IntoIterator<Item = String>) -> String {
+    let mut out = Vec::new();
+    for entry in entries {
+        let entry = entry.trim();
+        if entry.is_empty() || out.iter().any(|existing| existing == entry) {
+            continue;
+        }
+        out.push(entry.to_string());
+    }
+    out.join(":")
+}
+
+#[cfg(target_os = "macos")]
+fn macos_path_helper_path() -> Option<String> {
+    let output = std::process::Command::new("/usr/libexec/path_helper")
+        .arg("-s")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    parse_path_helper_output(&String::from_utf8_lossy(&output.stdout))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn macos_path_helper_path() -> Option<String> {
+    None
+}
+
+fn parse_path_helper_output(output: &str) -> Option<String> {
+    for line in output.lines() {
+        let Some(rest) = line.trim_start().strip_prefix("PATH=") else {
+            continue;
+        };
+        let rest = rest.trim_start();
+        if let Some(value) = rest.strip_prefix('"') {
+            return value.split('"').next().map(str::to_string);
+        }
+        if let Some(value) = rest.strip_prefix('\'') {
+            return value.split('\'').next().map(str::to_string);
+        }
+        return rest.split(';').next().map(str::to_string);
+    }
+    None
 }
 
 fn workspace_label(cwd: &Path) -> String {
@@ -1587,6 +1757,113 @@ fn detect_agent_label_from_text(text: &str) -> Option<&'static str> {
         || lower.contains("executing tool")
     {
         return Some("jcode");
+    }
+    None
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProcessInfo {
+    pid: u32,
+    ppid: u32,
+    command: String,
+    args: String,
+}
+
+fn detect_agent_label_from_process_tree(root_pid: u32) -> Option<&'static str> {
+    detect_agent_label_from_processes(root_pid, &process_table().ok()?)
+}
+
+#[cfg(unix)]
+fn process_table() -> io::Result<Vec<ProcessInfo>> {
+    static CACHE: OnceLock<Mutex<Option<(Instant, Vec<ProcessInfo>)>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(None));
+    if let Ok(mut guard) = cache.lock() {
+        if let Some((loaded_at, processes)) = guard.as_ref() {
+            if loaded_at.elapsed() < Duration::from_millis(250) {
+                return Ok(processes.clone());
+            }
+        }
+        let processes = process_table_uncached()?;
+        *guard = Some((Instant::now(), processes.clone()));
+        return Ok(processes);
+    }
+    process_table_uncached()
+}
+
+#[cfg(unix)]
+fn process_table_uncached() -> io::Result<Vec<ProcessInfo>> {
+    let output = std::process::Command::new("ps")
+        .args(["-axo", "pid=,ppid=,comm=,args="])
+        .output()?;
+    if !output.status.success() {
+        return Err(io::Error::other("ps failed"));
+    }
+    Ok(parse_process_table(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
+}
+
+#[cfg(not(unix))]
+fn process_table() -> io::Result<Vec<ProcessInfo>> {
+    Ok(Vec::new())
+}
+
+fn parse_process_table(raw: &str) -> Vec<ProcessInfo> {
+    raw.lines()
+        .filter_map(|line| {
+            let mut parts = line.split_whitespace();
+            let pid = parts.next()?.parse().ok()?;
+            let ppid = parts.next()?.parse().ok()?;
+            let command = parts.next()?.to_string();
+            let args = parts.collect::<Vec<_>>().join(" ");
+            Some(ProcessInfo {
+                pid,
+                ppid,
+                command,
+                args,
+            })
+        })
+        .collect()
+}
+
+fn detect_agent_label_from_processes(
+    root_pid: u32,
+    processes: &[ProcessInfo],
+) -> Option<&'static str> {
+    let by_pid = processes
+        .iter()
+        .map(|process| (process.pid, process))
+        .collect::<HashMap<_, _>>();
+    let mut children = HashMap::<u32, Vec<u32>>::new();
+    for process in processes {
+        children.entry(process.ppid).or_default().push(process.pid);
+    }
+    let mut stack = vec![root_pid];
+    let mut seen = Vec::<u32>::new();
+    while let Some(pid) = stack.pop() {
+        if seen.contains(&pid) {
+            continue;
+        }
+        seen.push(pid);
+        if let Some(process) = by_pid.get(&pid) {
+            if let Some(agent) = detect_agent_label_from_process(process) {
+                return Some(agent);
+            }
+        }
+        if let Some(child_pids) = children.get(&pid) {
+            stack.extend(child_pids.iter().copied());
+        }
+    }
+    None
+}
+
+fn detect_agent_label_from_process(process: &ProcessInfo) -> Option<&'static str> {
+    for candidate in
+        std::iter::once(process.command.as_str()).chain(process.args.split_whitespace())
+    {
+        if let Some(agent) = detect_agent_label(&[candidate.to_string()]) {
+            return Some(agent);
+        }
     }
     None
 }
@@ -1906,6 +2183,66 @@ mod tests {
             detect_agent_status(Some("jcode"), "Session ready\n❯"),
             "idle"
         );
+        assert_eq!(
+            detect_agent_status(Some("jcode"), "plain prompt"),
+            "unknown"
+        );
+    }
+
+    #[test]
+    fn enriches_terminal_path_for_launch_agent_shells() {
+        let path = enriched_terminal_path(Some("/usr/bin:/bin:/opt/homebrew/bin"), "/Users/alex");
+        let entries = path.split(':').collect::<Vec<_>>();
+
+        assert!(entries.contains(&"/Users/alex/.pyenv/bin"));
+        assert!(entries.contains(&"/Users/alex/.jenv/bin"));
+        assert!(entries.contains(&"/Users/alex/.local/bin"));
+        assert!(entries.contains(&"/opt/homebrew/bin"));
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| **entry == "/opt/homebrew/bin")
+                .count(),
+            1
+        );
+        assert!(is_shell_program("/bin/zsh"));
+        assert!(is_shell_program("-zsh"));
+        assert!(!is_shell_program("jcode"));
+    }
+
+    #[test]
+    fn parses_path_helper_output() {
+        assert_eq!(
+            parse_path_helper_output("PATH=\"/usr/local/bin:/usr/bin:/bin\"; export PATH;"),
+            Some("/usr/local/bin:/usr/bin:/bin".to_string())
+        );
+    }
+
+    #[test]
+    fn detects_jcode_from_terminal_process_tree() {
+        let processes = parse_process_table(
+            r#"
+              10     1 /bin/zsh -zsh
+              11    10 /opt/homebrew/bin/node node /Users/alex/.local/bin/jcode
+              12    11 /Users/alex/.local/bin/jcode jcode
+              20     1 /Users/alex/.local/bin/jcode jcode
+              30     1 /opt/homebrew/bin/node node /Users/alex/.local/bin/jcode
+            "#,
+        );
+
+        assert_eq!(
+            detect_agent_label_from_processes(10, &processes),
+            Some("jcode")
+        );
+        assert_eq!(
+            detect_agent_label_from_processes(20, &processes),
+            Some("jcode")
+        );
+        assert_eq!(
+            detect_agent_label_from_processes(30, &processes),
+            Some("jcode")
+        );
+        assert_eq!(detect_agent_label_from_processes(999, &processes), None);
     }
 
     #[test]
