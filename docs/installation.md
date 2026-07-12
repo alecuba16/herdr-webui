@@ -59,12 +59,6 @@ Runtime version:
 
 ## Run Locally
 
-Start Herdr separately:
-
-```sh
-herdr server
-```
-
 Run WebUI without login on loopback:
 
 ```sh
@@ -77,16 +71,31 @@ Open:
 http://127.0.0.1:8787
 ```
 
-Use a specific Herdr binary when WebUI launches backend sessions:
+Fresh settings default to `backend_mode: builtin`. The built-in backend starts inside the WebUI process, creates local API/client sockets for the current session, spawns PTY shells with `portable-pty`, and does not require a separate `herdr server`.
+
+Use an external Herdr daemon only when you explicitly want daemon compatibility:
 
 ```sh
-HERDR_WEB_HERDR_BIN=/opt/homebrew/bin/herdr make run-web-local
+herdr server
+herdr-webui --https off --backend-mode external-herdr
+```
+
+Use auto mode to prefer a compatible external socket when one is already running and fall back to built-in otherwise:
+
+```sh
+herdr-webui --https off --backend-mode auto
+```
+
+Use a specific Herdr binary only for external session launch/close compatibility:
+
+```sh
+HERDR_WEB_HERDR_BIN=/opt/homebrew/bin/herdr herdr-webui --https off --backend-mode external-herdr
 ```
 
 ## CLI
 
 ```text
-herdr-webui [--verbose] [--bind HOST:PORT] [--https off|auto|self-signed|files] [--tls-cert PATH --tls-key PATH] [--session NAME] [--api-socket PATH] [--client-socket PATH]
+herdr-webui [--verbose] [--bind HOST:PORT] [--https off|auto|self-signed|files] [--tls-cert PATH --tls-key PATH] [--session NAME] [--api-socket PATH] [--client-socket PATH] [--backend-mode <external-herdr|builtin|auto>]
 herdr-webui --version
 herdr-webui install-mac [--verbose] [--bind HOST:PORT] [--https off|auto|self-signed|files] [--tls-cert PATH --tls-key PATH] [--session NAME]
 herdr-webui update-mac [--verbose]
@@ -101,6 +110,15 @@ herdr-webui restart-linux | restart
 herdr-webui uninstall-mac [--verbose]
 herdr-webui uninstall-linux
 ```
+
+Backend mode details:
+
+- Default for fresh settings: `builtin`.
+- `--backend-mode builtin`: force the in-process built-in backend.
+- `--backend-mode external-herdr`: use external `herdr.sock` and `herdr-client.sock` paths, preserving named session behavior.
+- `--backend-mode auto`: prefer a live compatible external API socket, otherwise start built-in.
+- Settings → Backend writes `backend_mode` and optional `builtin_shell` to `~/.config/herdr-webui/webui-settings.json`. Existing saved settings keep their saved mode until changed.
+- Current built-in MVP supports workspace/tab/pane basics, PTY terminal attach/input/resize/reconnect, agent/Jcode tail detection, and worktree list/open/create. It intentionally does not yet provide full Herdr parity for server-side scroll/search/selection, true event push, persistence after WebUI restart, or built-in worktree remove.
 
 Use `--verbose`, `-v`, or `HERDR_WEB_VERBOSE=1` with macOS service commands to print LaunchAgent diagnostics, including UID/EUID, launchctl domain, service target, plist path, and launchctl stderr.
 

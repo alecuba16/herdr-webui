@@ -75,12 +75,19 @@ Important pieces:
 
 The WebUI should support two backend modes:
 
-1. **External Herdr backend**
-   - Current behavior.
-   - Talks to `herdr.sock` and `herdr-client.sock`.
-   - Remains default until the built-in backend reaches parity.
+1. **Built-in terminal multiplexer backend**
+   - Default for new installs and new `webui-settings.json` files.
+   - Runs in the WebUI process and owns local API/client sockets for WebUI adapters.
+   - Provides the current MVP without requiring a separate Herdr daemon.
 
-2. **Built-in terminal multiplexer backend**
+2. **External Herdr backend**
+   - Opt-in compatibility mode.
+   - Talks to `herdr.sock` and `herdr-client.sock`.
+   - Select with `--backend-mode external-herdr`, Settings → Backend, or a saved `backend_mode: "external-herdr"`.
+
+The built-in backend is now the default even though full Herdr parity is not complete. The remaining gaps are explicit below and are safer than requiring every local WebUI run to depend on a separate daemon.
+
+Built-in behavior:
    - Runs in the WebUI process or a child process managed by WebUI.
    - Provides Herdr-like functionality: sessions, workspaces, tabs, panes, worktrees, terminal attach, agent detection, agent start/read/send/focus.
    - Uses the same backend contract as the external Herdr adapter.
@@ -88,16 +95,19 @@ The WebUI should support two backend modes:
 
 Mode activation:
 
-- CLI flag: `--backend-mode external-herdr|builtin|auto`.
-- Persisted config key in `~/.config/herdr-webui/webui-settings.json`:
-  - `backend_mode`
+- Default: `builtin` for fresh runtime settings and frontend fallbacks.
+- CLI flag: `--backend-mode external-herdr|builtin|auto`. The flag overrides the saved setting for the current process.
+- Persisted config in `~/.config/herdr-webui/webui-settings.json` currently includes:
+  - `backend_mode`: `builtin`, `external-herdr`, or `auto`; fresh files default to `builtin`.
+  - `builtin_shell`: optional shell path used by the built-in backend.
+- Planned persisted built-in fields, not implemented yet:
   - `external_api_socket`
   - `external_client_socket`
   - `builtin_autostart`
   - `builtin_storage_dir`
   - `builtin_scrollback_limit_bytes`
-  - `builtin_default_shell`
-- Settings UI switch updates the config via `/api/server-settings` and restarts/rebinds only what is required.
+  - `builtin_default_shell` beyond the current `builtin_shell` key
+- Settings UI switch updates `/api/server-settings`. A mode change still requires restarting WebUI and reloading the page; automatic socket reconnect without restart remains pending.
 
 Future TUI requirement:
 
@@ -560,7 +570,7 @@ Acceptance criteria:
 - Settings writes config.
 - Invalid config is rejected before write.
 - Switching mode disconnects terminal/event sockets and refreshes cleanly.
-- External Herdr remains default.
+- Built-in backend is the default for new installs/settings; explicit external and auto selections remain supported.
 
 ### Phase 2: Shared typed API contract
 
@@ -823,7 +833,7 @@ Completed in this iteration:
    - CLI `--backend-mode <external-herdr|builtin|auto>`,
    - Settings UI controls,
    - `/api/versions.backend_mode`.
-3. Kept external Herdr as the default and kept all existing socket behavior for `external-herdr`.
+3. Switched fresh runtime settings and frontend fallbacks to built-in by default while keeping all existing socket behavior for explicit `external-herdr`.
 4. Implemented built-in workspace/tab/pane lifecycle basics:
    - default workspace and tab,
    - list/create/rename/close workspace,
@@ -871,7 +881,7 @@ Validation for this iteration:
 
 - `cargo test` passes: 109 tests.
 - `node --test src/assets/*.test.mjs` passes: 145 tests.
-- Live smoke passes: built-in mode starts with temp config, `/api/versions` reports compatible built-in backend, `/api/session-snapshot` exposes a root terminal, browser WebSocket `/ws/terminal` attaches to it and returns command output, direct built-in API socket `ping` returns `pong`, and review fixes cover socket/session selection plus listener cleanup.
+- Live smoke passes: fresh settings without `--backend-mode` persist `backend_mode: builtin`, `/api/versions` reports a compatible built-in backend, `/api/session-snapshot` exposes a root terminal, browser WebSocket `/ws/terminal` attaches to it and returns command output, direct built-in API socket `ping` returns `pong`, and review fixes cover socket/session selection plus listener cleanup.
 
 Intentional limitations still tracked:
 
@@ -893,7 +903,43 @@ Next checklist:
 6. Add built-in worktree remove with safety checks.
 7. Add PTY stress tests for reconnect, large output, large paste, and multi-client attach.
 
-## 10. Evidence map
+
+## 10. Coverage audit 2026-07-12
+
+This audit checks the todos, requirements, non-functional considerations, tests, and risks above against the current implementation. Status meanings:
+
+- **Covered**: implemented and exercised by automated tests or live smoke.
+- **Partial**: usable MVP exists, but planned parity work remains.
+- **Not covered yet**: still a future task and should stay on the checklist.
+
+| Plan area | Status | Current evidence | Remaining work |
+| --- | --- | --- | --- |
+| Default backend mode | Covered | `default_runtime_server_settings` now uses `BackendMode::Builtin`; frontend fallback is `builtin`; Settings persists `backend_mode`; CLI accepts `--backend-mode external-herdr|builtin|auto`. | Existing user config keeps its saved mode. Users who want Herdr daemon mode must select external explicitly. |
+| External Herdr compatibility | Covered | External socket path helpers, named session paths, protocol fallback, service launch/close, and route behavior remain in `src/main.rs`. | Move external code behind a provider adapter. |
+| Auto mode | Covered | `resolve_backend_mode` prefers a live compatible external API socket and otherwise starts built-in. `/api/versions` reports resolved `backend_mode`. | More health/status detail. |
+| BackendProvider trait and typed API | Not covered yet | Current built-in backend is socket-compatible and routes still construct JSON requests. | Extract `BackendProvider`, typed requests/responses/events, schema tests, and client-agnostic core. |
+| Existing WebUI route compatibility | Partial | Workspaces, tabs, panes, session snapshot, agents, worktrees, events WebSocket, and terminal WebSocket continue to use existing route shapes against built-in sockets. | Route handlers should call typed provider methods instead of raw `ApiClient`; runtime mode switch still needs full reconnect flow. |
+| Sessions | Partial | Built-in mode exposes `default`, launch is a no-op success, close proxies `server.stop`, browser reconnect attaches to live in-process PTYs while WebUI runs. | Named built-in session registry, per-session persistence dirs, safe close semantics, restore after WebUI restart, TUI session listing. |
+| Workspaces | Partial | Built-in creates/lists/renames/closes workspaces, includes cwd, focus, tab/pane counts via snapshot/list routes. | Move/reorder/focus events, richer aggregate agent status, persistent ordering, typed event emission. |
+| Worktrees | Partial | Built-in owns `worktree.list`, `worktree.open`, and `worktree.create` via Git CLI. `worktree.remove` returns explicit unsupported error instead of false success. | Safe remove with confirmation/primary protection, worktree events, more typed errors. |
+| Tabs, panes, layouts | Partial | Built-in list/create/rename/close tabs, list/get/close/read panes, and layout/session snapshot are implemented. | Split/move/swap/resize/zoom panes, pane rename/focus process info, layout apply/export parity, live layout events. |
+| Terminal runtime | Partial | `portable-pty` shell/argv spawn, ANSI output, input/paste, resize, detach/reconnect, bounded 8 MiB scrollback, bounded subscriber queues, full attach repaint, child cleanup on drop. Live smoke verifies `/ws/terminal` command output. | Observe/control/takeover, bracketed paste mode detection, image clipboard staging, explicit queued/rejected reconnect input policy, deeper stress tests. |
+| Scroll semantics | Partial | Built-in frontend path uses local xterm scroll and avoids sending backend scroll spam. Terminal tail/recent read uses bounded scrollback. | Server-side scroll offsets/metrics, wheel routing for mouse/alt screen/host scrollback, scroll events, search/selection APIs. |
+| Copy/paste performance | Partial | Existing frontend paste chunking/backpressure and frame coalescing remain; built-in writes bytes to PTY and keeps scrollback bounded. | Backend paste size caps/errors, bracketed paste negotiation, backend selection/read API for TUI, large-copy streaming. |
+| Render performance | Partial | Frontend small/large frame coalescing tests still pass; built-in sends ANSI terminal frames and bounded queues. | Backend render baseline/diff frames, graphics parity, backend batching metrics. |
+| Protocol compatibility/versioning | Partial | `/api/versions` reports backend mode, compatibility, backend version/protocol; built-in `ping` advertises capabilities. External protocol fallback remains. | Independent internal backend protocol/schema generation, method-string isolation. |
+| Security | Partial | Existing auth/localhost/public-bind checks preserved; built-in sockets use user-only permissions; stale socket handling refuses active socket unlink; destructive built-in worktree remove is blocked. | More backend validation around future destructive operations, explicit terminal takeover controls. |
+| Portability | Partial | Uses `portable-pty`; Unix socket safety covered on Unix. | Windows design/testing and PTY abstraction extraction. |
+| Observability | Partial | `/api/versions` includes mode/compatibility; error paths return explicit messages; tests cover key failures. | Structured counters/logging for terminal bytes, queue drops, paste chunks, scroll commands, reconnects. |
+| Events/subscriptions | Partial | External event bridge remains; built-in `events.subscribe` acks then closes so no thread leak; UI keeps 5s snapshot polling fallback. | Built-in typed event hub, sequence numbers, resume-after-sequence, push events for all mutations. |
+| Agent/Jcode support | Partial | Built-in agent list/start plus bounded tail detection for Jcode/OpenCode and Herdr alias coverage. No-sleep/notifications consume agent list. | Foreground process detection, manifest loader parity, read/send/focus/rename/explain agents, presets. |
+| Future TUI support | Partial | Built-in exposes local API and client terminal sockets that a non-browser client can technically speak. | Rust client crate, typed local control API, event stream, smoke CLI/TUI, no-Axum backend core. |
+| Test plan | Partial | Rust unit tests cover backend mode/settings/socket safety/events/worktree parsing/Jcode detection; JS tests cover settings and built-in scroll path; live smoke covers versions/snapshot/terminal WebSocket. | State-space tests, large-output/paste/reconnect/multi-client stress, worktree remove integration, TUI client tests. |
+| Risks and mitigations | Partial | Biggest immediate risks have mitigations: bounded scrollback/subscriber queues, explicit unsupported destructive remove, socket permission/stale-socket checks, external fallback. | Divergence from Herdr semantics, missing provider abstraction, missing event hub, and missing persistence remain tracked risks. |
+
+Verdict: not every todo from the original plan is covered. The current implementation covers a safe built-in default MVP and documents the remaining parity gaps. The uncovered items are intentionally still tracked instead of being marked complete.
+
+## 11. Evidence map
 
 Codebase-memory status:
 

@@ -22,7 +22,7 @@ Settings:
 - The terminal links setting is stored in browser `localStorage` as `terminalLinks`. It defaults to enabled and controls xterm URL link detection on desktop and mobile.
 - The file browser Git status colors setting is stored in browser `localStorage` as `fileBrowserGitStatus`. It defaults to enabled and controls whether the file browser tree shows Git status colors for files and directories.
 - Unified search settings are stored in browser `localStorage` under `herdr-web-options`. They enable/disable workspace, file, folder, and content sections independently, and `searchSectionOrder` controls the order of sections in the search palette.
-- Opening Settings clears the previous search, refreshes option values, reloads server settings, and focuses the search box.
+- Opening Settings clears the previous search, refreshes option values, reloads server settings, and focuses the search box. Settings → Backend controls `backend_mode`; fresh settings default to built-in, while external Herdr and auto modes remain available for compatibility.
 
 Notifications and attention sounds:
 
@@ -44,15 +44,16 @@ Panels:
 
 Worktrees:
 
-- With Herdr `0.7.1` and newer, WebUI uses Herdr's native `worktree.create` support for existing local branches and deferred Git work.
-- With Herdr `0.7.0`, WebUI keeps a legacy fallback for creating a checkout from an existing branch when a checkout path is supplied.
+- Built-in backend mode owns `worktree.list`, `worktree.open`, and `worktree.create` with local Git commands. Built-in `worktree.remove` is intentionally blocked until destructive safety validation lands.
+- With external Herdr `0.7.1` and newer, WebUI uses Herdr's native `worktree.create` support for existing local branches and deferred Git work.
+- With external Herdr `0.7.0`, WebUI keeps a legacy fallback for creating a checkout from an existing branch when a checkout path is supplied.
 - Desktop worktree creation uses `Worktree default directory` to generate checkout paths from repo name and branch. Relative defaults resolve from the repo root, for example `../worktrees`.
-- WebUI subscribes to `worktree.created`, `worktree.opened`, and `worktree.removed` and refreshes workspace/agent state quickly after these events.
+- With event-capable external Herdr backends, WebUI subscribes to `worktree.created`, `worktree.opened`, and `worktree.removed` and refreshes workspace/agent state quickly after these events. Built-in mode currently acks the event subscription and relies on snapshot refresh fallback until the event hub lands.
 - `worktree.removed` events from Herdr `0.7.1` may include a workspace snapshot. This is additive; WebUI refreshes from the backend state instead of relying only on the event payload.
 - Linked worktree cards use the branch name as the main title and show a custom worktree label as a small label chip when one exists.
 - Agent rows prefer the linked worktree custom label, so running agents are easier to scan across many branches.
 - Worktree groups avoid duplicate repo headers when the parent workspace card is already visible.
-- Removing a linked worktree is available from the worktree actions and from the keyboard prefix `Delete` shortcut.
+- Removing a linked worktree is available from the worktree actions and from the keyboard prefix `Delete` shortcut when the active backend supports safe removal. Built-in mode currently returns an explicit unsupported error for worktree remove until destructive validation is implemented.
 
 File browser:
 
@@ -92,10 +93,10 @@ Git UI:
 
 Panel and workspace close:
 
-- Closing the last panel in a workspace closes the workspace with Herdr's `workspace.close` API instead of calling `tab.close`, because Herdr rejects closing the last tab.
+- Closing the last panel in a workspace closes the workspace with the active backend `workspace.close` API instead of calling `tab.close`, because Herdr-compatible backends reject closing the last tab.
 - Closing a workspace or linked worktree uses `workspace.close` to close all panels in that workspace.
 - Closing a normal non-last panel still uses `tab.close`.
-- When Herdr reports `pane.exited`, WebUI closes that pane through Herdr's `pane.close` API and switches away from it after refresh.
+- When the active backend reports `pane.exited`, WebUI closes that pane through `pane.close` and switches away from it after refresh.
 
 Panel tab activity:
 
