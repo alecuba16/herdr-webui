@@ -1863,14 +1863,161 @@ fn detect_agent_label_from_processes(
 }
 
 fn detect_agent_label_from_process(process: &ProcessInfo) -> Option<&'static str> {
-    for candidate in
-        std::iter::once(process.command.as_str()).chain(process.args.split_whitespace())
+    if let Some(agent) = detect_agent_label(&[process.command.clone()]) {
+        return Some(agent);
+    }
+
+    let argv = process_args_tokens(&process.args);
+    if let Some(agent) = argv
+        .first()
+        .and_then(|candidate| detect_agent_label(std::slice::from_ref(candidate)))
     {
-        if let Some(agent) = detect_agent_label(&[candidate.to_string()]) {
-            return Some(agent);
+        return Some(agent);
+    }
+
+    let runtime = argv.first().map(String::as_str).unwrap_or(&process.command);
+    if is_generic_runtime_or_shell(runtime) {
+        return wrapped_agent_label_from_runtime_argv(runtime, &argv);
+    }
+
+    None
+}
+
+fn wrapped_agent_label_from_runtime_argv(runtime: &str, argv: &[String]) -> Option<&'static str> {
+    let runtime = normalized_command_name(runtime);
+    match runtime.as_str() {
+        "node" | "bun" => script_arg_agent_label(argv, &["-e", "--eval", "-p", "--print"], &[]),
+        "python" | "python3" => script_arg_agent_label(argv, &["-c"], &["-m"]),
+        "sh" | "bash" | "zsh" | "fish" => script_arg_agent_label(argv, &["-c"], &[]),
+        _ => None,
+    }
+}
+
+fn script_arg_agent_label(
+    argv: &[String],
+    eval_flags: &[&str],
+    module_flags: &[&str],
+) -> Option<&'static str> {
+    let mut args = argv.iter().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--" {
+            return args
+                .next()
+                .and_then(|token| detect_agent_label(std::slice::from_ref(token)));
         }
+        if flag_matches(arg, eval_flags) || flag_matches(arg, module_flags) {
+            return None;
+        }
+        if arg.starts_with('-') {
+            if option_takes_value(arg) {
+                let _ = args.next();
+            }
+            continue;
+        }
+        return detect_agent_label(std::slice::from_ref(arg));
     }
     None
+}
+
+fn flag_matches(arg: &str, flags: &[&str]) -> bool {
+    flags
+        .iter()
+        .any(|flag| arg == *flag || short_flag_payload(arg, flag) || long_flag_value(arg, flag))
+}
+
+fn short_flag_payload(arg: &str, flag: &str) -> bool {
+    flag.starts_with('-')
+        && !flag.starts_with("--")
+        && arg.starts_with(flag)
+        && arg.len() > flag.len()
+}
+
+fn long_flag_value(arg: &str, flag: &str) -> bool {
+    flag.starts_with("--")
+        && arg
+            .strip_prefix(flag)
+            .is_some_and(|rest| rest.starts_with('='))
+}
+
+fn option_takes_value(arg: &str) -> bool {
+    matches!(
+        arg,
+        "-r" | "--require"
+            | "--loader"
+            | "--import"
+            | "--experimental-loader"
+            | "--inspect-port"
+            | "-W"
+            | "-X"
+            | "-S"
+            | "-L"
+            | "-o"
+    )
+}
+
+fn is_generic_runtime_or_shell(name: &str) -> bool {
+    matches!(
+        normalized_command_name(name).as_str(),
+        "sh" | "bash" | "zsh" | "fish" | "tmux" | "node" | "bun" | "python" | "python3"
+    )
+}
+
+fn normalized_command_name(name: &str) -> String {
+    let mut name = Path::new(name)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(name)
+        .trim_matches(|ch| matches!(ch, '"' | '\''))
+        .to_lowercase();
+    for suffix in [".exe", ".cmd", ".bat", ".ps1", ".js"] {
+        if name.ends_with(suffix) {
+            name.truncate(name.len() - suffix.len());
+            break;
+        }
+    }
+    name
+}
+
+fn process_args_tokens(input: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for ch in input.chars() {
+        if escaped {
+            current.push(ch);
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if let Some(active_quote) = quote {
+            if ch == active_quote {
+                quote = None;
+            } else {
+                current.push(ch);
+            }
+            continue;
+        }
+        match ch {
+            '"' | '\'' => quote = Some(ch),
+            ch if ch.is_whitespace() => {
+                if !current.is_empty() {
+                    tokens.push(std::mem::take(&mut current));
+                }
+            }
+            ch => current.push(ch),
+        }
+    }
+    if escaped {
+        current.push('\\');
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
 }
 
 fn detect_agent_status(agent: Option<&str>, text: &str) -> &'static str {
@@ -2645,6 +2792,56 @@ mod tests {
             Some("jcode")
         );
         assert_eq!(detect_agent_label_from_processes(999, &processes), None);
+    }
+
+    #[test]
+    fn detects_jcode_wrapped_processes_like_herdr() {
+        let processes = parse_process_table(
+            r#"
+              10     1 /bin/zsh -zsh
+              11    10 /opt/homebrew/bin/node node -- /Users/alex/bin/jcode.js
+              20     1 /opt/homebrew/bin/bun bun /Users/alex/bin/jcode
+              30     1 /opt/homebrew/bin/python3 python3 /Users/alex/bin/jcode
+              40     1 /usr/bin/env jcode
+              50     1 /opt/homebrew/bin/node node --require /Users/alex/bin/jcode /Users/alex/app.js
+              60     1 /opt/homebrew/bin/node node -e /Users/alex/bin/jcode
+            "#,
+        );
+
+        assert_eq!(
+            detect_agent_label_from_processes(10, &processes),
+            Some("jcode")
+        );
+        assert_eq!(
+            detect_agent_label_from_processes(20, &processes),
+            Some("jcode")
+        );
+        assert_eq!(
+            detect_agent_label_from_processes(30, &processes),
+            Some("jcode")
+        );
+        assert_eq!(
+            detect_agent_label_from_processes(40, &processes),
+            Some("jcode")
+        );
+        assert_eq!(detect_agent_label_from_processes(50, &processes), None);
+        assert_eq!(detect_agent_label_from_processes(60, &processes), None);
+    }
+
+    #[test]
+    fn tokenizes_process_args_with_quotes_for_detection() {
+        assert_eq!(
+            process_args_tokens("node '/Users/alex/bin/jcode.js' --flag"),
+            vec!["node", "/Users/alex/bin/jcode.js", "--flag"]
+        );
+        assert_eq!(
+            process_args_tokens("node \"/Users/alex/bin/jcode.js\""),
+            vec!["node", "/Users/alex/bin/jcode.js"]
+        );
+        assert_eq!(
+            process_args_tokens(r"node /Users/alex/bin/jcode\ cli"),
+            vec!["node", "/Users/alex/bin/jcode cli"]
+        );
     }
 
     #[test]
