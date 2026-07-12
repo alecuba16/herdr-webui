@@ -839,7 +839,6 @@ fn app_router(state: WebState) -> Router {
         .route("/api/tabs/{tab_id}/close", post(close_tab))
         .route("/api/panes", get(panes))
         .route("/api/panes/{pane_id}/close", post(close_pane))
-        .route("/api/panes/{pane_id}/reset", post(reset_pane))
         .route("/api/pane-layout", get(pane_layout))
         .route("/api/session-snapshot", get(session_snapshot))
         .route("/api/agents", get(agents))
@@ -2451,25 +2450,6 @@ async fn close_pane(
     proxy_request(
         &api_for_headers(&state, &headers),
         json!({ "id": "web:pane:close", "method": "pane.close", "params": { "pane_id": pane_id } }),
-    )
-}
-
-/// Proxy `pane.reset` to the backend. Older backends that do not implement
-/// `pane.reset` return an error, which `proxy_request` surfaces as a 502.
-/// The frontend uses the backend version from `/api/versions` to decide
-/// whether to show the reset button.
-async fn reset_pane(
-    State(state): State<WebState>,
-    headers: HeaderMap,
-    ConnectInfo(remote): ConnectInfo<SocketAddr>,
-    AxumPath(pane_id): AxumPath<String>,
-) -> Response {
-    if let Err(response) = require_auth(&state, &headers, remote) {
-        return response;
-    }
-    proxy_request(
-        &api_for_headers(&state, &headers),
-        json!({ "id": "web:pane:reset", "method": "pane.reset", "params": { "pane_id": pane_id } }),
     )
 }
 

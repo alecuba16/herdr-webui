@@ -869,9 +869,6 @@ function panesForTab(id) {
 async function closePaneById(id) {
   await api(`/api/panes/${encodeURIComponent(id)}/close`, { method: "POST" });
 }
-async function resetPaneById(id) {
-  await api(`/api/panes/${encodeURIComponent(id)}/reset`, { method: "POST" });
-}
 async function closeWorkspaceById(id) {
   const closingWorkspace = state.workspaces.find((workspace) => workspace.workspace_id === id) || id;
   await api(`/api/workspaces/${encodeURIComponent(id)}/close`, {

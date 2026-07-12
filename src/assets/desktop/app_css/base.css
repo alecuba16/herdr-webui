@@ -362,11 +362,6 @@ body.light {
 .panel-add {
   flex: 0 0 auto;
 }
-.panel-reset {
-  flex: 0 0 auto;
-  font-size: 12px;
-  line-height: 1;
-}
 .panel-menu {
   background: var(--panel);
   border: 1px solid var(--border2);

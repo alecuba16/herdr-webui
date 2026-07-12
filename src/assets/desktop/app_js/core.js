@@ -35,9 +35,6 @@ let state = {
   // True when the backend supports session.snapshot (protocol 16+). Set after
   // the first successful snapshot; falls back to legacy polling when false.
   supportsSessionSnapshot: false,
-  // True when the backend supports the pane.reset API method (0.7.3+).
-  // Set by loadVersions from the backend version string.
-  supportsPaneReset: false,
 };
 let term,
   termWs,
@@ -2213,14 +2210,6 @@ async function resetSession() {
   state.pane = null;
   refresh();
 }
-async function resetTerminal() {
-  if (!state.pane) return;
-  try {
-    await resetPaneById(state.pane);
-  } catch (e) {
-    console.error("Failed to reset terminal:", e);
-  }
-}
 const statusClass = (s) => (s === "done" ? "done" : s || "unknown");
 function statusMark(status, withText = false) {
   const s = statusClass(status);
@@ -2352,20 +2341,11 @@ async function loadVersions() {
     }
     const button = el("footerSessionButton");
     if (button) button.textContent = state.session || session;
-    state.supportsPaneReset = supportsPaneReset(v.backend);
   } catch (e) {
     if (versionsEl) versionsEl.textContent = "webui - · backend offline";
     const button = el("footerSessionButton");
     if (button) button.textContent = state.session || "default";
-    state.supportsPaneReset = false;
   }
-}
-function supportsPaneReset(version) {
-  if (!version) return false;
-  const match = version.match(/^(\d+)\.(\d+)\.(\d+)/);
-  if (!match) return false;
-  const [, major, minor, patch] = match.map(Number);
-  return major > 0 || (major === 0 && (minor > 7 || (minor === 7 && patch >= 3)));
 }
 function sessionPrefix() {
   return "/session/" + encodeURIComponent(state.session || "default");
