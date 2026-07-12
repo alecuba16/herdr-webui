@@ -363,6 +363,39 @@ body.light .chip.label {
   flex-wrap: wrap;
   justify-content: flex-end;
 }
+.session-button {
+  align-items: center;
+  background: var(--panel2);
+  border: 1px solid var(--border2);
+  border-radius: 10px;
+  color: var(--fg);
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
+  min-height: 30px;
+  padding: 8px 11px;
+  transition:
+    background 0.15s,
+    border-color 0.15s,
+    color 0.15s;
+  white-space: nowrap;
+}
+.session-button:hover,
+.session-button:focus {
+  background: var(--control-hover);
+  border-color: var(--accent-border);
+}
+.session-button.primary {
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
+.session-button.danger {
+  color: #e64553;
+}
 .status-pill {
   display: inline-flex;
   align-items: center;
