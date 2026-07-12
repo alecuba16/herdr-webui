@@ -2042,6 +2042,7 @@ fn detect_jcode_status(lower: &str) -> &'static str {
     }
     if has_jcode_spinner(&bottom3)
         || has_jcode_tool_bar(&bottom4)
+        || has_jcode_background_activity(lower)
         || contains_any(
             &bottom4,
             &[
@@ -2064,6 +2065,41 @@ fn detect_jcode_status(lower: &str) -> &'static str {
         }
     }
     "unknown"
+}
+
+fn has_jcode_background_activity(text: &str) -> bool {
+    let mut saw_newer_bg_completion = false;
+    for line in text.lines().rev().take(80) {
+        let trimmed = line.trim();
+        if is_jcode_completed_background_line(trimmed) {
+            saw_newer_bg_completion = true;
+            continue;
+        }
+        if saw_newer_bg_completion {
+            continue;
+        }
+        if is_jcode_active_background_line(trimmed) {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_jcode_active_background_line(line: &str) -> bool {
+    (line.contains('◌') && line.contains(" bg "))
+        || contains_any(
+            line,
+            &[
+                "jcode is running this in the background",
+                "latest status: bg action=\"status\"",
+                "progress, checkpoints, and completion will appear here",
+            ],
+        )
+}
+
+fn is_jcode_completed_background_line(line: &str) -> bool {
+    (contains_any(line, &["✓", "✗"]) && line.contains(" bg "))
+        || (line.contains(" bg ") && contains_any(line, &["completed", "failed"]))
 }
 
 fn detect_opencode_status(lower: &str) -> &'static str {
@@ -2613,6 +2649,27 @@ mod tests {
                 "↻ network disconnected, waiting to retry · websocket · 8s"
             ),
             "working"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("jcode"),
+                "Jcode is running this in the background. Progress, checkpoints, and completion will appear here.\n╭ ◌ bg run full Rust and JS tests · 5202362vb9 ╮\nLatest status: bg action=\"status\" task_id=\"5202362vb9\"\n❯"
+            ),
+            "working"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("jcode"),
+                "╭ ✓ bg run full Rust and JS tests completed · 5202362vb9 ╮\nexit 0 · 5.7s\n❯"
+            ),
+            "idle"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("jcode"),
+                "Jcode is running this in the background. Progress, checkpoints, and completion will appear here.\n╭ ◌ bg run full Rust and JS tests · 5202362vb9 ╮\nLatest status: bg action=\"status\" task_id=\"5202362vb9\"\n╭ ✓ bg run full Rust and JS tests completed · 5202362vb9 ╮\nexit 0 · 5.7s\n❯"
+            ),
+            "idle"
         );
         assert_eq!(
             detect_agent_status(Some("jcode"), "Session ready\n❯"),
