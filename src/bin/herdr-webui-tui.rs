@@ -4,14 +4,15 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use herdr_webui::backend_client::{BackendClient, TerminalEvent, TerminalOutput};
 use herdr_webui::tui::{
-    build_client, key_to_terminal_bytes, render, snapshot_summary, TuiApp, TuiMode, TuiOptions,
+    build_client, is_menu_key, key_to_terminal_bytes, render, snapshot_summary, TuiApp, TuiMode,
+    TuiOptions,
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
@@ -71,14 +72,25 @@ fn run_interactive(
         if event::poll(Duration::from_millis(50))? {
             match event::read()? {
                 Event::Key(key) => {
+                    if key.kind == KeyEventKind::Release {
+                        continue;
+                    }
                     if app.mode == TuiMode::Attach {
-                        if key.modifiers.contains(KeyModifiers::CONTROL)
+                        if is_menu_key(key) {
+                            app.handle_key(key);
+                        } else if key.modifiers.contains(KeyModifiers::CONTROL)
                             && key.code == KeyCode::Char('g')
                         {
                             live_terminal = None;
                             app.handle_key(key);
                         } else if let Some(bytes) = key_to_terminal_bytes(key) {
-                            ensure_live_terminal(&mut live_terminal, &app)?;
+                            let size = terminal.size()?;
+                            ensure_live_terminal(
+                                &mut live_terminal,
+                                &app,
+                                size.width,
+                                size.height,
+                            )?;
                             if let Some(live) = &live_terminal {
                                 live.send_input(bytes);
                                 app.status = "sent input".to_string();
@@ -88,7 +100,13 @@ fn run_interactive(
                     } else {
                         app.handle_key(key);
                         if app.mode == TuiMode::Attach {
-                            ensure_live_terminal(&mut live_terminal, &app)?;
+                            let size = terminal.size()?;
+                            ensure_live_terminal(
+                                &mut live_terminal,
+                                &app,
+                                size.width,
+                                size.height,
+                            )?;
                         }
                     }
                     if app.should_quit() {
@@ -219,6 +237,8 @@ impl Drop for LiveTerminal {
 fn ensure_live_terminal(
     live_terminal: &mut Option<LiveTerminal>,
     app: &TuiApp,
+    cols: u16,
+    rows: u16,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let Some(terminal_id) = app.selected_terminal_id().map(str::to_string) else {
         return Ok(());
@@ -232,8 +252,8 @@ fn ensure_live_terminal(
     *live_terminal = Some(LiveTerminal::start(
         app.client.clone(),
         terminal_id,
-        120,
-        32,
+        cols.max(1),
+        rows.max(1),
     ));
     Ok(())
 }

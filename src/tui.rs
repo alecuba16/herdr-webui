@@ -14,6 +14,7 @@ use crate::terminal_text::{self, StripCarriageReturn, TerminalTextOptions};
 
 const SPINNERS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const TAIL_LINES: usize = 240;
+const TERMINAL_RAW_BUFFER_BYTES: usize = 512 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TuiMode {
@@ -149,6 +150,8 @@ pub struct TuiApp {
     pub sidebar_focus: SidebarFocus,
     pub mode: TuiMode,
     pub pane_tail: Vec<String>,
+    terminal_raw_output: String,
+    terminal_raw_terminal_id: Option<String>,
     pub status: String,
     pub error: Option<String>,
     pub last_refresh: Option<Instant>,
@@ -193,6 +196,8 @@ impl TuiApp {
             sidebar_focus: SidebarFocus::Workspaces,
             mode: TuiMode::Navigate,
             pane_tail: Vec::new(),
+            terminal_raw_output: String::new(),
+            terminal_raw_terminal_id: None,
             status: "connecting".to_string(),
             error: None,
             last_refresh: None,
@@ -247,6 +252,7 @@ impl TuiApp {
                 KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => {
                     self.mode = TuiMode::Navigate
                 }
+                _ if is_menu_key(key) => self.mode = TuiMode::Navigate,
                 _ => {}
             },
             TuiMode::Navigate => self.handle_navigation_key(key),
@@ -310,22 +316,23 @@ impl TuiApp {
     }
 
     pub fn ingest_terminal_output(&mut self, output: &TerminalOutput) {
-        let text = terminal_output_text_lossy(&String::from_utf8_lossy(&output.bytes));
-        if output.full {
-            self.pane_tail = text.lines().map(str::to_string).collect();
-        } else {
-            self.pane_tail.extend(text.lines().map(str::to_string));
+        let selected_terminal_id = self.selected_terminal_id().map(str::to_string);
+        if output.full || self.terminal_raw_terminal_id != selected_terminal_id {
+            self.terminal_raw_output.clear();
+            self.terminal_raw_terminal_id = selected_terminal_id;
         }
-        if self.pane_tail.len() > TAIL_LINES {
-            let overflow = self.pane_tail.len() - TAIL_LINES;
-            self.pane_tail.drain(0..overflow);
-        }
+        self.terminal_raw_output
+            .push_str(&String::from_utf8_lossy(&output.bytes));
+        trim_terminal_raw_output(&mut self.terminal_raw_output);
+        let text = terminal_output_text_lossy(&self.terminal_raw_output);
+        self.set_pane_tail_from_text(&text);
         self.mark_dirty();
     }
 
     fn handle_navigation_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => self.status = "quit".to_string(),
+            _ if is_menu_key(key) => self.mode = TuiMode::Help,
             KeyCode::Char('?') => self.mode = TuiMode::Help,
             KeyCode::Char('r') => {
                 if let Err(err) = self.refresh() {
@@ -345,6 +352,11 @@ impl TuiApp {
     }
 
     fn handle_attach_key(&mut self, key: KeyEvent) {
+        if is_menu_key(key) {
+            self.mode = TuiMode::Help;
+            self.status = "menu: Esc/Ctrl-B closes".to_string();
+            return;
+        }
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('g') {
             self.mode = TuiMode::Navigate;
             self.status = "detached".to_string();
@@ -496,6 +508,7 @@ impl TuiApp {
     pub fn refresh_tail(&mut self) {
         let Some(pane_id) = self.selected_pane().map(|pane| pane.id.clone()) else {
             self.pane_tail.clear();
+            self.reset_terminal_output_buffer();
             return;
         };
         match self.client.read_pane(&pane_id) {
@@ -506,15 +519,8 @@ impl TuiApp {
                     .and_then(Value::as_str)
                     .or_else(|| value.get("text").and_then(Value::as_str))
                     .unwrap_or("");
-                self.pane_tail = strip_ansi_lossy(text)
-                    .lines()
-                    .rev()
-                    .take(TAIL_LINES)
-                    .map(str::to_string)
-                    .collect::<Vec<_>>()
-                    .into_iter()
-                    .rev()
-                    .collect();
+                self.reset_terminal_output_buffer();
+                self.set_pane_tail_from_text(&strip_ansi_lossy(text));
                 self.mark_dirty();
             }
             Err(err) => {
@@ -522,6 +528,23 @@ impl TuiApp {
                 self.mark_dirty();
             }
         }
+    }
+
+    fn reset_terminal_output_buffer(&mut self) {
+        self.terminal_raw_output.clear();
+        self.terminal_raw_terminal_id = None;
+    }
+
+    fn set_pane_tail_from_text(&mut self, text: &str) {
+        self.pane_tail = text
+            .lines()
+            .rev()
+            .take(TAIL_LINES)
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
     }
 
     pub fn should_quit(&self) -> bool {
@@ -772,8 +795,8 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
         TuiMode::Help => "HELP",
     };
     let help = match app.mode {
-        TuiMode::Attach => " Ctrl-G detach · type sends input · q not intercepted ",
-        _ => " ↑/↓ j/k select · Tab switch list · Enter attach · r refresh · ? help · q quit ",
+        TuiMode::Attach => " Ctrl-B menu · Ctrl-G detach · type sends input · q passthrough ",
+        _ => " Ctrl-B menu · ↑/↓ j/k select · Enter attach · r refresh · q quit ",
     };
     let message = app.error.as_deref().unwrap_or(&app.status);
     let line = Line::from(vec![
@@ -800,7 +823,7 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
 
 fn render_help(frame: &mut Frame<'_>, area: Rect, p: &Palette) {
     let width = area.width.min(72);
-    let height = area.height.min(14);
+    let height = area.height.min(16);
     let rect = Rect::new(
         area.x + area.width.saturating_sub(width) / 2,
         area.y + area.height.saturating_sub(height) / 2,
@@ -819,9 +842,11 @@ fn render_help(frame: &mut Frame<'_>, area: Rect, p: &Palette) {
         Line::from("  w / a            focus workspace or agent list"),
         Line::from("  r                refresh snapshot"),
         Line::from("  Enter            attach selected terminal"),
+        Line::from("  Ctrl-B / ?       open or close this menu"),
         Line::from(""),
         Line::from("Attach mode"),
         Line::from("  keys             send to selected terminal"),
+        Line::from("  Ctrl-B           open menu, not sent to terminal"),
         Line::from("  Ctrl-G           detach back to navigation"),
         Line::from("  q / Esc          quit only from navigation"),
     ];
@@ -873,6 +898,10 @@ pub fn key_to_terminal_bytes(key: KeyEvent) -> Option<Vec<u8>> {
         KeyCode::Delete => Some(b"\x1b[3~".to_vec()),
         _ => None,
     }
+}
+
+pub fn is_menu_key(key: KeyEvent) -> bool {
+    key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('b')
 }
 
 fn parse_array<T>(snapshot: &Value, key: &str, parse: fn(&Value) -> T) -> Vec<T> {
@@ -1059,6 +1088,18 @@ fn strip_ansi_lossy(value: &str) -> String {
     terminal_text::strip_ansi_lossy(value, StripCarriageReturn::Drop)
 }
 
+fn trim_terminal_raw_output(value: &mut String) {
+    let excess = value.len().saturating_sub(TERMINAL_RAW_BUFFER_BYTES);
+    if excess == 0 {
+        return;
+    }
+    let drain_to = value
+        .char_indices()
+        .find_map(|(index, _)| (index >= excess).then_some(index))
+        .unwrap_or(value.len());
+    value.drain(..drain_to);
+}
+
 fn terminal_output_text_lossy(value: &str) -> String {
     terminal_text::terminal_text_lossy(value, TerminalTextOptions::tui_tail())
 }
@@ -1103,6 +1144,23 @@ mod tests {
             key_to_terminal_bytes(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
             Some(vec![3])
         );
+    }
+
+    #[test]
+    fn ctrl_b_toggles_menu_and_is_detectable_before_terminal_input() {
+        let key = KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL);
+        assert!(is_menu_key(key));
+
+        let client = BackendClient::builtin_session(None);
+        let mut app = TuiApp::new(client, Duration::from_secs(1));
+        app.handle_key(key);
+        assert_eq!(app.mode, TuiMode::Help);
+        app.handle_key(key);
+        assert_eq!(app.mode, TuiMode::Navigate);
+
+        app.mode = TuiMode::Attach;
+        app.handle_key(key);
+        assert_eq!(app.mode, TuiMode::Help);
     }
 
     #[test]
@@ -1202,5 +1260,42 @@ mod tests {
             bytes: b"\nnext line".to_vec(),
         });
         assert_eq!(app.pane_tail, vec!["Session ready", "working", "next line"]);
+    }
+
+    #[test]
+    fn terminal_output_ingest_merges_character_deltas_on_same_line() {
+        let client = BackendClient::builtin_session(None);
+        let mut app = TuiApp::new(client, Duration::from_secs(1));
+
+        app.ingest_terminal_output(&TerminalOutput {
+            seq: 1,
+            width: 120,
+            height: 32,
+            full: true,
+            bytes: b"prompt ".to_vec(),
+        });
+        app.ingest_terminal_output(&TerminalOutput {
+            seq: 2,
+            width: 120,
+            height: 32,
+            full: false,
+            bytes: b"a".to_vec(),
+        });
+        app.ingest_terminal_output(&TerminalOutput {
+            seq: 3,
+            width: 120,
+            height: 32,
+            full: false,
+            bytes: b"b".to_vec(),
+        });
+        app.ingest_terminal_output(&TerminalOutput {
+            seq: 4,
+            width: 120,
+            height: 32,
+            full: false,
+            bytes: b"\rprompt abc".to_vec(),
+        });
+
+        assert_eq!(app.pane_tail, vec!["prompt abc"]);
     }
 }
