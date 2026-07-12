@@ -106,6 +106,7 @@ describe("app bundle load", () => {
   let source;
   let gitUiSource;
   let gitSettingsSource;
+  let desktopWorkspacesCss;
   let desktopTerminalSource;
   let appBootSource;
 
@@ -114,6 +115,7 @@ describe("app bundle load", () => {
     appBootSource = readFileSync(new URL("./app_boot.js", import.meta.url), "utf8");
     const desktopAppSource = [
       "./desktop/app_js/core.js",
+      "./desktop/app_js/panel_switcher.js",
       "./desktop/app_js/render.js",
       "./desktop/app_js/terminal.js",
       "./desktop/app_js/worktrees.js",
@@ -133,6 +135,7 @@ describe("app bundle load", () => {
       desktopAppSource;
     gitUiSource = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
     gitSettingsSource = readFileSync(new URL("./desktop/git_ui/settings.js", import.meta.url), "utf8");
+    desktopWorkspacesCss = readFileSync(new URL("./desktop/app_css/workspaces.css", import.meta.url), "utf8");
   });
 
   it("loads without initialization-order ReferenceError", () => {
@@ -711,6 +714,25 @@ describe("app bundle load", () => {
     match(html, />custom<\/button>/);
     equal(html.includes(">shell</button>"), false);
     equal(ctx.panelRenameInitialLabel({ label: "shell", number: 1 }), "");
+
+    vm.runInContext(`
+      state.ws = "ws2";
+      state.tab = "ws2-tab1";
+      state.tabs = [
+        { workspace_id: "ws2", tab_id: "ws2-tab1", label: "shell", number: 1 },
+        { workspace_id: "ws2", tab_id: "ws2-tab2", label: "shell", number: 2 },
+      ];
+    `, ctx);
+    match(ctx.renderPanelField(), /<span>1<\/span>/);
+  });
+
+  it("keeps session manager buttons on one rounded style", () => {
+    match(source, /class="session-button primary" id="newBuiltinSessionTarget"/);
+    match(source, /class="session-button" id="newHerdrSessionTarget"/);
+    ok(!source.includes('class="tab add" id="newHerdrSessionTarget"'));
+    ok(!source.includes('class="mini danger" onclick="event.stopPropagation\(\);closeCurrentSession'));
+    match(desktopWorkspacesCss, /\.session-button \{/);
+    match(desktopWorkspacesCss, /border-radius: 10px;/);
   });
 
   it("renders backend-aware session manager and sends backend target headers", async () => {
