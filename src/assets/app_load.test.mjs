@@ -592,6 +592,8 @@ describe("app bundle load", () => {
     match(html, /id="optServerPassword"/);
     match(html, /id="optServerLocalBypass"/);
     match(html, /id="optBackendMode"/);
+    match(html, /id="optBuiltinBackendEnabled"/);
+    match(html, /id="optExternalHerdrBackendEnabled"/);
     match(html, /id="optBuiltinShell"/);
     match(html, /id="optNoSleepAutoCooldown"/);
     match(html, /id="serverSettingsApply"/);
@@ -600,7 +602,11 @@ describe("app bundle load", () => {
     match(html, /<h3>Power behavior<\/h3>/);
     match(html, /\.config\/herdr-webui\/webui-settings\.json/);
     match(source, /el\("optBackendMode"\)\.value = settings\.backend_mode \|\| "builtin";/);
+    match(source, /el\("optBuiltinBackendEnabled"\)\.checked = settings\.builtin_backend_enabled !== false;/);
+    match(source, /el\("optExternalHerdrBackendEnabled"\)\.checked = settings\.external_herdr_backend_enabled !== false;/);
     match(source, /backend_mode: backendMode,/);
+    match(source, /builtin_backend_enabled: builtinBackendEnabled,/);
+    match(source, /external_herdr_backend_enabled: externalHerdrBackendEnabled,/);
     match(source, /builtin_shell: builtinShell \|\| null,/);
   });
 
