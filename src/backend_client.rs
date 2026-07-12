@@ -570,6 +570,24 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn error_display_and_from_impls_are_descriptive() {
+        let io_error = BackendClientError::from(io::Error::new(io::ErrorKind::Other, "disk gone"));
+        assert_eq!(io_error.to_string(), "I/O error: disk gone");
+
+        let json_error = BackendClientError::from(serde_json::from_str::<Value>("{").unwrap_err());
+        assert!(json_error.to_string().starts_with("JSON error:"));
+
+        assert_eq!(
+            BackendClientError::Protocol("bad frame".to_string()).to_string(),
+            "terminal protocol error: bad frame"
+        );
+        assert_eq!(
+            BackendClientError::UnexpectedResponse("wrong frame".to_string()).to_string(),
+            "unexpected response: wrong frame"
+        );
+    }
+
+    #[test]
     fn builtin_session_uses_webui_socket_convention() {
         let _guard = env_lock().lock().unwrap();
         let base = PathBuf::from("/tmp").join(unique_name("tui-client-config"));
@@ -613,6 +631,30 @@ mod tests {
         let result = client.snapshot().unwrap();
 
         assert_eq!(result["type"], "session_snapshot");
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
+    }
+
+    #[test]
+    fn request_raw_reports_closed_control_socket() {
+        let socket = temp_socket("tui-api-closed");
+        let listener = bind_local_listener(&socket).unwrap();
+        let handle = thread::spawn(move || {
+            let stream = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            assert!(line.contains("session.snapshot"));
+            drop(stream);
+        });
+
+        let client = BackendClient::new(&socket, temp_socket("unused-terminal"));
+        let err = client
+            .request_raw(json!({ "id": "x", "method": "session.snapshot", "params": {} }))
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("closed the control socket without a response"));
         handle.join().unwrap();
         let _ = fs::remove_file(socket);
     }
@@ -787,6 +829,37 @@ mod tests {
     }
 
     #[test]
+    fn runtime_settings_path_uses_xdg_home_and_temp_fallbacks() {
+        let _guard = env_lock().lock().unwrap();
+        let original_xdg = std::env::var_os("XDG_CONFIG_HOME");
+        let original_home = std::env::var_os("HOME");
+        let xdg = PathBuf::from("/tmp").join(unique_name("xdg-config"));
+        let home = PathBuf::from("/tmp").join(unique_name("home-config"));
+
+        std::env::set_var("XDG_CONFIG_HOME", &xdg);
+        std::env::set_var("HOME", &home);
+        assert_eq!(
+            runtime_settings_path(),
+            xdg.join("herdr-webui/webui-settings.json")
+        );
+
+        std::env::remove_var("XDG_CONFIG_HOME");
+        assert_eq!(
+            runtime_settings_path(),
+            home.join(".config/herdr-webui/webui-settings.json")
+        );
+
+        std::env::remove_var("HOME");
+        assert_eq!(
+            runtime_settings_path(),
+            std::env::temp_dir().join("herdr-webui/webui-settings.json")
+        );
+
+        restore_env_var("XDG_CONFIG_HOME", original_xdg);
+        restore_env_var("HOME", original_home);
+    }
+
+    #[test]
     fn create_worktree_from_base_sends_builtin_cwd_base_shape() {
         let socket = temp_socket("tui-worktree-create");
         let listener = bind_local_listener(&socket).unwrap();
@@ -818,6 +891,150 @@ mod tests {
             .unwrap();
 
         assert_eq!(result["type"], "worktree_created");
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
+    }
+
+    #[test]
+    fn terminal_attach_reports_welcome_errors_and_wrong_first_frame() {
+        let socket = temp_socket("tui-term-err");
+        let listener = bind_local_listener(&socket).unwrap();
+        let handle = thread::spawn(move || {
+            for response in [
+                ServerMessage::Welcome {
+                    version: BUILTIN_TUI_PROTOCOL_VERSION,
+                    encoding: RenderEncoding::TerminalAnsi,
+                    error: Some("terminal rejected".to_string()),
+                },
+                ServerMessage::ServerShutdown {
+                    reason: Some("not welcome".to_string()),
+                },
+            ] {
+                let mut stream = listener.accept().unwrap();
+                match read_message::<_, ClientMessage>(&mut stream, MAX_TUI_TERMINAL_FRAME_SIZE)
+                    .unwrap()
+                {
+                    ClientMessage::Hello { .. } => {}
+                    other => panic!("expected hello, got {other:?}"),
+                }
+                write_message(&mut stream, &response).unwrap();
+            }
+        });
+
+        let client = BackendClient::new(temp_socket("unused-api"), &socket);
+        let protocol_err = match client.attach_terminal("term_1", 80, 24) {
+            Err(err) => err,
+            Ok(_) => panic!("expected terminal protocol error"),
+        };
+        assert_eq!(
+            protocol_err.to_string(),
+            "terminal protocol error: terminal rejected"
+        );
+        let unexpected = match client.attach_terminal("term_1", 80, 24) {
+            Err(err) => err,
+            Ok(_) => panic!("expected unexpected terminal response"),
+        };
+        assert!(unexpected
+            .to_string()
+            .contains("expected terminal Welcome, got ServerShutdown"));
+
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
+    }
+
+    #[test]
+    fn terminal_client_maps_non_output_events_and_ignores_control_frames() {
+        let socket = temp_socket("tui-terminal-events");
+        let listener = bind_local_listener(&socket).unwrap();
+        let handle = thread::spawn(move || {
+            let mut stream = listener.accept().unwrap();
+            match read_message::<_, ClientMessage>(&mut stream, MAX_TUI_TERMINAL_FRAME_SIZE)
+                .unwrap()
+            {
+                ClientMessage::Hello { cols, rows, .. } => assert_eq!((cols, rows), (1, 1)),
+                other => panic!("expected hello, got {other:?}"),
+            }
+            write_message(
+                &mut stream,
+                &ServerMessage::Welcome {
+                    version: BUILTIN_TUI_PROTOCOL_VERSION,
+                    encoding: RenderEncoding::TerminalAnsi,
+                    error: None,
+                },
+            )
+            .unwrap();
+            match read_message::<_, ClientMessage>(&mut stream, MAX_TUI_TERMINAL_FRAME_SIZE)
+                .unwrap()
+            {
+                ClientMessage::AttachTerminal { terminal_id, .. } => {
+                    assert_eq!(terminal_id, "term_events")
+                }
+                other => panic!("expected attach, got {other:?}"),
+            }
+
+            let events = [
+                ServerMessage::Graphics {
+                    bytes: b"image".to_vec(),
+                },
+                ServerMessage::WindowTitle {
+                    title: Some("title".to_string()),
+                },
+                ServerMessage::Clipboard {
+                    data: "copied".to_string(),
+                },
+                ServerMessage::Notify {
+                    kind: crate::protocol::NotifyKind::Toast,
+                    message: "message".to_string(),
+                    body: Some("body".to_string()),
+                },
+                ServerMessage::MouseCapture { enabled: true },
+                ServerMessage::ServerShutdown {
+                    reason: Some("done".to_string()),
+                },
+                ServerMessage::ReloadSoundConfig,
+                ServerMessage::PrefixInputSource { active: true },
+            ];
+            for event in events {
+                write_message(&mut stream, &event).unwrap();
+            }
+        });
+
+        let client = BackendClient::new(temp_socket("unused-api"), &socket);
+        let mut terminal = client.attach_terminal("term_events", 0, 0).unwrap();
+
+        assert_eq!(terminal.size(), (1, 1));
+        assert_eq!(
+            terminal.read_event().unwrap(),
+            TerminalEvent::Graphics(b"image".to_vec())
+        );
+        assert_eq!(
+            terminal.read_event().unwrap(),
+            TerminalEvent::WindowTitle(Some("title".to_string()))
+        );
+        assert_eq!(
+            terminal.read_event().unwrap(),
+            TerminalEvent::Clipboard("copied".to_string())
+        );
+        assert_eq!(
+            terminal.read_event().unwrap(),
+            TerminalEvent::Notify {
+                message: "message".to_string(),
+                body: Some("body".to_string())
+            }
+        );
+        assert_eq!(
+            terminal.read_event().unwrap(),
+            TerminalEvent::MouseCapture { enabled: true }
+        );
+        assert_eq!(
+            terminal.read_event().unwrap(),
+            TerminalEvent::ServerShutdown {
+                reason: Some("done".to_string())
+            }
+        );
+        assert_eq!(terminal.read_event().unwrap(), TerminalEvent::Ignored);
+        assert_eq!(terminal.read_event().unwrap(), TerminalEvent::Ignored);
+
         handle.join().unwrap();
         let _ = fs::remove_file(socket);
     }
@@ -939,6 +1156,67 @@ mod tests {
         assert_eq!(seen_rx.recv().unwrap(), b"abc");
         handle.join().unwrap();
         let _ = fs::remove_file(socket);
+    }
+
+    #[test]
+    fn terminal_client_direct_input_and_detach_use_protocol_frames() {
+        let socket = temp_socket("tui-term-io");
+        let listener = bind_local_listener(&socket).unwrap();
+        let (seen_tx, seen_rx) = mpsc::channel();
+        let handle = thread::spawn(move || {
+            let mut stream = listener.accept().unwrap();
+            match read_message::<_, ClientMessage>(&mut stream, MAX_TUI_TERMINAL_FRAME_SIZE)
+                .unwrap()
+            {
+                ClientMessage::Hello { .. } => {}
+                other => panic!("expected hello, got {other:?}"),
+            }
+            write_message(
+                &mut stream,
+                &ServerMessage::Welcome {
+                    version: BUILTIN_TUI_PROTOCOL_VERSION,
+                    encoding: RenderEncoding::TerminalAnsi,
+                    error: None,
+                },
+            )
+            .unwrap();
+            match read_message::<_, ClientMessage>(&mut stream, MAX_TUI_TERMINAL_FRAME_SIZE)
+                .unwrap()
+            {
+                ClientMessage::AttachTerminal { terminal_id, .. } => {
+                    assert_eq!(terminal_id, "term_io")
+                }
+                other => panic!("expected attach, got {other:?}"),
+            }
+            match read_message::<_, ClientMessage>(&mut stream, MAX_TUI_TERMINAL_FRAME_SIZE)
+                .unwrap()
+            {
+                ClientMessage::Input { data } => seen_tx.send(data).unwrap(),
+                other => panic!("expected input, got {other:?}"),
+            }
+            match read_message::<_, ClientMessage>(&mut stream, MAX_TUI_TERMINAL_FRAME_SIZE)
+                .unwrap()
+            {
+                ClientMessage::Detach => {}
+                other => panic!("expected detach, got {other:?}"),
+            }
+        });
+
+        let client = BackendClient::new(temp_socket("unused-api"), &socket);
+        let mut terminal = client.attach_terminal("term_io", 100, 30).unwrap();
+        terminal.send_input(b"direct").unwrap();
+        terminal.detach().unwrap();
+
+        assert_eq!(seen_rx.recv().unwrap(), b"direct");
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
+    }
+
+    fn restore_env_var(key: &str, value: Option<std::ffi::OsString>) {
+        match value {
+            Some(value) => std::env::set_var(key, value),
+            None => std::env::remove_var(key),
+        }
     }
 
     fn env_lock() -> &'static Mutex<()> {
