@@ -1137,7 +1137,7 @@ impl TerminalRuntime {
                 bytes
             })
             .unwrap_or_default();
-        strip_ansi_lossy(&String::from_utf8_lossy(&bytes))
+        terminal_screen_text_lossy(&String::from_utf8_lossy(&bytes))
     }
 
     fn append_output(&self, bytes: &[u8]) {
@@ -1749,12 +1749,17 @@ fn detect_agent_label_from_text(text: &str) -> Option<&'static str> {
     {
         return Some("opencode");
     }
+    let bottom4 = bottom_non_empty_lines(&lower, 4);
+    let bottom3 = bottom_non_empty_lines(&lower, 3);
     if lower.contains("jcode")
         || lower.contains("session ready")
         || lower.contains("ready for input")
         || jcode_blocked(&bottom_non_empty_lines(&lower, 8))
+        || has_jcode_spinner(&bottom3)
+        || has_jcode_tool_bar(&bottom4)
         || lower.contains("running tool")
         || lower.contains("executing tool")
+        || lower.contains("network disconnected, waiting to retry")
     {
         return Some("jcode");
     }
@@ -1970,20 +1975,68 @@ fn has_jcode_spinner(text: &str) -> bool {
 }
 
 fn has_jcode_tool_bar(text: &str) -> bool {
-    text.lines().any(|line| {
-        let trimmed = line.trim_start();
-        let mut prefix_count = 0_usize;
-        let mut prefix_end = 0_usize;
-        for (idx, ch) in trimmed.char_indices() {
-            if ch == '·' || ch == '●' {
-                prefix_count += 1;
-                prefix_end = idx + ch.len_utf8();
-            } else {
-                break;
-            }
+    text.lines().any(jcode_tool_bar_line)
+}
+
+fn jcode_tool_bar_line(line: &str) -> bool {
+    let mut rest = line.trim_start();
+    let Some(after_prefix) = consume_jcode_dots(rest, 3) else {
+        return false;
+    };
+    rest = after_prefix;
+    let Some(after_space) = consume_some_whitespace(rest) else {
+        return false;
+    };
+    rest = after_space;
+    let Some(after_command) = consume_non_whitespace(rest) else {
+        return false;
+    };
+    rest = after_command;
+    let Some(after_space) = consume_some_whitespace(rest) else {
+        return false;
+    };
+    rest = after_space;
+    let Some(after_suffix) = consume_jcode_dots(rest, 3) else {
+        return false;
+    };
+    rest = after_suffix;
+
+    if rest.trim().is_empty() {
+        return true;
+    }
+
+    let Some(after_space) = consume_some_whitespace(rest) else {
+        return false;
+    };
+    let Some(after_dot) = after_space.strip_prefix('·') else {
+        return false;
+    };
+    consume_some_whitespace(after_dot).is_some()
+}
+
+fn consume_jcode_dots(text: &str, count: usize) -> Option<&str> {
+    let mut rest = text;
+    for _ in 0..count {
+        let mut chars = rest.chars();
+        match chars.next() {
+            Some('·' | '●') => rest = chars.as_str(),
+            _ => return None,
         }
-        prefix_count >= 3 && trimmed[prefix_end..].contains(' ')
-    })
+    }
+    Some(rest)
+}
+
+fn consume_some_whitespace(text: &str) -> Option<&str> {
+    let trimmed = text.trim_start();
+    (trimmed.len() < text.len()).then_some(trimmed)
+}
+
+fn consume_non_whitespace(text: &str) -> Option<&str> {
+    let end = text
+        .char_indices()
+        .find_map(|(idx, ch)| ch.is_whitespace().then_some(idx))
+        .unwrap_or(text.len());
+    (end > 0).then_some(&text[end..])
 }
 
 fn has_opencode_progress(text: &str) -> bool {
@@ -2020,6 +2073,221 @@ fn contains_any(text: &str, needles: &[&str]) -> bool {
     needles.iter().any(|needle| text.contains(needle))
 }
 
+fn terminal_screen_text_lossy(input: &str) -> String {
+    let mut screen = TerminalScreen::default();
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\u{1b}' => match chars.peek().copied() {
+                Some('[') => {
+                    chars.next();
+                    let mut sequence = String::new();
+                    for next in chars.by_ref() {
+                        sequence.push(next);
+                        if next.is_ascii_alphabetic() || matches!(next, '~' | '@') {
+                            break;
+                        }
+                    }
+                    screen.apply_csi(&sequence);
+                }
+                Some(']') => {
+                    chars.next();
+                    skip_osc_sequence(&mut chars);
+                }
+                Some(_) => {
+                    chars.next();
+                }
+                None => {}
+            },
+            '\r' => screen.carriage_return(),
+            '\n' => screen.new_line(),
+            '\u{8}' => screen.backspace(),
+            '\t' => screen.tab(),
+            ch if ch.is_control() => {}
+            ch => screen.put(ch),
+        }
+    }
+    screen.text()
+}
+
+#[derive(Debug)]
+struct TerminalScreen {
+    lines: Vec<Vec<char>>,
+    row: usize,
+    col: usize,
+}
+
+impl Default for TerminalScreen {
+    fn default() -> Self {
+        Self {
+            lines: vec![Vec::new()],
+            row: 0,
+            col: 0,
+        }
+    }
+}
+
+impl TerminalScreen {
+    const MAX_LINES: usize = 400;
+
+    fn text(&self) -> String {
+        self.lines
+            .iter()
+            .map(|line| line.iter().collect::<String>().trim_end().to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn ensure_row(&mut self) {
+        while self.lines.len() <= self.row {
+            self.lines.push(Vec::new());
+        }
+    }
+
+    fn trim_scrollback(&mut self) {
+        let overflow = self.lines.len().saturating_sub(Self::MAX_LINES);
+        if overflow == 0 {
+            return;
+        }
+        self.lines.drain(0..overflow);
+        self.row = self.row.saturating_sub(overflow);
+    }
+
+    fn put(&mut self, ch: char) {
+        self.ensure_row();
+        let line = &mut self.lines[self.row];
+        while line.len() < self.col {
+            line.push(' ');
+        }
+        if self.col < line.len() {
+            line[self.col] = ch;
+        } else {
+            line.push(ch);
+        }
+        self.col += 1;
+    }
+
+    fn carriage_return(&mut self) {
+        self.col = 0;
+    }
+
+    fn new_line(&mut self) {
+        self.row += 1;
+        self.col = 0;
+        self.ensure_row();
+        self.trim_scrollback();
+    }
+
+    fn backspace(&mut self) {
+        self.col = self.col.saturating_sub(1);
+    }
+
+    fn tab(&mut self) {
+        let next_tab = ((self.col / 8) + 1) * 8;
+        while self.col < next_tab {
+            self.put(' ');
+        }
+    }
+
+    fn apply_csi(&mut self, sequence: &str) {
+        let Some(final_byte) = sequence.chars().last() else {
+            return;
+        };
+        let params = &sequence[..sequence.len() - final_byte.len_utf8()];
+        match final_byte {
+            'K' => self.erase_line(csi_first_param(params)),
+            'J' => self.erase_display(csi_first_param(params)),
+            'A' => self.row = self.row.saturating_sub(csi_count(params)),
+            'B' => {
+                self.row += csi_count(params);
+                self.ensure_row();
+                self.trim_scrollback();
+            }
+            'C' => self.col += csi_count(params),
+            'D' => self.col = self.col.saturating_sub(csi_count(params)),
+            'G' => self.col = csi_count(params).saturating_sub(1),
+            'H' | 'f' => self.move_cursor(params),
+            _ => {}
+        }
+    }
+
+    fn erase_line(&mut self, mode: usize) {
+        self.ensure_row();
+        let line = &mut self.lines[self.row];
+        match mode {
+            1 => {
+                let end = self.col.min(line.len().saturating_sub(1));
+                for ch in line.iter_mut().take(end + 1) {
+                    *ch = ' ';
+                }
+            }
+            2 => line.clear(),
+            _ => line.truncate(self.col.min(line.len())),
+        }
+    }
+
+    fn erase_display(&mut self, mode: usize) {
+        match mode {
+            2 | 3 => {
+                self.lines = vec![Vec::new()];
+                self.row = 0;
+                self.col = 0;
+            }
+            1 => {
+                self.lines
+                    .drain(..self.row.min(self.lines.len()))
+                    .for_each(drop);
+                self.row = 0;
+                self.erase_line(1);
+            }
+            _ => {
+                self.erase_line(0);
+                self.lines.truncate((self.row + 1).min(self.lines.len()));
+            }
+        }
+    }
+
+    fn move_cursor(&mut self, params: &str) {
+        let mut parts = params.split(';');
+        let row = parts
+            .next()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(1);
+        let col = parts
+            .next()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(1);
+        self.row = row.saturating_sub(1);
+        self.col = col.saturating_sub(1);
+        self.ensure_row();
+        self.trim_scrollback();
+    }
+}
+
+fn csi_count(params: &str) -> usize {
+    csi_first_param(params).max(1)
+}
+
+fn csi_first_param(params: &str) -> usize {
+    params
+        .trim_start_matches('?')
+        .split(';')
+        .next()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0)
+}
+
+fn skip_osc_sequence(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
+    let mut previous_escape = false;
+    for next in chars.by_ref() {
+        if next == '\u{7}' || (previous_escape && next == '\\') {
+            break;
+        }
+        previous_escape = next == '\u{1b}';
+    }
+}
+
+#[cfg(test)]
 fn strip_ansi_lossy(input: &str) -> String {
     let mut output = String::with_capacity(input.len());
     let mut chars = input.chars().peekable();
@@ -2036,13 +2304,7 @@ fn strip_ansi_lossy(input: &str) -> String {
                 }
                 Some(']') => {
                     chars.next();
-                    let mut previous_escape = false;
-                    for next in chars.by_ref() {
-                        if next == '\u{7}' || (previous_escape && next == '\\') {
-                            break;
-                        }
-                        previous_escape = next == '\u{1b}';
-                    }
+                    skip_osc_sequence(&mut chars);
                 }
                 Some(_) => {
                     chars.next();
@@ -2180,12 +2442,152 @@ mod tests {
             "working"
         );
         assert_eq!(
+            detect_agent_status(Some("jcode"), "··● bash ●·· · 12s"),
+            "working"
+        );
+        assert_eq!(
+            detect_agent_status(Some("jcode"), "··● bash ●··"),
+            "working"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("jcode"),
+                "●·· batch ··● · 2/5 done · last done: read · 1m 3s"
+            ),
+            "working"
+        );
+        assert_eq!(
+            detect_agent_status(Some("jcode"), "●·· batch ··● · 2/5 done"),
+            "working"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("jcode"),
+                "↻ network disconnected, waiting to retry · websocket · 8s"
+            ),
+            "working"
+        );
+        assert_eq!(
             detect_agent_status(Some("jcode"), "Session ready\n❯"),
+            "idle"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("jcode"),
+                "We should deny this assumption in the explanation.\n❯ "
+            ),
+            "idle"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("jcode"),
+                "Permission request\n❯ Allow once\n  Deny\nold response line 1\nold response line 2\nold response line 3\nold response line 4\nold response line 5\nold response line 6\nold response line 7\nold response line 8\n❯ "
+            ),
+            "idle"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("jcode"),
+                "Processing request\nold response line 1\nold response line 2\nold response line 3\nold response line 4\n❯ "
+            ),
+            "idle"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("jcode"),
+                "··● bash ●·· · 12s\nold response line 1\nold response line 2\nold response line 3\nold response line 4\n❯ "
+            ),
+            "idle"
+        );
+        assert_eq!(
+            detect_agent_status(Some("jcode"), "··● not a toolbar\n❯"),
             "idle"
         );
         assert_eq!(
             detect_agent_status(Some("jcode"), "plain prompt"),
             "unknown"
+        );
+
+        assert_eq!(
+            detect_agent_label_from_text("●·· batch ··● · 2/5 done"),
+            Some("jcode")
+        );
+        assert_eq!(
+            detect_agent_label_from_text("↻ network disconnected, waiting to retry"),
+            Some("jcode")
+        );
+    }
+
+    #[test]
+    fn jcode_tool_bar_matcher_tracks_manifest_shape() {
+        for line in [
+            "··● bash ●·· · 12s",
+            "··● bash ●··",
+            "●·· batch ··● · 2/5 done",
+            "●·· batch ··● · 2/5 done · last done: read · 1m 3s",
+        ] {
+            assert!(has_jcode_tool_bar(line), "expected toolbar: {line:?}");
+        }
+
+        for line in [
+            "··● not a toolbar",
+            "·· bash ●··",
+            "··● bash ●·",
+            "··● bash ●··tail",
+            "··● bash ●·· ·",
+            "··● bash ●··· 12s",
+        ] {
+            assert!(!has_jcode_tool_bar(line), "unexpected toolbar: {line:?}");
+        }
+    }
+
+    #[test]
+    fn terminal_screen_text_applies_common_tui_rewrites() {
+        assert_eq!(
+            terminal_screen_text_lossy("Session ready\n❯\r\u{1b}[2K··● bash ●·· · 12s"),
+            "Session ready\n··● bash ●·· · 12s"
+        );
+        assert_eq!(
+            terminal_screen_text_lossy(
+                "Session ready\n··● bash ●·· · 12s\r\u{1b}[2KSession ready\n❯"
+            ),
+            "Session ready\nSession ready\n❯"
+        );
+        assert_eq!(terminal_screen_text_lossy("old\u{1b}[2Jnew"), "new");
+        assert_eq!(terminal_screen_text_lossy("abc\rxy"), "xyc");
+        assert_eq!(terminal_screen_text_lossy("abc\u{8}d"), "abd");
+        assert_eq!(terminal_screen_text_lossy("abc\u{1b}[2G\u{1b}[1K"), "  c");
+        assert_eq!(
+            terminal_screen_text_lossy("one\ntwo\u{1b}[1A\rONE"),
+            "ONE\ntwo"
+        );
+        assert_eq!(
+            terminal_screen_text_lossy("\u{1b}]0;title\u{7}ready"),
+            "ready"
+        );
+    }
+
+    #[test]
+    fn jcode_status_uses_screen_not_stale_ansi_history() {
+        let working_screen =
+            terminal_screen_text_lossy("Session ready\n❯\r\u{1b}[2K··● bash ●·· · 12s");
+        assert_eq!(
+            detect_agent_status(Some("jcode"), &working_screen),
+            "working"
+        );
+
+        let idle_screen = terminal_screen_text_lossy(
+            "Session ready\n··● bash ●·· · 12s\r\u{1b}[2KSession ready\n❯",
+        );
+        assert_eq!(detect_agent_status(Some("jcode"), &idle_screen), "idle");
+        assert_eq!(detect_agent_label_from_text(&idle_screen), Some("jcode"));
+
+        let blocked_screen = terminal_screen_text_lossy(
+            "··● bash ●·· · 12s\r\u{1b}[2KApprove?\n❯ Allow\n  Reject\nEsc to cancel",
+        );
+        assert_eq!(
+            detect_agent_status(Some("jcode"), &blocked_screen),
+            "blocked"
         );
     }
 
