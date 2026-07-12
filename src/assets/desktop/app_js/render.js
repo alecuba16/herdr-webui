@@ -213,6 +213,12 @@ function renderSpaces() {
 function selectedWorkspace() {
   return state.workspaces.find((w) => w.workspace_id === state.ws) || null;
 }
+function selectedWorkspaceRepoPath() {
+  const w = selectedWorkspace();
+  if (!w) return "";
+  if (w.worktree && w.worktree.repo_root) return w.worktree.repo_root;
+  return workspacePath(w) || "";
+}
 function worktreeRowsForKey(key) {
   if (!key) return [];
   return state.worktrees.filter((w) => worktreeRowGroupKey(w) === key);
