@@ -683,6 +683,30 @@ describe("app bundle load", () => {
     equal(ctx.stripTerminalQueryReplies("normal input"), "normal input");
   });
 
+  it("renders default shell panels as numeric panel labels", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    vm.runInContext(`
+      state.ws = "ws1";
+      state.tab = "tab2";
+      state.panelMenuOpen = true;
+      state.tabs = [
+        { workspace_id: "ws1", tab_id: "tab1", label: "shell", number: 1 },
+        { workspace_id: "ws1", tab_id: "tab2", label: "shell", number: 2 },
+        { workspace_id: "ws1", tab_id: "tab3", label: "custom", number: 3 },
+      ];
+    `, ctx);
+
+    const html = ctx.renderPanelField();
+
+    match(html, /<span>2<\/span>/);
+    match(html, />1<\/button>/);
+    match(html, />2<\/button>/);
+    match(html, />custom<\/button>/);
+    equal(html.includes(">shell</button>"), false);
+    equal(ctx.panelRenameInitialLabel({ label: "shell", number: 1 }), "");
+  });
+
   it("renders backend-aware session manager and sends backend target headers", async () => {
     const ctx = context();
     const calls = [];
