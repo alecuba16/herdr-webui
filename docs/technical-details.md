@@ -229,7 +229,7 @@ Supported behavior:
 
 ## Settings
 
-Browser-local settings are stored in `localStorage` under `herdr-web-options`. Runtime server settings are stored in `~/.config/herdr-webui/webui-settings.json`. Main browser defaults are defined in `src/assets/desktop/app_js/core.js`; fresh runtime server settings default to `backend_mode: builtin`.
+Browser-local settings are stored in `localStorage` under `herdr-web-options`. Runtime server settings are stored in `~/.config/herdr-webui/webui-settings.json`. Main browser defaults are defined in `src/assets/desktop/app_js/core.js`; fresh runtime server settings default to `backend_mode: builtin` with both backend types enabled.
 
 | Setting | Default | Notes |
 | --- | --- | --- |
@@ -276,6 +276,17 @@ Browser-local settings are stored in `localStorage` under `herdr-web-options`. R
 | `worktreeDefaultDirectory` | empty | Default worktree parent dir. |
 | `explorationDefaultDirectory` | empty | Default exploration/open dir. |
 | `themeColors` | theme defaults | Normalized color token map. |
+
+Runtime server settings include:
+
+| Setting | Default | Notes |
+| --- | --- | --- |
+| `backend_mode` | `builtin` | Selects built-in, external Herdr, or auto routing when no request explicitly targets a backend. |
+| `builtin_backend_enabled` | `true` | Enables built-in session discovery/routing/creation. When false, built-in sessions are hidden and requests fall back to an enabled backend. |
+| `external_herdr_backend_enabled` | `true` | Enables passive external Herdr socket discovery plus explicit external launch/close actions. Discovery does not execute `herdr`. |
+| `builtin_shell` | empty | Optional shell/command path for new built-in panes. |
+
+Validation rejects configurations where both backend types are disabled.
 
 Other modules can contribute defaults through the settings module registry.
 

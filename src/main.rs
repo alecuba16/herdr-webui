@@ -160,6 +160,8 @@ struct PersistedServerSettings {
     no_sleep_auto_cooldown_seconds: Option<u64>,
     backend_mode: Option<BackendMode>,
     builtin_shell: Option<String>,
+    builtin_backend_enabled: Option<bool>,
+    external_herdr_backend_enabled: Option<bool>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -171,6 +173,8 @@ struct RuntimeServerSettings {
     no_sleep_auto_cooldown_seconds: u64,
     backend_mode: BackendMode,
     builtin_shell: Option<String>,
+    builtin_backend_enabled: bool,
+    external_herdr_backend_enabled: bool,
 }
 
 struct NoSleepGuard {
@@ -551,6 +555,12 @@ fn validate_runtime_server_settings(settings: &RuntimeServerSettings) -> io::Res
             "no-sleep auto cooldown must be 3600 seconds or less",
         ));
     }
+    if !settings.builtin_backend_enabled && !settings.external_herdr_backend_enabled {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "at least one backend type must be enabled",
+        ));
+    }
     Ok(())
 }
 
@@ -563,6 +573,8 @@ fn default_runtime_server_settings(bind: SocketAddr) -> RuntimeServerSettings {
         no_sleep_auto_cooldown_seconds: 60,
         backend_mode: BackendMode::Builtin,
         builtin_shell: None,
+        builtin_backend_enabled: true,
+        external_herdr_backend_enabled: true,
     }
 }
 
@@ -596,6 +608,8 @@ fn load_runtime_server_settings(default_bind: SocketAddr) -> io::Result<RuntimeS
         "no_sleep_auto_cooldown_seconds",
         "backend_mode",
         "builtin_shell",
+        "builtin_backend_enabled",
+        "external_herdr_backend_enabled",
     ]
     .iter()
     .any(|key| raw_json.get(key).is_none());
@@ -631,6 +645,12 @@ fn load_runtime_server_settings(default_bind: SocketAddr) -> io::Result<RuntimeS
     if persisted.builtin_shell.is_some() {
         settings.builtin_shell = persisted.builtin_shell.filter(|value| !value.is_empty());
     }
+    if let Some(enabled) = persisted.builtin_backend_enabled {
+        settings.builtin_backend_enabled = enabled;
+    }
+    if let Some(enabled) = persisted.external_herdr_backend_enabled {
+        settings.external_herdr_backend_enabled = enabled;
+    }
     validate_runtime_server_settings(&settings)?;
     if missing_keys {
         save_runtime_server_settings(&settings)?;
@@ -652,6 +672,8 @@ fn save_runtime_server_settings(settings: &RuntimeServerSettings) -> io::Result<
         no_sleep_auto_cooldown_seconds: Some(settings.no_sleep_auto_cooldown_seconds),
         backend_mode: Some(settings.backend_mode),
         builtin_shell: settings.builtin_shell.clone(),
+        builtin_backend_enabled: Some(settings.builtin_backend_enabled),
+        external_herdr_backend_enabled: Some(settings.external_herdr_backend_enabled),
     })?;
     fs::write(&path, content)?;
     #[cfg(unix)]
@@ -1203,13 +1225,8 @@ fn backend_target_for_headers(state: &WebState, headers: &HeaderMap) -> SessionB
         .get("x-herdr-backend")
         .and_then(|value| value.to_str().ok())
         .and_then(SessionBackendTarget::parse)
-        .unwrap_or_else(|| {
-            if state.backend_mode.is_builtin() {
-                SessionBackendTarget::Builtin
-            } else {
-                SessionBackendTarget::ExternalHerdr
-            }
-        })
+        .filter(|target| backend_target_enabled(state, *target))
+        .unwrap_or_else(|| default_backend_target(state))
 }
 
 fn backend_target_for_query(
@@ -1219,7 +1236,41 @@ fn backend_target_for_query(
 ) -> SessionBackendTarget {
     requested
         .and_then(SessionBackendTarget::parse)
+        .filter(|target| backend_target_enabled(state, *target))
         .unwrap_or_else(|| backend_target_for_headers(state, headers))
+}
+
+fn backend_target_enabled(state: &WebState, target: SessionBackendTarget) -> bool {
+    state
+        .server_settings
+        .lock()
+        .map(|settings| backend_target_enabled_in_settings(&settings, target))
+        .unwrap_or(true)
+}
+
+fn backend_target_enabled_in_settings(
+    settings: &RuntimeServerSettings,
+    target: SessionBackendTarget,
+) -> bool {
+    match target {
+        SessionBackendTarget::Builtin => settings.builtin_backend_enabled,
+        SessionBackendTarget::ExternalHerdr => settings.external_herdr_backend_enabled,
+    }
+}
+
+fn default_backend_target(state: &WebState) -> SessionBackendTarget {
+    let mode_target = if state.backend_mode.is_builtin() {
+        SessionBackendTarget::Builtin
+    } else {
+        SessionBackendTarget::ExternalHerdr
+    };
+    if backend_target_enabled(state, mode_target) {
+        return mode_target;
+    }
+    match mode_target {
+        SessionBackendTarget::Builtin => SessionBackendTarget::ExternalHerdr,
+        SessionBackendTarget::ExternalHerdr => SessionBackendTarget::Builtin,
+    }
 }
 
 fn session_from_headers(state: &WebState, headers: &HeaderMap) -> Option<String> {
@@ -1392,10 +1443,24 @@ fn known_builtin_sessions(state: &WebState) -> Vec<serde_json::Value> {
 }
 
 fn known_sessions(state: &WebState) -> Vec<serde_json::Value> {
-    known_external_sessions()
-        .into_iter()
-        .chain(known_builtin_sessions(state))
-        .collect()
+    let (external_enabled, builtin_enabled) = state
+        .server_settings
+        .lock()
+        .map(|settings| {
+            (
+                settings.external_herdr_backend_enabled,
+                settings.builtin_backend_enabled,
+            )
+        })
+        .unwrap_or((true, true));
+    let mut sessions = Vec::new();
+    if external_enabled {
+        sessions.extend(known_external_sessions());
+    }
+    if builtin_enabled {
+        sessions.extend(known_builtin_sessions(state));
+    }
+    sessions
 }
 
 fn connect_local_stream(path: &Path) -> io::Result<LocalStream> {
@@ -1503,6 +1568,8 @@ struct UpdateServerSettingsRequest {
     backend_mode: Option<BackendMode>,
     #[serde(default)]
     builtin_shell: Option<Option<String>>,
+    builtin_backend_enabled: Option<bool>,
+    external_herdr_backend_enabled: Option<bool>,
 }
 
 fn settings_public_json(settings: &RuntimeServerSettings) -> serde_json::Value {
@@ -1514,6 +1581,12 @@ fn settings_public_json(settings: &RuntimeServerSettings) -> serde_json::Value {
         "no_sleep_auto_cooldown_seconds": settings.no_sleep_auto_cooldown_seconds,
         "backend_mode": settings.backend_mode.as_str(),
         "builtin_shell": settings.builtin_shell.clone(),
+        "builtin_backend_enabled": settings.builtin_backend_enabled,
+        "external_herdr_backend_enabled": settings.external_herdr_backend_enabled,
+        "enabled_backends": {
+            "builtin": settings.builtin_backend_enabled,
+            "external-herdr": settings.external_herdr_backend_enabled,
+        },
         "settings_path": server_settings_path().to_string_lossy(),
     })
 }
@@ -1814,6 +1887,22 @@ async fn update_server_settings(
                 .as_ref()
                 .and_then(|settings| settings.builtin_shell.clone()),
         },
+        builtin_backend_enabled: body
+            .builtin_backend_enabled
+            .or_else(|| {
+                current
+                    .as_ref()
+                    .map(|settings| settings.builtin_backend_enabled)
+            })
+            .unwrap_or(true),
+        external_herdr_backend_enabled: body
+            .external_herdr_backend_enabled
+            .or_else(|| {
+                current
+                    .as_ref()
+                    .map(|settings| settings.external_herdr_backend_enabled)
+            })
+            .unwrap_or(true),
     };
     let bind_changed = current
         .as_ref()
@@ -1858,6 +1947,10 @@ async fn sessions(
     Json(json!({
         "backend_mode": state.backend_mode.as_str(),
         "current_backend": backend_target_for_headers(&state, &headers).as_str(),
+        "enabled_backends": {
+            "builtin": backend_target_enabled(&state, SessionBackendTarget::Builtin),
+            "external-herdr": backend_target_enabled(&state, SessionBackendTarget::ExternalHerdr),
+        },
         "sessions": known_sessions(&state),
     }))
     .into_response()
@@ -1988,6 +2081,17 @@ async fn launch_session(
     let body = body.map(|Json(body)| body).unwrap_or_default();
     let session = action_session(&state, &headers, &body);
     let backend = action_backend(&state, &headers, &body);
+    if !backend_target_enabled(&state, backend) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "ok": false,
+                "backend": backend.as_str(),
+                "error": "backend type is disabled in settings",
+            })),
+        )
+            .into_response();
+    }
     if backend == SessionBackendTarget::Builtin {
         return match ensure_builtin_session(&state, session.as_deref()) {
             Ok(()) => Json(json!({
@@ -2047,6 +2151,17 @@ async fn close_session(
     let body = body.map(|Json(body)| body).unwrap_or_default();
     let session = action_session(&state, &headers, &body);
     let backend = action_backend(&state, &headers, &body);
+    if !backend_target_enabled(&state, backend) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "ok": false,
+                "backend": backend.as_str(),
+                "error": "backend type is disabled in settings",
+            })),
+        )
+            .into_response();
+    }
     if backend == SessionBackendTarget::Builtin {
         let session_name = canonical_session_name(session.as_deref());
         let response = proxy_request(
@@ -3425,6 +3540,8 @@ mod tests {
                 no_sleep_auto_cooldown_seconds: 60,
                 backend_mode: BackendMode::ExternalHerdr,
                 builtin_shell: None,
+                builtin_backend_enabled: true,
+                external_herdr_backend_enabled: true,
             })),
             no_sleep: Arc::new(Mutex::new(NoSleepState::default())),
             rebind_tx,
@@ -3844,17 +3961,18 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert("x-herdr-session", HeaderValue::from_static("other"));
 
-        assert!(api_for_headers(&state, &headers)
-            .socket_path
-            .ends_with("herdr-webui/builtin/other/herdr.sock"));
-        assert!(client_socket_for_headers(&state, &headers)
-            .ends_with("herdr-webui/builtin/other/herdr-client.sock"));
-        assert!(api_for_query_session(&state, &headers, Some("query"), None)
-            .socket_path
-            .ends_with("herdr-webui/builtin/query/herdr.sock"));
-        assert!(
-            client_socket_for_query_session(&state, &headers, Some("query"), None)
-                .ends_with("herdr-webui/builtin/query/herdr-client.sock")
+        let (other_api, other_client) = builtin_socket_paths(Some("other"));
+        assert_eq!(api_for_headers(&state, &headers).socket_path, other_api);
+        assert_eq!(client_socket_for_headers(&state, &headers), other_client);
+
+        let (query_api, query_client) = builtin_socket_paths(Some("query"));
+        assert_eq!(
+            api_for_query_session(&state, &headers, Some("query"), None).socket_path,
+            query_api
+        );
+        assert_eq!(
+            client_socket_for_query_session(&state, &headers, Some("query"), None),
+            query_client
         );
     }
 
@@ -3876,6 +3994,49 @@ mod tests {
         assert!(api_for_headers(&state, &headers)
             .socket_path
             .ends_with("herdr/sessions/work/herdr.sock"));
+    }
+
+    #[test]
+    fn disabled_backend_type_is_hidden_and_not_selected() {
+        let _guard = env_lock().lock().unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "herdr-webui-disabled-backends-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("herdr/sessions/work")).unwrap();
+        fs::create_dir_all(root.join("herdr-webui/builtin/inside")).unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", &root);
+        let mut state = test_state();
+        state.backend_mode = BackendMode::Builtin;
+        state
+            .server_settings
+            .lock()
+            .unwrap()
+            .external_herdr_backend_enabled = false;
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-herdr-backend",
+            HeaderValue::from_static("external-herdr"),
+        );
+        headers.insert("x-herdr-session", HeaderValue::from_static("work"));
+
+        assert_eq!(
+            backend_target_for_headers(&state, &headers),
+            SessionBackendTarget::Builtin
+        );
+        let sessions = known_sessions(&state);
+
+        assert!(sessions.iter().all(
+            |session| session.get("backend").and_then(Value::as_str) != Some("external-herdr")
+        ));
+        assert!(sessions.iter().any(|session| {
+            session.get("backend").and_then(Value::as_str) == Some("builtin")
+                && session.get("name").and_then(Value::as_str) == Some("inside")
+        }));
+
+        std::env::remove_var("XDG_CONFIG_HOME");
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -3905,6 +4066,56 @@ mod tests {
         assert!(pairs.contains(&("builtin", "default")));
         assert!(pairs.contains(&("builtin", "inside")));
 
+        std::env::remove_var("XDG_CONFIG_HOME");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn runtime_settings_reject_disabling_all_backend_types() {
+        let mut settings = default_runtime_server_settings(DEFAULT_BIND.parse().unwrap());
+        settings.builtin_backend_enabled = false;
+        settings.external_herdr_backend_enabled = false;
+
+        let err = validate_runtime_server_settings(&settings).unwrap_err();
+
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("at least one backend type"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn known_sessions_is_passive_and_does_not_execute_herdr_bin() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _guard = env_lock().lock().unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "herdr-webui-passive-sessions-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("herdr/sessions/work")).unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", &root);
+        let marker = root.join("herdr-was-executed");
+        let fake_herdr = root.join("fake-herdr");
+        fs::write(
+            &fake_herdr,
+            format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&fake_herdr).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&fake_herdr, permissions).unwrap();
+        let mut state = test_state();
+        state.backend_mode = BackendMode::Builtin;
+        state.herdr_bin = fake_herdr.display().to_string();
+
+        let sessions = known_sessions(&state);
+
+        assert!(sessions.iter().any(|session| {
+            session.get("backend").and_then(Value::as_str) == Some("external-herdr")
+                && session.get("name").and_then(Value::as_str) == Some("work")
+        }));
+        assert!(!marker.exists(), "session discovery must not execute Herdr");
         std::env::remove_var("XDG_CONFIG_HOME");
         let _ = fs::remove_dir_all(&root);
     }
@@ -4041,6 +4252,8 @@ mod tests {
             no_sleep_auto_cooldown_seconds: 60,
             backend_mode: BackendMode::ExternalHerdr,
             builtin_shell: None,
+            builtin_backend_enabled: true,
+            external_herdr_backend_enabled: true,
         })
         .unwrap();
 
@@ -4060,6 +4273,8 @@ mod tests {
             no_sleep_auto_cooldown_seconds: 60,
             backend_mode: BackendMode::ExternalHerdr,
             builtin_shell: None,
+            builtin_backend_enabled: true,
+            external_herdr_backend_enabled: true,
         }) {
             Ok(_) => panic!("expected public auth config to fail"),
             Err(err) => err,
@@ -4099,6 +4314,10 @@ mod tests {
         assert_eq!(before_body["no_sleep_auto_cooldown_seconds"], 60);
         assert_eq!(before_body["backend_mode"], "external-herdr");
         assert_eq!(before_body["builtin_shell"], Value::Null);
+        assert_eq!(before_body["builtin_backend_enabled"], true);
+        assert_eq!(before_body["external_herdr_backend_enabled"], true);
+        assert_eq!(before_body["enabled_backends"]["builtin"], true);
+        assert_eq!(before_body["enabled_backends"]["external-herdr"], true);
 
         let updated = app
             .clone()
@@ -4114,6 +4333,8 @@ mod tests {
                             "localhost_no_auth": true,
                             "backend_mode": "builtin",
                             "builtin_shell": "/bin/zsh",
+                            "builtin_backend_enabled": true,
+                            "external_herdr_backend_enabled": false,
                             "no_sleep_auto_cooldown_seconds": 90,
                         })
                         .to_string(),
@@ -4130,6 +4351,10 @@ mod tests {
         assert_eq!(updated_body["no_sleep_auto_cooldown_seconds"], 90);
         assert_eq!(updated_body["backend_mode"], "builtin");
         assert_eq!(updated_body["builtin_shell"], "/bin/zsh");
+        assert_eq!(updated_body["builtin_backend_enabled"], true);
+        assert_eq!(updated_body["external_herdr_backend_enabled"], false);
+        assert_eq!(updated_body["enabled_backends"]["builtin"], true);
+        assert_eq!(updated_body["enabled_backends"]["external-herdr"], false);
         assert!(server_settings_path().exists());
 
         let cleared = app
@@ -4145,6 +4370,8 @@ mod tests {
                             "localhost_no_auth": true,
                             "backend_mode": "builtin",
                             "builtin_shell": null,
+                            "builtin_backend_enabled": true,
+                            "external_herdr_backend_enabled": false,
                             "no_sleep_auto_cooldown_seconds": 90,
                         })
                         .to_string(),
