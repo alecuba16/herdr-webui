@@ -212,7 +212,7 @@ Non-localhost binds require both username and password. WebUI rejects `0.0.0.0` 
 
 ## Sessions
 
-By default, WebUI targets Herdr's default session sockets.
+By default, fresh WebUI settings target the built-in backend default session. External Herdr sessions remain available from the session manager or by starting WebUI with `--backend-mode external-herdr`.
 
 Use a named session:
 
@@ -220,7 +220,14 @@ Use a named session:
 target/release/herdr-webui --session work --bind 127.0.0.1:8787
 ```
 
-When Herdr is offline, WebUI shows a session manager. It can launch Herdr using `HERDR_WEB_HERDR_BIN` or `herdr` from `PATH`, retry connection, reset workspaces, or close the current Herdr session.
+The footer session button opens the session manager. It detects:
+
+- built-in sessions under the WebUI config directory, for example `~/.config/herdr-webui/builtin/default`,
+- external Herdr sessions under the Herdr config directory, for example `~/.config/herdr/sessions/work`.
+
+Use **New built-in** to create or start a built-in session inside the WebUI process. Use **New Herdr** to target an external Herdr session and launch it using `HERDR_WEB_HERDR_BIN` or `herdr` from `PATH`. Selecting a row switches both the session name and backend target, so one browser WebUI process can work with built-in and external Herdr sessions in parallel.
+
+The session manager can also retry connection, reset workspaces, or close the current selected session. Closing a built-in session drops the in-process backend handle; closing an external Herdr session sends `server.stop` to that Herdr backend.
 
 If `--session NAME` is supplied, launched Herdr processes receive `HERDR_SESSION=NAME`.
 

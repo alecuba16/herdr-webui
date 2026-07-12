@@ -46,6 +46,8 @@ const MIN_BACKEND_VERSION: &str = "0.7.0";
 const MAX_TESTED_BACKEND_VERSION: &str = "0.7.3";
 
 type LocalStream = interprocess::local_socket::Stream;
+type BuiltinSessionRegistry =
+    Arc<Mutex<HashMap<String, Arc<builtin_backend::BuiltinBackendHandle>>>>;
 
 fn backend_compatibility_for_supported_range(
     backend: Option<&str>,
@@ -108,6 +110,29 @@ impl BackendMode {
 
     fn is_builtin(self) -> bool {
         matches!(self, Self::Builtin)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SessionBackendTarget {
+    ExternalHerdr,
+    Builtin,
+}
+
+impl SessionBackendTarget {
+    fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "external-herdr" | "external" | "herdr" => Some(Self::ExternalHerdr),
+            "builtin" | "built-in" => Some(Self::Builtin),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::ExternalHerdr => "external-herdr",
+            Self::Builtin => "builtin",
+        }
     }
 }
 
@@ -388,6 +413,7 @@ pub(crate) struct WebState {
     session_name: Option<String>,
     backend_mode: BackendMode,
     _builtin_backend: Option<Arc<builtin_backend::BuiltinBackendHandle>>,
+    builtin_sessions: BuiltinSessionRegistry,
     herdr_bin: String,
     auth: Arc<Mutex<AuthConfig>>,
     server_settings: Arc<Mutex<RuntimeServerSettings>>,
@@ -708,28 +734,28 @@ async fn main() -> io::Result<()> {
         config.session.as_deref(),
         config.api_socket.as_deref(),
     );
-    let (builtin_backend, api_socket, client_socket) = if backend_mode.is_builtin() {
+    let builtin_sessions: BuiltinSessionRegistry = Arc::new(Mutex::new(HashMap::new()));
+    let (api_socket, client_socket) = if backend_mode.is_builtin() {
         let (_api_socket, _client_socket) = builtin_socket_paths(config.session.as_deref());
-        let handle =
-            builtin_backend::BuiltinBackendHandle::start(builtin_backend::BuiltinBackendConfig {
+        let handle = Arc::new(builtin_backend::BuiltinBackendHandle::start(
+            builtin_backend::BuiltinBackendConfig {
                 api_socket: _api_socket,
                 client_socket: _client_socket,
                 cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
                 shell: server_settings.builtin_shell.clone(),
-            })?;
+            },
+        )?);
         let api_socket = handle.api_socket().to_path_buf();
         let client_socket = handle.client_socket().to_path_buf();
-        (
-            Some(Arc::new(handle)),
-            Some(api_socket),
-            Some(client_socket),
-        )
+        if let Ok(mut sessions) = builtin_sessions.lock() {
+            sessions.insert(
+                canonical_session_name(config.session.as_deref()),
+                Arc::clone(&handle),
+            );
+        }
+        (Some(api_socket), Some(client_socket))
     } else {
-        (
-            None,
-            config.api_socket.clone(),
-            config.client_socket.clone(),
-        )
+        (config.api_socket.clone(), config.client_socket.clone())
     };
     let server_settings = Arc::new(Mutex::new(server_settings.clone()));
     let (rebind_tx, rebind_rx) = tokio::sync::watch::channel(server_settings.lock().unwrap().bind);
@@ -738,7 +764,8 @@ async fn main() -> io::Result<()> {
         client_socket,
         session_name: config.session.clone(),
         backend_mode,
-        _builtin_backend: builtin_backend,
+        _builtin_backend: None,
+        builtin_sessions,
         herdr_bin: std::env::var("HERDR_WEB_HERDR_BIN").unwrap_or_else(|_| "herdr".to_string()),
         auth,
         server_settings,
@@ -1153,10 +1180,17 @@ fn client_socket_path_for(name: Option<&str>) -> PathBuf {
     session_dir(name).join("herdr-client.sock")
 }
 
-fn session_from_headers(state: &WebState, headers: &HeaderMap) -> Option<String> {
-    headers
-        .get("x-herdr-session")
-        .and_then(|value| value.to_str().ok())
+fn canonical_session_name(session: Option<&str>) -> String {
+    session
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .filter(|value| *value != "default")
+        .unwrap_or("default")
+        .to_string()
+}
+
+fn request_session_name(state: &WebState, requested: Option<&str>) -> Option<String> {
+    requested
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .filter(|value| *value != "default")
@@ -1164,75 +1198,129 @@ fn session_from_headers(state: &WebState, headers: &HeaderMap) -> Option<String>
         .or_else(|| state.session_name.clone())
 }
 
-fn api_for_headers(state: &WebState, headers: &HeaderMap) -> ApiClient {
-    if state.backend_mode.is_builtin() {
-        if let Some(socket_path) = &state.api_socket {
-            return ApiClient {
-                socket_path: socket_path.clone(),
-            };
+fn backend_target_for_headers(state: &WebState, headers: &HeaderMap) -> SessionBackendTarget {
+    headers
+        .get("x-herdr-backend")
+        .and_then(|value| value.to_str().ok())
+        .and_then(SessionBackendTarget::parse)
+        .unwrap_or_else(|| {
+            if state.backend_mode.is_builtin() {
+                SessionBackendTarget::Builtin
+            } else {
+                SessionBackendTarget::ExternalHerdr
+            }
+        })
+}
+
+fn backend_target_for_query(
+    state: &WebState,
+    headers: &HeaderMap,
+    requested: Option<&str>,
+) -> SessionBackendTarget {
+    requested
+        .and_then(SessionBackendTarget::parse)
+        .unwrap_or_else(|| backend_target_for_headers(state, headers))
+}
+
+fn session_from_headers(state: &WebState, headers: &HeaderMap) -> Option<String> {
+    request_session_name(
+        state,
+        headers
+            .get("x-herdr-session")
+            .and_then(|value| value.to_str().ok()),
+    )
+}
+
+fn api_for_target_session(
+    state: &WebState,
+    backend: SessionBackendTarget,
+    session: Option<&str>,
+) -> ApiClient {
+    match backend {
+        SessionBackendTarget::Builtin => {
+            let session_name = canonical_session_name(session);
+            let (api_socket, _) = builtin_socket_paths(Some(&session_name));
+            ApiClient {
+                socket_path: api_socket,
+            }
         }
-    }
-    let session = session_from_headers(state, headers);
-    if session.is_none() {
-        if let Some(socket_path) = &state.api_socket {
-            return ApiClient {
-                socket_path: socket_path.clone(),
-            };
+        SessionBackendTarget::ExternalHerdr => {
+            if session.is_none() {
+                if let Some(socket_path) = &state.api_socket {
+                    return ApiClient {
+                        socket_path: socket_path.clone(),
+                    };
+                }
+            }
+            ApiClient {
+                socket_path: api_socket_path_for(session),
+            }
         }
-    }
-    ApiClient {
-        socket_path: api_socket_path_for(session.as_deref()),
     }
 }
 
-fn client_socket_for_headers(state: &WebState, headers: &HeaderMap) -> PathBuf {
-    if state.backend_mode.is_builtin() {
-        if let Some(socket_path) = &state.client_socket {
-            return socket_path.clone();
+fn client_socket_for_target_session(
+    state: &WebState,
+    backend: SessionBackendTarget,
+    session: Option<&str>,
+) -> PathBuf {
+    match backend {
+        SessionBackendTarget::Builtin => {
+            let session_name = canonical_session_name(session);
+            let (_, client_socket) = builtin_socket_paths(Some(&session_name));
+            client_socket
+        }
+        SessionBackendTarget::ExternalHerdr => {
+            if session.is_none() {
+                if let Some(socket_path) = &state.client_socket {
+                    return socket_path.clone();
+                }
+            }
+            client_socket_path_for(session)
         }
     }
+}
+
+fn api_for_headers(state: &WebState, headers: &HeaderMap) -> ApiClient {
+    let backend = backend_target_for_headers(state, headers);
     let session = session_from_headers(state, headers);
-    if session.is_none() {
-        if let Some(socket_path) = &state.client_socket {
-            return socket_path.clone();
-        }
-    }
-    client_socket_path_for(session.as_deref())
+    api_for_target_session(state, backend, session.as_deref())
+}
+
+#[cfg(test)]
+fn client_socket_for_headers(state: &WebState, headers: &HeaderMap) -> PathBuf {
+    let backend = backend_target_for_headers(state, headers);
+    let session = session_from_headers(state, headers);
+    client_socket_for_target_session(state, backend, session.as_deref())
 }
 
 fn api_for_query_session(
     state: &WebState,
     headers: &HeaderMap,
     session: Option<&str>,
+    backend: Option<&str>,
 ) -> ApiClient {
-    if state.backend_mode.is_builtin() {
-        return api_for_headers(state, headers);
-    }
-    session
-        .map(|session| ApiClient {
-            socket_path: api_socket_path_for(Some(session)),
-        })
-        .unwrap_or_else(|| api_for_headers(state, headers))
+    let backend = backend_target_for_query(state, headers, backend);
+    let session = request_session_name(state, session);
+    api_for_target_session(state, backend, session.as_deref())
 }
 
 fn client_socket_for_query_session(
     state: &WebState,
     headers: &HeaderMap,
     session: Option<&str>,
+    backend: Option<&str>,
 ) -> PathBuf {
-    if state.backend_mode.is_builtin() {
-        return client_socket_for_headers(state, headers);
-    }
-    session
-        .map(|session| client_socket_path_for(Some(session)))
-        .unwrap_or_else(|| client_socket_for_headers(state, headers))
+    let backend = backend_target_for_query(state, headers, backend);
+    let session = request_session_name(state, session);
+    client_socket_for_target_session(state, backend, session.as_deref())
 }
 
 fn session_display_name(session: Option<&str>) -> &str {
     session.unwrap_or("default")
 }
 
-fn known_sessions() -> Vec<serde_json::Value> {
+fn known_external_sessions() -> Vec<serde_json::Value> {
     let mut names = vec![None];
     let sessions_dir = config_dir().join("sessions");
     if let Ok(entries) = fs::read_dir(sessions_dir) {
@@ -1253,10 +1341,60 @@ fn known_sessions() -> Vec<serde_json::Value> {
             let running = connect_local_stream(&api_socket).is_ok();
             json!({
                 "name": session_display_name(name.as_deref()),
+                "backend": SessionBackendTarget::ExternalHerdr.as_str(),
+                "backend_label": "Herdr",
                 "running": running,
                 "api_socket": api_socket.display().to_string(),
             })
         })
+        .collect()
+}
+
+fn known_builtin_sessions(state: &WebState) -> Vec<serde_json::Value> {
+    let mut names = vec!["default".to_string()];
+    let sessions_dir = server_settings_path()
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("builtin");
+    if let Ok(entries) = fs::read_dir(sessions_dir) {
+        let mut found = entries
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().is_dir())
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter(|name| name != "default")
+            .collect::<Vec<_>>();
+        found.sort();
+        names.extend(found);
+    }
+    if let Ok(sessions) = state.builtin_sessions.lock() {
+        let mut live = sessions.keys().cloned().collect::<Vec<_>>();
+        live.sort();
+        for name in live {
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+    }
+    names
+        .into_iter()
+        .map(|name| {
+            let (api_socket, _) = builtin_socket_paths(Some(&name));
+            let running = connect_local_stream(&api_socket).is_ok();
+            json!({
+                "name": name,
+                "backend": SessionBackendTarget::Builtin.as_str(),
+                "backend_label": "built-in",
+                "running": running,
+                "api_socket": api_socket.display().to_string(),
+            })
+        })
+        .collect()
+}
+
+fn known_sessions(state: &WebState) -> Vec<serde_json::Value> {
+    known_external_sessions()
+        .into_iter()
+        .chain(known_builtin_sessions(state))
         .collect()
 }
 
@@ -1717,10 +1855,12 @@ async fn sessions(
     if let Err(response) = require_auth(&state, &headers, remote) {
         return response;
     }
-    if state.backend_mode.is_builtin() {
-        return Json(json!({ "sessions": ["default"] })).into_response();
-    }
-    Json(json!({ "sessions": known_sessions() })).into_response()
+    Json(json!({
+        "backend_mode": state.backend_mode.as_str(),
+        "current_backend": backend_target_for_headers(&state, &headers).as_str(),
+        "sessions": known_sessions(&state),
+    }))
+    .into_response()
 }
 
 async fn versions(
@@ -1732,14 +1872,15 @@ async fn versions(
         return response;
     }
     let session = session_from_headers(&state, &headers);
+    let current_backend = backend_target_for_headers(&state, &headers);
     let api = api_for_headers(&state, &headers);
     let backend = api.backend_info();
-    let compatibility = if state.backend_mode.is_builtin() {
+    let compatibility = if current_backend == SessionBackendTarget::Builtin {
         BackendCompatibility::Compatible
     } else {
         backend_compatibility_for_supported_range(backend.version.as_deref(), backend.protocol)
     };
-    let compatibility_message = if state.backend_mode.is_builtin() {
+    let compatibility_message = if current_backend == SessionBackendTarget::Builtin {
         "built-in backend is embedded in this WebUI process"
     } else {
         compatibility.message(backend.version.as_deref())
@@ -1748,6 +1889,7 @@ async fn versions(
         "webui": HERDR_WEBUI_VERSION,
         "backend": backend.version,
         "backend_mode": state.backend_mode.as_str(),
+        "current_backend": current_backend.as_str(),
         "session": session_display_name(session.as_deref()),
         "protocol_version": PROTOCOL_VERSION,
         "min_protocol_version": MIN_SUPPORTED_PROTOCOL_VERSION,
@@ -1763,16 +1905,103 @@ async fn versions(
     .into_response()
 }
 
+#[derive(Default, Deserialize)]
+struct SessionActionRequest {
+    session: Option<String>,
+    backend: Option<String>,
+}
+
+fn requested_session_from_headers<'a>(headers: &'a HeaderMap) -> Option<&'a str> {
+    headers
+        .get("x-herdr-session")
+        .and_then(|value| value.to_str().ok())
+}
+
+fn action_session(
+    state: &WebState,
+    headers: &HeaderMap,
+    body: &SessionActionRequest,
+) -> Option<String> {
+    request_session_name(
+        state,
+        body.session
+            .as_deref()
+            .or_else(|| requested_session_from_headers(headers)),
+    )
+}
+
+fn action_backend(
+    state: &WebState,
+    headers: &HeaderMap,
+    body: &SessionActionRequest,
+) -> SessionBackendTarget {
+    body.backend
+        .as_deref()
+        .and_then(SessionBackendTarget::parse)
+        .unwrap_or_else(|| backend_target_for_headers(state, headers))
+}
+
+fn ensure_builtin_session(state: &WebState, session: Option<&str>) -> Result<(), String> {
+    let session_name = canonical_session_name(session);
+    if state
+        .builtin_sessions
+        .lock()
+        .map(|sessions| sessions.contains_key(&session_name))
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
+    let (api_socket, client_socket) = builtin_socket_paths(Some(&session_name));
+    if connect_local_stream(&api_socket).is_ok() {
+        return Ok(());
+    }
+    let shell = state
+        .server_settings
+        .lock()
+        .ok()
+        .and_then(|settings| settings.builtin_shell.clone());
+    let handle =
+        builtin_backend::BuiltinBackendHandle::start(builtin_backend::BuiltinBackendConfig {
+            api_socket,
+            client_socket,
+            cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            shell,
+        })
+        .map_err(|err| err.to_string())?;
+    state
+        .builtin_sessions
+        .lock()
+        .map_err(|_| "built-in session registry unavailable".to_string())?
+        .insert(session_name, Arc::new(handle));
+    Ok(())
+}
+
 async fn launch_session(
     State(state): State<WebState>,
     headers: HeaderMap,
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    body: Option<Json<SessionActionRequest>>,
 ) -> Response {
     if let Err(response) = require_auth(&state, &headers, remote) {
         return response;
     }
-    if state.backend_mode.is_builtin() {
-        return Json(json!({ "ok": true, "builtin": true })).into_response();
+    let body = body.map(|Json(body)| body).unwrap_or_default();
+    let session = action_session(&state, &headers, &body);
+    let backend = action_backend(&state, &headers, &body);
+    if backend == SessionBackendTarget::Builtin {
+        return match ensure_builtin_session(&state, session.as_deref()) {
+            Ok(()) => Json(json!({
+                "ok": true,
+                "backend": backend.as_str(),
+                "session": session_display_name(session.as_deref()),
+            }))
+            .into_response(),
+            Err(err) => (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "ok": false, "error": err })),
+            )
+                .into_response(),
+        };
     }
     let mut command = std::process::Command::new(&state.herdr_bin);
     command
@@ -1782,7 +2011,6 @@ async fn launch_session(
         .stderr(Stdio::null())
         .env_remove("HERDR_SOCKET_PATH")
         .env_remove("HERDR_CLIENT_SOCKET_PATH");
-    let session = session_from_headers(&state, &headers);
     if let Some(session) = session.as_deref().filter(|value| *value != "default") {
         command.env("HERDR_SESSION", session);
     }
@@ -1792,7 +2020,13 @@ async fn launch_session(
         command.process_group(0);
     }
     match command.spawn() {
-        Ok(child) => Json(json!({ "ok": true, "pid": child.id() })).into_response(),
+        Ok(child) => Json(json!({
+            "ok": true,
+            "pid": child.id(),
+            "backend": backend.as_str(),
+            "session": session_display_name(session.as_deref()),
+        }))
+        .into_response(),
         Err(err) => (
             StatusCode::BAD_GATEWAY,
             Json(json!({ "ok": false, "error": err.to_string() })),
@@ -1805,12 +2039,27 @@ async fn close_session(
     State(state): State<WebState>,
     headers: HeaderMap,
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    body: Option<Json<SessionActionRequest>>,
 ) -> Response {
     if let Err(response) = require_auth(&state, &headers, remote) {
         return response;
     }
+    let body = body.map(|Json(body)| body).unwrap_or_default();
+    let session = action_session(&state, &headers, &body);
+    let backend = action_backend(&state, &headers, &body);
+    if backend == SessionBackendTarget::Builtin {
+        let session_name = canonical_session_name(session.as_deref());
+        let response = proxy_request(
+            &api_for_target_session(&state, backend, session.as_deref()),
+            json!({ "id": "web:server:stop", "method": "server.stop", "params": {} }),
+        );
+        if let Ok(mut sessions) = state.builtin_sessions.lock() {
+            sessions.remove(&session_name);
+        }
+        return response;
+    }
     proxy_request(
-        &api_for_headers(&state, &headers),
+        &api_for_target_session(&state, backend, session.as_deref()),
         json!({ "id": "web:server:stop", "method": "server.stop", "params": {} }),
     )
 }
@@ -2726,7 +2975,12 @@ async fn events_ws(
     if let Err(response) = require_auth(&state, &headers, remote) {
         return response;
     }
-    let api = api_for_query_session(&state, &headers, query.session.as_deref());
+    let api = api_for_query_session(
+        &state,
+        &headers,
+        query.session.as_deref(),
+        query.backend.as_deref(),
+    );
     ws.on_upgrade(move |socket| events_socket(state, api, socket))
 }
 
@@ -2817,12 +3071,14 @@ struct TerminalQuery {
     cols: Option<u16>,
     rows: Option<u16>,
     session: Option<String>,
+    backend: Option<String>,
     temporary_tab_id: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct SessionQuery {
     session: Option<String>,
+    backend: Option<String>,
 }
 
 async fn terminal_ws(
@@ -2835,9 +3091,18 @@ async fn terminal_ws(
     if let Err(response) = require_auth(&state, &headers, remote) {
         return response;
     }
-    let client_socket_path =
-        client_socket_for_query_session(&state, &headers, query.session.as_deref());
-    let api = api_for_query_session(&state, &headers, query.session.as_deref());
+    let client_socket_path = client_socket_for_query_session(
+        &state,
+        &headers,
+        query.session.as_deref(),
+        query.backend.as_deref(),
+    );
+    let api = api_for_query_session(
+        &state,
+        &headers,
+        query.session.as_deref(),
+        query.backend.as_deref(),
+    );
     ws.on_upgrade(move |socket| terminal_socket(client_socket_path, api, query, socket))
 }
 
@@ -3144,6 +3409,7 @@ mod tests {
             session_name: None,
             backend_mode: BackendMode::ExternalHerdr,
             _builtin_backend: None,
+            builtin_sessions: Arc::new(Mutex::new(HashMap::new())),
             herdr_bin: "herdr".to_string(),
             auth: Arc::new(Mutex::new(AuthConfig {
                 user: Some("user".to_string()),
@@ -3529,7 +3795,7 @@ mod tests {
     }
 
     #[test]
-    fn builtin_mode_uses_state_socket_paths_for_all_header_sessions() {
+    fn builtin_mode_routes_header_sessions_to_builtin_socket_namespace() {
         let mut state = test_state();
         state.backend_mode = BackendMode::Builtin;
         state.api_socket = Some(PathBuf::from("/tmp/builtin-api.sock"));
@@ -3537,22 +3803,69 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert("x-herdr-session", HeaderValue::from_static("other"));
 
-        assert_eq!(
-            api_for_headers(&state, &headers).socket_path,
-            PathBuf::from("/tmp/builtin-api.sock")
+        assert!(api_for_headers(&state, &headers)
+            .socket_path
+            .ends_with("herdr-webui/builtin/other/herdr.sock"));
+        assert!(client_socket_for_headers(&state, &headers)
+            .ends_with("herdr-webui/builtin/other/herdr-client.sock"));
+        assert!(api_for_query_session(&state, &headers, Some("query"), None)
+            .socket_path
+            .ends_with("herdr-webui/builtin/query/herdr.sock"));
+        assert!(
+            client_socket_for_query_session(&state, &headers, Some("query"), None)
+                .ends_with("herdr-webui/builtin/query/herdr-client.sock")
         );
-        assert_eq!(
-            client_socket_for_headers(&state, &headers),
-            PathBuf::from("/tmp/builtin-client.sock")
+    }
+
+    #[test]
+    fn explicit_backend_header_can_route_external_while_default_is_builtin() {
+        let mut state = test_state();
+        state.backend_mode = BackendMode::Builtin;
+        let mut headers = HeaderMap::new();
+        headers.insert("x-herdr-session", HeaderValue::from_static("work"));
+        headers.insert(
+            "x-herdr-backend",
+            HeaderValue::from_static("external-herdr"),
         );
+
         assert_eq!(
-            api_for_query_session(&state, &headers, Some("other")).socket_path,
-            PathBuf::from("/tmp/builtin-api.sock")
+            backend_target_for_headers(&state, &headers),
+            SessionBackendTarget::ExternalHerdr
         );
-        assert_eq!(
-            client_socket_for_query_session(&state, &headers, Some("other")),
-            PathBuf::from("/tmp/builtin-client.sock")
-        );
+        assert!(api_for_headers(&state, &headers)
+            .socket_path
+            .ends_with("herdr/sessions/work/herdr.sock"));
+    }
+
+    #[test]
+    fn known_sessions_reports_external_and_builtin_entries() {
+        let _guard = env_lock().lock().unwrap();
+        let root =
+            std::env::temp_dir().join(format!("herdr-webui-sessions-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("herdr/sessions/work")).unwrap();
+        fs::create_dir_all(root.join("herdr-webui/builtin/inside")).unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", &root);
+        let state = test_state();
+
+        let sessions = known_sessions(&state);
+        let pairs = sessions
+            .iter()
+            .map(|session| {
+                (
+                    session.get("backend").and_then(Value::as_str).unwrap_or(""),
+                    session.get("name").and_then(Value::as_str).unwrap_or(""),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert!(pairs.contains(&("external-herdr", "default")));
+        assert!(pairs.contains(&("external-herdr", "work")));
+        assert!(pairs.contains(&("builtin", "default")));
+        assert!(pairs.contains(&("builtin", "inside")));
+
+        std::env::remove_var("XDG_CONFIG_HOME");
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

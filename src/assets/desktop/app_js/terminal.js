@@ -62,7 +62,7 @@ function connectTerminal() {
   const cols = state.termCols || 100,
     rows = state.termRows || 30,
     size = `${cols}x${rows}`;
-  const target = `${state.session}|${state.ws}|${state.tab}|${state.pane}|${state.terminalId}`;
+  const target = `${state.session}|${currentSessionBackend()}|${state.ws}|${state.tab}|${state.pane}|${state.terminalId}`;
   if (
     termWs &&
     termWs.readyState === 1 &&
@@ -589,6 +589,8 @@ async function pasteClipboard() {
 }
 function sendInputData(data, options = {}) {
   if (!termWs || termWs.readyState !== 1 || !data) return;
+  if (!options.allowTerminalReplies) data = stripTerminalQueryReplies(data);
+  if (!data) return;
   const bytes = inputEncoder.encode(data);
   const chunkSize = options.chunkSize || 16 * 1024;
   const maxBufferedAmount = options.maxBufferedAmount || 65536;
@@ -605,6 +607,14 @@ function sendInputData(data, options = {}) {
   inputQueueMaxBufferedAmount = Math.max(inputQueueMaxBufferedAmount, maxBufferedAmount);
   flushInputQueue();
 }
+
+function stripTerminalQueryReplies(data) {
+  return String(data || "").replace(
+    /\x1b\](?:10|11);rgb:[0-9a-fA-F]{1,4}\/[0-9a-fA-F]{1,4}\/[0-9a-fA-F]{1,4}(?:\x07|\x1b\\)/g,
+    "",
+  );
+}
+
 function sendPasteToTerminal(text) {
   if (!termWs || termWs.readyState !== 1 || !text) return;
   pasteFrameUntil = Date.now() + 250;
@@ -777,16 +787,19 @@ window.addEventListener("focus", () =>
   requestAnimationFrame(fitFocusedTerminal),
 );
 function wsUrl(path) {
-  const sep = path.includes("?") ? "&" : "?";
-  const session =
-    state.session && state.session !== "default"
-      ? sep + "session=" + encodeURIComponent(state.session)
-      : "";
+  const params = [];
+  if (state.session && state.session !== "default")
+    params.push("session=" + encodeURIComponent(state.session));
+  if (typeof currentSessionBackend === "function" && currentSessionBackend())
+    params.push("backend=" + encodeURIComponent(currentSessionBackend()));
+  const suffix = params.length
+    ? (path.includes("?") ? "&" : "?") + params.join("&")
+    : "";
   return (
     (location.protocol === "https:" ? "wss://" : "ws://") +
     location.host +
     path +
-    session
+    suffix
   );
 }
 function escapeHtml(s) {
