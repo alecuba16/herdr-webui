@@ -1198,6 +1198,34 @@ fn client_socket_for_headers(state: &WebState, headers: &HeaderMap) -> PathBuf {
     client_socket_path_for(session.as_deref())
 }
 
+fn api_for_query_session(
+    state: &WebState,
+    headers: &HeaderMap,
+    session: Option<&str>,
+) -> ApiClient {
+    if state.backend_mode.is_builtin() {
+        return api_for_headers(state, headers);
+    }
+    session
+        .map(|session| ApiClient {
+            socket_path: api_socket_path_for(Some(session)),
+        })
+        .unwrap_or_else(|| api_for_headers(state, headers))
+}
+
+fn client_socket_for_query_session(
+    state: &WebState,
+    headers: &HeaderMap,
+    session: Option<&str>,
+) -> PathBuf {
+    if state.backend_mode.is_builtin() {
+        return client_socket_for_headers(state, headers);
+    }
+    session
+        .map(|session| client_socket_path_for(Some(session)))
+        .unwrap_or_else(|| client_socket_for_headers(state, headers))
+}
+
 fn session_display_name(session: Option<&str>) -> &str {
     session.unwrap_or("default")
 }
@@ -2696,13 +2724,7 @@ async fn events_ws(
     if let Err(response) = require_auth(&state, &headers, remote) {
         return response;
     }
-    let api = query
-        .session
-        .as_deref()
-        .map(|session| ApiClient {
-            socket_path: api_socket_path_for(Some(session)),
-        })
-        .unwrap_or_else(|| api_for_headers(&state, &headers));
+    let api = api_for_query_session(&state, &headers, query.session.as_deref());
     ws.on_upgrade(move |socket| events_socket(state, api, socket))
 }
 
@@ -2811,18 +2833,9 @@ async fn terminal_ws(
     if let Err(response) = require_auth(&state, &headers, remote) {
         return response;
     }
-    let client_socket_path = query
-        .session
-        .as_deref()
-        .map(|session| client_socket_path_for(Some(session)))
-        .unwrap_or_else(|| client_socket_for_headers(&state, &headers));
-    let api = query
-        .session
-        .as_deref()
-        .map(|session| ApiClient {
-            socket_path: api_socket_path_for(Some(session)),
-        })
-        .unwrap_or_else(|| api_for_headers(&state, &headers));
+    let client_socket_path =
+        client_socket_for_query_session(&state, &headers, query.session.as_deref());
+    let api = api_for_query_session(&state, &headers, query.session.as_deref());
     ws.on_upgrade(move |socket| terminal_socket(client_socket_path, api, query, socket))
 }
 
@@ -3527,6 +3540,14 @@ mod tests {
         );
         assert_eq!(
             client_socket_for_headers(&state, &headers),
+            PathBuf::from("/tmp/builtin-client.sock")
+        );
+        assert_eq!(
+            api_for_query_session(&state, &headers, Some("other")).socket_path,
+            PathBuf::from("/tmp/builtin-api.sock")
+        );
+        assert_eq!(
+            client_socket_for_query_session(&state, &headers, Some("other")),
             PathBuf::from("/tmp/builtin-client.sock")
         );
     }

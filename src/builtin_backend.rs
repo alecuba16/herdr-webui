@@ -36,7 +36,6 @@ pub(crate) struct BuiltinBackendConfig {
     pub shell: Option<String>,
 }
 
-#[derive(Clone)]
 pub(crate) struct BuiltinBackendHandle {
     _inner: Arc<BuiltinBackendInner>,
 }
@@ -53,6 +52,18 @@ impl Drop for BuiltinBackendInner {
         self.running.store(false, Ordering::Release);
         let _ = fs::remove_file(&self.api_socket);
         let _ = fs::remove_file(&self.client_socket);
+    }
+}
+
+impl Drop for BuiltinBackendHandle {
+    fn drop(&mut self) {
+        self._inner.running.store(false, Ordering::Release);
+        // Unblock listener.accept() so listener threads can observe running=false
+        // and release their Arc<BuiltinBackendInner>. Without this, the listener
+        // threads keep the inner alive and socket cleanup never runs until process
+        // exit.
+        let _ = connect_local_stream(&self._inner.api_socket);
+        let _ = connect_local_stream(&self._inner.client_socket);
     }
 }
 
@@ -166,9 +177,10 @@ fn handle_api_connection(
             &mut stream,
             &success_response(&id, json!({ "type": "subscription_started" })),
         )?;
-        while backend.running.load(Ordering::Acquire) {
-            thread::sleep(Duration::from_millis(250));
-        }
+        // Built-in MVP does not have an event hub yet. Close the subscription
+        // after the ack so the WebUI bridge thread can exit and keep using its
+        // existing 5s snapshot polling instead of leaking one blocked thread per
+        // browser reconnect.
         return Ok(());
     }
 
@@ -489,7 +501,10 @@ impl BuiltinState {
             "worktree.list" => self.worktree_list(optional_string(&params, "cwd")),
             "worktree.open" => self.worktree_open(params),
             "worktree.create" => self.worktree_create(params),
-            "worktree.remove" => Ok(json!({ "type": "ok" })),
+            "worktree.remove" => Err(
+                "built-in backend does not implement worktree.remove yet; use remove-path fallback"
+                    .to_string(),
+            ),
             "pane.read" => {
                 let pane_id = required_string(&params, "pane_id")?;
                 let text = self.read_pane_recent(&pane_id)?;
@@ -1932,6 +1947,79 @@ mod tests {
         assert_eq!(rows[0]["is_detached"], false);
         assert_eq!(rows[1]["path"], "/repo-feature");
         assert_eq!(rows[1]["is_detached"], true);
+    }
+
+    #[test]
+    fn builtin_worktree_remove_reports_unsupported_instead_of_false_success() {
+        let state = BuiltinState::new(std::env::temp_dir(), Some(default_shell())).unwrap();
+
+        let err = state
+            .handle_request_inner("worktree.remove", json!({ "workspace_id": "ws_1" }))
+            .unwrap_err();
+
+        assert!(err.contains("does not implement worktree.remove"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn events_subscribe_acks_then_closes_without_holding_connection() {
+        let base = format!(
+            "/tmp/herdr-webui-events-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        );
+        let api_socket = PathBuf::from(format!("{base}-api.sock"));
+        let client_socket = PathBuf::from(format!("{base}-client.sock"));
+        let _handle = BuiltinBackendHandle::start(BuiltinBackendConfig {
+            api_socket: api_socket.clone(),
+            client_socket,
+            cwd: std::env::temp_dir(),
+            shell: Some(default_shell()),
+        })
+        .unwrap();
+        let mut stream = connect_local_stream(&api_socket).unwrap();
+        stream
+            .write_all(br#"{"id":"events","method":"events.subscribe","params":{}}"#)
+            .unwrap();
+        stream.write_all(b"\n").unwrap();
+        stream.flush().unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut ack = String::new();
+        reader.read_line(&mut ack).unwrap();
+        assert!(ack.contains("subscription_started"));
+        let mut eof = String::new();
+        assert_eq!(reader.read_line(&mut eof).unwrap(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dropping_handle_unblocks_listeners_and_reclaims_sockets() {
+        let base = format!(
+            "/tmp/herdr-webui-drop-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        );
+        let api_socket = PathBuf::from(format!("{base}-api.sock"));
+        let client_socket = PathBuf::from(format!("{base}-client.sock"));
+        let handle = BuiltinBackendHandle::start(BuiltinBackendConfig {
+            api_socket: api_socket.clone(),
+            client_socket: client_socket.clone(),
+            cwd: std::env::temp_dir(),
+            shell: Some(default_shell()),
+        })
+        .unwrap();
+        assert!(api_socket.exists());
+        assert!(client_socket.exists());
+
+        drop(handle);
+
+        for _ in 0..50 {
+            if !api_socket.exists() && !client_socket.exists() {
+                return;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        panic!("built-in sockets were not reclaimed after handle drop");
     }
 
     #[cfg(unix)]

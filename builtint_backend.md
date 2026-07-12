@@ -845,7 +845,9 @@ Completed in this iteration:
    - drop path kills owned PTY child,
    - built-in frontend scroll uses xterm local scroll and avoids sending backend scroll spam,
    - built-in socket paths fall back to hashed temp paths when config paths exceed Unix socket limits,
-   - startup refuses to unlink an active existing socket, only stale sockets are reclaimed.
+   - startup refuses to unlink an active existing socket, only stale sockets are reclaimed,
+   - handle drop unblocks listener accept loops and removes owned sockets,
+   - event subscriptions ack then close until the built-in event hub lands, avoiding bridge-thread leaks.
 7. Added worktree MVP:
    - `worktree.list` via `git worktree list --porcelain`,
    - `worktree.open`,
@@ -867,9 +869,9 @@ Completed in this iteration:
 
 Validation for this iteration:
 
-- `cargo test` passes: 106 tests.
+- `cargo test` passes: 109 tests.
 - `node --test src/assets/*.test.mjs` passes: 145 tests.
-- Live smoke passes: built-in mode starts with temp config, `/api/versions` reports compatible built-in backend, and direct built-in API socket `ping` returns `pong`.
+- Live smoke passes: built-in mode starts with temp config, `/api/versions` reports compatible built-in backend, `/api/session-snapshot` exposes a root terminal, browser WebSocket `/ws/terminal` attaches to it and returns command output, direct built-in API socket `ping` returns `pong`, and review fixes cover socket/session selection plus listener cleanup.
 
 Intentional limitations still tracked:
 
@@ -877,7 +879,7 @@ Intentional limitations still tracked:
 2. Built-in `events.subscribe` is an acked placeholder. UI still gets current state through existing route refresh paths, but true event push remains required for parity.
 3. Built-in scroll is browser/xterm-local only. Server-side scroll, selection extraction, terminal search, and diff render frames remain Phase 5.
 4. Foreground process detection is not yet Herdr-equivalent. Shell-launched agents are inferred from terminal tail. True foreground process inspection remains needed.
-5. Worktree remove is not implemented in the built-in API yet. Destructive built-in worktree operations must wait for confirmation and safety validation.
+5. Worktree remove is not implemented in the built-in API yet. It now returns an explicit unsupported error instead of a false success. Destructive built-in worktree operations must wait for confirmation and safety validation.
 6. Persistence is only settings-level. Built-in mux session/workspace persistence remains to be implemented.
 7. Future TUI can connect to the same local sockets, but a typed client library and event stream still need to be built.
 
