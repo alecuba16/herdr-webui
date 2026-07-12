@@ -26,6 +26,7 @@ mod file_browser;
 mod git_ui;
 mod protocol;
 mod service;
+mod terminal_text;
 
 use assets::*;
 #[cfg(test)]
