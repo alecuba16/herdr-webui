@@ -79,6 +79,7 @@ Primary types:
 
 - `BackendClient`
 - `TerminalClient`
+- `TerminalWriter`
 - `TerminalEvent`
 - `TerminalOutput`
 - `BackendClientError`
@@ -110,6 +111,11 @@ Terminal methods:
 - `TerminalClient::paste_text(text)`
 - `TerminalClient::resize(cols, rows)`
 - `TerminalClient::detach()`
+- `TerminalClient::writer()` for concurrent live read/write
+- `TerminalWriter::send_input(bytes)`
+- `TerminalWriter::paste_text(text)`
+- `TerminalWriter::resize(cols, rows)`
+- `TerminalWriter::detach()`
 
 ## TUI prototype scope now implemented
 
@@ -139,6 +145,23 @@ The future TUI may copy these features/functionality as a guide while keeping or
 ## Current gaps
 
 This API and TUI are usable prototypes, not full Herdr TUI parity.
+
+Parity checked against the Herdr native TUI implementation in the `jcode-support` branch:
+
+| Area | Herdr native TUI | `herdr-webui-tui` status |
+| --- | --- | --- |
+| Terminal attach/output/input | In-process terminal runtime with Ghostty VT parser, live render patches, keyboard protocol tracking, paste, resize, detach | Supported over built-in terminal socket with live background reader/writer, ANSI text parser, input, resize, detach |
+| Jcode/agent status | Manifest-driven detection, sidebar state icons, priority sorting, unseen/done state handling, custom labels | Basic agent list/status from built-in snapshot, focused agent selected by default, Jcode output visible |
+| Workspace navigation | Workspace picker, direct numeric switching, previous/next, rename, close, new workspace | Basic workspace list and selection only |
+| Tabs | Full tab bar, create/rename/close/switch 1-9, previous/next | Tab list display only |
+| Panes/layout | Split horizontal/vertical, focus by direction, cycle, resize mode, zoom, rename, close, last pane | Single selected pane display, no split/layout mutation yet |
+| Scrollback/copy/search | Host scrollback, scroll metrics, scrollbar, copy mode, edit scrollback, text search/matches | Recent pane text plus live terminal text, no scroll/copy/search UI yet |
+| Mouse/touch | Mouse pane focus, scroll, selection, dialogs, mobile layout | Keyboard-only prototype |
+| Worktrees | New/open/remove worktree dialogs with validation | Backend client supports list/open/create wrappers, no interactive TUI dialogs yet |
+| Settings/config/keybinds | Config reload, settings overlay, custom commands, prefix mode, configurable keybinds | Fixed keymap and help overlay |
+| Notifications/integrations | Notification targets, release notes, integrations/settings panels | Not implemented |
+
+The current pairing is therefore **backend/protocol paired**, not **feature-complete Herdr UI paired**. The TUI is ready as a foundation for Herdr-like workflows, but it intentionally does not yet replace the native Herdr app.
 
 Still pending:
 
