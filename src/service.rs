@@ -531,6 +531,7 @@ mod tests {
             session: Some("work".to_string()),
             api_socket: None,
             client_socket: None,
+            backend_mode: None,
             tls: crate::TlsConfig {
                 mode: TlsMode::Off,
                 cert_path: None,
@@ -552,6 +553,7 @@ mod tests {
             session: Some("work session's path".to_string()),
             api_socket: None,
             client_socket: None,
+            backend_mode: None,
             tls: crate::TlsConfig {
                 mode: TlsMode::SelfSigned,
                 cert_path: None,
@@ -571,6 +573,7 @@ mod tests {
             session: Some("work".to_string()),
             api_socket: None,
             client_socket: None,
+            backend_mode: None,
             tls: crate::TlsConfig {
                 mode: TlsMode::Files,
                 cert_path: Some(PathBuf::from("/tmp/cert.pem")),

@@ -20,11 +20,13 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 mod assets;
+mod builtin_backend;
 mod compat;
 mod file_browser;
 mod git_ui;
 mod protocol;
 mod service;
+mod terminal_text;
 
 use assets::*;
 #[cfg(test)]
@@ -71,7 +73,42 @@ struct WebConfig {
     session: Option<String>,
     api_socket: Option<PathBuf>,
     client_socket: Option<PathBuf>,
+    backend_mode: Option<BackendMode>,
     tls: TlsConfig,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum BackendMode {
+    ExternalHerdr,
+    Builtin,
+    Auto,
+}
+
+impl BackendMode {
+    fn parse(value: &str) -> io::Result<Self> {
+        match value {
+            "external-herdr" | "external" | "herdr" => Ok(Self::ExternalHerdr),
+            "builtin" | "built-in" => Ok(Self::Builtin),
+            "auto" => Ok(Self::Auto),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("invalid --backend-mode: {other}; use external-herdr, builtin, or auto"),
+            )),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::ExternalHerdr => "external-herdr",
+            Self::Builtin => "builtin",
+            Self::Auto => "auto",
+        }
+    }
+
+    fn is_builtin(self) -> bool {
+        matches!(self, Self::Builtin)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -96,6 +133,8 @@ struct PersistedServerSettings {
     password: Option<String>,
     localhost_no_auth: Option<bool>,
     no_sleep_auto_cooldown_seconds: Option<u64>,
+    backend_mode: Option<BackendMode>,
+    builtin_shell: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -105,6 +144,8 @@ struct RuntimeServerSettings {
     password: Option<String>,
     localhost_no_auth: bool,
     no_sleep_auto_cooldown_seconds: u64,
+    backend_mode: BackendMode,
+    builtin_shell: Option<String>,
 }
 
 struct NoSleepGuard {
@@ -192,6 +233,7 @@ impl WebConfig {
         let mut session = None;
         let mut api_socket = None;
         let mut client_socket = None;
+        let mut backend_mode = None;
         let mut tls_mode = TlsMode::Auto;
         let mut tls_mode_set = false;
         let mut cert_path = None;
@@ -220,6 +262,14 @@ impl WebConfig {
                 "--client-socket" => {
                     client_socket =
                         Some(PathBuf::from(required_arg(args, index, "--client-socket")?));
+                    index += 2;
+                }
+                "--backend-mode" => {
+                    backend_mode = Some(BackendMode::parse(required_arg(
+                        args,
+                        index,
+                        "--backend-mode",
+                    )?)?);
                     index += 2;
                 }
                 "--https" => {
@@ -263,6 +313,7 @@ impl WebConfig {
             session,
             api_socket,
             client_socket,
+            backend_mode,
             tls: TlsConfig {
                 mode: tls_mode,
                 cert_path,
@@ -313,7 +364,7 @@ fn print_help() {
 }
 
 fn help_text() -> &'static str {
-    "herdr-webui [--verbose] [--bind HOST:PORT] [--https off|auto|self-signed|files] [--tls-cert PATH --tls-key PATH] [--session NAME] [--api-socket PATH] [--client-socket PATH]\n\
+    "herdr-webui [--verbose] [--bind HOST:PORT] [--https off|auto|self-signed|files] [--tls-cert PATH --tls-key PATH] [--session NAME] [--api-socket PATH] [--client-socket PATH] [--backend-mode <external-herdr|builtin|auto>]\n\
 herdr-webui --version\n\
 herdr-webui install-mac [--verbose] [--bind HOST:PORT] [--https off|auto|self-signed|files] [--tls-cert PATH --tls-key PATH] [--session NAME]\n\
 herdr-webui update-mac [--verbose]\n\
@@ -326,7 +377,8 @@ herdr-webui start-linux | start\n\
 herdr-webui stop-linux | stop\n\
 herdr-webui restart-linux | restart\n\
 herdr-webui uninstall-mac [--verbose]\n\
-herdr-webui uninstall-linux\n"
+herdr-webui uninstall-linux\n\
+Default backend mode for fresh settings is builtin. Use --backend-mode external-herdr for a separate Herdr daemon.\n"
 }
 
 #[derive(Clone)]
@@ -334,6 +386,8 @@ pub(crate) struct WebState {
     api_socket: Option<PathBuf>,
     client_socket: Option<PathBuf>,
     session_name: Option<String>,
+    backend_mode: BackendMode,
+    _builtin_backend: Option<Arc<builtin_backend::BuiltinBackendHandle>>,
     herdr_bin: String,
     auth: Arc<Mutex<AuthConfig>>,
     server_settings: Arc<Mutex<RuntimeServerSettings>>,
@@ -481,6 +535,8 @@ fn default_runtime_server_settings(bind: SocketAddr) -> RuntimeServerSettings {
         password: None,
         localhost_no_auth: true,
         no_sleep_auto_cooldown_seconds: 60,
+        backend_mode: BackendMode::Builtin,
+        builtin_shell: None,
     }
 }
 
@@ -512,6 +568,8 @@ fn load_runtime_server_settings(default_bind: SocketAddr) -> io::Result<RuntimeS
         "password",
         "localhost_no_auth",
         "no_sleep_auto_cooldown_seconds",
+        "backend_mode",
+        "builtin_shell",
     ]
     .iter()
     .any(|key| raw_json.get(key).is_none());
@@ -541,6 +599,12 @@ fn load_runtime_server_settings(default_bind: SocketAddr) -> io::Result<RuntimeS
     if let Some(cooldown) = persisted.no_sleep_auto_cooldown_seconds {
         settings.no_sleep_auto_cooldown_seconds = cooldown;
     }
+    if let Some(backend_mode) = persisted.backend_mode {
+        settings.backend_mode = backend_mode;
+    }
+    if persisted.builtin_shell.is_some() {
+        settings.builtin_shell = persisted.builtin_shell.filter(|value| !value.is_empty());
+    }
     validate_runtime_server_settings(&settings)?;
     if missing_keys {
         save_runtime_server_settings(&settings)?;
@@ -560,6 +624,8 @@ fn save_runtime_server_settings(settings: &RuntimeServerSettings) -> io::Result<
         password: settings.password.clone(),
         localhost_no_auth: Some(settings.localhost_no_auth),
         no_sleep_auto_cooldown_seconds: Some(settings.no_sleep_auto_cooldown_seconds),
+        backend_mode: Some(settings.backend_mode),
+        builtin_shell: settings.builtin_shell.clone(),
     })?;
     fs::write(&path, content)?;
     #[cfg(unix)]
@@ -632,14 +698,47 @@ async fn main() -> io::Result<()> {
         return service::uninstall_linux();
     }
     let config = WebConfig::parse(&args)?;
-    let server_settings = load_runtime_server_settings(config.bind)?;
+    let mut server_settings = load_runtime_server_settings(config.bind)?;
+    if let Some(backend_mode) = config.backend_mode {
+        server_settings.backend_mode = backend_mode;
+    }
     let auth = Arc::new(Mutex::new(AuthConfig::from_settings(&server_settings)?));
+    let backend_mode = resolve_backend_mode(
+        server_settings.backend_mode,
+        config.session.as_deref(),
+        config.api_socket.as_deref(),
+    );
+    let (builtin_backend, api_socket, client_socket) = if backend_mode.is_builtin() {
+        let (_api_socket, _client_socket) = builtin_socket_paths(config.session.as_deref());
+        let handle =
+            builtin_backend::BuiltinBackendHandle::start(builtin_backend::BuiltinBackendConfig {
+                api_socket: _api_socket,
+                client_socket: _client_socket,
+                cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+                shell: server_settings.builtin_shell.clone(),
+            })?;
+        let api_socket = handle.api_socket().to_path_buf();
+        let client_socket = handle.client_socket().to_path_buf();
+        (
+            Some(Arc::new(handle)),
+            Some(api_socket),
+            Some(client_socket),
+        )
+    } else {
+        (
+            None,
+            config.api_socket.clone(),
+            config.client_socket.clone(),
+        )
+    };
     let server_settings = Arc::new(Mutex::new(server_settings.clone()));
     let (rebind_tx, rebind_rx) = tokio::sync::watch::channel(server_settings.lock().unwrap().bind);
     let state = WebState {
-        api_socket: config.api_socket.clone(),
-        client_socket: config.client_socket.clone(),
+        api_socket,
+        client_socket,
         session_name: config.session.clone(),
+        backend_mode,
+        _builtin_backend: builtin_backend,
         herdr_bin: std::env::var("HERDR_WEB_HERDR_BIN").unwrap_or_else(|_| "herdr".to_string()),
         auth,
         server_settings,
@@ -649,6 +748,99 @@ async fn main() -> io::Result<()> {
     };
 
     serve_rebindable(state, rebind_rx, config.tls).await
+}
+
+fn resolve_backend_mode(
+    configured: BackendMode,
+    session: Option<&str>,
+    explicit_api_socket: Option<&Path>,
+) -> BackendMode {
+    match configured {
+        BackendMode::Auto => {
+            let socket = explicit_api_socket
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| api_socket_path_for(session));
+            if connect_local_stream(&socket).is_ok() {
+                BackendMode::ExternalHerdr
+            } else {
+                BackendMode::Builtin
+            }
+        }
+        mode => mode,
+    }
+}
+
+fn builtin_socket_paths(session: Option<&str>) -> (PathBuf, PathBuf) {
+    let session = session
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(safe_socket_component)
+        .unwrap_or_else(|| "default".to_string());
+    let dir = server_settings_path()
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| std::env::temp_dir().join("herdr-webui"))
+        .join("builtin")
+        .join(&session);
+    let paths = (dir.join("herdr.sock"), dir.join("herdr-client.sock"));
+    if socket_path_pair_fits(&paths) {
+        return paths;
+    }
+
+    let hash = short_socket_hash(&format!("{}:{session}", dir.display()));
+    let dir = short_builtin_socket_dir(&hash);
+    (dir.join("herdr.sock"), dir.join("herdr-client.sock"))
+}
+
+#[cfg(unix)]
+fn short_builtin_socket_dir(hash: &str) -> PathBuf {
+    PathBuf::from("/tmp").join(format!("herdr-webui-builtin-{hash}"))
+}
+
+#[cfg(not(unix))]
+fn short_builtin_socket_dir(hash: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("herdr-webui-builtin-{hash}"))
+}
+
+fn safe_socket_component(value: &str) -> String {
+    let sanitized = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    if sanitized.is_empty() {
+        "default".to_string()
+    } else {
+        sanitized
+    }
+}
+
+fn short_socket_hash(value: &str) -> String {
+    Sha256::digest(value.as_bytes())
+        .iter()
+        .take(8)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn socket_path_pair_fits(paths: &(PathBuf, PathBuf)) -> bool {
+    socket_path_fits(&paths.0) && socket_path_fits(&paths.1)
+}
+
+#[cfg(unix)]
+fn socket_path_fits(path: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    path.as_os_str().as_bytes().len() < 100
+}
+
+#[cfg(not(unix))]
+fn socket_path_fits(_path: &Path) -> bool {
+    true
 }
 
 async fn serve_rebindable(
@@ -973,6 +1165,13 @@ fn session_from_headers(state: &WebState, headers: &HeaderMap) -> Option<String>
 }
 
 fn api_for_headers(state: &WebState, headers: &HeaderMap) -> ApiClient {
+    if state.backend_mode.is_builtin() {
+        if let Some(socket_path) = &state.api_socket {
+            return ApiClient {
+                socket_path: socket_path.clone(),
+            };
+        }
+    }
     let session = session_from_headers(state, headers);
     if session.is_none() {
         if let Some(socket_path) = &state.api_socket {
@@ -987,6 +1186,11 @@ fn api_for_headers(state: &WebState, headers: &HeaderMap) -> ApiClient {
 }
 
 fn client_socket_for_headers(state: &WebState, headers: &HeaderMap) -> PathBuf {
+    if state.backend_mode.is_builtin() {
+        if let Some(socket_path) = &state.client_socket {
+            return socket_path.clone();
+        }
+    }
     let session = session_from_headers(state, headers);
     if session.is_none() {
         if let Some(socket_path) = &state.client_socket {
@@ -994,6 +1198,34 @@ fn client_socket_for_headers(state: &WebState, headers: &HeaderMap) -> PathBuf {
         }
     }
     client_socket_path_for(session.as_deref())
+}
+
+fn api_for_query_session(
+    state: &WebState,
+    headers: &HeaderMap,
+    session: Option<&str>,
+) -> ApiClient {
+    if state.backend_mode.is_builtin() {
+        return api_for_headers(state, headers);
+    }
+    session
+        .map(|session| ApiClient {
+            socket_path: api_socket_path_for(Some(session)),
+        })
+        .unwrap_or_else(|| api_for_headers(state, headers))
+}
+
+fn client_socket_for_query_session(
+    state: &WebState,
+    headers: &HeaderMap,
+    session: Option<&str>,
+) -> PathBuf {
+    if state.backend_mode.is_builtin() {
+        return client_socket_for_headers(state, headers);
+    }
+    session
+        .map(|session| client_socket_path_for(Some(session)))
+        .unwrap_or_else(|| client_socket_for_headers(state, headers))
 }
 
 fn session_display_name(session: Option<&str>) -> &str {
@@ -1130,6 +1362,9 @@ struct UpdateServerSettingsRequest {
     password: Option<String>,
     localhost_no_auth: bool,
     no_sleep_auto_cooldown_seconds: Option<u64>,
+    backend_mode: Option<BackendMode>,
+    #[serde(default)]
+    builtin_shell: Option<Option<String>>,
 }
 
 fn settings_public_json(settings: &RuntimeServerSettings) -> serde_json::Value {
@@ -1139,6 +1374,8 @@ fn settings_public_json(settings: &RuntimeServerSettings) -> serde_json::Value {
         "has_password": settings.password.is_some(),
         "localhost_no_auth": settings.localhost_no_auth,
         "no_sleep_auto_cooldown_seconds": settings.no_sleep_auto_cooldown_seconds,
+        "backend_mode": settings.backend_mode.as_str(),
+        "builtin_shell": settings.builtin_shell.clone(),
         "settings_path": server_settings_path().to_string_lossy(),
     })
 }
@@ -1427,6 +1664,18 @@ async fn update_server_settings(
             }),
         localhost_no_auth: body.localhost_no_auth,
         no_sleep_auto_cooldown_seconds: body.no_sleep_auto_cooldown_seconds.unwrap_or(60),
+        backend_mode: body
+            .backend_mode
+            .or_else(|| current.as_ref().map(|settings| settings.backend_mode))
+            .unwrap_or(BackendMode::Builtin),
+        builtin_shell: match body.builtin_shell {
+            Some(value) => value
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty()),
+            None => current
+                .as_ref()
+                .and_then(|settings| settings.builtin_shell.clone()),
+        },
     };
     let bind_changed = current
         .as_ref()
@@ -1468,6 +1717,9 @@ async fn sessions(
     if let Err(response) = require_auth(&state, &headers, remote) {
         return response;
     }
+    if state.backend_mode.is_builtin() {
+        return Json(json!({ "sessions": ["default"] })).into_response();
+    }
     Json(json!({ "sessions": known_sessions() })).into_response()
 }
 
@@ -1482,12 +1734,20 @@ async fn versions(
     let session = session_from_headers(&state, &headers);
     let api = api_for_headers(&state, &headers);
     let backend = api.backend_info();
-    let compatibility =
-        backend_compatibility_for_supported_range(backend.version.as_deref(), backend.protocol);
-    let compatibility_message = compatibility.message(backend.version.as_deref());
+    let compatibility = if state.backend_mode.is_builtin() {
+        BackendCompatibility::Compatible
+    } else {
+        backend_compatibility_for_supported_range(backend.version.as_deref(), backend.protocol)
+    };
+    let compatibility_message = if state.backend_mode.is_builtin() {
+        "built-in backend is embedded in this WebUI process"
+    } else {
+        compatibility.message(backend.version.as_deref())
+    };
     Json(json!({
         "webui": HERDR_WEBUI_VERSION,
         "backend": backend.version,
+        "backend_mode": state.backend_mode.as_str(),
         "session": session_display_name(session.as_deref()),
         "protocol_version": PROTOCOL_VERSION,
         "min_protocol_version": MIN_SUPPORTED_PROTOCOL_VERSION,
@@ -1510,6 +1770,9 @@ async fn launch_session(
 ) -> Response {
     if let Err(response) = require_auth(&state, &headers, remote) {
         return response;
+    }
+    if state.backend_mode.is_builtin() {
+        return Json(json!({ "ok": true, "builtin": true })).into_response();
     }
     let mut command = std::process::Command::new(&state.herdr_bin);
     command
@@ -2463,13 +2726,7 @@ async fn events_ws(
     if let Err(response) = require_auth(&state, &headers, remote) {
         return response;
     }
-    let api = query
-        .session
-        .as_deref()
-        .map(|session| ApiClient {
-            socket_path: api_socket_path_for(Some(session)),
-        })
-        .unwrap_or_else(|| api_for_headers(&state, &headers));
+    let api = api_for_query_session(&state, &headers, query.session.as_deref());
     ws.on_upgrade(move |socket| events_socket(state, api, socket))
 }
 
@@ -2578,18 +2835,9 @@ async fn terminal_ws(
     if let Err(response) = require_auth(&state, &headers, remote) {
         return response;
     }
-    let client_socket_path = query
-        .session
-        .as_deref()
-        .map(|session| client_socket_path_for(Some(session)))
-        .unwrap_or_else(|| client_socket_for_headers(&state, &headers));
-    let api = query
-        .session
-        .as_deref()
-        .map(|session| ApiClient {
-            socket_path: api_socket_path_for(Some(session)),
-        })
-        .unwrap_or_else(|| api_for_headers(&state, &headers));
+    let client_socket_path =
+        client_socket_for_query_session(&state, &headers, query.session.as_deref());
+    let api = api_for_query_session(&state, &headers, query.session.as_deref());
     ws.on_upgrade(move |socket| terminal_socket(client_socket_path, api, query, socket))
 }
 
@@ -2894,6 +3142,8 @@ mod tests {
             api_socket: Some(PathBuf::from("/tmp/default-api.sock")),
             client_socket: Some(PathBuf::from("/tmp/default-client.sock")),
             session_name: None,
+            backend_mode: BackendMode::ExternalHerdr,
+            _builtin_backend: None,
             herdr_bin: "herdr".to_string(),
             auth: Arc::new(Mutex::new(AuthConfig {
                 user: Some("user".to_string()),
@@ -2907,6 +3157,8 @@ mod tests {
                 password: Some("pass".to_string()),
                 localhost_no_auth: false,
                 no_sleep_auto_cooldown_seconds: 60,
+                backend_mode: BackendMode::ExternalHerdr,
+                builtin_shell: None,
             })),
             no_sleep: Arc::new(Mutex::new(NoSleepState::default())),
             rebind_tx,
@@ -2981,6 +3233,7 @@ mod tests {
         assert_eq!(config.session, None);
         assert_eq!(config.api_socket, None);
         assert_eq!(config.client_socket, None);
+        assert_eq!(config.backend_mode, None);
         assert_eq!(config.tls.mode, TlsMode::Auto);
     }
 
@@ -3002,6 +3255,8 @@ mod tests {
             "/tmp/api.sock",
             "--client-socket",
             "/tmp/client.sock",
+            "--backend-mode",
+            "builtin",
             "--https",
             "files",
             "--tls-cert",
@@ -3023,6 +3278,7 @@ mod tests {
             config.client_socket.as_deref(),
             Some(Path::new("/tmp/client.sock"))
         );
+        assert_eq!(config.backend_mode, Some(BackendMode::Builtin));
         assert_eq!(config.tls.mode, TlsMode::Files);
         assert_eq!(
             config.tls.cert_path.as_deref(),
@@ -3092,6 +3348,8 @@ mod tests {
         assert!(text.contains("herdr-webui stop-linux | stop"));
         assert!(text.contains("herdr-webui restart-linux | restart"));
         assert!(text.contains("herdr-webui uninstall-linux"));
+        assert!(text.contains("--backend-mode <external-herdr|builtin|auto>"));
+        assert!(text.contains("Default backend mode for fresh settings is builtin"));
     }
 
     #[test]
@@ -3100,6 +3358,7 @@ mod tests {
         let invalid_bind = ["--bind", "not-a-socket"].map(String::from);
         let unknown = ["--unknown"].map(String::from);
         let invalid_https = ["--https", "letsencrypt"].map(String::from);
+        let invalid_backend = ["--backend-mode", "other"].map(String::from);
 
         assert_eq!(
             WebConfig::parse(&missing).unwrap_err().kind(),
@@ -3115,6 +3374,10 @@ mod tests {
         );
         assert_eq!(
             WebConfig::parse(&invalid_https).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            WebConfig::parse(&invalid_backend).unwrap_err().kind(),
             io::ErrorKind::InvalidInput
         );
     }
@@ -3184,6 +3447,38 @@ mod tests {
     }
 
     #[test]
+    fn derives_safe_builtin_socket_paths() {
+        let _guard = env_lock().lock().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", "/tmp/herdr-config");
+
+        let (api, client) = builtin_socket_paths(Some("team/session 1"));
+
+        assert!(api.ends_with("herdr-webui/builtin/team_session_1/herdr.sock"));
+        assert!(client.ends_with("herdr-webui/builtin/team_session_1/herdr-client.sock"));
+
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn builtin_socket_paths_fall_back_when_unix_path_would_be_too_long() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let _guard = env_lock().lock().unwrap();
+        let long_component = "x".repeat(140);
+        std::env::set_var("XDG_CONFIG_HOME", format!("/tmp/{long_component}"));
+
+        let (api, client) = builtin_socket_paths(Some("default"));
+
+        assert!(api.to_string_lossy().contains("herdr-webui-builtin-"));
+        assert!(client.to_string_lossy().contains("herdr-webui-builtin-"));
+        assert!(api.as_os_str().as_bytes().len() < 100);
+        assert!(client.as_os_str().as_bytes().len() < 100);
+
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    #[test]
     fn resolves_session_from_headers_and_state() {
         let mut state = test_state();
         let mut headers = HeaderMap::new();
@@ -3234,6 +3529,33 @@ mod tests {
     }
 
     #[test]
+    fn builtin_mode_uses_state_socket_paths_for_all_header_sessions() {
+        let mut state = test_state();
+        state.backend_mode = BackendMode::Builtin;
+        state.api_socket = Some(PathBuf::from("/tmp/builtin-api.sock"));
+        state.client_socket = Some(PathBuf::from("/tmp/builtin-client.sock"));
+        let mut headers = HeaderMap::new();
+        headers.insert("x-herdr-session", HeaderValue::from_static("other"));
+
+        assert_eq!(
+            api_for_headers(&state, &headers).socket_path,
+            PathBuf::from("/tmp/builtin-api.sock")
+        );
+        assert_eq!(
+            client_socket_for_headers(&state, &headers),
+            PathBuf::from("/tmp/builtin-client.sock")
+        );
+        assert_eq!(
+            api_for_query_session(&state, &headers, Some("other")).socket_path,
+            PathBuf::from("/tmp/builtin-api.sock")
+        );
+        assert_eq!(
+            client_socket_for_query_session(&state, &headers, Some("other")),
+            PathBuf::from("/tmp/builtin-client.sock")
+        );
+    }
+
+    #[test]
     fn authorizes_loopback_when_localhost_bypass_enabled() {
         let state = test_state();
         state.auth.lock().unwrap().localhost_no_auth = true;
@@ -3277,7 +3599,7 @@ mod tests {
     }
 
     #[test]
-    fn default_runtime_server_settings_use_no_credentials_and_local_bypass() {
+    fn default_runtime_server_settings_use_no_credentials_local_bypass_and_builtin_backend() {
         let settings = default_runtime_server_settings("127.0.0.1:8787".parse().unwrap());
 
         assert_eq!(settings.bind, "127.0.0.1:8787".parse().unwrap());
@@ -3285,6 +3607,8 @@ mod tests {
         assert_eq!(settings.password, None);
         assert!(settings.localhost_no_auth);
         assert_eq!(settings.no_sleep_auto_cooldown_seconds, 60);
+        assert_eq!(settings.backend_mode, BackendMode::Builtin);
+        assert_eq!(settings.builtin_shell, None);
     }
 
     #[test]
@@ -3308,6 +3632,9 @@ mod tests {
         let raw = fs::read_to_string(server_settings_path()).unwrap();
         assert!(raw.contains("localhost_no_auth"));
         assert!(raw.contains("no_sleep_auto_cooldown_seconds"));
+        assert!(raw.contains("backend_mode"));
+        assert!(raw.contains(r#""backend_mode": "builtin""#));
+        assert!(raw.contains("builtin_shell"));
 
         let _ = fs::remove_dir_all(config_home);
         std::env::remove_var("XDG_CONFIG_HOME");
@@ -3335,11 +3662,16 @@ mod tests {
         assert_eq!(settings.password, None);
         assert!(settings.localhost_no_auth);
         assert_eq!(settings.no_sleep_auto_cooldown_seconds, 60);
+        assert_eq!(settings.backend_mode, BackendMode::Builtin);
+        assert_eq!(settings.builtin_shell, None);
         let raw = fs::read_to_string(path).unwrap();
         assert!(raw.contains("localhost_no_auth"));
         assert!(raw.contains("user"));
         assert!(raw.contains("password"));
         assert!(raw.contains("no_sleep_auto_cooldown_seconds"));
+        assert!(raw.contains("backend_mode"));
+        assert!(raw.contains(r#""backend_mode": "builtin""#));
+        assert!(raw.contains("builtin_shell"));
 
         let _ = fs::remove_dir_all(config_home);
         std::env::remove_var("XDG_CONFIG_HOME");
@@ -3353,6 +3685,8 @@ mod tests {
             password: Some("test-password".to_string()),
             localhost_no_auth: false,
             no_sleep_auto_cooldown_seconds: 60,
+            backend_mode: BackendMode::ExternalHerdr,
+            builtin_shell: None,
         })
         .unwrap();
 
@@ -3370,6 +3704,8 @@ mod tests {
             password: None,
             localhost_no_auth: true,
             no_sleep_auto_cooldown_seconds: 60,
+            backend_mode: BackendMode::ExternalHerdr,
+            builtin_shell: None,
         }) {
             Ok(_) => panic!("expected public auth config to fail"),
             Err(err) => err,
@@ -3390,7 +3726,8 @@ mod tests {
                 .as_nanos()
         ));
         std::env::set_var("XDG_CONFIG_HOME", &config_home);
-        let app = test_app();
+        let state = test_state();
+        let app = test_app_with_state(state);
 
         let before = app
             .clone()
@@ -3406,8 +3743,11 @@ mod tests {
         assert_eq!(before_body["bind"], "127.0.0.1:8787");
         assert_eq!(before_body["username"], "user");
         assert_eq!(before_body["no_sleep_auto_cooldown_seconds"], 60);
+        assert_eq!(before_body["backend_mode"], "external-herdr");
+        assert_eq!(before_body["builtin_shell"], Value::Null);
 
         let updated = app
+            .clone()
             .oneshot(
                 request(Method::POST, "/api/server-settings")
                     .header(header::COOKIE, "herdr_web_session=token-123")
@@ -3418,6 +3758,8 @@ mod tests {
                             "username": "test-user",
                             "password": "test-password",
                             "localhost_no_auth": true,
+                            "backend_mode": "builtin",
+                            "builtin_shell": "/bin/zsh",
                             "no_sleep_auto_cooldown_seconds": 90,
                         })
                         .to_string(),
@@ -3432,7 +3774,33 @@ mod tests {
         assert_eq!(updated_body["username"], "test-user");
         assert_eq!(updated_body["has_password"], true);
         assert_eq!(updated_body["no_sleep_auto_cooldown_seconds"], 90);
+        assert_eq!(updated_body["backend_mode"], "builtin");
+        assert_eq!(updated_body["builtin_shell"], "/bin/zsh");
         assert!(server_settings_path().exists());
+
+        let cleared = app
+            .oneshot(
+                request(Method::POST, "/api/server-settings")
+                    .header(header::COOKIE, "herdr_web_session=token-123")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "bind": "0.0.0.0:8787",
+                            "username": "test-user",
+                            "password": null,
+                            "localhost_no_auth": true,
+                            "backend_mode": "builtin",
+                            "builtin_shell": null,
+                            "no_sleep_auto_cooldown_seconds": 90,
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let cleared_body = response_json(cleared).await;
+        assert_eq!(cleared_body["builtin_shell"], Value::Null);
 
         let _ = fs::remove_dir_all(config_home);
         std::env::remove_var("XDG_CONFIG_HOME");
@@ -3978,6 +4346,33 @@ mod tests {
 
         handle.join().unwrap();
         let _ = fs::remove_file(socket);
+    }
+
+    #[tokio::test]
+    async fn versions_api_reports_builtin_backend_as_compatible() {
+        let mut state = test_state();
+        state.backend_mode = BackendMode::Builtin;
+        state.api_socket = None;
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                request(Method::GET, "/api/versions")
+                    .header(header::COOKIE, "herdr_web_session=token-123")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = response_json(response).await;
+
+        assert_eq!(body["backend_mode"], "builtin");
+        assert_eq!(body["compatibility"]["status"], "compatible");
+        assert_eq!(body["compatibility"]["compatible"], true);
+        assert_eq!(
+            body["compatibility"]["message"],
+            "built-in backend is embedded in this WebUI process"
+        );
     }
 
     #[tokio::test]

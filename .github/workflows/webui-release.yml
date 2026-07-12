@@ -44,7 +44,7 @@ jobs:
         run: cargo test --target-dir target
 
       - name: Build release
-        run: cargo build --release --target-dir target --target ${{ matrix.target }}
+        run: cargo build --release --bins --target-dir target --target ${{ matrix.target }}
 
       - name: Verify release version
         run: |
@@ -58,7 +58,9 @@ jobs:
         run: |
           mkdir -p dist/${{ matrix.artifact }}
           cp target/${{ matrix.target }}/release/herdr-webui dist/${{ matrix.artifact }}/herdr-webui
+          cp target/${{ matrix.target }}/release/herdr-webui-tui dist/${{ matrix.artifact }}/herdr-webui-tui
           chmod 755 dist/${{ matrix.artifact }}/herdr-webui
+          chmod 755 dist/${{ matrix.artifact }}/herdr-webui-tui
           cat > dist/${{ matrix.artifact }}/README.txt <<'EOF'
           Install:
             ./herdr-webui install-mac
@@ -68,6 +70,10 @@ jobs:
 
           Uninstall LaunchAgent:
             ./herdr-webui uninstall-mac
+
+          Terminal UI:
+            ./herdr-webui-tui --summary
+            ./herdr-webui-tui --theme system
           EOF
           tar -C dist -czf dist/${{ matrix.artifact }}.tar.gz ${{ matrix.artifact }}
           shasum -a 256 dist/${{ matrix.artifact }}.tar.gz > dist/${{ matrix.artifact }}.tar.gz.sha256
@@ -107,7 +113,7 @@ jobs:
         run: cargo test --target-dir target
 
       - name: Build release
-        run: cargo build --release --target-dir target --target x86_64-unknown-linux-gnu
+        run: cargo build --release --bins --target-dir target --target x86_64-unknown-linux-gnu
 
       - name: Verify release version
         run: |
@@ -119,13 +125,19 @@ jobs:
         run: |
           mkdir -p dist/herdr-webui-linux-x86_64
           cp target/x86_64-unknown-linux-gnu/release/herdr-webui dist/herdr-webui-linux-x86_64/herdr-webui
+          cp target/x86_64-unknown-linux-gnu/release/herdr-webui-tui dist/herdr-webui-linux-x86_64/herdr-webui-tui
           chmod 755 dist/herdr-webui-linux-x86_64/herdr-webui
+          chmod 755 dist/herdr-webui-linux-x86_64/herdr-webui-tui
           cat > dist/herdr-webui-linux-x86_64/README.txt <<'EOF'
           Run:
             ./herdr-webui --bind 127.0.0.1:8787
 
           Local development auth bypass:
             HERDR_WEB_LOCALHOST_NO_AUTH=true ./herdr-webui --bind 127.0.0.1:8787
+
+          Terminal UI:
+            ./herdr-webui-tui --summary
+            ./herdr-webui-tui --theme system
           EOF
           tar -C dist -czf dist/herdr-webui-linux-x86_64.tar.gz herdr-webui-linux-x86_64
           sha256sum dist/herdr-webui-linux-x86_64.tar.gz > dist/herdr-webui-linux-x86_64.tar.gz.sha256

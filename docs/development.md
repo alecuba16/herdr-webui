@@ -9,6 +9,9 @@
 - `src/file_browser.rs`: authenticated file-browser API for trees, file read/write, rename, and delete.
 - `src/git_ui/mod.rs` and `src/git_ui/`: embedded Git UI API split into modules (cleanup, diff, branch, stash, conflict, file, log) for maintainability.
 - `src/protocol.rs`: Herdr direct terminal attach wire types and frame codec.
+- `src/backend_client.rs`: reusable Rust client over built-in backend sockets for TUI and smoke tools.
+- `src/tui.rs`: first-party TUI app state, snapshot parsing, key mapping, text snapshots, and Ratatui rendering. Keep this independent from built-in backend internals.
+- `src/bin/herdr-webui-tui.rs`: thin TUI binary wrapper for CLI parsing, terminal raw mode, event loop, and live attach worker wiring.
 - `src/service.rs`: OS service helpers.
 - `src/assets/`: embedded HTML/CSS/JS and frontend tests.
 - `src/assets/desktop/`: desktop UI bundle chunks and desktop-only CSS.
@@ -53,11 +56,13 @@ The Rust binary embeds frontend assets with `include_str!`, so release artifacts
 ## Structure Rules For New Features
 
 - Backend first for expensive repo work: file traversal, Git state, content matching, diff generation, and mutation validation.
+- Client boundary first for TUI/backend integration: expose new backend operations through `src/backend_client.rs`, then call that from `src/tui.rs`.
 - Shared frontend module first for cross-layout rendering or data maps.
 - Desktop/mobile controllers should stay thin: read settings, call APIs, store UI state, and render with shared helpers.
 - Settings must be clamped at read/write boundaries and documented in [Technical details](technical-details.md#settings).
 - Help text must be updated when a user-visible feature changes.
 - Add or update tests for asset loading, static feature assertions, backend edge cases, and panel-state behavior.
+- Keep TUI additions modular: transport in `backend_client`, state/rendering in `tui`, process/terminal wiring in `bin/herdr-webui-tui.rs`. Avoid direct `builtin_backend` imports from TUI code.
 
 ## Desktop And Mobile Parity
 

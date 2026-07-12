@@ -35,6 +35,7 @@ let state = {
   // True when the backend supports session.snapshot (protocol 16+). Set after
   // the first successful snapshot; falls back to legacy polling when false.
   supportsSessionSnapshot: false,
+  backendMode: "builtin",
 };
 let term,
   termWs,
@@ -506,7 +507,7 @@ function shortcutsModalHtml() {
             <div class="help-row"><strong>Sidebar</strong><span>Workspaces show open roots/worktrees; agents list status. Click to open; double-click names to rename. Drag the workspace/agents separator to resize by percent. Colored badges show blocked, done, working, and idle.</span></div>
             <div class="help-row"><strong>Header</strong><span>＋ opens/creates workspace; ? opens this help; gear opens Settings; moon/theme toggles color mode; sidebar chevron hides/shows navigation.</span></div>
             <div class="help-row"><strong>Panels/Tabs</strong><span>Top panel switcher changes terminal panel; + creates panel; ✕ closes current panel; double-click panel label to rename.</span></div>
-            <div class="help-row"><strong>Terminal</strong><span>Wheel, touch, and PageUp/PageDown scroll the Herdr backend first, with xterm local scroll as fallback. Tail appears after scrolling up and jumps back to latest output. Scroll speed is configurable in Settings → Terminal.</span></div>
+            <div class="help-row"><strong>Terminal</strong><span>Wheel, touch, and PageUp/PageDown scroll the Herdr backend when available; built-in backend uses xterm local scroll. Tail appears after scrolling up and jumps back to latest output. Scroll speed is configurable in Settings → Terminal.</span></div>
             <div class="help-row"><strong>Files</strong><span>Files selector opens browser/editor; ... goes up; file rows use license-safe type glyphs while folders stay plain except for Git status colors. Header search (⌕, or prefix then /) is the single search entry point for workspaces/worktrees, file names, folder names, and file contents. File/folder and content search run in the backend for the focused workspace/worktree, lazy-load pages, preserve parent folders for path context, and use Settings to enable sections and sort their order. Content results show as grouped files with highlighted match text, match-case and regex options, colored matched-line context, configurable default expanded/collapsed file groups, per-file disclosure arrows, Git-style arrow controls for more context above/below with overlap merging, lazy per-file loading, opening at the matched line with editor highlight, and full-file open. Text previews use the same CodeMirror editor surface as edit mode but stay read-only until Edit is pressed; line numbers show by default, fold controls work for supported languages, editor find supports match case and regex, edit mode enables replace, and syntax/search colors use shared theme tokens. Search selections, selected files, split panes, and unsaved edit drafts stay attached to each open workspace/worktree while switching panels; closing the workspace/worktree forgets them. Git colors are computed server-side and propagate up directories with priority red deleted, yellow modified, green new.</span></div>
             <div class="help-row"><strong>Git</strong><span>Git selector opens repo tools for diff, stage/unstage, discard, commit, commit & push, pull, push/force-push, rebase, conflicts, stash, branches, cleanup, and worktree prune. Changes, log, stash, and cleanup use one exclusive segmented toggle; the file filter sits below the action toolbar; cleanup uses the shared broom icon. File view can toggle unified/side-by-side diffs.</span></div>
             <div class="help-row"><strong>Worktrees</strong><span>Use the header ＋ button to open/create workspaces and linked worktrees. Selected workspace rows keep only close/remove actions so the sidebar stays simple.</span></div>
@@ -714,7 +715,7 @@ function themeCustomizerHtml() {
   return `<div class="theme-customizer"><div><strong>Theme colors</strong><small>Saved in this browser. Uses current defaults as reset reference.</small></div><div class="theme-customizer-actions"><label><span>Profile</span><select class="settings-select" id="themeColorProfile"><option value="default">Default</option><option value="catppuccin">Catppuccin</option><option value="tokyo">Tokyo Night</option><option value="nord">Nord</option></select></label><button type="button" class="tab add" id="themeColorsApplyProfile">Apply profile</button><button type="button" class="tab add" id="themeColorsApply">Apply / reload UI</button><button type="button" class="tab add" id="themeColorsReset">Reset theme colors</button></div><div class="theme-customizer-grid"><section><h3>Dark</h3>${rows("dark")}</section><section><h3>Light</h3>${rows("light")}</section></div></div>`;
 }
 function serverSettingsHtml() {
-  return `<div class="server-settings"><section class="settings-section"><div class="settings-section-head"><h3>Network access</h3><p>Saved in ~/.config/herdr-webui/webui-settings.json. Changing Bind restarts the WebUI listener.</p></div><label class="option"><span>Bind address<small>Use 127.0.0.1:8787 for local only or 0.0.0.0:8787 for LAN/public access.</small></span><input id="optServerBind" placeholder="127.0.0.1:8787"></label><label class="option"><span>Username<small>Required when binding outside localhost.</small></span><input id="optServerUser" autocomplete="username"></label><label class="option"><span>Password<small>Required when binding outside localhost. Leave blank to keep current password.</small></span><input id="optServerPassword" type="password" autocomplete="new-password"></label><label class="option"><input type="checkbox" id="optServerLocalBypass"><span>Allow localhost without login<small>Only applies to loopback requests.</small></span></label></section><section class="settings-section"><div class="settings-section-head"><h3>Power behavior</h3><p>Server-side sleep prevention defaults.</p></div><label class="option"><span>No-sleep Auto cooldown<small>Seconds to wait after agents stop working before releasing no-sleep.</small></span><input id="optNoSleepAutoCooldown" type="number" min="0" max="3600" step="1"></label></section><div class="worktree-error" id="serverSettingsError"></div><div class="modal-actions"><button type="button" class="tab add" id="serverSettingsLoad">Reload server settings</button><button type="button" class="btn" id="serverSettingsApply">Apply server settings</button></div></div>`;
+  return `<div class="server-settings"><section class="settings-section"><div class="settings-section-head"><h3>Network access</h3><p>Saved in ~/.config/herdr-webui/webui-settings.json. Changing Bind restarts the WebUI listener.</p></div><label class="option"><span>Bind address<small>Use 127.0.0.1:8787 for local only or 0.0.0.0:8787 for LAN/public access.</small></span><input id="optServerBind" placeholder="127.0.0.1:8787"></label><label class="option"><span>Username<small>Required when binding outside localhost.</small></span><input id="optServerUser" autocomplete="username"></label><label class="option"><span>Password<small>Required when binding outside localhost. Leave blank to keep current password.</small></span><input id="optServerPassword" type="password" autocomplete="new-password"></label><label class="option"><input type="checkbox" id="optServerLocalBypass"><span>Allow localhost without login<small>Only applies to loopback requests.</small></span></label></section><section class="settings-section"><div class="settings-section-head"><h3>Backend</h3><p>Switch between external Herdr and the built-in terminal backend. Restart WebUI after changing backend mode.</p></div><label class="option"><span>Backend mode<small>Built-in is the default and starts local PTYs from this WebUI process. External Herdr uses Herdr sockets. Auto uses Herdr when available, otherwise built-in.</small></span><select class="settings-select" id="optBackendMode"><option value="builtin">Built-in terminal backend</option><option value="external-herdr">External Herdr</option><option value="auto">Auto</option></select></label><label class="option"><span>Built-in shell<small>Optional shell or command path for new built-in panes. Leave empty for SHELL or /bin/zsh.</small></span><input id="optBuiltinShell" placeholder="/bin/zsh"></label></section><section class="settings-section"><div class="settings-section-head"><h3>Power behavior</h3><p>Server-side sleep prevention defaults.</p></div><label class="option"><span>No-sleep Auto cooldown<small>Seconds to wait after agents stop working before releasing no-sleep.</small></span><input id="optNoSleepAutoCooldown" type="number" min="0" max="3600" step="1"></label></section><div class="worktree-error" id="serverSettingsError"></div><div class="modal-actions"><button type="button" class="tab add" id="serverSettingsLoad">Reload server settings</button><button type="button" class="btn" id="serverSettingsApply">Apply server settings</button></div></div>`;
 }
 function themeColorInputId(mode, key) {
   return `optThemeColor-${mode}-${key}`;
@@ -2275,6 +2276,8 @@ async function loadServerSettings() {
       ? "true"
       : "false";
     el("optServerLocalBypass").checked = !!settings.localhost_no_auth;
+    el("optBackendMode").value = settings.backend_mode || "builtin";
+    el("optBuiltinShell").value = settings.builtin_shell || "";
     el("optNoSleepAutoCooldown").value = String(
       settings.no_sleep_auto_cooldown_seconds ?? 60,
     );
@@ -2290,6 +2293,8 @@ async function applyServerSettings() {
     password = el("optServerPassword").value,
     hasSavedPassword = el("optServerPassword").dataset.hasPassword === "true",
     localhostNoAuth = el("optServerLocalBypass").checked,
+    backendMode = el("optBackendMode").value,
+    builtinShell = el("optBuiltinShell").value.trim(),
     noSleepAutoCooldown = Number(el("optNoSleepAutoCooldown").value || 60);
   if (err) err.textContent = "";
   const validationError = serverSettingsValidationError(
@@ -2312,12 +2317,14 @@ async function applyServerSettings() {
         username: username || null,
         password: password ? password : null,
         localhost_no_auth: localhostNoAuth,
+        backend_mode: backendMode,
+        builtin_shell: builtinShell || null,
         no_sleep_auto_cooldown_seconds: noSleepAutoCooldown,
       }),
     });
     if (err)
       err.textContent =
-        "Saved. If Bind changed, listener is restarting; reload this page using the new address if needed.";
+        "Saved. If Bind changed, listener is restarting. If Backend mode changed, restart WebUI, then reload this page.";
     el("optServerPassword").value = "";
   } catch (ex) {
     if (err) err.textContent = ex.message || String(ex);
@@ -2329,14 +2336,20 @@ async function loadVersions() {
   const versionsEl = el("versions");
   try {
     const v = await api("/api/versions");
+    state.backendMode = v.backend_mode || "builtin";
     const session = v.session || state.session || "default";
     const compat = v.compatibility || {},
       status =
         compat.status && compat.status !== "compatible"
           ? " · " + compat.status
           : "";
+    const backendIsBuiltin =
+      state.backendMode === "builtin" ||
+      String(v.backend || "") === "builtin" ||
+      String(v.backend || "").startsWith("builtin-");
+    const backendLabel = backendIsBuiltin ? "built-in" : v.backend || "offline";
     if (versionsEl) {
-      versionsEl.textContent = `webui ${v.webui || "-"} · backend ${v.backend || "offline"}${status}`;
+      versionsEl.textContent = `webui ${v.webui || "-"} · backend ${backendLabel}${status}`;
       versionsEl.title = `session ${session}${compat.message ? ` · ${compat.message}` : ""}`;
     }
     const button = el("footerSessionButton");
