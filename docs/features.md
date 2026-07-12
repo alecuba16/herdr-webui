@@ -130,6 +130,7 @@ Parent workspace close with linked worktrees:
 
 Terminal paste:
 
+- Built-in backend terminal panes start the user's shell as a login shell with an enriched local PATH. This keeps Homebrew, `~/.local/bin`, pyenv, jenv, fzf, and jcode available when WebUI runs as a macOS LaunchAgent.
 - Both desktop and mobile terminals capture browser `paste` events in the capture phase before xterm or native handlers process them.
 - WebUI intentionally does not call xterm.js `terminal.paste(text)`. xterm parses that string synchronously on the browser main thread, which can freeze the UI for large code snippets.
 - Browser paste is normalized through the shared helper in `/assets/shared/core.js`, preserving newlines while converting CRLF/CR to LF.
