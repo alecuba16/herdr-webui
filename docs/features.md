@@ -7,7 +7,7 @@ The browser UI provides workspace navigation, top panel tabs, agent status, term
 Sidebar:
 
 - The sidebar can collapse via the divider; state is stored in browser `localStorage` and collapsed mode keeps compact blocked/working/idle/done counters.
-- The header exposes unified Search, Theme, No-sleep, Worktree, New workspace, Git, and Files controls. The footer exposes session info, shortcut help, and Settings.
+- The header exposes unified Search, Theme, No-sleep, Worktree, New workspace, Git, and Files controls. The footer exposes session info, shortcut help, Settings, and backend status. Built-in backend mode is shown as `built-in` instead of the internal built-in version string.
 - Theme colors are browser-local and shared with shell controls and embedded Git UI.
 - No-sleep supports Off, Auto, 1 hour, 2 hours, 4 hours, and Infinite from a compact dropdown.
 - No-sleep status polling is adaptive: WebUI does not keep polling while no-sleep is Off and the server is healthy. Active modes and transient errors still retry so the control stays accurate without idle browser/network churn.

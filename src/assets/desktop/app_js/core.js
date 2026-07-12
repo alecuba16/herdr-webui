@@ -2343,8 +2343,13 @@ async function loadVersions() {
         compat.status && compat.status !== "compatible"
           ? " · " + compat.status
           : "";
+    const backendIsBuiltin =
+      state.backendMode === "builtin" ||
+      String(v.backend || "") === "builtin" ||
+      String(v.backend || "").startsWith("builtin-");
+    const backendLabel = backendIsBuiltin ? "built-in" : v.backend || "offline";
     if (versionsEl) {
-      versionsEl.textContent = `webui ${v.webui || "-"} · backend ${v.backend || "offline"}${status}`;
+      versionsEl.textContent = `webui ${v.webui || "-"} · backend ${backendLabel}${status}`;
       versionsEl.title = `session ${session}${compat.message ? ` · ${compat.message}` : ""}`;
     }
     const button = el("footerSessionButton");
