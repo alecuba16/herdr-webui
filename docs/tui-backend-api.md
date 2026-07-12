@@ -1,6 +1,6 @@
-# Future TUI backend API
+# TUI backend API and prototype
 
-Herdr WebUI now exposes a small reusable Rust client layer for a future first-party TUI or smoke CLI:
+Herdr WebUI exposes a small reusable Rust client layer plus a first-party prototype TUI binary over the built-in backend sockets:
 
 ```rust
 use herdr_webui::backend_client::BackendClient;
@@ -18,6 +18,47 @@ terminal.detach()?;
 ```
 
 This is an original client-facing API over the built-in WebUI backend. It uses Herdr-like features and behavior as a product guide, not copied source/UI code.
+
+## Command-line TUI
+
+Build all binaries:
+
+```sh
+cargo build --bins
+```
+
+Run the TUI against the default built-in backend session:
+
+```sh
+cargo run --bin herdr-webui-tui
+```
+
+Non-interactive smoke modes:
+
+```sh
+cargo run --bin herdr-webui-tui -- --summary
+cargo run --bin herdr-webui-tui -- --once
+```
+
+Useful flags:
+
+- `--session NAME`: use a built-in socket namespace, default `default`
+- `--api-socket PATH --terminal-socket PATH`: connect to explicit socket paths
+- `--refresh-ms MS`: set snapshot refresh interval, minimum 50ms
+- `--summary`: print backend/session counts and exit
+- `--once`: print a text snapshot, selected pane, selected agent, and pane output, then exit
+
+Interactive controls:
+
+- `j/k` or arrow keys move selection
+- `Tab` switches workspace/agent list focus
+- `w` focuses workspaces, `a` focuses agents
+- `Enter` attaches the selected terminal and starts a live background reader for raw terminal frames
+- keys in attach mode send input through the live terminal writer
+- `Ctrl-G` detaches back to navigation
+- `r` refreshes, `?` shows help, `q` quits from navigation
+
+Terminal output is loaded from `pane.read` for snapshot views and from raw terminal attach frames when entering attach mode. The TUI applies common terminal rewrites such as carriage return, line clear, cursor movement, OSC title skipping, and ANSI stripping so Jcode toolbars and status lines stay visible instead of showing stale cleared output.
 
 ## Transport
 
@@ -70,15 +111,15 @@ Terminal methods:
 - `TerminalClient::resize(cols, rows)`
 - `TerminalClient::detach()`
 
-## TUI prototype scope now possible
+## TUI prototype scope now implemented
 
-A minimal TUI can now be implemented without Axum, WebSocket, DOM, xterm.js, or browser-local storage:
+The prototype TUI works without Axum, WebSocket, DOM, xterm.js, or browser-local storage:
 
 1. Connect with `BackendClient::builtin_session(None)`.
 2. Call `snapshot()`.
 3. Render workspaces/tabs/panes from the JSON snapshot.
 4. Attach to the selected pane terminal id.
-5. Render ANSI bytes from `TerminalOutput` with a terminal parser.
+5. Render ANSI bytes from `TerminalOutput` with the local terminal text parser.
 6. Send keyboard input through `send_input` and paste through `paste_text`.
 7. Resize on terminal-size changes.
 8. Detach on exit.
@@ -97,7 +138,7 @@ The future TUI may copy these features/functionality as a guide while keeping or
 
 ## Current gaps
 
-This API is a TUI-ready MVP, not full Herdr TUI parity.
+This API and TUI are usable prototypes, not full Herdr TUI parity.
 
 Still pending:
 
@@ -112,14 +153,17 @@ Still pending:
 
 ## Tests
 
-`src/backend_client.rs` includes unit tests for:
+`src/backend_client.rs`, `src/tui.rs`, and `src/bin/herdr-webui-tui.rs` include unit tests for:
 
 - built-in socket discovery path convention
 - JSON API request/result unwrapping for TUI clients
 - terminal handshake, attach, output read, input send, and detach over the bincode socket
+- TUI snapshot parsing, render smoke, keyboard-to-terminal byte mapping, text snapshots, raw terminal output parsing, and CLI parsing
 
 Run:
 
 ```sh
 cargo test backend_client
+cargo test tui
+cargo test --bin herdr-webui-tui
 ```

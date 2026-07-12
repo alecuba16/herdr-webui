@@ -3,6 +3,7 @@ use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
 use interprocess::local_socket::Stream as LocalStream;
+use interprocess::TryClone as _;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
@@ -306,9 +307,23 @@ pub struct TerminalClient {
     rows: u16,
 }
 
+pub struct TerminalWriter {
+    stream: LocalStream,
+    cols: u16,
+    rows: u16,
+}
+
 impl TerminalClient {
     pub fn size(&self) -> (u16, u16) {
         (self.cols, self.rows)
+    }
+
+    pub fn writer(&self) -> Result<TerminalWriter, BackendClientError> {
+        Ok(TerminalWriter {
+            stream: self.stream.try_clone()?,
+            cols: self.cols,
+            rows: self.rows,
+        })
     }
 
     pub fn read_event(&mut self) -> Result<TerminalEvent, BackendClientError> {
@@ -334,6 +349,50 @@ impl TerminalClient {
                 return Ok(output);
             }
         }
+    }
+
+    pub fn send_input(&mut self, data: &[u8]) -> Result<(), BackendClientError> {
+        write_protocol(
+            &mut self.stream,
+            &ClientMessage::Input {
+                data: data.to_vec(),
+            },
+        )
+    }
+
+    pub fn paste_text(&mut self, text: &str) -> Result<(), BackendClientError> {
+        write_protocol(
+            &mut self.stream,
+            &ClientMessage::InputEvents {
+                events: vec![crate::protocol::ClientInputEvent::Paste {
+                    text: text.to_string(),
+                }],
+            },
+        )
+    }
+
+    pub fn resize(&mut self, cols: u16, rows: u16) -> Result<(), BackendClientError> {
+        self.cols = cols.max(1);
+        self.rows = rows.max(1);
+        write_protocol(
+            &mut self.stream,
+            &ClientMessage::Resize {
+                cols: self.cols,
+                rows: self.rows,
+                cell_width_px: 0,
+                cell_height_px: 0,
+            },
+        )
+    }
+
+    pub fn detach(&mut self) -> Result<(), BackendClientError> {
+        write_protocol(&mut self.stream, &ClientMessage::Detach)
+    }
+}
+
+impl TerminalWriter {
+    pub fn size(&self) -> (u16, u16) {
+        (self.cols, self.rows)
     }
 
     pub fn send_input(&mut self, data: &[u8]) -> Result<(), BackendClientError> {
@@ -508,7 +567,6 @@ mod tests {
 
     use interprocess::local_socket::traits::Listener;
     use interprocess::local_socket::Listener as LocalListener;
-    use interprocess::TryClone as _;
     use serde_json::json;
 
     #[test]
@@ -596,7 +654,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_client_attaches_reads_output_sends_input_and_detaches() {
+    fn terminal_client_attaches_reads_output_writes_from_clone_and_detaches() {
         let socket = temp_socket("tui-terminal");
         let listener = bind_local_listener(&socket).unwrap();
         let (seen_tx, seen_rx) = mpsc::channel();
@@ -656,8 +714,10 @@ mod tests {
         let client = BackendClient::new(temp_socket("unused-api"), &socket);
         let mut terminal = client.attach_terminal("term_1", 80, 24).unwrap();
         let output = terminal.read_output().unwrap();
-        terminal.send_input(b"abc").unwrap();
-        terminal.detach().unwrap();
+        let mut writer = terminal.writer().unwrap();
+        assert_eq!(writer.size(), (80, 24));
+        writer.send_input(b"abc").unwrap();
+        writer.detach().unwrap();
 
         assert_eq!(output.seq, 7);
         assert!(output.full);
