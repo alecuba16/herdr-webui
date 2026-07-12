@@ -38,6 +38,17 @@ Built-in backend:
 - Built-in events currently acknowledge subscription requests and rely on snapshot refresh fallback. A true event hub is still a parity gap.
 - State is runtime-local. Durable layout/session persistence beyond settings and browser state is not complete yet.
 
+Terminal UI:
+
+- `herdr-webui-tui` ships as a second binary beside `herdr-webui`. `make install-mac`, `make update-mac`, `make install-linux`, and `make update-linux` install both binaries into `~/.local/bin` by default.
+- The TUI uses the reusable `backend_client` layer and the built-in control/terminal sockets. It does not import browser code or built-in backend internals.
+- Summary modes are available for smoke checks: `herdr-webui-tui --summary` prints backend/session counts, and `herdr-webui-tui --once` prints a text snapshot plus selected pane output.
+- Interactive mode supports workspace/agent navigation, selected-pane attach, live terminal output, keyboard input, paste, resize, detach, refresh, and a Ctrl-B help/menu overlay.
+- Terminal rendering understands common ANSI rewrites and SGR styling. Jcode progress/status lines that rewrite the same terminal row stay on that row, and ANSI foreground/background colors plus bold, dim, italic, and underline render in the TUI.
+- TUI theme modes match the Jcode branch shape: `--theme dark`, `--theme light`, or `--theme system`. `system` is the default and means terminal-driven colors; the TUI queries the terminal background with OSC 11 through `terminal-colorsaurus` before raw mode, falls back to dark when detection is unavailable, and also accepts `HERDR_WEBUI_TUI_THEME` or `JCODE_THEME`.
+- WebUI and TUI may run at the same time against the same built-in backend session. Output fans out through separate terminal attaches. Avoid sending input to the same pane from both clients at once because the PTY receives both streams in arrival order.
+- The TUI is backend/protocol paired with Herdr-like workflows, but not full native Herdr TUI parity yet. Layout mutation, copy/search scrollback, mouse/touch, worktree dialogs, configurable keymaps, and notification integrations remain gaps.
+
 Notifications and attention sounds:
 
 - Agents entering `blocked` or `done` are treated as attention events. WebUI tracks known attention agents locally and only alerts for newly attentioned agents.

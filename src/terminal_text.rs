@@ -1,5 +1,6 @@
+#![allow(dead_code)]
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(crate) enum StripCarriageReturn {
     Drop,
     Newline,
@@ -14,7 +15,6 @@ pub(crate) struct TerminalTextOptions {
 impl TerminalTextOptions {
     const DEFAULT_MAX_LINES: usize = 400;
 
-    #[allow(dead_code)]
     pub(crate) const fn backend_tail() -> Self {
         Self {
             max_lines: Self::DEFAULT_MAX_LINES,
@@ -22,7 +22,6 @@ impl TerminalTextOptions {
         }
     }
 
-    #[allow(dead_code)]
     pub(crate) const fn tui_tail() -> Self {
         Self {
             max_lines: Self::DEFAULT_MAX_LINES,
@@ -68,7 +67,6 @@ pub(crate) fn terminal_text_lossy(input: &str, options: TerminalTextOptions) -> 
     screen.text()
 }
 
-#[allow(dead_code)]
 pub(crate) fn strip_ansi_lossy(input: &str, carriage_return: StripCarriageReturn) -> String {
     let mut output = String::with_capacity(input.len());
     let mut chars = input.chars().peekable();

@@ -45,6 +45,7 @@ Useful flags:
 - `--session NAME`: use a built-in socket namespace, default `default`
 - `--api-socket PATH --terminal-socket PATH`: connect to explicit socket paths
 - `--refresh-ms MS`: set snapshot refresh interval, minimum 50ms
+- `--theme dark|light|system`: choose TUI colors. `system` is default and follows the terminal background when detection is available.
 - `--summary`: print backend/session counts and exit
 - `--once`: print a text snapshot, selected pane, selected agent, and pane output, then exit
 
@@ -57,8 +58,13 @@ Interactive controls:
 - keys in attach mode send input through the live terminal writer
 - `Ctrl-G` detaches back to navigation
 - `r` refreshes, `?` shows help, `q` quits from navigation
+- `Ctrl-B` opens the command/help menu from any mode
 
-Terminal output is loaded from `pane.read` for snapshot views and from raw terminal attach frames when entering attach mode. The TUI applies common terminal rewrites such as carriage return, line clear, cursor movement, OSC title skipping, and ANSI stripping so Jcode toolbars and status lines stay visible instead of showing stale cleared output.
+Terminal output is loaded from `pane.read` for snapshot views and from raw terminal attach frames when entering attach mode. The TUI applies common terminal rewrites such as carriage return, line clear, cursor movement, OSC title skipping, and ANSI handling so Jcode toolbars and status lines stay visible instead of showing stale cleared output. Live attach rendering preserves SGR foreground/background colors plus bold, dim, italic, and underline for Ratatui spans.
+
+The browser WebUI and TUI can run in parallel against one built-in backend session. They use separate terminal attaches over the same terminal socket protocol. Output fan-out is supported; simultaneous input to the same pane is allowed by the PTY but intentionally not coordinated, so users should type in only one client at a time for predictable command input.
+
+Theme behavior mirrors the Jcode theme branch shape. `dark` and `light` are explicit palettes. `system` means terminal colors: the TUI checks `HERDR_WEBUI_TUI_THEME`, then `JCODE_THEME`, then queries the terminal background before entering raw mode. If the terminal cannot answer in non-interactive or unsupported environments, the fallback is dark.
 
 ## Transport
 
@@ -133,7 +139,7 @@ The prototype TUI works without Axum, WebSocket, DOM, xterm.js, or browser-local
 2. Call `snapshot()`.
 3. Render workspaces/tabs/panes from the JSON snapshot.
 4. Attach to the selected pane terminal id.
-5. Render ANSI bytes from `TerminalOutput` with the local terminal text parser.
+5. Render ANSI bytes from `TerminalOutput` with local terminal rewrite handling and styled SGR spans.
 6. Send keyboard input through `send_input` and paste through `paste_text`.
 7. Resize on terminal-size changes.
 8. Detach on exit.
@@ -144,6 +150,7 @@ The future TUI may copy these features/functionality as a guide while keeping or
 
 - session/workspace/tab/pane navigation
 - terminal attach/input/resize/detach
+- ANSI color/style rendering for foreground/background colors, bold, dim, italic, and underline
 - agent list/status display
 - Jcode status display that uses built-in screen/process detection, Herdr `jcode-support` manifest markers, and active background-task cards to avoid false idle flips while work is still running
 - agent start through argv/cwd
@@ -159,7 +166,7 @@ Parity checked against the Herdr native TUI implementation in the `jcode-support
 
 | Area | Herdr native TUI | `herdr-webui-tui` status |
 | --- | --- | --- |
-| Terminal attach/output/input | In-process terminal runtime with Ghostty VT parser, live render patches, keyboard protocol tracking, paste, resize, detach | Supported over built-in terminal socket with live background reader/writer, ANSI text parser, input, resize, detach |
+| Terminal attach/output/input | In-process terminal runtime with Ghostty VT parser, live render patches, keyboard protocol tracking, paste, resize, detach | Supported over built-in terminal socket with live background reader/writer, ANSI rewrite handling, SGR colors/styles, input, resize, detach |
 | Jcode/agent status | Manifest-driven detection, sidebar state icons, priority sorting, unseen/done state handling, custom labels | Basic agent list/status from built-in snapshot, focused agent selected by default, Jcode output visible |
 | Workspace navigation | Workspace picker, direct numeric switching, previous/next, rename, close, new workspace | Basic workspace list and selection only |
 | Tabs | Full tab bar, create/rename/close/switch 1-9, previous/next | Tab list display only |
@@ -190,7 +197,7 @@ Still pending:
 - built-in socket discovery path convention
 - JSON API request/result unwrapping for TUI clients
 - terminal handshake, attach, output read, input send, and detach over the bincode socket
-- TUI snapshot parsing, render smoke, keyboard-to-terminal byte mapping, text snapshots, raw terminal output parsing, and CLI parsing
+- TUI snapshot parsing, render smoke, keyboard-to-terminal byte mapping, text snapshots, raw terminal output parsing, ANSI color/style spans, terminal row rewrite behavior, and CLI parsing
 
 Run:
 
