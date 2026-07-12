@@ -17,7 +17,16 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let cli = Cli::parse(std::env::args().skip(1))?;
+    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    if args
+        .iter()
+        .any(|arg| matches!(arg.as_str(), "--help" | "-h"))
+    {
+        println!("{}", help_text());
+        return Ok(());
+    }
+
+    let cli = Cli::parse(args)?;
     let options = cli.options;
     let client = build_client(&options);
 
