@@ -2121,7 +2121,7 @@ function setupSessionChrome() {
     m.className = "session-manager";
     m.id = "sessionManager";
     m.innerHTML =
-      '<div class="session-card"><div class="session-hero"><div><h1 id="sessionManagerTitle">Sessions</h1><p id="sessionManagerText">Choose a built-in or Herdr backend session to open.</p></div><div class="session-current"><span class="dot unknown"></span><span id="sessionCurrentLabel">default · built-in</span></div></div><div class="session-actions"><div class="session-list" id="sessionList"></div><div class="session-line session-new"><span><strong>Create or target session</strong><small>Choose where to create/open it. Built-in starts inside WebUI. Herdr starts external daemon.</small></span><span class="session-controls"><button class="btn" id="newBuiltinSessionTarget">New built-in</button><button class="tab add" id="newHerdrSessionTarget">New Herdr</button></span></div></div></div>';
+      '<div class="session-card"><div class="session-hero"><div><h1 id="sessionManagerTitle">Sessions</h1><p id="sessionManagerText">Choose a built-in or Herdr backend session to open.</p></div><div class="session-current"><span class="dot unknown"></span><span id="sessionCurrentLabel">default · built-in</span></div></div><div class="session-actions"><div class="session-list" id="sessionList"></div><div class="session-line session-new"><span><strong>Create or target session</strong><small>Choose where to create/open it. Built-in starts inside WebUI. Herdr starts external daemon.</small></span><span class="session-controls"><button class="session-button primary" id="newBuiltinSessionTarget">New built-in</button><button class="session-button" id="newHerdrSessionTarget">New Herdr</button></span></div></div></div>';
     document.querySelector(".main").prepend(m);
     el("newBuiltinSessionTarget").onclick = () => newSessionTarget("builtin");
     el("newHerdrSessionTarget").onclick = () => newSessionTarget("external-herdr");
@@ -2159,7 +2159,7 @@ function renderSessionRows() {
       const status = `<span class="status-pill ${s.running ? "running" : "offline"}">${s.running ? "running" : "offline"}</span>`;
       const backendPill = `<span class="status-pill">${escapeHtml(s.backend_label || sessionBackendLabel(backend))}</span>`;
       const controls = active
-        ? `<span class="session-controls">${backendPill}<button class="btn" onclick="event.stopPropagation();launchBackend('${escapeAttr(s.name)}','${escapeAttr(backend)}')">Launch</button><button class="tab add" onclick="event.stopPropagation();refresh()">Retry</button><button class="tab add" onclick="event.stopPropagation();resetSession()">Reset workspaces</button><button class="mini danger" onclick="event.stopPropagation();closeCurrentSession()">Close</button></span>`
+        ? `<span class="session-controls">${backendPill}<button class="session-button primary" onclick="event.stopPropagation();launchBackend('${escapeAttr(s.name)}','${escapeAttr(backend)}')">Launch</button><button class="session-button" onclick="event.stopPropagation();refresh()">Retry</button><button class="session-button" onclick="event.stopPropagation();resetSession()">Reset workspaces</button><button class="session-button danger" onclick="event.stopPropagation();closeCurrentSession()">Close</button></span>`
         : `<span class="session-controls">${backendPill}${status}</span>`;
       const hint = active
         ? "current browser target"
