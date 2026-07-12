@@ -8,6 +8,7 @@ Sidebar:
 
 - The sidebar can collapse via the divider; state is stored in browser `localStorage` and collapsed mode keeps compact blocked/working/idle/done counters.
 - The header exposes unified Search, Theme, No-sleep, Worktree, New workspace, Git, and Files controls. The footer exposes session info, shortcut help, Settings, and backend status. Built-in backend mode is shown as `built-in` instead of the internal built-in version string.
+- The footer session button opens the session manager. It lists detected external Herdr sessions and built-in sessions together, shows the backend kind for each row, and can target or launch a session in either backend.
 - Theme colors are browser-local and shared with shell controls and embedded Git UI.
 - No-sleep supports Off, Auto, 1 hour, 2 hours, 4 hours, and Infinite from a compact dropdown.
 - No-sleep status polling is adaptive: WebUI does not keep polling while no-sleep is Off and the server is healthy. Active modes and transient errors still retry so the control stays accurate without idle browser/network churn.
@@ -27,12 +28,15 @@ Settings:
 Built-in backend:
 
 - Fresh installs and fresh `webui-settings.json` files default to the built-in backend. External Herdr remains available as an explicit compatibility mode.
+- Session manager discovery scans external Herdr sockets under the Herdr config session directory and built-in socket namespaces under the WebUI config directory. The UI can create a new built-in session inside the WebUI process or launch an external Herdr session through `HERDR_WEB_HERDR_BIN`/`herdr`.
+- Selecting a session stores both the session name and backend target. HTTP requests send `x-herdr-session` plus `x-herdr-backend`, and terminal/event WebSockets include the same backend target as query data. This lets a single WebUI process talk to external Herdr and built-in sessions in parallel.
 - The footer shows `built-in` when `backend_mode` resolves to the built-in backend, rather than exposing the internal built-in version string as if it were an external Herdr daemon.
 - The built-in backend owns local workspace, tab, pane, agent, terminal, and worktree state inside the WebUI process. It uses local sockets for control and terminal attach so the browser UI and TUI client share one protocol path.
 - Control API coverage includes `ping`, `server.stop`, `session.snapshot`, `workspace.list/create/rename/close`, `tab.list/create/rename/close`, `pane.list/get/layout/close/read`, `agent.list/start`, `worktree.list/open/create`, and explicit unsupported errors for unsafe `worktree.remove`.
 - `ping` reports `builtin_backend: true`, `terminal_attach: true`, `terminal_server_scroll: false`, and `jcode_detection: true` so clients can choose safe feature paths.
 - `session.snapshot` returns focused workspace/tab/pane IDs plus workspace, tab, pane, and agent lists for fast WebUI and TUI bootstrap.
 - Terminals run through `portable-pty`, inherit a login-shell-like macOS/user `PATH`, set xterm-compatible terminal env, collect recent output, and expose attach/input/paste/resize/detach over the terminal socket.
+- Browser terminal input filters terminal-emulator query replies such as OSC 10/11 color responses before they reach the PTY. Native terminals consume those replies internally; xterm.js exposes them through `onData`, so WebUI drops them to avoid leaking `10;rgb:...`/`11;rgb:...` text into shells or agents.
 - Built-in terminal scroll is local xterm/TUI scroll only. Server-side scrollback, search, copy mode, and selection APIs are documented gaps.
 - Agent detection covers Herdr-style aliases for Jcode, Claude, OpenCode, Cursor, and Qoder CLI from direct argv, wrapped shells, and process trees. Jcode status detection follows the Herdr `jcode-support` manifest rules and also treats active Jcode background task cards as `working` so status does not jump to `idle` while a background task is still running.
 - Built-in events currently acknowledge subscription requests and rely on snapshot refresh fallback. A true event hub is still a parity gap.
