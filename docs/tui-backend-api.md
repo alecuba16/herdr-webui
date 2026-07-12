@@ -75,6 +75,14 @@ The client wraps the same local sockets that the WebUI browser adapter uses.
 
 Module: `herdr_webui::backend_client`
 
+The TUI stack is intentionally layered:
+
+- `backend_client`: reusable transport/client API over built-in control and terminal sockets.
+- `tui`: domain models, snapshot parsing, selection state, key mapping, text rendering, and Ratatui widgets.
+- `bin/herdr-webui-tui.rs`: CLI parsing, terminal raw mode, event loop, and live terminal reader/writer wiring.
+
+Keep new functionality behind this boundary. Add or extend `BackendClient` methods first, then consume them from TUI state/rendering. Do not import built-in backend internals into the TUI module or binary.
+
 Primary types:
 
 - `BackendClient`
@@ -137,6 +145,7 @@ The future TUI may copy these features/functionality as a guide while keeping or
 - session/workspace/tab/pane navigation
 - terminal attach/input/resize/detach
 - agent list/status display
+- Jcode status display that uses built-in screen/process detection, Herdr `jcode-support` manifest markers, and active background-task cards to avoid false idle flips while work is still running
 - agent start through argv/cwd
 - pane recent read
 - worktree list/open/create from `cwd`, branch, base, and path

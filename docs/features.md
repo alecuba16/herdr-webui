@@ -24,6 +24,20 @@ Settings:
 - Unified search settings are stored in browser `localStorage` under `herdr-web-options`. They enable/disable workspace, file, folder, and content sections independently, and `searchSectionOrder` controls the order of sections in the search palette.
 - Opening Settings clears the previous search, refreshes option values, reloads server settings, and focuses the search box. Settings → Backend controls `backend_mode`; fresh settings default to built-in, while external Herdr and auto modes remain available for compatibility.
 
+Built-in backend:
+
+- Fresh installs and fresh `webui-settings.json` files default to the built-in backend. External Herdr remains available as an explicit compatibility mode.
+- The footer shows `built-in` when `backend_mode` resolves to the built-in backend, rather than exposing the internal built-in version string as if it were an external Herdr daemon.
+- The built-in backend owns local workspace, tab, pane, agent, terminal, and worktree state inside the WebUI process. It uses local sockets for control and terminal attach so the browser UI and TUI client share one protocol path.
+- Control API coverage includes `ping`, `server.stop`, `session.snapshot`, `workspace.list/create/rename/close`, `tab.list/create/rename/close`, `pane.list/get/layout/close/read`, `agent.list/start`, `worktree.list/open/create`, and explicit unsupported errors for unsafe `worktree.remove`.
+- `ping` reports `builtin_backend: true`, `terminal_attach: true`, `terminal_server_scroll: false`, and `jcode_detection: true` so clients can choose safe feature paths.
+- `session.snapshot` returns focused workspace/tab/pane IDs plus workspace, tab, pane, and agent lists for fast WebUI and TUI bootstrap.
+- Terminals run through `portable-pty`, inherit a login-shell-like macOS/user `PATH`, set xterm-compatible terminal env, collect recent output, and expose attach/input/paste/resize/detach over the terminal socket.
+- Built-in terminal scroll is local xterm/TUI scroll only. Server-side scrollback, search, copy mode, and selection APIs are documented gaps.
+- Agent detection covers Herdr-style aliases for Jcode, Claude, OpenCode, Cursor, and Qoder CLI from direct argv, wrapped shells, and process trees. Jcode status detection follows the Herdr `jcode-support` manifest rules and also treats active Jcode background task cards as `working` so status does not jump to `idle` while a background task is still running.
+- Built-in events currently acknowledge subscription requests and rely on snapshot refresh fallback. A true event hub is still a parity gap.
+- State is runtime-local. Durable layout/session persistence beyond settings and browser state is not complete yet.
+
 Notifications and attention sounds:
 
 - Agents entering `blocked` or `done` are treated as attention events. WebUI tracks known attention agents locally and only alerts for newly attentioned agents.

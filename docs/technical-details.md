@@ -9,11 +9,40 @@ Herdr WebUI is a Rust Axum server with embedded static assets. The browser conne
 ```mermaid
 flowchart LR
   Browser[Browser UI] --> WebUI[Rust WebUI server]
-  WebUI --> Herdr[Herdr backend]
-  WebUI --> Git[git CLI]
+  WebUI --> Builtin[Built-in backend]
+  WebUI --> Herdr[External Herdr backend]
+  Builtin --> Pty[portable-pty terminals]
+  Builtin --> Git[git CLI]
   WebUI --> FS[workspace filesystem]
   Browser --> Assets[embedded /assets routes]
+  TUI[herdr-webui-tui] --> Client[backend_client]
+  Client --> BuiltinSockets[Built-in control + terminal sockets]
+  BuiltinSockets --> Builtin
 ```
+
+The built-in backend is the default runtime for new settings. External Herdr stays as a compatibility backend selected through settings or CLI flags. Both backends flow through the WebUI server adapter so browser code can keep one high-level API.
+
+### Built-in backend architecture
+
+- `src/builtin_backend.rs` owns built-in runtime state: workspaces, tabs, panes, terminals, agent metadata, worktree helpers, local socket listeners, request dispatch, and Jcode/OpenCode status detection.
+- Built-in control requests are newline-delimited JSON. Supported methods include `ping`, `session.snapshot`, workspace/tab/pane CRUD basics, `pane.read`, `agent.list/start`, and worktree list/open/create.
+- Built-in terminal attach uses `src/protocol.rs` frames over a separate local socket. The protocol supports attach, ANSI output, input, paste, resize, detach, and server shutdown frames.
+- The browser adapter in `src/main.rs` chooses built-in sockets when `backend_mode` resolves to `builtin`. Built-in mode must not accidentally route `/ws/events` or `/ws/terminal` to external Herdr session sockets.
+- `pane.read` returns terminal text after common TUI rewrites: carriage return, clear-line/display, cursor movement, OSC title skipping, and ANSI/control stripping. This keeps cleared Jcode toolbars/status cards from becoming stale plain text.
+- Agent detection first inspects known argv labels, then scans terminal child process trees with a short process-table cache, then falls back to terminal-screen markers. Jcode status follows the Herdr `jcode-support` manifest bottom-line rules plus active background-task markers so running tasks remain `working` even when an input prompt is visible.
+- Built-in `events.subscribe` is currently an acknowledgement plus snapshot-refresh fallback. A true event hub is the next architectural step for full Herdr parity.
+- Unsafe destructive operations stay explicit. `worktree.remove` returns unsupported until validation, preview, and rollback rules are implemented.
+
+### TUI/client modularity
+
+The TUI is intentionally separated from backend internals:
+
+- `src/backend_client.rs` is the reusable client boundary. It knows socket paths, JSON request/response wrapping, terminal frame IO, and error types. It does not render UI.
+- `src/tui.rs` owns TUI domain models, snapshot parsing, selection state, key mapping, text snapshot rendering, and Ratatui widgets. It consumes `BackendClient` and backend JSON, but does not know `BuiltinBackendInner` internals.
+- `src/bin/herdr-webui-tui.rs` is a thin binary shell for CLI parsing, terminal raw mode, the event loop, and the live terminal reader/writer thread.
+- This separation keeps SOLID boundaries: backend runtime has one reason to change, client transport has one reason to change, TUI state/rendering has one reason to change, and the binary only wires them together.
+- New TUI features should add typed wrappers to `BackendClient` before adding UI controls. Avoid calling built-in backend internals from `tui.rs` or the binary.
+- Herdr-like feature parity should be implemented as original UI/controller code over this client layer, not by copying Herdr source.
 
 ### Backend responsibilities
 
