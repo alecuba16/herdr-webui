@@ -82,13 +82,10 @@
   animation: app-refresh-spin 2s linear;
 }
 .git-ui-return-cwd-icon span {
-  background: none;
-  font-size: 16px;
-  font-weight: 800;
-  height: auto;
-  line-height: 1;
-  mask: none;
-  width: auto;
+  mask: url("/assets/icons/folder-up.svg") center / contain no-repeat;
+}
+.git-ui-current-changes-icon span {
+  mask: url("/assets/icons/git.svg") center / contain no-repeat;
 }
 @keyframes app-refresh-spin {
   from { transform: rotate(0deg); }
