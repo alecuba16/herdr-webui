@@ -336,7 +336,7 @@ function syncGitWorkspaceToggle() {
     setupSessionChrome();
     return;
   }
-  const workspace = state.workspaces.find((w) => w.workspace_id === state.ws);
+  const workspace = selectedOrDefaultWorkspace();
   const status = window.HerdrGitUi && window.HerdrGitUi.workspaceStatus ? window.HerdrGitUi.workspaceStatus(state.ws, workspace) : "unknown";
   button.className = `btn worktree-open-trigger shell-action shell-icon-button git-workspace-toggle ${status}`;
   button.innerHTML = appIcon("git");
@@ -373,7 +373,7 @@ async function ensureFileBrowserLoaded() {
 
 async function openWorkspaceGitUi(id) {
   if (!gitUiEnabled()) return;
-  const workspace = state.workspaces.find((w) => w.workspace_id === id);
+  const workspace = selectedOrDefaultWorkspace(id);
   if (!workspace) return;
   try {
     await ensureGitUiLoaded();
@@ -392,15 +392,15 @@ function syncFileWorkspaceToggle() {
     setupSessionChrome();
     return;
   }
-  const workspace = state.workspaces.find((w) => w.workspace_id === state.ws);
+  const workspace = selectedOrDefaultWorkspace();
   const hasPath = !!workspacePath(workspace);
   button.disabled = !hasPath;
-  button.title = hasPath ? "Show file browser" : "No workspace path available";
+  button.title = hasPath ? "Show file browser" : "No workspace or default folder available";
   syncShellModeButtons();
 }
 
 async function openWorkspaceFileBrowser(id) {
-  const workspace = state.workspaces.find((w) => w.workspace_id === id);
+  const workspace = selectedOrDefaultWorkspace(id);
   if (!workspace) return;
   try {
     await ensureFileBrowserLoaded();

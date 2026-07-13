@@ -658,6 +658,7 @@ describe("app bundle load", () => {
     match(html, /id="optBuiltinBackendEnabled"/);
     match(html, /id="optExternalHerdrBackendEnabled"/);
     match(html, /id="optBuiltinShell"/);
+    match(html, /id="optDefaultFolder"/);
     match(html, /id="optNoSleepAutoCooldown"/);
     match(html, /id="serverSettingsApply"/);
     match(html, /<h3>Network access<\/h3>/);
@@ -671,6 +672,11 @@ describe("app bundle load", () => {
     match(source, /builtin_backend_enabled: builtinBackendEnabled,/);
     match(source, /external_herdr_backend_enabled: externalHerdrBackendEnabled,/);
     match(source, /builtin_shell: builtinShell \|\| null,/);
+    match(source, /default_folder: defaultFolder \|\| null,/);
+    match(source, /state\.defaultFolder = settings\.default_folder/);
+    match(source, /selectedOrDefaultWorkspace/);
+    match(source, /defaultFolderFn: defaultFolderPath/);
+    ok(!source.includes('body: JSON.stringify({ label: "default", cwd: null })'));
   });
 
   it("labels the side footer backend as built-in for built-in backends", async () => {

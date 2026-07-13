@@ -287,6 +287,7 @@ Runtime server settings include:
 | `builtin_backend_enabled` | `true` | Enables built-in session discovery/routing/creation. When false, built-in sessions are hidden and requests fall back to an enabled backend. |
 | `external_herdr_backend_enabled` | `true` | Enables passive external Herdr socket discovery plus explicit external launch/close actions. Discovery does not execute `herdr`. |
 | `builtin_shell` | empty | Optional shell/command path for new built-in panes. |
+| `default_folder` | home folder | Default folder for Files, Git, and temporary terminals when no workspace/worktree is selected. The backend verifies read access on load/change, asks macOS for folder permission when needed, and falls back to home if access is unavailable. |
 
 Validation rejects configurations where both backend types are disabled.
 

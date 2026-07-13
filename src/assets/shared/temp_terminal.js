@@ -21,12 +21,14 @@
     var closeId = opts.closeId;
     var fontFamilyFn = opts.fontFamilyFn || function () { return "monospace"; };
     var themeFn = opts.themeFn || function () { return {}; };
+    var defaultFolderFn = opts.defaultFolderFn || function () { return ""; };
 
     var term = null;
     var termWs = null;
     var createdTabId = null;
     var createdPaneId = null;
     var createdWorkspaceId = null;
+    var ownsWorkspace = false;
     var isOpen = false;
     var closing = false;
     var inputEncoder = new TextEncoder();
@@ -38,7 +40,7 @@
 
     function open() {
       if (isOpen) return;
-      if (!state.ws) return;
+      if (!state.ws && !defaultFolderFn()) return;
       isOpen = true;
       closing = false;
       var modal = el(modalId);
@@ -65,7 +67,9 @@
       closeTab();
       createdTabId = null;
       createdPaneId = null;
+      if (ownsWorkspace) closeWorkspaceById(createdWorkspaceId);
       createdWorkspaceId = null;
+      ownsWorkspace = false;
     }
 
     function showCloseConfirm() {
@@ -120,12 +124,15 @@
     }
 
     function createTerminalSession() {
-      if (!state.ws) { close(); return; }
-      api("/api/tabs", {
+      ensureWorkspaceForTempTerminal().then(function (workspaceId) {
+        if (!workspaceId) { close(); return null; }
+        return api("/api/tabs", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ workspace_id: state.ws, label: "temp" }),
+          body: JSON.stringify({ workspace_id: workspaceId, label: "temp" }),
+        });
       }).then(function (res) {
+        if (!res) return null;
         var tab = res && res.result && res.result.tab;
         if (!tab || !tab.tab_id) { close(); return; }
         if (!isOpen) {
@@ -133,7 +140,7 @@
           return;
         }
         createdTabId = tab.tab_id;
-        createdWorkspaceId = state.ws;
+        createdWorkspaceId = createdWorkspaceId || state.ws;
         return findCreatedPane(0);
       }).then(function (pane) {
         if (!isOpen || !pane) return;
@@ -141,6 +148,26 @@
         createdPaneId = pane.pane_id || null;
         connectTerminalWs(pane.terminal_id);
       }).catch(function () { close(); });
+    }
+
+    function ensureWorkspaceForTempTerminal() {
+      if (state.ws) {
+        createdWorkspaceId = state.ws;
+        ownsWorkspace = false;
+        return Promise.resolve(state.ws);
+      }
+      var cwd = defaultFolderFn();
+      if (!cwd) return Promise.resolve(null);
+      return api("/api/workspaces", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ label: "temp", cwd: cwd }),
+      }).then(function (res) {
+        var workspace = res && res.result && res.result.workspace;
+        createdWorkspaceId = workspace && workspace.workspace_id;
+        ownsWorkspace = !!createdWorkspaceId;
+        return createdWorkspaceId;
+      });
     }
 
     function findCreatedPane(attempt) {
@@ -232,6 +259,12 @@
     function closeTabById(tabId) {
       if (!tabId) return;
       api("/api/tabs/" + encodeURIComponent(tabId) + "/close", { method: "POST" })
+        .catch(function () {});
+    }
+
+    function closeWorkspaceById(workspaceId) {
+      if (!workspaceId) return;
+      api("/api/workspaces/" + encodeURIComponent(workspaceId) + "/close", { method: "POST" })
         .catch(function () {});
     }
 

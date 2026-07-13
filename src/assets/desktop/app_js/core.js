@@ -37,6 +37,7 @@ let state = {
   supportsSessionSnapshot: false,
   backendMode: "builtin",
   sessionBackend: localStorage.getItem("herdr-session-backend") || "builtin",
+  defaultFolder: "",
 };
 let term,
   termWs,
@@ -245,6 +246,17 @@ function workspacePath(workspace) {
     (p) => p.workspace_id === workspace.workspace_id,
   );
   return (pane && (pane.foreground_cwd || pane.cwd)) || "";
+}
+function defaultFolderPath() {
+  return state.defaultFolder || "";
+}
+function defaultFolderWorkspace() {
+  const cwd = defaultFolderPath();
+  if (!cwd) return null;
+  return { workspace_id: "__default_folder__", label: "Default folder", cwd, default_folder: true };
+}
+function selectedOrDefaultWorkspace(id = state.ws) {
+  return state.workspaces.find((w) => w.workspace_id === id) || defaultFolderWorkspace();
 }
 window.HerdrWorkspacePath = workspacePath;
 function appRefreshIconButton({ className = "", title = "Refresh", label = "Refresh", spinning = false, onclick = "" } = {}) {
@@ -716,7 +728,7 @@ function themeCustomizerHtml() {
   return `<div class="theme-customizer"><div><strong>Theme colors</strong><small>Saved in this browser. Uses current defaults as reset reference.</small></div><div class="theme-customizer-actions"><label><span>Profile</span><select class="settings-select" id="themeColorProfile"><option value="default">Default</option><option value="catppuccin">Catppuccin</option><option value="tokyo">Tokyo Night</option><option value="nord">Nord</option></select></label><button type="button" class="tab add" id="themeColorsApplyProfile">Apply profile</button><button type="button" class="tab add" id="themeColorsApply">Apply / reload UI</button><button type="button" class="tab add" id="themeColorsReset">Reset theme colors</button></div><div class="theme-customizer-grid"><section><h3>Dark</h3>${rows("dark")}</section><section><h3>Light</h3>${rows("light")}</section></div></div>`;
 }
 function serverSettingsHtml() {
-  return `<div class="server-settings"><section class="settings-section"><div class="settings-section-head"><h3>Network access</h3><p>Saved in ~/.config/herdr-webui/webui-settings.json. Changing Bind restarts the WebUI listener.</p></div><label class="option"><span>Bind address<small>Use 127.0.0.1:8787 for local only or 0.0.0.0:8787 for LAN/public access.</small></span><input id="optServerBind" placeholder="127.0.0.1:8787"></label><label class="option"><span>Username<small>Required when binding outside localhost.</small></span><input id="optServerUser" autocomplete="username"></label><label class="option"><span>Password<small>Required when binding outside localhost. Leave blank to keep current password.</small></span><input id="optServerPassword" type="password" autocomplete="new-password"></label><label class="option"><input type="checkbox" id="optServerLocalBypass"><span>Allow localhost without login<small>Only applies to loopback requests.</small></span></label></section><section class="settings-section"><div class="settings-section-head"><h3>Backend</h3><p>Switch between external Herdr and the built-in terminal backend. Restart WebUI after changing backend mode.</p></div><label class="option"><span>Backend mode<small>Built-in is the default and starts local PTYs from this WebUI process. External Herdr uses Herdr sockets. Auto uses Herdr when available, otherwise built-in.</small></span><select class="settings-select" id="optBackendMode"><option value="builtin">Built-in terminal backend</option><option value="external-herdr">External Herdr</option><option value="auto">Auto</option></select></label><label class="option"><input type="checkbox" id="optBuiltinBackendEnabled"><span>Enable built-in backend<small>Allows local PTY sessions managed by this WebUI process.</small></span></label><label class="option"><input type="checkbox" id="optExternalHerdrBackendEnabled"><span>Enable external Herdr<small>Allows detecting and explicitly launching external Herdr sessions. Discovery stays passive until you create one.</small></span></label><label class="option"><span>Built-in shell<small>Optional shell or command path for new built-in panes. Leave empty for SHELL or /bin/zsh.</small></span><input id="optBuiltinShell" placeholder="/bin/zsh"></label></section><section class="settings-section"><div class="settings-section-head"><h3>Power behavior</h3><p>Server-side sleep prevention defaults.</p></div><label class="option"><span>No-sleep Auto cooldown<small>Seconds to wait after agents stop working before releasing no-sleep.</small></span><input id="optNoSleepAutoCooldown" type="number" min="0" max="3600" step="1"></label></section><div class="worktree-error" id="serverSettingsError"></div><div class="modal-actions"><button type="button" class="tab add" id="serverSettingsLoad">Reload server settings</button><button type="button" class="btn" id="serverSettingsApply">Apply server settings</button></div></div>`;
+  return `<div class="server-settings"><section class="settings-section"><div class="settings-section-head"><h3>Network access</h3><p>Saved in ~/.config/herdr-webui/webui-settings.json. Changing Bind restarts the WebUI listener.</p></div><label class="option"><span>Bind address<small>Use 127.0.0.1:8787 for local only or 0.0.0.0:8787 for LAN/public access.</small></span><input id="optServerBind" placeholder="127.0.0.1:8787"></label><label class="option"><span>Username<small>Required when binding outside localhost.</small></span><input id="optServerUser" autocomplete="username"></label><label class="option"><span>Password<small>Required when binding outside localhost. Leave blank to keep current password.</small></span><input id="optServerPassword" type="password" autocomplete="new-password"></label><label class="option"><input type="checkbox" id="optServerLocalBypass"><span>Allow localhost without login<small>Only applies to loopback requests.</small></span></label></section><section class="settings-section"><div class="settings-section-head"><h3>Backend</h3><p>Switch between external Herdr and the built-in terminal backend. Restart WebUI after changing backend mode.</p></div><label class="option"><span>Backend mode<small>Built-in is the default and starts local PTYs from this WebUI process. External Herdr uses Herdr sockets. Auto uses Herdr when available, otherwise built-in.</small></span><select class="settings-select" id="optBackendMode"><option value="builtin">Built-in terminal backend</option><option value="external-herdr">External Herdr</option><option value="auto">Auto</option></select></label><label class="option"><input type="checkbox" id="optBuiltinBackendEnabled"><span>Enable built-in backend<small>Allows local PTY sessions managed by this WebUI process.</small></span></label><label class="option"><input type="checkbox" id="optExternalHerdrBackendEnabled"><span>Enable external Herdr<small>Allows detecting and explicitly launching external Herdr sessions. Discovery stays passive until you create one.</small></span></label><label class="option"><span>Built-in shell<small>Optional shell or command path for new built-in panes. Leave empty for SHELL or /bin/zsh.</small></span><input id="optBuiltinShell" placeholder="/bin/zsh"></label><label class="option"><span>Default folder<small>Used by Files, Git, and temporary terminals when no workspace is selected. The backend verifies access and falls back to home.</small></span><input id="optDefaultFolder" placeholder="~"></label></section><section class="settings-section"><div class="settings-section-head"><h3>Power behavior</h3><p>Server-side sleep prevention defaults.</p></div><label class="option"><span>No-sleep Auto cooldown<small>Seconds to wait after agents stop working before releasing no-sleep.</small></span><input id="optNoSleepAutoCooldown" type="number" min="0" max="3600" step="1"></label></section><div class="worktree-error" id="serverSettingsError"></div><div class="modal-actions"><button type="button" class="tab add" id="serverSettingsLoad">Reload server settings</button><button type="button" class="btn" id="serverSettingsApply">Apply server settings</button></div></div>`;
 }
 function themeColorInputId(mode, key) {
   return `optThemeColor-${mode}-${key}`;
@@ -2313,6 +2325,10 @@ async function loadServerSettings() {
     el("optBuiltinBackendEnabled").checked = settings.builtin_backend_enabled !== false;
     el("optExternalHerdrBackendEnabled").checked = settings.external_herdr_backend_enabled !== false;
     el("optBuiltinShell").value = settings.builtin_shell || "";
+    state.defaultFolder = settings.default_folder || state.defaultFolder || "";
+    el("optDefaultFolder").value = state.defaultFolder || "";
+    syncGitWorkspaceToggle();
+    syncFileWorkspaceToggle();
     el("optNoSleepAutoCooldown").value = String(
       settings.no_sleep_auto_cooldown_seconds ?? 60,
     );
@@ -2332,6 +2348,7 @@ async function applyServerSettings() {
     builtinBackendEnabled = el("optBuiltinBackendEnabled").checked,
     externalHerdrBackendEnabled = el("optExternalHerdrBackendEnabled").checked,
     builtinShell = el("optBuiltinShell").value.trim(),
+    defaultFolder = el("optDefaultFolder").value.trim(),
     noSleepAutoCooldown = Number(el("optNoSleepAutoCooldown").value || 60);
   if (err) err.textContent = "";
   const validationError = serverSettingsValidationError(
@@ -2346,7 +2363,7 @@ async function applyServerSettings() {
   }
   submit.disabled = true;
   try {
-    await api("/api/server-settings", {
+    const updatedSettings = await api("/api/server-settings", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -2358,9 +2375,12 @@ async function applyServerSettings() {
         builtin_backend_enabled: builtinBackendEnabled,
         external_herdr_backend_enabled: externalHerdrBackendEnabled,
         builtin_shell: builtinShell || null,
+        default_folder: defaultFolder || null,
         no_sleep_auto_cooldown_seconds: noSleepAutoCooldown,
       }),
     });
+    state.defaultFolder = updatedSettings.default_folder || state.defaultFolder || "";
+    el("optDefaultFolder").value = state.defaultFolder || "";
     if (err)
       err.textContent =
         "Saved. If Bind changed, listener is restarting. If Backend mode changed, restart WebUI, then reload this page.";
@@ -2528,24 +2548,7 @@ async function refreshOnline(seq) {
   const w = await api("/api/workspaces");
   if (seq !== refreshSeq) return;
   state.workspaces = w.result.workspaces || [];
-  if (state.workspaces.length === 0 && !creatingDefaultWorkspace) {
-    creatingDefaultWorkspace = true;
-    try {
-      const r = await api("/api/workspaces", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ label: "default", cwd: null }),
-      });
-      if (seq !== refreshSeq) return;
-      state.ws = r.result.workspace.workspace_id;
-      state.fitDefault = true;
-      history.replaceState(null, "", selectionPath(state.ws));
-      creatingDefaultWorkspace = false;
-      return refresh();
-    } catch (e) {
-      creatingDefaultWorkspace = false;
-    }
-  }
+  creatingDefaultWorkspace = false;
   if (state.ws && !state.workspaces.some((w) => w.workspace_id === state.ws)) {
     resetTerminalConnection(true);
     setTerminalLoading(false);
@@ -2600,8 +2603,6 @@ async function refreshOnline(seq) {
   } catch (e) {
     state.workspaceOrder = [];
   }
-  if (!state.ws && state.workspaces[0])
-    state.ws = state.workspaces[0].workspace_id;
   if (state.ws) {
     const [allT, t, p, a] = await Promise.all([
       api("/api/tabs"),
@@ -2715,7 +2716,7 @@ async function refreshOnline(seq) {
       );
   }
   render();
-  connectTerminal();
+  if (state.ws) connectTerminal();
 }
 async function refresh() {
   const seq = ++refreshSeq;

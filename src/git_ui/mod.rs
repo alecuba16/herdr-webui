@@ -544,6 +544,7 @@ mod tests {
                 no_sleep_auto_cooldown_seconds: 60,
                 backend_mode: BackendMode::ExternalHerdr,
                 builtin_shell: None,
+                default_folder: std::env::temp_dir().to_string_lossy().to_string(),
                 builtin_backend_enabled: true,
                 external_herdr_backend_enabled: true,
             })),

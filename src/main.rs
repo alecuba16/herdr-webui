@@ -161,6 +161,7 @@ struct PersistedServerSettings {
     no_sleep_auto_cooldown_seconds: Option<u64>,
     backend_mode: Option<BackendMode>,
     builtin_shell: Option<String>,
+    default_folder: Option<String>,
     builtin_backend_enabled: Option<bool>,
     external_herdr_backend_enabled: Option<bool>,
 }
@@ -174,6 +175,7 @@ struct RuntimeServerSettings {
     no_sleep_auto_cooldown_seconds: u64,
     backend_mode: BackendMode,
     builtin_shell: Option<String>,
+    default_folder: String,
     builtin_backend_enabled: bool,
     external_herdr_backend_enabled: bool,
 }
@@ -574,9 +576,80 @@ fn default_runtime_server_settings(bind: SocketAddr) -> RuntimeServerSettings {
         no_sleep_auto_cooldown_seconds: 60,
         backend_mode: BackendMode::Builtin,
         builtin_shell: None,
+        default_folder: default_working_folder(None),
         builtin_backend_enabled: true,
         external_herdr_backend_enabled: true,
     }
+}
+
+fn readable_directory(path: &Path) -> io::Result<PathBuf> {
+    let metadata = fs::metadata(path)?;
+    if !metadata.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "default folder must be a directory",
+        ));
+    }
+    fs::read_dir(path)?;
+    Ok(path.canonicalize().unwrap_or_else(|_| path.to_path_buf()))
+}
+
+fn home_folder_path() -> PathBuf {
+    home_dir().unwrap_or_else(|_| PathBuf::from("~"))
+}
+
+fn default_working_folder(candidate: Option<&str>) -> String {
+    let fallback = readable_directory(&home_folder_path()).unwrap_or_else(|_| home_folder_path());
+    let raw = candidate
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("~");
+    let path = PathBuf::from(expand_user_path_string(raw));
+    match readable_directory(&path) {
+        Ok(path) => path.to_string_lossy().to_string(),
+        Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
+            request_default_folder_permission(&path)
+                .and_then(|path| readable_directory(&path))
+                .unwrap_or(fallback)
+                .to_string_lossy()
+                .to_string()
+        }
+        Err(_) => fallback.to_string_lossy().to_string(),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn request_default_folder_permission(default_folder: &Path) -> io::Result<PathBuf> {
+    let default = default_folder
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    let script = format!(
+        "set selectedFolder to choose folder with prompt \"Allow Herdr WebUI to read the default folder\" default location (POSIX file \"{default}\")\nreturn POSIX path of selectedFolder"
+    );
+    let output = Command::new("osascript").arg("-e").arg(script).output()?;
+    if !output.status.success() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        ));
+    }
+    let selected = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if selected.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "folder permission prompt returned no folder",
+        ));
+    }
+    Ok(PathBuf::from(selected))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn request_default_folder_permission(default_folder: &Path) -> io::Result<PathBuf> {
+    Err(io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        format!("cannot read {}", default_folder.display()),
+    ))
 }
 
 fn server_settings_path() -> PathBuf {
@@ -609,6 +682,7 @@ fn load_runtime_server_settings(default_bind: SocketAddr) -> io::Result<RuntimeS
         "no_sleep_auto_cooldown_seconds",
         "backend_mode",
         "builtin_shell",
+        "default_folder",
         "builtin_backend_enabled",
         "external_herdr_backend_enabled",
     ]
@@ -646,6 +720,9 @@ fn load_runtime_server_settings(default_bind: SocketAddr) -> io::Result<RuntimeS
     if persisted.builtin_shell.is_some() {
         settings.builtin_shell = persisted.builtin_shell.filter(|value| !value.is_empty());
     }
+    if persisted.default_folder.is_some() {
+        settings.default_folder = default_working_folder(persisted.default_folder.as_deref());
+    }
     if let Some(enabled) = persisted.builtin_backend_enabled {
         settings.builtin_backend_enabled = enabled;
     }
@@ -673,6 +750,7 @@ fn save_runtime_server_settings(settings: &RuntimeServerSettings) -> io::Result<
         no_sleep_auto_cooldown_seconds: Some(settings.no_sleep_auto_cooldown_seconds),
         backend_mode: Some(settings.backend_mode),
         builtin_shell: settings.builtin_shell.clone(),
+        default_folder: Some(settings.default_folder.clone()),
         builtin_backend_enabled: Some(settings.builtin_backend_enabled),
         external_herdr_backend_enabled: Some(settings.external_herdr_backend_enabled),
     })?;
@@ -1568,6 +1646,7 @@ struct UpdateServerSettingsRequest {
     backend_mode: Option<BackendMode>,
     #[serde(default)]
     builtin_shell: Option<Option<String>>,
+    default_folder: Option<String>,
     builtin_backend_enabled: Option<bool>,
     external_herdr_backend_enabled: Option<bool>,
 }
@@ -1581,6 +1660,7 @@ fn settings_public_json(settings: &RuntimeServerSettings) -> serde_json::Value {
         "no_sleep_auto_cooldown_seconds": settings.no_sleep_auto_cooldown_seconds,
         "backend_mode": settings.backend_mode.as_str(),
         "builtin_shell": settings.builtin_shell.clone(),
+        "default_folder": settings.default_folder.clone(),
         "builtin_backend_enabled": settings.builtin_backend_enabled,
         "external_herdr_backend_enabled": settings.external_herdr_backend_enabled,
         "enabled_backends": {
@@ -1887,6 +1967,11 @@ async fn update_server_settings(
                 .as_ref()
                 .and_then(|settings| settings.builtin_shell.clone()),
         },
+        default_folder: default_working_folder(body.default_folder.as_deref().or_else(|| {
+            current
+                .as_ref()
+                .map(|settings| settings.default_folder.as_str())
+        })),
         builtin_backend_enabled: body
             .builtin_backend_enabled
             .or_else(|| {
@@ -3565,6 +3650,7 @@ mod tests {
                 no_sleep_auto_cooldown_seconds: 60,
                 backend_mode: BackendMode::ExternalHerdr,
                 builtin_shell: None,
+                default_folder: std::env::temp_dir().to_string_lossy().to_string(),
                 builtin_backend_enabled: true,
                 external_herdr_backend_enabled: true,
             })),
@@ -4234,6 +4320,7 @@ mod tests {
         assert_eq!(settings.no_sleep_auto_cooldown_seconds, 60);
         assert_eq!(settings.backend_mode, BackendMode::Builtin);
         assert_eq!(settings.builtin_shell, None);
+        assert!(!settings.default_folder.is_empty());
     }
 
     #[test]
@@ -4260,6 +4347,7 @@ mod tests {
         assert!(raw.contains("backend_mode"));
         assert!(raw.contains(r#""backend_mode": "builtin""#));
         assert!(raw.contains("builtin_shell"));
+        assert!(raw.contains("default_folder"));
 
         let _ = fs::remove_dir_all(config_home);
         std::env::remove_var("XDG_CONFIG_HOME");
@@ -4289,6 +4377,7 @@ mod tests {
         assert_eq!(settings.no_sleep_auto_cooldown_seconds, 60);
         assert_eq!(settings.backend_mode, BackendMode::Builtin);
         assert_eq!(settings.builtin_shell, None);
+        assert!(!settings.default_folder.is_empty());
         let raw = fs::read_to_string(path).unwrap();
         assert!(raw.contains("localhost_no_auth"));
         assert!(raw.contains("user"));
@@ -4297,6 +4386,7 @@ mod tests {
         assert!(raw.contains("backend_mode"));
         assert!(raw.contains(r#""backend_mode": "builtin""#));
         assert!(raw.contains("builtin_shell"));
+        assert!(raw.contains("default_folder"));
 
         let _ = fs::remove_dir_all(config_home);
         std::env::remove_var("XDG_CONFIG_HOME");
@@ -4312,6 +4402,7 @@ mod tests {
             no_sleep_auto_cooldown_seconds: 60,
             backend_mode: BackendMode::ExternalHerdr,
             builtin_shell: None,
+            default_folder: std::env::temp_dir().to_string_lossy().to_string(),
             builtin_backend_enabled: true,
             external_herdr_backend_enabled: true,
         })
@@ -4333,6 +4424,7 @@ mod tests {
             no_sleep_auto_cooldown_seconds: 60,
             backend_mode: BackendMode::ExternalHerdr,
             builtin_shell: None,
+            default_folder: std::env::temp_dir().to_string_lossy().to_string(),
             builtin_backend_enabled: true,
             external_herdr_backend_enabled: true,
         }) {
@@ -4374,11 +4466,15 @@ mod tests {
         assert_eq!(before_body["no_sleep_auto_cooldown_seconds"], 60);
         assert_eq!(before_body["backend_mode"], "external-herdr");
         assert_eq!(before_body["builtin_shell"], Value::Null);
+        assert!(before_body["default_folder"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty()));
         assert_eq!(before_body["builtin_backend_enabled"], true);
         assert_eq!(before_body["external_herdr_backend_enabled"], true);
         assert_eq!(before_body["enabled_backends"]["builtin"], true);
         assert_eq!(before_body["enabled_backends"]["external-herdr"], true);
 
+        let default_folder = std::env::temp_dir().to_string_lossy().to_string();
         let updated = app
             .clone()
             .oneshot(
@@ -4393,6 +4489,7 @@ mod tests {
                             "localhost_no_auth": true,
                             "backend_mode": "builtin",
                             "builtin_shell": "/bin/zsh",
+                            "default_folder": default_folder,
                             "builtin_backend_enabled": true,
                             "external_herdr_backend_enabled": false,
                             "no_sleep_auto_cooldown_seconds": 90,
@@ -4411,6 +4508,14 @@ mod tests {
         assert_eq!(updated_body["no_sleep_auto_cooldown_seconds"], 90);
         assert_eq!(updated_body["backend_mode"], "builtin");
         assert_eq!(updated_body["builtin_shell"], "/bin/zsh");
+        assert_eq!(
+            updated_body["default_folder"],
+            std::env::temp_dir()
+                .canonicalize()
+                .unwrap()
+                .to_string_lossy()
+                .to_string()
+        );
         assert_eq!(updated_body["builtin_backend_enabled"], true);
         assert_eq!(updated_body["external_herdr_backend_enabled"], false);
         assert_eq!(updated_body["enabled_backends"]["builtin"], true);
