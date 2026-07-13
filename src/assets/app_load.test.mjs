@@ -390,6 +390,34 @@ describe("app bundle load", () => {
     match(gitLayoutCss, /\.git-ui-side-bottom \.git-ui-btn \{[\s\S]*?width: 100%;/);
   });
 
+
+  it("documents and traps temporary terminal keyboard input", () => {
+    const tempTerminalSource = readFileSync(new URL("./shared/temp_terminal.js", import.meta.url), "utf8");
+    const shortcutsSource = readFileSync(new URL("./desktop/app_js/shortcuts.js", import.meta.url), "utf8");
+    const html = readFileSync(new URL("./app.html", import.meta.url), "utf8");
+    const modalCss = readFileSync(new URL("./desktop/app_css/modals.css", import.meta.url), "utf8");
+
+    match(tempTerminalSource, /document\.addEventListener\("keydown", tempTerminalKeydown, true\)/);
+    match(tempTerminalSource, /if \(tempTerminalOwnsEventTarget\(event\.target\)\) return;/);
+    match(tempTerminalSource, /term\.element \|\| \(el\(containerId\) && el\(containerId\)\.querySelector/);
+    match(tempTerminalSource, /case "Backspace": return "\\x7f";/);
+    match(tempTerminalSource, /case "Tab": return event\.shiftKey \? "\\x1b\[Z" : "\\t";/);
+    match(tempTerminalSource, /String\(event\.key \|\| ""\)\.toLowerCase\(\) === "g"/);
+    match(shortcutsSource, /function tempTerminalModalOpen\(\)/);
+    match(shortcutsSource, /if \(tempTerminalModalOpen\(\)\) return false;/);
+    match(tempTerminalSource, /function terminalGridSize\(container\)/);
+    match(tempTerminalSource, /rows: Math\.max\(8, Math\.floor\(height \/ rowHeight\) - 1\)/);
+    match(tempTerminalSource, /setTimeout\(handleResize, 0\)/);
+    match(modalCss, /height: min\(80vh, calc\(100dvh - 32px\)\)/);
+    match(modalCss, /\.temp-terminal-body \{[\s\S]*?min-height: 0;[\s\S]*?overflow: hidden;/);
+    match(modalCss, /\.temp-terminal-body \.xterm,[\s\S]*?max-height: 100%;/);
+    match(html, /Input captured · Ctrl\+G detaches/);
+    match(html, /aria-label="Detach temporary terminal"/);
+    match(modalCss, /\.temp-terminal-hint/);
+    match(source, /Ctrl\+G<\/kbd><span>Detach temporary terminal/);
+    match(source, /Temporary terminal captures Tab\/Backspace and normal input while open/);
+  });
+
   it("defines file explorer and Git file filters", () => {
     match(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), /q=\$\{encodeURIComponent\(target\.filter\.trim\(\)\)\}/);
     match(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), /showSearch\(\)/);

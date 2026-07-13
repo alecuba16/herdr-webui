@@ -37,6 +37,7 @@
     var resizeTimer = null;
     var linkProvider = null;
     var confirmVisible = false;
+    var keyTrapBound = false;
 
     function open() {
       if (isOpen) return;
@@ -47,6 +48,7 @@
       if (modal) modal.style.display = "grid";
       var container = el(containerId);
       if (container) container.innerHTML = "";
+      installInputTrap();
       createTerminalSession();
     }
 
@@ -60,6 +62,7 @@
       hideCloseConfirm();
       isOpen = false;
       closing = true;
+      removeInputTrap();
       disconnectWs();
       disposeTerm();
       var modal = el(modalId);
@@ -123,6 +126,90 @@
       }
     }
 
+    function installInputTrap() {
+      if (keyTrapBound) return;
+      keyTrapBound = true;
+      document.addEventListener("keydown", tempTerminalKeydown, true);
+      var modal = el(modalId);
+      if (modal) {
+        modal.addEventListener("pointerdown", focusTerminalFromEvent, true);
+        modal.addEventListener("focusin", focusTerminalFromEvent, true);
+      }
+    }
+
+    function removeInputTrap() {
+      if (!keyTrapBound) return;
+      keyTrapBound = false;
+      document.removeEventListener("keydown", tempTerminalKeydown, true);
+      var modal = el(modalId);
+      if (modal) {
+        modal.removeEventListener("pointerdown", focusTerminalFromEvent, true);
+        modal.removeEventListener("focusin", focusTerminalFromEvent, true);
+      }
+    }
+
+    function tempTerminalKeydown(event) {
+      if (!isOpen || confirmVisible) return;
+      if (event.ctrlKey && !event.altKey && !event.metaKey && String(event.key || "").toLowerCase() === "g") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        showCloseConfirm();
+        return;
+      }
+      if (isCloseControl(event.target)) return;
+      if (tempTerminalOwnsEventTarget(event.target)) return;
+      var input = terminalInputForKey(event);
+      if (input == null) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      focusTerminalSoon();
+      sendInput(input);
+    }
+
+    function isCloseControl(target) {
+      return !!(target && target.closest && target.closest(".temp-terminal-close, .temp-terminal-confirm"));
+    }
+
+    function tempTerminalOwnsEventTarget(target) {
+      if (!target || !term) return false;
+      var termElement = term.element || (el(containerId) && el(containerId).querySelector && el(containerId).querySelector(".xterm"));
+      return !!(termElement && termElement.contains && termElement.contains(target));
+    }
+
+    function focusTerminalFromEvent(event) {
+      if (isCloseControl(event && event.target)) return;
+      focusTerminalSoon();
+    }
+
+    function focusTerminalSoon() {
+      setTimeout(function () {
+        if (!isOpen || confirmVisible || !term) return;
+        try { term.focus(); } catch (e) {}
+      }, 0);
+    }
+
+    function terminalInputForKey(event) {
+      if (event.metaKey || event.altKey) return null;
+      if (event.ctrlKey) return null;
+      switch (event.key) {
+        case "Backspace": return "\x7f";
+        case "Tab": return event.shiftKey ? "\x1b[Z" : "\t";
+        case "Enter": return "\r";
+        case "Escape": return "\x1b";
+        case "Delete": return "\x1b[3~";
+        case "ArrowUp": return "\x1b[A";
+        case "ArrowDown": return "\x1b[B";
+        case "ArrowRight": return "\x1b[C";
+        case "ArrowLeft": return "\x1b[D";
+        case "Home": return "\x1b[H";
+        case "End": return "\x1b[F";
+        case "PageUp": return "\x1b[5~";
+        case "PageDown": return "\x1b[6~";
+        default:
+          return String(event.key || "").length === 1 ? event.key : null;
+      }
+    }
+
     function createTerminalSession() {
       ensureWorkspaceForTempTerminal().then(function (workspaceId) {
         if (!workspaceId) { close(); return null; }
@@ -182,14 +269,35 @@
         });
     }
 
+    function terminalGridSize(container) {
+      var rect = container && container.getBoundingClientRect ? container.getBoundingClientRect() : null;
+      var width = Math.max(0, (container && container.clientWidth) || (rect && rect.width) || 720);
+      var height = Math.max(0, (container && container.clientHeight) || (rect && rect.height) || 420);
+      var colWidth = measuredTerminalCellWidth(container) || 9;
+      var rowHeight = measuredTerminalRowHeight(container) || 20;
+      return {
+        cols: Math.max(40, Math.floor(width / colWidth)),
+        rows: Math.max(8, Math.floor(height / rowHeight) - 1),
+      };
+    }
+
+    function measuredTerminalCellWidth(container) {
+      var measure = container && container.querySelector && container.querySelector(".xterm-char-measure-element");
+      var rect = measure && measure.getBoundingClientRect && measure.getBoundingClientRect();
+      return rect && rect.width > 2 ? rect.width : 0;
+    }
+
+    function measuredTerminalRowHeight(container) {
+      var row = container && container.querySelector && container.querySelector(".xterm-rows > div");
+      var rect = row && row.getBoundingClientRect && row.getBoundingClientRect();
+      return rect && rect.height > 8 ? rect.height : 0;
+    }
+
     function connectTerminalWs(terminalId) {
       var container = el(containerId);
       if (!container) return;
-      var cols = 80, rows = 24;
-      if (container.clientWidth && container.clientHeight) {
-        cols = Math.max(40, Math.floor(container.clientWidth / 9));
-        rows = Math.max(10, Math.floor(container.clientHeight / 18));
-      }
+      var size = terminalGridSize(container);
+      var cols = size.cols, rows = size.rows;
       if (!term) {
         term = new Terminal({
           convertEol: false,
@@ -200,6 +308,7 @@
         term.open(container);
         term.onData(function (data) { sendInput(data); });
         try { term.focus(); } catch (e) {}
+        setTimeout(handleResize, 0);
       }
       try { term.resize(cols, rows); } catch (e) {}
       var url = wsUrl(
@@ -336,8 +445,8 @@
         if (!isOpen || !term) return;
         var container = el(containerId);
         if (!container) return;
-        var cols = Math.max(40, Math.floor(container.clientWidth / 9));
-        var rows = Math.max(10, Math.floor(container.clientHeight / 18));
+        var size = terminalGridSize(container);
+        var cols = size.cols, rows = size.rows;
         try { term.resize(cols, rows); } catch (e) {}
         if (termWs && termWs.readyState === 1) {
           try {

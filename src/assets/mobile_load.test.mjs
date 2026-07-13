@@ -257,6 +257,18 @@ describe("mobile bundle load", () => {
     "\n" +
     readFileSync(new URL("./mobile/app.js", import.meta.url), "utf8");
 
+
+  it("renders temporary terminal capture hint on mobile", () => {
+    const mobileSource = readFileSync(new URL("./mobile/app.js", import.meta.url), "utf8");
+    const mobileCss = readFileSync(new URL("./mobile/app.css", import.meta.url), "utf8");
+
+    match(mobileSource, /Input captured · Ctrl\+G detaches/);
+    match(mobileSource, /aria-label="Detach temporary terminal"/);
+    match(mobileCss, /\.temp-terminal-hint/);
+    match(mobileCss, /height: min\(80vh, calc\(var\(--herdr-mobile-viewport-height\) - 24px\)\)/);
+    match(mobileCss, /\.temp-terminal-body \{[\s\S]*?min-height: 0;[\s\S]*?overflow: hidden;/);
+  });
+
   it("loads mobile shell without browser automation", () => {
     const ctx = context();
     doesNotThrow(() => vm.runInContext(source, ctx));

@@ -47,7 +47,12 @@ function closeCurrentPanelShortcut(force = false) {
   closeTab(state.tab);
   return true;
 }
+function tempTerminalModalOpen() {
+  const modal = el("tempTerminalModal");
+  return !!(modal && modal.style.display && modal.style.display !== "none");
+}
 function closeShortcutKeydown(e) {
+  if (tempTerminalModalOpen()) return false;
   if (!handleCloseShortcut(e)) return false;
   e.preventDefault();
   e.stopPropagation();

@@ -150,6 +150,8 @@
   display: none;
   place-items: center;
   background: #000c;
+  overflow: hidden;
+  padding: 16px;
   z-index: 1200;
 }
 .temp-terminal-modal {
@@ -159,10 +161,11 @@
   box-shadow: 0 18px 50px #000a;
   width: 90vw;
   max-width: 1200px;
-  height: 80vh;
+  height: min(80vh, calc(100dvh - 32px));
   max-height: 800px;
   display: flex;
   flex-direction: column;
+  min-height: 0;
   overflow: hidden;
 }
 .temp-terminal-head {
@@ -177,6 +180,15 @@
   margin: 0;
   font-size: 15px;
   font-weight: 600;
+}
+.temp-terminal-head-actions {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+.temp-terminal-hint {
+  color: var(--muted);
+  font-size: 12px;
 }
 .temp-terminal-close {
   background: transparent;
@@ -193,6 +205,7 @@
 }
 .temp-terminal-body {
   flex: 1;
+  min-height: 0;
   overflow: hidden;
   position: relative;
   padding: 4px;
@@ -200,6 +213,14 @@
 .temp-terminal-body .terminal {
   width: 100%;
   height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+.temp-terminal-body .xterm,
+.temp-terminal-body .xterm-screen,
+.temp-terminal-body .xterm-viewport {
+  max-height: 100%;
+  overflow: hidden;
 }
 .temp-terminal-modal {
   position: relative;
