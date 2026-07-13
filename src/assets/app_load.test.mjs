@@ -2016,6 +2016,12 @@ describe("app bundle load", () => {
     match(technicalDoc, /Git cwd is independent from workspace selection/);
     match(releaseNotes, /0\.2\.50 Release Notes/);
     match(releaseNotes, /Updates the global `\?` Help & Shortcuts modal/);
+    match(releaseNotes, /`Worktree…` creates a linked worktree/);
+    match(releaseNotes, /table header, and filter row sticky/);
+    match(featuresDoc, /normal worktree creation modal prefilled/);
+    match(featuresDoc, /scope row, table header, and filter row are sticky/);
+    match(technicalDoc, /src\/assets\/desktop\/git_ui\/actions\.js/);
+    match(technicalDoc, /selected-commit action strip/);
     match(gitUiSource, /function gitBranchModalDefaultCwd\(cwd\)/);
     match(gitUiSource, /if \(path && path !== "\/"\) return path;/);
     match(gitUiSource, /typeof window\.defaultFolderPath === "function"/);
@@ -2069,7 +2075,8 @@ describe("app bundle load", () => {
     match(gitLogCss, /\.git-ui-log-load-more/);
     match(gitLogCss, /\.git-ui-log-hover-card/);
     match(gitLogSource, /function selectedBranchForHash/);
-    match(gitActionsSource, /Create worktree…/);
+    match(gitActionsSource, />Worktree…<\/button>/);
+    match(gitActionsSource, /Selected commit has no branch label/);
     match(gitActionsSource, /title="Create a worktree from \$\{esc\(options\.selectedBranch\)\}"/);
     match(gitUiSource, /createWorktreeFromSelectedBranch\(\)/);
     match(source, /function openWorktreeCreateFromGitBranch\(cwd, branch\)/);
