@@ -363,7 +363,8 @@ describe("app bundle load", () => {
 
   it("uses a single selected-log reset modal and clear rebase wording", () => {
     match(gitActionsSource, /openSelectedResetModal\(\)/);
-    match(gitActionsSource, /Rebase current changes over selected commit/);
+    match(gitActionsSource, /title="Rebase current changes over the selected commit"/);
+    match(gitActionsSource, />Rebase…<\/button>/);
     match(gitActionsSource, /options\.allowRewrite/);
     ok(!gitActionsSource.includes("Reset soft</button><button"));
     match(gitUiSource, /renderResetSelectedModal/);
@@ -388,7 +389,7 @@ describe("app bundle load", () => {
     match(gitUiSource, /No stashes stored\. Refresh to rescan\./);
     match(gitUiSource, /view\.tab === "stash" && !canOpenStashView\(view\)/);
     match(gitUiSource, /tab === "stash" && !canOpenStashView\(view\)/);
-    match(gitActionsSource, /Tag this/);
+    match(gitActionsSource, />Tag<\/button>/);
     match(gitActionsSource, /openSelectedTagModal\(\)/);
     match(gitUiSource, /renderTagSelectedModal/);
     match(gitUiSource, /gitTagName/);
@@ -2068,7 +2069,8 @@ describe("app bundle load", () => {
     match(gitLogCss, /\.git-ui-log-load-more/);
     match(gitLogCss, /\.git-ui-log-hover-card/);
     match(gitLogSource, /function selectedBranchForHash/);
-    match(gitActionsSource, /Create worktree from \$\{esc\(options\.selectedBranch\)\}/);
+    match(gitActionsSource, /Create worktree…/);
+    match(gitActionsSource, /title="Create a worktree from \$\{esc\(options\.selectedBranch\)\}"/);
     match(gitUiSource, /createWorktreeFromSelectedBranch\(\)/);
     match(source, /function openWorktreeCreateFromGitBranch\(cwd, branch\)/);
     match(source, /id="worktreeFetchRemotes"/);
@@ -2080,6 +2082,11 @@ describe("app bundle load", () => {
     match(gitUiSource, /return tab === "cleanup" \|\| tab === "log";/);
     match(gitUiSource, /const scrollTop = preserveContentScroll\(view\.tab\)/);
     match(gitUiSource, /content\.scrollTop = scrollTop;/);
+    match(gitLogCss, /\.git-ui-log-scope-head \{[\s\S]*?position: sticky;[\s\S]*?top: 0;/);
+    match(gitLogCss, /\.git-ui-log-table-head \{[\s\S]*?position: sticky;[\s\S]*?top: var\(--git-log-scope-sticky-height, 58px\);/);
+    match(gitLogCss, /\.git-ui-log-filter-row \{[\s\S]*?position: sticky;[\s\S]*?--git-log-table-head-sticky-height/);
+    match(gitUiSource, /function updateGitLogStickyOffsets\(\)/);
+    match(gitUiSource, /--git-log-scope-sticky-height/);
     match(gitLogCss, /border-style: dashed;/);
   });
 
@@ -2150,6 +2157,9 @@ describe("app bundle load", () => {
     };
     vm.runInContext(source, ctx);
 
+    match(source, /id="worktreeNewTitle">Create worktree/);
+    match(source, /Review branch name, base branch, and checkout path, then create and open/);
+    match(source, /id="worktreeNewSubmit">Create and open/);
     equal(ctx.localWorktreeBranchName("feature/local"), "feature/local");
     equal(ctx.localWorktreeBranchName("origin/feature/remote"), "feature/remote");
     equal(ctx.localWorktreeBranchName("upstream/release/candidate"), "release/candidate");

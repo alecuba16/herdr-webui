@@ -1465,11 +1465,25 @@
       esc,
       arg,
     }));
+    updateGitLogStickyOffsets();
     if (view.pendingLogScrollHash) {
       const hash = view.pendingLogScrollHash;
       view.pendingLogScrollHash = "";
       requestAnimationFrame(() => window.HerdrGitLog.scrollToCommit(hash));
     }
+  }
+
+  function updateGitLogStickyOffsets() {
+    requestAnimationFrame(() => {
+      const content = document.querySelector(".git-ui-content");
+      if (!content) return;
+      const scope = content.querySelector(".git-ui-log-scope-head");
+      const head = content.querySelector(".git-ui-log-table-head");
+      const scopeHeight = scope ? Math.ceil(scope.getBoundingClientRect().height + 10) : 0;
+      const headHeight = head ? Math.ceil(head.getBoundingClientRect().height) : 0;
+      content.style.setProperty("--git-log-scope-sticky-height", `${scopeHeight}px`);
+      content.style.setProperty("--git-log-table-head-sticky-height", `${headHeight}px`);
+    });
   }
 
   async function renderStash(version) {

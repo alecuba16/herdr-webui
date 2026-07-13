@@ -440,8 +440,8 @@ function worktreeOpenModalHtml() {
         <div class="worktree-open-list" id="worktreeOpenList"></div>
         <div class="worktree-new" id="worktreeNewSection">
           <div class="worktree-new-head">
-            <strong>Create a new worktree</strong>
-            <small>Uses repo path above. Leave base blank to use repo default branch.</small>
+            <strong id="worktreeNewTitle">Create worktree</strong>
+            <small id="worktreeNewHint">Review branch name, base branch, and checkout path, then create and open.</small>
           </div>
           <form class="worktree-form" id="worktreeNewForm">
             <div class="worktree-grid">
@@ -454,7 +454,7 @@ function worktreeOpenModalHtml() {
               <label><span>Checkout path</span><input id="worktreeNewPath" placeholder="select base branch or enter branch name"></label>
             </div>
             <label class="option worktree-pull-option"><input type="checkbox" id="worktreeNewPullBase"><span><strong>Update base first</strong><small>Fast-forward only. If the branch diverged, you can continue without pulling.</small></span></label>
-            <button class="btn" id="worktreeNewSubmit">New worktree</button>
+            <button class="btn" id="worktreeNewSubmit">Create and open</button>
           </form>
         </div>
         <div class="worktree-new" id="worktreeWorkspaceSection">
