@@ -73,15 +73,6 @@
   display: inline-flex;
   gap: 4px;
 }
-.git-ui-cleanup-tab-icon {
-  background: currentColor;
-  display: inline-block;
-  flex: none;
-  height: 16px;
-  line-height: 1;
-  mask: url("/assets/icons/broom.svg") center / contain no-repeat;
-  width: 16px;
-}
 .git-ui-cleanup-bulk {
   align-items: center;
 }
@@ -236,4 +227,34 @@
   .git-ui-cleanup-grid {
     grid-template-columns: 1fr;
   }
+}
+
+.git-ui-toast {
+  align-items: center;
+  background: var(--panel-bg);
+  border: 1px solid var(--border2);
+  border-radius: 10px;
+  box-shadow: var(--shadow2);
+  bottom: 16px;
+  display: flex;
+  gap: 10px;
+  left: 336px;
+  max-width: min(720px, calc(100% - 360px));
+  padding: 10px 12px;
+  position: absolute;
+  right: 16px;
+  z-index: 20;
+}
+.git-ui-toast-branch {
+  color: var(--muted);
+  font-family: var(--mono-font);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.git-ui-toast-actions {
+  display: inline-flex;
+  gap: 6px;
+  margin-left: auto;
 }

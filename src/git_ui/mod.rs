@@ -182,6 +182,18 @@ pub(super) fn list_local_branches(cwd: &str) -> Result<Vec<LocalBranch>, String>
     Ok(branches)
 }
 
+fn git_remote_url(cwd: &str, upstream: &str) -> Option<String> {
+    let remote = upstream
+        .split_once('/')
+        .map(|(remote, _)| remote)
+        .filter(|remote| !remote.trim().is_empty())
+        .unwrap_or("origin");
+    git_ui_text(cwd, &["config", "--get", &format!("remote.{remote}.url")])
+        .ok()
+        .map(|url| url.trim().to_string())
+        .filter(|url| !url.is_empty())
+}
+
 fn git_status_blocking(cwd: String) -> Result<Response, (StatusCode, String)> {
     let repo = match git_ui_repo(&cwd) {
         Ok(repo) => repo,
@@ -296,6 +308,7 @@ fn git_status_blocking(cwd: String) -> Result<Response, (StatusCode, String)> {
             serde_json::Map::new()
         }
     };
+    let remote_url = git_remote_url(&repo, &upstream);
     let state_name = if !conflicted.is_empty() {
         "conflicts"
     } else if staged.is_empty() && unstaged.is_empty() && untracked.is_empty() {
@@ -307,6 +320,7 @@ fn git_status_blocking(cwd: String) -> Result<Response, (StatusCode, String)> {
         "repo_path": repo,
         "branch": branch,
         "upstream": upstream,
+        "remote_url": remote_url,
         "ahead": ahead,
         "behind": behind,
         "state": state_name,

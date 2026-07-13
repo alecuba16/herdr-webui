@@ -49,6 +49,7 @@ pub(super) struct GitUiPullPushRequest {
     pub(super) mode: Option<String>,
     pub(super) branch: Option<String>,
     pub(super) pull_first: Option<bool>,
+    pub(super) push_tags: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -386,11 +387,15 @@ fn git_ui_push_blocking(
     mode: String,
     branch: Option<String>,
     pull_first: bool,
+    push_tags: bool,
 ) -> Result<Response, (StatusCode, String)> {
     if pull_first {
         git_ui_text(&cwd, &["pull", "--ff-only"]).map_err(|err| (StatusCode::BAD_GATEWAY, err))?;
     }
     let mut args = vec!["push".to_string()];
+    if push_tags {
+        args.push("--tags".to_string());
+    }
     match mode.as_str() {
         "regular" => {}
         "force" => args.push("--force".to_string()),
@@ -430,8 +435,11 @@ pub(super) async fn git_ui_push(
     };
     let cwd = body.cwd;
     let pull_first = body.pull_first.unwrap_or(false);
-    match tokio::task::spawn_blocking(move || git_ui_push_blocking(cwd, mode, branch, pull_first))
-        .await
+    let push_tags = body.push_tags.unwrap_or(false);
+    match tokio::task::spawn_blocking(move || {
+        git_ui_push_blocking(cwd, mode, branch, pull_first, push_tags)
+    })
+    .await
     {
         Ok(Ok(response)) => response,
         Ok(Err((status, msg))) => git_json_error(status, msg),
