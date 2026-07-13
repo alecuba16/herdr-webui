@@ -12,6 +12,7 @@ use serde_json::json;
 use super::log_graph::{parse_log_row_json, reconstruct_log_line, LOG_FORMAT};
 use super::{
     git_json_error, git_ui_output, git_ui_repo, git_ui_text, git_ui_text_strings, safe_git_token,
+    safe_repo_path,
 };
 use crate::{git_failure, require_auth, WebState};
 
@@ -21,6 +22,7 @@ pub(super) struct GitUiLogQuery {
     pub(super) max: Option<usize>,
     pub(super) all: Option<bool>,
     pub(super) base: Option<String>,
+    pub(super) file: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -72,7 +74,12 @@ pub(super) struct GitUiApplyPatchRequest {
     pub(super) cached: Option<bool>,
 }
 
-fn git_log_args(max: usize, all: bool, refs: &[String]) -> Vec<String> {
+fn git_log_args(
+    max: usize,
+    all: bool,
+    refs: &[String],
+    file: Option<&str>,
+) -> Result<Vec<String>, String> {
     let mut args = vec![
         "log".to_string(),
         "--graph".to_string(),
@@ -82,11 +89,18 @@ fn git_log_args(max: usize, all: bool, refs: &[String]) -> Vec<String> {
         max.to_string(),
         format!("--format={LOG_FORMAT}"),
     ];
+    if file.is_some() {
+        args.push("--follow".to_string());
+    }
     args.extend(refs.iter().cloned());
     if all {
         args.push("--all".to_string());
     }
-    args
+    if let Some(file) = file {
+        args.push("--".to_string());
+        args.push(safe_repo_path(file)?.to_string());
+    }
+    Ok(args)
 }
 
 fn log_refs(
@@ -162,10 +176,12 @@ fn git_ui_log_blocking(
     limit: usize,
     all: bool,
     base: Option<String>,
+    file: Option<String>,
 ) -> Result<Response, (StatusCode, String)> {
     let refs = log_refs(&cwd, all, base)?;
     let query_limit = limit.saturating_add(1);
-    let args = git_log_args(query_limit, all, &refs);
+    let args = git_log_args(query_limit, all, &refs, file.as_deref())
+        .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
     match git_ui_text_strings(&cwd, &args) {
         Ok(text) => {
             let raw_lines = text.lines().map(ToOwned::to_owned).collect::<Vec<_>>();
@@ -223,8 +239,11 @@ pub(super) async fn git_ui_log(
     let limit = query.max.unwrap_or(80).clamp(1, 2000);
     let all = query.all.unwrap_or(false);
     let base = query.base;
+    let file = query.file;
     let cwd = cwd.to_string();
-    match tokio::task::spawn_blocking(move || git_ui_log_blocking(cwd, limit, all, base)).await {
+    match tokio::task::spawn_blocking(move || git_ui_log_blocking(cwd, limit, all, base, file))
+        .await
+    {
         Ok(Ok(response)) => response,
         Ok(Err((status, msg))) => git_json_error(status, msg),
         Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
@@ -688,7 +707,7 @@ mod tests {
             vec!["HEAD".to_string()]
         );
         assert_eq!(
-            git_log_args(80, false, &["master".to_string(), "HEAD".to_string()]),
+            git_log_args(80, false, &["master".to_string(), "HEAD".to_string()], None).unwrap(),
             vec![
                 "log",
                 "--graph",
@@ -702,7 +721,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            git_log_args(80, true, &["master".to_string()]),
+            git_log_args(80, true, &["master".to_string()], None).unwrap(),
             vec![
                 "log",
                 "--graph",
@@ -713,6 +732,23 @@ mod tests {
                 "--format=%H%x00%an%x00%ar%x00%cI%x00%D%x00%s",
                 "master",
                 "--all",
+            ]
+        );
+
+        assert_eq!(
+            git_log_args(40, false, &["HEAD".to_string()], Some("src/main.rs")).unwrap(),
+            vec![
+                "log",
+                "--graph",
+                "--decorate",
+                "--date=relative",
+                "--max-count",
+                "40",
+                "--format=%H%x00%an%x00%ar%x00%cI%x00%D%x00%s",
+                "--follow",
+                "HEAD",
+                "--",
+                "src/main.rs",
             ]
         );
 

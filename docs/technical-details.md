@@ -415,4 +415,10 @@ When a visible feature is added, update `shortcutsModalHtml()` and tests in `src
 
 ## Git log implementation
 
-- `/api/git-ui/log` asks Git for one more commit than the requested limit, returns `has_more` and `limit`, and emits structured graph rows for the Zed-style Git log.
+- `/api/git-ui/log` asks Git for one more commit than the requested limit, returns `has_more` and `limit`, accepts an optional `file` path that is sanitized with `safe_repo_path`, and emits structured graph rows for the Zed-style Git log.
+- `src/git_ui/log.rs` prepares structured log rows, ref ordering, branch colors, pagination metadata, and compare/reset/rebase routes.
+- `src/git_ui/log_graph.rs` parses `git log --graph` output into row data while preserving a legacy text line for compatibility.
+- `src/assets/desktop/git_ui/log.js` owns log rendering, local filtering, hover cards, sticky-header offsets, selection, scroll preservation, file-history scope display, and load-more state.
+- `src/assets/desktop/git_ui/actions.js` owns the selected-commit action strip only, including the compact `Worktree…` action.
+- `src/assets/desktop/git_ui/log.css` owns log table, lane, chip, hover-card, sticky-header, and load-more styling.
+- Worktree creation stays in the existing workspace/worktree flow (`openWorktreeCreateFromGitBranch`) so Git log does not duplicate worktree creation logic. Selected-commit file previews reuse the existing compare endpoint with `commit^` versus `commit`, keeping diff rendering and side-list behavior centralized.

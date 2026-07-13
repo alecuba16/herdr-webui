@@ -23,7 +23,8 @@
     const baseBranch = options.baseBranch || "master";
     const currentLabel = `${baseBranch} + current`;
     const esc = options.esc;
-    const scope = `<div class="git-ui-log-scope-head"><span class="git-ui-toolbar-title">History scope</span><button class="git-ui-btn ${!options.logAll ? "active" : ""}" title="Show ${esc(baseBranch)} first, then the current branch" onclick="HerdrGitUi.setLogAll(false)">${esc(currentLabel)}</button><button class="git-ui-btn ${options.logAll ? "active" : ""}" title="Show every branch and remote ref" onclick="HerdrGitUi.setLogAll(true)">All branches</button>${options.actionsHtml || ""}</div>`;
+    const fileScope = options.filePath ? `<span class="git-ui-log-file-scope" title="File history filter">${esc(options.filePath)}</span><button class="git-ui-btn" onclick="HerdrGitUi.clearLogFileHistory()">Clear file</button>` : "";
+    const scope = `<div class="git-ui-log-scope-head"><span class="git-ui-toolbar-title">History scope</span><button class="git-ui-btn ${!options.logAll ? "active" : ""}" title="Show ${esc(baseBranch)} first, then the current branch" onclick="HerdrGitUi.setLogAll(false)">${esc(currentLabel)}</button><button class="git-ui-btn ${options.logAll ? "active" : ""}" title="Show every branch and remote ref" onclick="HerdrGitUi.setLogAll(true)">All branches</button>${fileScope}${options.actionsHtml || ""}</div>`;
     const header = `<div class="git-ui-log-table-head"><span>Graph</span><span>Description</span><span>Date</span><span>Author</span></div>${renderFilterRow(filters, esc)}`;
     const body = rows.length
       ? rows.map((row) => renderRow(row, selected, filters, options, baseBranch)).join("")
@@ -42,7 +43,7 @@
   }
 
   function renderFilterRow(filters, esc) {
-    const input = (field, label) => `<label class="git-ui-log-filter"><span>${label}</span><input value="${esc(filters[field] || "")}" placeholder="Filter ${label.toLowerCase()}" oninput="HerdrGitUi.setLogFilter('${field}',this.value)"></label>`;
+    const input = (field, label) => `<label class="git-ui-log-filter" title="Filter ${label}"><span class="sr-only">Filter ${label}</span><input name="git-log-filter-${field}" autocomplete="off" aria-label="Filter ${label}" value="${esc(filters[field] || "")}" placeholder="Filter" oninput="HerdrGitUi.setLogFilter('${field}',this.value)"></label>`;
     return `<div class="git-ui-log-filter-row"><span class="git-ui-log-filter-spacer" aria-hidden="true"></span>${input("description", "Description")}${input("date", "Date")}${input("author", "Author")}</div>`;
   }
 
@@ -181,6 +182,33 @@
     return "branch";
   }
 
+  function selectedBranchForHash(data, hash, baseBranch) {
+    hash = String(hash || "");
+    if (!hash) return "";
+    const row = rowsFromData(data || {}).find((item) => String(item.hash || "") === hash);
+    return branchForRow(row, baseBranch);
+  }
+
+  function branchForRow(row, baseBranch) {
+    const labels = (row && row.labels) || [];
+    for (const label of labels) {
+      const normalized = normalizeLabel(label);
+      if (normalized.startsWith("HEAD -> ")) {
+        const branch = normalized.slice("HEAD -> ".length).trim();
+        if (branch && !branch.startsWith("origin/HEAD")) return branch;
+      }
+    }
+    const branches = labels.map(normalizeLabel).filter((label) => isBranchLabel(label, baseBranch));
+    return branches[0] || "";
+  }
+
+  function isBranchLabel(label, baseBranch) {
+    if (!label || label === "HEAD" || label.startsWith("tag:")) return false;
+    if (label.includes(" -> ")) return false;
+    if (label === "origin/HEAD") return false;
+    return labelKind(label, false, baseBranch) !== "tag";
+  }
+
   function renderGraph(graph, hasCommit) {
     const chars = String(graph || "* ").split("");
     const cells = [];
@@ -221,5 +249,5 @@
     if (target) target.scrollIntoView({ block: "center", behavior: "smooth" });
   }
 
-  window.HerdrGitLog = { render, scrollToCommit, rowsFromData, laneColor, applyFilters, logCommitCount };
+  window.HerdrGitLog = { render, scrollToCommit, rowsFromData, laneColor, applyFilters, logCommitCount, selectedBranchForHash };
 })();

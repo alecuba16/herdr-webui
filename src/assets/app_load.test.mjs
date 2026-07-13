@@ -108,7 +108,10 @@ describe("app bundle load", () => {
   let gitLogSource;
   let gitActionsSource;
   let gitSettingsSource;
+  let fileBrowserSource;
   let desktopWorkspacesCss;
+  let readmeDoc;
+  let installationDoc;
   let desktopTerminalSource;
   let appBootSource;
 
@@ -141,7 +144,10 @@ describe("app bundle load", () => {
     gitLogSource = readFileSync(new URL("./desktop/git_ui/log.js", import.meta.url), "utf8");
     gitActionsSource = readFileSync(new URL("./desktop/git_ui/actions.js", import.meta.url), "utf8");
     gitSettingsSource = readFileSync(new URL("./desktop/git_ui/settings.js", import.meta.url), "utf8");
+    fileBrowserSource = readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8");
     desktopWorkspacesCss = readFileSync(new URL("./desktop/app_css/workspaces.css", import.meta.url), "utf8");
+    readmeDoc = readFileSync(new URL("../../README.md", import.meta.url), "utf8");
+    installationDoc = readFileSync(new URL("../../docs/installation.md", import.meta.url), "utf8");
   });
 
   it("loads without initialization-order ReferenceError", () => {
@@ -363,7 +369,8 @@ describe("app bundle load", () => {
 
   it("uses a single selected-log reset modal and clear rebase wording", () => {
     match(gitActionsSource, /openSelectedResetModal\(\)/);
-    match(gitActionsSource, /Rebase current changes over selected commit/);
+    match(gitActionsSource, /title="Rebase current changes over the selected commit"/);
+    match(gitActionsSource, />Rebase…<\/button>/);
     match(gitActionsSource, /options\.allowRewrite/);
     ok(!gitActionsSource.includes("Reset soft</button><button"));
     match(gitUiSource, /renderResetSelectedModal/);
@@ -376,7 +383,12 @@ describe("app bundle load", () => {
     match(gitUiSource, /await this\.compareCommits\(hash, "\."\)/);
     match(gitUiSource, /Soft reset/);
     match(gitUiSource, /Hard reset/);
-    match(gitUiSource, /selectedLogToolbar\(selected, \{ allowRewrite: currentMode\(\) === "changes" \}\)/);
+    match(gitUiSource, /selectedLogToolbar\(selected, \{ allowRewrite: currentMode\(\) === "changes", selectedBranch \}\)/);
+    match(gitUiSource, /function commitPreviewSection/);
+    match(gitUiSource, /Committed files/);
+    match(gitUiSource, /loadSelectedCommitPreview\(view, view\.selectedLogCommits\[0\]\)/);
+    match(gitUiSource, /base=\$\{encodeURIComponent\(`\$\{hash\}\^`\)\}/);
+    match(gitUiSource, /openFileHistory\(cwd, path\)/);
     match(gitUiSource, /Fetch selected branch before rebasing/);
     match(gitUiSource, /pull_first: pullFirst/);
     ok(!gitUiSource.includes('/api/git-ui/pull", { cwd: view.cwd, mode: "ff-only", branch }'));
@@ -388,7 +400,7 @@ describe("app bundle load", () => {
     match(gitUiSource, /No stashes stored\. Refresh to rescan\./);
     match(gitUiSource, /view\.tab === "stash" && !canOpenStashView\(view\)/);
     match(gitUiSource, /tab === "stash" && !canOpenStashView\(view\)/);
-    match(gitActionsSource, /Tag this/);
+    match(gitActionsSource, />Tag<\/button>/);
     match(gitActionsSource, /openSelectedTagModal\(\)/);
     match(gitUiSource, /renderTagSelectedModal/);
     match(gitUiSource, /gitTagName/);
@@ -2014,7 +2026,23 @@ describe("app bundle load", () => {
     match(technicalDoc, /Built-in sessions do not seed a default workspace/);
     match(technicalDoc, /Git cwd is independent from workspace selection/);
     match(releaseNotes, /0\.2\.50 Release Notes/);
+    match(readmeDoc, /herdr-webui-tui --api-socket \/path\/to\/herdr\.sock --terminal-socket \/path\/to\/herdr-client\.sock/);
+    match(readmeDoc, /The TUI is a client; it does not start the backend by itself/);
+    match(installationDoc, /This is the recommended quick-start path/);
+    match(installationDoc, /For an external Herdr-compatible backend, point TUI at the socket pair explicitly/);
     match(releaseNotes, /Updates the global `\?` Help & Shortcuts modal/);
+    match(releaseNotes, /`Worktree…` creates a linked worktree/);
+    match(releaseNotes, /table header, and filter row sticky/);
+    match(releaseNotes, /File browser `Show history` opens the Git log scoped to the file/);
+    match(releaseNotes, /Committed files` side preview/);
+    match(featuresDoc, /normal worktree creation modal prefilled/);
+    match(featuresDoc, /scope row, table header, and filter row are sticky/);
+    match(featuresDoc, /File browser `Show history` opens this log scoped to the selected file/);
+    match(featuresDoc, /Selecting one commit loads a `Committed files` side preview/);
+    match(technicalDoc, /src\/assets\/desktop\/git_ui\/actions\.js/);
+    match(technicalDoc, /selected-commit action strip/);
+    match(technicalDoc, /optional `file` path/);
+    match(technicalDoc, /commit\^` versus `commit`/);
     match(gitUiSource, /function gitBranchModalDefaultCwd\(cwd\)/);
     match(gitUiSource, /if \(path && path !== "\/"\) return path;/);
     match(gitUiSource, /typeof window\.defaultFolderPath === "function"/);
@@ -2031,9 +2059,13 @@ describe("app bundle load", () => {
     match(gitUiSource, /logLimit: GIT_LOG_PAGE_SIZE,/);
     match(gitUiSource, /const GIT_LOG_PAGE_SIZE = 80;/);
     match(gitUiSource, /const GIT_LOG_MAX_LIMIT = 2000;/);
+    match(fileBrowserSource, /HerdrFileBrowser.showHistory/);
+    match(fileBrowserSource, />Show history<\/button>/);
+    match(fileBrowserSource, /showHistory\(encodedPath\)/);
+    match(fileBrowserSource, /openFileHistory\(encodeURIComponent\(state\.cwd\), encodeURIComponent\(path\)\)/);
     match(gitUiSource, /window\.HerdrGitLog\.render/);
     ok(!gitUiSource.includes("function renderLogLine(line)"));
-    match(gitLogSource, /window\.HerdrGitLog = \{ render, scrollToCommit, rowsFromData, laneColor, applyFilters, logCommitCount \};/);
+    match(gitLogSource, /window\.HerdrGitLog = \{ render, scrollToCommit, rowsFromData, laneColor, applyFilters, logCommitCount, selectedBranchForHash \};/);
     match(gitLogSource, /git-ui-log-table-head/);
     match(gitLogSource, /<span>Graph<\/span><span>Description<\/span><span>Date<\/span><span>Author<\/span>/);
     match(gitLogSource, /class="git-ui-log-ref \$\{kind\}"/);
@@ -2044,10 +2076,20 @@ describe("app bundle load", () => {
     ok(!gitLogSource.includes("const footer = renderLoadMore(data,"));
     match(gitLogSource, /renderLoadMore\(options\.data \|\| \{\}, rows, options, esc\)/);
     match(gitLogSource, /Load more changes/);
+    match(gitLogSource, /git-ui-log-file-scope/);
+    match(gitLogSource, /clearLogFileHistory\(\)/);
     match(gitLogSource, /HerdrGitUi.loadMoreLog\(\)/);
     match(gitLogSource, /data\.has_more/);
     match(gitLogSource, /function renderFilterRow/);
     match(gitLogSource, /oninput="HerdrGitUi.setLogFilter/);
+    match(gitLogSource, /aria-label="Filter \$\{label\}"/);
+    match(gitLogSource, /input\("description", "Description"\)/);
+    match(gitLogSource, /name="git-log-filter-\$\{field\}"/);
+    match(gitUiSource, /id="gitUiFileFilter"/);
+    match(gitUiSource, /name="git-ui-file-filter"/);
+    match(source, /Show history opens Git log scoped to the selected file/);
+    match(source, /Committed files side preview/);
+    ok(!gitLogSource.includes("Filter description"));
     match(gitLogSource, /git-ui-log-filter-spacer/);
     ok(!gitLogSource.includes('setLogFilter(' + "\'graph"));
     match(gitLogSource, /function applyFilters/);
@@ -2065,9 +2107,117 @@ describe("app bundle load", () => {
     match(gitLogCss, /\.git-ui-log-ref\.current[\s\S]*?#ef4444/);
     match(gitLogCss, /\.git-ui-log-ref\.main[\s\S]*?#3b82f6/);
     match(gitLogCss, /\.git-ui-log-filter-row/);
+    match(gitLogCss, /\.git-ui-log-file-scope/);
+    match(gitLogCss, /\.git-ui-log-filter \.sr-only/);
     match(gitLogCss, /\.git-ui-log-load-more/);
     match(gitLogCss, /\.git-ui-log-hover-card/);
+    match(gitLogSource, /function selectedBranchForHash/);
+    match(gitActionsSource, />Worktree…<\/button>/);
+    match(gitActionsSource, /Selected commit has no branch label/);
+    match(gitActionsSource, /title="Create a worktree from \$\{esc\(options\.selectedBranch\)\}"/);
+    match(gitUiSource, /createWorktreeFromSelectedBranch\(\)/);
+    match(source, /function openWorktreeCreateFromGitBranch\(cwd, branch\)/);
+    match(source, /id="worktreeFetchRemotes"/);
+    match(source, /Fetch remote branches…/);
+    match(source, /remote=true/);
+    match(source, /fetch=true/);
+    match(source, /function localWorktreeBranchName\(branch\)/);
+    match(gitUiSource, /function preserveContentScroll\(tab\)/);
+    match(gitUiSource, /return tab === "cleanup" \|\| tab === "log";/);
+    match(gitUiSource, /const scrollTop = preserveContentScroll\(view\.tab\)/);
+    match(gitUiSource, /content\.scrollTop = scrollTop;/);
+    match(gitLogCss, /\.git-ui-log-scope-head \{[\s\S]*?position: sticky;[\s\S]*?top: 0;/);
+    match(gitLogCss, /\.git-ui-log-table-head \{[\s\S]*?position: sticky;[\s\S]*?top: var\(--git-log-scope-sticky-height, 58px\);/);
+    match(gitLogCss, /\.git-ui-log-filter-row \{[\s\S]*?position: sticky;[\s\S]*?--git-log-table-head-sticky-height/);
+    match(gitUiSource, /function updateGitLogStickyOffsets\(\)/);
+    match(gitUiSource, /--git-log-scope-sticky-height/);
     match(gitLogCss, /border-style: dashed;/);
+  });
+
+  it("derives the selected Git log branch for worktree creation", () => {
+    const ctx = context();
+    vm.runInContext(gitLogSource, ctx);
+
+    const branch = ctx.HerdrGitLog.selectedBranchForHash(
+      {
+        rows: [
+          { hash: "aaa111", labels: ["HEAD -> feature/current", "origin/feature/current"] },
+          { hash: "bbb222", labels: ["origin/feature/remote"] },
+          { hash: "ccc333", labels: ["tag: v1"] },
+        ],
+      },
+      "aaa111",
+      "master",
+    );
+
+    equal(branch, "feature/current");
+    equal(
+      ctx.HerdrGitLog.selectedBranchForHash(
+        { rows: [{ hash: "bbb222", labels: ["origin/feature/remote"] }] },
+        "bbb222",
+        "master",
+      ),
+      "origin/feature/remote",
+    );
+    equal(
+      ctx.HerdrGitLog.selectedBranchForHash(
+        { rows: [{ hash: "ccc333", labels: ["tag: v1"] }] },
+        "ccc333",
+        "master",
+      ),
+      "",
+    );
+  });
+
+  it("opens the worktree modal prefilled from a selected Git log branch", async () => {
+    const ctx = context();
+    const urls = [];
+    ctx.fetch = async (url) => {
+      urls.push(String(url));
+      if (String(url).startsWith("/api/worktrees")) {
+        return {
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          json: async () => ({
+            result: {
+              source: {
+                source_checkout_path: "/repo",
+                repo_name: "repo",
+                repo_root: "/repo",
+                default_worktree_directory: "/worktrees",
+              },
+              worktrees: [],
+            },
+          }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        json: async () => ({ branches: ["main", "feature/local", "origin/feature/remote"] }),
+      };
+    };
+    vm.runInContext(source, ctx);
+
+    match(source, /id="worktreeNewTitle">Create worktree/);
+    match(source, /Review branch name, base branch, and checkout path, then create and open/);
+    match(source, /id="worktreeNewSubmit">Create and open/);
+    equal(ctx.localWorktreeBranchName("feature/local"), "feature/local");
+    equal(ctx.localWorktreeBranchName("origin/feature/remote"), "feature/remote");
+    equal(ctx.localWorktreeBranchName("upstream/release/candidate"), "release/candidate");
+
+    await ctx.openWorktreeCreateFromGitBranch("/repo", "origin/feature/remote");
+
+    equal(ctx.document.getElementById("worktreeOpenModal").style.display, "grid");
+    equal(ctx.document.getElementById("worktreeDiscoverPath").value, "/repo");
+    equal(ctx.document.getElementById("worktreeNewBase").value, "origin/feature/remote");
+    equal(ctx.document.getElementById("worktreeNewBranch").value, "feature/remote");
+    match(ctx.document.getElementById("worktreeNewPath").value, /\/worktrees\/repo\/feature-remote$/);
+
+    await ctx.fetchWorktreeRemoteBranches();
+    ok(urls.some((url) => url.includes("/api/git-branches?") && url.includes("remote=true") && url.includes("fetch=true")));
   });
 
   it("uses the same editor mount tooling for previous and current hunk text", () => {

@@ -122,6 +122,7 @@ function resetWorktreeOpenModal(path = explorationDefaultDirectoryOption()) {
   state.openWorktreeRows = [];
   state.openWorktreeAllRows = [];
   state.openWorktreeBranches = [];
+  state.openWorktreeIncludeRemoteBranches = false;
   state.openWorktreeBranchSourceKey = "";
   state.openWorktreeDefaultPath = "";
   state.openWorktreeBaseBranchName = "";
@@ -190,6 +191,7 @@ function openWorktreesForRepo(keyToken, fallbackPath = "") {
   el("worktreeNewPullBase").checked = false;
   state.openWorktreeDefaultPath = "";
   state.openWorktreeBaseBranchName = "";
+  state.openWorktreeIncludeRemoteBranches = false;
   state.openWorktreeBranchSourceKey = "";
   syncWorktreeBranchOptions([]);
   el("worktreeOpenError").textContent = "";
@@ -302,16 +304,20 @@ function syncCreateWorktreeCheckoutPath() {
 function syncWorktreeBranchOptions(branches) {
   const optionsEl = el("worktreeBranchOptions");
   if (!optionsEl) return;
-  optionsEl.innerHTML = (branches || [])
+  const items = (branches || [])
     .map((branch) => `<option value="${escapeAttr(branch)}"></option>`)
     .join("");
+  const fetchOption = state.openWorktreeIncludeRemoteBranches
+    ? ""
+    : `<option value="Fetch remote branches…"></option>`;
+  optionsEl.innerHTML = items + fetchOption;
 }
 function worktreeSourceKey(source) {
   return source
     ? source.cwd || source.repo_root || source.workspace_id || ""
     : "";
 }
-async function loadWorktreeBranchOptions() {
+async function loadWorktreeBranchOptions(fetchRemotes = false) {
   const source = state.openWorktreeSource;
   if (!source || !source.cwd) {
     state.openWorktreeBranches = [];
@@ -319,13 +325,14 @@ async function loadWorktreeBranchOptions() {
     state.openWorktreeBranchSourceKey = "";
     return;
   }
-  const key = worktreeSourceKey(source);
-  if (state.openWorktreeBranchSourceKey === key) return;
+  const key = `${worktreeSourceKey(source)}|remote:${!!state.openWorktreeIncludeRemoteBranches}`;
+  if (!fetchRemotes && state.openWorktreeBranchSourceKey === key) return;
   state.openWorktreeBranchSourceKey = key;
   try {
-    const r = await api(
-      "/api/git-branches?cwd=" + encodeURIComponent(source.cwd),
-    );
+    let url = "/api/git-branches?cwd=" + encodeURIComponent(source.cwd);
+    if (state.openWorktreeIncludeRemoteBranches) url += "&remote=true";
+    if (fetchRemotes) url += "&fetch=true";
+    const r = await api(url);
     state.openWorktreeBranches = r.branches || [];
     syncWorktreeBranchOptions(state.openWorktreeBranches);
   } catch (_) {
@@ -333,6 +340,38 @@ async function loadWorktreeBranchOptions() {
     state.openWorktreeBranchSourceKey = "";
     syncWorktreeBranchOptions([]);
   }
+}
+
+async function fetchWorktreeRemoteBranches() {
+  state.openWorktreeIncludeRemoteBranches = true;
+  state.openWorktreeBranchSourceKey = "";
+  await loadWorktreeBranchOptions(true);
+}
+
+function isRemoteWorktreeBranch(branch) {
+  const text = String(branch || "").trim();
+  return text.startsWith("origin/") || text.startsWith("upstream/");
+}
+
+async function openWorktreeCreateFromGitBranch(cwd, branch) {
+  const sourcePath = worktreeOpenInitialPath(cwd);
+  openWorktreeOpenModal(sourcePath, false);
+  el("worktreeDiscoverPath").value = sourcePath;
+  await discoverWorktrees();
+  const base = String(branch || "").trim();
+  const localBranch = localWorktreeBranchName(base);
+  el("worktreeNewBase").value = isRemoteWorktreeBranch(base) ? base : "";
+  el("worktreeNewBranch").value = localBranch;
+  state.openWorktreeBaseBranchName = localBranch;
+  syncWorktreeCheckoutPath();
+  setTimeout(() => el("worktreeNewPath").focus(), 0);
+}
+
+function localWorktreeBranchName(branch) {
+  const text = String(branch || "").trim();
+  if (text.startsWith("origin/")) return text.slice("origin/".length);
+  if (text.startsWith("upstream/")) return text.slice("upstream/".length);
+  return text;
 }
 function joinPath(...parts) {
   const clean = parts.filter(Boolean).map((part, index) => {
@@ -466,6 +505,11 @@ function defaultBaseBranch() {
 function syncBranchNameFromBase() {
   const base = el("worktreeNewBase").value.trim(),
     branchInput = el("worktreeNewBranch");
+  if (base === "Fetch remote branches…") {
+    el("worktreeNewBase").value = "";
+    fetchWorktreeRemoteBranches();
+    return;
+  }
   if (!base) return;
   if (base === defaultBaseBranch()) {
     if (branchInput.value.trim() === state.openWorktreeBaseBranchName)
@@ -479,8 +523,9 @@ function syncBranchNameFromBase() {
     branchInput.value.trim() !== state.openWorktreeBaseBranchName
   )
     return;
-  branchInput.value = base;
-  state.openWorktreeBaseBranchName = base;
+  const branch = localWorktreeBranchName(base);
+  branchInput.value = branch;
+  state.openWorktreeBaseBranchName = branch;
   syncWorktreeCheckoutPath();
 }
 function scheduleWorktreeAutodiscover() {
@@ -570,6 +615,7 @@ async function discoverWorktrees() {
     const nextSourceKey = worktreeSourceKey(state.openWorktreeSource);
     if (previousSourceKey !== nextSourceKey) {
       state.openWorktreeBranches = [];
+      state.openWorktreeIncludeRemoteBranches = false;
       state.openWorktreeBranchSourceKey = "";
       syncWorktreeBranchOptions([]);
     }

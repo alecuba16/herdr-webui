@@ -436,6 +436,11 @@ body.light .chip.label {
 .worktree-form input {
   font-size: 14px;
 }
+.worktree-base-picker {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+}
 .worktree-pull-option {
   align-items: center;
   cursor: pointer;

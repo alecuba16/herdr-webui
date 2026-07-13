@@ -442,6 +442,8 @@
     view.compareTarget = "";
     view.compareFilePaths = [];
     view.selectedLogCommits = [];
+    view.selectedCommitPreview = null;
+    view.logFilePath = "";
     view.mode = "changes";
     view.tab = "changes";
   }
@@ -525,6 +527,8 @@
         logLimit: GIT_LOG_PAGE_SIZE,
         logLoadingMore: false,
         selectedLogCommits: [],
+        selectedCommitPreview: null,
+        logFilePath: "",
         compareFilePaths: [],
         collapsedSections: {},
         expandedLargeSections: {},
@@ -964,7 +968,7 @@
     const view = active() || {};
     const statusSummaries = ((view.status || {}).summaries) || {};
     const summary = kind === "S" ? (statusSummaries.staged || {})[path] : kind === "M" ? (statusSummaries.unstaged || {})[path] : null;
-    const file = diffFile(path) || summary || {};
+    const file = (kind === "C" ? commitPreviewFile(path) : null) || diffFile(path) || summary || {};
     const status = file.status || (kind === "?" ? "added" : "modified");
     const icon = status === "added" ? "+" : status === "deleted" ? "−" : "✎";
     const cls = status === "added" ? "add" : status === "deleted" ? "del" : "edit";
@@ -996,6 +1000,22 @@
     return stashCount(view) > 0;
   }
 
+  function commitPreviewFile(path) {
+    const preview = ((active() || {}).selectedCommitPreview) || {};
+    return ((preview.diff && preview.diff.files) || []).find((file) => file.path === path);
+  }
+
+  function commitPreviewSection(view, filter) {
+    const selected = view.selectedLogCommits || [];
+    if (view.tab !== "log" || selected.length !== 1) return "";
+    const preview = view.selectedCommitPreview || {};
+    const label = selected[0].slice(0, 12);
+    if (preview.loading) return `<div class="git-ui-section"><div class="git-ui-section-head"><strong>Committed files</strong><em>${esc(label)}</em></div><div class="git-ui-empty-row">Loading commit files…</div></div>`;
+    if (preview.error) return `<div class="git-ui-section"><div class="git-ui-section-head"><strong>Committed files</strong><em>${esc(label)}</em></div><div class="git-ui-error">${esc(preview.error)}</div></div>`;
+    const files = ((preview.diff && preview.diff.files) || []).map((file) => file.path);
+    return section(`Committed files ${label}`, filterFiles(files, filter), "C");
+  }
+
   function renderSide() {
     const view = active() || {};
     const s = view.status || {};
@@ -1005,9 +1025,11 @@
       ? [{ id: "changes", label: "changes", disabled: true, disabledReason }, { id: "log", label: "log", disabled: true, disabledReason }, { id: "stash", label: "stash", disabled: true, disabledReason }, { id: "cleanup", label: "cleanup" }]
       : [{ id: "changes", label: "changes" }, { id: "log", label: "log" }, { id: "stash", label: stashCount(view) ? `stash (${stashCount(view)})` : "stash", disabled: !canOpenStashView(view), disabledReason: "No stashes stored. Refresh to rescan." }, { id: "cleanup", label: "cleanup" }];
     const filter = String(view.fileFilter || "").trim();
-    const fileSections = currentMode() === "changes"
-      ? `${(s.conflicted || []).length ? section("Conflicted", filterFiles(s.conflicted, filter), "U") : ""}${section("Staged", filterFiles(s.staged, filter), "S")}${section("Unstaged", filterFiles(s.unstaged, filter), "M")}${section("Untracked", filterFiles(s.untracked, filter), "?")}`
-      : section("Compared", filterFiles(view.compareFilePaths && view.compareFilePaths.length ? view.compareFilePaths : ((view.diff && view.diff.files) || []).map((file) => file.path), filter), "C");
+    const fileSections = view.tab === "log"
+      ? commitPreviewSection(view, filter)
+      : currentMode() === "changes"
+        ? `${(s.conflicted || []).length ? section("Conflicted", filterFiles(s.conflicted, filter), "U") : ""}${section("Staged", filterFiles(s.staged, filter), "S")}${section("Unstaged", filterFiles(s.unstaged, filter), "M")}${section("Untracked", filterFiles(s.untracked, filter), "?")}`
+        : section("Compared", filterFiles(view.compareFilePaths && view.compareFilePaths.length ? view.compareFilePaths : ((view.diff && view.diff.files) || []).map((file) => file.path), filter), "C");
     const canCommit = hasStagedChanges(view);
     const commitHint = canCommit ? "Commit staged changes" : "Stage changes before committing";
     const commitDisabled = canCommit ? "" : " disabled";
@@ -1015,7 +1037,7 @@
     const branchLabel = `${view.titleKind || "Branch"}: ${s.branch || view.title || "No branch"}`;
     const error = view.error && !cleanupOnly ? `<div class="git-ui-error">${esc(view.error)}</div>` : "";
     const actions = cleanupOnly ? "" : `<div class="git-ui-toolbar"><div class="git-ui-toolbar-title">Worktree actions</div><div class="git-ui-actions"><button class="git-ui-btn primary" title="${esc(commitHint)}" onclick="HerdrGitUi.openCommitModal()"${commitDisabled}>Commit</button><button class="git-ui-btn" onclick="HerdrGitUi.openPullModal()">↓ Pull</button><button class="git-ui-btn" onclick="HerdrGitUi.openPushModal()">↑ Push</button>${compareButton}<button class="git-ui-btn" onclick="HerdrGitUi.rebase()">Rebase</button><button class="git-ui-btn danger" onclick="HerdrGitUi.reset()">Reset</button></div></div>`;
-    const fileList = cleanupOnly ? "" : `<label class="git-ui-file-filter"><span class="git-ui-file-filter-icon" aria-hidden="true"></span><input value="${esc(view.fileFilter || "")}" placeholder="Filter files" oninput="HerdrGitUi.filterFiles(this.value)"></label>${fileSections}`;
+    const fileList = cleanupOnly ? "" : `<label class="git-ui-file-filter"><span class="git-ui-file-filter-icon" aria-hidden="true"></span><input value="${esc(view.fileFilter || "")}" id="gitUiFileFilter" name="git-ui-file-filter" autocomplete="off" placeholder="Filter files" oninput="HerdrGitUi.filterFiles(this.value)"></label>${fileSections}`;
     const sideBottom = cleanupOnly ? "" : renderDiffLayoutSideToggle(view);
     const returnToWorkspace = !cleanupOnly && !gitCwdMatchesWorkspace(view)
       ? `<button class="git-ui-refresh-icon git-ui-return-cwd-icon" title="Return Git to current workspace folder" aria-label="Return Git to current workspace folder" onclick="HerdrGitUi.returnToWorkspaceCwd()"><span>↩</span></button>`
@@ -1445,9 +1467,15 @@
     const baseBranch = gitLogDefaultBranch();
     const logLimit = Math.max(1, Math.min(GIT_LOG_MAX_LIMIT, Number(view.logLimit || GIT_LOG_PAGE_SIZE)));
     view.logLimit = logLimit;
-    const data = await api(`/api/git-ui/log?cwd=${encodeURIComponent(view.cwd)}&all=${view.logAll ? "true" : "false"}&base=${encodeURIComponent(baseBranch)}&max=${logLimit}`);
+    const fileParam = view.logFilePath ? `&file=${encodeURIComponent(view.logFilePath)}` : "";
+    const data = await api(`/api/git-ui/log?cwd=${encodeURIComponent(view.cwd)}&all=${view.logAll ? "true" : "false"}&base=${encodeURIComponent(baseBranch)}&max=${logLimit}${fileParam}`);
     const selected = view.selectedLogCommits || [];
-    const compare = Actions.selectedLogToolbar(selected, { allowRewrite: currentMode() === "changes" });
+    view.logData = data;
+    const selectedBranch = selected.length === 1 && window.HerdrGitLog && window.HerdrGitLog.selectedBranchForHash
+      ? window.HerdrGitLog.selectedBranchForHash(data, selected[0], baseBranch)
+      : "";
+    view.selectedLogBranch = selectedBranch;
+    const compare = Actions.selectedLogToolbar(selected, { allowRewrite: currentMode() === "changes", selectedBranch });
     replaceContent(version, window.HerdrGitLog.render({
       data,
       selected,
@@ -1455,16 +1483,31 @@
       logLimit: view.logLimit,
       logLoadingMore: !!view.logLoadingMore,
       baseBranch,
+      filePath: view.logFilePath || "",
       actionsHtml: compare,
       filters: view.logFilters || {},
       esc,
       arg,
     }));
+    updateGitLogStickyOffsets();
     if (view.pendingLogScrollHash) {
       const hash = view.pendingLogScrollHash;
       view.pendingLogScrollHash = "";
       requestAnimationFrame(() => window.HerdrGitLog.scrollToCommit(hash));
     }
+  }
+
+  function updateGitLogStickyOffsets() {
+    requestAnimationFrame(() => {
+      const content = document.querySelector(".git-ui-content");
+      if (!content) return;
+      const scope = content.querySelector(".git-ui-log-scope-head");
+      const head = content.querySelector(".git-ui-log-table-head");
+      const scopeHeight = scope ? Math.ceil(scope.getBoundingClientRect().height + 10) : 0;
+      const headHeight = head ? Math.ceil(head.getBoundingClientRect().height) : 0;
+      content.style.setProperty("--git-log-scope-sticky-height", `${scopeHeight}px`);
+      content.style.setProperty("--git-log-table-head-sticky-height", `${headHeight}px`);
+    });
   }
 
   async function renderStash(version) {
@@ -1649,12 +1692,16 @@
     return `<main class="git-ui-main"><div class="git-ui-content">${body}</div></main>`;
   }
 
+  function preserveContentScroll(tab) {
+    return tab === "cleanup" || tab === "log";
+  }
+
   function render() {
     if (!state.visible) return;
     saveSideEditorFromDom();
     const activeView = active() || {};
     const currentContent = document.querySelector(".git-ui-content");
-    if (currentContent && activeView.tab === "cleanup")
+    if (currentContent && preserveContentScroll(activeView.tab))
       activeView.contentScrollTop = currentContent.scrollTop;
     const version = ++state.renderVersion;
     const panel = ensurePanel();
@@ -1663,7 +1710,7 @@
     const side = panel.querySelector(".git-ui-side");
     if (side) side.scrollTop = state.sideScrollTop || 0;
     const nextContent = panel.querySelector(".git-ui-content");
-    if (nextContent && activeView.tab === "cleanup")
+    if (nextContent && preserveContentScroll(activeView.tab))
       nextContent.scrollTop = activeView.contentScrollTop || 0;
     mountSideEditors();
     const view = activeView;
@@ -1675,7 +1722,11 @@
   function replaceContent(version, html) {
     if (!state.visible || version !== state.renderVersion) return;
     const content = document.querySelector(".git-ui-content");
-    if (content) content.innerHTML = html;
+    if (!content) return;
+    const view = active() || {};
+    const scrollTop = preserveContentScroll(view.tab) ? (view.contentScrollTop || content.scrollTop || 0) : null;
+    content.innerHTML = html;
+    if (scrollTop !== null) content.scrollTop = scrollTop;
   }
 
   function mountSideEditors() {
@@ -1754,6 +1805,25 @@
   function diffFile(path) {
     const view = active() || {};
     return ((view.diff && view.diff.files) || []).find((file) => file.path === path);
+  }
+
+  function loadSelectedCommitPreview(view, hash) {
+    if (!view || !hash) return;
+    const current = view.selectedCommitPreview || {};
+    if (current.hash === hash && (current.loading || current.diff || current.error)) return;
+    view.selectedCommitPreview = { hash, loading: true, error: "", diff: null };
+    const context = 0;
+    api(`/api/git-ui/compare?cwd=${encodeURIComponent(view.cwd)}&base=${encodeURIComponent(`${hash}^`)}&target=${encodeURIComponent(hash)}&context=${context}`)
+      .then((diff) => {
+        if (!view.selectedCommitPreview || view.selectedCommitPreview.hash !== hash) return;
+        view.selectedCommitPreview = { hash, loading: false, error: "", diff };
+        if (state.visible) render();
+      })
+      .catch((err) => {
+        if (!view.selectedCommitPreview || view.selectedCommitPreview.hash !== hash) return;
+        view.selectedCommitPreview = { hash, loading: false, error: err.message || String(err), diff: null };
+        if (state.visible) render();
+      });
   }
 
   function hunkPatch(path, index) {
@@ -1848,6 +1918,15 @@
       view.diffKind = kind || "";
       view.expandedCompactDirs = {};
       if (view.sideEditor && view.sideEditor.path !== path) view.sideEditor = null;
+      if (kind === "C" && view.selectedCommitPreview && view.selectedCommitPreview.hash) {
+        view.mode = "readonly-compare";
+        view.compareBase = `${view.selectedCommitPreview.hash}^`;
+        view.compareTarget = view.selectedCommitPreview.hash;
+        view.compareFilePaths = ((view.selectedCommitPreview.diff && view.selectedCommitPreview.diff.files) || []).map((file) => file.path);
+        view.tab = "changes";
+        loadDiff().then(() => requestAnimationFrame(() => scrollToDiffFile(view.file))).catch((e) => { view.error = e.message; render(); });
+        return;
+      }
       if (currentMode() !== "changes") {
         loadDiff().then(() => requestAnimationFrame(() => scrollToDiffFile(view.file))).catch((e) => { view.error = e.message; render(); });
         return;
@@ -2442,6 +2521,28 @@
       view.tab = "log";
       render();
     },
+    async openFileHistory(cwd, path) {
+      cwd = decodeURIComponent(cwd || "");
+      path = decodeURIComponent(path || "");
+      if (!cwd || !path) return;
+      await open({ workspace_id: `git-file-history:${cwd}`, cwd, label: compactPath(cwd) }, { forceOpen: true });
+      const view = active();
+      if (!view) return;
+      view.tab = "log";
+      view.logFilePath = path;
+      view.logAll = true;
+      view.logLimit = GIT_LOG_PAGE_SIZE;
+      view.selectedLogCommits = [];
+      view.selectedCommitPreview = null;
+      render();
+    },
+    clearLogFileHistory() {
+      const view = active();
+      if (!view) return;
+      view.logFilePath = "";
+      view.logLimit = GIT_LOG_PAGE_SIZE;
+      render();
+    },
     latestChanges() {
       this.showChangesList();
     },
@@ -2457,12 +2558,15 @@
       } else {
         view.selectedLogCommits = selected.length === 1 && selected[0] === hash ? [] : [hash];
       }
+      if (view.selectedLogCommits.length === 1) loadSelectedCommitPreview(view, view.selectedLogCommits[0]);
+      else view.selectedCommitPreview = null;
       render();
     },
     clearLogSelection() {
       const view = active();
       if (!view) return;
       view.selectedLogCommits = [];
+      view.selectedCommitPreview = null;
       render();
     },
     compareSelectedLog() {
@@ -2563,6 +2667,13 @@
       if (!view || !ref || !tag) return;
       state.tagSelectedModal = null;
       post("/api/git-ui/tag", { cwd: view.cwd, ref_name: ref, tag_name: tag });
+    },
+    async createWorktreeFromSelectedBranch() {
+      const view = active();
+      const branch = view && view.selectedLogBranch;
+      if (!view || !branch) return;
+      if (typeof openWorktreeCreateFromGitBranch !== "function") return;
+      await openWorktreeCreateFromGitBranch(view.cwd, branch);
     },
     rebaseAfterSelected() {
       const view = active();

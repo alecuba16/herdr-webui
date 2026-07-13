@@ -6,22 +6,41 @@ It runs as a Rust Axum server, serves embedded frontend assets, and starts a bui
 
 ## Quick start
 
+Start the browser WebUI with the built-in backend, which is the default for fresh settings:
+
 ```bash
-cargo run -- --https off
+cargo run -- --https off --backend-mode builtin
+# open http://127.0.0.1:8787
 ```
 
-Open `http://127.0.0.1:8787`. Fresh settings default to the built-in backend, so no separate Herdr daemon is required. To use an external Herdr daemon instead, start it separately and run:
+That command starts one process: the Axum WebUI server plus the embedded PTY backend. No separate `herdr server` process is required.
+
+To use an external Herdr daemon instead, launch the daemon separately, then point WebUI at it:
 
 ```bash
+herdr server
 cargo run -- --https off --backend-mode external-herdr
 ```
 
-The installed package also includes a first-party terminal UI:
+The installed package also includes a first-party terminal UI. The TUI is a client; it does not start the backend by itself, so run it while WebUI is already running:
 
 ```bash
-herdr-webui-tui
-herdr-webui-tui --summary
-herdr-webui-tui --once
+herdr-webui-tui              # interactive TUI against built-in session "default"
+herdr-webui-tui --summary    # smoke summary
+herdr-webui-tui --once       # one-shot text snapshot
+```
+
+For a named built-in WebUI session, use the same namespace:
+
+```bash
+herdr-webui --session demo --backend-mode builtin
+herdr-webui-tui --session demo
+```
+
+For external Herdr-compatible sockets, pass the explicit socket paths instead of a built-in session name:
+
+```bash
+herdr-webui-tui --api-socket /path/to/herdr.sock --terminal-socket /path/to/herdr-client.sock
 ```
 
 `make install-mac`, `make update-mac`, `make install-linux`, and `make update-linux` install both `herdr-webui` and `herdr-webui-tui`. The browser WebUI and TUI can run in parallel against the same built-in backend session; both attach to the same terminal socket protocol. For predictable input, only type into one client for the same pane at a time.
