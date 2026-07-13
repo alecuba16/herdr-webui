@@ -4,8 +4,8 @@ use std::io::{self, BufRead, BufReader, Write};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{mpsc, Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, Path as AxumPath, Query, State};
@@ -45,6 +45,7 @@ const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 14;
 const PROTOCOL_VERSION: u32 = 16;
 const MIN_BACKEND_VERSION: &str = "0.7.0";
 const MAX_TESTED_BACKEND_VERSION: &str = "0.7.3";
+const DEFAULT_FOLDER_READ_TIMEOUT: Duration = Duration::from_millis(1500);
 
 type LocalStream = interprocess::local_socket::Stream;
 type BuiltinSessionRegistry =
@@ -594,22 +595,48 @@ fn readable_directory(path: &Path) -> io::Result<PathBuf> {
     Ok(path.canonicalize().unwrap_or_else(|_| path.to_path_buf()))
 }
 
+fn readable_directory_bounded(path: &Path) -> io::Result<PathBuf> {
+    let path = path.to_path_buf();
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(readable_directory(&path));
+    });
+    rx.recv_timeout(DEFAULT_FOLDER_READ_TIMEOUT).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::TimedOut,
+            "default folder readability check timed out",
+        )
+    })?
+}
+
 fn home_folder_path() -> PathBuf {
     home_dir().unwrap_or_else(|_| PathBuf::from("~"))
 }
 
 fn default_working_folder(candidate: Option<&str>) -> String {
-    let fallback = readable_directory(&home_folder_path()).unwrap_or_else(|_| home_folder_path());
+    default_working_folder_with_prompt(candidate, true)
+}
+
+fn default_working_folder_without_prompt(candidate: Option<&str>) -> String {
+    default_working_folder_with_prompt(candidate, false)
+}
+
+fn default_working_folder_with_prompt(
+    candidate: Option<&str>,
+    allow_permission_prompt: bool,
+) -> String {
+    let home = home_folder_path();
+    let fallback = readable_directory_bounded(&home).unwrap_or(home);
     let raw = candidate
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .unwrap_or("~");
     let path = PathBuf::from(expand_user_path_string(raw));
-    match readable_directory(&path) {
+    match readable_directory_bounded(&path) {
         Ok(path) => path.to_string_lossy().to_string(),
-        Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
+        Err(err) if allow_permission_prompt && err.kind() == io::ErrorKind::PermissionDenied => {
             request_default_folder_permission(&path)
-                .and_then(|path| readable_directory(&path))
+                .and_then(|path| readable_directory_bounded(&path))
                 .unwrap_or(fallback)
                 .to_string_lossy()
                 .to_string()
@@ -721,7 +748,8 @@ fn load_runtime_server_settings(default_bind: SocketAddr) -> io::Result<RuntimeS
         settings.builtin_shell = persisted.builtin_shell.filter(|value| !value.is_empty());
     }
     if persisted.default_folder.is_some() {
-        settings.default_folder = default_working_folder(persisted.default_folder.as_deref());
+        settings.default_folder =
+            default_working_folder_without_prompt(persisted.default_folder.as_deref());
     }
     if let Some(enabled) = persisted.builtin_backend_enabled {
         settings.builtin_backend_enabled = enabled;
