@@ -28,7 +28,7 @@
     const body = rows.length
       ? rows.map((row) => renderRow(row, selected, filters, options, baseBranch)).join("")
       : `<div class="git-ui-empty-row">No commits found.</div>`;
-    const footer = renderLoadMore(data, rows, options, esc);
+    const footer = renderLoadMore(options.data || {}, rows, options, esc);
     return `${scope}<div class="git-ui-log git-ui-log-table">${header}${body}${footer}</div>`;
   }
 
