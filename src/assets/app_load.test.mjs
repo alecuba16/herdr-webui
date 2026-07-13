@@ -1978,7 +1978,10 @@ describe("app bundle load", () => {
     match(directoryPickerSource, /function afterSelectCallback\(input\)/);
     match(directoryPickerSource, /input\.dataset\.directoryPickerAfterSelect/);
     match(gitUiSource, /id="gitUiBranchCwd"[^`]*data-directory-picker-after-select="HerdrGitUi\.loadBranchModalCwd"/);
-    match(gitUiSource, /Load typed path/);
+    ok(!gitUiSource.includes("Load typed path"));
+    match(gitUiSource, /function gitBranchModalDefaultCwd\(cwd\)/);
+    match(gitUiSource, /if \(path && path !== "\/"\) return path;/);
+    match(gitUiSource, /typeof window\.defaultFolderPath === "function"/);
     match(gitUiSource, /id="gitUiCleanupRoot"[^`]*data-directory-picker-after-select="HerdrGitUi\.scanCleanup"/);
     match(gitUiSource, /class="mini directory-picker-trigger" onclick="HerdrDirectoryPicker\.openInput\('gitUiBranchCwd'\)"/);
   });

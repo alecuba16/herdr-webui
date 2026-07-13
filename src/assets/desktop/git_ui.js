@@ -122,6 +122,16 @@
     return String(message || "").toLowerCase().includes("not a git repository");
   }
 
+  function gitBranchModalDefaultCwd(cwd) {
+    const path = String(cwd || "").trim();
+    if (path && path !== "/") return path;
+    if (typeof window.defaultFolderPath === "function") {
+      const fallback = String(window.defaultFolderPath() || "").trim();
+      if (fallback) return fallback;
+    }
+    return "~";
+  }
+
   function isNoGitRepositoryView(view) {
     return !!(((view && view.status) || {}).not_git_repository);
   }
@@ -844,7 +854,7 @@
       : modal.error
         ? `<div class="git-ui-error">${esc(modal.error)}</div>`
         : `<label class="git-ui-branch-field"><span>Branch</span><select id="gitUiBranchSelect">${branchOptions("Local branches", modal.local || [])}${branchOptions("Remote branches", modal.remote || [])}</select></label>`;
-    const dir = `<label class="git-ui-branch-field"><span>Git directory</span><div class="git-ui-inline-field"><input id="gitUiBranchCwd" value="${cwd}" placeholder="/path/to/repo" data-directory-picker-after-select="HerdrGitUi.loadBranchModalCwd"><button type="button" class="mini directory-picker-trigger" onclick="HerdrDirectoryPicker.openInput('gitUiBranchCwd')">Browse</button><button class="git-ui-btn" onclick="HerdrGitUi.loadBranchModalCwd()" ${modal.loading ? "disabled" : ""}>Load typed path</button></div></label>`;
+    const dir = `<label class="git-ui-branch-field"><span>Git directory</span><div class="git-ui-inline-field"><input id="gitUiBranchCwd" value="${cwd}" placeholder="/path/to/repo" data-directory-picker-after-select="HerdrGitUi.loadBranchModalCwd"><button type="button" class="mini directory-picker-trigger" onclick="HerdrDirectoryPicker.openInput('gitUiBranchCwd')">Browse</button></div></label>`;
     return `<div class="git-ui-modal-backdrop"><div class="git-ui-modal"><div class="git-ui-modal-head"><strong>Switch branch</strong></div>${dir}${body}<div class="git-ui-modal-actions"><button class="git-ui-btn" onclick="HerdrGitUi.closeBranchModal()">Cancel</button><button class="git-ui-btn" onclick="HerdrGitUi.applyBranchModalCwd()" ${modal.loading || modal.error ? "disabled" : ""}>Use directory</button><button class="git-ui-btn primary" onclick="HerdrGitUi.switchBranchFromModal()" ${modal.loading || modal.error ? "disabled" : ""}>Switch to</button></div></div></div>`;
   }
 
@@ -2357,13 +2367,14 @@
     async openBranchModal() {
       const view = active();
       if (!view) return;
-      state.branchModal = { loading: true, error: "", local: [], remote: [], cwd: view.cwd };
+      const cwd = gitBranchModalDefaultCwd(view.cwd);
+      state.branchModal = { loading: true, error: "", local: [], remote: [], cwd };
       render();
       try {
-        const data = await api(`/api/git-ui/branches?cwd=${encodeURIComponent(view.cwd)}`);
-        state.branchModal = { loading: false, error: "", local: data.local || [], remote: data.remote || [], cwd: view.cwd };
+        const data = await api(`/api/git-ui/branches?cwd=${encodeURIComponent(cwd)}`);
+        state.branchModal = { loading: false, error: "", local: data.local || [], remote: data.remote || [], cwd };
       } catch (err) {
-        state.branchModal = { loading: false, error: err.message || String(err), local: [], remote: [], cwd: view.cwd };
+        state.branchModal = { loading: false, error: err.message || String(err), local: [], remote: [], cwd };
       }
       render();
     },
