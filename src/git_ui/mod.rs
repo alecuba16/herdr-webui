@@ -870,6 +870,7 @@ mod tests {
                     max: Some(5),
                     all: None,
                     base: None,
+                    file: None,
                 }),
             )
             .await;

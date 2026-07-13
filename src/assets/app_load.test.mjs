@@ -108,7 +108,10 @@ describe("app bundle load", () => {
   let gitLogSource;
   let gitActionsSource;
   let gitSettingsSource;
+  let fileBrowserSource;
   let desktopWorkspacesCss;
+  let readmeDoc;
+  let installationDoc;
   let desktopTerminalSource;
   let appBootSource;
 
@@ -141,7 +144,10 @@ describe("app bundle load", () => {
     gitLogSource = readFileSync(new URL("./desktop/git_ui/log.js", import.meta.url), "utf8");
     gitActionsSource = readFileSync(new URL("./desktop/git_ui/actions.js", import.meta.url), "utf8");
     gitSettingsSource = readFileSync(new URL("./desktop/git_ui/settings.js", import.meta.url), "utf8");
+    fileBrowserSource = readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8");
     desktopWorkspacesCss = readFileSync(new URL("./desktop/app_css/workspaces.css", import.meta.url), "utf8");
+    readmeDoc = readFileSync(new URL("../../README.md", import.meta.url), "utf8");
+    installationDoc = readFileSync(new URL("../../docs/installation.md", import.meta.url), "utf8");
   });
 
   it("loads without initialization-order ReferenceError", () => {
@@ -378,6 +384,11 @@ describe("app bundle load", () => {
     match(gitUiSource, /Soft reset/);
     match(gitUiSource, /Hard reset/);
     match(gitUiSource, /selectedLogToolbar\(selected, \{ allowRewrite: currentMode\(\) === "changes", selectedBranch \}\)/);
+    match(gitUiSource, /function commitPreviewSection/);
+    match(gitUiSource, /Committed files/);
+    match(gitUiSource, /loadSelectedCommitPreview\(view, view\.selectedLogCommits\[0\]\)/);
+    match(gitUiSource, /base=\$\{encodeURIComponent\(`\$\{hash\}\^`\)\}/);
+    match(gitUiSource, /openFileHistory\(cwd, path\)/);
     match(gitUiSource, /Fetch selected branch before rebasing/);
     match(gitUiSource, /pull_first: pullFirst/);
     ok(!gitUiSource.includes('/api/git-ui/pull", { cwd: view.cwd, mode: "ff-only", branch }'));
@@ -2015,13 +2026,23 @@ describe("app bundle load", () => {
     match(technicalDoc, /Built-in sessions do not seed a default workspace/);
     match(technicalDoc, /Git cwd is independent from workspace selection/);
     match(releaseNotes, /0\.2\.50 Release Notes/);
+    match(readmeDoc, /herdr-webui-tui --api-socket \/path\/to\/herdr\.sock --terminal-socket \/path\/to\/herdr-client\.sock/);
+    match(readmeDoc, /The TUI is a client; it does not start the backend by itself/);
+    match(installationDoc, /This is the recommended quick-start path/);
+    match(installationDoc, /For an external Herdr-compatible backend, point TUI at the socket pair explicitly/);
     match(releaseNotes, /Updates the global `\?` Help & Shortcuts modal/);
     match(releaseNotes, /`Worktree…` creates a linked worktree/);
     match(releaseNotes, /table header, and filter row sticky/);
+    match(releaseNotes, /File browser `Show history` opens the Git log scoped to the file/);
+    match(releaseNotes, /Committed files` side preview/);
     match(featuresDoc, /normal worktree creation modal prefilled/);
     match(featuresDoc, /scope row, table header, and filter row are sticky/);
+    match(featuresDoc, /File browser `Show history` opens this log scoped to the selected file/);
+    match(featuresDoc, /Selecting one commit loads a `Committed files` side preview/);
     match(technicalDoc, /src\/assets\/desktop\/git_ui\/actions\.js/);
     match(technicalDoc, /selected-commit action strip/);
+    match(technicalDoc, /optional `file` path/);
+    match(technicalDoc, /commit\^` versus `commit`/);
     match(gitUiSource, /function gitBranchModalDefaultCwd\(cwd\)/);
     match(gitUiSource, /if \(path && path !== "\/"\) return path;/);
     match(gitUiSource, /typeof window\.defaultFolderPath === "function"/);
@@ -2038,6 +2059,10 @@ describe("app bundle load", () => {
     match(gitUiSource, /logLimit: GIT_LOG_PAGE_SIZE,/);
     match(gitUiSource, /const GIT_LOG_PAGE_SIZE = 80;/);
     match(gitUiSource, /const GIT_LOG_MAX_LIMIT = 2000;/);
+    match(fileBrowserSource, /HerdrFileBrowser.showHistory/);
+    match(fileBrowserSource, />Show history<\/button>/);
+    match(fileBrowserSource, /showHistory\(encodedPath\)/);
+    match(fileBrowserSource, /openFileHistory\(encodeURIComponent\(state\.cwd\), encodeURIComponent\(path\)\)/);
     match(gitUiSource, /window\.HerdrGitLog\.render/);
     ok(!gitUiSource.includes("function renderLogLine(line)"));
     match(gitLogSource, /window\.HerdrGitLog = \{ render, scrollToCommit, rowsFromData, laneColor, applyFilters, logCommitCount, selectedBranchForHash \};/);
@@ -2051,10 +2076,20 @@ describe("app bundle load", () => {
     ok(!gitLogSource.includes("const footer = renderLoadMore(data,"));
     match(gitLogSource, /renderLoadMore\(options\.data \|\| \{\}, rows, options, esc\)/);
     match(gitLogSource, /Load more changes/);
+    match(gitLogSource, /git-ui-log-file-scope/);
+    match(gitLogSource, /clearLogFileHistory\(\)/);
     match(gitLogSource, /HerdrGitUi.loadMoreLog\(\)/);
     match(gitLogSource, /data\.has_more/);
     match(gitLogSource, /function renderFilterRow/);
     match(gitLogSource, /oninput="HerdrGitUi.setLogFilter/);
+    match(gitLogSource, /aria-label="Filter \$\{label\}"/);
+    match(gitLogSource, /input\("description", "Description"\)/);
+    match(gitLogSource, /name="git-log-filter-\$\{field\}"/);
+    match(gitUiSource, /id="gitUiFileFilter"/);
+    match(gitUiSource, /name="git-ui-file-filter"/);
+    match(source, /Show history opens Git log scoped to the selected file/);
+    match(source, /Committed files side preview/);
+    ok(!gitLogSource.includes("Filter description"));
     match(gitLogSource, /git-ui-log-filter-spacer/);
     ok(!gitLogSource.includes('setLogFilter(' + "\'graph"));
     match(gitLogSource, /function applyFilters/);
@@ -2072,6 +2107,8 @@ describe("app bundle load", () => {
     match(gitLogCss, /\.git-ui-log-ref\.current[\s\S]*?#ef4444/);
     match(gitLogCss, /\.git-ui-log-ref\.main[\s\S]*?#3b82f6/);
     match(gitLogCss, /\.git-ui-log-filter-row/);
+    match(gitLogCss, /\.git-ui-log-file-scope/);
+    match(gitLogCss, /\.git-ui-log-filter \.sr-only/);
     match(gitLogCss, /\.git-ui-log-load-more/);
     match(gitLogCss, /\.git-ui-log-hover-card/);
     match(gitLogSource, /function selectedBranchForHash/);

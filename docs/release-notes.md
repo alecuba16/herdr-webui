@@ -6,7 +6,7 @@
 - Adds hover details with full hash, exact commit date/time, author, branches/tags, and title, plus local filters for description, date, and author. The graph column is intentionally not filterable so lane context stays stable.
 - Keeps the log scope row, table header, and filter row sticky while scrolling so selected refs and column meaning remain visible.
 - Moves selected-commit actions into one compact action strip: `Compare`, `Tag`, `Worktree…`, `Reset`, `Rebase…`, and `Clear`. `Worktree…` creates a linked worktree from the selected branch after confirming branch, base, and directory details.
-- Adds a bottom `Load more changes` button. The backend returns `has_more` and `limit` by fetching one extra commit, and the UI increases history in 80-commit pages up to a safe cap.
+- Adds a bottom `Load more changes` button. The backend returns `has_more` and `limit` by fetching one extra commit, and the UI increases history in 80-commit pages up to a safe cap. File browser `Show history` opens the Git log scoped to the file, and selecting a commit shows a `Committed files` side preview that opens commit-vs-parent diffs.
 
 ## 0.2.50 Release Notes
 

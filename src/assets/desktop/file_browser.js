@@ -564,7 +564,7 @@
     const edit = canEdit && !file.editing ? `<button class="git-ui-btn" onclick="HerdrFileBrowser.edit('${arg(file.path)}')">Edit</button>` : "";
     const save = canEdit && file.editing ? `<button class="git-ui-btn primary" ${file.saving ? "disabled" : ""} onclick="HerdrFileBrowser.save('${arg(file.path)}')">${file.saving ? "Saving..." : "Save"}</button><button class="git-ui-btn" onclick="HerdrFileBrowser.cancelEdit('${arg(file.path)}')">Cancel</button>` : "";
     const dirty = file.dirty ? `<span class="file-browser-dirty">modified</span>` : "";
-    return `<strong title="${esc(file.path)}">${esc(file.path)}</strong>${dirty}<span class="file-browser-toolbar-actions">${split}${edit}${save}<button class="git-ui-btn" onclick="HerdrFileBrowser.reload('${arg(file.path)}')">Reload</button><button class="git-ui-btn" onclick="HerdrFileBrowser.closeFile('${arg(file.path)}')">Close file</button></span>`;
+    return `<strong title="${esc(file.path)}">${esc(file.path)}</strong>${dirty}<span class="file-browser-toolbar-actions">${split}${edit}${save}<button class="git-ui-btn" onclick="HerdrFileBrowser.showHistory('${arg(file.path)}')">Show history</button><button class="git-ui-btn" onclick="HerdrFileBrowser.reload('${arg(file.path)}')">Reload</button><button class="git-ui-btn" onclick="HerdrFileBrowser.closeFile('${arg(file.path)}')">Close file</button></span>`;
   }
 
   function renderPreviewShell() {
@@ -908,6 +908,11 @@
     },
     save(encodedPath) { saveFile(decodeURIComponent(encodedPath)); },
     reload(encodedPath) { reloadFile(decodeURIComponent(encodedPath)).catch((error) => { state.error = error.message || String(error); render(); }); },
+    showHistory(encodedPath) {
+      const path = decodeURIComponent(encodedPath || "");
+      if (!path || !window.HerdrGitUi || !window.HerdrGitUi.openFileHistory) return;
+      window.HerdrGitUi.openFileHistory(encodeURIComponent(state.cwd), encodeURIComponent(path));
+    },
     isVisible() { return state.open; },
     isWorkspaceVisible(workspace) { return state.open && activeKey === workspaceKey(workspace); },
     syncTerminalVisibility,
