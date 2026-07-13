@@ -4129,6 +4129,8 @@ mod tests {
 
     #[test]
     fn builtin_mode_routes_header_sessions_to_builtin_socket_namespace() {
+        let _guard = env_lock().lock().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", "/tmp/herdr-config");
         let mut state = test_state();
         state.backend_mode = BackendMode::Builtin;
         state.api_socket = Some(PathBuf::from("/tmp/builtin-api.sock"));
@@ -4149,6 +4151,8 @@ mod tests {
             client_socket_for_query_session(&state, &headers, Some("query"), None),
             query_client
         );
+
+        std::env::remove_var("XDG_CONFIG_HOME");
     }
 
     #[test]
