@@ -2076,6 +2076,10 @@ describe("app bundle load", () => {
     match(source, /remote=true/);
     match(source, /fetch=true/);
     match(source, /function localWorktreeBranchName\(branch\)/);
+    match(gitUiSource, /function preserveContentScroll\(tab\)/);
+    match(gitUiSource, /return tab === "cleanup" \|\| tab === "log";/);
+    match(gitUiSource, /const scrollTop = preserveContentScroll\(view\.tab\)/);
+    match(gitUiSource, /content\.scrollTop = scrollTop;/);
     match(gitLogCss, /border-style: dashed;/);
   });
 

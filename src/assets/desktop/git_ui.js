@@ -1654,12 +1654,16 @@
     return `<main class="git-ui-main"><div class="git-ui-content">${body}</div></main>`;
   }
 
+  function preserveContentScroll(tab) {
+    return tab === "cleanup" || tab === "log";
+  }
+
   function render() {
     if (!state.visible) return;
     saveSideEditorFromDom();
     const activeView = active() || {};
     const currentContent = document.querySelector(".git-ui-content");
-    if (currentContent && activeView.tab === "cleanup")
+    if (currentContent && preserveContentScroll(activeView.tab))
       activeView.contentScrollTop = currentContent.scrollTop;
     const version = ++state.renderVersion;
     const panel = ensurePanel();
@@ -1668,7 +1672,7 @@
     const side = panel.querySelector(".git-ui-side");
     if (side) side.scrollTop = state.sideScrollTop || 0;
     const nextContent = panel.querySelector(".git-ui-content");
-    if (nextContent && activeView.tab === "cleanup")
+    if (nextContent && preserveContentScroll(activeView.tab))
       nextContent.scrollTop = activeView.contentScrollTop || 0;
     mountSideEditors();
     const view = activeView;
@@ -1680,7 +1684,11 @@
   function replaceContent(version, html) {
     if (!state.visible || version !== state.renderVersion) return;
     const content = document.querySelector(".git-ui-content");
-    if (content) content.innerHTML = html;
+    if (!content) return;
+    const view = active() || {};
+    const scrollTop = preserveContentScroll(view.tab) ? (view.contentScrollTop || content.scrollTop || 0) : null;
+    content.innerHTML = html;
+    if (scrollTop !== null) content.scrollTop = scrollTop;
   }
 
   function mountSideEditors() {
