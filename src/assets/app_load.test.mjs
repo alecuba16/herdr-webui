@@ -2038,12 +2038,15 @@ describe("app bundle load", () => {
     match(gitLogSource, /exact_date/);
     match(gitLogSource, /function renderFilterRow/);
     match(gitLogSource, /oninput="HerdrGitUi.setLogFilter/);
+    match(gitLogSource, /git-ui-log-filter-spacer/);
+    ok(!gitLogSource.includes('setLogFilter(' + "\'graph"));
     match(gitLogSource, /function applyFilters/);
     match(gitLogSource, /git-ui-log-hover-card/);
     match(gitLogSource, /if \(label === "HEAD" \|\| label.startsWith\("HEAD -> "\)\) return "current";/);
     match(gitLogSource, /return "main";/);
-    match(gitUiSource, /logFilters: \{ graph: "", description: "", date: "", author: "" \}/);
+    match(gitUiSource, /logFilters: \{ description: "", date: "", author: "" \}/);
     match(gitUiSource, /setLogFilter\(field, value\)/);
+    ok(!gitUiSource.includes('"graph", "description"'));
     match(gitUiSource, /HerdrGitLog\.applyFilters\(view\.logFilters\)/);
     match(gitLogCss, /grid-template-columns: minmax\(96px, max-content\) minmax\(240px, 1fr\) minmax\(90px, 120px\) minmax\(120px, 180px\);/);
     match(gitLogCss, /\.git-ui-log-ref\.current[\s\S]*?#ef4444/);

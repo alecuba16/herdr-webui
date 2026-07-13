@@ -535,7 +535,7 @@
         cleanupSelected: {},
         fileFilter: "",
         pendingLogScrollHash: "",
-        logFilters: { graph: "", description: "", date: "", author: "" },
+        logFilters: { description: "", date: "", author: "" },
         temporaryHistoryCompare: false,
         sideEditor: null,
       };
@@ -2488,8 +2488,8 @@
     setLogFilter(field, value) {
       const view = active();
       if (!view) return;
-      if (!["graph", "description", "date", "author"].includes(field)) return;
-      view.logFilters = view.logFilters || { graph: "", description: "", date: "", author: "" };
+      if (!["description", "date", "author"].includes(field)) return;
+      view.logFilters = view.logFilters || { description: "", date: "", author: "" };
       view.logFilters[field] = value || "";
       if (window.HerdrGitLog && window.HerdrGitLog.applyFilters) window.HerdrGitLog.applyFilters(view.logFilters);
     },

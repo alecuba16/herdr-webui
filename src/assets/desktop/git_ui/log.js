@@ -9,7 +9,7 @@
     "#a3e635",
     "#f472b6",
   ];
-  const FILTER_FIELDS = ["graph", "description", "date", "author"];
+  const FILTER_FIELDS = ["description", "date", "author"];
 
   function render(options) {
     const rows = rowsFromData(options.data || {});
@@ -28,7 +28,7 @@
 
   function renderFilterRow(filters, esc) {
     const input = (field, label) => `<label class="git-ui-log-filter"><span>${label}</span><input value="${esc(filters[field] || "")}" placeholder="Filter ${label.toLowerCase()}" oninput="HerdrGitUi.setLogFilter('${field}',this.value)"></label>`;
-    return `<div class="git-ui-log-filter-row">${input("graph", "Graph")}${input("description", "Description")}${input("date", "Date")}${input("author", "Author")}</div>`;
+    return `<div class="git-ui-log-filter-row"><span class="git-ui-log-filter-spacer" aria-hidden="true"></span>${input("description", "Description")}${input("date", "Date")}${input("author", "Author")}</div>`;
   }
 
   function rowsFromData(data) {
@@ -90,7 +90,7 @@
     const click = hash ? ` onclick="HerdrGitUi.selectLogCommit(event,'${arg(hash)}')"` : "";
     const hover = renderHover(row, color, esc, baseBranch);
     const tooltip = hoverText(row);
-    return `<div class="git-ui-log-row${selectedClass}${graphOnly}${currentClass}${hidden}" data-log-hash="${esc(hash)}" data-log-filter-graph="${esc(filterText.graph)}" data-log-filter-description="${esc(filterText.description)}" data-log-filter-date="${esc(filterText.date)}" data-log-filter-author="${esc(filterText.author)}" style="--lane:${color}" title="${esc(tooltip)}"${click}>${renderGraph(row.graph, !!hash)}<span class="git-ui-log-desc">${renderLabels(row.labels || [], row.current, esc, baseBranch)}<span class="git-ui-log-title">${esc(title)}</span></span><span class="git-ui-log-date">${esc(row.date || "")}</span><span class="git-ui-log-author">${esc(row.author || "")}</span>${hover}</div>`;
+    return `<div class="git-ui-log-row${selectedClass}${graphOnly}${currentClass}${hidden}" data-log-hash="${esc(hash)}" data-log-filter-description="${esc(filterText.description)}" data-log-filter-date="${esc(filterText.date)}" data-log-filter-author="${esc(filterText.author)}" style="--lane:${color}" title="${esc(tooltip)}"${click}>${renderGraph(row.graph, !!hash)}<span class="git-ui-log-desc">${renderLabels(row.labels || [], row.current, esc, baseBranch)}<span class="git-ui-log-title">${esc(title)}</span></span><span class="git-ui-log-date">${esc(row.date || "")}</span><span class="git-ui-log-author">${esc(row.author || "")}</span>${hover}</div>`;
   }
 
   function renderHover(row, color, esc, baseBranch) {
@@ -108,7 +108,6 @@
     const labels = (row.labels || []).map(normalizeLabel).join(" ");
     const title = row.title || row.message || "";
     return {
-      graph: `${row.graph || ""} ${row.hash || ""} ${labels}`,
       description: `${labels} ${title}`,
       date: `${row.date || ""} ${row.exact_date || ""}`,
       author: row.author || "",
