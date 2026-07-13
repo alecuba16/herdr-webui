@@ -151,10 +151,16 @@
 .git-ui-view-toggle + .git-ui-view-toggle {
   border-left: 1px solid var(--accent-2-border);
 }
-.git-ui-view-toggle:hover,
-.git-ui-view-toggle:focus {
+.git-ui-view-toggle:hover:not(:disabled),
+.git-ui-view-toggle:focus:not(:disabled) {
   background: color-mix(in srgb, var(--accent-1), transparent 88%);
   outline: 0;
+}
+.git-ui-view-toggle:disabled {
+  background: var(--panel2);
+  color: var(--muted);
+  cursor: not-allowed;
+  opacity: 0.65;
 }
 .git-ui-view-toggle.active {
   background: var(--accent-1);
@@ -229,11 +235,18 @@
     color 120ms ease,
     transform 80ms ease;
 }
-.git-ui-btn:hover,
+.git-ui-btn:hover:not(:disabled),
 .git-ui-btn.active {
   background: var(--control-hover, var(--panel2));
   border-color: var(--accent-1, var(--accent));
   color: var(--accent-1, var(--accent));
+}
+.git-ui-btn:disabled {
+  background: var(--panel2);
+  border-color: var(--border);
+  color: var(--muted);
+  cursor: not-allowed;
+  opacity: 0.65;
 }
 .git-ui-btn:hover:not(:disabled) {
   transform: translateY(-1px);

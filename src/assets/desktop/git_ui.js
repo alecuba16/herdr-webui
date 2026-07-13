@@ -9,6 +9,7 @@
     branchModal: null,
     gitOpModal: null,
     commitModal: null,
+    resetSelectedModal: null,
     gitToast: null,
     cleanupConfirm: null,
     sideScrollTop: 0,
@@ -81,6 +82,11 @@
     if (state.commitModal) {
       saveDraftFromDom();
       state.commitModal = null;
+      render();
+      return;
+    }
+    if (state.resetSelectedModal) {
+      state.resetSelectedModal = null;
       render();
       return;
     }
@@ -790,6 +796,13 @@
     return `<div class="git-ui-modal-backdrop"><div class="git-ui-modal git-ui-commit-modal"><div class="git-ui-modal-head"><strong>Commit staged changes</strong></div><label>Summary<input id="gitCommitTitle" class="git-ui-input" value="${esc(draft.title)}" placeholder="Short imperative summary"></label><label class="git-ui-check-row"><input id="gitCommitIncludeBody" type="checkbox" ${includeBody ? "checked" : ""} onchange="HerdrGitUi.toggleCommitBody(this.checked)"><span>Add commit body</span></label>${body}<label class="git-ui-check-row"><input id="gitCommitAmend" type="checkbox"><span>Amend previous commit</span></label><div class="git-ui-modal-actions"><button class="git-ui-btn" onclick="HerdrGitUi.closeCommitModal()">Cancel</button><button class="git-ui-btn" onclick="HerdrGitUi.saveDraft()">Save draft</button><button class="git-ui-btn active" onclick="HerdrGitUi.commitFromModal(false)">Commit</button><button class="git-ui-btn primary" onclick="HerdrGitUi.commitFromModal(true)">Commit & Push</button></div></div></div>`;
   }
 
+  function renderResetSelectedModal() {
+    const modal = state.resetSelectedModal;
+    if (!modal) return "";
+    const label = esc((modal.ref || "").slice(0, 12));
+    return `<div class="git-ui-modal-backdrop"><div class="git-ui-modal"><div class="git-ui-modal-head"><strong>Reset to selected commit</strong></div><p class="git-ui-muted">Choose how to reset the current branch to <strong>${label}</strong>.</p><div class="git-ui-actions"><button class="git-ui-btn" onclick="HerdrGitUi.resetSelected('soft')">Soft reset</button><button class="git-ui-btn danger" onclick="HerdrGitUi.resetSelected('hard')">Hard reset</button></div><div class="git-ui-muted">Soft keeps your changes staged. Hard discards working tree changes and requires confirmation.</div><div class="git-ui-modal-actions"><button class="git-ui-btn" onclick="HerdrGitUi.closeSelectedResetModal()">Cancel</button></div></div></div>`;
+  }
+
   function renderBranchModal() {
     const modal = state.branchModal;
     if (!modal) return "";
@@ -1332,7 +1345,7 @@
     const view = active();
     const data = await api(`/api/git-ui/log?cwd=${encodeURIComponent(view.cwd)}&all=${view.logAll ? "true" : "false"}`);
     const selected = view.selectedLogCommits || [];
-    const compare = Actions.selectedLogToolbar(selected);
+    const compare = Actions.selectedLogToolbar(selected, { allowRewrite: currentMode() === "changes" });
     replaceContent(version, `<div class="git-ui-log-scope-head"><span class="git-ui-toolbar-title">History scope</span><button class="git-ui-btn ${!view.logAll ? "active" : ""}" onclick="HerdrGitUi.setLogAll(false)">Current branch</button><button class="git-ui-btn ${view.logAll ? "active" : ""}" onclick="HerdrGitUi.setLogAll(true)">All branches</button>${compare}</div><div class="git-ui-log">${(data.lines || []).map(renderLogLine).join("")}</div>`);
     if (view.pendingLogScrollHash) {
       const hash = view.pendingLogScrollHash;
@@ -1598,7 +1611,7 @@
     const version = ++state.renderVersion;
     const panel = ensurePanel();
     panel.classList.toggle("mutating", !!activeView.mutating);
-    panel.innerHTML = renderSide() + renderMain() + renderContextMenu() + renderCommitModal() + renderBranchModal() + renderGitOpModal() + renderCleanupConfirm() + renderGitToast();
+    panel.innerHTML = renderSide() + renderMain() + renderContextMenu() + renderCommitModal() + renderResetSelectedModal() + renderBranchModal() + renderGitOpModal() + renderCleanupConfirm() + renderGitToast();
     const side = panel.querySelector(".git-ui-side");
     if (side) side.scrollTop = state.sideScrollTop || 0;
     const nextContent = panel.querySelector(".git-ui-content");
@@ -2407,6 +2420,14 @@
       post("/api/git-ui/reset", { cwd: active().cwd, ref_name: ref, mode, confirmation });
     },
     rebase() { this.openGitOpModal("rebase"); },
+    openSelectedResetModal() {
+      const view = active();
+      const ref = ((view && view.selectedLogCommits) || [])[0];
+      if (!view || !ref || currentMode() !== "changes") return;
+      state.resetSelectedModal = { ref };
+      render();
+    },
+    closeSelectedResetModal() { state.resetSelectedModal = null; render(); },
     resetSelected(mode) {
       const view = active();
       const ref = ((view && view.selectedLogCommits) || [])[0];
@@ -2414,6 +2435,7 @@
       const label = ref.slice(0, 12);
       const confirmation = mode === "hard" ? prompt(`Hard reset to ${label}. Type "reset hard" to confirm`) : (confirm(`Soft reset to ${label}?`) ? "" : null);
       if (confirmation === null) return;
+      state.resetSelectedModal = null;
       post("/api/git-ui/reset", { cwd: view.cwd, ref_name: ref, mode, confirmation });
     },
     rebaseAfterSelected() {

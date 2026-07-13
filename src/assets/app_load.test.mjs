@@ -105,6 +105,7 @@ function context() {
 describe("app bundle load", () => {
   let source;
   let gitUiSource;
+  let gitActionsSource;
   let gitSettingsSource;
   let desktopWorkspacesCss;
   let desktopTerminalSource;
@@ -134,6 +135,7 @@ describe("app bundle load", () => {
       "\n" +
       desktopAppSource;
     gitUiSource = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
+    gitActionsSource = readFileSync(new URL("./desktop/git_ui/actions.js", import.meta.url), "utf8");
     gitSettingsSource = readFileSync(new URL("./desktop/git_ui/settings.js", import.meta.url), "utf8");
     desktopWorkspacesCss = readFileSync(new URL("./desktop/app_css/workspaces.css", import.meta.url), "utf8");
   });
@@ -316,6 +318,9 @@ describe("app bundle load", () => {
     match(gitUiSource, /cleanupOnly \? "" : `<div class="git-ui-toolbar">/);
     match(gitUiSource, /cleanupOnly \? "" : `<label class="git-ui-file-filter">/);
     match(gitUiSource, /disabledReason = "Open a Git repository to use this view"/);
+    const gitLayoutCss = readFileSync(new URL("./desktop/git_ui/layout.css", import.meta.url), "utf8");
+    match(gitLayoutCss, /\.git-ui-btn:disabled \{[\s\S]*?background: var\(--panel2\);[\s\S]*?color: var\(--muted\);/);
+    match(gitLayoutCss, /\.git-ui-view-toggle:disabled \{[\s\S]*?background: var\(--panel2\);[\s\S]*?color: var\(--muted\);/);
     match(gitUiSource, /\/api\/git-ui\/cleanup-scan/);
     match(gitUiSource, /\/api\/git-ui\/branch-delete/);
     match(gitUiSource, /\/api\/git-ui\/worktree-remove/);
@@ -327,6 +332,17 @@ describe("app bundle load", () => {
     ok(!gitUiSource.includes("openForcePushModal"));
     ok(!gitUiSource.includes("HerdrGitUi.tab('commit')"));
     ok(!gitUiSource.includes('onclick="HerdrGitUi.toggleStageAll()'));
+  });
+
+  it("uses a single selected-log reset modal and clear rebase wording", () => {
+    match(gitActionsSource, /openSelectedResetModal\(\)/);
+    match(gitActionsSource, /Rebase current changes over selected commit/);
+    match(gitActionsSource, /options\.allowRewrite/);
+    ok(!gitActionsSource.includes("Reset soft</button><button"));
+    match(gitUiSource, /renderResetSelectedModal/);
+    match(gitUiSource, /Soft reset/);
+    match(gitUiSource, /Hard reset/);
+    match(gitUiSource, /selectedLogToolbar\(selected, \{ allowRewrite: currentMode\(\) === "changes" \}\)/);
   });
 
   it("defines file explorer and Git file filters", () => {
