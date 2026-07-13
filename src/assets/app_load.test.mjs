@@ -396,6 +396,8 @@ describe("app bundle load", () => {
     const sharedFileTreeSource = readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8");
     const desktopFileBrowserSource = readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8");
     const mobileFileBrowserSource = readFileSync(new URL("./mobile/file_browser.js", import.meta.url), "utf8");
+    const desktopWorktreesSource = readFileSync(new URL("./desktop/app_js/worktrees.js", import.meta.url), "utf8");
+    const mobileWorktreesSource = readFileSync(new URL("./mobile/worktrees.js", import.meta.url), "utf8");
     const directoryPickerSource = readFileSync(new URL("./desktop/directory_picker.js", import.meta.url), "utf8");
     match(sharedFileTreeSource, /renderCurrentDirectoryRow/);
     match(sharedFileTreeSource, /herdr-tree-up-action/);
@@ -407,6 +409,12 @@ describe("app bundle load", () => {
     match(desktopFileBrowserSource, /\/api\/file-browser\/request-access/);
     match(directoryPickerSource, /permission_required/);
     match(directoryPickerSource, /Grant folder access/);
+    match(desktopWorktreesSource, /return defaultFolderPath\(\) \|\| String\(options\.explorationDefaultDirectory \|\| ""\)\.trim\(\) \|\| "~";/);
+    match(mobileWorktreesSource, /defaultFolderFn/);
+    match(mobileWorktreesSource, /if \(defaultFolder\) return defaultFolder;/);
+    match(directoryPickerSource, /Tree\.renderCurrentDirectoryRow/);
+    ok(!directoryPickerSource.includes("Tree.upEntry"));
+    ok(!directoryPickerSource.includes(">Root</button>"));
     ok(!desktopFileBrowserSource.includes("entries.unshift(Tree.upEntry"));
     ok(!mobileFileBrowserSource.includes("entries.unshift(Tree.upEntry"));
     const fileTreeSource = readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8");
@@ -1819,23 +1827,24 @@ describe("app bundle load", () => {
     equal(ctx.document.getElementById("workspaceCreateLabel").value, "project");
   });
 
-  it("keeps exploration and worktree default directories separate", () => {
+  it("uses settings default folder for workspace and worktree open defaults", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
+    vm.runInContext('state.defaultFolder = "/tmp/default"', ctx);
 
     ctx.openWorkspaceCreateModal();
-    equal(ctx.document.getElementById("workspaceCreatePath").value, "");
+    equal(ctx.document.getElementById("workspaceCreatePath").value, "/tmp/default");
 
     ctx.document.getElementById("optWorktreeDefaultDirectory").value = "/tmp/worktrees";
     ctx.document.getElementById("optWorktreeDefaultDirectory").oninput();
     ctx.document.getElementById("optExplorationDefaultDirectory").value = "/tmp/code";
     ctx.document.getElementById("optExplorationDefaultDirectory").oninput();
     ctx.openWorkspaceCreateModal();
-    equal(ctx.document.getElementById("workspaceCreatePath").value, "/tmp/code");
+    equal(ctx.document.getElementById("workspaceCreatePath").value, "/tmp/default");
 
     ctx.openWorktreeOpenModal();
 
-    equal(ctx.document.getElementById("worktreeDiscoverPath").value, "/tmp/code");
+    equal(ctx.document.getElementById("worktreeDiscoverPath").value, "/tmp/default");
 
     vm.runInContext('state.openWorktreeSource = { repo_name: "repo", repo_root: "/src/repo" }', ctx);
     ctx.document.getElementById("worktreeNewBranch").value = "feature/x";

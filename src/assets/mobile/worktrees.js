@@ -9,6 +9,7 @@
       render,
       selectionPath,
       state,
+      defaultFolderFn,
     } = deps;
 
     function renderScreen() {
@@ -43,15 +44,17 @@
     }
 
     function explorationDefaultDirectoryOption() {
+      const defaultFolder = typeof defaultFolderFn === "function" ? String(defaultFolderFn() || "").trim() : "";
+      if (defaultFolder) return defaultFolder;
       try {
         const parsed = JSON.parse(
           (globalThis.localStorage &&
             globalThis.localStorage.getItem("herdr-web-options")) ||
             "{}",
         );
-        return String(parsed.explorationDefaultDirectory || "").trim();
+        return String(parsed.explorationDefaultDirectory || "").trim() || "~";
       } catch (_) {
-        return "";
+        return "~";
       }
     }
 

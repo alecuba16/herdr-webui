@@ -150,11 +150,17 @@
     const entries = Tree.applyGitStatus(filtering
       ? Tree.searchTreeEntries(state.entries)
       : [
-          ...(canGoUp ? [Tree.upEntry(state.path, 0)] : []),
-          { kind: "dir", name: `Current: ${currentFolderName()}`, path: state.path, expanded: true, level: 0 },
           ...(state.entries || []).map((entry) => Object.assign({}, entry, { expanded: false, level: Number(entry.level || 0) + 1 })),
         ], state.gitStatus);
-    modal.innerHTML = `<div class="directory-picker"><div class="directory-picker-head"><strong>Choose folder</strong><button class="git-ui-btn" onclick="HerdrDirectoryPicker.close()">Close</button></div><div class="directory-picker-path">${esc(joinPath(state.root, state.path))}</div><div class="directory-picker-actions"><button class="git-ui-btn" onclick="HerdrDirectoryPicker.home()">Home</button><button class="git-ui-btn" onclick="HerdrDirectoryPicker.root()">Root</button><button class="git-ui-btn primary" onclick="HerdrDirectoryPicker.selectCurrent()">Select this folder</button></div>${renderAccessError()}<div class="directory-picker-search"><input id="directoryPickerSearchInput" type="text" placeholder="Type to search..." value="${esc(state.filter)}" oninput="HerdrDirectoryPicker.filter(this.value)"></div><div class="directory-picker-tree">${Tree.renderEntries(entries, { callback: "HerdrDirectoryPicker", selectedPath: state.path })}</div></div>`;
+    const currentPath = joinPath(state.root, state.path);
+    const currentRow = filtering ? "" : Tree.renderCurrentDirectoryRow({
+      callback: "HerdrDirectoryPicker",
+      path: currentPath,
+      label: currentFolderName(),
+      title: currentPath,
+      canGoUp,
+    });
+    modal.innerHTML = `<div class="directory-picker"><div class="directory-picker-head"><strong>Choose folder</strong><button class="git-ui-btn" onclick="HerdrDirectoryPicker.close()">Close</button></div><div class="directory-picker-path">${esc(currentPath)}</div><div class="directory-picker-actions"><button class="git-ui-btn" onclick="HerdrDirectoryPicker.home()">Home</button><button class="git-ui-btn primary" onclick="HerdrDirectoryPicker.selectCurrent()">Select this folder</button></div>${renderAccessError()}<div class="directory-picker-search"><input id="directoryPickerSearchInput" type="text" placeholder="Type to search..." value="${esc(state.filter)}" oninput="HerdrDirectoryPicker.filter(this.value)"></div><div class="directory-picker-tree">${currentRow}${Tree.renderEntries(entries, { callback: "HerdrDirectoryPicker", selectedPath: state.path })}</div></div>`;
     if (refocus) {
       const input = document.getElementById("directoryPickerSearchInput");
       if (input) {
