@@ -160,7 +160,7 @@ describe("app bundle load", () => {
   it("defines Git UI changes-list Escape navigation", () => {
     match(gitUiSource, /window\.addEventListener\("keydown", handleKeydown, true\);/);
     match(gitUiSource, /if \(tab === "changes"\) \{\n\s+this\.showChangesList\(\);\n\s+return;\n\s+\}/);
-    match(gitUiSource, /Leave commit editor and return to changes\? Draft is saved locally\./);
+    match(gitUiSource, /if \(state\.commitModal\) \{\n\s+saveDraftFromDom\(\);\n\s+state\.commitModal = null;/);
     match(gitUiSource, /Hide Git UI\?/);
     match(gitUiSource, /function isChangesListView\(view\)/);
   });
@@ -274,7 +274,7 @@ describe("app bundle load", () => {
     match(html, /syntax\/search colors use shared theme tokens/);
     match(html, /Search selections, selected files, split panes, and unsaved edit drafts stay attached to each open workspace\/worktree while switching panels/);
     match(html, /priority red deleted, yellow modified, green new/);
-    match(html, /Git selector opens repo tools for diff, stage\/unstage, discard, commit, commit & push, pull, push\/force-push, rebase, conflicts, stash, branches, cleanup, and worktree prune/);
+    match(html, /Git selector opens repo tools for diff, stage\/unstage, discard, commit modal, commit & push, pull, push with force fallback, tag push option, rebase, conflicts, stash, branches, cleanup, and worktree prune/);
     match(html, /Changes, log, stash, and cleanup use one exclusive segmented toggle/);
     match(html, /file filter sits below the action toolbar/);
     match(html, /cleanup uses the shared broom icon/);
@@ -301,19 +301,26 @@ describe("app bundle load", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
 
-    match(gitUiSource, /git-ui-cleanup-tab-icon/);
+    ok(!gitUiSource.includes("git-ui-cleanup-tab-icon"));
     match(gitUiSource, /renderGitViewTabs/);
     match(gitUiSource, /git-ui-view-toggle/);
     ok(gitUiSource.indexOf("Worktree actions") < gitUiSource.indexOf("git-ui-file-filter"));
     match(readFileSync(new URL("./desktop/git_ui/layout.css", import.meta.url), "utf8"), /git-ui-view-toggle-group/);
-    match(readFileSync(new URL("./icons/broom.svg", import.meta.url), "utf8"), /Broom sweeping dust icon/);
+    ok(!gitUiSource.includes("broom.svg"));
     match(gitUiSource, /scanCleanup/);
     match(gitUiSource, /selectAllCleanup/);
     match(gitUiSource, /Delete selected/);
     match(gitUiSource, /\/api\/git-ui\/cleanup-scan/);
     match(gitUiSource, /\/api\/git-ui\/branch-delete/);
     match(gitUiSource, /\/api\/git-ui\/worktree-remove/);
-    match(gitUiSource, /HerdrDirectoryPicker\.openInput\('gitUiCleanupRoot'\)/);
+    match(gitUiSource, /openCommitModal\(\)/);
+    match(gitUiSource, /Stage changes before committing/);
+    match(gitUiSource, /gitCommitIncludeBody/);
+    match(gitUiSource, /gitUiPushTags/);
+    match(gitUiSource, /Open PR/);
+    ok(!gitUiSource.includes("openForcePushModal"));
+    ok(!gitUiSource.includes("HerdrGitUi.tab('commit')"));
+    ok(!gitUiSource.includes('onclick="HerdrGitUi.toggleStageAll()'));
   });
 
   it("defines file explorer and Git file filters", () => {
