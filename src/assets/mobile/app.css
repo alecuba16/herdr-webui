@@ -436,6 +436,32 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
 .herdr-tree-row.active {
   border-color: var(--accent);
 }
+.herdr-file-tree-current {
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 6px;
+  padding: 0 0 8px;
+}
+.herdr-tree-row.current {
+  background: var(--panel2);
+  border-color: var(--border2);
+  font-weight: 700;
+}
+.herdr-tree-up-action {
+  background: var(--bg);
+  border: 1px solid var(--border2);
+  border-radius: 999px;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 10px;
+}
+.herdr-tree-up-action:hover,
+.herdr-tree-up-action:focus {
+  border-color: var(--accent);
+  color: var(--accent);
+  outline: 0;
+}
 .herdr-tree-name {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -843,6 +869,8 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
   display: none;
   place-items: center;
   background: #000c;
+  overflow: hidden;
+  padding: 12px;
   z-index: 1200;
 }
 .temp-terminal-modal {
@@ -851,9 +879,10 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
   border-radius: 14px;
   margin: auto;
   width: 95vw;
-  height: 80vh;
+  height: min(80vh, calc(var(--herdr-mobile-viewport-height) - 24px));
   display: flex;
   flex-direction: column;
+  min-height: 0;
   overflow: hidden;
 }
 .temp-terminal-head {
@@ -870,6 +899,15 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
   font-weight: 600;
   color: var(--fg, #cdd6f4);
 }
+.temp-terminal-head-actions {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+.temp-terminal-hint {
+  color: var(--muted, #a6adc8);
+  font-size: 12px;
+}
 .temp-terminal-close {
   background: transparent;
   border: 0;
@@ -885,6 +923,7 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
 }
 .temp-terminal-body {
   flex: 1;
+  min-height: 0;
   overflow: hidden;
   position: relative;
   padding: 4px;
@@ -892,6 +931,13 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
 .temp-terminal-body .terminal {
   width: 100%;
   height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.temp-terminal-body .xterm {
+  height: 100%;
+  width: 100%;
 }
 .temp-terminal-modal {
   position: relative;

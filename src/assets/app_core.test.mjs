@@ -631,6 +631,61 @@ describe("desktop file browser editor integration", () => {
     return doc;
   }
 
+  it("renders current folder up control and treats home as a stable root", async () => {
+    const document = createFakeDocument();
+    const requests = [];
+    const context = {
+      window: {
+        addEventListener() {},
+        HerdrEditor: { create() { return { getValue() { return ""; }, setValue() {}, destroy() {} }; } },
+        HerdrGitUi: { hide() {} },
+        HerdrWorkspacePath(workspace) { return workspace.cwd; },
+      },
+      document,
+      localStorage: { getItem() { return JSON.stringify({ fileBrowserAllowParent: true, fileBrowserGitStatus: false }); } },
+      navigator: { clipboard: { writeText: async () => {} } },
+      fetch: async (url) => {
+        requests.push(String(url));
+        return {
+          ok: true,
+          async json() {
+            const path = decodeURIComponent((String(url).match(/path=([^&]*)/) || [null, ""])[1]);
+            return { path, entries: [{ kind: "file", name: "demo.txt", path: path ? `${path}/demo.txt` : "demo.txt" }], git_status: null };
+          },
+        };
+      },
+      confirm: () => true,
+      appRefreshIconButton: () => "<button>Refresh</button>",
+      encodeURIComponent,
+      decodeURIComponent,
+      Error,
+      JSON,
+      Math,
+      String,
+      setTimeout(fn) { fn(); return 1; },
+      clearTimeout() {},
+      getComputedStyle: () => ({ getPropertyValue() { return "14"; } }),
+    };
+    context.window.window = context.window;
+    context.window.document = document;
+    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
+    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
+
+    assert.equal(context.window.HerdrFileTree.parentDirectory("~"), "~");
+    assert.equal(context.window.HerdrFileTree.parentDirectory("~/code"), "~");
+
+    await context.window.HerdrFileBrowser.openAt({ cwd: "~" }, "src", { kind: "dir" });
+    const html = document.getElementById("fileBrowserPanel").innerHTML;
+    assert.match(html, /herdr-file-tree-current/);
+    assert.match(html, /↑ Up/);
+    assert.doesNotMatch(html, /herdr-tree-row dir up/);
+
+    context.window.HerdrFileBrowser.up();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.match(requests.at(-1), /cwd=~/);
+    assert.match(requests.at(-1), /path=/);
+  });
+
   it("mounts previews as read-only, edit as editable, and cancel as read-only", async () => {
     const document = createFakeDocument();
     const editorCalls = [];

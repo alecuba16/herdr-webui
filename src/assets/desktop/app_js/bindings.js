@@ -621,6 +621,7 @@ applyOptions();
 syncNoSleepControls();
 loadNoSleep();
 loadVersions();
+loadServerSettings();
 refresh();
 connectEvents();
 
@@ -637,6 +638,7 @@ if (globalThis.HerdrTempTerminal && el("tempTerminalModal")) {
     closeId: "tempTerminalClose",
     fontFamilyFn: terminalFontFamily,
     themeFn: terminalTheme,
+    defaultFolderFn: defaultFolderPath,
   });
   const tempTerminalToggle = el("tempTerminalToggle");
   const tempTerminalClose = el("tempTerminalClose");

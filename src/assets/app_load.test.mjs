@@ -131,6 +131,8 @@ describe("app bundle load", () => {
       "\n" +
       readFileSync(new URL("./shared/terminal_scroll.js", import.meta.url), "utf8") +
       "\n" +
+      readFileSync(new URL("./shared/terminal_fit.js", import.meta.url), "utf8") +
+      "\n" +
       readFileSync(new URL("./desktop/search.js", import.meta.url), "utf8") +
       "\n" +
       desktopAppSource;
@@ -321,6 +323,8 @@ describe("app bundle load", () => {
     const gitLayoutCss = readFileSync(new URL("./desktop/git_ui/layout.css", import.meta.url), "utf8");
     match(gitLayoutCss, /\.git-ui-btn:disabled \{[\s\S]*?background: var\(--panel2\);[\s\S]*?color: var\(--muted\);/);
     match(gitLayoutCss, /\.git-ui-view-toggle:disabled \{[\s\S]*?background: var\(--panel2\);[\s\S]*?color: var\(--muted\);/);
+    match(gitLayoutCss, /\.git-ui-modal label \{[\s\S]*?box-sizing: border-box;[\s\S]*?width: 100%;/);
+    match(gitLayoutCss, /\.git-ui-input,[\s\S]*?\.git-ui-textarea,[\s\S]*?\.git-ui-select \{[\s\S]*?box-sizing: border-box;[\s\S]*?min-width: 0;[\s\S]*?width: 100%;/);
     match(gitUiSource, /\/api\/git-ui\/cleanup-scan/);
     match(gitUiSource, /\/api\/git-ui\/branch-delete/);
     match(gitUiSource, /\/api\/git-ui\/worktree-remove/);
@@ -334,20 +338,158 @@ describe("app bundle load", () => {
     ok(!gitUiSource.includes('onclick="HerdrGitUi.toggleStageAll()'));
   });
 
+  it("offers conflict buttons for HEAD, parent, and remote sides", () => {
+    match(gitUiSource, /renderConflictOperationActions/);
+    match(gitUiSource, /aria-label="Conflict operation actions"/);
+    match(gitUiSource, /Rebase<\/span>\$\{action\("Continue", "rebase-continue"\)\}\$\{action\("Skip", "rebase-skip"\)\}\$\{action\("Abort", "rebase-abort", true\)\}/);
+    match(gitUiSource, /Merge<\/span>\$\{action\("Continue", "merge-continue"\)\}\$\{action\("Abort", "merge-abort", true\)\}/);
+    match(gitUiSource, /Cherry-pick<\/span>\$\{action\("Continue", "cherry-pick-continue"\)\}\$\{action\("Abort", "cherry-pick-abort", true\)\}/);
+    match(gitUiSource, /operationActions = renderConflictOperationActions\(\)/);
+    match(gitUiSource, /Use HEAD/);
+    match(gitUiSource, /Use parent/);
+    match(gitUiSource, /Use remote/);
+    match(gitUiSource, /HerdrGitUi\.resolve\('\$\{arg\(file\)\}','base'\)/);
+    match(gitUiSource, /title="Use parent\/base version"/);
+    match(gitUiSource, /title="Use remote\/incoming side"/);
+    match(gitUiSource, /Mark resolved \(stage\)/);
+    match(gitUiSource, /Stage this manually edited file as resolved/);
+    match(gitUiSource, /After editing a conflicted file manually/);
+    ok(!gitUiSource.includes(">Use branch</button>"));
+    const gitLayoutCss = readFileSync(new URL("./desktop/git_ui/layout.css", import.meta.url), "utf8");
+    match(gitLayoutCss, /\.git-ui-conflict-file-actions \{[\s\S]*?flex-wrap: wrap;/);
+  });
+
   it("uses a single selected-log reset modal and clear rebase wording", () => {
     match(gitActionsSource, /openSelectedResetModal\(\)/);
     match(gitActionsSource, /Rebase current changes over selected commit/);
     match(gitActionsSource, /options\.allowRewrite/);
     ok(!gitActionsSource.includes("Reset soft</button><button"));
     match(gitUiSource, /renderResetSelectedModal/);
+    match(gitUiSource, /renderCompareSelectedModal/);
+    match(gitUiSource, /Compare selected commit/);
+    match(gitUiSource, /Previous version shows the selected commit diff against its parent/);
+    match(gitUiSource, /compareSelectedWithPrevious/);
+    match(gitUiSource, /await this\.showHistoryCommit\(hash\)/);
+    match(gitUiSource, /compareSelectedWithCurrent/);
+    match(gitUiSource, /await this\.compareCommits\(hash, "\."\)/);
     match(gitUiSource, /Soft reset/);
     match(gitUiSource, /Hard reset/);
     match(gitUiSource, /selectedLogToolbar\(selected, \{ allowRewrite: currentMode\(\) === "changes" \}\)/);
+    match(gitUiSource, /Fetch selected branch before rebasing/);
+    match(gitUiSource, /pull_first: pullFirst/);
+    ok(!gitUiSource.includes('/api/git-ui/pull", { cwd: view.cwd, mode: "ff-only", branch }'));
+  });
+
+  it("gates stash tab by stash count and offers log tagging", () => {
+    match(gitUiSource, /function stashCount\(view\)/);
+    match(gitUiSource, /function canOpenStashView\(view\)/);
+    match(gitUiSource, /No stashes stored\. Refresh to rescan\./);
+    match(gitUiSource, /view\.tab === "stash" && !canOpenStashView\(view\)/);
+    match(gitUiSource, /tab === "stash" && !canOpenStashView\(view\)/);
+    match(gitActionsSource, /Tag this/);
+    match(gitActionsSource, /openSelectedTagModal\(\)/);
+    match(gitUiSource, /renderTagSelectedModal/);
+    match(gitUiSource, /gitTagName/);
+    match(gitUiSource, /\/api\/git-ui\/tag/);
+  });
+
+  it("keeps Git and file drawers on the newly selected workspace", () => {
+    match(source, /gitWasVisible/);
+    match(source, /fileWasVisible/);
+    match(source, /openWorkspaceGitUi\(ws, \{ forceOpen: true \}\)/);
+    match(source, /openWorkspaceFileBrowser\(ws, \{ forceOpen: true \}\)/);
+    match(readFileSync(new URL("./desktop/app_js/render.js", import.meta.url), "utf8"), /HerdrGitUi\.open\(workspace, options \|\| \{\}\)/);
+    match(readFileSync(new URL("./desktop/app_js/render.js", import.meta.url), "utf8"), /HerdrFileBrowser\.open\(workspace, options \|\| \{\}\)/);
+    match(gitUiSource, /state\.visible && state\.activeKey === key && !openOptions\.forceOpen/);
+    match(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), /state\.open && activeKey === key && !openOptions\.forceOpen/);
+  });
+
+  it("moves the diff layout toggle to the bottom of the Git side rail", () => {
+    match(gitUiSource, /function renderDiffLayoutSideToggle/);
+    match(gitUiSource, /git-ui-side-bottom/);
+    ok(!gitUiSource.includes('<span class="git-ui-toolbar-title">${view.file ? "File view" : "Diff view"}</span>${changes}${history}${blame}${layoutToggle}'));
+    const gitLayoutCss = readFileSync(new URL("./desktop/git_ui/layout.css", import.meta.url), "utf8");
+    match(gitLayoutCss, /\.git-ui-side-bottom \{[\s\S]*?margin-top: auto;/);
+    match(gitLayoutCss, /\.git-ui-side-bottom \.git-ui-btn \{[\s\S]*?width: 100%;/);
+  });
+
+
+  it("documents and traps temporary terminal keyboard input", () => {
+    const tempTerminalSource = readFileSync(new URL("./shared/temp_terminal.js", import.meta.url), "utf8");
+    const terminalFitSource = readFileSync(new URL("./shared/terminal_fit.js", import.meta.url), "utf8");
+    const shortcutsSource = readFileSync(new URL("./desktop/app_js/shortcuts.js", import.meta.url), "utf8");
+    const html = readFileSync(new URL("./app.html", import.meta.url), "utf8");
+    const modalCss = readFileSync(new URL("./desktop/app_css/modals.css", import.meta.url), "utf8");
+
+    match(tempTerminalSource, /document\.addEventListener\("keydown", tempTerminalKeydown, true\)/);
+    match(tempTerminalSource, /if \(tempTerminalOwnsEventTarget\(event\.target\)\) return;/);
+    match(tempTerminalSource, /term\.element \|\| \(el\(containerId\) && el\(containerId\)\.querySelector/);
+    match(tempTerminalSource, /case "Backspace": return "\\x7f";/);
+    match(tempTerminalSource, /case "Tab": return event\.shiftKey \? "\\x1b\[Z" : "\\t";/);
+    match(tempTerminalSource, /String\(event\.key \|\| ""\)\.toLowerCase\(\) === "g"/);
+    match(shortcutsSource, /function tempTerminalModalOpen\(\)/);
+    match(shortcutsSource, /if \(tempTerminalModalOpen\(\)\) return false;/);
+    match(tempTerminalSource, /function terminalGridSize\(container\)/);
+    match(tempTerminalSource, /function connectTerminalWsAfterLayout\(terminalId, attempt\)/);
+    match(tempTerminalSource, /ensureTerminalSurface\(container\)/);
+    match(tempTerminalSource, /function waitForTerminalFit\(container, attempt, callback\)/);
+    match(tempTerminalSource, /HerdrTerminalFit\.gridSize\(container, term/);
+    match(tempTerminalSource, /HerdrTerminalFit\.cellSize\(term, container/);
+    match(tempTerminalSource, /HerdrTerminalFit\.fitXtermToContainer\(container\)/);
+    match(terminalFitSource, /function cellSize\(term, container, fallback\)/);
+    match(terminalFitSource, /function gridSize\(container, term, options\)/);
+    match(terminalFitSource, /function fitXtermToContainer\(container\)/);
+    match(terminalFitSource, /root\.HerdrTerminalFit/);
+    match(tempTerminalSource, /resizeTerminalSurface\(container, cols, rows\)/);
+    match(tempTerminalSource, /box\.width >= 320 && box\.height >= 120/);
+    match(tempTerminalSource, /function afterBrowserLayout\(callback\)/);
+    match(tempTerminalSource, /rowReserve: 1/);
+    match(terminalFitSource, /rows: Math\.max\(opts\.minRows \|\| 8,/);
+    ok(!tempTerminalSource.includes("setTimeout(handleResize, 0)"));
+    match(modalCss, /height: min\(80vh, calc\(100dvh - 32px\)\)/);
+    match(modalCss, /width: calc\(100vw - 32px\);\n\s+max-width: none;/);
+    ok(!modalCss.includes("max-width: 1200px"));
+    match(modalCss, /\.temp-terminal-body \{[\s\S]*?min-height: 0;[\s\S]*?overflow: hidden;/);
+    match(modalCss, /\.temp-terminal-body \.xterm \{[\s\S]*?height: 100%;[\s\S]*?width: 100%;/);
+    match(html, /Input captured · Ctrl\+G detaches/);
+    match(html, /aria-label="Detach temporary terminal"/);
+    match(modalCss, /\.temp-terminal-hint/);
+    match(source, /Ctrl\+G<\/kbd><span>Detach temporary terminal/);
+    match(source, /Temporary terminal captures Tab\/Backspace and normal input while open/);
   });
 
   it("defines file explorer and Git file filters", () => {
     match(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), /q=\$\{encodeURIComponent\(target\.filter\.trim\(\)\)\}/);
     match(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), /showSearch\(\)/);
+    const sharedFileTreeSource = readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8");
+    const desktopFileBrowserSource = readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8");
+    const mobileFileBrowserSource = readFileSync(new URL("./mobile/file_browser.js", import.meta.url), "utf8");
+    const desktopWorktreesSource = readFileSync(new URL("./desktop/app_js/worktrees.js", import.meta.url), "utf8");
+    const mobileWorktreesSource = readFileSync(new URL("./mobile/worktrees.js", import.meta.url), "utf8");
+    const directoryPickerSource = readFileSync(new URL("./desktop/directory_picker.js", import.meta.url), "utf8");
+    match(sharedFileTreeSource, /renderCurrentDirectoryRow/);
+    match(sharedFileTreeSource, /herdr-tree-up-action/);
+    match(sharedFileTreeSource, /value === "~"/);
+    match(desktopFileBrowserSource, /Tree\.renderCurrentDirectoryRow/);
+    match(mobileFileBrowserSource, /Tree\.renderCurrentDirectoryRow/);
+    match(desktopFileBrowserSource, /permission_required/);
+    match(desktopFileBrowserSource, /Grant folder access/);
+    match(desktopFileBrowserSource, /\/api\/file-browser\/request-access/);
+    match(directoryPickerSource, /permission_required/);
+    match(directoryPickerSource, /Grant folder access/);
+    match(directoryPickerSource, /function configuredDefaultFolder\(\)/);
+    match(directoryPickerSource, /typeof window\.defaultFolderPath === "function"/);
+    match(directoryPickerSource, /function initialPickerPath\(input\)/);
+    match(directoryPickerSource, /if \(!text \|\| text === "\/"\) return configuredDefaultFolder\(\);/);
+    match(directoryPickerSource, /const parts = splitPath\(initialPickerPath\(input\)\);/);
+    match(desktopWorktreesSource, /return defaultFolderPath\(\) \|\| String\(options\.explorationDefaultDirectory \|\| ""\)\.trim\(\) \|\| "~";/);
+    match(mobileWorktreesSource, /defaultFolderFn/);
+    match(mobileWorktreesSource, /if \(defaultFolder\) return defaultFolder;/);
+    match(directoryPickerSource, /Tree\.renderCurrentDirectoryRow/);
+    ok(!directoryPickerSource.includes("Tree.upEntry"));
+    ok(!directoryPickerSource.includes(">Root</button>"));
+    ok(!desktopFileBrowserSource.includes("entries.unshift(Tree.upEntry"));
+    ok(!mobileFileBrowserSource.includes("entries.unshift(Tree.upEntry"));
     const fileTreeSource = readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8");
     const fileIconSource = readFileSync(new URL("./shared/file_icons.js", import.meta.url), "utf8");
     const fileIconCss = readFileSync(new URL("./shared/file_icons.css", import.meta.url), "utf8");
@@ -624,6 +766,7 @@ describe("app bundle load", () => {
     match(html, /id="optBuiltinBackendEnabled"/);
     match(html, /id="optExternalHerdrBackendEnabled"/);
     match(html, /id="optBuiltinShell"/);
+    match(html, /id="optDefaultFolder"/);
     match(html, /id="optNoSleepAutoCooldown"/);
     match(html, /id="serverSettingsApply"/);
     match(html, /<h3>Network access<\/h3>/);
@@ -637,6 +780,11 @@ describe("app bundle load", () => {
     match(source, /builtin_backend_enabled: builtinBackendEnabled,/);
     match(source, /external_herdr_backend_enabled: externalHerdrBackendEnabled,/);
     match(source, /builtin_shell: builtinShell \|\| null,/);
+    match(source, /default_folder: defaultFolder \|\| null,/);
+    match(source, /state\.defaultFolder = settings\.default_folder/);
+    match(source, /selectedOrDefaultWorkspace/);
+    match(source, /defaultFolderFn: defaultFolderPath/);
+    ok(!source.includes('body: JSON.stringify({ label: "default", cwd: null })'));
   });
 
   it("labels the side footer backend as built-in for built-in backends", async () => {
@@ -1752,23 +1900,24 @@ describe("app bundle load", () => {
     equal(ctx.document.getElementById("workspaceCreateLabel").value, "project");
   });
 
-  it("keeps exploration and worktree default directories separate", () => {
+  it("uses settings default folder for workspace and worktree open defaults", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
+    vm.runInContext('state.defaultFolder = "/tmp/default"', ctx);
 
     ctx.openWorkspaceCreateModal();
-    equal(ctx.document.getElementById("workspaceCreatePath").value, "");
+    equal(ctx.document.getElementById("workspaceCreatePath").value, "/tmp/default");
 
     ctx.document.getElementById("optWorktreeDefaultDirectory").value = "/tmp/worktrees";
     ctx.document.getElementById("optWorktreeDefaultDirectory").oninput();
     ctx.document.getElementById("optExplorationDefaultDirectory").value = "/tmp/code";
     ctx.document.getElementById("optExplorationDefaultDirectory").oninput();
     ctx.openWorkspaceCreateModal();
-    equal(ctx.document.getElementById("workspaceCreatePath").value, "/tmp/code");
+    equal(ctx.document.getElementById("workspaceCreatePath").value, "/tmp/default");
 
     ctx.openWorktreeOpenModal();
 
-    equal(ctx.document.getElementById("worktreeDiscoverPath").value, "/tmp/code");
+    equal(ctx.document.getElementById("worktreeDiscoverPath").value, "/tmp/default");
 
     vm.runInContext('state.openWorktreeSource = { repo_name: "repo", repo_root: "/src/repo" }', ctx);
     ctx.document.getElementById("worktreeNewBranch").value = "feature/x";
@@ -1778,6 +1927,11 @@ describe("app bundle load", () => {
 
   it("defines side-by-side and unified Git diff layouts", () => {
     match(gitSettingsSource, /id="optGitUiDiffLayout"/);
+    match(gitSettingsSource, /id="optGitUiDefaultBranch"/);
+    match(gitSettingsSource, /gitUiDefaultBranch: "master"/);
+    match(gitUiSource, /function gitLogDefaultBranch\(\)/);
+    match(gitUiSource, /base=\$\{encodeURIComponent\(baseBranch\)\}/);
+    match(gitUiSource, /Show \$\{esc\(baseBranch\)\} first, then the current branch/);
     match(gitSettingsSource, /Unified \(GitHub-style\)/);
     match(gitSettingsSource, /gitUiDiffLayout: "side-by-side"/);
     match(gitUiSource, /function diffLayoutMode\(\)/);
@@ -1788,6 +1942,20 @@ describe("app bundle load", () => {
     match(gitUiSource, /restoreHunk\('\$\{arg\(path\)\}',\$\{hunkIndex\}\)/);
     match(gitUiSource, /function contextArrowsForChunk\(chunks, index\)/);
     match(gitUiSource, /const after = next \? hiddenGap\(chunk, next\) : false;/);
+  });
+
+  it("loads shared terminal fit helper before terminal clients", () => {
+    const terminalFitSource = readFileSync(new URL("./shared/terminal_fit.js", import.meta.url), "utf8");
+    const desktopTerminalSource = readFileSync(new URL("./desktop/app_js/terminal.js", import.meta.url), "utf8");
+    const mobileTerminalSource = readFileSync(new URL("./mobile/terminal.js", import.meta.url), "utf8");
+
+    match(appBootSource, /\/assets\/shared\/terminal-fit\.js/);
+    match(terminalFitSource, /visibleBox/);
+    match(desktopTerminalSource, /HerdrTerminalFit\.cellSize\(term, terminal/);
+    match(desktopTerminalSource, /HerdrTerminalFit\.gridSize\(shell, term/);
+    match(mobileTerminalSource, /HerdrTerminalFit\.gridSize\(shell, term/);
+    match(mobileTerminalSource, /HerdrTerminalFit\.fitXtermToContainer\(terminal\)/);
+    ok(!mobileTerminalSource.includes("Math.floor(shell.clientWidth / 9)"));
   });
 
   it("uses the same editor mount tooling for previous and current hunk text", () => {

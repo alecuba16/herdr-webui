@@ -270,11 +270,19 @@
   padding: 14px;
 }
 .file-browser-error {
+  align-items: center;
   border: 1px solid #f38ba8;
   border-radius: 10px;
   color: #f38ba8;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: space-between;
   margin: 10px;
   padding: 10px;
+}
+.file-browser-error span {
+  min-width: 0;
 }
 .herdr-file-tree {
   display: flex;
@@ -302,6 +310,33 @@
 .herdr-tree-row.active {
   background: var(--control-hover, var(--panel2));
   border-color: var(--border2);
+}
+.herdr-file-tree-current {
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+  padding: 8px 8px 4px;
+}
+.herdr-tree-row.current {
+  background: var(--panel2);
+  border-color: var(--border2);
+  cursor: default;
+  font-weight: 700;
+}
+.herdr-tree-up-action {
+  background: var(--bg);
+  border: 1px solid var(--border2);
+  border-radius: 999px;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 8px;
+}
+.herdr-tree-up-action:hover,
+.herdr-tree-up-action:focus {
+  border-color: var(--accent);
+  color: var(--accent);
+  outline: 0;
 }
 .herdr-tree-name {
   overflow: hidden;

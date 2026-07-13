@@ -350,7 +350,7 @@ function worktreeDefaultDirectoryOption() {
   return String(options.worktreeDefaultDirectory || "").trim();
 }
 function explorationDefaultDirectoryOption() {
-  return String(options.explorationDefaultDirectory || "").trim();
+  return defaultFolderPath() || String(options.explorationDefaultDirectory || "").trim() || "~";
 }
 function defaultWorktreeCheckoutPath() {
   const source = state.openWorktreeSource || {},

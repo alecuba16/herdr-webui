@@ -18,6 +18,7 @@ const SHARED_LINE_CONTEXT_JS: &str = include_str!("assets/shared/line_context.js
 const SHARED_WORKSPACE_SEARCH_JS: &str = include_str!("assets/shared/workspace_search.js");
 const SHARED_EDITOR_JS: &str = include_str!("assets/shared/editor.js");
 const SHARED_TERMINAL_SCROLL_JS: &str = include_str!("assets/shared/terminal_scroll.js");
+const SHARED_TERMINAL_FIT_JS: &str = include_str!("assets/shared/terminal_fit.js");
 const SHARED_TEMP_TERMINAL_JS: &str = include_str!("assets/shared/temp_terminal.js");
 const VENDOR_CODEMIRROR_JS: &str = include_str!("assets/vendor/codemirror.bundle.js");
 const APP_BOOT_JS: &str = include_str!("assets/app_boot.js");
@@ -175,6 +176,13 @@ pub(crate) async fn shared_editor_js() -> Response {
 pub(crate) async fn shared_terminal_scroll_js() -> Response {
     static_text(
         SHARED_TERMINAL_SCROLL_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(crate) async fn shared_terminal_fit_js() -> Response {
+    static_text(
+        SHARED_TERMINAL_FIT_JS,
         "application/javascript; charset=utf-8",
     )
 }
@@ -413,6 +421,7 @@ mod tests {
             javascript
         );
         assert_eq!(content_type(&shared_terminal_scroll_js().await), javascript);
+        assert_eq!(content_type(&shared_terminal_fit_js().await), javascript);
         assert_eq!(content_type(&shared_editor_js().await), javascript);
         assert_eq!(content_type(&vendor_codemirror_js().await), javascript);
         assert_eq!(content_type(&mobile_file_browser_js().await), javascript);

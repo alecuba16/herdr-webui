@@ -336,7 +336,7 @@ function syncGitWorkspaceToggle() {
     setupSessionChrome();
     return;
   }
-  const workspace = state.workspaces.find((w) => w.workspace_id === state.ws);
+  const workspace = selectedOrDefaultWorkspace();
   const status = window.HerdrGitUi && window.HerdrGitUi.workspaceStatus ? window.HerdrGitUi.workspaceStatus(state.ws, workspace) : "unknown";
   button.className = `btn worktree-open-trigger shell-action shell-icon-button git-workspace-toggle ${status}`;
   button.innerHTML = appIcon("git");
@@ -371,9 +371,9 @@ async function ensureFileBrowserLoaded() {
   await loadDesktopFeature("/assets/desktop/file-browser.js");
 }
 
-async function openWorkspaceGitUi(id) {
+async function openWorkspaceGitUi(id, options) {
   if (!gitUiEnabled()) return;
-  const workspace = state.workspaces.find((w) => w.workspace_id === id);
+  const workspace = selectedOrDefaultWorkspace(id);
   if (!workspace) return;
   try {
     await ensureGitUiLoaded();
@@ -382,7 +382,7 @@ async function openWorkspaceGitUi(id) {
     return;
   }
   if (window.HerdrFileBrowser) window.HerdrFileBrowser.hide();
-  window.HerdrGitUi.open(workspace);
+  window.HerdrGitUi.open(workspace, options || {});
   render();
 }
 
@@ -392,15 +392,15 @@ function syncFileWorkspaceToggle() {
     setupSessionChrome();
     return;
   }
-  const workspace = state.workspaces.find((w) => w.workspace_id === state.ws);
+  const workspace = selectedOrDefaultWorkspace();
   const hasPath = !!workspacePath(workspace);
   button.disabled = !hasPath;
-  button.title = hasPath ? "Show file browser" : "No workspace path available";
+  button.title = hasPath ? "Show file browser" : "No workspace or default folder available";
   syncShellModeButtons();
 }
 
-async function openWorkspaceFileBrowser(id) {
-  const workspace = state.workspaces.find((w) => w.workspace_id === id);
+async function openWorkspaceFileBrowser(id, options) {
+  const workspace = selectedOrDefaultWorkspace(id);
   if (!workspace) return;
   try {
     await ensureFileBrowserLoaded();
@@ -409,7 +409,7 @@ async function openWorkspaceFileBrowser(id) {
     return;
   }
   if (window.HerdrGitUi) window.HerdrGitUi.hide();
-  window.HerdrFileBrowser.open(workspace).catch((error) => alert(error.message || String(error)));
+  window.HerdrFileBrowser.open(workspace, options || {}).catch((error) => alert(error.message || String(error)));
   render();
 }
 function runWorkspaceContextAction(action, button) {

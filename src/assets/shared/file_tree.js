@@ -67,6 +67,19 @@
       .join("")}</div>`;
   }
 
+  function renderCurrentDirectoryRow(options) {
+    const opts = options || {};
+    const callback = opts.callback || "HerdrFileTree";
+    const upMethod = opts.upMethod || "up";
+    const path = opts.path || opts.cwd || "";
+    const label = opts.label || basename(path) || path || "Files";
+    const title = opts.title || path || label;
+    const up = opts.canGoUp
+      ? `<button type="button" class="herdr-tree-up-action" title="Go up one folder" onclick="event.preventDefault();event.stopPropagation();${callback}.${upMethod}()">↑ Up</button>`
+      : "";
+    return `<div class="herdr-file-tree-current" role="presentation"><div class="herdr-tree-row dir current" role="treeitem" tabindex="0" title="${esc(title)}"><span class="herdr-tree-caret"></span><span class="herdr-tree-kind">${icon("dir", path || label)}</span><span class="herdr-tree-name">${esc(label)}</span>${up}</div></div>`;
+  }
+
   function renderPathTree(files, options) {
     const opts = Object.assign({ indentPx: treeIndentPx() }, options || {});
     const root = { dirs: new Map(), files: [] };
@@ -173,6 +186,8 @@
 
   function parentDirectory(path) {
     const value = String(path || "").replace(/\/+$/, "");
+    if (value === "~" || value === "") return value || "/";
+    if (/^~\/[^/]+$/.test(value)) return "~";
     if (!value || value === "/") return value || "/";
     const index = value.lastIndexOf("/");
     if (index <= 0) return "/";
@@ -288,6 +303,7 @@
     highlight,
     parentDirectory,
     parentPath,
+    renderCurrentDirectoryRow,
     renderEntries,
     renderPathTree,
     normalizeSearchKind,

@@ -37,6 +37,7 @@
     gitKind: "",
     gitDiff: null,
     gitDiffError: "",
+    defaultFolder: "",
   };
 
   let eventWs,
@@ -120,6 +121,13 @@
     if (!response.ok || body.error)
       throw Error(apiErrorMessage(body, response.statusText));
     return body;
+  }
+
+  async function loadServerSettings() {
+    try {
+      const settings = await api("/api/server-settings");
+      state.defaultFolder = settings.default_folder || state.defaultFolder || "";
+    } catch (_) {}
   }
 
   function apiErrorMessage(body, statusText) {
@@ -292,7 +300,10 @@
         <div class="temp-terminal-modal" role="dialog" aria-modal="true" aria-labelledby="tempTerminalTitle">
           <div class="temp-terminal-head">
             <h2 id="tempTerminalTitle">Temporary terminal</h2>
-            <button class="temp-terminal-close" id="tempTerminalClose" title="Close" aria-label="Close temporary terminal">✕</button>
+            <div class="temp-terminal-head-actions">
+              <span class="temp-terminal-hint">Input captured · Ctrl+G detaches</span>
+              <button class="temp-terminal-close" id="tempTerminalClose" title="Detach temporary terminal" aria-label="Detach temporary terminal">✕</button>
+            </div>
           </div>
           <div class="temp-terminal-body">
             <div class="terminal" id="tempTerminal"></div>
@@ -489,6 +500,7 @@
     return (
       (workspace && workspace.worktree && workspace.worktree.checkout_path) ||
       (workspace && (workspace.cwd || workspace.path)) ||
+      state.defaultFolder ||
       ""
     );
   }
@@ -1153,6 +1165,7 @@
         return globalThis.HerdrAppHelpers.resolveTerminalFontFamily("");
       }
     },
+    defaultFolderFn: () => state.defaultFolder || "",
   });
   window.addEventListener("resize", () => mobileTempTerminal.handleResize());
   mobileSettings = globalThis.HerdrMobileSettings.create({
@@ -1326,6 +1339,7 @@
   applyTheme();
   parseRoute(true);
   render();
+  loadServerSettings().then(render);
   refresh();
   connectEvents();
   window.addEventListener("popstate", () => {

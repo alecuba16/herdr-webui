@@ -259,27 +259,40 @@ fn handle_client_connection(
                 )?;
                 seq += 1;
                 if !writer_started {
-                    let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(256);
+                    let (tx, rx) = mpsc::sync_channel::<TerminalSubscriberMessage>(256);
                     terminal.subscribe(tx);
                     let mut writer = stream.try_clone().map_err(|err| err.to_string())?;
                     let terminal_size = Arc::clone(&terminal_size);
                     thread::spawn(move || {
                         let mut seq = seq;
-                        while let Ok(bytes) = rx.recv() {
-                            let (width, height) = terminal_size
-                                .lock()
-                                .map(|size| *size)
-                                .unwrap_or((cols, rows));
-                            let frame = ServerMessage::Terminal(TerminalFrame {
-                                seq,
-                                width,
-                                height,
-                                full: false,
-                                bytes,
-                            });
-                            seq += 1;
-                            if write_message(&mut writer, &frame).is_err() {
-                                break;
+                        while let Ok(message) = rx.recv() {
+                            match message {
+                                TerminalSubscriberMessage::Output(bytes) => {
+                                    let (width, height) = terminal_size
+                                        .lock()
+                                        .map(|size| *size)
+                                        .unwrap_or((cols, rows));
+                                    let frame = ServerMessage::Terminal(TerminalFrame {
+                                        seq,
+                                        width,
+                                        height,
+                                        full: false,
+                                        bytes,
+                                    });
+                                    seq += 1;
+                                    if write_message(&mut writer, &frame).is_err() {
+                                        break;
+                                    }
+                                }
+                                TerminalSubscriberMessage::Exited => {
+                                    let _ = write_message(
+                                        &mut writer,
+                                        &ServerMessage::ServerShutdown {
+                                            reason: Some("terminal exited".to_string()),
+                                        },
+                                    );
+                                    break;
+                                }
                             }
                         }
                     });
@@ -1082,7 +1095,14 @@ struct TerminalRuntime {
     child: Mutex<Box<dyn Child + Send + Sync>>,
     writer: Mutex<Box<dyn Write + Send>>,
     scrollback: Mutex<VecDeque<u8>>,
-    subscribers: Mutex<Vec<mpsc::SyncSender<Vec<u8>>>>,
+    subscribers: Mutex<Vec<mpsc::SyncSender<TerminalSubscriberMessage>>>,
+    exited: AtomicBool,
+}
+
+#[derive(Clone)]
+enum TerminalSubscriberMessage {
+    Output(Vec<u8>),
+    Exited,
 }
 
 impl TerminalRuntime {
@@ -1150,6 +1170,7 @@ impl TerminalRuntime {
             writer: Mutex::new(writer),
             scrollback: Mutex::new(VecDeque::new()),
             subscribers: Mutex::new(Vec::new()),
+            exited: AtomicBool::new(false),
         });
         let runtime_for_reader = Arc::clone(&runtime);
         thread::spawn(move || {
@@ -1161,6 +1182,7 @@ impl TerminalRuntime {
                     Err(_) => break,
                 }
             }
+            runtime_for_reader.notify_exited();
         });
         Ok(runtime)
     }
@@ -1189,7 +1211,11 @@ impl TerminalRuntime {
         }
     }
 
-    fn subscribe(&self, tx: mpsc::SyncSender<Vec<u8>>) {
+    fn subscribe(&self, tx: mpsc::SyncSender<TerminalSubscriberMessage>) {
+        if self.exited.load(Ordering::Acquire) {
+            let _ = tx.try_send(TerminalSubscriberMessage::Exited);
+            return;
+        }
         if let Ok(mut subscribers) = self.subscribers.lock() {
             subscribers.push(tx);
         }
@@ -1229,7 +1255,7 @@ impl TerminalRuntime {
             }
         }
         if let Ok(mut subscribers) = self.subscribers.lock() {
-            let payload = bytes.to_vec();
+            let payload = TerminalSubscriberMessage::Output(bytes.to_vec());
             subscribers.retain(|tx| match tx.try_send(payload.clone()) {
                 Ok(()) => true,
                 Err(mpsc::TrySendError::Full(_)) => false,
@@ -1237,6 +1263,29 @@ impl TerminalRuntime {
             });
         }
         self.publish_agent_status_if_changed();
+    }
+
+    fn notify_exited(&self) {
+        if self.exited.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        self.event_hub.publish(
+            "pane.exited",
+            json!({
+                "workspace_id": self.event_context.workspace_id,
+                "tab_id": self.event_context.tab_id,
+                "pane_id": self.event_context.pane_id,
+                "terminal_id": self.event_context.terminal_id,
+                "reason": "terminal exited",
+            }),
+        );
+        if let Ok(mut subscribers) = self.subscribers.lock() {
+            subscribers.retain(|tx| match tx.try_send(TerminalSubscriberMessage::Exited) {
+                Ok(()) => false,
+                Err(mpsc::TrySendError::Full(_)) => false,
+                Err(mpsc::TrySendError::Disconnected(_)) => false,
+            });
+        }
     }
 
     fn publish_agent_status_if_changed(&self) {
@@ -2514,6 +2563,51 @@ mod tests {
         assert_eq!(event["event"], "pane.agent_status_changed");
         assert_eq!(event["data"]["agent"], "jcode");
         assert_eq!(event["data"]["agent_status"], "working");
+    }
+
+    #[test]
+    fn terminal_exit_notifies_subscribers_and_event_hub() {
+        let hub = BuiltinEventHub::new();
+        let events = hub.subscribe();
+        let context = PaneEventContext {
+            workspace_id: "ws_exit".to_string(),
+            tab_id: "tab_exit".to_string(),
+            pane_id: "pane_exit".to_string(),
+            terminal_id: "term_exit".to_string(),
+        };
+        let terminal = TerminalRuntime::spawn(
+            "term_exit".to_string(),
+            std::env::current_dir().unwrap(),
+            vec![
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "printf done".to_string(),
+            ],
+            24,
+            80,
+            hub,
+            context,
+        )
+        .unwrap();
+        let (tx, rx) = mpsc::sync_channel(8);
+        terminal.subscribe(tx);
+
+        let mut saw_exit = false;
+        for _ in 0..8 {
+            match rx.recv_timeout(Duration::from_secs(1)).unwrap() {
+                TerminalSubscriberMessage::Output(_) => {}
+                TerminalSubscriberMessage::Exited => {
+                    saw_exit = true;
+                    break;
+                }
+            }
+        }
+        assert!(saw_exit);
+
+        let event = events.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!(event["event"], "pane.exited");
+        assert_eq!(event["data"]["pane_id"], "pane_exit");
+        assert_eq!(event["data"]["terminal_id"], "term_exit");
     }
 
     #[test]

@@ -78,10 +78,11 @@ describe("app boot", () => {
     equal(scripts[6].src, "/assets/vendor/codemirror.js");
     equal(scripts[7].src, "/assets/shared/editor.js");
     equal(scripts[8].src, "/assets/shared/terminal-scroll.js");
-    equal(scripts[9].src, "/assets/shared/temp-terminal.js");
-    equal(scripts[10].src, "/assets/desktop/search.js");
-    equal(scripts[11].src, "/assets/desktop/directory-picker.js");
-    equal(scripts[12].src, "/assets/desktop/app.js");
+    equal(scripts[9].src, "/assets/shared/terminal-fit.js");
+    equal(scripts[10].src, "/assets/shared/temp-terminal.js");
+    equal(scripts[11].src, "/assets/desktop/search.js");
+    equal(scripts[12].src, "/assets/desktop/directory-picker.js");
+    equal(scripts[13].src, "/assets/desktop/app.js");
   });
 
   it("loads mobile bundle for narrow screens", () => {
@@ -101,14 +102,15 @@ describe("app boot", () => {
     equal(scripts[6].src, "/assets/vendor/codemirror.js");
     equal(scripts[7].src, "/assets/shared/editor.js");
     equal(scripts[8].src, "/assets/shared/terminal-scroll.js");
-    equal(scripts[9].src, "/assets/shared/temp-terminal.js");
-    equal(scripts[10].src, "/assets/mobile/core.js");
-    equal(scripts[11].src, "/assets/mobile/attention.js");
-    equal(scripts[12].src, "/assets/mobile/terminal.js");
-    equal(scripts[13].src, "/assets/mobile/worktrees.js");
-    equal(scripts[14].src, "/assets/mobile/file-browser.js");
-    equal(scripts[15].src, "/assets/mobile/settings.js");
-    equal(scripts[16].src, "/assets/mobile/app.js");
+    equal(scripts[9].src, "/assets/shared/terminal-fit.js");
+    equal(scripts[10].src, "/assets/shared/temp-terminal.js");
+    equal(scripts[11].src, "/assets/mobile/core.js");
+    equal(scripts[12].src, "/assets/mobile/attention.js");
+    equal(scripts[13].src, "/assets/mobile/terminal.js");
+    equal(scripts[14].src, "/assets/mobile/worktrees.js");
+    equal(scripts[15].src, "/assets/mobile/file-browser.js");
+    equal(scripts[16].src, "/assets/mobile/settings.js");
+    equal(scripts[17].src, "/assets/mobile/app.js");
   });
 
   it("honors explicit desktop override", () => {

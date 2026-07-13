@@ -21,12 +21,14 @@
     var closeId = opts.closeId;
     var fontFamilyFn = opts.fontFamilyFn || function () { return "monospace"; };
     var themeFn = opts.themeFn || function () { return {}; };
+    var defaultFolderFn = opts.defaultFolderFn || function () { return ""; };
 
     var term = null;
     var termWs = null;
     var createdTabId = null;
     var createdPaneId = null;
     var createdWorkspaceId = null;
+    var ownsWorkspace = false;
     var isOpen = false;
     var closing = false;
     var inputEncoder = new TextEncoder();
@@ -35,16 +37,18 @@
     var resizeTimer = null;
     var linkProvider = null;
     var confirmVisible = false;
+    var keyTrapBound = false;
 
     function open() {
       if (isOpen) return;
-      if (!state.ws) return;
+      if (!state.ws && !defaultFolderFn()) return;
       isOpen = true;
       closing = false;
       var modal = el(modalId);
       if (modal) modal.style.display = "grid";
       var container = el(containerId);
       if (container) container.innerHTML = "";
+      installInputTrap();
       createTerminalSession();
     }
 
@@ -58,6 +62,7 @@
       hideCloseConfirm();
       isOpen = false;
       closing = true;
+      removeInputTrap();
       disconnectWs();
       disposeTerm();
       var modal = el(modalId);
@@ -65,7 +70,9 @@
       closeTab();
       createdTabId = null;
       createdPaneId = null;
+      if (ownsWorkspace) closeWorkspaceById(createdWorkspaceId);
       createdWorkspaceId = null;
+      ownsWorkspace = false;
     }
 
     function showCloseConfirm() {
@@ -119,13 +126,100 @@
       }
     }
 
+    function installInputTrap() {
+      if (keyTrapBound) return;
+      keyTrapBound = true;
+      document.addEventListener("keydown", tempTerminalKeydown, true);
+      var modal = el(modalId);
+      if (modal) {
+        modal.addEventListener("pointerdown", focusTerminalFromEvent, true);
+        modal.addEventListener("focusin", focusTerminalFromEvent, true);
+      }
+    }
+
+    function removeInputTrap() {
+      if (!keyTrapBound) return;
+      keyTrapBound = false;
+      document.removeEventListener("keydown", tempTerminalKeydown, true);
+      var modal = el(modalId);
+      if (modal) {
+        modal.removeEventListener("pointerdown", focusTerminalFromEvent, true);
+        modal.removeEventListener("focusin", focusTerminalFromEvent, true);
+      }
+    }
+
+    function tempTerminalKeydown(event) {
+      if (!isOpen || confirmVisible) return;
+      if (event.ctrlKey && !event.altKey && !event.metaKey && String(event.key || "").toLowerCase() === "g") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        showCloseConfirm();
+        return;
+      }
+      if (isCloseControl(event.target)) return;
+      if (tempTerminalOwnsEventTarget(event.target)) return;
+      var input = terminalInputForKey(event);
+      if (input == null) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      focusTerminalSoon();
+      sendInput(input);
+    }
+
+    function isCloseControl(target) {
+      return !!(target && target.closest && target.closest(".temp-terminal-close, .temp-terminal-confirm"));
+    }
+
+    function tempTerminalOwnsEventTarget(target) {
+      if (!target || !term) return false;
+      var termElement = term.element || (el(containerId) && el(containerId).querySelector && el(containerId).querySelector(".xterm"));
+      return !!(termElement && termElement.contains && termElement.contains(target));
+    }
+
+    function focusTerminalFromEvent(event) {
+      if (isCloseControl(event && event.target)) return;
+      focusTerminalSoon();
+    }
+
+    function focusTerminalSoon() {
+      setTimeout(function () {
+        if (!isOpen || confirmVisible || !term) return;
+        try { term.focus(); } catch (e) {}
+      }, 0);
+    }
+
+    function terminalInputForKey(event) {
+      if (event.metaKey || event.altKey) return null;
+      if (event.ctrlKey) return null;
+      switch (event.key) {
+        case "Backspace": return "\x7f";
+        case "Tab": return event.shiftKey ? "\x1b[Z" : "\t";
+        case "Enter": return "\r";
+        case "Escape": return "\x1b";
+        case "Delete": return "\x1b[3~";
+        case "ArrowUp": return "\x1b[A";
+        case "ArrowDown": return "\x1b[B";
+        case "ArrowRight": return "\x1b[C";
+        case "ArrowLeft": return "\x1b[D";
+        case "Home": return "\x1b[H";
+        case "End": return "\x1b[F";
+        case "PageUp": return "\x1b[5~";
+        case "PageDown": return "\x1b[6~";
+        default:
+          return String(event.key || "").length === 1 ? event.key : null;
+      }
+    }
+
     function createTerminalSession() {
-      if (!state.ws) { close(); return; }
-      api("/api/tabs", {
+      ensureWorkspaceForTempTerminal().then(function (workspaceId) {
+        if (!workspaceId) { close(); return null; }
+        return api("/api/tabs", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ workspace_id: state.ws, label: "temp" }),
+          body: JSON.stringify({ workspace_id: workspaceId, label: "temp" }),
+        });
       }).then(function (res) {
+        if (!res) return null;
         var tab = res && res.result && res.result.tab;
         if (!tab || !tab.tab_id) { close(); return; }
         if (!isOpen) {
@@ -133,14 +227,55 @@
           return;
         }
         createdTabId = tab.tab_id;
-        createdWorkspaceId = state.ws;
+        createdWorkspaceId = createdWorkspaceId || state.ws;
         return findCreatedPane(0);
       }).then(function (pane) {
         if (!isOpen || !pane) return;
         if (!pane.terminal_id) { close(); return; }
         createdPaneId = pane.pane_id || null;
-        connectTerminalWs(pane.terminal_id);
+        connectTerminalWsAfterLayout(pane.terminal_id, 0);
       }).catch(function () { close(); });
+    }
+
+    function connectTerminalWsAfterLayout(terminalId, attempt) {
+      afterBrowserLayout(function () {
+        if (!isOpen) return;
+        var container = el(containerId);
+        var rect = container && container.getBoundingClientRect ? container.getBoundingClientRect() : null;
+        var width = Math.max(0, (container && container.clientWidth) || (rect && rect.width) || 0);
+        var height = Math.max(0, (container && container.clientHeight) || (rect && rect.height) || 0);
+        if ((width < 320 || height < 120) && attempt < 8) {
+          setTimeout(function () { connectTerminalWsAfterLayout(terminalId, attempt + 1); }, 50);
+          return;
+        }
+        connectTerminalWs(terminalId);
+        setTimeout(handleResize, 50);
+        setTimeout(handleResize, 250);
+      });
+    }
+
+    function afterBrowserLayout(callback) {
+      HerdrTerminalFit.afterLayout(callback);
+    }
+
+    function ensureWorkspaceForTempTerminal() {
+      if (state.ws) {
+        createdWorkspaceId = state.ws;
+        ownsWorkspace = false;
+        return Promise.resolve(state.ws);
+      }
+      var cwd = defaultFolderFn();
+      if (!cwd) return Promise.resolve(null);
+      return api("/api/workspaces", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ label: "temp", cwd: cwd }),
+      }).then(function (res) {
+        var workspace = res && res.result && res.result.workspace;
+        createdWorkspaceId = workspace && workspace.workspace_id;
+        ownsWorkspace = !!createdWorkspaceId;
+        return createdWorkspaceId;
+      });
     }
 
     function findCreatedPane(attempt) {
@@ -155,48 +290,89 @@
         });
     }
 
+    function terminalGridSize(container) {
+      return HerdrTerminalFit.gridSize(container, term, {
+        fallbackWidth: 720,
+        fallbackHeight: 420,
+        fallbackCell: { width: 9, height: 20 },
+        minCols: 40,
+        minRows: 8,
+        rowReserve: 1,
+      });
+    }
+
     function connectTerminalWs(terminalId) {
       var container = el(containerId);
       if (!container) return;
-      var cols = 80, rows = 24;
-      if (container.clientWidth && container.clientHeight) {
-        cols = Math.max(40, Math.floor(container.clientWidth / 9));
-        rows = Math.max(10, Math.floor(container.clientHeight / 18));
-      }
-      if (!term) {
-        term = new Terminal({
-          convertEol: false,
-          fontFamily: fontFamilyFn(),
-          scrollback: 5000,
-          theme: themeFn(),
-        });
-        term.open(container);
-        term.onData(function (data) { sendInput(data); });
-        try { term.focus(); } catch (e) {}
-      }
-      try { term.resize(cols, rows); } catch (e) {}
-      var url = wsUrl(
-        "/ws/terminal?terminal_id=" + encodeURIComponent(terminalId) +
-        "&cols=" + cols + "&rows=" + rows +
-        "&temporary_tab_id=" + encodeURIComponent(createdTabId || "")
-      );
-      var ws = new WebSocket(url);
-      termWs = ws;
-      ws.binaryType = "arraybuffer";
-      ws.onopen = function () {
-        if (termWs === ws && term) try { term.focus(); } catch (e) {}
-      };
-      ws.onmessage = function (event) {
-        if (termWs !== ws) return;
-        enqueueFrame(typeof event.data === "string" ? event.data : new Uint8Array(event.data));
-      };
-      ws.onclose = function () {
-        if (termWs === ws) termWs = null;
-        if (isOpen && !closing) {
-          // Server-side terminal exited (e.g. user typed exit) or connection dropped.
-          close();
+      ensureTerminalSurface(container);
+      waitForTerminalFit(container, 0, function (size) {
+        if (!isOpen || !term) return;
+        var cols = size.cols, rows = size.rows;
+        resizeTerminalSurface(container, cols, rows);
+        var url = wsUrl(
+          "/ws/terminal?terminal_id=" + encodeURIComponent(terminalId) +
+          "&cols=" + cols + "&rows=" + rows +
+          "&temporary_tab_id=" + encodeURIComponent(createdTabId || "")
+        );
+        var ws = new WebSocket(url);
+        termWs = ws;
+        ws.binaryType = "arraybuffer";
+        ws.onopen = function () {
+          if (termWs === ws && term) try { term.focus(); } catch (e) {}
+        };
+        ws.onmessage = function (event) {
+          if (termWs !== ws) return;
+          enqueueFrame(typeof event.data === "string" ? event.data : new Uint8Array(event.data));
+        };
+        ws.onclose = function () {
+          if (termWs === ws) termWs = null;
+          if (isOpen && !closing) {
+            // Server-side terminal exited (e.g. user typed exit) or connection dropped.
+            close();
+          }
+        };
+      });
+    }
+
+    function ensureTerminalSurface(container) {
+      if (term) return;
+      term = new Terminal({
+        convertEol: false,
+        fontFamily: fontFamilyFn(),
+        scrollback: 5000,
+        theme: themeFn(),
+      });
+      term.open(container);
+      term.onData(function (data) { sendInput(data); });
+      try { term.focus(); } catch (e) {}
+      refreshTerminalFitAfterFontLoad();
+    }
+
+    function waitForTerminalFit(container, attempt, callback) {
+      afterBrowserLayout(function () {
+        if (!isOpen || !term) return;
+        var size = terminalGridSize(container);
+        if (!terminalFitReady(container, size) && attempt < 10) {
+          setTimeout(function () { waitForTerminalFit(container, attempt + 1, callback); }, 50);
+          return;
         }
-      };
+        callback(size);
+      });
+    }
+
+    function terminalFitReady(container, size) {
+      var box = HerdrTerminalFit.visibleBox(container, { width: 0, height: 0 }) || { width: 0, height: 0 };
+      var cell = HerdrTerminalFit.cellSize(term, container, { width: 9, height: 20 });
+      return box.width >= 320 && box.height >= 120 && cell.width >= 4 && cell.height >= 8 && size.cols >= 40;
+    }
+
+    function refreshTerminalFitAfterFontLoad() {
+      var fonts = globalThis.document && globalThis.document.fonts;
+      if (!fonts || !fonts.ready) return;
+      fonts.ready.then(function () {
+        if (!isOpen || !term) return;
+        handleResize();
+      }).catch(function () {});
     }
 
     function disconnectWs() {
@@ -232,6 +408,12 @@
     function closeTabById(tabId) {
       if (!tabId) return;
       api("/api/tabs/" + encodeURIComponent(tabId) + "/close", { method: "POST" })
+        .catch(function () {});
+    }
+
+    function closeWorkspaceById(workspaceId) {
+      if (!workspaceId) return;
+      api("/api/workspaces/" + encodeURIComponent(workspaceId) + "/close", { method: "POST" })
         .catch(function () {});
     }
 
@@ -303,15 +485,24 @@
         if (!isOpen || !term) return;
         var container = el(containerId);
         if (!container) return;
-        var cols = Math.max(40, Math.floor(container.clientWidth / 9));
-        var rows = Math.max(10, Math.floor(container.clientHeight / 18));
-        try { term.resize(cols, rows); } catch (e) {}
+        var size = terminalGridSize(container);
+        var cols = size.cols, rows = size.rows;
+        resizeTerminalSurface(container, cols, rows);
         if (termWs && termWs.readyState === 1) {
           try {
             termWs.send(JSON.stringify({ type: "resize", cols: cols, rows: rows }));
           } catch (e) {}
         }
       }, 100);
+    }
+
+    function resizeTerminalSurface(container, cols, rows) {
+      try { term.resize(cols, rows); } catch (e) {}
+      fitTerminalDomToContainer(container);
+    }
+
+    function fitTerminalDomToContainer(container) {
+      HerdrTerminalFit.fitXtermToContainer(container);
     }
 
     return { open: open, requestClose: requestClose, close: close, isVisible: isVisible, handleResize: handleResize, handlePaneExited: handlePaneExited };
