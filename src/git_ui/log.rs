@@ -32,6 +32,7 @@ pub(super) struct GitUiRebaseRequest {
     cwd: String,
     upstream: String,
     onto: Option<String>,
+    pull_first: Option<bool>,
     confirmation: Option<String>,
 }
 
@@ -231,10 +232,23 @@ fn git_ui_default_base_ref(cwd: &str) -> Result<String, String> {
     Err("could not find main or master ref".to_string())
 }
 
+fn fetch_branch_name(ref_name: &str) -> &str {
+    ref_name.strip_prefix("origin/").unwrap_or(ref_name)
+}
+
+fn fetched_rebase_ref(ref_name: &str) -> String {
+    if ref_name.starts_with("origin/") || ref_name.starts_with("refs/") {
+        ref_name.to_string()
+    } else {
+        format!("origin/{ref_name}")
+    }
+}
+
 fn git_ui_rebase_blocking(
     cwd: String,
     upstream: String,
     onto: Option<String>,
+    pull_first: bool,
 ) -> Result<Response, (StatusCode, String)> {
     let onto = match onto {
         Some(value) => value,
@@ -243,8 +257,22 @@ fn git_ui_rebase_blocking(
             Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
         },
     };
-    match git_ui_text(&cwd, &["rebase", "--onto", &onto, &upstream]) {
-        Ok(text) => Ok(Json(json!({ "ok": true, "message": text, "onto": onto })).into_response()),
+    let rebase_onto = if pull_first {
+        let fetch_branch = fetch_branch_name(&onto).to_string();
+        git_ui_text(&cwd, &["fetch", "origin", &fetch_branch]).map_err(|err| {
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("fetch selected branch failed:\n{err}"),
+            )
+        })?;
+        fetched_rebase_ref(&onto)
+    } else {
+        onto.clone()
+    };
+    match git_ui_text(&cwd, &["rebase", "--onto", &rebase_onto, &upstream]) {
+        Ok(text) => {
+            Ok(Json(json!({ "ok": true, "message": text, "onto": rebase_onto })).into_response())
+        }
         Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
     }
 }
@@ -280,7 +308,12 @@ pub(super) async fn git_ui_rebase(
         None => None,
     };
     let cwd = body.cwd;
-    match tokio::task::spawn_blocking(move || git_ui_rebase_blocking(cwd, upstream, onto)).await {
+    let pull_first = body.pull_first.unwrap_or(false);
+    match tokio::task::spawn_blocking(move || {
+        git_ui_rebase_blocking(cwd, upstream, onto, pull_first)
+    })
+    .await
+    {
         Ok(Ok(response)) => response,
         Ok(Err((status, msg))) => git_json_error(status, msg),
         Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
@@ -559,5 +592,24 @@ pub(super) async fn git_ui_apply_patch(
         Ok(Ok(response)) => response,
         Ok(Err((status, msg))) => git_json_error(status, msg),
         Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rebase_pull_first_fetches_branch_and_rebases_onto_remote_tracking_ref() {
+        assert_eq!(fetch_branch_name("master"), "master");
+        assert_eq!(fetched_rebase_ref("master"), "origin/master");
+        assert_eq!(fetch_branch_name("origin/master"), "master");
+        assert_eq!(fetched_rebase_ref("origin/master"), "origin/master");
+        assert_eq!(fetch_branch_name("feature/topic"), "feature/topic");
+        assert_eq!(fetched_rebase_ref("feature/topic"), "origin/feature/topic");
+        assert_eq!(
+            fetched_rebase_ref("refs/remotes/origin/master"),
+            "refs/remotes/origin/master"
+        );
     }
 }

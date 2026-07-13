@@ -858,7 +858,7 @@
       return renderGitOpModalShell(force ? "Push failed" : "Push changes", body, force ? "Retry push" : "Push", force ? "danger" : "primary", "runPushFromModal");
     }
     if (modal.type === "rebase") {
-      const body = `${common}<label class="git-ui-branch-field"><span>Rebase commits after</span><input id="gitUiRebaseUpstream" value="HEAD" placeholder="HEAD"></label><label class="git-ui-check-row"><input id="gitUiRebasePullFirst" type="checkbox" checked><span>First pull selected branch before rebasing</span></label>${error}`;
+      const body = `${common}<label class="git-ui-branch-field"><span>Rebase commits after</span><input id="gitUiRebaseUpstream" value="HEAD" placeholder="HEAD"></label><label class="git-ui-check-row"><input id="gitUiRebasePullFirst" type="checkbox" checked><span>Fetch selected branch before rebasing</span></label>${error}`;
       return renderGitOpModalShell("Rebase branch", body, "Rebase", "primary", "runRebaseFromModal");
     }
     return "";
@@ -2307,13 +2307,18 @@
     async runRebaseFromModal() {
       const view = active();
       if (!view) return;
+      const modal = state.gitOpModal || { type: "rebase" };
       const upstream = ((document.getElementById("gitUiRebaseUpstream") || {}).value || "").trim();
       const branch = (document.getElementById("gitUiOpBranch") || {}).value || "";
       const pullFirst = !!((document.getElementById("gitUiRebasePullFirst") || {}).checked);
       if (!upstream) return;
       state.gitOpModal = null;
-      if (pullFirst) await postJson("/api/git-ui/pull", { cwd: view.cwd, mode: "ff-only", branch });
-      await postJson("/api/git-ui/rebase", { cwd: view.cwd, upstream, onto: branch, confirmation: "rebase selected" });
+      try {
+        await postJson("/api/git-ui/rebase", { cwd: view.cwd, upstream, onto: branch, pull_first: pullFirst, confirmation: "rebase selected" });
+      } catch (err) {
+        state.gitOpModal = Object.assign({}, modal, { type: "rebase", error: err.message || String(err) });
+        render();
+      }
     },
     resolve(path, mode) { post("/api/git-ui/conflict-resolve", { cwd: active().cwd, path: decodeURIComponent(path), mode }); },
     conflictAction(action) { post("/api/git-ui/conflict-action", { cwd: active().cwd, action }); },

@@ -345,6 +345,9 @@ describe("app bundle load", () => {
     match(gitUiSource, /Soft reset/);
     match(gitUiSource, /Hard reset/);
     match(gitUiSource, /selectedLogToolbar\(selected, \{ allowRewrite: currentMode\(\) === "changes" \}\)/);
+    match(gitUiSource, /Fetch selected branch before rebasing/);
+    match(gitUiSource, /pull_first: pullFirst/);
+    ok(!gitUiSource.includes('/api/git-ui/pull", { cwd: view.cwd, mode: "ff-only", branch }'));
   });
 
   it("gates stash tab by stash count and offers log tagging", () => {
