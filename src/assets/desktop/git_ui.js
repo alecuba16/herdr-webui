@@ -9,6 +9,7 @@
     branchModal: null,
     gitOpModal: null,
     commitModal: null,
+    compareSelectedModal: null,
     resetSelectedModal: null,
     tagSelectedModal: null,
     gitToast: null,
@@ -83,6 +84,11 @@
     if (state.commitModal) {
       saveDraftFromDom();
       state.commitModal = null;
+      render();
+      return;
+    }
+    if (state.compareSelectedModal) {
+      state.compareSelectedModal = null;
       render();
       return;
     }
@@ -808,6 +814,13 @@
     if (!modal) return "";
     const label = esc((modal.ref || "").slice(0, 12));
     return `<div class="git-ui-modal-backdrop"><div class="git-ui-modal"><div class="git-ui-modal-head"><strong>Reset to selected commit</strong></div><p class="git-ui-muted">Choose how to reset the current branch to <strong>${label}</strong>.</p><div class="git-ui-actions"><button class="git-ui-btn" onclick="HerdrGitUi.resetSelected('soft')">Soft reset</button><button class="git-ui-btn danger" onclick="HerdrGitUi.resetSelected('hard')">Hard reset</button></div><div class="git-ui-muted">Soft keeps your changes staged. Hard discards working tree changes and requires confirmation.</div><div class="git-ui-modal-actions"><button class="git-ui-btn" onclick="HerdrGitUi.closeSelectedResetModal()">Cancel</button></div></div></div>`;
+  }
+
+  function renderCompareSelectedModal() {
+    const modal = state.compareSelectedModal;
+    if (!modal) return "";
+    const label = esc((modal.ref || "").slice(0, 12));
+    return `<div class="git-ui-modal-backdrop"><div class="git-ui-modal"><div class="git-ui-modal-head"><strong>Compare selected commit</strong></div><p class="git-ui-muted">Choose what to compare with <strong>${label}</strong>.</p><div class="git-ui-actions"><button class="git-ui-btn primary" onclick="HerdrGitUi.compareSelectedWithPrevious()">Previous version</button><button class="git-ui-btn" onclick="HerdrGitUi.compareSelectedWithCurrent()">Current changes</button></div><div class="git-ui-muted">Previous version shows the selected commit diff against its parent. Current changes compares the selected commit with your working tree.</div><div class="git-ui-modal-actions"><button class="git-ui-btn" onclick="HerdrGitUi.closeSelectedCompareModal()">Cancel</button></div></div></div>`;
   }
 
   function renderTagSelectedModal() {
@@ -1633,7 +1646,7 @@
     const version = ++state.renderVersion;
     const panel = ensurePanel();
     panel.classList.toggle("mutating", !!activeView.mutating);
-    panel.innerHTML = renderSide() + renderMain() + renderContextMenu() + renderCommitModal() + renderResetSelectedModal() + renderTagSelectedModal() + renderBranchModal() + renderGitOpModal() + renderCleanupConfirm() + renderGitToast();
+    panel.innerHTML = renderSide() + renderMain() + renderContextMenu() + renderCommitModal() + renderCompareSelectedModal() + renderResetSelectedModal() + renderTagSelectedModal() + renderBranchModal() + renderGitOpModal() + renderCleanupConfirm() + renderGitToast();
     const side = panel.querySelector(".git-ui-side");
     if (side) side.scrollTop = state.sideScrollTop || 0;
     const nextContent = panel.querySelector(".git-ui-content");
@@ -2436,8 +2449,30 @@
     },
     compareSelectedLog() {
       const selected = ((active() || {}).selectedLogCommits || []).slice(0, 2);
-      if (selected.length === 1) this.compareCommits(selected[0], ".");
+      if (selected.length === 1) this.openSelectedCompareModal();
       if (selected.length === 2) this.compareCommits(selected[0], selected[1]);
+    },
+    openSelectedCompareModal() {
+      const selected = ((active() || {}).selectedLogCommits || []).slice(0, 1);
+      if (!selected.length) return;
+      state.compareSelectedModal = { ref: selected[0] };
+      render();
+    },
+    closeSelectedCompareModal() {
+      state.compareSelectedModal = null;
+      render();
+    },
+    async compareSelectedWithPrevious() {
+      const hash = state.compareSelectedModal && state.compareSelectedModal.ref;
+      state.compareSelectedModal = null;
+      if (!hash) return;
+      await this.showHistoryCommit(hash);
+    },
+    async compareSelectedWithCurrent() {
+      const hash = state.compareSelectedModal && state.compareSelectedModal.ref;
+      state.compareSelectedModal = null;
+      if (!hash) return;
+      await this.compareCommits(hash, ".");
     },
     setLogAll(value) { active().logAll = !!value; render(); },
     reset() {

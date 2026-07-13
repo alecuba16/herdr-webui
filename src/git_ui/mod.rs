@@ -738,6 +738,21 @@ mod tests {
                 "feature"
             ]
         );
+
+        let mut selected_commit = query();
+        selected_commit.base = Some("abc1234^".to_string());
+        selected_commit.target = Some("abc1234".to_string());
+        assert_eq!(
+            git_ui_diff_args(&selected_commit, true).unwrap(),
+            vec![
+                "diff",
+                "--no-ext-diff",
+                "--color=never",
+                "-U3",
+                "abc1234^",
+                "abc1234"
+            ]
+        );
     }
 
     #[test]

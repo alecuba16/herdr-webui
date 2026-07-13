@@ -342,6 +342,13 @@ describe("app bundle load", () => {
     match(gitActionsSource, /options\.allowRewrite/);
     ok(!gitActionsSource.includes("Reset soft</button><button"));
     match(gitUiSource, /renderResetSelectedModal/);
+    match(gitUiSource, /renderCompareSelectedModal/);
+    match(gitUiSource, /Compare selected commit/);
+    match(gitUiSource, /Previous version shows the selected commit diff against its parent/);
+    match(gitUiSource, /compareSelectedWithPrevious/);
+    match(gitUiSource, /await this\.showHistoryCommit\(hash\)/);
+    match(gitUiSource, /compareSelectedWithCurrent/);
+    match(gitUiSource, /await this\.compareCommits\(hash, "\."\)/);
     match(gitUiSource, /Soft reset/);
     match(gitUiSource, /Hard reset/);
     match(gitUiSource, /selectedLogToolbar\(selected, \{ allowRewrite: currentMode\(\) === "changes" \}\)/);
