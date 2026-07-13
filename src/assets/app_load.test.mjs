@@ -105,6 +105,7 @@ function context() {
 describe("app bundle load", () => {
   let source;
   let gitUiSource;
+  let gitLogSource;
   let gitActionsSource;
   let gitSettingsSource;
   let desktopWorkspacesCss;
@@ -137,6 +138,7 @@ describe("app bundle load", () => {
       "\n" +
       desktopAppSource;
     gitUiSource = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
+    gitLogSource = readFileSync(new URL("./desktop/git_ui/log.js", import.meta.url), "utf8");
     gitActionsSource = readFileSync(new URL("./desktop/git_ui/actions.js", import.meta.url), "utf8");
     gitSettingsSource = readFileSync(new URL("./desktop/git_ui/settings.js", import.meta.url), "utf8");
     desktopWorkspacesCss = readFileSync(new URL("./desktop/app_css/workspaces.css", import.meta.url), "utf8");
@@ -149,7 +151,7 @@ describe("app bundle load", () => {
   it("keeps file history header scoped to selected files", () => {
     match(gitUiSource, /function renderFileToolbar\(activeTab\) \{\n\s+const view = active\(\) \|\| \{\};/);
     match(gitUiSource, /const history = view\.file \? `<button class="git-ui-btn \$\{activeTab === "history" \? "active" : ""\}" onclick="HerdrGitUi\.tab\('history'\)">History<\/button>` : "";/);
-    equal([...gitUiSource.matchAll(/git-ui-log-head/g)].length, 1);
+    equal([...gitLogSource.matchAll(/git-ui-log-scope-head/g)].length, 1);
   });
 
   it("hides only large file diffs by default", () => {
@@ -1944,7 +1946,7 @@ describe("app bundle load", () => {
     match(gitSettingsSource, /gitUiDefaultBranch: "master"/);
     match(gitUiSource, /function gitLogDefaultBranch\(\)/);
     match(gitUiSource, /base=\$\{encodeURIComponent\(baseBranch\)\}/);
-    match(gitUiSource, /Show \$\{esc\(baseBranch\)\} first, then the current branch/);
+    match(gitLogSource, /Show \$\{esc\(baseBranch\)\} first, then the current branch/);
     match(gitSettingsSource, /Unified \(GitHub-style\)/);
     match(gitSettingsSource, /gitUiDiffLayout: "side-by-side"/);
     match(gitUiSource, /function diffLayoutMode\(\)/);
@@ -2017,6 +2019,24 @@ describe("app bundle load", () => {
     match(gitUiSource, /typeof window\.defaultFolderPath === "function"/);
     match(gitUiSource, /id="gitUiCleanupRoot"[^`]*data-directory-picker-after-select="HerdrGitUi\.scanCleanup"/);
     match(gitUiSource, /class="mini directory-picker-trigger" onclick="HerdrDirectoryPicker\.openInput\('gitUiBranchCwd'\)"/);
+  });
+
+  it("renders Git log like a four-column graph table with ref chips", () => {
+    const gitLogCss = readFileSync(new URL("./desktop/git_ui/log.css", import.meta.url), "utf8");
+    const assetsSource = readFileSync(new URL("../assets.rs", import.meta.url), "utf8");
+
+    match(assetsSource, /include_str!\("assets\/desktop\/git_ui\/log\.js"\)/);
+    match(gitUiSource, /logAll: true,/);
+    match(gitUiSource, /window\.HerdrGitLog\.render/);
+    ok(!gitUiSource.includes("function renderLogLine(line)"));
+    match(gitLogSource, /window\.HerdrGitLog = \{ render, scrollToCommit, rowsFromData, laneColor \};/);
+    match(gitLogSource, /const header = `<div class="git-ui-log-table-head"><span>Graph<\/span><span>Description<\/span><span>Date<\/span><span>Author<\/span><\/div>`;/);
+    match(gitLogSource, /class="git-ui-log-ref \$\{kind\}"/);
+    match(gitLogSource, /current: detail\.labels\.some/);
+    match(gitLogSource, /const LANE_COLORS = \[/);
+    match(gitLogCss, /grid-template-columns: minmax\(96px, max-content\) minmax\(240px, 1fr\) minmax\(90px, 120px\) minmax\(120px, 180px\);/);
+    match(gitLogCss, /\.git-ui-log-ref\.current/);
+    match(gitLogCss, /border-style: dashed;/);
   });
 
   it("uses the same editor mount tooling for previous and current hunk text", () => {

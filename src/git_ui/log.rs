@@ -9,6 +9,7 @@ use axum::Json;
 use serde::Deserialize;
 use serde_json::json;
 
+use super::log_graph::{parse_log_row_json, reconstruct_log_line, LOG_FORMAT};
 use super::{
     git_json_error, git_ui_output, git_ui_repo, git_ui_text, git_ui_text_strings, safe_git_token,
 };
@@ -71,36 +72,6 @@ pub(super) struct GitUiApplyPatchRequest {
     pub(super) cached: Option<bool>,
 }
 
-/// Reconstruct a git log graph line so it no longer contains the null-byte
-/// (`%x00`) separators emitted by `--format=%H%x00%an%x00%ar%x00%s`.
-///
-/// Commit lines become a human-readable `--oneline`-style string
-/// (`<graph_prefix><short-hash> <message>`). Graph-only and empty lines are
-/// passed through unchanged, since they never contain null bytes.
-fn reconstruct_log_line(line: &str) -> String {
-    let raw = line.trim();
-    if raw.is_empty() {
-        return line.to_owned();
-    }
-    let start = match raw.find(|c: char| c.is_ascii_hexdigit()) {
-        Some(start) => start,
-        None => return line.to_owned(),
-    };
-    let end = raw[start..]
-        .find(|c: char| !c.is_ascii_hexdigit())
-        .map(|e| start + e)
-        .unwrap_or(raw.len());
-    if end - start < 7 {
-        return line.to_owned();
-    }
-    let hash = &raw[start..end];
-    let parts: Vec<&str> = raw[end..].split('\0').collect();
-    let message = parts.get(3).map(|s| s.trim()).unwrap_or("");
-    let graph_prefix = &raw[..start];
-    let short = &hash[..8.min(hash.len())];
-    format!("{}{} {}", graph_prefix, short, message)
-}
-
 fn git_log_args(max: &str, all: bool, refs: &[String]) -> Vec<String> {
     let mut args = vec![
         "log".to_string(),
@@ -109,12 +80,11 @@ fn git_log_args(max: &str, all: bool, refs: &[String]) -> Vec<String> {
         "--date=relative".to_string(),
         "--max-count".to_string(),
         max.to_string(),
-        "--format=%H%x00%an%x00%ar%x00%s".to_string(),
+        format!("--format={LOG_FORMAT}"),
     ];
+    args.extend(refs.iter().cloned());
     if all {
         args.push("--all".to_string());
-    } else {
-        args.extend(refs.iter().cloned());
     }
     args
 }
@@ -124,9 +94,6 @@ fn log_refs(
     all: bool,
     base: Option<String>,
 ) -> Result<Vec<String>, (StatusCode, String)> {
-    if all {
-        return Ok(Vec::new());
-    }
     let mut refs = Vec::new();
     if let Some(base) = default_log_base(base) {
         let base = safe_git_token(&base, "log base branch")
@@ -136,7 +103,9 @@ fn log_refs(
             refs.push(base);
         }
     }
-    refs.push("HEAD".to_string());
+    if !all {
+        refs.push("HEAD".to_string());
+    }
     Ok(refs)
 }
 
@@ -170,37 +139,30 @@ fn git_ui_log_blocking(
             let lines = text.lines().map(ToOwned::to_owned).collect::<Vec<_>>();
             let commits = lines
                 .iter()
-                .filter_map(|line| {
-                    let raw = line.trim();
-                    if raw.is_empty() {
-                        return None;
-                    }
-                    let start = match raw.find(|c: char| c.is_ascii_hexdigit()) {
-                        Some(start) => start,
-                        None => return None,
-                    };
-                    let end = raw[start..]
-                        .find(|c: char| !c.is_ascii_hexdigit())
-                        .map(|e| start + e)
-                        .unwrap_or(raw.len());
-                    if end - start < 7 {
-                        return None;
-                    }
-                    let hash = raw[start..end].to_string();
-                    let parts: Vec<&str> = raw[end..].split('\0').collect();
-                    let author = parts.get(1).map(|s| s.trim()).unwrap_or("").to_string();
-                    let date = parts.get(2).map(|s| s.trim()).unwrap_or("").to_string();
-                    let message = parts.get(3).map(|s| s.trim()).unwrap_or("").to_string();
-                    Some(
-                        json!({ "hash": hash, "author": author, "date": date, "message": message }),
-                    )
+                .filter_map(|line| parse_log_row_json(line))
+                .filter(|row| row["hash"].as_str().is_some_and(|hash| !hash.is_empty()))
+                .map(|row| {
+                    json!({
+                        "hash": row["hash"],
+                        "author": row["author"],
+                        "date": row["date"],
+                        "message": row["title"],
+                        "labels": row["labels"],
+                    })
                 })
+                .collect::<Vec<_>>();
+            let rows = lines
+                .iter()
+                .filter_map(|line| parse_log_row_json(line))
                 .collect::<Vec<_>>();
             let display_lines = lines
                 .iter()
                 .map(|line| reconstruct_log_line(line))
                 .collect::<Vec<_>>();
-            Ok(Json(json!({ "commits": commits, "lines": display_lines })).into_response())
+            Ok(
+                Json(json!({ "commits": commits, "lines": display_lines, "rows": rows }))
+                    .into_response(),
+            )
         }
         Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
     }
@@ -670,7 +632,11 @@ mod tests {
 
         assert_eq!(
             log_refs(&repo.to_string_lossy(), false, Some(base.clone())).unwrap(),
-            vec![base, "HEAD".to_string()]
+            vec![base.clone(), "HEAD".to_string()]
+        );
+        assert_eq!(
+            log_refs(&repo.to_string_lossy(), true, Some(base.clone())).unwrap(),
+            vec![base]
         );
         assert_eq!(
             log_refs(
@@ -690,9 +656,23 @@ mod tests {
                 "--date=relative",
                 "--max-count",
                 "80",
-                "--format=%H%x00%an%x00%ar%x00%s",
+                "--format=%H%x00%an%x00%ar%x00%D%x00%s",
                 "master",
                 "HEAD",
+            ]
+        );
+        assert_eq!(
+            git_log_args("80", true, &["master".to_string()]),
+            vec![
+                "log",
+                "--graph",
+                "--decorate",
+                "--date=relative",
+                "--max-count",
+                "80",
+                "--format=%H%x00%an%x00%ar%x00%D%x00%s",
+                "master",
+                "--all",
             ]
         );
 

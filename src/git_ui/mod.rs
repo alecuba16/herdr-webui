@@ -19,6 +19,7 @@ mod conflict;
 mod diff;
 mod file;
 mod log;
+mod log_graph;
 mod stash;
 
 macro_rules! check_auth {
@@ -875,6 +876,11 @@ mod tests {
             assert_eq!(log.status(), StatusCode::OK);
             let json = response_json(log).await;
             assert!(json["lines"][0].as_str().unwrap().contains("initial"));
+            assert_eq!(json["rows"][0]["title"], "initial");
+            assert!(json["rows"][0]["hash"]
+                .as_str()
+                .is_some_and(|hash| !hash.is_empty()));
+            assert!(json["rows"][0]["lane"].as_u64().is_some());
 
             let file = git_ui_file(
                 State(state.clone()),
