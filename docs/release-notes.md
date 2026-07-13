@@ -1,5 +1,9 @@
 # Release notes
 
+### Default folder startup hotfix
+
+- Prevents WebUI startup from blocking before the listener binds when macOS stalls while checking the configured default folder, for example protected folders like `~/Documents`. Startup now uses a bounded readability check and falls back to `~`; explicit settings changes can still trigger the normal permission prompt.
+
 ### Zed-style Git log
 
 - Rebuilds the desktop Git log into a Zed-inspired four-column table with graph lanes, description/ref chips, date, and author. The configured default branch is shown first and colored blue; the current branch is highlighted in red.
