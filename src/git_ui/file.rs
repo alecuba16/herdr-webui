@@ -46,9 +46,18 @@ fn git_ui_blame_blocking(
     file: String,
     ref_name: String,
 ) -> Result<Response, (StatusCode, String)> {
-    match git_ui_text(&cwd, &["blame", "--line-porcelain", &ref_name, "--", &file]) {
+    let args = git_blame_args(&file, &ref_name);
+    match git_ui_text(&cwd, &args) {
         Ok(text) => Ok(Json(json!({ "text": text })).into_response()),
         Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
+    }
+}
+
+fn git_blame_args<'a>(file: &'a str, ref_name: &'a str) -> Vec<&'a str> {
+    if ref_name == "working" {
+        vec!["blame", "--line-porcelain", "--contents", file, "--", file]
+    } else {
+        vec!["blame", "--line-porcelain", ref_name, "--", file]
     }
 }
 
@@ -68,7 +77,7 @@ pub(super) async fn git_ui_blame(
         Ok(file) => file,
         Err(err) => return git_json_error(StatusCode::BAD_REQUEST, err),
     };
-    let ref_name = match safe_git_token(query.ref_name.as_deref().unwrap_or("HEAD"), "ref") {
+    let ref_name = match safe_git_token(query.ref_name.as_deref().unwrap_or("working"), "ref") {
         Ok(v) => v,
         Err(err) => return git_json_error(StatusCode::BAD_REQUEST, err),
     };
@@ -282,5 +291,29 @@ pub(super) async fn git_ui_file_history(
         Ok(Ok(response)) => response,
         Ok(Err((status, msg))) => git_json_error(status, msg),
         Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn blame_uses_working_tree_contents_by_default() {
+        assert_eq!(
+            git_blame_args("src/main.rs", "working"),
+            vec![
+                "blame",
+                "--line-porcelain",
+                "--contents",
+                "src/main.rs",
+                "--",
+                "src/main.rs"
+            ]
+        );
+        assert_eq!(
+            git_blame_args("src/main.rs", "HEAD"),
+            vec!["blame", "--line-porcelain", "HEAD", "--", "src/main.rs"]
+        );
     }
 }

@@ -869,6 +869,7 @@ mod tests {
                     cwd: Some(cwd.clone()),
                     max: Some(5),
                     all: None,
+                    scope: None,
                     base: None,
                     file: None,
                 }),
