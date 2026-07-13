@@ -1,5 +1,11 @@
 # Release notes
 
+### Zed-style Git log
+
+- Rebuilds the desktop Git log into a Zed-inspired four-column table with graph lanes, description/ref chips, date, and author. The configured default branch is shown first and colored blue; the current branch is highlighted in red.
+- Adds hover details with full hash, exact commit date/time, author, branches/tags, and title, plus local filters for description, date, and author.
+- Adds a bottom `Load more changes` button. The backend returns `has_more` and `limit` by fetching one extra commit, and the UI increases history in 80-commit pages up to a safe cap.
+
 ## 0.2.50 Release Notes
 
 ### Startup and default folder behavior
