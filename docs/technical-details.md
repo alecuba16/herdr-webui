@@ -412,3 +412,7 @@ When a visible feature is added, update `shortcutsModalHtml()` and tests in `src
 - File writes use editor state and backend validation.
 - Workspace/worktree close forgets only UI state, not repository data.
 - Destructive Git actions are routed through backend commands and UI confirmation paths.
+
+## Git log implementation
+
+- `/api/git-ui/log` asks Git for one more commit than the requested limit, returns `has_more` and `limit`, and emits structured graph rows for the Zed-style Git log.

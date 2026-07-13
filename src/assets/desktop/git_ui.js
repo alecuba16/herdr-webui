@@ -18,6 +18,8 @@
     shortcutPrefixUntil: 0,
   };
   const LARGE_FILE_DIFF_LINE_LIMIT = 500;
+  const GIT_LOG_PAGE_SIZE = 80;
+  const GIT_LOG_MAX_LIMIT = 2000;
   const DEFAULT_GIT_SHORTCUTS = {
     changes: "Digit1",
     commit: "Digit2",
@@ -248,7 +250,7 @@
 
   function showGitKeyboardHelp() {
     const map = gitShortcutMap();
-    alert(`${gitShortcutPrefixLabel()} then:\n${shortcutDisplay(map.changes)} Changes list\n${shortcutDisplay(map.commit)} Commit modal\n${shortcutDisplay(map.log)} Log\n${shortcutDisplay(map.stash)} Stash\n${shortcutDisplay(map.refresh)} Refresh\n${shortcutDisplay(map.stageAll)} Stage/unstage all\n${shortcutDisplay(map.stageFile)} Stage file\n${shortcutDisplay(map.unstageFile)} Unstage file\n${shortcutDisplay(map.discardFile)} Discard file\n${shortcutDisplay(map.stashFile)} Stash file\n${shortcutDisplay(map.history)} File history\n${shortcutDisplay(map.blame)} Toggle blame\n${shortcutDisplay(map.edit)} Edit file\n${shortcutDisplay(map.compare)} Return to current changes\n${shortcutDisplay(map.branch)} Git directory / branch dialog\n${shortcutDisplay(map.focusFile)} Focus file list\n${shortcutDisplay(map.help)} Git shortcut help\n\nFolder picker: selected folder becomes the Git panel directory immediately.\n↩ beside Refresh: return Git to the current workspace/worktree folder.\nEsc Back / hide`);
+    alert(`${gitShortcutPrefixLabel()} then:\n${shortcutDisplay(map.changes)} Changes list\n${shortcutDisplay(map.commit)} Commit modal\n${shortcutDisplay(map.log)} Log\n${shortcutDisplay(map.stash)} Stash\n${shortcutDisplay(map.refresh)} Refresh\n${shortcutDisplay(map.stageAll)} Stage/unstage all\n${shortcutDisplay(map.stageFile)} Stage file\n${shortcutDisplay(map.unstageFile)} Unstage file\n${shortcutDisplay(map.discardFile)} Discard file\n${shortcutDisplay(map.stashFile)} Stash file\n${shortcutDisplay(map.history)} File history\n${shortcutDisplay(map.blame)} Toggle blame\n${shortcutDisplay(map.edit)} Edit file\n${shortcutDisplay(map.compare)} Return to current changes\n${shortcutDisplay(map.branch)} Git directory / branch dialog\n${shortcutDisplay(map.focusFile)} Focus file list\n${shortcutDisplay(map.help)} Git shortcut help\n\nFolder picker: selected folder becomes the Git panel directory immediately.\n↩ beside Refresh: return Git to the current workspace/worktree folder.\nLog view: graph, description, date, and author columns; hover a commit for exact date/details; filter description/date/author; Load more changes fetches older commits.\nEsc Back / hide`);
   }
 
   function shortcutDisplay(value) {
@@ -519,7 +521,9 @@
         compareTarget: "",
         blame: {},
         showBlame: false,
-        logAll: false,
+        logAll: true,
+        logLimit: GIT_LOG_PAGE_SIZE,
+        logLoadingMore: false,
         selectedLogCommits: [],
         compareFilePaths: [],
         collapsedSections: {},
@@ -535,6 +539,7 @@
         cleanupSelected: {},
         fileFilter: "",
         pendingLogScrollHash: "",
+        logFilters: { description: "", date: "", author: "" },
         temporaryHistoryCompare: false,
         sideEditor: null,
       };
@@ -1438,88 +1443,28 @@
   async function renderLog(version) {
     const view = active();
     const baseBranch = gitLogDefaultBranch();
-    const data = await api(`/api/git-ui/log?cwd=${encodeURIComponent(view.cwd)}&all=${view.logAll ? "true" : "false"}&base=${encodeURIComponent(baseBranch)}`);
+    const logLimit = Math.max(1, Math.min(GIT_LOG_MAX_LIMIT, Number(view.logLimit || GIT_LOG_PAGE_SIZE)));
+    view.logLimit = logLimit;
+    const data = await api(`/api/git-ui/log?cwd=${encodeURIComponent(view.cwd)}&all=${view.logAll ? "true" : "false"}&base=${encodeURIComponent(baseBranch)}&max=${logLimit}`);
     const selected = view.selectedLogCommits || [];
     const compare = Actions.selectedLogToolbar(selected, { allowRewrite: currentMode() === "changes" });
-    const currentLabel = `${baseBranch} + current`;
-    replaceContent(version, `<div class="git-ui-log-scope-head"><span class="git-ui-toolbar-title">History scope</span><button class="git-ui-btn ${!view.logAll ? "active" : ""}" title="Show ${esc(baseBranch)} first, then the current branch" onclick="HerdrGitUi.setLogAll(false)">${esc(currentLabel)}</button><button class="git-ui-btn ${view.logAll ? "active" : ""}" onclick="HerdrGitUi.setLogAll(true)">All branches</button>${compare}</div><div class="git-ui-log">${(data.lines || []).map(renderLogLine).join("")}</div>`);
+    replaceContent(version, window.HerdrGitLog.render({
+      data,
+      selected,
+      logAll: view.logAll,
+      logLimit: view.logLimit,
+      logLoadingMore: !!view.logLoadingMore,
+      baseBranch,
+      actionsHtml: compare,
+      filters: view.logFilters || {},
+      esc,
+      arg,
+    }));
     if (view.pendingLogScrollHash) {
       const hash = view.pendingLogScrollHash;
       view.pendingLogScrollHash = "";
-      requestAnimationFrame(() => scrollToLogCommit(hash));
+      requestAnimationFrame(() => window.HerdrGitLog.scrollToCommit(hash));
     }
-  }
-
-  function renderLogLine(line) {
-    const parsed = parseLogGraphLine(line);
-    const graph = parsed.graph;
-    const hash = parsed.hash;
-    const detail = splitLogDecorations(parsed.message);
-    const labels = detail.labels.map((label) => `<span>${esc(label)}</span>`).join("");
-    const selected = hash && (((active() || {}).selectedLogCommits || []).includes(hash));
-    const click = hash ? ` onclick="HerdrGitUi.selectLogCommit(event,'${arg(hash)}')"` : "";
-    const cls = hash ? (selected ? " selected" : "") : " graph-only";
-    return `<div class="git-ui-log-row${cls}" data-log-hash="${esc(hash)}" title="${esc(detail.message)}"${click}>${renderGraph(graph, !!hash)}<span class="git-ui-log-msg">${hash ? `<strong>${esc(hash)}</strong> ` : ""}${esc(detail.message)}</span><span class="git-ui-log-labels">${labels}</span></div>`;
-  }
-
-  function scrollToLogCommit(hash) {
-    const nodes = Array.from(document.querySelectorAll(".git-ui-log-row[data-log-hash]"));
-    const target = nodes.find((node) => (node.dataset.logHash || "").startsWith(hash));
-    if (target) target.scrollIntoView({ block: "center", behavior: "smooth" });
-  }
-
-  function parseLogGraphLine(line) {
-    const raw = String(line || "");
-    const hash = raw.match(/[a-f0-9]{7,}/i);
-    if (hash) {
-      return {
-        graph: raw.slice(0, hash.index),
-        hash: hash[0],
-        message: cleanLogMessage(raw.slice((hash.index || 0) + hash[0].length)),
-      };
-    }
-    if (/^[|\\/ *._-]+$/.test(raw)) return { graph: raw, hash: "", message: "" };
-    return { graph: "* ", hash: "", message: cleanLogMessage(raw) };
-  }
-
-  function cleanLogMessage(value) {
-    return String(value || "")
-      .replace(/^[\s|\\/_.*-]+/, "")
-      .trim();
-  }
-
-  function splitLogDecorations(value) {
-    const text = String(value || "").trim();
-    const match = text.match(/^\(([^)]+)\)\s*(.*)$/);
-    if (!match) return { labels: [], message: text };
-    return {
-      labels: match[1].split(",").map((label) => label.trim()).filter(Boolean),
-      message: match[2].trim(),
-    };
-  }
-
-  function renderGraph(graph, hasCommit) {
-    const chars = String(graph || "* ").split("");
-    const cells = [];
-    for (let i = 0; i < Math.min(chars.length, 18); i++) {
-      const ch = chars[i];
-      let cls = "git-ui-lane";
-      let mark = "";
-      if (ch === "*") {
-        cls += " commit";
-        mark = '<i class="git-ui-log-dot"></i>';
-      } else if (ch === "|") cls += " vertical";
-      else if (ch === "/") cls += " merge-left";
-      else if (ch === "\\") cls += " merge-right";
-      else if (ch === "_" || ch === "-" || ch === ".") cls += " horizontal";
-      cells.push(`<span class="${cls}" style="--lane:${laneColor(i)}">${mark}</span>`);
-    }
-    if (hasCommit && !graph.includes("*")) cells.unshift('<span class="git-ui-lane commit" style="--lane:var(--accent)"><i class="git-ui-log-dot"></i></span>');
-    return `<span class="git-ui-log-graph" aria-hidden="true">${cells.join("")}</span>`;
-  }
-
-  function laneColor(index) {
-    return ["var(--accent)", "var(--muted)", "var(--border2)", "var(--fg)", "var(--border)", "var(--panel2)"][index % 6];
   }
 
   async function renderStash(version) {
@@ -2547,7 +2492,35 @@
       if (!hash) return;
       await this.compareCommits(hash, ".");
     },
-    setLogAll(value) { active().logAll = !!value; render(); },
+    setLogAll(value) {
+      const view = active();
+      if (!view) return;
+      view.logAll = !!value;
+      view.logLimit = GIT_LOG_PAGE_SIZE;
+      render();
+    },
+    async loadMoreLog() {
+      const view = active();
+      if (!view || view.logLoadingMore) return;
+      view.logLimit = Math.min(GIT_LOG_MAX_LIMIT, Math.max(GIT_LOG_PAGE_SIZE, Number(view.logLimit || GIT_LOG_PAGE_SIZE)) + GIT_LOG_PAGE_SIZE);
+      view.logLoadingMore = true;
+      try {
+        await renderLog(++state.renderVersion);
+      } catch (err) {
+        view.error = err.message || String(err);
+      } finally {
+        view.logLoadingMore = false;
+        if (state.visible) render();
+      }
+    },
+    setLogFilter(field, value) {
+      const view = active();
+      if (!view) return;
+      if (!["description", "date", "author"].includes(field)) return;
+      view.logFilters = view.logFilters || { description: "", date: "", author: "" };
+      view.logFilters[field] = value || "";
+      if (window.HerdrGitLog && window.HerdrGitLog.applyFilters) window.HerdrGitLog.applyFilters(view.logFilters);
+    },
     reset() {
       const ref = prompt("Reset to ref", "HEAD");
       if (!ref) return;

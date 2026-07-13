@@ -9,6 +9,7 @@ use axum::Json;
 use serde::Deserialize;
 use serde_json::json;
 
+use super::log_graph::{parse_log_row_json, reconstruct_log_line, LOG_FORMAT};
 use super::{
     git_json_error, git_ui_output, git_ui_repo, git_ui_text, git_ui_text_strings, safe_git_token,
 };
@@ -71,37 +72,7 @@ pub(super) struct GitUiApplyPatchRequest {
     pub(super) cached: Option<bool>,
 }
 
-/// Reconstruct a git log graph line so it no longer contains the null-byte
-/// (`%x00`) separators emitted by `--format=%H%x00%an%x00%ar%x00%s`.
-///
-/// Commit lines become a human-readable `--oneline`-style string
-/// (`<graph_prefix><short-hash> <message>`). Graph-only and empty lines are
-/// passed through unchanged, since they never contain null bytes.
-fn reconstruct_log_line(line: &str) -> String {
-    let raw = line.trim();
-    if raw.is_empty() {
-        return line.to_owned();
-    }
-    let start = match raw.find(|c: char| c.is_ascii_hexdigit()) {
-        Some(start) => start,
-        None => return line.to_owned(),
-    };
-    let end = raw[start..]
-        .find(|c: char| !c.is_ascii_hexdigit())
-        .map(|e| start + e)
-        .unwrap_or(raw.len());
-    if end - start < 7 {
-        return line.to_owned();
-    }
-    let hash = &raw[start..end];
-    let parts: Vec<&str> = raw[end..].split('\0').collect();
-    let message = parts.get(3).map(|s| s.trim()).unwrap_or("");
-    let graph_prefix = &raw[..start];
-    let short = &hash[..8.min(hash.len())];
-    format!("{}{} {}", graph_prefix, short, message)
-}
-
-fn git_log_args(max: &str, all: bool, refs: &[String]) -> Vec<String> {
+fn git_log_args(max: usize, all: bool, refs: &[String]) -> Vec<String> {
     let mut args = vec![
         "log".to_string(),
         "--graph".to_string(),
@@ -109,12 +80,11 @@ fn git_log_args(max: &str, all: bool, refs: &[String]) -> Vec<String> {
         "--date=relative".to_string(),
         "--max-count".to_string(),
         max.to_string(),
-        "--format=%H%x00%an%x00%ar%x00%s".to_string(),
+        format!("--format={LOG_FORMAT}"),
     ];
+    args.extend(refs.iter().cloned());
     if all {
         args.push("--all".to_string());
-    } else {
-        args.extend(refs.iter().cloned());
     }
     args
 }
@@ -124,9 +94,6 @@ fn log_refs(
     all: bool,
     base: Option<String>,
 ) -> Result<Vec<String>, (StatusCode, String)> {
-    if all {
-        return Ok(Vec::new());
-    }
     let mut refs = Vec::new();
     if let Some(base) = default_log_base(base) {
         let base = safe_git_token(&base, "log base branch")
@@ -136,7 +103,9 @@ fn log_refs(
             refs.push(base);
         }
     }
-    refs.push("HEAD".to_string());
+    if !all {
+        refs.push("HEAD".to_string());
+    }
     Ok(refs)
 }
 
@@ -157,50 +126,83 @@ fn git_ref_exists(cwd: &str, ref_name: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn parsed_log_rows(lines: &[String]) -> Vec<serde_json::Value> {
+    lines
+        .iter()
+        .filter_map(|line| parse_log_row_json(line))
+        .collect::<Vec<_>>()
+}
+
+fn count_commit_rows(rows: &[serde_json::Value]) -> usize {
+    rows.iter()
+        .filter(|row| row["hash"].as_str().is_some_and(|hash| !hash.is_empty()))
+        .count()
+}
+
+fn trim_log_lines_to_commit_limit(lines: Vec<String>, limit: usize) -> Vec<String> {
+    let mut commits = 0usize;
+    let mut trimmed = Vec::new();
+    for line in lines {
+        let is_commit = parse_log_row_json(&line)
+            .and_then(|row| row["hash"].as_str().map(|hash| !hash.is_empty()))
+            .unwrap_or(false);
+        if is_commit {
+            commits += 1;
+            if commits > limit {
+                break;
+            }
+        }
+        trimmed.push(line);
+    }
+    trimmed
+}
+
 fn git_ui_log_blocking(
     cwd: String,
-    max: String,
+    limit: usize,
     all: bool,
     base: Option<String>,
 ) -> Result<Response, (StatusCode, String)> {
     let refs = log_refs(&cwd, all, base)?;
-    let args = git_log_args(&max, all, &refs);
+    let query_limit = limit.saturating_add(1);
+    let args = git_log_args(query_limit, all, &refs);
     match git_ui_text_strings(&cwd, &args) {
         Ok(text) => {
-            let lines = text.lines().map(ToOwned::to_owned).collect::<Vec<_>>();
-            let commits = lines
+            let raw_lines = text.lines().map(ToOwned::to_owned).collect::<Vec<_>>();
+            let raw_rows = parsed_log_rows(&raw_lines);
+            let has_more = count_commit_rows(&raw_rows) > limit;
+            let lines = if has_more {
+                trim_log_lines_to_commit_limit(raw_lines, limit)
+            } else {
+                raw_lines
+            };
+            let rows = parsed_log_rows(&lines);
+            let commits = rows
                 .iter()
-                .filter_map(|line| {
-                    let raw = line.trim();
-                    if raw.is_empty() {
-                        return None;
-                    }
-                    let start = match raw.find(|c: char| c.is_ascii_hexdigit()) {
-                        Some(start) => start,
-                        None => return None,
-                    };
-                    let end = raw[start..]
-                        .find(|c: char| !c.is_ascii_hexdigit())
-                        .map(|e| start + e)
-                        .unwrap_or(raw.len());
-                    if end - start < 7 {
-                        return None;
-                    }
-                    let hash = raw[start..end].to_string();
-                    let parts: Vec<&str> = raw[end..].split('\0').collect();
-                    let author = parts.get(1).map(|s| s.trim()).unwrap_or("").to_string();
-                    let date = parts.get(2).map(|s| s.trim()).unwrap_or("").to_string();
-                    let message = parts.get(3).map(|s| s.trim()).unwrap_or("").to_string();
-                    Some(
-                        json!({ "hash": hash, "author": author, "date": date, "message": message }),
-                    )
+                .filter(|row| row["hash"].as_str().is_some_and(|hash| !hash.is_empty()))
+                .map(|row| {
+                    json!({
+                        "hash": row["hash"],
+                        "author": row["author"],
+                        "date": row["date"],
+                        "message": row["title"],
+                        "exact_date": row["exact_date"],
+                        "labels": row["labels"],
+                    })
                 })
                 .collect::<Vec<_>>();
             let display_lines = lines
                 .iter()
                 .map(|line| reconstruct_log_line(line))
                 .collect::<Vec<_>>();
-            Ok(Json(json!({ "commits": commits, "lines": display_lines })).into_response())
+            Ok(Json(json!({
+                "commits": commits,
+                "lines": display_lines,
+                "rows": rows,
+                "has_more": has_more,
+                "limit": limit,
+            }))
+            .into_response())
         }
         Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
     }
@@ -218,11 +220,11 @@ pub(super) async fn git_ui_log(
     let Some(cwd) = query.cwd.as_deref() else {
         return git_json_error(StatusCode::BAD_REQUEST, "cwd is required");
     };
-    let max = query.max.unwrap_or(80).clamp(1, 300).to_string();
+    let limit = query.max.unwrap_or(80).clamp(1, 2000);
     let all = query.all.unwrap_or(false);
     let base = query.base;
     let cwd = cwd.to_string();
-    match tokio::task::spawn_blocking(move || git_ui_log_blocking(cwd, max, all, base)).await {
+    match tokio::task::spawn_blocking(move || git_ui_log_blocking(cwd, limit, all, base)).await {
         Ok(Ok(response)) => response,
         Ok(Err((status, msg))) => git_json_error(status, msg),
         Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
@@ -670,7 +672,11 @@ mod tests {
 
         assert_eq!(
             log_refs(&repo.to_string_lossy(), false, Some(base.clone())).unwrap(),
-            vec![base, "HEAD".to_string()]
+            vec![base.clone(), "HEAD".to_string()]
+        );
+        assert_eq!(
+            log_refs(&repo.to_string_lossy(), true, Some(base.clone())).unwrap(),
+            vec![base]
         );
         assert_eq!(
             log_refs(
@@ -682,7 +688,7 @@ mod tests {
             vec!["HEAD".to_string()]
         );
         assert_eq!(
-            git_log_args("80", false, &["master".to_string(), "HEAD".to_string()]),
+            git_log_args(80, false, &["master".to_string(), "HEAD".to_string()]),
             vec![
                 "log",
                 "--graph",
@@ -690,13 +696,68 @@ mod tests {
                 "--date=relative",
                 "--max-count",
                 "80",
-                "--format=%H%x00%an%x00%ar%x00%s",
+                "--format=%H%x00%an%x00%ar%x00%cI%x00%D%x00%s",
                 "master",
                 "HEAD",
             ]
         );
+        assert_eq!(
+            git_log_args(80, true, &["master".to_string()]),
+            vec![
+                "log",
+                "--graph",
+                "--decorate",
+                "--date=relative",
+                "--max-count",
+                "80",
+                "--format=%H%x00%an%x00%ar%x00%cI%x00%D%x00%s",
+                "master",
+                "--all",
+            ]
+        );
 
         let _ = std::fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn trims_log_lines_to_limit_and_reports_more_candidates() {
+        let lines = vec![
+            [
+                "* aaaaaaaa111111",
+                "A",
+                "1 day ago",
+                "2026-07-12T10:00:00Z",
+                "HEAD -> topic",
+                "First",
+            ]
+            .join("\0"),
+            "|\\".to_string(),
+            [
+                "* bbbbbbbb222222",
+                "B",
+                "2 days ago",
+                "2026-07-11T10:00:00Z",
+                "master",
+                "Second",
+            ]
+            .join("\0"),
+            [
+                "* cccccccc333333",
+                "C",
+                "3 days ago",
+                "2026-07-10T10:00:00Z",
+                "",
+                "Third",
+            ]
+            .join("\0"),
+        ];
+        let rows = parsed_log_rows(&lines);
+        assert_eq!(count_commit_rows(&rows), 3);
+        let trimmed = trim_log_lines_to_commit_limit(lines, 2);
+        let trimmed_rows = parsed_log_rows(&trimmed);
+        assert_eq!(count_commit_rows(&trimmed_rows), 2);
+        assert!(trimmed.iter().any(|line| line == "|\\"));
+        assert!(!trimmed.iter().any(|line| line.contains("cccccccc333333")));
     }
 
     fn temp_repo(prefix: &str) -> std::path::PathBuf {
