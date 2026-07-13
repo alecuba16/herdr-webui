@@ -100,6 +100,32 @@
     return !!(view && view.tab === "changes" && currentMode() === "changes" && !view.file && !view.sideEditor);
   }
 
+  function isNotGitRepositoryMessage(message) {
+    return String(message || "").toLowerCase().includes("not a git repository");
+  }
+
+  function isNoGitRepositoryView(view) {
+    return !!(((view && view.status) || {}).not_git_repository);
+  }
+
+  function markNoGitRepository(view) {
+    view.error = "";
+    view.loading = false;
+    view.tab = "cleanup";
+    view.file = "";
+    view.diff = { files: [] };
+    view.status = {
+      state: "cleanup only",
+      repo_path: view.cwd || "",
+      branch: "No Git repository",
+      not_git_repository: true,
+      conflicted: [],
+      staged: [],
+      unstaged: [],
+      untracked: [],
+    };
+  }
+
   function handleGitShortcut(event, view) {
     if (event.defaultPrevented || state.shortcutPrefixUntil <= Date.now()) return false;
     state.shortcutPrefixUntil = 0;
@@ -498,6 +524,11 @@
       view.loading = false;
       if (state.visible) render();
     } catch (err) {
+      if (isNotGitRepositoryMessage(err && err.message)) {
+        markNoGitRepository(view);
+        if (state.visible) render();
+        return;
+      }
       view.error = err.message || String(err);
       view.loading = false;
       if (state.visible) render();
@@ -848,7 +879,12 @@
   }
 
   function renderGitViewTabs(tabs, activeTab) {
-    return `<div class="git-ui-view-toggle-group" role="tablist" aria-label="Git views">${tabs.map((tab) => `<button class="git-ui-view-toggle ${tab.id === "cleanup" ? "git-ui-cleanup-tab" : ""} ${activeTab === tab.id ? "active" : ""}" type="button" role="tab" aria-selected="${activeTab === tab.id ? "true" : "false"}" onclick="HerdrGitUi.tab('${tab.id}')">${tab.label}</button>`).join("")}</div>`;
+    return `<div class="git-ui-view-toggle-group" role="tablist" aria-label="Git views">${tabs.map((tab) => {
+      const disabled = tab.disabled ? " disabled" : "";
+      const title = tab.disabled ? ` title="${esc(tab.disabledReason || "Unavailable")}"` : "";
+      const onclick = tab.disabled ? "" : ` onclick="HerdrGitUi.tab('${tab.id}')"`;
+      return `<button class="git-ui-view-toggle ${tab.id === "cleanup" ? "git-ui-cleanup-tab" : ""} ${activeTab === tab.id ? "active" : ""}" type="button" role="tab" aria-selected="${activeTab === tab.id ? "true" : "false"}"${title}${onclick}${disabled}>${tab.label}</button>`;
+    }).join("")}</div>`;
   }
 
 
@@ -860,7 +896,11 @@
   function renderSide() {
     const view = active() || {};
     const s = view.status || {};
-    const tabs = [{ id: "changes", label: "changes" }, { id: "log", label: "log" }, { id: "stash", label: "stash" }, { id: "cleanup", label: "cleanup" }];
+    const cleanupOnly = isNoGitRepositoryView(view);
+    const disabledReason = "Open a Git repository to use this view";
+    const tabs = cleanupOnly
+      ? [{ id: "changes", label: "changes", disabled: true, disabledReason }, { id: "log", label: "log", disabled: true, disabledReason }, { id: "stash", label: "stash", disabled: true, disabledReason }, { id: "cleanup", label: "cleanup" }]
+      : [{ id: "changes", label: "changes" }, { id: "log", label: "log" }, { id: "stash", label: "stash" }, { id: "cleanup", label: "cleanup" }];
     const filter = String(view.fileFilter || "").trim();
     const fileSections = currentMode() === "changes"
       ? `${(s.conflicted || []).length ? section("Conflicted", filterFiles(s.conflicted, filter), "U") : ""}${section("Staged", filterFiles(s.staged, filter), "S")}${section("Unstaged", filterFiles(s.unstaged, filter), "M")}${section("Untracked", filterFiles(s.untracked, filter), "?")}`
@@ -870,7 +910,10 @@
     const commitDisabled = canCommit ? "" : " disabled";
     const compareButton = currentMode() !== "changes" ? `<button class="git-ui-btn" onclick="HerdrGitUi.latestChanges()">Current changes</button>` : "";
     const branchLabel = `${view.titleKind || "Branch"}: ${s.branch || view.title || "No branch"}`;
-    return `<aside class="git-ui-side" onscroll="HerdrGitUi.sideScroll(this)"><div class="git-ui-head"><div class="git-ui-head-main"><div class="git-ui-title-row"><div class="git-ui-title">Git</div>${appRefreshIconButton({ className: "git-ui-refresh-icon", title: "Refresh", label: "Refresh Git state", spinning: !!view.refreshAnimating, onclick: "HerdrGitUi.refreshWithSpin()" })}</div><div class="git-ui-subtitle">${esc(s.state || "closed")} · ${esc(compactPath(s.repo_path))}</div><button class="git-ui-branch-pill" title="Change Git directory or switch branch" onclick="HerdrGitUi.openBranchModal()"><span>${esc(branchLabel)}</span><b>↗</b></button></div></div>${view.error ? `<div class="git-ui-error">${esc(view.error)}</div>` : ""}<div class="git-ui-toolbar git-ui-view-toolbar">${renderGitViewTabs(tabs, view.tab)}</div><div class="git-ui-toolbar"><div class="git-ui-toolbar-title">Worktree actions</div><div class="git-ui-actions"><button class="git-ui-btn primary" title="${esc(commitHint)}" onclick="HerdrGitUi.openCommitModal()"${commitDisabled}>Commit</button><button class="git-ui-btn" onclick="HerdrGitUi.openPullModal()">↓ Pull</button><button class="git-ui-btn" onclick="HerdrGitUi.openPushModal()">↑ Push</button>${compareButton}<button class="git-ui-btn" onclick="HerdrGitUi.rebase()">Rebase</button><button class="git-ui-btn danger" onclick="HerdrGitUi.reset()">Reset</button></div></div><label class="git-ui-file-filter"><span class="git-ui-file-filter-icon" aria-hidden="true"></span><input value="${esc(view.fileFilter || "")}" placeholder="Filter files" oninput="HerdrGitUi.filterFiles(this.value)"></label>${fileSections}</aside>`;
+    const error = view.error && !cleanupOnly ? `<div class="git-ui-error">${esc(view.error)}</div>` : "";
+    const actions = cleanupOnly ? "" : `<div class="git-ui-toolbar"><div class="git-ui-toolbar-title">Worktree actions</div><div class="git-ui-actions"><button class="git-ui-btn primary" title="${esc(commitHint)}" onclick="HerdrGitUi.openCommitModal()"${commitDisabled}>Commit</button><button class="git-ui-btn" onclick="HerdrGitUi.openPullModal()">↓ Pull</button><button class="git-ui-btn" onclick="HerdrGitUi.openPushModal()">↑ Push</button>${compareButton}<button class="git-ui-btn" onclick="HerdrGitUi.rebase()">Rebase</button><button class="git-ui-btn danger" onclick="HerdrGitUi.reset()">Reset</button></div></div>`;
+    const fileList = cleanupOnly ? "" : `<label class="git-ui-file-filter"><span class="git-ui-file-filter-icon" aria-hidden="true"></span><input value="${esc(view.fileFilter || "")}" placeholder="Filter files" oninput="HerdrGitUi.filterFiles(this.value)"></label>${fileSections}`;
+    return `<aside class="git-ui-side" onscroll="HerdrGitUi.sideScroll(this)"><div class="git-ui-head"><div class="git-ui-head-main"><div class="git-ui-title-row"><div class="git-ui-title">Git</div>${appRefreshIconButton({ className: "git-ui-refresh-icon", title: "Refresh", label: "Refresh Git state", spinning: !!view.refreshAnimating, onclick: "HerdrGitUi.refreshWithSpin()" })}</div><div class="git-ui-subtitle">${esc(s.state || "closed")} · ${esc(compactPath(s.repo_path))}</div><button class="git-ui-branch-pill" title="Change Git directory or switch branch" onclick="HerdrGitUi.openBranchModal()"><span>${esc(branchLabel)}</span><b>↗</b></button></div></div>${error}<div class="git-ui-toolbar git-ui-view-toolbar">${renderGitViewTabs(tabs, view.tab)}</div>${actions}${fileList}</aside>`;
   }
 
   function filterFiles(files, filter) {
@@ -1534,6 +1577,7 @@
   function renderMain() {
     const view = active() || {};
     if (view.loading) return `<main class="git-ui-main"><div class="git-ui-loading"><span></span><strong>Loading Git state</strong></div></main>`;
+    if (isNoGitRepositoryView(view)) return `<main class="git-ui-main"><div class="git-ui-content">${renderCleanup()}</div></main>`;
     let body = "";
     if (view.tab === "changes") body = renderDiff();
     if (view.tab === "conflicts") body = renderConflicts();
@@ -1707,6 +1751,7 @@
     statusLabel() { return state.open ? (state.visible ? "open" : "hidden") : "closed"; },
     tab(tab) {
       if (!["changes", "log", "stash", "cleanup", "conflicts", "history"].includes(tab)) return;
+      if (isNoGitRepositoryView(active()) && tab !== "cleanup") return;
       if (tab === "changes") {
         this.showChangesList();
         return;
@@ -1717,6 +1762,11 @@
     showChangesList() {
       const view = active();
       if (!view) return;
+      if (isNoGitRepositoryView(view)) {
+        view.tab = "cleanup";
+        render();
+        return;
+      }
       view.mode = "changes";
       view.compareBase = "";
       view.compareTarget = "";

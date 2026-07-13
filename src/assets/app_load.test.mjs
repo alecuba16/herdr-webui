@@ -310,6 +310,12 @@ describe("app bundle load", () => {
     match(gitUiSource, /scanCleanup/);
     match(gitUiSource, /selectAllCleanup/);
     match(gitUiSource, /Delete selected/);
+    match(gitUiSource, /isNotGitRepositoryMessage/);
+    match(gitUiSource, /markNoGitRepository\(view\)/);
+    match(gitUiSource, /not_git_repository: true/);
+    match(gitUiSource, /cleanupOnly \? "" : `<div class="git-ui-toolbar">/);
+    match(gitUiSource, /cleanupOnly \? "" : `<label class="git-ui-file-filter">/);
+    match(gitUiSource, /disabledReason = "Open a Git repository to use this view"/);
     match(gitUiSource, /\/api\/git-ui\/cleanup-scan/);
     match(gitUiSource, /\/api\/git-ui\/branch-delete/);
     match(gitUiSource, /\/api\/git-ui\/worktree-remove/);
