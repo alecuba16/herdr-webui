@@ -10,7 +10,7 @@
   }
 
   function createState(initial) {
-    return Object.assign({ open: false, cwd: "", path: "", entries: [], children: {}, expanded: {}, loading: {}, selected: "", files: [], split: false, error: "", contextMenu: null, filter: "", filterTimer: null, filterVisible: false, filterLoading: false, filterOffset: 0, filterDone: true, filterScrollTop: 0, filterKind: "file", gitStatus: null, refreshing: false, contentSearch: createContentSearchState() }, initial || {});
+    return Object.assign({ open: false, cwd: "", path: "", entries: [], children: {}, expanded: {}, loading: {}, selected: "", files: [], split: false, error: "", permissionRequired: false, contextMenu: null, filter: "", filterTimer: null, filterVisible: false, filterLoading: false, filterOffset: 0, filterDone: true, filterScrollTop: 0, filterKind: "file", gitStatus: null, refreshing: false, contentSearch: createContentSearchState() }, initial || {});
   }
 
   function esc(value) { return Tree.esc(value); }
@@ -151,8 +151,17 @@
   async function api(url, opt) {
     const res = await fetch(url, Object.assign({ credentials: "same-origin" }, opt || {}));
     const body = await res.json();
-    if (!res.ok || body.error) throw Error(body.error || res.statusText);
+    if (!res.ok || body.error) {
+      const error = Error(body.error || res.statusText);
+      error.details = body || {};
+      throw error;
+    }
     return body;
+  }
+
+  function setError(target, error) {
+    target.error = error.message || String(error);
+    target.permissionRequired = !!(error.details && error.details.permission_required);
   }
 
   async function open(workspace) {
@@ -252,6 +261,7 @@
     renderIfActive(target);
     try {
       target.error = "";
+      target.permissionRequired = false;
       const data = await api(`/api/file-browser/tree?cwd=${encodeURIComponent(target.cwd)}&path=${encodeURIComponent(path || "")}&depth=0${gitStatusEnabled() ? "&include_git_status=true" : ""}`);
       target.path = data.path || "";
       target.entries = data.entries || [];
@@ -262,7 +272,7 @@
       target.filterOffset = 0;
       target.filterDone = !target.filter.trim();
     } catch (error) {
-      target.error = error.message || String(error);
+      setError(target, error);
     }
     target.refreshing = false;
     renderIfActive(target, preserveFocus);
@@ -300,6 +310,7 @@
     const target = state;
     try {
       target.error = "";
+      target.permissionRequired = false;
       const replacePath = currentFilePathFor(target);
       target.selected = path;
       if (target.files.some((file) => file.path === path)) {
@@ -320,7 +331,7 @@
         else target.files.push(nextFile);
       }
     } catch (error) {
-      target.error = error.message || String(error);
+      setError(target, error);
     }
     renderIfActive(target);
   }
@@ -437,9 +448,33 @@
     const entries = treeEntries();
     const currentRow = Tree.renderCurrentDirectoryRow({ callback: "HerdrFileBrowser", canGoUp: canGoUp(), path: currentDirectoryPath(), label: currentDirectoryLabel(), title: currentDirectoryTitle() });
     const sideBody = `${currentRow}${Tree.renderEntries(entries, { selectedPath: state.selected, callback: "HerdrFileBrowser", showMeta: true, dirClickMethod: "none", dirDoubleClickMethod: "enter", contextMethod: "menu", shiftSelectMode: true })}`;
-    panel.innerHTML = `<aside class="file-browser-side ${activeFile ? "previewing" : ""} ${state.contentSearch.active ? "content-searching" : ""}" tabindex="0"><div class="file-browser-head"><div class="file-browser-title-row"><div class="file-browser-title">Files</div><div class="file-browser-actions">${appRefreshIconButton({ className: "file-browser-refresh", title: "Refresh", label: "Refresh files", spinning: !!state.refreshing, onclick: "HerdrFileBrowser.refresh()" })}</div></div><div class="file-browser-subtitle">${esc(state.path || state.cwd || "No workspace")}</div><div class="file-browser-result-count">Use header search (⌕) to find workspaces, files, folders, or file contents.</div></div>${state.error ? `<div class="file-browser-error">${esc(state.error)}</div>` : ""}${sideBody}</aside><main class="file-browser-main"><div class="file-browser-toolbar">${renderToolbar(activeFile)}</div><div class="file-browser-preview ${state.split || state.contentSearch.active ? "split" : ""}" id="fileBrowserPreview">${renderPreviewShell()}</div></main>${renderContextMenu()}`;
+    panel.innerHTML = `<aside class="file-browser-side ${activeFile ? "previewing" : ""} ${state.contentSearch.active ? "content-searching" : ""}" tabindex="0"><div class="file-browser-head"><div class="file-browser-title-row"><div class="file-browser-title">Files</div><div class="file-browser-actions">${appRefreshIconButton({ className: "file-browser-refresh", title: "Refresh", label: "Refresh files", spinning: !!state.refreshing, onclick: "HerdrFileBrowser.refresh()" })}</div></div><div class="file-browser-subtitle">${esc(state.path || state.cwd || "No workspace")}</div><div class="file-browser-result-count">Use header search (⌕) to find workspaces, files, folders, or file contents.</div></div>${renderAccessError()}${sideBody}</aside><main class="file-browser-main"><div class="file-browser-toolbar">${renderToolbar(activeFile)}</div><div class="file-browser-preview ${state.split || state.contentSearch.active ? "split" : ""}" id="fileBrowserPreview">${renderPreviewShell()}</div></main>${renderContextMenu()}`;
     mountEditors();
     mountContentSearchEditors();
+  }
+
+  function renderAccessError() {
+    if (!state.error) return "";
+    const action = state.permissionRequired ? `<button class="git-ui-btn primary" onclick="HerdrFileBrowser.requestAccess()">Grant folder access</button>` : "";
+    return `<div class="file-browser-error"><span>${esc(state.error)}</span>${action}</div>`;
+  }
+
+  async function requestAccess() {
+    try {
+      const data = await api("/api/file-browser/request-access", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cwd: state.cwd, path: state.path || "" }),
+      });
+      if (data.path) {
+        state.cwd = data.path;
+        state.path = "";
+      }
+      await loadTree(state.path || "");
+    } catch (error) {
+      setError(state, error);
+      renderIfActive(state);
+    }
   }
 
   function syncTerminalVisibility() {
@@ -743,6 +778,7 @@
     hide,
     forgetWorkspace,
     refresh() { loadTree(state.path); },
+    requestAccess,
     setFilterKind(kind) {
       state.filterKind = normalizeSearchScope(kind);
       state.filterVisible = true;

@@ -366,11 +366,17 @@ describe("app bundle load", () => {
     const sharedFileTreeSource = readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8");
     const desktopFileBrowserSource = readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8");
     const mobileFileBrowserSource = readFileSync(new URL("./mobile/file_browser.js", import.meta.url), "utf8");
+    const directoryPickerSource = readFileSync(new URL("./desktop/directory_picker.js", import.meta.url), "utf8");
     match(sharedFileTreeSource, /renderCurrentDirectoryRow/);
     match(sharedFileTreeSource, /herdr-tree-up-action/);
     match(sharedFileTreeSource, /value === "~"/);
     match(desktopFileBrowserSource, /Tree\.renderCurrentDirectoryRow/);
     match(mobileFileBrowserSource, /Tree\.renderCurrentDirectoryRow/);
+    match(desktopFileBrowserSource, /permission_required/);
+    match(desktopFileBrowserSource, /Grant folder access/);
+    match(desktopFileBrowserSource, /\/api\/file-browser\/request-access/);
+    match(directoryPickerSource, /permission_required/);
+    match(directoryPickerSource, /Grant folder access/);
     ok(!desktopFileBrowserSource.includes("entries.unshift(Tree.upEntry"));
     ok(!mobileFileBrowserSource.includes("entries.unshift(Tree.upEntry"));
     const fileTreeSource = readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8");

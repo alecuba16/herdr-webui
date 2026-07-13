@@ -3,6 +3,8 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "macos")]
+use std::process::Command;
 use std::time::UNIX_EPOCH;
 
 use axum::extract::{ConnectInfo, Query, State};
@@ -57,6 +59,10 @@ pub(crate) fn routes() -> Router<WebState> {
         .route(
             "/api/file-browser/delete",
             axum::routing::post(file_browser_delete),
+        )
+        .route(
+            "/api/file-browser/request-access",
+            axum::routing::post(file_browser_request_access),
         )
 }
 
@@ -116,6 +122,12 @@ struct FileBrowserRenameRequest {
 struct FileBrowserDeleteRequest {
     cwd: String,
     path: String,
+}
+
+#[derive(Deserialize)]
+struct FileBrowserAccessRequest {
+    cwd: String,
+    path: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -265,7 +277,31 @@ fn compact_directory_entry(root: &Path, dir: PathBuf, name: String) -> (String, 
 }
 
 fn file_browser_json_error(status: StatusCode, error: impl Into<String>) -> Response {
-    (status, Json(json!({ "error": error.into() }))).into_response()
+    let error = error.into();
+    if is_permission_error_message(&error) {
+        return file_browser_permission_error(status, error);
+    }
+    (status, Json(json!({ "error": error }))).into_response()
+}
+
+fn file_browser_permission_error(status: StatusCode, error: impl Into<String>) -> Response {
+    (
+        status,
+        Json(json!({
+            "error": error.into(),
+            "permission_required": true,
+            "action": "request_file_access",
+        })),
+    )
+        .into_response()
+}
+
+fn is_permission_error_message(error: &str) -> bool {
+    let lower = error.to_lowercase();
+    lower.contains("operation not permitted")
+        || lower.contains("permission denied")
+        || lower.contains("os error 1")
+        || lower.contains("os error 13")
 }
 
 #[allow(clippy::result_large_err)]
@@ -326,6 +362,98 @@ fn resolve_child(root: &Path, path: &str) -> Result<PathBuf, String> {
         return Err("path escapes root".to_string());
     }
     Ok(canonical)
+}
+
+fn unresolved_child_path(cwd: &str, path: Option<&str>) -> Result<PathBuf, String> {
+    let rel = clean_relative_path(path)?;
+    let mut base = PathBuf::from(expand_user_path_string(cwd));
+    if !rel.is_empty() {
+        base.push(rel);
+    }
+    Ok(base)
+}
+
+fn applescript_quote(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+fn request_file_access_blocking(
+    cwd: String,
+    path: Option<String>,
+) -> Result<Response, (StatusCode, String)> {
+    let target = unresolved_child_path(&cwd, path.as_deref())
+        .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    let default_folder = if target.is_dir() {
+        target.clone()
+    } else {
+        target
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from(expand_user_path_string(&cwd)))
+    };
+    let selected = request_file_access_dialog(&default_folder)?;
+    let canonical = selected.canonicalize().map_err(|err| {
+        (
+            StatusCode::BAD_GATEWAY,
+            format!("selected folder is not readable: {err}"),
+        )
+    })?;
+    fs::read_dir(&canonical).map_err(|err| {
+        (
+            StatusCode::BAD_GATEWAY,
+            format!("selected folder is not readable: {err}"),
+        )
+    })?;
+    Ok(Json(json!({
+        "ok": true,
+        "path": canonical.to_string_lossy(),
+        "message": "Folder access confirmed",
+    }))
+    .into_response())
+}
+
+#[cfg(target_os = "macos")]
+fn request_file_access_dialog(default_folder: &Path) -> Result<PathBuf, (StatusCode, String)> {
+    let default = default_folder.to_string_lossy();
+    let script = format!(
+        "set selectedFolder to choose folder with prompt \"Allow Herdr WebUI to read this folder\" default location (POSIX file {})\nreturn POSIX path of selectedFolder",
+        applescript_quote(&default)
+    );
+    let output = Command::new("osascript")
+        .arg("-e")
+        .arg(script)
+        .output()
+        .map_err(|err| {
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("failed to open permission prompt: {err}"),
+            )
+        })?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let message = if stderr.is_empty() {
+            "folder access prompt was cancelled".to_string()
+        } else {
+            stderr
+        };
+        return Err((StatusCode::BAD_GATEWAY, message));
+    }
+    let selected = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if selected.is_empty() {
+        return Err((
+            StatusCode::BAD_GATEWAY,
+            "folder access prompt returned no folder".to_string(),
+        ));
+    }
+    Ok(PathBuf::from(selected))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn request_file_access_dialog(_default_folder: &Path) -> Result<PathBuf, (StatusCode, String)> {
+    Err((
+        StatusCode::BAD_REQUEST,
+        "interactive folder permission prompts are only supported on macOS".to_string(),
+    ))
 }
 
 fn relative_to_root(root: &Path, path: &Path) -> String {
@@ -953,6 +1081,24 @@ async fn file_browser_tree(
     .into_response()
 }
 
+async fn file_browser_request_access(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    Json(body): Json<FileBrowserAccessRequest>,
+) -> Response {
+    if let Err(response) = file_browser_auth(&state, &headers, remote) {
+        return response;
+    }
+    let cwd = body.cwd;
+    let path = body.path;
+    match tokio::task::spawn_blocking(move || request_file_access_blocking(cwd, path)).await {
+        Ok(Ok(response)) => response,
+        Ok(Err((status, msg))) => file_browser_json_error(status, msg),
+        Err(err) => file_browser_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    }
+}
+
 async fn file_browser_file(
     State(state): State<WebState>,
     headers: HeaderMap,
@@ -1355,6 +1501,26 @@ mod tests {
         assert!(clean_relative_path(Some("../secret")).is_err());
         assert!(clean_relative_path(Some("a/../secret")).is_err());
         assert_eq!(clean_relative_path(Some("/a/b")).unwrap(), "a/b");
+    }
+
+    #[test]
+    fn permission_errors_are_classified_for_ui_action() {
+        assert!(is_permission_error_message(
+            "Operation not permitted (os error 1)"
+        ));
+        assert!(is_permission_error_message(
+            "Permission denied (os error 13)"
+        ));
+        assert!(!is_permission_error_message("No such file or directory"));
+    }
+
+    #[test]
+    fn unresolved_child_path_expands_home_without_canonicalizing() {
+        let path = unresolved_child_path("~", Some("Documents/Private")).unwrap();
+        let text = path.to_string_lossy();
+        assert!(text.ends_with("Documents/Private"));
+        assert!(!text.starts_with('~'));
+        assert!(unresolved_child_path("~", Some("../secret")).is_err());
     }
 
     #[test]

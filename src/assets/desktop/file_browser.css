@@ -270,11 +270,19 @@
   padding: 14px;
 }
 .file-browser-error {
+  align-items: center;
   border: 1px solid #f38ba8;
   border-radius: 10px;
   color: #f38ba8;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: space-between;
   margin: 10px;
   padding: 10px;
+}
+.file-browser-error span {
+  min-width: 0;
 }
 .herdr-file-tree {
   display: flex;

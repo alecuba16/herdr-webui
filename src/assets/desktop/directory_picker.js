@@ -1,6 +1,6 @@
 (function () {
   const Tree = window.HerdrFileTree;
-  const state = { input: null, root: "~", path: "", entries: [], error: "", filter: "", filterTimer: null, gitStatus: null };
+  const state = { input: null, root: "~", path: "", entries: [], error: "", permissionRequired: false, filter: "", filterTimer: null, gitStatus: null };
 
   function esc(value) { return Tree.esc(value); }
 
@@ -28,8 +28,28 @@
   async function api(url) {
     const res = await fetch(url, { credentials: "same-origin" });
     const body = await res.json();
-    if (!res.ok || body.error) throw Error(body.error || res.statusText);
+    if (!res.ok || body.error) {
+      const error = Error(body.error || res.statusText);
+      error.details = body || {};
+      throw error;
+    }
     return body;
+  }
+
+  async function postJson(url, payload) {
+    const res = await fetch(url, { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload || {}) });
+    const body = await res.json();
+    if (!res.ok || body.error) {
+      const error = Error(body.error || res.statusText);
+      error.details = body || {};
+      throw error;
+    }
+    return body;
+  }
+
+  function setError(error) {
+    state.error = error.message || String(error);
+    state.permissionRequired = !!(error.details && error.details.permission_required);
   }
 
   function attach(inputId) {
@@ -61,6 +81,7 @@
     state.filter = "";
     clearTimeout(state.filterTimer);
     state.error = "";
+    state.permissionRequired = false;
     render();
     try {
       const data = await api(`/api/file-browser/tree?cwd=${encodeURIComponent(state.root)}&path=${encodeURIComponent(state.path)}&dirs_only=true${gitStatusEnabled() ? "&include_git_status=true" : ""}`);
@@ -68,7 +89,7 @@
       state.entries = data.entries || [];
       state.gitStatus = data.git_status || null;
     } catch (error) {
-      state.error = error.message || String(error);
+      setError(error);
       state.entries = [];
     }
     render();
@@ -81,7 +102,7 @@
       state.entries = data.entries || [];
       state.gitStatus = data.git_status || null;
     } catch (error) {
-      state.error = error.message || String(error);
+      setError(error);
       state.entries = [];
     }
     render();
@@ -133,7 +154,7 @@
           { kind: "dir", name: `Current: ${currentFolderName()}`, path: state.path, expanded: true, level: 0 },
           ...(state.entries || []).map((entry) => Object.assign({}, entry, { expanded: false, level: Number(entry.level || 0) + 1 })),
         ], state.gitStatus);
-    modal.innerHTML = `<div class="directory-picker"><div class="directory-picker-head"><strong>Choose folder</strong><button class="git-ui-btn" onclick="HerdrDirectoryPicker.close()">Close</button></div><div class="directory-picker-path">${esc(joinPath(state.root, state.path))}</div><div class="directory-picker-actions"><button class="git-ui-btn" onclick="HerdrDirectoryPicker.home()">Home</button><button class="git-ui-btn" onclick="HerdrDirectoryPicker.root()">Root</button><button class="git-ui-btn primary" onclick="HerdrDirectoryPicker.selectCurrent()">Select this folder</button></div>${state.error ? `<div class="file-browser-error">${esc(state.error)}</div>` : ""}<div class="directory-picker-search"><input id="directoryPickerSearchInput" type="text" placeholder="Type to search..." value="${esc(state.filter)}" oninput="HerdrDirectoryPicker.filter(this.value)"></div><div class="directory-picker-tree">${Tree.renderEntries(entries, { callback: "HerdrDirectoryPicker", selectedPath: state.path })}</div></div>`;
+    modal.innerHTML = `<div class="directory-picker"><div class="directory-picker-head"><strong>Choose folder</strong><button class="git-ui-btn" onclick="HerdrDirectoryPicker.close()">Close</button></div><div class="directory-picker-path">${esc(joinPath(state.root, state.path))}</div><div class="directory-picker-actions"><button class="git-ui-btn" onclick="HerdrDirectoryPicker.home()">Home</button><button class="git-ui-btn" onclick="HerdrDirectoryPicker.root()">Root</button><button class="git-ui-btn primary" onclick="HerdrDirectoryPicker.selectCurrent()">Select this folder</button></div>${renderAccessError()}<div class="directory-picker-search"><input id="directoryPickerSearchInput" type="text" placeholder="Type to search..." value="${esc(state.filter)}" oninput="HerdrDirectoryPicker.filter(this.value)"></div><div class="directory-picker-tree">${Tree.renderEntries(entries, { callback: "HerdrDirectoryPicker", selectedPath: state.path })}</div></div>`;
     if (refocus) {
       const input = document.getElementById("directoryPickerSearchInput");
       if (input) {
@@ -145,11 +166,34 @@
     }
   }
 
+  function renderAccessError() {
+    if (!state.error) return "";
+    const action = state.permissionRequired ? `<button class="git-ui-btn primary" onclick="HerdrDirectoryPicker.requestAccess()">Grant folder access</button>` : "";
+    return `<div class="file-browser-error"><span>${esc(state.error)}</span>${action}</div>`;
+  }
+
+  async function requestAccess() {
+    try {
+      const data = await postJson("/api/file-browser/request-access", { cwd: state.root, path: state.path || "" });
+      if (data.path) {
+        const parts = splitPath(data.path);
+        state.root = parts.root;
+        state.path = parts.path;
+      }
+      await load(state.path || "");
+    } catch (error) {
+      setError(error);
+      state.entries = [];
+      render();
+    }
+  }
+
   window.HerdrDirectoryPicker = {
     attach,
     openInput,
     close,
     selectCurrent,
+    requestAccess,
     toggle(encodedPath) { load(decodeURIComponent(encodedPath)); },
     select(encodedPath) { load(decodeURIComponent(encodedPath)); },
     up(encodedPath) {
