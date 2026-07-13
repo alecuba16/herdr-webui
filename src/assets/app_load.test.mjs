@@ -2041,6 +2041,8 @@ describe("app bundle load", () => {
     match(gitLogSource, /const LANE_COLORS = \[/);
     match(gitLogSource, /exact_date/);
     match(gitLogSource, /function renderLoadMore/);
+    ok(!gitLogSource.includes("const footer = renderLoadMore(data,"));
+    match(gitLogSource, /renderLoadMore\(options\.data \|\| \{\}, rows, options, esc\)/);
     match(gitLogSource, /Load more changes/);
     match(gitLogSource, /HerdrGitUi.loadMoreLog\(\)/);
     match(gitLogSource, /data\.has_more/);
