@@ -27,6 +27,13 @@
       } catch (_) { return true; }
     }
 
+    function parentFoldersEnabled() {
+      try {
+        const parsed = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
+        return parsed.fileBrowserAllowParent === true;
+      } catch (_) { return false; }
+    }
+
     function pathSearchOptions() {
       try {
         const parsed = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
@@ -261,7 +268,8 @@
       if (!cwd()) return '<div class="mobile-loading">Select workspace with path first</div>';
       if (!local.entries.length && !local.loading && !local.error) load(local.path || "");
       if (local.file) return renderPreview();
-      const tree = Tree.renderEntries(treeEntries(), { selectedPath: local.selected, callback: "HerdrMobileFiles", showMeta: true });
+      const currentRow = Tree.renderCurrentDirectoryRow({ callback: "HerdrMobileFiles", canGoUp: canGoUp(), path: currentDirectoryPath(), label: currentDirectoryLabel(), title: currentDirectoryTitle() });
+      const tree = currentRow + Tree.renderEntries(treeEntries(), { selectedPath: local.selected, callback: "HerdrMobileFiles", showMeta: true });
       const body = `<div class="mobile-files-list-head"><div class="mobile-help mobile-file-result-count">Use header search (⌕) to find workspaces, files, folders, or file contents.</div></div>${local.loading ? '<div class="mobile-loading">Loading</div>' : tree}`;
       return `<section class="mobile-section mobile-files" tabindex="0"><div class="mobile-files-head"><div><h2>Files</h2><p class="mobile-help">${deps.escapeHtml(local.path || cwd())}</p></div><div class="mobile-actions"><button class="mobile-btn" onclick="HerdrMobile.filesRefresh()">Refresh</button></div></div>${local.error ? `<div class="mobile-error">${deps.escapeHtml(local.error)}</div>` : ""}${body}</section>`;
     }
@@ -411,10 +419,31 @@
 
     function treeEntries() {
       const entries = local.entries.map((entry) => Object.assign({}, entry));
-      const currentRoot = local.cwdOverride || deps.currentWorkspaceCwd() || "";
-      const canGoUp = local.path || (currentRoot && Tree.parentDirectory(currentRoot) !== currentRoot);
-      if (!local.filter.trim() && canGoUp) entries.unshift(Tree.upEntry(local.path, 0));
       return Tree.applyGitStatus(entries, local.gitStatus);
+    }
+
+    function currentDirectoryRoot() {
+      return local.cwdOverride || deps.currentWorkspaceCwd() || "";
+    }
+
+    function currentDirectoryPath() {
+      return local.path || currentDirectoryRoot();
+    }
+
+    function currentDirectoryLabel() {
+      if (local.path) return Tree.basename(local.path);
+      const root = currentDirectoryRoot();
+      return Tree.basename(root) || root || "Files";
+    }
+
+    function currentDirectoryTitle() {
+      const root = currentDirectoryRoot();
+      return local.path ? `${root.replace(/\/+$/, "")}/${local.path}` : root;
+    }
+
+    function canGoUp() {
+      const root = currentDirectoryRoot();
+      return !!(local.path || (parentFoldersEnabled() && root && Tree.parentDirectory(root) !== root));
     }
 
     function fileBrowserDepth() {
@@ -469,6 +498,7 @@
         if (local.path) { load(Tree.parentPath(local.path)); return; }
         const wsCwd = deps.currentWorkspaceCwd() || "";
         const currentRoot = local.cwdOverride || wsCwd;
+        if (!parentFoldersEnabled()) return;
         if (!currentRoot) return;
         const parent = Tree.parentDirectory(currentRoot);
         if (!parent || parent === currentRoot) return;

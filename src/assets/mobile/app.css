@@ -436,6 +436,32 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
 .herdr-tree-row.active {
   border-color: var(--accent);
 }
+.herdr-file-tree-current {
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 6px;
+  padding: 0 0 8px;
+}
+.herdr-tree-row.current {
+  background: var(--panel2);
+  border-color: var(--border2);
+  font-weight: 700;
+}
+.herdr-tree-up-action {
+  background: var(--bg);
+  border: 1px solid var(--border2);
+  border-radius: 999px;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 10px;
+}
+.herdr-tree-up-action:hover,
+.herdr-tree-up-action:focus {
+  border-color: var(--accent);
+  color: var(--accent);
+  outline: 0;
+}
 .herdr-tree-name {
   overflow: hidden;
   text-overflow: ellipsis;

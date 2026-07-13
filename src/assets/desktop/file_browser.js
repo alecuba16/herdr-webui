@@ -30,6 +30,13 @@
     } catch (_) { return true; }
   }
 
+  function parentFoldersEnabled() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
+      return parsed.fileBrowserAllowParent === true;
+    } catch (_) { return false; }
+  }
+
   function pathSearchOptions() {
     try {
       const parsed = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
@@ -428,7 +435,8 @@
     syncTerminalVisibility();
     const activeFile = currentFile();
     const entries = treeEntries();
-    const sideBody = `${Tree.renderEntries(entries, { selectedPath: state.selected, callback: "HerdrFileBrowser", showMeta: true, dirClickMethod: "none", dirDoubleClickMethod: "enter", contextMethod: "menu", shiftSelectMode: true })}`;
+    const currentRow = Tree.renderCurrentDirectoryRow({ callback: "HerdrFileBrowser", canGoUp: canGoUp(), path: currentDirectoryPath(), label: currentDirectoryLabel(), title: currentDirectoryTitle() });
+    const sideBody = `${currentRow}${Tree.renderEntries(entries, { selectedPath: state.selected, callback: "HerdrFileBrowser", showMeta: true, dirClickMethod: "none", dirDoubleClickMethod: "enter", contextMethod: "menu", shiftSelectMode: true })}`;
     panel.innerHTML = `<aside class="file-browser-side ${activeFile ? "previewing" : ""} ${state.contentSearch.active ? "content-searching" : ""}" tabindex="0"><div class="file-browser-head"><div class="file-browser-title-row"><div class="file-browser-title">Files</div><div class="file-browser-actions">${appRefreshIconButton({ className: "file-browser-refresh", title: "Refresh", label: "Refresh files", spinning: !!state.refreshing, onclick: "HerdrFileBrowser.refresh()" })}</div></div><div class="file-browser-subtitle">${esc(state.path || state.cwd || "No workspace")}</div><div class="file-browser-result-count">Use header search (⌕) to find workspaces, files, folders, or file contents.</div></div>${state.error ? `<div class="file-browser-error">${esc(state.error)}</div>` : ""}${sideBody}</aside><main class="file-browser-main"><div class="file-browser-toolbar">${renderToolbar(activeFile)}</div><div class="file-browser-preview ${state.split || state.contentSearch.active ? "split" : ""}" id="fileBrowserPreview">${renderPreviewShell()}</div></main>${renderContextMenu()}`;
     mountEditors();
     mountContentSearchEditors();
@@ -445,8 +453,24 @@
 
   function treeEntries() {
     const entries = flattenEntries(state.entries, 0);
-    if (state.path || Tree.parentDirectory(state.cwd) !== state.cwd) entries.unshift(Tree.upEntry(state.path, 0));
     return Tree.applyGitStatus(entries, state.gitStatus);
+  }
+
+  function currentDirectoryPath() {
+    return state.path || state.cwd || "";
+  }
+
+  function currentDirectoryLabel() {
+    if (state.path) return Tree.basename(state.path);
+    return Tree.basename(state.cwd) || state.cwd || "Files";
+  }
+
+  function currentDirectoryTitle() {
+    return state.path ? `${state.cwd.replace(/\/+$/, "")}/${state.path}` : state.cwd;
+  }
+
+  function canGoUp() {
+    return !!(state.path || (parentFoldersEnabled() && state.cwd && Tree.parentDirectory(state.cwd) !== state.cwd));
   }
 
   async function goUp() {
@@ -454,6 +478,7 @@
       await loadTree(Tree.parentPath(state.path));
       return;
     }
+    if (!parentFoldersEnabled()) return;
     const parent = Tree.parentDirectory(state.cwd);
     if (!parent || parent === state.cwd) return;
     state.cwd = parent;

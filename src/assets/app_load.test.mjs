@@ -361,6 +361,16 @@ describe("app bundle load", () => {
   it("defines file explorer and Git file filters", () => {
     match(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), /q=\$\{encodeURIComponent\(target\.filter\.trim\(\)\)\}/);
     match(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), /showSearch\(\)/);
+    const sharedFileTreeSource = readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8");
+    const desktopFileBrowserSource = readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8");
+    const mobileFileBrowserSource = readFileSync(new URL("./mobile/file_browser.js", import.meta.url), "utf8");
+    match(sharedFileTreeSource, /renderCurrentDirectoryRow/);
+    match(sharedFileTreeSource, /herdr-tree-up-action/);
+    match(sharedFileTreeSource, /value === "~"/);
+    match(desktopFileBrowserSource, /Tree\.renderCurrentDirectoryRow/);
+    match(mobileFileBrowserSource, /Tree\.renderCurrentDirectoryRow/);
+    ok(!desktopFileBrowserSource.includes("entries.unshift(Tree.upEntry"));
+    ok(!mobileFileBrowserSource.includes("entries.unshift(Tree.upEntry"));
     const fileTreeSource = readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8");
     const fileIconSource = readFileSync(new URL("./shared/file_icons.js", import.meta.url), "utf8");
     const fileIconCss = readFileSync(new URL("./shared/file_icons.css", import.meta.url), "utf8");
