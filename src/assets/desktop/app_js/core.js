@@ -2610,6 +2610,14 @@ async function refreshOnline(seq) {
   } catch (e) {
     state.workspaceOrder = [];
   }
+  if (!state.ws) {
+    state.allTabs = [];
+    state.tabs = [];
+    state.panes = [];
+    state.agents = [];
+    state.terminalId = null;
+    setTerminalLoading(false);
+  }
   if (state.ws) {
     const [allT, t, p, a] = await Promise.all([
       api("/api/tabs"),

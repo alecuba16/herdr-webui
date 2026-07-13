@@ -381,7 +381,7 @@ struct PaneRecord {
 }
 
 impl BuiltinState {
-    fn new(cwd: PathBuf, shell: Option<String>) -> io::Result<Self> {
+    fn new(_cwd: PathBuf, shell: Option<String>) -> io::Result<Self> {
         let default_shell = shell.unwrap_or_else(default_shell);
         let state = Self {
             data: Mutex::new(BuiltinData {
@@ -397,9 +397,6 @@ impl BuiltinState {
             default_shell,
             events: BuiltinEventHub::new(),
         };
-        state
-            .create_workspace(Some(cwd), Some("Workspace".to_string()), true)
-            .map_err(io::Error::other)?;
         Ok(state)
     }
 
@@ -2537,6 +2534,7 @@ mod tests {
     fn builtin_event_hub_publishes_mutation_events() {
         let state =
             BuiltinState::new(std::env::current_dir().unwrap(), Some(default_shell())).unwrap();
+        state.handle_request("seed", "workspace.create", json!({ "label": "Workspace" }));
         let rx = state.subscribe_events();
 
         state.handle_request("test", "tab.create", json!({ "label": "second" }));
@@ -2550,6 +2548,7 @@ mod tests {
     fn terminal_output_publishes_agent_status_changes() {
         let state =
             BuiltinState::new(std::env::current_dir().unwrap(), Some(default_shell())).unwrap();
+        state.handle_request("seed", "workspace.create", json!({ "label": "Workspace" }));
         let rx = state.subscribe_events();
         let terminal = {
             let data = state.data.lock().unwrap();
@@ -2960,6 +2959,19 @@ mod tests {
         assert!(err.contains("does not implement worktree.remove"));
     }
 
+    #[test]
+    fn builtin_state_starts_without_auto_workspace() {
+        let state = BuiltinState::new(std::env::temp_dir(), Some(default_shell())).unwrap();
+
+        let snapshot = state.handle_request("snapshot", "session.snapshot", json!({}));
+        let snapshot = &snapshot["result"]["snapshot"];
+
+        assert_eq!(snapshot["workspaces"].as_array().unwrap().len(), 0);
+        assert_eq!(snapshot["tabs"].as_array().unwrap().len(), 0);
+        assert_eq!(snapshot["panes"].as_array().unwrap().len(), 0);
+        assert!(snapshot["focused_workspace_id"].is_null());
+    }
+
     #[cfg(unix)]
     #[test]
     fn events_subscribe_streams_builtin_event_hub_messages() {
@@ -2977,6 +2989,19 @@ mod tests {
             shell: Some(default_shell()),
         })
         .unwrap();
+        {
+            let mut seed = connect_local_stream(&api_socket).unwrap();
+            seed.write_all(
+                br#"{"id":"seed","method":"workspace.create","params":{"label":"seed"}}"#,
+            )
+            .unwrap();
+            seed.write_all(b"\n").unwrap();
+            seed.flush().unwrap();
+            let mut reader = BufReader::new(seed);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            assert!(line.contains("workspace_created"));
+        }
         let (tx, rx) = mpsc::channel::<String>();
         let subscribe_socket = api_socket.clone();
         thread::spawn(move || {

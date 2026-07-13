@@ -1972,6 +1972,17 @@ describe("app bundle load", () => {
   });
 
 
+
+  it("stops terminal loading when no workspace exists", () => {
+    ok(source.includes("if (!state.ws) {"));
+    ok(source.includes("state.allTabs = [];"));
+    ok(source.includes("state.tabs = [];"));
+    ok(source.includes("state.panes = [];"));
+    ok(source.includes("state.agents = [];"));
+    ok(source.includes("state.terminalId = null;"));
+    ok(source.includes("setTerminalLoading(false);"));
+  });
+
   it("auto-runs Git folder actions after directory picker confirm", () => {
     const directoryPickerSource = readFileSync(new URL("./desktop/directory_picker.js", import.meta.url), "utf8");
 
