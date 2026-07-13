@@ -336,6 +336,21 @@ describe("app bundle load", () => {
     ok(!gitUiSource.includes('onclick="HerdrGitUi.toggleStageAll()'));
   });
 
+  it("offers conflict buttons for HEAD, parent, and remote sides", () => {
+    match(gitUiSource, /Use HEAD/);
+    match(gitUiSource, /Use parent/);
+    match(gitUiSource, /Use remote/);
+    match(gitUiSource, /HerdrGitUi\.resolve\('\$\{arg\(file\)\}','base'\)/);
+    match(gitUiSource, /title="Use parent\/base version"/);
+    match(gitUiSource, /title="Use remote\/incoming side"/);
+    match(gitUiSource, /Mark resolved \(stage\)/);
+    match(gitUiSource, /Stage this manually edited file as resolved/);
+    match(gitUiSource, /After editing a conflicted file manually/);
+    ok(!gitUiSource.includes(">Use branch</button>"));
+    const gitLayoutCss = readFileSync(new URL("./desktop/git_ui/layout.css", import.meta.url), "utf8");
+    match(gitLayoutCss, /\.git-ui-conflict-file-actions \{[\s\S]*?flex-wrap: wrap;/);
+  });
+
   it("uses a single selected-log reset modal and clear rebase wording", () => {
     match(gitActionsSource, /openSelectedResetModal\(\)/);
     match(gitActionsSource, /Rebase current changes over selected commit/);
@@ -410,7 +425,7 @@ describe("app bundle load", () => {
     match(tempTerminalSource, /setTimeout\(handleResize, 0\)/);
     match(modalCss, /height: min\(80vh, calc\(100dvh - 32px\)\)/);
     match(modalCss, /\.temp-terminal-body \{[\s\S]*?min-height: 0;[\s\S]*?overflow: hidden;/);
-    match(modalCss, /\.temp-terminal-body \.xterm,[\s\S]*?max-height: 100%;/);
+    match(modalCss, /\.temp-terminal-body \.xterm \{[\s\S]*?height: 100%;[\s\S]*?width: 100%;/);
     match(html, /Input captured · Ctrl\+G detaches/);
     match(html, /aria-label="Detach temporary terminal"/);
     match(modalCss, /\.temp-terminal-hint/);

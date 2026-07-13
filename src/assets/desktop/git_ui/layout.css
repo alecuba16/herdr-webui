@@ -226,6 +226,16 @@
 .git-ui-conflict-actions {
   margin: 8px 0;
 }
+.git-ui-conflict-file {
+  align-items: flex-start;
+}
+.git-ui-conflict-file-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
 .git-ui-btn {
   background: var(--panel2);
   border: 1px solid var(--border2);

@@ -1,6 +1,7 @@
 use std::fs;
 use std::net::SocketAddr;
 use std::path::Path;
+use std::process::Command;
 
 use axum::extract::{ConnectInfo, Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -10,7 +11,8 @@ use serde::Deserialize;
 use serde_json::json;
 
 use super::{
-    git_json_error, git_ui_output, git_ui_repo, git_ui_text, safe_repo_path, GitUiCwdQuery,
+    git_failure, git_json_error, git_ui_output, git_ui_repo, git_ui_text, safe_repo_path,
+    GitUiCwdQuery,
 };
 use crate::{require_auth, WebState};
 
@@ -84,6 +86,7 @@ fn git_ui_conflict_resolve_blocking(
             .and_then(|_| git_ui_text(&cwd, &["add", "--", &path])),
         "theirs" => git_ui_text(&cwd, &["checkout", "--theirs", "--", &path])
             .and_then(|_| git_ui_text(&cwd, &["add", "--", &path])),
+        mode if is_base_conflict_mode(mode) => git_ui_conflict_stage_to_file(&cwd, &path, 1),
         "mark" => git_ui_text(&cwd, &["add", "--", &path]),
         "manual" => {
             let repo = match git_ui_repo(&cwd) {
@@ -101,6 +104,138 @@ fn git_ui_conflict_resolve_blocking(
     match result {
         Ok(text) => Ok(Json(json!({ "ok": true, "message": text })).into_response()),
         Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
+    }
+}
+
+fn git_conflict_stage_spec(stage: u8, path: &str) -> String {
+    format!(":{stage}:{path}")
+}
+
+fn is_base_conflict_mode(mode: &str) -> bool {
+    matches!(mode, "base" | "parent")
+}
+
+fn git_ui_conflict_stage_to_file(cwd: &str, path: &str, stage: u8) -> Result<String, String> {
+    let repo = git_ui_repo(cwd)?;
+    let spec = git_conflict_stage_spec(stage, path);
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(&repo)
+        .args(["show", &spec])
+        .output()
+        .map_err(|err| err.to_string())?;
+    if !output.status.success() {
+        return Err(git_failure(output, "git show"));
+    }
+    let full = Path::new(&repo).join(path);
+    if let Some(parent) = full.parent() {
+        fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    }
+    fs::write(full, output.stdout).map_err(|err| err.to_string())?;
+    git_ui_text(&repo, &["add", "--", path])
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::*;
+
+    #[test]
+    fn conflict_stage_spec_targets_git_index_stages() {
+        assert_eq!(git_conflict_stage_spec(1, "src/main.rs"), ":1:src/main.rs");
+        assert_eq!(git_conflict_stage_spec(2, "file.txt"), ":2:file.txt");
+        assert_eq!(
+            git_conflict_stage_spec(3, "dir/file.txt"),
+            ":3:dir/file.txt"
+        );
+        assert!(is_base_conflict_mode("base"));
+        assert!(is_base_conflict_mode("parent"));
+        assert!(!is_base_conflict_mode("ours"));
+    }
+
+    #[test]
+    fn conflict_resolve_base_uses_parent_stage_and_stages_file() {
+        let repo = temp_repo("herdr-conflict-base");
+        std::fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init"]);
+        run_git(&repo, &["config", "user.email", "test@example.com"]);
+        run_git(&repo, &["config", "user.name", "Herdr Test"]);
+        std::fs::write(repo.join("file.txt"), "base\n").unwrap();
+        run_git(&repo, &["add", "file.txt"]);
+        run_git(&repo, &["commit", "-m", "base"]);
+        let base_branch = git_text(&repo, &["branch", "--show-current"])
+            .trim()
+            .to_string();
+        run_git(&repo, &["checkout", "-b", "feature"]);
+        std::fs::write(repo.join("file.txt"), "head\n").unwrap();
+        run_git(&repo, &["commit", "-am", "head"]);
+        run_git(&repo, &["checkout", &base_branch]);
+        std::fs::write(repo.join("file.txt"), "remote\n").unwrap();
+        run_git(&repo, &["commit", "-am", "remote"]);
+        run_git(&repo, &["checkout", "feature"]);
+        let merge = Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["merge", base_branch.as_str()])
+            .output()
+            .unwrap();
+        assert!(!merge.status.success(), "merge should conflict");
+
+        git_ui_conflict_resolve_blocking(
+            repo.to_string_lossy().to_string(),
+            "file.txt".to_string(),
+            "base".to_string(),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(repo.join("file.txt")).unwrap(),
+            "base\n"
+        );
+        let status = git_text(&repo, &["status", "--porcelain"]);
+        assert!(
+            status.contains("M  file.txt"),
+            "expected staged file, got {status:?}"
+        );
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
+    fn temp_repo(prefix: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()))
+    }
+
+    fn run_git(repo: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn git_text(repo: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        String::from_utf8_lossy(&output.stdout).to_string()
     }
 }
 
