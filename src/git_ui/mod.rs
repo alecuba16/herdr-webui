@@ -1,6 +1,6 @@
 use std::fs;
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use axum::extract::{ConnectInfo, Query, State};
@@ -53,6 +53,7 @@ pub(crate) fn routes() -> Router<WebState> {
             post(cleanup::git_ui_worktree_prune),
         )
         .route("/api/git-ui/log", get(log::git_ui_log))
+        .route("/api/git-ui/path-info", get(git_ui_path_info))
         .route("/api/git-ui/blame", get(file::git_ui_blame))
         .route(
             "/api/git-ui/file",
@@ -91,6 +92,12 @@ pub(super) struct GitUiCwdQuery {
 }
 
 #[derive(Deserialize)]
+struct GitUiPathInfoQuery {
+    cwd: String,
+    path: String,
+}
+
+#[derive(Deserialize)]
 struct GitUiPathsRequest {
     cwd: String,
     paths: Vec<String>,
@@ -114,6 +121,66 @@ pub(super) fn git_ui_repo(cwd: &str) -> Result<String, String> {
         return Err(git_failure(output, "git rev-parse"));
     }
     Ok(expanded)
+}
+
+fn git_repo_root(cwd: &str) -> Result<String, String> {
+    let validated = safe_git_token(cwd, "repository path")?;
+    let expanded = expand_user_path_string(validated);
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(&expanded)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .map_err(|err| err.to_string())?;
+    if !output.status.success() {
+        return Err(git_failure(output, "git rev-parse"));
+    }
+    let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if root.is_empty() {
+        return Err("git repository root was empty".to_string());
+    }
+    Ok(root)
+}
+
+fn repo_relative_path(repo_root: &Path, cwd: &Path, file: &str) -> Result<String, String> {
+    let full = cwd.join(file);
+    let relative = full
+        .strip_prefix(repo_root)
+        .map_err(|_| "file is outside the git repository".to_string())?;
+    let text = relative.to_string_lossy().replace('\\', "/");
+    if text.is_empty() {
+        Err("file path resolves to the repository root".to_string())
+    } else {
+        Ok(text)
+    }
+}
+
+fn git_ui_path_info_blocking(cwd: String, path: String) -> Result<Response, (StatusCode, String)> {
+    let path = safe_repo_path(&path).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    let repo_root = git_repo_root(&cwd).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    let repo_root_path = fs::canonicalize(&repo_root).unwrap_or_else(|_| PathBuf::from(&repo_root));
+    let expanded_cwd_text = expand_user_path_string(&cwd);
+    let expanded_cwd =
+        fs::canonicalize(&expanded_cwd_text).unwrap_or_else(|_| PathBuf::from(&expanded_cwd_text));
+    let repo_path = repo_relative_path(&repo_root_path, &expanded_cwd, path)
+        .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    Ok(Json(json!({ "repo_root": repo_root, "file": repo_path })).into_response())
+}
+
+async fn git_ui_path_info(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    Query(query): Query<GitUiPathInfoQuery>,
+) -> Response {
+    check_auth!(&state, &headers, remote);
+    match tokio::task::spawn_blocking(move || git_ui_path_info_blocking(query.cwd, query.path))
+        .await
+    {
+        Ok(Ok(response)) => response,
+        Ok(Err((status, msg))) => git_json_error(status, msg),
+        Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    }
 }
 
 pub(super) fn git_ui_output(cwd: &str, args: &[&str]) -> Result<std::process::Output, String> {
@@ -637,6 +704,17 @@ mod tests {
     }
 
     #[test]
+    fn repo_relative_path_preserves_nested_browser_context() {
+        let repo = Path::new("/tmp/example-repo");
+        let nested_cwd = repo.join("src/ui");
+        assert_eq!(
+            repo_relative_path(repo, &nested_cwd, "history.rs").unwrap(),
+            "src/ui/history.rs"
+        );
+        assert!(repo_relative_path(repo, Path::new("/tmp/other"), "file.rs").is_err());
+    }
+
+    #[test]
     fn rejects_unsafe_git_tokens() {
         assert_eq!(safe_git_token(" main ", "branch").unwrap(), "main");
         assert!(safe_git_token("", "branch").is_err());
@@ -860,6 +938,27 @@ mod tests {
             assert!(json["branches"]
                 .as_array()
                 .is_some_and(|branches| !branches.is_empty()));
+
+            repo.write("nested/history.txt", "history\n");
+            let nested_cwd = repo.path.join("nested").to_string_lossy().to_string();
+            let path_info = git_ui_path_info(
+                State(state.clone()),
+                HeaderMap::new(),
+                ConnectInfo(remote()),
+                Query(GitUiPathInfoQuery {
+                    cwd: nested_cwd,
+                    path: "history.txt".to_string(),
+                }),
+            )
+            .await;
+            assert_eq!(path_info.status(), StatusCode::OK);
+            let json = response_json(path_info).await;
+            let expected_root = fs::canonicalize(&repo.path)
+                .unwrap_or_else(|_| repo.path.clone())
+                .to_string_lossy()
+                .to_string();
+            assert_eq!(json["repo_root"], expected_root);
+            assert_eq!(json["file"], "nested/history.txt");
 
             let log = git_ui_log(
                 State(state.clone()),
