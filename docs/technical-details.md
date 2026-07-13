@@ -32,6 +32,7 @@ The session manager adds a per-request backend target on top of the global defau
 - Built-in terminal attach uses `src/protocol.rs` frames over a separate local socket. The protocol supports attach, ANSI output, input, paste, resize, detach, and server shutdown frames.
 - The browser adapter in `src/main.rs` chooses sockets from the effective backend target. Without an explicit target it follows `backend_mode`; with `x-herdr-backend` or `backend=` query data it routes that request to the selected built-in or external Herdr session. Built-in mode must not accidentally route `/ws/events` or `/ws/terminal` to external Herdr session sockets, and external Herdr selections must still work from a WebUI process whose default is built-in.
 - Built-in sessions are stored in a small handle registry keyed by session name. The registry keeps each in-process built-in backend alive while it is running and allows the browser WebUI and TUI/smoke clients to attach in parallel. Closing a built-in session removes its handle; the handle drop unblocks socket listeners and cleans sockets.
+- Built-in sessions do not seed a default workspace during `BuiltinState::new`. A fresh backend socket returns an empty `session.snapshot`; UI surfaces must handle zero workspaces and use `default_folder` for Files, Git, temporary terminals, and workspace/worktree pickers until the user explicitly opens or creates a workspace.
 - `pane.read` returns terminal text after common TUI rewrites: carriage return, clear-line/display, cursor movement, OSC title skipping, and ANSI/control stripping. This keeps cleared Jcode toolbars/status cards from becoming stale plain text.
 - Agent detection first inspects known argv labels, then scans terminal child process trees with a short process-table cache, then falls back to terminal-screen markers. Jcode status follows the Herdr `jcode-support` manifest bottom-line rules plus active background-task markers so running tasks remain `working` even when an input prompt is visible.
 - Built-in `events.subscribe` stays open through an in-process event hub. Workspace, tab, pane, worktree, and agent status mutations publish Herdr-shaped JSON events to subscribers. The WebUI bridge uses those events for built-in sessions instead of its legacy 5s snapshot polling branch; external Herdr sessions keep the existing compatibility behavior.
@@ -219,6 +220,15 @@ No external icon assets are copied. The implementation uses local CSS and short 
 ### Git UI structure
 
 The Git sidebar separates exclusive view selection from action commands. Changes, log, stash, and cleanup render as a segmented toggle styled like the workspace shell-mode controls. Worktree actions remain in the toolbar below that toggle, and the file filter is rendered under the action toolbar so filtering applies to the visible file lists without visually competing with view switching. Cleanup uses `src/assets/icons/broom.svg` as a single shared mask icon instead of composing broom/trash glyphs in CSS.
+
+Git cwd is independent from workspace selection only when the user explicitly picks a different Git directory. Each cached Git view stores both `workspaceCwd` and current `cwd`:
+
+- initial open sets both values from the selected workspace/worktree or the default-folder pseudo-workspace,
+- choosing a directory from the Git picker calls `applyBranchModalCwd`, updates `cwd`, clears stale file/diff/log selection state, and refreshes,
+- switching branches uses the current `cwd` and does not also mean selecting a different folder,
+- the `↩` return action is visible only when normalized `cwd !== workspaceCwd`, and resets `cwd` back to the active workspace/worktree folder.
+
+This avoids two competing actions over one path field and keeps Git drawer state predictable when browsing repositories outside the currently selected workspace.
 
 ## Editor
 

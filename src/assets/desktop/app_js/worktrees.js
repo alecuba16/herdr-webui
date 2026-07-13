@@ -114,6 +114,7 @@ function closeWorktreeOpenModal() {
   if (m) m.style.display = "none";
 }
 function resetWorktreeOpenModal(path = explorationDefaultDirectoryOption()) {
+  path = worktreeOpenInitialPath(path);
   state.openWorktreeSelected = null;
   state.openWorktreeSuggestionLocked = false;
   state.openWorktreeSource = null;
@@ -192,8 +193,9 @@ function openWorktreesForRepo(keyToken, fallbackPath = "") {
   state.openWorktreeBranchSourceKey = "";
   syncWorktreeBranchOptions([]);
   el("worktreeOpenError").textContent = "";
-  el("worktreeDiscoverPath").value =
-    source.source_cwd || source.source_repo_root || fallbackPath || "";
+  el("worktreeDiscoverPath").value = worktreeOpenInitialPath(
+    source.source_cwd || source.source_repo_root || fallbackPath,
+  );
   syncSmartWorkspaceLabel();
   renderWorktreeOpenList();
   el("worktreeOpenModal").style.display = "grid";
@@ -349,8 +351,15 @@ function worktreeRootForSource(source) {
 function worktreeDefaultDirectoryOption() {
   return String(options.worktreeDefaultDirectory || "").trim();
 }
+function usefulDirectoryDefault(value) {
+  const path = String(value || "").trim();
+  return path && path !== "/" ? path : "";
+}
 function explorationDefaultDirectoryOption() {
-  return defaultFolderPath() || String(options.explorationDefaultDirectory || "").trim() || "~";
+  return usefulDirectoryDefault(defaultFolderPath()) || usefulDirectoryDefault(options.explorationDefaultDirectory) || "~";
+}
+function worktreeOpenInitialPath(path) {
+  return usefulDirectoryDefault(path) || explorationDefaultDirectoryOption();
 }
 function defaultWorktreeCheckoutPath() {
   const source = state.openWorktreeSource || {},

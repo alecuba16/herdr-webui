@@ -139,12 +139,26 @@
     return parts[parts.length - 1] || state.root;
   }
 
+  function afterSelectCallback(input) {
+    const name = input && input.dataset && input.dataset.directoryPickerAfterSelect;
+    if (!name || !/^[A-Za-z_$][A-Za-z0-9_$]*(\.[A-Za-z_$][A-Za-z0-9_$]*)*$/.test(name)) return null;
+    let owner = window;
+    const parts = name.split(".");
+    const method = parts.pop();
+    for (const part of parts) owner = owner && owner[part];
+    const fn = owner && owner[method];
+    return typeof fn === "function" ? () => fn.call(owner) : null;
+  }
+
   function selectCurrent() {
     if (!state.input) return;
-    state.input.value = joinPath(state.root, state.path);
-    state.input.dispatchEvent(new Event("input", { bubbles: true }));
-    state.input.dispatchEvent(new Event("change", { bubbles: true }));
+    const input = state.input;
+    input.value = joinPath(state.root, state.path);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    const callback = afterSelectCallback(input);
     close();
+    if (callback) callback();
   }
 
   function render() {
