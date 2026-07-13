@@ -1971,6 +1971,18 @@ describe("app bundle load", () => {
     ok(!mobileTerminalSource.includes("Math.floor(shell.clientWidth / 9)"));
   });
 
+
+  it("auto-runs Git folder actions after directory picker confirm", () => {
+    const directoryPickerSource = readFileSync(new URL("./desktop/directory_picker.js", import.meta.url), "utf8");
+
+    match(directoryPickerSource, /function afterSelectCallback\(input\)/);
+    match(directoryPickerSource, /input\.dataset\.directoryPickerAfterSelect/);
+    match(gitUiSource, /id="gitUiBranchCwd"[^`]*data-directory-picker-after-select="HerdrGitUi\.loadBranchModalCwd"/);
+    match(gitUiSource, /Load typed path/);
+    match(gitUiSource, /id="gitUiCleanupRoot"[^`]*data-directory-picker-after-select="HerdrGitUi\.scanCleanup"/);
+    match(gitUiSource, /class="mini directory-picker-trigger" onclick="HerdrDirectoryPicker\.openInput\('gitUiBranchCwd'\)"/);
+  });
+
   it("uses the same editor mount tooling for previous and current hunk text", () => {
     const gitDiffCss = readFileSync(new URL("./desktop/git_ui/diff.css", import.meta.url), "utf8");
 
