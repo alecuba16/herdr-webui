@@ -10,10 +10,17 @@
 }
 .git-ui-head,
 .git-ui-toolbar,
+.git-ui-side-bottom,
 .git-ui-commit,
 .git-ui-section {
   border-bottom: 1px solid var(--border);
   padding: 10px;
+}
+.git-ui-side-bottom {
+  margin-top: auto;
+}
+.git-ui-side-bottom .git-ui-btn {
+  width: 100%;
 }
 .git-ui-toolbar-title {
   color: var(--muted);

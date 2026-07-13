@@ -2506,9 +2506,15 @@ function navigateSelection(e, ws, tab, pane) {
   if (e && (e.metaKey || e.ctrlKey || e.shiftKey || e.button === 1))
     return true;
   e.preventDefault();
-  if (window.HerdrGitUi) window.HerdrGitUi.hide();
-  if (window.HerdrFileBrowser) window.HerdrFileBrowser.hide();
+  const gitWasVisible = !!(window.HerdrGitUi && window.HerdrGitUi.isVisible && window.HerdrGitUi.isVisible());
+  const fileWasVisible = !!(window.HerdrFileBrowser && window.HerdrFileBrowser.isVisible && window.HerdrFileBrowser.isVisible());
   go(ws, tab, pane);
+  if (gitWasVisible) openWorkspaceGitUi(ws, { forceOpen: true });
+  else if (fileWasVisible) openWorkspaceFileBrowser(ws, { forceOpen: true });
+  else {
+    if (window.HerdrGitUi) window.HerdrGitUi.hide();
+    if (window.HerdrFileBrowser) window.HerdrFileBrowser.hide();
+  }
   return false;
 }
 function go(ws, tab, pane) {

@@ -164,10 +164,11 @@
     target.permissionRequired = !!(error.details && error.details.permission_required);
   }
 
-  async function open(workspace) {
+  async function open(workspace, options) {
+    const openOptions = options || {};
     const cwd = workspaceCwd(workspace);
     const key = workspaceKey(workspace);
-    if (state.open && activeKey === key) {
+    if (state.open && activeKey === key && !openOptions.forceOpen) {
       hide();
       return;
     }

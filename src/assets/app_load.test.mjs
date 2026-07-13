@@ -370,6 +370,26 @@ describe("app bundle load", () => {
     match(gitUiSource, /\/api\/git-ui\/tag/);
   });
 
+  it("keeps Git and file drawers on the newly selected workspace", () => {
+    match(source, /gitWasVisible/);
+    match(source, /fileWasVisible/);
+    match(source, /openWorkspaceGitUi\(ws, \{ forceOpen: true \}\)/);
+    match(source, /openWorkspaceFileBrowser\(ws, \{ forceOpen: true \}\)/);
+    match(readFileSync(new URL("./desktop/app_js/render.js", import.meta.url), "utf8"), /HerdrGitUi\.open\(workspace, options \|\| \{\}\)/);
+    match(readFileSync(new URL("./desktop/app_js/render.js", import.meta.url), "utf8"), /HerdrFileBrowser\.open\(workspace, options \|\| \{\}\)/);
+    match(gitUiSource, /state\.visible && state\.activeKey === key && !openOptions\.forceOpen/);
+    match(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), /state\.open && activeKey === key && !openOptions\.forceOpen/);
+  });
+
+  it("moves the diff layout toggle to the bottom of the Git side rail", () => {
+    match(gitUiSource, /function renderDiffLayoutSideToggle/);
+    match(gitUiSource, /git-ui-side-bottom/);
+    ok(!gitUiSource.includes('<span class="git-ui-toolbar-title">${view.file ? "File view" : "Diff view"}</span>${changes}${history}${blame}${layoutToggle}'));
+    const gitLayoutCss = readFileSync(new URL("./desktop/git_ui/layout.css", import.meta.url), "utf8");
+    match(gitLayoutCss, /\.git-ui-side-bottom \{[\s\S]*?margin-top: auto;/);
+    match(gitLayoutCss, /\.git-ui-side-bottom \.git-ui-btn \{[\s\S]*?width: 100%;/);
+  });
+
   it("defines file explorer and Git file filters", () => {
     match(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), /q=\$\{encodeURIComponent\(target\.filter\.trim\(\)\)\}/);
     match(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), /showSearch\(\)/);

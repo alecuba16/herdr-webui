@@ -371,7 +371,7 @@ async function ensureFileBrowserLoaded() {
   await loadDesktopFeature("/assets/desktop/file-browser.js");
 }
 
-async function openWorkspaceGitUi(id) {
+async function openWorkspaceGitUi(id, options) {
   if (!gitUiEnabled()) return;
   const workspace = selectedOrDefaultWorkspace(id);
   if (!workspace) return;
@@ -382,7 +382,7 @@ async function openWorkspaceGitUi(id) {
     return;
   }
   if (window.HerdrFileBrowser) window.HerdrFileBrowser.hide();
-  window.HerdrGitUi.open(workspace);
+  window.HerdrGitUi.open(workspace, options || {});
   render();
 }
 
@@ -399,7 +399,7 @@ function syncFileWorkspaceToggle() {
   syncShellModeButtons();
 }
 
-async function openWorkspaceFileBrowser(id) {
+async function openWorkspaceFileBrowser(id, options) {
   const workspace = selectedOrDefaultWorkspace(id);
   if (!workspace) return;
   try {
@@ -409,7 +409,7 @@ async function openWorkspaceFileBrowser(id) {
     return;
   }
   if (window.HerdrGitUi) window.HerdrGitUi.hide();
-  window.HerdrFileBrowser.open(workspace).catch((error) => alert(error.message || String(error)));
+  window.HerdrFileBrowser.open(workspace, options || {}).catch((error) => alert(error.message || String(error)));
   render();
 }
 function runWorkspaceContextAction(action, button) {
