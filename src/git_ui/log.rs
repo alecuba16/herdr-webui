@@ -21,8 +21,38 @@ pub(super) struct GitUiLogQuery {
     pub(super) cwd: Option<String>,
     pub(super) max: Option<usize>,
     pub(super) all: Option<bool>,
+    pub(super) scope: Option<String>,
     pub(super) base: Option<String>,
     pub(super) file: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GitLogScope {
+    All,
+    BaseCurrent,
+    Base,
+}
+
+impl GitLogScope {
+    fn from_query(scope: Option<String>, all: bool) -> Result<Self, String> {
+        match scope
+            .as_deref()
+            .unwrap_or(if all { "all" } else { "base-current" })
+        {
+            "all" => Ok(Self::All),
+            "base-current" => Ok(Self::BaseCurrent),
+            "base" => Ok(Self::Base),
+            other => Err(format!("unsupported git log scope: {other}")),
+        }
+    }
+
+    fn includes_all(self) -> bool {
+        matches!(self, Self::All)
+    }
+
+    fn includes_current(self) -> bool {
+        matches!(self, Self::BaseCurrent)
+    }
 }
 
 #[derive(Deserialize)]
@@ -105,7 +135,7 @@ fn git_log_args(
 
 fn log_refs(
     cwd: &str,
-    all: bool,
+    scope: GitLogScope,
     base: Option<String>,
 ) -> Result<Vec<String>, (StatusCode, String)> {
     let mut refs = Vec::new();
@@ -117,7 +147,7 @@ fn log_refs(
             refs.push(base);
         }
     }
-    if !all {
+    if scope.includes_current() {
         refs.push("HEAD".to_string());
     }
     Ok(refs)
@@ -174,13 +204,13 @@ fn trim_log_lines_to_commit_limit(lines: Vec<String>, limit: usize) -> Vec<Strin
 fn git_ui_log_blocking(
     cwd: String,
     limit: usize,
-    all: bool,
+    scope: GitLogScope,
     base: Option<String>,
     file: Option<String>,
 ) -> Result<Response, (StatusCode, String)> {
-    let refs = log_refs(&cwd, all, base)?;
+    let refs = log_refs(&cwd, scope, base)?;
     let query_limit = limit.saturating_add(1);
-    let args = git_log_args(query_limit, all, &refs, file.as_deref())
+    let args = git_log_args(query_limit, scope.includes_all(), &refs, file.as_deref())
         .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
     match git_ui_text_strings(&cwd, &args) {
         Ok(text) => {
@@ -238,10 +268,14 @@ pub(super) async fn git_ui_log(
     };
     let limit = query.max.unwrap_or(80).clamp(1, 2000);
     let all = query.all.unwrap_or(false);
+    let scope = match GitLogScope::from_query(query.scope, all) {
+        Ok(scope) => scope,
+        Err(err) => return git_json_error(StatusCode::BAD_REQUEST, err),
+    };
     let base = query.base;
     let file = query.file;
     let cwd = cwd.to_string();
-    match tokio::task::spawn_blocking(move || git_ui_log_blocking(cwd, limit, all, base, file))
+    match tokio::task::spawn_blocking(move || git_ui_log_blocking(cwd, limit, scope, base, file))
         .await
     {
         Ok(Ok(response)) => response,
@@ -690,22 +724,50 @@ mod tests {
         run_git(&repo, &["checkout", "-b", "feature"]);
 
         assert_eq!(
-            log_refs(&repo.to_string_lossy(), false, Some(base.clone())).unwrap(),
+            log_refs(
+                &repo.to_string_lossy(),
+                GitLogScope::BaseCurrent,
+                Some(base.clone())
+            )
+            .unwrap(),
             vec![base.clone(), "HEAD".to_string()]
         );
         assert_eq!(
-            log_refs(&repo.to_string_lossy(), true, Some(base.clone())).unwrap(),
+            log_refs(
+                &repo.to_string_lossy(),
+                GitLogScope::All,
+                Some(base.clone())
+            )
+            .unwrap(),
+            vec![base.clone()]
+        );
+        assert_eq!(
+            log_refs(
+                &repo.to_string_lossy(),
+                GitLogScope::Base,
+                Some(base.clone())
+            )
+            .unwrap(),
             vec![base]
         );
         assert_eq!(
             log_refs(
                 &repo.to_string_lossy(),
-                false,
+                GitLogScope::BaseCurrent,
                 Some("missing-branch".to_string())
             )
             .unwrap(),
             vec!["HEAD".to_string()]
         );
+        assert_eq!(
+            GitLogScope::from_query(None, true).unwrap(),
+            GitLogScope::All
+        );
+        assert_eq!(
+            GitLogScope::from_query(Some("base".to_string()), true).unwrap(),
+            GitLogScope::Base
+        );
+        assert!(GitLogScope::from_query(Some("weird".to_string()), false).is_err());
         assert_eq!(
             git_log_args(80, false, &["master".to_string(), "HEAD".to_string()], None).unwrap(),
             vec![

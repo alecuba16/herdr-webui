@@ -303,6 +303,10 @@
     return String(gitUiOptions().gitUiDefaultBranch || "master").trim() || "master";
   }
 
+  function normalizeLogScope(scope) {
+    return ["all", "base-current", "base"].includes(scope) ? scope : "all";
+  }
+
   function setGitUiOption(key, value) {
     const options = gitUiOptions();
     options[key] = value;
@@ -524,6 +528,7 @@
         blame: {},
         showBlame: false,
         logAll: true,
+        logScope: "all",
         logLimit: GIT_LOG_PAGE_SIZE,
         logLoadingMore: false,
         selectedLogCommits: [],
@@ -1033,23 +1038,25 @@
     const canCommit = hasStagedChanges(view);
     const commitHint = canCommit ? "Commit staged changes" : "Stage changes before committing";
     const commitDisabled = canCommit ? "" : " disabled";
-    const compareButton = currentMode() !== "changes" ? `<button class="git-ui-btn" onclick="HerdrGitUi.latestChanges()">Current changes</button>` : "";
     const branchLabel = `${view.titleKind || "Branch"}: ${s.branch || view.title || "No branch"}`;
     const error = view.error && !cleanupOnly ? `<div class="git-ui-error">${esc(view.error)}</div>` : "";
-    const actions = cleanupOnly ? "" : `<div class="git-ui-toolbar"><div class="git-ui-toolbar-title">Worktree actions</div><div class="git-ui-actions"><button class="git-ui-btn primary" title="${esc(commitHint)}" onclick="HerdrGitUi.openCommitModal()"${commitDisabled}>Commit</button><button class="git-ui-btn" onclick="HerdrGitUi.openPullModal()">↓ Pull</button><button class="git-ui-btn" onclick="HerdrGitUi.openPushModal()">↑ Push</button>${compareButton}<button class="git-ui-btn" onclick="HerdrGitUi.rebase()">Rebase</button><button class="git-ui-btn danger" onclick="HerdrGitUi.reset()">Reset</button></div></div>`;
+    const actions = cleanupOnly ? "" : `<div class="git-ui-toolbar"><div class="git-ui-toolbar-title">Worktree actions</div><div class="git-ui-actions"><button class="git-ui-btn primary" title="${esc(commitHint)}" onclick="HerdrGitUi.openCommitModal()"${commitDisabled}>Commit</button><button class="git-ui-btn" onclick="HerdrGitUi.openPullModal()">↓ Pull</button><button class="git-ui-btn" onclick="HerdrGitUi.openPushModal()">↑ Push</button><button class="git-ui-btn" onclick="HerdrGitUi.rebase()">Rebase</button><button class="git-ui-btn danger" onclick="HerdrGitUi.reset()">Reset</button></div></div>`;
     const fileList = cleanupOnly ? "" : `<label class="git-ui-file-filter"><span class="git-ui-file-filter-icon" aria-hidden="true"></span><input value="${esc(view.fileFilter || "")}" id="gitUiFileFilter" name="git-ui-file-filter" autocomplete="off" placeholder="Filter files" oninput="HerdrGitUi.filterFiles(this.value)"></label>${fileSections}`;
     const sideBottom = cleanupOnly ? "" : renderDiffLayoutSideToggle(view);
     const returnToWorkspace = !cleanupOnly && !gitCwdMatchesWorkspace(view)
-      ? `<button class="git-ui-refresh-icon git-ui-return-cwd-icon" title="Return Git to current workspace folder" aria-label="Return Git to current workspace folder" onclick="HerdrGitUi.returnToWorkspaceCwd()"><span>↩</span></button>`
+      ? `<button class="git-ui-refresh-icon git-ui-return-cwd-icon" title="Return Git to current workspace folder" aria-label="Return Git to current workspace folder" onclick="HerdrGitUi.returnToWorkspaceCwd()"><span></span></button>`
+      : "";
+    const returnToCurrentChanges = !cleanupOnly && currentMode() !== "changes"
+      ? `<button class="git-ui-refresh-icon git-ui-current-changes-icon" title="Return to current changes" aria-label="Return to current changes" onclick="HerdrGitUi.latestChanges()"><span></span></button>`
       : "";
     const refreshButton = appRefreshIconButton({ className: "git-ui-refresh-icon", title: "Refresh", label: "Refresh Git state", spinning: !!view.refreshAnimating, onclick: "HerdrGitUi.refreshWithSpin()" });
-    return `<aside class="git-ui-side" onscroll="HerdrGitUi.sideScroll(this)"><div class="git-ui-head"><div class="git-ui-head-main"><div class="git-ui-title-row"><div class="git-ui-title">Git</div><div class="git-ui-title-actions">${returnToWorkspace}${refreshButton}</div></div><div class="git-ui-subtitle">${esc(s.state || "closed")} · ${esc(compactPath(s.repo_path))}</div><button class="git-ui-branch-pill" title="Change Git directory or switch branch" onclick="HerdrGitUi.openBranchModal()"><span>${esc(branchLabel)}</span><b>↗</b></button></div></div>${error}<div class="git-ui-toolbar git-ui-view-toolbar">${renderGitViewTabs(tabs, view.tab)}</div>${actions}${fileList}${sideBottom}</aside>`;
+    return `<aside class="git-ui-side" onscroll="HerdrGitUi.sideScroll(this)"><div class="git-ui-head"><div class="git-ui-head-main"><div class="git-ui-title-row"><div class="git-ui-title">Git</div><div class="git-ui-title-actions">${returnToCurrentChanges}${returnToWorkspace}${refreshButton}</div></div><div class="git-ui-subtitle">${esc(s.state || "closed")} · ${esc(compactPath(s.repo_path))}</div><button class="git-ui-branch-pill" title="Change Git directory or switch branch" onclick="HerdrGitUi.openBranchModal()"><span>${esc(branchLabel)}</span><b>↗</b></button></div></div>${error}<div class="git-ui-toolbar git-ui-view-toolbar">${renderGitViewTabs(tabs, view.tab)}</div>${actions}${fileList}${sideBottom}</aside>`;
   }
 
   function renderDiffLayoutSideToggle(view) {
     const layout = diffLayoutMode();
     const label = view && view.file ? "File view" : "Diff view";
-    return `<div class="git-ui-side-bottom"><div class="git-ui-toolbar-title">${label}</div><button class="git-ui-btn" title="Switch diff layout" onclick="HerdrGitUi.toggleDiffLayout()">${layout === "unified" ? "Side-by-side" : "Unified"}</button></div>`;
+    return `<div class="git-ui-side-bottom"><div class="git-ui-toolbar-title">${label}</div><div class="git-ui-view-toggle-group git-ui-diff-layout-toggle" role="group" aria-label="Diff layout"><button class="git-ui-view-toggle ${layout === "side-by-side" ? "active" : ""}" title="Show side-by-side diff" onclick="HerdrGitUi.setDiffLayout('side-by-side')">Side</button><button class="git-ui-view-toggle ${layout === "unified" ? "active" : ""}" title="Show unified diff" onclick="HerdrGitUi.setDiffLayout('unified')">Unified</button></div></div>`;
   }
 
   function filterFiles(files, filter) {
@@ -1061,7 +1068,7 @@
   function renderFileToolbar(activeTab) {
     const view = active() || {};
     const conflicts = ((((view.status || {}).conflicted) || []).length > 0);
-    const compare = currentMode() !== "changes"
+    const compare = activeTab !== "history" && currentMode() !== "changes"
       ? `<span class="git-ui-compare-state">Comparing ${esc(view.compareBase || "base")} → ${esc(view.compareTarget || "target")}</span><button class="git-ui-btn" onclick="HerdrGitUi.latestChanges()">Return to current changes</button>`
       : "";
     const files = (view.diff && view.diff.files) || [];
@@ -1227,13 +1234,15 @@
     const view = active();
     if (!view || !path || view.blame[path] !== undefined || currentMode() === "readonly-compare") return;
     view.blame[path] = null;
-    api(`/api/git-ui/blame?cwd=${encodeURIComponent(view.cwd)}&file=${encodeURIComponent(path)}`)
+    const ref = currentMode() === "changes" ? "working" : (view.compareTarget || "HEAD");
+    api(`/api/git-ui/blame?cwd=${encodeURIComponent(view.cwd)}&file=${encodeURIComponent(path)}&ref_name=${encodeURIComponent(ref)}`)
       .then((data) => {
         view.blame[path] = parseBlame(data.text || "");
         if (state.visible) render();
       })
-      .catch(() => {
-        view.blame[path] = {};
+      .catch((err) => {
+        view.blame[path] = { __error: err.message || String(err) };
+        if (state.visible) render();
       });
   }
 
@@ -1260,6 +1269,7 @@
     const view = active() || {};
     if (!view.showBlame) return "";
     const blame = view.blame && view.blame[path];
+    if (blame && blame.__error) return "blame unavailable";
     const name = blame && lineNumber ? blame[lineNumber] : "";
     if (!name) return "";
     return String(name).split(/\s+/).slice(0, 2).join(" ");
@@ -1467,8 +1477,10 @@
     const baseBranch = gitLogDefaultBranch();
     const logLimit = Math.max(1, Math.min(GIT_LOG_MAX_LIMIT, Number(view.logLimit || GIT_LOG_PAGE_SIZE)));
     view.logLimit = logLimit;
+    view.logScope = normalizeLogScope(view.logScope || (view.logAll ? "all" : "base-current"));
+    view.logAll = view.logScope === "all";
     const fileParam = view.logFilePath ? `&file=${encodeURIComponent(view.logFilePath)}` : "";
-    const data = await api(`/api/git-ui/log?cwd=${encodeURIComponent(view.cwd)}&all=${view.logAll ? "true" : "false"}&base=${encodeURIComponent(baseBranch)}&max=${logLimit}${fileParam}`);
+    const data = await api(`/api/git-ui/log?cwd=${encodeURIComponent(view.cwd)}&all=${view.logAll ? "true" : "false"}&scope=${encodeURIComponent(view.logScope)}&base=${encodeURIComponent(baseBranch)}&max=${logLimit}${fileParam}`);
     const selected = view.selectedLogCommits || [];
     view.logData = data;
     const selectedBranch = selected.length === 1 && window.HerdrGitLog && window.HerdrGitLog.selectedBranchForHash
@@ -1480,6 +1492,7 @@
       data,
       selected,
       logAll: view.logAll,
+      logScope: view.logScope,
       logLimit: view.logLimit,
       logLoadingMore: !!view.logLoadingMore,
       baseBranch,
@@ -2040,6 +2053,10 @@
       setGitUiOption("gitUiDiffLayout", diffLayoutMode() === "unified" ? "side-by-side" : "unified");
       render();
     },
+    setDiffLayout(layout) {
+      setGitUiOption("gitUiDiffLayout", layout === "unified" ? "unified" : "side-by-side");
+      render();
+    },
     async editSideBySide() {
       const view = active();
       if (!canEditCurrentFile(view)) return;
@@ -2518,6 +2535,7 @@
       if (!view || !hash) return;
       view.pendingLogScrollHash = hash;
       view.logAll = true;
+      view.logScope = "all";
       view.tab = "log";
       render();
     },
@@ -2525,15 +2543,18 @@
       cwd = decodeURIComponent(cwd || "");
       path = decodeURIComponent(path || "");
       if (!cwd || !path) return;
-      await open({ workspace_id: `git-file-history:${cwd}`, cwd, label: compactPath(cwd) }, { forceOpen: true });
+      if (!(state.visible && active() && samePath(active().cwd, cwd))) {
+        await open({ workspace_id: `git-file-history:${cwd}`, cwd, label: compactPath(cwd) }, { forceOpen: true });
+      }
       const view = active();
       if (!view) return;
-      view.tab = "log";
-      view.logFilePath = path;
-      view.logAll = true;
-      view.logLimit = GIT_LOG_PAGE_SIZE;
-      view.selectedLogCommits = [];
-      view.selectedCommitPreview = null;
+      view.file = path;
+      view.diffKind = "";
+      view.tab = "history";
+      view.mode = "changes";
+      view.compareBase = "";
+      view.compareTarget = "";
+      view.temporaryHistoryCompare = false;
       render();
     },
     clearLogFileHistory() {
@@ -2599,7 +2620,18 @@
     setLogAll(value) {
       const view = active();
       if (!view) return;
-      view.logAll = !!value;
+      view.logScope = value ? "all" : "base-current";
+      view.logAll = view.logScope === "all";
+      view.logLimit = GIT_LOG_PAGE_SIZE;
+      render();
+    },
+    cycleLogScope() {
+      const view = active();
+      if (!view) return;
+      const order = ["all", "base-current", "base"];
+      const current = normalizeLogScope(view.logScope || (view.logAll ? "all" : "base-current"));
+      view.logScope = order[(order.indexOf(current) + 1) % order.length];
+      view.logAll = view.logScope === "all";
       view.logLimit = GIT_LOG_PAGE_SIZE;
       render();
     },

@@ -389,6 +389,12 @@ describe("app bundle load", () => {
     match(gitUiSource, /loadSelectedCommitPreview\(view, view\.selectedLogCommits\[0\]\)/);
     match(gitUiSource, /base=\$\{encodeURIComponent\(`\$\{hash\}\^`\)\}/);
     match(gitUiSource, /openFileHistory\(cwd, path\)/);
+    match(gitUiSource, /state\.visible && active\(\) && samePath\(active\(\)\.cwd, cwd\)/);
+    match(gitUiSource, /view\.tab = "history";/);
+    match(gitUiSource, /const compare = activeTab !== "history" && currentMode\(\) !== "changes"/);
+    match(gitUiSource, /const ref = currentMode\(\) === "changes" \? "working" : \(view\.compareTarget \|\| "HEAD"\);/);
+    match(gitUiSource, /ref_name=\$\{encodeURIComponent\(ref\)\}/);
+    match(gitUiSource, /blame unavailable/);
     match(gitUiSource, /Fetch selected branch before rebasing/);
     match(gitUiSource, /pull_first: pullFirst/);
     ok(!gitUiSource.includes('/api/git-ui/pull", { cwd: view.cwd, mode: "ff-only", branch }'));
@@ -1958,10 +1964,15 @@ describe("app bundle load", () => {
     match(gitSettingsSource, /gitUiDefaultBranch: "master"/);
     match(gitUiSource, /function gitLogDefaultBranch\(\)/);
     match(gitUiSource, /base=\$\{encodeURIComponent\(baseBranch\)\}/);
-    match(gitLogSource, /Show \$\{esc\(baseBranch\)\} first, then the current branch/);
+    match(gitLogSource, /Toggle history scope: All/);
     match(gitSettingsSource, /Unified \(GitHub-style\)/);
     match(gitSettingsSource, /gitUiDiffLayout: "side-by-side"/);
     match(gitUiSource, /function diffLayoutMode\(\)/);
+    match(gitUiSource, /function renderDiffLayoutSideToggle\(view\)/);
+    match(gitUiSource, /git-ui-diff-layout-toggle/);
+    match(gitUiSource, /HerdrGitUi\.setDiffLayout\('side-by-side'\)/);
+    match(gitUiSource, /HerdrGitUi\.setDiffLayout\('unified'\)/);
+    match(gitUiSource, /setDiffLayout\(layout\)/);
     match(gitUiSource, /function renderUnifiedLine\(/);
     match(gitUiSource, /git-ui-unified-row/);
     match(gitUiSource, /sideBySideRows\(chunk\)/);
@@ -2015,7 +2026,13 @@ describe("app bundle load", () => {
     match(gitUiSource, /function gitCwdMatchesWorkspace\(view\)/);
     match(gitUiSource, /HerdrGitUi\.returnToWorkspaceCwd\(\)/);
     match(gitUiSource, /returnToWorkspaceCwd\(\) \{/);
+    match(gitUiSource, /git-ui-current-changes-icon/);
+    match(gitUiSource, /title="Return to current changes"/);
+    match(gitUiSource, /returnToCurrentChanges\}\$\{returnToWorkspace\}/);
+    ok(!gitUiSource.includes('${compareButton}<button'));
     match(gitLayoutCss, /\.git-ui-return-cwd-icon span/);
+    match(gitLayoutCss, /folder-up\.svg/);
+    match(gitLayoutCss, /\.git-ui-current-changes-icon span \{[\s\S]*?git\.svg/);
     match(gitUiSource, /Folder picker: selected folder becomes the Git panel directory immediately/);
     match(gitUiSource, /Load more changes fetches older commits/);
     match(source, /Choosing a folder in the Git directory picker immediately moves the Git panel/);
@@ -2056,6 +2073,7 @@ describe("app bundle load", () => {
 
     match(assetsSource, /include_str!\("assets\/desktop\/git_ui\/log\.js"\)/);
     match(gitUiSource, /logAll: true,/);
+    match(gitUiSource, /logScope: "all",/);
     match(gitUiSource, /logLimit: GIT_LOG_PAGE_SIZE,/);
     match(gitUiSource, /const GIT_LOG_PAGE_SIZE = 80;/);
     match(gitUiSource, /const GIT_LOG_MAX_LIMIT = 2000;/);
@@ -2064,6 +2082,11 @@ describe("app bundle load", () => {
     match(fileBrowserSource, /showHistory\(encodedPath\)/);
     match(fileBrowserSource, /openFileHistory\(encodeURIComponent\(state\.cwd\), encodeURIComponent\(path\)\)/);
     match(gitUiSource, /window\.HerdrGitLog\.render/);
+    match(gitLogSource, /onclick="HerdrGitUi\.cycleLogScope\(\)"/);
+    match(gitLogSource, /Toggle history scope: All/);
+    match(gitLogSource, /function logScopeLabel/);
+    ok(!gitLogSource.includes("HerdrGitUi.setLogAll(false)"));
+    ok(!gitLogSource.includes("All branches</button>"));
     ok(!gitUiSource.includes("function renderLogLine(line)"));
     match(gitLogSource, /window\.HerdrGitLog = \{ render, scrollToCommit, rowsFromData, laneColor, applyFilters, logCommitCount, selectedBranchForHash \};/);
     match(gitLogSource, /git-ui-log-table-head/);
@@ -2098,6 +2121,9 @@ describe("app bundle load", () => {
     match(gitLogSource, /return "main";/);
     match(gitUiSource, /logFilters: \{ description: "", date: "", author: "" \}/);
     match(gitUiSource, /max=\$\{logLimit\}/);
+    match(gitUiSource, /scope=\$\{encodeURIComponent\(view\.logScope\)\}/);
+    match(gitUiSource, /cycleLogScope\(\) \{/);
+    match(gitUiSource, /const order = \["all", "base-current", "base"\]/);
     match(gitUiSource, /async loadMoreLog\(\)/);
     match(gitUiSource, /view\.logLimit = Math\.min\(GIT_LOG_MAX_LIMIT/);
     match(gitUiSource, /setLogFilter\(field, value\)/);
