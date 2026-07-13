@@ -181,6 +181,33 @@
     return "branch";
   }
 
+  function selectedBranchForHash(data, hash, baseBranch) {
+    hash = String(hash || "");
+    if (!hash) return "";
+    const row = rowsFromData(data || {}).find((item) => String(item.hash || "") === hash);
+    return branchForRow(row, baseBranch);
+  }
+
+  function branchForRow(row, baseBranch) {
+    const labels = (row && row.labels) || [];
+    for (const label of labels) {
+      const normalized = normalizeLabel(label);
+      if (normalized.startsWith("HEAD -> ")) {
+        const branch = normalized.slice("HEAD -> ".length).trim();
+        if (branch && !branch.startsWith("origin/HEAD")) return branch;
+      }
+    }
+    const branches = labels.map(normalizeLabel).filter((label) => isBranchLabel(label, baseBranch));
+    return branches[0] || "";
+  }
+
+  function isBranchLabel(label, baseBranch) {
+    if (!label || label === "HEAD" || label.startsWith("tag:")) return false;
+    if (label.includes(" -> ")) return false;
+    if (label === "origin/HEAD") return false;
+    return labelKind(label, false, baseBranch) !== "tag";
+  }
+
   function renderGraph(graph, hasCommit) {
     const chars = String(graph || "* ").split("");
     const cells = [];
@@ -221,5 +248,5 @@
     if (target) target.scrollIntoView({ block: "center", behavior: "smooth" });
   }
 
-  window.HerdrGitLog = { render, scrollToCommit, rowsFromData, laneColor, applyFilters, logCommitCount };
+  window.HerdrGitLog = { render, scrollToCommit, rowsFromData, laneColor, applyFilters, logCommitCount, selectedBranchForHash };
 })();

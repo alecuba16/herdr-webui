@@ -511,6 +511,7 @@ el("worktreeWorkspaceLabel").addEventListener("keydown", (e) => {
 });
 el("worktreeNewBase").addEventListener("input", syncBranchNameFromBase);
 el("worktreeNewBase").addEventListener("change", syncBranchNameFromBase);
+el("worktreeFetchRemotes").onclick = fetchWorktreeRemoteBranches;
 el("worktreeNewBranch").addEventListener("input", () => {
   if (el("worktreeNewBranch").value.trim() !== state.openWorktreeBaseBranchName)
     state.openWorktreeBaseBranchName = "";

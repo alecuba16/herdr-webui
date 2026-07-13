@@ -2856,6 +2856,8 @@ struct WorkspaceQuery {
 #[derive(Deserialize)]
 struct GitBranchesQuery {
     cwd: Option<String>,
+    remote: Option<bool>,
+    fetch: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -2886,22 +2888,41 @@ pub(crate) fn expand_user_path_string(path: &str) -> String {
     expand_path_prefix(path).to_string_lossy().to_string()
 }
 
-fn list_git_branches(cwd: &str) -> io::Result<Vec<String>> {
+fn list_git_branches(
+    cwd: &str,
+    include_remote: bool,
+    fetch_remote: bool,
+) -> Result<Vec<String>, String> {
     let cwd = expand_path_prefix(cwd);
+    if fetch_remote {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&cwd)
+            .args(["fetch", "--all", "--prune"])
+            .output()
+            .map_err(|err| err.to_string())?;
+        if !output.status.success() {
+            return Err(git_failure(output, "git fetch"));
+        }
+    }
+    let mut refs = vec!["refs/heads"];
+    if include_remote {
+        refs.push("refs/remotes");
+    }
     let output = Command::new("git")
         .arg("-C")
         .arg(cwd)
-        .args(["for-each-ref", "--format=%(refname:short)", "refs/heads"])
-        .output()?;
+        .args(["for-each-ref", "--format=%(refname:short)"])
+        .args(refs)
+        .output()
+        .map_err(|err| err.to_string())?;
     if !output.status.success() {
-        return Err(io::Error::other(
-            String::from_utf8_lossy(&output.stderr).trim().to_string(),
-        ));
+        return Err(git_failure(output, "git for-each-ref"));
     }
     let mut branches = String::from_utf8_lossy(&output.stdout)
         .lines()
         .map(str::trim)
-        .filter(|line| !line.is_empty())
+        .filter(|line| !line.is_empty() && !line.ends_with("/HEAD"))
         .map(ToOwned::to_owned)
         .collect::<Vec<_>>();
     branches.sort();
@@ -2925,7 +2946,11 @@ async fn git_branches(
         )
             .into_response();
     };
-    match list_git_branches(cwd) {
+    match list_git_branches(
+        cwd,
+        query.remote.unwrap_or(false),
+        query.fetch.unwrap_or(false),
+    ) {
         Ok(branches) => Json(GitBranchesResponse { branches }).into_response(),
         Err(err) => (
             StatusCode::BAD_GATEWAY,
@@ -5771,5 +5796,84 @@ mod tests {
         )
         .unwrap()
         .contains("<svg"));
+    }
+
+    #[test]
+    fn list_git_branches_can_include_remote_refs_on_request() {
+        let repo =
+            std::env::temp_dir().join(format!("herdr-webui-branches-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&repo);
+        fs::create_dir_all(&repo).unwrap();
+        assert!(Command::new("git")
+            .arg("init")
+            .arg(&repo)
+            .output()
+            .unwrap()
+            .status
+            .success());
+        fs::write(repo.join("file.txt"), "hello").unwrap();
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["add", "."])
+            .output()
+            .unwrap()
+            .status
+            .success());
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args([
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=t@example.com",
+                "commit",
+                "-m",
+                "init",
+            ])
+            .output()
+            .unwrap()
+            .status
+            .success());
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["branch", "feature/local"])
+            .output()
+            .unwrap()
+            .status
+            .success());
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["update-ref", "refs/remotes/origin/feature/remote", "HEAD"])
+            .output()
+            .unwrap()
+            .status
+            .success());
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args([
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/main",
+            ])
+            .output()
+            .unwrap()
+            .status
+            .success());
+
+        let local = list_git_branches(repo.to_str().unwrap(), false, false).unwrap();
+        assert!(local.contains(&"feature/local".to_string()));
+        assert!(!local.contains(&"origin/feature/remote".to_string()));
+
+        let remote = list_git_branches(repo.to_str().unwrap(), true, false).unwrap();
+        assert!(remote.contains(&"feature/local".to_string()));
+        assert!(remote.contains(&"origin/feature/remote".to_string()));
+        assert!(!remote.contains(&"origin/HEAD".to_string()));
+
+        fs::remove_dir_all(repo).unwrap();
     }
 }
