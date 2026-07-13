@@ -1,6 +1,6 @@
 use serde_json::{json, Value};
 
-pub(super) const LOG_FORMAT: &str = "%H%x00%an%x00%ar%x00%D%x00%s";
+pub(super) const LOG_FORMAT: &str = "%H%x00%an%x00%ar%x00%cI%x00%D%x00%s";
 
 pub(super) fn reconstruct_log_line(line: &str) -> String {
     match parse_log_row(line) {
@@ -19,6 +19,7 @@ pub(super) fn parse_log_row_json(line: &str) -> Option<Value> {
         "hash": row.hash,
         "author": row.author,
         "date": row.date,
+        "exact_date": row.exact_date,
         "title": row.title,
         "labels": row.labels,
         "lane": row.lane,
@@ -32,6 +33,7 @@ struct LogRow {
     hash: String,
     author: String,
     date: String,
+    exact_date: String,
     title: String,
     labels: Vec<String>,
     lane: usize,
@@ -59,8 +61,9 @@ fn parse_log_row(line: &str) -> Option<LogRow> {
     let parts: Vec<&str> = raw[end..].split('\0').collect();
     let author = parts.get(1).map(|s| s.trim()).unwrap_or("").to_string();
     let date = parts.get(2).map(|s| s.trim()).unwrap_or("").to_string();
-    let labels = split_decorations(parts.get(3).copied().unwrap_or(""));
-    let title = parts.get(4).map(|s| s.trim()).unwrap_or("").to_string();
+    let exact_date = parts.get(3).map(|s| s.trim()).unwrap_or("").to_string();
+    let labels = split_decorations(parts.get(4).copied().unwrap_or(""));
+    let title = parts.get(5).map(|s| s.trim()).unwrap_or("").to_string();
     let current = labels
         .iter()
         .any(|label| label == "HEAD" || label.starts_with("HEAD -> "));
@@ -70,6 +73,7 @@ fn parse_log_row(line: &str) -> Option<LogRow> {
         hash,
         author,
         date,
+        exact_date,
         title,
         labels,
         lane,
@@ -87,6 +91,7 @@ fn graph_only_row(raw: &str) -> Option<LogRow> {
         hash: String::new(),
         author: String::new(),
         date: String::new(),
+        exact_date: String::new(),
         title: String::new(),
         labels: Vec::new(),
         lane: graph_lane(raw),
@@ -134,14 +139,21 @@ mod tests {
 
     #[test]
     fn parses_commit_row_with_refs_date_author_and_lane() {
-        let row = parse_log_row(
-            "| * abcdef123456\0Alice\02 hours ago\0HEAD -> feature, tag: v1\0Add graph view",
-        )
-        .unwrap();
+        let record = [
+            "| * abcdef123456",
+            "Alice",
+            "2 hours ago",
+            "2026-07-13T12:34:56+02:00",
+            "HEAD -> feature, tag: v1",
+            "Add graph view",
+        ]
+        .join("\0");
+        let row = parse_log_row(&record).unwrap();
         assert_eq!(row.graph, "| * ");
         assert_eq!(row.hash, "abcdef123456");
         assert_eq!(row.author, "Alice");
         assert_eq!(row.date, "2 hours ago");
+        assert_eq!(row.exact_date, "2026-07-13T12:34:56+02:00");
         assert_eq!(row.title, "Add graph view");
         assert_eq!(row.labels, vec!["HEAD -> feature", "tag: v1"]);
         assert_eq!(row.lane, 2);
@@ -154,7 +166,17 @@ mod tests {
         assert_eq!(row.graph, "|/");
         assert!(row.hash.is_empty());
         assert_eq!(
-            reconstruct_log_line("* abcdef123456\0Bob\0yesterday\0origin/main\0Fix bug"),
+            reconstruct_log_line(
+                &[
+                    "* abcdef123456",
+                    "Bob",
+                    "yesterday",
+                    "2026-07-13T12:00:00Z",
+                    "origin/main",
+                    "Fix bug",
+                ]
+                .join("\0")
+            ),
             "* abcdef12 Fix bug"
         );
     }

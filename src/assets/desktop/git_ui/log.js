@@ -9,19 +9,26 @@
     "#a3e635",
     "#f472b6",
   ];
+  const FILTER_FIELDS = ["graph", "description", "date", "author"];
 
   function render(options) {
     const rows = rowsFromData(options.data || {});
     const selected = options.selected || [];
+    const filters = normalizeFilters(options.filters || {});
     const baseBranch = options.baseBranch || "master";
     const currentLabel = `${baseBranch} + current`;
     const esc = options.esc;
     const scope = `<div class="git-ui-log-scope-head"><span class="git-ui-toolbar-title">History scope</span><button class="git-ui-btn ${!options.logAll ? "active" : ""}" title="Show ${esc(baseBranch)} first, then the current branch" onclick="HerdrGitUi.setLogAll(false)">${esc(currentLabel)}</button><button class="git-ui-btn ${options.logAll ? "active" : ""}" title="Show every branch and remote ref" onclick="HerdrGitUi.setLogAll(true)">All branches</button>${options.actionsHtml || ""}</div>`;
-    const header = `<div class="git-ui-log-table-head"><span>Graph</span><span>Description</span><span>Date</span><span>Author</span></div>`;
+    const header = `<div class="git-ui-log-table-head"><span>Graph</span><span>Description</span><span>Date</span><span>Author</span></div>${renderFilterRow(filters, esc)}`;
     const body = rows.length
-      ? rows.map((row) => renderRow(row, selected, options)).join("")
+      ? rows.map((row) => renderRow(row, selected, filters, options, baseBranch)).join("")
       : `<div class="git-ui-empty-row">No commits found.</div>`;
     return `${scope}<div class="git-ui-log git-ui-log-table">${header}${body}</div>`;
+  }
+
+  function renderFilterRow(filters, esc) {
+    const input = (field, label) => `<label class="git-ui-log-filter"><span>${label}</span><input value="${esc(filters[field] || "")}" placeholder="Filter ${label.toLowerCase()}" oninput="HerdrGitUi.setLogFilter('${field}',this.value)"></label>`;
+    return `<div class="git-ui-log-filter-row">${input("graph", "Graph")}${input("description", "Description")}${input("date", "Date")}${input("author", "Author")}</div>`;
   }
 
   function rowsFromData(data) {
@@ -39,6 +46,7 @@
       title: detail.title,
       labels: detail.labels,
       date: "",
+      exact_date: "",
       author: "",
       lane: graphLane(parsed.graph),
       current: detail.labels.some((label) => label === "HEAD" || label.startsWith("HEAD -> ")),
@@ -67,7 +75,7 @@
     };
   }
 
-  function renderRow(row, selected, options) {
+  function renderRow(row, selected, filters, options, baseBranch) {
     const esc = options.esc;
     const arg = options.arg;
     const hash = String(row.hash || "");
@@ -77,17 +85,68 @@
     const lane = Number.isFinite(Number(row.lane)) ? Number(row.lane) : graphLane(row.graph);
     const color = laneColor(lane);
     const title = row.title || row.message || "";
+    const filterText = filterFields(row);
+    const hidden = matchesFilters(filterText, filters) ? "" : " hidden";
     const click = hash ? ` onclick="HerdrGitUi.selectLogCommit(event,'${arg(hash)}')"` : "";
-    return `<div class="git-ui-log-row${selectedClass}${graphOnly}${currentClass}" data-log-hash="${esc(hash)}" style="--lane:${color}" title="${esc(title)}"${click}>${renderGraph(row.graph, !!hash)}<span class="git-ui-log-desc">${renderLabels(row.labels || [], row.current, esc)}<span class="git-ui-log-title">${esc(title)}</span></span><span class="git-ui-log-date">${esc(row.date || "")}</span><span class="git-ui-log-author">${esc(row.author || "")}</span></div>`;
+    const hover = renderHover(row, color, esc, baseBranch);
+    const tooltip = hoverText(row);
+    return `<div class="git-ui-log-row${selectedClass}${graphOnly}${currentClass}${hidden}" data-log-hash="${esc(hash)}" data-log-filter-graph="${esc(filterText.graph)}" data-log-filter-description="${esc(filterText.description)}" data-log-filter-date="${esc(filterText.date)}" data-log-filter-author="${esc(filterText.author)}" style="--lane:${color}" title="${esc(tooltip)}"${click}>${renderGraph(row.graph, !!hash)}<span class="git-ui-log-desc">${renderLabels(row.labels || [], row.current, esc, baseBranch)}<span class="git-ui-log-title">${esc(title)}</span></span><span class="git-ui-log-date">${esc(row.date || "")}</span><span class="git-ui-log-author">${esc(row.author || "")}</span>${hover}</div>`;
   }
 
-  function renderLabels(labels, current, esc) {
-    return `<span class="git-ui-log-labels">${labels.map((label) => renderLabel(label, current, esc)).join("")}</span>`;
+  function renderHover(row, color, esc, baseBranch) {
+    if (!row.hash) return "";
+    const labels = row.labels || [];
+    return `<div class="git-ui-log-hover-card" style="--lane:${color}"><div class="git-ui-log-hover-labels">${labels.map((label) => renderLabel(label, row.current, esc, baseBranch)).join("")}</div><div><strong>${esc(row.hash || "")}</strong></div><div>${esc(row.title || row.message || "")}</div><div>${esc(row.exact_date || row.date || "")}</div><div>${esc(row.author || "")}</div></div>`;
   }
 
-  function renderLabel(label, current, esc) {
+  function hoverText(row) {
+    const labels = (row.labels || []).map(normalizeLabel).filter(Boolean).join(", ");
+    return [`[${labels || "no branch"}] ${row.hash || ""}`, row.exact_date || row.date || "", row.author || "", row.title || row.message || ""].filter(Boolean).join("\n");
+  }
+
+  function filterFields(row) {
+    const labels = (row.labels || []).map(normalizeLabel).join(" ");
+    const title = row.title || row.message || "";
+    return {
+      graph: `${row.graph || ""} ${row.hash || ""} ${labels}`,
+      description: `${labels} ${title}`,
+      date: `${row.date || ""} ${row.exact_date || ""}`,
+      author: row.author || "",
+    };
+  }
+
+  function normalizeFilters(filters) {
+    return FILTER_FIELDS.reduce((next, field) => {
+      next[field] = String(filters[field] || "").trim().toLowerCase();
+      return next;
+    }, {});
+  }
+
+  function matchesFilters(text, filters) {
+    return FILTER_FIELDS.every((field) => {
+      const needle = filters[field];
+      return !needle || String(text[field] || "").toLowerCase().includes(needle);
+    });
+  }
+
+  function applyFilters(filters) {
+    const normalized = normalizeFilters(filters || {});
+    for (const row of document.querySelectorAll(".git-ui-log-row")) {
+      const text = FILTER_FIELDS.reduce((next, field) => {
+        next[field] = row.dataset[`logFilter${field[0].toUpperCase()}${field.slice(1)}`] || "";
+        return next;
+      }, {});
+      row.hidden = !matchesFilters(text, normalized);
+    }
+  }
+
+  function renderLabels(labels, current, esc, baseBranch) {
+    return `<span class="git-ui-log-labels">${labels.map((label) => renderLabel(label, current, esc, baseBranch)).join("")}</span>`;
+  }
+
+  function renderLabel(label, current, esc, baseBranch) {
     const normalized = normalizeLabel(label);
-    const kind = labelKind(normalized, current);
+    const kind = labelKind(normalized, current, baseBranch);
     return `<span class="git-ui-log-ref ${kind}">${esc(normalized)}</span>`;
   }
 
@@ -99,8 +158,10 @@
       .trim();
   }
 
-  function labelKind(label, current) {
-    if (label === "HEAD" || label.startsWith("HEAD -> ") || current) return "current";
+  function labelKind(label, current, baseBranch) {
+    const base = String(baseBranch || "master");
+    if (label === "HEAD" || label.startsWith("HEAD -> ")) return "current";
+    if (label === base || label === `origin/${base}` || label === "main" || label === "origin/main" || label === "master" || label === "origin/master") return "main";
     if (label.startsWith("tag:")) return "tag";
     if (label.includes("/")) return "remote";
     return "branch";
@@ -146,5 +207,5 @@
     if (target) target.scrollIntoView({ block: "center", behavior: "smooth" });
   }
 
-  window.HerdrGitLog = { render, scrollToCommit, rowsFromData, laneColor };
+  window.HerdrGitLog = { render, scrollToCommit, rowsFromData, laneColor, applyFilters };
 })();

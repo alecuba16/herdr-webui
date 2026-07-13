@@ -147,6 +147,7 @@ fn git_ui_log_blocking(
                         "author": row["author"],
                         "date": row["date"],
                         "message": row["title"],
+                        "exact_date": row["exact_date"],
                         "labels": row["labels"],
                     })
                 })
@@ -656,7 +657,7 @@ mod tests {
                 "--date=relative",
                 "--max-count",
                 "80",
-                "--format=%H%x00%an%x00%ar%x00%D%x00%s",
+                "--format=%H%x00%an%x00%ar%x00%cI%x00%D%x00%s",
                 "master",
                 "HEAD",
             ]
@@ -670,7 +671,7 @@ mod tests {
                 "--date=relative",
                 "--max-count",
                 "80",
-                "--format=%H%x00%an%x00%ar%x00%D%x00%s",
+                "--format=%H%x00%an%x00%ar%x00%cI%x00%D%x00%s",
                 "master",
                 "--all",
             ]

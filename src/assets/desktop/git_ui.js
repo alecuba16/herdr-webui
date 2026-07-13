@@ -535,6 +535,7 @@
         cleanupSelected: {},
         fileFilter: "",
         pendingLogScrollHash: "",
+        logFilters: { graph: "", description: "", date: "", author: "" },
         temporaryHistoryCompare: false,
         sideEditor: null,
       };
@@ -1447,6 +1448,7 @@
       logAll: view.logAll,
       baseBranch,
       actionsHtml: compare,
+      filters: view.logFilters || {},
       esc,
       arg,
     }));
@@ -2483,6 +2485,14 @@
       await this.compareCommits(hash, ".");
     },
     setLogAll(value) { active().logAll = !!value; render(); },
+    setLogFilter(field, value) {
+      const view = active();
+      if (!view) return;
+      if (!["graph", "description", "date", "author"].includes(field)) return;
+      view.logFilters = view.logFilters || { graph: "", description: "", date: "", author: "" };
+      view.logFilters[field] = value || "";
+      if (window.HerdrGitLog && window.HerdrGitLog.applyFilters) window.HerdrGitLog.applyFilters(view.logFilters);
+    },
     reset() {
       const ref = prompt("Reset to ref", "HEAD");
       if (!ref) return;

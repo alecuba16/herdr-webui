@@ -184,3 +184,75 @@
 .git-ui-log-row:hover .git-ui-log-author {
   color: var(--fg);
 }
+.git-ui-log-filter-row {
+  background: color-mix(in srgb, var(--panel) 86%, var(--panel2));
+  border-bottom: 1px solid var(--border);
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(96px, max-content) minmax(240px, 1fr) minmax(90px, 120px) minmax(120px, 180px);
+  min-width: 720px;
+  padding: 7px 10px;
+}
+.git-ui-log-filter {
+  color: var(--muted);
+  display: grid;
+  font-size: 10px;
+  gap: 3px;
+  text-transform: uppercase;
+}
+.git-ui-log-filter input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--fg);
+  font-size: 12px;
+  min-width: 0;
+  padding: 5px 7px;
+  text-transform: none;
+}
+.git-ui-log-row.hidden,
+.git-ui-log-row[hidden] {
+  display: none;
+}
+.git-ui-log-ref.main {
+  --lane: #3b82f6;
+  background: color-mix(in srgb, #3b82f6 24%, transparent);
+  border-color: color-mix(in srgb, #3b82f6 72%, var(--border2));
+  color: color-mix(in srgb, #3b82f6 70%, var(--fg));
+  font-weight: 700;
+}
+.git-ui-log-ref.current {
+  --lane: #ef4444;
+  background: color-mix(in srgb, #ef4444 24%, transparent);
+  border-color: color-mix(in srgb, #ef4444 72%, var(--border2));
+  color: color-mix(in srgb, #ef4444 68%, var(--fg));
+}
+.git-ui-log-hover-card {
+  background: var(--panel);
+  border: 1px solid color-mix(in srgb, var(--lane, var(--accent)) 48%, var(--border2));
+  border-radius: 10px;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.28);
+  color: var(--fg);
+  display: none;
+  font-family: var(--font);
+  font-size: 12px;
+  gap: 4px;
+  left: 120px;
+  max-width: min(540px, 70vw);
+  padding: 9px 10px;
+  position: absolute;
+  top: 100%;
+  white-space: normal;
+  z-index: 10;
+}
+.git-ui-log-row {
+  position: relative;
+}
+.git-ui-log-row:hover .git-ui-log-hover-card {
+  display: grid;
+}
+.git-ui-log-hover-labels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}

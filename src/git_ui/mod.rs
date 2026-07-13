@@ -881,6 +881,9 @@ mod tests {
                 .as_str()
                 .is_some_and(|hash| !hash.is_empty()));
             assert!(json["rows"][0]["lane"].as_u64().is_some());
+            assert!(json["rows"][0]["exact_date"]
+                .as_str()
+                .is_some_and(|date| date.contains("T")));
 
             let file = git_ui_file(
                 State(state.clone()),
