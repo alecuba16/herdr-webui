@@ -416,6 +416,34 @@
     return (workspace && workspace.workspace_id) || workspaceCwd(workspace) || "default";
   }
 
+  function normalizePathForCompare(path) {
+    const text = String(path || "").trim();
+    if (!text) return "";
+    return text === "/" ? "/" : text.replace(/\/+$/, "");
+  }
+
+  function samePath(left, right) {
+    return normalizePathForCompare(left) === normalizePathForCompare(right);
+  }
+
+  function gitCwdMatchesWorkspace(view) {
+    if (!view || !view.workspaceCwd) return true;
+    return samePath(view.cwd, view.workspaceCwd);
+  }
+
+  function resetGitViewForCwd(view, cwd) {
+    view.cwd = cwd;
+    view.file = "";
+    view.status = null;
+    view.diff = null;
+    view.compareBase = "";
+    view.compareTarget = "";
+    view.compareFilePaths = [];
+    view.selectedLogCommits = [];
+    view.mode = "changes";
+    view.tab = "changes";
+  }
+
   function workspaceStatus(key, workspace) {
     if (!workspace || !workspaceCwd(workspace)) return "nogit";
     const view = state.cache[key || workspaceKey(workspace)];
@@ -465,6 +493,7 @@
   async function open(workspace, options) {
     const openOptions = options || {};
     const key = workspaceKey(workspace);
+    const nextWorkspaceCwd = workspaceCwd(workspace);
     if (state.visible && state.activeKey === key && !openOptions.forceOpen) {
       hide();
       return;
@@ -473,7 +502,8 @@
     state.activeKey = key;
     if (!state.cache[key]) {
       state.cache[key] = {
-        cwd: workspaceCwd(workspace),
+        cwd: nextWorkspaceCwd,
+        workspaceCwd: nextWorkspaceCwd,
         title: workspaceTitle(workspace),
         titleKind: workspace.worktree ? "Worktree" : "Branch",
         tab: "changes",
@@ -509,9 +539,14 @@
         sideEditor: null,
       };
     } else {
-      state.cache[key].cwd = workspaceCwd(workspace) || state.cache[key].cwd;
-      state.cache[key].title = workspaceTitle(workspace);
-      state.cache[key].titleKind = workspace.worktree ? "Worktree" : "Branch";
+      const view = state.cache[key];
+      const previousWorkspaceCwd = view.workspaceCwd || "";
+      view.workspaceCwd = nextWorkspaceCwd || previousWorkspaceCwd;
+      if (!view.cwd || (previousWorkspaceCwd && samePath(view.cwd, previousWorkspaceCwd))) {
+        view.cwd = nextWorkspaceCwd || view.cwd;
+      }
+      view.title = workspaceTitle(workspace);
+      view.titleKind = workspace.worktree ? "Worktree" : "Branch";
     }
     state.open = true;
     state.visible = true;
@@ -854,8 +889,8 @@
       : modal.error
         ? `<div class="git-ui-error">${esc(modal.error)}</div>`
         : `<label class="git-ui-branch-field"><span>Branch</span><select id="gitUiBranchSelect">${branchOptions("Local branches", modal.local || [])}${branchOptions("Remote branches", modal.remote || [])}</select></label>`;
-    const dir = `<label class="git-ui-branch-field"><span>Git directory</span><div class="git-ui-inline-field"><input id="gitUiBranchCwd" value="${cwd}" placeholder="/path/to/repo" data-directory-picker-after-select="HerdrGitUi.loadBranchModalCwd"><button type="button" class="mini directory-picker-trigger" onclick="HerdrDirectoryPicker.openInput('gitUiBranchCwd')">Browse</button></div></label>`;
-    return `<div class="git-ui-modal-backdrop"><div class="git-ui-modal"><div class="git-ui-modal-head"><strong>Switch branch</strong></div>${dir}${body}<div class="git-ui-modal-actions"><button class="git-ui-btn" onclick="HerdrGitUi.closeBranchModal()">Cancel</button><button class="git-ui-btn" onclick="HerdrGitUi.applyBranchModalCwd()" ${modal.loading || modal.error ? "disabled" : ""}>Use directory</button><button class="git-ui-btn primary" onclick="HerdrGitUi.switchBranchFromModal()" ${modal.loading || modal.error ? "disabled" : ""}>Switch to</button></div></div></div>`;
+    const dir = `<label class="git-ui-branch-field"><span>Git directory</span><div class="git-ui-inline-field"><input id="gitUiBranchCwd" value="${cwd}" placeholder="/path/to/repo" data-directory-picker-after-select="HerdrGitUi.applyBranchModalCwd"><button type="button" class="mini directory-picker-trigger" onclick="HerdrDirectoryPicker.openInput('gitUiBranchCwd')">Browse</button></div></label>`;
+    return `<div class="git-ui-modal-backdrop"><div class="git-ui-modal"><div class="git-ui-modal-head"><strong>Switch branch</strong></div>${dir}${body}<div class="git-ui-muted">Choosing a folder moves the Git panel to that directory immediately. Use Switch branch only to checkout another branch in the current Git directory.</div><div class="git-ui-modal-actions"><button class="git-ui-btn" onclick="HerdrGitUi.closeBranchModal()">Cancel</button><button class="git-ui-btn primary" onclick="HerdrGitUi.switchBranchFromModal()" ${modal.loading || modal.error ? "disabled" : ""}>Switch branch</button></div></div></div>`;
   }
 
   function renderCleanupConfirm() {
@@ -977,7 +1012,11 @@
     const actions = cleanupOnly ? "" : `<div class="git-ui-toolbar"><div class="git-ui-toolbar-title">Worktree actions</div><div class="git-ui-actions"><button class="git-ui-btn primary" title="${esc(commitHint)}" onclick="HerdrGitUi.openCommitModal()"${commitDisabled}>Commit</button><button class="git-ui-btn" onclick="HerdrGitUi.openPullModal()">↓ Pull</button><button class="git-ui-btn" onclick="HerdrGitUi.openPushModal()">↑ Push</button>${compareButton}<button class="git-ui-btn" onclick="HerdrGitUi.rebase()">Rebase</button><button class="git-ui-btn danger" onclick="HerdrGitUi.reset()">Reset</button></div></div>`;
     const fileList = cleanupOnly ? "" : `<label class="git-ui-file-filter"><span class="git-ui-file-filter-icon" aria-hidden="true"></span><input value="${esc(view.fileFilter || "")}" placeholder="Filter files" oninput="HerdrGitUi.filterFiles(this.value)"></label>${fileSections}`;
     const sideBottom = cleanupOnly ? "" : renderDiffLayoutSideToggle(view);
-    return `<aside class="git-ui-side" onscroll="HerdrGitUi.sideScroll(this)"><div class="git-ui-head"><div class="git-ui-head-main"><div class="git-ui-title-row"><div class="git-ui-title">Git</div>${appRefreshIconButton({ className: "git-ui-refresh-icon", title: "Refresh", label: "Refresh Git state", spinning: !!view.refreshAnimating, onclick: "HerdrGitUi.refreshWithSpin()" })}</div><div class="git-ui-subtitle">${esc(s.state || "closed")} · ${esc(compactPath(s.repo_path))}</div><button class="git-ui-branch-pill" title="Change Git directory or switch branch" onclick="HerdrGitUi.openBranchModal()"><span>${esc(branchLabel)}</span><b>↗</b></button></div></div>${error}<div class="git-ui-toolbar git-ui-view-toolbar">${renderGitViewTabs(tabs, view.tab)}</div>${actions}${fileList}${sideBottom}</aside>`;
+    const returnToWorkspace = !cleanupOnly && !gitCwdMatchesWorkspace(view)
+      ? `<button class="git-ui-refresh-icon git-ui-return-cwd-icon" title="Return Git to current workspace folder" aria-label="Return Git to current workspace folder" onclick="HerdrGitUi.returnToWorkspaceCwd()"><span>↩</span></button>`
+      : "";
+    const refreshButton = appRefreshIconButton({ className: "git-ui-refresh-icon", title: "Refresh", label: "Refresh Git state", spinning: !!view.refreshAnimating, onclick: "HerdrGitUi.refreshWithSpin()" });
+    return `<aside class="git-ui-side" onscroll="HerdrGitUi.sideScroll(this)"><div class="git-ui-head"><div class="git-ui-head-main"><div class="git-ui-title-row"><div class="git-ui-title">Git</div><div class="git-ui-title-actions">${returnToWorkspace}${refreshButton}</div></div><div class="git-ui-subtitle">${esc(s.state || "closed")} · ${esc(compactPath(s.repo_path))}</div><button class="git-ui-branch-pill" title="Change Git directory or switch branch" onclick="HerdrGitUi.openBranchModal()"><span>${esc(branchLabel)}</span><b>↗</b></button></div></div>${error}<div class="git-ui-toolbar git-ui-view-toolbar">${renderGitViewTabs(tabs, view.tab)}</div>${actions}${fileList}${sideBottom}</aside>`;
   }
 
   function renderDiffLayoutSideToggle(view) {
@@ -2403,10 +2442,14 @@
       const cwd = (input && input.value.trim()) || (state.branchModal && state.branchModal.cwd) || "";
       if (!view || !cwd) return;
       state.branchModal = null;
-      view.cwd = cwd;
-      view.file = "";
-      view.status = null;
-      view.diff = null;
+      resetGitViewForCwd(view, cwd);
+      render();
+      refresh();
+    },
+    returnToWorkspaceCwd() {
+      const view = active();
+      if (!view || !view.workspaceCwd || gitCwdMatchesWorkspace(view)) return;
+      resetGitViewForCwd(view, view.workspaceCwd);
       render();
       refresh();
     },

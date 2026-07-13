@@ -1983,13 +1983,22 @@ describe("app bundle load", () => {
     ok(source.includes("setTerminalLoading(false);"));
   });
 
-  it("auto-runs Git folder actions after directory picker confirm", () => {
+  it("uses one Git folder selection flow and offers return to workspace", () => {
     const directoryPickerSource = readFileSync(new URL("./desktop/directory_picker.js", import.meta.url), "utf8");
+    const gitLayoutCss = readFileSync(new URL("./desktop/git_ui/layout.css", import.meta.url), "utf8");
 
     match(directoryPickerSource, /function afterSelectCallback\(input\)/);
     match(directoryPickerSource, /input\.dataset\.directoryPickerAfterSelect/);
-    match(gitUiSource, /id="gitUiBranchCwd"[^`]*data-directory-picker-after-select="HerdrGitUi\.loadBranchModalCwd"/);
+    match(gitUiSource, /id="gitUiBranchCwd"[^`]*data-directory-picker-after-select="HerdrGitUi\.applyBranchModalCwd"/);
     ok(!gitUiSource.includes("Load typed path"));
+    ok(!gitUiSource.includes(">Use directory</button>"));
+    ok(!gitUiSource.includes(">Switch to</button>"));
+    match(gitUiSource, /Choosing a folder moves the Git panel to that directory immediately/);
+    match(gitUiSource, /workspaceCwd: nextWorkspaceCwd/);
+    match(gitUiSource, /function gitCwdMatchesWorkspace\(view\)/);
+    match(gitUiSource, /HerdrGitUi\.returnToWorkspaceCwd\(\)/);
+    match(gitUiSource, /returnToWorkspaceCwd\(\) \{/);
+    match(gitLayoutCss, /\.git-ui-return-cwd-icon span/);
     match(gitUiSource, /function gitBranchModalDefaultCwd\(cwd\)/);
     match(gitUiSource, /if \(path && path !== "\/"\) return path;/);
     match(gitUiSource, /typeof window\.defaultFolderPath === "function"/);
