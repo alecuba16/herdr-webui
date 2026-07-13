@@ -1335,46 +1335,106 @@ impl Drop for TerminalRuntime {
 }
 
 fn workspace_list_json(data: &BuiltinData) -> Vec<Value> {
-    let mut workspaces = data.workspaces.values().collect::<Vec<_>>();
-    workspaces.sort_by_key(|workspace| workspace.workspace_id.clone());
-    workspaces
+    ordered_workspaces(data)
         .into_iter()
         .map(|workspace| workspace_json(workspace, data))
         .collect()
 }
 
 fn tab_list_json(data: &BuiltinData, workspace_id: Option<&str>) -> Vec<Value> {
-    let mut tabs = data.tabs.values().collect::<Vec<_>>();
-    tabs.sort_by_key(|tab| tab.tab_id.clone());
-    tabs.into_iter()
-        .filter(|tab| workspace_id.is_none_or(|workspace_id| tab.workspace_id == workspace_id))
+    ordered_tabs(data, workspace_id)
+        .into_iter()
         .map(|tab| tab_json(tab, data))
         .collect()
 }
 
 fn pane_list_json(data: &BuiltinData, workspace_id: Option<&str>) -> Vec<Value> {
-    let mut panes = data.panes.values().collect::<Vec<_>>();
-    panes.sort_by_key(|pane| pane.pane_id.clone());
-    panes
+    ordered_panes(data, workspace_id)
         .into_iter()
-        .filter(|pane| workspace_id.is_none_or(|workspace_id| pane.workspace_id == workspace_id))
         .map(|pane| pane_json(pane, data))
         .collect()
 }
 
 fn agent_list_json(data: &BuiltinData) -> Vec<Value> {
-    data.panes
-        .values()
+    ordered_panes(data, None)
+        .into_iter()
         .filter(|pane| pane.label.is_some() || pane_agent_presentation(pane, data).agent.is_some())
         .map(|pane| agent_json(pane, data))
         .collect()
 }
 
 fn layout_list_json(data: &BuiltinData) -> Vec<Value> {
-    data.tabs
-        .values()
+    ordered_tabs(data, None)
+        .into_iter()
         .map(|tab| layout_json(tab, data))
         .collect()
+}
+
+fn ordered_workspaces(data: &BuiltinData) -> Vec<&WorkspaceRecord> {
+    let mut workspaces = data.workspaces.values().collect::<Vec<_>>();
+    workspaces.sort_by_key(|workspace| id_sort_key(&workspace.workspace_id));
+    workspaces
+}
+
+fn ordered_tabs<'a>(data: &'a BuiltinData, workspace_id: Option<&str>) -> Vec<&'a TabRecord> {
+    let mut tabs = Vec::new();
+    for workspace in ordered_workspaces(data) {
+        if workspace_id.is_some_and(|workspace_id| workspace.workspace_id != workspace_id) {
+            continue;
+        }
+        tabs.extend(
+            workspace
+                .tab_ids
+                .iter()
+                .filter_map(|tab_id| data.tabs.get(tab_id)),
+        );
+    }
+    tabs
+}
+
+fn ordered_panes<'a>(data: &'a BuiltinData, workspace_id: Option<&str>) -> Vec<&'a PaneRecord> {
+    let mut panes = Vec::new();
+    for tab in ordered_tabs(data, workspace_id) {
+        panes.extend(
+            tab.pane_ids
+                .iter()
+                .filter_map(|pane_id| data.panes.get(pane_id)),
+        );
+    }
+    panes
+}
+
+fn workspace_display_number(workspace: &WorkspaceRecord, data: &BuiltinData) -> usize {
+    ordered_workspaces(data)
+        .iter()
+        .position(|candidate| candidate.workspace_id == workspace.workspace_id)
+        .map(|index| index + 1)
+        .unwrap_or(1)
+}
+
+fn tab_display_number(tab: &TabRecord, data: &BuiltinData) -> usize {
+    data.workspaces
+        .get(&tab.workspace_id)
+        .and_then(|workspace| {
+            workspace
+                .tab_ids
+                .iter()
+                .position(|tab_id| tab_id == &tab.tab_id)
+        })
+        .map(|index| index + 1)
+        .unwrap_or(1)
+}
+
+fn pane_display_number(pane: &PaneRecord, data: &BuiltinData) -> usize {
+    data.tabs
+        .get(&pane.tab_id)
+        .and_then(|tab| {
+            tab.pane_ids
+                .iter()
+                .position(|pane_id| pane_id == &pane.pane_id)
+        })
+        .map(|index| index + 1)
+        .unwrap_or(1)
 }
 
 fn workspace_json(workspace: &WorkspaceRecord, data: &BuiltinData) -> Value {
@@ -1386,7 +1446,7 @@ fn workspace_json(workspace: &WorkspaceRecord, data: &BuiltinData) -> Value {
         .sum::<usize>();
     json!({
         "workspace_id": workspace.workspace_id,
-        "number": numeric_suffix(&workspace.workspace_id),
+        "number": workspace_display_number(workspace, data),
         "label": workspace.label,
         "focused": data.focused_workspace_id.as_deref() == Some(&workspace.workspace_id),
         "pane_count": pane_count,
@@ -1402,7 +1462,7 @@ fn tab_json(tab: &TabRecord, data: &BuiltinData) -> Value {
     json!({
         "tab_id": tab.tab_id,
         "workspace_id": tab.workspace_id,
-        "number": numeric_suffix(&tab.tab_id),
+        "number": tab_display_number(tab, data),
         "label": tab.label,
         "focused": data.focused_tab_id.as_deref() == Some(&tab.tab_id),
         "pane_count": tab.pane_ids.len(),
@@ -1417,6 +1477,7 @@ fn pane_json(pane: &PaneRecord, data: &BuiltinData) -> Value {
         "terminal_id": pane.terminal_id,
         "workspace_id": pane.workspace_id,
         "tab_id": pane.tab_id,
+        "number": pane_display_number(pane, data),
         "focused": data.focused_pane_id.as_deref() == Some(&pane.pane_id),
         "cwd": pane.cwd.to_string_lossy(),
         "foreground_cwd": pane.cwd.to_string_lossy(),
@@ -1866,7 +1927,7 @@ fn workspace_label(cwd: &Path) -> String {
         .to_string()
 }
 
-fn numeric_suffix(id: &str) -> usize {
+fn id_sort_key(id: &str) -> usize {
     id.rsplit('_')
         .next()
         .and_then(|value| value.parse::<usize>().ok())
@@ -2542,6 +2603,85 @@ mod tests {
         let event = rx.recv_timeout(Duration::from_secs(1)).unwrap();
         assert_eq!(event["event"], "tab.created");
         assert_eq!(event["data"]["type"], "tab_created");
+    }
+
+    #[test]
+    fn builtin_display_numbers_are_scoped_by_level() {
+        let state =
+            BuiltinState::new(std::env::current_dir().unwrap(), Some(default_shell())).unwrap();
+        let empty_snapshot = state.handle_request("empty", "session.snapshot", json!({}));
+        assert_eq!(
+            empty_snapshot["result"]["snapshot"]["workspaces"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
+
+        let first_workspace_response = state.handle_request(
+            "workspace-first",
+            "workspace.create",
+            json!({ "label": "First workspace" }),
+        );
+        let snapshot = state.handle_request("snapshot", "session.snapshot", json!({}));
+        let first_workspace = snapshot["result"]["snapshot"]["workspaces"][0].clone();
+        let first_workspace_id = first_workspace["workspace_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        assert_eq!(first_workspace["number"], 1);
+        assert_eq!(first_workspace_response["result"]["workspace"]["number"], 1);
+        assert_eq!(snapshot["result"]["snapshot"]["tabs"][0]["number"], 1);
+        assert_eq!(snapshot["result"]["snapshot"]["panes"][0]["number"], 1);
+
+        let second_tab = state.handle_request(
+            "tab",
+            "tab.create",
+            json!({ "workspace_id": first_workspace_id, "label": "Second" }),
+        );
+        assert_eq!(second_tab["result"]["tab"]["number"], 2);
+        assert_eq!(second_tab["result"]["root_pane"]["number"], 1);
+
+        let second_workspace = state.handle_request(
+            "workspace",
+            "workspace.create",
+            json!({ "label": "Second workspace" }),
+        );
+        let second_workspace_id = second_workspace["result"]["workspace"]["workspace_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        assert_eq!(second_workspace["result"]["workspace"]["number"], 2);
+        assert_eq!(second_workspace["result"]["tab"]["number"], 1);
+        assert_eq!(second_workspace["result"]["root_pane"]["number"], 1);
+
+        let first_workspace_tabs = state.handle_request(
+            "tabs-first",
+            "tab.list",
+            json!({ "workspace_id": first_workspace_id }),
+        );
+        let first_workspace_tab_numbers = first_workspace_tabs["result"]["tabs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tab| tab["number"].as_u64().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(first_workspace_tab_numbers, vec![1, 2]);
+
+        let second_workspace_tabs = state.handle_request(
+            "tabs-second",
+            "tab.list",
+            json!({ "workspace_id": second_workspace_id }),
+        );
+        let second_workspace_tab_numbers = second_workspace_tabs["result"]["tabs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tab| tab["number"].as_u64().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(second_workspace_tab_numbers, vec![1]);
     }
 
     #[test]
