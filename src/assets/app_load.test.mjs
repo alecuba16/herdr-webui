@@ -482,7 +482,8 @@ describe("app bundle load", () => {
     match(directoryPickerSource, /function initialPickerPath\(input\)/);
     match(directoryPickerSource, /if \(!text \|\| text === "\/"\) return configuredDefaultFolder\(\);/);
     match(directoryPickerSource, /const parts = splitPath\(initialPickerPath\(input\)\);/);
-    match(desktopWorktreesSource, /return defaultFolderPath\(\) \|\| String\(options\.explorationDefaultDirectory \|\| ""\)\.trim\(\) \|\| "~";/);
+    match(desktopWorktreesSource, /function usefulDirectoryDefault\(value\)/);
+    match(desktopWorktreesSource, /return usefulDirectoryDefault\(defaultFolderPath\(\)\) \|\| usefulDirectoryDefault\(options\.explorationDefaultDirectory\) \|\| "~";/);
     match(mobileWorktreesSource, /defaultFolderFn/);
     match(mobileWorktreesSource, /if \(defaultFolder\) return defaultFolder;/);
     match(directoryPickerSource, /Tree\.renderCurrentDirectoryRow/);
@@ -1918,11 +1919,23 @@ describe("app bundle load", () => {
     ctx.openWorktreeOpenModal();
 
     equal(ctx.document.getElementById("worktreeDiscoverPath").value, "/tmp/default");
+    ctx.openWorktreeOpenModal("/");
+    equal(ctx.document.getElementById("worktreeDiscoverPath").value, "/tmp/default");
 
     vm.runInContext('state.openWorktreeSource = { repo_name: "repo", repo_root: "/src/repo" }', ctx);
     ctx.document.getElementById("worktreeNewBranch").value = "feature/x";
     ctx.syncWorktreeCheckoutPath();
     equal(ctx.document.getElementById("worktreeNewPath").value, "/tmp/worktrees/repo/feature-x");
+  });
+
+  it("does not use legacy root as worktree discover default", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    vm.runInContext('state.defaultFolder = ""; options.explorationDefaultDirectory = "/";', ctx);
+
+    ctx.openWorktreeOpenModal("/");
+
+    equal(ctx.document.getElementById("worktreeDiscoverPath").value, "~");
   });
 
   it("defines side-by-side and unified Git diff layouts", () => {
@@ -1956,6 +1969,54 @@ describe("app bundle load", () => {
     match(mobileTerminalSource, /HerdrTerminalFit\.gridSize\(shell, term/);
     match(mobileTerminalSource, /HerdrTerminalFit\.fitXtermToContainer\(terminal\)/);
     ok(!mobileTerminalSource.includes("Math.floor(shell.clientWidth / 9)"));
+  });
+
+
+
+  it("stops terminal loading when no workspace exists", () => {
+    ok(source.includes("if (!state.ws) {"));
+    ok(source.includes("state.allTabs = [];"));
+    ok(source.includes("state.tabs = [];"));
+    ok(source.includes("state.panes = [];"));
+    ok(source.includes("state.agents = [];"));
+    ok(source.includes("state.terminalId = null;"));
+    ok(source.includes("setTerminalLoading(false);"));
+  });
+
+  it("uses one Git folder selection flow and offers return to workspace", () => {
+    const directoryPickerSource = readFileSync(new URL("./desktop/directory_picker.js", import.meta.url), "utf8");
+    const gitLayoutCss = readFileSync(new URL("./desktop/git_ui/layout.css", import.meta.url), "utf8");
+    const featuresDoc = readFileSync(new URL("../../docs/features.md", import.meta.url), "utf8");
+    const technicalDoc = readFileSync(new URL("../../docs/technical-details.md", import.meta.url), "utf8");
+    const releaseNotes = readFileSync(new URL("../../docs/release-notes.md", import.meta.url), "utf8");
+
+    match(directoryPickerSource, /function afterSelectCallback\(input\)/);
+    match(directoryPickerSource, /input\.dataset\.directoryPickerAfterSelect/);
+    match(gitUiSource, /id="gitUiBranchCwd"[^`]*data-directory-picker-after-select="HerdrGitUi\.applyBranchModalCwd"/);
+    ok(!gitUiSource.includes("Load typed path"));
+    ok(!gitUiSource.includes(">Use directory</button>"));
+    ok(!gitUiSource.includes(">Switch to</button>"));
+    match(gitUiSource, /Choosing a folder moves the Git panel to that directory immediately/);
+    match(gitUiSource, /workspaceCwd: nextWorkspaceCwd/);
+    match(gitUiSource, /function gitCwdMatchesWorkspace\(view\)/);
+    match(gitUiSource, /HerdrGitUi\.returnToWorkspaceCwd\(\)/);
+    match(gitUiSource, /returnToWorkspaceCwd\(\) \{/);
+    match(gitLayoutCss, /\.git-ui-return-cwd-icon span/);
+    match(gitUiSource, /Folder picker: selected folder becomes the Git panel directory immediately/);
+    match(source, /Choosing a folder in the Git directory picker immediately moves the Git panel/);
+    match(source, /WebUI no longer opens a workspace automatically on startup/);
+    match(source, /In Git UI, open Git directory\/branch dialog/);
+    match(featuresDoc, /The Git directory picker has a single meaning/);
+    match(featuresDoc, /The built-in backend starts with zero workspaces/);
+    match(technicalDoc, /Built-in sessions do not seed a default workspace/);
+    match(technicalDoc, /Git cwd is independent from workspace selection/);
+    match(releaseNotes, /0\.2\.50 Release Notes/);
+    match(releaseNotes, /Updates the global `\?` Help & Shortcuts modal/);
+    match(gitUiSource, /function gitBranchModalDefaultCwd\(cwd\)/);
+    match(gitUiSource, /if \(path && path !== "\/"\) return path;/);
+    match(gitUiSource, /typeof window\.defaultFolderPath === "function"/);
+    match(gitUiSource, /id="gitUiCleanupRoot"[^`]*data-directory-picker-after-select="HerdrGitUi\.scanCleanup"/);
+    match(gitUiSource, /class="mini directory-picker-trigger" onclick="HerdrDirectoryPicker\.openInput\('gitUiBranchCwd'\)"/);
   });
 
   it("uses the same editor mount tooling for previous and current hunk text", () => {

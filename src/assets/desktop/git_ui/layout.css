@@ -52,6 +52,12 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.git-ui-title-actions {
+  align-items: center;
+  display: inline-flex;
+  flex: none;
+  gap: 6px;
+}
 .git-ui-refresh-icon {
   align-items: center;
   background: var(--panel2);
@@ -74,6 +80,15 @@
 }
 .git-ui-refresh-icon.spinning span {
   animation: app-refresh-spin 2s linear;
+}
+.git-ui-return-cwd-icon span {
+  background: none;
+  font-size: 16px;
+  font-weight: 800;
+  height: auto;
+  line-height: 1;
+  mask: none;
+  width: auto;
 }
 @keyframes app-refresh-spin {
   from { transform: rotate(0deg); }
