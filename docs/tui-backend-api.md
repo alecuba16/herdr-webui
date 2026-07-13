@@ -182,7 +182,7 @@ The current pairing is therefore **backend/protocol paired**, not **feature-comp
 Still pending:
 
 - stable typed response structs instead of JSON `Value` for control responses
-- true event stream/event hub; built-in `events.subscribe` currently acks then closes
+- typed event wrappers in `BackendClient`; built-in `events.subscribe` now has a server-side event hub, but the Rust client layer does not yet expose a high-level typed subscription API
 - observe/control/takeover semantics for multiple terminal clients
 - server-side scroll offsets, scroll metrics, search, and selection/copy APIs
 - named built-in session registry and persistence after WebUI restart

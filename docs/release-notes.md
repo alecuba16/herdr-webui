@@ -10,7 +10,7 @@
 - Improves Jcode detection with Herdr `jcode-support` manifest-style screen detection, process-tree fallback, and active background-task markers so status remains `working` while tasks are still running.
 - Adds TUI terminal rewrite handling for Jcode progress/status lines plus ANSI SGR rendering for foreground/background colors, bold, dim, italic, and underline.
 - Adds TUI theme modes matching Jcode's `system`, `light`, and `dark` shape. `system` follows terminal background detection and falls back to dark when unsupported.
-- Documents current Herdr TUI parity gaps: layout mutation, scrollback copy/search, mouse/touch, worktree dialogs, configurable keymaps, notification integrations, true event hub, and durable built-in session persistence.
+- Documents current Herdr TUI parity gaps: layout mutation, scrollback copy/search, mouse/touch, worktree dialogs, configurable keymaps, notification integrations, typed TUI event wrappers, and durable built-in session persistence.
 
 ## 0.2.28 Release Notes
 
