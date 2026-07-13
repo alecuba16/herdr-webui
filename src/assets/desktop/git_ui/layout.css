@@ -470,6 +470,13 @@
   padding: 14px;
   width: min(520px, calc(100vw - 48px));
 }
+.git-ui-modal label {
+  box-sizing: border-box;
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  width: 100%;
+}
 .git-ui-modal-head,
 .git-ui-modal-actions {
   align-items: center;
@@ -486,9 +493,12 @@
   gap: 6px;
 }
 .git-ui-inline-field {
+  box-sizing: border-box;
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  min-width: 0;
+  width: 100%;
 }
 .git-ui-inline-field input {
   flex: 1;
@@ -503,10 +513,13 @@
   background: var(--bg);
   border: 1px solid var(--border2);
   border-radius: 8px;
+  box-sizing: border-box;
   color: var(--fg);
   font: inherit;
   min-height: 38px;
+  min-width: 0;
   padding: 7px 9px;
+  width: 100%;
 }
 .git-ui-menu span {
   color: var(--muted);
@@ -651,8 +664,10 @@
   background: var(--panel2);
   border: 1px solid var(--border2);
   border-radius: 8px;
+  box-sizing: border-box;
   color: var(--fg);
   font: inherit;
+  min-width: 0;
   padding: 7px 8px;
   width: 100%;
 }
