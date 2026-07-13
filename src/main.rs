@@ -1168,7 +1168,6 @@ fn app_router(state: WebState) -> Router {
         .route("/assets/icons/folder-up.svg", get(icon_folder_up_svg))
         .route("/assets/icons/file.svg", get(icon_file_svg))
         .route("/assets/icons/trash.svg", get(icon_trash_svg))
-        .route("/assets/icons/broom.svg", get(icon_broom_svg))
         .route("/assets/icons/search.svg", get(icon_search_svg))
         .route("/assets/icons/refresh.svg", get(icon_refresh_svg))
         .route("/favicon.svg", get(favicon_svg))

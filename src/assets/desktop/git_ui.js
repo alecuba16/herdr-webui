@@ -8,6 +8,9 @@
     contextMenu: null,
     branchModal: null,
     gitOpModal: null,
+    commitModal: null,
+    resetSelectedModal: null,
+    gitToast: null,
     cleanupConfirm: null,
     sideScrollTop: 0,
     shortcutPrefixUntil: 0,
@@ -76,16 +79,23 @@
       render();
       return;
     }
+    if (state.commitModal) {
+      saveDraftFromDom();
+      state.commitModal = null;
+      render();
+      return;
+    }
+    if (state.resetSelectedModal) {
+      state.resetSelectedModal = null;
+      render();
+      return;
+    }
     if (state.cleanupConfirm) {
       state.cleanupConfirm = null;
       render();
       return;
     }
-    if (view.tab === "commit") {
-      if (!confirm("Leave commit editor and return to changes? Draft is saved locally.")) return;
-      saveDraftFromDom();
-      window.HerdrGitUi.showChangesList();
-    } else if (isChangesListView(view)) {
+    if (isChangesListView(view)) {
       if (confirm("Hide Git UI?")) hide();
     } else {
       window.HerdrGitUi.showChangesList();
@@ -94,6 +104,32 @@
 
   function isChangesListView(view) {
     return !!(view && view.tab === "changes" && currentMode() === "changes" && !view.file && !view.sideEditor);
+  }
+
+  function isNotGitRepositoryMessage(message) {
+    return String(message || "").toLowerCase().includes("not a git repository");
+  }
+
+  function isNoGitRepositoryView(view) {
+    return !!(((view && view.status) || {}).not_git_repository);
+  }
+
+  function markNoGitRepository(view) {
+    view.error = "";
+    view.loading = false;
+    view.tab = "cleanup";
+    view.file = "";
+    view.diff = { files: [] };
+    view.status = {
+      state: "cleanup only",
+      repo_path: view.cwd || "",
+      branch: "No Git repository",
+      not_git_repository: true,
+      conflicted: [],
+      staged: [],
+      unstaged: [],
+      untracked: [],
+    };
   }
 
   function handleGitShortcut(event, view) {
@@ -105,10 +141,10 @@
     const shortcutMap = gitShortcutMap();
     const actions = {
       changes: () => window.HerdrGitUi.showChangesList(),
-      commit: () => window.HerdrGitUi.tab("commit"),
+      commit: () => window.HerdrGitUi.openCommitModal(),
       log: () => window.HerdrGitUi.tab("log"),
       stash: () => window.HerdrGitUi.tab("stash"),
-      commitAlt: () => window.HerdrGitUi.tab("commit"),
+      commitAlt: () => window.HerdrGitUi.openCommitModal(),
       logAlt: () => window.HerdrGitUi.tab("log"),
       refresh: () => window.HerdrGitUi.refresh(),
       stageAll: () => window.HerdrGitUi.toggleStageAll(),
@@ -190,7 +226,7 @@
 
   function showGitKeyboardHelp() {
     const map = gitShortcutMap();
-    alert(`${gitShortcutPrefixLabel()} then:\n${shortcutDisplay(map.changes)} Changes list\n${shortcutDisplay(map.commit)} Commit\n${shortcutDisplay(map.log)} Log\n${shortcutDisplay(map.stash)} Stash\n${shortcutDisplay(map.refresh)} Refresh\n${shortcutDisplay(map.stageAll)} Stage/unstage all\n${shortcutDisplay(map.stageFile)} Stage file\n${shortcutDisplay(map.unstageFile)} Unstage file\n${shortcutDisplay(map.discardFile)} Discard file\n${shortcutDisplay(map.stashFile)} Stash file\n${shortcutDisplay(map.history)} File history\n${shortcutDisplay(map.blame)} Toggle blame\n${shortcutDisplay(map.edit)} Edit file\n${shortcutDisplay(map.compare)} Current compare\n${shortcutDisplay(map.branch)} Branch switch\n${shortcutDisplay(map.focusFile)} Focus file list\n${shortcutDisplay(map.help)} Git shortcut help\nEsc Back / hide`);
+    alert(`${gitShortcutPrefixLabel()} then:\n${shortcutDisplay(map.changes)} Changes list\n${shortcutDisplay(map.commit)} Commit modal\n${shortcutDisplay(map.log)} Log\n${shortcutDisplay(map.stash)} Stash\n${shortcutDisplay(map.refresh)} Refresh\n${shortcutDisplay(map.stageAll)} Stage/unstage all\n${shortcutDisplay(map.stageFile)} Stage file\n${shortcutDisplay(map.unstageFile)} Unstage file\n${shortcutDisplay(map.discardFile)} Discard file\n${shortcutDisplay(map.stashFile)} Stash file\n${shortcutDisplay(map.history)} File history\n${shortcutDisplay(map.blame)} Toggle blame\n${shortcutDisplay(map.edit)} Edit file\n${shortcutDisplay(map.compare)} Return to current changes\n${shortcutDisplay(map.branch)} Branch switch\n${shortcutDisplay(map.focusFile)} Focus file list\n${shortcutDisplay(map.help)} Git shortcut help\nEsc Back / hide`);
   }
 
   function shortcutDisplay(value) {
@@ -494,6 +530,11 @@
       view.loading = false;
       if (state.visible) render();
     } catch (err) {
+      if (isNotGitRepositoryMessage(err && err.message)) {
+        markNoGitRepository(view);
+        if (state.visible) render();
+        return;
+      }
       view.error = err.message || String(err);
       view.loading = false;
       if (state.visible) render();
@@ -678,6 +719,89 @@
     if (!actions.length) actions.push(`<span>No file actions</span>`);
     return `<div class="git-ui-menu" style="left:${Math.max(0, menu.x)}px;top:${Math.max(0, menu.y)}px" onclick="event.stopPropagation()">${actions.join("")}</div>`;
   }
+  function normalizeRemoteUrl(raw) {
+    let value = String(raw || "").trim();
+    if (!value) return "";
+    const scp = value.match(/^git@([^:]+):(.+)$/);
+    if (scp) value = `https://${scp[1]}/${scp[2]}`;
+    if (value.startsWith("ssh://git@")) value = value.replace(/^ssh:\/\/git@/, "https://");
+    value = value.replace(/\.git$/, "");
+    try {
+      const url = new URL(value);
+      return /^https?:$/.test(url.protocol) ? url.toString().replace(/\/$/, "") : "";
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function branchPath(branch) {
+    return String(branch || "").split("/").map(encodeURIComponent).join("/");
+  }
+
+  function gitBranchUrl(status) {
+    const base = normalizeRemoteUrl(status && status.remote_url);
+    const branch = status && status.branch;
+    if (!base || !branch || branch === "(detached)") return "";
+    if (base.includes("bitbucket.org/")) return `${base}/branch/${branchPath(branch)}`;
+    return `${base}/tree/${branchPath(branch)}`;
+  }
+
+  function gitPullRequestUrl(status) {
+    const base = normalizeRemoteUrl(status && status.remote_url);
+    const branch = status && status.branch;
+    if (!base || !branch || branch === "(detached)") return "";
+    if (base.includes("github.com/")) return `${base}/pull/new/${branchPath(branch)}`;
+    if (base.includes("bitbucket.org/")) return `${base}/pull-requests/new?source=${encodeURIComponent(branch)}`;
+    return "";
+  }
+
+  function renderGitToast() {
+    const toast = state.gitToast;
+    if (!toast) return "";
+    const branch = toast.branch ? `<span class="git-ui-toast-branch">${esc(toast.branch)}</span>` : "";
+    const branchButton = toast.branchUrl ? `<button class="git-ui-btn" onclick="HerdrGitUi.openGitUrl('${arg(toast.branchUrl)}')">Open branch</button>` : "";
+    const prButton = toast.prUrl ? `<button class="git-ui-btn primary" onclick="HerdrGitUi.openGitUrl('${arg(toast.prUrl)}')">Open PR</button>` : "";
+    return `<div class="git-ui-toast" role="status"><span>${esc(toast.message || "Done")}</span>${branch}<span class="git-ui-toast-actions">${branchButton}${prButton}<button class="git-ui-btn" onclick="HerdrGitUi.closeGitToast()">Dismiss</button></span></div>`;
+  }
+
+  function showCommitToast(message) {
+    const view = active() || {};
+    const status = view.status || {};
+    const id = Date.now();
+    state.gitToast = {
+      id,
+      message,
+      branch: status.branch || "",
+      branchUrl: gitBranchUrl(status),
+      prUrl: gitPullRequestUrl(status),
+    };
+    render();
+    setTimeout(() => {
+      if (state.gitToast && state.gitToast.id === id) {
+        state.gitToast = null;
+        if (state.visible) render();
+      }
+    }, 10000);
+  }
+
+  function renderCommitModal() {
+    const modal = state.commitModal;
+    if (!modal) return "";
+    const view = active() || {};
+    const key = draftKey(view);
+    let draft = { title: "", body: "" };
+    try { draft = Object.assign(draft, JSON.parse(localStorage.getItem(key) || "{}")); } catch (_) {}
+    const includeBody = !!modal.includeBody;
+    const body = includeBody ? `<label>Details<textarea id="gitCommitBody" class="git-ui-textarea" placeholder="Optional body">${esc(draft.body)}</textarea></label>` : "";
+    return `<div class="git-ui-modal-backdrop"><div class="git-ui-modal git-ui-commit-modal"><div class="git-ui-modal-head"><strong>Commit staged changes</strong></div><label>Summary<input id="gitCommitTitle" class="git-ui-input" value="${esc(draft.title)}" placeholder="Short imperative summary"></label><label class="git-ui-check-row"><input id="gitCommitIncludeBody" type="checkbox" ${includeBody ? "checked" : ""} onchange="HerdrGitUi.toggleCommitBody(this.checked)"><span>Add commit body</span></label>${body}<label class="git-ui-check-row"><input id="gitCommitAmend" type="checkbox"><span>Amend previous commit</span></label><div class="git-ui-modal-actions"><button class="git-ui-btn" onclick="HerdrGitUi.closeCommitModal()">Cancel</button><button class="git-ui-btn" onclick="HerdrGitUi.saveDraft()">Save draft</button><button class="git-ui-btn active" onclick="HerdrGitUi.commitFromModal(false)">Commit</button><button class="git-ui-btn primary" onclick="HerdrGitUi.commitFromModal(true)">Commit & Push</button></div></div></div>`;
+  }
+
+  function renderResetSelectedModal() {
+    const modal = state.resetSelectedModal;
+    if (!modal) return "";
+    const label = esc((modal.ref || "").slice(0, 12));
+    return `<div class="git-ui-modal-backdrop"><div class="git-ui-modal"><div class="git-ui-modal-head"><strong>Reset to selected commit</strong></div><p class="git-ui-muted">Choose how to reset the current branch to <strong>${label}</strong>.</p><div class="git-ui-actions"><button class="git-ui-btn" onclick="HerdrGitUi.resetSelected('soft')">Soft reset</button><button class="git-ui-btn danger" onclick="HerdrGitUi.resetSelected('hard')">Hard reset</button></div><div class="git-ui-muted">Soft keeps your changes staged. Hard discards working tree changes and requires confirmation.</div><div class="git-ui-modal-actions"><button class="git-ui-btn" onclick="HerdrGitUi.closeSelectedResetModal()">Cancel</button></div></div></div>`;
+  }
 
   function renderBranchModal() {
     const modal = state.branchModal;
@@ -711,9 +835,13 @@
     }
     if (modal.type === "push" || modal.type === "force-push") {
       const force = modal.type === "force-push";
-      const note = force ? `<div class="git-ui-muted">Use force-with-lease unless you intentionally overwrite remote history.</div>` : "";
-      const body = `${common}${renderGitOpModeSelect("Push option", [["regular", "Regular push"], ["force-with-lease", "Force with lease"], ["force", "Force push"]], force ? "force-with-lease" : "regular")}${note}${error}`;
-      return renderGitOpModalShell(force ? "Force push" : "Push changes", body, force ? "Force push" : "Push", force ? "danger" : "primary", "runPushFromModal");
+      const pushTags = `<label class="git-ui-check-row"><input id="gitUiPushTags" type="checkbox"><span>Push tags</span></label>`;
+      const modeSelect = force
+        ? renderGitOpModeSelect("Retry option", [["force-with-lease", "Force with lease"], ["force", "Force push"]], "force-with-lease")
+        : "";
+      const note = force ? `<div class="git-ui-muted">Regular push failed. Retry with force-with-lease unless you intentionally need --force.</div>` : "";
+      const body = `${common}${modeSelect}${pushTags}${note}${error}`;
+      return renderGitOpModalShell(force ? "Push failed" : "Push changes", body, force ? "Retry push" : "Push", force ? "danger" : "primary", "runPushFromModal");
     }
     if (modal.type === "rebase") {
       const body = `${common}<label class="git-ui-branch-field"><span>Rebase commits after</span><input id="gitUiRebaseUpstream" value="HEAD" placeholder="HEAD"></label><label class="git-ui-check-row"><input id="gitUiRebasePullFirst" type="checkbox" checked><span>First pull selected branch before rebasing</span></label>${error}`;
@@ -763,25 +891,42 @@
     return `<span class="git-ui-file-summary"><span class="git-ui-file-icon ${cls}">${icon}</span>${counts}</span>`;
   }
 
-  function cleanupTabLabel() {
-    return `<span class="git-ui-cleanup-tab-icon" aria-hidden="true"></span><span>cleanup</span>`;
+  function renderGitViewTabs(tabs, activeTab) {
+    return `<div class="git-ui-view-toggle-group" role="tablist" aria-label="Git views">${tabs.map((tab) => {
+      const disabled = tab.disabled ? " disabled" : "";
+      const title = tab.disabled ? ` title="${esc(tab.disabledReason || "Unavailable")}"` : "";
+      const onclick = tab.disabled ? "" : ` onclick="HerdrGitUi.tab('${tab.id}')"`;
+      return `<button class="git-ui-view-toggle ${tab.id === "cleanup" ? "git-ui-cleanup-tab" : ""} ${activeTab === tab.id ? "active" : ""}" type="button" role="tab" aria-selected="${activeTab === tab.id ? "true" : "false"}"${title}${onclick}${disabled}>${tab.label}</button>`;
+    }).join("")}</div>`;
   }
 
-  function renderGitViewTabs(tabs, activeTab) {
-    return `<div class="git-ui-view-toggle-group" role="tablist" aria-label="Git views">${tabs.map((tab) => `<button class="git-ui-view-toggle ${tab.id === "cleanup" ? "git-ui-cleanup-tab" : ""} ${activeTab === tab.id ? "active" : ""}" type="button" role="tab" aria-selected="${activeTab === tab.id ? "true" : "false"}" onclick="HerdrGitUi.tab('${tab.id}')">${tab.label}</button>`).join("")}</div>`;
+
+  function hasStagedChanges(view) {
+    const status = (view && view.status) || {};
+    return (status.staged || []).length > 0;
   }
 
   function renderSide() {
     const view = active() || {};
     const s = view.status || {};
-    const tabs = [{ id: "changes", label: "changes" }, { id: "log", label: "log" }, { id: "stash", label: "stash" }, { id: "cleanup", label: cleanupTabLabel() }];
+    const cleanupOnly = isNoGitRepositoryView(view);
+    const disabledReason = "Open a Git repository to use this view";
+    const tabs = cleanupOnly
+      ? [{ id: "changes", label: "changes", disabled: true, disabledReason }, { id: "log", label: "log", disabled: true, disabledReason }, { id: "stash", label: "stash", disabled: true, disabledReason }, { id: "cleanup", label: "cleanup" }]
+      : [{ id: "changes", label: "changes" }, { id: "log", label: "log" }, { id: "stash", label: "stash" }, { id: "cleanup", label: "cleanup" }];
     const filter = String(view.fileFilter || "").trim();
     const fileSections = currentMode() === "changes"
       ? `${(s.conflicted || []).length ? section("Conflicted", filterFiles(s.conflicted, filter), "U") : ""}${section("Staged", filterFiles(s.staged, filter), "S")}${section("Unstaged", filterFiles(s.unstaged, filter), "M")}${section("Untracked", filterFiles(s.untracked, filter), "?")}`
       : section("Compared", filterFiles(view.compareFilePaths && view.compareFilePaths.length ? view.compareFilePaths : ((view.diff && view.diff.files) || []).map((file) => file.path), filter), "C");
-    const stageLabel = (s.staged || []).length ? "Unstage all" : "Stage all";
+    const canCommit = hasStagedChanges(view);
+    const commitHint = canCommit ? "Commit staged changes" : "Stage changes before committing";
+    const commitDisabled = canCommit ? "" : " disabled";
+    const compareButton = currentMode() !== "changes" ? `<button class="git-ui-btn" onclick="HerdrGitUi.latestChanges()">Current changes</button>` : "";
     const branchLabel = `${view.titleKind || "Branch"}: ${s.branch || view.title || "No branch"}`;
-    return `<aside class="git-ui-side" onscroll="HerdrGitUi.sideScroll(this)"><div class="git-ui-head"><div class="git-ui-head-main"><div class="git-ui-title-row"><div class="git-ui-title">Git</div>${appRefreshIconButton({ className: "git-ui-refresh-icon", title: "Refresh", label: "Refresh Git state", spinning: !!view.refreshAnimating, onclick: "HerdrGitUi.refreshWithSpin()" })}</div><div class="git-ui-subtitle">${esc(s.state || "closed")} · ${esc(compactPath(s.repo_path))}</div><button class="git-ui-branch-pill" title="Change Git directory or switch branch" onclick="HerdrGitUi.openBranchModal()"><span>${esc(branchLabel)}</span><b>↗</b></button></div></div>${view.error ? `<div class="git-ui-error">${esc(view.error)}</div>` : ""}<div class="git-ui-toolbar git-ui-view-toolbar">${renderGitViewTabs(tabs, view.tab)}</div><div class="git-ui-toolbar"><div class="git-ui-toolbar-title">Worktree actions</div><div class="git-ui-actions"><button class="git-ui-btn primary" onclick="HerdrGitUi.tab('commit')">Commit</button><button class="git-ui-btn" onclick="HerdrGitUi.openPullModal()">Pull</button><button class="git-ui-btn" onclick="HerdrGitUi.openPushModal()">Push</button><button class="git-ui-btn danger" onclick="HerdrGitUi.openForcePushModal()">Force push</button><button class="git-ui-btn" onclick="HerdrGitUi.toggleStageAll()">${stageLabel}</button><button class="git-ui-btn" onclick="HerdrGitUi.compareCurrent()">Current changes</button><button class="git-ui-btn" onclick="HerdrGitUi.rebase()">Rebase</button><button class="git-ui-btn danger" onclick="HerdrGitUi.reset()">Reset</button></div></div><label class="git-ui-file-filter"><span class="git-ui-file-filter-icon" aria-hidden="true"></span><input value="${esc(view.fileFilter || "")}" placeholder="Filter files" oninput="HerdrGitUi.filterFiles(this.value)"></label>${fileSections}</aside>`;
+    const error = view.error && !cleanupOnly ? `<div class="git-ui-error">${esc(view.error)}</div>` : "";
+    const actions = cleanupOnly ? "" : `<div class="git-ui-toolbar"><div class="git-ui-toolbar-title">Worktree actions</div><div class="git-ui-actions"><button class="git-ui-btn primary" title="${esc(commitHint)}" onclick="HerdrGitUi.openCommitModal()"${commitDisabled}>Commit</button><button class="git-ui-btn" onclick="HerdrGitUi.openPullModal()">↓ Pull</button><button class="git-ui-btn" onclick="HerdrGitUi.openPushModal()">↑ Push</button>${compareButton}<button class="git-ui-btn" onclick="HerdrGitUi.rebase()">Rebase</button><button class="git-ui-btn danger" onclick="HerdrGitUi.reset()">Reset</button></div></div>`;
+    const fileList = cleanupOnly ? "" : `<label class="git-ui-file-filter"><span class="git-ui-file-filter-icon" aria-hidden="true"></span><input value="${esc(view.fileFilter || "")}" placeholder="Filter files" oninput="HerdrGitUi.filterFiles(this.value)"></label>${fileSections}`;
+    return `<aside class="git-ui-side" onscroll="HerdrGitUi.sideScroll(this)"><div class="git-ui-head"><div class="git-ui-head-main"><div class="git-ui-title-row"><div class="git-ui-title">Git</div>${appRefreshIconButton({ className: "git-ui-refresh-icon", title: "Refresh", label: "Refresh Git state", spinning: !!view.refreshAnimating, onclick: "HerdrGitUi.refreshWithSpin()" })}</div><div class="git-ui-subtitle">${esc(s.state || "closed")} · ${esc(compactPath(s.repo_path))}</div><button class="git-ui-branch-pill" title="Change Git directory or switch branch" onclick="HerdrGitUi.openBranchModal()"><span>${esc(branchLabel)}</span><b>↗</b></button></div></div>${error}<div class="git-ui-toolbar git-ui-view-toolbar">${renderGitViewTabs(tabs, view.tab)}</div>${actions}${fileList}</aside>`;
   }
 
   function filterFiles(files, filter) {
@@ -1200,7 +1345,7 @@
     const view = active();
     const data = await api(`/api/git-ui/log?cwd=${encodeURIComponent(view.cwd)}&all=${view.logAll ? "true" : "false"}`);
     const selected = view.selectedLogCommits || [];
-    const compare = Actions.selectedLogToolbar(selected);
+    const compare = Actions.selectedLogToolbar(selected, { allowRewrite: currentMode() === "changes" });
     replaceContent(version, `<div class="git-ui-log-scope-head"><span class="git-ui-toolbar-title">History scope</span><button class="git-ui-btn ${!view.logAll ? "active" : ""}" onclick="HerdrGitUi.setLogAll(false)">Current branch</button><button class="git-ui-btn ${view.logAll ? "active" : ""}" onclick="HerdrGitUi.setLogAll(true)">All branches</button>${compare}</div><div class="git-ui-log">${(data.lines || []).map(renderLogLine).join("")}</div>`);
     if (view.pendingLogScrollHash) {
       const hash = view.pendingLogScrollHash;
@@ -1436,14 +1581,6 @@
     return `${renderFileToolbar("history")}<div class="git-ui-list">${(data.commits || []).map((c) => `<div class="git-ui-file"><span><strong>${esc(c.hash)}</strong> ${esc(c.message)}</span><span class="git-ui-file-meta"><span class="git-ui-muted">${esc(c.author)} ${esc(c.date)}</span><button class="git-ui-file-action" onclick="event.stopPropagation();HerdrGitUi.showHistoryCommit('${arg(c.hash)}')">changes</button><button class="git-ui-file-action" onclick="event.stopPropagation();HerdrGitUi.gotoLogCommit('${arg(c.hash)}')">log</button></span></div>`).join("") || `<div class="git-ui-empty-row">No history for selected file</div>`}</div>`;
   }
 
-  function renderCommit() {
-    const view = active() || {};
-    const key = draftKey(view);
-    let draft = { title: "", body: "" };
-    try { draft = Object.assign(draft, JSON.parse(localStorage.getItem(key) || "{}")); } catch (_) {}
-    return `<div class="git-ui-commit"><div class="git-ui-toolbar-title">Commit staged changes</div><label>Summary<input id="gitCommitTitle" class="git-ui-input" value="${esc(draft.title)}" placeholder="Short imperative summary"></label><label>Details<textarea id="gitCommitBody" class="git-ui-textarea" placeholder="Optional body">${esc(draft.body)}</textarea></label><div class="git-ui-actions"><span class="git-ui-action-group"><button class="git-ui-btn" onclick="HerdrGitUi.saveDraft()">Save draft</button><button class="git-ui-btn active" onclick="HerdrGitUi.commit(false)">Commit</button><button class="git-ui-btn primary" onclick="HerdrGitUi.commitAndPush()">Commit & Push</button><button class="git-ui-btn" onclick="HerdrGitUi.commit(true)">Amend previous</button></span></div></div>`;
-  }
-
   function renderConflicts() {
     const files = (((active() || {}).status || {}).conflicted || []);
     const rebaseActions = `<div class="git-ui-actions git-ui-conflict-actions"><button class="git-ui-btn primary" onclick="HerdrGitUi.conflictAction('rebase-continue')">Rebase continue</button><button class="git-ui-btn" onclick="HerdrGitUi.conflictAction('rebase-skip')">Rebase skip</button><button class="git-ui-btn danger" onclick="HerdrGitUi.conflictAction('rebase-abort')">Rebase abort</button></div>`;
@@ -1453,9 +1590,9 @@
   function renderMain() {
     const view = active() || {};
     if (view.loading) return `<main class="git-ui-main"><div class="git-ui-loading"><span></span><strong>Loading Git state</strong></div></main>`;
+    if (isNoGitRepositoryView(view)) return `<main class="git-ui-main"><div class="git-ui-content">${renderCleanup()}</div></main>`;
     let body = "";
     if (view.tab === "changes") body = renderDiff();
-    if (view.tab === "commit") body = renderCommit();
     if (view.tab === "conflicts") body = renderConflicts();
     if (view.tab === "log") body = `<div class="git-ui-muted">Loading log...</div>`;
     if (view.tab === "stash") body = `<div class="git-ui-muted">Loading stashes...</div>`;
@@ -1474,7 +1611,7 @@
     const version = ++state.renderVersion;
     const panel = ensurePanel();
     panel.classList.toggle("mutating", !!activeView.mutating);
-    panel.innerHTML = renderSide() + renderMain() + renderContextMenu() + renderBranchModal() + renderGitOpModal() + renderCleanupConfirm();
+    panel.innerHTML = renderSide() + renderMain() + renderContextMenu() + renderCommitModal() + renderResetSelectedModal() + renderBranchModal() + renderGitOpModal() + renderCleanupConfirm() + renderGitToast();
     const side = panel.querySelector(".git-ui-side");
     if (side) side.scrollTop = state.sideScrollTop || 0;
     const nextContent = panel.querySelector(".git-ui-content");
@@ -1527,9 +1664,11 @@
   function saveDraftFromDom() {
     const title = document.getElementById("gitCommitTitle");
     const body = document.getElementById("gitCommitBody");
-    if (!title || !body || !state.activeKey) return;
+    if (!title || !state.activeKey) return;
+    let existing = {};
+    try { existing = JSON.parse(localStorage.getItem(draftKey()) || "{}"); } catch (_) {}
     try {
-      localStorage.setItem(draftKey(), JSON.stringify({ title: title.value, body: body.value, updated_at: Date.now() }));
+      localStorage.setItem(draftKey(), JSON.stringify({ title: title.value, body: body ? body.value : (existing.body || ""), updated_at: Date.now() }));
     } catch (_) {}
   }
 
@@ -1624,8 +1763,8 @@
     workspaceStatus,
     statusLabel() { return state.open ? (state.visible ? "open" : "hidden") : "closed"; },
     tab(tab) {
-      if (!["changes", "log", "stash", "cleanup", "commit", "conflicts", "history"].includes(tab)) return;
-      saveDraftFromDom();
+      if (!["changes", "log", "stash", "cleanup", "conflicts", "history"].includes(tab)) return;
+      if (isNoGitRepositoryView(active()) && tab !== "cleanup") return;
       if (tab === "changes") {
         this.showChangesList();
         return;
@@ -1636,6 +1775,11 @@
     showChangesList() {
       const view = active();
       if (!view) return;
+      if (isNoGitRepositoryView(view)) {
+        view.tab = "cleanup";
+        render();
+        return;
+      }
       view.mode = "changes";
       view.compareBase = "";
       view.compareTarget = "";
@@ -2050,18 +2194,53 @@
     saveDraft() {
       saveDraftFromDom();
     },
-    commit(amend) { post("/api/git-ui/commit", { cwd: active().cwd, title: document.getElementById("gitCommitTitle").value, body: document.getElementById("gitCommitBody").value, amend }); },
-    async commitAndPush() {
+    openCommitModal() {
       const view = active();
       if (!view) return;
+      if (!hasStagedChanges(view)) {
+        view.error = "Stage changes before committing.";
+        render();
+        return;
+      }
+      state.commitModal = { includeBody: false };
+      render();
+    },
+    closeCommitModal() { saveDraftFromDom(); state.commitModal = null; render(); },
+    closeGitToast() { state.gitToast = null; render(); },
+    openGitUrl(url) { const decoded = decodeURIComponent(url || ""); if (decoded) window.open(decoded, "_blank", "noopener"); },
+    toggleCommitBody(value) { saveDraftFromDom(); state.commitModal = Object.assign({}, state.commitModal || {}, { includeBody: !!value }); render(); },
+    commitPayload(amend) {
+      const view = active();
+      const includeBody = !!((document.getElementById("gitCommitIncludeBody") || {}).checked);
+      return {
+        cwd: view.cwd,
+        title: (document.getElementById("gitCommitTitle") || {}).value || "",
+        body: includeBody ? ((document.getElementById("gitCommitBody") || {}).value || "") : "",
+        amend: !!amend,
+      };
+    },
+    async commitFromModal(pushAfter) {
+      const view = active();
+      if (!view) return;
+      const amend = !!((document.getElementById("gitCommitAmend") || {}).checked);
+      const payload = this.commitPayload(amend);
+      saveDraftFromDom();
+      state.commitModal = null;
       try {
-        await postJson("/api/git-ui/commit", { cwd: view.cwd, title: document.getElementById("gitCommitTitle").value, body: document.getElementById("gitCommitBody").value, amend: false });
-        await postJson("/api/git-ui/push", { cwd: view.cwd, mode: "regular" });
+        await postJson("/api/git-ui/commit", payload);
+        if (!pushAfter) {
+          showCommitToast("Commit created");
+          return;
+        }
+        await postJson("/api/git-ui/push", { cwd: view.cwd, mode: "regular", push_tags: false });
+        showCommitToast("Commit pushed");
       } catch (err) {
-        state.gitOpModal = { type: "force-push", error: err.message || String(err) };
+        if (pushAfter) state.gitOpModal = { type: "force-push", error: err.message || String(err) };
         render();
       }
     },
+    commit(amend) { this.commitFromModal(false); },
+    commitAndPush() { this.commitFromModal(true); },
     async openGitOpModal(type) {
       const view = active();
       if (!view) return;
@@ -2078,7 +2257,6 @@
     },
     openPullModal() { this.openGitOpModal("pull"); },
     openPushModal() { this.openGitOpModal("push"); },
-    openForcePushModal() { this.openGitOpModal("force-push"); },
     closeGitOpModal() { state.gitOpModal = null; render(); },
     async runPullFromModal() {
       const view = active();
@@ -2093,9 +2271,10 @@
       if (!view) return;
       const mode = (document.getElementById("gitUiOpMode") || {}).value || "regular";
       const branch = (document.getElementById("gitUiOpBranch") || {}).value || "";
+      const pushTags = !!((document.getElementById("gitUiPushTags") || {}).checked);
       state.gitOpModal = null;
       try {
-        await postJson("/api/git-ui/push", { cwd: view.cwd, mode, branch });
+        await postJson("/api/git-ui/push", { cwd: view.cwd, mode, branch, push_tags: pushTags });
       } catch (err) {
         state.gitOpModal = { type: "force-push", error: err.message || String(err) };
         render();
@@ -2173,7 +2352,7 @@
       else post("/api/git-ui/switch", { cwd: view.cwd, branch });
     },
     async compareCurrent() {
-      this.latestChanges();
+      if (currentMode() !== "changes") this.latestChanges();
     },
     async compareCommits(base, target) {
       active().compareBase = base;
@@ -2241,6 +2420,14 @@
       post("/api/git-ui/reset", { cwd: active().cwd, ref_name: ref, mode, confirmation });
     },
     rebase() { this.openGitOpModal("rebase"); },
+    openSelectedResetModal() {
+      const view = active();
+      const ref = ((view && view.selectedLogCommits) || [])[0];
+      if (!view || !ref || currentMode() !== "changes") return;
+      state.resetSelectedModal = { ref };
+      render();
+    },
+    closeSelectedResetModal() { state.resetSelectedModal = null; render(); },
     resetSelected(mode) {
       const view = active();
       const ref = ((view && view.selectedLogCommits) || [])[0];
@@ -2248,6 +2435,7 @@
       const label = ref.slice(0, 12);
       const confirmation = mode === "hard" ? prompt(`Hard reset to ${label}. Type "reset hard" to confirm`) : (confirm(`Soft reset to ${label}?`) ? "" : null);
       if (confirmation === null) return;
+      state.resetSelectedModal = null;
       post("/api/git-ui/reset", { cwd: view.cwd, ref_name: ref, mode, confirmation });
     },
     rebaseAfterSelected() {
