@@ -1199,6 +1199,10 @@ fn app_router(state: WebState) -> Router {
             get(shared_terminal_scroll_js),
         )
         .route(
+            "/assets/shared/terminal-fit.js",
+            get(shared_terminal_fit_js),
+        )
+        .route(
             "/assets/shared/temp-terminal.js",
             get(shared_temp_terminal_js),
         )

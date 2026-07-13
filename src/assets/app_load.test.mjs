@@ -131,6 +131,8 @@ describe("app bundle load", () => {
       "\n" +
       readFileSync(new URL("./shared/terminal_scroll.js", import.meta.url), "utf8") +
       "\n" +
+      readFileSync(new URL("./shared/terminal_fit.js", import.meta.url), "utf8") +
+      "\n" +
       readFileSync(new URL("./desktop/search.js", import.meta.url), "utf8") +
       "\n" +
       desktopAppSource;
@@ -414,6 +416,7 @@ describe("app bundle load", () => {
 
   it("documents and traps temporary terminal keyboard input", () => {
     const tempTerminalSource = readFileSync(new URL("./shared/temp_terminal.js", import.meta.url), "utf8");
+    const terminalFitSource = readFileSync(new URL("./shared/terminal_fit.js", import.meta.url), "utf8");
     const shortcutsSource = readFileSync(new URL("./desktop/app_js/shortcuts.js", import.meta.url), "utf8");
     const html = readFileSync(new URL("./app.html", import.meta.url), "utf8");
     const modalCss = readFileSync(new URL("./desktop/app_css/modals.css", import.meta.url), "utf8");
@@ -428,11 +431,24 @@ describe("app bundle load", () => {
     match(shortcutsSource, /if \(tempTerminalModalOpen\(\)\) return false;/);
     match(tempTerminalSource, /function terminalGridSize\(container\)/);
     match(tempTerminalSource, /function connectTerminalWsAfterLayout\(terminalId, attempt\)/);
-    match(tempTerminalSource, /width < 320 \|\| height < 120/);
+    match(tempTerminalSource, /ensureTerminalSurface\(container\)/);
+    match(tempTerminalSource, /function waitForTerminalFit\(container, attempt, callback\)/);
+    match(tempTerminalSource, /HerdrTerminalFit\.gridSize\(container, term/);
+    match(tempTerminalSource, /HerdrTerminalFit\.cellSize\(term, container/);
+    match(tempTerminalSource, /HerdrTerminalFit\.fitXtermToContainer\(container\)/);
+    match(terminalFitSource, /function cellSize\(term, container, fallback\)/);
+    match(terminalFitSource, /function gridSize\(container, term, options\)/);
+    match(terminalFitSource, /function fitXtermToContainer\(container\)/);
+    match(terminalFitSource, /root\.HerdrTerminalFit/);
+    match(tempTerminalSource, /resizeTerminalSurface\(container, cols, rows\)/);
+    match(tempTerminalSource, /box\.width >= 320 && box\.height >= 120/);
     match(tempTerminalSource, /function afterBrowserLayout\(callback\)/);
-    match(tempTerminalSource, /rows: Math\.max\(8, Math\.floor\(height \/ rowHeight\) - 1\)/);
-    match(tempTerminalSource, /setTimeout\(handleResize, 0\)/);
+    match(tempTerminalSource, /rowReserve: 1/);
+    match(terminalFitSource, /rows: Math\.max\(opts\.minRows \|\| 8,/);
+    ok(!tempTerminalSource.includes("setTimeout(handleResize, 0)"));
     match(modalCss, /height: min\(80vh, calc\(100dvh - 32px\)\)/);
+    match(modalCss, /width: calc\(100vw - 32px\);\n\s+max-width: none;/);
+    ok(!modalCss.includes("max-width: 1200px"));
     match(modalCss, /\.temp-terminal-body \{[\s\S]*?min-height: 0;[\s\S]*?overflow: hidden;/);
     match(modalCss, /\.temp-terminal-body \.xterm \{[\s\S]*?height: 100%;[\s\S]*?width: 100%;/);
     match(html, /Input captured · Ctrl\+G detaches/);
@@ -1921,6 +1937,20 @@ describe("app bundle load", () => {
     match(gitUiSource, /restoreHunk\('\$\{arg\(path\)\}',\$\{hunkIndex\}\)/);
     match(gitUiSource, /function contextArrowsForChunk\(chunks, index\)/);
     match(gitUiSource, /const after = next \? hiddenGap\(chunk, next\) : false;/);
+  });
+
+  it("loads shared terminal fit helper before terminal clients", () => {
+    const terminalFitSource = readFileSync(new URL("./shared/terminal_fit.js", import.meta.url), "utf8");
+    const desktopTerminalSource = readFileSync(new URL("./desktop/app_js/terminal.js", import.meta.url), "utf8");
+    const mobileTerminalSource = readFileSync(new URL("./mobile/terminal.js", import.meta.url), "utf8");
+
+    match(appBootSource, /\/assets\/shared\/terminal-fit\.js/);
+    match(terminalFitSource, /visibleBox/);
+    match(desktopTerminalSource, /HerdrTerminalFit\.cellSize\(term, terminal/);
+    match(desktopTerminalSource, /HerdrTerminalFit\.gridSize\(shell, term/);
+    match(mobileTerminalSource, /HerdrTerminalFit\.gridSize\(shell, term/);
+    match(mobileTerminalSource, /HerdrTerminalFit\.fitXtermToContainer\(terminal\)/);
+    ok(!mobileTerminalSource.includes("Math.floor(shell.clientWidth / 9)"));
   });
 
   it("uses the same editor mount tooling for previous and current hunk text", () => {

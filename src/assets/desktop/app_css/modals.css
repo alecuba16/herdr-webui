@@ -159,8 +159,8 @@
   border: 1px solid var(--border2);
   border-radius: 14px;
   box-shadow: 0 18px 50px #000a;
-  width: 90vw;
-  max-width: 1200px;
+  width: calc(100vw - 32px);
+  max-width: none;
   height: min(80vh, calc(100dvh - 32px));
   max-height: 800px;
   display: flex;

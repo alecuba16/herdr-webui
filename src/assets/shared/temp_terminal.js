@@ -255,8 +255,7 @@
     }
 
     function afterBrowserLayout(callback) {
-      var raf = window.requestAnimationFrame || function (fn) { return setTimeout(fn, 0); };
-      raf(function () { raf(function () { setTimeout(callback, 0); }); });
+      HerdrTerminalFit.afterLayout(callback);
     }
 
     function ensureWorkspaceForTempTerminal() {
@@ -292,69 +291,88 @@
     }
 
     function terminalGridSize(container) {
-      var rect = container && container.getBoundingClientRect ? container.getBoundingClientRect() : null;
-      var width = Math.max(0, (container && container.clientWidth) || (rect && rect.width) || 720);
-      var height = Math.max(0, (container && container.clientHeight) || (rect && rect.height) || 420);
-      var colWidth = measuredTerminalCellWidth(container) || 9;
-      var rowHeight = measuredTerminalRowHeight(container) || 20;
-      return {
-        cols: Math.max(40, Math.floor(width / colWidth)),
-        rows: Math.max(8, Math.floor(height / rowHeight) - 1),
-      };
-    }
-
-    function measuredTerminalCellWidth(container) {
-      var measure = container && container.querySelector && container.querySelector(".xterm-char-measure-element");
-      var rect = measure && measure.getBoundingClientRect && measure.getBoundingClientRect();
-      return rect && rect.width > 2 ? rect.width : 0;
-    }
-
-    function measuredTerminalRowHeight(container) {
-      var row = container && container.querySelector && container.querySelector(".xterm-rows > div");
-      var rect = row && row.getBoundingClientRect && row.getBoundingClientRect();
-      return rect && rect.height > 8 ? rect.height : 0;
+      return HerdrTerminalFit.gridSize(container, term, {
+        fallbackWidth: 720,
+        fallbackHeight: 420,
+        fallbackCell: { width: 9, height: 20 },
+        minCols: 40,
+        minRows: 8,
+        rowReserve: 1,
+      });
     }
 
     function connectTerminalWs(terminalId) {
       var container = el(containerId);
       if (!container) return;
-      var size = terminalGridSize(container);
-      var cols = size.cols, rows = size.rows;
-      if (!term) {
-        term = new Terminal({
-          convertEol: false,
-          fontFamily: fontFamilyFn(),
-          scrollback: 5000,
-          theme: themeFn(),
-        });
-        term.open(container);
-        term.onData(function (data) { sendInput(data); });
-        try { term.focus(); } catch (e) {}
-        setTimeout(handleResize, 0);
-      }
-      try { term.resize(cols, rows); } catch (e) {}
-      var url = wsUrl(
-        "/ws/terminal?terminal_id=" + encodeURIComponent(terminalId) +
-        "&cols=" + cols + "&rows=" + rows +
-        "&temporary_tab_id=" + encodeURIComponent(createdTabId || "")
-      );
-      var ws = new WebSocket(url);
-      termWs = ws;
-      ws.binaryType = "arraybuffer";
-      ws.onopen = function () {
-        if (termWs === ws && term) try { term.focus(); } catch (e) {}
-      };
-      ws.onmessage = function (event) {
-        if (termWs !== ws) return;
-        enqueueFrame(typeof event.data === "string" ? event.data : new Uint8Array(event.data));
-      };
-      ws.onclose = function () {
-        if (termWs === ws) termWs = null;
-        if (isOpen && !closing) {
-          // Server-side terminal exited (e.g. user typed exit) or connection dropped.
-          close();
+      ensureTerminalSurface(container);
+      waitForTerminalFit(container, 0, function (size) {
+        if (!isOpen || !term) return;
+        var cols = size.cols, rows = size.rows;
+        resizeTerminalSurface(container, cols, rows);
+        var url = wsUrl(
+          "/ws/terminal?terminal_id=" + encodeURIComponent(terminalId) +
+          "&cols=" + cols + "&rows=" + rows +
+          "&temporary_tab_id=" + encodeURIComponent(createdTabId || "")
+        );
+        var ws = new WebSocket(url);
+        termWs = ws;
+        ws.binaryType = "arraybuffer";
+        ws.onopen = function () {
+          if (termWs === ws && term) try { term.focus(); } catch (e) {}
+        };
+        ws.onmessage = function (event) {
+          if (termWs !== ws) return;
+          enqueueFrame(typeof event.data === "string" ? event.data : new Uint8Array(event.data));
+        };
+        ws.onclose = function () {
+          if (termWs === ws) termWs = null;
+          if (isOpen && !closing) {
+            // Server-side terminal exited (e.g. user typed exit) or connection dropped.
+            close();
+          }
+        };
+      });
+    }
+
+    function ensureTerminalSurface(container) {
+      if (term) return;
+      term = new Terminal({
+        convertEol: false,
+        fontFamily: fontFamilyFn(),
+        scrollback: 5000,
+        theme: themeFn(),
+      });
+      term.open(container);
+      term.onData(function (data) { sendInput(data); });
+      try { term.focus(); } catch (e) {}
+      refreshTerminalFitAfterFontLoad();
+    }
+
+    function waitForTerminalFit(container, attempt, callback) {
+      afterBrowserLayout(function () {
+        if (!isOpen || !term) return;
+        var size = terminalGridSize(container);
+        if (!terminalFitReady(container, size) && attempt < 10) {
+          setTimeout(function () { waitForTerminalFit(container, attempt + 1, callback); }, 50);
+          return;
         }
-      };
+        callback(size);
+      });
+    }
+
+    function terminalFitReady(container, size) {
+      var box = HerdrTerminalFit.visibleBox(container, { width: 0, height: 0 }) || { width: 0, height: 0 };
+      var cell = HerdrTerminalFit.cellSize(term, container, { width: 9, height: 20 });
+      return box.width >= 320 && box.height >= 120 && cell.width >= 4 && cell.height >= 8 && size.cols >= 40;
+    }
+
+    function refreshTerminalFitAfterFontLoad() {
+      var fonts = globalThis.document && globalThis.document.fonts;
+      if (!fonts || !fonts.ready) return;
+      fonts.ready.then(function () {
+        if (!isOpen || !term) return;
+        handleResize();
+      }).catch(function () {});
     }
 
     function disconnectWs() {
@@ -469,13 +487,22 @@
         if (!container) return;
         var size = terminalGridSize(container);
         var cols = size.cols, rows = size.rows;
-        try { term.resize(cols, rows); } catch (e) {}
+        resizeTerminalSurface(container, cols, rows);
         if (termWs && termWs.readyState === 1) {
           try {
             termWs.send(JSON.stringify({ type: "resize", cols: cols, rows: rows }));
           } catch (e) {}
         }
       }, 100);
+    }
+
+    function resizeTerminalSurface(container, cols, rows) {
+      try { term.resize(cols, rows); } catch (e) {}
+      fitTerminalDomToContainer(container);
+    }
+
+    function fitTerminalDomToContainer(container) {
+      HerdrTerminalFit.fitXtermToContainer(container);
     }
 
     return { open: open, requestClose: requestClose, close: close, isVisible: isVisible, handleResize: handleResize, handlePaneExited: handlePaneExited };

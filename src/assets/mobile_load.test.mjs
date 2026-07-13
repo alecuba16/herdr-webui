@@ -241,6 +241,8 @@ describe("mobile bundle load", () => {
     "\n" +
     readFileSync(new URL("./shared/terminal_scroll.js", import.meta.url), "utf8") +
     "\n" +
+    readFileSync(new URL("./shared/terminal_fit.js", import.meta.url), "utf8") +
+    "\n" +
     readFileSync(new URL("./shared/temp_terminal.js", import.meta.url), "utf8") +
     "\n" +
     readFileSync(new URL("./mobile/core.js", import.meta.url), "utf8") +
