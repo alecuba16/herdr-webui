@@ -482,7 +482,8 @@ describe("app bundle load", () => {
     match(directoryPickerSource, /function initialPickerPath\(input\)/);
     match(directoryPickerSource, /if \(!text \|\| text === "\/"\) return configuredDefaultFolder\(\);/);
     match(directoryPickerSource, /const parts = splitPath\(initialPickerPath\(input\)\);/);
-    match(desktopWorktreesSource, /return defaultFolderPath\(\) \|\| String\(options\.explorationDefaultDirectory \|\| ""\)\.trim\(\) \|\| "~";/);
+    match(desktopWorktreesSource, /function usefulDirectoryDefault\(value\)/);
+    match(desktopWorktreesSource, /return usefulDirectoryDefault\(defaultFolderPath\(\)\) \|\| usefulDirectoryDefault\(options\.explorationDefaultDirectory\) \|\| "~";/);
     match(mobileWorktreesSource, /defaultFolderFn/);
     match(mobileWorktreesSource, /if \(defaultFolder\) return defaultFolder;/);
     match(directoryPickerSource, /Tree\.renderCurrentDirectoryRow/);
@@ -1918,11 +1919,23 @@ describe("app bundle load", () => {
     ctx.openWorktreeOpenModal();
 
     equal(ctx.document.getElementById("worktreeDiscoverPath").value, "/tmp/default");
+    ctx.openWorktreeOpenModal("/");
+    equal(ctx.document.getElementById("worktreeDiscoverPath").value, "/tmp/default");
 
     vm.runInContext('state.openWorktreeSource = { repo_name: "repo", repo_root: "/src/repo" }', ctx);
     ctx.document.getElementById("worktreeNewBranch").value = "feature/x";
     ctx.syncWorktreeCheckoutPath();
     equal(ctx.document.getElementById("worktreeNewPath").value, "/tmp/worktrees/repo/feature-x");
+  });
+
+  it("does not use legacy root as worktree discover default", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    vm.runInContext('state.defaultFolder = ""; options.explorationDefaultDirectory = "/";', ctx);
+
+    ctx.openWorktreeOpenModal("/");
+
+    equal(ctx.document.getElementById("worktreeDiscoverPath").value, "~");
   });
 
   it("defines side-by-side and unified Git diff layouts", () => {
