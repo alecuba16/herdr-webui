@@ -157,6 +157,27 @@ mod tests {
     }
 
     #[test]
+    fn conflict_operation_actions_include_rebase_merge_and_cherry_pick() {
+        assert_eq!(
+            conflict_action_args("rebase-continue"),
+            Some(vec!["rebase", "--continue"])
+        );
+        assert_eq!(
+            conflict_action_args("merge-continue"),
+            Some(vec!["merge", "--continue"])
+        );
+        assert_eq!(
+            conflict_action_args("merge-abort"),
+            Some(vec!["merge", "--abort"])
+        );
+        assert_eq!(
+            conflict_action_args("cherry-pick-continue"),
+            Some(vec!["cherry-pick", "--continue"])
+        );
+        assert_eq!(conflict_action_args("bad-action"), None);
+    }
+
+    #[test]
     fn conflict_resolve_base_uses_parent_stage_and_stages_file() {
         let repo = temp_repo("herdr-conflict-base");
         std::fs::create_dir_all(&repo).unwrap();
@@ -276,6 +297,19 @@ fn git_ui_conflict_action_blocking(
     }
 }
 
+fn conflict_action_args(action: &str) -> Option<Vec<&'static str>> {
+    Some(match action {
+        "merge-abort" => vec!["merge", "--abort"],
+        "merge-continue" => vec!["merge", "--continue"],
+        "rebase-continue" => vec!["rebase", "--continue"],
+        "rebase-skip" => vec!["rebase", "--skip"],
+        "rebase-abort" => vec!["rebase", "--abort"],
+        "cherry-pick-continue" => vec!["cherry-pick", "--continue"],
+        "cherry-pick-abort" => vec!["cherry-pick", "--abort"],
+        _ => return None,
+    })
+}
+
 pub(super) async fn git_ui_conflict_action(
     State(state): State<WebState>,
     headers: HeaderMap,
@@ -285,14 +319,8 @@ pub(super) async fn git_ui_conflict_action(
     if let Err(response) = require_auth(&state, &headers, remote) {
         return response;
     }
-    let args = match body.action.as_str() {
-        "merge-abort" => vec!["merge", "--abort"],
-        "rebase-continue" => vec!["rebase", "--continue"],
-        "rebase-skip" => vec!["rebase", "--skip"],
-        "rebase-abort" => vec!["rebase", "--abort"],
-        "cherry-pick-continue" => vec!["cherry-pick", "--continue"],
-        "cherry-pick-abort" => vec!["cherry-pick", "--abort"],
-        _ => return git_json_error(StatusCode::BAD_REQUEST, "invalid conflict action"),
+    let Some(args) = conflict_action_args(body.action.as_str()) else {
+        return git_json_error(StatusCode::BAD_REQUEST, "invalid conflict action");
     };
     let cwd = body.cwd;
     match tokio::task::spawn_blocking(move || git_ui_conflict_action_blocking(cwd, args)).await {

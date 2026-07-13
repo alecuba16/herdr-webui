@@ -337,6 +337,12 @@ describe("app bundle load", () => {
   });
 
   it("offers conflict buttons for HEAD, parent, and remote sides", () => {
+    match(gitUiSource, /renderConflictOperationActions/);
+    match(gitUiSource, /aria-label="Conflict operation actions"/);
+    match(gitUiSource, /Rebase<\/span>\$\{action\("Continue", "rebase-continue"\)\}\$\{action\("Skip", "rebase-skip"\)\}\$\{action\("Abort", "rebase-abort", true\)\}/);
+    match(gitUiSource, /Merge<\/span>\$\{action\("Continue", "merge-continue"\)\}\$\{action\("Abort", "merge-abort", true\)\}/);
+    match(gitUiSource, /Cherry-pick<\/span>\$\{action\("Continue", "cherry-pick-continue"\)\}\$\{action\("Abort", "cherry-pick-abort", true\)\}/);
+    match(gitUiSource, /operationActions = renderConflictOperationActions\(\)/);
     match(gitUiSource, /Use HEAD/);
     match(gitUiSource, /Use parent/);
     match(gitUiSource, /Use remote/);
