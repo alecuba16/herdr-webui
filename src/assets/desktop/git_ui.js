@@ -10,6 +10,7 @@
     gitOpModal: null,
     commitModal: null,
     resetSelectedModal: null,
+    tagSelectedModal: null,
     gitToast: null,
     cleanupConfirm: null,
     sideScrollTop: 0,
@@ -87,6 +88,11 @@
     }
     if (state.resetSelectedModal) {
       state.resetSelectedModal = null;
+      render();
+      return;
+    }
+    if (state.tagSelectedModal) {
+      state.tagSelectedModal = null;
       render();
       return;
     }
@@ -525,6 +531,7 @@
     if (state.visible) render();
     try {
       view.status = await api(`/api/git-ui/status?cwd=${encodeURIComponent(view.cwd)}`);
+      if (view.tab === "stash" && !canOpenStashView(view)) view.tab = "changes";
       if (state.visible) render();
       await loadDiff();
       view.loading = false;
@@ -803,6 +810,13 @@
     return `<div class="git-ui-modal-backdrop"><div class="git-ui-modal"><div class="git-ui-modal-head"><strong>Reset to selected commit</strong></div><p class="git-ui-muted">Choose how to reset the current branch to <strong>${label}</strong>.</p><div class="git-ui-actions"><button class="git-ui-btn" onclick="HerdrGitUi.resetSelected('soft')">Soft reset</button><button class="git-ui-btn danger" onclick="HerdrGitUi.resetSelected('hard')">Hard reset</button></div><div class="git-ui-muted">Soft keeps your changes staged. Hard discards working tree changes and requires confirmation.</div><div class="git-ui-modal-actions"><button class="git-ui-btn" onclick="HerdrGitUi.closeSelectedResetModal()">Cancel</button></div></div></div>`;
   }
 
+  function renderTagSelectedModal() {
+    const modal = state.tagSelectedModal;
+    if (!modal) return "";
+    const label = esc((modal.ref || "").slice(0, 12));
+    return `<div class="git-ui-modal-backdrop"><div class="git-ui-modal"><div class="git-ui-modal-head"><strong>Tag selected commit</strong></div><p class="git-ui-muted">Create a lightweight tag at <strong>${label}</strong>.</p><label>Tag name<input id="gitTagName" class="git-ui-input" value="${esc(modal.tag || "")}" placeholder="v1.2.3"></label><div class="git-ui-modal-actions"><button class="git-ui-btn primary" onclick="HerdrGitUi.createSelectedTag()">Create tag</button><button class="git-ui-btn" onclick="HerdrGitUi.closeSelectedTagModal()">Cancel</button></div></div></div>`;
+  }
+
   function renderBranchModal() {
     const modal = state.branchModal;
     if (!modal) return "";
@@ -906,6 +920,14 @@
     return (status.staged || []).length > 0;
   }
 
+  function stashCount(view) {
+    return Math.max(0, Number(((view && view.status) || {}).stashes || 0));
+  }
+
+  function canOpenStashView(view) {
+    return stashCount(view) > 0;
+  }
+
   function renderSide() {
     const view = active() || {};
     const s = view.status || {};
@@ -913,7 +935,7 @@
     const disabledReason = "Open a Git repository to use this view";
     const tabs = cleanupOnly
       ? [{ id: "changes", label: "changes", disabled: true, disabledReason }, { id: "log", label: "log", disabled: true, disabledReason }, { id: "stash", label: "stash", disabled: true, disabledReason }, { id: "cleanup", label: "cleanup" }]
-      : [{ id: "changes", label: "changes" }, { id: "log", label: "log" }, { id: "stash", label: "stash" }, { id: "cleanup", label: "cleanup" }];
+      : [{ id: "changes", label: "changes" }, { id: "log", label: "log" }, { id: "stash", label: stashCount(view) ? `stash (${stashCount(view)})` : "stash", disabled: !canOpenStashView(view), disabledReason: "No stashes stored. Refresh to rescan." }, { id: "cleanup", label: "cleanup" }];
     const filter = String(view.fileFilter || "").trim();
     const fileSections = currentMode() === "changes"
       ? `${(s.conflicted || []).length ? section("Conflicted", filterFiles(s.conflicted, filter), "U") : ""}${section("Staged", filterFiles(s.staged, filter), "S")}${section("Unstaged", filterFiles(s.unstaged, filter), "M")}${section("Untracked", filterFiles(s.untracked, filter), "?")}`
@@ -1611,7 +1633,7 @@
     const version = ++state.renderVersion;
     const panel = ensurePanel();
     panel.classList.toggle("mutating", !!activeView.mutating);
-    panel.innerHTML = renderSide() + renderMain() + renderContextMenu() + renderCommitModal() + renderResetSelectedModal() + renderBranchModal() + renderGitOpModal() + renderCleanupConfirm() + renderGitToast();
+    panel.innerHTML = renderSide() + renderMain() + renderContextMenu() + renderCommitModal() + renderResetSelectedModal() + renderTagSelectedModal() + renderBranchModal() + renderGitOpModal() + renderCleanupConfirm() + renderGitToast();
     const side = panel.querySelector(".git-ui-side");
     if (side) side.scrollTop = state.sideScrollTop || 0;
     const nextContent = panel.querySelector(".git-ui-content");
@@ -1764,7 +1786,9 @@
     statusLabel() { return state.open ? (state.visible ? "open" : "hidden") : "closed"; },
     tab(tab) {
       if (!["changes", "log", "stash", "cleanup", "conflicts", "history"].includes(tab)) return;
-      if (isNoGitRepositoryView(active()) && tab !== "cleanup") return;
+      const view = active();
+      if (isNoGitRepositoryView(view) && tab !== "cleanup") return;
+      if (tab === "stash" && !canOpenStashView(view)) return;
       if (tab === "changes") {
         this.showChangesList();
         return;
@@ -2437,6 +2461,22 @@
       if (confirmation === null) return;
       state.resetSelectedModal = null;
       post("/api/git-ui/reset", { cwd: view.cwd, ref_name: ref, mode, confirmation });
+    },
+    openSelectedTagModal() {
+      const view = active();
+      const ref = ((view && view.selectedLogCommits) || [])[0];
+      if (!view || !ref) return;
+      state.tagSelectedModal = { ref, tag: "" };
+      render();
+    },
+    closeSelectedTagModal() { state.tagSelectedModal = null; render(); },
+    createSelectedTag() {
+      const view = active();
+      const ref = ((state.tagSelectedModal || {}).ref) || ((view && view.selectedLogCommits) || [])[0];
+      const tag = ((document.getElementById("gitTagName") || {}).value || "").trim();
+      if (!view || !ref || !tag) return;
+      state.tagSelectedModal = null;
+      post("/api/git-ui/tag", { cwd: view.cwd, ref_name: ref, tag_name: tag });
     },
     rebaseAfterSelected() {
       const view = active();

@@ -44,6 +44,13 @@ pub(super) struct GitUiCommitRequest {
 }
 
 #[derive(Deserialize)]
+pub(super) struct GitUiTagRequest {
+    pub(super) cwd: String,
+    pub(super) tag_name: String,
+    pub(super) ref_name: String,
+}
+
+#[derive(Deserialize)]
 pub(super) struct GitUiPullPushRequest {
     pub(super) cwd: String,
     pub(super) mode: Option<String>,
@@ -323,6 +330,52 @@ pub(super) async fn git_ui_commit(
     })
     .await
     {
+        Ok(Ok(response)) => response,
+        Ok(Err((status, msg))) => git_json_error(status, msg),
+        Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    }
+}
+
+fn safe_tag_name(value: &str) -> Result<&str, String> {
+    let tag = safe_git_token(value, "tag")?;
+    if tag.chars().any(char::is_whitespace) {
+        return Err("invalid tag".to_string());
+    }
+    Ok(tag)
+}
+
+fn git_ui_tag_blocking(
+    cwd: String,
+    tag_name: String,
+    ref_name: String,
+) -> Result<Response, (StatusCode, String)> {
+    match git_ui_text(&cwd, &["tag", &tag_name, &ref_name]) {
+        Ok(text) => {
+            Ok(Json(json!({ "ok": true, "message": text, "tag": tag_name })).into_response())
+        }
+        Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
+    }
+}
+
+pub(super) async fn git_ui_tag(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    Json(body): Json<GitUiTagRequest>,
+) -> Response {
+    if let Err(response) = require_auth(&state, &headers, remote) {
+        return response;
+    }
+    let tag_name = match safe_tag_name(&body.tag_name) {
+        Ok(v) => v.to_string(),
+        Err(err) => return git_json_error(StatusCode::BAD_REQUEST, err),
+    };
+    let ref_name = match safe_git_token(&body.ref_name, "ref") {
+        Ok(v) => v.to_string(),
+        Err(err) => return git_json_error(StatusCode::BAD_REQUEST, err),
+    };
+    let cwd = body.cwd;
+    match tokio::task::spawn_blocking(move || git_ui_tag_blocking(cwd, tag_name, ref_name)).await {
         Ok(Ok(response)) => response,
         Ok(Err((status, msg))) => git_json_error(status, msg),
         Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),

@@ -345,6 +345,19 @@ describe("app bundle load", () => {
     match(gitUiSource, /selectedLogToolbar\(selected, \{ allowRewrite: currentMode\(\) === "changes" \}\)/);
   });
 
+  it("gates stash tab by stash count and offers log tagging", () => {
+    match(gitUiSource, /function stashCount\(view\)/);
+    match(gitUiSource, /function canOpenStashView\(view\)/);
+    match(gitUiSource, /No stashes stored\. Refresh to rescan\./);
+    match(gitUiSource, /view\.tab === "stash" && !canOpenStashView\(view\)/);
+    match(gitUiSource, /tab === "stash" && !canOpenStashView\(view\)/);
+    match(gitActionsSource, /Tag this/);
+    match(gitActionsSource, /openSelectedTagModal\(\)/);
+    match(gitUiSource, /renderTagSelectedModal/);
+    match(gitUiSource, /gitTagName/);
+    match(gitUiSource, /\/api\/git-ui\/tag/);
+  });
+
   it("defines file explorer and Git file filters", () => {
     match(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), /q=\$\{encodeURIComponent\(target\.filter\.trim\(\)\)\}/);
     match(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), /showSearch\(\)/);

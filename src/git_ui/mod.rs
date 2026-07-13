@@ -72,6 +72,7 @@ pub(crate) fn routes() -> Router<WebState> {
         .route("/api/git-ui/pull", post(log::git_ui_pull))
         .route("/api/git-ui/push", post(log::git_ui_push))
         .route("/api/git-ui/commit", post(log::git_ui_commit))
+        .route("/api/git-ui/tag", post(log::git_ui_tag))
         .route("/api/git-ui/apply-patch", post(log::git_ui_apply_patch))
         .route(
             "/api/git-ui/conflict-resolve",
@@ -1268,6 +1269,34 @@ mod tests {
             .await;
             assert_eq!(commit.status(), StatusCode::OK);
             assert!(repo.git(&["log", "--oneline", "-1"]).contains("add new"));
+
+            let head = repo.git(&["rev-parse", "HEAD"]).trim().to_string();
+            let tag = git_ui_tag(
+                State(state.clone()),
+                HeaderMap::new(),
+                ConnectInfo(remote()),
+                Json(GitUiTagRequest {
+                    cwd: cwd.clone(),
+                    tag_name: "ui-test-tag".to_string(),
+                    ref_name: head.clone(),
+                }),
+            )
+            .await;
+            assert_eq!(tag.status(), StatusCode::OK);
+            assert_eq!(repo.git(&["rev-parse", "ui-test-tag"]).trim(), head);
+
+            let unsafe_tag = git_ui_tag(
+                State(state.clone()),
+                HeaderMap::new(),
+                ConnectInfo(remote()),
+                Json(GitUiTagRequest {
+                    cwd: cwd.clone(),
+                    tag_name: "bad tag".to_string(),
+                    ref_name: "HEAD".to_string(),
+                }),
+            )
+            .await;
+            assert_eq!(unsafe_tag.status(), StatusCode::BAD_REQUEST);
 
             let compare = git_ui_compare(
                 State(state),
