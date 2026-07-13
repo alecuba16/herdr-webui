@@ -2027,15 +2027,22 @@ describe("app bundle load", () => {
 
     match(assetsSource, /include_str!\("assets\/desktop\/git_ui\/log\.js"\)/);
     match(gitUiSource, /logAll: true,/);
+    match(gitUiSource, /logLimit: GIT_LOG_PAGE_SIZE,/);
+    match(gitUiSource, /const GIT_LOG_PAGE_SIZE = 80;/);
+    match(gitUiSource, /const GIT_LOG_MAX_LIMIT = 2000;/);
     match(gitUiSource, /window\.HerdrGitLog\.render/);
     ok(!gitUiSource.includes("function renderLogLine(line)"));
-    match(gitLogSource, /window\.HerdrGitLog = \{ render, scrollToCommit, rowsFromData, laneColor, applyFilters \};/);
+    match(gitLogSource, /window\.HerdrGitLog = \{ render, scrollToCommit, rowsFromData, laneColor, applyFilters, logCommitCount \};/);
     match(gitLogSource, /git-ui-log-table-head/);
     match(gitLogSource, /<span>Graph<\/span><span>Description<\/span><span>Date<\/span><span>Author<\/span>/);
     match(gitLogSource, /class="git-ui-log-ref \$\{kind\}"/);
     match(gitLogSource, /current: detail\.labels\.some/);
     match(gitLogSource, /const LANE_COLORS = \[/);
     match(gitLogSource, /exact_date/);
+    match(gitLogSource, /function renderLoadMore/);
+    match(gitLogSource, /Load more changes/);
+    match(gitLogSource, /HerdrGitUi.loadMoreLog\(\)/);
+    match(gitLogSource, /data\.has_more/);
     match(gitLogSource, /function renderFilterRow/);
     match(gitLogSource, /oninput="HerdrGitUi.setLogFilter/);
     match(gitLogSource, /git-ui-log-filter-spacer/);
@@ -2045,6 +2052,9 @@ describe("app bundle load", () => {
     match(gitLogSource, /if \(label === "HEAD" \|\| label.startsWith\("HEAD -> "\)\) return "current";/);
     match(gitLogSource, /return "main";/);
     match(gitUiSource, /logFilters: \{ description: "", date: "", author: "" \}/);
+    match(gitUiSource, /max=\$\{logLimit\}/);
+    match(gitUiSource, /async loadMoreLog\(\)/);
+    match(gitUiSource, /view\.logLimit = Math\.min\(GIT_LOG_MAX_LIMIT/);
     match(gitUiSource, /setLogFilter\(field, value\)/);
     ok(!gitUiSource.includes('"graph", "description"'));
     match(gitUiSource, /HerdrGitLog\.applyFilters\(view\.logFilters\)/);
@@ -2052,6 +2062,7 @@ describe("app bundle load", () => {
     match(gitLogCss, /\.git-ui-log-ref\.current[\s\S]*?#ef4444/);
     match(gitLogCss, /\.git-ui-log-ref\.main[\s\S]*?#3b82f6/);
     match(gitLogCss, /\.git-ui-log-filter-row/);
+    match(gitLogCss, /\.git-ui-log-load-more/);
     match(gitLogCss, /\.git-ui-log-hover-card/);
     match(gitLogCss, /border-style: dashed;/);
   });

@@ -18,6 +18,8 @@
     shortcutPrefixUntil: 0,
   };
   const LARGE_FILE_DIFF_LINE_LIMIT = 500;
+  const GIT_LOG_PAGE_SIZE = 80;
+  const GIT_LOG_MAX_LIMIT = 2000;
   const DEFAULT_GIT_SHORTCUTS = {
     changes: "Digit1",
     commit: "Digit2",
@@ -520,6 +522,8 @@
         blame: {},
         showBlame: false,
         logAll: true,
+        logLimit: GIT_LOG_PAGE_SIZE,
+        logLoadingMore: false,
         selectedLogCommits: [],
         compareFilePaths: [],
         collapsedSections: {},
@@ -1439,13 +1443,17 @@
   async function renderLog(version) {
     const view = active();
     const baseBranch = gitLogDefaultBranch();
-    const data = await api(`/api/git-ui/log?cwd=${encodeURIComponent(view.cwd)}&all=${view.logAll ? "true" : "false"}&base=${encodeURIComponent(baseBranch)}`);
+    const logLimit = Math.max(1, Math.min(GIT_LOG_MAX_LIMIT, Number(view.logLimit || GIT_LOG_PAGE_SIZE)));
+    view.logLimit = logLimit;
+    const data = await api(`/api/git-ui/log?cwd=${encodeURIComponent(view.cwd)}&all=${view.logAll ? "true" : "false"}&base=${encodeURIComponent(baseBranch)}&max=${logLimit}`);
     const selected = view.selectedLogCommits || [];
     const compare = Actions.selectedLogToolbar(selected, { allowRewrite: currentMode() === "changes" });
     replaceContent(version, window.HerdrGitLog.render({
       data,
       selected,
       logAll: view.logAll,
+      logLimit: view.logLimit,
+      logLoadingMore: !!view.logLoadingMore,
       baseBranch,
       actionsHtml: compare,
       filters: view.logFilters || {},
@@ -2484,7 +2492,27 @@
       if (!hash) return;
       await this.compareCommits(hash, ".");
     },
-    setLogAll(value) { active().logAll = !!value; render(); },
+    setLogAll(value) {
+      const view = active();
+      if (!view) return;
+      view.logAll = !!value;
+      view.logLimit = GIT_LOG_PAGE_SIZE;
+      render();
+    },
+    async loadMoreLog() {
+      const view = active();
+      if (!view || view.logLoadingMore) return;
+      view.logLimit = Math.min(GIT_LOG_MAX_LIMIT, Math.max(GIT_LOG_PAGE_SIZE, Number(view.logLimit || GIT_LOG_PAGE_SIZE)) + GIT_LOG_PAGE_SIZE);
+      view.logLoadingMore = true;
+      try {
+        await renderLog(++state.renderVersion);
+      } catch (err) {
+        view.error = err.message || String(err);
+      } finally {
+        view.logLoadingMore = false;
+        if (state.visible) render();
+      }
+    },
     setLogFilter(field, value) {
       const view = active();
       if (!view) return;

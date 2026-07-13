@@ -11,6 +11,11 @@
   ];
   const FILTER_FIELDS = ["description", "date", "author"];
 
+  function logCommitCount(data, rows) {
+    if (Array.isArray(data.commits)) return data.commits.length;
+    return rows.filter((row) => row && row.hash).length;
+  }
+
   function render(options) {
     const rows = rowsFromData(options.data || {});
     const selected = options.selected || [];
@@ -23,7 +28,17 @@
     const body = rows.length
       ? rows.map((row) => renderRow(row, selected, filters, options, baseBranch)).join("")
       : `<div class="git-ui-empty-row">No commits found.</div>`;
-    return `${scope}<div class="git-ui-log git-ui-log-table">${header}${body}</div>`;
+    const footer = renderLoadMore(data, rows, options, esc);
+    return `${scope}<div class="git-ui-log git-ui-log-table">${header}${body}${footer}</div>`;
+  }
+
+  function renderLoadMore(data, rows, options, esc) {
+    const count = logCommitCount(data || {}, rows || []);
+    const limit = Number(data.limit || options.logLimit || count || 0);
+    const hasMore = !!(data && data.has_more);
+    const disabled = options.logLoadingMore ? "disabled" : "";
+    const label = options.logLoadingMore ? "Loading more changes…" : "Load more changes";
+    return `<div class="git-ui-log-load-more"><span>Showing ${esc(String(count))}${limit ? ` of ${esc(String(limit))} requested` : ""} commits</span><button class="git-ui-btn" onclick="HerdrGitUi.loadMoreLog()" ${hasMore ? disabled : "disabled"}>${hasMore ? label : "No more changes"}</button></div>`;
   }
 
   function renderFilterRow(filters, esc) {
@@ -206,5 +221,5 @@
     if (target) target.scrollIntoView({ block: "center", behavior: "smooth" });
   }
 
-  window.HerdrGitLog = { render, scrollToCommit, rowsFromData, laneColor, applyFilters };
+  window.HerdrGitLog = { render, scrollToCommit, rowsFromData, laneColor, applyFilters, logCommitCount };
 })();

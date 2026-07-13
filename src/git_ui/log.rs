@@ -72,7 +72,7 @@ pub(super) struct GitUiApplyPatchRequest {
     pub(super) cached: Option<bool>,
 }
 
-fn git_log_args(max: &str, all: bool, refs: &[String]) -> Vec<String> {
+fn git_log_args(max: usize, all: bool, refs: &[String]) -> Vec<String> {
     let mut args = vec![
         "log".to_string(),
         "--graph".to_string(),
@@ -126,20 +126,59 @@ fn git_ref_exists(cwd: &str, ref_name: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn parsed_log_rows(lines: &[String]) -> Vec<serde_json::Value> {
+    lines
+        .iter()
+        .filter_map(|line| parse_log_row_json(line))
+        .collect::<Vec<_>>()
+}
+
+fn count_commit_rows(rows: &[serde_json::Value]) -> usize {
+    rows.iter()
+        .filter(|row| row["hash"].as_str().is_some_and(|hash| !hash.is_empty()))
+        .count()
+}
+
+fn trim_log_lines_to_commit_limit(lines: Vec<String>, limit: usize) -> Vec<String> {
+    let mut commits = 0usize;
+    let mut trimmed = Vec::new();
+    for line in lines {
+        let is_commit = parse_log_row_json(&line)
+            .and_then(|row| row["hash"].as_str().map(|hash| !hash.is_empty()))
+            .unwrap_or(false);
+        if is_commit {
+            commits += 1;
+            if commits > limit {
+                break;
+            }
+        }
+        trimmed.push(line);
+    }
+    trimmed
+}
+
 fn git_ui_log_blocking(
     cwd: String,
-    max: String,
+    limit: usize,
     all: bool,
     base: Option<String>,
 ) -> Result<Response, (StatusCode, String)> {
     let refs = log_refs(&cwd, all, base)?;
-    let args = git_log_args(&max, all, &refs);
+    let query_limit = limit.saturating_add(1);
+    let args = git_log_args(query_limit, all, &refs);
     match git_ui_text_strings(&cwd, &args) {
         Ok(text) => {
-            let lines = text.lines().map(ToOwned::to_owned).collect::<Vec<_>>();
-            let commits = lines
+            let raw_lines = text.lines().map(ToOwned::to_owned).collect::<Vec<_>>();
+            let raw_rows = parsed_log_rows(&raw_lines);
+            let has_more = count_commit_rows(&raw_rows) > limit;
+            let lines = if has_more {
+                trim_log_lines_to_commit_limit(raw_lines, limit)
+            } else {
+                raw_lines
+            };
+            let rows = parsed_log_rows(&lines);
+            let commits = rows
                 .iter()
-                .filter_map(|line| parse_log_row_json(line))
                 .filter(|row| row["hash"].as_str().is_some_and(|hash| !hash.is_empty()))
                 .map(|row| {
                     json!({
@@ -152,18 +191,18 @@ fn git_ui_log_blocking(
                     })
                 })
                 .collect::<Vec<_>>();
-            let rows = lines
-                .iter()
-                .filter_map(|line| parse_log_row_json(line))
-                .collect::<Vec<_>>();
             let display_lines = lines
                 .iter()
                 .map(|line| reconstruct_log_line(line))
                 .collect::<Vec<_>>();
-            Ok(
-                Json(json!({ "commits": commits, "lines": display_lines, "rows": rows }))
-                    .into_response(),
-            )
+            Ok(Json(json!({
+                "commits": commits,
+                "lines": display_lines,
+                "rows": rows,
+                "has_more": has_more,
+                "limit": limit,
+            }))
+            .into_response())
         }
         Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
     }
@@ -181,11 +220,11 @@ pub(super) async fn git_ui_log(
     let Some(cwd) = query.cwd.as_deref() else {
         return git_json_error(StatusCode::BAD_REQUEST, "cwd is required");
     };
-    let max = query.max.unwrap_or(80).clamp(1, 300).to_string();
+    let limit = query.max.unwrap_or(80).clamp(1, 2000);
     let all = query.all.unwrap_or(false);
     let base = query.base;
     let cwd = cwd.to_string();
-    match tokio::task::spawn_blocking(move || git_ui_log_blocking(cwd, max, all, base)).await {
+    match tokio::task::spawn_blocking(move || git_ui_log_blocking(cwd, limit, all, base)).await {
         Ok(Ok(response)) => response,
         Ok(Err((status, msg))) => git_json_error(status, msg),
         Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
@@ -649,7 +688,7 @@ mod tests {
             vec!["HEAD".to_string()]
         );
         assert_eq!(
-            git_log_args("80", false, &["master".to_string(), "HEAD".to_string()]),
+            git_log_args(80, false, &["master".to_string(), "HEAD".to_string()]),
             vec![
                 "log",
                 "--graph",
@@ -663,7 +702,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            git_log_args("80", true, &["master".to_string()]),
+            git_log_args(80, true, &["master".to_string()]),
             vec![
                 "log",
                 "--graph",
@@ -678,6 +717,47 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn trims_log_lines_to_limit_and_reports_more_candidates() {
+        let lines = vec![
+            [
+                "* aaaaaaaa111111",
+                "A",
+                "1 day ago",
+                "2026-07-12T10:00:00Z",
+                "HEAD -> topic",
+                "First",
+            ]
+            .join("\0"),
+            "|\\".to_string(),
+            [
+                "* bbbbbbbb222222",
+                "B",
+                "2 days ago",
+                "2026-07-11T10:00:00Z",
+                "master",
+                "Second",
+            ]
+            .join("\0"),
+            [
+                "* cccccccc333333",
+                "C",
+                "3 days ago",
+                "2026-07-10T10:00:00Z",
+                "",
+                "Third",
+            ]
+            .join("\0"),
+        ];
+        let rows = parsed_log_rows(&lines);
+        assert_eq!(count_commit_rows(&rows), 3);
+        let trimmed = trim_log_lines_to_commit_limit(lines, 2);
+        let trimmed_rows = parsed_log_rows(&trimmed);
+        assert_eq!(count_commit_rows(&trimmed_rows), 2);
+        assert!(trimmed.iter().any(|line| line == "|\\"));
+        assert!(!trimmed.iter().any(|line| line.contains("cccccccc333333")));
     }
 
     fn temp_repo(prefix: &str) -> std::path::PathBuf {

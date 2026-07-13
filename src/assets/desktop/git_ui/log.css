@@ -256,3 +256,18 @@
   flex-wrap: wrap;
   gap: 4px;
 }
+
+.git-ui-log-load-more {
+  align-items: center;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  min-width: 720px;
+  padding: 10px;
+}
+.git-ui-log-load-more .git-ui-btn {
+  min-width: 150px;
+}
