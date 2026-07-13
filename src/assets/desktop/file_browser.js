@@ -160,8 +160,11 @@
   }
 
   function setError(target, error) {
-    target.error = error.message || String(error);
-    target.permissionRequired = !!(error.details && error.details.permission_required);
+    const permissionRequired = !!(error.details && error.details.permission_required);
+    target.permissionRequired = permissionRequired;
+    target.error = permissionRequired
+      ? "Herdr needs folder access to browse or search this folder."
+      : error.message || String(error);
   }
 
   async function open(workspace, options) {
@@ -242,13 +245,15 @@
       const entries = data.entries || [];
       target.entries = append ? target.entries.concat(entries) : entries;
       target.gitStatus = data.git_status || null;
+      target.error = "";
+      target.permissionRequired = false;
       target.filterOffset = offset + entries.length;
       target.filterDone = !data.truncated || entries.length === 0;
       target.children = {};
       target.expanded = {};
       target.loading = {};
     } catch (error) {
-      target.error = error.message || String(error);
+      setError(target, error);
       target.filterDone = true;
     }
     target.filterLoading = false;
@@ -388,6 +393,8 @@
       const data = await api(`/api/file-browser/content-search?cwd=${encodeURIComponent(target.cwd)}&path=${encodeURIComponent(target.path || "")}&q=${encodeURIComponent(content.query.trim())}&offset=${offset}&limit=${content.pageSize}&context_lines=${content.contextLines}&max_matches_per_file=${content.maxMatchesPerFile}&match_case=${content.matchCase ? "true" : "false"}&regex=${content.regex ? "true" : "false"}`);
       const files = data.files || [];
       content.files = append ? content.files.concat(files) : files;
+      target.error = "";
+      target.permissionRequired = false;
       content.totalFiles = data.total_files || files.length;
       content.totalMatches = data.total_matches || 0;
       content.offset = offset + files.length;
@@ -401,7 +408,8 @@
         for (const file of files) if (!Object.prototype.hasOwnProperty.call(content.expanded, file.path)) content.expanded[file.path] = expanded;
       }
     } catch (error) {
-      content.error = error.message || String(error);
+      setError(target, error);
+      content.error = target.permissionRequired ? "Folder access is required to search file contents." : error.message || String(error);
       content.done = true;
     }
     content.loading = false;
@@ -590,7 +598,8 @@
     const primary = menu.kind === "dir"
       ? `<button onclick="HerdrFileBrowser.menuAction('enter')">Enter folder</button>`
       : `<button onclick="HerdrFileBrowser.menuAction('open')">Open</button><button onclick="HerdrFileBrowser.menuAction('split')">Open in split</button>`;
-    return `<div class="git-ui-menu file-browser-menu" style="left:${Math.max(0, menu.x)}px;top:${Math.max(0, menu.y)}px" onclick="event.stopPropagation()">${primary}<button onclick="HerdrFileBrowser.menuAction('rename')">Rename</button><button class="danger" onclick="HerdrFileBrowser.menuAction('delete')">Delete</button><button onclick="HerdrFileBrowser.menuAction('copyPath')">Copy path</button></div>`;
+    const history = menu.kind === "file" ? `<button onclick="HerdrFileBrowser.menuAction('history')">Show history</button>` : "";
+    return `<div class="git-ui-menu file-browser-menu" style="left:${Math.max(0, menu.x)}px;top:${Math.max(0, menu.y)}px" onclick="event.stopPropagation()">${primary}${history}<button onclick="HerdrFileBrowser.menuAction('rename')">Rename</button><button class="danger" onclick="HerdrFileBrowser.menuAction('delete')">Delete</button><button onclick="HerdrFileBrowser.menuAction('copyPath')">Copy path</button></div>`;
   }
 
   function mountEditors() {
@@ -879,6 +888,7 @@
         if (action === "open") await loadFile(menu.path);
         if (action === "split") await loadFile(menu.path, "split");
         if (action === "enter") await loadTree(menu.path);
+        if (action === "history") { this.showHistory(encodeURIComponent(menu.path)); return; }
         if (action === "rename") await renamePath(menu.path);
         if (action === "delete") await deletePath(menu.path);
         if (action === "copyPath") {
@@ -911,6 +921,7 @@
     showHistory(encodedPath) {
       const path = decodeURIComponent(encodedPath || "");
       if (!path || !window.HerdrGitUi || !window.HerdrGitUi.openFileHistory) return;
+      hide();
       window.HerdrGitUi.openFileHistory(encodeURIComponent(state.cwd), encodeURIComponent(path));
     },
     isVisible() { return state.open; },

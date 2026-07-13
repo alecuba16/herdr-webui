@@ -448,8 +448,122 @@
     view.selectedLogCommits = [];
     view.selectedCommitPreview = null;
     view.logFilePath = "";
+    view.historyCommitHash = "";
+    view.historySource = "";
+    view.fileBackTarget = null;
+    view.navigationStack = [];
     view.mode = "changes";
     view.tab = "changes";
+  }
+
+  function clonePlain(value, fallback) {
+    try { return JSON.parse(JSON.stringify(value == null ? fallback : value)); }
+    catch (_) { return fallback; }
+  }
+
+  function currentNavigationLabel(view) {
+    if (!view) return "Git";
+    if (view.tab === "history" && view.file) return `History · ${view.file}`;
+    if (view.tab === "log" && view.logFilePath) return `Log · ${view.logFilePath}`;
+    if (view.tab === "log") return "Log";
+    if (view.tab === "stash") return "Stash";
+    if (view.tab === "cleanup") return "Cleanup";
+    if (view.fileBackTarget && view.fileBackTarget.type === "log") return `Committed file · ${view.file || "file"}`;
+    if (view.temporaryHistoryCompare && view.file) return `Committed file · ${view.file}`;
+    if (view.file) return currentMode() === "changes" ? `Current file · ${view.file}` : `Compared file · ${view.file}`;
+    return currentMode() === "changes" ? "Current changes" : "Compared changes";
+  }
+
+  function captureNavigationSnapshot(view, label) {
+    if (!view) return null;
+    const content = document.querySelector(".git-ui-content");
+    if (content && preserveContentScroll(view.tab)) view.contentScrollTop = content.scrollTop;
+    return {
+      label: label || currentNavigationLabel(view),
+      tab: view.tab || "changes",
+      mode: view.mode || "changes",
+      file: view.file || "",
+      diffKind: view.diffKind || "",
+      diffScope: view.diffScope || "all",
+      compareBase: view.compareBase || "",
+      compareTarget: view.compareTarget || "",
+      compareFilePaths: clonePlain(view.compareFilePaths, []),
+      selectedLogCommits: clonePlain(view.selectedLogCommits, []),
+      selectedCommitPreview: clonePlain(view.selectedCommitPreview, null),
+      logFilePath: view.logFilePath || "",
+      logLimit: view.logLimit || GIT_LOG_PAGE_SIZE,
+      logScope: view.logScope || (view.logAll ? "all" : "base-current"),
+      logAll: !!view.logAll,
+      logFilters: clonePlain(view.logFilters, { description: "", date: "", author: "" }),
+      fileFilter: view.fileFilter || "",
+      temporaryHistoryCompare: !!view.temporaryHistoryCompare,
+      historyCommitHash: view.historyCommitHash || "",
+      historySource: view.historySource || "",
+      fileBackTarget: clonePlain(view.fileBackTarget, null),
+      contentScrollTop: view.contentScrollTop || 0,
+      sideScrollTop: state.sideScrollTop || 0,
+    };
+  }
+
+  function pushNavigationSnapshot(view, label) {
+    const snapshot = captureNavigationSnapshot(view, label);
+    if (!snapshot) return;
+    const stack = (view.navigationStack || []).filter(Boolean);
+    const last = stack[stack.length - 1];
+    const signature = `${snapshot.tab}|${snapshot.mode}|${snapshot.file}|${snapshot.compareBase}|${snapshot.compareTarget}|${snapshot.selectedLogCommits.join(",")}|${snapshot.logFilePath}`;
+    const lastSignature = last ? `${last.tab}|${last.mode}|${last.file}|${last.compareBase}|${last.compareTarget}|${(last.selectedLogCommits || []).join(",")}|${last.logFilePath}` : "";
+    if (signature === lastSignature) return;
+    view.navigationStack = stack.concat(snapshot).slice(-12);
+  }
+
+  async function restoreNavigationSnapshot(view, snapshot) {
+    if (!view || !snapshot) return;
+    view.tab = snapshot.tab || "changes";
+    view.mode = snapshot.mode || "changes";
+    view.file = snapshot.file || "";
+    view.diffKind = snapshot.diffKind || "";
+    view.diffScope = snapshot.diffScope || "all";
+    view.compareBase = snapshot.compareBase || "";
+    view.compareTarget = snapshot.compareTarget || "";
+    view.compareFilePaths = clonePlain(snapshot.compareFilePaths, []);
+    view.selectedLogCommits = clonePlain(snapshot.selectedLogCommits, []);
+    view.selectedCommitPreview = clonePlain(snapshot.selectedCommitPreview, null);
+    view.logFilePath = snapshot.logFilePath || "";
+    view.logLimit = snapshot.logLimit || GIT_LOG_PAGE_SIZE;
+    view.logScope = normalizeLogScope(snapshot.logScope || (snapshot.logAll ? "all" : "base-current"));
+    view.logAll = view.logScope === "all";
+    view.logFilters = clonePlain(snapshot.logFilters, { description: "", date: "", author: "" });
+    view.fileFilter = snapshot.fileFilter || "";
+    view.temporaryHistoryCompare = !!snapshot.temporaryHistoryCompare;
+    view.historyCommitHash = snapshot.historyCommitHash || "";
+    view.historySource = snapshot.historySource || "";
+    view.fileBackTarget = clonePlain(snapshot.fileBackTarget, null);
+    view.contentScrollTop = snapshot.contentScrollTop || 0;
+    state.sideScrollTop = snapshot.sideScrollTop || 0;
+    view.sideEditor = null;
+    if (view.tab === "changes") {
+      await loadDiff();
+      return;
+    }
+    if (view.tab === "log" && view.selectedLogCommits.length === 1 && (!view.selectedCommitPreview || view.selectedCommitPreview.hash !== view.selectedLogCommits[0])) {
+      loadSelectedCommitPreview(view, view.selectedLogCommits[0]);
+    }
+    render();
+  }
+
+  function renderNavigationTrail(view) {
+    const stack = ((view && view.navigationStack) || []).filter(Boolean);
+    if (!stack.length) return "";
+    const labels = stack.map((item) => item.label || "Git").concat(currentNavigationLabel(view));
+    const title = labels.join(" › ");
+    const visible = stack.length > 2
+      ? [stack[0], { label: "…", ellipsis: true }, stack[stack.length - 1]]
+      : stack;
+    const crumbs = visible.map((item) => item.ellipsis
+      ? `<span class="git-ui-breadcrumb-ellipsis" title="${esc(title)}">…</span>`
+      : `<span class="git-ui-breadcrumb-step" title="${esc(item.label || "Git")}">${esc(item.label || "Git")}</span>`)
+      .join(`<span class="git-ui-breadcrumb-sep">›</span>`);
+    return `<span class="git-ui-breadcrumbs" title="${esc(title)}"><button class="git-ui-btn" title="Go back to previous Git view" onclick="HerdrGitUi.goBack()">← Back</button>${crumbs}<span class="git-ui-breadcrumb-sep">›</span><strong title="${esc(currentNavigationLabel(view))}">${esc(currentNavigationLabel(view))}</strong></span>`;
   }
 
   function workspaceStatus(key, workspace) {
@@ -550,6 +664,10 @@
         pendingLogScrollHash: "",
         logFilters: { description: "", date: "", author: "" },
         temporaryHistoryCompare: false,
+        historyCommitHash: "",
+        historySource: "",
+        fileBackTarget: null,
+        navigationStack: [],
         sideEditor: null,
       };
     } else {
@@ -1021,6 +1139,55 @@
     return section(`Committed files ${label}`, filterFiles(files, filter), "C");
   }
 
+  function historicalFileCommitLabel(view) {
+    const hash = view && (view.historyCommitHash || view.compareTarget || "");
+    return hash ? String(hash).slice(0, 12) : "selected commit";
+  }
+
+  function clearHistoryCompareState(view, options = {}) {
+    if (!view) return;
+    view.temporaryHistoryCompare = false;
+    view.historyCommitHash = "";
+    if (options.clearSource) view.historySource = "";
+    if (options.clearBackTarget) view.fileBackTarget = null;
+  }
+
+  function resetToChangesMode(view, options = {}) {
+    if (!view) return;
+    view.mode = "changes";
+    view.compareBase = "";
+    view.compareTarget = "";
+    clearHistoryCompareState(view, options);
+  }
+
+  function startHistoryCommitCompare(view, hash) {
+    if (!view || !hash) return;
+    view.compareBase = `${hash}^`;
+    view.compareTarget = hash;
+    view.mode = "readonly-compare";
+    view.temporaryHistoryCompare = !!view.file;
+    view.historyCommitHash = hash;
+    view.fileBackTarget = null;
+    if (view.file) view.compareFilePaths = [view.file];
+  }
+
+  function fileViewStateLabel(view, activeTab) {
+    if (activeTab === "history") return view.file ? `History · ${view.file}` : "File history";
+    if (view.fileBackTarget && view.fileBackTarget.type === "log") return `Committed file · ${view.file || "file"} · ${historicalFileCommitLabel(view)}`;
+    if (view.temporaryHistoryCompare) return `Committed file · ${view.file || "file"} · ${historicalFileCommitLabel(view)}`;
+    if (view.file && currentMode() === "changes") return `Current file · ${view.file}`;
+    if (view.file && currentMode() !== "changes") return `Compared file · ${view.file}`;
+    if (currentMode() === "changes") return "Current changes";
+    return "Compared changes";
+  }
+
+  function fileToolbarBackButton(view, activeTab) {
+    if (activeTab === "history") return `<button class="git-ui-btn" title="Back to file view" onclick="HerdrGitUi.backToFileView()">← Back</button>`;
+    if (view.temporaryHistoryCompare) return `<button class="git-ui-btn" title="Back to file history" onclick="HerdrGitUi.backToFileHistory()">← Back</button>`;
+    if (view.fileBackTarget || currentMode() !== "changes") return `<button class="git-ui-btn" title="Back" onclick="HerdrGitUi.backFromFileView()">← Back</button>`;
+    return "";
+  }
+
   function renderSide() {
     const view = active() || {};
     const s = view.status || {};
@@ -1030,8 +1197,11 @@
       ? [{ id: "changes", label: "changes", disabled: true, disabledReason }, { id: "log", label: "log", disabled: true, disabledReason }, { id: "stash", label: "stash", disabled: true, disabledReason }, { id: "cleanup", label: "cleanup" }]
       : [{ id: "changes", label: "changes" }, { id: "log", label: "log" }, { id: "stash", label: stashCount(view) ? `stash (${stashCount(view)})` : "stash", disabled: !canOpenStashView(view), disabledReason: "No stashes stored. Refresh to rescan." }, { id: "cleanup", label: "cleanup" }];
     const filter = String(view.fileFilter || "").trim();
+    const committedSelection = view.temporaryHistoryCompare || (view.fileBackTarget && view.fileBackTarget.type === "log");
     const fileSections = view.tab === "log"
       ? commitPreviewSection(view, filter)
+      : committedSelection && view.file
+        ? section(`Committed files ${historicalFileCommitLabel(view)}`, filterFiles(view.compareFilePaths && view.compareFilePaths.length ? view.compareFilePaths : [view.file], filter), "C")
       : currentMode() === "changes"
         ? `${(s.conflicted || []).length ? section("Conflicted", filterFiles(s.conflicted, filter), "U") : ""}${section("Staged", filterFiles(s.staged, filter), "S")}${section("Unstaged", filterFiles(s.unstaged, filter), "M")}${section("Untracked", filterFiles(s.untracked, filter), "?")}`
         : section("Compared", filterFiles(view.compareFilePaths && view.compareFilePaths.length ? view.compareFilePaths : ((view.diff && view.diff.files) || []).map((file) => file.path), filter), "C");
@@ -1041,7 +1211,10 @@
     const branchLabel = `${view.titleKind || "Branch"}: ${s.branch || view.title || "No branch"}`;
     const error = view.error && !cleanupOnly ? `<div class="git-ui-error">${esc(view.error)}</div>` : "";
     const actions = cleanupOnly ? "" : `<div class="git-ui-toolbar"><div class="git-ui-toolbar-title">Worktree actions</div><div class="git-ui-actions"><button class="git-ui-btn primary" title="${esc(commitHint)}" onclick="HerdrGitUi.openCommitModal()"${commitDisabled}>Commit</button><button class="git-ui-btn" onclick="HerdrGitUi.openPullModal()">↓ Pull</button><button class="git-ui-btn" onclick="HerdrGitUi.openPushModal()">↑ Push</button><button class="git-ui-btn" onclick="HerdrGitUi.rebase()">Rebase</button><button class="git-ui-btn danger" onclick="HerdrGitUi.reset()">Reset</button></div></div>`;
-    const fileList = cleanupOnly ? "" : `<label class="git-ui-file-filter"><span class="git-ui-file-filter-icon" aria-hidden="true"></span><input value="${esc(view.fileFilter || "")}" id="gitUiFileFilter" name="git-ui-file-filter" autocomplete="off" placeholder="Filter files" oninput="HerdrGitUi.filterFiles(this.value)"></label>${fileSections}`;
+    const filterInput = sideFileCount(view)
+      ? `<label class="git-ui-file-filter"><span class="git-ui-file-filter-icon" aria-hidden="true"></span><input value="${esc(view.fileFilter || "")}" id="gitUiFileFilter" name="git-ui-file-filter" autocomplete="off" placeholder="Filter files" oninput="HerdrGitUi.filterFiles(this.value)"></label>`
+      : "";
+    const fileList = cleanupOnly ? "" : `${filterInput}${fileSections}`;
     const sideBottom = cleanupOnly ? "" : renderDiffLayoutSideToggle(view);
     const returnToWorkspace = !cleanupOnly && !gitCwdMatchesWorkspace(view)
       ? `<button class="git-ui-refresh-icon git-ui-return-cwd-icon" title="Return Git to current workspace folder" aria-label="Return Git to current workspace folder" onclick="HerdrGitUi.returnToWorkspaceCwd()"><span></span></button>`
@@ -1065,11 +1238,30 @@
     return (files || []).filter((file) => String(file || "").toLowerCase().includes(needle));
   }
 
+  function sideFileCount(view) {
+    if (!view) return 0;
+    const status = view.status || {};
+    if (view.tab === "log") return (((view.selectedCommitPreview || {}).diff || {}).files || []).length;
+    if (view.temporaryHistoryCompare && view.file) return 1;
+    if (currentMode() === "changes") {
+      return [status.conflicted, status.staged, status.unstaged, status.untracked]
+        .reduce((total, list) => total + ((list || []).length), 0);
+    }
+    const compared = view.compareFilePaths && view.compareFilePaths.length
+      ? view.compareFilePaths
+      : ((view.diff && view.diff.files) || []).map((file) => file.path);
+    return (compared || []).length;
+  }
+
   function renderFileToolbar(activeTab) {
     const view = active() || {};
     const conflicts = ((((view.status || {}).conflicted) || []).length > 0);
-    const compare = activeTab !== "history" && currentMode() !== "changes"
-      ? `<span class="git-ui-compare-state">Comparing ${esc(view.compareBase || "base")} → ${esc(view.compareTarget || "target")}</span><button class="git-ui-btn" onclick="HerdrGitUi.latestChanges()">Return to current changes</button>`
+    const breadcrumbs = renderNavigationTrail(view);
+    const back = breadcrumbs ? "" : fileToolbarBackButton(view, activeTab);
+    const viewStateLabel = fileViewStateLabel(view, activeTab);
+    const stateLabel = breadcrumbs || `<span class="git-ui-compare-state git-ui-file-view-state" title="${esc(viewStateLabel)}">${esc(viewStateLabel)}</span>`;
+    const compare = activeTab !== "history" && currentMode() !== "changes" && !view.temporaryHistoryCompare && !view.fileBackTarget
+      ? `<span class="git-ui-compare-state">Comparing ${esc(view.compareBase || "base")} → ${esc(view.compareTarget || "target")}</span>`
       : "";
     const files = (view.diff && view.diff.files) || [];
     const collapsible = activeTab === "changes" && files.length > 0;
@@ -1083,7 +1275,7 @@
       : activeTab === "changes" && canEditCurrentFile(view)
         ? `<button class="git-ui-btn" onclick="HerdrGitUi.editSideBySide()">Edit side-by-side</button>`
         : "";
-    return `<div class="git-ui-log-head">${changes}${history}${blame}${sideEditor}${conflicts ? `<button class="git-ui-btn ${activeTab === "conflicts" ? "active" : ""}" onclick="HerdrGitUi.tab('conflicts')">Conflicts</button>` : ""}${collapse}${compare}</div>`;
+    return `<div class="git-ui-log-head">${back}${stateLabel}${changes}${history}${blame}${sideEditor}${conflicts ? `<button class="git-ui-btn ${activeTab === "conflicts" ? "active" : ""}" onclick="HerdrGitUi.tab('conflicts')">Conflicts</button>` : ""}${collapse}${compare}</div>`;
   }
 
   function canEditCurrentFile(view) {
@@ -1675,7 +1867,7 @@
     const view = active();
     if (!view.file) return `${renderFileToolbar("history")}<div class="git-ui-muted">Select file first.</div>`;
     const data = await api(`/api/git-ui/file-history?cwd=${encodeURIComponent(view.cwd)}&file=${encodeURIComponent(view.file)}`);
-    return `${renderFileToolbar("history")}<div class="git-ui-list">${(data.commits || []).map((c) => `<div class="git-ui-file"><span><strong>${esc(c.hash)}</strong> ${esc(c.message)}</span><span class="git-ui-file-meta"><span class="git-ui-muted">${esc(c.author)} ${esc(c.date)}</span><button class="git-ui-file-action" onclick="event.stopPropagation();HerdrGitUi.showHistoryCommit('${arg(c.hash)}')">changes</button><button class="git-ui-file-action" onclick="event.stopPropagation();HerdrGitUi.gotoLogCommit('${arg(c.hash)}')">log</button></span></div>`).join("") || `<div class="git-ui-empty-row">No history for selected file</div>`}</div>`;
+    return `${renderFileToolbar("history")}<div class="git-ui-list">${(data.commits || []).map((c) => `<div class="git-ui-file"><span><strong>${esc(c.hash)}</strong> ${esc(c.message)}</span><span class="git-ui-file-meta"><span class="git-ui-muted">${esc(c.author)} ${esc(c.date)}</span><button class="git-ui-file-action" onclick="event.stopPropagation();HerdrGitUi.showHistoryCommit('${arg(c.hash)}')">committed file</button><button class="git-ui-file-action" onclick="event.stopPropagation();HerdrGitUi.gotoLogCommit('${arg(c.hash)}')">log</button></span></div>`).join("") || `<div class="git-ui-empty-row">No history for selected file</div>`}</div>`;
   }
 
   function renderConflictOperationActions() {
@@ -1913,10 +2105,8 @@
         render();
         return;
       }
-      view.mode = "changes";
-      view.compareBase = "";
-      view.compareTarget = "";
-      view.temporaryHistoryCompare = false;
+      resetToChangesMode(view, { clearSource: true, clearBackTarget: true });
+      view.navigationStack = [];
       view.sideEditor = null;
       view.file = "";
       view.diffKind = "";
@@ -1932,9 +2122,13 @@
       view.expandedCompactDirs = {};
       if (view.sideEditor && view.sideEditor.path !== path) view.sideEditor = null;
       if (kind === "C" && view.selectedCommitPreview && view.selectedCommitPreview.hash) {
+        const hash = view.selectedCommitPreview.hash;
+        if (!(view.fileBackTarget && view.fileBackTarget.type === "log")) pushNavigationSnapshot(view);
         view.mode = "readonly-compare";
-        view.compareBase = `${view.selectedCommitPreview.hash}^`;
-        view.compareTarget = view.selectedCommitPreview.hash;
+        view.compareBase = `${hash}^`;
+        view.compareTarget = hash;
+        view.historyCommitHash = hash;
+        view.fileBackTarget = { type: "log", hash };
         view.compareFilePaths = ((view.selectedCommitPreview.diff && view.selectedCommitPreview.diff.files) || []).map((file) => file.path);
         view.tab = "changes";
         loadDiff().then(() => requestAnimationFrame(() => scrollToDiffFile(view.file))).catch((e) => { view.error = e.message; render(); });
@@ -2511,23 +2705,67 @@
       if (currentMode() !== "changes") this.latestChanges();
     },
     async compareCommits(base, target) {
-      active().compareBase = base;
-      active().compareTarget = target;
-      active().mode = "readonly-compare";
-      active().temporaryHistoryCompare = false;
-      active().tab = "changes";
+      const view = active();
+      if (!view) return;
+      pushNavigationSnapshot(view);
+      view.compareBase = base;
+      view.compareTarget = target;
+      view.mode = "readonly-compare";
+      clearHistoryCompareState(view, { clearBackTarget: true });
+      view.tab = "changes";
       await loadDiff();
     },
     async showHistoryCommit(hash) {
       hash = decodeURIComponent(hash);
       const view = active();
       if (!view || !hash) return;
-      view.compareBase = `${hash}^`;
-      view.compareTarget = hash;
-      view.mode = "readonly-compare";
-      view.temporaryHistoryCompare = true;
+      pushNavigationSnapshot(view);
+      startHistoryCommitCompare(view, hash);
       view.tab = "changes";
       await loadDiff();
+    },
+    async backToFileHistory() {
+      const view = active();
+      if (!view || !view.file) return;
+      resetToChangesMode(view, { clearBackTarget: true });
+      view.tab = "history";
+      render();
+    },
+    async backToFileView() {
+      const view = active();
+      if (!view || !view.file) return;
+      const cwd = view.cwd;
+      const path = view.file;
+      resetToChangesMode(view, { clearBackTarget: true });
+      view.tab = "changes";
+      if (view.historySource === "file-browser" && window.HerdrFileBrowser && window.HerdrFileBrowser.openAt) {
+        await window.HerdrFileBrowser.openAt({ workspace_id: state.activeKey || `git-file-history:${cwd}`, cwd, label: compactPath(cwd) }, path);
+        return;
+      }
+      await loadDiff();
+    },
+    async backFromFileView() {
+      const view = active();
+      if (!view) return;
+      if ((view.navigationStack || []).length) {
+        const snapshot = view.navigationStack.pop();
+        await restoreNavigationSnapshot(view, snapshot);
+        return;
+      }
+      const backTarget = view.fileBackTarget;
+      if (backTarget && backTarget.type === "log") {
+        resetToChangesMode(view, { clearBackTarget: true });
+        view.file = "";
+        view.diffKind = "";
+        view.tab = "log";
+        if (backTarget.hash) {
+          view.selectedLogCommits = [backTarget.hash];
+          if (!view.selectedCommitPreview || view.selectedCommitPreview.hash !== backTarget.hash) loadSelectedCommitPreview(view, backTarget.hash);
+        }
+        render();
+        return;
+      }
+      this.showChangesList();
     },
     gotoLogCommit(hash) {
       hash = decodeURIComponent(hash);
@@ -2543,18 +2781,24 @@
       cwd = decodeURIComponent(cwd || "");
       path = decodeURIComponent(path || "");
       if (!cwd || !path) return;
+      try {
+        const info = await api(`/api/git-ui/path-info?cwd=${encodeURIComponent(cwd)}&path=${encodeURIComponent(path)}`);
+        cwd = info.repo_root || cwd;
+        path = info.file || path;
+      } catch (err) {
+        // Keep the existing best-effort behavior so non-git folders still surface the Git error in-panel.
+      }
       if (!(state.visible && active() && samePath(active().cwd, cwd))) {
         await open({ workspace_id: `git-file-history:${cwd}`, cwd, label: compactPath(cwd) }, { forceOpen: true });
       }
       const view = active();
       if (!view) return;
+      if (state.visible) pushNavigationSnapshot(view);
       view.file = path;
       view.diffKind = "";
       view.tab = "history";
-      view.mode = "changes";
-      view.compareBase = "";
-      view.compareTarget = "";
-      view.temporaryHistoryCompare = false;
+      resetToChangesMode(view, { clearBackTarget: true });
+      view.historySource = "file-browser";
       render();
     },
     clearLogFileHistory() {
@@ -2566,6 +2810,15 @@
     },
     latestChanges() {
       this.showChangesList();
+    },
+    async goBack() {
+      const view = active();
+      if (!view || !(view.navigationStack || []).length) {
+        this.showChangesList();
+        return;
+      }
+      const snapshot = view.navigationStack.pop();
+      await restoreNavigationSnapshot(view, snapshot);
     },
     selectLogCommit(event, hash) {
       hash = decodeURIComponent(hash);
