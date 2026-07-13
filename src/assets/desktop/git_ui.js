@@ -287,6 +287,10 @@
     return gitUiOptions().gitUiDiffLayout === "unified" ? "unified" : "side-by-side";
   }
 
+  function gitLogDefaultBranch() {
+    return String(gitUiOptions().gitUiDefaultBranch || "master").trim() || "master";
+  }
+
   function setGitUiOption(key, value) {
     const options = gitUiOptions();
     options[key] = value;
@@ -1384,10 +1388,12 @@
 
   async function renderLog(version) {
     const view = active();
-    const data = await api(`/api/git-ui/log?cwd=${encodeURIComponent(view.cwd)}&all=${view.logAll ? "true" : "false"}`);
+    const baseBranch = gitLogDefaultBranch();
+    const data = await api(`/api/git-ui/log?cwd=${encodeURIComponent(view.cwd)}&all=${view.logAll ? "true" : "false"}&base=${encodeURIComponent(baseBranch)}`);
     const selected = view.selectedLogCommits || [];
     const compare = Actions.selectedLogToolbar(selected, { allowRewrite: currentMode() === "changes" });
-    replaceContent(version, `<div class="git-ui-log-scope-head"><span class="git-ui-toolbar-title">History scope</span><button class="git-ui-btn ${!view.logAll ? "active" : ""}" onclick="HerdrGitUi.setLogAll(false)">Current branch</button><button class="git-ui-btn ${view.logAll ? "active" : ""}" onclick="HerdrGitUi.setLogAll(true)">All branches</button>${compare}</div><div class="git-ui-log">${(data.lines || []).map(renderLogLine).join("")}</div>`);
+    const currentLabel = `${baseBranch} + current`;
+    replaceContent(version, `<div class="git-ui-log-scope-head"><span class="git-ui-toolbar-title">History scope</span><button class="git-ui-btn ${!view.logAll ? "active" : ""}" title="Show ${esc(baseBranch)} first, then the current branch" onclick="HerdrGitUi.setLogAll(false)">${esc(currentLabel)}</button><button class="git-ui-btn ${view.logAll ? "active" : ""}" onclick="HerdrGitUi.setLogAll(true)">All branches</button>${compare}</div><div class="git-ui-log">${(data.lines || []).map(renderLogLine).join("")}</div>`);
     if (view.pendingLogScrollHash) {
       const hash = view.pendingLogScrollHash;
       view.pendingLogScrollHash = "";

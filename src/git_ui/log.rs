@@ -9,7 +9,9 @@ use axum::Json;
 use serde::Deserialize;
 use serde_json::json;
 
-use super::{git_json_error, git_ui_repo, git_ui_text, git_ui_text_strings, safe_git_token};
+use super::{
+    git_json_error, git_ui_output, git_ui_repo, git_ui_text, git_ui_text_strings, safe_git_token,
+};
 use crate::{git_failure, require_auth, WebState};
 
 #[derive(Deserialize)]
@@ -17,6 +19,7 @@ pub(super) struct GitUiLogQuery {
     pub(super) cwd: Option<String>,
     pub(super) max: Option<usize>,
     pub(super) all: Option<bool>,
+    pub(super) base: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -98,24 +101,71 @@ fn reconstruct_log_line(line: &str) -> String {
     format!("{}{} {}", graph_prefix, short, message)
 }
 
+fn git_log_args(max: &str, all: bool, refs: &[String]) -> Vec<String> {
+    let mut args = vec![
+        "log".to_string(),
+        "--graph".to_string(),
+        "--decorate".to_string(),
+        "--date=relative".to_string(),
+        "--max-count".to_string(),
+        max.to_string(),
+        "--format=%H%x00%an%x00%ar%x00%s".to_string(),
+    ];
+    if all {
+        args.push("--all".to_string());
+    } else {
+        args.extend(refs.iter().cloned());
+    }
+    args
+}
+
+fn log_refs(
+    cwd: &str,
+    all: bool,
+    base: Option<String>,
+) -> Result<Vec<String>, (StatusCode, String)> {
+    if all {
+        return Ok(Vec::new());
+    }
+    let mut refs = Vec::new();
+    if let Some(base) = default_log_base(base) {
+        let base = safe_git_token(&base, "log base branch")
+            .map_err(|err| (StatusCode::BAD_REQUEST, err))?
+            .to_string();
+        if git_ref_exists(cwd, &base) {
+            refs.push(base);
+        }
+    }
+    refs.push("HEAD".to_string());
+    Ok(refs)
+}
+
+fn default_log_base(base: Option<String>) -> Option<String> {
+    let branch = base.unwrap_or_else(|| "master".to_string());
+    let branch = branch.trim();
+    if branch.is_empty() {
+        None
+    } else {
+        Some(branch.to_string())
+    }
+}
+
+fn git_ref_exists(cwd: &str, ref_name: &str) -> bool {
+    let spec = format!("{ref_name}^{{commit}}");
+    git_ui_output(cwd, &["rev-parse", "--verify", "--quiet", &spec])
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
 fn git_ui_log_blocking(
     cwd: String,
     max: String,
     all: bool,
+    base: Option<String>,
 ) -> Result<Response, (StatusCode, String)> {
-    let mut args = vec![
-        "log",
-        "--graph",
-        "--decorate",
-        "--date=relative",
-        "--max-count",
-        &max,
-        "--format=%H%x00%an%x00%ar%x00%s",
-    ];
-    if all {
-        args.push("--all");
-    }
-    match git_ui_text(&cwd, &args) {
+    let refs = log_refs(&cwd, all, base)?;
+    let args = git_log_args(&max, all, &refs);
+    match git_ui_text_strings(&cwd, &args) {
         Ok(text) => {
             let lines = text.lines().map(ToOwned::to_owned).collect::<Vec<_>>();
             let commits = lines
@@ -170,8 +220,9 @@ pub(super) async fn git_ui_log(
     };
     let max = query.max.unwrap_or(80).clamp(1, 300).to_string();
     let all = query.all.unwrap_or(false);
+    let base = query.base;
     let cwd = cwd.to_string();
-    match tokio::task::spawn_blocking(move || git_ui_log_blocking(cwd, max, all)).await {
+    match tokio::task::spawn_blocking(move || git_ui_log_blocking(cwd, max, all, base)).await {
         Ok(Ok(response)) => response,
         Ok(Err((status, msg))) => git_json_error(status, msg),
         Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
@@ -598,6 +649,89 @@ pub(super) async fn git_ui_apply_patch(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn log_refs_show_configured_base_before_head_when_available() {
+        let repo = temp_repo("herdr-log-base");
+        std::fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init"]);
+        run_git(&repo, &["config", "user.email", "test@example.com"]);
+        run_git(&repo, &["config", "user.name", "Herdr Test"]);
+        std::fs::write(repo.join("file.txt"), "base\n").unwrap();
+        run_git(&repo, &["add", "file.txt"]);
+        run_git(&repo, &["commit", "-m", "base"]);
+        let base = git_text(&repo, &["branch", "--show-current"])
+            .trim()
+            .to_string();
+        run_git(&repo, &["checkout", "-b", "feature"]);
+
+        assert_eq!(
+            log_refs(&repo.to_string_lossy(), false, Some(base.clone())).unwrap(),
+            vec![base, "HEAD".to_string()]
+        );
+        assert_eq!(
+            log_refs(
+                &repo.to_string_lossy(),
+                false,
+                Some("missing-branch".to_string())
+            )
+            .unwrap(),
+            vec!["HEAD".to_string()]
+        );
+        assert_eq!(
+            git_log_args("80", false, &["master".to_string(), "HEAD".to_string()]),
+            vec![
+                "log",
+                "--graph",
+                "--decorate",
+                "--date=relative",
+                "--max-count",
+                "80",
+                "--format=%H%x00%an%x00%ar%x00%s",
+                "master",
+                "HEAD",
+            ]
+        );
+
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
+    fn temp_repo(prefix: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()))
+    }
+
+    fn run_git(repo: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn git_text(repo: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        String::from_utf8_lossy(&output.stdout).to_string()
+    }
 
     #[test]
     fn rebase_pull_first_fetches_branch_and_rebases_onto_remote_tracking_ref() {

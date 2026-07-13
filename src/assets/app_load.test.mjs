@@ -427,6 +427,9 @@ describe("app bundle load", () => {
     match(shortcutsSource, /function tempTerminalModalOpen\(\)/);
     match(shortcutsSource, /if \(tempTerminalModalOpen\(\)\) return false;/);
     match(tempTerminalSource, /function terminalGridSize\(container\)/);
+    match(tempTerminalSource, /function connectTerminalWsAfterLayout\(terminalId, attempt\)/);
+    match(tempTerminalSource, /width < 320 \|\| height < 120/);
+    match(tempTerminalSource, /function afterBrowserLayout\(callback\)/);
     match(tempTerminalSource, /rows: Math\.max\(8, Math\.floor\(height \/ rowHeight\) - 1\)/);
     match(tempTerminalSource, /setTimeout\(handleResize, 0\)/);
     match(modalCss, /height: min\(80vh, calc\(100dvh - 32px\)\)/);
@@ -1903,6 +1906,11 @@ describe("app bundle load", () => {
 
   it("defines side-by-side and unified Git diff layouts", () => {
     match(gitSettingsSource, /id="optGitUiDiffLayout"/);
+    match(gitSettingsSource, /id="optGitUiDefaultBranch"/);
+    match(gitSettingsSource, /gitUiDefaultBranch: "master"/);
+    match(gitUiSource, /function gitLogDefaultBranch\(\)/);
+    match(gitUiSource, /base=\$\{encodeURIComponent\(baseBranch\)\}/);
+    match(gitUiSource, /Show \$\{esc\(baseBranch\)\} first, then the current branch/);
     match(gitSettingsSource, /Unified \(GitHub-style\)/);
     match(gitSettingsSource, /gitUiDiffLayout: "side-by-side"/);
     match(gitUiSource, /function diffLayoutMode\(\)/);

@@ -868,6 +868,7 @@ mod tests {
                     cwd: Some(cwd.clone()),
                     max: Some(5),
                     all: None,
+                    base: None,
                 }),
             )
             .await;

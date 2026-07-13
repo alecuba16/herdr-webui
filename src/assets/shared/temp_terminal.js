@@ -233,8 +233,30 @@
         if (!isOpen || !pane) return;
         if (!pane.terminal_id) { close(); return; }
         createdPaneId = pane.pane_id || null;
-        connectTerminalWs(pane.terminal_id);
+        connectTerminalWsAfterLayout(pane.terminal_id, 0);
       }).catch(function () { close(); });
+    }
+
+    function connectTerminalWsAfterLayout(terminalId, attempt) {
+      afterBrowserLayout(function () {
+        if (!isOpen) return;
+        var container = el(containerId);
+        var rect = container && container.getBoundingClientRect ? container.getBoundingClientRect() : null;
+        var width = Math.max(0, (container && container.clientWidth) || (rect && rect.width) || 0);
+        var height = Math.max(0, (container && container.clientHeight) || (rect && rect.height) || 0);
+        if ((width < 320 || height < 120) && attempt < 8) {
+          setTimeout(function () { connectTerminalWsAfterLayout(terminalId, attempt + 1); }, 50);
+          return;
+        }
+        connectTerminalWs(terminalId);
+        setTimeout(handleResize, 50);
+        setTimeout(handleResize, 250);
+      });
+    }
+
+    function afterBrowserLayout(callback) {
+      var raf = window.requestAnimationFrame || function (fn) { return setTimeout(fn, 0); };
+      raf(function () { raf(function () { setTimeout(callback, 0); }); });
     }
 
     function ensureWorkspaceForTempTerminal() {
