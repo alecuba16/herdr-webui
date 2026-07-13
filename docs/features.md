@@ -39,7 +39,7 @@ Built-in backend:
 - Browser terminal input filters terminal-emulator query replies such as OSC 10/11 color responses before they reach the PTY. Native terminals consume those replies internally; xterm.js exposes them through `onData`, so WebUI drops them to avoid leaking `10;rgb:...`/`11;rgb:...` text into shells or agents.
 - Built-in terminal scroll is local xterm/TUI scroll only. Server-side scrollback, search, copy mode, and selection APIs are documented gaps.
 - Agent detection covers Herdr-style aliases for Jcode, Claude, OpenCode, Cursor, and Qoder CLI from direct argv, wrapped shells, and process trees. Jcode status detection follows the Herdr `jcode-support` manifest rules and also treats active Jcode background task cards as `working` so status does not jump to `idle` while a background task is still running.
-- Built-in events currently acknowledge subscription requests and rely on snapshot refresh fallback. A true event hub is still a parity gap.
+- Built-in `events.subscribe` now stays open as a real event hub. Workspace, tab, pane, worktree, and agent status mutations publish JSON events immediately, and the WebUI bridge skips its legacy 5s snapshot polling for built-in sessions. External Herdr compatibility remains unchanged and still uses its existing event subscription plus legacy snapshot fallback.
 - State is runtime-local. Durable layout/session persistence beyond settings and browser state is not complete yet.
 
 Terminal UI:
