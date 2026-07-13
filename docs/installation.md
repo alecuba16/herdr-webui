@@ -64,6 +64,8 @@ Run WebUI without login on loopback:
 
 ```sh
 make run-web-local
+# or explicitly:
+herdr-webui --https off --backend-mode builtin
 ```
 
 Open:
@@ -72,9 +74,9 @@ Open:
 http://127.0.0.1:8787
 ```
 
-Fresh settings default to `backend_mode: builtin`. The built-in backend starts inside the WebUI process, creates local API/client sockets for the current session, spawns PTY shells with `portable-pty`, and does not require a separate `herdr server`.
+Fresh settings default to `backend_mode: builtin`. The built-in backend starts inside the WebUI process, creates local API/client sockets for the current session, spawns PTY shells with `portable-pty`, and does not require a separate `herdr server`. This is the recommended quick-start path.
 
-Use an external Herdr daemon only when you explicitly want daemon compatibility:
+Use an external Herdr daemon only when you explicitly want daemon compatibility. This is a two-process setup:
 
 ```sh
 herdr server
@@ -85,6 +87,20 @@ Use auto mode to prefer a compatible external socket when one is already running
 
 ```sh
 herdr-webui --https off --backend-mode auto
+```
+
+Launch the TUI as a separate client after WebUI/backend is already running:
+
+```sh
+herdr-webui-tui --session default
+herdr-webui-tui --summary
+herdr-webui-tui --once
+```
+
+For an external Herdr-compatible backend, point TUI at the socket pair explicitly:
+
+```sh
+herdr-webui-tui --api-socket /path/to/herdr.sock --terminal-socket /path/to/herdr-client.sock
 ```
 
 Use a specific Herdr binary only for external session launch/close compatibility:
@@ -124,11 +140,11 @@ Backend mode details:
 
 TUI details:
 
-- `herdr-webui-tui` connects to the same built-in socket namespace as WebUI. Run it while the WebUI service is running.
+- `herdr-webui-tui` is a separate client. It connects to the same built-in socket namespace as WebUI when `--session` is used; run it while the WebUI service/backend is running.
 - `--summary` and `--once` are non-interactive and safe for smoke tests.
 - `--theme dark|light|system` controls TUI colors. `system` is default and follows terminal background detection when available; `HERDR_WEBUI_TUI_THEME` or `JCODE_THEME` can set the same value.
 - Interactive mode uses Ctrl-B for the help/menu overlay, Enter to attach the selected pane terminal, and Ctrl-G to detach.
-- WebUI and TUI can run in parallel against one built-in session. Output is shared through independent terminal attaches; avoid simultaneous input to the same pane from both clients.
+- WebUI and TUI can run in parallel against one built-in session. Output is shared through independent terminal attaches; avoid simultaneous input to the same pane from both clients. For external Herdr-compatible backends, pass `--api-socket` and `--terminal-socket` instead of `--session`.
 
 Use `--verbose`, `-v`, or `HERDR_WEB_VERBOSE=1` with macOS service commands to print LaunchAgent diagnostics, including UID/EUID, launchctl domain, service target, plist path, and launchctl stderr.
 
