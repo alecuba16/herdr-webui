@@ -126,6 +126,14 @@ File explorer state is cached per open workspace/worktree identity. It preserves
 
 When a workspace or worktree closes, the cached state is forgotten. Async file fetches write back to the captured workspace state, so switching panels does not corrupt another workspace panel.
 
+### Folder picker UX
+
+Desktop file browser and the folder picker both use the shared `file-tree.js` current-directory row for the active folder and its `↑ Up` control. This avoids a separate `dir up` tree row that looked like content and behaved inconsistently. The visible picker actions intentionally expose Home and Select only; absolute paths are still supported when typed/pasted, but the UI does not encourage jumping to `/` over the configured default folder.
+
+### Temporary terminal input
+
+The temporary terminal overlay is implemented in `src/assets/shared/temp_terminal.js` for desktop and mobile. While open, xterm.js keeps ownership of focused terminal key events so shell completions, prompts, and line rewrites use the same terminal parser path as normal terminals. If focus escapes the terminal surface, the overlay captures normal key input, Tab, Backspace, arrows, and paging keys before browser focus navigation can steal them, then forwards the terminal byte sequence to the temporary terminal websocket. The overlay clamps the modal, terminal body, and xterm surface to the viewport and sizes PTY rows with a one-row safety margin so output does not grow below the visible area. `Ctrl+G` opens the detach confirmation, matching the header hint next to the close button and the Help & Shortcuts modal.
+
 ### Unified header search
 
 The header search is the single search entry point on desktop and mobile. It can render these collapsible sections in a configurable order:
@@ -287,6 +295,7 @@ Runtime server settings include:
 | `builtin_backend_enabled` | `true` | Enables built-in session discovery/routing/creation. When false, built-in sessions are hidden and requests fall back to an enabled backend. |
 | `external_herdr_backend_enabled` | `true` | Enables passive external Herdr socket discovery plus explicit external launch/close actions. Discovery does not execute `herdr`. |
 | `builtin_shell` | empty | Optional shell/command path for new built-in panes. |
+| `default_folder` | home folder | Default folder for Files, Git, and temporary terminals when no workspace/worktree is selected. The backend verifies read access on load/change, asks macOS for folder permission when needed, and falls back to home if access is unavailable. |
 
 Validation rejects configurations where both backend types are disabled.
 

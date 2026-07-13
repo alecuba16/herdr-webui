@@ -10,10 +10,17 @@
 }
 .git-ui-head,
 .git-ui-toolbar,
+.git-ui-side-bottom,
 .git-ui-commit,
 .git-ui-section {
   border-bottom: 1px solid var(--border);
   padding: 10px;
+}
+.git-ui-side-bottom {
+  margin-top: auto;
+}
+.git-ui-side-bottom .git-ui-btn {
+  width: 100%;
 }
 .git-ui-toolbar-title {
   color: var(--muted);
@@ -210,6 +217,13 @@
   gap: 6px;
   padding: 6px;
 }
+.git-ui-action-label {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
 .git-ui-check-row {
   align-items: center;
   display: flex;
@@ -218,6 +232,16 @@
 }
 .git-ui-conflict-actions {
   margin: 8px 0;
+}
+.git-ui-conflict-file {
+  align-items: flex-start;
+}
+.git-ui-conflict-file-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
 }
 .git-ui-btn {
   background: var(--panel2);
@@ -470,6 +494,13 @@
   padding: 14px;
   width: min(520px, calc(100vw - 48px));
 }
+.git-ui-modal label {
+  box-sizing: border-box;
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  width: 100%;
+}
 .git-ui-modal-head,
 .git-ui-modal-actions {
   align-items: center;
@@ -486,9 +517,12 @@
   gap: 6px;
 }
 .git-ui-inline-field {
+  box-sizing: border-box;
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  min-width: 0;
+  width: 100%;
 }
 .git-ui-inline-field input {
   flex: 1;
@@ -503,10 +537,13 @@
   background: var(--bg);
   border: 1px solid var(--border2);
   border-radius: 8px;
+  box-sizing: border-box;
   color: var(--fg);
   font: inherit;
   min-height: 38px;
+  min-width: 0;
   padding: 7px 9px;
+  width: 100%;
 }
 .git-ui-menu span {
   color: var(--muted);
@@ -651,8 +688,10 @@
   background: var(--panel2);
   border: 1px solid var(--border2);
   border-radius: 8px;
+  box-sizing: border-box;
   color: var(--fg);
   font: inherit;
+  min-width: 0;
   padding: 7px 8px;
   width: 100%;
 }

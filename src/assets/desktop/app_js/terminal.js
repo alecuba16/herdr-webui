@@ -665,19 +665,9 @@ function fitTerminalSurface() {
     shell.scrollTop = 0;
     shell.scrollLeft = 0;
   }
-  const dims =
-    term &&
-    term._core &&
-    term._core._renderService &&
-    term._core._renderService.dimensions &&
-    term._core._renderService.dimensions.css &&
-    term._core._renderService.dimensions.css.cell;
-  const cellWidth =
-    (dims && dims.width) ||
-    9;
-  const rowHeight =
-    (dims && dims.height) ||
-    17;
+  const cell = HerdrTerminalFit.cellSize(term, terminal, { width: 9, height: 17 });
+  const cellWidth = cell.width;
+  const rowHeight = cell.height;
   const width = Math.ceil(cellWidth * cols);
   const height = Math.ceil(rowHeight * rows);
   if (options.overflow) {
@@ -724,21 +714,13 @@ function browserTerminalSize() {
   if (!shell) return null;
   const shellSize = fitTerminalShell();
   if (!shellSize) return null;
-  const width = Math.max(80, shellSize.width - 16);
-  const height = Math.max(24, shellSize.height - 16);
-  const dims =
-    term &&
-    term._core &&
-    term._core._renderService &&
-    term._core._renderService.dimensions &&
-    term._core._renderService.dimensions.css &&
-    term._core._renderService.dimensions.css.cell;
-  const cellWidth = (dims && dims.width) || 9;
-  const cellHeight = (dims && dims.height) || 17;
-  return {
-    cols: Math.max(80, Math.floor(width / cellWidth)),
-    rows: Math.max(24, Math.floor(height / cellHeight)),
-  };
+  return HerdrTerminalFit.gridSize(shell, term, {
+    paddingX: 16,
+    paddingY: 16,
+    fallbackCell: { width: 9, height: 17 },
+    minCols: 80,
+    minRows: 24,
+  });
 }
 function shouldFitFocusedWebTerminal() {
   return !document.hidden && (!document.hasFocus || document.hasFocus());

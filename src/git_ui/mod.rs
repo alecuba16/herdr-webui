@@ -72,6 +72,7 @@ pub(crate) fn routes() -> Router<WebState> {
         .route("/api/git-ui/pull", post(log::git_ui_pull))
         .route("/api/git-ui/push", post(log::git_ui_push))
         .route("/api/git-ui/commit", post(log::git_ui_commit))
+        .route("/api/git-ui/tag", post(log::git_ui_tag))
         .route("/api/git-ui/apply-patch", post(log::git_ui_apply_patch))
         .route(
             "/api/git-ui/conflict-resolve",
@@ -543,6 +544,7 @@ mod tests {
                 no_sleep_auto_cooldown_seconds: 60,
                 backend_mode: BackendMode::ExternalHerdr,
                 builtin_shell: None,
+                default_folder: std::env::temp_dir().to_string_lossy().to_string(),
                 builtin_backend_enabled: true,
                 external_herdr_backend_enabled: true,
             })),
@@ -736,6 +738,21 @@ mod tests {
                 "feature"
             ]
         );
+
+        let mut selected_commit = query();
+        selected_commit.base = Some("abc1234^".to_string());
+        selected_commit.target = Some("abc1234".to_string());
+        assert_eq!(
+            git_ui_diff_args(&selected_commit, true).unwrap(),
+            vec![
+                "diff",
+                "--no-ext-diff",
+                "--color=never",
+                "-U3",
+                "abc1234^",
+                "abc1234"
+            ]
+        );
     }
 
     #[test]
@@ -851,6 +868,7 @@ mod tests {
                     cwd: Some(cwd.clone()),
                     max: Some(5),
                     all: None,
+                    base: None,
                 }),
             )
             .await;
@@ -1268,6 +1286,34 @@ mod tests {
             .await;
             assert_eq!(commit.status(), StatusCode::OK);
             assert!(repo.git(&["log", "--oneline", "-1"]).contains("add new"));
+
+            let head = repo.git(&["rev-parse", "HEAD"]).trim().to_string();
+            let tag = git_ui_tag(
+                State(state.clone()),
+                HeaderMap::new(),
+                ConnectInfo(remote()),
+                Json(GitUiTagRequest {
+                    cwd: cwd.clone(),
+                    tag_name: "ui-test-tag".to_string(),
+                    ref_name: head.clone(),
+                }),
+            )
+            .await;
+            assert_eq!(tag.status(), StatusCode::OK);
+            assert_eq!(repo.git(&["rev-parse", "ui-test-tag"]).trim(), head);
+
+            let unsafe_tag = git_ui_tag(
+                State(state.clone()),
+                HeaderMap::new(),
+                ConnectInfo(remote()),
+                Json(GitUiTagRequest {
+                    cwd: cwd.clone(),
+                    tag_name: "bad tag".to_string(),
+                    ref_name: "HEAD".to_string(),
+                }),
+            )
+            .await;
+            assert_eq!(unsafe_tag.status(), StatusCode::BAD_REQUEST);
 
             let compare = git_ui_compare(
                 State(state),

@@ -110,10 +110,11 @@ function terminalLinksEnabled() {
     function size() {
       const shell = el("terminalShell");
       if (!shell) return { cols: 80, rows: 24 };
-      return {
-        cols: Math.max(40, Math.floor(shell.clientWidth / 9)),
-        rows: Math.max(10, Math.floor(shell.clientHeight / 18)),
-      };
+      return HerdrTerminalFit.gridSize(shell, term, {
+        fallbackCell: { width: 9, height: 18 },
+        minCols: 40,
+        minRows: 10,
+      });
     }
 
     function connect() {
@@ -178,6 +179,7 @@ function terminalLinksEnabled() {
       openedTerminalElement = terminal;
       try {
         term.resize(nextSize.cols, nextSize.rows);
+        HerdrTerminalFit.fitXtermToContainer(terminal);
       } catch (_) {}
       updateTerminalFollowButton();
       const ws = new WebSocket(
