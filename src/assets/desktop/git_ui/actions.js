@@ -15,10 +15,13 @@
       const shortHash = esc(selected[0].slice(0, 12));
       const compare = selected.length === 1 ? "Compare" : "Compare selected";
       const tag = selected.length === 1 ? `<button class="git-ui-btn" onclick="HerdrGitUi.openSelectedTagModal()">Tag this</button>` : "";
+      const branch = selected.length === 1 && options.selectedBranch
+        ? `<button class="git-ui-btn" onclick="HerdrGitUi.createWorktreeFromSelectedBranch()">Create worktree from ${esc(options.selectedBranch)}</button>`
+        : "";
       const rewrite = selected.length === 1 && options.allowRewrite
         ? `<span class="git-ui-log-actions-separator"></span><span class="git-ui-muted">Selected ${shortHash}</span><button class="git-ui-btn danger" onclick="HerdrGitUi.openSelectedResetModal()">Reset</button><button class="git-ui-btn" onclick="HerdrGitUi.rebaseAfterSelected()">Rebase current changes over selected commit</button>`
         : "";
-      return `<button class="git-ui-btn active" onclick="HerdrGitUi.compareSelectedLog()">${compare}</button>${tag}<button class="git-ui-btn" onclick="HerdrGitUi.clearLogSelection()">Clear</button>${rewrite}`;
+      return `<button class="git-ui-btn active" onclick="HerdrGitUi.compareSelectedLog()">${compare}</button>${tag}${branch}<button class="git-ui-btn" onclick="HerdrGitUi.clearLogSelection()">Clear</button>${rewrite}`;
     },
   };
 })();

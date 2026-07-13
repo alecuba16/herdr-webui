@@ -28,6 +28,7 @@ let state = {
   createWorktreeAutodiscoverTimer: null,
   createWorktreeDefaultPath: "",
   openWorktreeSuggestionLocked: false,
+  openWorktreeIncludeRemoteBranches: false,
   // Per-tab layout snapshots keyed by `${workspace_id}/${tab_id}`. Populated
   // from session.snapshot and kept current by layout.updated events. Used to
   // size the terminal without a per-pane pane.layout round trip.
@@ -445,7 +446,7 @@ function worktreeOpenModalHtml() {
           <form class="worktree-form" id="worktreeNewForm">
             <div class="worktree-grid">
               <label><span>Branch name</span><input id="worktreeNewBranch" placeholder="feature/my-branch"></label>
-              <label><span>Base branch</span><input id="worktreeNewBase" list="worktreeBranchOptions" placeholder="default branch"></label>
+              <label><span>Base branch</span><span class="worktree-base-picker"><input id="worktreeNewBase" list="worktreeBranchOptions" placeholder="default branch"><button type="button" class="mini" id="worktreeFetchRemotes" title="Fetch remote branches and add them to this list">Fetch remotes</button></span></label>
               <datalist id="worktreeBranchOptions"></datalist>
             </div>
             <div class="worktree-grid">

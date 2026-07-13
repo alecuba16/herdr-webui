@@ -1447,7 +1447,12 @@
     view.logLimit = logLimit;
     const data = await api(`/api/git-ui/log?cwd=${encodeURIComponent(view.cwd)}&all=${view.logAll ? "true" : "false"}&base=${encodeURIComponent(baseBranch)}&max=${logLimit}`);
     const selected = view.selectedLogCommits || [];
-    const compare = Actions.selectedLogToolbar(selected, { allowRewrite: currentMode() === "changes" });
+    view.logData = data;
+    const selectedBranch = selected.length === 1 && window.HerdrGitLog && window.HerdrGitLog.selectedBranchForHash
+      ? window.HerdrGitLog.selectedBranchForHash(data, selected[0], baseBranch)
+      : "";
+    view.selectedLogBranch = selectedBranch;
+    const compare = Actions.selectedLogToolbar(selected, { allowRewrite: currentMode() === "changes", selectedBranch });
     replaceContent(version, window.HerdrGitLog.render({
       data,
       selected,
@@ -2563,6 +2568,13 @@
       if (!view || !ref || !tag) return;
       state.tagSelectedModal = null;
       post("/api/git-ui/tag", { cwd: view.cwd, ref_name: ref, tag_name: tag });
+    },
+    async createWorktreeFromSelectedBranch() {
+      const view = active();
+      const branch = view && view.selectedLogBranch;
+      if (!view || !branch) return;
+      if (typeof openWorktreeCreateFromGitBranch !== "function") return;
+      await openWorktreeCreateFromGitBranch(view.cwd, branch);
     },
     rebaseAfterSelected() {
       const view = active();
