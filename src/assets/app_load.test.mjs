@@ -2005,6 +2005,7 @@ describe("app bundle load", () => {
     match(gitUiSource, /returnToWorkspaceCwd\(\) \{/);
     match(gitLayoutCss, /\.git-ui-return-cwd-icon span/);
     match(gitUiSource, /Folder picker: selected folder becomes the Git panel directory immediately/);
+    match(gitUiSource, /Load more changes fetches older commits/);
     match(source, /Choosing a folder in the Git directory picker immediately moves the Git panel/);
     match(source, /WebUI no longer opens a workspace automatically on startup/);
     match(source, /In Git UI, open Git directory\/branch dialog/);
