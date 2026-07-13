@@ -19,6 +19,20 @@
     return { root: "~", path: text };
   }
 
+  function configuredDefaultFolder() {
+    if (typeof window.defaultFolderPath === "function") {
+      const value = String(window.defaultFolderPath() || "").trim();
+      if (value) return value;
+    }
+    return "~";
+  }
+
+  function initialPickerPath(input) {
+    const text = String((input && input.value) || "").trim();
+    if (!text || text === "/") return configuredDefaultFolder();
+    return text;
+  }
+
   function joinPath(root, path) {
     const rel = String(path || "").replace(/^\/+/, "");
     if (root === "/") return "/" + rel;
@@ -66,7 +80,7 @@
 
   function open(input) {
     state.input = input;
-    const parts = splitPath(input.value);
+    const parts = splitPath(initialPickerPath(input));
     state.root = parts.root;
     load(parts.path || "");
   }

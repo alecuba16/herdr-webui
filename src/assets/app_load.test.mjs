@@ -477,6 +477,11 @@ describe("app bundle load", () => {
     match(desktopFileBrowserSource, /\/api\/file-browser\/request-access/);
     match(directoryPickerSource, /permission_required/);
     match(directoryPickerSource, /Grant folder access/);
+    match(directoryPickerSource, /function configuredDefaultFolder\(\)/);
+    match(directoryPickerSource, /typeof window\.defaultFolderPath === "function"/);
+    match(directoryPickerSource, /function initialPickerPath\(input\)/);
+    match(directoryPickerSource, /if \(!text \|\| text === "\/"\) return configuredDefaultFolder\(\);/);
+    match(directoryPickerSource, /const parts = splitPath\(initialPickerPath\(input\)\);/);
     match(desktopWorktreesSource, /return defaultFolderPath\(\) \|\| String\(options\.explorationDefaultDirectory \|\| ""\)\.trim\(\) \|\| "~";/);
     match(mobileWorktreesSource, /defaultFolderFn/);
     match(mobileWorktreesSource, /if \(defaultFolder\) return defaultFolder;/);
