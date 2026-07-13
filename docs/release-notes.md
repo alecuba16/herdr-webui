@@ -1,5 +1,19 @@
 # Release notes
 
+## 0.2.50 Release Notes
+
+### Startup and default folder behavior
+
+- Built-in backend sessions now start empty. Opening WebUI no longer creates a default workspace, shell, tab, or pane until the user explicitly opens a workspace/worktree, starts an agent, or opens a temporary terminal.
+- Empty built-in snapshots render cleanly in the browser: terminal loading stops and stale tabs, panes, agents, and terminal selection are cleared.
+- Workspace/worktree opening, worktree discovery, Git directory picking, file browser, and temporary terminals consistently use the configured default folder when no workspace/worktree is selected, instead of falling back to `/`.
+
+### Git directory picker and help
+
+- Simplifies the Git directory selector to one folder action. Choosing a folder moves the Git drawer to that folder and refreshes; branch checkout is now a separate `Switch branch` action inside that selected Git directory.
+- Adds a `↩` action next to the Git Refresh button when the Git drawer is looking at a folder different from the current workspace/worktree. It returns Git to the active workspace/worktree folder, clears stale diff/file selection state, and refreshes.
+- Updates the global `?` Help & Shortcuts modal and the Git shortcut help popup with the new Git folder semantics, return-to-workspace action, and default-folder startup behavior.
+
 ## 0.2.39 Release Notes
 
 ### Built-in backend and TUI foundation

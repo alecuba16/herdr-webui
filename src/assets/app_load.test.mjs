@@ -1986,6 +1986,9 @@ describe("app bundle load", () => {
   it("uses one Git folder selection flow and offers return to workspace", () => {
     const directoryPickerSource = readFileSync(new URL("./desktop/directory_picker.js", import.meta.url), "utf8");
     const gitLayoutCss = readFileSync(new URL("./desktop/git_ui/layout.css", import.meta.url), "utf8");
+    const featuresDoc = readFileSync(new URL("../../docs/features.md", import.meta.url), "utf8");
+    const technicalDoc = readFileSync(new URL("../../docs/technical-details.md", import.meta.url), "utf8");
+    const releaseNotes = readFileSync(new URL("../../docs/release-notes.md", import.meta.url), "utf8");
 
     match(directoryPickerSource, /function afterSelectCallback\(input\)/);
     match(directoryPickerSource, /input\.dataset\.directoryPickerAfterSelect/);
@@ -1999,6 +2002,16 @@ describe("app bundle load", () => {
     match(gitUiSource, /HerdrGitUi\.returnToWorkspaceCwd\(\)/);
     match(gitUiSource, /returnToWorkspaceCwd\(\) \{/);
     match(gitLayoutCss, /\.git-ui-return-cwd-icon span/);
+    match(gitUiSource, /Folder picker: selected folder becomes the Git panel directory immediately/);
+    match(source, /Choosing a folder in the Git directory picker immediately moves the Git panel/);
+    match(source, /WebUI no longer opens a workspace automatically on startup/);
+    match(source, /In Git UI, open Git directory\/branch dialog/);
+    match(featuresDoc, /The Git directory picker has a single meaning/);
+    match(featuresDoc, /The built-in backend starts with zero workspaces/);
+    match(technicalDoc, /Built-in sessions do not seed a default workspace/);
+    match(technicalDoc, /Git cwd is independent from workspace selection/);
+    match(releaseNotes, /0\.2\.50 Release Notes/);
+    match(releaseNotes, /Updates the global `\?` Help & Shortcuts modal/);
     match(gitUiSource, /function gitBranchModalDefaultCwd\(cwd\)/);
     match(gitUiSource, /if \(path && path !== "\/"\) return path;/);
     match(gitUiSource, /typeof window\.defaultFolderPath === "function"/);
