@@ -21,6 +21,7 @@ use sha2::{Digest, Sha256};
 
 mod assets;
 mod builtin_backend;
+mod builtin_events;
 mod compat;
 mod file_browser;
 mod git_ui;
@@ -3102,11 +3103,13 @@ async fn events_ws(
 async fn events_socket(state: WebState, api: ApiClient, mut socket: WebSocket) {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
     let subscribe_api = api.clone();
+    let backend_info = api.backend_info();
+    let use_builtin_event_hub = backend_uses_builtin_event_hub(&backend_info);
+    let backend_protocol = backend_info.protocol;
     std::thread::spawn(move || {
         // Detect the backend protocol so we only subscribe to layout.updated
         // on protocol 16+. Older backends reject unknown subscription types
         // and would fail the entire events.subscribe request.
-        let backend_protocol = subscribe_api.backend_info().protocol;
         let mut subscriptions = vec![
             json!({"type":"workspace.created"}),
             json!({"type":"workspace.updated"}),
@@ -3162,9 +3165,14 @@ async fn events_socket(state: WebState, api: ApiClient, mut socket: WebSocket) {
     loop {
         tokio::select! {
             Some(value) = rx.recv() => {
+                if web_event_kind(&value) == Some("pane.agent_status_changed") {
+                    if let Ok(agents) = api.request_value(json!({ "id": "web:agent:list:event", "method": "agent.list", "params": {} })) {
+                        sync_auto_no_sleep_from_agents(&state, &agents);
+                    }
+                }
                 if socket.send(Message::Text(value.to_string().into())).await.is_err() { break; }
             }
-            _ = interval.tick() => {
+            _ = interval.tick(), if !use_builtin_event_hub => {
                 let agents = api.request_value(json!({ "id": "web:agent:list:poll", "method": "agent.list", "params": {} })).ok();
                 if let Some(agents) = &agents {
                     sync_auto_no_sleep_from_agents(&state, agents);
@@ -3178,6 +3186,24 @@ async fn events_socket(state: WebState, api: ApiClient, mut socket: WebSocket) {
             }
         }
     }
+}
+
+fn backend_uses_builtin_event_hub(info: &BackendInfo) -> bool {
+    info.version
+        .as_deref()
+        .is_some_and(|version| version.starts_with("builtin-"))
+        && info.protocol.unwrap_or(0) >= 16
+}
+
+fn web_event_kind(value: &serde_json::Value) -> Option<&str> {
+    if value.get("type").and_then(serde_json::Value::as_str) != Some("event") {
+        return None;
+    }
+    let event = value.get("event")?;
+    event
+        .get("event")
+        .or_else(|| event.get("type"))
+        .and_then(serde_json::Value::as_str)
 }
 
 #[derive(Deserialize)]
@@ -3659,6 +3685,41 @@ mod tests {
         );
         assert_eq!(SessionBackendTarget::Builtin.as_str(), "builtin");
         assert_eq!(SessionBackendTarget::parse("unknown"), None);
+    }
+
+    #[test]
+    fn builtin_event_hub_detection_only_matches_builtin_protocol_16() {
+        assert!(backend_uses_builtin_event_hub(&BackendInfo {
+            version: Some("builtin-0.1.0".to_string()),
+            protocol: Some(16),
+        }));
+        assert!(!backend_uses_builtin_event_hub(&BackendInfo {
+            version: Some("builtin-0.1.0".to_string()),
+            protocol: Some(15),
+        }));
+        assert!(!backend_uses_builtin_event_hub(&BackendInfo {
+            version: Some("1.2.3".to_string()),
+            protocol: Some(16),
+        }));
+        assert!(!backend_uses_builtin_event_hub(&BackendInfo {
+            version: None,
+            protocol: Some(16),
+        }));
+    }
+
+    #[test]
+    fn web_event_kind_extracts_wrapped_backend_events() {
+        let value = json!({
+            "type": "event",
+            "event": { "event": "pane.agent_status_changed", "data": {} }
+        });
+        assert_eq!(web_event_kind(&value), Some("pane.agent_status_changed"));
+        let value = json!({
+            "type": "event",
+            "event": { "type": "layout.updated", "data": {} }
+        });
+        assert_eq!(web_event_kind(&value), Some("layout.updated"));
+        assert_eq!(web_event_kind(&json!({ "type": "snapshot" })), None);
     }
 
     #[test]

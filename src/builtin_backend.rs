@@ -13,6 +13,7 @@ use interprocess::TryClone as _;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde_json::{json, Value};
 
+use crate::builtin_events::{BuiltinEventHub, PaneEventContext};
 use crate::protocol::{
     read_message, write_message, ClientInputEvent, ClientMessage, RenderEncoding, ServerMessage,
     TerminalFrame,
@@ -174,14 +175,18 @@ fn handle_api_connection(
     let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
 
     if method == "events.subscribe" {
+        let rx = backend.state.subscribe_events();
         write_json_line(
             &mut stream,
             &success_response(&id, json!({ "type": "subscription_started" })),
         )?;
-        // Built-in MVP does not have an event hub yet. Close the subscription
-        // after the ack so the WebUI bridge thread can exit and keep using its
-        // existing 5s snapshot polling instead of leaking one blocked thread per
-        // browser reconnect.
+        while backend.running.load(Ordering::Acquire) {
+            match rx.recv_timeout(Duration::from_millis(250)) {
+                Ok(event) => write_json_line(&mut stream, &event)?,
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
         return Ok(());
     }
 
@@ -321,6 +326,7 @@ fn handle_client_connection(
 struct BuiltinState {
     data: Mutex<BuiltinData>,
     default_shell: String,
+    events: BuiltinEventHub,
 }
 
 struct BuiltinData {
@@ -376,6 +382,7 @@ impl BuiltinState {
                 focused_pane_id: None,
             }),
             default_shell,
+            events: BuiltinEventHub::new(),
         };
         state
             .create_workspace(Some(cwd), Some("Workspace".to_string()), true)
@@ -384,9 +391,45 @@ impl BuiltinState {
     }
 
     fn handle_request(&self, id: &str, method: &str, params: Value) -> Value {
-        match self.handle_request_inner(method, params) {
-            Ok(result) => success_response(id, result),
+        match self.handle_request_inner(method, params.clone()) {
+            Ok(result) => {
+                self.publish_success_event(method, &params, &result);
+                success_response(id, result)
+            }
             Err(err) => error_response(id, "builtin_error", err),
+        }
+    }
+
+    fn subscribe_events(&self) -> mpsc::Receiver<Value> {
+        self.events.subscribe()
+    }
+
+    fn publish_event(&self, event: &str, data: Value) {
+        self.events.publish(event, data);
+    }
+
+    fn publish_success_event(&self, method: &str, params: &Value, result: &Value) {
+        match method {
+            "workspace.create" => self.publish_event("workspace.created", result.clone()),
+            "workspace.rename" => self.publish_event("workspace.renamed", result.clone()),
+            "workspace.close" => self.publish_event(
+                "workspace.closed",
+                json!({ "workspace_id": optional_string(params, "workspace_id") }),
+            ),
+            "tab.create" => self.publish_event("tab.created", result.clone()),
+            "tab.rename" => self.publish_event("tab.renamed", result.clone()),
+            "tab.close" => self.publish_event(
+                "tab.closed",
+                json!({ "tab_id": optional_string(params, "tab_id") }),
+            ),
+            "pane.close" => self.publish_event(
+                "pane.closed",
+                json!({ "pane_id": optional_string(params, "pane_id") }),
+            ),
+            "agent.start" => self.publish_event("workspace.created", result.clone()),
+            "worktree.open" => self.publish_event("worktree.opened", result.clone()),
+            "worktree.create" => self.publish_event("worktree.created", result.clone()),
+            _ => {}
         }
     }
 
@@ -546,6 +589,13 @@ impl BuiltinState {
             vec![self.default_shell.clone()],
             30,
             100,
+            self.events.clone(),
+            PaneEventContext {
+                workspace_id: workspace_id.clone(),
+                tab_id: tab_id.clone(),
+                pane_id: pane_id.clone(),
+                terminal_id: terminal_id.clone(),
+            },
         )
         .map_err(|err| err.to_string())?;
         data.workspaces.insert(
@@ -618,6 +668,13 @@ impl BuiltinState {
             vec![self.default_shell.clone()],
             30,
             100,
+            self.events.clone(),
+            PaneEventContext {
+                workspace_id: workspace_id.clone(),
+                tab_id: tab_id.clone(),
+                pane_id: pane_id.clone(),
+                terminal_id: terminal_id.clone(),
+            },
         )
         .map_err(|err| err.to_string())?;
         data.tabs.insert(
@@ -674,9 +731,21 @@ impl BuiltinState {
         let tab_id = next_id(&mut data, "tab");
         let pane_id = next_id(&mut data, "pane");
         let terminal_id = next_id(&mut data, "term");
-        let terminal =
-            TerminalRuntime::spawn(terminal_id.clone(), cwd.clone(), argv.clone(), 30, 100)
-                .map_err(|err| err.to_string())?;
+        let terminal = TerminalRuntime::spawn(
+            terminal_id.clone(),
+            cwd.clone(),
+            argv.clone(),
+            30,
+            100,
+            self.events.clone(),
+            PaneEventContext {
+                workspace_id: workspace_id.clone(),
+                tab_id: tab_id.clone(),
+                pane_id: pane_id.clone(),
+                terminal_id: terminal_id.clone(),
+            },
+        )
+        .map_err(|err| err.to_string())?;
         data.workspaces.insert(
             workspace_id.clone(),
             WorkspaceRecord {
@@ -1005,6 +1074,10 @@ impl BuiltinState {
 struct TerminalRuntime {
     _id: String,
     child_pid: Option<u32>,
+    argv: Vec<String>,
+    event_hub: BuiltinEventHub,
+    event_context: PaneEventContext,
+    last_agent_state: Mutex<Option<(Option<String>, String)>>,
     master: Mutex<Box<dyn MasterPty + Send>>,
     child: Mutex<Box<dyn Child + Send + Sync>>,
     writer: Mutex<Box<dyn Write + Send>>,
@@ -1019,6 +1092,8 @@ impl TerminalRuntime {
         argv: Vec<String>,
         rows: u16,
         cols: u16,
+        event_hub: BuiltinEventHub,
+        event_context: PaneEventContext,
     ) -> io::Result<Arc<Self>> {
         let pty_system = native_pty_system();
         let pair = pty_system
@@ -1066,6 +1141,10 @@ impl TerminalRuntime {
         let runtime = Arc::new(Self {
             _id: id,
             child_pid,
+            argv,
+            event_hub,
+            event_context,
+            last_agent_state: Mutex::new(None),
             master: Mutex::new(pair.master),
             child: Mutex::new(child),
             writer: Mutex::new(writer),
@@ -1156,6 +1235,47 @@ impl TerminalRuntime {
                 Err(mpsc::TrySendError::Full(_)) => false,
                 Err(mpsc::TrySendError::Disconnected(_)) => false,
             });
+        }
+        self.publish_agent_status_if_changed();
+    }
+
+    fn publish_agent_status_if_changed(&self) {
+        let tail = self.history_tail_text(DETECTION_TAIL_BYTES);
+        let process_agent = self
+            .child_pid()
+            .and_then(detect_agent_label_from_process_tree);
+        let agent = detect_agent_label(&self.argv)
+            .or(process_agent)
+            .or_else(|| detect_agent_label_from_text(&tail))
+            .map(str::to_string);
+        let status = match detect_agent_status(agent.as_deref(), &tail) {
+            "unknown" if agent.is_some() => "idle",
+            status => status,
+        }
+        .to_string();
+        let current = (agent.clone(), status.clone());
+        let should_publish = self
+            .last_agent_state
+            .lock()
+            .map(|mut previous| {
+                let changed = previous.as_ref() != Some(&current);
+                *previous = Some(current);
+                changed
+            })
+            .unwrap_or(false);
+        if should_publish && agent.is_some() {
+            self.event_hub.publish(
+                "pane.agent_status_changed",
+                json!({
+                    "workspace_id": self.event_context.workspace_id,
+                    "tab_id": self.event_context.tab_id,
+                    "pane_id": self.event_context.pane_id,
+                    "terminal_id": self.event_context.terminal_id,
+                    "agent": agent,
+                    "agent_status": status,
+                    "status": status,
+                }),
+            );
         }
     }
 }
@@ -2365,6 +2485,38 @@ mod tests {
     }
 
     #[test]
+    fn builtin_event_hub_publishes_mutation_events() {
+        let state =
+            BuiltinState::new(std::env::current_dir().unwrap(), Some(default_shell())).unwrap();
+        let rx = state.subscribe_events();
+
+        state.handle_request("test", "tab.create", json!({ "label": "second" }));
+
+        let event = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!(event["event"], "tab.created");
+        assert_eq!(event["data"]["type"], "tab_created");
+    }
+
+    #[test]
+    fn terminal_output_publishes_agent_status_changes() {
+        let state =
+            BuiltinState::new(std::env::current_dir().unwrap(), Some(default_shell())).unwrap();
+        let rx = state.subscribe_events();
+        let terminal = {
+            let data = state.data.lock().unwrap();
+            let pane = data.panes.values().next().unwrap();
+            data.terminals.get(&pane.terminal_id).unwrap().clone()
+        };
+
+        terminal.append_output("●·· batch ··● · 2/5 done".as_bytes());
+
+        let event = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!(event["event"], "pane.agent_status_changed");
+        assert_eq!(event["data"]["agent"], "jcode");
+        assert_eq!(event["data"]["agent_status"], "working");
+    }
+
+    #[test]
     fn detects_jcode_status_from_jcode_support_manifest_patterns() {
         assert_eq!(
             detect_agent_status(
@@ -2716,7 +2868,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn events_subscribe_acks_then_closes_without_holding_connection() {
+    fn events_subscribe_streams_builtin_event_hub_messages() {
         let base = format!(
             "/tmp/herdr-webui-events-test-{}-{}",
             std::process::id(),
@@ -2731,18 +2883,35 @@ mod tests {
             shell: Some(default_shell()),
         })
         .unwrap();
-        let mut stream = connect_local_stream(&api_socket).unwrap();
-        stream
-            .write_all(br#"{"id":"events","method":"events.subscribe","params":{}}"#)
-            .unwrap();
-        stream.write_all(b"\n").unwrap();
-        stream.flush().unwrap();
-        let mut reader = BufReader::new(stream);
-        let mut ack = String::new();
-        reader.read_line(&mut ack).unwrap();
+        let (tx, rx) = mpsc::channel::<String>();
+        let subscribe_socket = api_socket.clone();
+        thread::spawn(move || {
+            let mut stream = connect_local_stream(&subscribe_socket).unwrap();
+            stream
+                .write_all(br#"{"id":"events","method":"events.subscribe","params":{}}"#)
+                .unwrap();
+            stream.write_all(b"\n").unwrap();
+            stream.flush().unwrap();
+            let mut reader = BufReader::new(stream);
+            for _ in 0..2 {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                tx.send(line).unwrap();
+            }
+        });
+
+        let ack = rx.recv_timeout(Duration::from_secs(1)).unwrap();
         assert!(ack.contains("subscription_started"));
-        let mut eof = String::new();
-        assert_eq!(reader.read_line(&mut eof).unwrap(), 0);
+        let mut control = connect_local_stream(&api_socket).unwrap();
+        control
+            .write_all(br#"{"id":"tab","method":"tab.create","params":{"label":"evented"}}"#)
+            .unwrap();
+        control.write_all(b"\n").unwrap();
+        control.flush().unwrap();
+
+        let event = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let event: Value = serde_json::from_str(&event).unwrap();
+        assert_eq!(event["event"], "tab.created");
     }
 
     #[cfg(unix)]
