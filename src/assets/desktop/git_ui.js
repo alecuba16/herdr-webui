@@ -610,6 +610,14 @@
     const fileVisible = !!(fileBrowser && fileBrowser.isVisible && fileBrowser.isVisible());
     shell.style.display = show || fileVisible ? "none" : "";
     if (window.syncShellModeButtons) window.syncShellModeButtons();
+    // Refit the terminal surface when the shell reappears so the
+    // terminal does not extend below the visible area.
+    if (!show && !fileVisible && shell.style.display !== "none") {
+      if (window.HerdrTerminalFit) window.HerdrTerminalFit.afterLayout(function () {
+        if (typeof fitTerminalShell === "function") fitTerminalShell();
+        if (typeof fitTerminalSurface === "function") fitTerminalSurface();
+      });
+    }
   }
 
   async function open(workspace, options) {
