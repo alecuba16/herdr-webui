@@ -79,11 +79,17 @@ function syncProjectDashboard() {
   const dashboard = el("projectDashboard"),
     shell = el("terminalShell");
   if (!dashboard) return;
-  const showDashboard = state.workspaces.length === 0 && !state.ws;
+  const showDashboard = state.workspaces.length === 0 && !state.ws && !drawerSurfaceVisible();
   dashboard.hidden = !showDashboard;
   if (shell) shell.hidden = showDashboard;
   if (!showDashboard) return;
   dashboard.innerHTML = renderProjectDashboard();
+}
+function drawerSurfaceVisible() {
+  return !!(
+    (window.HerdrGitUi && window.HerdrGitUi.isVisible && window.HerdrGitUi.isVisible()) ||
+    (window.HerdrFileBrowser && window.HerdrFileBrowser.isVisible && window.HerdrFileBrowser.isVisible())
+  );
 }
 function renderProjectDashboard() {
   const actionsMenu = window.HerdrActionRegistry.action("actions-menu");
