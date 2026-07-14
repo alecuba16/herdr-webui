@@ -571,7 +571,7 @@ mod tests {
 
     #[test]
     fn error_display_and_from_impls_are_descriptive() {
-        let io_error = BackendClientError::from(io::Error::new(io::ErrorKind::Other, "disk gone"));
+        let io_error = BackendClientError::from(io::Error::other("disk gone"));
         assert_eq!(io_error.to_string(), "I/O error: disk gone");
 
         let json_error = BackendClientError::from(serde_json::from_str::<Value>("{").unwrap_err());

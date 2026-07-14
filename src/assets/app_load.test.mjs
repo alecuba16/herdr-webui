@@ -102,6 +102,14 @@ function context() {
   return vm.createContext(ctx);
 }
 
+function loadWorkspaceSearch(ctx) {
+  vm.runInContext(readFileSync(new URL("./shared/core.js", import.meta.url), "utf8"), ctx);
+  vm.runInContext(
+    readFileSync(new URL("./shared/workspace_search.js", import.meta.url), "utf8"),
+    ctx,
+  );
+}
+
 describe("app bundle load", () => {
   let source;
   let gitUiSource;
@@ -654,7 +662,7 @@ describe("app bundle load", () => {
   it("keeps content search file expansion when context is reloaded", () => {
     const ctx = context();
     ctx.localStorage.setItem("herdr-web-options", JSON.stringify({ fileContentSearchDefaultExpanded: false }));
-    vm.runInContext(readFileSync(new URL("./shared/workspace_search.js", import.meta.url), "utf8"), ctx);
+    loadWorkspaceSearch(ctx);
     const helper = ctx.HerdrWorkspaceSearch;
 
     const state = helper.createContentState({ expanded: { "src/a.js": true, "src/b.js": false } });
@@ -670,7 +678,7 @@ describe("app bundle load", () => {
   it("normalizes shared path search settings", () => {
     const ctx = context();
     ctx.localStorage.setItem("herdr-web-options", JSON.stringify({ searchFilesEnabled: false, searchFoldersEnabled: true }));
-    vm.runInContext(readFileSync(new URL("./shared/workspace_search.js", import.meta.url), "utf8"), ctx);
+    loadWorkspaceSearch(ctx);
     const helper = ctx.HerdrWorkspaceSearch;
 
     equal(helper.pathSearchAvailable(helper.settings()), true);
@@ -696,7 +704,7 @@ describe("app bundle load", () => {
       fileContentSearchMatchCase: true,
       fileContentSearchRegex: true,
     }));
-    vm.runInContext(readFileSync(new URL("./shared/workspace_search.js", import.meta.url), "utf8"), ctx);
+    loadWorkspaceSearch(ctx);
 
     const opts = ctx.HerdrWorkspaceSearch.settings();
     equal(JSON.stringify(opts.searchSectionOrder), JSON.stringify(["content", "files", "workspaces"]));
@@ -718,7 +726,7 @@ describe("app bundle load", () => {
       urls.push(String(url));
       return { ok: true, statusText: "OK", json: async () => ({ entries: [], files: [], truncated: false }) };
     };
-    vm.runInContext(readFileSync(new URL("./shared/workspace_search.js", import.meta.url), "utf8"), ctx);
+    loadWorkspaceSearch(ctx);
     const helper = ctx.HerdrWorkspaceSearch;
 
     ctx.localStorage.setItem("herdr-web-options", JSON.stringify({ searchFilesEnabled: false, searchFoldersEnabled: false, searchContentEnabled: false }));
