@@ -275,7 +275,12 @@ function showTerminalShellMode() {
   syncShellModeButtons();
   if (state.terminalId && !term && typeof Terminal !== "undefined") connectTerminal();
   fitTerminalShell();
-  if (typeof requestAnimationFrame === "function") requestAnimationFrame(fitTerminalShell);
+  if (typeof fitTerminalSurface === "function") fitTerminalSurface();
+  if (typeof requestAnimationFrame === "function")
+    requestAnimationFrame(() => {
+      fitTerminalShell();
+      if (typeof fitTerminalSurface === "function") fitTerminalSurface();
+    });
 }
 const headTitle = document.querySelector(".head strong");
 if (headTitle) {
