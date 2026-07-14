@@ -212,6 +212,25 @@ describe("app bundle load", () => {
     match(source, /else if \(action === "git"\) openWorkspaceGitUi\(state\.ws\);/);
   });
 
+  it("uses one unified header Actions launcher instead of separate plus and temporary terminal buttons", () => {
+    const html = readFileSync(new URL("./app.html", import.meta.url), "utf8");
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    ok(html.includes('id="headerActionsButton"'));
+    ok(html.includes(">Actions<"));
+    equal(html.includes('id="newWs"'), false);
+    equal(html.includes('id="tempTerminalToggle"'), false);
+    match(source, /headerActions\.onclick = \(\) => openSearchPalette\(\);/);
+    ok(!source.includes("tempTerminalToggle"));
+
+    ctx.setupSessionChrome();
+    const button = ctx.document.getElementById("headerActionsButton");
+    equal(button.title, "Search and actions (Ctrl+B then /)");
+    button.onclick();
+    equal(ctx.document.getElementById("searchPalette").style.display, "grid");
+  });
+
   it("adds configured shortcut labels to desktop tooltips", () => {
     const ctx = context();
     ctx.localStorage.setItem("herdr-web-options", JSON.stringify({
@@ -223,7 +242,7 @@ describe("app bundle load", () => {
 
     equal(ctx.document.getElementById("shortcutsToggle").title, "Shortcuts (Ctrl+Q then Shift+/)");
     equal(ctx.document.getElementById("settingsToggle").title, "Settings (Ctrl+Q then S)");
-    equal(ctx.document.getElementById("newWs").title, "Open workspace, discover worktrees, or create a worktree (Ctrl+Q then N)");
+    equal(ctx.document.getElementById("headerActionsButton").title, "Search and actions (Ctrl+Q then /)");
     equal(ctx.document.getElementById("sidebarToggle").title, "Hide sidebar (Ctrl+Q then B)");
 
     vm.runInContext(`
