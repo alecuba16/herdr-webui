@@ -493,6 +493,14 @@
     const gitOpen = !!(git && git.style.display !== "none");
     shell.style.display = state.open || gitOpen ? "none" : "";
     if (window.syncShellModeButtons) window.syncShellModeButtons();
+    // Refit the terminal surface when the shell reappears so the
+    // terminal does not extend below the visible area.
+    if (!state.open && !gitOpen && shell.style.display !== "none") {
+      if (window.HerdrTerminalFit) window.HerdrTerminalFit.afterLayout(function () {
+        if (typeof fitTerminalShell === "function") fitTerminalShell();
+        if (typeof fitTerminalSurface === "function") fitTerminalSurface();
+      });
+    }
   }
 
   function treeEntries() {
