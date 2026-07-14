@@ -2091,7 +2091,7 @@ fn detect_agent_label_from_processes(
 }
 
 fn detect_agent_label_from_process(process: &ProcessInfo) -> Option<&'static str> {
-    if let Some(agent) = detect_agent_label(&[process.command.clone()]) {
+    if let Some(agent) = detect_agent_label(std::slice::from_ref(&process.command)) {
         return Some(agent);
     }
 
@@ -2256,8 +2256,531 @@ fn detect_agent_status(agent: Option<&str>, text: &str) -> &'static str {
     match agent {
         "jcode" => detect_jcode_status(&lower),
         "opencode" => detect_opencode_status(&lower),
+        "kilo" => detect_kilo_status(&lower),
+        "amp" => detect_amp_status(&lower),
+        "agy" => detect_antigravity_status(&lower),
+        "claude" => detect_claude_status(&lower),
+        "cline" => detect_cline_status(&lower),
+        "codex" => detect_codex_status(&lower),
+        "cursor" => detect_cursor_status(&lower),
+        "devin" => detect_devin_status(&lower),
+        "droid" => detect_droid_status(&lower),
+        "gemini" => detect_gemini_status(&lower),
+        "copilot" => detect_copilot_status(&lower),
+        "grok" => detect_grok_status(&lower),
+        "hermes" => detect_hermes_status(&lower),
+        "kimi" => detect_kimi_status(&lower),
+        "kiro" => detect_kiro_status(&lower),
+        "maki" => detect_maki_status(&lower),
+        "pi" => detect_pi_status(&lower),
+        "qodercli" => detect_qodercli_status(&lower),
         _ => "unknown",
     }
+}
+
+fn detect_amp_status(lower: &str) -> &'static str {
+    if contains_any(
+        lower,
+        &[
+            "plugin confirmation needed",
+            "waiting for approval",
+            "invoke tool",
+            "run this command?",
+            "allow editing file:",
+            "allow creating file:",
+            "confirm tool call",
+        ],
+    ) || (lower.contains("approve")
+        && contains_any(
+            lower,
+            &[
+                "allow all for this session",
+                "allow all for every session",
+                "allow file for every session",
+                "deny with feedback",
+            ],
+        ))
+    {
+        return "blocked";
+    }
+    if has_braille_spinner_line(lower)
+        || lower.lines().any(|line| {
+            let line = line.trim_start();
+            line.starts_with('╰')
+                && contains_any(line, &["thinking", "streaming", "running tools", "waiting"])
+                && line.contains('─')
+        })
+        || lower.contains("esc to cancel")
+    {
+        return "working";
+    }
+    if lower.contains(" - amp - ") {
+        return "idle";
+    }
+    "unknown"
+}
+
+fn detect_antigravity_status(lower: &str) -> &'static str {
+    if lower.contains("requesting permission for:")
+        && (lower.contains("do you want to proceed?")
+            || (lower.contains("tab amend") && lower.contains("edit command")))
+    {
+        return "blocked";
+    }
+    if has_braille_ing_line(lower) || bottom_non_empty_lines(lower, 5).contains("· 1 task") {
+        return "working";
+    }
+    "unknown"
+}
+
+fn detect_claude_status(lower: &str) -> &'static str {
+    if (lower.contains("enter to select")
+        && lower.contains("esc to cancel")
+        && contains_any(
+            lower,
+            &[
+                "tab/arrow keys to navigate",
+                "arrow keys to navigate",
+                "arrows to navigate",
+                "↑/↓ to navigate",
+                "↑↓ to navigate",
+            ],
+        ))
+        || (lower.contains("run a dynamic workflow?") && lower.contains("esc to cancel"))
+        || (lower.contains("do you want to proceed?")
+            && contains_any(
+                lower,
+                &[
+                    "bash command",
+                    "bash(",
+                    "contains expansion",
+                    "tab to amend",
+                    "ctrl+e to explain",
+                    "esc to cancel",
+                ],
+            ))
+        || contains_any(
+            lower,
+            &[
+                "waiting for permission",
+                "do you want to allow this connection?",
+                "review your answers",
+                "skip interview and plan immediately",
+            ],
+        )
+    {
+        return "blocked";
+    }
+    if has_braille_spinner_line(lower)
+        || lower
+            .lines()
+            .any(|line| line.trim_start().starts_with("/btw"))
+        || lower.contains("esc to close")
+    {
+        return "working";
+    }
+    if lower.lines().any(|line| line.trim_start().starts_with('❯'))
+        && !contains_any(
+            lower,
+            &[
+                "enter to select",
+                "esc to cancel",
+                "tab/arrow keys",
+                "arrow keys to navigate",
+                "↑/↓ to navigate",
+            ],
+        )
+    {
+        return "idle";
+    }
+    "unknown"
+}
+
+fn detect_cline_status(lower: &str) -> &'static str {
+    if lower.contains("let cline use this tool")
+        || (lower.contains("[act mode]")
+            && (lower.contains("execute command?") || lower.contains("use this tool?"))
+            && lower.contains("yes"))
+        || (lower.contains("[plan mode]")
+            && (lower.contains("execute command?") || lower.contains("use this tool?"))
+            && lower.contains("yes"))
+    {
+        "blocked"
+    } else if lower.trim().is_empty() {
+        "unknown"
+    } else {
+        "working"
+    }
+}
+
+fn detect_codex_status(lower: &str) -> &'static str {
+    if lower.contains("action required")
+        || lower.contains("press enter to confirm or esc to cancel")
+        || lower.contains("enter to submit answer")
+        || lower.contains("enter to submit all")
+        || lower.contains("allow command?")
+        || lower.contains("[y/n]")
+        || lower.contains("yes (y)")
+        || ((lower.contains("do you want to") || lower.contains("would you like to"))
+            && (lower.contains("yes") || lower.contains('❯')))
+    {
+        return "blocked";
+    }
+    if has_codex_spinner(lower) {
+        return "working";
+    }
+    if !lower.trim().is_empty() {
+        return "idle";
+    }
+    "unknown"
+}
+
+fn detect_cursor_status(lower: &str) -> &'static str {
+    let bottom8 = bottom_non_empty_lines(lower, 8);
+    if (bottom8.contains("write to this file?")
+        && bottom8.contains("proceed (y)")
+        && contains_any(
+            &bottom8,
+            &["reject & propose changes", "esc or n or p", "add write("],
+        ))
+        || (lower.contains("waiting for approval")
+            && lower.contains("run this command?")
+            && contains_any(lower, &["run (once) (y)", "skip (esc or n)"]))
+        || contains_any(lower, &["(y) (enter)", "keep (n)", "skip (esc or n)"])
+        || lower.lines().any(|line| {
+            let line = line.trim_start();
+            line.starts_with("allow ") && line.contains("(y)")
+        })
+    {
+        return "blocked";
+    }
+    let bottom6 = bottom_non_empty_lines(lower, 6);
+    let bottom5 = bottom_non_empty_lines(lower, 5);
+    if bottom6.contains("ctrl+c to stop")
+        || background_tasks_line(&bottom5)
+        || has_cursor_spinner(&bottom8)
+    {
+        return "working";
+    }
+    "unknown"
+}
+
+fn detect_devin_status(lower: &str) -> &'static str {
+    if lower.contains("do you trust the files in this folder?")
+        || (lower.contains("approve once")
+            && lower.contains("select")
+            && lower.contains("confirm")
+            && lower.contains("esc cancel"))
+    {
+        return "blocked";
+    }
+    if (lower.contains("running tools") && lower.contains("esc to interrupt"))
+        || lower.contains("guide devin while it works")
+        || (lower.contains("reading shell ") && lower.contains("timeout:"))
+    {
+        return "working";
+    }
+    if (lower.contains("ask devin to build")
+        && lower.contains("features, fix bugs")
+        && lower.contains("your code"))
+        || (lower.contains("context:")
+            && lower.lines().any(|line| line.trim_start().starts_with('❭')))
+    {
+        return "idle";
+    }
+    "unknown"
+}
+
+fn detect_droid_status(lower: &str) -> &'static str {
+    if (lower.contains("enter to select")
+        && lower.contains("esc to cancel")
+        && contains_any(
+            lower,
+            &[
+                "↑↓ to navigate",
+                "use ↑↓ to navigate",
+                "> yes, allow",
+                "> no, cancel",
+            ],
+        ))
+        || (lower.contains("enter select")
+            && lower.contains("esc cancel")
+            && contains_any(lower, &["↑/↓ navigate", "↑↓ navigate"]))
+    {
+        return "blocked";
+    }
+    if lower.contains("esc to stop") {
+        return "working";
+    }
+    "unknown"
+}
+
+fn detect_gemini_status(lower: &str) -> &'static str {
+    if lower.contains("│ apply this change")
+        || lower.contains("│ allow execution")
+        || (lower.contains("yes")
+            && contains_any(
+                lower,
+                &[
+                    "waiting for user confirmation",
+                    "│ do you want to proceed",
+                    "do you want to proceed?",
+                ],
+            ))
+        || lower.lines().any(|line| {
+            let line = line.trim_start();
+            line.starts_with('❯') && (line.contains("yes") || line.contains("allow"))
+        })
+    {
+        return "blocked";
+    }
+    if lower.contains("esc to cancel") {
+        return "working";
+    }
+    "unknown"
+}
+
+fn detect_copilot_status(lower: &str) -> &'static str {
+    if lower.contains("enter to select")
+        || lower.contains("enter to confirm")
+        || lower.contains("enter to submit")
+        || lower.contains("enter accept")
+    {
+        return "blocked";
+    }
+    if contains_any(
+        lower,
+        &[
+            "esc to cancel",
+            "esc cancel",
+            "esc again to cancel",
+            "esc interrupt",
+        ],
+    ) {
+        return "working";
+    }
+    "unknown"
+}
+
+fn detect_grok_status(lower: &str) -> &'static str {
+    let bottom2 = bottom_non_empty_lines(lower, 2);
+    if lower.lines().any(grok_option_dialog_line)
+        || (bottom2.contains(":select")
+            && bottom2.contains("ctrl+o:yolo")
+            && bottom2.contains("ctrl+c:cancel"))
+        || (bottom2.contains("tab:scrollback") && bottom2.contains("shift+x:dismiss"))
+        || (lower.contains("yes, proceed")
+            && lower.contains("no, reject")
+            && contains_any(
+                lower,
+                &["use ← → to choose permission whitelist scope", "←/→:scope"],
+            ))
+    {
+        return "blocked";
+    }
+    if lower.lines().any(grok_spinner_stop_line)
+        || (bottom2.contains("esc:cancel") && bottom2.contains("ctrl+.:shortcuts"))
+        || (lower.contains("ctrl+c:cancel")
+            && lower.contains("ctrl+enter:interject")
+            && lower.contains("waiting"))
+        || lower.lines().any(grok_tool_line)
+    {
+        return "working";
+    }
+    if bottom2.contains("ctrl+.:shortcuts")
+        && !bottom2.contains("esc:cancel")
+        && !bottom2.contains("ctrl+c:cancel")
+    {
+        return "idle";
+    }
+    "unknown"
+}
+
+fn detect_hermes_status(lower: &str) -> &'static str {
+    if lower.contains("dangerous command")
+        || (lower.contains("allow once")
+            && lower.contains("allow for this session")
+            && lower.contains("deny"))
+        || contains_any(
+            lower,
+            &["enter to confirm", "↑/↓ to select", "show full command"],
+        )
+    {
+        return "blocked";
+    }
+    if lower.contains("msg=interrupt") || lower.contains("ctrl+c cancel") {
+        return "working";
+    }
+    "unknown"
+}
+
+fn detect_kimi_status(lower: &str) -> &'static str {
+    if (lower.contains("↵ confirm")
+        && contains_any(
+            lower,
+            &[
+                "run this command?",
+                "write this file?",
+                "apply these edits?",
+                "stop this task?",
+                "ready to build with this plan?",
+                " choose",
+            ],
+        ))
+        || (lower.contains("↑↓ select")
+            && lower.contains("esc cancel")
+            && (lower.lines().any(|line| line.trim() == "question")
+                || lower
+                    .lines()
+                    .any(|line| line.trim_start().starts_with("? ")))
+            && contains_any(lower, &["↵ choose", "↵ toggle", "↵ save"]))
+        || (lower.contains("requesting approval")
+            && lower.contains("reject")
+            && contains_any(lower, &["approve once", "approve for this session"])
+            && contains_any(lower, &["1/2/3/4 choose", "↵ confirm"]))
+    {
+        return "blocked";
+    }
+    if lower.lines().any(kimi_background_agents_line)
+        || lower.lines().any(|line| {
+            matches!(
+                line.trim(),
+                "🌕" | "🌖" | "🌗" | "🌘" | "🌑" | "🌒" | "🌓" | "🌔"
+            )
+        })
+        || lower.lines().any(|line| {
+            let line = line.trim_start();
+            starts_with_braille(line)
+                && contains_any(line, &["thinking...", "working...", "using "])
+        })
+    {
+        return "working";
+    }
+    "unknown"
+}
+
+fn detect_kiro_status(lower: &str) -> &'static str {
+    if (lower.contains("requires approval")
+        && contains_any(
+            lower,
+            &[
+                "yes, single permission",
+                "trust, always allow",
+                "no (tab to edit)",
+                "esc to close",
+            ],
+        ))
+        || (lower.contains("pending from subagents")
+            && (lower.contains("tool approval") || lower.contains("tool approvals"))
+            && contains_any(
+                lower,
+                &[
+                    "approve all pending",
+                    "configure individually",
+                    "exit (cancel subagents)",
+                ],
+            ))
+    {
+        return "blocked";
+    }
+    if lower.contains("kiro is working")
+        || (lower.contains("esc to cancel")
+            && lower.lines().any(|line| {
+                let line = line.trim_start();
+                matches!(line.chars().next(), Some('◔' | '◑' | '◕' | '●'))
+                    && line.chars().skip(1).any(char::is_alphabetic)
+            }))
+    {
+        return "working";
+    }
+    "unknown"
+}
+
+fn detect_maki_status(lower: &str) -> &'static str {
+    if (lower.contains("permission required")
+        && contains_any(
+            lower,
+            &[
+                "y allow",
+                "n deny",
+                "confirm allow",
+                "confirm deny",
+                "enter deny",
+                "esc cancel",
+            ],
+        ))
+        || (lower.contains("plan complete")
+            && lower.contains("enter confirm")
+            && contains_any(lower, &["space toggle parallel", "edit plan"]))
+    {
+        return "blocked";
+    }
+    let bottom1 = bottom_non_empty_lines(lower, 1);
+    if bottom1.lines().any(maki_spinner_status_line) {
+        return "working";
+    }
+    if bottom1.lines().any(maki_idle_status_line)
+        || (bottom_non_empty_lines(lower, 3)
+            .lines()
+            .any(|line| line.starts_with("❯ "))
+            && !lower.contains("queue another prompt"))
+    {
+        return "idle";
+    }
+    "unknown"
+}
+
+fn detect_pi_status(lower: &str) -> &'static str {
+    if lower.contains("working...") {
+        "working"
+    } else {
+        "unknown"
+    }
+}
+
+fn detect_qodercli_status(lower: &str) -> &'static str {
+    if (lower.contains("waiting for user confirmation")
+        && contains_any(lower, &["yes", "no", "allow", "reject"]))
+        || (lower.contains("awaiting approval") && contains_any(lower, &["allow", "reject"]))
+        || contains_any(
+            lower,
+            &[
+                "permission required",
+                "allow once or always?",
+                "asking user",
+                "enter your response",
+                "review your answers:",
+                "shell awaiting input",
+            ],
+        )
+    {
+        return "blocked";
+    }
+    if lower.contains("(esc to cancel,") || has_braille_spinner_line(lower) {
+        return "working";
+    }
+    "unknown"
+}
+
+fn detect_kilo_status(lower: &str) -> &'static str {
+    if let Some(status) = detect_opencode_like_status(lower) {
+        return status;
+    }
+    if lower.contains("esc interrupt") {
+        return "working";
+    }
+    "unknown"
+}
+
+fn detect_opencode_like_status(lower: &str) -> Option<&'static str> {
+    if lower.contains("△ permission required")
+        || (lower.contains("esc dismiss")
+            && contains_any(lower, &["enter confirm", "enter submit", "enter toggle"])
+            && contains_any(lower, &["↑↓ select", "⇆ tab"]))
+    {
+        return Some("blocked");
+    }
+    None
 }
 
 fn detect_jcode_status(lower: &str) -> &'static str {
@@ -2270,7 +2793,6 @@ fn detect_jcode_status(lower: &str) -> &'static str {
     }
     if has_jcode_spinner(&bottom3)
         || has_jcode_tool_bar(&bottom4)
-        || has_jcode_background_activity(lower)
         || contains_any(
             &bottom4,
             &[
@@ -2282,61 +2804,21 @@ fn detect_jcode_status(lower: &str) -> &'static str {
     {
         return "working";
     }
-    if contains_any(&bottom3, &["session ready", "ready for input"])
-        || bottom3.lines().any(|line| line.trim() == "❯")
-    {
-        if !contains_any(
+    if (contains_any(&bottom3, &["session ready", "ready for input"])
+        || bottom3.lines().any(|line| line.trim() == "❯"))
+        && !contains_any(
             &bottom3,
             &["processing", "embedding", "running tool", "executing"],
-        ) {
-            return "idle";
-        }
+        )
+    {
+        return "idle";
     }
     "unknown"
 }
 
-fn has_jcode_background_activity(text: &str) -> bool {
-    let mut saw_newer_bg_completion = false;
-    for line in text.lines().rev().take(80) {
-        let trimmed = line.trim();
-        if is_jcode_completed_background_line(trimmed) {
-            saw_newer_bg_completion = true;
-            continue;
-        }
-        if saw_newer_bg_completion {
-            continue;
-        }
-        if is_jcode_active_background_line(trimmed) {
-            return true;
-        }
-    }
-    false
-}
-
-fn is_jcode_active_background_line(line: &str) -> bool {
-    (line.contains('◌') && line.contains(" bg "))
-        || contains_any(
-            line,
-            &[
-                "jcode is running this in the background",
-                "latest status: bg action=\"status\"",
-                "progress, checkpoints, and completion will appear here",
-            ],
-        )
-}
-
-fn is_jcode_completed_background_line(line: &str) -> bool {
-    (contains_any(line, &["✓", "✗"]) && line.contains(" bg "))
-        || (line.contains(" bg ") && contains_any(line, &["completed", "failed"]))
-}
-
 fn detect_opencode_status(lower: &str) -> &'static str {
-    if lower.contains("△ permission required")
-        || (lower.contains("esc dismiss")
-            && contains_any(lower, &["enter confirm", "enter submit", "enter toggle"])
-            && contains_any(lower, &["↑↓ select", "⇆ tab"]))
-    {
-        return "blocked";
+    if let Some(status) = detect_opencode_like_status(lower) {
+        return status;
     }
     if contains_any(
         lower,
@@ -2345,9 +2827,7 @@ fn detect_opencode_status(lower: &str) -> &'static str {
             "ctrl+c to interrupt",
             "press esc to interrupt",
         ],
-    ) || lower
-        .lines()
-        .any(|line| line.contains("opencode") && line.contains("esc") && line.contains("interrupt"))
+    ) || lower.lines().any(has_opencode_interrupt_line)
         || has_opencode_progress(lower)
     {
         return "working";
@@ -2380,9 +2860,124 @@ fn jcode_question_blocked(text: &str) -> bool {
 fn has_jcode_spinner(text: &str) -> bool {
     text.lines().any(|line| {
         let mut chars = line.trim_start().chars();
-        matches!(chars.next(), Some(first) if ('\u{2800}'..='\u{28ff}').contains(&first))
+        matches!(chars.next(), Some(first) if is_braille(first))
+            && matches!(chars.next(), Some(second) if second.is_whitespace())
             && chars.any(char::is_alphabetic)
     })
+}
+
+fn has_braille_spinner_line(text: &str) -> bool {
+    text.lines().any(|line| {
+        let mut chars = line.trim_start().chars();
+        matches!(chars.next(), Some(first) if is_braille(first))
+            && matches!(chars.next(), Some(second) if second.is_whitespace())
+    })
+}
+
+fn has_braille_ing_line(text: &str) -> bool {
+    text.lines().any(|line| {
+        let line = line.trim_start();
+        starts_with_braille(line) && line.split_whitespace().any(|word| word.ends_with("ing"))
+    })
+}
+
+fn starts_with_braille(text: &str) -> bool {
+    text.chars().next().is_some_and(is_braille)
+}
+
+fn is_braille(ch: char) -> bool {
+    ('\u{2800}'..='\u{28ff}').contains(&ch)
+}
+
+fn has_codex_spinner(text: &str) -> bool {
+    text.chars().any(|ch| {
+        matches!(
+            ch,
+            '⠋' | '⠙' | '⠹' | '⠸' | '⠼' | '⠴' | '⠦' | '⠧' | '⠇' | '⠏'
+        )
+    })
+}
+
+fn has_cursor_spinner(text: &str) -> bool {
+    text.lines().any(|line| {
+        let line = line.trim_start();
+        if line.starts_with('⬡') || line.starts_with('⬢') || starts_with_braille(line) {
+            line.split_whitespace().any(|word| word.ends_with("ing"))
+        } else {
+            false
+        }
+    })
+}
+
+fn background_tasks_line(text: &str) -> bool {
+    text.lines().any(|line| {
+        let words = line.split_whitespace().collect::<Vec<_>>();
+        words.windows(3).any(|window| {
+            window[0].parse::<usize>().is_ok()
+                && window[1].starts_with("background")
+                && window[2].starts_with("task")
+        })
+    })
+}
+
+fn grok_option_dialog_line(line: &str) -> bool {
+    let mut words = line.trim_start_matches('┃').split_whitespace();
+    let Some(label) = words.next() else {
+        return false;
+    };
+    let Some(choice) = words.next() else {
+        return false;
+    };
+    !label.is_empty()
+        && label.chars().all(|ch| ch.is_ascii_alphanumeric())
+        && matches!(choice, "(●)" | "(○)")
+}
+
+fn grok_spinner_stop_line(line: &str) -> bool {
+    let line = line.trim_start();
+    starts_with_braille(line) && line.ends_with("[stop]")
+}
+
+fn grok_tool_line(line: &str) -> bool {
+    let line = line.trim_start();
+    if !starts_with_braille(line) {
+        return false;
+    }
+    let lower = line.to_lowercase();
+    contains_any(&lower, &[" run", " read", " search", " list"])
+}
+
+fn kimi_background_agents_line(line: &str) -> bool {
+    line.contains("kimi")
+        && line.contains("thinking")
+        && line.contains("[")
+        && line.contains("agent")
+        && line.contains("running]")
+}
+
+fn maki_spinner_status_line(line: &str) -> bool {
+    let line = line.trim_start();
+    starts_with_braille(line) && contains_any(line, &["[build]", "[plan]", "[bash]"])
+}
+
+fn maki_idle_status_line(line: &str) -> bool {
+    let line = line.trim_start();
+    contains_any(line, &["[build]", "[plan]", "[bash]"]) && !starts_with_braille(line)
+}
+
+fn has_opencode_interrupt_line(line: &str) -> bool {
+    let Some(opencode_index) = line.find("opencode") else {
+        return false;
+    };
+    let mut rest = &line[opencode_index + "opencode".len()..];
+    while let Some(index) = rest.find("esc ") {
+        let after_esc = &rest[index + "esc ".len()..];
+        if after_esc.starts_with("interrupt") || after_esc.starts_with("again to interrupt") {
+            return true;
+        }
+        rest = &rest[index + "esc".len()..];
+    }
+    false
 }
 
 fn has_jcode_tool_bar(text: &str) -> bool {
@@ -2801,7 +3396,7 @@ mod tests {
                 Some("jcode"),
                 "Jcode is running this in the background. Progress, checkpoints, and completion will appear here.\n╭ ◌ bg run full Rust and JS tests · 5202362vb9 ╮\nLatest status: bg action=\"status\" task_id=\"5202362vb9\"\n❯"
             ),
-            "working"
+            "idle"
         );
         assert_eq!(
             detect_agent_status(
@@ -2857,6 +3452,10 @@ mod tests {
             detect_agent_status(Some("jcode"), "plain prompt"),
             "unknown"
         );
+        assert_eq!(
+            detect_agent_status(Some("jcode"), "⠋running analysis"),
+            "unknown"
+        );
 
         assert_eq!(
             detect_agent_label_from_text("●·· batch ··● · 2/5 done"),
@@ -2866,6 +3465,144 @@ mod tests {
             detect_agent_label_from_text("↻ network disconnected, waiting to retry"),
             Some("jcode")
         );
+    }
+
+    #[test]
+    fn detects_all_builtin_agent_screen_manifest_statuses() {
+        let cases = [
+            ("amp", "waiting for approval\nrun this command?", "blocked"),
+            ("amp", "╰ amp thinking ─", "working"),
+            ("amp", "project - amp - ready", "idle"),
+            (
+                "agy",
+                "requesting permission for:\ndo you want to proceed?",
+                "blocked",
+            ),
+            ("agy", "⠋ thinking", "working"),
+            (
+                "claude",
+                "enter to select\nesc to cancel\narrow keys to navigate",
+                "blocked",
+            ),
+            ("claude", "/btw\nesc to close", "working"),
+            ("claude", "❯", "idle"),
+            ("cline", "Let Cline use this tool?", "blocked"),
+            ("cline", "Cline is reading context", "working"),
+            ("codex", "Allow command?", "blocked"),
+            ("codex", "⠋ thinking", "working"),
+            ("codex", "codex ready", "idle"),
+            (
+                "cursor",
+                "write to this file?\nproceed (y)\nreject & propose changes",
+                "blocked",
+            ),
+            ("cursor", "⬡ thinking", "working"),
+            (
+                "devin",
+                "approve once\nselect\nconfirm\nesc cancel",
+                "blocked",
+            ),
+            ("devin", "running tools\nesc to interrupt", "working"),
+            (
+                "devin",
+                "Ask Devin to build\nfeatures, fix bugs\nyour code",
+                "idle",
+            ),
+            (
+                "droid",
+                "enter to select\nesc to cancel\n↑↓ to navigate",
+                "blocked",
+            ),
+            ("droid", "esc to stop", "working"),
+            ("gemini", "│ Apply this change", "blocked"),
+            ("gemini", "esc to cancel", "working"),
+            ("copilot", "enter to submit", "blocked"),
+            ("copilot", "esc interrupt", "working"),
+            ("grok", "┃ a (●) option", "blocked"),
+            ("grok", "⠋ Run command", "working"),
+            ("grok", "ctrl+.:shortcuts", "idle"),
+            ("hermes", "dangerous command", "blocked"),
+            ("hermes", "msg=interrupt", "working"),
+            ("kilo", "△ Permission required", "blocked"),
+            ("kilo", "esc interrupt", "working"),
+            ("kimi", "↵ confirm\nrun this command?", "blocked"),
+            ("kimi", "🌕", "working"),
+            (
+                "kiro",
+                "requires approval\nyes, single permission",
+                "blocked",
+            ),
+            ("kiro", "kiro is working", "working"),
+            ("maki", "permission required\ny allow", "blocked"),
+            ("maki", "⠋ [build]", "working"),
+            ("maki", "[build]", "idle"),
+            ("pi", "Working...", "working"),
+            (
+                "qodercli",
+                "waiting for user confirmation\nyes/no",
+                "blocked",
+            ),
+            ("qodercli", "(esc to cancel, keep working)", "working"),
+        ];
+
+        for (agent, text, expected) in cases {
+            assert_eq!(
+                detect_agent_status(Some(agent), text),
+                expected,
+                "agent {agent} text {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn jcode_status_covers_manifest_choice_combinations() {
+        for allow in ["allow once", "always allow", "allow"] {
+            for deny in ["deny", "reject", "cancel"] {
+                let text = format!("Permission request\n{allow}\n{deny}");
+                assert_eq!(detect_agent_status(Some("jcode"), &text), "blocked");
+            }
+        }
+
+        for allow in ["allow", "yes"] {
+            for deny in ["reject", "no", "cancel"] {
+                let text = format!("Approve?\n{allow}\n{deny}");
+                assert_eq!(detect_agent_status(Some("jcode"), &text), "blocked");
+            }
+        }
+
+        for allow in ["allow", "yes", "proceed"] {
+            for deny in ["reject", "no", "cancel"] {
+                let text = format!("Confirm action\n{allow}\n{deny}");
+                assert_eq!(detect_agent_status(Some("jcode"), &text), "blocked");
+            }
+        }
+
+        for action in ["continue", "submit", "cancel"] {
+            let text = format!("Enter your response\n{action}");
+            assert_eq!(detect_agent_status(Some("jcode"), &text), "blocked");
+        }
+
+        for prompt in ["enter your response", "awaiting input", "waiting for user"] {
+            let text = format!("Asking user\n{prompt}");
+            assert_eq!(detect_agent_status(Some("jcode"), &text), "blocked");
+        }
+
+        for action in ["enter", "type", "respond"] {
+            let text = format!("Awaiting input\n{action}");
+            assert_eq!(detect_agent_status(Some("jcode"), &text), "blocked");
+        }
+
+        for status in [
+            "running tool",
+            "executing tool",
+            "network disconnected, waiting to retry",
+        ] {
+            assert_eq!(detect_agent_status(Some("jcode"), status), "working");
+        }
+
+        for ready in ["session ready", "ready for input", "❯"] {
+            assert_eq!(detect_agent_status(Some("jcode"), ready), "idle");
+        }
     }
 
     #[test]
@@ -3058,8 +3795,28 @@ mod tests {
             "blocked"
         );
         assert_eq!(
+            detect_agent_status(Some("opencode"), "esc dismiss\nenter submit\n⇆ tab"),
+            "blocked"
+        );
+        assert_eq!(
+            detect_agent_status(Some("opencode"), "esc dismiss\nenter toggle\n↑↓ select"),
+            "blocked"
+        );
+        assert_eq!(
             detect_agent_status(Some("opencode"), "opencode · esc to interrupt"),
             "working"
+        );
+        assert_eq!(
+            detect_agent_status(Some("opencode"), "opencode · esc again to interrupt"),
+            "working"
+        );
+        assert_eq!(
+            detect_agent_status(Some("opencode"), "opencode escaped interrupt"),
+            "unknown"
+        );
+        assert_eq!(
+            detect_agent_status(Some("opencode"), "esc interrupt before opencode"),
+            "unknown"
         );
         assert_eq!(detect_agent_status(Some("opencode"), "■■■■"), "working");
     }

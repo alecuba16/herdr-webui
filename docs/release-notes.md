@@ -1,5 +1,13 @@
 # Release notes
 
+## 0.2.59 Release Notes
+
+### Built-in backend agent detection parity
+
+- Expands built-in backend screen detection beyond Jcode and OpenCode to cover the same visible blocker, working, and idle patterns used by Herdr's screen-manifest agents where those signals are available from terminal text.
+- Aligns Jcode and OpenCode edge cases with Herdr: Jcode background task cards no longer stay `working` after the prompt returns, Jcode braille spinners require spinner-plus-space text, and OpenCode interrupt hints now match the stricter `opencode ... esc interrupt` shape.
+- Adds focused detection coverage for Amp, Antigravity, Claude, Cline, Codex, Cursor, Devin, Droid, Gemini, GitHub Copilot, Grok, Hermes, Kilo, Kimi, Kiro, Maki, OpenCode, Pi, Qoder CLI, and Jcode.
+
 ### Default folder startup hotfix
 
 - Prevents WebUI startup from blocking before the listener binds when macOS stalls while checking the configured default folder, for example protected folders like `~/Documents`. Startup now uses a bounded readability check and falls back to `~`; explicit settings changes can still trigger the normal permission prompt.
