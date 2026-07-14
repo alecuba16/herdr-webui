@@ -212,6 +212,41 @@ describe("app bundle load", () => {
     match(source, /else if \(action === "git"\) openWorkspaceGitUi\(state\.ws\);/);
   });
 
+  it("adds configured shortcut labels to desktop tooltips", () => {
+    const ctx = context();
+    ctx.localStorage.setItem("herdr-web-options", JSON.stringify({
+      globalShortcutPrefix: "Ctrl+Q",
+      webuiShortcuts: { help: "Shift+Slash", settings: "KeyS", newWorkspace: "KeyN", sidebar: "KeyB", newPanel: "KeyP", closePanel: "KeyX", closeWorkspace: "Shift+KeyX", removeWorktree: "Delete" },
+    }));
+    vm.runInContext(source, ctx);
+    ctx.applyOptions();
+
+    equal(ctx.document.getElementById("shortcutsToggle").title, "Shortcuts (Ctrl+Q then Shift+/)");
+    equal(ctx.document.getElementById("settingsToggle").title, "Settings (Ctrl+Q then S)");
+    equal(ctx.document.getElementById("newWs").title, "Open workspace, discover worktrees, or create a worktree (Ctrl+Q then N)");
+    equal(ctx.document.getElementById("sidebarToggle").title, "Hide sidebar (Ctrl+Q then B)");
+
+    vm.runInContext(`
+      state.ws = "w1";
+      state.tab = "t1";
+      state.tabs = [{ workspace_id: "w1", tab_id: "t1", label: "Shell" }];
+    `, ctx);
+    ok(ctx.renderPanelField().includes('title="New panel (Ctrl+Q then P)"'));
+    ok(ctx.renderPanelField().includes('title="Close current panel (Ctrl+Q then X)"'));
+
+    const actions = ctx.selectedWorkspaceActionButtons({ workspace_id: "w1", worktree: { checkout_path: "/tmp/wt", is_linked_worktree: true } });
+    ok(actions.includes('Ctrl+Q then Shift+X'));
+    ok(actions.includes('Ctrl+Q then Delete'));
+  });
+
+  it("adds configured shortcut labels to Git tooltips", () => {
+    match(gitUiSource, /function titleWithGitShortcut\(title, action\)/);
+    match(gitUiSource, /titleWithGitShortcut\("Refresh", "refresh"\)/);
+    match(gitUiSource, /titleWithGitShortcut\("Change Git directory or switch branch", "branch"\)/);
+    match(gitUiSource, /titleWithGitShortcut\("File history", "history"\)/);
+    match(gitUiSource, /titleWithGitShortcut\("Blame", "blame"\)/);
+  });
+
   it("shows project dashboard and hides terminal shell when no workspace exists", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
@@ -230,7 +265,7 @@ describe("app bundle load", () => {
 
   it("keeps file history header scoped to selected files", () => {
     match(gitUiSource, /function renderFileToolbar\(activeTab\) \{\n\s+const view = active\(\) \|\| \{\};/);
-    match(gitUiSource, /const history = view\.file \? `<button class="git-ui-btn \$\{activeTab === "history" \? "active" : ""\}" onclick="HerdrGitUi\.tab\('history'\)">History<\/button>` : "";/);
+    match(gitUiSource, /const history = view\.file \? `<button class="git-ui-btn \$\{activeTab === "history" \? "active" : ""\}" title="\$\{esc\(titleWithGitShortcut\("File history", "history"\)\)\}" onclick="HerdrGitUi\.tab\('history'\)">History<\/button>` : "";/);
     equal([...gitLogSource.matchAll(/git-ui-log-scope-head/g)].length, 1);
   });
 

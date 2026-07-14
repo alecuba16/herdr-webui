@@ -164,6 +164,7 @@ if (sidebarToggle)
     sidebarCollapsed = !sidebarCollapsed;
     storeFlag(SIDEBAR_COLLAPSED_KEY, sidebarCollapsed);
     applySidebarCollapsed();
+    syncShortcutTooltips();
     scheduleTerminalFit();
   };
 function storedFlag(key) {
@@ -650,14 +651,60 @@ function shortcutKeyFromEvent(e) {
 
 function shortcutDisplay(value) {
   return String(value || "")
-    .replace(/^Key/, "")
-    .replace(/^Digit/, "")
+    .replace(/(^|\+)Key/g, "$1")
+    .replace(/(^|\+)Digit/g, "$1")
     .replace("BracketLeft", "[")
     .replace("BracketRight", "]")
     .replace("Slash", "/")
     .replace("Period", ".")
     .replace("Comma", ",")
     .replace("Shift+", "Shift+");
+}
+
+function shortcutMapFor(scope) {
+  const source = typeof options !== "undefined" && options && options[scope];
+  return source || defaultShortcutMap(scope);
+}
+
+function shortcutLabel(scope, action) {
+  const key = shortcutMapFor(scope)[action];
+  if (!key) return "";
+  return `${globalShortcutPrefixLabel()} then ${shortcutDisplay(key)}`;
+}
+
+function titleWithShortcut(title, scope, action) {
+  const label = shortcutLabel(scope, action);
+  return label ? `${title} (${label})` : title;
+}
+
+function titleWithWebuiShortcut(title, action) {
+  return titleWithShortcut(title, "webuiShortcuts", action);
+}
+
+function setShortcutTooltip(id, title, action) {
+  const node = el(id);
+  if (!node) return;
+  const text = titleWithWebuiShortcut(title, action);
+  node.title = text;
+  node.setAttribute("aria-label", text);
+}
+
+function syncShortcutTooltips() {
+  setShortcutTooltip("shortcutsToggle", "Shortcuts", "help");
+  setShortcutTooltip("footerShortcutsButton", "Shortcuts", "help");
+  setShortcutTooltip("settingsToggle", "Settings", "settings");
+  setShortcutTooltip("footerSettingsButton", "Settings", "settings");
+  setShortcutTooltip("searchButtonHead", "Search", "search");
+  setShortcutTooltip("newWs", "Open workspace, discover worktrees, or create a worktree", "newWorkspace");
+  setShortcutTooltip("sidebarToggle", sidebarCollapsed ? "Show sidebar" : "Hide sidebar", "sidebar");
+  setShortcutTooltip("terminalWorkspaceToggle", "Show terminal", "focusTerminal");
+  const searchClose = el("searchPaletteClose");
+  if (searchClose) searchClose.title = "Close (Esc)";
+  const tempClose = el("tempTerminalClose");
+  if (tempClose) {
+    tempClose.title = "Detach temporary terminal (Ctrl+G)";
+    tempClose.setAttribute("aria-label", tempClose.title);
+  }
 }
 
 function shortcutCollisionMap() {
@@ -1742,6 +1789,7 @@ function applyOptions() {
       if (typeof Terminal !== "undefined") connectTerminal();
     }
   }
+  syncShortcutTooltips();
 }
 function renderAgentStatusOrderSettings() {
   const list = el("agentStatusOrderList"),
@@ -1980,7 +2028,7 @@ function setupSessionChrome() {
     const b = document.createElement("button");
     b.className = "btn shell-action";
     b.id = "searchButtonHead";
-    b.title = "Search";
+    b.title = titleWithWebuiShortcut("Search", "search");
     b.textContent = "⌕";
     head.insertBefore(b, el("newWs"));
     b.onclick = () => openSearchPalette();
@@ -2022,7 +2070,7 @@ function setupSessionChrome() {
     const t = document.createElement("button");
     t.className = "btn worktree-open-trigger shell-action shell-icon-button";
     t.id = "terminalWorkspaceToggle";
-    t.title = "Show terminal";
+    t.title = titleWithWebuiShortcut("Show terminal", "focusTerminal");
     t.innerHTML = appIcon("terminal");
     t.setAttribute("aria-label", "Show terminal");
     t.setAttribute("role", "tab");
@@ -2109,7 +2157,7 @@ function setupSessionChrome() {
   if (!el("footerShortcutsButton")) {
     const actions = document.createElement("span");
     actions.className = "footer-actions";
-    actions.innerHTML = `<button class="mini footer-icon-button" id="footerShortcutsButton" title="Shortcuts" aria-label="Shortcuts">${appIcon("help")}</button><button class="mini footer-icon-button" id="footerSettingsButton" title="Settings" aria-label="Settings">${appIcon("settings")}</button>`;
+    actions.innerHTML = `<button class="mini footer-icon-button" id="footerShortcutsButton" title="${escapeAttr(titleWithWebuiShortcut("Shortcuts", "help"))}" aria-label="${escapeAttr(titleWithWebuiShortcut("Shortcuts", "help"))}">${appIcon("help")}</button><button class="mini footer-icon-button" id="footerSettingsButton" title="${escapeAttr(titleWithWebuiShortcut("Settings", "settings"))}" aria-label="${escapeAttr(titleWithWebuiShortcut("Settings", "settings"))}">${appIcon("settings")}</button>`;
     footer.appendChild(actions);
     el("footerShortcutsButton").onclick = () => { applyOptions(); el("shortcutsModal").style.display = "grid"; };
     el("footerSettingsButton").onclick = () => { el("settingsModal").style.display = "grid"; prepareSettingsModalOpen(); };
@@ -2118,12 +2166,10 @@ function setupSessionChrome() {
   const footerSettingsButton = el("footerSettingsButton");
   if (footerShortcutsButton) {
     footerShortcutsButton.classList.add("footer-icon-button");
-    footerShortcutsButton.setAttribute("aria-label", "Shortcuts");
     footerShortcutsButton.innerHTML = appIcon("help");
   }
   if (footerSettingsButton) {
     footerSettingsButton.classList.add("footer-icon-button");
-    footerSettingsButton.setAttribute("aria-label", "Settings");
     footerSettingsButton.innerHTML = appIcon("settings");
   }
   if (!el("sessionManager")) {
@@ -2136,6 +2182,7 @@ function setupSessionChrome() {
     el("newBuiltinSessionTarget").onclick = () => newSessionTarget("builtin");
     el("newHerdrSessionTarget").onclick = () => newSessionTarget("external-herdr");
   }
+  syncShortcutTooltips();
 }
 function sessionBackendLabel(backend) {
   return backend === "external-herdr" ? "Herdr" : "built-in";

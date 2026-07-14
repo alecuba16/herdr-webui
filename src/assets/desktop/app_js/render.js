@@ -250,11 +250,11 @@ function selectedWorkspaceActionButtons(w) {
   const linked = isLinkedWorktree(w);
   const buttons = [];
   buttons.push(
-    `<span class="mini warn" data-workspace-action="close" title="Close selected ${linked ? "worktree" : "workspace"} and its panels" onclick="event.preventDefault();event.stopPropagation();runWorkspaceContextAction('close',this)">✕</span>`,
+    `<span class="mini warn" data-workspace-action="close" title="${escapeAttr(titleWithWebuiShortcut(`Close selected ${linked ? "worktree" : "workspace"} and its panels`, "closeWorkspace"))}" onclick="event.preventDefault();event.stopPropagation();runWorkspaceContextAction('close',this)">✕</span>`,
   );
   if (linked)
     buttons.push(
-      `<span class="mini danger" data-workspace-action="remove-worktree" title="Remove selected worktree from disk after confirmation" onclick="event.preventDefault();event.stopPropagation();runWorkspaceContextAction('remove-worktree',this)">🗑</span>`,
+      `<span class="mini danger" data-workspace-action="remove-worktree" title="${escapeAttr(titleWithWebuiShortcut("Remove selected worktree from disk after confirmation", "removeWorktree"))}" onclick="event.preventDefault();event.stopPropagation();runWorkspaceContextAction('remove-worktree',this)">🗑</span>`,
     );
   return `<span class="space-actions selected-space-actions">${buttons.join("")}</span>`;
 }
