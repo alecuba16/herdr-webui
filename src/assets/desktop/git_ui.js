@@ -255,13 +255,23 @@
 
   function shortcutDisplay(value) {
     return String(value || "")
-      .replace(/^Key/, "")
-      .replace(/^Digit/, "")
+      .replace(/(^|\+)Key/g, "$1")
+      .replace(/(^|\+)Digit/g, "$1")
       .replace("BracketLeft", "[")
       .replace("BracketRight", "]")
       .replace("Slash", "/")
       .replace("Period", ".")
       .replace("Comma", ",");
+  }
+
+  function gitShortcutLabel(action) {
+    const key = gitShortcutMap()[action];
+    return key ? `${gitShortcutPrefixLabel()} then ${shortcutDisplay(key)}` : "";
+  }
+
+  function titleWithGitShortcut(title, action) {
+    const label = gitShortcutLabel(action);
+    return label ? `${title} (${label})` : title;
   }
 
   function gitUiOptions() {
@@ -833,8 +843,8 @@
 
   function sectionBulkAction(title, kind, files) {
     if (!files || !files.length) return "";
-    if (kind === "S") return `<button class="git-ui-section-action" title="Unstage all ${esc(title.toLowerCase())} files" onclick="event.stopPropagation();HerdrGitUi.bulkSectionAction('unstage','${arg(title)}')">−</button>`;
-    if (kind === "M" || kind === "?") return `<button class="git-ui-section-action" title="Stage all ${esc(title.toLowerCase())} files" onclick="event.stopPropagation();HerdrGitUi.bulkSectionAction('stage','${arg(title)}')">+</button>`;
+    if (kind === "S") return `<button class="git-ui-section-action" title="${esc(titleWithGitShortcut(`Unstage all ${title.toLowerCase()} files`, "unstageFile"))}" onclick="event.stopPropagation();HerdrGitUi.bulkSectionAction('unstage','${arg(title)}')">−</button>`;
+    if (kind === "M" || kind === "?") return `<button class="git-ui-section-action" title="${esc(titleWithGitShortcut(`Stage all ${title.toLowerCase()} files`, "stageFile"))}" onclick="event.stopPropagation();HerdrGitUi.bulkSectionAction('stage','${arg(title)}')">+</button>`;
     return "";
   }
 
@@ -1214,7 +1224,7 @@
         ? `${(s.conflicted || []).length ? section("Conflicted", filterFiles(s.conflicted, filter), "U") : ""}${section("Staged", filterFiles(s.staged, filter), "S")}${section("Unstaged", filterFiles(s.unstaged, filter), "M")}${section("Untracked", filterFiles(s.untracked, filter), "?")}`
         : section("Compared", filterFiles(view.compareFilePaths && view.compareFilePaths.length ? view.compareFilePaths : ((view.diff && view.diff.files) || []).map((file) => file.path), filter), "C");
     const canCommit = hasStagedChanges(view);
-    const commitHint = canCommit ? "Commit staged changes" : "Stage changes before committing";
+    const commitHint = canCommit ? titleWithGitShortcut("Commit staged changes", "commit") : titleWithGitShortcut("Stage changes before committing", "commit");
     const commitDisabled = canCommit ? "" : " disabled";
     const branchLabel = `${view.titleKind || "Branch"}: ${s.branch || view.title || "No branch"}`;
     const error = view.error && !cleanupOnly ? `<div class="git-ui-error">${esc(view.error)}</div>` : "";
@@ -1230,8 +1240,8 @@
     const returnToCurrentChanges = !cleanupOnly && currentMode() !== "changes"
       ? `<button class="git-ui-refresh-icon git-ui-current-changes-icon" title="Return to current changes" aria-label="Return to current changes" onclick="HerdrGitUi.latestChanges()"><span></span></button>`
       : "";
-    const refreshButton = appRefreshIconButton({ className: "git-ui-refresh-icon", title: "Refresh", label: "Refresh Git state", spinning: !!view.refreshAnimating, onclick: "HerdrGitUi.refreshWithSpin()" });
-    return `<aside class="git-ui-side" onscroll="HerdrGitUi.sideScroll(this)"><div class="git-ui-head"><div class="git-ui-head-main"><div class="git-ui-title-row"><div class="git-ui-title">Git</div><div class="git-ui-title-actions">${returnToCurrentChanges}${returnToWorkspace}${refreshButton}</div></div><div class="git-ui-subtitle">${esc(s.state || "closed")} · ${esc(compactPath(s.repo_path))}</div><button class="git-ui-branch-pill" title="Change Git directory or switch branch" onclick="HerdrGitUi.openBranchModal()"><span>${esc(branchLabel)}</span><b>↗</b></button></div></div>${error}<div class="git-ui-toolbar git-ui-view-toolbar">${renderGitViewTabs(tabs, view.tab)}</div>${actions}${fileList}${sideBottom}</aside>`;
+    const refreshButton = appRefreshIconButton({ className: "git-ui-refresh-icon", title: titleWithGitShortcut("Refresh", "refresh"), label: titleWithGitShortcut("Refresh Git state", "refresh"), spinning: !!view.refreshAnimating, onclick: "HerdrGitUi.refreshWithSpin()" });
+    return `<aside class="git-ui-side" onscroll="HerdrGitUi.sideScroll(this)"><div class="git-ui-head"><div class="git-ui-head-main"><div class="git-ui-title-row"><div class="git-ui-title">Git</div><div class="git-ui-title-actions">${returnToCurrentChanges}${returnToWorkspace}${refreshButton}</div></div><div class="git-ui-subtitle">${esc(s.state || "closed")} · ${esc(compactPath(s.repo_path))}</div><button class="git-ui-branch-pill" title="${esc(titleWithGitShortcut("Change Git directory or switch branch", "branch"))}" onclick="HerdrGitUi.openBranchModal()"><span>${esc(branchLabel)}</span><b>↗</b></button></div></div>${error}<div class="git-ui-toolbar git-ui-view-toolbar">${renderGitViewTabs(tabs, view.tab)}</div>${actions}${fileList}${sideBottom}</aside>`;
   }
 
   function renderDiffLayoutSideToggle(view) {
@@ -1276,12 +1286,12 @@
     const collapsed = files.filter((file) => view.collapsedFiles && view.collapsedFiles[file.path]).length;
     const collapse = collapsible ? `<button class="git-ui-btn" onclick="HerdrGitUi.${collapsed === files.length ? "expandAllFiles" : "collapseAllFiles"}()">${collapsed === files.length ? "Show all" : "Collapse all"}</button>` : "";
     const changes = currentMode() === "changes" ? `<button class="git-ui-btn ${activeTab === "changes" ? "active" : ""}" onclick="HerdrGitUi.latestChanges()">Changes</button>` : "";
-    const history = view.file ? `<button class="git-ui-btn ${activeTab === "history" ? "active" : ""}" onclick="HerdrGitUi.tab('history')">History</button>` : "";
-    const blame = activeTab === "changes" && view.file ? `<button class="git-ui-btn ${view.showBlame ? "active" : ""}" onclick="HerdrGitUi.toggleBlame()">Blame</button>` : "";
+    const history = view.file ? `<button class="git-ui-btn ${activeTab === "history" ? "active" : ""}" title="${esc(titleWithGitShortcut("File history", "history"))}" onclick="HerdrGitUi.tab('history')">History</button>` : "";
+    const blame = activeTab === "changes" && view.file ? `<button class="git-ui-btn ${view.showBlame ? "active" : ""}" title="${esc(titleWithGitShortcut("Blame", "blame"))}" onclick="HerdrGitUi.toggleBlame()">Blame</button>` : "";
     const sideEditor = view.sideEditor && view.sideEditor.path === view.file
       ? `<button class="git-ui-btn primary" ${view.sideEditor.saving ? "disabled" : ""} onclick="HerdrGitUi.saveSideEditor()">${view.sideEditor.saving ? "Saving..." : "Save edits"}</button><button class="git-ui-btn" onclick="HerdrGitUi.cancelSideEditor()">Cancel edits</button>`
       : activeTab === "changes" && canEditCurrentFile(view)
-        ? `<button class="git-ui-btn" onclick="HerdrGitUi.editSideBySide()">Edit side-by-side</button>`
+        ? `<button class="git-ui-btn" title="${esc(titleWithGitShortcut("Edit side-by-side", "edit"))}" onclick="HerdrGitUi.editSideBySide()">Edit side-by-side</button>`
         : "";
     return `<div class="git-ui-log-head">${back}${stateLabel}${changes}${history}${blame}${sideEditor}${conflicts ? `<button class="git-ui-btn ${activeTab === "conflicts" ? "active" : ""}" onclick="HerdrGitUi.tab('conflicts')">Conflicts</button>` : ""}${collapse}${compare}</div>`;
   }

@@ -56,9 +56,6 @@ async function createWorkspaceFromModal() {
     submit.disabled = false;
   }
 }
-newWs.onclick = () => {
-  openWorktreeOpenModal(selectedWorkspaceRepoPath(), true);
-};
 el("workspaceCreateClose").onclick = closeWorkspaceCreateModal;
 el("workspaceCreateCancel").onclick = closeWorkspaceCreateModal;
 el("questionClose").onclick = () => closeQuestion(false);

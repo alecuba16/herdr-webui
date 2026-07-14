@@ -8,6 +8,7 @@
     selectionPath: mobileSelectionPath,
   } = globalThis.HerdrMobileCore;
   const { createFaviconNotifier } = globalThis.HerdrAppHelpers;
+  const MORE_SCREENS = ["agents", "panels", "worktrees", "files", "git", "settings"];
 
   const state = {
     session: "default",
@@ -32,6 +33,7 @@
     worktreeBase: "",
     worktreeLabel: "",
     worktreePath: "",
+    worktreeCreateExpanded: false,
     gitCwd: "",
     gitStatus: null,
     gitError: "",
@@ -43,6 +45,8 @@
   };
 
   let eventWs,
+    eventRefreshTimer = null,
+    eventReconnectTimer = null,
     refreshSeq = 0,
     browserFavicon = createFaviconNotifier(document),
     browserFaviconError = false,
@@ -306,13 +310,10 @@
           </div>
         </div>
         <nav class="mobile-nav">
-          <button data-screen="home">Workspaces</button>
-          <button data-screen="agents">Agents</button>
-          <button data-screen="panels">Panels</button>
-          <button data-screen="worktrees">Worktrees</button>
-          <button data-screen="files">Files</button>
-          <button data-screen="git">Git</button>
+          <button data-screen="home">Home</button>
+          <button data-screen="search">Search</button>
           <button data-screen="terminal">Terminal</button>
+          <button data-screen="more">More</button>
         </nav>
       </div>
       <div class="temp-terminal-backdrop" id="tempTerminalModal">
@@ -341,6 +342,10 @@
   }
 
   function showScreen(screen) {
+    if (screen === "search") {
+      openMobileSearch();
+      return;
+    }
     const wasTerminal = state.screen === "terminal";
     state.screen = screen;
     if (wasTerminal && screen !== "terminal") mobileTerminal.destroy(false);
@@ -362,7 +367,10 @@
       searchButton.disabled = disabled;
     }
     document.querySelectorAll(".mobile-nav button").forEach((button) => {
-      button.classList.toggle("active", button.dataset.screen === state.screen);
+      const searchNavDisabled = button.dataset.screen === "search" && headerSearchDisabled();
+      button.hidden = searchNavDisabled;
+      button.disabled = searchNavDisabled;
+      button.classList.toggle("active", mobileNavActive(button.dataset.screen));
       button.innerHTML = mobileNavLabel(button.dataset.screen);
     });
     const screen = el("mobileScreen");
@@ -382,6 +390,7 @@
     else if (state.screen === "settings")
       screen.innerHTML = mobileSettings.render();
     else if (state.screen === "terminal") renderTerminalScreen(screen);
+    else if (state.screen === "more") screen.innerHTML = renderMore();
     else screen.innerHTML = renderHome();
     syncBrowserFavicon();
   }
@@ -415,7 +424,44 @@
   }
 
   function renderHome() {
-    return `<section class="mobile-section"><h2>Workspaces</h2>${renderWorkspaces()}</section><section class="mobile-section"><h2>Agents</h2>${renderAgentsRows()}</section>`;
+    return `${renderTaskHub()}<section class="mobile-section"><h2>Workspaces</h2>${renderWorkspaces()}</section><section class="mobile-section"><h2>Agents needing attention</h2>${renderAttentionAgents()}</section>`;
+  }
+
+  function renderTaskHub() {
+    const active = currentWorkspace();
+    const searchAction = globalThis.HerdrActionRegistry.action("search");
+    const activeAction = active
+      ? `<button class="mobile-task-card primary" onclick="HerdrMobile.showScreen('terminal')"><strong>Continue ${escapeHtml(workspaceTitle(active))}</strong><span>${escapeHtml(contextMeta(active))}</span></button>`
+      : `<button class="mobile-task-card primary" onclick="HerdrMobile.runAction('open-workspace')"><strong>Open workspace or worktree</strong><span>Pick a folder, discover worktrees, or create a checkout.</span></button>`;
+    return `<section class="mobile-section mobile-task-hub"><h2>Start</h2><div class="mobile-task-grid">${activeAction}<button class="mobile-task-card" onclick="HerdrMobile.runAction('search')"><strong>${escapeHtml(searchAction.title)}</strong><span>${escapeHtml(searchAction.subtitle)}</span></button></div></section>`;
+  }
+
+  function renderAttentionAgents() {
+    const attention = mobileAttention
+      .sortAgents(state.agents)
+      .filter((agent) => ["blocked", "done"].includes(mobileAttention.statusClass(agent.agent_status)));
+    if (!attention.length) return '<div class="mobile-loading">No blocked or done agents</div>';
+    const previousAgents = state.agents;
+    state.agents = attention;
+    try {
+      return renderAgentsRows();
+    } finally {
+      state.agents = previousAgents;
+    }
+  }
+
+  function renderMore() {
+    const attention = state.agents.filter((agent) => ["blocked", "done"].includes(mobileAttention.statusClass(agent.agent_status))).length;
+    const workspace = currentWorkspace();
+    const tools = [
+      { screen: "agents", title: "Agents", meta: attention ? `${attention} need attention` : `${state.agents.length} active`, icon: "●" },
+      { screen: "panels", title: "Panels", meta: workspace ? `${state.tabs.length} terminal tabs` : "Select workspace first", icon: "▦" },
+      { screen: "worktrees", title: "Worktrees", meta: "Discover, open, or create Git worktrees", icon: "wt" },
+      { screen: "files", title: "Files", meta: workspace ? "Browse current workspace" : "Select workspace first", icon: "fi" },
+      { screen: "git", title: "Git", meta: workspace ? "Status, diff, branches, history" : "Select workspace first", icon: "git" },
+      { screen: "settings", title: "Settings", meta: "Appearance, search, alerts, terminal", icon: "⚙" },
+    ];
+    return `<section class="mobile-section mobile-more"><h2>More tools</h2><p class="mobile-help">Less-used tools stay here so Home, Search, and Terminal remain fast.</p><div class="mobile-more-grid">${tools.map((tool) => `<button class="mobile-more-card" onclick="HerdrMobile.showScreen('${tool.screen}')"><span class="mobile-more-icon">${escapeHtml(tool.icon)}</span><strong>${escapeHtml(tool.title)}</strong><small>${escapeHtml(tool.meta)}</small></button>`).join("")}</div></section>`;
   }
 
   function renderWorkspaces() {
@@ -478,19 +524,17 @@
   }
 
   function mobileNavLabel(screen) {
-    if (screen !== "agents")
-      return (
-        {
-          home: "Workspaces",
-          panels: "Panels",
-          worktrees: "Worktrees",
-          files: "Files",
-          git: "Git",
-          terminal: "Terminal",
-        }[screen] || screen
-      );
+    if (screen === "home") return "Home";
+    if (screen === "search") return "Search";
+    if (screen === "terminal") return "Terminal";
+    if (screen !== "more") return screen;
     const status = mobileAttention.topStatus();
-    return `Agents${status ? ` <span class="mobile-nav-status ${escapeHtml(status)}">${escapeHtml(status)}</span>` : ""}`;
+    return `More${status ? ` <span class="mobile-nav-status ${escapeHtml(status)}">${escapeHtml(status)}</span>` : ""}`;
+  }
+
+  function mobileNavActive(screen) {
+    if (screen === "more") return state.screen === "more" || MORE_SCREENS.includes(state.screen);
+    return screen === state.screen;
   }
 
   function renderPanels() {
@@ -839,6 +883,7 @@
     pathKind: "file",
     timer: null,
     requestSeq: 0,
+    actions: [],
     targets: [],
     pathEntries: [],
     pathGitStatus: null,
@@ -847,7 +892,7 @@
     pathDone: true,
     pathOffset: 0,
     content: globalThis.HerdrWorkspaceSearch ? globalThis.HerdrWorkspaceSearch.createContentState() : { query: "", files: [], expanded: {}, snippets: {}, loading: false, error: "", done: true, offset: 0, total_files: 0, total_matches: 0 },
-    sectionsExpanded: { workspaces: true, files: true, content: true },
+    sectionsExpanded: { actions: true, workspaces: true, files: true, content: true },
   };
 
   function openMobileSearch() {
@@ -856,6 +901,7 @@
     const input = el("mobileSearchInput");
     if (!sheet || !input) return;
     mobileSearch.query = "";
+    mobileSearch.actions = mobileActionCandidates("");
     mobileSearch.targets = mobileSearchTargets("");
     mobileSearch.pathEntries = [];
     mobileSearch.pathError = "";
@@ -900,6 +946,13 @@
       if (!needle || text.includes(needle)) rows.push({ type: "agent", agent, title, subtitle: agent.workspace_id || "agent" });
     }
     return rows.slice(0, 10);
+  }
+
+  function mobileActionCandidates(query) {
+    return globalThis.HerdrActionRegistry.candidates(query, {
+      platform: "mobile",
+      hasWorkspace: !!currentWorkspace(),
+    });
   }
 
   function mobileTextParts(...values) {
@@ -978,6 +1031,7 @@
   function scheduleMobileSearch() {
     const input = el("mobileSearchInput");
     mobileSearch.query = input ? input.value : "";
+    mobileSearch.actions = mobileActionCandidates(mobileSearch.query);
     mobileSearch.targets = mobileSearchTargets(mobileSearch.query);
     renderMobileSearch();
     if (mobileSearch.timer) clearTimeout(mobileSearch.timer);
@@ -1077,6 +1131,9 @@
     const opts = helper.settings();
     normalizeMobilePathKind(opts);
     const query = String(mobileSearch.query || "").trim();
+    const actionRows = mobileSearch.actions.length
+      ? mobileSearch.actions.map((row, index) => `<button class="mobile-row" onclick="HerdrMobileSearch.openAction(${index})"><strong>${escapeHtml(row.title)}</strong><span>${escapeHtml(row.subtitle)}</span></button>`).join("")
+      : '<div class="mobile-loading">No matching actions.</div>';
     const targetRows = mobileSearch.targets.length
       ? mobileSearch.targets.map((row, index) => `<button class="mobile-row" onclick="HerdrMobileSearch.openTarget(${index})"><strong>${escapeHtml(row.title)}</strong><span>${escapeHtml(row.subtitle || row.type)}</span></button>`).join("")
       : '<div class="mobile-loading">No workspace or agent matches.</div>';
@@ -1091,11 +1148,12 @@
         ? `<div class="mobile-loading">Type at least ${opts.contentMinChars} characters to search file contents.</div>`
         : helper.renderContentPicker(mobileSearch.content, { callback: "HerdrMobileSearchContent", idPrefix: "mobileUnifiedSearchContent", disableSnippetEditing: true });
     const sections = {
+      actions: renderMobileSearchSection("actions", "Actions", String(mobileSearch.actions.length), actionRows),
       workspaces: opts.searchWorkspacesEnabled === false || !query ? "" : renderMobileSearchSection("workspaces", "Workspaces and agents", String(mobileSearch.targets.length), targetRows),
       files: mobilePathSearchAvailable(opts) ? renderMobileSearchSection("files", "Files and folders", mobileSearch.pathKind === "dir" ? "Folders" : "Files", `<div class="mobile-actions"><button class="mobile-btn ${mobileSearch.pathKind === "file" ? "active" : ""}" ${opts.searchFilesEnabled === false ? "disabled" : ""} onclick="HerdrMobileSearch.setPathKind('file')">Files</button><button class="mobile-btn ${mobileSearch.pathKind === "dir" ? "active" : ""}" ${opts.searchFoldersEnabled === false ? "disabled" : ""} onclick="HerdrMobileSearch.setPathKind('dir')">Folders</button></div>${mobileSearch.pathError ? `<div class="mobile-error">${escapeHtml(mobileSearch.pathError)}</div>` : ""}${pathTree}`) : "",
       content: opts.searchContentEnabled === false ? "" : renderMobileSearchSection("content", "File content", `${Number(mobileSearch.content.total_matches || 0)} matches`, contentBody),
     };
-    box.innerHTML = opts.searchSectionOrder.map((key) => sections[key] || "").join("");
+    box.innerHTML = sections.actions + opts.searchSectionOrder.map((key) => sections[key] || "").join("");
   }
 
   function renderMobileSearchSection(key, title, meta, body) {
@@ -1117,6 +1175,7 @@
 
   function openFirstMobileSearchResult() {
     const opts = mobileSearchSettings();
+    if (mobileSearch.sectionsExpanded.actions !== false && mobileSearch.actions[0]) { HerdrMobileSearch.openAction(0); return; }
     for (const section of opts.searchSectionOrder || ["workspaces", "files", "content"]) {
       if (mobileSearch.sectionsExpanded[section] === false) continue;
       if (section === "workspaces" && opts.searchWorkspacesEnabled !== false && mobileSearch.targets[0]) { HerdrMobileSearch.openTarget(0); return; }
@@ -1132,8 +1191,48 @@
     }
   }
 
+  function runMobileAction(action) {
+    if (action === "search") {
+      openMobileSearch();
+      return;
+    }
+    if (action === "open-workspace" || action === "discover-worktrees") {
+      showScreen("worktrees");
+      if (action === "discover-worktrees") mobileWorktrees.load();
+      return;
+    }
+    if (action === "create-worktree") {
+      state.worktreeCreateExpanded = true;
+      showScreen("worktrees");
+      return;
+    }
+    if (action === "temp-terminal") {
+      if (mobileTempTerminal) mobileTempTerminal.open();
+      return;
+    }
+    if (["terminal", "files", "git", "settings"].includes(action)) showScreen(action);
+  }
+
+  function scheduleEventRefresh() {
+    if (eventRefreshTimer || document.hidden) return;
+    eventRefreshTimer = setTimeout(() => {
+      eventRefreshTimer = null;
+      if (document.hidden) return;
+      return refresh();
+    }, 120);
+  }
+
+  function scheduleEventReconnect() {
+    if (eventReconnectTimer || document.hidden) return;
+    eventReconnectTimer = setTimeout(() => {
+      eventReconnectTimer = null;
+      if (document.hidden) return;
+      connectEvents();
+    }, 1500);
+  }
+
   function connectEvents() {
-    if (eventWs || !globalThis.WebSocket) return;
+    if (eventWs || !globalThis.WebSocket || document.hidden) return;
     const ws = new WebSocket(wsUrl("/ws/events"));
     eventWs = ws;
     ws.onmessage = (event) => {
@@ -1145,11 +1244,11 @@
         if (kind === "pane.exited" && mobileTempTerminal && mobileTempTerminal.handlePaneExited)
           mobileTempTerminal.handlePaneExited(data.pane_id);
       } catch (_) {}
-      refresh();
+      scheduleEventRefresh();
     };
     ws.onclose = () => {
       if (eventWs === ws) eventWs = null;
-      setTimeout(connectEvents, 1500);
+      scheduleEventReconnect();
     };
   }
 
@@ -1213,9 +1312,15 @@
 
   globalThis.HerdrMobileSearch = {
     toggleSection(section) {
-      if (!["workspaces", "files", "content"].includes(section)) return;
+      if (!["actions", "workspaces", "files", "content"].includes(section)) return;
       mobileSearch.sectionsExpanded[section] = mobileSearch.sectionsExpanded[section] === false;
       renderMobileSearch();
+    },
+    openAction(index) {
+      const row = mobileSearch.actions[index];
+      if (!row) return;
+      closeMobileSearch();
+      runMobileAction(row.action);
     },
     setPathKind(kind) {
       const opts = mobileSearchSettings();
@@ -1232,7 +1337,7 @@
       if (!row) return;
       closeMobileSearch();
       if (row.type === "workspace") selectWorkspace(row.workspace.workspace_id);
-      else if (row.agent) selectAgent(row.agent.terminal_id || row.agent.agent || "");
+      else if (row.agent) selectAgent(row.agent.workspace_id, row.agent.tab_id, row.agent.pane_id);
     },
     openPath(path, kind) {
       closeMobileSearch();
@@ -1313,6 +1418,7 @@
     loadWorktrees: mobileWorktrees.load,
     openWorktree: mobileWorktrees.open,
     createWorktree: mobileWorktrees.create,
+    setWorktreeCreateExpanded: mobileWorktrees.setCreateExpanded,
     updateWorktreeField: mobileWorktrees.updateField,
     setThemeMode: mobileSettings.setThemeMode,
     setBrowserNotifications: mobileSettings.setBrowserNotifications,
@@ -1327,6 +1433,7 @@
     setSearchFoldersEnabled: mobileSettings.setSearchFoldersEnabled,
     setSearchContentEnabled: mobileSettings.setSearchContentEnabled,
     setSearchSectionOrder: mobileSettings.setSearchSectionOrder,
+    setSettingsFilter: mobileSettings.setSettingsFilter,
     moveSearchSection: mobileSettings.moveSearchSection,
     setFileContentSearchMinChars: mobileSettings.setFileContentSearchMinChars,
     setFileContentSearchPageSize: mobileSettings.setFileContentSearchPageSize,
@@ -1344,6 +1451,7 @@
     currentScreen,
     currentSelection,
     refresh,
+    runAction: runMobileAction,
     showScreen,
   };
 
@@ -1368,7 +1476,13 @@
   window.addEventListener("resize", scheduleTerminalResize);
   if (window.visualViewport)
     window.visualViewport.addEventListener("resize", scheduleTerminalResize);
-  document.addEventListener("visibilitychange", syncBrowserFavicon);
+  document.addEventListener("visibilitychange", () => {
+    syncBrowserFavicon();
+    if (!document.hidden) {
+      scheduleEventRefresh();
+      scheduleEventReconnect();
+    }
+  });
   document.addEventListener("pointerdown", mobileAttention.unlockAudio, {
     once: true,
   });

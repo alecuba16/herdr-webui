@@ -17,7 +17,6 @@
     var api = opts.api;
     var modalId = opts.modalId;
     var containerId = opts.containerId;
-    var buttonId = opts.buttonId;
     var closeId = opts.closeId;
     var fontFamilyFn = opts.fontFamilyFn || function () { return "monospace"; };
     var themeFn = opts.themeFn || function () { return {}; };
