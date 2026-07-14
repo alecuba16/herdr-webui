@@ -30,7 +30,7 @@ function context(pathname = "/") {
   const historyCalls = [];
   const terminalStats = { disposed: 0, linkDisposed: 0, linksRegistered: 0, opened: 0 };
   const requests = [];
-  const navButtons = ["home", "agents", "panels", "worktrees", "files", "git", "terminal"].map(
+  const navButtons = ["home", "search", "terminal", "more"].map(
     (screen) => Object.assign(element(), { dataset: { screen } }),
   );
   const getElement = (id) => {
@@ -287,6 +287,22 @@ describe("mobile bundle load", () => {
     ok(source.includes("HerdrMobileSearch.openAction"));
   });
 
+  it("renders simplified mobile nav with More menu", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    match(source, /<button data-screen="home">Home<\/button>/);
+    match(source, /<button data-screen="search">Search<\/button>/);
+    match(source, /<button data-screen="terminal">Terminal<\/button>/);
+    match(source, /<button data-screen="more">More<\/button>/);
+    ok(!source.includes('data-screen="agents">Agents</button>'));
+    doesNotThrow(() => ctx.HerdrMobile.showScreen("more"));
+    const html = ctx.document.getElementById("mobileScreen").innerHTML;
+    ok(html.includes("More tools"));
+    ok(html.includes("HerdrMobile.showScreen('worktrees')"));
+    ctx.HerdrMobile.showScreen("search");
+    equal(ctx.document.getElementById("mobileSearchSheet").hidden, false);
+  });
+
   it("keeps mobile worktree creation progressive and settings filterable", () => {
     match(source, /Create new worktree/);
     match(source, /setWorktreeCreateExpanded/);
@@ -505,14 +521,14 @@ describe("mobile bundle load", () => {
     );
   });
 
-  it("shows highest-priority agent status in agents tab label", async () => {
+  it("shows highest-priority agent status in More tab label", async () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
     vm.runInContext(source, ctx);
     await ctx.HerdrMobile.refresh();
-    const agentsButton = ctx.navButtons.find(
-      (button) => button.dataset.screen === "agents",
+    const moreButton = ctx.navButtons.find(
+      (button) => button.dataset.screen === "more",
     );
-    ok(agentsButton.innerHTML.includes("blocked"));
+    ok(moreButton.innerHTML.includes("blocked"));
   });
 
   it("sorts mobile agents by attention priority", async () => {

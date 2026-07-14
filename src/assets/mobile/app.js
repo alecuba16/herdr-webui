@@ -8,6 +8,7 @@
     selectionPath: mobileSelectionPath,
   } = globalThis.HerdrMobileCore;
   const { createFaviconNotifier } = globalThis.HerdrAppHelpers;
+  const MORE_SCREENS = ["agents", "panels", "worktrees", "files", "git", "settings"];
 
   const state = {
     session: "default",
@@ -307,13 +308,10 @@
           </div>
         </div>
         <nav class="mobile-nav">
-          <button data-screen="home">Workspaces</button>
-          <button data-screen="agents">Agents</button>
-          <button data-screen="panels">Panels</button>
-          <button data-screen="worktrees">Worktrees</button>
-          <button data-screen="files">Files</button>
-          <button data-screen="git">Git</button>
+          <button data-screen="home">Home</button>
+          <button data-screen="search">Search</button>
           <button data-screen="terminal">Terminal</button>
+          <button data-screen="more">More</button>
         </nav>
       </div>
       <div class="temp-terminal-backdrop" id="tempTerminalModal">
@@ -342,6 +340,10 @@
   }
 
   function showScreen(screen) {
+    if (screen === "search") {
+      openMobileSearch();
+      return;
+    }
     const wasTerminal = state.screen === "terminal";
     state.screen = screen;
     if (wasTerminal && screen !== "terminal") mobileTerminal.destroy(false);
@@ -363,7 +365,10 @@
       searchButton.disabled = disabled;
     }
     document.querySelectorAll(".mobile-nav button").forEach((button) => {
-      button.classList.toggle("active", button.dataset.screen === state.screen);
+      const searchNavDisabled = button.dataset.screen === "search" && headerSearchDisabled();
+      button.hidden = searchNavDisabled;
+      button.disabled = searchNavDisabled;
+      button.classList.toggle("active", mobileNavActive(button.dataset.screen));
       button.innerHTML = mobileNavLabel(button.dataset.screen);
     });
     const screen = el("mobileScreen");
@@ -383,6 +388,7 @@
     else if (state.screen === "settings")
       screen.innerHTML = mobileSettings.render();
     else if (state.screen === "terminal") renderTerminalScreen(screen);
+    else if (state.screen === "more") screen.innerHTML = renderMore();
     else screen.innerHTML = renderHome();
     syncBrowserFavicon();
   }
@@ -437,6 +443,20 @@
     const html = renderAgentsRows();
     state.agents = previousAgents;
     return html;
+  }
+
+  function renderMore() {
+    const attention = state.agents.filter((agent) => ["blocked", "done"].includes(mobileAttention.statusClass(agent.agent_status))).length;
+    const workspace = currentWorkspace();
+    const tools = [
+      { screen: "agents", title: "Agents", meta: attention ? `${attention} need attention` : `${state.agents.length} active`, icon: "●" },
+      { screen: "panels", title: "Panels", meta: workspace ? `${state.tabs.length} terminal tabs` : "Select workspace first", icon: "▦" },
+      { screen: "worktrees", title: "Worktrees", meta: "Discover, open, or create Git worktrees", icon: "wt" },
+      { screen: "files", title: "Files", meta: workspace ? "Browse current workspace" : "Select workspace first", icon: "fi" },
+      { screen: "git", title: "Git", meta: workspace ? "Status, diff, branches, history" : "Select workspace first", icon: "git" },
+      { screen: "settings", title: "Settings", meta: "Appearance, search, alerts, terminal", icon: "⚙" },
+    ];
+    return `<section class="mobile-section mobile-more"><h2>More tools</h2><p class="mobile-help">Less-used tools stay here so Home, Search, and Terminal remain fast.</p><div class="mobile-more-grid">${tools.map((tool) => `<button class="mobile-more-card" onclick="HerdrMobile.showScreen('${tool.screen}')"><span class="mobile-more-icon">${escapeHtml(tool.icon)}</span><strong>${escapeHtml(tool.title)}</strong><small>${escapeHtml(tool.meta)}</small></button>`).join("")}</div></section>`;
   }
 
   function renderWorkspaces() {
@@ -499,19 +519,17 @@
   }
 
   function mobileNavLabel(screen) {
-    if (screen !== "agents")
-      return (
-        {
-          home: "Workspaces",
-          panels: "Panels",
-          worktrees: "Worktrees",
-          files: "Files",
-          git: "Git",
-          terminal: "Terminal",
-        }[screen] || screen
-      );
+    if (screen === "home") return "Home";
+    if (screen === "search") return "Search";
+    if (screen === "terminal") return "Terminal";
+    if (screen !== "more") return screen;
     const status = mobileAttention.topStatus();
-    return `Agents${status ? ` <span class="mobile-nav-status ${escapeHtml(status)}">${escapeHtml(status)}</span>` : ""}`;
+    return `More${status ? ` <span class="mobile-nav-status ${escapeHtml(status)}">${escapeHtml(status)}</span>` : ""}`;
+  }
+
+  function mobileNavActive(screen) {
+    if (screen === "more") return state.screen === "more" || MORE_SCREENS.includes(state.screen);
+    return screen === state.screen;
   }
 
   function renderPanels() {
