@@ -15,7 +15,7 @@ function createSearchPaletteState() {
     pathLoading: false,
     pathError: "",
     content: window.HerdrWorkspaceSearch ? window.HerdrWorkspaceSearch.createContentState() : { query: "", files: [], expanded: {}, snippets: {}, loading: false, error: "", done: true, offset: 0, total_files: 0, total_matches: 0 },
-    sectionsExpanded: { workspaces: true, files: true, content: true },
+    sectionsExpanded: { actions: true, workspaces: true, files: true, content: true },
   };
 }
 
@@ -253,6 +253,24 @@ function searchScore(text, needle) {
   return 10 + index;
 }
 
+function searchActionCandidates(query) {
+  const needle = String(query || "").trim().toLowerCase();
+  const hasWorkspace = !!currentSearchWorkspace();
+  const actions = [
+    { type: "action", action: "open-workspace", icon: "＋", title: "Open workspace or worktree", subtitle: "Open a folder, discover worktrees, or create a checkout", text: "open workspace folder worktree project" },
+    { type: "action", action: "discover-worktrees", icon: "wt", title: "Discover worktrees", subtitle: "Find linked Git worktrees from the current or default folder", text: "discover find list linked git worktrees" },
+    { type: "action", action: "temp-terminal", icon: "T", title: "Start temporary terminal", subtitle: "Open a shell without creating a workspace", text: "temporary terminal shell start" },
+    { type: "action", action: "sessions", icon: "se", title: "Manage sessions", subtitle: "Switch or launch built-in and Herdr backend sessions", text: "session backend manage launch switch" },
+    ...(hasWorkspace ? [
+      { type: "action", action: "files", icon: "fi", title: "Open Files", subtitle: "Browse files for the current workspace", text: "files file browser current workspace" },
+      { type: "action", action: "git", icon: "git", title: "Open Git", subtitle: "Show Git status for the current workspace", text: "git status changes current workspace" },
+      { type: "action", action: "create-worktree", icon: "wt", title: "Create worktree", subtitle: "Create a Git worktree from the current workspace", text: "create new git worktree branch checkout" },
+    ] : []),
+  ];
+  if (!needle) return actions;
+  return actions.filter((action) => `${action.title} ${action.subtitle} ${action.text}`.toLowerCase().includes(needle));
+}
+
 function searchSettings() {
   return window.HerdrWorkspaceSearch && window.HerdrWorkspaceSearch.settings
     ? window.HerdrWorkspaceSearch.settings()
@@ -381,8 +399,9 @@ function activeWorkspaceLabel() {
   return workspace ? workspaceDisplayTitle(workspace) : "No workspace selected";
 }
 
-function buildSearchSelectionRows(targets, order, opts) {
+function buildSearchSelectionRows(actions, targets, order, opts) {
   const rows = [];
+  if (searchPaletteState.sectionsExpanded.actions !== false) rows.push(...actions);
   if (!order || !order.length) order = ["workspaces", "files", "content"];
   for (const section of order) {
     if (section === "workspaces" && opts.searchWorkspacesEnabled !== false && searchPaletteState.sectionsExpanded.workspaces !== false) rows.push(...targets);
@@ -418,18 +437,29 @@ function renderSearchPalette() {
   const opts = searchSettings();
   normalizePalettePathKind(opts);
   const order = opts.searchSectionOrder || ["workspaces", "files", "content"];
+  const actions = searchActionCandidates(query);
   const targets = searchCandidates(query);
-  searchPaletteState.results = buildSearchSelectionRows(targets, order, opts);
+  searchPaletteState.results = buildSearchSelectionRows(actions, targets, order, opts);
   if (searchPaletteState.selectedIndex >= searchPaletteState.results.length)
     searchPaletteState.selectedIndex = Math.max(0, searchPaletteState.results.length - 1);
   const container = el("searchPaletteResults");
   if (!container) return;
   const sections = {
+    actions: renderActionSection(actions),
     workspaces: opts.searchWorkspacesEnabled === false || !query.trim() ? "" : renderTargetSection(targets),
     files: pathSearchAvailable(opts) ? renderWorkspacePathSection(opts) : "",
     content: opts.searchContentEnabled === false ? "" : renderWorkspaceContentSection(),
   };
-  container.innerHTML = order.map((key) => sections[key] || "").join("");
+  container.innerHTML = sections.actions + order.map((key) => sections[key] || "").join("");
+}
+
+function renderActionSection(actions) {
+  const expanded = searchPaletteState.sectionsExpanded.actions !== false;
+  if (!actions.length && searchPaletteState.query.trim()) return "";
+  const body = actions.length
+    ? actions.map((result) => renderTargetResult(result, searchPaletteState.results.indexOf(result))).join("")
+    : '<div class="search-empty">No matching actions.</div>';
+  return `<section class="search-section"><button class="search-section-head search-section-toggle" onclick="HerdrSearchPalette.toggleSection('actions')" aria-expanded="${expanded ? "true" : "false"}"><strong><span class="herdr-tree-icon herdr-tree-icon-${expanded ? "chevron-down" : "chevron-right"}" aria-hidden="true"></span>Actions</strong><span>${actions.length}</span></button>${expanded ? body : ""}</section>`;
 }
 
 function renderTargetSection(targets) {
@@ -495,8 +525,24 @@ function chooseSearchResult(index = searchPaletteState.selectedIndex) {
     openWorkspaceSearchContent(result.file, result.match);
     return;
   }
+  if (result.type === "action") {
+    runSearchAction(result.action);
+    return;
+  }
   closeSearchPalette();
   go(result.ws, result.tab, result.pane);
+}
+
+function runSearchAction(action) {
+  closeSearchPalette();
+  if (action === "open-workspace" || action === "discover-worktrees") openWorktreeOpenModal(selectedWorkspaceRepoPath(), true);
+  else if (action === "create-worktree") {
+    if (state.ws) openWorktreeCreateModal(state.ws);
+    else openWorktreeOpenModal(selectedWorkspaceRepoPath(), true);
+  } else if (action === "temp-terminal" && tempTerminal) tempTerminal.open();
+  else if (action === "sessions") showSessionManager();
+  else if (action === "files") openWorkspaceFileBrowser(state.ws);
+  else if (action === "git") openWorkspaceGitUi(state.ws);
 }
 
 function searchPaletteKeydown(e) {
@@ -551,7 +597,7 @@ function openWorkspaceSearchContent(file, match) {
 
 const HerdrSearchPalette = {
   toggleSection(section) {
-    if (!["workspaces", "files", "content"].includes(section)) return;
+    if (!["actions", "workspaces", "files", "content"].includes(section)) return;
     searchPaletteState.sectionsExpanded[section] = searchPaletteState.sectionsExpanded[section] === false;
     renderSearchPalette();
   },

@@ -32,6 +32,7 @@
     worktreeBase: "",
     worktreeLabel: "",
     worktreePath: "",
+    worktreeCreateExpanded: false,
     gitCwd: "",
     gitStatus: null,
     gitError: "",
@@ -415,7 +416,27 @@
   }
 
   function renderHome() {
-    return `<section class="mobile-section"><h2>Workspaces</h2>${renderWorkspaces()}</section><section class="mobile-section"><h2>Agents</h2>${renderAgentsRows()}</section>`;
+    return `${renderTaskHub()}<section class="mobile-section"><h2>Workspaces</h2>${renderWorkspaces()}</section><section class="mobile-section"><h2>Agents needing attention</h2>${renderAttentionAgents()}</section>`;
+  }
+
+  function renderTaskHub() {
+    const active = currentWorkspace();
+    const activeAction = active
+      ? `<button class="mobile-task-card primary" onclick="HerdrMobile.showScreen('terminal')"><strong>Continue ${escapeHtml(workspaceTitle(active))}</strong><span>${escapeHtml(contextMeta(active))}</span></button>`
+      : `<button class="mobile-task-card primary" onclick="HerdrMobile.runAction('open-workspace')"><strong>Open workspace or worktree</strong><span>Pick a folder, discover worktrees, or create a checkout.</span></button>`;
+    return `<section class="mobile-section mobile-task-hub"><h2>Start</h2><div class="mobile-task-grid">${activeAction}<button class="mobile-task-card" onclick="HerdrMobile.runAction('discover-worktrees')"><strong>Discover worktrees</strong><span>Find linked Git worktrees from a repo or worktrees folder.</span></button><button class="mobile-task-card" onclick="HerdrMobile.runAction('temp-terminal')"><strong>Temporary terminal</strong><span>Start a shell without creating a workspace.</span></button><button class="mobile-task-card" onclick="HerdrMobile.runAction('search')"><strong>Search and actions</strong><span>Find workspaces, files, content, or launch app actions.</span></button></div></section>`;
+  }
+
+  function renderAttentionAgents() {
+    const attention = mobileAttention
+      .sortAgents(state.agents)
+      .filter((agent) => ["blocked", "done"].includes(mobileAttention.statusClass(agent.agent_status)));
+    if (!attention.length) return '<div class="mobile-loading">No blocked or done agents</div>';
+    const previousAgents = state.agents;
+    state.agents = attention;
+    const html = renderAgentsRows();
+    state.agents = previousAgents;
+    return html;
   }
 
   function renderWorkspaces() {
@@ -839,6 +860,7 @@
     pathKind: "file",
     timer: null,
     requestSeq: 0,
+    actions: [],
     targets: [],
     pathEntries: [],
     pathGitStatus: null,
@@ -847,7 +869,7 @@
     pathDone: true,
     pathOffset: 0,
     content: globalThis.HerdrWorkspaceSearch ? globalThis.HerdrWorkspaceSearch.createContentState() : { query: "", files: [], expanded: {}, snippets: {}, loading: false, error: "", done: true, offset: 0, total_files: 0, total_matches: 0 },
-    sectionsExpanded: { workspaces: true, files: true, content: true },
+    sectionsExpanded: { actions: true, workspaces: true, files: true, content: true },
   };
 
   function openMobileSearch() {
@@ -856,6 +878,7 @@
     const input = el("mobileSearchInput");
     if (!sheet || !input) return;
     mobileSearch.query = "";
+    mobileSearch.actions = mobileActionCandidates("");
     mobileSearch.targets = mobileSearchTargets("");
     mobileSearch.pathEntries = [];
     mobileSearch.pathError = "";
@@ -900,6 +923,25 @@
       if (!needle || text.includes(needle)) rows.push({ type: "agent", agent, title, subtitle: agent.workspace_id || "agent" });
     }
     return rows.slice(0, 10);
+  }
+
+  function mobileActionCandidates(query) {
+    const needle = String(query || "").trim().toLowerCase();
+    const hasWorkspace = !!currentWorkspace();
+    const actions = [
+      { action: "open-workspace", title: "Open workspace or worktree", subtitle: "Open a folder, discover worktrees, or create a checkout", text: "open workspace folder worktree project" },
+      { action: "discover-worktrees", title: "Discover worktrees", subtitle: "Find linked Git worktrees", text: "discover find linked git worktrees" },
+      { action: "temp-terminal", title: "Temporary terminal", subtitle: "Start a shell without creating a workspace", text: "temporary terminal shell start" },
+      { action: "settings", title: "Settings", subtitle: "Adjust layout, files, alerts, terminal, and worktree defaults", text: "settings options preferences" },
+      ...(hasWorkspace ? [
+        { action: "terminal", title: "Open Terminal", subtitle: "Return to the current terminal", text: "terminal current workspace" },
+        { action: "files", title: "Open Files", subtitle: "Browse current workspace files", text: "files browser current workspace" },
+        { action: "git", title: "Open Git", subtitle: "Review current workspace Git status", text: "git status changes" },
+        { action: "create-worktree", title: "Create worktree", subtitle: "Open the create worktree form", text: "create git worktree branch checkout" },
+      ] : []),
+    ];
+    if (!needle) return actions;
+    return actions.filter((action) => `${action.title} ${action.subtitle} ${action.text}`.toLowerCase().includes(needle));
   }
 
   function mobileTextParts(...values) {
@@ -978,6 +1020,7 @@
   function scheduleMobileSearch() {
     const input = el("mobileSearchInput");
     mobileSearch.query = input ? input.value : "";
+    mobileSearch.actions = mobileActionCandidates(mobileSearch.query);
     mobileSearch.targets = mobileSearchTargets(mobileSearch.query);
     renderMobileSearch();
     if (mobileSearch.timer) clearTimeout(mobileSearch.timer);
@@ -1077,6 +1120,9 @@
     const opts = helper.settings();
     normalizeMobilePathKind(opts);
     const query = String(mobileSearch.query || "").trim();
+    const actionRows = mobileSearch.actions.length
+      ? mobileSearch.actions.map((row, index) => `<button class="mobile-row" onclick="HerdrMobileSearch.openAction(${index})"><strong>${escapeHtml(row.title)}</strong><span>${escapeHtml(row.subtitle)}</span></button>`).join("")
+      : '<div class="mobile-loading">No matching actions.</div>';
     const targetRows = mobileSearch.targets.length
       ? mobileSearch.targets.map((row, index) => `<button class="mobile-row" onclick="HerdrMobileSearch.openTarget(${index})"><strong>${escapeHtml(row.title)}</strong><span>${escapeHtml(row.subtitle || row.type)}</span></button>`).join("")
       : '<div class="mobile-loading">No workspace or agent matches.</div>';
@@ -1091,11 +1137,12 @@
         ? `<div class="mobile-loading">Type at least ${opts.contentMinChars} characters to search file contents.</div>`
         : helper.renderContentPicker(mobileSearch.content, { callback: "HerdrMobileSearchContent", idPrefix: "mobileUnifiedSearchContent", disableSnippetEditing: true });
     const sections = {
+      actions: renderMobileSearchSection("actions", "Actions", String(mobileSearch.actions.length), actionRows),
       workspaces: opts.searchWorkspacesEnabled === false || !query ? "" : renderMobileSearchSection("workspaces", "Workspaces and agents", String(mobileSearch.targets.length), targetRows),
       files: mobilePathSearchAvailable(opts) ? renderMobileSearchSection("files", "Files and folders", mobileSearch.pathKind === "dir" ? "Folders" : "Files", `<div class="mobile-actions"><button class="mobile-btn ${mobileSearch.pathKind === "file" ? "active" : ""}" ${opts.searchFilesEnabled === false ? "disabled" : ""} onclick="HerdrMobileSearch.setPathKind('file')">Files</button><button class="mobile-btn ${mobileSearch.pathKind === "dir" ? "active" : ""}" ${opts.searchFoldersEnabled === false ? "disabled" : ""} onclick="HerdrMobileSearch.setPathKind('dir')">Folders</button></div>${mobileSearch.pathError ? `<div class="mobile-error">${escapeHtml(mobileSearch.pathError)}</div>` : ""}${pathTree}`) : "",
       content: opts.searchContentEnabled === false ? "" : renderMobileSearchSection("content", "File content", `${Number(mobileSearch.content.total_matches || 0)} matches`, contentBody),
     };
-    box.innerHTML = opts.searchSectionOrder.map((key) => sections[key] || "").join("");
+    box.innerHTML = sections.actions + opts.searchSectionOrder.map((key) => sections[key] || "").join("");
   }
 
   function renderMobileSearchSection(key, title, meta, body) {
@@ -1117,6 +1164,7 @@
 
   function openFirstMobileSearchResult() {
     const opts = mobileSearchSettings();
+    if (mobileSearch.sectionsExpanded.actions !== false && mobileSearch.actions[0]) { HerdrMobileSearch.openAction(0); return; }
     for (const section of opts.searchSectionOrder || ["workspaces", "files", "content"]) {
       if (mobileSearch.sectionsExpanded[section] === false) continue;
       if (section === "workspaces" && opts.searchWorkspacesEnabled !== false && mobileSearch.targets[0]) { HerdrMobileSearch.openTarget(0); return; }
@@ -1130,6 +1178,28 @@
         if (file && match) { HerdrMobileSearch.openContent(file.path, match.id); return; }
       }
     }
+  }
+
+  function runMobileAction(action) {
+    if (action === "search") {
+      openMobileSearch();
+      return;
+    }
+    if (action === "open-workspace" || action === "discover-worktrees") {
+      showScreen("worktrees");
+      if (action === "discover-worktrees") mobileWorktrees.load();
+      return;
+    }
+    if (action === "create-worktree") {
+      state.worktreeCreateExpanded = true;
+      showScreen("worktrees");
+      return;
+    }
+    if (action === "temp-terminal") {
+      if (mobileTempTerminal) mobileTempTerminal.open();
+      return;
+    }
+    if (["terminal", "files", "git", "settings"].includes(action)) showScreen(action);
   }
 
   function connectEvents() {
@@ -1213,9 +1283,15 @@
 
   globalThis.HerdrMobileSearch = {
     toggleSection(section) {
-      if (!["workspaces", "files", "content"].includes(section)) return;
+      if (!["actions", "workspaces", "files", "content"].includes(section)) return;
       mobileSearch.sectionsExpanded[section] = mobileSearch.sectionsExpanded[section] === false;
       renderMobileSearch();
+    },
+    openAction(index) {
+      const row = mobileSearch.actions[index];
+      if (!row) return;
+      closeMobileSearch();
+      runMobileAction(row.action);
     },
     setPathKind(kind) {
       const opts = mobileSearchSettings();
@@ -1232,7 +1308,7 @@
       if (!row) return;
       closeMobileSearch();
       if (row.type === "workspace") selectWorkspace(row.workspace.workspace_id);
-      else if (row.agent) selectAgent(row.agent.terminal_id || row.agent.agent || "");
+      else if (row.agent) selectAgent(row.agent.workspace_id, row.agent.tab_id, row.agent.pane_id);
     },
     openPath(path, kind) {
       closeMobileSearch();
@@ -1313,6 +1389,7 @@
     loadWorktrees: mobileWorktrees.load,
     openWorktree: mobileWorktrees.open,
     createWorktree: mobileWorktrees.create,
+    setWorktreeCreateExpanded: mobileWorktrees.setCreateExpanded,
     updateWorktreeField: mobileWorktrees.updateField,
     setThemeMode: mobileSettings.setThemeMode,
     setBrowserNotifications: mobileSettings.setBrowserNotifications,
@@ -1327,6 +1404,7 @@
     setSearchFoldersEnabled: mobileSettings.setSearchFoldersEnabled,
     setSearchContentEnabled: mobileSettings.setSearchContentEnabled,
     setSearchSectionOrder: mobileSettings.setSearchSectionOrder,
+    setSettingsFilter: mobileSettings.setSettingsFilter,
     moveSearchSection: mobileSettings.moveSearchSection,
     setFileContentSearchMinChars: mobileSettings.setFileContentSearchMinChars,
     setFileContentSearchPageSize: mobileSettings.setFileContentSearchPageSize,
@@ -1344,6 +1422,7 @@
     currentScreen,
     currentSelection,
     refresh,
+    runAction: runMobileAction,
     showScreen,
   };
 
