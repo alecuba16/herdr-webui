@@ -282,6 +282,30 @@ describe("app bundle load", () => {
     ok(!dashboard.innerHTML.includes("Start a shell without creating"));
   });
 
+  it("hides project dashboard when Git or file drawer is visible without a workspace", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    const dashboard = ctx.document.getElementById("projectDashboard");
+    const shell = ctx.document.getElementById("terminalShell");
+
+    ctx.window.HerdrGitUi = { isVisible: () => true };
+    ctx.window.HerdrFileBrowser = { isVisible: () => false };
+    ctx.syncProjectDashboard();
+    equal(dashboard.hidden, true);
+    equal(shell.hidden, false);
+
+    ctx.window.HerdrGitUi = { isVisible: () => false };
+    ctx.window.HerdrFileBrowser = { isVisible: () => true };
+    ctx.syncProjectDashboard();
+    equal(dashboard.hidden, true);
+    equal(shell.hidden, false);
+
+    ctx.window.HerdrFileBrowser = { isVisible: () => false };
+    ctx.syncProjectDashboard();
+    equal(dashboard.hidden, false);
+    equal(shell.hidden, true);
+  });
+
   it("keeps file history header scoped to selected files", () => {
     match(gitUiSource, /function renderFileToolbar\(activeTab\) \{\n\s+const view = active\(\) \|\| \{\};/);
     match(gitUiSource, /const history = view\.file \? `<button class="git-ui-btn \$\{activeTab === "history" \? "active" : ""\}" title="\$\{esc\(titleWithGitShortcut\("File history", "history"\)\)\}" onclick="HerdrGitUi\.tab\('history'\)">History<\/button>` : "";/);
