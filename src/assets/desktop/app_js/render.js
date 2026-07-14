@@ -71,6 +71,7 @@ function render() {
     }
   }
   fitTerminalShell();
+  if (typeof fitTerminalSurface === "function") fitTerminalSurface();
 }
 window.HerdrDesktopRender = render;
 function updateTitle(wsById, tabById, tabCountsByWorkspace, pane) {
