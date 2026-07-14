@@ -1,5 +1,12 @@
 # Release notes
 
+## 0.2.60 Release Notes
+
+### Built-in backend detection docs
+
+- Documents the expanded built-in backend agent identity and screen-status detection coverage in the README, feature docs, and technical docs.
+- Clarifies that the built-in backend mirrors Herdr screen-manifest visible `blocked`, `working`, and `idle` signals where terminal text exposes them, while OSC-only or metadata-only Herdr signals remain outside the screen-text fallback.
+
 ## 0.2.59 Release Notes
 
 ### Built-in backend agent detection parity
