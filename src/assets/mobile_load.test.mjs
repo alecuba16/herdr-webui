@@ -252,6 +252,8 @@ describe("mobile bundle load", () => {
   const source =
     readFileSync(new URL("./shared/core.js", import.meta.url), "utf8") +
     "\n" +
+    readFileSync(new URL("./shared/actions.js", import.meta.url), "utf8") +
+    "\n" +
     readFileSync(new URL("./shared/file_icons.js", import.meta.url), "utf8") +
     "\n" +
     readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8") +
@@ -308,7 +310,10 @@ describe("mobile bundle load", () => {
     const html = ctx.document.getElementById("mobileScreen").innerHTML;
     ok(html.includes("mobile-task-hub"));
     ok(html.includes("Open workspace or worktree"));
+    ok(html.includes("Search and actions"));
+    ok(!html.includes("Temporary terminal"));
     ok(source.includes("function mobileActionCandidates(query)"));
+    ok(source.includes("HerdrActionRegistry.candidates"));
     ok(source.includes("HerdrMobileSearch.openAction"));
   });
 

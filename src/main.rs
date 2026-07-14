@@ -1200,6 +1200,7 @@ fn app_router(state: WebState) -> Router {
         .route("/assets/desktop/shortcuts.css", get(desktop_shortcuts_css))
         .route("/assets/app-boot.js", get(app_boot_js))
         .route("/assets/shared/core.js", get(shared_core_js))
+        .route("/assets/shared/actions.js", get(shared_actions_js))
         .route("/assets/shared/file-icons.js", get(shared_file_icons_js))
         .route("/assets/shared/file-icons.css", get(shared_file_icons_css))
         .route("/assets/shared/colors.css", get(shared_colors_css))

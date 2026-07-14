@@ -427,10 +427,11 @@
 
   function renderTaskHub() {
     const active = currentWorkspace();
+    const searchAction = globalThis.HerdrActionRegistry.action("search");
     const activeAction = active
       ? `<button class="mobile-task-card primary" onclick="HerdrMobile.showScreen('terminal')"><strong>Continue ${escapeHtml(workspaceTitle(active))}</strong><span>${escapeHtml(contextMeta(active))}</span></button>`
       : `<button class="mobile-task-card primary" onclick="HerdrMobile.runAction('open-workspace')"><strong>Open workspace or worktree</strong><span>Pick a folder, discover worktrees, or create a checkout.</span></button>`;
-    return `<section class="mobile-section mobile-task-hub"><h2>Start</h2><div class="mobile-task-grid">${activeAction}<button class="mobile-task-card" onclick="HerdrMobile.runAction('discover-worktrees')"><strong>Discover worktrees</strong><span>Find linked Git worktrees from a repo or worktrees folder.</span></button><button class="mobile-task-card" onclick="HerdrMobile.runAction('temp-terminal')"><strong>Temporary terminal</strong><span>Start a shell without creating a workspace.</span></button><button class="mobile-task-card" onclick="HerdrMobile.runAction('search')"><strong>Search and actions</strong><span>Find workspaces, files, content, or launch app actions.</span></button></div></section>`;
+    return `<section class="mobile-section mobile-task-hub"><h2>Start</h2><div class="mobile-task-grid">${activeAction}<button class="mobile-task-card" onclick="HerdrMobile.runAction('search')"><strong>${escapeHtml(searchAction.title)}</strong><span>${escapeHtml(searchAction.subtitle)}</span></button></div></section>`;
   }
 
   function renderAttentionAgents() {
@@ -946,22 +947,10 @@
   }
 
   function mobileActionCandidates(query) {
-    const needle = String(query || "").trim().toLowerCase();
-    const hasWorkspace = !!currentWorkspace();
-    const actions = [
-      { action: "open-workspace", title: "Open workspace or worktree", subtitle: "Open a folder, discover worktrees, or create a checkout", text: "open workspace folder worktree project" },
-      { action: "discover-worktrees", title: "Discover worktrees", subtitle: "Find linked Git worktrees", text: "discover find linked git worktrees" },
-      { action: "temp-terminal", title: "Temporary terminal", subtitle: "Start a shell without creating a workspace", text: "temporary terminal shell start" },
-      { action: "settings", title: "Settings", subtitle: "Adjust layout, files, alerts, terminal, and worktree defaults", text: "settings options preferences" },
-      ...(hasWorkspace ? [
-        { action: "terminal", title: "Open Terminal", subtitle: "Return to the current terminal", text: "terminal current workspace" },
-        { action: "files", title: "Open Files", subtitle: "Browse current workspace files", text: "files browser current workspace" },
-        { action: "git", title: "Open Git", subtitle: "Review current workspace Git status", text: "git status changes" },
-        { action: "create-worktree", title: "Create worktree", subtitle: "Open the create worktree form", text: "create git worktree branch checkout" },
-      ] : []),
-    ];
-    if (!needle) return actions;
-    return actions.filter((action) => `${action.title} ${action.subtitle} ${action.text}`.toLowerCase().includes(needle));
+    return globalThis.HerdrActionRegistry.candidates(query, {
+      platform: "mobile",
+      hasWorkspace: !!currentWorkspace(),
+    });
   }
 
   function mobileTextParts(...values) {
