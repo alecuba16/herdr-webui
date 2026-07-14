@@ -173,6 +173,54 @@ describe("app bundle load", () => {
     match(source, /runSearchAction\(result\.action\)/);
   });
 
+  it("returns desktop UX actions from a single command-palette candidate path", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    const actionNames = (query) => Array.from(ctx.searchActionCandidates(query), (action) => action.action);
+    deepEqual(
+      actionNames(""),
+      ["open-workspace", "discover-worktrees", "temp-terminal", "sessions"],
+    );
+    deepEqual(
+      actionNames("session"),
+      ["sessions"],
+    );
+    deepEqual(
+      actionNames("nonsense"),
+      [],
+    );
+  });
+
+  it("wires desktop project dashboard and command actions to expected launchers", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    const dashboard = ctx.renderProjectDashboard();
+
+    match(dashboard, /openWorktreeOpenModal\(selectedWorkspaceRepoPath\(\), true\)/);
+    match(dashboard, /tempTerminal && tempTerminal\.open\(\)/);
+    match(dashboard, /showSessionManager\(\)/);
+    match(source, /if \(action === "open-workspace" \|\| action === "discover-worktrees"\) openWorktreeOpenModal\(selectedWorkspaceRepoPath\(\), true\);/);
+    match(source, /else if \(action === "temp-terminal" && tempTerminal\) tempTerminal\.open\(\);/);
+    match(source, /else if \(action === "sessions"\) showSessionManager\(\);/);
+    match(source, /else if \(action === "files"\) openWorkspaceFileBrowser\(state\.ws\);/);
+    match(source, /else if \(action === "git"\) openWorkspaceGitUi\(state\.ws\);/);
+  });
+
+  it("shows project dashboard and hides terminal shell when no workspace exists", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    const dashboard = ctx.document.getElementById("projectDashboard");
+    const shell = ctx.document.getElementById("terminalShell");
+
+    ctx.syncProjectDashboard();
+
+    equal(dashboard.hidden, false);
+    equal(shell.hidden, true);
+    ok(dashboard.innerHTML.includes("Start with a project"));
+    ok(dashboard.innerHTML.includes("Open workspace or worktree"));
+  });
+
   it("keeps file history header scoped to selected files", () => {
     match(gitUiSource, /function renderFileToolbar\(activeTab\) \{\n\s+const view = active\(\) \|\| \{\};/);
     match(gitUiSource, /const history = view\.file \? `<button class="git-ui-btn \$\{activeTab === "history" \? "active" : ""\}" onclick="HerdrGitUi\.tab\('history'\)">History<\/button>` : "";/);

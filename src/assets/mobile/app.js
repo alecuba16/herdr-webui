@@ -440,9 +440,11 @@
     if (!attention.length) return '<div class="mobile-loading">No blocked or done agents</div>';
     const previousAgents = state.agents;
     state.agents = attention;
-    const html = renderAgentsRows();
-    state.agents = previousAgents;
-    return html;
+    try {
+      return renderAgentsRows();
+    } finally {
+      state.agents = previousAgents;
+    }
   }
 
   function renderMore() {

@@ -10,8 +10,10 @@ function element(id = "") {
     classList: { toggle() {}, add() {}, remove() {} },
     dataset: {},
     style: { setProperty() {} },
+    disabled: false,
     hidden: false,
     innerHTML: "",
+    open: false,
     textContent: "",
     clientWidth: 360,
     clientHeight: 520,
@@ -24,7 +26,7 @@ function element(id = "") {
   };
 }
 
-function context(pathname = "/") {
+function context(pathname = "/", options = {}) {
   const elements = new Map();
   const localStorage = new Map();
   const historyCalls = [];
@@ -115,7 +117,8 @@ function context(pathname = "/") {
       }
     },
     WebSocket: class {
-      constructor() {
+      constructor(url) {
+        this.url = url;
         this.readyState = 1;
         this.bufferedAmount = 0;
         ctx.lastSocket = this;
@@ -125,6 +128,12 @@ function context(pathname = "/") {
     },
     fetch: async (url, opt = {}) => {
       requests.push({ url, opt });
+      if (url === "/api/server-settings")
+        return {
+          ok: true,
+          status: 200,
+          json: async () => options.serverSettings || {},
+        };
       if (url === "/api/tabs" && opt.method === "POST")
         return {
           ok: true,
@@ -215,6 +224,14 @@ function context(pathname = "/") {
                       agent_status: "blocked",
                       name: "blocked-agent",
                     },
+                    {
+                      workspace_id: "w1",
+                      tab_id: "w1:t2",
+                      pane_id: "w1:p2",
+                      terminal_id: "term2",
+                      agent_status: "working",
+                      name: "working-agent",
+                    },
                   ],
                 };
       return { ok: true, status: 200, json: async () => ({ result }) };
@@ -235,7 +252,15 @@ describe("mobile bundle load", () => {
   const source =
     readFileSync(new URL("./shared/core.js", import.meta.url), "utf8") +
     "\n" +
+    readFileSync(new URL("./shared/file_icons.js", import.meta.url), "utf8") +
+    "\n" +
     readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8") +
+    "\n" +
+    readFileSync(new URL("./shared/line_context.js", import.meta.url), "utf8") +
+    "\n" +
+    readFileSync(new URL("./shared/file_content_search.js", import.meta.url), "utf8") +
+    "\n" +
+    readFileSync(new URL("./shared/workspace_search.js", import.meta.url), "utf8") +
     "\n" +
     readFileSync(new URL("./shared/editor.js", import.meta.url), "utf8") +
     "\n" +
@@ -287,6 +312,53 @@ describe("mobile bundle load", () => {
     ok(source.includes("HerdrMobileSearch.openAction"));
   });
 
+  it("filters mobile action search results at runtime", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    ctx.HerdrMobile.showScreen("search");
+    let html = ctx.document.getElementById("mobileSearchResults").innerHTML;
+    ok(html.includes("Open workspace or worktree"));
+    ok(html.includes("Temporary terminal"));
+
+    const input = ctx.document.getElementById("mobileSearchInput");
+    input.value = "settings";
+    input.oninput();
+    html = ctx.document.getElementById("mobileSearchResults").innerHTML;
+    ok(html.includes("Settings"));
+    ok(!html.includes("Temporary terminal"));
+  });
+
+  it("restores all agents after rendering Home attention-only agents", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+
+    ctx.HerdrMobile.showScreen("home");
+    const homeHtml = ctx.document.getElementById("mobileScreen").innerHTML;
+    ok(homeHtml.includes("blocked-agent"));
+    ok(!homeHtml.includes("working-agent"));
+
+    ctx.HerdrMobile.showScreen("agents");
+    const agentsHtml = ctx.document.getElementById("mobileScreen").innerHTML;
+    ok(agentsHtml.includes("blocked-agent"));
+    ok(agentsHtml.includes("working-agent"));
+  });
+
+  it("routes mobile backend headers and sockets from selected backend branches", async () => {
+    for (const [storedBackend, expected] of [["external", "external-herdr"], ["external-herdr", "external-herdr"], ["builtin", "builtin"]]) {
+      const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
+      ctx.localStorage.setItem("herdr-session-backend", storedBackend);
+      vm.runInContext(source, ctx);
+      await ctx.HerdrMobile.refresh();
+      const workspacesRequest = ctx.requests.find((request) => request.url === "/api/workspaces");
+      equal(workspacesRequest.opt.headers["x-herdr-backend"], expected);
+      ok(ctx.lastSocket.url.includes(`backend=${encodeURIComponent(expected)}`));
+    }
+    match(source, /state\.backendMode === "external" \|\| state\.backendMode === "external-herdr"/);
+    match(source, /state\.backendMode === "builtin"/);
+  });
+
   it("renders simplified mobile nav with More menu", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
@@ -301,6 +373,81 @@ describe("mobile bundle load", () => {
     ok(html.includes("HerdrMobile.showScreen('worktrees')"));
     ctx.HerdrMobile.showScreen("search");
     equal(ctx.document.getElementById("mobileSearchSheet").hidden, false);
+  });
+
+  it("hides Search primary nav when header search is disabled", () => {
+    const ctx = context();
+    ctx.localStorage.setItem("herdr-web-options", JSON.stringify({ headerSearchEnabled: false }));
+
+    vm.runInContext(source, ctx);
+
+    const searchButton = ctx.navButtons.find((button) => button.dataset.screen === "search");
+    equal(searchButton.hidden, true);
+    equal(searchButton.disabled, true);
+    ctx.document.getElementById("mobileSearchSheet").hidden = true;
+    ctx.HerdrMobile.showScreen("search");
+    equal(ctx.document.getElementById("mobileSearchSheet").hidden, true);
+  });
+
+  it("routes mobile task actions to worktree, create, search, and terminal flows", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+
+    ctx.HerdrMobile.runAction("discover-worktrees");
+    equal(ctx.HerdrMobile.currentScreen(), "worktrees");
+    ok(ctx.requests.some((request) => String(request.url).startsWith("/api/worktrees")));
+
+    ctx.HerdrMobile.runAction("create-worktree");
+    equal(ctx.HerdrMobile.currentScreen(), "worktrees");
+    ok(ctx.document.getElementById("mobileScreen").innerHTML.includes("Create new worktree"));
+    ok(ctx.document.getElementById("mobileScreen").innerHTML.includes("mobile-disclosure\" open"));
+
+    ctx.HerdrMobile.runAction("search");
+    equal(ctx.document.getElementById("mobileSearchSheet").hidden, false);
+
+    const openedBefore = ctx.terminalStats.opened;
+    ctx.HerdrMobile.runAction("terminal");
+    equal(ctx.HerdrMobile.currentScreen(), "terminal");
+    ok(ctx.terminalStats.opened >= openedBefore);
+  });
+
+  it("renders all secondary tools in More while keeping direct routes available", () => {
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
+    vm.runInContext(source, ctx);
+
+    ctx.HerdrMobile.showScreen("more");
+    const html = ctx.document.getElementById("mobileScreen").innerHTML;
+    for (const screen of ["agents", "panels", "worktrees", "files", "git", "settings"])
+      ok(html.includes(`HerdrMobile.showScreen('${screen}')`));
+    for (const screen of ["agents", "panels", "worktrees", "files", "git", "settings"])
+      doesNotThrow(() => ctx.HerdrMobile.showScreen(screen));
+  });
+
+  it("filters mobile settings live without rerendering or losing focus", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    ctx.HerdrMobile.showScreen("settings");
+
+    const groups = [
+      Object.assign(element("appearance"), { dataset: { settingsText: "appearance theme" } }),
+      Object.assign(element("terminal"), { dataset: { settingsText: "terminal font links" } }),
+    ];
+    const empty = ctx.document.getElementById("mobileSettingsEmpty");
+    const originalQuerySelectorAll = ctx.document.querySelectorAll;
+    ctx.document.querySelectorAll = (selector) =>
+      selector === ".mobile-settings-disclosure" ? groups : originalQuerySelectorAll(selector);
+
+    ctx.HerdrMobile.setSettingsFilter("terminal");
+    equal(groups[0].hidden, true);
+    equal(groups[1].hidden, false);
+    equal(groups[1].open, true);
+    equal(empty.hidden, true);
+
+    ctx.HerdrMobile.setSettingsFilter("no-match");
+    equal(groups[0].hidden, true);
+    equal(groups[1].hidden, true);
+    equal(empty.hidden, false);
   });
 
   it("keeps mobile worktree creation progressive and settings filterable", () => {
