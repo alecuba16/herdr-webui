@@ -24,18 +24,11 @@
   }
 
   function normalizeSectionOrder(value) {
-    const allowed = ["workspaces", "files", "content"];
-    const seen = new Set();
-    const order = [];
-    for (const part of String(value || "").split(",")) {
-      const key = part.trim().toLowerCase();
-      if (allowed.includes(key) && !seen.has(key)) {
-        seen.add(key);
-        order.push(key);
-      }
-    }
-    for (const key of allowed) if (!seen.has(key)) order.push(key);
-    return order;
+    return globalThis.HerdrAppHelpers.normalizeOrder(value, [
+      "workspaces",
+      "files",
+      "content",
+    ]);
   }
 
   function settings() {

@@ -11,6 +11,8 @@
 
   const state = {
     session: "default",
+    backendMode: "",
+    sessionBackend: localStorage.getItem("herdr-session-backend") || "",
     workspaces: [],
     tabs: [],
     allTabs: [],
@@ -107,6 +109,9 @@
       state.session && state.session !== "default"
         ? { "x-herdr-session": state.session }
         : {},
+      currentSessionBackend()
+        ? { "x-herdr-backend": currentSessionBackend() }
+        : {},
     );
     return next;
   }
@@ -126,6 +131,7 @@
   async function loadServerSettings() {
     try {
       const settings = await api("/api/server-settings");
+      state.backendMode = settings.backend_mode || state.backendMode;
       state.defaultFolder = settings.default_folder || state.defaultFolder || "";
     } catch (_) {}
   }
@@ -139,12 +145,25 @@
 
   function wsUrl(path) {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    const sep = path.includes("?") ? "&" : "?";
-    const session =
-      state.session && state.session !== "default"
-        ? sep + "session=" + encodeURIComponent(state.session)
-        : "";
-    return `${proto}//${location.host}${path}${session}`;
+    const params = [];
+    if (state.session && state.session !== "default")
+      params.push("session=" + encodeURIComponent(state.session));
+    if (currentSessionBackend())
+      params.push("backend=" + encodeURIComponent(currentSessionBackend()));
+    const suffix = params.length
+      ? (path.includes("?") ? "&" : "?") + params.join("&")
+      : "";
+    return `${proto}//${location.host}${path}${suffix}`;
+  }
+
+  function currentSessionBackend() {
+    if (state.sessionBackend === "external") return "external-herdr";
+    if (state.sessionBackend === "builtin" || state.sessionBackend === "external-herdr")
+      return state.sessionBackend;
+    if (state.backendMode === "external" || state.backendMode === "external-herdr")
+      return "external-herdr";
+    if (state.backendMode === "builtin") return "builtin";
+    return "";
   }
 
   function currentWorkspace() {
