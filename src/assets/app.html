@@ -16,8 +16,7 @@
           ><button class="mini" id="themeToggle" title="Toggle theme">☾</button
           ><button class="mini" id="shortcutsToggle" title="Shortcuts">?</button
           ><button class="mini" id="settingsToggle" title="Settings">⚙</button
-          ><button class="btn" id="newWs" title="Open or create workspace">＋</button
-          ><button class="mini temp-terminal-toggle" id="tempTerminalToggle" title="Temporary terminal" aria-label="Temporary terminal"><span class="temp-terminal-icon" aria-hidden="true"><span class="temp-terminal-icon-glyph"></span><span class="temp-terminal-icon-label">T</span></span></button>
+          ><button class="btn shell-action header-actions-button" id="headerActionsButton" title="Search and actions" aria-label="Search and actions"><span aria-hidden="true">⌕</span><span>Actions</span></button>
         </div>
         <div class="section">
           <div class="muted" id="versions">webui - · backend -</div>
@@ -29,6 +28,7 @@
       <button class="sidebar-toggle" id="sidebarToggle" title="Hide sidebar" aria-label="Hide sidebar">‹</button>
       <main class="main">
         <div class="tabs" id="tabs"></div>
+        <section class="project-dashboard" id="projectDashboard" hidden></section>
         <div class="terminal-shell" id="terminalShell">
           <div class="terminal-loading" id="terminalLoading">
             <span>Loading panel</span>

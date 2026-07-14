@@ -6,6 +6,7 @@
     state,
   }) {
     const normalizeOrder = globalThis.HerdrAppHelpers.normalizeOrder;
+    let settingsFilter = "";
 
     function render() {
       const layout = localStorage.getItem("herdr-web-layout") || "auto";
@@ -29,7 +30,35 @@
       const explorationDirectory = explorationDefaultDirectoryValue();
       const volume = notificationVolumeValue();
       const links = terminalLinksEnabled();
-      return `<section class="mobile-section mobile-form"><h2>Settings</h2>${appearanceSection(theme)}${layoutSection(layout)}${filesSection(depth, lineNumbers, headerSearch, searchOrder, pathSearchPageSize, minChars, contentPageSize, contextLines, autoCollapse, defaultExpanded, matchesPerFile, matchCase, regex)}${workspacesSection(worktreeDirectory, explorationDirectory)}${alertsSection(notifications, volume)}${terminalSection(font, links)}${dataSection()}${state.error ? `<div class="mobile-error">${escapeHtml(state.error)}</div>` : ""}</section>`;
+      const groups = [
+        { title: "Appearance", keywords: "theme dark light auto", html: appearanceSection(theme), open: true },
+        { title: "Layout", keywords: "layout mobile desktop auto", html: layoutSection(layout) },
+        { title: "Files and search", keywords: "files search browser content line numbers regex", html: filesSection(depth, lineNumbers, headerSearch, searchOrder, pathSearchPageSize, minChars, contentPageSize, contextLines, autoCollapse, defaultExpanded, matchesPerFile, matchCase, regex) },
+        { title: "Workspaces", keywords: "workspace worktree exploration default directory", html: workspacesSection(worktreeDirectory, explorationDirectory) },
+        { title: "Alerts", keywords: "alerts notifications sound volume", html: alertsSection(notifications, volume) },
+        { title: "Terminal", keywords: "terminal font links", html: terminalSection(font, links) },
+        { title: "Data", keywords: "refresh reload data", html: dataSection() },
+      ];
+      const anyVisible = groups.some(settingsGroupVisible);
+      return `<section class="mobile-section mobile-form"><h2>Settings</h2><label class="mobile-settings-filter"><span>Filter settings</span><input value="${escapeHtml(settingsFilter)}" oninput="HerdrMobile.setSettingsFilter(this.value)" placeholder="Search settings"></label>${groups.map((group) => renderSettingsDisclosure(group)).join("")}<div id="mobileSettingsEmpty" class="mobile-loading"${anyVisible ? " hidden" : ""}>No settings match.</div>${state.error ? `<div class="mobile-error">${escapeHtml(state.error)}</div>` : ""}</section>`;
+    }
+
+    function settingsGroupVisible(group) {
+      const needle = settingsFilter.trim().toLowerCase();
+      if (!needle) return true;
+      return `${group.title} ${group.keywords}`.toLowerCase().includes(needle);
+    }
+
+    function renderSettingsDisclosure(group) {
+      const html = stripGroupHeading(group.title, group.html);
+      const open = group.open || !!settingsFilter.trim();
+      const hidden = settingsGroupVisible(group) ? "" : " hidden";
+      const searchText = `${group.title} ${group.keywords}`.toLowerCase();
+      return `<details class="mobile-settings-disclosure" data-settings-text="${escapeHtml(searchText)}"${open ? " open" : ""}${hidden}><summary>${escapeHtml(group.title)}</summary>${html}</details>`;
+    }
+
+    function stripGroupHeading(title, html) {
+      return String(html).replace(`<div class="mobile-settings-group"><h3>${title}</h3>`, '<div class="mobile-settings-group">');
     }
 
     function appearanceSection(theme) {
@@ -88,6 +117,22 @@
     function setThemeMode(value) {
       localStorage.setItem("herdr-web-theme", value);
       applyTheme();
+    }
+
+    function setSettingsFilter(value) {
+      settingsFilter = String(value || "");
+      const needle = settingsFilter.trim().toLowerCase();
+      let anyVisible = false;
+      document.querySelectorAll(".mobile-settings-disclosure").forEach((node) => {
+        const visible = !needle || String(node.dataset.settingsText || "").includes(needle);
+        node.hidden = !visible;
+        if (visible) {
+          anyVisible = true;
+          if (needle) node.open = true;
+        }
+      });
+      const empty = document.getElementById("mobileSettingsEmpty");
+      if (empty) empty.hidden = anyVisible;
     }
 
     function setLayoutPreference(value) {
@@ -370,6 +415,7 @@
       setSearchContentEnabled(value) { setBooleanOption("searchContentEnabled", value); },
       moveSearchSection,
       setSearchSectionOrder,
+      setSettingsFilter,
       toggleSearchSection,
       setFileContentSearchMinChars,
       setFileContentSearchPageSize,

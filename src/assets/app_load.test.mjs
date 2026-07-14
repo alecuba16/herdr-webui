@@ -142,6 +142,8 @@ describe("app bundle load", () => {
     source =
       readFileSync(new URL("./shared/core.js", import.meta.url), "utf8") +
       "\n" +
+      readFileSync(new URL("./shared/actions.js", import.meta.url), "utf8") +
+      "\n" +
       readFileSync(new URL("./shared/terminal_scroll.js", import.meta.url), "utf8") +
       "\n" +
       readFileSync(new URL("./shared/terminal_fit.js", import.meta.url), "utf8") +
@@ -164,9 +166,149 @@ describe("app bundle load", () => {
     doesNotThrow(() => vm.runInContext(source, context()));
   });
 
+  it("defines project-first dashboard and command-palette actions", () => {
+    match(source, /function renderProjectDashboard\(\)/);
+    match(source, /Start with a project/);
+    match(source, /function searchActionCandidates\(query\)/);
+    match(source, /HerdrActionRegistry\.candidates/);
+    match(source, /Open workspace or worktree/);
+    match(source, /Temporary terminal/);
+    match(source, /runSearchAction\(result\.action\)/);
+  });
+
+  it("returns desktop UX actions from a single command-palette candidate path", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    const actionNames = (query) => Array.from(ctx.searchActionCandidates(query), (action) => action.action);
+    deepEqual(
+      actionNames(""),
+      ["open-workspace", "discover-worktrees", "temp-terminal", "sessions"],
+    );
+    deepEqual(
+      actionNames("session"),
+      ["sessions"],
+    );
+    deepEqual(
+      actionNames("nonsense"),
+      [],
+    );
+  });
+
+  it("wires desktop project dashboard and command actions to expected launchers", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    const dashboard = ctx.renderProjectDashboard();
+
+    match(dashboard, /runSearchAction\('open-workspace'\)/);
+    match(dashboard, /openSearchPalette\(\)/);
+    match(dashboard, /Actions menu/);
+    ok(!dashboard.includes("runSearchAction('temp-terminal')"));
+    ok(!dashboard.includes("runSearchAction('sessions')"));
+    match(source, /if \(action === "open-workspace" \|\| action === "discover-worktrees"\) openWorktreeOpenModal\(selectedWorkspaceRepoPath\(\), true\);/);
+    match(source, /else if \(action === "temp-terminal" && tempTerminal\) tempTerminal\.open\(\);/);
+    match(source, /else if \(action === "sessions"\) showSessionManager\(\);/);
+    match(source, /else if \(action === "files"\) openWorkspaceFileBrowser\(state\.ws\);/);
+    match(source, /else if \(action === "git"\) openWorkspaceGitUi\(state\.ws\);/);
+  });
+
+  it("uses one unified header Actions launcher instead of separate plus and temporary terminal buttons", () => {
+    const html = readFileSync(new URL("./app.html", import.meta.url), "utf8");
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    ok(html.includes('id="headerActionsButton"'));
+    ok(html.includes(">Actions<"));
+    equal(html.includes('id="newWs"'), false);
+    equal(html.includes('id="tempTerminalToggle"'), false);
+    match(source, /headerActions\.onclick = \(\) => openSearchPalette\(\);/);
+    ok(!source.includes("tempTerminalToggle"));
+
+    ctx.setupSessionChrome();
+    const button = ctx.document.getElementById("headerActionsButton");
+    equal(button.title, "Search and actions (Ctrl+B then /)");
+    button.onclick();
+    equal(ctx.document.getElementById("searchPalette").style.display, "grid");
+  });
+
+  it("adds configured shortcut labels to desktop tooltips", () => {
+    const ctx = context();
+    ctx.localStorage.setItem("herdr-web-options", JSON.stringify({
+      globalShortcutPrefix: "Ctrl+Q",
+      webuiShortcuts: { help: "Shift+Slash", settings: "KeyS", newWorkspace: "KeyN", sidebar: "KeyB", newPanel: "KeyP", closePanel: "KeyX", closeWorkspace: "Shift+KeyX", removeWorktree: "Delete" },
+    }));
+    vm.runInContext(source, ctx);
+    ctx.applyOptions();
+
+    equal(ctx.document.getElementById("shortcutsToggle").title, "Shortcuts (Ctrl+Q then Shift+/)");
+    equal(ctx.document.getElementById("settingsToggle").title, "Settings (Ctrl+Q then S)");
+    equal(ctx.document.getElementById("headerActionsButton").title, "Search and actions (Ctrl+Q then /)");
+    equal(ctx.document.getElementById("sidebarToggle").title, "Hide sidebar (Ctrl+Q then B)");
+
+    vm.runInContext(`
+      state.ws = "w1";
+      state.tab = "t1";
+      state.tabs = [{ workspace_id: "w1", tab_id: "t1", label: "Shell" }];
+    `, ctx);
+    ok(ctx.renderPanelField().includes('title="New panel (Ctrl+Q then P)"'));
+    ok(ctx.renderPanelField().includes('title="Close current panel (Ctrl+Q then X)"'));
+
+    const actions = ctx.selectedWorkspaceActionButtons({ workspace_id: "w1", worktree: { checkout_path: "/tmp/wt", is_linked_worktree: true } });
+    ok(actions.includes('Ctrl+Q then Shift+X'));
+    ok(actions.includes('Ctrl+Q then Delete'));
+  });
+
+  it("adds configured shortcut labels to Git tooltips", () => {
+    match(gitUiSource, /function titleWithGitShortcut\(title, action\)/);
+    match(gitUiSource, /titleWithGitShortcut\("Refresh", "refresh"\)/);
+    match(gitUiSource, /titleWithGitShortcut\("Change Git directory or switch branch", "branch"\)/);
+    match(gitUiSource, /titleWithGitShortcut\("File history", "history"\)/);
+    match(gitUiSource, /titleWithGitShortcut\("Blame", "blame"\)/);
+  });
+
+  it("shows project dashboard and hides terminal shell when no workspace exists", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    const dashboard = ctx.document.getElementById("projectDashboard");
+    const shell = ctx.document.getElementById("terminalShell");
+
+    ctx.syncProjectDashboard();
+
+    equal(dashboard.hidden, false);
+    equal(shell.hidden, true);
+    ok(dashboard.innerHTML.includes("Start with a project"));
+    ok(dashboard.innerHTML.includes("Open workspace or worktree"));
+    ok(dashboard.innerHTML.includes("Actions menu"));
+    ok(!dashboard.innerHTML.includes("Start a shell without creating"));
+  });
+
+  it("hides project dashboard when Git or file drawer is visible without a workspace", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    const dashboard = ctx.document.getElementById("projectDashboard");
+    const shell = ctx.document.getElementById("terminalShell");
+
+    ctx.window.HerdrGitUi = { isVisible: () => true };
+    ctx.window.HerdrFileBrowser = { isVisible: () => false };
+    ctx.syncProjectDashboard();
+    equal(dashboard.hidden, true);
+    equal(shell.hidden, false);
+
+    ctx.window.HerdrGitUi = { isVisible: () => false };
+    ctx.window.HerdrFileBrowser = { isVisible: () => true };
+    ctx.syncProjectDashboard();
+    equal(dashboard.hidden, true);
+    equal(shell.hidden, false);
+
+    ctx.window.HerdrFileBrowser = { isVisible: () => false };
+    ctx.syncProjectDashboard();
+    equal(dashboard.hidden, false);
+    equal(shell.hidden, true);
+  });
+
   it("keeps file history header scoped to selected files", () => {
     match(gitUiSource, /function renderFileToolbar\(activeTab\) \{\n\s+const view = active\(\) \|\| \{\};/);
-    match(gitUiSource, /const history = view\.file \? `<button class="git-ui-btn \$\{activeTab === "history" \? "active" : ""\}" onclick="HerdrGitUi\.tab\('history'\)">History<\/button>` : "";/);
+    match(gitUiSource, /const history = view\.file \? `<button class="git-ui-btn \$\{activeTab === "history" \? "active" : ""\}" title="\$\{esc\(titleWithGitShortcut\("File history", "history"\)\)\}" onclick="HerdrGitUi\.tab\('history'\)">History<\/button>` : "";/);
     equal([...gitLogSource.matchAll(/git-ui-log-scope-head/g)].length, 1);
   });
 

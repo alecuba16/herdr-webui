@@ -8,6 +8,7 @@ pub(crate) const APP_HTML: &str = include_str!("assets/app.html");
 const LOGIN_CSS: &str = include_str!("assets/login.css");
 const LOGIN_JS: &str = include_str!("assets/login.js");
 const SHARED_CORE_JS: &str = include_str!("assets/shared/core.js");
+const SHARED_ACTIONS_JS: &str = include_str!("assets/shared/actions.js");
 const SHARED_FILE_ICONS_JS: &str = include_str!("assets/shared/file_icons.js");
 const SHARED_FILE_ICONS_CSS: &str = include_str!("assets/shared/file_icons.css");
 const SHARED_COLORS_CSS: &str = include_str!("assets/shared/colors.css");
@@ -124,6 +125,10 @@ pub(crate) async fn app_boot_js() -> Response {
 
 pub(crate) async fn shared_core_js() -> Response {
     static_text(SHARED_CORE_JS, "application/javascript; charset=utf-8")
+}
+
+pub(crate) async fn shared_actions_js() -> Response {
+    static_text(SHARED_ACTIONS_JS, "application/javascript; charset=utf-8")
 }
 
 pub(crate) async fn shared_file_icons_js() -> Response {
@@ -416,6 +421,7 @@ mod tests {
             content_type(&desktop_directory_picker_js().await),
             javascript
         );
+        assert_eq!(content_type(&shared_actions_js().await), javascript);
         assert_eq!(content_type(&shared_file_tree_js().await), javascript);
         assert_eq!(
             content_type(&shared_workspace_search_js().await),

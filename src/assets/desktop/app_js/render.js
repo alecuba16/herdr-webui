@@ -58,6 +58,7 @@ function render() {
   }
   updateTitle(wsById, tabById, tabCountsByWorkspace, pane);
   syncBrowserFavicon();
+  syncProjectDashboard();
   if (state.editingTab) {
     const input = document.querySelector(".tab-rename-input");
     if (input && document.activeElement !== input) {
@@ -74,6 +75,26 @@ function render() {
   if (typeof fitTerminalSurface === "function") fitTerminalSurface();
 }
 window.HerdrDesktopRender = render;
+function syncProjectDashboard() {
+  const dashboard = el("projectDashboard"),
+    shell = el("terminalShell");
+  if (!dashboard) return;
+  const showDashboard = state.workspaces.length === 0 && !state.ws && !drawerSurfaceVisible();
+  dashboard.hidden = !showDashboard;
+  if (shell) shell.hidden = showDashboard;
+  if (!showDashboard) return;
+  dashboard.innerHTML = renderProjectDashboard();
+}
+function drawerSurfaceVisible() {
+  return !!(
+    (window.HerdrGitUi && window.HerdrGitUi.isVisible && window.HerdrGitUi.isVisible()) ||
+    (window.HerdrFileBrowser && window.HerdrFileBrowser.isVisible && window.HerdrFileBrowser.isVisible())
+  );
+}
+function renderProjectDashboard() {
+  const actionsMenu = window.HerdrActionRegistry.action("actions-menu");
+  return `<div class="project-dashboard-card"><div class="project-dashboard-hero"><h1>Start with a project</h1><p>Open one project first. Less-used actions stay in one menu and the command palette.</p></div><div class="project-dashboard-actions"><button class="project-dashboard-action primary" onclick="runSearchAction('open-workspace')"><strong>Open workspace or worktree</strong><span>Pick a folder, discover linked worktrees, and open the checkout.</span></button><button class="project-dashboard-action" onclick="openSearchPalette()"><strong>${escapeHtml(actionsMenu.title)}</strong><span>${escapeHtml(actionsMenu.subtitle)}</span></button></div></div>`;
+}
 function updateTitle(wsById, tabById, tabCountsByWorkspace, pane) {
   const w = wsById[state.ws];
   const t = tabById[state.tab];
@@ -235,11 +256,11 @@ function selectedWorkspaceActionButtons(w) {
   const linked = isLinkedWorktree(w);
   const buttons = [];
   buttons.push(
-    `<span class="mini warn" data-workspace-action="close" title="Close selected ${linked ? "worktree" : "workspace"} and its panels" onclick="event.preventDefault();event.stopPropagation();runWorkspaceContextAction('close',this)">✕</span>`,
+    `<span class="mini warn" data-workspace-action="close" title="${escapeAttr(titleWithWebuiShortcut(`Close selected ${linked ? "worktree" : "workspace"} and its panels`, "closeWorkspace"))}" onclick="event.preventDefault();event.stopPropagation();runWorkspaceContextAction('close',this)">✕</span>`,
   );
   if (linked)
     buttons.push(
-      `<span class="mini danger" data-workspace-action="remove-worktree" title="Remove selected worktree from disk after confirmation" onclick="event.preventDefault();event.stopPropagation();runWorkspaceContextAction('remove-worktree',this)">🗑</span>`,
+      `<span class="mini danger" data-workspace-action="remove-worktree" title="${escapeAttr(titleWithWebuiShortcut("Remove selected worktree from disk after confirmation", "removeWorktree"))}" onclick="event.preventDefault();event.stopPropagation();runWorkspaceContextAction('remove-worktree',this)">🗑</span>`,
     );
   return `<span class="space-actions selected-space-actions">${buttons.join("")}</span>`;
 }
