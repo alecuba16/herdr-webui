@@ -277,6 +277,23 @@ describe("mobile bundle load", () => {
     ok(ctx.HerdrMobile);
   });
 
+  it("renders mobile task hub and action search", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    const html = ctx.document.getElementById("mobileScreen").innerHTML;
+    ok(html.includes("mobile-task-hub"));
+    ok(html.includes("Open workspace or worktree"));
+    ok(source.includes("function mobileActionCandidates(query)"));
+    ok(source.includes("HerdrMobileSearch.openAction"));
+  });
+
+  it("keeps mobile worktree creation progressive and settings filterable", () => {
+    match(source, /Create new worktree/);
+    match(source, /setWorktreeCreateExpanded/);
+    match(source, /Filter settings/);
+    match(source, /mobile-settings-disclosure/);
+  });
+
   it("routes mobile HTTP and WebSocket requests to the selected backend", () => {
     const mobileSource = readFileSync(new URL("./mobile/app.js", import.meta.url), "utf8");
     match(mobileSource, /"x-herdr-backend": currentSessionBackend\(\)/);

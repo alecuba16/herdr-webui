@@ -58,6 +58,7 @@ function render() {
   }
   updateTitle(wsById, tabById, tabCountsByWorkspace, pane);
   syncBrowserFavicon();
+  syncProjectDashboard();
   if (state.editingTab) {
     const input = document.querySelector(".tab-rename-input");
     if (input && document.activeElement !== input) {
@@ -74,6 +75,19 @@ function render() {
   if (typeof fitTerminalSurface === "function") fitTerminalSurface();
 }
 window.HerdrDesktopRender = render;
+function syncProjectDashboard() {
+  const dashboard = el("projectDashboard"),
+    shell = el("terminalShell");
+  if (!dashboard) return;
+  const showDashboard = state.workspaces.length === 0 && !state.ws;
+  dashboard.hidden = !showDashboard;
+  if (shell) shell.hidden = showDashboard;
+  if (!showDashboard) return;
+  dashboard.innerHTML = renderProjectDashboard();
+}
+function renderProjectDashboard() {
+  return `<div class="project-dashboard-card"><div class="project-dashboard-hero"><h1>Start with a project</h1><p>Open a folder, discover linked Git worktrees, or start a temporary terminal. Search can also launch these actions.</p></div><div class="project-dashboard-actions"><button class="project-dashboard-action" onclick="openWorktreeOpenModal(selectedWorkspaceRepoPath(), true)"><strong>Open workspace or worktree</strong><span>Pick a folder, discover linked worktrees, and open the checkout.</span></button><button class="project-dashboard-action" onclick="openWorktreeOpenModal(selectedWorkspaceRepoPath(), true)"><strong>Discover worktrees</strong><span>Find existing Git worktrees from the configured default folder.</span></button><button class="project-dashboard-action" onclick="tempTerminal && tempTerminal.open()"><strong>Temporary terminal</strong><span>Start a shell without creating a workspace first.</span></button><button class="project-dashboard-action" onclick="showSessionManager()"><strong>Manage sessions</strong><span>Switch built-in or external Herdr sessions and launch backends.</span></button></div></div>`;
+}
 function updateTitle(wsById, tabById, tabCountsByWorkspace, pane) {
   const w = wsById[state.ws];
   const t = tabById[state.tab];

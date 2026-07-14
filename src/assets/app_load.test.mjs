@@ -164,6 +164,15 @@ describe("app bundle load", () => {
     doesNotThrow(() => vm.runInContext(source, context()));
   });
 
+  it("defines project-first dashboard and command-palette actions", () => {
+    match(source, /function renderProjectDashboard\(\)/);
+    match(source, /Start with a project/);
+    match(source, /function searchActionCandidates\(query\)/);
+    match(source, /Open workspace or worktree/);
+    match(source, /Start temporary terminal/);
+    match(source, /runSearchAction\(result\.action\)/);
+  });
+
   it("keeps file history header scoped to selected files", () => {
     match(gitUiSource, /function renderFileToolbar\(activeTab\) \{\n\s+const view = active\(\) \|\| \{\};/);
     match(gitUiSource, /const history = view\.file \? `<button class="git-ui-btn \$\{activeTab === "history" \? "active" : ""\}" onclick="HerdrGitUi\.tab\('history'\)">History<\/button>` : "";/);
