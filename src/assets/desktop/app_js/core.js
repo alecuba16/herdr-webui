@@ -139,6 +139,7 @@ const inputEncoder = new TextEncoder();
 const {
   branchPathSlug,
   normalizeAbsolutePath,
+  normalizeOrder,
   normalizeThemeColors,
   resolveTerminalFontFamily,
   textValue,
@@ -1058,18 +1059,7 @@ function normalizeAgentStatusOrder(value) {
   return order;
 }
 function normalizeSearchSectionOrder(value) {
-  const seen = new Set();
-  const order = [];
-  const parts = Array.isArray(value) ? value : String(value || "").split(",");
-  for (const part of parts) {
-    const key = String(part || "").trim().toLowerCase();
-    if (searchSectionGroupKeys.includes(key) && !seen.has(key)) {
-      seen.add(key);
-      order.push(key);
-    }
-  }
-  for (const key of searchSectionGroupKeys) if (!seen.has(key)) order.push(key);
-  return order;
+  return normalizeOrder(value, searchSectionGroupKeys);
 }
 function normalizeSidebarWorkspacePercent(value) {
   return Math.round(Math.max(

@@ -27,6 +27,22 @@
     return "/" + parts.join("/");
   }
 
+  function normalizeOrder(value, allowed) {
+    const keys = Array.isArray(allowed) ? allowed : [];
+    const seen = new Set();
+    const order = [];
+    const parts = Array.isArray(value) ? value : String(value || "").split(",");
+    for (const part of parts) {
+      const key = String(part || "").trim().toLowerCase();
+      if (keys.includes(key) && !seen.has(key)) {
+        seen.add(key);
+        order.push(key);
+      }
+    }
+    for (const key of keys) if (!seen.has(key)) order.push(key);
+    return order;
+  }
+
   function terminalPasteInput(text, bracketedPasteMode) {
     const normalized = String(text || "").replace(/\r\n|\r/g, "\n");
     if (bracketedPasteMode) return "\x1b[200~" + normalized + "\x1b[201~";
@@ -214,6 +230,7 @@
   const helpers = {
     branchPathSlug,
     normalizeAbsolutePath,
+    normalizeOrder,
     normalizeThemeColors,
     resolveTerminalFontFamily,
     textValue,

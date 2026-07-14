@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -235,10 +235,7 @@ fn handle_client_connection(
     let mut seq = 1_u64;
     let terminal_size = Arc::new(Mutex::new((cols, rows)));
     loop {
-        let message = match read_message::<_, ClientMessage>(&mut stream, MAX_FRAME_SIZE) {
-            Ok(message) => message,
-            Err(err) => return Err(err),
-        };
+        let message = read_message::<_, ClientMessage>(&mut stream, MAX_FRAME_SIZE)?;
         match message {
             ClientMessage::AttachTerminal { terminal_id, .. } => {
                 let terminal = backend
@@ -470,12 +467,7 @@ impl BuiltinState {
                 let label = optional_string(&params, "label");
                 let workspace = self.create_workspace(cwd, label, false)?;
                 let tab = self
-                    .tabs_for_workspace(
-                        &workspace["workspace_id"]
-                            .as_str()
-                            .unwrap_or_default()
-                            .to_string(),
-                    )?
+                    .tabs_for_workspace(workspace["workspace_id"].as_str().unwrap_or_default())?
                     .into_iter()
                     .next()
                     .unwrap_or_else(|| json!({}));
@@ -2002,13 +1994,15 @@ struct ProcessInfo {
     args: String,
 }
 
+type ProcessCache = Option<(Instant, Vec<ProcessInfo>)>;
+
 fn detect_agent_label_from_process_tree(root_pid: u32) -> Option<&'static str> {
     detect_agent_label_from_processes(root_pid, &process_table().ok()?)
 }
 
 #[cfg(unix)]
 fn process_table() -> io::Result<Vec<ProcessInfo>> {
-    static CACHE: OnceLock<Mutex<Option<(Instant, Vec<ProcessInfo>)>>> = OnceLock::new();
+    static CACHE: OnceLock<Mutex<ProcessCache>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(None));
     if let Ok(mut guard) = cache.lock() {
         if let Some((loaded_at, processes)) = guard.as_ref() {
@@ -2072,12 +2066,11 @@ fn detect_agent_label_from_processes(
         children.entry(process.ppid).or_default().push(process.pid);
     }
     let mut stack = vec![root_pid];
-    let mut seen = Vec::<u32>::new();
+    let mut seen = HashSet::<u32>::new();
     while let Some(pid) = stack.pop() {
-        if seen.contains(&pid) {
+        if !seen.insert(pid) {
             continue;
         }
-        seen.push(pid);
         if let Some(process) = by_pid.get(&pid) {
             if let Some(agent) = detect_agent_label_from_process(process) {
                 return Some(agent);

@@ -8,6 +8,7 @@ const require = createRequire(import.meta.url);
 const {
   branchPathSlug,
   normalizeAbsolutePath,
+  normalizeOrder,
   normalizeThemeColors,
   resolveTerminalFontFamily,
   textValue,
@@ -72,6 +73,26 @@ describe("normalizeAbsolutePath", () => {
   it("leaves relative and home paths unchanged", () => {
     assert.equal(normalizeAbsolutePath("../worktrees"), "../worktrees");
     assert.equal(normalizeAbsolutePath("~/worktrees"), "~/worktrees");
+  });
+});
+
+describe("normalizeOrder", () => {
+  it("deduplicates, filters, and appends missing allowed values", () => {
+    assert.deepEqual(
+      normalizeOrder("files,unknown,files,workspaces", [
+        "workspaces",
+        "files",
+        "content",
+      ]),
+      ["files", "workspaces", "content"],
+    );
+  });
+
+  it("accepts array input while preserving allowed order", () => {
+    assert.deepEqual(
+      normalizeOrder(["CONTENT", "files"], ["workspaces", "files", "content"]),
+      ["content", "files", "workspaces"],
+    );
   });
 });
 
