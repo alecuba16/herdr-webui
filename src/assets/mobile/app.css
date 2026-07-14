@@ -395,6 +395,46 @@ body.light {
   background: var(--panel2);
   color: var(--fg);
 }
+.mobile-more-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+.mobile-more-card {
+  display: grid;
+  gap: 6px;
+  min-height: 118px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--panel);
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+}
+.mobile-more-card:active,
+.mobile-more-card:focus-visible {
+  border-color: var(--accent);
+  outline: none;
+}
+.mobile-more-card strong {
+  font-size: 15px;
+}
+.mobile-more-card small {
+  color: var(--muted);
+  line-height: 1.35;
+}
+.mobile-more-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 12px;
+  background: var(--panel2);
+  color: var(--accent);
+  font-weight: 800;
+}
 body.mobile-keyboard-open .mobile-app {
   grid-template-rows: minmax(0, 1fr);
 }

@@ -105,7 +105,7 @@ Expected impact: high. Effort: low.
 
 ### P2. Simplify mobile nav
 
-Current seven tabs are complete but busy. Proposed second step:
+Implemented in this branch as the second UX stage:
 
 - Home
 - Search
@@ -114,7 +114,7 @@ Current seven tabs are complete but busy. Proposed second step:
 
 `More` contains Agents, Panels, Worktrees, Files, Git, Settings.
 
-Alternative safer version: keep seven tabs but make Home the main task hub first, then decide from usage.
+This keeps direct routes to each secondary screen so existing deep links and tests remain compatible.
 
 Expected impact: medium-high. Effort: medium.
 
