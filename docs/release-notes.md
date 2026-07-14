@@ -1,5 +1,14 @@
 # Release notes
 
+## 0.2.61 Release Notes
+
+### Frontend parity and hot path efficiency
+
+- Adds shared frontend search-order normalization so desktop and mobile settings use one implementation and the behavior stays aligned.
+- Fixes mobile multi-backend routing parity by sending the selected backend for HTTP requests and WebSocket connections.
+- Reduces hot-path overhead in built-in backend process-tree traversal by using set-based visited tracking.
+- Documents the code-quality audit baseline, remediated issues, and deferred risks for follow-up refactors.
+
 ## 0.2.60 Release Notes
 
 ### Built-in backend detection docs
