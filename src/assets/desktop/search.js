@@ -254,21 +254,10 @@ function searchScore(text, needle) {
 }
 
 function searchActionCandidates(query) {
-  const needle = String(query || "").trim().toLowerCase();
-  const hasWorkspace = !!currentSearchWorkspace();
-  const actions = [
-    { type: "action", action: "open-workspace", icon: "＋", title: "Open workspace or worktree", subtitle: "Open a folder, discover worktrees, or create a checkout", text: "open workspace folder worktree project" },
-    { type: "action", action: "discover-worktrees", icon: "wt", title: "Discover worktrees", subtitle: "Find linked Git worktrees from the current or default folder", text: "discover find list linked git worktrees" },
-    { type: "action", action: "temp-terminal", icon: "T", title: "Start temporary terminal", subtitle: "Open a shell without creating a workspace", text: "temporary terminal shell start" },
-    { type: "action", action: "sessions", icon: "se", title: "Manage sessions", subtitle: "Switch or launch built-in and Herdr backend sessions", text: "session backend manage launch switch" },
-    ...(hasWorkspace ? [
-      { type: "action", action: "files", icon: "fi", title: "Open Files", subtitle: "Browse files for the current workspace", text: "files file browser current workspace" },
-      { type: "action", action: "git", icon: "git", title: "Open Git", subtitle: "Show Git status for the current workspace", text: "git status changes current workspace" },
-      { type: "action", action: "create-worktree", icon: "wt", title: "Create worktree", subtitle: "Create a Git worktree from the current workspace", text: "create new git worktree branch checkout" },
-    ] : []),
-  ];
-  if (!needle) return actions;
-  return actions.filter((action) => `${action.title} ${action.subtitle} ${action.text}`.toLowerCase().includes(needle));
+  return window.HerdrActionRegistry.candidates(query, {
+    platform: "desktop",
+    hasWorkspace: !!currentSearchWorkspace(),
+  });
 }
 
 function searchSettings() {

@@ -142,6 +142,8 @@ describe("app bundle load", () => {
     source =
       readFileSync(new URL("./shared/core.js", import.meta.url), "utf8") +
       "\n" +
+      readFileSync(new URL("./shared/actions.js", import.meta.url), "utf8") +
+      "\n" +
       readFileSync(new URL("./shared/terminal_scroll.js", import.meta.url), "utf8") +
       "\n" +
       readFileSync(new URL("./shared/terminal_fit.js", import.meta.url), "utf8") +
@@ -168,8 +170,9 @@ describe("app bundle load", () => {
     match(source, /function renderProjectDashboard\(\)/);
     match(source, /Start with a project/);
     match(source, /function searchActionCandidates\(query\)/);
+    match(source, /HerdrActionRegistry\.candidates/);
     match(source, /Open workspace or worktree/);
-    match(source, /Start temporary terminal/);
+    match(source, /Temporary terminal/);
     match(source, /runSearchAction\(result\.action\)/);
   });
 
@@ -197,9 +200,11 @@ describe("app bundle load", () => {
     vm.runInContext(source, ctx);
     const dashboard = ctx.renderProjectDashboard();
 
-    match(dashboard, /openWorktreeOpenModal\(selectedWorkspaceRepoPath\(\), true\)/);
-    match(dashboard, /tempTerminal && tempTerminal\.open\(\)/);
-    match(dashboard, /showSessionManager\(\)/);
+    match(dashboard, /runSearchAction\('open-workspace'\)/);
+    match(dashboard, /openSearchPalette\(\)/);
+    match(dashboard, /Actions menu/);
+    ok(!dashboard.includes("runSearchAction('temp-terminal')"));
+    ok(!dashboard.includes("runSearchAction('sessions')"));
     match(source, /if \(action === "open-workspace" \|\| action === "discover-worktrees"\) openWorktreeOpenModal\(selectedWorkspaceRepoPath\(\), true\);/);
     match(source, /else if \(action === "temp-terminal" && tempTerminal\) tempTerminal\.open\(\);/);
     match(source, /else if \(action === "sessions"\) showSessionManager\(\);/);
@@ -219,6 +224,8 @@ describe("app bundle load", () => {
     equal(shell.hidden, true);
     ok(dashboard.innerHTML.includes("Start with a project"));
     ok(dashboard.innerHTML.includes("Open workspace or worktree"));
+    ok(dashboard.innerHTML.includes("Actions menu"));
+    ok(!dashboard.innerHTML.includes("Start a shell without creating"));
   });
 
   it("keeps file history header scoped to selected files", () => {
