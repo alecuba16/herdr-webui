@@ -32,6 +32,10 @@ function context(pathname = "/", options = {}) {
   const historyCalls = [];
   const terminalStats = { disposed: 0, linkDisposed: 0, linksRegistered: 0, opened: 0 };
   const requests = [];
+  const sockets = [];
+  const timers = [];
+  const listeners = {};
+  let timerSeq = 0;
   const navButtons = ["home", "search", "terminal", "more"].map(
     (screen) => Object.assign(element(), { dataset: { screen } }),
   );
@@ -43,15 +47,25 @@ function context(pathname = "/", options = {}) {
     console,
     TextEncoder,
     Uint8Array,
-    setTimeout() {},
-    clearTimeout() {},
+    setTimeout(callback, delay = 0) {
+      const id = ++timerSeq;
+      timers.push({ id, callback, delay, cleared: false });
+      return id;
+    },
+    clearTimeout(id) {
+      const timer = timers.find((item) => item.id === id);
+      if (timer) timer.cleared = true;
+    },
     document: {
       body: element("body"),
       createElement: () => element(),
       getElementById: getElement,
       querySelectorAll: (selector) =>
         selector === ".mobile-nav button" ? navButtons : [],
-      addEventListener() {},
+      hidden: false,
+      addEventListener(event, listener) {
+        (listeners[event] || (listeners[event] = [])).push(listener);
+      },
     },
     history: {
       pushState(_state, _title, path) {
@@ -121,6 +135,7 @@ function context(pathname = "/", options = {}) {
         this.url = url;
         this.readyState = 1;
         this.bufferedAmount = 0;
+        sockets.push(this);
         ctx.lastSocket = this;
       }
       send() {}
@@ -239,7 +254,16 @@ function context(pathname = "/", options = {}) {
   };
   ctx.terminalStats = terminalStats;
   ctx.requests = requests;
+  ctx.sockets = sockets;
   ctx.navButtons = navButtons;
+  ctx.pendingTimers = timers;
+  ctx.flushTimers = async () => {
+    const due = timers.splice(0).filter((timer) => !timer.cleared);
+    for (const timer of due) await timer.callback();
+  };
+  ctx.dispatchDocumentEvent = (event) => {
+    for (const listener of listeners[event] || []) listener();
+  };
   ctx.window = Object.assign(ctx, {
     matchMedia: () => ({ matches: false }),
     addEventListener() {},
@@ -362,6 +386,32 @@ describe("mobile bundle load", () => {
     }
     match(source, /state\.backendMode === "external" \|\| state\.backendMode === "external-herdr"/);
     match(source, /state\.backendMode === "builtin"/);
+  });
+
+
+  it("coalesces mobile event socket refreshes and pauses reconnect while hidden", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    const before = ctx.requests.length;
+
+    const eventSocket = ctx.sockets.find((socket) => String(socket.url).includes("/ws/events"));
+    const event = { data: JSON.stringify({ event: { event: "workspace.updated" } }) };
+    eventSocket.onmessage(event);
+    eventSocket.onmessage(event);
+    eventSocket.onmessage(event);
+
+    equal(ctx.requests.length, before);
+    equal(ctx.pendingTimers.filter((timer) => !timer.cleared).length, 1);
+    await ctx.flushTimers();
+    equal(ctx.requests.length, before + 6);
+
+    ctx.document.hidden = true;
+    eventSocket.onclose();
+    equal(ctx.pendingTimers.filter((timer) => !timer.cleared).length, 0);
+    ctx.document.hidden = false;
+    ctx.dispatchDocumentEvent("visibilitychange");
+    equal(ctx.pendingTimers.filter((timer) => !timer.cleared).length, 2);
   });
 
   it("renders simplified mobile nav with More menu", () => {

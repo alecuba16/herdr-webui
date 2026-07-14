@@ -45,6 +45,8 @@
   };
 
   let eventWs,
+    eventRefreshTimer = null,
+    eventReconnectTimer = null,
     refreshSeq = 0,
     browserFavicon = createFaviconNotifier(document),
     browserFaviconError = false,
@@ -1211,8 +1213,26 @@
     if (["terminal", "files", "git", "settings"].includes(action)) showScreen(action);
   }
 
+  function scheduleEventRefresh() {
+    if (eventRefreshTimer || document.hidden) return;
+    eventRefreshTimer = setTimeout(() => {
+      eventRefreshTimer = null;
+      if (document.hidden) return;
+      return refresh();
+    }, 120);
+  }
+
+  function scheduleEventReconnect() {
+    if (eventReconnectTimer || document.hidden) return;
+    eventReconnectTimer = setTimeout(() => {
+      eventReconnectTimer = null;
+      if (document.hidden) return;
+      connectEvents();
+    }, 1500);
+  }
+
   function connectEvents() {
-    if (eventWs || !globalThis.WebSocket) return;
+    if (eventWs || !globalThis.WebSocket || document.hidden) return;
     const ws = new WebSocket(wsUrl("/ws/events"));
     eventWs = ws;
     ws.onmessage = (event) => {
@@ -1224,11 +1244,11 @@
         if (kind === "pane.exited" && mobileTempTerminal && mobileTempTerminal.handlePaneExited)
           mobileTempTerminal.handlePaneExited(data.pane_id);
       } catch (_) {}
-      refresh();
+      scheduleEventRefresh();
     };
     ws.onclose = () => {
       if (eventWs === ws) eventWs = null;
-      setTimeout(connectEvents, 1500);
+      scheduleEventReconnect();
     };
   }
 
@@ -1456,7 +1476,13 @@
   window.addEventListener("resize", scheduleTerminalResize);
   if (window.visualViewport)
     window.visualViewport.addEventListener("resize", scheduleTerminalResize);
-  document.addEventListener("visibilitychange", syncBrowserFavicon);
+  document.addEventListener("visibilitychange", () => {
+    syncBrowserFavicon();
+    if (!document.hidden) {
+      scheduleEventRefresh();
+      scheduleEventReconnect();
+    }
+  });
   document.addEventListener("pointerdown", mobileAttention.unlockAudio, {
     once: true,
   });
