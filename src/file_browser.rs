@@ -578,7 +578,7 @@ fn push_search_entries_with_visit_limit(
             }
             let is_dir = entry.metadata.is_dir();
             let kind = if is_dir { "dir" } else { "file" };
-            let kind_matches = search_kind.map_or(true, |wanted| wanted == kind);
+            let kind_matches = search_kind.is_none_or(|wanted| wanted == kind);
             if kind_matches
                 && (entry.sort_name.contains(needle)
                     || relative_to_root(build.root, &entry.path)

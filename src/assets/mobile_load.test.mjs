@@ -277,6 +277,14 @@ describe("mobile bundle load", () => {
     ok(ctx.HerdrMobile);
   });
 
+  it("routes mobile HTTP and WebSocket requests to the selected backend", () => {
+    const mobileSource = readFileSync(new URL("./mobile/app.js", import.meta.url), "utf8");
+    match(mobileSource, /"x-herdr-backend": currentSessionBackend\(\)/);
+    match(mobileSource, /params\.push\("backend=" \+ encodeURIComponent\(currentSessionBackend\(\)\)\)/);
+    match(mobileSource, /params\.join\("&"\)/);
+    match(mobileSource, /state\.backendMode = settings\.backend_mode/);
+  });
+
   it("renders settings and worktrees screens without browser automation", () => {
     const ctx = context();
     vm.runInContext(source, ctx);

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::SocketAddr;
@@ -1102,7 +1102,7 @@ fn ensure_self_signed_cert() -> io::Result<(PathBuf, PathBuf)> {
             "self-signed cert path has no parent directory",
         )
     })?;
-    fs::create_dir_all(&dir)?;
+    fs::create_dir_all(dir)?;
     let subject_alt_names = vec![
         "localhost".to_string(),
         "127.0.0.1".to_string(),
@@ -1527,11 +1527,12 @@ fn known_builtin_sessions(state: &WebState) -> Vec<serde_json::Value> {
         found.sort();
         names.extend(found);
     }
+    let mut known = names.iter().cloned().collect::<HashSet<_>>();
     if let Ok(sessions) = state.builtin_sessions.lock() {
         let mut live = sessions.keys().cloned().collect::<Vec<_>>();
         live.sort();
         for name in live {
-            if !names.contains(&name) {
+            if known.insert(name.clone()) {
                 names.push(name);
             }
         }
@@ -2121,7 +2122,7 @@ struct SessionActionRequest {
     backend: Option<String>,
 }
 
-fn requested_session_from_headers<'a>(headers: &'a HeaderMap) -> Option<&'a str> {
+fn requested_session_from_headers(headers: &HeaderMap) -> Option<&str> {
     headers
         .get("x-herdr-session")
         .and_then(|value| value.to_str().ok())

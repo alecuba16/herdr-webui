@@ -135,6 +135,76 @@ fn git_ui_conflict_stage_to_file(cwd: &str, path: &str, stage: u8) -> Result<Str
     git_ui_text(&repo, &["add", "--", path])
 }
 
+pub(super) async fn git_ui_conflict_resolve(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    Json(body): Json<GitUiConflictResolveRequest>,
+) -> Response {
+    if let Err(response) = require_auth(&state, &headers, remote) {
+        return response;
+    }
+    let path = match safe_repo_path(&body.path) {
+        Ok(path) => path.to_string(),
+        Err(err) => return git_json_error(StatusCode::BAD_REQUEST, err),
+    };
+    let mode = body.mode;
+    let content = body.content;
+    let cwd = body.cwd;
+    match tokio::task::spawn_blocking(move || {
+        git_ui_conflict_resolve_blocking(cwd, path, mode, content)
+    })
+    .await
+    {
+        Ok(Ok(response)) => response,
+        Ok(Err((status, msg))) => git_json_error(status, msg),
+        Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    }
+}
+
+fn git_ui_conflict_action_blocking(
+    cwd: String,
+    args: Vec<&'static str>,
+) -> Result<Response, (StatusCode, String)> {
+    match git_ui_text(&cwd, &args) {
+        Ok(text) => Ok(Json(json!({ "ok": true, "message": text })).into_response()),
+        Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
+    }
+}
+
+fn conflict_action_args(action: &str) -> Option<Vec<&'static str>> {
+    Some(match action {
+        "merge-abort" => vec!["merge", "--abort"],
+        "merge-continue" => vec!["merge", "--continue"],
+        "rebase-continue" => vec!["rebase", "--continue"],
+        "rebase-skip" => vec!["rebase", "--skip"],
+        "rebase-abort" => vec!["rebase", "--abort"],
+        "cherry-pick-continue" => vec!["cherry-pick", "--continue"],
+        "cherry-pick-abort" => vec!["cherry-pick", "--abort"],
+        _ => return None,
+    })
+}
+
+pub(super) async fn git_ui_conflict_action(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    Json(body): Json<GitUiConflictActionRequest>,
+) -> Response {
+    if let Err(response) = require_auth(&state, &headers, remote) {
+        return response;
+    }
+    let Some(args) = conflict_action_args(body.action.as_str()) else {
+        return git_json_error(StatusCode::BAD_REQUEST, "invalid conflict action");
+    };
+    let cwd = body.cwd;
+    match tokio::task::spawn_blocking(move || git_ui_conflict_action_blocking(cwd, args)).await {
+        Ok(Ok(response)) => response,
+        Ok(Err((status, msg))) => git_json_error(status, msg),
+        Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -257,75 +327,5 @@ mod tests {
             .unwrap();
         assert!(output.status.success());
         String::from_utf8_lossy(&output.stdout).to_string()
-    }
-}
-
-pub(super) async fn git_ui_conflict_resolve(
-    State(state): State<WebState>,
-    headers: HeaderMap,
-    ConnectInfo(remote): ConnectInfo<SocketAddr>,
-    Json(body): Json<GitUiConflictResolveRequest>,
-) -> Response {
-    if let Err(response) = require_auth(&state, &headers, remote) {
-        return response;
-    }
-    let path = match safe_repo_path(&body.path) {
-        Ok(path) => path.to_string(),
-        Err(err) => return git_json_error(StatusCode::BAD_REQUEST, err),
-    };
-    let mode = body.mode;
-    let content = body.content;
-    let cwd = body.cwd;
-    match tokio::task::spawn_blocking(move || {
-        git_ui_conflict_resolve_blocking(cwd, path, mode, content)
-    })
-    .await
-    {
-        Ok(Ok(response)) => response,
-        Ok(Err((status, msg))) => git_json_error(status, msg),
-        Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
-    }
-}
-
-fn git_ui_conflict_action_blocking(
-    cwd: String,
-    args: Vec<&'static str>,
-) -> Result<Response, (StatusCode, String)> {
-    match git_ui_text(&cwd, &args) {
-        Ok(text) => Ok(Json(json!({ "ok": true, "message": text })).into_response()),
-        Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
-    }
-}
-
-fn conflict_action_args(action: &str) -> Option<Vec<&'static str>> {
-    Some(match action {
-        "merge-abort" => vec!["merge", "--abort"],
-        "merge-continue" => vec!["merge", "--continue"],
-        "rebase-continue" => vec!["rebase", "--continue"],
-        "rebase-skip" => vec!["rebase", "--skip"],
-        "rebase-abort" => vec!["rebase", "--abort"],
-        "cherry-pick-continue" => vec!["cherry-pick", "--continue"],
-        "cherry-pick-abort" => vec!["cherry-pick", "--abort"],
-        _ => return None,
-    })
-}
-
-pub(super) async fn git_ui_conflict_action(
-    State(state): State<WebState>,
-    headers: HeaderMap,
-    ConnectInfo(remote): ConnectInfo<SocketAddr>,
-    Json(body): Json<GitUiConflictActionRequest>,
-) -> Response {
-    if let Err(response) = require_auth(&state, &headers, remote) {
-        return response;
-    }
-    let Some(args) = conflict_action_args(body.action.as_str()) else {
-        return git_json_error(StatusCode::BAD_REQUEST, "invalid conflict action");
-    };
-    let cwd = body.cwd;
-    match tokio::task::spawn_blocking(move || git_ui_conflict_action_blocking(cwd, args)).await {
-        Ok(Ok(response)) => response,
-        Ok(Err((status, msg))) => git_json_error(status, msg),
-        Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
     }
 }
