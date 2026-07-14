@@ -29,7 +29,21 @@ mod protocol;
 mod service;
 mod terminal_text;
 
-use assets::*;
+use assets::{
+    app_boot_js, app_html, desktop_css, desktop_directory_picker_js, desktop_file_browser_css,
+    desktop_file_browser_js, desktop_git_ui_css, desktop_git_ui_js, desktop_js, desktop_search_css,
+    desktop_search_js, desktop_shortcuts_css, favicon_attention_svg, favicon_error_svg,
+    favicon_svg, icon_chevron_down_svg, icon_chevron_right_svg, icon_file_svg, icon_folder_svg,
+    icon_folder_up_svg, icon_git_svg, icon_help_svg, icon_refresh_svg, icon_search_svg,
+    icon_settings_svg, icon_terminal_svg, icon_theme_auto_svg, icon_trash_svg,
+    jetbrains_mono_nerd_font, login_css, login_html, login_js, mobile_attention_js, mobile_core_js,
+    mobile_css, mobile_file_browser_js, mobile_js, mobile_settings_js, mobile_terminal_js,
+    mobile_worktrees_js, shared_actions_js, shared_colors_css, shared_content_search_css,
+    shared_core_js, shared_editor_js, shared_file_content_search_js, shared_file_icons_css,
+    shared_file_icons_js, shared_file_tree_js, shared_line_context_js, shared_temp_terminal_js,
+    shared_terminal_fit_js, shared_terminal_scroll_js, shared_workspace_search_js,
+    vendor_codemirror_js, xterm_css, xterm_js,
+};
 #[cfg(test)]
 use compat::SimpleVersion;
 use compat::{backend_compatibility, BackendCompatibility};
