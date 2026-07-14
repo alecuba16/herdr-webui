@@ -492,6 +492,17 @@ function setTerminalFollowPaused(paused) {
   button.setAttribute("aria-hidden", paused ? "false" : "true");
 }
 
+// Auto-scroll to bottom after writing new data when the user is
+// following (not paused). This keeps the latest output visible while
+// preserving manual scrollback positions.
+function terminalFollowPaused() {
+  const button = el("terminalFollowButton");
+  return !!(button && !button.hidden);
+}
+function maybeAutoScrollToBottom() {
+  if (terminalFollowPaused() || terminalScrollbackOffsetEstimate > 0) return;
+  try { term.scrollToBottom(); } catch (e) {}
+}
 function writeTerminalFrame(data, onDone) {
   // For large frames (the initial attach repaint), use the write callback
   // to know when xterm.js finishes parsing. This avoids the caller
@@ -506,6 +517,7 @@ function writeTerminalFrame(data, onDone) {
   } catch (e) {
     term.write(data);
   }
+  maybeAutoScrollToBottom();
 }
 function scrollTerminalToBottom(focus = true) {
   sendBackendTail();
