@@ -208,7 +208,7 @@
 .section-header {
   flex: none;
 }
-.head #newWs,
+.head #headerActionsButton,
 .head #terminalWorkspaceToggle,
 .head #gitWorkspaceToggle,
 .head #fileWorkspaceToggle,
@@ -230,7 +230,7 @@
   overflow: hidden;
   padding: 0;
 }
-.head #newWs,
+.head #headerActionsButton,
 .head .no-sleep-control.active {
   background: var(--accent-2);
   color: var(--accent-1);
@@ -270,6 +270,13 @@
   color: var(--accent-1);
   border: 1px solid var(--accent-2-border);
 }
+.head #headerActionsButton {
+  gap: 6px;
+  grid-auto-flow: column;
+  min-width: 82px;
+  padding: 0 10px;
+  width: auto;
+}
 .head .shell-mode-group .shell-action.active,
 .head .shell-mode-group .git-workspace-toggle.active,
 .head .shell-mode-group .git-workspace-toggle.open {
@@ -301,10 +308,8 @@
   color: var(--accent-fg);
 }
 .head > .shell-action:hover,
-.head #newWs:hover,
 .head .no-sleep-control:hover,
 .head > .shell-action:focus,
-.head #newWs:focus,
 .head .no-sleep-control:focus {
   background: var(--control-hover);
   border-color: var(--accent);

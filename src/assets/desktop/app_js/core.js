@@ -155,8 +155,7 @@ const browserFavicon = createFaviconNotifier(document);
 let browserFaviconError = false;
 const workspaces = el("workspaces"),
   agents = el("agents"),
-  tabs = el("tabs"),
-  newWs = el("newWs");
+  tabs = el("tabs");
 applySidebarCollapsed();
 const sidebarToggle = el("sidebarToggle");
 if (sidebarToggle)
@@ -694,8 +693,7 @@ function syncShortcutTooltips() {
   setShortcutTooltip("footerShortcutsButton", "Shortcuts", "help");
   setShortcutTooltip("settingsToggle", "Settings", "settings");
   setShortcutTooltip("footerSettingsButton", "Settings", "settings");
-  setShortcutTooltip("searchButtonHead", "Search", "search");
-  setShortcutTooltip("newWs", "Open workspace, discover worktrees, or create a worktree", "newWorkspace");
+  setShortcutTooltip("headerActionsButton", "Search and actions", "search");
   setShortcutTooltip("sidebarToggle", sidebarCollapsed ? "Show sidebar" : "Hide sidebar", "sidebar");
   setShortcutTooltip("terminalWorkspaceToggle", "Show terminal", "focusTerminal");
   const searchClose = el("searchPaletteClose");
@@ -1763,10 +1761,10 @@ function applyOptions() {
   for (const module of settingsModules) {
     if (typeof module.apply === "function") module.apply(options);
   }
-  const searchButtonHead = el("searchButtonHead");
-  if (searchButtonHead) {
-    searchButtonHead.hidden = options.headerSearchEnabled === false;
-    searchButtonHead.disabled = options.headerSearchEnabled === false;
+  const actionsButton = el("headerActionsButton");
+  if (actionsButton) {
+    actionsButton.hidden = options.headerSearchEnabled === false;
+    actionsButton.disabled = options.headerSearchEnabled === false;
   }
   syncGitWorkspaceToggle();
   syncThemeColorInputs();
@@ -2022,21 +2020,15 @@ function themeToggleIcon() {
 }
 function setupSessionChrome() {
   const head = document.querySelector(".head");
+  const headerActions = el("headerActionsButton");
   const oldSessionButton = el("sessionButton");
   if (oldSessionButton) oldSessionButton.remove();
-  if (!el("searchButtonHead")) {
-    const b = document.createElement("button");
-    b.className = "btn shell-action";
-    b.id = "searchButtonHead";
-    b.title = titleWithWebuiShortcut("Search", "search");
-    b.textContent = "⌕";
-    head.insertBefore(b, el("newWs"));
-    b.onclick = () => openSearchPalette();
-  }
-  const searchButton = el("searchButtonHead");
-  if (searchButton) {
-    searchButton.hidden = options.headerSearchEnabled === false;
-    searchButton.disabled = options.headerSearchEnabled === false;
+  const oldSearchButton = el("searchButtonHead");
+  if (oldSearchButton) oldSearchButton.remove();
+  if (headerActions) {
+    headerActions.hidden = options.headerSearchEnabled === false;
+    headerActions.disabled = options.headerSearchEnabled === false;
+    headerActions.onclick = () => openSearchPalette();
   }
   if (!el("themeToggleHead")) {
     const b = document.createElement("button");
@@ -2044,7 +2036,7 @@ function setupSessionChrome() {
     b.id = "themeToggleHead";
     b.title = "Toggle theme";
     b.innerHTML = themeToggleIcon();
-    head.insertBefore(b, el("newWs"));
+    head.insertBefore(b, headerActions);
     b.onclick = () => {
       themeMode = themeMode === "auto" ? "dark" : themeMode === "dark" ? "light" : "auto";
       applyTheme();
@@ -2054,7 +2046,7 @@ function setupSessionChrome() {
   if (!el("noSleepHead")) {
     const wrap = document.createElement("span");
     wrap.innerHTML = noSleepControlHtml("noSleepHead");
-    head.insertBefore(wrap.firstChild, el("newWs"));
+    head.insertBefore(wrap.firstChild, headerActions);
     syncNoSleepControls();
   }
   let shellModeGroup = el("shellModeGroup");
@@ -2064,7 +2056,8 @@ function setupSessionChrome() {
     shellModeGroup.className = "shell-mode-group";
     shellModeGroup.setAttribute("role", "tablist");
     shellModeGroup.setAttribute("aria-label", "Workspace view");
-    el("newWs").insertAdjacentElement("afterend", shellModeGroup);
+    if (headerActions) headerActions.insertAdjacentElement("afterend", shellModeGroup);
+    else head.appendChild(shellModeGroup);
   }
   if (!el("terminalWorkspaceToggle")) {
     const t = document.createElement("button");
