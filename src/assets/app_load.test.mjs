@@ -526,6 +526,67 @@ describe("app bundle load", () => {
     equal(vm.runInContext("tempTerminal.minimized", ctx), 1);
   });
 
+  it("opens app search with Cmd/Ctrl+F without stealing editor or terminal Ctrl+F", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    const key = (extra = {}) => ({
+      code: "KeyF",
+      key: "f",
+      altKey: false,
+      ctrlKey: false,
+      metaKey: false,
+      shiftKey: false,
+      defaultPrevented: false,
+      propagationStopped: false,
+      immediateStopped: false,
+      target: ctx.document.body,
+      preventDefault() { this.defaultPrevented = true; },
+      stopPropagation() { this.propagationStopped = true; },
+      stopImmediatePropagation() { this.immediateStopped = true; },
+      ...extra,
+    });
+    const closestClassTarget = (className) => ({
+      classList: { contains: (value) => value === className },
+    });
+
+    let event = key({ metaKey: true });
+    ctx.handleGlobalShortcut(event);
+    equal(event.defaultPrevented, true);
+    equal(ctx.document.getElementById("searchPalette").style.display, "grid");
+
+    event = key({ ctrlKey: true });
+    ctx.handleGlobalShortcut(event);
+    equal(event.defaultPrevented, true);
+    equal(ctx.document.getElementById("searchPaletteInput").focused, true);
+    equal(ctx.document.getElementById("searchPaletteInput").selected, true);
+
+    ctx.document.getElementById("searchPalette").style.display = "none";
+    event = key({
+      metaKey: true,
+      target: { closest: (selector) => selector === ".herdr-editor" ? closestClassTarget("herdr-editor") : null },
+    });
+    ctx.handleGlobalShortcut(event);
+    equal(event.defaultPrevented, false);
+    equal(ctx.document.getElementById("searchPalette").style.display, "none");
+
+    event = key({
+      ctrlKey: true,
+      target: { closest: (selector) => selector === ".xterm" ? closestClassTarget("xterm") : null },
+    });
+    ctx.handleGlobalShortcut(event);
+    equal(event.defaultPrevented, false);
+    equal(ctx.document.getElementById("searchPalette").style.display, "none");
+
+    event = key({
+      metaKey: true,
+      target: { closest: (selector) => selector === ".xterm" ? closestClassTarget("xterm") : null },
+    });
+    ctx.handleGlobalShortcut(event);
+    equal(event.defaultPrevented, true);
+    equal(ctx.document.getElementById("searchPalette").style.display, "grid");
+  });
+
   it("keeps Git prefix shortcuts collision-free with WebUI prefix keys", () => {
     const webuiKeys = new Set([...source.matchAll(/case "([^"]+)":/g)].map((match) => match[1]));
     const gitKeys = ["Digit1", "Digit2", "Digit3", "Digit4", "KeyC", "KeyL", "KeyR", "KeyG", "KeyY", "KeyU", "KeyD", "KeyZ", "KeyH", "KeyM", "KeyE", "KeyO", "KeyV", "KeyI", "Digit0"];
