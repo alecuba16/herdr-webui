@@ -42,6 +42,7 @@ const DESKTOP_GIT_UI_CSS: &str = concat!(
 );
 const DESKTOP_SEARCH_CSS: &str = include_str!("assets/desktop/search.css");
 const DESKTOP_FILE_BROWSER_CSS: &str = include_str!("assets/desktop/file_browser.css");
+const DESKTOP_DIRECTORY_PICKER_CSS: &str = include_str!("assets/desktop/directory_picker.css");
 const DESKTOP_SHORTCUTS_CSS: &str = include_str!("assets/desktop/shortcuts.css");
 const DESKTOP_GIT_UI_JS: &str = concat!(
     include_str!("assets/desktop/git_ui/settings.js"),
@@ -242,6 +243,10 @@ pub(crate) async fn desktop_file_browser_css() -> Response {
     static_text(DESKTOP_FILE_BROWSER_CSS, "text/css; charset=utf-8")
 }
 
+pub(crate) async fn desktop_directory_picker_css() -> Response {
+    static_text(DESKTOP_DIRECTORY_PICKER_CSS, "text/css; charset=utf-8")
+}
+
 pub(crate) async fn desktop_shortcuts_css() -> Response {
     static_text(DESKTOP_SHORTCUTS_CSS, "text/css; charset=utf-8")
 }
@@ -438,6 +443,7 @@ mod tests {
         assert_eq!(content_type(&shared_content_search_css().await), css);
         assert_eq!(content_type(&desktop_git_ui_css().await), css);
         assert_eq!(content_type(&desktop_file_browser_css().await), css);
+        assert_eq!(content_type(&desktop_directory_picker_css().await), css);
         assert_eq!(content_type(&login_css().await), css);
     }
 
