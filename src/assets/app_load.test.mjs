@@ -781,6 +781,8 @@ describe("app bundle load", () => {
     const desktopWorktreesSource = readFileSync(new URL("./desktop/app_js/worktrees.js", import.meta.url), "utf8");
     const mobileWorktreesSource = readFileSync(new URL("./mobile/worktrees.js", import.meta.url), "utf8");
     const directoryPickerSource = readFileSync(new URL("./desktop/directory_picker.js", import.meta.url), "utf8");
+    const directoryPickerCss = readFileSync(new URL("./desktop/directory_picker.css", import.meta.url), "utf8");
+    const sharedFileTreeCss = readFileSync(new URL("./shared/file_tree.css", import.meta.url), "utf8");
     match(sharedFileTreeSource, /renderCurrentDirectoryRow/);
     match(sharedFileTreeSource, /herdr-tree-up-action/);
     match(sharedFileTreeSource, /value === "~"/);
@@ -797,6 +799,12 @@ describe("app bundle load", () => {
     match(directoryPickerSource, /function ensureStyles\(\)/);
     match(directoryPickerSource, /\/assets\/desktop\/directory-picker\.css/);
     match(directoryPickerSource, /ensureStyles\(\);\n\s+state\.input = input;/);
+    match(directoryPickerSource, /directory-picker-error/);
+    match(directoryPickerCss, /\.directory-picker-error \{/);
+    match(appBootSource, /\/assets\/shared\/file-tree\.css/);
+    match(sharedFileTreeCss, /\.herdr-file-tree \{/);
+    match(sharedFileTreeCss, /\.herdr-tree-row \{/);
+    match(sharedFileTreeCss, /\.herdr-tree-icon-folder/);
     match(directoryPickerSource, /function configuredDefaultFolder\(\)/);
     match(directoryPickerSource, /typeof window\.defaultFolderPath === "function"/);
     match(directoryPickerSource, /function initialPickerPath\(input\)/);

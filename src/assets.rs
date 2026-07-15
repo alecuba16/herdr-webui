@@ -11,6 +11,7 @@ const SHARED_CORE_JS: &str = include_str!("assets/shared/core.js");
 const SHARED_ACTIONS_JS: &str = include_str!("assets/shared/actions.js");
 const SHARED_FILE_ICONS_JS: &str = include_str!("assets/shared/file_icons.js");
 const SHARED_FILE_ICONS_CSS: &str = include_str!("assets/shared/file_icons.css");
+const SHARED_FILE_TREE_CSS: &str = include_str!("assets/shared/file_tree.css");
 const SHARED_COLORS_CSS: &str = include_str!("assets/shared/colors.css");
 const SHARED_CONTENT_SEARCH_CSS: &str = include_str!("assets/shared/content_search.css");
 const SHARED_FILE_TREE_JS: &str = include_str!("assets/shared/file_tree.js");
@@ -142,6 +143,10 @@ pub(crate) async fn shared_file_icons_js() -> Response {
 
 pub(crate) async fn shared_file_icons_css() -> Response {
     static_text(SHARED_FILE_ICONS_CSS, "text/css; charset=utf-8")
+}
+
+pub(crate) async fn shared_file_tree_css() -> Response {
+    static_text(SHARED_FILE_TREE_CSS, "text/css; charset=utf-8")
 }
 
 pub(crate) async fn shared_colors_css() -> Response {
@@ -429,6 +434,7 @@ mod tests {
         );
         assert_eq!(content_type(&shared_actions_js().await), javascript);
         assert_eq!(content_type(&shared_file_tree_js().await), javascript);
+        assert_eq!(content_type(&shared_file_tree_css().await), css);
         assert_eq!(
             content_type(&shared_workspace_search_js().await),
             javascript

@@ -1,0 +1,117 @@
+.herdr-tree-hit {
+  background: var(--herdr-search-hit-bg);
+  border-radius: 3px;
+  color: var(--herdr-search-hit-fg);
+  padding: 0 2px;
+}
+.herdr-file-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px;
+}
+.herdr-tree-row {
+  align-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--fg);
+  cursor: pointer;
+  display: grid;
+  font: inherit;
+  font-size: 12px;
+  gap: 4px;
+  grid-template-columns: 14px 16px minmax(0, 1fr) auto auto;
+  padding: 5px 6px 5px calc(6px + var(--tree-offset, 0px));
+  text-align: left;
+  width: 100%;
+}
+.herdr-tree-row:hover,
+.herdr-tree-row.active {
+  background: var(--control-hover, var(--panel2));
+  border-color: var(--border2);
+}
+.herdr-file-tree-current {
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+  padding: 8px 8px 4px;
+}
+.herdr-tree-row.current {
+  background: var(--panel2);
+  border-color: var(--border2);
+  cursor: default;
+  font-weight: 700;
+}
+.herdr-tree-up-action {
+  background: var(--bg);
+  border: 1px solid var(--border2);
+  border-radius: 999px;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 8px;
+}
+.herdr-tree-up-action:hover,
+.herdr-tree-up-action:focus {
+  border-color: var(--accent);
+  color: var(--accent);
+  outline: 0;
+}
+.herdr-tree-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.herdr-tree-crumb {
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+}
+.herdr-tree-crumb:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+.herdr-tree-sep {
+  color: var(--muted);
+  padding: 0 2px;
+}
+.herdr-tree-meta,
+.herdr-tree-status {
+  color: var(--muted);
+  font-size: 11px;
+}
+.herdr-tree-status {
+  border: 1px solid var(--border2);
+  border-radius: 999px;
+  min-width: 20px;
+  padding: 1px 5px;
+  text-align: center;
+}
+.herdr-tree-status.added,
+.herdr-tree-status.untracked { color: #1db910; }
+.herdr-tree-status.deleted { color: #f38ba8; }
+.herdr-tree-status.conflict { color: #fab387; }
+.herdr-tree-row.git-modified { color: var(--git-modified-color); }
+.herdr-tree-row.git-added,
+.herdr-tree-row.git-untracked { color: var(--git-added-color); }
+.herdr-tree-row.git-deleted { color: var(--git-deleted-color); }
+.herdr-tree-row.git-changed { color: var(--git-changed-color); }
+.herdr-tree-row.git-conflict { color: var(--git-conflict-color); }
+.herdr-tree-icon {
+  background: currentColor;
+  display: inline-block;
+  height: 14px;
+  mask-position: center;
+  mask-repeat: no-repeat;
+  mask-size: contain;
+  width: 14px;
+}
+.herdr-tree-icon-chevron-right { mask-image: url("/assets/icons/chevron-right.svg"); }
+.herdr-tree-icon-chevron-down { mask-image: url("/assets/icons/chevron-down.svg"); }
+.herdr-tree-icon-folder { mask-image: url("/assets/icons/folder.svg"); }
+.herdr-tree-icon-folder-up { mask-image: url("/assets/icons/folder-up.svg"); }
+.herdr-tree-icon-file { mask-image: url("/assets/icons/file.svg"); }
