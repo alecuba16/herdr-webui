@@ -331,10 +331,12 @@
       if (mode === "split") {
         target.files.push(nextFile);
         target.split = true;
-      } else {
+      } else if (mode === "replace") {
         const index = Math.max(0, target.files.findIndex((file) => file.path === replacePath));
         if (target.files.length) target.files[index] = nextFile;
         else target.files.push(nextFile);
+      } else {
+        target.files.push(nextFile);
       }
     } catch (error) {
       setError(target, error);
@@ -580,7 +582,17 @@
     const edit = canEdit && !file.editing ? `<button class="git-ui-btn" onclick="HerdrFileBrowser.edit('${arg(file.path)}')">Edit</button>` : "";
     const save = canEdit && file.editing ? `<button class="git-ui-btn primary" ${file.saving ? "disabled" : ""} onclick="HerdrFileBrowser.save('${arg(file.path)}')">${file.saving ? "Saving..." : "Save"}</button><button class="git-ui-btn" onclick="HerdrFileBrowser.cancelEdit('${arg(file.path)}')">Cancel</button>` : "";
     const dirty = file.dirty ? `<span class="file-browser-dirty">modified</span>` : "";
-    return `<strong title="${esc(file.path)}">${esc(file.path)}</strong>${dirty}<span class="file-browser-toolbar-actions">${split}${edit}${save}<button class="git-ui-btn" onclick="HerdrFileBrowser.showHistory('${arg(file.path)}')">Show history</button><button class="git-ui-btn" onclick="HerdrFileBrowser.reload('${arg(file.path)}')">Reload</button><button class="git-ui-btn" onclick="HerdrFileBrowser.closeFile('${arg(file.path)}')">Close file</button></span>`;
+    return `<div class="file-browser-toolbar-main">${renderFileTabs()}<div class="file-browser-current-file"><strong title="${esc(file.path)}">${esc(file.path)}</strong>${dirty}</div></div><span class="file-browser-toolbar-actions">${split}${edit}${save}<button class="git-ui-btn" onclick="HerdrFileBrowser.showHistory('${arg(file.path)}')">Show history</button><button class="git-ui-btn" onclick="HerdrFileBrowser.reload('${arg(file.path)}')">Reload</button><button class="git-ui-btn" onclick="HerdrFileBrowser.closeFile('${arg(file.path)}')">Close file</button></span>`;
+  }
+
+  function renderFileTabs() {
+    if (!state.files.length) return "";
+    const tabs = state.files.map((file) => {
+      const active = file.path === state.selected;
+      const dirty = file.dirty ? `<span class="file-browser-tab-dirty" title="Modified">●</span>` : "";
+      return `<button class="file-browser-file-tab ${active ? "active" : ""}" role="tab" aria-selected="${active ? "true" : "false"}" title="${esc(file.path)}" onclick="HerdrFileBrowser.focusFile('${arg(file.path)}')"><span>${esc(Tree.basename(file.path))}</span>${dirty}<span class="file-browser-tab-close" title="Close" onclick="event.stopPropagation();HerdrFileBrowser.closeFile('${arg(file.path)}')">×</span></button>`;
+    }).join("");
+    return `<div class="file-browser-file-tabs" role="tablist" aria-label="Open files">${tabs}</div>`;
   }
 
   function renderPreviewShell() {

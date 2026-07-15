@@ -395,6 +395,7 @@ async function ensureFileBrowserLoaded() {
 
 async function openWorkspaceGitUi(id, options) {
   if (!gitUiEnabled()) return;
+  const openOptions = options || {};
   const workspace = selectedOrDefaultWorkspace(id);
   if (!workspace) return;
   try {
@@ -403,8 +404,13 @@ async function openWorkspaceGitUi(id, options) {
     alert(error.message || String(error));
     return;
   }
+  if (!openOptions.forceOpen && currentWorkspaceShellMode(id) === "git" && !isWorkspaceShellMinimized(id) && window.HerdrGitUi.isWorkspaceVisible(workspaceShellKey(workspace))) {
+    minimizeWorkspaceShell(id);
+    return;
+  }
   if (window.HerdrFileBrowser) window.HerdrFileBrowser.hide();
-  window.HerdrGitUi.open(workspace, options || {});
+  rememberWorkspaceShellMode("git", id, { minimized: false });
+  window.HerdrGitUi.open(workspace, openOptions);
   render();
 }
 
@@ -422,6 +428,7 @@ function syncFileWorkspaceToggle() {
 }
 
 async function openWorkspaceFileBrowser(id, options) {
+  const openOptions = options || {};
   const workspace = selectedOrDefaultWorkspace(id);
   if (!workspace) return;
   try {
@@ -430,8 +437,13 @@ async function openWorkspaceFileBrowser(id, options) {
     alert(error.message || String(error));
     return;
   }
+  if (!openOptions.forceOpen && currentWorkspaceShellMode(id) === "files" && !isWorkspaceShellMinimized(id) && window.HerdrFileBrowser.isWorkspaceVisible(workspace)) {
+    minimizeWorkspaceShell(id);
+    return;
+  }
   if (window.HerdrGitUi) window.HerdrGitUi.hide();
-  window.HerdrFileBrowser.open(workspace, options || {}).catch((error) => alert(error.message || String(error)));
+  rememberWorkspaceShellMode("files", id, { minimized: false });
+  window.HerdrFileBrowser.open(workspace, openOptions).catch((error) => alert(error.message || String(error)));
   render();
 }
 function runWorkspaceContextAction(action, button) {

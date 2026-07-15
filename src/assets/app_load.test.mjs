@@ -671,15 +671,36 @@ describe("app bundle load", () => {
     match(gitUiSource, /\/api\/git-ui\/tag/);
   });
 
-  it("keeps Git and file drawers on the newly selected workspace", () => {
-    match(source, /gitWasVisible/);
-    match(source, /fileWasVisible/);
-    match(source, /openWorkspaceGitUi\(ws, \{ forceOpen: true \}\)/);
-    match(source, /openWorkspaceFileBrowser\(ws, \{ forceOpen: true \}\)/);
-    match(readFileSync(new URL("./desktop/app_js/render.js", import.meta.url), "utf8"), /HerdrGitUi\.open\(workspace, options \|\| \{\}\)/);
-    match(readFileSync(new URL("./desktop/app_js/render.js", import.meta.url), "utf8"), /HerdrFileBrowser\.open\(workspace, options \|\| \{\}\)/);
+  it("keeps workspace shell tabs scoped to each workspace", () => {
+    match(source, /workspaceShell: \{\}/);
+    match(source, /function workspaceShellState/);
+    match(source, /function minimizeWorkspaceShell/);
+    match(source, /function restoreWorkspaceShell/);
+    match(source, /applyWorkspaceShellForSelection\(ws\)/);
+    match(source, /function forgetWorkspaceShell/);
+    match(source, /workspaceShellRestore/);
+    const renderSource = readFileSync(new URL("./desktop/app_js/render.js", import.meta.url), "utf8");
+    match(renderSource, /rememberWorkspaceShellMode\("git", id, \{ minimized: false \}\)/);
+    match(renderSource, /rememberWorkspaceShellMode\("files", id, \{ minimized: false \}\)/);
+    match(renderSource, /HerdrGitUi\.open\(workspace, openOptions\)/);
+    match(renderSource, /HerdrFileBrowser\.open\(workspace, openOptions\)/);
+    match(readFileSync(new URL("./desktop/app_js/worktrees.js", import.meta.url), "utf8"), /forgetWorkspaceShell\(closingWorkspace\)/);
     match(gitUiSource, /state\.visible && state\.activeKey === key && !openOptions\.forceOpen/);
     match(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), /state\.open && activeKey === key && !openOptions\.forceOpen/);
+  });
+
+  it("opens search results as file browser tabs with split support", () => {
+    const fileBrowserSource = readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8");
+    const searchSource = readFileSync(new URL("./desktop/search.js", import.meta.url), "utf8");
+    match(fileBrowserSource, /function renderFileTabs/);
+    match(fileBrowserSource, /role="tablist" aria-label="Open files"/);
+    match(fileBrowserSource, /target\.files\.push\(nextFile\)/);
+    match(fileBrowserSource, /mode === "split"/);
+    match(fileBrowserSource, /target\.split = true/);
+    match(searchSource, /async function openWorkspaceSearchPath/);
+    match(searchSource, /await ensureFileBrowserLoaded\(\)/);
+    match(searchSource, /await window\.HerdrFileBrowser\.openAt/);
+    match(searchSource, /rememberWorkspaceShellMode\("files", workspace, \{ minimized: false \}\)/);
   });
 
   it("moves the diff layout toggle to the bottom of the Git side rail", () => {

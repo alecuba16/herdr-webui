@@ -52,6 +52,66 @@
   justify-content: space-between;
   min-width: 0;
 }
+.file-browser-toolbar-main {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.file-browser-current-file {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+}
+.file-browser-file-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+}
+.file-browser-file-tab {
+  align-items: center;
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  color: var(--fg);
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  font-size: 12px;
+  gap: 6px;
+  max-width: 220px;
+  min-width: 0;
+  padding: 4px 6px 4px 9px;
+}
+.file-browser-file-tab.active {
+  background: var(--accent-2);
+  border-color: var(--border2);
+  color: var(--accent-1);
+  font-weight: 800;
+}
+.file-browser-file-tab span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file-browser-tab-dirty {
+  color: var(--accent);
+  flex: 0 0 auto;
+}
+.file-browser-tab-close {
+  border-radius: 999px;
+  color: var(--muted);
+  flex: 0 0 auto;
+  line-height: 1;
+  padding: 1px 4px;
+}
+.file-browser-tab-close:hover {
+  background: var(--control-hover, var(--panel));
+  color: var(--fg);
+}
 .file-browser-toolbar strong {
   overflow: hidden;
   text-overflow: ellipsis;

@@ -284,6 +284,41 @@
   box-shadow: 0 6px 18px color-mix(in srgb, var(--accent-1), transparent 74%);
   color: var(--accent-fg);
 }
+.head .shell-mode-group.minimized .shell-action.active {
+  opacity: 0.72;
+}
+.head .shell-mode-group .workspace-shell-minimize {
+  font-size: 18px;
+  font-weight: 800;
+}
+.head .shell-mode-group .workspace-shell-minimize:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+.workspace-shell-restore {
+  align-items: center;
+  background: var(--accent-1);
+  border: 1px solid var(--accent-2-border);
+  border-radius: 999px;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 18px);
+  box-shadow: 0 14px 38px color-mix(in srgb, var(--accent-1), transparent 72%);
+  color: var(--accent-fg);
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+  gap: 8px;
+  padding: 9px 14px;
+  position: fixed;
+  right: calc(env(safe-area-inset-right, 0px) + 18px);
+  z-index: 70;
+}
+.workspace-shell-restore:hover,
+.workspace-shell-restore:focus {
+  filter: brightness(1.05);
+  outline: 0;
+}
 .head > .shell-action.active,
 .head .no-sleep-control.active {
   background: var(--accent-1);
