@@ -49,6 +49,7 @@ let term,
   connectedTerminalId = null,
   connectedSize = "",
   termScrollBound = false,
+  terminalViewportScrollElement = null,
   terminalTouchLastY = null,
   terminalWheelDeltaPixels = 0,
   terminalScrollbackOffsetEstimate = 0,
@@ -2513,6 +2514,14 @@ function resetTerminalConnection(clear = false, destroy = false) {
   terminalWriteFlushPending = false;
   terminalAttachPending = false;
   setTerminalFollowPaused(false);
+  if (
+    terminalViewportScrollElement &&
+    typeof terminalViewportScrollElement.removeEventListener === "function" &&
+    typeof handleTerminalViewportScroll === "function"
+  ) {
+    terminalViewportScrollElement.removeEventListener("scroll", handleTerminalViewportScroll);
+  }
+  terminalViewportScrollElement = null;
   if (termWs) {
     termWs.onclose = null;
     try {

@@ -652,7 +652,7 @@ describe("app bundle load", () => {
     match(tempTerminalSource, /HerdrTerminalFit\.fitXtermToContainer\(container\)/);
     match(terminalFitSource, /function cellSize\(term, container, fallback\)/);
     match(terminalFitSource, /function gridSize\(container, term, options\)/);
-    match(terminalFitSource, /function fitXtermToContainer\(container\)/);
+    match(terminalFitSource, /function fitXtermToContainer\(container, options\)/);
     match(terminalFitSource, /root\.HerdrTerminalFit/);
     match(tempTerminalSource, /resizeTerminalSurface\(container, cols, rows\)/);
     match(tempTerminalSource, /box\.width >= 320 && box\.height >= 120/);

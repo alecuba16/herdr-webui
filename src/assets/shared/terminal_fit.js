@@ -58,19 +58,44 @@
     };
   }
 
-  function fitXtermToContainer(container) {
+  function fitXtermToContainer(container, options) {
+    var opts = options || {};
     if (!container || !container.querySelector) return;
+    var height = Math.floor(opts.height || container.clientHeight || 0);
+    var heightPx = height > 0 ? height + "px" : "";
     var xterm = container.querySelector(".xterm");
     if (xterm) {
       xterm.style.width = "100%";
-      xterm.style.height = "100%";
+      xterm.style.height = heightPx || "100%";
+      xterm.style.maxHeight = heightPx || "";
       xterm.style.minWidth = "0";
       xterm.style.minHeight = "0";
+      xterm.style.overflow = "hidden";
     }
     var viewport = container.querySelector(".xterm-viewport");
     if (viewport) {
       viewport.style.left = "0";
       viewport.style.right = "0";
+      if (heightPx) {
+        viewport.style.height = heightPx;
+        viewport.style.maxHeight = heightPx;
+      }
+    }
+    if (!heightPx) return;
+    var screen = container.querySelector(".xterm-screen");
+    if (screen) {
+      screen.style.height = heightPx;
+      screen.style.maxHeight = heightPx;
+      screen.style.overflow = "hidden";
+    }
+    var helpers = container.querySelector(".xterm-helpers");
+    if (helpers) {
+      helpers.style.maxHeight = heightPx;
+      helpers.style.overflow = "hidden";
+    }
+    var canvasNodes = container.querySelectorAll && container.querySelectorAll(".xterm-screen canvas");
+    if (canvasNodes) {
+      for (var i = 0; i < canvasNodes.length; i++) canvasNodes[i].style.maxHeight = heightPx;
     }
   }
 
