@@ -244,6 +244,7 @@ describe("app bundle load", () => {
     equal(ctx.document.getElementById("settingsToggle").title, "Settings (Ctrl+Q then S)");
     equal(ctx.document.getElementById("headerActionsButton").title, "Search and actions (Ctrl+Q then /)");
     equal(ctx.document.getElementById("sidebarToggle").title, "Hide sidebar (Ctrl+Q then B)");
+    equal(ctx.document.getElementById("tempTerminalMinimize").title, "Minimize temporary terminal (Ctrl+Q then Shift+M)");
 
     vm.runInContext(`
       state.ws = "w1";
@@ -701,6 +702,11 @@ describe("app bundle load", () => {
     match(tempTerminalSource, /document\.addEventListener\("keydown", tempTerminalKeydown, true\)/);
     match(tempTerminalSource, /if \(tempTerminalOwnsEventTarget\(event\.target\)\) \{/);
     match(tempTerminalSource, /terminalFocusRetainingInputForKey\(event\)/);
+    match(tempTerminalSource, /shortcutLabelFn/);
+    match(tempTerminalSource, /setShortcutTitle\(button, "Minimize temporary terminal"\)/);
+    match(tempTerminalSource, /setShortcutTitle\(button, "Show temporary terminal"\)/);
+    match(shortcutsSource, /tempTerminalToggle/);
+    match(readFileSync(new URL("./desktop/app_js/bindings.js", import.meta.url), "utf8"), /shortcutLabelFn: \(\) => shortcutLabel\("webuiShortcuts", "tempTerminalToggle"\)/);
     match(tempTerminalSource, /if \(event\.key === "Backspace"\) return "\\x7f";/);
     match(tempTerminalSource, /if \(event\.key === "Tab"\) return event\.shiftKey \? "\\x1b\[Z" : "\\t";/);
     match(tempTerminalSource, /term\.element \|\| \(el\(containerId\) && el\(containerId\)\.querySelector/);

@@ -21,6 +21,7 @@
     var fontFamilyFn = opts.fontFamilyFn || function () { return "monospace"; };
     var themeFn = opts.themeFn || function () { return {}; };
     var defaultFolderFn = opts.defaultFolderFn || function () { return ""; };
+    var shortcutLabelFn = opts.shortcutLabelFn || function () { return ""; };
 
     var term = null;
     var termWs = null;
@@ -408,11 +409,25 @@
     function installMinimizeControl() {
       var modal = el(modalId);
       var button = modal && modal.querySelector && modal.querySelector(".temp-terminal-minimize");
+      setShortcutTitle(button, "Minimize temporary terminal");
       if (button && !button.__herdrTempTerminalMinimizeBound) {
         button.__herdrTempTerminalMinimizeBound = true;
         button.onclick = minimize;
       }
       ensureRestoreControl();
+    }
+
+    function shortcutTitle(action) {
+      var label = "";
+      try { label = shortcutLabelFn() || ""; } catch (e) {}
+      return label ? action + " (" + label + ")" : action;
+    }
+
+    function setShortcutTitle(node, action) {
+      if (!node) return;
+      var title = shortcutTitle(action);
+      node.title = title;
+      node.setAttribute && node.setAttribute("aria-label", title);
     }
 
     function ensureRestoreControl() {
@@ -422,8 +437,7 @@
       restoreButton = doc.createElement("button");
       restoreButton.type = "button";
       restoreButton.className = "temp-terminal-restore";
-      restoreButton.title = "Show temporary terminal";
-      restoreButton.setAttribute("aria-label", "Show temporary terminal");
+      setShortcutTitle(restoreButton, "Show temporary terminal");
       restoreButton.innerHTML = '<span class="temp-terminal-restore-icon" aria-hidden="true">▣</span><span class="temp-terminal-restore-label">Terminal</span>';
       restoreButton.onclick = restore;
       restoreButton.style.display = "none";
@@ -433,7 +447,10 @@
 
     function showRestoreControl() {
       var button = ensureRestoreControl();
-      if (button) button.style.display = "inline-flex";
+      if (button) {
+        setShortcutTitle(button, "Show temporary terminal");
+        button.style.display = "inline-flex";
+      }
     }
 
     function hideRestoreControl() {
