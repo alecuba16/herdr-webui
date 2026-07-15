@@ -808,8 +808,12 @@ describe("app bundle load", () => {
     match(readFileSync(new URL("./desktop/app_js/shortcuts.js", import.meta.url), "utf8"), /openFocusedFileBrowserFind\(e\.target\)/);
     match(fileBrowserSource, /HerdrEditor\.openFind/);
     ok(!fileBrowserSource.includes("file-browser-current-file"), "active file title is already represented by the file tab");
-    ok(!fileBrowserSource.includes("<span>${esc(file.path)}</span>"), "file panes must not duplicate the selected path next to the tab button");
+    ok(!fileBrowserSource.includes("file-browser-current-file"), "file pane title must stay inside the selector button");
+    match(fileBrowserSource, /file-browser-pane-path-button/);
+    match(fileBrowserSource, /<span class="file-browser-pane-path">\$\{esc\(file\.path\)\}<\/span>/);
     match(fileBrowserSource, /title="\$\{esc\(file\.path\)\}" onclick="HerdrFileBrowser\.focusFile/);
+    match(fileBrowserCss, /\.file-browser-pane-path-button \{[\s\S]*?min-width: 0;/);
+    match(fileBrowserCss, /\.file-browser-pane-path \{[\s\S]*?direction: rtl;[\s\S]*?max-width: 100%;[\s\S]*?text-overflow: ellipsis;[\s\S]*?unicode-bidi: plaintext;[\s\S]*?white-space: nowrap;/);
     match(fileBrowserSource, /target\.files\.push\(nextFile\)/);
     match(fileBrowserSource, /mode === "split"/);
     match(fileBrowserSource, /target\.split = true/);

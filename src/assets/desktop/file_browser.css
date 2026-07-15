@@ -279,6 +279,24 @@
   min-width: 0;
   padding: 6px;
 }
+.file-browser-pane-path-button {
+  flex: 1 1 auto;
+  justify-content: flex-start;
+  max-width: 100%;
+  min-width: 0;
+}
+.file-browser-pane-path {
+  direction: rtl;
+  display: block;
+  flex: 1 1 auto;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  unicode-bidi: plaintext;
+  white-space: nowrap;
+}
 .file-browser-pane-subtitle {
   color: var(--muted);
   flex: 1 1 auto;
