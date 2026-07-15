@@ -258,6 +258,11 @@ function provideTerminalLinks(lineNumber, callback) {
 // RAF delay adds ~16ms of latency for no benefit. Above the threshold we
 // coalesce bursts to avoid overwhelming the renderer.
 const IMMEDIATE_WRITE_THRESHOLD = 8192;
+const PASTE_TEXT_CHUNK_SIZE = 4096;
+const PASTE_BYTE_CHUNK_SIZE = 16 * 1024;
+const PASTE_BUFFER_LIMIT = 64 * 1024;
+const PASTE_FLUSH_BUDGET_MS = 8;
+const PASTE_FLUSH_DELAY_MS = 4;
 // Frames above this size are likely full-screen repaints from the backend
 // (the initial attach frame). xterm.js parses these in 12ms time-slices with
 // setTimeout(0) between slices, and each slice triggers a browser paint of
@@ -637,12 +642,67 @@ function stripTerminalQueryReplies(data) {
 
 function sendPasteToTerminal(text) {
   if (!termWs || termWs.readyState !== 1 || !text) return;
-  pasteFrameUntil = Date.now() + 250;
-  sendInputData(terminalPasteInput(text, false), {
-    chunkSize: 16 * 1024,
-    maxBufferedAmount: 64 * 1024,
-  });
-  finishPasteFrameSoon();
+  const value = String(text || "");
+  if (!value) return;
+  if (pasteJob) {
+    pasteJob.text += value;
+    pasteJob.total = pasteJob.text.length;
+  } else {
+    pasteJob = { text: value, offset: 0, total: value.length, pendingCR: false };
+  }
+  pasteFrameUntil = Date.now() + Math.max(400, Math.min(8000, Math.ceil(pasteJob.total / 128)));
+  showTerminalPasteProgress(pasteJob.total);
+  schedulePasteChunkFlush(0);
+}
+function schedulePasteChunkFlush(delay = PASTE_FLUSH_DELAY_MS) {
+  if (pasteChunkTimer) return;
+  pasteChunkTimer = setTimeout(flushPasteChunks, delay);
+}
+function flushPasteChunks() {
+  pasteChunkTimer = null;
+  if (!pasteJob) return;
+  if (!termWs || termWs.readyState !== 1) {
+    pasteJob = null;
+    pasteFrameUntil = 0;
+    hideTerminalPasteProgress();
+    return;
+  }
+  const start = Date.now();
+  while (
+    pasteJob &&
+    pasteJob.offset < pasteJob.total &&
+    termWs.bufferedAmount < PASTE_BUFFER_LIMIT
+  ) {
+    const end = Math.min(pasteJob.total, pasteJob.offset + PASTE_TEXT_CHUNK_SIZE);
+    const rawChunk = pasteJob.text.slice(pasteJob.offset, end);
+    pasteJob.offset = end;
+    const chunk = normalizeTerminalPasteChunk(pasteJob, rawChunk, pasteJob.offset >= pasteJob.total);
+    if (chunk) sendPasteChunkToTerminal(chunk);
+    updateTerminalPasteProgress(pasteJob.offset, pasteJob.total);
+    if (Date.now() - start >= PASTE_FLUSH_BUDGET_MS) break;
+  }
+  if (!pasteJob) return;
+  if (pasteJob.offset >= pasteJob.total) {
+    finishPasteFrameSoon();
+    return;
+  }
+  schedulePasteChunkFlush(termWs.bufferedAmount >= PASTE_BUFFER_LIMIT ? PASTE_FLUSH_DELAY_MS : 0);
+}
+function normalizeTerminalPasteChunk(job, chunk, isFinal) {
+  if (job.pendingCR) {
+    chunk = "\r" + chunk;
+    job.pendingCR = false;
+  }
+  if (!isFinal && chunk.endsWith("\r")) {
+    chunk = chunk.slice(0, -1);
+    job.pendingCR = true;
+  }
+  return chunk.replace(/\r\n|\r/g, "\n");
+}
+function sendPasteChunkToTerminal(chunk) {
+  const bytes = inputEncoder.encode(chunk);
+  for (let i = 0; i < bytes.length; i += PASTE_BYTE_CHUNK_SIZE)
+    termWs.send(bytes.slice(i, i + PASTE_BYTE_CHUNK_SIZE));
 }
 function scheduleInputFlush() {
   if (inputFlushTimer) return;
@@ -661,10 +721,38 @@ function flushInputQueue() {
   else inputQueueMaxBufferedAmount = 65536;
 }
 function finishPasteFrameSoon() {
-  setTimeout(() => {
+  pasteJob = null;
+  updateTerminalPasteProgress(1, 1);
+  pasteProgressHideTimer = setTimeout(() => {
+    pasteProgressHideTimer = null;
     pasteFrameUntil = 0;
+    hideTerminalPasteProgress();
     scheduleTerminalLayoutFit();
   }, 250);
+}
+function showTerminalPasteProgress(total) {
+  if (pasteProgressHideTimer) {
+    clearTimeout(pasteProgressHideTimer);
+    pasteProgressHideTimer = null;
+  }
+  const progress = el("terminalPasteProgress");
+  if (progress) progress.hidden = false;
+  updateTerminalPasteProgress(0, total);
+}
+function updateTerminalPasteProgress(done, total) {
+  const pct = Math.max(0, Math.min(100, Math.round((Math.max(0, done) / Math.max(1, total)) * 100)));
+  const label = el("terminalPasteProgressLabel");
+  if (label) label.textContent = pct >= 100 ? "Paste sent" : "Pasting… " + pct + "%";
+  const bar = el("terminalPasteProgressBar");
+  if (bar) bar.style.width = pct + "%";
+}
+function hideTerminalPasteProgress() {
+  if (pasteProgressHideTimer) {
+    clearTimeout(pasteProgressHideTimer);
+    pasteProgressHideTimer = null;
+  }
+  const progress = el("terminalPasteProgress");
+  if (progress) progress.hidden = true;
 }
 function showClipboardMenu(x, y) {
   const menu = el("clipboardMenu");

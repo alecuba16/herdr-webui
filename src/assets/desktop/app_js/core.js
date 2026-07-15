@@ -69,6 +69,9 @@ let term,
   inputQueue = [],
   inputQueueMaxBufferedAmount = 65536,
   inputFlushTimer = null,
+  pasteJob = null,
+  pasteChunkTimer = null,
+  pasteProgressHideTimer = null,
   terminalWriteQueue = [],
   terminalWriteFlushPending = false,
   pasteFrameUntil = 0,
@@ -2509,6 +2512,16 @@ function resetTerminalConnection(clear = false, destroy = false) {
   }
   inputQueue = [];
   inputQueueMaxBufferedAmount = 65536;
+  if (pasteChunkTimer) {
+    clearTimeout(pasteChunkTimer);
+    pasteChunkTimer = null;
+  }
+  if (pasteProgressHideTimer) {
+    clearTimeout(pasteProgressHideTimer);
+    pasteProgressHideTimer = null;
+  }
+  pasteJob = null;
+  if (typeof hideTerminalPasteProgress === "function") hideTerminalPasteProgress();
   if (terminalWriteQueue.length && typeof flushTerminalFrames === "function") flushTerminalFrames();
   terminalWriteQueue = [];
   terminalWriteFlushPending = false;
