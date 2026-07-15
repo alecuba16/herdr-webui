@@ -49,6 +49,7 @@ let term,
   connectedTerminalId = null,
   connectedSize = "",
   termScrollBound = false,
+  terminalViewportScrollElement = null,
   terminalTouchLastY = null,
   terminalWheelDeltaPixels = 0,
   terminalScrollbackOffsetEstimate = 0,
@@ -68,6 +69,9 @@ let term,
   inputQueue = [],
   inputQueueMaxBufferedAmount = 65536,
   inputFlushTimer = null,
+  pasteJob = null,
+  pasteChunkTimer = null,
+  pasteProgressHideTimer = null,
   terminalWriteQueue = [],
   terminalWriteFlushPending = false,
   pasteFrameUntil = 0,
@@ -2508,11 +2512,29 @@ function resetTerminalConnection(clear = false, destroy = false) {
   }
   inputQueue = [];
   inputQueueMaxBufferedAmount = 65536;
+  if (pasteChunkTimer) {
+    clearTimeout(pasteChunkTimer);
+    pasteChunkTimer = null;
+  }
+  if (pasteProgressHideTimer) {
+    clearTimeout(pasteProgressHideTimer);
+    pasteProgressHideTimer = null;
+  }
+  pasteJob = null;
+  if (typeof hideTerminalPasteProgress === "function") hideTerminalPasteProgress();
   if (terminalWriteQueue.length && typeof flushTerminalFrames === "function") flushTerminalFrames();
   terminalWriteQueue = [];
   terminalWriteFlushPending = false;
   terminalAttachPending = false;
   setTerminalFollowPaused(false);
+  if (
+    terminalViewportScrollElement &&
+    typeof terminalViewportScrollElement.removeEventListener === "function" &&
+    typeof handleTerminalViewportScroll === "function"
+  ) {
+    terminalViewportScrollElement.removeEventListener("scroll", handleTerminalViewportScroll);
+  }
+  terminalViewportScrollElement = null;
   if (termWs) {
     termWs.onclose = null;
     try {

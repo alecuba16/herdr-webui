@@ -652,7 +652,7 @@ describe("app bundle load", () => {
     match(tempTerminalSource, /HerdrTerminalFit\.fitXtermToContainer\(container\)/);
     match(terminalFitSource, /function cellSize\(term, container, fallback\)/);
     match(terminalFitSource, /function gridSize\(container, term, options\)/);
-    match(terminalFitSource, /function fitXtermToContainer\(container\)/);
+    match(terminalFitSource, /function fitXtermToContainer\(container, options\)/);
     match(terminalFitSource, /root\.HerdrTerminalFit/);
     match(tempTerminalSource, /resizeTerminalSurface\(container, cols, rows\)/);
     match(tempTerminalSource, /box\.width >= 320 && box\.height >= 120/);
@@ -1954,9 +1954,26 @@ describe("app bundle load", () => {
     match(source, /addEventListener\(\s*"paste"/);
     match(source, /stopImmediatePropagation\(\)/);
     match(source, /sendPasteToTerminal\(text\)/);
-    match(source, /sendInputData\(terminalPasteInput\(text, false\)/);
+    match(source, /schedulePasteChunkFlush\(0\)/);
+    match(source, /function flushPasteChunks\(\)/);
+    match(source, /PASTE_TEXT_CHUNK_SIZE = 4096/);
+    match(source, /termWs\.bufferedAmount < PASTE_BUFFER_LIMIT/);
+    match(source, /normalizeTerminalPasteChunk\(pasteJob, rawChunk/);
+    match(source, /showTerminalPasteProgress\(pasteJob\.total\)/);
     ok(!source.includes('JSON.stringify({ type: "paste"'));
     ok(!source.includes('.paste(text)'));
+  });
+
+  it("renders terminal paste progress UI", () => {
+    const html = readFileSync(new URL("./app.html", import.meta.url), "utf8");
+    const terminalCss = readFileSync(new URL("./desktop/app_css/terminal.css", import.meta.url), "utf8");
+    match(html, /id="terminalPasteProgress"/);
+    match(html, /id="terminalPasteProgressLabel"/);
+    match(html, /id="terminalPasteProgressBar"/);
+    match(terminalCss, /\.terminal-paste-progress \{/);
+    match(terminalCss, /\.terminal-paste-progress-track i \{[\s\S]*?transition: width 80ms linear;/);
+    match(source, /function updateTerminalPasteProgress\(done, total\)/);
+    match(source, /label\.textContent = pct >= 100 \? "Paste sent" : "Pasting… " \+ pct \+ "%"/);
   });
 
   it("renders no-sleep control options", () => {

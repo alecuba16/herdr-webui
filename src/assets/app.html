@@ -33,6 +33,10 @@
           <div class="terminal-loading" id="terminalLoading">
             <span>Loading panel</span>
           </div>
+          <div class="terminal-paste-progress" id="terminalPasteProgress" hidden aria-live="polite">
+            <div class="terminal-paste-progress-label" id="terminalPasteProgressLabel">Pasting…</div>
+            <div class="terminal-paste-progress-track" aria-hidden="true"><i id="terminalPasteProgressBar"></i></div>
+          </div>
           <button class="terminal-follow-button" id="terminalFollowButton" type="button" hidden title="Go to latest terminal output and resume follow" aria-label="Go to latest terminal output and resume follow">↓ Tail</button>
           <div class="terminal" id="terminal"></div>
         </div>

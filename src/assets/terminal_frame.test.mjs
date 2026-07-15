@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { createRequire } from "node:module";
+import { readFileSync } from "node:fs";
 import vm from "node:vm";
+
+const require = createRequire(import.meta.url);
+const HerdrTerminalFit = require("./shared/terminal_fit.js");
 
 // Minimal mock for the desktop terminal frame pipeline. We only test the
 // enqueue / coalesce / flush logic, not xterm.js itself.
@@ -78,6 +83,122 @@ describe("desktop terminal frame coalescing", () => {
     assert.equal(writes.length, 1, "10 frames should produce 1 write");
     assert.ok(coalesced.includes("line 0"));
     assert.ok(coalesced.includes("line 9"));
+  });
+});
+
+describe("desktop terminal visible height fitting", () => {
+  function styleNode() {
+    return { style: {} };
+  }
+
+  it("caps xterm DOM nodes to the visible shell height", () => {
+    const xterm = styleNode();
+    const viewport = styleNode();
+    const screen = styleNode();
+    const helpers = styleNode();
+    const canvas = styleNode();
+    screen.style.height = "1580px";
+    const nodes = {
+      ".xterm": xterm,
+      ".xterm-viewport": viewport,
+      ".xterm-screen": screen,
+      ".xterm-helpers": helpers,
+    };
+    const container = {
+      clientHeight: 1064,
+      querySelector(selector) { return nodes[selector] || null; },
+      querySelectorAll(selector) { return selector === ".xterm-screen canvas" ? [canvas] : []; },
+    };
+
+    HerdrTerminalFit.fitXtermToContainer(container, { height: 1064 });
+
+    for (const node of [xterm, viewport, screen]) {
+      assert.equal(node.style.height, "1064px");
+      assert.equal(node.style.maxHeight, "1064px");
+    }
+    assert.equal(screen.style.overflow, "hidden");
+    assert.equal(helpers.style.maxHeight, "1064px");
+    assert.equal(canvas.style.maxHeight, "1064px");
+  });
+
+  it("uses 20px fallback cell height so a 1080px shell fits 53 rows, not 62", () => {
+    const shell = {
+      clientWidth: 1141,
+      clientHeight: 1080,
+      getClientRects() { return [{}]; },
+      getBoundingClientRect() { return { width: 1141, height: 1080 }; },
+      querySelector() { return null; },
+    };
+
+    const size = HerdrTerminalFit.gridSize(shell, null, {
+      paddingX: 16,
+      paddingY: 16,
+      fallbackCell: { width: 9, height: 20 },
+      minCols: 80,
+      minRows: 24,
+    });
+
+    assert.equal(size.rows, 53);
+    assert.equal(size.rows * size.cell.height, 1060);
+    assert.ok(size.rows * size.cell.height <= shell.clientHeight - 16);
+  });
+
+  it("auto-scrolls after xterm write callback only when follow is active", () => {
+    let scrolled = 0;
+    let paused = false;
+    const callbacks = [];
+    const term = {
+      write(_data, cb) { if (cb) callbacks.push(cb); },
+      scrollToBottom() { scrolled += 1; },
+    };
+    const maybeAutoScrollToBottom = () => {
+      if (paused) return;
+      term.scrollToBottom();
+    };
+    const followTerminalAfterWrite = () => maybeAutoScrollToBottom();
+
+    term.write("new data", followTerminalAfterWrite);
+    assert.equal(scrolled, 0, "scroll waits for xterm parse callback");
+    callbacks.shift()();
+    assert.equal(scrolled, 1, "follow active scrolls after write");
+
+    paused = true;
+    term.write("more data", followTerminalAfterWrite);
+    callbacks.shift()();
+    assert.equal(scrolled, 1, "paused follow preserves user scrollback");
+  });
+});
+
+describe("desktop terminal paste streaming", () => {
+  function loadDesktopTerminalContext() {
+    const source = readFileSync(new URL("./desktop/app_js/terminal.js", import.meta.url), "utf8");
+    const ctx = {
+      console,
+      TextEncoder,
+      clearTimeout() {},
+      setTimeout() { return 1; },
+      requestAnimationFrame() {},
+      document: { hidden: false },
+      window: { addEventListener() {} },
+      state: {},
+      options: {},
+      terminal: null,
+    };
+    vm.createContext(ctx);
+    vm.runInContext(source, ctx);
+    return ctx;
+  }
+
+  it("normalizes CRLF across async paste chunk boundaries", () => {
+    const ctx = loadDesktopTerminalContext();
+    const job = { pendingCR: false };
+
+    const first = ctx.normalizeTerminalPasteChunk(job, "hello\r", false);
+    const second = ctx.normalizeTerminalPasteChunk(job, "\nworld\rnext", true);
+
+    assert.equal(first, "hello");
+    assert.equal(second, "\nworld\nnext");
+    assert.equal(job.pendingCR, false);
   });
 });
 
