@@ -693,11 +693,15 @@ describe("app bundle load", () => {
   it("opens search results as file browser tabs with split support", () => {
     const fileBrowserSource = readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8");
     const searchSource = readFileSync(new URL("./desktop/search.js", import.meta.url), "utf8");
+    const fileBrowserCss = readFileSync(new URL("./desktop/file_browser.css", import.meta.url), "utf8");
     match(fileBrowserSource, /function renderFileTabs/);
     match(fileBrowserSource, /role="tablist" aria-label="Open files"/);
     match(fileBrowserSource, /target\.files\.push\(nextFile\)/);
     match(fileBrowserSource, /mode === "split"/);
     match(fileBrowserSource, /target\.split = true/);
+    match(fileBrowserCss, /\.file-browser-file-tabs \{[\s\S]*?flex-wrap: nowrap;/);
+    match(fileBrowserCss, /\.file-browser-file-tabs \{[\s\S]*?overflow-x: auto;/);
+    ok(!fileBrowserCss.includes(".file-browser-side.previewing"), "file tree must stay visible while previewing files");
     match(searchSource, /async function openWorkspaceSearchPath/);
     match(searchSource, /await ensureFileBrowserLoaded\(\)/);
     match(searchSource, /await window\.HerdrFileBrowser\.openAt/);

@@ -67,9 +67,13 @@
 }
 .file-browser-file-tabs {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 4px;
   min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 2px;
+  scrollbar-width: thin;
 }
 .file-browser-file-tab {
   align-items: center;
@@ -610,13 +614,11 @@
 }
 @media (max-width: 900px) {
   .file-browser-panel {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(240px, 36%) minmax(360px, 1fr);
     inset: 0;
     max-width: none;
     min-width: 0;
-  }
-  .file-browser-side.previewing {
-    display: none;
+    overflow: auto hidden;
   }
 }
 .file-browser-refresh.active {
