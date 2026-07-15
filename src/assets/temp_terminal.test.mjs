@@ -51,6 +51,7 @@ function context() {
   const createdButtons = [];
   const timeouts = [];
   const apiCalls = [];
+  let ctx;
 
   const getElement = (id) => {
     if (!elements.has(id)) elements.set(id, makeElement(id));
@@ -64,13 +65,16 @@ function context() {
   class FakeTerminal {
     constructor() {
       this.element = makeElement("xterm");
-      this.element.containsTarget = { insideTerm: true };
+      this.textarea = makeElement("xterm-textarea");
+      this.textarea.insideTerm = true;
+      this.element.containsTarget = this.textarea;
       this.focusCount = 0;
       this.resizeCalls = [];
-      context.lastTerminal = this;
+      ctx.lastTerminal = this;
     }
     focus() {
       this.focusCount += 1;
+      ctx.document.activeElement = this.textarea;
     }
     onData(fn) {
       this.onDataHandler = fn;
@@ -101,7 +105,7 @@ function context() {
     }
   }
 
-  const ctx = {
+  ctx = {
     TextEncoder,
     Terminal: FakeTerminal,
     WebSocket: FakeWebSocket,
@@ -227,6 +231,26 @@ describe("temporary terminal", () => {
     equal(backspace.immediateStopped, true);
     inputFrames = terminalInputFrames(ctx);
     equal(inputFrames[1], "\x7f");
+  });
+
+  it("keeps xterm focused after captured Backspace", async () => {
+    const ctx = context();
+    await openTempTerminal(ctx);
+    const listener = ctx.listeners.get("keydown");
+    ok(listener);
+    const terminal = ctx.lastTerminal;
+    const target = terminal.textarea;
+    ctx.document.activeElement = target;
+    const focusBefore = terminal.focusCount;
+
+    const backspace = keyEvent("Backspace", target);
+    listener(backspace);
+
+    equal(backspace.defaultPrevented, true);
+    equal(backspace.immediateStopped, true);
+    equal(ctx.document.activeElement, target);
+    ok(terminal.focusCount >= focusBefore + 1);
+    equal(terminalInputFrames(ctx).at(-1), "\x7f");
   });
 
   it("lets xterm handle ordinary keys from inside the terminal without duplicate input", async () => {

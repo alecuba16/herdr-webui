@@ -178,7 +178,7 @@
         if (ownedInput == null) return;
         event.preventDefault();
         event.stopImmediatePropagation();
-        focusTerminalSoon();
+        refocusTerminalAfterCapturedInput();
         sendInput(ownedInput);
         return;
       }
@@ -186,7 +186,7 @@
       if (input == null) return;
       event.preventDefault();
       event.stopImmediatePropagation();
-      focusTerminalSoon();
+      refocusTerminalAfterCapturedInput();
       sendInput(input);
     }
 
@@ -207,9 +207,21 @@
 
     function focusTerminalSoon() {
       setTimeout(function () {
-        if (!isOpen || isMinimized || confirmVisible || !term) return;
-        try { term.focus(); } catch (e) {}
+        focusTerminalNow();
       }, 0);
+    }
+
+    function focusTerminalNow() {
+      if (!isOpen || isMinimized || confirmVisible || !term) return;
+      try { term.focus(); } catch (e) {}
+    }
+
+    function refocusTerminalAfterCapturedInput() {
+      focusTerminalNow();
+      if (typeof requestAnimationFrame === "function") {
+        requestAnimationFrame(function () { focusTerminalNow(); });
+      }
+      focusTerminalSoon();
     }
 
     function terminalFocusRetainingInputForKey(event) {
