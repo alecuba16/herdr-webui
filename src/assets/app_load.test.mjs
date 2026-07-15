@@ -699,11 +699,15 @@ describe("app bundle load", () => {
     const fileBrowserCss = readFileSync(new URL("./desktop/file_browser.css", import.meta.url), "utf8");
     match(fileBrowserSource, /function renderFileTabs/);
     match(fileBrowserSource, /role="tablist" aria-label="Open files"/);
+    ok(!fileBrowserSource.includes("file-browser-current-file"), "active file title is already represented by the file tab");
+    ok(!fileBrowserSource.includes("<span>${esc(file.path)}</span>"), "file panes must not duplicate the selected path next to the tab button");
+    match(fileBrowserSource, /title="\$\{esc\(file\.path\)\}" onclick="HerdrFileBrowser\.focusFile/);
     match(fileBrowserSource, /target\.files\.push\(nextFile\)/);
     match(fileBrowserSource, /mode === "split"/);
     match(fileBrowserSource, /target\.split = true/);
     match(fileBrowserCss, /\.file-browser-file-tabs \{[\s\S]*?flex-wrap: nowrap;/);
     match(fileBrowserCss, /\.file-browser-file-tabs \{[\s\S]*?overflow-x: auto;/);
+    ok(!fileBrowserCss.includes(".file-browser-current-file"));
     ok(!fileBrowserCss.includes(".file-browser-side.previewing"), "file tree must stay visible while previewing files");
     match(searchSource, /async function openWorkspaceSearchPath/);
     match(searchSource, /await ensureFileBrowserLoaded\(\)/);

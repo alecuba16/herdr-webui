@@ -581,8 +581,7 @@
     const split = state.files.length > 1 ? `<button class="git-ui-btn ${state.split ? "active" : ""}" onclick="HerdrFileBrowser.toggleSplit()">Split</button>` : "";
     const edit = canEdit && !file.editing ? `<button class="git-ui-btn" onclick="HerdrFileBrowser.edit('${arg(file.path)}')">Edit</button>` : "";
     const save = canEdit && file.editing ? `<button class="git-ui-btn primary" ${file.saving ? "disabled" : ""} onclick="HerdrFileBrowser.save('${arg(file.path)}')">${file.saving ? "Saving..." : "Save"}</button><button class="git-ui-btn" onclick="HerdrFileBrowser.cancelEdit('${arg(file.path)}')">Cancel</button>` : "";
-    const dirty = file.dirty ? `<span class="file-browser-dirty">modified</span>` : "";
-    return `<div class="file-browser-toolbar-main">${renderFileTabs()}<div class="file-browser-current-file"><strong title="${esc(file.path)}">${esc(file.path)}</strong>${dirty}</div></div><span class="file-browser-toolbar-actions">${split}${edit}${save}<button class="git-ui-btn" onclick="HerdrFileBrowser.showHistory('${arg(file.path)}')">Show history</button><button class="git-ui-btn" onclick="HerdrFileBrowser.reload('${arg(file.path)}')">Reload</button><button class="git-ui-btn" onclick="HerdrFileBrowser.closeFile('${arg(file.path)}')">Close file</button></span>`;
+    return `<div class="file-browser-toolbar-main">${renderFileTabs()}</div><span class="file-browser-toolbar-actions">${split}${edit}${save}<button class="git-ui-btn" onclick="HerdrFileBrowser.showHistory('${arg(file.path)}')">Show history</button><button class="git-ui-btn" onclick="HerdrFileBrowser.reload('${arg(file.path)}')">Reload</button><button class="git-ui-btn" onclick="HerdrFileBrowser.closeFile('${arg(file.path)}')">Close file</button></span>`;
   }
 
   function renderFileTabs() {
@@ -597,7 +596,7 @@
 
   function renderPreviewShell() {
     const files = state.split ? state.files : [currentFile()].filter(Boolean);
-    const panes = files.map((file) => `<section class="file-browser-pane ${file.path === state.selected ? "active" : ""}"><div class="file-browser-pane-head"><button class="git-ui-btn ${file.path === state.selected ? "active" : ""}" onclick="HerdrFileBrowser.focusFile('${arg(file.path)}')">${esc(Tree.basename(file.path))}</button><span>${esc(file.path)}</span><button class="file-browser-pane-close" title="Close file" onclick="event.stopPropagation();HerdrFileBrowser.closeFile('${arg(file.path)}')">&times;</button></div><div class="file-browser-pane-body" id="fileBrowserEditor-${hashId(file.path)}">${previewPlaceholder(file)}</div>${file.error ? `<div class="file-browser-error">${esc(file.error)}</div>` : ""}</section>`);
+    const panes = files.map((file) => `<section class="file-browser-pane ${file.path === state.selected ? "active" : ""}"><div class="file-browser-pane-head"><button class="git-ui-btn ${file.path === state.selected ? "active" : ""}" title="${esc(file.path)}" onclick="HerdrFileBrowser.focusFile('${arg(file.path)}')">${esc(Tree.basename(file.path))}</button><button class="file-browser-pane-close" title="Close file" onclick="event.stopPropagation();HerdrFileBrowser.closeFile('${arg(file.path)}')">&times;</button></div><div class="file-browser-pane-body" id="fileBrowserEditor-${hashId(file.path)}">${previewPlaceholder(file)}</div>${file.error ? `<div class="file-browser-error">${esc(file.error)}</div>` : ""}</section>`);
     if (state.contentSearch.active) panes.push(renderContentSearchPane());
     if (!panes.length) return previewPlaceholder(null);
     return panes.join("");
@@ -609,7 +608,7 @@
     const body = contentSearch
       ? contentSearch.render({ query: content.query, files: content.files, expanded: content.expanded, snippets: content.snippets, loading: content.loading, error: content.error, done: content.done, total_files: content.totalFiles, total_matches: content.totalMatches }, { callback: "HerdrFileBrowserContent", inputId: "fileContentSearchInput", hideInput: true })
       : `<div class="file-browser-empty">Content search renderer unavailable.</div>`;
-    return `<section class="file-browser-pane active file-browser-content-pane"><div class="file-browser-pane-head"><button class="git-ui-btn active">Content search</button><span>${esc(content.query || "No query")}</span><button class="file-browser-pane-close" title="Close content search" onclick="event.stopPropagation();HerdrFileBrowser.closeContentSearch()">&times;</button></div><div class="file-browser-pane-body file-browser-content-pane-body">${body}</div></section>`;
+    return `<section class="file-browser-pane active file-browser-content-pane"><div class="file-browser-pane-head"><button class="git-ui-btn active">Content search</button><span class="file-browser-pane-subtitle">${esc(content.query || "No query")}</span><button class="file-browser-pane-close" title="Close content search" onclick="event.stopPropagation();HerdrFileBrowser.closeContentSearch()">&times;</button></div><div class="file-browser-pane-body file-browser-content-pane-body">${body}</div></section>`;
   }
 
   function renderContextMenu() {
