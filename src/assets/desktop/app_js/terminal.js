@@ -59,6 +59,7 @@ function connectTerminal() {
     return;
   }
   fitTerminalShell();
+  if (shouldFitFocusedWebTerminal() || options.fitToBrowser) applyBrowserTerminalSize();
   const cols = state.termCols || 100,
     rows = state.termRows || 30,
     size = `${cols}x${rows}`;
@@ -212,6 +213,10 @@ function refreshTerminalAfterFontLoad(terminalKey) {
     .then(() => {
       if (!term || connectedTerminalId !== terminalKey) return;
       applyTerminalFont();
+      if ((shouldFitFocusedWebTerminal() || options.fitToBrowser) && applyBrowserTerminalSize()) {
+        connectTerminal();
+        return;
+      }
       fitTerminalSurface();
     })
     .catch(() => {});
@@ -253,6 +258,11 @@ function provideTerminalLinks(lineNumber, callback) {
 // RAF delay adds ~16ms of latency for no benefit. Above the threshold we
 // coalesce bursts to avoid overwhelming the renderer.
 const IMMEDIATE_WRITE_THRESHOLD = 8192;
+const PASTE_TEXT_CHUNK_SIZE = 4096;
+const PASTE_BYTE_CHUNK_SIZE = 16 * 1024;
+const PASTE_BUFFER_LIMIT = 64 * 1024;
+const PASTE_FLUSH_BUDGET_MS = 8;
+const PASTE_FLUSH_DELAY_MS = 4;
 // Frames above this size are likely full-screen repaints from the backend
 // (the initial attach frame). xterm.js parses these in 12ms time-slices with
 // setTimeout(0) between slices, and each slice triggers a browser paint of
@@ -503,6 +513,9 @@ function maybeAutoScrollToBottom() {
   if (terminalFollowPaused() || terminalScrollbackOffsetEstimate > 0) return;
   try { term.scrollToBottom(); } catch (e) {}
 }
+function followTerminalAfterWrite() {
+  requestAnimationFrame(maybeAutoScrollToBottom);
+}
 function writeTerminalFrame(data, onDone) {
   // For large frames (the initial attach repaint), use the write callback
   // to know when xterm.js finishes parsing. This avoids the caller
@@ -513,11 +526,11 @@ function writeTerminalFrame(data, onDone) {
     catch (e) { term.write(data); onDone(); return; }
   }
   try {
-    term.write(data);
+    term.write(data, followTerminalAfterWrite);
   } catch (e) {
     term.write(data);
+    followTerminalAfterWrite();
   }
-  maybeAutoScrollToBottom();
 }
 function scrollTerminalToBottom(focus = true) {
   sendBackendTail();
@@ -629,12 +642,67 @@ function stripTerminalQueryReplies(data) {
 
 function sendPasteToTerminal(text) {
   if (!termWs || termWs.readyState !== 1 || !text) return;
-  pasteFrameUntil = Date.now() + 250;
-  sendInputData(terminalPasteInput(text, false), {
-    chunkSize: 16 * 1024,
-    maxBufferedAmount: 64 * 1024,
-  });
-  finishPasteFrameSoon();
+  const value = String(text || "");
+  if (!value) return;
+  if (pasteJob) {
+    pasteJob.text += value;
+    pasteJob.total = pasteJob.text.length;
+  } else {
+    pasteJob = { text: value, offset: 0, total: value.length, pendingCR: false };
+  }
+  pasteFrameUntil = Date.now() + Math.max(400, Math.min(8000, Math.ceil(pasteJob.total / 128)));
+  showTerminalPasteProgress(pasteJob.total);
+  schedulePasteChunkFlush(0);
+}
+function schedulePasteChunkFlush(delay = PASTE_FLUSH_DELAY_MS) {
+  if (pasteChunkTimer) return;
+  pasteChunkTimer = setTimeout(flushPasteChunks, delay);
+}
+function flushPasteChunks() {
+  pasteChunkTimer = null;
+  if (!pasteJob) return;
+  if (!termWs || termWs.readyState !== 1) {
+    pasteJob = null;
+    pasteFrameUntil = 0;
+    hideTerminalPasteProgress();
+    return;
+  }
+  const start = Date.now();
+  while (
+    pasteJob &&
+    pasteJob.offset < pasteJob.total &&
+    termWs.bufferedAmount < PASTE_BUFFER_LIMIT
+  ) {
+    const end = Math.min(pasteJob.total, pasteJob.offset + PASTE_TEXT_CHUNK_SIZE);
+    const rawChunk = pasteJob.text.slice(pasteJob.offset, end);
+    pasteJob.offset = end;
+    const chunk = normalizeTerminalPasteChunk(pasteJob, rawChunk, pasteJob.offset >= pasteJob.total);
+    if (chunk) sendPasteChunkToTerminal(chunk);
+    updateTerminalPasteProgress(pasteJob.offset, pasteJob.total);
+    if (Date.now() - start >= PASTE_FLUSH_BUDGET_MS) break;
+  }
+  if (!pasteJob) return;
+  if (pasteJob.offset >= pasteJob.total) {
+    finishPasteFrameSoon();
+    return;
+  }
+  schedulePasteChunkFlush(termWs.bufferedAmount >= PASTE_BUFFER_LIMIT ? PASTE_FLUSH_DELAY_MS : 0);
+}
+function normalizeTerminalPasteChunk(job, chunk, isFinal) {
+  if (job.pendingCR) {
+    chunk = "\r" + chunk;
+    job.pendingCR = false;
+  }
+  if (!isFinal && chunk.endsWith("\r")) {
+    chunk = chunk.slice(0, -1);
+    job.pendingCR = true;
+  }
+  return chunk.replace(/\r\n|\r/g, "\n");
+}
+function sendPasteChunkToTerminal(chunk) {
+  const bytes = inputEncoder.encode(chunk);
+  for (let i = 0; i < bytes.length; i += PASTE_BYTE_CHUNK_SIZE)
+    termWs.send(bytes.slice(i, i + PASTE_BYTE_CHUNK_SIZE));
 }
 function scheduleInputFlush() {
   if (inputFlushTimer) return;
@@ -653,10 +721,38 @@ function flushInputQueue() {
   else inputQueueMaxBufferedAmount = 65536;
 }
 function finishPasteFrameSoon() {
-  setTimeout(() => {
+  pasteJob = null;
+  updateTerminalPasteProgress(1, 1);
+  pasteProgressHideTimer = setTimeout(() => {
+    pasteProgressHideTimer = null;
     pasteFrameUntil = 0;
+    hideTerminalPasteProgress();
     scheduleTerminalLayoutFit();
   }, 250);
+}
+function showTerminalPasteProgress(total) {
+  if (pasteProgressHideTimer) {
+    clearTimeout(pasteProgressHideTimer);
+    pasteProgressHideTimer = null;
+  }
+  const progress = el("terminalPasteProgress");
+  if (progress) progress.hidden = false;
+  updateTerminalPasteProgress(0, total);
+}
+function updateTerminalPasteProgress(done, total) {
+  const pct = Math.max(0, Math.min(100, Math.round((Math.max(0, done) / Math.max(1, total)) * 100)));
+  const label = el("terminalPasteProgressLabel");
+  if (label) label.textContent = pct >= 100 ? "Paste sent" : "Pasting… " + pct + "%";
+  const bar = el("terminalPasteProgressBar");
+  if (bar) bar.style.width = pct + "%";
+}
+function hideTerminalPasteProgress() {
+  if (pasteProgressHideTimer) {
+    clearTimeout(pasteProgressHideTimer);
+    pasteProgressHideTimer = null;
+  }
+  const progress = el("terminalPasteProgress");
+  if (progress) progress.hidden = true;
 }
 function showClipboardMenu(x, y) {
   const menu = el("clipboardMenu");
@@ -677,31 +773,62 @@ function fitTerminalSurface() {
     shell.scrollTop = 0;
     shell.scrollLeft = 0;
   }
-  const cell = HerdrTerminalFit.cellSize(term, terminal, { width: 9, height: 17 });
+  const cell = HerdrTerminalFit.cellSize(term, terminal, { width: 9, height: 20 });
   const cellWidth = cell.width;
   const rowHeight = cell.height;
   const width = Math.ceil(cellWidth * cols);
   const height = Math.ceil(rowHeight * rows);
+  const shellHeight = terminalShellInnerHeight(shell);
+  const visibleHeight = !options.overflow && shellHeight > 0
+    ? Math.min(height, shellHeight)
+    : height;
   if (options.overflow) {
     terminal.style.width = width + "px";
     terminal.style.height = height + "px";
+    terminal.style.maxHeight = "";
     terminal.style.minWidth = width + "px";
     terminal.style.minHeight = height + "px";
+    terminal.style.overflow = "";
   } else {
     terminal.style.width = "100%";
-    // Cap the terminal height to the shell's inner height so the last row
-    // is not scrolled off when the backend layout rows produce a surface
-    // taller than the shell. Use the shell client height minus the padding
-    // (8px top + 8px bottom = 16px) as the upper bound.
-    const shellHeight = shell ? Math.max(0, shell.clientHeight - 16) : 0;
-    if (shellHeight > 0 && height > shellHeight) {
-      terminal.style.height = shellHeight + "px";
-    } else {
-      terminal.style.height = "";
-    }
+    terminal.style.height = visibleHeight > 0 ? visibleHeight + "px" : "";
+    terminal.style.maxHeight = shellHeight > 0 ? shellHeight + "px" : "";
     terminal.style.minWidth = "0";
     terminal.style.minHeight = "0";
+    terminal.style.overflow = "hidden";
+    HerdrTerminalFit.fitXtermToContainer(terminal, { height: visibleHeight });
+    bindTerminalViewportFollow();
   }
+}
+function bindTerminalViewportFollow() {
+  const xtermElement = term && term.element;
+  const viewport = xtermElement && xtermElement.querySelector && xtermElement.querySelector(".xterm-viewport");
+  if (!viewport || typeof viewport.addEventListener !== "function" || terminalViewportScrollElement === viewport) return;
+  if (terminalViewportScrollElement && typeof terminalViewportScrollElement.removeEventListener === "function") {
+    terminalViewportScrollElement.removeEventListener("scroll", handleTerminalViewportScroll);
+  }
+  terminalViewportScrollElement = viewport;
+  viewport.addEventListener("scroll", handleTerminalViewportScroll, { passive: true });
+}
+function handleTerminalViewportScroll() {
+  setTerminalFollowPaused(!terminalAtBottom());
+}
+function cssPixels(value) {
+  const parsed = Number.parseFloat(value || "0");
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+function terminalShellPadding(shell) {
+  if (!shell || typeof getComputedStyle !== "function") return { x: 16, y: 16 };
+  const style = getComputedStyle(shell);
+  return {
+    x: cssPixels(style.paddingLeft) + cssPixels(style.paddingRight),
+    y: cssPixels(style.paddingTop) + cssPixels(style.paddingBottom),
+  };
+}
+function terminalShellInnerHeight(shell) {
+  if (!shell) return 0;
+  const padding = terminalShellPadding(shell);
+  return Math.max(0, Math.floor(shell.clientHeight - padding.y));
 }
 function fitTerminalShell() {
   const shell = el("terminalShell");
@@ -726,16 +853,25 @@ function browserTerminalSize() {
   if (!shell) return null;
   const shellSize = fitTerminalShell();
   if (!shellSize) return null;
+  const padding = terminalShellPadding(shell);
   return HerdrTerminalFit.gridSize(shell, term, {
-    paddingX: 16,
-    paddingY: 16,
-    fallbackCell: { width: 9, height: 17 },
+    paddingX: padding.x,
+    paddingY: padding.y,
+    fallbackCell: { width: 9, height: 20 },
     minCols: 80,
     minRows: 24,
   });
 }
 function shouldFitFocusedWebTerminal() {
-  return !document.hidden && (!document.hasFocus || document.hasFocus());
+  return !document.hidden;
+}
+function applyBrowserTerminalSize() {
+  const fit = browserTerminalSize();
+  if (!fit) return false;
+  const changed = state.termCols !== fit.cols || state.termRows !== fit.rows;
+  state.termCols = fit.cols;
+  state.termRows = fit.rows;
+  return changed;
 }
 function shouldAutoFitDetachedTerminal() {
   if (options.fitToBrowser) return false;
@@ -753,9 +889,8 @@ function fitFocusedTerminal() {
   if (!state.terminalId || !shouldFitFocusedWebTerminal()) return;
   const fit = browserTerminalSize();
   if (!fit) return;
-  state.termCols = fit.cols;
-  state.termRows = fit.rows;
-  connectTerminal();
+  if (applyBrowserTerminalSize()) connectTerminal();
+  else fitTerminalSurface();
 }
 window.addEventListener("resize", () => {
   if (resizeFramePending) return;
