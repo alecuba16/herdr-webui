@@ -66,7 +66,7 @@
     const stored = storedFindOptions();
     const matchCase = stored.matchCase === true;
     const regex = stored.regex === true;
-    return `<div class="herdr-editor-find" data-readonly="${readonly ? "true" : "false"}">
+    return `<div class="herdr-editor-find" data-readonly="${readonly ? "true" : "false"}" hidden>
       <input class="herdr-editor-find-query" placeholder="Find" autocomplete="off" spellcheck="false">
       <input class="herdr-editor-replace-query" placeholder="Replace" autocomplete="off" spellcheck="false" ${readonly ? "disabled" : ""}>
       <button type="button" class="herdr-editor-find-prev" title="Previous match">↑</button>
@@ -77,6 +77,27 @@
       <label><input type="checkbox" class="herdr-editor-find-regex" ${regex ? "checked" : ""}>.*</label>
       <span class="herdr-editor-find-status"></span>
     </div>`;
+  }
+
+  function openFind(parent) {
+    const toolbar = parent && parent.querySelector && parent.querySelector(".herdr-editor-find");
+    if (!toolbar) return false;
+    toolbar.hidden = false;
+    const query = toolbar.querySelector && toolbar.querySelector(".herdr-editor-find-query");
+    if (query && query.focus) {
+      const focusQuery = () => {
+        try { query.focus({ preventScroll: true }); } catch (_) { try { query.focus(); } catch (_) {} }
+        if (query.select) try { query.select(); } catch (_) {}
+      };
+      if (typeof setTimeout === "function") setTimeout(focusQuery, 0);
+      else focusQuery();
+    }
+    return true;
+  }
+
+  function editorHeaderHtml(opts, title) {
+    if (opts.hideHeader) return "";
+    return `<div class="herdr-editor-head"><strong>${esc(title)}</strong><span>${esc(languageFor(opts.path))}</span><button type="button" class="herdr-editor-find-toggle" title="Find / replace (Ctrl+F)" aria-label="Find / replace" onclick="HerdrEditor.openFind(this.closest('.herdr-editor'))">⌕</button></div>`;
   }
 
   function wireFindToolbar(parent, api, opts) {
@@ -90,6 +111,19 @@
     const readonly = opts.readonly !== false;
     let current = -1;
     let lastQuery = "";
+    api.openFind = function () { return openFind(parent); };
+    if (!parent.__herdrEditorFindShortcutBound && parent.addEventListener) {
+      parent.__herdrEditorFindShortcutBound = true;
+      parent.addEventListener("keydown", (event) => {
+        if (!event || event.defaultPrevented || event.altKey || event.shiftKey) return;
+        const key = String(event.key || "").toLowerCase();
+        if (key !== "f" || !(event.ctrlKey || event.metaKey)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.stopImmediatePropagation) event.stopImmediatePropagation();
+        openFind(parent);
+      }, true);
+    }
 
     function options() {
       return { matchCase: !!(matchCase && matchCase.checked), regex: !!(regex && regex.checked) };
@@ -146,7 +180,12 @@
       query.addEventListener("input", () => { current = -1; choose(1); });
       query.addEventListener("keydown", (event) => {
         if (event.key === "Enter") { event.preventDefault(); choose(event.shiftKey ? -1 : 1); }
-        if (event.key === "Escape") { query.value = ""; current = -1; setStatus(""); }
+        if (event.key === "Escape") {
+          if (query.value) query.value = "";
+          else toolbar.hidden = true;
+          current = -1;
+          setStatus("");
+        }
       });
     }
     if (matchCase) matchCase.addEventListener("change", () => { persist(); current = -1; choose(1); });
@@ -224,13 +263,13 @@
 
   function codeMirrorShellHtml(opts) {
     const title = opts.path || (opts.readonly === false ? "Editor" : "Preview");
-    const head = opts.hideHeader ? "" : `<div class="herdr-editor-head"><strong>${esc(title)}</strong><span>${esc(languageFor(opts.path))}</span></div>`;
+    const head = editorHeaderHtml(opts, title);
     return `<div class="herdr-editor cm">${head}${findToolbarHtml(opts)}<div class="herdr-editor-mount"><div class="herdr-editor-loading">Loading editor…</div></div></div>`;
   }
 
   function previewHtml(opts) {
     const content = String(opts.content || "");
-    const head = opts.hideHeader ? "" : `<div class="herdr-editor-head"><strong>${esc(opts.path || "Preview")}</strong><span>${esc(languageFor(opts.path))}</span></div>`;
+    const head = editorHeaderHtml(opts, opts.path || "Preview");
     const lineNumbers = opts.lineNumbers !== false;
     const code = lineNumbers ? numberedPreviewHtml(content, opts.path) : `<pre class="herdr-editor-code"><code>${highlight(content, opts.path)}</code></pre>`;
     return `<div class="herdr-editor readonly${lineNumbers ? " with-line-numbers" : ""}">${head}${findToolbarHtml(opts)}${code}</div>`;
@@ -244,7 +283,7 @@
   }
 
   function editHtml(opts) {
-    const head = opts.hideHeader ? "" : `<div class="herdr-editor-head"><strong>${esc(opts.path || "Editor")}</strong><span>${esc(languageFor(opts.path))}</span></div>`;
+    const head = editorHeaderHtml(opts, opts.path || "Editor");
     return `<div class="herdr-editor">${head}${findToolbarHtml(opts)}<textarea spellcheck="false">${esc(opts.content || "")}</textarea></div>`;
   }
 
@@ -263,5 +302,5 @@
     return codeMirrorPromise;
   }
 
-  window.HerdrEditor = { create, highlight, languageFor, ensureCodeMirror, findRanges };
+  window.HerdrEditor = { create, highlight, languageFor, ensureCodeMirror, findRanges, openFind };
 })();

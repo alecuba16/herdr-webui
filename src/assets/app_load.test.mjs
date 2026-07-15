@@ -438,6 +438,12 @@ describe("app bundle load", () => {
     match(html, /editor find supports match case and regex/);
     match(html, /edit mode enables replace/);
     match(html, /syntax\/search colors use shared theme tokens/);
+    const editorSource = readFileSync(new URL("./shared/editor.js", import.meta.url), "utf8");
+    match(editorSource, /class="herdr-editor-find"[^`]*hidden/);
+    match(editorSource, /herdr-editor-find-toggle/);
+    match(editorSource, /parent\.addEventListener\("keydown"/);
+    match(editorSource, /event\.ctrlKey \|\| event\.metaKey/);
+    match(editorSource, /openFind/);
     match(html, /Search selections, selected files, split panes, and unsaved edit drafts stay attached to each open workspace\/worktree while switching panels/);
     match(html, /priority red deleted, yellow modified, green new/);
     match(html, /Git selector opens repo tools for diff, stage\/unstage, discard, commit modal, commit & push, pull, push with force fallback, tag push option, rebase, conflicts, stash, branches, cleanup, and worktree prune/);
@@ -699,6 +705,9 @@ describe("app bundle load", () => {
     const fileBrowserCss = readFileSync(new URL("./desktop/file_browser.css", import.meta.url), "utf8");
     match(fileBrowserSource, /function renderFileTabs/);
     match(fileBrowserSource, /role="tablist" aria-label="Open files"/);
+    match(fileBrowserSource, /file-browser-pane-find/);
+    match(fileBrowserSource, /findInFile\(encodedPath\)/);
+    match(fileBrowserSource, /HerdrEditor\.openFind/);
     ok(!fileBrowserSource.includes("file-browser-current-file"), "active file title is already represented by the file tab");
     ok(!fileBrowserSource.includes("<span>${esc(file.path)}</span>"), "file panes must not duplicate the selected path next to the tab button");
     match(fileBrowserSource, /title="\$\{esc\(file\.path\)\}" onclick="HerdrFileBrowser\.focusFile/);

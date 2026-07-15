@@ -596,7 +596,7 @@
 
   function renderPreviewShell() {
     const files = state.split ? state.files : [currentFile()].filter(Boolean);
-    const panes = files.map((file) => `<section class="file-browser-pane ${file.path === state.selected ? "active" : ""}"><div class="file-browser-pane-head"><button class="git-ui-btn ${file.path === state.selected ? "active" : ""}" title="${esc(file.path)}" onclick="HerdrFileBrowser.focusFile('${arg(file.path)}')">${esc(Tree.basename(file.path))}</button><button class="file-browser-pane-close" title="Close file" onclick="event.stopPropagation();HerdrFileBrowser.closeFile('${arg(file.path)}')">&times;</button></div><div class="file-browser-pane-body" id="fileBrowserEditor-${hashId(file.path)}">${previewPlaceholder(file)}</div>${file.error ? `<div class="file-browser-error">${esc(file.error)}</div>` : ""}</section>`);
+    const panes = files.map((file) => `<section class="file-browser-pane ${file.path === state.selected ? "active" : ""}"><div class="file-browser-pane-head"><button class="git-ui-btn ${file.path === state.selected ? "active" : ""}" title="${esc(file.path)}" onclick="HerdrFileBrowser.focusFile('${arg(file.path)}')">${esc(Tree.basename(file.path))}</button><button class="file-browser-pane-find" title="Find / replace (Ctrl+F)" aria-label="Find / replace" onclick="event.stopPropagation();HerdrFileBrowser.findInFile('${arg(file.path)}')">⌕</button><button class="file-browser-pane-close" title="Close file" onclick="event.stopPropagation();HerdrFileBrowser.closeFile('${arg(file.path)}')">&times;</button></div><div class="file-browser-pane-body" id="fileBrowserEditor-${hashId(file.path)}">${previewPlaceholder(file)}</div>${file.error ? `<div class="file-browser-error">${esc(file.error)}</div>` : ""}</section>`);
     if (state.contentSearch.active) panes.push(renderContentSearchPane());
     if (!panes.length) return previewPlaceholder(null);
     return panes.join("");
@@ -882,6 +882,20 @@
     enter(encodedPath) { loadTree(decodeURIComponent(encodedPath)); },
     select(encodedPath, mode) { loadFile(decodeURIComponent(encodedPath), mode); },
     focusFile(encodedPath) { state.selected = decodeURIComponent(encodedPath); render(); },
+    findInFile(encodedPath) {
+      const path = decodeURIComponent(encodedPath);
+      const parent = document.getElementById(`fileBrowserEditor-${hashId(path)}`);
+      if (window.HerdrEditor && window.HerdrEditor.openFind && window.HerdrEditor.openFind(parent)) return;
+      const file = state.files.find((file) => file.path === path);
+      if (file) {
+        state.selected = path;
+        render();
+        setTimeout(() => {
+          const nextParent = document.getElementById(`fileBrowserEditor-${hashId(path)}`);
+          if (window.HerdrEditor && window.HerdrEditor.openFind) window.HerdrEditor.openFind(nextParent);
+        }, 0);
+      }
+    },
     closeFile(encodedPath) {
       const path = decodeURIComponent(encodedPath);
       const file = state.files.find((file) => file.path === path);

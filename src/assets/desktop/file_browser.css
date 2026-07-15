@@ -287,6 +287,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.file-browser-pane-find,
 .file-browser-pane-close {
   align-items: center;
   background: transparent;
@@ -299,9 +300,12 @@
   font: inherit;
   height: 26px;
   justify-content: center;
-  margin-left: auto;
   width: 26px;
 }
+.file-browser-pane-find {
+  margin-left: auto;
+}
+.file-browser-pane-find:hover,
 .file-browser-pane-close:hover {
   background: var(--control-hover, var(--panel));
   border-color: var(--border2);
@@ -361,6 +365,27 @@
   color: var(--muted);
   font-size: 12px;
 }
+.herdr-editor-find-toggle {
+  align-items: center;
+  background: transparent;
+  border: 1px solid var(--border2);
+  border-radius: 8px;
+  color: var(--muted);
+  cursor: pointer;
+  display: inline-flex;
+  flex: 0 0 auto;
+  font: inherit;
+  height: 26px;
+  justify-content: center;
+  width: 26px;
+}
+.herdr-editor-find-toggle:hover,
+.herdr-editor-find-toggle:focus-visible {
+  background: var(--control-hover, var(--panel2));
+  border-color: var(--accent);
+  color: var(--accent);
+  outline: 0;
+}
 .herdr-editor-find {
   align-items: center;
   background: var(--panel);
@@ -369,6 +394,9 @@
   flex-wrap: wrap;
   gap: 6px;
   padding: 6px 8px;
+}
+.herdr-editor-find[hidden] {
+  display: none;
 }
 .herdr-editor-find input[type="text"],
 .herdr-editor-find input:not([type]) {
