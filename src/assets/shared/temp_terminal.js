@@ -37,16 +37,27 @@
     var linkProvider = null;
     var confirmVisible = false;
     var keyTrapBound = false;
+    var isMinimized = false;
+    var restoreButton = null;
 
     function open() {
-      if (isOpen) return;
+      if (isOpen) {
+        if (isMinimized) restore();
+        return;
+      }
       if (!state.ws && !defaultFolderFn()) return;
       isOpen = true;
       closing = false;
+      isMinimized = false;
+      hideRestoreControl();
       var modal = el(modalId);
-      if (modal) modal.style.display = "grid";
+      if (modal) {
+        modal.style.display = "grid";
+        modal.removeAttribute && modal.removeAttribute("aria-hidden");
+      }
       var container = el(containerId);
       if (container) container.innerHTML = "";
+      installMinimizeControl();
       installInputTrap();
       createTerminalSession();
     }
@@ -60,12 +71,17 @@
       if (!isOpen) return;
       hideCloseConfirm();
       isOpen = false;
+      isMinimized = false;
       closing = true;
       removeInputTrap();
+      hideRestoreControl();
       disconnectWs();
       disposeTerm();
       var modal = el(modalId);
-      if (modal) modal.style.display = "none";
+      if (modal) {
+        modal.style.display = "none";
+        modal.setAttribute && modal.setAttribute("aria-hidden", "true");
+      }
       closeTab();
       createdTabId = null;
       createdPaneId = null;
@@ -148,7 +164,7 @@
     }
 
     function tempTerminalKeydown(event) {
-      if (!isOpen || confirmVisible) return;
+      if (!isOpen || isMinimized || confirmVisible) return;
       if (event.ctrlKey && !event.altKey && !event.metaKey && String(event.key || "").toLowerCase() === "g") {
         event.preventDefault();
         event.stopImmediatePropagation();
@@ -156,7 +172,15 @@
         return;
       }
       if (isCloseControl(event.target)) return;
-      if (tempTerminalOwnsEventTarget(event.target)) return;
+      if (tempTerminalOwnsEventTarget(event.target)) {
+        var ownedInput = terminalFocusRetainingInputForKey(event);
+        if (ownedInput == null) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        focusTerminalSoon();
+        sendInput(ownedInput);
+        return;
+      }
       var input = terminalInputForKey(event);
       if (input == null) return;
       event.preventDefault();
@@ -166,7 +190,7 @@
     }
 
     function isCloseControl(target) {
-      return !!(target && target.closest && target.closest(".temp-terminal-close, .temp-terminal-confirm"));
+      return !!(target && target.closest && target.closest(".temp-terminal-close, .temp-terminal-minimize, .temp-terminal-restore, .temp-terminal-confirm"));
     }
 
     function tempTerminalOwnsEventTarget(target) {
@@ -182,9 +206,16 @@
 
     function focusTerminalSoon() {
       setTimeout(function () {
-        if (!isOpen || confirmVisible || !term) return;
+        if (!isOpen || isMinimized || confirmVisible || !term) return;
         try { term.focus(); } catch (e) {}
       }, 0);
+    }
+
+    function terminalFocusRetainingInputForKey(event) {
+      if (event.metaKey || event.altKey || event.ctrlKey) return null;
+      if (event.key === "Backspace") return "\x7f";
+      if (event.key === "Tab") return event.shiftKey ? "\x1b[Z" : "\t";
+      return null;
     }
 
     function terminalInputForKey(event) {
@@ -369,9 +400,80 @@
       var fonts = globalThis.document && globalThis.document.fonts;
       if (!fonts || !fonts.ready) return;
       fonts.ready.then(function () {
-        if (!isOpen || !term) return;
+        if (!isOpen || isMinimized || !term) return;
         handleResize();
       }).catch(function () {});
+    }
+
+    function installMinimizeControl() {
+      var modal = el(modalId);
+      var button = modal && modal.querySelector && modal.querySelector(".temp-terminal-minimize");
+      if (button && !button.__herdrTempTerminalMinimizeBound) {
+        button.__herdrTempTerminalMinimizeBound = true;
+        button.onclick = minimize;
+      }
+      ensureRestoreControl();
+    }
+
+    function ensureRestoreControl() {
+      if (restoreButton) return restoreButton;
+      var doc = globalThis.document;
+      if (!doc || !doc.createElement || !doc.body) return null;
+      restoreButton = doc.createElement("button");
+      restoreButton.type = "button";
+      restoreButton.className = "temp-terminal-restore";
+      restoreButton.title = "Show temporary terminal";
+      restoreButton.setAttribute("aria-label", "Show temporary terminal");
+      restoreButton.innerHTML = '<span class="temp-terminal-restore-icon" aria-hidden="true">▣</span><span class="temp-terminal-restore-label">Terminal</span>';
+      restoreButton.onclick = restore;
+      restoreButton.style.display = "none";
+      doc.body.appendChild(restoreButton);
+      return restoreButton;
+    }
+
+    function showRestoreControl() {
+      var button = ensureRestoreControl();
+      if (button) button.style.display = "inline-flex";
+    }
+
+    function hideRestoreControl() {
+      if (restoreButton) restoreButton.style.display = "none";
+    }
+
+    function blurTerminalFocus() {
+      var doc = globalThis.document;
+      var active = doc && doc.activeElement;
+      if (!active || !tempTerminalOwnsEventTarget(active) || !active.blur) return;
+      try { active.blur(); } catch (e) {}
+    }
+
+    function minimize() {
+      if (!isOpen || isMinimized || confirmVisible) return;
+      isMinimized = true;
+      removeInputTrap();
+      blurTerminalFocus();
+      var modal = el(modalId);
+      if (modal) {
+        modal.style.display = "none";
+        modal.setAttribute && modal.setAttribute("aria-hidden", "true");
+      }
+      showRestoreControl();
+    }
+
+    function restore() {
+      if (!isOpen) return;
+      isMinimized = false;
+      hideRestoreControl();
+      var modal = el(modalId);
+      if (modal) {
+        modal.style.display = "grid";
+        modal.removeAttribute && modal.removeAttribute("aria-hidden");
+      }
+      installInputTrap();
+      HerdrTerminalFit.afterLayout(function () {
+        handleResize();
+        focusTerminalSoon();
+      });
     }
 
     function disconnectWs() {
@@ -470,18 +572,18 @@
       try { term.write(data); } catch (e) { try { term.write(data); } catch (e2) {} }
     }
 
-    function isVisible() { return isOpen; }
+    function isVisible() { return isOpen && !isMinimized; }
 
     function handlePaneExited(paneId) {
       if (isOpen && paneId && createdPaneId === paneId) close();
     }
 
     function handleResize() {
-      if (!isOpen || !term) return;
+      if (!isOpen || isMinimized || !term) return;
       if (resizeTimer) clearTimeout(resizeTimer);
       resizeTimer = setTimeout(function () {
         resizeTimer = null;
-        if (!isOpen || !term) return;
+        if (!isOpen || isMinimized || !term) return;
         var container = el(containerId);
         if (!container) return;
         var size = terminalGridSize(container);
@@ -504,7 +606,7 @@
       HerdrTerminalFit.fitXtermToContainer(container);
     }
 
-    return { open: open, requestClose: requestClose, close: close, isVisible: isVisible, handleResize: handleResize, handlePaneExited: handlePaneExited };
+    return { open: open, requestClose: requestClose, close: close, minimize: minimize, restore: restore, isVisible: isVisible, handleResize: handleResize, handlePaneExited: handlePaneExited };
   }
 
   globalThis.HerdrTempTerminal = { create: createTempTerminal };

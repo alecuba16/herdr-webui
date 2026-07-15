@@ -190,6 +190,7 @@
   color: var(--muted);
   font-size: 12px;
 }
+.temp-terminal-minimize,
 .temp-terminal-close {
   background: transparent;
   border: 0;
@@ -199,9 +200,37 @@
   padding: 4px 8px;
   border-radius: 6px;
 }
+.temp-terminal-minimize:hover,
 .temp-terminal-close:hover {
   background: var(--border);
   color: var(--fg);
+}
+.temp-terminal-restore {
+  align-items: center;
+  background: var(--panel);
+  border: 1px solid var(--border2);
+  border-radius: 999px;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 18px);
+  box-shadow: 0 10px 28px #0008;
+  color: var(--fg);
+  cursor: pointer;
+  display: none;
+  gap: 8px;
+  padding: 8px 12px;
+  position: fixed;
+  right: calc(env(safe-area-inset-right, 0px) + 18px);
+  z-index: 1199;
+}
+.temp-terminal-restore:hover {
+  background: var(--border);
+}
+.temp-terminal-restore-icon {
+  font-size: 15px;
+  line-height: 1;
+}
+.temp-terminal-restore-label {
+  font-size: 12px;
+  font-weight: 600;
 }
 .temp-terminal-body {
   flex: 1;
