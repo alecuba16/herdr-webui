@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { createRequire } from "node:module";
+import { readFileSync } from "node:fs";
 import vm from "node:vm";
 
 const require = createRequire(import.meta.url);
@@ -165,6 +166,39 @@ describe("desktop terminal visible height fitting", () => {
     term.write("more data", followTerminalAfterWrite);
     callbacks.shift()();
     assert.equal(scrolled, 1, "paused follow preserves user scrollback");
+  });
+});
+
+describe("desktop terminal paste streaming", () => {
+  function loadDesktopTerminalContext() {
+    const source = readFileSync(new URL("./desktop/app_js/terminal.js", import.meta.url), "utf8");
+    const ctx = {
+      console,
+      TextEncoder,
+      clearTimeout() {},
+      setTimeout() { return 1; },
+      requestAnimationFrame() {},
+      document: { hidden: false },
+      window: { addEventListener() {} },
+      state: {},
+      options: {},
+      terminal: null,
+    };
+    vm.createContext(ctx);
+    vm.runInContext(source, ctx);
+    return ctx;
+  }
+
+  it("normalizes CRLF across async paste chunk boundaries", () => {
+    const ctx = loadDesktopTerminalContext();
+    const job = { pendingCR: false };
+
+    const first = ctx.normalizeTerminalPasteChunk(job, "hello\r", false);
+    const second = ctx.normalizeTerminalPasteChunk(job, "\nworld\rnext", true);
+
+    assert.equal(first, "hello");
+    assert.equal(second, "\nworld\nnext");
+    assert.equal(job.pendingCR, false);
   });
 });
 
