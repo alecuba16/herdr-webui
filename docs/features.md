@@ -37,6 +37,7 @@ Built-in backend:
 - `ping` reports `builtin_backend: true`, `terminal_attach: true`, `terminal_server_scroll: false`, and `jcode_detection: true` so clients can choose safe feature paths.
 - `session.snapshot` returns focused workspace/tab/pane IDs plus workspace, tab, pane, and agent lists for fast WebUI and TUI bootstrap.
 - Terminals run through `portable-pty`, inherit a login-shell-like macOS/user `PATH`, set xterm-compatible terminal env, collect recent output, and expose attach/input/paste/resize/detach over the terminal socket.
+- Desktop temporary terminals are fully keyboard-manageable: `Ctrl+B` then `Shift+M` opens, minimizes to the corner restore pill, or restores the same live temporary terminal. While the overlay is visible, `Ctrl+G` detaches it through the close confirmation.
 - Browser terminal input filters terminal-emulator query replies such as OSC 10/11 color responses before they reach the PTY. Native terminals consume those replies internally; xterm.js exposes them through `onData`, so WebUI drops them to avoid leaking `10;rgb:...`/`11;rgb:...` text into shells or agents.
 - Built-in terminal scroll is local xterm/TUI scroll only. Server-side scrollback, search, copy mode, and selection APIs are documented gaps.
 - Agent identity detection covers Herdr-style direct argv aliases, wrapped shells, and terminal child process trees for Amp, Antigravity, Claude, Cline, Codex, Cursor, Devin, Droid, Gemini, GitHub Copilot, Grok, Hermes, Jcode, Kilo, Kimi, Kiro, Maki, OpenCode, Pi, Qoder CLI, plus legacy OMP and Mastra labels.
