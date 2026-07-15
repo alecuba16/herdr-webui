@@ -50,6 +50,7 @@ function context() {
   const listeners = new Map();
   const createdButtons = [];
   const timeouts = [];
+  const apiCalls = [];
 
   const getElement = (id) => {
     if (!elements.has(id)) elements.set(id, makeElement(id));
@@ -145,6 +146,7 @@ function context() {
       },
     },
     api(url) {
+      apiCalls.push(url);
       if (url === "/api/tabs") return Promise.resolve({ result: { tab: { tab_id: "tab-1" } } });
       if (url.startsWith("/api/panes")) return Promise.resolve({ result: { panes: [{ tab_id: "tab-1", pane_id: "pane-1", terminal_id: "term-1" }] } });
       return Promise.resolve({ result: {} });
@@ -152,6 +154,7 @@ function context() {
     sentFrames,
     listeners,
     createdButtons,
+    apiCalls,
     elements,
     console,
   };
@@ -196,6 +199,12 @@ function keyEvent(key, target, extra = {}) {
   };
 }
 
+function terminalInputFrames(ctx) {
+  return ctx.sentFrames
+    .filter((frame) => frame instanceof Uint8Array)
+    .map((frame) => Buffer.from(frame).toString("utf8"));
+}
+
 describe("temporary terminal", () => {
   it("captures Tab and Backspace inside xterm before the browser moves focus", async () => {
     const ctx = context();
@@ -208,15 +217,30 @@ describe("temporary terminal", () => {
     listener(tab);
     equal(tab.defaultPrevented, true);
     equal(tab.immediateStopped, true);
-    let inputFrames = ctx.sentFrames.filter((frame) => frame instanceof Uint8Array);
-    equal(Buffer.from(inputFrames[0]).toString("utf8"), "\t");
+    let inputFrames = terminalInputFrames(ctx);
+    equal(inputFrames[0], "\t");
 
     const backspace = keyEvent("Backspace", target);
     listener(backspace);
     equal(backspace.defaultPrevented, true);
     equal(backspace.immediateStopped, true);
-    inputFrames = ctx.sentFrames.filter((frame) => frame instanceof Uint8Array);
-    equal(Buffer.from(inputFrames[1]).toString("utf8"), "\x7f");
+    inputFrames = terminalInputFrames(ctx);
+    equal(inputFrames[1], "\x7f");
+  });
+
+  it("lets xterm handle ordinary keys from inside the terminal without duplicate input", async () => {
+    const ctx = context();
+    await openTempTerminal(ctx);
+    const listener = ctx.listeners.get("keydown");
+    ok(listener);
+    const before = terminalInputFrames(ctx).length;
+
+    const enter = keyEvent("Enter", { insideTerm: true });
+    listener(enter);
+
+    equal(enter.defaultPrevented, false);
+    equal(enter.immediateStopped, false);
+    equal(terminalInputFrames(ctx).length, before);
   });
 
   it("minimizes to a corner restore control and restores the same live terminal", async () => {
@@ -239,6 +263,27 @@ describe("temporary terminal", () => {
     equal(modal.style.display, "grid");
     equal(modal.attributes["aria-hidden"], undefined);
     equal(restoreButton.style.display, "none");
+    ok(ctx.listeners.get("keydown"));
+  });
+
+  it("open restores a minimized terminal without creating another tab session", async () => {
+    const ctx = context();
+    const tempTerminal = await openTempTerminal(ctx);
+    const tabCreatesBefore = ctx.apiCalls.filter((url) => url === "/api/tabs").length;
+    const firstTerminal = ctx.lastTerminal;
+    const listener = ctx.listeners.get("keydown");
+    ok(listener);
+
+    tempTerminal.minimize();
+    const beforeInput = terminalInputFrames(ctx).length;
+    listener(keyEvent("a", ctx.document.body));
+    equal(terminalInputFrames(ctx).length, beforeInput);
+
+    tempTerminal.open();
+
+    equal(tempTerminal.isVisible(), true);
+    equal(ctx.lastTerminal, firstTerminal);
+    equal(ctx.apiCalls.filter((url) => url === "/api/tabs").length, tabCreatesBefore);
     ok(ctx.listeners.get("keydown"));
   });
 });
