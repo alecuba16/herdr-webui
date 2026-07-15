@@ -2577,6 +2577,32 @@ describe("app bundle load", () => {
     ok(urls.some((url) => url.includes("/api/git-branches?") && url.includes("remote=true") && url.includes("fetch=true")));
   });
 
+  it("does not load git branch options for non-Git workspace browse folders", async () => {
+    const ctx = context();
+    const urls = [];
+    ctx.fetch = async (url) => {
+      urls.push(String(url));
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        json: async () => ({
+          result: {
+            source: { source_checkout_path: "/Users/alejandro.blanco" },
+            worktrees: [],
+          },
+        }),
+      };
+    };
+    vm.runInContext(source, ctx);
+
+    ctx.openWorktreeOpenModal("/Users/alejandro.blanco", false);
+    await ctx.discoverWorktrees();
+
+    ok(urls.some((url) => url.includes("/api/worktrees?")));
+    ok(!urls.some((url) => url.includes("/api/git-branches?")));
+  });
+
   it("uses the same editor mount tooling for previous and current hunk text", () => {
     const gitDiffCss = readFileSync(new URL("./desktop/git_ui/diff.css", import.meta.url), "utf8");
 
