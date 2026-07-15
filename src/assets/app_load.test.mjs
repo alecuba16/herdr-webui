@@ -547,7 +547,10 @@ describe("app bundle load", () => {
     match(gitUiSource, /const fileList = cleanupOnly \? "" : `\$\{filterInput\}\$\{fileSections\}`;/);
     match(gitUiSource, /disabledReason = "Open a Git repository to use this view"/);
     const gitLayoutCss = readFileSync(new URL("./desktop/git_ui/layout.css", import.meta.url), "utf8");
-    match(gitLayoutCss, /\.git-ui-btn:disabled \{[\s\S]*?background: var\(--panel2\);[\s\S]*?color: var\(--muted\);/);
+    const controlsCss = readFileSync(new URL("./desktop/app_css/controls.css", import.meta.url), "utf8");
+    match(controlsCss, /\.git-ui-btn:disabled \{[\s\S]*?background: var\(--panel2\);[\s\S]*?color: var\(--muted\);/);
+    match(controlsCss, /\.git-ui-btn\.primary \{[\s\S]*?background: var\(--accent-1, var\(--accent\)\);/);
+    ok(!/^\.git-ui-btn \{/m.test(gitLayoutCss));
     match(gitLayoutCss, /\.git-ui-view-toggle:disabled \{[\s\S]*?background: var\(--panel2\);[\s\S]*?color: var\(--muted\);/);
     match(gitLayoutCss, /\.git-ui-modal label \{[\s\S]*?box-sizing: border-box;[\s\S]*?width: 100%;/);
     match(gitLayoutCss, /\.git-ui-input,[\s\S]*?\.git-ui-textarea,[\s\S]*?\.git-ui-select \{[\s\S]*?box-sizing: border-box;[\s\S]*?min-width: 0;[\s\S]*?width: 100%;/);
