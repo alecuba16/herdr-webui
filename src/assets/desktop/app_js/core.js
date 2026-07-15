@@ -710,6 +710,13 @@ function syncShortcutTooltips() {
     tempClose.title = "Detach temporary terminal (Ctrl+G)";
     tempClose.setAttribute("aria-label", tempClose.title);
   }
+  setShortcutTooltip("tempTerminalMinimize", "Minimize temporary terminal", "tempTerminalToggle");
+  const tempRestore = document.querySelector && document.querySelector(".temp-terminal-restore");
+  if (tempRestore) {
+    const text = titleWithWebuiShortcut("Show temporary terminal", "tempTerminalToggle");
+    tempRestore.title = text;
+    tempRestore.setAttribute("aria-label", text);
+  }
 }
 
 function shortcutCollisionMap() {

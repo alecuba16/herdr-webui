@@ -639,6 +639,7 @@ if (globalThis.HerdrTempTerminal && el("tempTerminalModal")) {
     fontFamilyFn: terminalFontFamily,
     themeFn: terminalTheme,
     defaultFolderFn: defaultFolderPath,
+    shortcutLabelFn: () => shortcutLabel("webuiShortcuts", "tempTerminalToggle"),
   });
   const tempTerminalClose = el("tempTerminalClose");
   const tempTerminalModal = el("tempTerminalModal");

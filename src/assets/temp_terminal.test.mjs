@@ -163,7 +163,7 @@ function context() {
   return vm.createContext(ctx);
 }
 
-async function openTempTerminal(ctx) {
+async function openTempTerminal(ctx, options = {}) {
   vm.runInContext(readFileSync(new URL("./shared/temp_terminal.js", import.meta.url), "utf8"), ctx);
   const tempTerminal = ctx.HerdrTempTerminal.create({
     el: ctx.document.getElementById,
@@ -173,6 +173,7 @@ async function openTempTerminal(ctx) {
     modalId: "tempTerminalModal",
     containerId: "tempTerminal",
     defaultFolderFn: () => "",
+    ...options,
   });
   tempTerminal.open();
   for (let i = 0; i < 8; i += 1) await Promise.resolve();
@@ -245,17 +246,20 @@ describe("temporary terminal", () => {
 
   it("minimizes to a corner restore control and restores the same live terminal", async () => {
     const ctx = context();
-    const tempTerminal = await openTempTerminal(ctx);
+    const tempTerminal = await openTempTerminal(ctx, { shortcutLabelFn: () => "Ctrl+B then Shift+M" });
     const modal = ctx.elements.get("tempTerminalModal");
+    const minimizeButton = modal.minimizeButton;
     const restoreButton = ctx.createdButtons.find((button) => button.className === "temp-terminal-restore");
     ok(restoreButton);
     equal(tempTerminal.isVisible(), true);
+    equal(minimizeButton.title, "Minimize temporary terminal (Ctrl+B then Shift+M)");
 
     tempTerminal.minimize();
     equal(tempTerminal.isVisible(), false);
     equal(modal.style.display, "none");
     equal(modal.attributes["aria-hidden"], "true");
     equal(restoreButton.style.display, "inline-flex");
+    equal(restoreButton.title, "Show temporary terminal (Ctrl+B then Shift+M)");
     equal(ctx.listeners.has("keydown"), false);
 
     restoreButton.onclick();
