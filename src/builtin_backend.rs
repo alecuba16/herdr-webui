@@ -2784,6 +2784,14 @@ fn detect_jcode_status(lower: &str) -> &'static str {
     if jcode_blocked(&bottom8) || jcode_question_blocked(&bottom6) {
         return "blocked";
     }
+    if bottom3
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .is_some_and(jcode_idle_line)
+    {
+        return "idle";
+    }
     if has_jcode_spinner(&bottom3)
         || has_jcode_tool_bar(&bottom4)
         || contains_any(
@@ -2807,6 +2815,24 @@ fn detect_jcode_status(lower: &str) -> &'static str {
         return "idle";
     }
     "unknown"
+}
+
+fn jcode_idle_line(line: &str) -> bool {
+    let line = line.trim();
+    line == "❯"
+        || jcode_numbered_prompt_line(line)
+        || line.contains("session ready")
+        || line.contains("ready for input")
+}
+
+fn jcode_numbered_prompt_line(line: &str) -> bool {
+    let line = line.trim_start();
+    let digit_count = line.chars().take_while(|ch| ch.is_ascii_digit()).count();
+    digit_count > 0
+        && line[digit_count..]
+            .chars()
+            .next()
+            .is_some_and(|ch| ch == '>')
 }
 
 fn detect_opencode_status(lower: &str) -> &'static str {
@@ -3359,6 +3385,22 @@ mod tests {
             "working"
         );
         assert_eq!(
+            detect_agent_status(Some("jcode"), "⠋ thinking… 1.2s"),
+            "working"
+        );
+        assert_eq!(
+            detect_agent_status(Some("jcode"), "⠋ streaming · ↑1.2k ↓42 · 1.2s"),
+            "working"
+        );
+        assert_eq!(
+            detect_agent_status(Some("jcode"), "⠋ sending… 0.3s"),
+            "working"
+        );
+        assert_eq!(
+            detect_agent_status(Some("jcode"), "⠋ connecting… 0.3s"),
+            "working"
+        );
+        assert_eq!(
             detect_agent_status(Some("jcode"), "··● bash ●·· · 12s"),
             "working"
         );
@@ -3409,6 +3451,14 @@ mod tests {
             detect_agent_status(Some("jcode"), "Session ready\n❯"),
             "idle"
         );
+        assert_eq!(detect_agent_status(Some("jcode"), "1> "), "idle");
+        assert_eq!(
+            detect_agent_status(
+                Some("jcode"),
+                "1>                                                            together_ai/revolut ca/glm 5 2 · ~/repo"
+            ),
+            "idle"
+        );
         assert_eq!(
             detect_agent_status(
                 Some("jcode"),
@@ -3436,6 +3486,29 @@ mod tests {
                 "··● bash ●·· · 12s\nold response line 1\nold response line 2\nold response line 3\nold response line 4\n❯ "
             ),
             "idle"
+        );
+        assert_eq!(
+            detect_agent_status(Some("jcode"), "··● bash ●·· · 12s\nSession ready\n❯ "),
+            "idle"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("jcode"),
+                "Running tool bash\nresult mentions running tool\n❯ "
+            ),
+            "idle"
+        );
+        assert_eq!(
+            detect_agent_status(Some("jcode"), "··● bash ●·· · 12s\n1> "),
+            "idle"
+        );
+        assert_eq!(
+            detect_agent_status(Some("jcode"), "Running tool bash\n1> typed input"),
+            "idle"
+        );
+        assert_eq!(
+            detect_agent_status(Some("jcode"), "Session ready\n❯\n··● bash ●·· · 12s"),
+            "working"
         );
         assert_eq!(
             detect_agent_status(Some("jcode"), "··● not a toolbar\n❯"),
