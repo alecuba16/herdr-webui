@@ -316,8 +316,10 @@ describe("mobile bundle load", () => {
     const mobileCss = readFileSync(new URL("./mobile/app.css", import.meta.url), "utf8");
 
     match(mobileSource, /Input captured · Ctrl\+G detaches/);
+    match(mobileSource, /aria-label="Minimize temporary terminal"/);
     match(mobileSource, /aria-label="Detach temporary terminal"/);
     match(mobileCss, /\.temp-terminal-hint/);
+    match(mobileCss, /\.temp-terminal-restore \{[\s\S]*?position: fixed;[\s\S]*?right: calc\(env\(safe-area-inset-right, 0px\) \+ 18px\);/);
     match(mobileCss, /height: min\(80vh, calc\(var\(--herdr-mobile-viewport-height\) - 24px\)\)/);
     match(mobileCss, /\.temp-terminal-body \{[\s\S]*?min-height: 0;[\s\S]*?overflow: hidden;/);
   });

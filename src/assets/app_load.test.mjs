@@ -636,7 +636,10 @@ describe("app bundle load", () => {
     const modalCss = readFileSync(new URL("./desktop/app_css/modals.css", import.meta.url), "utf8");
 
     match(tempTerminalSource, /document\.addEventListener\("keydown", tempTerminalKeydown, true\)/);
-    match(tempTerminalSource, /if \(tempTerminalOwnsEventTarget\(event\.target\)\) return;/);
+    match(tempTerminalSource, /if \(tempTerminalOwnsEventTarget\(event\.target\)\) \{/);
+    match(tempTerminalSource, /terminalFocusRetainingInputForKey\(event\)/);
+    match(tempTerminalSource, /if \(event\.key === "Backspace"\) return "\\x7f";/);
+    match(tempTerminalSource, /if \(event\.key === "Tab"\) return event\.shiftKey \? "\\x1b\[Z" : "\\t";/);
     match(tempTerminalSource, /term\.element \|\| \(el\(containerId\) && el\(containerId\)\.querySelector/);
     match(tempTerminalSource, /case "Backspace": return "\\x7f";/);
     match(tempTerminalSource, /case "Tab": return event\.shiftKey \? "\\x1b\[Z" : "\\t";/);
@@ -666,8 +669,10 @@ describe("app bundle load", () => {
     match(modalCss, /\.temp-terminal-body \{[\s\S]*?min-height: 0;[\s\S]*?overflow: hidden;/);
     match(modalCss, /\.temp-terminal-body \.xterm \{[\s\S]*?height: 100%;[\s\S]*?width: 100%;/);
     match(html, /Input captured · Ctrl\+G detaches/);
+    match(html, /aria-label="Minimize temporary terminal"/);
     match(html, /aria-label="Detach temporary terminal"/);
     match(modalCss, /\.temp-terminal-hint/);
+    match(modalCss, /\.temp-terminal-restore \{[\s\S]*?position: fixed;[\s\S]*?right: calc\(env\(safe-area-inset-right, 0px\) \+ 18px\);/);
     match(source, /Ctrl\+G<\/kbd><span>Detach temporary terminal/);
     match(source, /Temporary terminal captures Tab\/Backspace and normal input while open/);
   });
