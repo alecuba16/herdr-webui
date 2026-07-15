@@ -65,11 +65,11 @@ The README is the project summary and documentation index. Detailed functionalit
 - Backend-aware session manager that detects built-in and external Herdr sessions, switches between them, and can create or launch sessions in either backend.
 - Built-in backend agent detection with Herdr-style argv/process-tree labels and screen status rules for visible idle, working, and blocked states across common coding agents.
 - First-party `herdr-webui-tui` for terminal-native workspace/agent navigation, live attach/input/resize/detach, ANSI colors/styles, `--theme dark|light|system`, Ctrl-B help/menu, and smoke-friendly summary/once modes.
-- Workspace and linked worktree navigation with per-panel terminal state.
+- Workspace and linked worktree navigation with per-environment Terminal/Git/Files shell state, minimize/restore controls, and independent global temporary terminals.
 - Git UI for status, diffs, staging, commits, stash, branches, cleanup, worktrees, conflicts, blame, and file history.
-- Unified header search for workspaces/worktrees, panels, file names, folder names, and file-content matches, including match-case and regex options for content search.
-- File explorer with backend Git status colors, parent-aware backend file/folder search, backend content search, type icons, read-only CodeMirror preview, edit mode, line numbers, matched-line opening, folding, in-editor find, and editable find/replace.
-- Per-workspace file explorer state while workspaces/worktrees are open, including selected files, search selections, edit mode, split panes, and drafts.
+- Unified header search for workspaces/worktrees, panels, file names, folder names, and file-content matches, including match-case and regex options for content search plus `Cmd+F`/`Ctrl+F` routing to app search or editor find by focus.
+- File explorer with backend Git status colors, parent-aware backend file/folder search, backend content search, type icons, file tabs, side-by-side split panes, read-only CodeMirror preview, edit mode, line numbers, matched-line opening, folding, in-editor find, and editable find/replace.
+- Per-workspace file explorer state while workspaces/worktrees are open, including selected files, search selections, open file tabs, edit mode, split panes, and drafts.
 - Settings for keyboard shortcuts, theme colors, terminal behavior, notifications, worktree defaults, file browser behavior, enabled search sections, search section ordering, and content-search defaults.
 - Help button documents visible features and shortcuts in-app.
 

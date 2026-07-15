@@ -72,6 +72,13 @@ The TUI is intentionally separated from backend internals:
 - Keep CodeMirror preview and edit mode behavior consistent.
 - Load shared modules once through `app_boot.js`.
 
+### Workspace shell state
+
+- `src/assets/desktop/app_js/workspace_shell.js` owns workspace/worktree-scoped shell state for the desktop Terminal/Git/Files controls. The state is keyed by workspace/worktree identity, not by the global browser session.
+- Git and Files drawers remember their active mode, minimized flag, selected section/file, navigation state, open file tabs, split panes, content-search state, and editor drafts while the workspace/worktree remains open.
+- Switching workspace/worktree swaps to that environment's shell state. Closing a workspace/worktree calls the forget path and discards that cached shell state.
+- The temporary terminal is deliberately not stored in `workspace_shell.js`. It remains one global temporary overlay with its own minimize/restore lifecycle and keyboard-capture rules.
+
 ## Static asset model
 
 The Rust binary embeds assets with `include_str!` or `include_bytes!`. Public routes are explicit, for example:
@@ -91,6 +98,8 @@ The Rust binary embeds assets with `include_str!` or `include_bytes!`. Public ro
 - mobile assets under `/assets/mobile/...`
 
 `app_boot.js` loads layout CSS, then shared color tokens, shared icon CSS, shared content-search CSS, shared JS, and finally layout-specific JS. File icon data is a shared module loaded before `file-tree.js`, so desktop and mobile use the same mappings. Content-search and workspace-search helpers are also shared, with desktop and mobile owning only controller state and backend calls.
+
+Desktop Git and Files feature bundles are loaded on demand through the `HerdrLoadCss`/script dedupe helpers. Common button and tree styling that can appear before a feature bundle loads stays in always-loaded shared/desktop CSS, while Git/File feature-specific CSS stays lazy. This keeps first paint small without regressing picker or shell button styling.
 
 ## File explorer
 
@@ -121,16 +130,31 @@ File explorer state is cached per open workspace/worktree identity. It preserves
 - selected file,
 - search selections and last opened result,
 - content-search result tab state,
-- split pane sizes,
+- open file tabs,
+- split pane state,
 - editing mode,
 - unsaved edit draft,
 - dirty flag.
 
 When a workspace or worktree closes, the cached state is forgotten. Async file fetches write back to the captured workspace state, so switching panels does not corrupt another workspace panel.
 
+### File tabs, split panes, and editor find
+
+- Opening a file from the tree or from a search result creates/selects a file tab inside the file explorer instead of replacing global terminal state.
+- Shift-open or context `Open in split` enables side-by-side file panes. The open-file list and split flag are part of the workspace/worktree cached state.
+- Each file pane owns a CodeMirror-backed `HerdrEditor` mount. The pane header button is the file selector and renders the full path with start-side ellipsis so deep paths retain the basename end; the full path is always kept in the button `title`.
+- `Cmd+F`/`Ctrl+F` routing is focus aware. The app shell opens the global search palette, but a focused editor or file browser pane opens that file editor's find/replace bar. Terminal `Ctrl+F` remains safe for terminal applications.
+- The editor find bar starts hidden and is created with the editor shell. It is opened lazily by shortcut or magnifier and reuses the same find/replace implementation for CodeMirror and fallback editors.
+
 ### Folder picker UX
 
 Desktop file browser and the folder picker both use the shared `file-tree.js` current-directory row for the active folder and its `↑ Up` control. This avoids a separate `dir up` tree row that looked like content and behaved inconsistently. The visible picker actions intentionally expose Home and Select only; absolute paths are still supported when typed/pasted, but the UI does not encourage jumping to `/` over the configured default folder.
+
+The folder picker loads its own picker CSS plus the always-loaded shared tree CSS before opening. This keeps the filtered tree, current folder row, and themed buttons styled even when the full file browser feature bundle has not been loaded yet.
+
+### Git branch loading guard
+
+Workspace/worktree opening only fetches Git branch suggestions when the selected folder has Git repository metadata. Plain folders skip `/api/git-branches`; this avoids expected non-Git backend failures from surfacing as noisy 502s while preserving branch options for real repositories.
 
 ### Temporary terminal input
 

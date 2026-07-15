@@ -1,5 +1,25 @@
 # Release notes
 
+## 0.2.67 Release Notes
+
+### Workspace shell and file explorer UX
+
+- Adds workspace/worktree-scoped shell state for Terminal, Git, and Files controls. Git and Files now minimize/restore like shell tabs and restore their section, navigation, selected file, open file tabs, split panes, content-search state, and editor drafts when returning to the same open workspace/worktree. Closing that workspace/worktree discards the cached state. Temporary terminal state remains global and independent.
+- Opens files from the tree and unified search as file explorer tabs, with side-by-side split panes available from Shift-open and context actions.
+- Keeps the file tree visible while previewing files and restores the polished Browse directory picker with shared tree styling, filtering, and current-folder navigation.
+- Shows the full file path in the file pane selector button, clipping with start-side ellipsis when needed and preserving the full path as the tooltip.
+
+### Search, editor find, and keyboard focus
+
+- Adds an editor find/replace bar that opens from the editor magnifier, file pane magnifier, or `Cmd+F`/`Ctrl+F` when a file editor or file explorer pane owns focus.
+- Routes `Cmd+F`/`Ctrl+F` from the app shell to the global search palette while preserving terminal-safe `Ctrl+F` behavior.
+- Keeps temporary terminal focus stable when Backspace is captured outside the xterm surface, avoiding browser focus loss during line editing.
+
+### Lazy loading and plain-folder robustness
+
+- Deduplicates desktop feature CSS loading through shared helpers, lazy-loads Git/File feature CSS only when needed, and moves shared button/tree styles to always-loaded CSS so folder pickers and shell buttons stay styled before feature bundles load.
+- Avoids Git branch lookups for plain non-Git folders, preventing expected non-Git branch API failures from surfacing as 502 noise while keeping branch suggestions for real repositories.
+
 ## 0.2.61 Release Notes
 
 ### Frontend parity and hot path efficiency
