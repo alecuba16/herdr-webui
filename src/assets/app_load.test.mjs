@@ -222,7 +222,7 @@ describe("app bundle load", () => {
     equal(html.includes('id="newWs"'), false);
     equal(html.includes('id="tempTerminalToggle"'), false);
     match(source, /headerActions\.onclick = \(\) => openSearchPalette\(\);/);
-    ok(!source.includes("tempTerminalToggle"));
+    ok(!source.includes('id="tempTerminalToggle"'));
 
     ctx.setupSessionChrome();
     const button = ctx.document.getElementById("headerActionsButton");
@@ -446,6 +446,11 @@ describe("app bundle load", () => {
     match(html, /Alt\+F selects files, Alt\+D selects folders, Alt\+1\/2\/3 toggles sections, and Alt\+↑\/↓ expands content context/);
     match(html, /Alt\+F\/Alt\+D inside the palette to switch file or folder search, Alt\+1\/2\/3 to collapse or expand search sections, and Alt\+↑\/↓ to expand selected content-match context/);
     match(source, /DEFAULT_WEBUI_SHORTCUTS/);
+    match(source, /tempTerminalToggle: "Shift\+KeyM"/);
+    match(source, /Open\/minimize\/restore temporary terminal/);
+    match(source, /Open, minimize, or restore the temporary terminal/);
+    match(source, /Temporary terminal captures Tab\/Backspace and normal input while open; Ctrl\+G detaches it through the close confirmation; \$\{escapeHtml\(globalShortcutPrefixLabel\(\)\)\} then Shift\+M opens, minimizes, or restores it/);
+    match(readFileSync(new URL("../../docs/features.md", import.meta.url), "utf8"), /Ctrl\+B` then `Shift\+M` opens, minimizes to the corner restore pill, or restores the same live temporary terminal/);
     match(source, /removeWorktreeAlt: "Backspace"/);
     match(source, /removeWorktreeAlt: \(\) =>/);
     match(source, /DEFAULT_GIT_SHORTCUTS/);
@@ -453,6 +458,64 @@ describe("app bundle load", () => {
     match(source, /data-shortcut-record/);
     match(source, /Shortcut conflict with:/);
     match(source, /optFileContentSearchDefaultExpanded/);
+  });
+
+  it("uses the WebUI prefix shortcut to manage temporary terminals", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    vm.runInContext(`
+      const modal = document.getElementById("tempTerminalModal");
+      modal.style.display = "grid";
+      tempTerminal = {
+        visible: true,
+        minimized: 0,
+        opened: 0,
+        isVisible() { return this.visible; },
+        minimize() { this.minimized += 1; this.visible = false; modal.style.display = "none"; },
+        open() { this.opened += 1; this.visible = true; modal.style.display = "grid"; },
+      };
+    `, ctx);
+
+    const key = (code, key, extra = {}) => ({
+      code,
+      key,
+      altKey: false,
+      ctrlKey: false,
+      metaKey: false,
+      shiftKey: false,
+      defaultPrevented: false,
+      propagationStopped: false,
+      immediateStopped: false,
+      target: ctx.document.body,
+      preventDefault() { this.defaultPrevented = true; },
+      stopPropagation() { this.propagationStopped = true; },
+      stopImmediatePropagation() { this.immediateStopped = true; },
+      ...extra,
+    });
+
+    let prefix = key("KeyB", "b", { ctrlKey: true });
+    ctx.handleGlobalShortcut(prefix);
+    equal(prefix.defaultPrevented, true);
+    let shortcut = key("KeyM", "M", { shiftKey: true });
+    ctx.handleGlobalShortcut(shortcut);
+    equal(shortcut.defaultPrevented, true);
+    equal(vm.runInContext("tempTerminal.minimized", ctx), 1);
+    equal(vm.runInContext("tempTerminal.opened", ctx), 0);
+
+    prefix = key("KeyB", "b", { ctrlKey: true });
+    ctx.handleGlobalShortcut(prefix);
+    shortcut = key("KeyM", "M", { shiftKey: true });
+    ctx.handleGlobalShortcut(shortcut);
+    equal(vm.runInContext("tempTerminal.minimized", ctx), 1);
+    equal(vm.runInContext("tempTerminal.opened", ctx), 1);
+
+    vm.runInContext(`document.getElementById("tempTerminalModal").style.display = "grid"; tempTerminal.visible = true;`, ctx);
+    prefix = key("KeyB", "b", { ctrlKey: true });
+    ctx.handleGlobalShortcut(prefix);
+    const settings = key("KeyS", "s");
+    ctx.handleGlobalShortcut(settings);
+    equal(ctx.document.getElementById("settingsModal").style.display, undefined);
+    equal(vm.runInContext("tempTerminal.minimized", ctx), 1);
   });
 
   it("keeps Git prefix shortcuts collision-free with WebUI prefix keys", () => {

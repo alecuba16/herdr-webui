@@ -51,6 +51,21 @@ function tempTerminalModalOpen() {
   const modal = el("tempTerminalModal");
   return !!(modal && modal.style.display && modal.style.display !== "none");
 }
+function tempTerminalShortcutAllowed() {
+  if (!tempTerminalModalOpen()) return false;
+  const modal = el("tempTerminalModal");
+  const confirm = modal && modal.querySelector && modal.querySelector(".temp-terminal-confirm");
+  return !(confirm && confirm.style.display && confirm.style.display !== "none");
+}
+function toggleTempTerminalShortcut() {
+  if (!tempTerminal) return false;
+  if (tempTerminal.isVisible && tempTerminal.isVisible()) {
+    if (tempTerminal.minimize) tempTerminal.minimize();
+    return true;
+  }
+  tempTerminal.open();
+  return true;
+}
 function closeShortcutKeydown(e) {
   if (tempTerminalModalOpen()) return false;
   if (!handleCloseShortcut(e)) return false;
@@ -263,6 +278,9 @@ function runPrefixedShortcut(e) {
       focusTerminal(true);
       return true;
     },
+    tempTerminalToggle: () => {
+      return toggleTempTerminalShortcut();
+    },
     focusNext: () => {
       return focusRelativeControl(1);
     },
@@ -283,7 +301,8 @@ function consumeShortcutEvent(e) {
 }
 function handleGlobalShortcut(e) {
   if (e.defaultPrevented || options.globalShortcutsEnabled === false) return false;
-  if (modalOpen()) {
+  const tempTerminalOnly = modalOpen() && tempTerminalShortcutAllowed();
+  if (modalOpen() && !tempTerminalOnly) {
     hideShortcutPrefixOverlay();
     return false;
   }
@@ -297,6 +316,8 @@ function handleGlobalShortcut(e) {
   if (prefixActive) {
     hideShortcutPrefixOverlay();
     if (e.key === "Escape") return consumeShortcutEvent(e);
+    if (tempTerminalOnly && shortcutKey(e) !== (options.webuiShortcuts || {}).tempTerminalToggle)
+      return consumeShortcutEvent(e);
     runPrefixedShortcut(e);
     return consumeShortcutEvent(e);
   }
