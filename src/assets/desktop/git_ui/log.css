@@ -33,6 +33,37 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.git-ui-diff-search {
+  align-items: center;
+  border: 1px solid var(--border2);
+  border-radius: 999px;
+  color: var(--muted);
+  display: inline-flex;
+  flex: 1 1 220px;
+  gap: 6px;
+  max-width: 360px;
+  min-width: 180px;
+  padding: 3px 8px;
+}
+.git-ui-diff-search span,
+.git-ui-diff-search-count {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+.git-ui-diff-search input {
+  background: transparent;
+  border: 0;
+  color: var(--fg);
+  flex: 1;
+  font: inherit;
+  min-width: 0;
+  outline: 0;
+  padding: 0;
+}
+.git-ui-diff-search-count {
+  min-width: 54px;
+}
 .git-ui-breadcrumbs {
   align-items: center;
   border: 1px solid var(--border2);

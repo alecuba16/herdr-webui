@@ -151,6 +151,13 @@
   flex: 0 0 var(--sidebar-workspace-percent, 68%);
   min-height: 20%;
 }
+.sidebar-pane.workspaces-pane.panel-menu-open {
+  min-height: max(20%, var(--workspace-panel-menu-min-height, 0px));
+  z-index: 2;
+}
+.sidebar-pane.workspaces-pane.panel-menu-open .sidebar-scroll {
+  overflow: visible;
+}
 .sidebar-pane.agents-pane {
   flex: 1 1 auto;
   min-height: 110px;

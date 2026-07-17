@@ -497,7 +497,8 @@ impl BuiltinState {
             "tab.create" => {
                 let workspace_id = optional_string(&params, "workspace_id");
                 let label = optional_string(&params, "label");
-                let (tab, root_pane) = self.create_tab(workspace_id, label)?;
+                let focus = optional_bool(&params, "focus").unwrap_or(true);
+                let (tab, root_pane) = self.create_tab(workspace_id, label, focus)?;
                 Ok(json!({ "type": "tab_created", "tab": tab, "root_pane": root_pane }))
             }
             "tab.rename" => {
@@ -648,6 +649,7 @@ impl BuiltinState {
         &self,
         workspace_id: Option<String>,
         label: Option<String>,
+        focus: bool,
     ) -> Result<(Value, Value), String> {
         let mut data = self
             .data
@@ -704,9 +706,15 @@ impl BuiltinState {
             },
         );
         data.terminals.insert(terminal_id, terminal);
-        data.focused_workspace_id = Some(workspace_id);
-        data.focused_tab_id = Some(tab_id.clone());
-        data.focused_pane_id = Some(pane_id.clone());
+        if focus
+            || data.focused_workspace_id.is_none()
+            || data.focused_tab_id.is_none()
+            || data.focused_pane_id.is_none()
+        {
+            data.focused_workspace_id = Some(workspace_id);
+            data.focused_tab_id = Some(tab_id.clone());
+            data.focused_pane_id = Some(pane_id.clone());
+        }
         let tab = tab_json(data.tabs.get(&tab_id).unwrap(), &data);
         let pane = pane_json(data.panes.get(&pane_id).unwrap(), &data);
         Ok((tab, pane))
@@ -1662,6 +1670,10 @@ fn optional_string(params: &Value, key: &str) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
+}
+
+fn optional_bool(params: &Value, key: &str) -> Option<bool> {
+    params.get(key).and_then(Value::as_bool)
 }
 
 fn success_response(id: &str, result: Value) -> Value {
@@ -3217,6 +3229,42 @@ mod tests {
         let event = rx.recv_timeout(Duration::from_secs(1)).unwrap();
         assert_eq!(event["event"], "tab.created");
         assert_eq!(event["data"]["type"], "tab_created");
+    }
+
+    #[test]
+    fn builtin_tab_create_respects_focus_false() {
+        let state =
+            BuiltinState::new(std::env::current_dir().unwrap(), Some(default_shell())).unwrap();
+        let workspace =
+            state.handle_request("seed", "workspace.create", json!({ "label": "Workspace" }));
+        let workspace_id = workspace["result"]["workspace"]["workspace_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let focused_tab_id = workspace["result"]["tab"]["tab_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let background_tab = state.handle_request(
+            "background-tab",
+            "tab.create",
+            json!({ "workspace_id": workspace_id, "label": "Temp", "focus": false }),
+        );
+        let background_tab_id = background_tab["result"]["tab"]["tab_id"].as_str().unwrap();
+        let snapshot = state.handle_request("snapshot", "session.snapshot", json!({}));
+
+        assert_eq!(
+            snapshot["result"]["snapshot"]["focused_tab_id"].as_str(),
+            Some(focused_tab_id.as_str())
+        );
+        let tabs = snapshot["result"]["snapshot"]["tabs"].as_array().unwrap();
+        assert!(tabs
+            .iter()
+            .any(|tab| tab["tab_id"] == focused_tab_id && tab["focused"] == true));
+        assert!(tabs
+            .iter()
+            .any(|tab| tab["tab_id"] == background_tab_id && tab["focused"] == false));
     }
 
     #[test]

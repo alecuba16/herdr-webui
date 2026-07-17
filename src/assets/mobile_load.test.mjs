@@ -86,6 +86,7 @@ function context(pathname = "/", options = {}) {
       getItem: (key) => localStorage.get(key) || null,
       setItem: (key, value) => localStorage.set(key, String(value)),
     },
+    confirm: options.confirm || (() => true),
     window: null,
     globalThis: null,
     Terminal: class {
@@ -191,9 +192,19 @@ function context(pathname = "/", options = {}) {
             ],
           }),
         };
+      const optionValue = (key, fallback) => {
+        const value = options[key];
+        return typeof value === "function"
+          ? value({ url, opt, requests })
+          : value === undefined
+            ? fallback
+            : value;
+      };
       const result = url.includes("workspaces")
         ? {
-            workspaces: [{ workspace_id: "w1", label: "alpha", pane_count: 1, cwd: "/tmp/alpha" }],
+            workspaces: optionValue("workspaces", [
+              { workspace_id: "w1", label: "alpha", pane_count: 1, cwd: "/tmp/alpha" },
+            ]),
           }
         : url.includes("worktrees")
           ? {
@@ -209,17 +220,17 @@ function context(pathname = "/", options = {}) {
             }
           : url.includes("tabs")
             ? {
-                tabs: [
+                tabs: optionValue("tabs", [
                   { workspace_id: "w1", tab_id: "w1:t1", number: 1 },
                   { workspace_id: "w1", tab_id: "w1:t2", number: 2 },
-                ],
+                ]),
               }
             : url.includes("panes")
               ? {
-                  panes: [
+                  panes: optionValue("panes", [
                     { tab_id: "w1:t1", pane_id: "w1:p1", terminal_id: "term1" },
                     { tab_id: "w1:t2", pane_id: "w1:p2", terminal_id: "term2" },
-                  ],
+                  ]),
                 }
               : {
                   agents: [
@@ -778,5 +789,41 @@ describe("mobile bundle load", () => {
     ok(html.includes("Close current panel"));
     ok(source.includes("mobile-tab-close"));
     equal(typeof ctx.HerdrMobile.closeCurrentPanel, "function");
+  });
+
+  it("closes current mobile panel and selects the focused fallback panel", async () => {
+    const remainingTabs = [
+      { workspace_id: "w1", tab_id: "w1:t2", number: 2, focused: true },
+    ];
+    const remainingPanes = [
+      { tab_id: "w1:t2", pane_id: "w1:p2", terminal_id: "term2", focused: true },
+    ];
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1", {
+      tabs: ({ requests }) =>
+        requests.some((request) => request.url === "/api/tabs/w1%3At1/close")
+          ? remainingTabs
+          : [
+              { workspace_id: "w1", tab_id: "w1:t1", number: 1 },
+              ...remainingTabs,
+            ],
+      panes: ({ requests }) =>
+        requests.some((request) => request.url === "/api/tabs/w1%3At1/close")
+          ? remainingPanes
+          : [
+              { tab_id: "w1:t1", pane_id: "w1:p1", terminal_id: "term1" },
+              ...remainingPanes,
+            ],
+    });
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+
+    await ctx.HerdrMobile.closeCurrentPanel();
+
+    ok(ctx.requests.some(
+      (request) => request.url === "/api/tabs/w1%3At1/close" && request.opt.method === "POST",
+    ));
+    equal(ctx.HerdrMobile.currentSelection().tab, "w1:t2");
+    equal(ctx.HerdrMobile.currentSelection().pane, "w1:p2");
+    equal(ctx.history.calls.at(-1).path, "/session/default/workspace/w1/tab/t2/pane/p2");
   });
 });

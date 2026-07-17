@@ -60,12 +60,18 @@
     // Git drawer owns keyboard while visible, so terminal/global shortcuts behind it do not receive input.
     event.stopPropagation();
     if (event.stopImmediatePropagation) event.stopImmediatePropagation();
+    if (handleDiffSearchShortcut(event, view)) return;
     if (isGitShortcutPrefix(event)) {
       state.shortcutPrefixUntil = Date.now() + 5000;
       event.preventDefault();
       return;
     }
     if (handleGitShortcut(event, view)) return;
+    if (event.key === "Escape" && isDiffSearchTarget(event.target)) {
+      event.preventDefault();
+      window.HerdrGitUi.clearDiffSearch();
+      return;
+    }
     if (event.key !== "Escape") return;
     event.preventDefault();
     if (state.contextMenu) {
@@ -118,6 +124,20 @@
 
   function isChangesListView(view) {
     return !!(view && view.tab === "changes" && currentMode() === "changes" && !view.file && !view.sideEditor);
+  }
+
+  function handleDiffSearchShortcut(event, view) {
+    if (!event || editableTarget(event.target)) return false;
+    const key = String(event.key || "").toLowerCase();
+    if (key !== "f" || (!event.ctrlKey && !event.metaKey) || event.altKey || event.shiftKey) return false;
+    if (!canSearchDiff(view)) return false;
+    event.preventDefault();
+    window.HerdrGitUi.openDiffSearch();
+    return true;
+  }
+
+  function isDiffSearchTarget(target) {
+    return !!(target && target.closest && target.closest("#gitUiDiffSearch"));
   }
 
   function isNotGitRepositoryMessage(message) {
@@ -402,6 +422,67 @@
 
   function highlight(code, path) {
     return Syntax.highlight(code, path);
+  }
+
+  function highlightDiffText(code, path) {
+    const query = diffSearchQuery();
+    if (!query) return highlight(code, path);
+    const text = String(code == null ? "" : code);
+    const lower = text.toLowerCase();
+    const needle = query.toLowerCase();
+    let index = 0;
+    let html = "";
+    while (index < text.length) {
+      const found = lower.indexOf(needle, index);
+      if (found < 0) break;
+      if (found > index) html += highlight(text.slice(index, found), path);
+      html += `<mark class="git-ui-search-match">${highlight(text.slice(found, found + query.length), path)}</mark>`;
+      index = found + query.length;
+    }
+    return html + highlight(text.slice(index), path);
+  }
+
+  function diffSearchQuery() {
+    const view = active() || {};
+    return String(view.diffSearchQuery || "").trim();
+  }
+
+  function canSearchDiff(view) {
+    if (!view || view.sideEditor) return false;
+    if (["history", "log", "stash", "cleanup", "conflicts"].includes(view.tab)) return false;
+    return !!(((view.diff || {}).files || []).length || view.file);
+  }
+
+  function countTextMatches(value, query) {
+    const needle = String(query || "").trim().toLowerCase();
+    if (!needle) return 0;
+    const text = String(value == null ? "" : value).toLowerCase();
+    let count = 0;
+    let index = 0;
+    while (index < text.length) {
+      const found = text.indexOf(needle, index);
+      if (found < 0) break;
+      count++;
+      index = found + needle.length;
+    }
+    return count;
+  }
+
+  function diffSearchMatchCount(view, query) {
+    const needle = String(query || "").trim();
+    if (!needle) return 0;
+    const unified = diffLayoutMode() === "unified";
+    return (((view && view.diff && view.diff.files) || [])).reduce((total, file) => {
+      return total + ((file.chunks || []).reduce((fileTotal, chunk) => {
+        const rows = unified ? unifiedRows(chunk) : sideBySideRows(chunk);
+        return fileTotal + rows.reduce((lineTotal, row) => {
+          if (unified) return lineTotal + countTextMatches((row.line || {}).content || "", needle);
+          return lineTotal
+            + countTextMatches((row.oldLine || {}).content || "", needle)
+            + countTextMatches((row.newLine || {}).content || "", needle);
+        }, 0);
+      }, 0));
+    }, 0);
   }
 
   async function api(url, opt) {
@@ -872,6 +953,7 @@
         expandCompactMethod: "expandCompactDir",
         filterTerm: view.fileFilter || "",
         metaForPath: fileSummary,
+        statusForPath: fileTreeStatus,
       });
     }
     if (fileListMode() === "flat") return renderFlatFileList(files, kind, view);
@@ -1106,16 +1188,75 @@
   }
 
   function fileSummary(path, kind) {
+    const files = fileSummaryEntries(path, kind);
+    const status = fileTreeStatus(path, kind);
+    const icon = status === "added" || status === "untracked" ? "+" : status === "deleted" ? "−" : status === "conflict" ? "!" : "✎";
+    const cls = status === "added" || status === "untracked" ? "add" : status === "deleted" ? "del" : status === "conflict" ? "conflict" : "edit";
+    const totals = files.reduce((total, entry) => {
+      const additions = Number(entry.additions);
+      const deletions = Number(entry.deletions);
+      if (Number.isFinite(additions)) total.additions += additions;
+      if (Number.isFinite(deletions)) total.deletions += deletions;
+      return total;
+    }, { additions: 0, deletions: 0 });
+    const hasCounts = files.some((entry) => Number.isFinite(Number(entry.additions)) || Number.isFinite(Number(entry.deletions)));
+    const counts = hasCounts ? `<span class="git-ui-file-counts"><b>+${totals.additions}</b><i>-${totals.deletions}</i></span>` : "";
+    return `<span class="git-ui-file-summary"><span class="git-ui-file-icon ${cls}">${icon}</span>${counts}</span>`;
+  }
+
+  function fileSummaryEntries(path, kind) {
+    const exact = fileSummaryForPath(path, kind);
+    if (exact) return [exact];
+    const prefix = `${String(path || "").replace(/\/+$/, "")}/`;
+    return filesForKind(kind)
+      .filter((file) => String(file || "").startsWith(prefix))
+      .map((file) => fileSummaryForPath(file, kind))
+      .filter(Boolean);
+  }
+
+  function fileSummaryForPath(path, kind) {
     const view = active() || {};
     const statusSummaries = ((view.status || {}).summaries) || {};
     const summary = kind === "S" ? (statusSummaries.staged || {})[path] : kind === "M" ? (statusSummaries.unstaged || {})[path] : null;
-    const file = (kind === "C" ? commitPreviewFile(path) : null) || diffFile(path) || summary || {};
-    const status = file.status || (kind === "?" ? "added" : "modified");
-    const icon = status === "added" ? "+" : status === "deleted" ? "−" : "✎";
-    const cls = status === "added" ? "add" : status === "deleted" ? "del" : "edit";
-    const hasCounts = Number.isFinite(Number(file.additions)) && Number.isFinite(Number(file.deletions));
-    const counts = hasCounts ? `<span class="git-ui-file-counts"><b>+${Number(file.additions)}</b><i>-${Number(file.deletions)}</i></span>` : "";
-    return `<span class="git-ui-file-summary"><span class="git-ui-file-icon ${cls}">${icon}</span>${counts}</span>`;
+    return (kind === "C" ? commitPreviewFile(path) : null) || diffFile(path) || summary || null;
+  }
+
+  function filesForKind(kind) {
+    const view = active() || {};
+    const status = view.status || {};
+    if (kind === "S") return status.staged || [];
+    if (kind === "M") return status.unstaged || [];
+    if (kind === "?") return status.untracked || [];
+    if (kind === "U") return status.conflicted || [];
+    if (kind === "C") {
+      if (view.tab === "log") return (((view.selectedCommitPreview || {}).diff || {}).files || []).map((file) => file.path);
+      if (view.compareFilePaths && view.compareFilePaths.length) return view.compareFilePaths;
+      return ((view.diff && view.diff.files) || []).map((file) => file.path);
+    }
+    return [];
+  }
+
+  function fileTreeStatus(path, kind) {
+    const entries = fileSummaryEntries(path, kind);
+    const statuses = entries.map((entry) => normalizeFileTreeStatus(entry.status, kind));
+    if (!entries.length) statuses.push(normalizeFileTreeStatus("", kind));
+    if (statuses.includes("conflict")) return "conflict";
+    if (statuses.includes("deleted")) return "deleted";
+    if (statuses.includes("modified")) return "modified";
+    if (statuses.includes("changed")) return "changed";
+    if (statuses.includes("untracked")) return "untracked";
+    if (statuses.includes("added")) return "added";
+    return statuses[0] || "modified";
+  }
+
+  function normalizeFileTreeStatus(status, kind) {
+    const value = String(status || "").toLowerCase();
+    if (kind === "U" || value.includes("conflict")) return "conflict";
+    if (kind === "?" || value === "untracked") return "untracked";
+    if (value === "added" || value === "new") return "added";
+    if (value === "deleted" || value === "removed") return "deleted";
+    if (value === "renamed" || value === "copied") return "changed";
+    return "modified";
   }
 
   function renderGitViewTabs(tabs, activeTab) {
@@ -1293,7 +1434,17 @@
       : activeTab === "changes" && canEditCurrentFile(view)
         ? `<button class="git-ui-btn" title="${esc(titleWithGitShortcut("Edit side-by-side", "edit"))}" onclick="HerdrGitUi.editSideBySide()">Edit side-by-side</button>`
         : "";
-    return `<div class="git-ui-log-head">${back}${stateLabel}${changes}${history}${blame}${sideEditor}${conflicts ? `<button class="git-ui-btn ${activeTab === "conflicts" ? "active" : ""}" onclick="HerdrGitUi.tab('conflicts')">Conflicts</button>` : ""}${collapse}${compare}</div>`;
+    const search = renderDiffSearchControl(view);
+    return `<div class="git-ui-log-head">${back}${stateLabel}${changes}${history}${blame}${sideEditor}${conflicts ? `<button class="git-ui-btn ${activeTab === "conflicts" ? "active" : ""}" onclick="HerdrGitUi.tab('conflicts')">Conflicts</button>` : ""}${collapse}${search}${compare}</div>`;
+  }
+
+  function renderDiffSearchControl(view) {
+    if (!canSearchDiff(view)) return "";
+    const query = String(view.diffSearchQuery || "");
+    if (!view.diffSearchOpen && !query) return `<button class="git-ui-btn" title="Search compared text (Ctrl+F)" onclick="HerdrGitUi.openDiffSearch()">Search</button>`;
+    const count = query.trim() ? diffSearchMatchCount(view, query) : 0;
+    const countText = query.trim() ? `${count} match${count === 1 ? "" : "es"}` : "";
+    return `<label class="git-ui-diff-search" title="Search compared text"><span>Search</span><input id="gitUiDiffSearch" value="${esc(query)}" autocomplete="off" spellcheck="false" placeholder="Search compared text" oninput="HerdrGitUi.setDiffSearch(this.value)"></label><span class="git-ui-diff-search-count">${esc(countText)}</span><button class="git-ui-btn" title="Clear diff search" onclick="HerdrGitUi.clearDiffSearch()">×</button>`;
   }
 
   function canEditCurrentFile(view) {
@@ -1610,9 +1761,9 @@
   }
 
   function renderUnifiedDiffCode(line, rows, rowIndex, path) {
-    if (!line || !["delete", "add"].includes(line.line_type)) return highlight((line && line.content) || "", path);
+    if (!line || !["delete", "add"].includes(line.line_type)) return highlightDiffText((line && line.content) || "", path);
     const pair = unifiedChangePair(rows, rowIndex);
-    if (!pair) return highlight(line.content || "", path);
+    if (!pair) return highlightDiffText(line.content || "", path);
     return renderDiffCode(pair.oldLine, pair.newLine, path, line.line_type === "delete" ? "old" : "new");
   }
 
@@ -1643,13 +1794,13 @@
     const line = side === "old" ? oldLine : newLine;
     if (!line) return "";
     if (!oldLine || !newLine || oldLine.line_type !== "delete" || newLine.line_type !== "add") {
-      return highlight(line.content, path);
+      return highlightDiffText(line.content, path);
     }
     const parts = changedMiddle(oldLine.content || "", newLine.content || "");
     const content = side === "old" ? oldLine.content || "" : newLine.content || "";
     const changed = side === "old" ? parts.oldChanged : parts.newChanged;
-    if (!changed.length) return highlight(content, path);
-    return `${highlight(content.slice(0, changed.start), path)}<span class="git-ui-word-change">${highlight(content.slice(changed.start, changed.end), path)}</span>${highlight(content.slice(changed.end), path)}`;
+    if (!changed.length) return highlightDiffText(content, path);
+    return `${highlightDiffText(content.slice(0, changed.start), path)}<span class="git-ui-word-change">${highlightDiffText(content.slice(changed.start, changed.end), path)}</span>${highlightDiffText(content.slice(changed.end), path)}`;
   }
 
   function changedMiddle(oldText, newText) {
@@ -1936,6 +2087,7 @@
     if (nextContent && preserveContentScroll(activeView.tab))
       nextContent.scrollTop = activeView.contentScrollTop || 0;
     mountSideEditors();
+    focusDiffSearchIfNeeded();
     const view = activeView;
     if (view.tab === "log") renderLog(version).catch((e) => { view.error = e.message; render(); });
     if (view.tab === "stash") renderStash(version).catch((e) => { view.error = e.message; render(); });
@@ -1950,6 +2102,17 @@
     const scrollTop = preserveContentScroll(view.tab) ? (view.contentScrollTop || content.scrollTop || 0) : null;
     content.innerHTML = html;
     if (scrollTop !== null) content.scrollTop = scrollTop;
+  }
+
+  function focusDiffSearchIfNeeded() {
+    if (!state.focusDiffSearch) return;
+    state.focusDiffSearch = false;
+    setTimeout(() => {
+      const input = document.getElementById("gitUiDiffSearch");
+      if (!input) return;
+      input.focus();
+      if (input.setSelectionRange) input.setSelectionRange(input.value.length, input.value.length);
+    }, 0);
   }
 
   function mountSideEditors() {
@@ -2432,6 +2595,28 @@
         view.fileFilter = String(value || "");
         render();
       }, 300);
+    },
+    openDiffSearch() {
+      const view = active();
+      if (!canSearchDiff(view)) return;
+      view.diffSearchOpen = true;
+      state.focusDiffSearch = true;
+      render();
+    },
+    setDiffSearch(value) {
+      const view = active();
+      if (!view) return;
+      view.diffSearchOpen = true;
+      view.diffSearchQuery = String(value || "");
+      state.focusDiffSearch = true;
+      render();
+    },
+    clearDiffSearch() {
+      const view = active();
+      if (!view) return;
+      view.diffSearchOpen = false;
+      view.diffSearchQuery = "";
+      render();
     },
     toggleCleanupSelection(key, checked) {
       const view = active();

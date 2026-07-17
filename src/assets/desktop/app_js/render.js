@@ -39,6 +39,7 @@ function render() {
     workspaceContextActions.innerHTML !== workspaceContextHtml
   )
     workspaceContextActions.innerHTML = workspaceContextHtml;
+  syncWorkspacePanelMenuSize();
   const agentsHtml = renderAgents(wsById, tabById, tabCountsByWorkspace);
   if (agentsHtml !== lastAgentsHtml) {
     agents.innerHTML = agentsHtml;
@@ -73,6 +74,25 @@ function render() {
   }
   fitTerminalShell();
   if (typeof fitTerminalSurface === "function") fitTerminalSurface();
+}
+
+function syncWorkspacePanelMenuSize() {
+  const workspacePane = el("workspacePane"),
+    menu = workspacePane && workspacePane.querySelector && workspacePane.querySelector(".panel-menu");
+  if (!workspacePane) return;
+  if (!menu) {
+    workspacePane.classList.remove("panel-menu-open");
+    if (workspacePane.style.removeProperty)
+      workspacePane.style.removeProperty("--workspace-panel-menu-min-height");
+    else workspacePane.style.setProperty("--workspace-panel-menu-min-height", "0px");
+    return;
+  }
+  workspacePane.classList.add("panel-menu-open");
+  const paneRect = workspacePane.getBoundingClientRect ? workspacePane.getBoundingClientRect() : null,
+    menuRect = menu.getBoundingClientRect ? menu.getBoundingClientRect() : null;
+  if (!paneRect || !menuRect) return;
+  const minHeight = Math.max(0, Math.ceil(menuRect.bottom - paneRect.top + 10));
+  workspacePane.style.setProperty("--workspace-panel-menu-min-height", `${minHeight}px`);
 }
 window.HerdrDesktopRender = render;
 function syncProjectDashboard() {

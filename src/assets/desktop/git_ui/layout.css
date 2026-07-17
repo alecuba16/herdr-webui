@@ -363,6 +363,89 @@
   overflow-x: hidden;
   overflow-y: auto;
 }
+.git-ui-list .herdr-file-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 0;
+}
+.git-ui-list .herdr-tree-row.git-ui-file {
+  align-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--fg);
+  cursor: pointer;
+  display: grid;
+  font: inherit;
+  font-size: 12px;
+  gap: 5px;
+  grid-template-columns: 14px 16px minmax(0, 1fr) auto;
+  justify-content: initial;
+  min-width: 0;
+  padding: 5px 6px 5px calc(6px + var(--tree-offset, 0px));
+  text-align: left;
+  width: 100%;
+}
+.git-ui-list .herdr-tree-row.git-ui-file:hover,
+.git-ui-list .herdr-tree-row.git-ui-file.active {
+  background: var(--panel2);
+  border-color: var(--border2);
+}
+.git-ui-list .herdr-tree-row.git-ui-dir {
+  color: var(--muted);
+  font-weight: 800;
+}
+.git-ui-list .herdr-tree-row.git-ui-file:is(.git-modified, .git-added, .git-untracked, .git-deleted, .git-changed, .git-conflict) {
+  color: var(--fg);
+}
+.git-ui-list .herdr-tree-row.git-ui-dir:is(.git-modified, .git-added, .git-untracked, .git-deleted, .git-changed, .git-conflict) {
+  color: var(--muted);
+}
+.git-ui-list .herdr-tree-row.git-ui-file .herdr-tree-caret,
+.git-ui-list .herdr-tree-row.git-ui-file .herdr-tree-sep {
+  color: var(--muted);
+}
+.git-ui-list .herdr-tree-row.file.git-ui-file .herdr-tree-kind,
+.git-ui-list .herdr-tree-row.file.git-ui-file .herdr-tree-icon {
+  color: var(--muted);
+}
+.git-ui-list .herdr-tree-row.file.git-ui-file .herdr-tree-icon:not(.herdr-tree-icon-filetype) {
+  background: var(--muted);
+}
+.git-ui-list .herdr-tree-row.dir.git-ui-file .herdr-tree-kind,
+.git-ui-list .herdr-tree-row.dir.git-ui-file .herdr-tree-icon {
+  color: var(--accent);
+}
+.git-ui-list .herdr-tree-row.dir.git-ui-file .herdr-tree-icon:not(.herdr-tree-icon-filetype) {
+  background: var(--accent);
+}
+.git-ui-list .herdr-tree-caret,
+.git-ui-list .herdr-tree-kind {
+  align-items: center;
+  display: inline-flex;
+  justify-content: center;
+  min-width: 0;
+}
+.git-ui-list .herdr-tree-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.git-ui-list .herdr-tree-icon {
+  background: currentColor;
+  display: inline-block;
+  height: 14px;
+  mask-position: center;
+  mask-repeat: no-repeat;
+  mask-size: contain;
+  width: 14px;
+}
+.git-ui-list .herdr-tree-icon-chevron-right { mask-image: url("/assets/icons/chevron-right.svg"); }
+.git-ui-list .herdr-tree-icon-chevron-down { mask-image: url("/assets/icons/chevron-down.svg"); }
+.git-ui-list .herdr-tree-icon-folder { mask-image: url("/assets/icons/folder.svg"); }
+.git-ui-list .herdr-tree-icon-file { mask-image: url("/assets/icons/file.svg"); }
 .git-ui-section-head {
   align-items: center;
   background: transparent;
@@ -644,6 +727,7 @@
 .git-ui-file-icon.add { color: var(--git-added-color); }
 .git-ui-file-icon.del { color: var(--git-deleted-color); }
 .git-ui-file-icon.edit { color: var(--git-modified-color); }
+.git-ui-file-icon.conflict { color: var(--git-conflict-color); }
 .git-ui-file-counts {
   font-size: 10px;
   font-style: normal;

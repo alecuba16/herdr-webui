@@ -755,10 +755,13 @@
         browserFaviconError = false;
         mobileAttention.handleSound();
         mobileWorktrees.applyResult(worktrees);
-        if (!state.tabs.some((tab) => tab.tab_id === state.tab))
-          state.tab = (state.tabs[0] || {}).tab_id || null;
+        if (!state.tabs.some((tab) => tab.tab_id === state.tab)) {
+          const focused = state.tabs.find((tab) => tab.focused);
+          state.tab = (focused || state.tabs[0] || {}).tab_id || null;
+        }
         if (!state.panes.some((pane) => pane.pane_id === state.pane)) {
           const pane =
+            state.panes.find((item) => item.tab_id === state.tab && item.focused) ||
             state.panes.find((item) => item.tab_id === state.tab) ||
             state.panes[0];
           state.pane = pane && pane.pane_id;
