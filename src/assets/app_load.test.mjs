@@ -2024,6 +2024,17 @@ describe("app bundle load", () => {
     ok(!html.includes("panelSelector"));
   });
 
+  it("resizes workspace pane for an open panel selector", () => {
+    const renderSource = readFileSync(new URL("./desktop/app_js/render.js", import.meta.url), "utf8");
+    const chromeCss = readFileSync(new URL("./desktop/app_css/chrome.css", import.meta.url), "utf8");
+
+    match(renderSource, /function syncWorkspacePanelMenuSize\(\)/);
+    match(renderSource, /querySelector\("\.panel-menu"\)/);
+    match(renderSource, /--workspace-panel-menu-min-height/);
+    match(chromeCss, /\.sidebar-pane\.workspaces-pane\.panel-menu-open \{[\s\S]*?min-height: max\(20%, var\(--workspace-panel-menu-min-height, 0px\)\);/);
+    match(chromeCss, /\.sidebar-pane\.workspaces-pane\.panel-menu-open \.sidebar-scroll \{[\s\S]*?overflow: visible;/);
+  });
+
   it("captures terminal paste before xterm native paste", () => {
     match(source, /addEventListener\(\s*"paste"/);
     match(source, /stopImmediatePropagation\(\)/);
