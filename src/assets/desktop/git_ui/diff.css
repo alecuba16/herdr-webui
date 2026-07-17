@@ -490,3 +490,9 @@
   background: rgba(248, 81, 73, 0.36);
   border-radius: 2px;
 }
+.git-ui-search-match {
+  background: color-mix(in srgb, var(--accent) 38%, #ffd166 62%);
+  border-radius: 2px;
+  color: #111827;
+  padding: 0 1px;
+}
