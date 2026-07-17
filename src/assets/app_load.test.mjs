@@ -887,6 +887,9 @@ describe("app bundle load", () => {
     match(fileTreeSource, /opts\.metaForPath\(dirPath, opts\.kind\)/);
     match(gitLayoutCss, /\.git-ui-list \.herdr-tree-row\.git-ui-file \{[\s\S]*?display: grid;/);
     match(gitLayoutCss, /\.git-ui-list \.herdr-tree-row\.git-conflict/);
+    match(gitLayoutCss, /--git-ui-tree-status-color: var\(--git-modified-color\)/);
+    match(gitLayoutCss, /\.git-ui-list \.herdr-tree-row:is\(\.git-modified, \.git-added, \.git-untracked, \.git-deleted, \.git-changed, \.git-conflict\) \.herdr-tree-name/);
+    match(gitLayoutCss, /\.git-ui-list \.herdr-tree-row:is\(\.git-modified, \.git-added, \.git-untracked, \.git-deleted, \.git-changed, \.git-conflict\) \.herdr-tree-icon:not\(\.herdr-tree-icon-filetype\)/);
     match(gitLayoutCss, /\.git-ui-file-icon\.conflict/);
   });
 

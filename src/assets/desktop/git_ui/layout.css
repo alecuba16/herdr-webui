@@ -396,12 +396,38 @@
   color: var(--muted);
   font-weight: 800;
 }
-.git-ui-list .herdr-tree-row.git-modified { color: var(--git-modified-color); }
+.git-ui-list .herdr-tree-row.git-modified {
+  --git-ui-tree-status-color: var(--git-modified-color);
+  color: var(--git-ui-tree-status-color);
+}
 .git-ui-list .herdr-tree-row.git-added,
-.git-ui-list .herdr-tree-row.git-untracked { color: var(--git-added-color); }
-.git-ui-list .herdr-tree-row.git-deleted { color: var(--git-deleted-color); }
-.git-ui-list .herdr-tree-row.git-changed { color: var(--git-changed-color); }
-.git-ui-list .herdr-tree-row.git-conflict { color: var(--git-conflict-color); }
+.git-ui-list .herdr-tree-row.git-untracked {
+  --git-ui-tree-status-color: var(--git-added-color);
+  color: var(--git-ui-tree-status-color);
+}
+.git-ui-list .herdr-tree-row.git-deleted {
+  --git-ui-tree-status-color: var(--git-deleted-color);
+  color: var(--git-ui-tree-status-color);
+}
+.git-ui-list .herdr-tree-row.git-changed {
+  --git-ui-tree-status-color: var(--git-changed-color);
+  color: var(--git-ui-tree-status-color);
+}
+.git-ui-list .herdr-tree-row.git-conflict {
+  --git-ui-tree-status-color: var(--git-conflict-color);
+  color: var(--git-ui-tree-status-color);
+}
+.git-ui-list .herdr-tree-row:is(.git-modified, .git-added, .git-untracked, .git-deleted, .git-changed, .git-conflict) .herdr-tree-caret,
+.git-ui-list .herdr-tree-row:is(.git-modified, .git-added, .git-untracked, .git-deleted, .git-changed, .git-conflict) .herdr-tree-kind,
+.git-ui-list .herdr-tree-row:is(.git-modified, .git-added, .git-untracked, .git-deleted, .git-changed, .git-conflict) .herdr-tree-name,
+.git-ui-list .herdr-tree-row:is(.git-modified, .git-added, .git-untracked, .git-deleted, .git-changed, .git-conflict) .herdr-tree-crumb,
+.git-ui-list .herdr-tree-row:is(.git-modified, .git-added, .git-untracked, .git-deleted, .git-changed, .git-conflict) .herdr-tree-sep,
+.git-ui-list .herdr-tree-row:is(.git-modified, .git-added, .git-untracked, .git-deleted, .git-changed, .git-conflict) .herdr-tree-icon {
+  color: var(--git-ui-tree-status-color);
+}
+.git-ui-list .herdr-tree-row:is(.git-modified, .git-added, .git-untracked, .git-deleted, .git-changed, .git-conflict) .herdr-tree-icon:not(.herdr-tree-icon-filetype) {
+  background: var(--git-ui-tree-status-color);
+}
 .git-ui-list .herdr-tree-caret,
 .git-ui-list .herdr-tree-kind {
   align-items: center;
