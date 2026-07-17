@@ -886,10 +886,11 @@ describe("app bundle load", () => {
     match(fileTreeSource, /opts\.statusForPath\(dirPath, opts\.kind\)/);
     match(fileTreeSource, /opts\.metaForPath\(dirPath, opts\.kind\)/);
     match(gitLayoutCss, /\.git-ui-list \.herdr-tree-row\.git-ui-file \{[\s\S]*?display: grid;/);
-    match(gitLayoutCss, /\.git-ui-list \.herdr-tree-row\.git-conflict/);
-    match(gitLayoutCss, /--git-ui-tree-status-color: var\(--git-modified-color\)/);
-    match(gitLayoutCss, /\.git-ui-list \.herdr-tree-row:is\(\.git-modified, \.git-added, \.git-untracked, \.git-deleted, \.git-changed, \.git-conflict\) \.herdr-tree-name/);
-    match(gitLayoutCss, /\.git-ui-list \.herdr-tree-row:is\(\.git-modified, \.git-added, \.git-untracked, \.git-deleted, \.git-changed, \.git-conflict\) \.herdr-tree-icon:not\(\.herdr-tree-icon-filetype\)/);
+    match(gitLayoutCss, /\.git-ui-list \.herdr-tree-row\.git-ui-file:is\(\.git-modified, \.git-added, \.git-untracked, \.git-deleted, \.git-changed, \.git-conflict\)/);
+    match(gitLayoutCss, /\.git-ui-list \.herdr-tree-row\.git-ui-file:is\(\.git-modified, \.git-added, \.git-untracked, \.git-deleted, \.git-changed, \.git-conflict\) \{\s*color: var\(--fg\);/);
+    match(gitLayoutCss, /\.git-ui-list \.herdr-tree-row\.git-ui-dir:is\(\.git-modified, \.git-added, \.git-untracked, \.git-deleted, \.git-changed, \.git-conflict\) \{\s*color: var\(--muted\);/);
+    match(gitLayoutCss, /\.git-ui-list \.herdr-tree-row\.file\.git-ui-file \.herdr-tree-icon:not\(\.herdr-tree-icon-filetype\) \{\s*background: var\(--muted\);/);
+    match(gitLayoutCss, /\.git-ui-list \.herdr-tree-row\.dir\.git-ui-file \.herdr-tree-icon:not\(\.herdr-tree-icon-filetype\) \{\s*background: var\(--accent\);/);
     match(gitLayoutCss, /\.git-ui-file-icon\.conflict/);
   });
 
