@@ -890,6 +890,25 @@ describe("app bundle load", () => {
     match(gitLayoutCss, /\.git-ui-file-icon\.conflict/);
   });
 
+  it("supports Ctrl+F search across compared Git diff text", () => {
+    const gitLogCss = readFileSync(new URL("./desktop/git_ui/log.css", import.meta.url), "utf8");
+    const gitDiffCss = readFileSync(new URL("./desktop/git_ui/diff.css", import.meta.url), "utf8");
+
+    match(gitUiSource, /function handleDiffSearchShortcut\(event, view\)/);
+    match(gitUiSource, /editableTarget\(event\.target\)/);
+    match(gitUiSource, /event\.ctrlKey && !event\.metaKey|!event\.ctrlKey && !event\.metaKey/);
+    match(gitUiSource, /id="gitUiDiffSearch"/);
+    match(gitUiSource, /state\.focusDiffSearch = true/);
+    match(gitUiSource, /function highlightDiffText\(code, path\)/);
+    match(gitUiSource, /const rows = unified \? unifiedRows\(chunk\) : sideBySideRows\(chunk\)/);
+    match(gitUiSource, /<mark class="git-ui-search-match">/);
+    match(gitUiSource, /renderDiffCode\(oldLine, newLine, path, "old"\)/);
+    match(gitUiSource, /renderDiffCode\(oldLine, newLine, path, "new"\)/);
+    match(gitUiSource, /highlightDiffText\(content\.slice\(changed\.start, changed\.end\), path\)/);
+    match(gitLogCss, /\.git-ui-diff-search \{/);
+    match(gitDiffCss, /\.git-ui-search-match \{/);
+  });
+
   it("keeps content search file expansion when context is reloaded", () => {
     const ctx = context();
     ctx.localStorage.setItem("herdr-web-options", JSON.stringify({ fileContentSearchDefaultExpanded: false }));
