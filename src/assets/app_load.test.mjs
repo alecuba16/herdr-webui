@@ -875,6 +875,21 @@ describe("app bundle load", () => {
     match(gitUiSource, /filterFiles/);
   });
 
+  it("uses shared file tree rows for Git files with Git metadata", () => {
+    const fileTreeSource = readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8");
+    const gitLayoutCss = readFileSync(new URL("./desktop/git_ui/layout.css", import.meta.url), "utf8");
+
+    match(gitUiSource, /FileTree\.renderPathTree\(files, \{/);
+    match(gitUiSource, /statusForPath: fileTreeStatus/);
+    match(gitUiSource, /function fileSummaryEntries\(path, kind\)/);
+    match(gitUiSource, /function normalizeFileTreeStatus\(status, kind\)/);
+    match(fileTreeSource, /opts\.statusForPath\(dirPath, opts\.kind\)/);
+    match(fileTreeSource, /opts\.metaForPath\(dirPath, opts\.kind\)/);
+    match(gitLayoutCss, /\.git-ui-list \.herdr-tree-row\.git-ui-file \{[\s\S]*?display: grid;/);
+    match(gitLayoutCss, /\.git-ui-list \.herdr-tree-row\.git-conflict/);
+    match(gitLayoutCss, /\.git-ui-file-icon\.conflict/);
+  });
+
   it("keeps content search file expansion when context is reloaded", () => {
     const ctx = context();
     ctx.localStorage.setItem("herdr-web-options", JSON.stringify({ fileContentSearchDefaultExpanded: false }));

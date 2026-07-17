@@ -872,6 +872,7 @@
         expandCompactMethod: "expandCompactDir",
         filterTerm: view.fileFilter || "",
         metaForPath: fileSummary,
+        statusForPath: fileTreeStatus,
       });
     }
     if (fileListMode() === "flat") return renderFlatFileList(files, kind, view);
@@ -1106,16 +1107,75 @@
   }
 
   function fileSummary(path, kind) {
+    const files = fileSummaryEntries(path, kind);
+    const status = fileTreeStatus(path, kind);
+    const icon = status === "added" || status === "untracked" ? "+" : status === "deleted" ? "−" : status === "conflict" ? "!" : "✎";
+    const cls = status === "added" || status === "untracked" ? "add" : status === "deleted" ? "del" : status === "conflict" ? "conflict" : "edit";
+    const totals = files.reduce((total, entry) => {
+      const additions = Number(entry.additions);
+      const deletions = Number(entry.deletions);
+      if (Number.isFinite(additions)) total.additions += additions;
+      if (Number.isFinite(deletions)) total.deletions += deletions;
+      return total;
+    }, { additions: 0, deletions: 0 });
+    const hasCounts = files.some((entry) => Number.isFinite(Number(entry.additions)) || Number.isFinite(Number(entry.deletions)));
+    const counts = hasCounts ? `<span class="git-ui-file-counts"><b>+${totals.additions}</b><i>-${totals.deletions}</i></span>` : "";
+    return `<span class="git-ui-file-summary"><span class="git-ui-file-icon ${cls}">${icon}</span>${counts}</span>`;
+  }
+
+  function fileSummaryEntries(path, kind) {
+    const exact = fileSummaryForPath(path, kind);
+    if (exact) return [exact];
+    const prefix = `${String(path || "").replace(/\/+$/, "")}/`;
+    return filesForKind(kind)
+      .filter((file) => String(file || "").startsWith(prefix))
+      .map((file) => fileSummaryForPath(file, kind))
+      .filter(Boolean);
+  }
+
+  function fileSummaryForPath(path, kind) {
     const view = active() || {};
     const statusSummaries = ((view.status || {}).summaries) || {};
     const summary = kind === "S" ? (statusSummaries.staged || {})[path] : kind === "M" ? (statusSummaries.unstaged || {})[path] : null;
-    const file = (kind === "C" ? commitPreviewFile(path) : null) || diffFile(path) || summary || {};
-    const status = file.status || (kind === "?" ? "added" : "modified");
-    const icon = status === "added" ? "+" : status === "deleted" ? "−" : "✎";
-    const cls = status === "added" ? "add" : status === "deleted" ? "del" : "edit";
-    const hasCounts = Number.isFinite(Number(file.additions)) && Number.isFinite(Number(file.deletions));
-    const counts = hasCounts ? `<span class="git-ui-file-counts"><b>+${Number(file.additions)}</b><i>-${Number(file.deletions)}</i></span>` : "";
-    return `<span class="git-ui-file-summary"><span class="git-ui-file-icon ${cls}">${icon}</span>${counts}</span>`;
+    return (kind === "C" ? commitPreviewFile(path) : null) || diffFile(path) || summary || null;
+  }
+
+  function filesForKind(kind) {
+    const view = active() || {};
+    const status = view.status || {};
+    if (kind === "S") return status.staged || [];
+    if (kind === "M") return status.unstaged || [];
+    if (kind === "?") return status.untracked || [];
+    if (kind === "U") return status.conflicted || [];
+    if (kind === "C") {
+      if (view.tab === "log") return (((view.selectedCommitPreview || {}).diff || {}).files || []).map((file) => file.path);
+      if (view.compareFilePaths && view.compareFilePaths.length) return view.compareFilePaths;
+      return ((view.diff && view.diff.files) || []).map((file) => file.path);
+    }
+    return [];
+  }
+
+  function fileTreeStatus(path, kind) {
+    const entries = fileSummaryEntries(path, kind);
+    const statuses = entries.map((entry) => normalizeFileTreeStatus(entry.status, kind));
+    if (!entries.length) statuses.push(normalizeFileTreeStatus("", kind));
+    if (statuses.includes("conflict")) return "conflict";
+    if (statuses.includes("deleted")) return "deleted";
+    if (statuses.includes("modified")) return "modified";
+    if (statuses.includes("changed")) return "changed";
+    if (statuses.includes("untracked")) return "untracked";
+    if (statuses.includes("added")) return "added";
+    return statuses[0] || "modified";
+  }
+
+  function normalizeFileTreeStatus(status, kind) {
+    const value = String(status || "").toLowerCase();
+    if (kind === "U" || value.includes("conflict")) return "conflict";
+    if (kind === "?" || value === "untracked") return "untracked";
+    if (value === "added" || value === "new") return "added";
+    if (value === "deleted" || value === "removed") return "deleted";
+    if (value === "renamed" || value === "copied") return "changed";
+    return "modified";
   }
 
   function renderGitViewTabs(tabs, activeTab) {
