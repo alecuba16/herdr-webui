@@ -875,6 +875,44 @@ describe("app bundle load", () => {
     match(gitUiSource, /filterFiles/);
   });
 
+  it("uses shared file tree rows for Git files with Git metadata", () => {
+    const fileTreeSource = readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8");
+    const gitLayoutCss = readFileSync(new URL("./desktop/git_ui/layout.css", import.meta.url), "utf8");
+
+    match(gitUiSource, /FileTree\.renderPathTree\(files, \{/);
+    match(gitUiSource, /statusForPath: fileTreeStatus/);
+    match(gitUiSource, /function fileSummaryEntries\(path, kind\)/);
+    match(gitUiSource, /function normalizeFileTreeStatus\(status, kind\)/);
+    match(fileTreeSource, /opts\.statusForPath\(dirPath, opts\.kind\)/);
+    match(fileTreeSource, /opts\.metaForPath\(dirPath, opts\.kind\)/);
+    match(gitLayoutCss, /\.git-ui-list \.herdr-tree-row\.git-ui-file \{[\s\S]*?display: grid;/);
+    match(gitLayoutCss, /\.git-ui-list \.herdr-tree-row\.git-ui-file:is\(\.git-modified, \.git-added, \.git-untracked, \.git-deleted, \.git-changed, \.git-conflict\)/);
+    match(gitLayoutCss, /\.git-ui-list \.herdr-tree-row\.git-ui-file:is\(\.git-modified, \.git-added, \.git-untracked, \.git-deleted, \.git-changed, \.git-conflict\) \{\s*color: var\(--fg\);/);
+    match(gitLayoutCss, /\.git-ui-list \.herdr-tree-row\.git-ui-dir:is\(\.git-modified, \.git-added, \.git-untracked, \.git-deleted, \.git-changed, \.git-conflict\) \{\s*color: var\(--muted\);/);
+    match(gitLayoutCss, /\.git-ui-list \.herdr-tree-row\.file\.git-ui-file \.herdr-tree-icon:not\(\.herdr-tree-icon-filetype\) \{\s*background: var\(--muted\);/);
+    match(gitLayoutCss, /\.git-ui-list \.herdr-tree-row\.dir\.git-ui-file \.herdr-tree-icon:not\(\.herdr-tree-icon-filetype\) \{\s*background: var\(--accent\);/);
+    match(gitLayoutCss, /\.git-ui-file-icon\.conflict/);
+  });
+
+  it("supports Ctrl+F search across compared Git diff text", () => {
+    const gitLogCss = readFileSync(new URL("./desktop/git_ui/log.css", import.meta.url), "utf8");
+    const gitDiffCss = readFileSync(new URL("./desktop/git_ui/diff.css", import.meta.url), "utf8");
+
+    match(gitUiSource, /function handleDiffSearchShortcut\(event, view\)/);
+    match(gitUiSource, /editableTarget\(event\.target\)/);
+    match(gitUiSource, /event\.ctrlKey && !event\.metaKey|!event\.ctrlKey && !event\.metaKey/);
+    match(gitUiSource, /id="gitUiDiffSearch"/);
+    match(gitUiSource, /state\.focusDiffSearch = true/);
+    match(gitUiSource, /function highlightDiffText\(code, path\)/);
+    match(gitUiSource, /const rows = unified \? unifiedRows\(chunk\) : sideBySideRows\(chunk\)/);
+    match(gitUiSource, /<mark class="git-ui-search-match">/);
+    match(gitUiSource, /renderDiffCode\(oldLine, newLine, path, "old"\)/);
+    match(gitUiSource, /renderDiffCode\(oldLine, newLine, path, "new"\)/);
+    match(gitUiSource, /highlightDiffText\(content\.slice\(changed\.start, changed\.end\), path\)/);
+    match(gitLogCss, /\.git-ui-diff-search \{/);
+    match(gitDiffCss, /\.git-ui-search-match \{/);
+  });
+
   it("keeps content search file expansion when context is reloaded", () => {
     const ctx = context();
     ctx.localStorage.setItem("herdr-web-options", JSON.stringify({ fileContentSearchDefaultExpanded: false }));
@@ -2022,6 +2060,17 @@ describe("app bundle load", () => {
     match(html, /panel-close/);
     match(html, /Close current panel/);
     ok(!html.includes("panelSelector"));
+  });
+
+  it("resizes workspace pane for an open panel selector", () => {
+    const renderSource = readFileSync(new URL("./desktop/app_js/render.js", import.meta.url), "utf8");
+    const chromeCss = readFileSync(new URL("./desktop/app_css/chrome.css", import.meta.url), "utf8");
+
+    match(renderSource, /function syncWorkspacePanelMenuSize\(\)/);
+    match(renderSource, /querySelector\("\.panel-menu"\)/);
+    match(renderSource, /--workspace-panel-menu-min-height/);
+    match(chromeCss, /\.sidebar-pane\.workspaces-pane\.panel-menu-open \{[\s\S]*?min-height: max\(20%, var\(--workspace-panel-menu-min-height, 0px\)\);/);
+    match(chromeCss, /\.sidebar-pane\.workspaces-pane\.panel-menu-open \.sidebar-scroll \{[\s\S]*?overflow: visible;/);
   });
 
   it("captures terminal paste before xterm native paste", () => {

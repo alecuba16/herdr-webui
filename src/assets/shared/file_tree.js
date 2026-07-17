@@ -109,8 +109,10 @@
         const collapsed = !!((opts.collapsedDirs || {})[dirPath]);
         const keydown = opts.activateMethod ? ` onkeydown="${callback}.${opts.activateMethod}(event)"` : "";
         const dirClass = opts.dirClass ? ` ${opts.dirClass}` : "";
+        const status = typeof opts.statusForPath === "function" ? opts.statusForPath(dirPath, opts.kind) : "";
+        const meta = typeof opts.metaForPath === "function" ? opts.metaForPath(dirPath, opts.kind) : "";
         const name = renderCompactDirName(compact.parts, opts, callback);
-        return `<div class="herdr-tree-row dir${dirClass}" role="treeitem" tabindex="0" aria-expanded="${collapsed ? "false" : "true"}" style="${indentStyle(level, opts)}" onclick="${callback}.${opts.toggleMethod || "toggle"}('${arg(dirPath)}')"${keydown}><span class="herdr-tree-caret">${icon(collapsed ? "closed" : "open")}</span><span class="herdr-tree-kind">${icon("dir", dirPath)}</span><span class="herdr-tree-name">${name}</span></div>${collapsed ? "" : renderPathNode(compact.child, dirPath, opts, level + 1)}`;
+        return `<div class="herdr-tree-row dir${dirClass}${status ? ` git-${status}` : ""}" role="treeitem" tabindex="0" aria-expanded="${collapsed ? "false" : "true"}" style="${indentStyle(level, opts)}" onclick="${callback}.${opts.toggleMethod || "toggle"}('${arg(dirPath)}')"${keydown}><span class="herdr-tree-caret">${icon(collapsed ? "closed" : "open")}</span><span class="herdr-tree-kind">${icon("dir", dirPath)}</span><span class="herdr-tree-name">${name}</span>${statusBadge(status)}${meta}</div>${collapsed ? "" : renderPathNode(compact.child, dirPath, opts, level + 1)}`;
       }
       const selected = opts.selectedPath === entry.path && (!opts.selectedKind || opts.selectedKind === opts.kind);
       const meta = typeof opts.metaForPath === "function" ? opts.metaForPath(entry.path, opts.kind) : "";
