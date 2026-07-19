@@ -2,6 +2,24 @@
   const LAYOUT_KEY = "herdr-web-layout";
   const MOBILE_QUERY = "(max-width: 760px)";
   const scriptLoads = {};
+  const ASSET_VERSION = readAssetVersion();
+
+  function readAssetVersion() {
+    try {
+      const current = document.currentScript && document.currentScript.src;
+      if (current) {
+        const value = new URL(current, window.location.href).searchParams.get("v");
+        if (value) return value;
+      }
+    } catch (_) {}
+    return String(window.HERDR_ASSET_VERSION || Date.now());
+  }
+
+  function assetUrl(path) {
+    if (!ASSET_VERSION) return path;
+    const separator = path.includes("?") ? "&" : "?";
+    return path + separator + "v=" + encodeURIComponent(ASSET_VERSION);
+  }
 
   function readLayoutPreference() {
     try {
@@ -24,21 +42,22 @@
   function loadCss(href) {
     const link = document.createElement("link");
     link.rel = "stylesheet";
-    link.href = href;
+    link.href = assetUrl(href);
     document.head.appendChild(link);
   }
 
   function loadScript(src) {
-    if (scriptLoads[src]) return scriptLoads[src];
+    const versionedSrc = assetUrl(src);
+    if (scriptLoads[versionedSrc]) return scriptLoads[versionedSrc];
     const script = document.createElement("script");
     script.async = false;
-    script.src = src;
+    script.src = versionedSrc;
     document.body.appendChild(script);
-    scriptLoads[src] = new Promise((resolve, reject) => {
+    scriptLoads[versionedSrc] = new Promise((resolve, reject) => {
       script.onload = resolve;
       script.onerror = () => reject(Error("Failed to load " + src));
     });
-    return scriptLoads[src];
+    return scriptLoads[versionedSrc];
   }
 
   function loadLayout() {

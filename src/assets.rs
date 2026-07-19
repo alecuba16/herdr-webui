@@ -4,6 +4,9 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
 
+const HERDR_WEBUI_VERSION: &str = env!("HERDR_WEBUI_VERSION");
+const ASSET_CACHE_CONTROL: &str = "no-cache, must-revalidate";
+
 pub(crate) const LOGIN_HTML: &str = include_str!("assets/login.html");
 pub(crate) const APP_HTML: &str = include_str!("assets/app.html");
 
@@ -95,11 +98,11 @@ const ICON_SEARCH: &str = include_str!("assets/icons/search.svg");
 const ICON_REFRESH: &str = include_str!("assets/icons/refresh.svg");
 
 pub(crate) fn app_html() -> Response {
-    Html(APP_HTML).into_response()
+    static_html(versioned_html_assets(APP_HTML))
 }
 
 pub(crate) fn login_html() -> Response {
-    Html(LOGIN_HTML).into_response()
+    static_html(versioned_html_assets(LOGIN_HTML))
 }
 
 pub(crate) fn static_asset_routes<S>() -> Router<S>
@@ -405,14 +408,45 @@ fn static_text(body: &'static str, content_type: &'static str) -> Response {
     response
         .headers_mut()
         .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+    set_asset_cache_headers(&mut response);
     response
 }
 
 fn static_bytes(body: &'static [u8], content_type: &'static str) -> Response {
-    Response::builder()
+    let mut response = Response::builder()
         .header(header::CONTENT_TYPE, content_type)
         .body(Body::from(body))
-        .expect("static asset response should be valid")
+        .expect("static asset response should be valid");
+    set_asset_cache_headers(&mut response);
+    response
+}
+
+fn static_html(body: String) -> Response {
+    let mut response = Html(body).into_response();
+    set_asset_cache_headers(&mut response);
+    response
+}
+
+fn versioned_html_assets(html: &str) -> String {
+    let version = format!("?v={HERDR_WEBUI_VERSION}");
+    let mut body = html.to_owned();
+    for asset in [
+        "/assets/xterm.js",
+        "/assets/xterm.css",
+        "/assets/app-boot.js",
+        "/assets/login.css",
+        "/assets/login.js",
+    ] {
+        body = body.replace(asset, &format!("{asset}{version}"));
+    }
+    body
+}
+
+fn set_asset_cache_headers(response: &mut Response) {
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static(ASSET_CACHE_CONTROL),
+    );
 }
 
 pub(crate) async fn favicon_svg() -> Response {
@@ -628,6 +662,40 @@ mod tests {
             );
         }
     }
+    fn cache_control(response: &Response) -> &str {
+        response
+            .headers()
+            .get(header::CACHE_CONTROL)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("")
+    }
+
+    #[test]
+    fn html_asset_urls_include_build_version() {
+        let version = format!("?v={HERDR_WEBUI_VERSION}");
+        let app = versioned_html_assets(APP_HTML);
+        let login = versioned_html_assets(LOGIN_HTML);
+
+        assert!(app.contains(&format!("/assets/xterm.js{version}")));
+        assert!(app.contains(&format!("/assets/xterm.css{version}")));
+        assert!(app.contains(&format!("/assets/app-boot.js{version}")));
+        assert!(login.contains(&format!("/assets/login.css{version}")));
+        assert!(login.contains(&format!("/assets/login.js{version}")));
+    }
+
+    #[tokio::test]
+    async fn static_assets_revalidate_after_update() {
+        assert_eq!(cache_control(&app_html()), ASSET_CACHE_CONTROL);
+        assert_eq!(cache_control(&login_html()), ASSET_CACHE_CONTROL);
+        assert_eq!(cache_control(&desktop_js().await), ASSET_CACHE_CONTROL);
+        assert_eq!(cache_control(&desktop_css().await), ASSET_CACHE_CONTROL);
+        assert_eq!(cache_control(&app_boot_js().await), ASSET_CACHE_CONTROL);
+        assert_eq!(
+            cache_control(&jetbrains_mono_nerd_font().await),
+            ASSET_CACHE_CONTROL
+        );
+    }
+
     #[tokio::test]
     async fn serves_remaining_static_text_assets_with_content_types() {
         let javascript = "application/javascript; charset=utf-8";

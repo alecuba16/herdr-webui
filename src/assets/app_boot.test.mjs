@@ -13,15 +13,18 @@ function context({ mobile = false, preference = null } = {}) {
   const ctx = {
     document: {
       documentElement: { dataset: {} },
+      currentScript: { src: "https://127.0.0.1:8787/assets/app-boot.js?v=test-version" },
       head: { appendChild: (node) => links.push(node) },
       body: { appendChild: (node) => scripts.push(node) },
       createElement: (tag) => ({ tag }),
     },
     localStorage: { getItem: (key) => storage.get(key) || null },
+    URL,
     window: null,
   };
   ctx.window = {
     location: {
+      href: "https://127.0.0.1:8787/",
       reload() {
         reloads += 1;
       },
@@ -51,6 +54,10 @@ function context({ mobile = false, preference = null } = {}) {
   };
 }
 
+function versioned(paths) {
+  return paths.map((path) => `${path}?v=test-version`);
+}
+
 describe("app boot", () => {
   const source = readFileSync(
     new URL("./app_boot.js", import.meta.url),
@@ -61,60 +68,68 @@ describe("app boot", () => {
     const { ctx, links, scripts } = context();
     vm.runInContext(source, ctx);
     equal(ctx.document.documentElement.dataset.herdrLayout, "desktop");
-    equal(links[0].href, "/assets/desktop/app.css");
-    equal(links[1].href, "/assets/desktop/git-ui.css");
-    equal(links[2].href, "/assets/desktop/file-browser.css");
-    equal(links[3].href, "/assets/desktop/shortcuts.css");
-    equal(links[4].href, "/assets/desktop/search.css");
-    equal(links[5].href, "/assets/shared/colors.css");
-    equal(links[6].href, "/assets/shared/file-icons.css");
-    equal(links[7].href, "/assets/shared/file-widgets.css");
-    equal(links[8].href, "/assets/shared/content-search.css");
-    equal(scripts[0].src, "/assets/shared/core.js");
-    equal(scripts[1].src, "/assets/shared/actions.js");
-    equal(scripts[2].src, "/assets/shared/file-icons.js");
-    equal(scripts[3].src, "/assets/shared/file-tree.js");
-    equal(scripts[4].src, "/assets/shared/line-context.js");
-    equal(scripts[5].src, "/assets/shared/file-content-search.js");
-    equal(scripts[6].src, "/assets/shared/workspace-search.js");
-    equal(scripts[7].src, "/assets/vendor/codemirror.js");
-    equal(scripts[8].src, "/assets/shared/editor.js");
-    equal(scripts[9].src, "/assets/shared/terminal-scroll.js");
-    equal(scripts[10].src, "/assets/shared/terminal-fit.js");
-    equal(scripts[11].src, "/assets/shared/temp-terminal.js");
-    equal(scripts[12].src, "/assets/desktop/search.js");
-    equal(scripts[13].src, "/assets/desktop/directory-picker.js");
-    equal(scripts[14].src, "/assets/desktop/app.js");
+    equal(links.map((link) => link.href).join("\n"), versioned([
+      "/assets/desktop/app.css",
+      "/assets/desktop/git-ui.css",
+      "/assets/desktop/file-browser.css",
+      "/assets/desktop/shortcuts.css",
+      "/assets/desktop/search.css",
+      "/assets/shared/colors.css",
+      "/assets/shared/file-icons.css",
+      "/assets/shared/file-widgets.css",
+      "/assets/shared/content-search.css",
+    ]).join("\n"));
+    equal(scripts.map((script) => script.src).join("\n"), versioned([
+      "/assets/shared/core.js",
+      "/assets/shared/actions.js",
+      "/assets/shared/file-icons.js",
+      "/assets/shared/file-tree.js",
+      "/assets/shared/line-context.js",
+      "/assets/shared/file-content-search.js",
+      "/assets/shared/workspace-search.js",
+      "/assets/vendor/codemirror.js",
+      "/assets/shared/editor.js",
+      "/assets/shared/terminal-scroll.js",
+      "/assets/shared/terminal-fit.js",
+      "/assets/shared/temp-terminal.js",
+      "/assets/desktop/search.js",
+      "/assets/desktop/directory-picker.js",
+      "/assets/desktop/app.js",
+    ]).join("\n"));
   });
 
   it("loads mobile bundle for narrow screens", () => {
     const { ctx, links, scripts } = context({ mobile: true });
     vm.runInContext(source, ctx);
     equal(ctx.document.documentElement.dataset.herdrLayout, "mobile");
-    equal(links[0].href, "/assets/mobile/app.css");
-    equal(links[1].href, "/assets/shared/colors.css");
-    equal(links[2].href, "/assets/shared/file-icons.css");
-    equal(links[3].href, "/assets/shared/file-widgets.css");
-    equal(links[4].href, "/assets/shared/content-search.css");
-    equal(scripts[0].src, "/assets/shared/core.js");
-    equal(scripts[1].src, "/assets/shared/actions.js");
-    equal(scripts[2].src, "/assets/shared/file-icons.js");
-    equal(scripts[3].src, "/assets/shared/file-tree.js");
-    equal(scripts[4].src, "/assets/shared/line-context.js");
-    equal(scripts[5].src, "/assets/shared/file-content-search.js");
-    equal(scripts[6].src, "/assets/shared/workspace-search.js");
-    equal(scripts[7].src, "/assets/vendor/codemirror.js");
-    equal(scripts[8].src, "/assets/shared/editor.js");
-    equal(scripts[9].src, "/assets/shared/terminal-scroll.js");
-    equal(scripts[10].src, "/assets/shared/terminal-fit.js");
-    equal(scripts[11].src, "/assets/shared/temp-terminal.js");
-    equal(scripts[12].src, "/assets/mobile/core.js");
-    equal(scripts[13].src, "/assets/mobile/attention.js");
-    equal(scripts[14].src, "/assets/mobile/terminal.js");
-    equal(scripts[15].src, "/assets/mobile/worktrees.js");
-    equal(scripts[16].src, "/assets/mobile/file-browser.js");
-    equal(scripts[17].src, "/assets/mobile/settings.js");
-    equal(scripts[18].src, "/assets/mobile/app.js");
+    equal(links.map((link) => link.href).join("\n"), versioned([
+      "/assets/mobile/app.css",
+      "/assets/shared/colors.css",
+      "/assets/shared/file-icons.css",
+      "/assets/shared/file-widgets.css",
+      "/assets/shared/content-search.css",
+    ]).join("\n"));
+    equal(scripts.map((script) => script.src).join("\n"), versioned([
+      "/assets/shared/core.js",
+      "/assets/shared/actions.js",
+      "/assets/shared/file-icons.js",
+      "/assets/shared/file-tree.js",
+      "/assets/shared/line-context.js",
+      "/assets/shared/file-content-search.js",
+      "/assets/shared/workspace-search.js",
+      "/assets/vendor/codemirror.js",
+      "/assets/shared/editor.js",
+      "/assets/shared/terminal-scroll.js",
+      "/assets/shared/terminal-fit.js",
+      "/assets/shared/temp-terminal.js",
+      "/assets/mobile/core.js",
+      "/assets/mobile/attention.js",
+      "/assets/mobile/terminal.js",
+      "/assets/mobile/worktrees.js",
+      "/assets/mobile/file-browser.js",
+      "/assets/mobile/settings.js",
+      "/assets/mobile/app.js",
+    ]).join("\n"));
   });
 
   it("honors explicit desktop override", () => {
@@ -124,8 +139,8 @@ describe("app boot", () => {
     });
     vm.runInContext(source, ctx);
     equal(ctx.document.documentElement.dataset.herdrLayout, "desktop");
-    equal(links[0].href, "/assets/desktop/app.css");
-    equal(scripts[0].src, "/assets/shared/core.js");
+    equal(links[0].href, "/assets/desktop/app.css?v=test-version");
+    equal(scripts[0].src, "/assets/shared/core.js?v=test-version");
   });
 
   it("reloads to switch layout when auto viewport crosses breakpoint", () => {
