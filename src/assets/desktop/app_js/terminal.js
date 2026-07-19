@@ -599,7 +599,6 @@ async function copySelection() {
     document.execCommand("copy");
     area.remove();
   }
-  hideClipboardMenu();
   return true;
 }
 async function pasteClipboard() {
@@ -610,7 +609,6 @@ async function pasteClipboard() {
     text = prompt("Paste text") || "";
   }
   if (text) sendPasteToTerminal(text);
-  hideClipboardMenu();
 }
 function sendInputData(data, options = {}) {
   if (!termWs || termWs.readyState !== 1 || !data) return;
@@ -753,17 +751,6 @@ function hideTerminalPasteProgress() {
   }
   const progress = el("terminalPasteProgress");
   if (progress) progress.hidden = true;
-}
-function showClipboardMenu(x, y) {
-  const menu = el("clipboardMenu");
-  if (!menu) return;
-  menu.style.left = x + "px";
-  menu.style.top = y + "px";
-  menu.style.display = "block";
-}
-function hideClipboardMenu() {
-  const menu = el("clipboardMenu");
-  if (menu) menu.style.display = "none";
 }
 function fitTerminalSurface() {
   const cols = state.termCols || 100,

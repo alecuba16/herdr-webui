@@ -414,9 +414,6 @@ function showTerminalShellMode() {
       if (typeof fitTerminalSurface === "function") fitTerminalSurface();
     });
 }
-function workspaceShellMinimize() {
-  showTerminalShellMode();
-}
 const headTitle = document.querySelector(".head strong");
 if (headTitle) {
   const brand = document.createElement("div");

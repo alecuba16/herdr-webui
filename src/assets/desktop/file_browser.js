@@ -401,10 +401,6 @@
     return currentFileFor(state);
   }
 
-  function currentFilePath() {
-    return currentFilePathFor(state);
-  }
-
   function syncContentSearchOptions(target = state) {
     const opts = contentSearchOptions();
     target.contentSearch.minChars = opts.minChars;

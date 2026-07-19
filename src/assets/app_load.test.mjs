@@ -2055,6 +2055,17 @@ describe("app bundle load", () => {
     match(source, /id="optShowTabActivity"/);
     match(source, /tab-activity/);
     match(source, /tabActivityLabel/);
+    const html = vm.runInContext(
+      `options.showTabActivity = true;
+       state.ws = "ws1";
+       state.tab = "tab1";
+       state.tabs = [{ workspace_id: "ws1", tab_id: "tab1", label: "main" }];
+       tabActivity[tabActivityKey("ws1", "tab1")] = { signature: "x", updatedAt: Date.now() - 65_000 };
+       renderPanelField();`,
+      ctx,
+    );
+    match(html, /tab-activity/);
+    match(html, /1m ago/);
   });
 
   it("renders current panel as label with add and close buttons", () => {
