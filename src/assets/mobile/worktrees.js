@@ -10,6 +10,7 @@
       selectionPath,
       state,
       defaultFolderFn,
+      pathBasename,
     } = deps;
 
     function renderScreen() {
@@ -34,14 +35,6 @@
       const value =
         row.source_repo_name || row.repo_name || row.source_repo_root || "";
       return pathBasename(value) || value || "repo";
-    }
-
-    function pathBasename(path) {
-      const parts = String(path || "")
-        .replace(/\/+$/, "")
-        .split("/")
-        .filter(Boolean);
-      return parts.length ? parts[parts.length - 1] : "";
     }
 
     function explorationDefaultDirectoryOption() {
