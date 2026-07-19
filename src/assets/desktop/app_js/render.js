@@ -46,6 +46,7 @@ function render() {
     lastAgentsHtml = agentsHtml;
   }
   applySidebarCollapsed();
+  syncWorkspaceDock();
   syncGitWorkspaceToggle();
   syncFileWorkspaceToggle();
   const themeHead = el("themeToggleHead");
@@ -338,6 +339,69 @@ function renderWorkspaceCard(w, extraClass) {
   if (selected)
     return `<div class="item active ${extraClass || ""}" data-workspace-id="${escapeAttr(w.workspace_id)}"${drag} ondblclick="event.preventDefault();event.stopPropagation();startWorkspaceRename('${w.workspace_id}','${escapeAttr(w.label)}')">${body}</div>`;
   return `<a class="item ${extraClass || ""}" data-workspace-id="${escapeAttr(w.workspace_id)}" href="${escapeAttr(selectionPath(w.workspace_id))}" target="herdr-selection"${drag} onclick="if(state.editingWorkspace){event.preventDefault();return false}return navigateSelection(event,'${w.workspace_id}')" ondblclick="event.preventDefault();event.stopPropagation();startWorkspaceRename('${w.workspace_id}','${escapeAttr(w.label)}')">${body}</a>`;
+}
+
+function syncWorkspaceDock() {
+  const dock = el("workspaceDock");
+  if (!dock) return;
+  const visible = !!(sidebarCollapsed && state.workspaces && state.workspaces.length);
+  dock.hidden = !visible;
+  if (!visible) {
+    if (lastWorkspaceDockHtml) {
+      dock.innerHTML = "";
+      lastWorkspaceDockHtml = "";
+    }
+    return;
+  }
+  const html = renderWorkspaceDock();
+  if (html !== lastWorkspaceDockHtml) {
+    dock.innerHTML = html;
+    lastWorkspaceDockHtml = html;
+  }
+}
+function renderWorkspaceDock() {
+  const ordered = state.workspaces.slice();
+  const selectedIndex = ordered.findIndex((w) => w.workspace_id === state.ws);
+  if (selectedIndex > 0) ordered.unshift(ordered.splice(selectedIndex, 1)[0]);
+  return ordered.map(renderWorkspaceDockBubble).join("");
+}
+function renderWorkspaceDockBubble(w) {
+  const selected = w.workspace_id === state.ws;
+  const title = workspaceDisplayTitle(w);
+  const status = statusClass(w.agent_status);
+  const badges = workspaceDockBadges(w);
+  const tooltip = workspaceDockTooltip(w, badges);
+  const classes = ["workspace-dock-bubble", selected ? "active" : "", status].filter(Boolean).join(" ");
+  const encodedId = encodeURIComponent(w.workspace_id);
+  return `<a class="${classes}" href="${escapeAttr(selectionPath(w.workspace_id))}" target="herdr-selection" title="${escapeAttr(tooltip)}" aria-label="${escapeAttr(`Switch to ${title}`)}" onclick="return navigateSelection(event,decodeURIComponent('${encodedId}'))"><span class="workspace-dock-dot">${statusDot(w.agent_status)}</span><span class="workspace-dock-title">${escapeHtml(title)}</span><span class="workspace-dock-badges">${badges.map((badge) => `<span class="workspace-dock-badge ${badge.kind}">${escapeHtml(badge.label)}</span>`).join("")}</span></a>`;
+}
+function workspaceDockBadges(w) {
+  const fileCount = workspaceOpenFileCount(w);
+  const panelCount = workspacePanelCount(w);
+  const branch = workspaceBranch(w);
+  const gitLabel = branch || (isLinkedWorktree(w) ? "worktree" : "folder");
+  return [
+    { kind: "files", label: `${fileCount}f`, title: `${fileCount} open file${fileCount === 1 ? "" : "s"}` },
+    { kind: "panels", label: `${panelCount}p`, title: `${panelCount} panel${panelCount === 1 ? "" : "s"}` },
+    { kind: branch ? "branch" : isLinkedWorktree(w) ? "worktree" : "folder", label: gitLabel, title: branch ? `Git branch ${branch}` : isLinkedWorktree(w) ? "Linked worktree" : "Workspace folder" },
+  ];
+}
+function workspaceOpenFileCount(w) {
+  try {
+    if (window.HerdrFileBrowser && window.HerdrFileBrowser.openFileCount)
+      return Math.max(0, Number(window.HerdrFileBrowser.openFileCount(w)) || 0);
+  } catch (_) {}
+  return 0;
+}
+function workspacePanelCount(w) {
+  const explicit = Number(w && w.tab_count);
+  if (Number.isFinite(explicit) && explicit >= 0) return explicit;
+  return (state.allTabs || state.tabs || []).filter((tab) => tab.workspace_id === w.workspace_id).length;
+}
+function workspaceDockTooltip(w, badges) {
+  const path = workspacePath(w);
+  const meta = badges.map((badge) => badge.title).join(" · ");
+  return [workspaceDisplayTitle(w), meta, path].filter(Boolean).join("\n");
 }
 
 function syncGitWorkspaceToggle() {

@@ -62,6 +62,7 @@ let term,
   terminalFramePending = false,
   resizeFramePending = false,
   lastWorkspacesHtml = "",
+  lastWorkspaceDockHtml = "",
   lastAgentsHtml = "",
   lastTabsHtml = "",
   tabActivity = {},
@@ -168,6 +169,7 @@ if (sidebarToggle)
     sidebarCollapsed = !sidebarCollapsed;
     storeFlag(SIDEBAR_COLLAPSED_KEY, sidebarCollapsed);
     applySidebarCollapsed();
+    if (typeof syncWorkspaceDock === "function") syncWorkspaceDock();
     syncShortcutTooltips();
     scheduleTerminalFit();
   };
@@ -465,6 +467,7 @@ if (sectionEl && !el("workspacePane")) {
     document.querySelector(".side").appendChild(versionsEl);
   }
 }
+insertMissingHtml("workspaceDock", '<nav class="workspace-dock" id="workspaceDock" aria-label="Minimized workspaces" hidden></nav>');
 insertMissingHtml("worktreeCreateModal", worktreeCreateModalHtml());
 insertMissingHtml("worktreeOpenModal", worktreeOpenModalHtml());
 insertMissingHtml("workspaceCreateModal", workspaceCreateModalHtml());
