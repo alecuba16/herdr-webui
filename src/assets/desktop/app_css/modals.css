@@ -119,30 +119,6 @@
   background: var(--control-hover);
   border-color: var(--accent-border);
 }
-.context-menu {
-  position: fixed;
-  z-index: 1000;
-  display: none;
-  background: var(--panel);
-  border: 1px solid var(--border2);
-  border-radius: 8px;
-  box-shadow: 0 8px 24px #0006;
-  padding: 4px;
-}
-.context-menu button {
-  display: block;
-  width: 120px;
-  text-align: left;
-  background: transparent;
-  color: var(--fg);
-  border: 0;
-  padding: 7px 9px;
-  border-radius: 6px;
-}
-.context-menu button:hover {
-  background: var(--border);
-}
-
 /* Ephemeral temporary terminal overlay */
 .temp-terminal-backdrop {
   position: fixed;

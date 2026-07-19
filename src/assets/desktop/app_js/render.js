@@ -171,26 +171,6 @@ function updateTabActivity() {
       delete tabActivity[key];
   }
 }
-function tabHoverInfo(t, panesByTab) {
-  const panes = panesByTab.get(t.tab_id) || [];
-  const pane = panes.find((p) => p.pane_id === state.pane) || panes[0];
-  if (!pane) return tabTitle(t);
-  const size =
-    t.tab_id === state.tab && state.termCols && state.termRows
-      ? ` · ${state.termCols}x${state.termRows}`
-      : "";
-  return `${tabTitle(t)} · ${pane.pane_id} · ${pane.terminal_id}${size}`;
-}
-function renderTabButton(t, panesByTab) {
-  if (state.editingTab === t.tab_id)
-    return `<span class="tab ${t.tab_id === state.tab ? "active" : ""}"><input class="tab-rename-input" value="${escapeAttr(state.editingTabValue)}" onmousedown="event.stopPropagation()" onclick="event.stopPropagation()" onblur="commitTabRename('${t.tab_id}')" oninput="state.editingTabValue=this.value" onkeydown="tabRenameKey(event,'${t.tab_id}')"></span>`;
-  const activity = tabActivity[tabActivityKey(t.workspace_id, t.tab_id)],
-    activityLabel =
-      options.showTabActivity && activity
-        ? tabActivityLabel(activity.updatedAt, Date.now())
-        : "";
-  return `<a class="tab ${t.tab_id === state.tab ? "active" : ""}" title="${escapeAttr(tabHoverInfo(t, panesByTab))}" href="${escapeAttr(selectionPath(t.workspace_id, t.tab_id))}" target="herdr-selection" onclick="return navigateSelection(event,'${t.workspace_id}','${t.tab_id}')" ondblclick="event.preventDefault();event.stopPropagation();startTabRename('${t.tab_id}','${escapeAttr(tabTitle(t))}')"><span class="tab-label">${escapeHtml(tabTitle(t))}</span>${activityLabel ? `<span class="tab-activity">${escapeHtml(activityLabel)}</span>` : ""}<span class="tab-actions"><span class="mini warn" title="Close panel" onclick="event.preventDefault();event.stopPropagation();closeTab('${t.tab_id}')">✕</span></span></a>`;
-}
 function renderSpaces() {
   const groups = new Map(),
     usedParents = new Set(),
@@ -260,13 +240,6 @@ function selectedWorkspaceRepoPath() {
   if (!w) return "";
   if (w.worktree && w.worktree.repo_root) return w.worktree.repo_root;
   return workspacePath(w) || "";
-}
-function worktreeRowsForKey(key) {
-  if (!key) return [];
-  return state.worktrees.filter((w) => worktreeRowGroupKey(w) === key);
-}
-function selectedWorkspaceWorktreeKey(w = selectedWorkspace()) {
-  return worktreeGroupKey(w);
 }
 function renderWorkspaceContextActions() {
   return "";
@@ -461,20 +434,6 @@ function runWorkspaceContextAction(action, button) {
   else if (action === "open-worktrees") openWorktreesForWorkspace(w, button.dataset.key || "");
   else if (action === "close") closeWorkspace(w.workspace_id);
   else if (action === "remove-worktree") removeWorktree(w.workspace_id);
-}
-async function renameCurrentPanel() {
-  const tab = state.allTabs.concat(state.tabs).find((t) => t.tab_id === state.tab);
-  if (!tab) return;
-  const label = prompt("Rename panel", tabTitle(tab));
-  if (label === null) return;
-  const trimmed = String(label || "").trim();
-  if (!trimmed) return;
-  await api(`/api/tabs/${encodeURIComponent(tab.tab_id)}/rename`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ label: trimmed }),
-  });
-  refresh();
 }
 function workspaceDisplayTitle(w) {
   if (!isLinkedWorktree(w)) return w.label;

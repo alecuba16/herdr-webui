@@ -569,12 +569,6 @@ function editableEventTarget(e) {
     (t.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName))
   );
 }
-el("copyMenu").onclick = copySelection;
-el("pasteMenu").onclick = pasteClipboard;
-document.addEventListener("click", (e) => {
-  const menu = el("clipboardMenu");
-  if (menu && !menu.contains(e.target)) hideClipboardMenu();
-});
 window.addEventListener("keydown", closeShortcutKeydown, true);
 window.addEventListener("keydown", handleGlobalShortcut, true);
 document.addEventListener("keydown", (e) => {
