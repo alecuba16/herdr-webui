@@ -314,6 +314,56 @@
   background: var(--accent-1);
   color: var(--accent-fg);
 }
+.shell-floating-stack {
+  align-items: flex-end;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 22px);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: min(380px, calc(100vw - 56px));
+  position: fixed;
+  right: calc(env(safe-area-inset-right, 0px) + 18px);
+  z-index: 1099;
+}
+.shell-floating-toggle {
+  align-items: center;
+  backdrop-filter: blur(10px);
+  background: color-mix(in srgb, var(--panel), transparent 5%);
+  border: 1px solid var(--border2);
+  border-radius: 999px;
+  box-shadow: 0 12px 34px #0007;
+  color: var(--fg);
+  cursor: pointer;
+  display: flex;
+  gap: 8px;
+  max-width: 100%;
+  min-height: 40px;
+  padding: 8px 12px;
+  transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
+}
+.shell-floating-toggle:hover,
+.shell-floating-toggle:focus-visible {
+  background: var(--control-hover);
+  border-color: var(--accent);
+  outline: none;
+  transform: translateY(-1px);
+}
+.shell-floating-icon {
+  color: var(--accent);
+  display: inline-flex;
+}
+.shell-floating-label {
+  font-weight: 800;
+  white-space: nowrap;
+}
+.shell-floating-detail {
+  color: var(--muted);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .head > .shell-action:hover,
 .head .no-sleep-control:hover,
 .head > .shell-action:focus,

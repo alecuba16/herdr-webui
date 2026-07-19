@@ -679,7 +679,14 @@ describe("app bundle load", () => {
     match(readFileSync(new URL("./desktop/app_js/render.js", import.meta.url), "utf8"), /HerdrGitUi\.open\(workspace, options \|\| \{\}\)/);
     match(readFileSync(new URL("./desktop/app_js/render.js", import.meta.url), "utf8"), /HerdrFileBrowser\.open\(workspace, options \|\| \{\}\)/);
     match(gitUiSource, /state\.visible && state\.activeKey === key && !openOptions\.forceOpen/);
-    match(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), /state\.open && activeKey === key && !openOptions\.forceOpen/);
+    match(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), /state\.open && !state\.hidden && activeKey === key && !openOptions\.forceOpen/);
+    match(source, /function syncShellFloatingStack\(show\)/);
+    match(source, /fileSummary\.count > 0/);
+    match(fileBrowserSource, /function openFileSummary\(workspace, limit\)/);
+    match(fileBrowserSource, /function isWorkspaceHidden\(workspace\)/);
+    match(source, /openFileSummary\(fileWorkspace, 3\)/);
+    match(readFileSync(new URL("./desktop/app_css/chrome.css", import.meta.url), "utf8"), /\.shell-floating-stack \{/);
+    match(readFileSync(new URL("./desktop/app_css/chrome.css", import.meta.url), "utf8"), /\.shell-floating-detail \{/);
   });
 
   it("moves the diff layout toggle to the bottom of the Git side rail", () => {
