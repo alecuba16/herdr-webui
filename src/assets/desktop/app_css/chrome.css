@@ -363,6 +363,29 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.shell-floating-status {
+  border-radius: 999px;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--panel), transparent 45%);
+  flex: none;
+  height: 9px;
+  width: 9px;
+}
+.shell-floating-status.working {
+  background: #f5c542;
+}
+.shell-floating-status.blocked {
+  background: #ef4444;
+}
+.shell-floating-status.idle {
+  background: #22c55e;
+}
+.shell-floating-status.done {
+  background: #60a5fa;
+}
+.shell-floating-status.unknown {
+  background: var(--muted);
+}
+
 
 .head > .shell-action:hover,
 .head .no-sleep-control:hover,
