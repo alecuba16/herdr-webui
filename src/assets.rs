@@ -512,7 +512,9 @@ pub(crate) async fn icon_refresh_svg() -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::header;
+    use axum::body::{to_bytes, Body};
+    use axum::http::{header, Method, Request, StatusCode};
+    use tower::ServiceExt;
 
     fn content_type(response: &Response) -> &str {
         response
@@ -522,6 +524,110 @@ mod tests {
             .unwrap_or("")
     }
 
+    async fn request_static_asset(app: Router, path: &str) -> Response {
+        app.oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(path)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn static_asset_routes_serve_embedded_content() {
+        let app: Router = static_asset_routes();
+        let assets = [
+            ("/assets/xterm.js", "javascript", 1000usize),
+            ("/assets/xterm.css", "text/css", 100usize),
+            (
+                "/assets/fonts/JetBrainsMonoNerdFontMono-Regular.ttf",
+                "font/ttf",
+                2 * 1024 * 1024,
+            ),
+            ("/assets/app-boot.js", "javascript", 100usize),
+            ("/assets/shared/core.js", "javascript", 100usize),
+            ("/assets/shared/actions.js", "javascript", 100usize),
+            ("/assets/shared/file-icons.js", "javascript", 100usize),
+            ("/assets/shared/file-icons.css", "text/css", 100usize),
+            ("/assets/shared/colors.css", "text/css", 100usize),
+            ("/assets/shared/file-widgets.css", "text/css", 100usize),
+            ("/assets/shared/content-search.css", "text/css", 100usize),
+            ("/assets/shared/file-tree.js", "javascript", 100usize),
+            (
+                "/assets/shared/file-content-search.js",
+                "javascript",
+                100usize,
+            ),
+            ("/assets/shared/line-context.js", "javascript", 100usize),
+            ("/assets/shared/workspace-search.js", "javascript", 100usize),
+            ("/assets/shared/editor.js", "javascript", 100usize),
+            ("/assets/shared/terminal-scroll.js", "javascript", 100usize),
+            ("/assets/shared/terminal-fit.js", "javascript", 100usize),
+            ("/assets/shared/temp-terminal.js", "javascript", 1000usize),
+            ("/assets/vendor/codemirror.js", "javascript", 1000usize),
+            ("/assets/desktop/app.js", "javascript", 1000usize),
+            ("/assets/desktop/git-ui.js", "javascript", 1000usize),
+            ("/assets/desktop/file-browser.js", "javascript", 1000usize),
+            (
+                "/assets/desktop/directory-picker.js",
+                "javascript",
+                100usize,
+            ),
+            ("/assets/desktop/search.js", "javascript", 100usize),
+            ("/assets/desktop/app.css", "text/css", 1000usize),
+            ("/assets/desktop/git-ui.css", "text/css", 1000usize),
+            ("/assets/desktop/file-browser.css", "text/css", 100usize),
+            ("/assets/desktop/search.css", "text/css", 100usize),
+            ("/assets/desktop/shortcuts.css", "text/css", 100usize),
+            ("/assets/login.css", "text/css", 100usize),
+            ("/assets/login.js", "javascript", 100usize),
+            ("/assets/mobile/app.js", "javascript", 1000usize),
+            ("/assets/mobile/core.js", "javascript", 1000usize),
+            ("/assets/mobile/attention.js", "javascript", 1000usize),
+            ("/assets/mobile/terminal.js", "javascript", 1000usize),
+            ("/assets/mobile/worktrees.js", "javascript", 1000usize),
+            ("/assets/mobile/settings.js", "javascript", 100usize),
+            ("/assets/mobile/file-browser.js", "javascript", 1000usize),
+            ("/assets/mobile/app.css", "text/css", 1000usize),
+            ("/assets/icons/help.svg", "image/svg+xml", 100usize),
+            ("/assets/icons/settings.svg", "image/svg+xml", 100usize),
+            ("/assets/icons/theme-auto.svg", "image/svg+xml", 100usize),
+            ("/assets/icons/git.svg", "image/svg+xml", 100usize),
+            ("/assets/icons/terminal.svg", "image/svg+xml", 100usize),
+            ("/assets/icons/chevron-right.svg", "image/svg+xml", 100usize),
+            ("/assets/icons/chevron-down.svg", "image/svg+xml", 100usize),
+            ("/assets/icons/folder.svg", "image/svg+xml", 100usize),
+            ("/assets/icons/folder-up.svg", "image/svg+xml", 100usize),
+            ("/assets/icons/file.svg", "image/svg+xml", 100usize),
+            ("/assets/icons/trash.svg", "image/svg+xml", 100usize),
+            ("/assets/icons/search.svg", "image/svg+xml", 100usize),
+            ("/assets/icons/refresh.svg", "image/svg+xml", 100usize),
+            ("/favicon.svg", "image/svg+xml", 100usize),
+            ("/favicon-attention.svg", "image/svg+xml", 100usize),
+            ("/favicon-error.svg", "image/svg+xml", 100usize),
+        ];
+
+        for (path, expected_content_type, minimum_bytes) in assets {
+            let response = request_static_asset(app.clone(), path).await;
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            assert!(
+                content_type(&response).contains(expected_content_type),
+                "{path} content type was {}",
+                content_type(&response)
+            );
+            let body = to_bytes(response.into_body(), 8 * 1024 * 1024)
+                .await
+                .unwrap();
+            assert!(
+                body.len() > minimum_bytes,
+                "{path} body length {} <= {minimum_bytes}",
+                body.len()
+            );
+        }
+    }
     #[tokio::test]
     async fn serves_remaining_static_text_assets_with_content_types() {
         let javascript = "application/javascript; charset=utf-8";
