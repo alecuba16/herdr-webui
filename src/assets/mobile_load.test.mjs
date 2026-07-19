@@ -354,6 +354,24 @@ describe("mobile bundle load", () => {
     ok(source.includes("HerdrMobileSearch.openAction"));
   });
 
+
+  it("defines expandable mobile selector rail for Cmd Files Git parity", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+
+    ctx.HerdrMobile.toggleSelectorRail(true);
+    const rail = ctx.document.getElementById("mobileSelectorRail");
+    equal(rail.hidden, false);
+    ok(rail.innerHTML.includes("Cmd"));
+    ok(rail.innerHTML.includes("Files"));
+    ok(rail.innerHTML.includes("Git"));
+    ok(rail.innerHTML.includes("mobile-selector-status"));
+    match(source, /function mobileGitSummary\(\)/);
+    match(source, /function mobileTerminalSummary\(\)/);
+    match(readFileSync(new URL("./mobile/app.css", import.meta.url), "utf8"), /\.mobile-selector-rail \{/);
+  });
+
   it("filters mobile action search results at runtime", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
