@@ -2679,7 +2679,11 @@ fn list_git_branches(
             .output()
             .map_err(|err| err.to_string())?;
         if !output.status.success() {
-            return Err(git_failure(output, "git fetch"));
+            let failure = git_failure(output, "git fetch");
+            if is_not_git_repository_error(&failure) {
+                return Ok(Vec::new());
+            }
+            return Err(failure);
         }
     }
     let mut refs = vec!["refs/heads"];
@@ -2694,7 +2698,11 @@ fn list_git_branches(
         .output()
         .map_err(|err| err.to_string())?;
     if !output.status.success() {
-        return Err(git_failure(output, "git for-each-ref"));
+        let failure = git_failure(output, "git for-each-ref");
+        if is_not_git_repository_error(&failure) {
+            return Ok(Vec::new());
+        }
+        return Err(failure);
     }
     let mut branches = String::from_utf8_lossy(&output.stdout)
         .lines()
@@ -2705,6 +2713,10 @@ fn list_git_branches(
     branches.sort();
     branches.dedup();
     Ok(branches)
+}
+
+fn is_not_git_repository_error(message: &str) -> bool {
+    message.contains("not a git repository")
 }
 
 async fn git_branches(
@@ -5122,5 +5134,26 @@ mod tests {
         assert!(!remote.contains(&"origin/HEAD".to_string()));
 
         fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[test]
+    fn list_git_branches_returns_empty_for_non_git_directory() {
+        let dir = std::env::temp_dir().join(format!(
+            "herdr-webui-nongit-branches-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        assert_eq!(
+            list_git_branches(dir.to_str().unwrap(), false, false).unwrap(),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            list_git_branches(dir.to_str().unwrap(), true, true).unwrap(),
+            Vec::<String>::new()
+        );
+
+        fs::remove_dir_all(dir).unwrap();
     }
 }

@@ -792,6 +792,7 @@
     saveSideEditorFromDom();
     state.visible = false;
     showPanel(false);
+    syncShellModeButtonsIfAvailable();
   }
 
   function close() {
@@ -801,6 +802,12 @@
     state.open = false;
     state.visible = false;
     showPanel(false);
+    syncShellModeButtonsIfAvailable();
+  }
+
+  function syncShellModeButtonsIfAvailable() {
+    if (typeof window.syncShellModeButtons === "function") window.syncShellModeButtons();
+    else if (typeof syncShellModeButtons === "function") syncShellModeButtons();
   }
 
   async function refresh() {
