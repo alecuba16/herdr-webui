@@ -1,5 +1,16 @@
 # Release notes
 
+## 0.2.68 Release Notes
+
+### Floating workspace selectors and mobile parity
+
+- Adds desktop floating selector pills for minimized Cmd, Git, and Files surfaces so workspace/worktree context stays visible while switching drawers.
+- Shows Git activity in the floating Git pill with `+N -N` diff counts when loaded, or a changed-file fallback when only status is available.
+- Shows the current Cmd terminal/panel plus a colored working/idle/blocked/done status dot while the terminal is behind Git or Files.
+- Keeps open file count and names visible in the Files pill when the file drawer is hidden.
+- Adds mobile parity through an expandable bottom selector rail from More, with Cmd, Files, Git, and More pills plus compact status metadata.
+- Keeps the UX lightweight: state is read from existing cached frontend models, no new polling is introduced, and mobile does not fetch broad diffs just to fill selector metadata.
+
 ## 0.2.61 Release Notes
 
 ### Frontend parity and hot path efficiency
