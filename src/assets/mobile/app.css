@@ -1178,9 +1178,6 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
   flex-wrap: wrap;
   gap: 8px;
 }
-.herdr-content-search-head .file-browser-filter {
-  flex: 1 1 180px;
-}
 .herdr-content-search-file {
   border: 1px solid var(--border);
   border-radius: 14px;
@@ -1198,11 +1195,6 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
   text-align: left;
   width: 100%;
 }
-.herdr-content-search-file-head strong {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .herdr-content-search-file-actions,
 .herdr-content-search-matches {
   border-top: 1px solid var(--border);
@@ -1210,28 +1202,11 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
   gap: 8px;
   padding: 8px;
 }
-.herdr-content-search-preview {
-  background: var(--herdr-content-panel-bg);
-  font: 12px/1.5 var(--mono-font);
-  overflow: auto;
-  padding: 8px 0;
-}
-.herdr-content-search-line {
-  display: grid;
-  grid-template-columns: 24px 4ch minmax(0, 1fr);
-  min-width: max-content;
-}
-.herdr-content-search-context-cell {
-  align-items: center;
-  display: flex;
-  justify-content: center;
-}
 .herdr-content-search-line span {
   color: var(--muted);
   padding: 0 8px;
   text-align: right;
 }
-.herdr-content-search-line code { white-space: pre; }
 
 .mobile-search-sheet {
   background: color-mix(in srgb, var(--bg), transparent 12%);

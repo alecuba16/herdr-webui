@@ -652,9 +652,6 @@
   flex-wrap: wrap;
   gap: 6px;
 }
-.herdr-content-search-head .file-browser-filter {
-  flex: 1 1 180px;
-}
 .herdr-content-search-tools {
   color: var(--muted);
   font-size: 12px;
@@ -679,11 +676,6 @@
   text-align: left;
   width: 100%;
 }
-.herdr-content-search-file-head strong {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .herdr-content-search-file-head span:last-child {
   color: var(--muted);
   font-size: 11px;
@@ -700,22 +692,6 @@
 .herdr-content-search-actions {
   grid-column: 1 / -1;
 }
-.herdr-content-search-preview {
-  background: var(--herdr-content-panel-bg);
-  font: 12px/1.5 var(--mono-font);
-  overflow: auto;
-  padding: 8px 0;
-}
-.herdr-content-search-line {
-  display: grid;
-  grid-template-columns: 24px 4ch minmax(0, 1fr);
-  min-width: max-content;
-}
-.herdr-content-search-context-cell {
-  align-items: center;
-  display: flex;
-  justify-content: center;
-}
 .herdr-content-search-line span {
   color: var(--muted);
   padding: 0 8px;
@@ -725,7 +701,6 @@
 .herdr-content-search-line code {
   color: var(--fg);
   padding-right: 8px;
-  white-space: pre;
 }
 .herdr-content-search-editor .herdr-editor-mount,
 .herdr-content-search-editor .herdr-editor-loading {
