@@ -216,9 +216,11 @@ mod tests {
 
     #[test]
     fn auto_no_sleep_turns_off_after_idle_cooldown() {
-        let mut state = NoSleepState::default();
-        state.mode = "auto".to_string();
-        state.auto_idle_since_ms = Some(unix_ms_now().saturating_sub(1000));
+        let mut state = NoSleepState {
+            mode: "auto".to_string(),
+            auto_idle_since_ms: Some(unix_ms_now().saturating_sub(1000)),
+            ..NoSleepState::default()
+        };
 
         sync_auto_no_sleep(&mut state, false, 0);
 
