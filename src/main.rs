@@ -3,7 +3,7 @@ use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -25,6 +25,7 @@ mod builtin_events;
 mod compat;
 mod file_browser;
 mod git_ui;
+mod no_sleep_mode;
 mod protocol;
 mod service;
 mod terminal_text;
@@ -33,6 +34,10 @@ use assets::{app_html, login_html};
 #[cfg(test)]
 use compat::SimpleVersion;
 use compat::{backend_compatibility, BackendCompatibility};
+use no_sleep_mode::{
+    agents_working_from_value, apply_no_sleep_mode, no_sleep_ms, no_sleep_public_json,
+    sync_auto_no_sleep, unix_ms_now, NoSleepState,
+};
 use protocol::*;
 
 const DEFAULT_BIND: &str = "127.0.0.1:8787";
@@ -179,85 +184,6 @@ struct RuntimeServerSettings {
     default_folder: String,
     builtin_backend_enabled: bool,
     external_herdr_backend_enabled: bool,
-}
-
-struct NoSleepGuard {
-    child: Child,
-}
-
-impl Drop for NoSleepGuard {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-struct NoSleepState {
-    mode: String,
-    until_ms: Option<u64>,
-    error: Option<String>,
-    guard: Option<NoSleepGuard>,
-    auto_generation: u64,
-    auto_idle_since_ms: Option<u64>,
-}
-
-impl Default for NoSleepState {
-    fn default() -> Self {
-        Self {
-            mode: "off".to_string(),
-            until_ms: None,
-            error: None,
-            guard: None,
-            auto_generation: 0,
-            auto_idle_since_ms: None,
-        }
-    }
-}
-
-fn no_sleep_ms(mode: &str) -> Option<u64> {
-    match mode {
-        "off" | "auto" | "infinite" => Some(0),
-        "1h" => Some(60 * 60 * 1000),
-        "2h" => Some(2 * 60 * 60 * 1000),
-        "4h" => Some(4 * 60 * 60 * 1000),
-        _ => None,
-    }
-}
-
-fn unix_ms_now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
-}
-
-fn start_no_sleep_guard() -> io::Result<NoSleepGuard> {
-    #[cfg(target_os = "macos")]
-    let child = Command::new("caffeinate")
-        .args(["-dimsu"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?;
-    #[cfg(target_os = "linux")]
-    let child = Command::new("systemd-inhibit")
-        .args([
-            "--what=sleep:idle",
-            "--who=herdr-webui",
-            "--why=Herdr WebUI no-sleep mode",
-            "sleep",
-            "infinity",
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?;
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    return Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "no-sleep mode is only supported on macOS and Linux",
-    ));
-    Ok(NoSleepGuard { child })
 }
 
 impl WebConfig {
@@ -1612,62 +1538,6 @@ fn settings_public_json(settings: &RuntimeServerSettings) -> serde_json::Value {
     })
 }
 
-fn no_sleep_public_json(state: &NoSleepState) -> serde_json::Value {
-    json!({
-        "mode": &state.mode,
-        "until_ms": state.until_ms,
-        "error": &state.error,
-        "active": state.guard.is_some(),
-        "supported": cfg!(any(target_os = "macos", target_os = "linux")),
-    })
-}
-
-fn agents_working_from_value(value: &serde_json::Value) -> bool {
-    value
-        .pointer("/result/agents")
-        .and_then(|agents| agents.as_array())
-        .is_some_and(|agents| {
-            agents.iter().any(|agent| {
-                agent
-                    .get("agent_status")
-                    .or_else(|| agent.get("status"))
-                    .and_then(|status| status.as_str())
-                    == Some("working")
-            })
-        })
-}
-
-fn sync_auto_no_sleep(state: &mut NoSleepState, has_working_agents: bool, cooldown_seconds: u64) {
-    if state.mode != "auto" {
-        return;
-    }
-    if has_working_agents && state.guard.is_none() {
-        state.auto_idle_since_ms = None;
-        match start_no_sleep_guard() {
-            Ok(guard) => {
-                state.guard = Some(guard);
-                state.error = None;
-            }
-            Err(err) => {
-                state.error = Some(err.to_string());
-            }
-        }
-    } else if has_working_agents {
-        state.auto_idle_since_ms = None;
-        state.error = None;
-    } else {
-        let now = unix_ms_now();
-        let idle_since = *state.auto_idle_since_ms.get_or_insert(now);
-        if now.saturating_sub(idle_since) >= cooldown_seconds.saturating_mul(1000) {
-            state.guard = None;
-            state.mode = "off".to_string();
-            state.until_ms = None;
-            state.auto_idle_since_ms = None;
-            state.error = None;
-        }
-    }
-}
-
 fn sync_auto_no_sleep_from_agents(state: &WebState, agents: &serde_json::Value) {
     let cooldown = state
         .server_settings
@@ -1678,36 +1548,6 @@ fn sync_auto_no_sleep_from_agents(state: &WebState, agents: &serde_json::Value) 
         return;
     };
     sync_auto_no_sleep(&mut no_sleep, agents_working_from_value(agents), cooldown);
-}
-
-fn apply_no_sleep_mode(
-    state: &mut NoSleepState,
-    mode: String,
-    until_ms: Option<u64>,
-) -> (bool, u64) {
-    state.auto_generation = state.auto_generation.wrapping_add(1);
-    let generation = state.auto_generation;
-    state.guard = None;
-    state.mode = "off".to_string();
-    state.until_ms = None;
-    state.error = None;
-    state.auto_idle_since_ms = None;
-    if mode == "off" || mode == "auto" {
-        state.mode = mode;
-        return (false, generation);
-    }
-    match start_no_sleep_guard() {
-        Ok(guard) => {
-            state.mode = mode;
-            state.until_ms = until_ms;
-            state.guard = Some(guard);
-            (true, generation)
-        }
-        Err(err) => {
-            state.error = Some(err.to_string());
-            (false, generation)
-        }
-    }
 }
 
 async fn run_auto_no_sleep_loop(state: WebState, api: ApiClient, generation: u64) {
@@ -1729,7 +1569,7 @@ async fn run_auto_no_sleep_loop(state: WebState, api: ApiClient, generation: u64
             Err(err) => {
                 if let Ok(mut no_sleep) = state.no_sleep.lock() {
                     if no_sleep.mode == "auto" && no_sleep.auto_generation == generation {
-                        no_sleep.guard = None;
+                        no_sleep.clear_guard();
                         no_sleep.error = Some(err);
                     }
                 }
@@ -1843,7 +1683,7 @@ async fn update_no_sleep(
                 return;
             };
             if no_sleep.until_ms == Some(until_ms) {
-                no_sleep.guard = None;
+                no_sleep.clear_guard();
                 no_sleep.mode = "off".to_string();
                 no_sleep.until_ms = None;
             }
@@ -4679,17 +4519,15 @@ mod tests {
 
     #[test]
     fn auto_no_sleep_turns_off_after_idle_cooldown() {
-        let mut state = NoSleepState {
-            mode: "auto".to_string(),
-            auto_idle_since_ms: Some(unix_ms_now().saturating_sub(1000)),
-            ..NoSleepState::default()
-        };
+        let mut state = NoSleepState::default();
+        state.mode = "auto".to_string();
+        state.auto_idle_since_ms = Some(unix_ms_now().saturating_sub(1000));
 
         sync_auto_no_sleep(&mut state, false, 0);
 
         assert_eq!(state.mode, "off");
         assert_eq!(state.auto_idle_since_ms, None);
-        assert!(state.guard.is_none());
+        assert!(!state.active());
     }
 
     #[test]
