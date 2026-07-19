@@ -10,7 +10,7 @@
   }
 
   function createState(initial) {
-    return Object.assign({ open: false, cwd: "", path: "", entries: [], children: {}, expanded: {}, loading: {}, selected: "", files: [], split: false, error: "", permissionRequired: false, contextMenu: null, filter: "", filterTimer: null, filterVisible: false, filterLoading: false, filterOffset: 0, filterDone: true, filterScrollTop: 0, filterKind: "file", gitStatus: null, refreshing: false, contentSearch: createContentSearchState() }, initial || {});
+    return Object.assign({ open: false, hidden: false, cwd: "", path: "", entries: [], children: {}, expanded: {}, loading: {}, selected: "", files: [], split: false, error: "", permissionRequired: false, contextMenu: null, filter: "", filterTimer: null, filterVisible: false, filterLoading: false, filterOffset: 0, filterDone: true, filterScrollTop: 0, filterKind: "file", gitStatus: null, refreshing: false, contentSearch: createContentSearchState() }, initial || {});
   }
 
   function esc(value) { return Tree.esc(value); }
@@ -143,9 +143,16 @@
   }
 
   function renderIfActive(target, preserveScroll) {
-    if (state !== target || !target.open) return;
+    if (state !== target || !target.open || target.hidden) return;
     if (preserveScroll) renderPreservingScroll();
     else render();
+  }
+
+  function cachedStateForWorkspace(workspace) {
+    const key = workspaceKey(workspace);
+    if (!key) return state;
+    if (activeKey === key) return state;
+    return stateCache[key] || null;
   }
 
   async function api(url, opt) {
@@ -171,13 +178,14 @@
     const openOptions = options || {};
     const cwd = workspaceCwd(workspace);
     const key = workspaceKey(workspace);
-    if (state.open && activeKey === key && !openOptions.forceOpen) {
+    if (state.open && !state.hidden && activeKey === key && !openOptions.forceOpen) {
       hide();
       return;
     }
     if (window.HerdrGitUi) window.HerdrGitUi.hide();
     activateState(key, cwd);
     state.open = true;
+    state.hidden = false;
     render();
     await loadTree(state.path || "");
   }
@@ -190,6 +198,7 @@
     if (window.HerdrGitUi) window.HerdrGitUi.hide();
     activateState(key, cwd);
     state.open = true;
+    state.hidden = false;
     state.filter = "";
     state.filterVisible = false;
     state.filterKind = "file";
@@ -206,10 +215,18 @@
   }
 
   function hide() {
+    if (!state.open) return;
     stopTransientWork(state);
-    state.open = false;
+    state.hidden = true;
     const panel = document.getElementById("fileBrowserPanel");
     if (panel) panel.remove();
+    syncTerminalVisibility();
+  }
+
+  function show() {
+    if (!state.open || !state.hidden) return;
+    state.hidden = false;
+    render();
     syncTerminalVisibility();
   }
 
@@ -220,6 +237,7 @@
     delete stateCache[key];
     if (activeKey !== key) return;
     state.open = false;
+    state.hidden = false;
     activeKey = "";
     state = createState();
     const panel = document.getElementById("fileBrowserPanel");
@@ -351,6 +369,34 @@
     return file ? file.path : "";
   }
 
+  function openFileSummary(workspace, limit) {
+    let target = state;
+    let maxNames = limit;
+    if (workspace && typeof workspace === "object") {
+      target = cachedStateForWorkspace(workspace);
+    } else {
+      maxNames = workspace;
+    }
+    const files = target && target.open ? target.files || [] : [];
+    const count = files.length;
+    if (!count) return { count: 0, names: [], title: "No open files" };
+    const shown = files
+      .slice(0, Math.max(1, maxNames || 3))
+      .map((file) => Tree.basename(file.path || "") || file.path || "Untitled");
+    const allNames = files.map((file) => Tree.basename(file.path || "") || file.path || "Untitled");
+    const suffix = count === 1 ? "" : "s";
+    return {
+      count,
+      names: shown,
+      title: `${count} open file${suffix}: ${allNames.join(", ")}`,
+    };
+  }
+
+  function isWorkspaceHidden(workspace) {
+    const target = cachedStateForWorkspace(workspace);
+    return !!(target && target.open && target.hidden);
+  }
+
   function currentFile() {
     return currentFileFor(state);
   }
@@ -443,7 +489,7 @@
   }
 
   function render() {
-    if (!state.open) return;
+    if (!state.open || state.hidden) return;
     let panel = document.getElementById("fileBrowserPanel");
     if (!panel) {
       panel = document.createElement("div");
@@ -491,11 +537,12 @@
     if (!shell) return;
     const git = document.getElementById("gitUiPanel");
     const gitOpen = !!(git && git.style.display !== "none");
-    shell.style.display = state.open || gitOpen ? "none" : "";
+    const fileVisible = state.open && !state.hidden;
+    shell.style.display = fileVisible || gitOpen ? "none" : "";
     if (window.syncShellModeButtons) window.syncShellModeButtons();
     // Refit the terminal surface when the shell reappears so the
     // terminal does not extend below the visible area.
-    if (!state.open && !gitOpen && shell.style.display !== "none") {
+    if (!fileVisible && !gitOpen && shell.style.display !== "none") {
       if (window.HerdrTerminalFit) window.HerdrTerminalFit.afterLayout(function () {
         if (typeof fitTerminalShell === "function") fitTerminalShell();
         if (typeof fitTerminalSurface === "function") fitTerminalSurface();
@@ -932,8 +979,12 @@
       hide();
       window.HerdrGitUi.openFileHistory(encodeURIComponent(state.cwd), encodeURIComponent(path));
     },
-    isVisible() { return state.open; },
-    isWorkspaceVisible(workspace) { return state.open && activeKey === workspaceKey(workspace); },
+    isVisible() { return state.open && !state.hidden; },
+    isHidden() { return state.open && state.hidden; },
+    isWorkspaceHidden,
+    openFileSummary,
+    show,
+    isWorkspaceVisible(workspace) { return state.open && !state.hidden && activeKey === workspaceKey(workspace); },
     syncTerminalVisibility,
   };
 

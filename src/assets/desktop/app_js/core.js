@@ -242,7 +242,88 @@ function syncShellModeButtons() {
     button.setAttribute("aria-pressed", active ? "true" : "false");
     button.setAttribute("aria-selected", active ? "true" : "false");
   }
+  syncShellFloatingButtons();
 }
+function syncShellFloatingButtons() {
+  const mode = shellMode();
+  const gitHidden = !!(window.HerdrGitUi && window.HerdrGitUi.statusLabel && window.HerdrGitUi.statusLabel() === "hidden");
+  const fileWorkspace = selectedOrDefaultWorkspace();
+  const fileSummary = window.HerdrFileBrowser && window.HerdrFileBrowser.openFileSummary ? window.HerdrFileBrowser.openFileSummary(fileWorkspace, 3) : null;
+  const fileHidden = !!(window.HerdrFileBrowser && window.HerdrFileBrowser.isWorkspaceHidden && window.HerdrFileBrowser.isWorkspaceHidden(fileWorkspace));
+  const showGit = gitHidden && mode !== "git";
+  const showFiles = fileHidden && mode !== "files" && fileSummary && fileSummary.count > 0;
+  const stack = syncShellFloatingStack(showGit || showFiles);
+  if (!stack) return;
+  syncShellFloatingButton({
+    id: "gitFloatingToggle",
+    show: showGit,
+    icon: "git",
+    label: "Git",
+    title: "Restore Git drawer",
+    aria: "Restore Git drawer",
+    onclick: () => {
+      if (window.HerdrGitUi && window.HerdrGitUi.statusLabel && window.HerdrGitUi.statusLabel() === "hidden") {
+        if (window.HerdrFileBrowser) window.HerdrFileBrowser.hide();
+        openWorkspaceGitUi(state.ws, { forceOpen: true });
+      } else {
+        openWorkspaceGitUi(state.ws);
+      }
+    },
+    stack,
+  });
+  const fileLabel = fileSummary ? `${fileSummary.count} file${fileSummary.count === 1 ? "" : "s"}` : "Files";
+  const fileNames = fileSummary && fileSummary.names && fileSummary.names.length ? fileSummary.names.join(" · ") : "";
+  syncShellFloatingButton({
+    id: "fileFloatingToggle",
+    show: showFiles,
+    icon: "file",
+    label: fileLabel,
+    detail: fileNames,
+    title: fileSummary ? `${fileSummary.title}\nRestore file browser` : "Restore file browser",
+    aria: fileSummary ? `${fileSummary.title}. Restore file browser` : "Restore file browser",
+    onclick: () => {
+      if (window.HerdrGitUi) window.HerdrGitUi.hide();
+      openWorkspaceFileBrowser(state.ws, { forceOpen: true });
+    },
+    stack,
+  });
+  if (!stack.children || !stack.children.length) stack.remove();
+}
+function syncShellFloatingStack(show) {
+  let stack = el("shellFloatingStack");
+  if (!show) {
+    if (stack) stack.remove();
+    return null;
+  }
+  if (!stack) {
+    stack = document.createElement("div");
+    stack.id = "shellFloatingStack";
+    stack.className = "shell-floating-stack";
+    document.body.appendChild(stack);
+  }
+  return stack;
+}
+function syncShellFloatingButton({ id, show, icon, label, detail, title, aria, onclick, stack }) {
+  let button = el(id);
+  if (!show) {
+    if (button) button.remove();
+    return;
+  }
+  if (!button) {
+    button = document.createElement("button");
+    button.id = id;
+    button.type = "button";
+    button.className = "shell-floating-toggle";
+    stack.appendChild(button);
+  } else if (button.parentNode !== stack) {
+    stack.appendChild(button);
+  }
+  button.innerHTML = `<span class="shell-floating-icon">${appIcon(icon)}</span><span class="shell-floating-label">${escapeHtml(label)}</span>${detail ? `<span class="shell-floating-detail">${escapeHtml(detail)}</span>` : ""}`;
+  button.setAttribute("aria-label", aria);
+  button.title = title;
+  button.onclick = onclick;
+}
+
 function workspacePath(workspace) {
   if (!workspace) return "";
   if (workspace.worktree && workspace.worktree.checkout_path)
@@ -278,6 +359,8 @@ function showTerminalShellMode() {
   if (window.HerdrFileBrowser) window.HerdrFileBrowser.hide();
   const shell = el("terminalShell");
   if (shell) shell.style.display = "";
+  if (typeof syncGitWorkspaceToggle === "function") syncGitWorkspaceToggle();
+  if (typeof syncFileWorkspaceToggle === "function") syncFileWorkspaceToggle();
   syncShellModeButtons();
   if (state.terminalId && !term && typeof Terminal !== "undefined") connectTerminal();
   fitTerminalShell();
@@ -287,6 +370,9 @@ function showTerminalShellMode() {
       fitTerminalShell();
       if (typeof fitTerminalSurface === "function") fitTerminalSurface();
     });
+}
+function workspaceShellMinimize() {
+  showTerminalShellMode();
 }
 const headTitle = document.querySelector(".head strong");
 if (headTitle) {
@@ -2584,6 +2670,9 @@ function navigateSelection(e, ws, tab, pane) {
   else {
     if (window.HerdrGitUi) window.HerdrGitUi.hide();
     if (window.HerdrFileBrowser) window.HerdrFileBrowser.hide();
+    if (typeof syncGitWorkspaceToggle === "function") syncGitWorkspaceToggle();
+    if (typeof syncFileWorkspaceToggle === "function") syncFileWorkspaceToggle();
+    syncShellModeButtons();
   }
   return false;
 }
