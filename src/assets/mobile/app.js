@@ -42,6 +42,7 @@
     gitDiff: null,
     gitDiffError: "",
     defaultFolder: "",
+    selectorRailOpen: false,
   };
 
   let eventWs,
@@ -302,6 +303,7 @@
           <button class="mobile-btn temp-terminal-toggle" id="mobileTempTerminal" title="Temporary terminal" aria-label="Temporary terminal"><span class="temp-terminal-icon" aria-hidden="true"><span class="temp-terminal-icon-glyph"></span><span class="temp-terminal-icon-label">T</span></span></button>
         </header>
         <main class="mobile-screen" id="mobileScreen"></main>
+        <div class="mobile-selector-rail" id="mobileSelectorRail" hidden></div>
         <div class="mobile-search-sheet" id="mobileSearchSheet" hidden>
           <div class="mobile-search-card">
             <div class="mobile-search-head"><input id="mobileSearchInput" placeholder="Search workspaces, files, folders, content" autocomplete="off" /><button class="mobile-btn" id="mobileSearchClose">✕</button></div>
@@ -338,7 +340,14 @@
     const tempClose = el("tempTerminalClose");
     if (tempClose) tempClose.onclick = () => mobileTempTerminal && mobileTempTerminal.requestClose();
     document.querySelectorAll(".mobile-nav button").forEach((button) => {
-      button.onclick = () => showScreen(button.dataset.screen);
+      button.onclick = () => {
+        if (button.dataset.screen === "more") {
+          toggleSelectorRail();
+          return;
+        }
+        state.selectorRailOpen = false;
+        showScreen(button.dataset.screen);
+      };
     });
   }
 
@@ -372,8 +381,10 @@
       button.hidden = searchNavDisabled;
       button.disabled = searchNavDisabled;
       button.classList.toggle("active", mobileNavActive(button.dataset.screen));
+      button.setAttribute("aria-expanded", button.dataset.screen === "more" && state.selectorRailOpen ? "true" : "false");
       button.innerHTML = mobileNavLabel(button.dataset.screen);
     });
+    syncMobileSelectorRail();
     const screen = el("mobileScreen");
     screen.classList.toggle("terminal-active", state.screen === "terminal");
     if (state.error) {
@@ -536,6 +547,66 @@
   function mobileNavActive(screen) {
     if (screen === "more") return state.screen === "more" || MORE_SCREENS.includes(state.screen);
     return screen === state.screen;
+  }
+
+
+  function toggleSelectorRail(open) {
+    state.selectorRailOpen = open === undefined ? !state.selectorRailOpen : !!open;
+    render();
+  }
+
+  function syncMobileSelectorRail() {
+    const rail = el("mobileSelectorRail");
+    if (!rail) return;
+    rail.hidden = !state.selectorRailOpen;
+    rail.innerHTML = state.selectorRailOpen ? renderMobileSelectorRail() : "";
+  }
+
+  function renderMobileSelectorRail() {
+    const terminal = mobileTerminalSummary();
+    const git = mobileGitSummary();
+    const workspace = currentWorkspace();
+    const items = [
+      { screen: "terminal", label: "Cmd", meta: terminal.meta, status: terminal.status, disabled: !state.terminalId },
+      { screen: "files", label: "Files", meta: workspace ? "Browse workspace" : "Select workspace", disabled: !workspace },
+      { screen: "git", label: "Git", meta: git, disabled: !workspace },
+      { screen: "more", label: "More", meta: "All tools", disabled: false },
+    ];
+    return items.map((item) => {
+      const active = mobileNavActive(item.screen) ? " active" : "";
+      const status = item.status ? `<span class="mobile-selector-status ${escapeHtml(item.status)}" aria-hidden="true"></span>` : "";
+      return `<button class="mobile-selector-pill${active}" ${item.disabled ? "disabled" : ""} onclick="HerdrMobile.openSelectorScreen('${item.screen}')">${status}<strong>${escapeHtml(item.label)}</strong><span>${escapeHtml(item.meta || "")}</span></button>`;
+    }).join("");
+  }
+
+  function mobileTerminalSummary() {
+    const pane = currentPane();
+    const agent = state.agents.find((item) =>
+      item.workspace_id === state.ws &&
+      item.tab_id === state.tab &&
+      item.pane_id === state.pane &&
+      (!pane || !pane.terminal_id || !item.terminal_id || item.terminal_id === pane.terminal_id)
+    ) || state.agents.find((item) => item.workspace_id === state.ws && item.tab_id === state.tab && item.pane_id === state.pane);
+    const status = agent ? mobileAttention.statusClass(agent.agent_status) : "unknown";
+    return {
+      status,
+      meta: (pane && pane.terminal_id) || state.terminalId || state.pane || "No terminal",
+    };
+  }
+
+  function mobileGitSummary() {
+    const status = state.gitStatus || {};
+    const count = [status.conflicted, status.staged, status.unstaged, status.untracked]
+      .reduce((total, list) => total + ((list || []).length), 0);
+    const file = currentGitDiffFile();
+    if (file) return `+${file.additions || 0} -${file.deletions || 0}`;
+    if (count) return `${count} changed`;
+    return status.branch || "Status";
+  }
+
+  function openSelectorScreen(screen) {
+    state.selectorRailOpen = false;
+    showScreen(screen === "more" ? "more" : screen);
   }
 
   function renderPanels() {
@@ -1452,6 +1523,8 @@
     applyTerminalFontFamily: mobileTerminal.applyFontFamily,
     applyTerminalLinks: mobileTerminal.applyLinks,
     scrollTerminalToBottom: mobileTerminal.scrollToBottom,
+    toggleSelectorRail,
+    openSelectorScreen,
     currentScreen,
     currentSelection,
     refresh,
