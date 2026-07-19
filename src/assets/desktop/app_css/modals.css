@@ -157,11 +157,6 @@
   font-size: 15px;
   font-weight: 600;
 }
-.temp-terminal-head-actions {
-  align-items: center;
-  display: flex;
-  gap: 8px;
-}
 .temp-terminal-hint {
   color: var(--muted);
   font-size: 12px;
@@ -200,43 +195,6 @@
 .temp-terminal-restore:hover {
   background: var(--border);
 }
-.temp-terminal-restore-icon {
-  font-size: 15px;
-  line-height: 1;
-}
-.temp-terminal-restore-label {
-  font-size: 12px;
-  font-weight: 600;
-}
-.temp-terminal-body {
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
-  position: relative;
-  padding: 4px;
-}
-.temp-terminal-body .terminal {
-  width: 100%;
-  height: 100%;
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
-}
-.temp-terminal-body .xterm {
-  height: 100%;
-  width: 100%;
-}
-.temp-terminal-modal {
-  position: relative;
-}
-.temp-terminal-confirm {
-  position: absolute;
-  inset: 0;
-  display: none;
-  place-items: center;
-  background: #0009;
-  z-index: 2;
-}
 .temp-terminal-confirm-card {
   background: var(--panel);
   border: 1px solid var(--border2);
@@ -252,42 +210,4 @@
 .temp-terminal-confirm-card p {
   color: var(--muted);
   margin: 0 0 14px;
-}
-.temp-terminal-confirm-actions {
-  display: flex;
-  gap: 8px;
-  justify-content: flex-end;
-}
-.temp-terminal-toggle {
-  align-items: center;
-  display: inline-flex;
-  justify-content: center;
-}
-.temp-terminal-icon {
-  align-items: center;
-  color: currentColor;
-  display: inline-flex;
-  flex-direction: column;
-  gap: 0;
-  height: 18px;
-  justify-content: center;
-  line-height: 1;
-  width: 18px;
-}
-.temp-terminal-icon-glyph {
-  background: currentColor;
-  display: block;
-  height: 12px;
-  mask-image: url("/assets/icons/terminal.svg");
-  mask-position: center;
-  mask-repeat: no-repeat;
-  mask-size: contain;
-  width: 16px;
-}
-.temp-terminal-icon-label {
-  display: block;
-  font-size: 8px;
-  font-weight: 800;
-  letter-spacing: -0.5px;
-  margin-top: -1px;
 }

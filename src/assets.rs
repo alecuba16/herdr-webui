@@ -12,6 +12,7 @@ const SHARED_ACTIONS_JS: &str = include_str!("assets/shared/actions.js");
 const SHARED_FILE_ICONS_JS: &str = include_str!("assets/shared/file_icons.js");
 const SHARED_FILE_ICONS_CSS: &str = include_str!("assets/shared/file_icons.css");
 const SHARED_COLORS_CSS: &str = include_str!("assets/shared/colors.css");
+const SHARED_FILE_WIDGETS_CSS: &str = include_str!("assets/shared/file_widgets.css");
 const SHARED_CONTENT_SEARCH_CSS: &str = include_str!("assets/shared/content_search.css");
 const SHARED_FILE_TREE_JS: &str = include_str!("assets/shared/file_tree.js");
 const SHARED_FILE_CONTENT_SEARCH_JS: &str = include_str!("assets/shared/file_content_search.js");
@@ -144,6 +145,10 @@ pub(crate) async fn shared_file_icons_css() -> Response {
 
 pub(crate) async fn shared_colors_css() -> Response {
     static_text(SHARED_COLORS_CSS, "text/css; charset=utf-8")
+}
+
+pub(crate) async fn shared_file_widgets_css() -> Response {
+    static_text(SHARED_FILE_WIDGETS_CSS, "text/css; charset=utf-8")
 }
 
 pub(crate) async fn shared_content_search_css() -> Response {
@@ -434,6 +439,7 @@ mod tests {
         assert_eq!(content_type(&mobile_file_browser_js().await), javascript);
         assert_eq!(content_type(&login_js().await), javascript);
         assert_eq!(content_type(&shared_colors_css().await), css);
+        assert_eq!(content_type(&shared_file_widgets_css().await), css);
         assert_eq!(content_type(&shared_content_search_css().await), css);
         assert_eq!(content_type(&desktop_git_ui_css().await), css);
         assert_eq!(content_type(&desktop_file_browser_css().await), css);

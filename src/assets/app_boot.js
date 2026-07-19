@@ -56,6 +56,7 @@
     }
     loadCss("/assets/shared/colors.css");
     loadCss("/assets/shared/file-icons.css");
+    loadCss("/assets/shared/file-widgets.css");
     loadCss("/assets/shared/content-search.css");
     loadScript("/assets/shared/core.js");
     loadScript("/assets/shared/actions.js");

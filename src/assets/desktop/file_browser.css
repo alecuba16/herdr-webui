@@ -191,12 +191,6 @@
   font-size: 12px;
   padding: 6px 2px 0;
 }
-.herdr-tree-hit {
-  background: var(--herdr-search-hit-bg);
-  border-radius: 3px;
-  color: var(--herdr-search-hit-fg);
-  padding: 0 2px;
-}
 .file-browser-main {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -332,55 +326,10 @@
   font-size: 11px;
   padding: 2px 8px;
 }
-.herdr-tree-up-action:hover,
-.herdr-tree-up-action:focus {
-  border-color: var(--accent);
-  color: var(--accent);
-  outline: 0;
-}
-.herdr-tree-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.herdr-tree-crumb {
-  background: transparent;
-  border: 0;
-  color: inherit;
-  cursor: pointer;
-  font: inherit;
-  padding: 0;
-}
-.herdr-tree-crumb:hover {
-  color: var(--accent);
-  text-decoration: underline;
-}
-.herdr-tree-sep {
-  color: var(--muted);
-  padding: 0 2px;
-}
-.herdr-tree-meta,
-.herdr-tree-status {
-  color: var(--muted);
-  font-size: 11px;
-}
-.herdr-tree-status {
-  border: 1px solid var(--border2);
-  border-radius: 999px;
-  min-width: 20px;
-  padding: 1px 5px;
-  text-align: center;
-}
 .herdr-tree-status.added,
 .herdr-tree-status.untracked { color: #1db910; }
 .herdr-tree-status.deleted { color: #f38ba8; }
 .herdr-tree-status.conflict { color: #fab387; }
-.herdr-tree-row.git-modified { color: var(--git-modified-color); }
-.herdr-tree-row.git-added,
-.herdr-tree-row.git-untracked { color: var(--git-added-color); }
-.herdr-tree-row.git-deleted { color: var(--git-deleted-color); }
-.herdr-tree-row.git-changed { color: var(--git-changed-color); }
-.herdr-tree-row.git-conflict { color: var(--git-conflict-color); }
 .herdr-tree-icon {
   background: currentColor;
   display: inline-block;
@@ -390,11 +339,6 @@
   mask-size: contain;
   width: 14px;
 }
-.herdr-tree-icon-chevron-right { mask-image: url("/assets/icons/chevron-right.svg"); }
-.herdr-tree-icon-chevron-down { mask-image: url("/assets/icons/chevron-down.svg"); }
-.herdr-tree-icon-folder { mask-image: url("/assets/icons/folder.svg"); }
-.herdr-tree-icon-folder-up { mask-image: url("/assets/icons/folder-up.svg"); }
-.herdr-tree-icon-file { mask-image: url("/assets/icons/file.svg"); }
 .herdr-tree-icon-refresh { mask-image: url("/assets/icons/refresh.svg"); }
 .herdr-editor {
   display: grid;
@@ -422,10 +366,6 @@
   gap: 10px;
   justify-content: space-between;
   padding: 8px 10px;
-}
-.herdr-editor-head span {
-  color: var(--muted);
-  font-size: 12px;
 }
 .herdr-editor-find {
   align-items: center;
@@ -457,13 +397,6 @@
 }
 .herdr-editor-find button:disabled,
 .herdr-editor-find input:disabled { opacity: 0.55; }
-.herdr-editor-find label {
-  align-items: center;
-  color: var(--muted);
-  display: inline-flex;
-  font-size: 12px;
-  gap: 3px;
-}
 .herdr-editor-find-status {
   color: var(--muted);
   font-size: 12px;
@@ -508,10 +441,6 @@
   user-select: none;
   white-space: pre;
 }
-.herdr-editor-lines span {
-  display: block;
-  min-width: 2.5ch;
-}
 .herdr-editor textarea {
   outline: none;
   resize: none;
@@ -523,11 +452,6 @@
   min-width: 72px;
   white-space: nowrap;
 }
-.cm-herdr-hunk-add { background: color-mix(in srgb, #1db910, transparent 88%); }
-.cm-herdr-hunk-delete,
-.cm-herdr-hunk-del { background: color-mix(in srgb, #f38ba8, transparent 88%); }
-.cm-herdr-hunk-changed,
-.cm-herdr-hunk-edit { background: color-mix(in srgb, var(--accent), transparent 90%); }
 .cm-herdr-hunk-actions {
   align-items: center;
   background: var(--panel2);

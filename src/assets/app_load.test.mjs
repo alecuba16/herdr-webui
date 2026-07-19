@@ -710,7 +710,7 @@ describe("app bundle load", () => {
     const terminalFitSource = readFileSync(new URL("./shared/terminal_fit.js", import.meta.url), "utf8");
     const shortcutsSource = readFileSync(new URL("./desktop/app_js/shortcuts.js", import.meta.url), "utf8");
     const html = readFileSync(new URL("./app.html", import.meta.url), "utf8");
-    const modalCss = readFileSync(new URL("./desktop/app_css/modals.css", import.meta.url), "utf8");
+    const modalCss = `${readFileSync(new URL("./desktop/app_css/modals.css", import.meta.url), "utf8")}\n${readFileSync(new URL("./shared/file_widgets.css", import.meta.url), "utf8")}`;
 
     match(tempTerminalSource, /document\.addEventListener\("keydown", tempTerminalKeydown, true\)/);
     match(tempTerminalSource, /if \(tempTerminalOwnsEventTarget\(event\.target\)\) \{/);
@@ -806,6 +806,7 @@ describe("app bundle load", () => {
     ok(!fileIconCss.includes("--file-icon-color"));
     match(appBootSource, /\/assets\/shared\/file-icons\.js/);
     match(appBootSource, /\/assets\/shared\/file-icons\.css/);
+    match(appBootSource, /\/assets\/shared\/file-widgets\.css/);
     match(appBootSource, /\/assets\/shared\/content-search\.css/);
     match(appBootSource, /\/assets\/shared\/colors\.css/);
     match(appBootSource, /\/assets\/shared\/line-context\.js/);
@@ -815,6 +816,7 @@ describe("app bundle load", () => {
     const searchSource = readFileSync(new URL("./desktop/search.js", import.meta.url), "utf8");
     const lineContextSource = readFileSync(new URL("./shared/line_context.js", import.meta.url), "utf8");
     const sharedColorsCss = readFileSync(new URL("./shared/colors.css", import.meta.url), "utf8");
+    const sharedFileWidgetsCss = readFileSync(new URL("./shared/file_widgets.css", import.meta.url), "utf8");
     const sharedContentSearchCss = readFileSync(new URL("./shared/content_search.css", import.meta.url), "utf8");
     match(fileContentSearchSource, /HerdrContentSearch/);
     match(lineContextSource, /HerdrLineContext/);
@@ -846,6 +848,9 @@ describe("app bundle load", () => {
     match(sharedContentSearchCss, /herdr-content-search-context-arrow/);
     match(sharedContentSearchCss, /herdr-content-search-hit/);
     match(sharedContentSearchCss, /font-weight: 700/);
+    match(sharedFileWidgetsCss, /herdr-tree-row\.git-modified/);
+    match(sharedFileWidgetsCss, /cm-herdr-hunk-add/);
+    match(sharedFileWidgetsCss, /temp-terminal-icon-glyph/);
     match(workspaceSearchSource, /preserveExpanded/);
     match(workspaceSearchSource, /pathSearchAvailable/);
     match(workspaceSearchSource, /normalizePathKind/);

@@ -324,7 +324,7 @@ describe("mobile bundle load", () => {
 
   it("renders temporary terminal capture hint on mobile", () => {
     const mobileSource = readFileSync(new URL("./mobile/app.js", import.meta.url), "utf8");
-    const mobileCss = readFileSync(new URL("./mobile/app.css", import.meta.url), "utf8");
+    const mobileCss = `${readFileSync(new URL("./mobile/app.css", import.meta.url), "utf8")}\n${readFileSync(new URL("./shared/file_widgets.css", import.meta.url), "utf8")}`;
 
     match(mobileSource, /Input captured · Ctrl\+G detaches/);
     match(mobileSource, /aria-label="Minimize temporary terminal"/);
