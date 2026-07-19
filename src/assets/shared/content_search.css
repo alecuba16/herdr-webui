@@ -44,3 +44,31 @@
   font-weight: 700;
   padding: 0 2px;
 }
+
+.herdr-content-search-head .file-browser-filter {
+  flex: 1 1 180px;
+}
+.herdr-content-search-file-head strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.herdr-content-search-preview {
+  background: var(--herdr-content-panel-bg);
+  font: 12px/1.5 var(--mono-font);
+  overflow: auto;
+  padding: 8px 0;
+}
+.herdr-content-search-line {
+  display: grid;
+  grid-template-columns: 24px 4ch minmax(0, 1fr);
+  min-width: max-content;
+}
+.herdr-content-search-context-cell {
+  align-items: center;
+  display: flex;
+  justify-content: center;
+}
+.herdr-content-search-line code {
+  white-space: pre;
+}
