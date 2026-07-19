@@ -6,8 +6,10 @@ function workspaceCloseName(id) {
 }
 function workspaceBranch(w) {
   const wt = worktreeForWorkspace(w);
+  const inline = w && w.worktree;
   return (
     (wt && (wt.branch || (wt.is_detached ? "detached" : ""))) ||
+    (inline && (inline.branch || (inline.is_detached ? "detached" : ""))) ||
     state.workspaceBranches[w.workspace_id] ||
     ""
   );

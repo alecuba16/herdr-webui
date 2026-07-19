@@ -2109,6 +2109,11 @@ describe("app bundle load", () => {
       openFileCount(workspace) {
         return workspace && workspace.workspace_id === "ws2" ? 2 : 0;
       },
+      openFileSummary(workspace) {
+        return workspace && workspace.workspace_id === "ws2"
+          ? { count: 2, names: ["main.rs", "lib.rs"], title: "2 open files: main.rs, lib.rs" }
+          : { count: 0, names: [], title: "0 open files" };
+      },
     };
 
     vm.runInContext(
@@ -2125,10 +2130,11 @@ describe("app bundle load", () => {
     const html = ctx.document.getElementById("workspaceDock").innerHTML;
     equal((html.match(/workspace-dock-bubble/g) || []).length, 2);
     match(html, /workspace-dock-bubble active working/);
-    match(html, /workspace-dock-title">repo-selector/);
-    match(html, /workspace-dock-badge files">2f/);
-    match(html, /workspace-dock-badge panels">3p/);
-    match(html, /workspace-dock-badge worktree">worktree/);
+    match(html, /workspace-dock-title">selector/);
+    match(html, /workspace-dock-badge files">2 files/);
+    match(html, /workspace-dock-badge panels">3 panels/);
+    match(html, /workspace-dock-badge branch">selector/);
+    match(html, /2 open files: main\.rs, lib\.rs/);
     match(html, /navigateSelection\(event,decodeURIComponent/);
   });
 
@@ -2142,6 +2148,7 @@ describe("app bundle load", () => {
     match(renderSource, /function renderWorkspaceDockBubble\(w\)/);
     match(renderSource, /workspaceOpenFileCount\(w\)/);
     match(fileBrowserSource, /openFileCount\(workspace\)/);
+    match(fileBrowserSource, /openFileSummary\(workspace, limit = 3\)/);
     match(css, /\.workspace-dock \{/);
     match(css, /right: calc\(env\(safe-area-inset-right/);
   });
