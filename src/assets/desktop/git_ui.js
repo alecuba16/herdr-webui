@@ -1412,6 +1412,44 @@
     return (compared || []).length;
   }
 
+  function cachedViewForWorkspace(workspace) {
+    const key = workspaceKey(workspace);
+    if (!key) return active();
+    return state.cache[key] || null;
+  }
+
+  function changeSummary(workspace) {
+    const view = workspace && typeof workspace === "object" ? cachedViewForWorkspace(workspace) : active();
+    const files = ((view && view.diff && view.diff.files) || []);
+    const totals = files.reduce((total, file) => {
+      const additions = Number(file.additions);
+      const deletions = Number(file.deletions);
+      if (Number.isFinite(additions)) total.additions += additions;
+      if (Number.isFinite(deletions)) total.deletions += deletions;
+      return total;
+    }, { additions: 0, deletions: 0 });
+    const hasCounts = files.some((file) => Number.isFinite(Number(file.additions)) || Number.isFinite(Number(file.deletions)));
+    const status = (view && view.status) || {};
+    const fallbackFiles = [status.conflicted, status.staged, status.unstaged, status.untracked]
+      .reduce((total, list) => total + ((list || []).length), 0);
+    const count = files.length || fallbackFiles;
+    const branch = status.branch ? ` on ${status.branch}` : "";
+    const countLabel = hasCounts ? `+${totals.additions} -${totals.deletions}` : `${count} changed file${count === 1 ? "" : "s"}`;
+    return {
+      additions: totals.additions,
+      deletions: totals.deletions,
+      files: count,
+      hasCounts,
+      title: count ? `${countLabel}${branch}` : `No Git changes${branch}`,
+    };
+  }
+
+  function isWorkspaceHidden(workspace) {
+    const key = workspaceKey(workspace);
+    return !!(state.open && !state.visible && (!key || state.activeKey === key));
+  }
+
+
   function renderFileToolbar(activeTab) {
     const view = active() || {};
     const conflicts = ((((view.status || {}).conflicted) || []).length > 0);
@@ -2264,6 +2302,8 @@
     refreshVisible() { if (state.visible) render(); },
     isVisible() { return state.visible; },
     isWorkspaceVisible(key) { return state.visible && state.activeKey === key; },
+    isWorkspaceHidden,
+    changeSummary,
     workspaceStatus,
     statusLabel() { return state.open ? (state.visible ? "open" : "hidden") : "closed"; },
     tab(tab) {

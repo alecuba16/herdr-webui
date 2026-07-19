@@ -685,6 +685,12 @@ describe("app bundle load", () => {
     match(fileBrowserSource, /function openFileSummary\(workspace, limit\)/);
     match(fileBrowserSource, /function isWorkspaceHidden\(workspace\)/);
     match(source, /openFileSummary\(fileWorkspace, 3\)/);
+    match(source, /function currentTerminalSummary\(\)/);
+    match(source, /id: "terminalFloatingToggle"/);
+    match(source, /changeSummary\(gitWorkspace\)/);
+    match(gitUiSource, /function changeSummary\(workspace\)/);
+    match(gitUiSource, /function isWorkspaceHidden\(workspace\)/);
+    match(readFileSync(new URL("./desktop/app_css/chrome.css", import.meta.url), "utf8"), /\.shell-floating-status\.working \{/);
     match(readFileSync(new URL("./desktop/app_css/chrome.css", import.meta.url), "utf8"), /\.shell-floating-stack \{/);
     match(readFileSync(new URL("./desktop/app_css/chrome.css", import.meta.url), "utf8"), /\.shell-floating-detail \{/);
   });

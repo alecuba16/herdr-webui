@@ -246,21 +246,41 @@ function syncShellModeButtons() {
 }
 function syncShellFloatingButtons() {
   const mode = shellMode();
-  const gitHidden = !!(window.HerdrGitUi && window.HerdrGitUi.statusLabel && window.HerdrGitUi.statusLabel() === "hidden");
+  const gitWorkspace = selectedOrDefaultWorkspace();
+  const gitHidden = !!(window.HerdrGitUi && window.HerdrGitUi.isWorkspaceHidden && window.HerdrGitUi.isWorkspaceHidden(gitWorkspace));
+  const gitSummary = window.HerdrGitUi && window.HerdrGitUi.changeSummary ? window.HerdrGitUi.changeSummary(gitWorkspace) : null;
   const fileWorkspace = selectedOrDefaultWorkspace();
   const fileSummary = window.HerdrFileBrowser && window.HerdrFileBrowser.openFileSummary ? window.HerdrFileBrowser.openFileSummary(fileWorkspace, 3) : null;
   const fileHidden = !!(window.HerdrFileBrowser && window.HerdrFileBrowser.isWorkspaceHidden && window.HerdrFileBrowser.isWorkspaceHidden(fileWorkspace));
+  const terminalSummary = currentTerminalSummary();
+  const showTerminal = mode !== "terminal" && !!terminalSummary;
   const showGit = gitHidden && mode !== "git";
   const showFiles = fileHidden && mode !== "files" && fileSummary && fileSummary.count > 0;
-  const stack = syncShellFloatingStack(showGit || showFiles);
+  const stack = syncShellFloatingStack(showTerminal || showGit || showFiles);
   if (!stack) return;
+  syncShellFloatingButton({
+    id: "terminalFloatingToggle",
+    show: showTerminal,
+    icon: "terminal",
+    label: "Cmd",
+    detail: terminalSummary && terminalSummary.label,
+    status: terminalSummary && terminalSummary.status,
+    title: terminalSummary ? `${terminalSummary.title}
+Show terminal` : "Show terminal",
+    aria: terminalSummary ? `${terminalSummary.title}. Show terminal` : "Show terminal",
+    onclick: () => showTerminalShellMode(),
+    stack,
+  });
+  const gitDetail = gitSummary && gitSummary.hasCounts ? `+${gitSummary.additions} -${gitSummary.deletions}` : (gitSummary && gitSummary.files ? `${gitSummary.files} files` : "");
   syncShellFloatingButton({
     id: "gitFloatingToggle",
     show: showGit,
     icon: "git",
     label: "Git",
-    title: "Restore Git drawer",
-    aria: "Restore Git drawer",
+    detail: gitDetail,
+    title: gitSummary ? `${gitSummary.title}
+Restore Git drawer` : "Restore Git drawer",
+    aria: gitSummary ? `${gitSummary.title}. Restore Git drawer` : "Restore Git drawer",
     onclick: () => {
       if (window.HerdrGitUi && window.HerdrGitUi.statusLabel && window.HerdrGitUi.statusLabel() === "hidden") {
         if (window.HerdrFileBrowser) window.HerdrFileBrowser.hide();
@@ -279,7 +299,8 @@ function syncShellFloatingButtons() {
     icon: "file",
     label: fileLabel,
     detail: fileNames,
-    title: fileSummary ? `${fileSummary.title}\nRestore file browser` : "Restore file browser",
+    title: fileSummary ? `${fileSummary.title}
+Restore file browser` : "Restore file browser",
     aria: fileSummary ? `${fileSummary.title}. Restore file browser` : "Restore file browser",
     onclick: () => {
       if (window.HerdrGitUi) window.HerdrGitUi.hide();
@@ -289,6 +310,27 @@ function syncShellFloatingButtons() {
   });
   if (!stack.children || !stack.children.length) stack.remove();
 }
+function currentTerminalSummary() {
+  const pane = (state.panes || []).find((p) => p.pane_id === state.pane) || null;
+  if (!pane && !state.terminalId && !state.pane) return null;
+  const agent = (state.agents || []).find((a) =>
+    a.workspace_id === state.ws &&
+    a.tab_id === state.tab &&
+    a.pane_id === state.pane &&
+    (!pane || !pane.terminal_id || !a.terminal_id || a.terminal_id === pane.terminal_id)
+  ) || (state.agents || []).find((a) => a.workspace_id === state.ws && a.tab_id === state.tab && a.pane_id === state.pane);
+  const status = agent ? (isWorkingDismissed(agent) ? "idle" : statusClass(agent.agent_status)) : "unknown";
+  const terminalId = (pane && pane.terminal_id) || state.terminalId || "";
+  const panel = state.pane || (pane && pane.pane_id) || "terminal";
+  const label = terminalId || panel;
+  const agentLabel = agent && (agent.name || agent.display_agent || agent.agent || agent.terminal_id);
+  return {
+    label,
+    status,
+    title: `${panel}${terminalId && terminalId !== panel ? ` · ${terminalId}` : ""}${agentLabel ? ` · ${agentLabel}` : ""} · ${status}`,
+  };
+}
+
 function syncShellFloatingStack(show) {
   let stack = el("shellFloatingStack");
   if (!show) {
@@ -303,7 +345,7 @@ function syncShellFloatingStack(show) {
   }
   return stack;
 }
-function syncShellFloatingButton({ id, show, icon, label, detail, title, aria, onclick, stack }) {
+function syncShellFloatingButton({ id, show, icon, label, detail, status, title, aria, onclick, stack }) {
   let button = el(id);
   if (!show) {
     if (button) button.remove();
@@ -318,7 +360,8 @@ function syncShellFloatingButton({ id, show, icon, label, detail, title, aria, o
   } else if (button.parentNode !== stack) {
     stack.appendChild(button);
   }
-  button.innerHTML = `<span class="shell-floating-icon">${appIcon(icon)}</span><span class="shell-floating-label">${escapeHtml(label)}</span>${detail ? `<span class="shell-floating-detail">${escapeHtml(detail)}</span>` : ""}`;
+  const statusDot = status ? `<span class="shell-floating-status ${escapeAttr(status)}" aria-hidden="true"></span>` : "";
+  button.innerHTML = `${statusDot}<span class="shell-floating-icon">${appIcon(icon)}</span><span class="shell-floating-label">${escapeHtml(label)}</span>${detail ? `<span class="shell-floating-detail">${escapeHtml(detail)}</span>` : ""}`;
   button.setAttribute("aria-label", aria);
   button.title = title;
   button.onclick = onclick;
