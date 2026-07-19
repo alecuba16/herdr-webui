@@ -688,7 +688,7 @@ describe("app bundle load", () => {
     match(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), /state\.open && !state\.hidden && activeKey === key && !openOptions\.forceOpen/);
     match(source, /function syncShellFloatingStack\(show\)/);
     match(source, /fileSummary\.count > 0/);
-    match(fileBrowserSource, /function openFileSummary\(workspace, limit\)/);
+    match(fileBrowserSource, /function openFileSummary\(workspace, limit(?: = 3)?\)/);
     match(fileBrowserSource, /function isWorkspaceHidden\(workspace\)/);
     match(source, /openFileSummary\(fileWorkspace, 3\)/);
     match(source, /function currentTerminalSummary\(\)/);

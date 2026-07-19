@@ -369,7 +369,7 @@
     return file ? file.path : "";
   }
 
-  function openFileSummary(workspace, limit) {
+  function openFileSummary(workspace, limit = 3) {
     let target = state;
     let maxNames = limit;
     if (workspace && typeof workspace === "object") {
