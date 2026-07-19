@@ -651,3 +651,101 @@ body.light .chip.label {
   font: 12px var(--mono-font);
   color: var(--fg);
 }
+
+.workspace-dock {
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 70px);
+  display: grid;
+  gap: 8px;
+  max-height: min(44vh, 360px);
+  max-width: min(360px, calc(100vw - 56px));
+  overflow: auto;
+  overscroll-behavior: contain;
+  position: fixed;
+  right: calc(env(safe-area-inset-right, 0px) + 18px);
+  z-index: 1100;
+}
+.workspace-dock[hidden] {
+  display: none;
+}
+.workspace-dock-bubble {
+  align-items: center;
+  background: color-mix(in srgb, var(--panel), transparent 5%);
+  border: 1px solid var(--border2);
+  border-radius: 16px;
+  box-shadow: 0 12px 34px #0007;
+  color: var(--fg);
+  display: grid;
+  gap: 4px 8px;
+  grid-template-columns: auto minmax(90px, 1fr);
+  min-width: 210px;
+  padding: 9px 10px;
+  text-decoration: none;
+  transition:
+    background 120ms ease,
+    border-color 120ms ease,
+    transform 120ms ease;
+}
+.workspace-dock-bubble:hover,
+.workspace-dock-bubble:focus-visible {
+  background: var(--control-hover);
+  border-color: var(--accent);
+  outline: none;
+  transform: translateY(-1px);
+}
+.workspace-dock-bubble.active {
+  border-color: var(--accent);
+  box-shadow:
+    0 12px 34px #0007,
+    0 0 0 1px color-mix(in srgb, var(--accent), transparent 45%);
+}
+.workspace-dock-dot {
+  grid-row: 1 / span 2;
+}
+.workspace-dock-title {
+  font-size: 13px;
+  font-weight: 800;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workspace-dock-badges {
+  display: flex;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+}
+.workspace-dock-badge {
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  flex: 0 1 auto;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.2;
+  max-width: 120px;
+  min-width: 0;
+  overflow: hidden;
+  padding: 2px 6px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workspace-dock-badge.files {
+  color: var(--git-changed-color);
+}
+.workspace-dock-badge.panels {
+  color: var(--accent);
+}
+.workspace-dock-badge.branch {
+  color: #b4befe;
+}
+.workspace-dock-badge.worktree {
+  color: var(--git-added-color);
+}
+.workspace-dock-badge.folder {
+  color: var(--muted);
+}
+body.light .workspace-dock-badge.branch {
+  color: #174ea6;
+}

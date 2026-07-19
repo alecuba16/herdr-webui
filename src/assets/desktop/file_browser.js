@@ -978,6 +978,11 @@
     isVisible() { return state.open && !state.hidden; },
     isHidden() { return state.open && state.hidden; },
     isWorkspaceHidden,
+    openFileCount(workspace) {
+      const key = workspaceKey(workspace);
+      const target = stateCache[key] || (activeKey === key ? state : null);
+      return target && Array.isArray(target.files) ? target.files.length : 0;
+    },
     openFileSummary,
     show,
     isWorkspaceVisible(workspace) { return state.open && !state.hidden && activeKey === workspaceKey(workspace); },

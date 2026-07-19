@@ -2102,6 +2102,50 @@ describe("app bundle load", () => {
     match(chromeCss, /\.sidebar-pane\.workspaces-pane\.panel-menu-open \.sidebar-scroll \{[\s\S]*?overflow: visible;/);
   });
 
+  it("renders bottom-right workspace dock bubbles when sidebar is collapsed", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    ctx.HerdrFileBrowser = {
+      openFileCount(workspace) {
+        return workspace && workspace.workspace_id === "ws2" ? 2 : 0;
+      },
+    };
+
+    vm.runInContext(
+      `state.workspaces = [
+         { workspace_id: "ws1", label: "main", tab_count: 1, pane_count: 1, agent_status: "idle", cwd: "/repo" },
+         { workspace_id: "ws2", label: "selector", tab_count: 3, pane_count: 3, agent_status: "working", cwd: "/repo-selector", worktree: { is_linked_worktree: true, branch: "selector", checkout_path: "/repo-selector" } },
+       ];
+       state.ws = "ws2";
+       sidebarCollapsed = true;
+       syncWorkspaceDock();`,
+      ctx,
+    );
+
+    const html = ctx.document.getElementById("workspaceDock").innerHTML;
+    equal((html.match(/workspace-dock-bubble/g) || []).length, 2);
+    match(html, /workspace-dock-bubble active working/);
+    match(html, /workspace-dock-title">repo-selector/);
+    match(html, /workspace-dock-badge files">2f/);
+    match(html, /workspace-dock-badge panels">3p/);
+    match(html, /workspace-dock-badge worktree">worktree/);
+    match(html, /navigateSelection\(event,decodeURIComponent/);
+  });
+
+  it("wires workspace dock chrome and file-count API", () => {
+    const coreSource = readFileSync(new URL("./desktop/app_js/core.js", import.meta.url), "utf8");
+    const renderSource = readFileSync(new URL("./desktop/app_js/render.js", import.meta.url), "utf8");
+    const css = readFileSync(new URL("./desktop/app_css/workspaces.css", import.meta.url), "utf8");
+
+    match(coreSource, /id=\"workspaceDock\"/);
+    match(renderSource, /function syncWorkspaceDock\(\)/);
+    match(renderSource, /function renderWorkspaceDockBubble\(w\)/);
+    match(renderSource, /workspaceOpenFileCount\(w\)/);
+    match(fileBrowserSource, /openFileCount\(workspace\)/);
+    match(css, /\.workspace-dock \{/);
+    match(css, /right: calc\(env\(safe-area-inset-right/);
+  });
+
   it("captures terminal paste before xterm native paste", () => {
     match(source, /addEventListener\(\s*"paste"/);
     match(source, /stopImmediatePropagation\(\)/);
