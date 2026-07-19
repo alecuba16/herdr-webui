@@ -411,6 +411,12 @@ describe("app bundle load", () => {
     match(source, /HerdrGitUi\.isVisible\(\)\)\n\s+return false;/);
   });
 
+  it("syncs shell mode buttons when Git drawer hides", () => {
+    match(gitUiSource, /function hide\(\) \{[\s\S]*?state\.visible = false;[\s\S]*?showPanel\(false\);[\s\S]*?syncShellModeButtonsIfAvailable\(\);/);
+    match(gitUiSource, /function close\(\) \{[\s\S]*?state\.visible = false;[\s\S]*?showPanel\(false\);[\s\S]*?syncShellModeButtonsIfAvailable\(\);/);
+    match(gitUiSource, /function syncShellModeButtonsIfAvailable\(\)/);
+  });
+
   it("renders shortcut editor with collision detection", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
