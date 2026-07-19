@@ -1376,6 +1376,7 @@
     render,
     selectionPath,
     state,
+    pathBasename,
   });
   mobileFileBrowser = globalThis.HerdrMobileFileBrowser.create({
     api,
