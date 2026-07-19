@@ -1,5 +1,16 @@
 # Release notes
 
+## 0.2.69 Release Notes
+
+### Code quality and modularity pass
+
+- Documents the deep code-quality audit baseline for Rust, JavaScript, CSS, desktop UX, and mobile parity.
+- Removes low-risk frontend duplication by sharing content-search and file-widget styles between desktop and mobile.
+- Reuses the shared mobile path helper in worktree views so path rendering behavior stays consistent.
+- Moves static asset route registration and coverage into the assets module, keeping the HTTP shell router smaller and more cohesive.
+- Extracts no-sleep mode state/guard helpers into a dedicated module while preserving the existing API behavior.
+- Keeps validation green across asset tests, Rust tests, Clippy, release builds, and diff checks.
+
 ## 0.2.68 Release Notes
 
 ### Floating workspace selectors and mobile parity
