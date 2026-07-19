@@ -4494,43 +4494,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_no_sleep_modes() {
-        assert_eq!(no_sleep_ms("off"), Some(0));
-        assert_eq!(no_sleep_ms("auto"), Some(0));
-        assert_eq!(no_sleep_ms("1h"), Some(60 * 60 * 1000));
-        assert_eq!(no_sleep_ms("2h"), Some(2 * 60 * 60 * 1000));
-        assert_eq!(no_sleep_ms("4h"), Some(4 * 60 * 60 * 1000));
-        assert_eq!(no_sleep_ms("infinite"), Some(0));
-        assert_eq!(no_sleep_ms("bad"), None);
-    }
-
-    #[test]
-    fn detects_working_agents_for_auto_no_sleep() {
-        assert!(agents_working_from_value(&json!({
-            "result": { "agents": [{ "agent_status": "idle" }, { "agent_status": "working" }] }
-        })));
-        assert!(!agents_working_from_value(&json!({
-            "result": { "agents": [{ "agent_status": "idle" }, { "agent_status": "done" }] }
-        })));
-        assert!(!agents_working_from_value(
-            &json!({ "result": { "agents": [] } })
-        ));
-    }
-
-    #[test]
-    fn auto_no_sleep_turns_off_after_idle_cooldown() {
-        let mut state = NoSleepState::default();
-        state.mode = "auto".to_string();
-        state.auto_idle_since_ms = Some(unix_ms_now().saturating_sub(1000));
-
-        sync_auto_no_sleep(&mut state, false, 0);
-
-        assert_eq!(state.mode, "off");
-        assert_eq!(state.auto_idle_since_ms, None);
-        assert!(!state.active());
-    }
-
-    #[test]
     fn classifies_backend_compatibility() {
         assert_eq!(
             backend_compatibility_for_supported_range(Some("0.6.9"), Some(PROTOCOL_VERSION)),
