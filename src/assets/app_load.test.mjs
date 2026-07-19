@@ -2121,6 +2121,10 @@ describe("app bundle load", () => {
          { workspace_id: "ws1", label: "main", tab_count: 1, pane_count: 1, agent_status: "idle", cwd: "/repo" },
          { workspace_id: "ws2", label: "selector", tab_count: 3, pane_count: 3, agent_status: "working", cwd: "/repo-selector", worktree: { is_linked_worktree: true, branch: "selector", checkout_path: "/repo-selector" } },
        ];
+       state.worktrees = [
+         { path: "/repo-selector", branch: "selector", is_linked_worktree: true, open_workspace_id: "ws2", source_workspace_id: "ws1", source_cwd: "/repo" },
+         { path: "/repo-feature", branch: "feature", is_linked_worktree: true, source_workspace_id: "ws1", source_cwd: "/repo" },
+       ];
        state.ws = "ws2";
        sidebarCollapsed = true;
        syncWorkspaceDock();`,
@@ -2128,14 +2132,55 @@ describe("app bundle load", () => {
     );
 
     const html = ctx.document.getElementById("workspaceDock").innerHTML;
-    equal((html.match(/workspace-dock-bubble/g) || []).length, 2);
+    equal((html.match(/workspace-dock-bubble/g) || []).length, 3);
     match(html, /workspace-dock-bubble active working/);
     match(html, /workspace-dock-title">selector/);
     match(html, /workspace-dock-badge files">2 files/);
     match(html, /workspace-dock-badge panels">3 panels/);
     match(html, /workspace-dock-badge branch">selector/);
+    match(html, /workspace-dock-title">feature/);
+    match(html, /Open linked worktree/);
+    match(html, /openDockWorktree\(event,decodeURIComponent/);
     match(html, /2 open files: main\.rs, lib\.rs/);
     match(html, /navigateSelection\(event,decodeURIComponent/);
+  });
+
+  it("opens unopened workspace dock worktree bubbles directly", async () => {
+    const ctx = context();
+    const requests = [];
+    ctx.fetch = async (url, opt) => {
+      requests.push({ url, opt });
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          result: {
+            workspaces: [],
+            workspace: { workspace_id: "ws-opened" },
+            tab: { tab_id: "tab-opened" },
+            root_pane: { pane_id: "pane-opened" },
+          },
+        }),
+      };
+    };
+    vm.runInContext(source, ctx);
+    vm.runInContext(
+      `state.worktrees = [
+         { path: "/repo-feature", branch: "feature", is_linked_worktree: true, source_workspace_id: "ws1", source_cwd: "/repo" },
+       ];`,
+      ctx,
+    );
+
+    await ctx.openDockWorktree({ preventDefault() {}, stopPropagation() {} }, "/repo-feature");
+
+    const openRequest = requests.find((request) => request.url === "/api/worktrees/open");
+    ok(openRequest);
+    deepEqual(JSON.parse(openRequest.opt.body), {
+      workspace_id: "ws1",
+      cwd: null,
+      path: "/repo-feature",
+      label: null,
+    });
   });
 
   it("wires workspace dock chrome and file-count API", () => {
@@ -2146,7 +2191,9 @@ describe("app bundle load", () => {
     match(coreSource, /id=\"workspaceDock\"/);
     match(renderSource, /function syncWorkspaceDock\(\)/);
     match(renderSource, /function renderWorkspaceDockBubble\(w\)/);
+    match(renderSource, /function renderWorktreeDockBubble\(worktree\)/);
     match(renderSource, /workspaceOpenFileCount\(w\)/);
+    match(readFileSync(new URL("./desktop/app_js/worktrees.js", import.meta.url), "utf8"), /async function openDockWorktree\(event, path\)/);
     match(fileBrowserSource, /openFileCount\(workspace\)/);
     match(fileBrowserSource, /openFileSummary\(workspace, limit = 3\)/);
     match(css, /\.workspace-dock \{/);
