@@ -29,21 +29,7 @@ mod protocol;
 mod service;
 mod terminal_text;
 
-use assets::{
-    app_boot_js, app_html, desktop_css, desktop_directory_picker_js, desktop_file_browser_css,
-    desktop_file_browser_js, desktop_git_ui_css, desktop_git_ui_js, desktop_js, desktop_search_css,
-    desktop_search_js, desktop_shortcuts_css, favicon_attention_svg, favicon_error_svg,
-    favicon_svg, icon_chevron_down_svg, icon_chevron_right_svg, icon_file_svg, icon_folder_svg,
-    icon_folder_up_svg, icon_git_svg, icon_help_svg, icon_refresh_svg, icon_search_svg,
-    icon_settings_svg, icon_terminal_svg, icon_theme_auto_svg, icon_trash_svg,
-    jetbrains_mono_nerd_font, login_css, login_html, login_js, mobile_attention_js, mobile_core_js,
-    mobile_css, mobile_file_browser_js, mobile_js, mobile_settings_js, mobile_terminal_js,
-    mobile_worktrees_js, shared_actions_js, shared_colors_css, shared_content_search_css,
-    shared_core_js, shared_editor_js, shared_file_content_search_js, shared_file_icons_css,
-    shared_file_icons_js, shared_file_tree_js, shared_file_widgets_css, shared_line_context_js,
-    shared_temp_terminal_js, shared_terminal_fit_js, shared_terminal_scroll_js,
-    shared_workspace_search_js, vendor_codemirror_js, xterm_css, xterm_js,
-};
+use assets::{app_html, login_html};
 #[cfg(test)]
 use compat::SimpleVersion;
 use compat::{backend_compatibility, BackendCompatibility};
@@ -1204,104 +1190,7 @@ fn app_router(state: WebState) -> Router {
         .route("/api/pane-layout", get(pane_layout))
         .route("/api/session-snapshot", get(session_snapshot))
         .route("/api/agents", get(agents))
-        .route("/assets/desktop/app.css", get(desktop_css))
-        .route("/assets/desktop/git-ui.css", get(desktop_git_ui_css))
-        .route(
-            "/assets/desktop/file-browser.css",
-            get(desktop_file_browser_css),
-        )
-        .route("/assets/desktop/search.css", get(desktop_search_css))
-        .route("/assets/desktop/shortcuts.css", get(desktop_shortcuts_css))
-        .route("/assets/app-boot.js", get(app_boot_js))
-        .route("/assets/shared/core.js", get(shared_core_js))
-        .route("/assets/shared/actions.js", get(shared_actions_js))
-        .route("/assets/shared/file-icons.js", get(shared_file_icons_js))
-        .route("/assets/shared/file-icons.css", get(shared_file_icons_css))
-        .route("/assets/shared/colors.css", get(shared_colors_css))
-        .route(
-            "/assets/shared/file-widgets.css",
-            get(shared_file_widgets_css),
-        )
-        .route(
-            "/assets/shared/content-search.css",
-            get(shared_content_search_css),
-        )
-        .route("/assets/shared/file-tree.js", get(shared_file_tree_js))
-        .route(
-            "/assets/shared/file-content-search.js",
-            get(shared_file_content_search_js),
-        )
-        .route(
-            "/assets/shared/line-context.js",
-            get(shared_line_context_js),
-        )
-        .route(
-            "/assets/shared/workspace-search.js",
-            get(shared_workspace_search_js),
-        )
-        .route("/assets/vendor/codemirror.js", get(vendor_codemirror_js))
-        .route("/assets/shared/editor.js", get(shared_editor_js))
-        .route(
-            "/assets/shared/terminal-scroll.js",
-            get(shared_terminal_scroll_js),
-        )
-        .route(
-            "/assets/shared/terminal-fit.js",
-            get(shared_terminal_fit_js),
-        )
-        .route(
-            "/assets/shared/temp-terminal.js",
-            get(shared_temp_terminal_js),
-        )
-        .route("/assets/desktop/git-ui.js", get(desktop_git_ui_js))
-        .route(
-            "/assets/desktop/file-browser.js",
-            get(desktop_file_browser_js),
-        )
-        .route(
-            "/assets/desktop/directory-picker.js",
-            get(desktop_directory_picker_js),
-        )
-        .route("/assets/desktop/search.js", get(desktop_search_js))
-        .route("/assets/desktop/app.js", get(desktop_js))
-        .route("/assets/login.css", get(login_css))
-        .route("/assets/login.js", get(login_js))
-        .route("/assets/mobile/attention.js", get(mobile_attention_js))
-        .route("/assets/mobile/core.js", get(mobile_core_js))
-        .route("/assets/mobile/settings.js", get(mobile_settings_js))
-        .route("/assets/mobile/terminal.js", get(mobile_terminal_js))
-        .route("/assets/mobile/worktrees.js", get(mobile_worktrees_js))
-        .route(
-            "/assets/mobile/file-browser.js",
-            get(mobile_file_browser_js),
-        )
-        .route("/assets/mobile/app.css", get(mobile_css))
-        .route("/assets/mobile/app.js", get(mobile_js))
-        .route("/assets/xterm.js", get(xterm_js))
-        .route("/assets/xterm.css", get(xterm_css))
-        .route(
-            "/assets/fonts/JetBrainsMonoNerdFontMono-Regular.ttf",
-            get(jetbrains_mono_nerd_font),
-        )
-        .route("/assets/icons/help.svg", get(icon_help_svg))
-        .route("/assets/icons/settings.svg", get(icon_settings_svg))
-        .route("/assets/icons/theme-auto.svg", get(icon_theme_auto_svg))
-        .route("/assets/icons/git.svg", get(icon_git_svg))
-        .route("/assets/icons/terminal.svg", get(icon_terminal_svg))
-        .route(
-            "/assets/icons/chevron-right.svg",
-            get(icon_chevron_right_svg),
-        )
-        .route("/assets/icons/chevron-down.svg", get(icon_chevron_down_svg))
-        .route("/assets/icons/folder.svg", get(icon_folder_svg))
-        .route("/assets/icons/folder-up.svg", get(icon_folder_up_svg))
-        .route("/assets/icons/file.svg", get(icon_file_svg))
-        .route("/assets/icons/trash.svg", get(icon_trash_svg))
-        .route("/assets/icons/search.svg", get(icon_search_svg))
-        .route("/assets/icons/refresh.svg", get(icon_refresh_svg))
-        .route("/favicon.svg", get(favicon_svg))
-        .route("/favicon-attention.svg", get(favicon_attention_svg))
-        .route("/favicon-error.svg", get(favicon_error_svg))
+        .merge(assets::static_asset_routes())
         .route("/ws/events", get(events_ws))
         .route("/ws/terminal", get(terminal_ws))
         .with_state(state)

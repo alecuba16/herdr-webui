@@ -1,6 +1,8 @@
 use axum::body::Body;
 use axum::http::{header, HeaderValue};
 use axum::response::{Html, IntoResponse, Response};
+use axum::routing::get;
+use axum::Router;
 
 pub(crate) const LOGIN_HTML: &str = include_str!("assets/login.html");
 pub(crate) const APP_HTML: &str = include_str!("assets/app.html");
@@ -98,6 +100,111 @@ pub(crate) fn app_html() -> Response {
 
 pub(crate) fn login_html() -> Response {
     Html(LOGIN_HTML).into_response()
+}
+
+pub(crate) fn static_asset_routes<S>() -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
+    Router::new()
+        .route("/assets/desktop/app.css", get(desktop_css))
+        .route("/assets/desktop/git-ui.css", get(desktop_git_ui_css))
+        .route(
+            "/assets/desktop/file-browser.css",
+            get(desktop_file_browser_css),
+        )
+        .route("/assets/desktop/search.css", get(desktop_search_css))
+        .route("/assets/desktop/shortcuts.css", get(desktop_shortcuts_css))
+        .route("/assets/app-boot.js", get(app_boot_js))
+        .route("/assets/shared/core.js", get(shared_core_js))
+        .route("/assets/shared/actions.js", get(shared_actions_js))
+        .route("/assets/shared/file-icons.js", get(shared_file_icons_js))
+        .route("/assets/shared/file-icons.css", get(shared_file_icons_css))
+        .route("/assets/shared/colors.css", get(shared_colors_css))
+        .route(
+            "/assets/shared/file-widgets.css",
+            get(shared_file_widgets_css),
+        )
+        .route(
+            "/assets/shared/content-search.css",
+            get(shared_content_search_css),
+        )
+        .route("/assets/shared/file-tree.js", get(shared_file_tree_js))
+        .route(
+            "/assets/shared/file-content-search.js",
+            get(shared_file_content_search_js),
+        )
+        .route(
+            "/assets/shared/line-context.js",
+            get(shared_line_context_js),
+        )
+        .route(
+            "/assets/shared/workspace-search.js",
+            get(shared_workspace_search_js),
+        )
+        .route("/assets/vendor/codemirror.js", get(vendor_codemirror_js))
+        .route("/assets/shared/editor.js", get(shared_editor_js))
+        .route(
+            "/assets/shared/terminal-scroll.js",
+            get(shared_terminal_scroll_js),
+        )
+        .route(
+            "/assets/shared/terminal-fit.js",
+            get(shared_terminal_fit_js),
+        )
+        .route(
+            "/assets/shared/temp-terminal.js",
+            get(shared_temp_terminal_js),
+        )
+        .route("/assets/desktop/git-ui.js", get(desktop_git_ui_js))
+        .route(
+            "/assets/desktop/file-browser.js",
+            get(desktop_file_browser_js),
+        )
+        .route(
+            "/assets/desktop/directory-picker.js",
+            get(desktop_directory_picker_js),
+        )
+        .route("/assets/desktop/search.js", get(desktop_search_js))
+        .route("/assets/desktop/app.js", get(desktop_js))
+        .route("/assets/login.css", get(login_css))
+        .route("/assets/login.js", get(login_js))
+        .route("/assets/mobile/attention.js", get(mobile_attention_js))
+        .route("/assets/mobile/core.js", get(mobile_core_js))
+        .route("/assets/mobile/settings.js", get(mobile_settings_js))
+        .route("/assets/mobile/terminal.js", get(mobile_terminal_js))
+        .route("/assets/mobile/worktrees.js", get(mobile_worktrees_js))
+        .route(
+            "/assets/mobile/file-browser.js",
+            get(mobile_file_browser_js),
+        )
+        .route("/assets/mobile/app.css", get(mobile_css))
+        .route("/assets/mobile/app.js", get(mobile_js))
+        .route("/assets/xterm.js", get(xterm_js))
+        .route("/assets/xterm.css", get(xterm_css))
+        .route(
+            "/assets/fonts/JetBrainsMonoNerdFontMono-Regular.ttf",
+            get(jetbrains_mono_nerd_font),
+        )
+        .route("/assets/icons/help.svg", get(icon_help_svg))
+        .route("/assets/icons/settings.svg", get(icon_settings_svg))
+        .route("/assets/icons/theme-auto.svg", get(icon_theme_auto_svg))
+        .route("/assets/icons/git.svg", get(icon_git_svg))
+        .route("/assets/icons/terminal.svg", get(icon_terminal_svg))
+        .route(
+            "/assets/icons/chevron-right.svg",
+            get(icon_chevron_right_svg),
+        )
+        .route("/assets/icons/chevron-down.svg", get(icon_chevron_down_svg))
+        .route("/assets/icons/folder.svg", get(icon_folder_svg))
+        .route("/assets/icons/folder-up.svg", get(icon_folder_up_svg))
+        .route("/assets/icons/file.svg", get(icon_file_svg))
+        .route("/assets/icons/trash.svg", get(icon_trash_svg))
+        .route("/assets/icons/search.svg", get(icon_search_svg))
+        .route("/assets/icons/refresh.svg", get(icon_refresh_svg))
+        .route("/favicon.svg", get(favicon_svg))
+        .route("/favicon-attention.svg", get(favicon_attention_svg))
+        .route("/favicon-error.svg", get(favicon_error_svg))
 }
 
 pub(crate) async fn xterm_js() -> Response {
