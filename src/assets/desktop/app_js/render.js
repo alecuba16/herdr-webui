@@ -381,8 +381,8 @@ function workspaceDockBadges(w) {
   const branch = workspaceBranch(w);
   const gitLabel = branch || (isLinkedWorktree(w) ? "worktree" : "folder");
   return [
-    { kind: "files", label: `${fileCount}f`, title: `${fileCount} open file${fileCount === 1 ? "" : "s"}` },
-    { kind: "panels", label: `${panelCount}p`, title: `${panelCount} panel${panelCount === 1 ? "" : "s"}` },
+    { kind: "files", label: `${fileCount} file${fileCount === 1 ? "" : "s"}`, title: workspaceOpenFileTitle(w, fileCount) },
+    { kind: "panels", label: `${panelCount} panel${panelCount === 1 ? "" : "s"}`, title: `${panelCount} panel${panelCount === 1 ? "" : "s"}` },
     { kind: branch ? "branch" : isLinkedWorktree(w) ? "worktree" : "folder", label: gitLabel, title: branch ? `Git branch ${branch}` : isLinkedWorktree(w) ? "Linked worktree" : "Workspace folder" },
   ];
 }
@@ -392,6 +392,16 @@ function workspaceOpenFileCount(w) {
       return Math.max(0, Number(window.HerdrFileBrowser.openFileCount(w)) || 0);
   } catch (_) {}
   return 0;
+}
+function workspaceOpenFileTitle(w, fallbackCount = workspaceOpenFileCount(w)) {
+  const fallback = `${fallbackCount} open file${fallbackCount === 1 ? "" : "s"}`;
+  try {
+    if (window.HerdrFileBrowser && window.HerdrFileBrowser.openFileSummary) {
+      const summary = window.HerdrFileBrowser.openFileSummary(w, 3);
+      if (summary && summary.title) return summary.title;
+    }
+  } catch (_) {}
+  return fallback;
 }
 function workspacePanelCount(w) {
   const explicit = Number(w && w.tab_count);
