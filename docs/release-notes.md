@@ -1,5 +1,16 @@
 # Release notes
 
+## 0.2.70 Release Notes
+
+### Selector worktree inclusion
+
+- Includes the selector branch workspace dock changes that were missed by the previous local release.
+- Shows linked worktrees in the collapsed workspace dock and opens them from the dock bubble.
+- Keeps workspace dock metadata visible with branch, panel, and open-file badges.
+- Keeps the browser asset cache-busting behavior active after the selector branch merge.
+- Handles non-Git branch lookups without 502 errors and refreshes Git selector active state after closing or hiding the Git drawer.
+- Preserves the newer floating Cmd/Git/Files stack for open-file indicators, avoiding the older duplicate standalone open-files button from the selector worktree.
+
 ## 0.2.69 Release Notes
 
 ### Code quality and modularity pass
