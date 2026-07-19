@@ -344,7 +344,8 @@ function renderWorkspaceCard(w, extraClass) {
 function syncWorkspaceDock() {
   const dock = el("workspaceDock");
   if (!dock) return;
-  const visible = !!(sidebarCollapsed && state.workspaces && state.workspaces.length);
+  const items = workspaceDockItems();
+  const visible = !!(sidebarCollapsed && items.length);
   dock.hidden = !visible;
   if (!visible) {
     if (lastWorkspaceDockHtml) {
@@ -353,17 +354,55 @@ function syncWorkspaceDock() {
     }
     return;
   }
-  const html = renderWorkspaceDock();
+  const html = renderWorkspaceDock(items);
   if (html !== lastWorkspaceDockHtml) {
     dock.innerHTML = html;
     lastWorkspaceDockHtml = html;
   }
 }
-function renderWorkspaceDock() {
-  const ordered = state.workspaces.slice();
-  const selectedIndex = ordered.findIndex((w) => w.workspace_id === state.ws);
+function workspaceDockItems() {
+  const items = (state.workspaces || []).map((workspace) => ({
+    type: "workspace",
+    key: `workspace:${workspace.workspace_id}`,
+    workspace,
+  }));
+  const openWorktreePaths = new Set(
+    (state.workspaces || [])
+      .filter(isLinkedWorktree)
+      .map((workspace) => normalizedPathKey(workspaceDockWorktreePath(workspace)))
+      .filter(Boolean),
+  );
+  const openWorkspaceIds = new Set(
+    (state.workspaces || []).map((workspace) => workspace.workspace_id).filter(Boolean),
+  );
+  for (const worktree of state.worktrees || []) {
+    if (!worktree || !worktree.is_linked_worktree || !worktree.path) continue;
+    if (worktree.open_workspace_id && openWorkspaceIds.has(worktree.open_workspace_id)) continue;
+    const pathKey = normalizedPathKey(worktree.path);
+    if (!pathKey || openWorktreePaths.has(pathKey)) continue;
+    openWorktreePaths.add(pathKey);
+    items.push({ type: "worktree", key: `worktree:${pathKey}`, worktree });
+  }
+  return items;
+}
+function workspaceDockWorktreePath(workspace) {
+  const wt = worktreeForWorkspace(workspace);
+  return (wt && wt.path) || (workspace.worktree && workspace.worktree.checkout_path) || "";
+}
+function normalizedPathKey(path) {
+  return String(path || "").replace(/\/+$/, "");
+}
+function renderWorkspaceDock(items = workspaceDockItems()) {
+  const ordered = items.slice();
+  const selectedIndex = ordered.findIndex(
+    (item) => item.type === "workspace" && item.workspace.workspace_id === state.ws,
+  );
   if (selectedIndex > 0) ordered.unshift(ordered.splice(selectedIndex, 1)[0]);
-  return ordered.map(renderWorkspaceDockBubble).join("");
+  return ordered.map(renderWorkspaceDockItem).join("");
+}
+function renderWorkspaceDockItem(item) {
+  if (item.type === "worktree") return renderWorktreeDockBubble(item.worktree);
+  return renderWorkspaceDockBubble(item.workspace);
 }
 function renderWorkspaceDockBubble(w) {
   const selected = w.workspace_id === state.ws;
@@ -374,6 +413,22 @@ function renderWorkspaceDockBubble(w) {
   const classes = ["workspace-dock-bubble", selected ? "active" : "", status].filter(Boolean).join(" ");
   const encodedId = encodeURIComponent(w.workspace_id);
   return `<a class="${classes}" href="${escapeAttr(selectionPath(w.workspace_id))}" target="herdr-selection" title="${escapeAttr(tooltip)}" aria-label="${escapeAttr(`Switch to ${title}`)}" onclick="return navigateSelection(event,decodeURIComponent('${encodedId}'))"><span class="workspace-dock-dot">${statusDot(w.agent_status)}</span><span class="workspace-dock-title">${escapeHtml(title)}</span><span class="workspace-dock-badges">${badges.map((badge) => `<span class="workspace-dock-badge ${badge.kind}">${escapeHtml(badge.label)}</span>`).join("")}</span></a>`;
+}
+function renderWorktreeDockBubble(worktree) {
+  const title =
+    (typeof worktreeOpenRowTitle === "function" && worktreeOpenRowTitle(worktree)) ||
+    worktree.branch ||
+    pathBasename(worktree.path) ||
+    "worktree";
+  const branch = worktree.branch || (worktree.is_detached ? "detached" : "worktree");
+  const encodedPath = encodeURIComponent(worktree.path || "");
+  const tooltip = [
+    title,
+    `Git branch ${branch}`,
+    "Open linked worktree",
+    worktree.path,
+  ].filter(Boolean).join("\n");
+  return `<a class="workspace-dock-bubble worktree" href="#" title="${escapeAttr(tooltip)}" aria-label="${escapeAttr(`Open worktree ${title}`)}" onclick="return openDockWorktree(event,decodeURIComponent('${encodedPath}'))"><span class="workspace-dock-dot">↗</span><span class="workspace-dock-title">${escapeHtml(title)}</span><span class="workspace-dock-badges"><span class="workspace-dock-badge branch">${escapeHtml(branch)}</span><span class="workspace-dock-badge worktree">worktree</span></span></a>`;
 }
 function workspaceDockBadges(w) {
   const fileCount = workspaceOpenFileCount(w);

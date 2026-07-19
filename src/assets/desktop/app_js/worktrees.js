@@ -694,26 +694,60 @@ async function openDiscoveredWorktree(index) {
   const err = el("worktreeOpenError");
   err.textContent = "";
   try {
-    const r = await api("/api/worktrees/open", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        workspace_id: row.source_workspace_id || null,
-        cwd: row.source_workspace_id ? null : row.source_cwd,
-        path: row.path,
-        label: null,
-      }),
-    });
+    const r = await openWorktreeRow(row);
     closeWorktreeOpenModal();
-    const result = r.result || {};
-    go(
-      result.workspace.workspace_id,
-      result.tab && result.tab.tab_id,
-      result.root_pane && result.root_pane.pane_id,
-    );
+    goOpenedWorktreeResult(r);
   } catch (ex) {
     err.textContent = ex.message || String(ex);
   }
+}
+async function openDockWorktree(event, path) {
+  if (event) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
+  const row = findDockWorktree(path);
+  if (!row || !row.is_linked_worktree) return false;
+  try {
+    if (row.open_workspace_id && state.workspaces.some((w) => w.workspace_id === row.open_workspace_id)) {
+      go(row.open_workspace_id);
+      return false;
+    }
+    const r = await openWorktreeRow(row);
+    goOpenedWorktreeResult(r);
+  } catch (ex) {
+    console.warn("Failed to open worktree", ex);
+    openWorktreeOpenModal(row.source_cwd || row.source_repo_root || row.path, true);
+    const err = el("worktreeOpenError");
+    if (err) err.textContent = ex.message || String(ex);
+  }
+  return false;
+}
+function findDockWorktree(path) {
+  const target = String(path || "").replace(/\/+$/, "");
+  return (state.worktrees || []).find(
+    (row) => row && row.is_linked_worktree && String(row.path || "").replace(/\/+$/, "") === target,
+  );
+}
+async function openWorktreeRow(row) {
+  return api("/api/worktrees/open", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      workspace_id: row.source_workspace_id || null,
+      cwd: row.source_workspace_id ? null : row.source_cwd,
+      path: row.path,
+      label: null,
+    }),
+  });
+}
+function goOpenedWorktreeResult(response) {
+  const result = (response || {}).result || {};
+  go(
+    result.workspace.workspace_id,
+    result.tab && result.tab.tab_id,
+    result.root_pane && result.root_pane.pane_id,
+  );
 }
 async function removeDiscoveredWorktree(index) {
   const row = (state.openWorktreeRows || [])[index];
