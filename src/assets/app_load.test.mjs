@@ -1258,6 +1258,9 @@ describe("app bundle load", () => {
     );
     equal(ctx.stripTerminalQueryReplies("4;10;rgb:d7d7/ffff/d6d6\\prompt"), "prompt");
     equal(ctx.stripTerminalQueryReplies("\x1b]12;rgb:d7d7/ffff/d6d6\x07prompt"), "prompt");
+    equal(ctx.stripTerminalQueryReplies("\x1b[1;1Rprompt"), "prompt");
+    equal(ctx.stripTerminalQueryReplies("before\x1b[24;80Rafter"), "beforeafter");
+    equal(ctx.stripTerminalQueryReplies("\x1b[?1;1Rprompt"), "prompt");
     equal(ctx.stripTerminalQueryReplies("normal input"), "normal input");
   });
 
