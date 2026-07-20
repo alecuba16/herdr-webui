@@ -1,5 +1,13 @@
 # Release notes
 
+## 0.2.71 Release Notes
+
+### Terminal selection clipboard copy
+
+- Copies desktop terminal selections to the browser clipboard on mouse release, matching Jcode's native copy-on-select behavior.
+- Uses the browser clipboard API for normal copies, keeps the existing textarea fallback for user-activated mouseup/manual copy, and avoids focus-stealing fallback work from delayed xterm selection-change events.
+- Adds regression coverage for clipboard success, fallback, duplicate-selection suppression, and the mouseup versus delayed selection-change event wiring.
+
 ## 0.2.61 Release Notes
 
 ### Frontend parity and hot path efficiency
