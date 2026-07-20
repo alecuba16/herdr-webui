@@ -1271,14 +1271,18 @@ describe("app bundle load", () => {
     equal(ctx.stripTerminalQueryReplies("\x1b]12;rgb:d7d7/ffff/d6d6\x07prompt"), "prompt");
     equal(ctx.stripTerminalQueryReplies("\x1b]52;c;SGVsbG8=\x07prompt"), "prompt");
     equal(ctx.stripTerminalQueryReplies("\x1bP1+r436f=76616c7565\x1b\\prompt"), "prompt");
-    equal(ctx.stripTerminalQueryReplies("\x1b[0nprompt"), "prompt");
-    equal(ctx.stripTerminalQueryReplies("\x1b[?1;2cprompt"), "prompt");
-    equal(ctx.stripTerminalQueryReplies("\x1b[>0;276;0cprompt"), "prompt");
-    equal(ctx.stripTerminalQueryReplies("\x1b[4;24;80tprompt"), "prompt");
-    equal(ctx.stripTerminalQueryReplies("\x1b[?25;1$yprompt"), "prompt");
-    equal(ctx.stripTerminalQueryReplies("\x1b[1;1Rprompt"), "prompt");
-    equal(ctx.stripTerminalQueryReplies("before\x1b[24;80Rafter"), "beforeafter");
-    equal(ctx.stripTerminalQueryReplies("\x1b[?1;1Rprompt"), "prompt");
+    equal(ctx.stripTerminalQueryReplies("\x1b[0nprompt"), "\x1b[0nprompt");
+    equal(ctx.stripTerminalQueryReplies("\x1b[?1;2cprompt"), "\x1b[?1;2cprompt");
+    equal(ctx.stripTerminalQueryReplies("\x1b[>0;276;0cprompt"), "\x1b[>0;276;0cprompt");
+    equal(ctx.stripTerminalQueryReplies("\x1b[4;24;80tprompt"), "\x1b[4;24;80tprompt");
+    equal(ctx.stripTerminalQueryReplies("\x1b[?25;1$yprompt"), "\x1b[?25;1$yprompt");
+    equal(ctx.stripTerminalQueryReplies("\x1b[1;1Rprompt"), "\x1b[1;1Rprompt");
+    equal(ctx.stripTerminalQueryReplies("before\x1b[24;80Rafter"), "before\x1b[24;80Rafter");
+    equal(ctx.stripTerminalQueryReplies("\x1b[?1;1Rprompt"), "\x1b[?1;1Rprompt");
+    equal(ctx.stripTerminalQueryReplies(";1Rprompt"), "prompt");
+    equal(ctx.stripTerminalQueryReplies("24;80Rprompt"), "prompt");
+    equal(ctx.stripTerminalQueryReplies("\x1b["), "");
+    equal(ctx.stripTerminalQueryReplies("24;80Rprompt"), "\x1b[24;80Rprompt");
     equal(ctx.stripTerminalQueryReplies("normal input"), "normal input");
   });
 

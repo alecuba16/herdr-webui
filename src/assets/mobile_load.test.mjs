@@ -745,7 +745,7 @@ describe("mobile bundle load", () => {
     equal(ctx.lastSocket.sent.length, sentBeforeInput);
   });
 
-  it("filters xterm query replies from mobile terminal onData but not explicit paste", async () => {
+  it("passes CSI replies needed by terminal apps while filtering OSC input", async () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
     vm.runInContext(source, ctx);
     await ctx.HerdrMobile.refresh();
@@ -753,10 +753,17 @@ describe("mobile bundle load", () => {
 
     const decoder = new TextDecoder();
     ctx.lastTerminal.onDataCallback("\x1b[1;1Rok\x1b]52;c;SGVsbG8=\x07");
-    equal(decoder.decode(ctx.lastSocket.sent.at(-1)), "ok");
+    equal(decoder.decode(ctx.lastSocket.sent.at(-1)), "\x1b[1;1Rok");
     const sentCount = ctx.lastSocket.sent.length;
     ctx.lastTerminal.onDataCallback("\x1b[24;80R");
-    equal(ctx.lastSocket.sent.length, sentCount);
+    equal(ctx.lastSocket.sent.length, sentCount + 1);
+    equal(decoder.decode(ctx.lastSocket.sent.at(-1)), "\x1b[24;80R");
+    const splitSentCount = ctx.lastSocket.sent.length;
+    ctx.lastTerminal.onDataCallback("\x1b[");
+    equal(ctx.lastSocket.sent.length, splitSentCount);
+    ctx.lastTerminal.onDataCallback("24;80R");
+    equal(ctx.lastSocket.sent.length, splitSentCount + 1);
+    equal(decoder.decode(ctx.lastSocket.sent.at(-1)), "\x1b[24;80R");
 
     const terminal = ctx.document.getElementById("terminal");
     const paste = terminal._listeners.paste.at(-1);
