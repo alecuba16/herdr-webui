@@ -835,14 +835,15 @@
       const response = await api("/api/tabs", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ workspace_id: state.ws }),
+        body: JSON.stringify({ workspace_id: state.ws, focus: true }),
       });
       const tab = ((response.result || {}).tab || {}).tab_id;
+      const pane = ((response.result || {}).pane || {}).pane_id;
       if (tab) {
         state.tab = tab;
-        state.pane = null;
+        state.pane = pane || null;
         state.screen = "terminal";
-        history.pushState(null, "", selectionPath(state.ws, tab));
+        history.pushState(null, "", selectionPath(state.ws, tab, pane));
         mobileTerminal.destroy(true);
       }
       refresh();

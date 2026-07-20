@@ -12,6 +12,8 @@
       inputQueue = [],
       writeQueue = [],
       writeFlushPending = false,
+      terminalOutputControlCarry = "",
+      outputDecoder = new TextDecoder(),
       inputEncoder = new TextEncoder();
 
     // Below this size, a frame is written immediately instead of waiting for
@@ -222,6 +224,7 @@ function terminalLinksEnabled() {
       inputQueue = [];
       writeQueue = [];
       writeFlushPending = false;
+      terminalOutputControlCarry = "";
       terminalAttachPending = false;
       if (inputFlushTimer) {
         clearTimeout(inputFlushTimer);
@@ -360,10 +363,15 @@ function terminalLinksEnabled() {
             scrollToBottom();
           });
         };
+        const filtered = handleTerminalOutputControlSequences(data);
+        if (!filtered) {
+          done();
+          return;
+        }
         try {
-          term.write(data, done);
+          term.write(filtered, done);
         } catch (_) {
-          term.write(data);
+          term.write(filtered);
           done();
         }
         return;
@@ -389,6 +397,8 @@ function terminalLinksEnabled() {
     }
 
     function writeTerminalFrame(data) {
+      data = handleTerminalOutputControlSequences(data);
+      if (!data) return;
       // Only use the scroll-preserving callback when follow is actually
       // paused (user scrolled up). When following the bottom, skip the
       // callback entirely to avoid per-write overhead.
@@ -412,6 +422,46 @@ function terminalLinksEnabled() {
         term.write(data);
         if (done) done();
       }
+    }
+
+    function decodeBase64Utf8(value) {
+      try {
+        const binary = atob(String(value || ""));
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+        return outputDecoder.decode(bytes);
+      } catch (_) {
+        return "";
+      }
+    }
+
+    function copyOsc52ClipboardPayload(encoded) {
+      const text = decodeBase64Utf8(encoded);
+      if (!text) return;
+      const clipboard = globalThis.navigator && globalThis.navigator.clipboard;
+      if (!clipboard || typeof clipboard.writeText !== "function") return;
+      Promise.resolve(clipboard.writeText(text)).catch(() => {
+        console.warn("mobile terminal OSC 52 clipboard write was blocked by the browser");
+      });
+    }
+
+    function handleTerminalOutputControlSequences(data) {
+      const text = typeof data === "string" ? data : outputDecoder.decode(data);
+      let combined = terminalOutputControlCarry ? terminalOutputControlCarry + text : text;
+      terminalOutputControlCarry = "";
+      let changed = combined !== text;
+      combined = combined.replace(/\x1b\]52;[A-Za-z0-9]*;([A-Za-z0-9+/=]*)(?:\x07|\x1b\\)/g, (_seq, encoded) => {
+        changed = true;
+        copyOsc52ClipboardPayload(encoded);
+        return "";
+      });
+      const pending = combined.lastIndexOf("\x1b]52;");
+      if (pending >= 0 && combined.indexOf("\x07", pending) < 0 && combined.indexOf("\x1b\\", pending) < 0) {
+        terminalOutputControlCarry = combined.slice(pending).slice(0, 8192);
+        combined = combined.slice(0, pending);
+        changed = true;
+      }
+      return changed ? combined : data;
     }
 
     function scrollToBottom() {

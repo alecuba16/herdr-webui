@@ -224,6 +224,44 @@ function selectedTerminalText() {
   }
 }
 
+function decodeBase64Utf8(value) {
+  try {
+    const binary = atob(String(value || ""));
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+    return outputDecoder.decode(bytes);
+  } catch (e) {
+    return "";
+  }
+}
+
+function copyOsc52ClipboardPayload(encoded) {
+  const text = decodeBase64Utf8(encoded);
+  if (!text) return;
+  writeTextToClipboard(text, { allowFallback: false }).then((copied) => {
+    if (!copied) console.warn("terminal OSC 52 clipboard write was blocked by the browser");
+  });
+}
+
+function handleTerminalOutputControlSequences(data) {
+  const text = typeof data === "string" ? data : outputDecoder.decode(data);
+  let combined = terminalOutputControlCarry ? terminalOutputControlCarry + text : text;
+  terminalOutputControlCarry = "";
+  let changed = combined !== text;
+  combined = combined.replace(/\x1b\]52;[A-Za-z0-9]*;([A-Za-z0-9+/=]*)(?:\x07|\x1b\\)/g, (_seq, encoded) => {
+    changed = true;
+    copyOsc52ClipboardPayload(encoded);
+    return "";
+  });
+  const pending = combined.lastIndexOf("\x1b]52;");
+  if (pending >= 0 && combined.indexOf("\x07", pending) < 0 && combined.indexOf("\x1b\\", pending) < 0) {
+    terminalOutputControlCarry = combined.slice(pending).slice(0, 8192);
+    combined = combined.slice(0, pending);
+    changed = true;
+  }
+  return changed ? combined : data;
+}
+
 async function writeTextToClipboard(text, options = {}) {
   if (!text) return false;
   try {
@@ -577,6 +615,11 @@ function followTerminalAfterWrite() {
   requestAnimationFrame(maybeAutoScrollToBottom);
 }
 function writeTerminalFrame(data, onDone) {
+  data = handleTerminalOutputControlSequences(data);
+  if (!data) {
+    if (onDone) onDone();
+    return;
+  }
   // For large frames (the initial attach repaint), use the write callback
   // to know when xterm.js finishes parsing. This avoids the caller
   // revealing the terminal while xterm's WriteBuffer is still in its

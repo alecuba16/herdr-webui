@@ -3174,6 +3174,7 @@ async fn remove_worktree(
 struct CreateTabRequest {
     workspace_id: Option<String>,
     label: Option<String>,
+    focus: Option<bool>,
 }
 
 async fn create_tab(
@@ -3187,7 +3188,7 @@ async fn create_tab(
     }
     proxy_request(
         &api_for_headers(&state, &headers),
-        json!({ "id": "web:tab:create", "method": "tab.create", "params": { "workspace_id": body.workspace_id, "focus": false, "label": body.label, "env": {} } }),
+        json!({ "id": "web:tab:create", "method": "tab.create", "params": { "workspace_id": body.workspace_id, "focus": body.focus.unwrap_or(false), "label": body.label, "env": {} } }),
     )
 }
 

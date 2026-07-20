@@ -38,6 +38,7 @@ function context(pathname = "/", options = {}) {
   const sockets = [];
   const timers = [];
   const listeners = {};
+  const clipboardWrites = [];
   let timerSeq = 0;
   const navButtons = ["home", "search", "terminal", "more"].map(
     (screen) => Object.assign(element(), { dataset: { screen } }),
@@ -48,6 +49,8 @@ function context(pathname = "/", options = {}) {
   };
   const ctx = {
     console,
+    atob: (value) => Buffer.from(String(value), "base64").toString("binary"),
+    TextDecoder,
     TextEncoder,
     Uint8Array,
     setTimeout(callback, delay = 0) {
@@ -73,9 +76,11 @@ function context(pathname = "/", options = {}) {
     history: {
       pushState(_state, _title, path) {
         historyCalls.push({ type: "push", path });
+        ctx.location.pathname = path;
       },
       replaceState(_state, _title, path) {
         historyCalls.push({ type: "replace", path });
+        ctx.location.pathname = path;
       },
       calls: historyCalls,
     },
@@ -88,6 +93,13 @@ function context(pathname = "/", options = {}) {
     localStorage: {
       getItem: (key) => localStorage.get(key) || null,
       setItem: (key, value) => localStorage.set(key, String(value)),
+    },
+    navigator: {
+      clipboard: {
+        writeText: async (text) => {
+          clipboardWrites.push(text);
+        },
+      },
     },
     confirm: options.confirm || (() => true),
     window: null,
@@ -157,7 +169,7 @@ function context(pathname = "/", options = {}) {
         return {
           ok: true,
           status: 200,
-          json: async () => ({ result: { tab: { tab_id: "w1:t3" } } }),
+          json: async () => ({ result: { tab: { tab_id: "w1:t3" }, pane: { pane_id: "w1:p3" } } }),
         };
       if (String(url).startsWith("/api/git-ui/status"))
         return {
@@ -267,6 +279,7 @@ function context(pathname = "/", options = {}) {
     },
   };
   ctx.terminalStats = terminalStats;
+  ctx.clipboardWrites = clipboardWrites;
   ctx.requests = requests;
   ctx.sockets = sockets;
   ctx.navButtons = navButtons;
@@ -671,6 +684,22 @@ describe("mobile bundle load", () => {
     ok(ctx.lastTerminal.scrolledToBottom);
   });
 
+  it("copies mobile OSC 52 terminal output without rendering the control sequence", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    ctx.HerdrMobile.showScreen("terminal");
+
+    const encoded = Buffer.from("mobile copied").toString("base64");
+    ctx.lastSocket.onmessage({ data: `before\x1b]52;c;${encoded}` });
+    equal(ctx.lastTerminal.writes.at(-1), "before");
+    ctx.lastSocket.onmessage({ data: "\x07after" });
+    equal(ctx.lastTerminal.writes.at(-1), "after");
+    await Promise.resolve();
+    await Promise.resolve();
+    equal(ctx.clipboardWrites.at(-1), "mobile copied");
+  });
+
   it("captures mobile terminal paste before xterm native paste", () => {
     match(source, /addEventListener\(\s*"paste"/);
     match(source, /stopImmediatePropagation\(\)/);
@@ -795,7 +824,28 @@ describe("mobile bundle load", () => {
   });
 
   it("creates new panel in selected workspace", async () => {
-    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1", {
+      tabs: ({ requests }) =>
+        requests.some((request) => request.url === "/api/tabs" && request.opt.method === "POST")
+          ? [
+              { workspace_id: "w1", tab_id: "w1:t1", number: 1 },
+              { workspace_id: "w1", tab_id: "w1:t3", number: 3, focused: true },
+            ]
+          : [
+              { workspace_id: "w1", tab_id: "w1:t1", number: 1 },
+              { workspace_id: "w1", tab_id: "w1:t2", number: 2 },
+            ],
+      panes: ({ requests }) =>
+        requests.some((request) => request.url === "/api/tabs" && request.opt.method === "POST")
+          ? [
+              { tab_id: "w1:t1", pane_id: "w1:p1", terminal_id: "term1" },
+              { tab_id: "w1:t3", pane_id: "w1:p3", terminal_id: "term3", focused: true },
+            ]
+          : [
+              { tab_id: "w1:t1", pane_id: "w1:p1", terminal_id: "term1" },
+              { tab_id: "w1:t2", pane_id: "w1:p2", terminal_id: "term2" },
+            ],
+    });
     vm.runInContext(source, ctx);
     await ctx.HerdrMobile.refresh();
     await ctx.HerdrMobile.createPanel();
@@ -804,9 +854,14 @@ describe("mobile bundle load", () => {
         (request) =>
           request.url === "/api/tabs" &&
           request.opt.method === "POST" &&
-          JSON.parse(request.opt.body).workspace_id === "w1",
+          JSON.parse(request.opt.body).workspace_id === "w1" &&
+          JSON.parse(request.opt.body).focus === true,
       ),
     );
+    const selection = ctx.HerdrMobile.currentSelection();
+    equal(selection.ws, "w1");
+    equal(selection.tab, "w1:t3");
+    equal(selection.pane, "w1:p3");
   });
 
   it("renders mobile close current panel controls", async () => {

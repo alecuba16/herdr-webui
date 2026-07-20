@@ -970,10 +970,11 @@ async function newTab() {
   const r = await api("/api/tabs", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ workspace_id: state.ws }),
+    body: JSON.stringify({ workspace_id: state.ws, focus: true }),
   });
-  const tab = r.result.tab.tab_id;
-  go(state.ws, tab);
+  const tab = ((r.result || {}).tab || {}).tab_id;
+  const pane = ((r.result || {}).pane || {}).pane_id;
+  if (tab) go(state.ws, tab, pane);
 }
 function startWorkspaceRename(id, label) {
   state.editingWorkspace = id;
