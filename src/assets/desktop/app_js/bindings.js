@@ -570,7 +570,6 @@ function editableEventTarget(e) {
   );
 }
 el("copyMenu").onclick = copySelection;
-el("pasteMenu").onclick = pasteClipboard;
 document.addEventListener("click", (e) => {
   const menu = el("clipboardMenu");
   if (menu && !menu.contains(e.target)) hideClipboardMenu();
@@ -593,10 +592,10 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     copySelection();
   } else if (pasteKey) {
-    e.preventDefault();
-    pasteClipboard();
+    focusTerminal();
   }
 });
+document.addEventListener("paste", (e) => handleTerminalPasteEvent(e));
 window.onpopstate = refresh;
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) {

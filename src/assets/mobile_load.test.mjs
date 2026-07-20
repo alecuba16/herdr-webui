@@ -288,8 +288,8 @@ function context(pathname = "/", options = {}) {
     const due = timers.splice(0).filter((timer) => !timer.cleared);
     for (const timer of due) await timer.callback();
   };
-  ctx.dispatchDocumentEvent = (event) => {
-    for (const listener of listeners[event] || []) listener();
+  ctx.dispatchDocumentEvent = (event, payload = {}) => {
+    for (const listener of listeners[event] || []) listener(payload);
   };
   ctx.window = Object.assign(ctx, {
     matchMedia: () => ({ matches: false }),
@@ -706,8 +706,43 @@ describe("mobile bundle load", () => {
     match(source, /sendPasteToTerminal\(text\)/);
     match(source, /helpers\.terminalPasteInput\(text, false\)/);
     match(source, /sendInputData\(pasteInput, \{ allowTerminalReplies: true \}\)/);
+    match(source, /document\.addEventListener\("paste", \(event\) => handleTerminalPasteEvent\(event\)\)/);
+    ok(!source.includes("navigator.clipboard.readText"));
     ok(!source.includes('JSON.stringify({ type: "paste"'));
     ok(!source.includes('.paste(text)'));
+  });
+
+  it("pastes mobile terminal text from native browser paste events and leaves inputs native", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    ctx.HerdrMobile.showScreen("terminal");
+
+    const decoder = new TextDecoder();
+    const event = {
+      target: ctx.document.body,
+      defaultPrevented: false,
+      clipboardData: { getData: (type) => (type === "text/plain" ? "mobile native paste" : "") },
+      preventDefault() { this.defaultPrevented = true; },
+      stopPropagation() { this.stopped = true; },
+    };
+    ctx.dispatchDocumentEvent("paste", event);
+
+    equal(event.defaultPrevented, true);
+    equal(decoder.decode(ctx.lastSocket.sent.at(-1)), "mobile native paste");
+
+    const inputEvent = {
+      target: { tagName: "TEXTAREA" },
+      defaultPrevented: false,
+      clipboardData: { getData: () => "input native paste" },
+      preventDefault() { this.defaultPrevented = true; },
+      stopPropagation() { this.stopped = true; },
+    };
+    const sentBeforeInput = ctx.lastSocket.sent.length;
+    ctx.dispatchDocumentEvent("paste", inputEvent);
+
+    equal(inputEvent.defaultPrevented, false);
+    equal(ctx.lastSocket.sent.length, sentBeforeInput);
   });
 
   it("filters xterm query replies from mobile terminal onData but not explicit paste", async () => {

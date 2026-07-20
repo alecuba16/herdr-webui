@@ -129,13 +129,7 @@ function connectTerminal() {
   if (!termScrollBound) {
     el("terminalShell").addEventListener(
       "paste",
-      (e) => {
-        const text = e.clipboardData && e.clipboardData.getData("text/plain");
-        if (!text) return;
-        e.preventDefault();
-        e.stopImmediatePropagation();
-        sendPasteToTerminal(text);
-      },
+      (e) => handleTerminalPasteEvent(e, { force: true, stopImmediate: true }),
       true,
     );
     el("terminalShell").addEventListener(
@@ -697,15 +691,22 @@ async function copySelection() {
   hideClipboardMenu();
   return true;
 }
-async function pasteClipboard() {
-  let text = "";
-  try {
-    text = await navigator.clipboard.readText();
-  } catch (e) {
-    text = prompt("Paste text") || "";
-  }
-  if (text) sendPasteToTerminal(text);
-  hideClipboardMenu();
+function editableClipboardTarget(target) {
+  return (
+    target &&
+    (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName))
+  );
+}
+function handleTerminalPasteEvent(event, options = {}) {
+  if (!event || event.defaultPrevented) return false;
+  if (!options.force && editableClipboardTarget(event.target)) return false;
+  const text = event.clipboardData && event.clipboardData.getData("text/plain");
+  if (!text || !termWs || termWs.readyState !== 1) return false;
+  event.preventDefault();
+  if (options.stopImmediate && event.stopImmediatePropagation) event.stopImmediatePropagation();
+  else if (event.stopPropagation) event.stopPropagation();
+  sendPasteToTerminal(text);
+  return true;
 }
 function sendInputData(data, options = {}) {
   if (!termWs || termWs.readyState !== 1 || !data) return;
