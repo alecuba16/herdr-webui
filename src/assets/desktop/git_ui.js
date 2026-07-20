@@ -1347,6 +1347,31 @@
     return "";
   }
 
+  function aheadBehindHint(s) {
+    const ahead = Number(s.ahead) || 0;
+    const behind = Number(s.behind) || 0;
+    const upstream = String(s.upstream || "").trim();
+    if (!upstream) return "";
+    const parts = [];
+    if (ahead > 0) parts.push(`ahead ${ahead} (local has commits not on ${upstream})`);
+    if (behind > 0) parts.push(`behind ${behind} (${upstream} has commits not on local)`);
+    if (!parts.length) parts.push(`in sync with ${upstream}`);
+    return parts.join(" · ");
+  }
+
+  function renderAheadBehind(s, esc) {
+    const upstream = String(s.upstream || "").trim();
+    if (!upstream) return "";
+    const ahead = Number(s.ahead) || 0;
+    const behind = Number(s.behind) || 0;
+    const title = aheadBehindHint(s);
+    const badges = [];
+    if (ahead > 0) badges.push(`<span class="git-ui-ahead-behind ahead" title="${esc(title)}">↑${esc(String(ahead))}</span>`);
+    if (behind > 0) badges.push(`<span class="git-ui-ahead-behind behind" title="${esc(title)}">↓${esc(String(behind))}</span>`);
+    if (!badges.length) badges.push(`<span class="git-ui-ahead-behind synced" title="${esc(title)}">✓</span>`);
+    return `<span class="git-ui-ahead-behind-group" title="${esc(title)}">${badges.join("")}</span>`;
+  }
+
   function renderSide() {
     const view = active() || {};
     const s = view.status || {};
@@ -1382,7 +1407,8 @@
       ? `<button class="git-ui-refresh-icon git-ui-current-changes-icon" title="Return to current changes" aria-label="Return to current changes" onclick="HerdrGitUi.latestChanges()"><span></span></button>`
       : "";
     const refreshButton = appRefreshIconButton({ className: "git-ui-refresh-icon", title: titleWithGitShortcut("Refresh", "refresh"), label: titleWithGitShortcut("Refresh Git state", "refresh"), spinning: !!view.refreshAnimating, onclick: "HerdrGitUi.refreshWithSpin()" });
-    return `<aside class="git-ui-side" onscroll="HerdrGitUi.sideScroll(this)"><div class="git-ui-head"><div class="git-ui-head-main"><div class="git-ui-title-row"><div class="git-ui-title">Git</div><div class="git-ui-title-actions">${returnToCurrentChanges}${returnToWorkspace}${refreshButton}</div></div><div class="git-ui-subtitle">${esc(s.state || "closed")} · ${esc(compactPath(s.repo_path))}</div><button class="git-ui-branch-pill" title="${esc(titleWithGitShortcut("Change Git directory or switch branch", "branch"))}" onclick="HerdrGitUi.openBranchModal()"><span>${esc(branchLabel)}</span><b>↗</b></button></div></div>${error}<div class="git-ui-toolbar git-ui-view-toolbar">${renderGitViewTabs(tabs, view.tab)}</div>${actions}${fileList}${sideBottom}</aside>`;
+    const aheadBehind = cleanupOnly ? "" : renderAheadBehind(s, esc);
+    return `<aside class="git-ui-side" onscroll="HerdrGitUi.sideScroll(this)"><div class="git-ui-head"><div class="git-ui-head-main"><div class="git-ui-title-row"><div class="git-ui-title">Git</div><div class="git-ui-title-actions">${returnToCurrentChanges}${returnToWorkspace}${refreshButton}</div></div><div class="git-ui-subtitle">${esc(s.state || "closed")} · ${esc(compactPath(s.repo_path))}</div><button class="git-ui-branch-pill" title="${esc(titleWithGitShortcut("Change Git directory or switch branch", "branch"))}" onclick="HerdrGitUi.openBranchModal()"><span>${esc(branchLabel)}</span>${aheadBehind}<b>↗</b></button></div></div>${error}<div class="git-ui-toolbar git-ui-view-toolbar">${renderGitViewTabs(tabs, view.tab)}</div>${actions}${fileList}${sideBottom}</aside>`;
   }
 
   function renderDiffLayoutSideToggle(view) {
@@ -1862,6 +1888,7 @@
       filters: view.logFilters || {},
       esc,
       arg,
+      status: view.status || {},
     }));
     updateGitLogStickyOffsets();
     if (view.pendingLogScrollHash) {

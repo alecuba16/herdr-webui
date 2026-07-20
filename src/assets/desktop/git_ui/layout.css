@@ -128,6 +128,39 @@
 .git-ui-branch-pill:hover {
   background: rgba(56, 139, 253, 0.2);
 }
+.git-ui-ahead-behind-group {
+  align-items: center;
+  display: inline-flex;
+  flex: none;
+  gap: 3px;
+  margin-left: 2px;
+}
+.git-ui-ahead-behind {
+  align-items: center;
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: 10px;
+  font-weight: 800;
+  gap: 1px;
+  line-height: 1;
+  padding: 1px 5px;
+  white-space: nowrap;
+}
+.git-ui-ahead-behind.ahead {
+  background: color-mix(in srgb, #34d399 18%, transparent);
+  border: 1px solid color-mix(in srgb, #34d399 60%, var(--border2));
+  color: #34d399;
+}
+.git-ui-ahead-behind.behind {
+  background: color-mix(in srgb, #fbbf24 18%, transparent);
+  border: 1px solid color-mix(in srgb, #fbbf24 60%, var(--border2));
+  color: #fbbf24;
+}
+.git-ui-ahead-behind.synced {
+  background: color-mix(in srgb, var(--muted) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--muted) 40%, var(--border2));
+  color: var(--muted);
+}
 .git-ui-tabs,
 .git-ui-actions {
   display: flex;
