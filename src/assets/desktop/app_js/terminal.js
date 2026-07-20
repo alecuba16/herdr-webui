@@ -686,12 +686,10 @@ function sendInputData(data, options = {}) {
 }
 
 function stripTerminalQueryReplies(data) {
-  return String(data || "")
-    .replace(
-      /(?:\x1b\])?(?:(?:10|11|12)|4;\d{1,3});rgb:[0-9a-fA-F]{1,4}\/[0-9a-fA-F]{1,4}\/[0-9a-fA-F]{1,4}(?:\x07|\x1b\\|\\)?/g,
-      "",
-    )
-    .replace(/\x1b\[\??\d{1,4};\d{1,4}R/g, "");
+  const filter = globalThis.HerdrTerminalFilter;
+  return filter && filter.stripTerminalQueryReplies
+    ? filter.stripTerminalQueryReplies(data)
+    : String(data || "");
 }
 
 function sendPasteToTerminal(text) {

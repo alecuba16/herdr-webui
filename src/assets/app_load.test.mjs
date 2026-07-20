@@ -148,6 +148,8 @@ describe("app bundle load", () => {
       "\n" +
       readFileSync(new URL("./shared/terminal_fit.js", import.meta.url), "utf8") +
       "\n" +
+      readFileSync(new URL("./shared/terminal_filter.js", import.meta.url), "utf8") +
+      "\n" +
       readFileSync(new URL("./desktop/search.js", import.meta.url), "utf8") +
       "\n" +
       desktopAppSource;
@@ -1244,7 +1246,7 @@ describe("app bundle load", () => {
     );
   });
 
-  it("filters OSC color query replies before terminal input reaches the backend", () => {
+  it("filters xterm query replies before terminal input reaches the backend", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
 
@@ -1258,6 +1260,13 @@ describe("app bundle load", () => {
     );
     equal(ctx.stripTerminalQueryReplies("4;10;rgb:d7d7/ffff/d6d6\\prompt"), "prompt");
     equal(ctx.stripTerminalQueryReplies("\x1b]12;rgb:d7d7/ffff/d6d6\x07prompt"), "prompt");
+    equal(ctx.stripTerminalQueryReplies("\x1b]52;c;SGVsbG8=\x07prompt"), "prompt");
+    equal(ctx.stripTerminalQueryReplies("\x1bP1+r436f=76616c7565\x1b\\prompt"), "prompt");
+    equal(ctx.stripTerminalQueryReplies("\x1b[0nprompt"), "prompt");
+    equal(ctx.stripTerminalQueryReplies("\x1b[?1;2cprompt"), "prompt");
+    equal(ctx.stripTerminalQueryReplies("\x1b[>0;276;0cprompt"), "prompt");
+    equal(ctx.stripTerminalQueryReplies("\x1b[4;24;80tprompt"), "prompt");
+    equal(ctx.stripTerminalQueryReplies("\x1b[?25;1$yprompt"), "prompt");
     equal(ctx.stripTerminalQueryReplies("\x1b[1;1Rprompt"), "prompt");
     equal(ctx.stripTerminalQueryReplies("before\x1b[24;80Rafter"), "beforeafter");
     equal(ctx.stripTerminalQueryReplies("\x1b[?1;1Rprompt"), "prompt");
