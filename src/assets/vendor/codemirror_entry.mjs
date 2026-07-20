@@ -153,6 +153,8 @@ function gitOverlayExtensions(opts) {
   const extensions = [];
   const blame = Array.isArray(opts.blame) ? opts.blame : [];
   const hunks = Array.isArray(opts.hunks) ? opts.hunks : [];
+  const lineClasses = Array.isArray(opts.lineClasses) ? opts.lineClasses : [];
+  const dynamicLineClasses = typeof opts.dynamicLineClasses === "function" ? opts.dynamicLineClasses : null;
   if (blame.length) {
     extensions.push(gutter({
       class: "cm-herdr-blame-gutter",
@@ -184,6 +186,23 @@ function gitOverlayExtensions(opts) {
       },
     }));
   }
+  if (lineClasses.length || dynamicLineClasses) {
+    const currentLineClasses = (view) => {
+      if (!dynamicLineClasses) return lineClasses;
+      const dynamic = dynamicLineClasses(view.state.doc.toString()) || [];
+      return lineClasses.concat(Array.isArray(dynamic) ? dynamic : []);
+    };
+    extensions.push(ViewPlugin.fromClass(class {
+      constructor(view) {
+        this.lineClasses = currentLineClasses(view);
+        this.decorations = buildLineClassDecorations(view, this.lineClasses);
+      }
+      update(update) {
+        if (update.docChanged) this.lineClasses = currentLineClasses(update.view);
+        if (update.docChanged || update.viewportChanged) this.decorations = buildLineClassDecorations(update.view, this.lineClasses);
+      }
+    }, { decorations: (plugin) => plugin.decorations }));
+  }
   return extensions;
 }
 
@@ -212,6 +231,23 @@ function buildSearchHighlightDecorations(view, highlight, lineNo) {
       if (to > from) decorations.push(Decoration.mark({ class: "cm-herdr-search-hit" }).range(from, to));
     }
   } catch (_) {}
+  return Decoration.set(decorations, true);
+}
+
+function buildLineClassDecorations(view, lineClasses) {
+  const decorations = [];
+  for (const item of lineClasses) {
+    const fromLine = Math.max(1, Number(item.fromLine || item.line || 1));
+    const toLine = Math.max(fromLine, Number(item.toLine || item.endLine || fromLine));
+    const className = item.className || item.class || "";
+    if (!className) continue;
+    try {
+      for (let lineNo = fromLine; lineNo <= Math.min(toLine, view.state.doc.lines); lineNo++) {
+        const line = view.state.doc.line(lineNo);
+        decorations.push(Decoration.line({ class: className }).range(line.from));
+      }
+    } catch (_) {}
+  }
   return Decoration.set(decorations, true);
 }
 

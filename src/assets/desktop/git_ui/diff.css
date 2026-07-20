@@ -65,9 +65,19 @@
 .git-ui-hunk-edit-mount .cm-editor {
   height: 100%;
 }
+.git-ui-hunk-edit-mount .cm-scroller {
+  overflow-x: auto;
+}
+.git-ui-hunk-edit-mount .cm-content,
+.git-ui-hunk-edit-mount .cm-line {
+  white-space: pre;
+}
+.git-ui-hunk-edit-mount .cm-content {
+  min-width: max-content;
+}
 .git-ui-hunk-old-mount .cm-content,
-.git-ui-hunk-old-mount .herdr-editor-code {
-  border-left: 4px solid #da3633;
+.git-ui-hunk-current-mount .cm-content {
+  border-left: 0;
 }
 .git-ui-hunk-old-mount .cm-scroller {
   flex-direction: row-reverse;
@@ -75,21 +85,6 @@
 .git-ui-hunk-old-mount .cm-gutters {
   border-left: 1px solid var(--border);
   border-right: 0;
-}
-.git-ui-hunk-current-mount .cm-content,
-.git-ui-hunk-current-mount .herdr-editor-code {
-  border-left: 4px solid #1b7c3d;
-}
-.git-ui-hunk-old-mount .cm-herdr-hunk-del,
-.git-ui-hunk-current-mount .cm-herdr-hunk-del {
-  background: rgba(248, 81, 73, 0.14);
-}
-.git-ui-hunk-old-mount .cm-herdr-hunk-add,
-.git-ui-hunk-current-mount .cm-herdr-hunk-add {
-  background: rgba(46, 160, 67, 0.14);
-}
-.git-ui-hunk-edit-mount .cm-herdr-hunk-actions {
-  display: none;
 }
 .git-ui-split-editor {
   display: grid;
@@ -319,27 +314,36 @@
   border-right: 1px solid var(--border);
   border-top: 1px solid var(--border);
 }
-.git-ui-hunk-scroll {
+.git-ui-hunk-viewport {
+  overflow: hidden;
+}
+.git-ui-hunk-xscroll {
+  border-left: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+  height: 13px;
   overflow-x: auto;
   overflow-y: hidden;
 }
+.git-ui-hunk-xscroll.no-scroll {
+  display: none;
+}
+.git-ui-hunk-xscroll-inner {
+  height: 1px;
+  min-width: 100%;
+}
 .git-ui-diff-row {
   display: grid;
-  grid-template-columns: 26px min-content 132px min-content;
+  grid-template-columns: 26px minmax(0, 1fr) 132px minmax(0, 1fr);
   font-family: var(--mono-font);
   font-size: 12px;
   line-height: 1.45;
-  width: max-content;
-  min-width: 100%;
 }
 .git-ui-unified-row {
   display: grid;
-  grid-template-columns: 26px 74px 34px min-content;
+  grid-template-columns: 26px 74px 34px minmax(0, 1fr);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
   line-height: 1.45;
-  width: max-content;
-  min-width: 100%;
 }
 .git-ui-unified-lines {
   background: var(--panel);
@@ -380,6 +384,8 @@
   user-select: none;
 }
 .git-ui-unified-text {
+  min-width: 0;
+  overflow: hidden;
   white-space: pre;
 }
 .git-ui-context-cell {
@@ -462,8 +468,16 @@
   color: var(--accent);
 }
 .git-ui-code {
+  box-sizing: border-box;
+  min-width: 0;
+  overflow: hidden;
   padding: 1px 8px;
   white-space: pre;
+}
+.git-ui-code-text {
+  display: inline-block;
+  transform: translateX(calc(-1 * var(--git-ui-hunk-scroll-left, 0px)));
+  will-change: transform;
 }
 .git-ui-change-start .git-ui-code-old,
 .git-ui-change-start .git-ui-code-new,
@@ -508,4 +522,17 @@
   border-radius: 2px;
   color: #111827;
   padding: 0 1px;
+}
+.git-ui-hunk-old-mount .git-ui-side-line-del,
+.git-ui-hunk-current-mount .git-ui-side-line-del {
+  background: rgba(248, 81, 73, 0.14);
+  border-left: 4px solid #da3633;
+}
+.git-ui-hunk-old-mount .git-ui-side-line-add,
+.git-ui-hunk-current-mount .git-ui-side-line-add {
+  background: rgba(46, 160, 67, 0.14);
+  border-left: 4px solid #1b7c3d;
+}
+.git-ui-hunk-current-mount .git-ui-side-line-edit {
+  background: rgba(251, 191, 36, 0.22);
 }
