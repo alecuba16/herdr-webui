@@ -1574,8 +1574,8 @@
     });
   }
 
-  function sideEditorPreviousLineClasses(hunk) {
-    const types = hunk.oldLineTypes || [];
+  function sideEditorOriginalLineClasses(hunk, side) {
+    const types = side === "old" ? (hunk.oldLineTypes || []) : (hunk.newLineTypes || []);
     const classForType = { del: "git-ui-side-line-del", add: "git-ui-side-line-add" };
     const result = [];
     let i = 0;
@@ -2318,7 +2318,7 @@
           content: textarea.value,
           readonly: mount.dataset.readonly === "true",
           hideFind: true,
-          lineClasses: side === "old" ? sideEditorPreviousLineClasses(hunk) : [],
+          lineClasses: sideEditorOriginalLineClasses(hunk, side),
           dynamicLineClasses: side === "current" ? function (value) { return changedLineClasses(baseContent, value); } : null,
           onChange: side === "old" ? null : function (value) { textarea.value = value; },
         });

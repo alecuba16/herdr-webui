@@ -76,8 +76,8 @@
   min-width: max-content;
 }
 .git-ui-hunk-old-mount .cm-content,
-.git-ui-hunk-old-mount .herdr-editor-code {
-  border-left: 4px solid #da3633;
+.git-ui-hunk-current-mount .cm-content {
+  border-left: 0;
 }
 .git-ui-hunk-old-mount .cm-scroller {
   flex-direction: row-reverse;
@@ -85,11 +85,6 @@
 .git-ui-hunk-old-mount .cm-gutters {
   border-left: 1px solid var(--border);
   border-right: 0;
-}
-.git-ui-hunk-current-mount .cm-content,
-.git-ui-hunk-current-mount .herdr-editor-code {
-  background: rgba(251, 191, 36, 0.05);
-  border-left: 4px solid #fbbf24;
 }
 .git-ui-split-editor {
   display: grid;
@@ -528,11 +523,15 @@
   color: #111827;
   padding: 0 1px;
 }
-.git-ui-hunk-old-mount .git-ui-side-line-del {
+.git-ui-hunk-old-mount .git-ui-side-line-del,
+.git-ui-hunk-current-mount .git-ui-side-line-del {
   background: rgba(248, 81, 73, 0.14);
+  border-left: 4px solid #da3633;
 }
-.git-ui-hunk-old-mount .git-ui-side-line-add {
+.git-ui-hunk-old-mount .git-ui-side-line-add,
+.git-ui-hunk-current-mount .git-ui-side-line-add {
   background: rgba(46, 160, 67, 0.14);
+  border-left: 4px solid #1b7c3d;
 }
 .git-ui-hunk-current-mount .git-ui-side-line-edit {
   background: rgba(251, 191, 36, 0.22);
