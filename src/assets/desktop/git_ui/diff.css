@@ -91,19 +91,6 @@
   background: rgba(251, 191, 36, 0.05);
   border-left: 4px solid #fbbf24;
 }
-.git-ui-hunk-old-mount .cm-herdr-hunk-del {
-  background: rgba(248, 81, 73, 0.14);
-}
-.git-ui-hunk-old-mount .cm-herdr-hunk-add {
-  background: rgba(46, 160, 67, 0.14);
-}
-.git-ui-hunk-current-mount .cm-herdr-hunk-add,
-.git-ui-hunk-current-mount .cm-herdr-hunk-del {
-  background: rgba(251, 191, 36, 0.22);
-}
-.git-ui-hunk-edit-mount .cm-herdr-hunk-actions {
-  display: none;
-}
 .git-ui-split-editor {
   display: grid;
   gap: 12px;

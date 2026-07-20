@@ -1574,17 +1574,89 @@
     });
   }
 
-  function sideEditorLineHunks(hunk, side) {
-    const types = side === "old" ? (hunk.oldLineTypes || []) : (hunk.newLineTypes || []);
-    const kind = side === "old" ? "del" : "add";
+  function sideEditorPreviousLineClasses(hunk) {
+    const types = hunk.oldLineTypes || [];
+    const classForType = { del: "git-ui-side-line-del", add: "git-ui-side-line-add" };
     const result = [];
     let i = 0;
     while (i < types.length) {
-      if (types[i] !== kind) { i++; continue; }
+      const className = classForType[types[i]] || "";
+      if (!className) { i++; continue; }
       let j = i;
-      while (j < types.length && types[j] === kind) j++;
-      result.push({ id: hunk.index + "-" + side + "-" + i, header: hunk.header, fromLine: i + 1, toLine: j, type: kind, kind: kind });
+      while (j < types.length && classForType[types[j]] === className) j++;
+      result.push({ fromLine: i + 1, toLine: j, className });
       i = j;
+    }
+    return result;
+  }
+
+  function changedLineClasses(baseText, currentText) {
+    if (String(baseText || "") === String(currentText || "")) return [];
+    const baseLines = String(baseText || "").split("\n");
+    const currentLines = String(currentText || "").split("\n");
+    const changed = changedCurrentLineIndexes(baseLines, currentLines);
+    return lineIndexesToRanges(changed, "git-ui-side-line-edit");
+  }
+
+  function changedCurrentLineIndexes(baseLines, currentLines) {
+    const maxCells = 40000;
+    if (baseLines.length * currentLines.length > maxCells) return changedCurrentLineIndexesByBounds(baseLines, currentLines);
+    const rows = baseLines.length + 1;
+    const cols = currentLines.length + 1;
+    const dp = Array.from({ length: rows }, () => new Array(cols).fill(0));
+    for (let i = baseLines.length - 1; i >= 0; i--) {
+      for (let j = currentLines.length - 1; j >= 0; j--) {
+        dp[i][j] = baseLines[i] === currentLines[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+      }
+    }
+    const matched = new Set();
+    let i = 0;
+    let j = 0;
+    while (i < baseLines.length && j < currentLines.length) {
+      if (baseLines[i] === currentLines[j]) {
+        matched.add(j);
+        i++;
+        j++;
+      } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+        i++;
+      } else {
+        j++;
+      }
+    }
+    const changed = [];
+    for (let line = 0; line < currentLines.length; line++) {
+      if (!matched.has(line)) changed.push(line);
+    }
+    return changed.length ? changed : changedCurrentLineIndexesByBounds(baseLines, currentLines);
+  }
+
+  function changedCurrentLineIndexesByBounds(baseLines, currentLines) {
+    let start = 0;
+    while (start < baseLines.length && start < currentLines.length && baseLines[start] === currentLines[start]) start++;
+    let baseEnd = baseLines.length - 1;
+    let currentEnd = currentLines.length - 1;
+    while (baseEnd >= start && currentEnd >= start && baseLines[baseEnd] === currentLines[currentEnd]) {
+      baseEnd--;
+      currentEnd--;
+    }
+    const changed = [];
+    if (currentEnd < start && currentLines.length) return [Math.min(start, currentLines.length - 1)];
+    for (let line = start; line <= currentEnd; line++) changed.push(line);
+    return changed;
+  }
+
+  function lineIndexesToRanges(indexes, className) {
+    const result = [];
+    let i = 0;
+    while (i < indexes.length) {
+      const start = indexes[i];
+      let end = start;
+      i++;
+      while (i < indexes.length && indexes[i] === end + 1) {
+        end = indexes[i];
+        i++;
+      }
+      result.push({ fromLine: start + 1, toLine: end + 1, className });
     }
     return result;
   }
@@ -2196,8 +2268,6 @@
   }
 
   function setupSideEditorMountUi(root) {
-    const view = active() || {};
-    const editorState = view.sideEditor || {};
     const scope = root || document;
     scope.querySelectorAll(".git-ui-hunk-editor").forEach((editor) => {
       // Sync horizontal scroll between previous/current CodeMirror scrollers.
@@ -2226,22 +2296,6 @@
         });
         sync(scrollers[0]);
       }
-
-      // Apply compare/edit tinting without CodeMirror block decorations. The
-      // CodeMirror `hunks` option creates block widgets, which can crash here.
-      editor.querySelectorAll(".git-ui-hunk-edit-mount[data-hunk-index]").forEach((mount) => {
-        const index = Number(mount.dataset.hunkIndex || 0);
-        const side = mount.dataset.editorSide || "current";
-        const hunk = (editorState.hunks || [])[index] || {};
-        const types = side === "old" ? (hunk.oldLineTypes || []) : (hunk.newLineTypes || []);
-        const lines = Array.from(mount.querySelectorAll(".cm-line"));
-        lines.forEach((line, lineIndex) => {
-          const type = types[lineIndex] || "context";
-          line.classList.toggle("git-ui-side-line-del", side === "old" && type === "del");
-          line.classList.toggle("git-ui-side-line-add", side === "old" && type === "add");
-          line.classList.toggle("git-ui-side-line-edit", side === "current" && type !== "context");
-        });
-      });
     });
   }
 
@@ -2256,12 +2310,16 @@
         const sourceClass = side === "old" ? "git-ui-hunk-old-hidden" : "git-ui-hunk-current-hidden";
         const textarea = document.querySelector(`.${sourceClass}[data-hunk-index="${index}"]`);
         if (!textarea) return;
+        const hunk = ((view.sideEditor || {}).hunks || [])[index] || {};
+        const baseContent = textarea.value;
         window.HerdrEditor.create({
           parent: mount,
           path: view.file || view.sideEditor.path || "",
           content: textarea.value,
           readonly: mount.dataset.readonly === "true",
           hideFind: true,
+          lineClasses: side === "old" ? sideEditorPreviousLineClasses(hunk) : [],
+          dynamicLineClasses: side === "current" ? function (value) { return changedLineClasses(baseContent, value); } : null,
           onChange: side === "old" ? null : function (value) { textarea.value = value; },
         });
       });
