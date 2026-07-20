@@ -165,7 +165,24 @@
     }
 
     function tempTerminalKeydown(event) {
-      if (!isOpen || isMinimized || confirmVisible) return;
+      if (!isOpen) return;
+      // Never let Backspace trigger browser "back" navigation or Tab steal focus
+      // while the temp terminal is open, even if a confirm/minimized state would
+      // otherwise drop the event. These two keys are the reported focus-loss bug.
+      var key = String(event.key || "");
+      if (key === "Backspace" && !event.metaKey && !event.altKey && !event.ctrlKey) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        if (!isMinimized && !confirmVisible && term) sendInput("\x7f");
+        return;
+      }
+      if (key === "Tab" && !event.metaKey && !event.altKey && !event.ctrlKey) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        if (!isMinimized && !confirmVisible && term) sendInput(event.shiftKey ? "\x1b[Z" : "\t");
+        return;
+      }
+      if (isMinimized || confirmVisible) return;
       if (event.ctrlKey && !event.altKey && !event.metaKey && String(event.key || "").toLowerCase() === "g") {
         event.preventDefault();
         event.stopImmediatePropagation();
@@ -376,6 +393,19 @@
       term.open(container);
       term.onData(function (data) { sendInput(data); });
       try { term.focus(); } catch (e) {}
+      // xterm can blur its helper textarea during resize/write; re-grab focus
+      // synchronously so Backspace/Tab never fall through to the background.
+      var helperTextarea = term.textarea;
+      if (helperTextarea && helperTextarea.addEventListener) {
+        helperTextarea.addEventListener("blur", function () {
+          if (!isOpen || isMinimized || confirmVisible || closing) return;
+          // Don't steal focus back from the close-confirm buttons.
+          var active = document.activeElement;
+          if (active && isCloseControl(active)) return;
+          if (active && active.closest && active.closest(".temp-terminal-confirm")) return;
+          try { term.focus(); } catch (e) {}
+        }, true);
+      }
       refreshTerminalFitAfterFontLoad();
     }
 
@@ -611,6 +641,7 @@
             termWs.send(JSON.stringify({ type: "resize", cols: cols, rows: rows }));
           } catch (e) {}
         }
+        if (!confirmVisible) { try { term.focus(); } catch (e) {} }
       }, 100);
     }
 
