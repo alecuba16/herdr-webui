@@ -886,10 +886,11 @@
     if (state.visible) render();
   }
 
-  async function post(path, body) {
+  async function post(path, body, label) {
     const view = active();
     if (!view || view.mutating) return;
     view.mutating = true;
+    view.mutatingLabel = label || "";
     if (state.visible) render();
     try {
       await api(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
@@ -899,14 +900,16 @@
       if (state.visible) render();
     } finally {
       view.mutating = false;
+      view.mutatingLabel = "";
       if (state.visible) render();
     }
   }
 
-  async function postJson(path, body) {
+  async function postJson(path, body, label) {
     const view = active();
     if (!view || view.mutating) return null;
     view.mutating = true;
+    view.mutatingLabel = label || "";
     if (state.visible) render();
     try {
       const result = await api(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
@@ -918,6 +921,7 @@
       throw err;
     } finally {
       view.mutating = false;
+      view.mutatingLabel = "";
       if (state.visible) render();
     }
   }
@@ -1434,7 +1438,8 @@
       : "";
     const refreshButton = appRefreshIconButton({ className: "git-ui-refresh-icon", title: titleWithGitShortcut("Refresh", "refresh"), label: titleWithGitShortcut("Refresh Git state", "refresh"), spinning: !!view.refreshAnimating, onclick: "HerdrGitUi.refreshWithSpin()" });
     const aheadBehind = cleanupOnly ? "" : renderAheadBehind(s, esc);
-    return `<aside class="git-ui-side" onscroll="HerdrGitUi.sideScroll(this)"><div class="git-ui-head"><div class="git-ui-head-main"><div class="git-ui-title-row"><div class="git-ui-title">Git</div><div class="git-ui-title-actions">${returnToCurrentChanges}${returnToWorkspace}${refreshButton}</div></div><div class="git-ui-subtitle">${esc(s.state || "closed")} · ${esc(compactPath(s.repo_path))}</div><button class="git-ui-branch-pill" title="${esc(titleWithGitShortcut("Change Git directory or switch branch", "branch"))}" onclick="HerdrGitUi.openBranchModal()"><span>${esc(branchLabel)}</span>${aheadBehind}<b>↗</b></button></div></div>${error}<div class="git-ui-toolbar git-ui-view-toolbar">${renderGitViewTabs(tabs, view.tab)}</div>${actions}${fileList}${sideBottom}</aside>`;
+    const busy = view.mutating ? `<span class="git-ui-busy"><span class="git-ui-busy-spinner"></span>${esc(view.mutatingLabel || "Working...")}</span>` : "";
+    return `<aside class="git-ui-side" onscroll="HerdrGitUi.sideScroll(this)"><div class="git-ui-head"><div class="git-ui-head-main"><div class="git-ui-title-row"><div class="git-ui-title">Git</div><div class="git-ui-title-actions">${busy}${returnToCurrentChanges}${returnToWorkspace}${refreshButton}</div></div><div class="git-ui-subtitle">${esc(s.state || "closed")} · ${esc(compactPath(s.repo_path))}</div><button class="git-ui-branch-pill" title="${esc(titleWithGitShortcut("Change Git directory or switch branch", "branch"))}" onclick="HerdrGitUi.openBranchModal()"><span>${esc(branchLabel)}</span>${aheadBehind}<b>↗</b></button></div></div>${error}<div class="git-ui-toolbar git-ui-view-toolbar">${renderGitViewTabs(tabs, view.tab)}</div>${actions}${fileList}${sideBottom}</aside>`;
   }
 
   function renderDiffLayoutSideToggle(view) {
@@ -1569,10 +1574,16 @@
       const oldLines = [];
       const newLines = [];
       const newNumbers = [];
+      const oldLineTypes = [];
+      const newLineTypes = [];
       for (const line of chunk.lines || []) {
-        if (line.line_type !== "add") oldLines.push(line.content || "");
+        if (line.line_type !== "add") {
+          oldLines.push(line.content || "");
+          oldLineTypes.push(line.line_type === "delete" ? "del" : "context");
+        }
         if (line.line_type !== "delete") {
           newLines.push(line.content || "");
+          newLineTypes.push(line.line_type === "add" ? "add" : "context");
           if (line.new_line_number) newNumbers.push(line.new_line_number);
         }
       }
@@ -1581,10 +1592,27 @@
         header: chunk.header,
         oldText: oldLines.join("\n"),
         text: newLines.join("\n"),
+        oldLineTypes,
+        newLineTypes,
         newStart: newNumbers.length ? Math.min.apply(null, newNumbers) : 0,
         newEnd: newNumbers.length ? Math.max.apply(null, newNumbers) : 0,
       };
     });
+  }
+
+  function sideEditorLineHunks(hunk, side) {
+    const types = side === "old" ? (hunk.oldLineTypes || []) : (hunk.newLineTypes || []);
+    const kind = side === "old" ? "del" : "add";
+    const result = [];
+    let i = 0;
+    while (i < types.length) {
+      if (types[i] !== kind) { i++; continue; }
+      let j = i;
+      while (j < types.length && types[j] === kind) j++;
+      result.push({ id: hunk.index + "-" + side + "-" + i, header: hunk.header, fromLine: i + 1, toLine: j, type: kind, kind: kind });
+      i = j;
+    }
+    return result;
   }
 
   function renderDiffFile(file) {
@@ -2178,12 +2206,16 @@
       const sourceClass = side === "old" ? "git-ui-hunk-old-hidden" : "git-ui-hunk-current-hidden";
       const textarea = document.querySelector(`.${sourceClass}[data-hunk-index="${index}"]`);
       if (!textarea) return;
+      const hunk = ((view.sideEditor || {}).hunks || [])[index];
+      const lineHunks = hunk ? sideEditorLineHunks(hunk, side) : [];
       window.HerdrEditor.create({
         parent: mount,
         path: view.file || view.sideEditor.path || "",
         content: textarea.value,
         readonly: mount.dataset.readonly === "true",
         hideFind: true,
+        hunks: lineHunks,
+        hunkActions: [],
         onChange: side === "old" ? null : function (value) { textarea.value = value; },
       });
     });

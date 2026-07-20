@@ -2487,14 +2487,8 @@ function sessionPrefix() {
 // Earlier code scoped ids as `${ws}:${id}` in parseRoute, which made
 // `state.tab` (scoped) never match `state.tabs[].tab_id` (unscoped), so the
 // panel switcher always snapped back to the focused/first tab after a refresh.
-// These helpers are now identity on desktop so ids stay raw end-to-end.
+// Ids stay raw end-to-end on desktop — no scoping helpers needed.
 // (Mobile keeps a real scoped implementation in src/assets/mobile/core.js.)
-function expandScopedId(ws, id) {
-  return id || null;
-}
-function compactScopedId(ws, id) {
-  return id || null;
-}
 function selectionPath(ws, tab, pane) {
   let p = sessionPrefix() + "/workspace/" + encodeURIComponent(ws);
   if (tab) p += "/tab/" + encodeURIComponent(tab);
