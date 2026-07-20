@@ -1,5 +1,14 @@
 # Release notes
 
+## 0.2.75 Release Notes
+
+### Git side-by-side editor polish
+
+- Fixes the Git side-by-side hunk editor to keep horizontal scrolling synchronized between previous and current panes inside each hunk.
+- Uses CodeMirror line decorations for original red/green diff indicators instead of post-render DOM line class mutation.
+- Keeps yellow highlighting limited to lines changed during the current edit session, while preserving the original red/green change markers.
+- Removes the pane-wide yellow left border from the editable current side so the left border continues to represent the original diff state.
+
 ## 0.2.61 Release Notes
 
 ### Frontend parity and hot path efficiency

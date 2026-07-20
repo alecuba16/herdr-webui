@@ -1574,17 +1574,89 @@
     });
   }
 
-  function sideEditorLineHunks(hunk, side) {
+  function sideEditorOriginalLineClasses(hunk, side) {
     const types = side === "old" ? (hunk.oldLineTypes || []) : (hunk.newLineTypes || []);
-    const kind = side === "old" ? "del" : "add";
+    const classForType = { del: "git-ui-side-line-del", add: "git-ui-side-line-add" };
     const result = [];
     let i = 0;
     while (i < types.length) {
-      if (types[i] !== kind) { i++; continue; }
+      const className = classForType[types[i]] || "";
+      if (!className) { i++; continue; }
       let j = i;
-      while (j < types.length && types[j] === kind) j++;
-      result.push({ id: hunk.index + "-" + side + "-" + i, header: hunk.header, fromLine: i + 1, toLine: j, type: kind, kind: kind });
+      while (j < types.length && classForType[types[j]] === className) j++;
+      result.push({ fromLine: i + 1, toLine: j, className });
       i = j;
+    }
+    return result;
+  }
+
+  function changedLineClasses(baseText, currentText) {
+    if (String(baseText || "") === String(currentText || "")) return [];
+    const baseLines = String(baseText || "").split("\n");
+    const currentLines = String(currentText || "").split("\n");
+    const changed = changedCurrentLineIndexes(baseLines, currentLines);
+    return lineIndexesToRanges(changed, "git-ui-side-line-edit");
+  }
+
+  function changedCurrentLineIndexes(baseLines, currentLines) {
+    const maxCells = 40000;
+    if (baseLines.length * currentLines.length > maxCells) return changedCurrentLineIndexesByBounds(baseLines, currentLines);
+    const rows = baseLines.length + 1;
+    const cols = currentLines.length + 1;
+    const dp = Array.from({ length: rows }, () => new Array(cols).fill(0));
+    for (let i = baseLines.length - 1; i >= 0; i--) {
+      for (let j = currentLines.length - 1; j >= 0; j--) {
+        dp[i][j] = baseLines[i] === currentLines[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+      }
+    }
+    const matched = new Set();
+    let i = 0;
+    let j = 0;
+    while (i < baseLines.length && j < currentLines.length) {
+      if (baseLines[i] === currentLines[j]) {
+        matched.add(j);
+        i++;
+        j++;
+      } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+        i++;
+      } else {
+        j++;
+      }
+    }
+    const changed = [];
+    for (let line = 0; line < currentLines.length; line++) {
+      if (!matched.has(line)) changed.push(line);
+    }
+    return changed.length ? changed : changedCurrentLineIndexesByBounds(baseLines, currentLines);
+  }
+
+  function changedCurrentLineIndexesByBounds(baseLines, currentLines) {
+    let start = 0;
+    while (start < baseLines.length && start < currentLines.length && baseLines[start] === currentLines[start]) start++;
+    let baseEnd = baseLines.length - 1;
+    let currentEnd = currentLines.length - 1;
+    while (baseEnd >= start && currentEnd >= start && baseLines[baseEnd] === currentLines[currentEnd]) {
+      baseEnd--;
+      currentEnd--;
+    }
+    const changed = [];
+    if (currentEnd < start && currentLines.length) return [Math.min(start, currentLines.length - 1)];
+    for (let line = start; line <= currentEnd; line++) changed.push(line);
+    return changed;
+  }
+
+  function lineIndexesToRanges(indexes, className) {
+    const result = [];
+    let i = 0;
+    while (i < indexes.length) {
+      const start = indexes[i];
+      let end = start;
+      i++;
+      while (i < indexes.length && indexes[i] === end + 1) {
+        end = indexes[i];
+        i++;
+      }
+      result.push({ fromLine: start + 1, toLine: end + 1, className });
     }
     return result;
   }
@@ -1708,7 +1780,7 @@
     const body = diffLayoutMode() === "unified"
       ? rows.map((row, rowIndex) => renderUnifiedLine(row, path, index, rows, rowIndex, contextArrows)).join("")
       : rows.map((row, rowIndex) => renderLine(row, path, index, rows, rowIndex, contextArrows, !!file.preview_large_diff)).join("");
-    return `<div class="git-ui-hunk ${diffLayoutMode() === "unified" ? "git-ui-hunk-unified" : ""}"><div class="git-ui-hunk-head"><span>${esc(chunk.header)}</span>${actions}</div><div class="git-ui-hunk-scroll">${body}</div></div>`;
+    return `<div class="git-ui-hunk ${diffLayoutMode() === "unified" ? "git-ui-hunk-unified" : ""}"><div class="git-ui-hunk-head"><span>${esc(chunk.header)}</span>${actions}</div><div class="git-ui-hunk-viewport">${body}</div><div class="git-ui-hunk-xscroll" aria-hidden="true"><div class="git-ui-hunk-xscroll-inner"></div></div></div>`;
   }
 
   function contextArrowsForChunk(chunks, index) {
@@ -1784,7 +1856,7 @@
         : "";
     const oldCode = oldLine ? renderDiffCode(oldLine, newLine, path, "old") : "";
     const newCode = newLine ? renderDiffCode(oldLine, newLine, path, "new") : "";
-    return `<div class="git-ui-diff-row ${cls}"><div class="git-ui-context-cell">${contextControls}</div><div class="git-ui-code git-ui-code-old">${oldCode}</div><div class="git-ui-line-pair"><span class="git-ui-line-old"><em>${esc(oldAuthor)}</em>${oldNo}</span>${blockButton}<span class="git-ui-line-new"><em>${esc(newAuthor)}</em>${newNo}</span></div><div class="git-ui-code git-ui-code-new">${newCode}</div></div>`;
+    return `<div class="git-ui-diff-row ${cls}"><div class="git-ui-context-cell">${contextControls}</div><div class="git-ui-code git-ui-code-old"><span class="git-ui-code-text">${oldCode}</span></div><div class="git-ui-line-pair"><span class="git-ui-line-old"><em>${esc(oldAuthor)}</em>${oldNo}</span>${blockButton}<span class="git-ui-line-new"><em>${esc(newAuthor)}</em>${newNo}</span></div><div class="git-ui-code git-ui-code-new"><span class="git-ui-code-text">${newCode}</span></div></div>`;
   }
 
   function renderUnifiedLine(row, path, hunkIndex, rows, rowIndex, contextArrows) {
@@ -1811,7 +1883,7 @@
         : "";
     const sign = add ? "+" : del ? "-" : " ";
     const code = renderUnifiedDiffCode(line, rows, rowIndex, path);
-    return `<div class="git-ui-unified-row ${cls}"><div class="git-ui-context-cell">${contextControls}</div><div class="git-ui-unified-lines"><span>${oldNo}</span><span>${newNo}</span></div><div class="git-ui-unified-action">${blockButton}</div><div class="git-ui-code git-ui-code-unified"><span class="git-ui-unified-author">${esc(author)}</span><span class="git-ui-unified-sign">${sign}</span><span class="git-ui-unified-text">${code}</span></div></div>`;
+    return `<div class="git-ui-unified-row ${cls}"><div class="git-ui-context-cell">${contextControls}</div><div class="git-ui-unified-lines"><span>${oldNo}</span><span>${newNo}</span></div><div class="git-ui-unified-action">${blockButton}</div><div class="git-ui-code git-ui-code-unified"><span class="git-ui-unified-author">${esc(author)}</span><span class="git-ui-unified-sign">${sign}</span><span class="git-ui-unified-text"><span class="git-ui-code-text">${code}</span></span></div></div>`;
   }
 
   function renderUnifiedDiffCode(line, rows, rowIndex, path) {
@@ -2125,6 +2197,30 @@
     return tab === "cleanup" || tab === "log";
   }
 
+  function setupDiffHunkScrollbars(root) {
+    const scope = root || document;
+    scope.querySelectorAll(".git-ui-hunk").forEach((hunk) => {
+      const scroll = hunk.querySelector(".git-ui-hunk-xscroll");
+      const inner = scroll && scroll.querySelector(".git-ui-hunk-xscroll-inner");
+      if (!scroll || !inner) return;
+      const codeCells = Array.from(hunk.querySelectorAll(".git-ui-code, .git-ui-unified-text"));
+      const maxScroll = codeCells.reduce((max, cell) => Math.max(max, Math.max(0, cell.scrollWidth - cell.clientWidth)), 0);
+      scroll.classList.toggle("no-scroll", maxScroll < 2);
+      inner.style.width = `${Math.max(scroll.clientWidth + maxScroll, scroll.clientWidth)}px`;
+      const apply = () => hunk.style.setProperty("--git-ui-hunk-scroll-left", `${scroll.scrollLeft}px`);
+      scroll.addEventListener("scroll", apply, { passive: true });
+      codeCells.forEach((cell) => {
+        cell.addEventListener("wheel", (event) => {
+          if (!event.deltaX || Math.abs(event.deltaX) < Math.abs(event.deltaY)) return;
+          if (maxScroll < 2) return;
+          event.preventDefault();
+          scroll.scrollLeft += event.deltaX;
+        }, { passive: false });
+      });
+      apply();
+    });
+  }
+
   function render() {
     if (!state.visible) return;
     saveSideEditorFromDom();
@@ -2141,6 +2237,7 @@
     const nextContent = panel.querySelector(".git-ui-content");
     if (nextContent && preserveContentScroll(activeView.tab))
       nextContent.scrollTop = activeView.contentScrollTop || 0;
+    setupDiffHunkScrollbars(panel);
     mountSideEditors();
     focusDiffSearchIfNeeded();
     const view = activeView;
@@ -2170,29 +2267,64 @@
     }, 0);
   }
 
+  function setupSideEditorMountUi(root) {
+    const scope = root || document;
+    scope.querySelectorAll(".git-ui-hunk-editor").forEach((editor) => {
+      // Sync horizontal scroll between previous/current CodeMirror scrollers.
+      const scrollers = Array.from(editor.querySelectorAll(".git-ui-hunk-edit-mount .cm-scroller"));
+      if (scrollers.length >= 2) {
+        const sync = (source) => {
+          if (source._gitUiSyncingSideEditorScroll) return;
+          for (const scroller of scrollers) {
+            if (scroller === source) continue;
+            if (scroller.scrollLeft === source.scrollLeft) continue;
+            scroller._gitUiSyncingSideEditorScroll = true;
+            scroller.scrollLeft = source.scrollLeft;
+            requestAnimationFrame(() => { scroller._gitUiSyncingSideEditorScroll = false; });
+          }
+        };
+        scrollers.forEach((scroller) => {
+          scroller.addEventListener("scroll", () => sync(scroller), { passive: true });
+          scroller.addEventListener("wheel", (event) => {
+            if (!event.deltaX || Math.abs(event.deltaX) < Math.abs(event.deltaY)) return;
+            const next = scroller.scrollLeft + event.deltaX;
+            if (next === scroller.scrollLeft) return;
+            event.preventDefault();
+            scroller.scrollLeft = next;
+            sync(scroller);
+          }, { passive: false });
+        });
+        sync(scrollers[0]);
+      }
+    });
+  }
+
   function mountSideEditors() {
     const view = active() || {};
     if (!window.HerdrEditor || !view.sideEditor) return;
     const mounts = Array.from(document.querySelectorAll(".git-ui-hunk-edit-mount[data-hunk-index]"));
-    const mountAll = () => mounts.forEach((mount) => {
-      const index = Number(mount.dataset.hunkIndex || 0);
-      const side = mount.dataset.editorSide || "current";
-      const sourceClass = side === "old" ? "git-ui-hunk-old-hidden" : "git-ui-hunk-current-hidden";
-      const textarea = document.querySelector(`.${sourceClass}[data-hunk-index="${index}"]`);
-      if (!textarea) return;
-      const hunk = ((view.sideEditor || {}).hunks || [])[index];
-      const lineHunks = hunk ? sideEditorLineHunks(hunk, side) : [];
-      window.HerdrEditor.create({
-        parent: mount,
-        path: view.file || view.sideEditor.path || "",
-        content: textarea.value,
-        readonly: mount.dataset.readonly === "true",
-        hideFind: true,
-        hunks: lineHunks,
-        hunkActions: [],
-        onChange: side === "old" ? null : function (value) { textarea.value = value; },
+    const mountAll = () => {
+      mounts.forEach((mount) => {
+        const index = Number(mount.dataset.hunkIndex || 0);
+        const side = mount.dataset.editorSide || "current";
+        const sourceClass = side === "old" ? "git-ui-hunk-old-hidden" : "git-ui-hunk-current-hidden";
+        const textarea = document.querySelector(`.${sourceClass}[data-hunk-index="${index}"]`);
+        if (!textarea) return;
+        const hunk = ((view.sideEditor || {}).hunks || [])[index] || {};
+        const baseContent = textarea.value;
+        window.HerdrEditor.create({
+          parent: mount,
+          path: view.file || view.sideEditor.path || "",
+          content: textarea.value,
+          readonly: mount.dataset.readonly === "true",
+          hideFind: true,
+          lineClasses: sideEditorOriginalLineClasses(hunk, side),
+          dynamicLineClasses: side === "current" ? function (value) { return changedLineClasses(baseContent, value); } : null,
+          onChange: side === "old" ? null : function (value) { textarea.value = value; },
+        });
       });
-    });
+      requestAnimationFrame(() => setupSideEditorMountUi(document));
+    };
     if (!window.HerdrCodeMirror && window.HerdrEditor.ensureCodeMirror) {
       window.HerdrEditor.ensureCodeMirror().then(() => mountAll()).catch(() => mountAll());
       return;
