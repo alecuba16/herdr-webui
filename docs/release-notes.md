@@ -1,5 +1,14 @@
 # Release notes
 
+## 0.2.72 Release Notes
+
+### Terminal clipboard, panel focus, and Jcode resume fixes
+
+- Keeps terminal clipboard behavior browser-owned: selections and OSC 52 copy requests write through browser clipboard APIs, while paste uses native browser paste events instead of backend clipboard access.
+- Fixes panel creation to request focus and navigate to the tab and pane returned by the backend on both desktop and mobile.
+- Allows complete CSI terminal replies, including cursor-position reports, to reach TUI apps so Jcode can resume without cursor-position timeouts, while still stripping unsafe OSC/DCS controls and orphan CPR tails.
+- Adds regression coverage for desktop and mobile selection copy, OSC 52 copy, native paste handling, focused panel creation, and split cursor-position replies.
+
 ## 0.2.71 Release Notes
 
 ### Terminal selection clipboard copy
