@@ -671,31 +671,6 @@
     return `.../${parts.slice(-3).join("/")}`;
   }
 
-  let diffScrollSyncBound = false;
-  function bindDiffScrollSync() {
-    if (diffScrollSyncBound) return;
-    diffScrollSyncBound = true;
-    // Mirror horizontal scroll between the old/new code cells of a side-by-side
-    // diff row so wide lines stay aligned. Each cell scrolls on its own
-    // (overflow-x: auto in diff.css); this keeps the two sides in lockstep.
-    document.addEventListener("scroll", function (event) {
-      const node = event.target;
-      if (!node || !node.classList || !node.classList.contains("git-ui-code")) return;
-      const row = node.closest && node.closest(".git-ui-diff-row");
-      if (!row) return;
-      if (node._syncingScroll) return;
-      const others = row.querySelectorAll(".git-ui-code");
-      for (const other of others) {
-        if (other === node) continue;
-        if (other.scrollLeft === node.scrollLeft) continue;
-        other._syncingScroll = true;
-        other.scrollLeft = node.scrollLeft;
-        // clear the flag next tick so the mirrored scroll event can fire
-        setTimeout(() => { other._syncingScroll = false; }, 0);
-      }
-    }, true);
-  }
-
   function ensurePanel() {
     let panel = document.getElementById("gitUiPanel");
     if (panel) return panel;
@@ -706,7 +681,6 @@
     panel.tabIndex = -1;
     panel.style.display = "none";
     if (shell && shell.parentNode) shell.parentNode.appendChild(panel);
-    bindDiffScrollSync();
     return panel;
   }
 
@@ -1734,7 +1708,7 @@
     const body = diffLayoutMode() === "unified"
       ? rows.map((row, rowIndex) => renderUnifiedLine(row, path, index, rows, rowIndex, contextArrows)).join("")
       : rows.map((row, rowIndex) => renderLine(row, path, index, rows, rowIndex, contextArrows, !!file.preview_large_diff)).join("");
-    return `<div class="git-ui-hunk ${diffLayoutMode() === "unified" ? "git-ui-hunk-unified" : ""}"><div class="git-ui-hunk-head"><span>${esc(chunk.header)}</span>${actions}</div>${body}</div>`;
+    return `<div class="git-ui-hunk ${diffLayoutMode() === "unified" ? "git-ui-hunk-unified" : ""}"><div class="git-ui-hunk-head"><span>${esc(chunk.header)}</span>${actions}</div><div class="git-ui-hunk-scroll">${body}</div></div>`;
   }
 
   function contextArrowsForChunk(chunks, index) {
