@@ -671,6 +671,31 @@
     return `.../${parts.slice(-3).join("/")}`;
   }
 
+  let diffScrollSyncBound = false;
+  function bindDiffScrollSync() {
+    if (diffScrollSyncBound) return;
+    diffScrollSyncBound = true;
+    // Mirror horizontal scroll between the old/new code cells of a side-by-side
+    // diff row so wide lines stay aligned. Each cell scrolls on its own
+    // (overflow-x: auto in diff.css); this keeps the two sides in lockstep.
+    document.addEventListener("scroll", function (event) {
+      const node = event.target;
+      if (!node || !node.classList || !node.classList.contains("git-ui-code")) return;
+      const row = node.closest && node.closest(".git-ui-diff-row");
+      if (!row) return;
+      if (node._syncingScroll) return;
+      const others = row.querySelectorAll(".git-ui-code");
+      for (const other of others) {
+        if (other === node) continue;
+        if (other.scrollLeft === node.scrollLeft) continue;
+        other._syncingScroll = true;
+        other.scrollLeft = node.scrollLeft;
+        // clear the flag next tick so the mirrored scroll event can fire
+        setTimeout(() => { other._syncingScroll = false; }, 0);
+      }
+    }, true);
+  }
+
   function ensurePanel() {
     let panel = document.getElementById("gitUiPanel");
     if (panel) return panel;
@@ -681,6 +706,7 @@
     panel.tabIndex = -1;
     panel.style.display = "none";
     if (shell && shell.parentNode) shell.parentNode.appendChild(panel);
+    bindDiffScrollSync();
     return panel;
   }
 
@@ -2259,7 +2285,7 @@
   async function applyHunk(path, index, options) {
     const patch = hunkPatch(path, index);
     if (!patch) return;
-    await post("/api/git-ui/apply-patch", Object.assign({ cwd: active().cwd, patch }, options || {}));
+    await post("/api/git-ui/apply-patch", Object.assign({ cwd: active().cwd, patch }, options || {}), options && options.reverse ? "Restoring hunk" : "Applying hunk");
   }
 
   window.HerdrGitUi = {
@@ -2414,12 +2440,12 @@
       const status = (view && view.status) || {};
       const staged = status.staged || [];
       if (staged.length) {
-        post("/api/git-ui/unstage", { cwd: view.cwd, paths: staged });
+        post("/api/git-ui/unstage", { cwd: view.cwd, paths: staged }, "Unstaging all");
         return;
       }
       const paths = [...(status.unstaged || []), ...(status.untracked || [])];
       if (!paths.length) return;
-      post("/api/git-ui/stage", { cwd: view.cwd, paths });
+      post("/api/git-ui/stage", { cwd: view.cwd, paths }, "Staging all");
     },
     bulkSectionAction(action, title) {
       const view = active();
@@ -2437,19 +2463,19 @@
       const verb = action === "unstage" ? "Unstage" : "Stage";
       if (!confirm(`${verb} ${paths.length} ${title.toLowerCase()} file${paths.length === 1 ? "" : "s"}?`)) return;
       setTimeout(() => {
-        post(action === "unstage" ? "/api/git-ui/unstage" : "/api/git-ui/stage", { cwd: view.cwd, paths });
+        post(action === "unstage" ? "/api/git-ui/unstage" : "/api/git-ui/stage", { cwd: view.cwd, paths }, action === "unstage" ? "Unstaging files" : "Staging files");
       }, 0);
     },
-    stageFile(path) { post("/api/git-ui/stage", { cwd: active().cwd, paths: [decodeURIComponent(path)] }); },
-    unstageFile(path) { post("/api/git-ui/unstage", { cwd: active().cwd, paths: [decodeURIComponent(path)] }); },
-    restoreFile(path) { if (confirm("Restore this file change?")) post("/api/git-ui/discard", { cwd: active().cwd, paths: [decodeURIComponent(path)], confirmed: true }); },
+    stageFile(path) { post("/api/git-ui/stage", { cwd: active().cwd, paths: [decodeURIComponent(path)] }, "Staging file"); },
+    unstageFile(path) { post("/api/git-ui/unstage", { cwd: active().cwd, paths: [decodeURIComponent(path)] }, "Unstaging file"); },
+    restoreFile(path) { if (confirm("Restore this file change?")) post("/api/git-ui/discard", { cwd: active().cwd, paths: [decodeURIComponent(path)], confirmed: true }, "Restoring file"); },
     restoreHunk(path, index) {
       path = decodeURIComponent(path);
       const view = active() || {};
       const staged = (view.diffScope || "all") === "staged";
       if (confirm(staged ? "Restore this staged hunk? This discards it from the index." : "Restore this hunk?")) applyHunk(path, index, staged ? { reverse: true, cached: true } : { reverse: true });
     },
-    discardFile(path) { path = decodeURIComponent(path); if (confirm(`Restore complete file ${path}? This discards staged and unstaged changes.`)) post("/api/git-ui/discard", { cwd: active().cwd, paths: [path], confirmed: true }); },
+    discardFile(path) { path = decodeURIComponent(path); if (confirm(`Restore complete file ${path}? This discards staged and unstaged changes.`)) post("/api/git-ui/discard", { cwd: active().cwd, paths: [path], confirmed: true }, "Restoring file"); },
     toggleBlame() { const view = active(); if (!view) return; view.showBlame = !view.showBlame; render(); },
     toggleDiffLayout() {
       setGitUiOption("gitUiDiffLayout", diffLayoutMode() === "unified" ? "side-by-side" : "unified");
@@ -2579,16 +2605,16 @@
     },
     unstageHunk(path, index) { path = decodeURIComponent(path); applyHunk(path, index, { reverse: true, cached: true }); },
     stageHunk(path, index) { path = decodeURIComponent(path); applyHunk(path, index, { cached: true }); },
-    discardSelected() { if (confirm("Discard selected working tree changes?")) post("/api/git-ui/discard", { cwd: active().cwd, paths: selectedPaths(), confirmed: true }); },
-    stash() { const message = prompt("Stash message", "herdr-webui stash"); if (message !== null) post("/api/git-ui/stash", { cwd: active().cwd, message }); },
+    discardSelected() { if (confirm("Discard selected working tree changes?")) post("/api/git-ui/discard", { cwd: active().cwd, paths: selectedPaths(), confirmed: true }, "Discarding changes"); },
+    stash() { const message = prompt("Stash message", "herdr-webui stash"); if (message !== null) post("/api/git-ui/stash", { cwd: active().cwd, message }, "Stashing"); },
     stashFile(path) {
       path = decodeURIComponent(path);
       if (!confirm(`Stash complete file ${path}?`)) return;
       const message = prompt(`Stash message for ${path}`, `herdr-webui stash ${path}`);
-      if (message !== null) post("/api/git-ui/stash", { cwd: active().cwd, message, paths: [path] });
+      if (message !== null) post("/api/git-ui/stash", { cwd: active().cwd, message, paths: [path] }, "Stashing file");
     },
-    applyStash(stash, pop) { post("/api/git-ui/stash-apply", { cwd: active().cwd, stash: decodeURIComponent(stash), pop }); },
-    dropStash(stash) { stash = decodeURIComponent(stash); if (confirm(`Drop ${stash}?`)) post("/api/git-ui/stash-drop", { cwd: active().cwd, stash, confirmed: true }); },
+    applyStash(stash, pop) { post("/api/git-ui/stash-apply", { cwd: active().cwd, stash: decodeURIComponent(stash), pop }, pop ? "Popping stash" : "Applying stash"); },
+    dropStash(stash) { stash = decodeURIComponent(stash); if (confirm(`Drop ${stash}?`)) post("/api/git-ui/stash-drop", { cwd: active().cwd, stash, confirmed: true }, "Dropping stash"); },
     async scanCleanup() {
       const view = active();
       if (!view) return;
@@ -2797,12 +2823,12 @@
       saveDraftFromDom();
       state.commitModal = null;
       try {
-        await postJson("/api/git-ui/commit", payload);
+        await postJson("/api/git-ui/commit", payload, "Committing");
         if (!pushAfter) {
           showCommitToast("Commit created");
           return;
         }
-        await postJson("/api/git-ui/push", { cwd: view.cwd, mode: "regular", push_tags: false });
+        await postJson("/api/git-ui/push", { cwd: view.cwd, mode: "regular", push_tags: false }, "Pushing");
         showCommitToast("Commit pushed");
       } catch (err) {
         if (pushAfter) state.gitOpModal = { type: "force-push", error: err.message || String(err) };
@@ -2834,7 +2860,7 @@
       const mode = (document.getElementById("gitUiOpMode") || {}).value || "regular";
       const branch = (document.getElementById("gitUiOpBranch") || {}).value || "";
       state.gitOpModal = null;
-      await postJson("/api/git-ui/pull", { cwd: view.cwd, mode, branch });
+      await postJson("/api/git-ui/pull", { cwd: view.cwd, mode, branch }, "Pulling");
     },
     async runPushFromModal() {
       const view = active();
@@ -2844,7 +2870,7 @@
       const pushTags = !!((document.getElementById("gitUiPushTags") || {}).checked);
       state.gitOpModal = null;
       try {
-        await postJson("/api/git-ui/push", { cwd: view.cwd, mode, branch, push_tags: pushTags });
+        await postJson("/api/git-ui/push", { cwd: view.cwd, mode, branch, push_tags: pushTags }, "Pushing");
       } catch (err) {
         state.gitOpModal = { type: "force-push", error: err.message || String(err) };
         render();
@@ -2860,14 +2886,14 @@
       if (!upstream) return;
       state.gitOpModal = null;
       try {
-        await postJson("/api/git-ui/rebase", { cwd: view.cwd, upstream, onto: branch, pull_first: pullFirst, confirmation: "rebase selected" });
+        await postJson("/api/git-ui/rebase", { cwd: view.cwd, upstream, onto: branch, pull_first: pullFirst, confirmation: "rebase selected" }, "Rebasing");
       } catch (err) {
         state.gitOpModal = Object.assign({}, modal, { type: "rebase", error: err.message || String(err) });
         render();
       }
     },
-    resolve(path, mode) { post("/api/git-ui/conflict-resolve", { cwd: active().cwd, path: decodeURIComponent(path), mode }); },
-    conflictAction(action) { post("/api/git-ui/conflict-action", { cwd: active().cwd, action }); },
+    resolve(path, mode) { post("/api/git-ui/conflict-resolve", { cwd: active().cwd, path: decodeURIComponent(path), mode }, "Resolving conflict"); },
+    conflictAction(action) { post("/api/git-ui/conflict-action", { cwd: active().cwd, action }, "Continuing operation"); },
     async openBranchModal() {
       const view = active();
       if (!view) return;
@@ -2928,8 +2954,8 @@
       const modalCwd = (input && input.value.trim()) || (state.branchModal && state.branchModal.cwd) || view.cwd;
       state.branchModal = null;
       view.cwd = modalCwd;
-      if (kind === "remote") post("/api/git-ui/switch", { cwd: view.cwd, branch: localNameForRemote(branch), create: true, base: branch });
-      else post("/api/git-ui/switch", { cwd: view.cwd, branch });
+      if (kind === "remote") post("/api/git-ui/switch", { cwd: view.cwd, branch: localNameForRemote(branch), create: true, base: branch }, "Switching branch");
+      else post("/api/git-ui/switch", { cwd: view.cwd, branch }, "Switching branch");
     },
     async compareCurrent() {
       if (currentMode() !== "changes") this.latestChanges();
@@ -3146,7 +3172,7 @@
       const mode = prompt("Mode: soft, mixed, hard", "soft");
       if (!mode) return;
       const confirmation = mode === "hard" ? prompt('Type "reset hard" to confirm') : "";
-      post("/api/git-ui/reset", { cwd: active().cwd, ref_name: ref, mode, confirmation });
+      post("/api/git-ui/reset", { cwd: active().cwd, ref_name: ref, mode, confirmation }, "Resetting");
     },
     rebase() { this.openGitOpModal("rebase"); },
     openSelectedResetModal() {
@@ -3165,7 +3191,7 @@
       const confirmation = mode === "hard" ? prompt(`Hard reset to ${label}. Type "reset hard" to confirm`) : (confirm(`Soft reset to ${label}?`) ? "" : null);
       if (confirmation === null) return;
       state.resetSelectedModal = null;
-      post("/api/git-ui/reset", { cwd: view.cwd, ref_name: ref, mode, confirmation });
+      post("/api/git-ui/reset", { cwd: view.cwd, ref_name: ref, mode, confirmation }, "Resetting");
     },
     openSelectedTagModal() {
       const view = active();
@@ -3181,7 +3207,7 @@
       const tag = ((document.getElementById("gitTagName") || {}).value || "").trim();
       if (!view || !ref || !tag) return;
       state.tagSelectedModal = null;
-      post("/api/git-ui/tag", { cwd: view.cwd, ref_name: ref, tag_name: tag });
+      post("/api/git-ui/tag", { cwd: view.cwd, ref_name: ref, tag_name: tag }, "Tagging");
     },
     async createWorktreeFromSelectedBranch() {
       const view = active();
@@ -3196,7 +3222,7 @@
       if (!view || !upstream) return;
       const confirmation = prompt(`Rebase commits after ${upstream.slice(0, 12)} onto main/master. Type "rebase selected" to confirm`);
       if (confirmation === null) return;
-      post("/api/git-ui/rebase", { cwd: view.cwd, upstream, confirmation });
+      post("/api/git-ui/rebase", { cwd: view.cwd, upstream, confirmation }, "Rebasing");
     },
   };
 })();

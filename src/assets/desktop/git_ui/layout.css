@@ -161,6 +161,36 @@
   border: 1px solid color-mix(in srgb, var(--muted) 40%, var(--border2));
   color: var(--muted);
 }
+.git-ui-busy {
+  align-items: center;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 50%, var(--border2));
+  border-radius: 999px;
+  color: var(--accent);
+  display: inline-flex;
+  font-size: 11px;
+  font-weight: 600;
+  gap: 6px;
+  padding: 2px 8px;
+  white-space: nowrap;
+}
+.git-ui-busy-spinner {
+  animation: git-ui-busy-spin 0.8s linear infinite;
+  border: 2px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-radius: 50%;
+  border-top-color: var(--accent);
+  display: inline-block;
+  flex: none;
+  height: 11px;
+  width: 11px;
+}
+@keyframes git-ui-busy-spin {
+  to { transform: rotate(360deg); }
+}
+.git-ui-panel.mutating .git-ui-btn {
+  cursor: progress;
+  opacity: 0.85;
+}
 .git-ui-tabs,
 .git-ui-actions {
   display: flex;

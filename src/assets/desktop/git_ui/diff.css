@@ -364,8 +364,9 @@
 }
 .git-ui-unified-text {
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-x: auto;
+  overflow-y: hidden;
+  white-space: pre;
 }
 .git-ui-context-cell {
   background: var(--panel);
@@ -448,7 +449,8 @@
 }
 .git-ui-code {
   min-width: 0;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
   padding: 1px 8px;
   white-space: pre;
 }
