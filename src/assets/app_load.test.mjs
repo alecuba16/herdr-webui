@@ -61,6 +61,7 @@ function context() {
     return elements.get(id);
   };
   const localStorage = new Map();
+  const documentListeners = {};
   const ctx = {
     console,
     atob: (value) => Buffer.from(String(value), "base64").toString("binary"),
@@ -80,7 +81,9 @@ function context() {
       querySelector: () => element(),
       querySelectorAll: () => [],
       getElementById: getElement,
-      addEventListener() {},
+      addEventListener(event, listener) {
+        (documentListeners[event] || (documentListeners[event] = [])).push(listener);
+      },
     },
     localStorage: {
       getItem: (key) => localStorage.get(key) || null,
@@ -100,6 +103,9 @@ function context() {
     confirm: () => true,
   };
   ctx.terminal = getElement("terminal");
+  ctx.dispatchDocumentEvent = (event, payload = {}) => {
+    for (const listener of documentListeners[event] || []) listener(payload);
+  };
   ctx.window = ctx;
   ctx.globalThis = ctx;
   return vm.createContext(ctx);
@@ -2220,17 +2226,64 @@ describe("app bundle load", () => {
   });
 
   it("captures terminal paste before xterm native paste", () => {
+    const html = readFileSync(new URL("./app.html", import.meta.url), "utf8");
     match(source, /addEventListener\(\s*"paste"/);
     match(source, /stopImmediatePropagation\(\)/);
     match(source, /sendPasteToTerminal\(text\)/);
+    match(source, /document\.addEventListener\("paste", \(e\) => handleTerminalPasteEvent\(e\)\)/);
     match(source, /schedulePasteChunkFlush\(0\)/);
     match(source, /function flushPasteChunks\(\)/);
     match(source, /PASTE_TEXT_CHUNK_SIZE = 4096/);
     match(source, /termWs\.bufferedAmount < PASTE_BUFFER_LIMIT/);
     match(source, /normalizeTerminalPasteChunk\(pasteJob, rawChunk/);
     match(source, /showTerminalPasteProgress\(pasteJob\.total\)/);
+    ok(!source.includes("navigator.clipboard.readText"));
+    ok(!source.includes('prompt("Paste text")'));
+    ok(!source.includes("pasteClipboard"));
+    match(html, /id="pasteMenu" disabled title="Use Cmd\/Ctrl\+V to paste with the browser"/);
     ok(!source.includes('JSON.stringify({ type: "paste"'));
     ok(!source.includes('.paste(text)'));
+  });
+
+  it("pastes terminal text from native browser paste events without clipboard read permission", () => {
+    const ctx = context();
+    const sent = [];
+    ctx.sent = sent;
+    ctx.navigator.clipboard.readText = async () => {
+      throw new Error("clipboard read should not be used for terminal paste");
+    };
+    vm.runInContext(source, ctx);
+    vm.runInContext(
+      `termWs = { readyState: 1, bufferedAmount: 0, send(data) { globalThis.sent.push(data); } };
+       term = { focus() { globalThis.focusedTerminal = true; } };`,
+      ctx,
+    );
+    const event = {
+      target: ctx.document.body,
+      defaultPrevented: false,
+      clipboardData: { getData: (type) => (type === "text/plain" ? "native paste" : "") },
+      preventDefault() { this.defaultPrevented = true; },
+      stopPropagation() { this.stopped = true; },
+    };
+
+    ctx.dispatchDocumentEvent("paste", event);
+    ctx.flushPasteChunks();
+
+    equal(event.defaultPrevented, true);
+    equal(new TextDecoder().decode(sent.at(-1)), "native paste");
+
+    const inputEvent = {
+      target: { tagName: "INPUT" },
+      defaultPrevented: false,
+      clipboardData: { getData: () => "native input paste" },
+      preventDefault() { this.defaultPrevented = true; },
+      stopPropagation() { this.stopped = true; },
+    };
+    const sentBeforeInput = sent.length;
+    ctx.dispatchDocumentEvent("paste", inputEvent);
+
+    equal(inputEvent.defaultPrevented, false);
+    equal(sent.length, sentBeforeInput);
   });
 
   it("renders terminal paste progress UI", () => {

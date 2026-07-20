@@ -7,6 +7,7 @@
       connectedTerminalSize = "",
       terminalFollowPaused = false,
       terminalScrollFollowBound = false,
+      documentPasteBound = false,
       terminalLinkProvider = null,
       inputFlushTimer = null,
       inputQueue = [],
@@ -160,17 +161,14 @@ function terminalLinksEnabled() {
       if (!terminal.dataset.pasteHandler) {
         terminal.addEventListener(
           "paste",
-          (event) => {
-            const text =
-              event.clipboardData && event.clipboardData.getData("text/plain");
-            if (!text || !termWs || termWs.readyState !== 1) return;
-            event.preventDefault();
-            event.stopImmediatePropagation();
-            sendPasteToTerminal(text);
-          },
+          (event) => handleTerminalPasteEvent(event, { force: true, stopImmediate: true }),
           true,
         );
         terminal.dataset.pasteHandler = "1";
+      }
+      if (!documentPasteBound && globalThis.document && globalThis.document.addEventListener) {
+        globalThis.document.addEventListener("paste", (event) => handleTerminalPasteEvent(event));
+        documentPasteBound = true;
       }
       if (!terminal.dataset.scrollHandler) {
         terminal.addEventListener("wheel", handleWheel, { passive: false });
@@ -479,6 +477,25 @@ function terminalLinksEnabled() {
       return filter && filter.stripTerminalQueryReplies
         ? filter.stripTerminalQueryReplies(data)
         : String(data || "");
+    }
+
+    function editableClipboardTarget(target) {
+      return (
+        target &&
+        (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName))
+      );
+    }
+
+    function handleTerminalPasteEvent(event, options = {}) {
+      if (!event || event.defaultPrevented) return false;
+      if (!options.force && editableClipboardTarget(event.target)) return false;
+      const text = event.clipboardData && event.clipboardData.getData("text/plain");
+      if (!text || !termWs || termWs.readyState !== 1) return false;
+      event.preventDefault();
+      if (options.stopImmediate && event.stopImmediatePropagation) event.stopImmediatePropagation();
+      else if (event.stopPropagation) event.stopPropagation();
+      sendPasteToTerminal(text);
+      return true;
     }
 
     function sendInputData(data, options = {}) {
