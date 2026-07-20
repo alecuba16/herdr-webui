@@ -1708,7 +1708,7 @@
     const body = diffLayoutMode() === "unified"
       ? rows.map((row, rowIndex) => renderUnifiedLine(row, path, index, rows, rowIndex, contextArrows)).join("")
       : rows.map((row, rowIndex) => renderLine(row, path, index, rows, rowIndex, contextArrows, !!file.preview_large_diff)).join("");
-    return `<div class="git-ui-hunk ${diffLayoutMode() === "unified" ? "git-ui-hunk-unified" : ""}"><div class="git-ui-hunk-head"><span>${esc(chunk.header)}</span>${actions}</div><div class="git-ui-hunk-scroll">${body}</div></div>`;
+    return `<div class="git-ui-hunk ${diffLayoutMode() === "unified" ? "git-ui-hunk-unified" : ""}"><div class="git-ui-hunk-head"><span>${esc(chunk.header)}</span>${actions}</div><div class="git-ui-hunk-viewport">${body}</div><div class="git-ui-hunk-xscroll" aria-hidden="true"><div class="git-ui-hunk-xscroll-inner"></div></div></div>`;
   }
 
   function contextArrowsForChunk(chunks, index) {
@@ -1784,7 +1784,7 @@
         : "";
     const oldCode = oldLine ? renderDiffCode(oldLine, newLine, path, "old") : "";
     const newCode = newLine ? renderDiffCode(oldLine, newLine, path, "new") : "";
-    return `<div class="git-ui-diff-row ${cls}"><div class="git-ui-context-cell">${contextControls}</div><div class="git-ui-code git-ui-code-old">${oldCode}</div><div class="git-ui-line-pair"><span class="git-ui-line-old"><em>${esc(oldAuthor)}</em>${oldNo}</span>${blockButton}<span class="git-ui-line-new"><em>${esc(newAuthor)}</em>${newNo}</span></div><div class="git-ui-code git-ui-code-new">${newCode}</div></div>`;
+    return `<div class="git-ui-diff-row ${cls}"><div class="git-ui-context-cell">${contextControls}</div><div class="git-ui-code git-ui-code-old"><span class="git-ui-code-text">${oldCode}</span></div><div class="git-ui-line-pair"><span class="git-ui-line-old"><em>${esc(oldAuthor)}</em>${oldNo}</span>${blockButton}<span class="git-ui-line-new"><em>${esc(newAuthor)}</em>${newNo}</span></div><div class="git-ui-code git-ui-code-new"><span class="git-ui-code-text">${newCode}</span></div></div>`;
   }
 
   function renderUnifiedLine(row, path, hunkIndex, rows, rowIndex, contextArrows) {
@@ -1811,7 +1811,7 @@
         : "";
     const sign = add ? "+" : del ? "-" : " ";
     const code = renderUnifiedDiffCode(line, rows, rowIndex, path);
-    return `<div class="git-ui-unified-row ${cls}"><div class="git-ui-context-cell">${contextControls}</div><div class="git-ui-unified-lines"><span>${oldNo}</span><span>${newNo}</span></div><div class="git-ui-unified-action">${blockButton}</div><div class="git-ui-code git-ui-code-unified"><span class="git-ui-unified-author">${esc(author)}</span><span class="git-ui-unified-sign">${sign}</span><span class="git-ui-unified-text">${code}</span></div></div>`;
+    return `<div class="git-ui-unified-row ${cls}"><div class="git-ui-context-cell">${contextControls}</div><div class="git-ui-unified-lines"><span>${oldNo}</span><span>${newNo}</span></div><div class="git-ui-unified-action">${blockButton}</div><div class="git-ui-code git-ui-code-unified"><span class="git-ui-unified-author">${esc(author)}</span><span class="git-ui-unified-sign">${sign}</span><span class="git-ui-unified-text"><span class="git-ui-code-text">${code}</span></span></div></div>`;
   }
 
   function renderUnifiedDiffCode(line, rows, rowIndex, path) {
@@ -2125,6 +2125,30 @@
     return tab === "cleanup" || tab === "log";
   }
 
+  function setupDiffHunkScrollbars(root) {
+    const scope = root || document;
+    scope.querySelectorAll(".git-ui-hunk").forEach((hunk) => {
+      const scroll = hunk.querySelector(".git-ui-hunk-xscroll");
+      const inner = scroll && scroll.querySelector(".git-ui-hunk-xscroll-inner");
+      if (!scroll || !inner) return;
+      const codeCells = Array.from(hunk.querySelectorAll(".git-ui-code, .git-ui-unified-text"));
+      const maxScroll = codeCells.reduce((max, cell) => Math.max(max, Math.max(0, cell.scrollWidth - cell.clientWidth)), 0);
+      scroll.classList.toggle("no-scroll", maxScroll < 2);
+      inner.style.width = `${Math.max(scroll.clientWidth + maxScroll, scroll.clientWidth)}px`;
+      const apply = () => hunk.style.setProperty("--git-ui-hunk-scroll-left", `${scroll.scrollLeft}px`);
+      scroll.addEventListener("scroll", apply, { passive: true });
+      codeCells.forEach((cell) => {
+        cell.addEventListener("wheel", (event) => {
+          if (!event.deltaX || Math.abs(event.deltaX) < Math.abs(event.deltaY)) return;
+          if (maxScroll < 2) return;
+          event.preventDefault();
+          scroll.scrollLeft += event.deltaX;
+        }, { passive: false });
+      });
+      apply();
+    });
+  }
+
   function render() {
     if (!state.visible) return;
     saveSideEditorFromDom();
@@ -2141,6 +2165,7 @@
     const nextContent = panel.querySelector(".git-ui-content");
     if (nextContent && preserveContentScroll(activeView.tab))
       nextContent.scrollTop = activeView.contentScrollTop || 0;
+    setupDiffHunkScrollbars(panel);
     mountSideEditors();
     focusDiffSearchIfNeeded();
     const view = activeView;
@@ -2170,29 +2195,78 @@
     }, 0);
   }
 
+  function setupSideEditorMountUi(root) {
+    const view = active() || {};
+    const editorState = view.sideEditor || {};
+    const scope = root || document;
+    scope.querySelectorAll(".git-ui-hunk-editor").forEach((editor) => {
+      // Sync horizontal scroll between previous/current CodeMirror scrollers.
+      const scrollers = Array.from(editor.querySelectorAll(".git-ui-hunk-edit-mount .cm-scroller"));
+      if (scrollers.length >= 2) {
+        const sync = (source) => {
+          if (source._gitUiSyncingSideEditorScroll) return;
+          for (const scroller of scrollers) {
+            if (scroller === source) continue;
+            if (scroller.scrollLeft === source.scrollLeft) continue;
+            scroller._gitUiSyncingSideEditorScroll = true;
+            scroller.scrollLeft = source.scrollLeft;
+            requestAnimationFrame(() => { scroller._gitUiSyncingSideEditorScroll = false; });
+          }
+        };
+        scrollers.forEach((scroller) => {
+          scroller.addEventListener("scroll", () => sync(scroller), { passive: true });
+          scroller.addEventListener("wheel", (event) => {
+            if (!event.deltaX || Math.abs(event.deltaX) < Math.abs(event.deltaY)) return;
+            const next = scroller.scrollLeft + event.deltaX;
+            if (next === scroller.scrollLeft) return;
+            event.preventDefault();
+            scroller.scrollLeft = next;
+            sync(scroller);
+          }, { passive: false });
+        });
+        sync(scrollers[0]);
+      }
+
+      // Apply compare/edit tinting without CodeMirror block decorations. The
+      // CodeMirror `hunks` option creates block widgets, which can crash here.
+      editor.querySelectorAll(".git-ui-hunk-edit-mount[data-hunk-index]").forEach((mount) => {
+        const index = Number(mount.dataset.hunkIndex || 0);
+        const side = mount.dataset.editorSide || "current";
+        const hunk = (editorState.hunks || [])[index] || {};
+        const types = side === "old" ? (hunk.oldLineTypes || []) : (hunk.newLineTypes || []);
+        const lines = Array.from(mount.querySelectorAll(".cm-line"));
+        lines.forEach((line, lineIndex) => {
+          const type = types[lineIndex] || "context";
+          line.classList.toggle("git-ui-side-line-del", side === "old" && type === "del");
+          line.classList.toggle("git-ui-side-line-add", side === "old" && type === "add");
+          line.classList.toggle("git-ui-side-line-edit", side === "current" && type !== "context");
+        });
+      });
+    });
+  }
+
   function mountSideEditors() {
     const view = active() || {};
     if (!window.HerdrEditor || !view.sideEditor) return;
     const mounts = Array.from(document.querySelectorAll(".git-ui-hunk-edit-mount[data-hunk-index]"));
-    const mountAll = () => mounts.forEach((mount) => {
-      const index = Number(mount.dataset.hunkIndex || 0);
-      const side = mount.dataset.editorSide || "current";
-      const sourceClass = side === "old" ? "git-ui-hunk-old-hidden" : "git-ui-hunk-current-hidden";
-      const textarea = document.querySelector(`.${sourceClass}[data-hunk-index="${index}"]`);
-      if (!textarea) return;
-      const hunk = ((view.sideEditor || {}).hunks || [])[index];
-      const lineHunks = hunk ? sideEditorLineHunks(hunk, side) : [];
-      window.HerdrEditor.create({
-        parent: mount,
-        path: view.file || view.sideEditor.path || "",
-        content: textarea.value,
-        readonly: mount.dataset.readonly === "true",
-        hideFind: true,
-        hunks: lineHunks,
-        hunkActions: [],
-        onChange: side === "old" ? null : function (value) { textarea.value = value; },
+    const mountAll = () => {
+      mounts.forEach((mount) => {
+        const index = Number(mount.dataset.hunkIndex || 0);
+        const side = mount.dataset.editorSide || "current";
+        const sourceClass = side === "old" ? "git-ui-hunk-old-hidden" : "git-ui-hunk-current-hidden";
+        const textarea = document.querySelector(`.${sourceClass}[data-hunk-index="${index}"]`);
+        if (!textarea) return;
+        window.HerdrEditor.create({
+          parent: mount,
+          path: view.file || view.sideEditor.path || "",
+          content: textarea.value,
+          readonly: mount.dataset.readonly === "true",
+          hideFind: true,
+          onChange: side === "old" ? null : function (value) { textarea.value = value; },
+        });
       });
-    });
+      requestAnimationFrame(() => setupSideEditorMountUi(document));
+    };
     if (!window.HerdrCodeMirror && window.HerdrEditor.ensureCodeMirror) {
       window.HerdrEditor.ensureCodeMirror().then(() => mountAll()).catch(() => mountAll());
       return;
