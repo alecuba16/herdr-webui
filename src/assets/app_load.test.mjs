@@ -388,6 +388,8 @@ describe("app bundle load", () => {
     match(desktopTerminalSource, /function sendBackendScroll\(lines\) \{[\s\S]*?state\.backendMode === "builtin"[\s\S]*?type: "scroll"[\s\S]*?direction: lines < 0 \? "up" : "down"/);
     match(desktopTerminalSource, /function setTerminalFollowPaused\(paused\) \{[\s\S]*?button\.hidden = !paused;/);
     match(desktopTerminalSource, /function updateTerminalScrollbackEstimate\(lines\) \{[\s\S]*?terminalScrollbackOffsetEstimate[\s\S]*?setTerminalFollowPaused\(terminalScrollbackOffsetEstimate > 0\);/);
+    match(desktopTerminalSource, /shell\.addEventListener\("mouseup", \(\) => autoCopyTerminalSelection\(\{ allowFallback: true \}\), true\);/);
+    match(desktopTerminalSource, /term\.onSelectionChange\(\(\) => \{[\s\S]*?autoCopyTerminalSelection\(\{ allowFallback: false \}\);/);
     ok(!desktopTerminalSource.includes("term.onScroll"));
     ok(!desktopTerminalSource.includes("term.scrollToLine"));
     ok(!desktopTerminalSource.includes("const shouldPreserve"));
@@ -395,6 +397,60 @@ describe("app bundle load", () => {
     match(desktopTerminalSource, /function sendBackendTail\(\) \{[\s\S]*?for \(let i = 0; i < 120; i \+= 1\)[\s\S]*?sendBackendScroll\(200\)/);
     match(desktopTerminalSource, /function scrollTerminalToBottom\(focus = true\) \{[\s\S]*?sendBackendTail\(\);[\s\S]*?setTerminalFollowPaused\(false\);[\s\S]*?term\.scrollToBottom\(\);/);
     match(desktopTerminalSource, /ws\.onopen = \(\) => \{[\s\S]*?scrollTerminalToBottom\(false\);/);
+  });
+
+  it("auto-copies non-empty terminal selections to the browser clipboard", async () => {
+    const ctx = context();
+    const writes = [];
+    ctx.navigator.clipboard.writeText = async (text) => {
+      writes.push(text);
+    };
+    vm.runInContext(source, ctx);
+
+    const first = await vm.runInContext(`
+      term = { getSelection() { return "copy me"; } };
+      autoCopyTerminalSelection();
+    `, ctx);
+    const duplicate = await vm.runInContext("autoCopyTerminalSelection();", ctx);
+    await vm.runInContext(`
+      term = { getSelection() { return ""; } };
+      autoCopyTerminalSelection();
+    `, ctx);
+    const afterClear = await vm.runInContext(`
+      term = { getSelection() { return "copy me"; } };
+      autoCopyTerminalSelection();
+    `, ctx);
+
+    equal(first, true);
+    equal(duplicate, true);
+    equal(afterClear, true);
+    deepEqual(writes, ["copy me", "copy me"]);
+  });
+
+  it("falls back to execCommand copy when clipboard writeText is unavailable", async () => {
+    const ctx = context();
+    const commands = [];
+    ctx.navigator.clipboard.writeText = async () => {
+      throw new Error("denied");
+    };
+    ctx.document.execCommand = (command) => {
+      commands.push(command);
+      return true;
+    };
+    vm.runInContext(source, ctx);
+
+    const delayed = await vm.runInContext(`
+      term = { getSelection() { return "fallback text"; } };
+      autoCopyTerminalSelection({ allowFallback: false });
+    `, ctx);
+    const copied = await vm.runInContext(`
+      term = { getSelection() { return "fallback text"; } };
+      autoCopyTerminalSelection();
+    `, ctx);
+
+    equal(delayed, false);
+    equal(copied, true);
+    deepEqual(commands, ["copy"]);
   });
 
   it("keeps Git UI keyboard input away from the terminal", () => {

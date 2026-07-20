@@ -91,6 +91,7 @@ function connectTerminal() {
     applyTerminalLinks();
     applyTheme();
     term.onData(sendInputData);
+    bindTerminalSelectionAutoCopy();
     if (term.attachCustomKeyEventHandler)
       term.attachCustomKeyEventHandler((e) => {
         if (window.HerdrGitUi && window.HerdrGitUi.isVisible && window.HerdrGitUi.isVisible())
@@ -159,6 +160,7 @@ function connectTerminal() {
     shell.addEventListener("mousedown", () =>
       setTimeout(focusTerminal, 0),
     );
+    shell.addEventListener("mouseup", () => autoCopyTerminalSelection({ allowFallback: true }), true);
     terminal.addEventListener("wheel", handleTerminalWheel, { passive: false, capture: true });
     terminal.addEventListener("touchstart", handleTerminalTouchStart, { passive: true, capture: true });
     terminal.addEventListener("touchmove", handleTerminalTouchMove, { passive: false, capture: true });
@@ -203,6 +205,64 @@ function connectTerminal() {
     }
   };
 }
+function bindTerminalSelectionAutoCopy() {
+  if (!term || !term.onSelectionChange) return;
+  term.onSelectionChange(() => {
+    if (terminalSelectionCopyTimer) clearTimeout(terminalSelectionCopyTimer);
+    terminalSelectionCopyTimer = setTimeout(() => {
+      terminalSelectionCopyTimer = null;
+      autoCopyTerminalSelection({ allowFallback: false });
+    }, 40);
+  });
+}
+
+function selectedTerminalText() {
+  try {
+    return term && term.getSelection ? String(term.getSelection() || "") : "";
+  } catch (e) {
+    return "";
+  }
+}
+
+async function writeTextToClipboard(text, options = {}) {
+  if (!text) return false;
+  try {
+    if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error("clipboard api unavailable");
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch (e) {
+    if (options.allowFallback === false) return false;
+    try {
+      const area = document.createElement("textarea");
+      area.value = text;
+      area.setAttribute("readonly", "");
+      area.style.position = "fixed";
+      area.style.left = "-9999px";
+      area.style.top = "0";
+      document.body.appendChild(area);
+      area.select();
+      const copied = document.execCommand("copy");
+      area.remove();
+      return copied !== false;
+    } catch (fallbackError) {
+      console.warn("failed to copy terminal selection", fallbackError);
+      return false;
+    }
+  }
+}
+
+async function autoCopyTerminalSelection(options = {}) {
+  const text = selectedTerminalText();
+  if (!text) {
+    terminalLastAutoCopiedSelection = "";
+    return false;
+  }
+  if (text === terminalLastAutoCopiedSelection) return true;
+  const copied = await writeTextToClipboard(text, options);
+  if (copied) terminalLastAutoCopiedSelection = text;
+  return copied;
+}
+
 function refreshTerminalAfterFontLoad(terminalKey) {
   const fonts = globalThis.document && globalThis.document.fonts;
   if (!fonts || !fonts.load) return;
@@ -587,18 +647,10 @@ function scheduleTerminalLayoutFit() {
   });
 }
 async function copySelection() {
-  const text = term && term.getSelection ? term.getSelection() : "";
+  const text = selectedTerminalText();
   if (!text) return false;
-  try {
-    await navigator.clipboard.writeText(text);
-  } catch (e) {
-    const area = document.createElement("textarea");
-    area.value = text;
-    document.body.appendChild(area);
-    area.select();
-    document.execCommand("copy");
-    area.remove();
-  }
+  const copied = await writeTextToClipboard(text);
+  if (!copied) return false;
   hideClipboardMenu();
   return true;
 }
