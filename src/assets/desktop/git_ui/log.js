@@ -23,14 +23,32 @@
     const baseBranch = options.baseBranch || "master";
     const logScope = normalizeLogScope(options.logScope || (options.logAll ? "all" : "base-current"));
     const esc = options.esc;
+    const upstreamRef = upstreamRefFromStatus(options.status || {});
     const fileScope = options.filePath ? `<span class="git-ui-log-file-scope" title="File history filter">${esc(options.filePath)}</span><button class="git-ui-btn" onclick="HerdrGitUi.clearLogFileHistory()">Clear file</button>` : "";
     const scope = `<div class="git-ui-log-scope-head"><span class="git-ui-toolbar-title">History scope</span><button class="git-ui-btn active" title="Toggle history scope: All, ${esc(baseBranch)} + branch, ${esc(baseBranch)}" onclick="HerdrGitUi.cycleLogScope()">${esc(logScopeLabel(logScope, baseBranch))}</button>${fileScope}${options.actionsHtml || ""}</div>`;
     const header = `<div class="git-ui-log-table-head"><span>Graph</span><span>Description</span><span>Date</span><span>Author</span></div>${renderFilterRow(filters, esc)}`;
+    const renderOptions = Object.assign({}, options, { upstreamRef });
     const body = rows.length
-      ? rows.map((row) => renderRow(row, selected, filters, options, baseBranch)).join("")
+      ? rows.map((row) => renderRow(row, selected, filters, renderOptions, baseBranch)).join("")
       : `<div class="git-ui-empty-row">No commits found.</div>`;
     const footer = renderLoadMore(options.data || {}, rows, options, esc);
     return `${scope}<div class="git-ui-log git-ui-log-table">${header}${body}${footer}</div>`;
+  }
+
+  function upstreamRefFromStatus(status) {
+    if (!status) return "";
+    const upstream = String(status.upstream || "").trim();
+    if (!upstream) return "";
+    if (upstream.startsWith("refs/remotes/")) return upstream.replace(/^refs\/remotes\//, "");
+    if (upstream.includes("/")) return upstream;
+    return `origin/${upstream}`;
+  }
+
+  function isUpstreamTip(row, upstreamRef) {
+    if (!upstreamRef || !row || !Array.isArray(row.labels)) return false;
+    const labels = row.labels.map(normalizeLabel);
+    if (row.current || labels.some((label) => label === "HEAD" || label.startsWith("HEAD -> "))) return false;
+    return labels.includes(upstreamRef);
   }
 
   function renderLoadMore(data, rows, options, esc) {
@@ -108,7 +126,9 @@
     const hash = String(row.hash || "");
     const selectedClass = hash && selected.includes(hash) ? " selected" : "";
     const graphOnly = hash ? "" : " graph-only";
-    const currentClass = row.current ? " current" : "";
+    const isCurrent = row.current || (Array.isArray(row.labels) && row.labels.some((label) => normalizeLabel(label) === "HEAD" || normalizeLabel(label).startsWith("HEAD -> ")));
+    const currentClass = isCurrent ? " current" : "";
+    const upstreamTip = isUpstreamTip(row, options.upstreamRef) ? " origin-tip" : "";
     const lane = Number.isFinite(Number(row.lane)) ? Number(row.lane) : graphLane(row.graph);
     const color = laneColor(lane);
     const title = row.title || row.message || "";
@@ -117,7 +137,7 @@
     const click = hash ? ` onclick="HerdrGitUi.selectLogCommit(event,'${arg(hash)}')"` : "";
     const hover = renderHover(row, color, esc, baseBranch);
     const tooltip = hoverText(row);
-    return `<div class="git-ui-log-row${selectedClass}${graphOnly}${currentClass}${hidden}" data-log-hash="${esc(hash)}" data-log-filter-description="${esc(filterText.description)}" data-log-filter-date="${esc(filterText.date)}" data-log-filter-author="${esc(filterText.author)}" style="--lane:${color}" title="${esc(tooltip)}"${click}>${renderGraph(row.graph, !!hash)}<span class="git-ui-log-desc">${renderLabels(row.labels || [], row.current, esc, baseBranch)}<span class="git-ui-log-title">${esc(title)}</span></span><span class="git-ui-log-date">${esc(row.date || "")}</span><span class="git-ui-log-author">${esc(row.author || "")}</span>${hover}</div>`;
+    return `<div class="git-ui-log-row${selectedClass}${graphOnly}${currentClass}${upstreamTip}${hidden}" data-log-hash="${esc(hash)}" data-log-filter-description="${esc(filterText.description)}" data-log-filter-date="${esc(filterText.date)}" data-log-filter-author="${esc(filterText.author)}" style="--lane:${color}" title="${esc(tooltip)}"${click}>${renderGraph(row.graph, !!hash, upstreamTip, isCurrent)}<span class="git-ui-log-desc">${renderLabels(row.labels || [], row.current, esc, baseBranch)}<span class="git-ui-log-title">${esc(title)}</span></span><span class="git-ui-log-date">${esc(row.date || "")}</span><span class="git-ui-log-author">${esc(row.author || "")}</span>${hover}</div>`;
   }
 
   function renderHover(row, color, esc, baseBranch) {
@@ -189,6 +209,7 @@
     if (label === "HEAD" || label.startsWith("HEAD -> ")) return "current";
     if (label === base || label === `origin/${base}` || label === "main" || label === "origin/main" || label === "master" || label === "origin/master") return "main";
     if (label.startsWith("tag:")) return "tag";
+    if (label.startsWith("origin/") && label !== "origin/HEAD") return "origin";
     if (label.includes("/")) return "remote";
     return "branch";
   }
@@ -220,8 +241,12 @@
     return labelKind(label, false, baseBranch) !== "tag";
   }
 
-  function renderGraph(graph, hasCommit) {
+  function renderGraph(graph, hasCommit, upstreamTip, isCurrent) {
     const chars = String(graph || "* ").split("");
+    const dotClasses = ["git-ui-log-dot"];
+    if (upstreamTip) dotClasses.push("origin");
+    if (isCurrent) dotClasses.push("head");
+    const dotClass = ` class="${dotClasses.join(" ")}"`;
     const cells = [];
     for (let i = 0; i < Math.min(chars.length, 24); i++) {
       const ch = chars[i];
@@ -229,7 +254,7 @@
       let mark = "";
       if (ch === "*") {
         cls += " commit";
-        mark = '<i class="git-ui-log-dot"></i>';
+        mark = `<i${dotClass}></i>`;
       } else if (ch === "|") cls += " vertical";
       else if (ch === "/") cls += " merge-left";
       else if (ch === "\\") cls += " merge-right";
@@ -237,7 +262,7 @@
       cells.push(`<span class="${cls}" style="--lane:${laneColor(i)}">${mark}</span>`);
     }
     if (hasCommit && !String(graph || "").includes("*")) {
-      cells.unshift('<span class="git-ui-lane commit" style="--lane:var(--accent)"><i class="git-ui-log-dot"></i></span>');
+      cells.unshift(`<span class="git-ui-lane commit" style="--lane:var(--accent)"><i${dotClass}></i></span>`);
     }
     return `<span class="git-ui-log-graph" aria-hidden="true">${cells.join("")}</span>`;
   }

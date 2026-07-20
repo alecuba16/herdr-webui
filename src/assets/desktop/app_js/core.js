@@ -2481,19 +2481,18 @@ async function loadVersions() {
 function sessionPrefix() {
   return "/session/" + encodeURIComponent(state.session || "default");
 }
-function expandScopedId(ws, id) {
-  if (!ws || !id) return id || null;
-  return `${ws}:${id}`;
-}
-function compactScopedId(ws, id) {
-  if (!ws || !id) return id || null;
-  const prefix = `${ws}:`;
-  return id.startsWith(prefix) ? id.slice(prefix.length) : id;
-}
+// Desktop backend (builtin_backend.rs `next_id` -> `tab_N`) returns UNSCOPED
+// tab/pane ids. The URL stores them raw (`/workspace/ws1/tab/tab_2`), and every
+// comparison in refreshOnline / closeTab / etc. is against the raw backend id.
+// Earlier code scoped ids as `${ws}:${id}` in parseRoute, which made
+// `state.tab` (scoped) never match `state.tabs[].tab_id` (unscoped), so the
+// panel switcher always snapped back to the focused/first tab after a refresh.
+// Ids stay raw end-to-end on desktop — no scoping helpers needed.
+// (Mobile keeps a real scoped implementation in src/assets/mobile/core.js.)
 function selectionPath(ws, tab, pane) {
   let p = sessionPrefix() + "/workspace/" + encodeURIComponent(ws);
-  if (tab) p += "/tab/" + encodeURIComponent(compactScopedId(ws, tab));
-  if (pane) p += "/pane/" + encodeURIComponent(compactScopedId(ws, pane));
+  if (tab) p += "/tab/" + encodeURIComponent(tab);
+  if (pane) p += "/pane/" + encodeURIComponent(pane);
   return p;
 }
 function parseRoute() {
@@ -2508,8 +2507,8 @@ function parseRoute() {
     i = 2;
   }
   state.ws = p[i] === "workspace" ? p[i + 1] : null;
-  state.tab = p[i + 2] === "tab" ? expandScopedId(state.ws, p[i + 3]) : null;
-  state.pane = p[i + 4] === "pane" ? expandScopedId(state.ws, p[i + 5]) : null;
+  state.tab = p[i + 2] === "tab" ? (p[i + 3] || null) : null;
+  state.pane = p[i + 4] === "pane" ? (p[i + 5] || null) : null;
 }
 function setTerminalLoading(show) {
   const loading = el("terminalLoading");
