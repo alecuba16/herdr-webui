@@ -76,6 +76,7 @@ let term,
   terminalWriteFlushPending = false,
   terminalSelectionCopyTimer = null,
   terminalLastAutoCopiedSelection = "",
+  terminalOutputControlCarry = "",
   pasteFrameUntil = 0,
   shortcutPrefixUntil = 0,
   shortcutPrefixTimer = null,
@@ -143,6 +144,7 @@ let noSleepState = { mode: "off", until_ms: null, error: null, supported: true }
 let noSleepPollTimer = null;
 let noSleepRequestSeq = 0;
 const inputEncoder = new TextEncoder();
+const outputDecoder = new TextDecoder();
 const {
   branchPathSlug,
   normalizeAbsolutePath,
@@ -2536,6 +2538,7 @@ function resetTerminalConnection(clear = false, destroy = false) {
   if (typeof hideTerminalPasteProgress === "function") hideTerminalPasteProgress();
   if (terminalWriteQueue.length && typeof flushTerminalFrames === "function") flushTerminalFrames();
   terminalWriteQueue = [];
+  terminalOutputControlCarry = "";
   terminalWriteFlushPending = false;
   terminalAttachPending = false;
   setTerminalFollowPaused(false);

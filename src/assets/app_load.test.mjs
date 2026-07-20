@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { beforeEach, describe, it } from "node:test";
 import { deepEqual, doesNotThrow, equal, match, ok } from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { TextDecoder, TextEncoder } from "node:util";
 import vm from "node:vm";
 
 function element(id = "") {
@@ -62,6 +63,8 @@ function context() {
   const localStorage = new Map();
   const ctx = {
     console,
+    atob: (value) => Buffer.from(String(value), "base64").toString("binary"),
+    TextDecoder,
     TextEncoder,
     URLSearchParams,
     clearTimeout,
@@ -1271,6 +1274,81 @@ describe("app bundle load", () => {
     equal(ctx.stripTerminalQueryReplies("before\x1b[24;80Rafter"), "beforeafter");
     equal(ctx.stripTerminalQueryReplies("\x1b[?1;1Rprompt"), "prompt");
     equal(ctx.stripTerminalQueryReplies("normal input"), "normal input");
+  });
+
+  it("copies OSC 52 terminal output through the browser clipboard path", async () => {
+    const ctx = context();
+    const writes = [];
+    ctx.navigator.clipboard.writeText = async (text) => {
+      writes.push(text);
+    };
+    vm.runInContext(source, ctx);
+
+    const encoded = Buffer.from("semantic copied").toString("base64");
+    equal(
+      ctx.handleTerminalOutputControlSequences(`before\x1b]52;c;${encoded}\x07after`),
+      "beforeafter",
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    deepEqual(writes, ["semantic copied"]);
+    equal(ctx.handleTerminalOutputControlSequences("\x1b[A"), "\x1b[A");
+  });
+
+  it("handles split OSC 52 terminal output without rendering the control sequence", async () => {
+    const ctx = context();
+    const writes = [];
+    ctx.navigator.clipboard.writeText = async (text) => {
+      writes.push(text);
+    };
+    vm.runInContext(source, ctx);
+
+    const encoded = Buffer.from("split copied").toString("base64");
+    equal(ctx.handleTerminalOutputControlSequences(`prompt\x1b]52;c;${encoded}`), "prompt");
+    equal(ctx.handleTerminalOutputControlSequences("\x07next"), "next");
+    await Promise.resolve();
+    await Promise.resolve();
+    deepEqual(writes, ["split copied"]);
+  });
+
+  it("creates a focused desktop panel and navigates to the returned pane", async () => {
+    const ctx = context();
+    const requests = [];
+    ctx.location.pathname = "/session/default/workspace/w1/tab/t1/pane/p1";
+    ctx.history = {
+      pushState(_state, _title, path) {
+        ctx.location.pathname = path;
+      },
+      replaceState(_state, _title, path) {
+        ctx.location.pathname = path;
+      },
+    };
+    ctx.fetch = async (url, opt = {}) => {
+      requests.push({ url, opt });
+      if (url === "/api/tabs" && opt.method === "POST") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ result: { tab: { tab_id: "w1:t3" }, pane: { pane_id: "w1:p3" } } }),
+        };
+      }
+      const result = String(url).includes("workspaces")
+        ? { workspaces: [{ workspace_id: "w1" }] }
+        : String(url).includes("tabs")
+          ? { tabs: [{ workspace_id: "w1", tab_id: "w1:t3", focused: true }] }
+          : String(url).includes("panes")
+            ? { panes: [{ workspace_id: "w1", tab_id: "w1:t3", pane_id: "w1:p3", terminal_id: "term3", focused: true }] }
+            : { agents: [] };
+      return { ok: true, status: 200, json: async () => ({ result }) };
+    };
+    vm.runInContext(source, ctx);
+    vm.runInContext('state.ws = "w1";', ctx);
+
+    await ctx.newTab();
+
+    const create = requests.find((request) => request.url === "/api/tabs" && request.opt.method === "POST");
+    deepEqual(JSON.parse(create.opt.body), { workspace_id: "w1", focus: true });
+    equal(ctx.location.pathname, "/session/default/workspace/w1/tab/t3/pane/p3");
   });
 
   it("renders default shell panels as numeric panel labels", () => {
