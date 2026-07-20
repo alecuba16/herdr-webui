@@ -38,7 +38,7 @@ The session manager adds a per-request backend target on top of the global defau
 - Agent detection first inspects known argv labels, then scans terminal child process trees with a short process-table cache, then falls back to terminal-screen markers. The screen fallback mirrors Herdr screen-manifest rules for visible `blocked`, `working`, and `idle` states in Amp, Antigravity, Claude, Cline, Codex, Cursor, Devin, Droid, Gemini, GitHub Copilot, Grok, Hermes, Jcode, Kilo, Kimi, Kiro, Maki, OpenCode, Pi, and Qoder CLI. Jcode status follows the Herdr `jcode-support` manifest bottom-line rules plus active background-task markers so running tasks remain `working` even when an input prompt is visible. OSC-only or metadata-only Herdr detections are outside this fallback because the built-in backend consumes normalized terminal text.
 - Built-in `events.subscribe` stays open through an in-process event hub. Workspace, tab, pane, worktree, and agent status mutations publish Herdr-shaped JSON events to subscribers. The WebUI bridge uses those events for built-in sessions instead of its legacy 5s snapshot polling branch; external Herdr sessions keep the existing compatibility behavior.
 - Status detection stays backend-core owned, not WebSocket-owned. PTY/process/status detectors publish internal state-change events, then WebSocket, TUI, and smoke clients consume through backend/client APIs. This keeps TUI/headless clients first-class and keeps status tests independent from browser transport.
-- xterm.js terminal query replies are treated as frontend input sanitation, not backend color logic. Native terminals consume OSC 10/11 color query responses internally, but xterm.js can expose those responses through `onData`. WebUI filters those replies before they reach the terminal WebSocket so they cannot be written into the PTY as shell input.
+- xterm.js terminal query replies are treated as frontend input sanitation, not backend color logic. Native terminals consume query responses internally, but xterm.js can expose those responses through `onData`. WebUI filters those replies in `src/assets/shared/terminal_filter.js` before they reach the terminal WebSocket so they cannot be written into the PTY as shell input.
 - Unsafe destructive operations stay explicit. `worktree.remove` returns unsupported until validation, preview, and rollback rules are implemented.
 
 ### TUI/client modularity
@@ -87,10 +87,26 @@ The Rust binary embeds assets with `include_str!` or `include_bytes!`. Public ro
 - `/assets/shared/workspace-search.js`
 - `/assets/vendor/codemirror.js`
 - `/assets/shared/editor.js`
+- `/assets/shared/terminal-filter.js`
 - desktop assets under `/assets/desktop/...`
 - mobile assets under `/assets/mobile/...`
 
 `app_boot.js` loads layout CSS, then shared color tokens, shared icon CSS, shared content-search CSS, shared JS, and finally layout-specific JS. File icon data is a shared module loaded before `file-tree.js`, so desktop and mobile use the same mappings. Content-search and workspace-search helpers are also shared, with desktop and mobile owning only controller state and backend calls.
+
+### xterm query reply filter
+
+Browser terminal input has two sources: user keystrokes and terminal-emulator replies to application queries. The latter can look like normal text if forwarded to a shell. The common symptom is a cursor-position reply such as `ESC [ 1 ; 1 R`; if the escape byte is consumed or not visible, the prompt may show `;1R` after switching panels or focusing a terminal.
+
+`src/assets/shared/terminal_filter.js` is the frontend boundary for those replies. `sendInputData` calls it before forwarding xterm `onData` bytes to `/ws/terminal`. Paste paths do not use this filter because pasted text is explicit user data and may intentionally contain escape sequences.
+
+The filter strips complete xterm-generated reply families that WebUI should never send as shell input:
+
+- OSC string controls: color replies such as OSC 4 palette entries and OSC 10-19 dynamic colors, OSC 52 clipboard query replies, title/icon replies, and other OSC strings terminated by BEL or ST.
+- DCS/SOS/PM/APC string controls, including XTGETTCAP and DECRQSS-style responses terminated by ST.
+- CSI reports: cursor position reports (`ESC[row;colR` and private `ESC[?row;colR`), device status (`n`), primary/secondary device attributes (`c`), window reports (`t`), and DECRPM mode reports ending in `$y`.
+- Legacy truncated color replies observed without the leading OSC introducer, for example `4;10;rgb:...` or `10;rgb:...`, so older leaked sequences are still removed.
+
+The filter is intentionally scoped to terminal-emulator replies, not all control characters. Normal keyboard escape sequences such as arrows, tab, page keys, and bracketed paste markers remain allowed.
 
 ## File explorer
 

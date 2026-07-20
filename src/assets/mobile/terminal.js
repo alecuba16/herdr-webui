@@ -424,8 +424,18 @@ function terminalLinksEnabled() {
       } catch (_) {}
     }
 
-    function sendInputData(data) {
+    function stripTerminalQueryReplies(data) {
+      const filter = globalThis.HerdrTerminalFilter;
+      return filter && filter.stripTerminalQueryReplies
+        ? filter.stripTerminalQueryReplies(data)
+        : String(data || "");
+    }
+
+    function sendInputData(data, options = {}) {
       if (!termWs || termWs.readyState !== 1 || !data) return;
+      if (typeof data === "string" && !options.allowTerminalReplies)
+        data = stripTerminalQueryReplies(data);
+      if (!data) return;
       const bytes = typeof data === "string" ? inputEncoder.encode(data) : data;
       const chunkSize = 16 * 1024;
       if (
@@ -443,7 +453,11 @@ function terminalLinksEnabled() {
 
     function sendPasteToTerminal(text) {
       if (!termWs || termWs.readyState !== 1 || !text) return;
-      sendInputData(terminalPasteInput(text, false));
+      const helpers = globalThis.HerdrAppHelpers || {};
+      const pasteInput = helpers.terminalPasteInput
+        ? helpers.terminalPasteInput(text, false)
+        : String(text || "").replace(/\r\n?/g, "\n");
+      sendInputData(pasteInput, { allowTerminalReplies: true });
     }
 
     function scheduleInputFlush() {

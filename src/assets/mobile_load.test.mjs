@@ -1,12 +1,13 @@
 import { describe, it } from "node:test";
 import { doesNotThrow, equal, match, ok } from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { TextEncoder } from "node:util";
+import { TextDecoder, TextEncoder } from "node:util";
 import vm from "node:vm";
 
 function element(id = "") {
   return {
     id,
+    _listeners: {},
     classList: { toggle() {}, add() {}, remove() {} },
     dataset: {},
     style: { setProperty() {} },
@@ -18,7 +19,9 @@ function element(id = "") {
     clientWidth: 360,
     clientHeight: 520,
     appendChild() {},
-    addEventListener() {},
+    addEventListener(event, listener) {
+      (this._listeners[event] || (this._listeners[event] = [])).push(listener);
+    },
     setAttribute() {},
     querySelectorAll() {
       return [];
@@ -98,7 +101,7 @@ function context(pathname = "/", options = {}) {
         this.onScrollCallback = null;
         ctx.lastTerminal = this;
       }
-      onData() {}
+      onData(callback) { this.onDataCallback = callback; }
       onScroll(callback) {
         this.onScrollCallback = callback;
       }
@@ -139,7 +142,7 @@ function context(pathname = "/", options = {}) {
         sockets.push(this);
         ctx.lastSocket = this;
       }
-      send() {}
+      send(data) { this.sent = this.sent || []; this.sent.push(data); }
       close() {}
     },
     fetch: async (url, opt = {}) => {
@@ -304,6 +307,8 @@ describe("mobile bundle load", () => {
     readFileSync(new URL("./shared/terminal_scroll.js", import.meta.url), "utf8") +
     "\n" +
     readFileSync(new URL("./shared/terminal_fit.js", import.meta.url), "utf8") +
+    "\n" +
+    readFileSync(new URL("./shared/terminal_filter.js", import.meta.url), "utf8") +
     "\n" +
     readFileSync(new URL("./shared/temp_terminal.js", import.meta.url), "utf8") +
     "\n" +
@@ -670,9 +675,33 @@ describe("mobile bundle load", () => {
     match(source, /addEventListener\(\s*"paste"/);
     match(source, /stopImmediatePropagation\(\)/);
     match(source, /sendPasteToTerminal\(text\)/);
-    match(source, /sendInputData\(terminalPasteInput\(text, false\)\)/);
+    match(source, /helpers\.terminalPasteInput\(text, false\)/);
+    match(source, /sendInputData\(pasteInput, \{ allowTerminalReplies: true \}\)/);
     ok(!source.includes('JSON.stringify({ type: "paste"'));
     ok(!source.includes('.paste(text)'));
+  });
+
+  it("filters xterm query replies from mobile terminal onData but not explicit paste", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    ctx.HerdrMobile.showScreen("terminal");
+
+    const decoder = new TextDecoder();
+    ctx.lastTerminal.onDataCallback("\x1b[1;1Rok\x1b]52;c;SGVsbG8=\x07");
+    equal(decoder.decode(ctx.lastSocket.sent.at(-1)), "ok");
+    const sentCount = ctx.lastSocket.sent.length;
+    ctx.lastTerminal.onDataCallback("\x1b[24;80R");
+    equal(ctx.lastSocket.sent.length, sentCount);
+
+    const terminal = ctx.document.getElementById("terminal");
+    const paste = terminal._listeners.paste.at(-1);
+    paste({
+      clipboardData: { getData: () => "\x1b[1;1Rpasted" },
+      preventDefault() {},
+      stopImmediatePropagation() {},
+    });
+    equal(decoder.decode(ctx.lastSocket.sent.at(-1)), "\x1b[1;1Rpasted");
   });
 
   it("opens mobile Git file diff with scrollable hunk markup", async () => {

@@ -68,6 +68,7 @@
     loadScript("/assets/shared/editor.js");
     loadScript("/assets/shared/terminal-scroll.js");
     loadScript("/assets/shared/terminal-fit.js");
+    loadScript("/assets/shared/terminal-filter.js");
     loadScript("/assets/shared/temp-terminal.js");
     if (mobile) {
       loadScript("/assets/mobile/core.js");

@@ -41,8 +41,8 @@ use assets::{
     mobile_worktrees_js, shared_actions_js, shared_colors_css, shared_content_search_css,
     shared_core_js, shared_editor_js, shared_file_content_search_js, shared_file_icons_css,
     shared_file_icons_js, shared_file_tree_js, shared_line_context_js, shared_temp_terminal_js,
-    shared_terminal_fit_js, shared_terminal_scroll_js, shared_workspace_search_js,
-    vendor_codemirror_js, xterm_css, xterm_js,
+    shared_terminal_filter_js, shared_terminal_fit_js, shared_terminal_scroll_js,
+    shared_workspace_search_js, vendor_codemirror_js, xterm_css, xterm_js,
 };
 #[cfg(test)]
 use compat::SimpleVersion;
@@ -1244,6 +1244,10 @@ fn app_router(state: WebState) -> Router {
         .route(
             "/assets/shared/terminal-fit.js",
             get(shared_terminal_fit_js),
+        )
+        .route(
+            "/assets/shared/terminal-filter.js",
+            get(shared_terminal_filter_js),
         )
         .route(
             "/assets/shared/temp-terminal.js",
