@@ -1079,7 +1079,18 @@ describe("app bundle load", () => {
     match(html, /Update base first/);
     match(html, /id="worktreeOpenRefresh"/);
     match(html, /class="app-refresh-icon"/);
+    match(source, /sortWorktreesByRecent\(\(\(r\.result \|\| \{\}\)\.worktrees \|\| \[\]\)\.map/);
+    match(source, /worktreeActivityLabel\(w\)/);
+    match(source, /Latest commit unknown/);
     ok(!source.includes('id = "openWorktrees"'));
+  });
+
+  it("wires Git branch options checked out in worktrees to switch Git directory", () => {
+    match(gitUiSource, /data-worktree-path=/);
+    match(gitUiSource, /Checked out at/);
+    match(gitUiSource, /worktree: \$\{esc\(compactPath\(worktreePath\)\)\}/);
+    match(gitUiSource, /resetGitViewForCwd\(view, worktreePath\)/);
+    match(gitUiSource, /if \(worktreePath && !samePath\(worktreePath, modalCwd\)\)/);
   });
 
   it("detects diverging fast-forward pull failures", () => {

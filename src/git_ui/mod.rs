@@ -967,6 +967,20 @@ mod tests {
     }
 
     #[test]
+    fn parses_worktree_branch_paths_for_branch_picker() {
+        let paths = branch::parse_worktree_branch_paths(
+            "worktree /repo\nbranch refs/heads/main\n\nworktree /repo-feature\nbranch refs/heads/feature/demo\n\nworktree /repo-detached\ndetached\n",
+        );
+
+        assert_eq!(paths.get("main").map(String::as_str), Some("/repo"));
+        assert_eq!(
+            paths.get("feature/demo").map(String::as_str),
+            Some("/repo-feature")
+        );
+        assert!(!paths.contains_key("detached"));
+    }
+
+    #[test]
     fn parses_diff_paths() {
         assert_eq!(
             parse_diff_path("a/src/main.rs").as_deref(),
@@ -1179,6 +1193,10 @@ mod tests {
             assert!(json["local"][0]["name"]
                 .as_str()
                 .is_some_and(|branch| !branch.is_empty()));
+            assert_eq!(
+                json["local"][0]["worktree_path"].as_str(),
+                Some(repo.path.to_str().unwrap())
+            );
             assert!(json["branches"]
                 .as_array()
                 .is_some_and(|branches| !branches.is_empty()));

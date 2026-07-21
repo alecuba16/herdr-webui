@@ -1216,7 +1216,12 @@
 
   function branchOptions(label, branches) {
     if (!branches.length) return "";
-    return `<optgroup label="${esc(label)}">${branches.map((branch) => `<option value="${branch.remote ? "remote:" : "local:"}${esc(branch.name)}" ${branch.current ? "selected" : ""}>${esc(branch.name)}${branch.current ? " (current)" : ""}</option>`).join("")}</optgroup>`;
+    return `<optgroup label="${esc(label)}">${branches.map((branch) => {
+      const worktreePath = String(branch.worktree_path || "");
+      const worktreeAttrs = worktreePath ? ` data-worktree-path="${esc(worktreePath)}" title="Checked out at ${esc(worktreePath)}"` : "";
+      const worktreeLabel = worktreePath ? ` (worktree: ${esc(compactPath(worktreePath))})` : "";
+      return `<option value="${branch.remote ? "remote:" : "local:"}${esc(branch.name)}"${worktreeAttrs} ${branch.current ? "selected" : ""}>${esc(branch.name)}${branch.current ? " (current)" : ""}${worktreeLabel}</option>`;
+    }).join("")}</optgroup>`;
   }
 
   function localNameForRemote(remote) {
@@ -3154,9 +3159,17 @@
       if (!view || !select || !select.value) return;
       const [kind, ...rest] = select.value.split(":");
       const branch = rest.join(":");
+      const selectedOption = select.options && select.options[select.selectedIndex];
+      const worktreePath = selectedOption && selectedOption.dataset ? selectedOption.dataset.worktreePath : "";
       const input = document.getElementById("gitUiBranchCwd");
       const modalCwd = (input && input.value.trim()) || (state.branchModal && state.branchModal.cwd) || view.cwd;
       state.branchModal = null;
+      if (worktreePath && !samePath(worktreePath, modalCwd)) {
+        resetGitViewForCwd(view, worktreePath);
+        render();
+        refresh();
+        return;
+      }
       view.cwd = modalCwd;
       if (kind === "remote") post("/api/git-ui/switch", { cwd: view.cwd, branch: localNameForRemote(branch), create: true, base: branch }, "Switching branch");
       else post("/api/git-ui/switch", { cwd: view.cwd, branch }, "Switching branch");

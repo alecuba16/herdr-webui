@@ -215,6 +215,7 @@ function context(pathname = "/", options = {}) {
                   branch: "feature/mobile",
                   path: "/tmp/alpha/mobile-worktree",
                   is_linked_worktree: true,
+                  last_commit_at: "2026-07-21T10:00:00Z",
                 },
               ],
             }
@@ -771,14 +772,16 @@ describe("mobile bundle load", () => {
     ok(html.indexOf("blocked-agent") < html.indexOf("done-agent"));
   });
 
-  it("shows worktree name as title and repo name as meta", async () => {
+  it("shows worktree name, repo name, and latest commit date as meta", async () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
     vm.runInContext(source, ctx);
     await ctx.HerdrMobile.loadWorktrees();
     ctx.HerdrMobile.showScreen("worktrees");
     const html = ctx.document.getElementById("mobileScreen").innerHTML;
     ok(html.includes("<strong>mobile-worktree</strong>"));
-    ok(html.includes("<small>alpha</small>"));
+    ok(html.includes("<small>alpha · Latest commit"));
+    ok(source.includes("sortWorktreesByRecent"));
+    ok(source.includes("worktreeActivityLabel"));
   });
 
   it("creates new panel in selected workspace", async () => {

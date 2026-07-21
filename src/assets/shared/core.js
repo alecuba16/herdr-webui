@@ -164,6 +164,54 @@
     return null;
   }
 
+  function worktreeActivityTimestamp(row) {
+    const source = row || {};
+    const candidates = [
+      source.last_commit_at,
+      source.latest_commit_at,
+      source.last_commit_date,
+      source.latest_commit_date,
+      source.modified_at,
+      source.updated_at,
+      source.mtime,
+      source.last_modified_at,
+    ];
+    for (const value of candidates) {
+      const time = Date.parse(String(value || ""));
+      if (Number.isFinite(time)) return time;
+    }
+    for (const value of [source.last_commit_timestamp, source.latest_commit_timestamp, source.modified_timestamp, source.updated_timestamp]) {
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric) || numeric <= 0) continue;
+      return numeric < 10_000_000_000 ? numeric * 1000 : numeric;
+    }
+    return 0;
+  }
+
+  function formatWorktreeActivityDate(row) {
+    const time = worktreeActivityTimestamp(row);
+    if (!time) return "";
+    const date = new Date(time);
+    if (!Number.isFinite(date.getTime())) return "";
+    const pad = (value) => String(value).padStart(2, "0");
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  }
+
+  function worktreeActivityLabel(row) {
+    const date = formatWorktreeActivityDate(row);
+    return date ? `Latest commit ${date}` : "Latest commit unknown";
+  }
+
+  function sortWorktreesByRecent(rows) {
+    return [...(rows || [])].sort((left, right) => {
+      const byTime = worktreeActivityTimestamp(right) - worktreeActivityTimestamp(left);
+      if (byTime) return byTime;
+      return String(textValue(left.label) || textValue(left.path)).localeCompare(
+        String(textValue(right.label) || textValue(right.path)),
+      );
+    });
+  }
+
   function validateWorktreeCreate(input) {
     const branch = String(input.branch || "").trim();
     if (!branch && !input.generateWorktreeNames) {
@@ -267,6 +315,10 @@
     textValue,
     resolveWorktreeSource,
     checkedOutWorktreeForBranch,
+    worktreeActivityTimestamp,
+    formatWorktreeActivityDate,
+    worktreeActivityLabel,
+    sortWorktreesByRecent,
     validateWorktreeCreate,
     buildWorktreeCreateBody,
     createFaviconNotifier,

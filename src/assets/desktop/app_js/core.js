@@ -150,6 +150,8 @@ const {
   textValue,
   resolveWorktreeSource: resolveWorktreeSourceHelper,
   checkedOutWorktreeForBranch: checkedOutWorktreeForBranchHelper,
+  worktreeActivityLabel,
+  sortWorktreesByRecent,
   validateWorktreeCreate: validateWorktreeCreateHelper,
   buildWorktreeCreateBody,
   createFaviconNotifier,

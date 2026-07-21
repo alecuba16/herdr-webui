@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::net::SocketAddr;
 
 use axum::extract::{ConnectInfo, Query, State};
@@ -27,13 +28,16 @@ pub(super) struct GitUiBranchDeleteRequest {
 }
 
 fn git_ui_branches_blocking(cwd: String) -> Result<Response, (StatusCode, String)> {
+    let worktree_paths = git_ui_text(&cwd, &["worktree", "list", "--porcelain"])
+        .map(|raw| parse_worktree_branch_paths(&raw))
+        .unwrap_or_default();
     let local = match list_local_branches(&cwd) {
         Ok(branches) => branches,
         Err(err) => return Err((StatusCode::BAD_GATEWAY, err)),
     };
     let local_json = local
         .iter()
-        .map(|b| json!({ "name": b.name, "current": b.current, "remote": false }))
+        .map(|b| json!({ "name": b.name, "current": b.current, "remote": false, "worktree_path": worktree_paths.get(&b.name).cloned() }))
         .collect::<Vec<_>>();
     let remote_text = match git_ui_text(&cwd, &["branch", "-r", "--format=%(refname:short)"]) {
         Ok(text) => text,
@@ -46,7 +50,8 @@ fn git_ui_branches_blocking(cwd: String) -> Result<Response, (StatusCode, String
             if name.is_empty() || name.ends_with("/HEAD") {
                 return None;
             }
-            Some(json!({ "name": name, "current": false, "remote": true }))
+            let local = local_branch_name_for_remote(name);
+            Some(json!({ "name": name, "current": false, "remote": true, "worktree_path": worktree_paths.get(local).cloned() }))
         })
         .collect::<Vec<_>>();
     let mut branches = local_json.clone();
@@ -55,6 +60,30 @@ fn git_ui_branches_blocking(cwd: String) -> Result<Response, (StatusCode, String
         Json(json!({ "branches": branches, "local": local_json, "remote": remote }))
             .into_response(),
     )
+}
+
+fn local_branch_name_for_remote(remote: &str) -> &str {
+    remote
+        .split_once('/')
+        .map(|(_, branch)| branch)
+        .unwrap_or(remote)
+}
+
+pub(super) fn parse_worktree_branch_paths(raw: &str) -> HashMap<String, String> {
+    let mut paths = HashMap::new();
+    let mut current_path: Option<String> = None;
+    for line in raw.lines() {
+        if let Some(path) = line.strip_prefix("worktree ") {
+            current_path = Some(path.to_string());
+        } else if let Some(branch) = line.strip_prefix("branch refs/heads/") {
+            if let Some(path) = current_path.as_ref() {
+                paths.insert(branch.to_string(), path.clone());
+            }
+        } else if line.trim().is_empty() {
+            current_path = None;
+        }
+    }
+    paths
 }
 
 pub(super) async fn git_ui_branches(

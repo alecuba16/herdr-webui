@@ -1002,7 +1002,10 @@ impl BuiltinState {
             .to_string();
         let list = git_output(Path::new(&repo_root), &["worktree", "list", "--porcelain"])
             .unwrap_or_default();
-        let worktrees = parse_git_worktrees(&list);
+        let mut worktrees = parse_git_worktrees(&list);
+        enrich_worktree_commit_dates(&mut worktrees);
+        worktrees
+            .sort_by(|left, right| worktree_activity_key(right).cmp(&worktree_activity_key(left)));
         Ok(json!({
             "type": "worktree_list",
             "source": {
@@ -3191,6 +3194,35 @@ fn parse_git_worktrees(raw: &str) -> Vec<Value> {
     }
     flush(&mut rows, &mut current_path, &mut branch, &mut detached);
     rows
+}
+
+fn enrich_worktree_commit_dates(rows: &mut [Value]) {
+    for row in rows {
+        let Some(path) = row.get("path").and_then(Value::as_str).map(str::to_string) else {
+            continue;
+        };
+        let Ok(text) = git_output(Path::new(&path), &["log", "-1", "--format=%cI%x00%H"]) else {
+            continue;
+        };
+        let mut parts = text.split('\0');
+        let date = parts.next().unwrap_or_default().trim();
+        let hash = parts.next().unwrap_or_default().trim();
+        if let Some(object) = row.as_object_mut() {
+            if !date.is_empty() {
+                object.insert("last_commit_at".to_string(), json!(date));
+            }
+            if !hash.is_empty() {
+                object.insert("last_commit_hash".to_string(), json!(hash));
+            }
+        }
+    }
+}
+
+fn worktree_activity_key(row: &Value) -> String {
+    row.get("last_commit_at")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
 }
 
 fn now_ms() -> u128 {
