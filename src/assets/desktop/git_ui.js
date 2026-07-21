@@ -2902,11 +2902,18 @@
       if (!repo || !branch) return;
       const label = force ? "force delete" : "delete";
       if (!confirm(`${label} branch ${branch} in ${repo.path}?`)) return;
+      view.cleanupLoading = true;
+      view.cleanupError = "";
+      render();
       try {
         await api("/api/git-ui/branch-delete", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ cwd: repo.path, branch, force, confirmed: true }) });
         await this.scanCleanup();
       } catch (err) {
         view.cleanupError = err.message || String(err);
+        render();
+      } finally {
+        const latest = active();
+        if (latest) latest.cleanupLoading = false;
         render();
       }
     },
@@ -2917,11 +2924,18 @@
       if (!repo || !worktree || !worktree.path) return;
       const label = force ? "force remove" : "remove";
       if (!confirm(`${label} worktree ${worktree.path}?`)) return;
+      view.cleanupLoading = true;
+      view.cleanupError = "";
+      render();
       try {
         await api("/api/git-ui/worktree-remove", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ cwd: repo.path, path: worktree.path, force, confirmed: true }) });
         await this.scanCleanup();
       } catch (err) {
         view.cleanupError = err.message || String(err);
+        render();
+      } finally {
+        const latest = active();
+        if (latest) latest.cleanupLoading = false;
         render();
       }
     },

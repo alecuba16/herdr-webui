@@ -98,13 +98,25 @@ function closeWorktreeCreateModal() {
   state.createWorktreeDefaultPath = "";
   setCreateWorktreeLoading(false);
 }
-function setCreateWorktreeLoading(show) {
+function setCreateWorktreeLoading(show, message = "Discovering worktrees...") {
   const loading = el("worktreeCreateLoading");
-  if (loading) loading.classList.toggle("show", !!show);
+  if (loading) {
+    loading.textContent = message;
+    loading.classList.toggle("show", !!show);
+  }
 }
-function setWorktreeLoading(show) {
+function setWorktreeLoading(show, message = "Discovering worktrees...") {
   const loading = el("worktreeLoading");
-  if (loading) loading.classList.toggle("show", !!show);
+  if (loading) {
+    loading.textContent = message;
+    loading.classList.toggle("show", !!show);
+  }
+}
+function setOpenWorktreeOperation(type = "", index = null, message = "Working...") {
+  state.openWorktreeOperation = type;
+  state.openWorktreeOperationIndex = Number.isInteger(index) ? index : null;
+  setWorktreeLoading(!!type, message);
+  renderWorktreeOpenList();
 }
 function closeWorktreeOpenModal() {
   clearTimeout(state.openWorktreeAutodiscoverTimer);
@@ -455,6 +467,7 @@ async function submitWorktreeCreate(input) {
     return;
   }
   submitEl.disabled = true;
+  setCreateWorktreeLoading(true, "Creating worktree...");
   try {
     const r = await api("/api/worktrees", {
       method: "POST",
@@ -479,6 +492,7 @@ async function submitWorktreeCreate(input) {
     errEl.textContent = message;
   } finally {
     submitEl.disabled = false;
+    setCreateWorktreeLoading(false);
   }
 }
 function pullFastForwardFailed(message) {
@@ -585,8 +599,12 @@ function renderWorktreeOpenList() {
   }
   list.innerHTML = rows
     .map(
-      (w, i) =>
-        `<div class="worktree-open-row ${state.openWorktreeSelected === i ? "selected" : ""}"><span><strong>${escapeHtml(worktreeOpenRowTitle(w))}</strong><small>${escapeHtml(w.branch || "detached")} · ${escapeHtml(w.path)}</small></span><span class="session-controls"><button class="mini danger" title="Remove worktree from disk" onclick="event.stopPropagation();removeDiscoveredWorktree(${i})">🗑</button><button class="btn" onclick="openDiscoveredWorktree(${i})">Open</button></span></div>`,
+      (w, i) => {
+        const busy = !!state.openWorktreeOperation;
+        const opening = state.openWorktreeOperation === "open" && state.openWorktreeOperationIndex === i;
+        const removing = state.openWorktreeOperation === "remove" && state.openWorktreeOperationIndex === i;
+        return `<div class="worktree-open-row ${state.openWorktreeSelected === i ? "selected" : ""}"><span><strong>${escapeHtml(worktreeOpenRowTitle(w))}</strong><small>${escapeHtml(w.branch || "detached")} · ${escapeHtml(w.path)}</small></span><span class="session-controls"><button class="mini danger" title="Remove worktree from disk" ${busy ? "disabled" : ""} onclick="event.stopPropagation();removeDiscoveredWorktree(${i})">${removing ? "…" : "🗑"}</button><button class="btn" ${busy ? "disabled" : ""} onclick="openDiscoveredWorktree(${i})">${opening ? "Opening..." : "Open"}</button></span></div>`;
+      },
     )
     .join("");
 }
@@ -672,6 +690,7 @@ async function createWorkspaceFromSmartModal() {
     return;
   }
   submit.disabled = true;
+  setWorktreeLoading(true, "Opening workspace...");
   try {
     const r = await api("/api/workspaces", {
       method: "POST",
@@ -684,6 +703,7 @@ async function createWorkspaceFromSmartModal() {
     err.textContent = ex.message || String(ex);
   } finally {
     submit.disabled = false;
+    setWorktreeLoading(false);
   }
 }
 async function openDiscoveredWorktree(index) {
@@ -691,6 +711,7 @@ async function openDiscoveredWorktree(index) {
   if (!row || !row.is_linked_worktree) return;
   const err = el("worktreeOpenError");
   err.textContent = "";
+  setOpenWorktreeOperation("open", index, "Opening worktree...");
   try {
     const r = await api("/api/worktrees/open", {
       method: "POST",
@@ -711,6 +732,8 @@ async function openDiscoveredWorktree(index) {
     );
   } catch (ex) {
     err.textContent = ex.message || String(ex);
+  } finally {
+    setOpenWorktreeOperation("", null);
   }
 }
 async function removeDiscoveredWorktree(index) {
@@ -725,6 +748,7 @@ async function removeDiscoveredWorktree(index) {
     return;
   const err = el("worktreeOpenError");
   err.textContent = "";
+  setOpenWorktreeOperation("remove", index, "Removing worktree...");
   try {
     if (row.open_workspace_id)
       await api(
@@ -752,6 +776,8 @@ async function removeDiscoveredWorktree(index) {
       return;
     }
     err.textContent = message;
+  } finally {
+    setOpenWorktreeOperation("", null);
   }
 }
 async function confirmForceWorktreeRemove(message) {
@@ -799,6 +825,7 @@ async function createDiscoveredWorktree() {
     return;
   }
   submit.disabled = true;
+  setOpenWorktreeOperation("create", null, "Creating worktree...");
   try {
     if (sourcePath && !state.openWorktreeSource) await discoverWorktrees();
     const checkedOut = checkedOutWorktreeForBranch(branch);
@@ -839,6 +866,7 @@ async function createDiscoveredWorktree() {
     err.textContent = message;
   } finally {
     submit.disabled = false;
+    setOpenWorktreeOperation("", null);
   }
 }
 async function closeWorkspace(id) {

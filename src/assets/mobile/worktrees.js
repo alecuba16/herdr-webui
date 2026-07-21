@@ -20,14 +20,25 @@
       if (!state.worktreeDiscoverPath && explorationDefaultDirectoryOption())
         state.worktreeDiscoverPath = explorationDefaultDirectoryOption();
       const createOpen = state.worktreeCreateExpanded ? " open" : "";
-      return `<section class="mobile-section mobile-form mobile-worktree-flow"><h2>Worktrees</h2><div class="mobile-settings-group"><h3>Open existing</h3><p class="mobile-help">Open linked worktrees for current workspace repo, or enter a repo/worktrees folder path.</p><label><span>Repo or worktrees folder</span><input value="${escapeHtml(state.worktreeDiscoverPath)}" oninput="HerdrMobile.updateWorktreeField('worktreeDiscoverPath', this.value)" placeholder="~/Documents/code/repo-or-worktrees"></label><button class="mobile-btn primary mobile-wide" onclick="HerdrMobile.loadWorktrees()">Discover worktrees</button>${state.worktreeError ? `<div class="mobile-error">${escapeHtml(state.worktreeError)}</div>` : ""}<div class="mobile-worktree-source"><strong>${escapeHtml(source.repo_name || "Current workspace repo")}</strong><span>${escapeHtml(sourcePath || "Select a workspace or enter a path to discover worktrees")}</span></div><div class="mobile-worktree-list">${rows.length ? rows.map((row, index) => renderRow(row, index)).join("") : '<div class="mobile-loading">No linked worktrees found yet</div>'}</div></div><details class="mobile-settings-group mobile-disclosure"${createOpen} onchange="HerdrMobile.setWorktreeCreateExpanded(this.open)"><summary>Create new worktree</summary><label><span>Branch name</span><input value="${escapeHtml(state.worktreeBranch)}" oninput="HerdrMobile.updateWorktreeField('worktreeBranch', this.value)" placeholder="feature/my-branch"></label><label><span>Base branch</span><input value="${escapeHtml(state.worktreeBase)}" oninput="HerdrMobile.updateWorktreeField('worktreeBase', this.value)" placeholder="HEAD or main"></label><label><span>Label</span><input value="${escapeHtml(state.worktreeLabel)}" oninput="HerdrMobile.updateWorktreeField('worktreeLabel', this.value)" placeholder="optional"></label><label><span>Checkout path</span><input value="${escapeHtml(state.worktreePath)}" oninput="HerdrMobile.updateWorktreeField('worktreePath', this.value)" placeholder="backend default if blank"></label><button class="mobile-btn primary mobile-wide" onclick="HerdrMobile.createWorktree()">Create and open</button></details></section>`;
+      const busy = !!state.worktreeLoading;
+      const loading = busy ? `<div class="mobile-loading">${escapeHtml(state.worktreeLoadingLabel || "Working...")}</div>` : "";
+      return `<section class="mobile-section mobile-form mobile-worktree-flow"><h2>Worktrees</h2><div class="mobile-settings-group"><h3>Open existing</h3><p class="mobile-help">Open linked worktrees for current workspace repo, or enter a repo/worktrees folder path.</p><label><span>Repo or worktrees folder</span><input value="${escapeHtml(state.worktreeDiscoverPath)}" oninput="HerdrMobile.updateWorktreeField('worktreeDiscoverPath', this.value)" placeholder="~/Documents/code/repo-or-worktrees"></label><button class="mobile-btn primary mobile-wide" ${busy ? "disabled" : ""} onclick="HerdrMobile.loadWorktrees()">${busy && state.worktreeLoadingLabel === "Discovering worktrees..." ? "Discovering..." : "Discover worktrees"}</button>${loading}${state.worktreeError ? `<div class="mobile-error">${escapeHtml(state.worktreeError)}</div>` : ""}<div class="mobile-worktree-source"><strong>${escapeHtml(source.repo_name || "Current workspace repo")}</strong><span>${escapeHtml(sourcePath || "Select a workspace or enter a path to discover worktrees")}</span></div><div class="mobile-worktree-list">${rows.length ? rows.map((row, index) => renderRow(row, index)).join("") : '<div class="mobile-loading">No linked worktrees found yet</div>'}</div></div><details class="mobile-settings-group mobile-disclosure"${createOpen} onchange="HerdrMobile.setWorktreeCreateExpanded(this.open)"><summary>Create new worktree</summary><label><span>Branch name</span><input value="${escapeHtml(state.worktreeBranch)}" oninput="HerdrMobile.updateWorktreeField('worktreeBranch', this.value)" placeholder="feature/my-branch"></label><label><span>Base branch</span><input value="${escapeHtml(state.worktreeBase)}" oninput="HerdrMobile.updateWorktreeField('worktreeBase', this.value)" placeholder="HEAD or main"></label><label><span>Label</span><input value="${escapeHtml(state.worktreeLabel)}" oninput="HerdrMobile.updateWorktreeField('worktreeLabel', this.value)" placeholder="optional"></label><label><span>Checkout path</span><input value="${escapeHtml(state.worktreePath)}" oninput="HerdrMobile.updateWorktreeField('worktreePath', this.value)" placeholder="backend default if blank"></label><button class="mobile-btn primary mobile-wide" ${busy ? "disabled" : ""} onclick="HerdrMobile.createWorktree()">${busy && state.worktreeLoadingLabel === "Creating worktree..." ? "Creating..." : "Create and open"}</button></details></section>`;
     }
 
     function renderRow(row, index) {
       const title =
         pathBasename(row.path) || row.label || row.branch || "worktree";
       const meta = repoLabel(row);
-      return `<div class="mobile-worktree-row"><span><strong>${escapeHtml(title)}</strong><small>${escapeHtml(meta)}</small></span><button class="mobile-btn primary" onclick="HerdrMobile.openWorktree(${index})">Open</button></div>`;
+      const busy = !!state.worktreeLoading;
+      const opening = state.worktreeBusyIndex === index && state.worktreeLoadingLabel === "Opening worktree...";
+      return `<div class="mobile-worktree-row"><span><strong>${escapeHtml(title)}</strong><small>${escapeHtml(meta)}</small></span><button class="mobile-btn primary" ${busy ? "disabled" : ""} onclick="HerdrMobile.openWorktree(${index})">${opening ? "Opening..." : "Open"}</button></div>`;
+    }
+
+    function setLoading(show, label = "Working...", index = null) {
+      state.worktreeLoading = !!show;
+      state.worktreeLoadingLabel = show ? label : "";
+      state.worktreeBusyIndex = Number.isInteger(index) ? index : null;
+      render();
     }
 
     function repoLabel(row) {
@@ -76,6 +87,7 @@
     async function load() {
       if (!state.ws && !state.worktreeDiscoverPath.trim()) return;
       state.worktreeError = "";
+      setLoading(true, "Discovering worktrees...");
       try {
         const path = state.worktreeDiscoverPath.trim();
         const query = path
@@ -84,8 +96,9 @@
         applyResult(await api("/api/worktrees?" + query));
       } catch (error) {
         state.worktreeError = error.message || String(error);
+      } finally {
+        setLoading(false);
       }
-      render();
     }
 
     function updateField(field, value) {
@@ -101,6 +114,7 @@
       if (!row || !row.path) return;
       const sourcePath = state.worktreeDiscoverPath.trim();
       state.worktreeError = "";
+      setLoading(true, "Opening worktree...", index);
       try {
         const response = await api("/api/worktrees/open", {
           method: "POST",
@@ -115,9 +129,13 @@
             label: null,
           }),
         });
+        state.worktreeLoading = false;
+        state.worktreeLoadingLabel = "";
+        state.worktreeBusyIndex = null;
         navigateToResult(response);
       } catch (error) {
         state.worktreeError = error.message || String(error);
+        setLoading(false);
         render();
       }
     }
@@ -155,6 +173,7 @@
         render();
         return;
       }
+      setLoading(true, "Creating worktree...");
       try {
         const response = await api("/api/worktrees", {
           method: "POST",
@@ -174,9 +193,13 @@
         state.worktreeBase = "";
         state.worktreeLabel = "";
         state.worktreePath = "";
+        state.worktreeLoading = false;
+        state.worktreeLoadingLabel = "";
+        state.worktreeBusyIndex = null;
         navigateToResult(response);
       } catch (err) {
         state.worktreeError = err.message || String(err);
+        setLoading(false);
         render();
       }
     }
