@@ -638,7 +638,7 @@ async function discoverWorktrees() {
       state.openWorktreeBranchSourceKey = "";
       syncWorktreeBranchOptions([]);
     }
-    state.openWorktreeAllRows = sortWorktreesByRecent(((r.result || {}).worktrees || []).map((w) =>
+    state.openWorktreeAllRows = ((r.result || {}).worktrees || []).map((w) =>
       Object.assign({}, w, {
         path: textValue(w.path),
         label: textValue(w.label),
@@ -648,7 +648,7 @@ async function discoverWorktrees() {
         source_repo_root: textValue(source.repo_root),
         source_cwd: sourceCwd,
       }),
-    ));
+    );
     state.openWorktreeRows = state.openWorktreeAllRows;
     renderWorktreeOpenList();
     loadWorktreeBranchOptions();
