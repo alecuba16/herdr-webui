@@ -605,12 +605,7 @@
   function renderPreviewShell() {
     const files = state.split ? state.files : [currentFile()].filter(Boolean);
     const panes = files.map((file) => {
-      const hidePaneHead = state.files.length > 1 && !state.split;
-      const find = !file.binary && !file.truncated
-        ? `<button class="file-browser-pane-search" title="Find in file" aria-label="Find in ${esc(Tree.basename(file.path))}" onclick="event.stopPropagation();HerdrFileBrowser.toggleFind('${arg(file.path)}')"><span></span></button>`
-        : "";
-      const head = hidePaneHead ? "" : `<div class="file-browser-pane-head"><button class="git-ui-btn ${file.path === state.selected ? "active" : ""}" onclick="HerdrFileBrowser.focusFile('${arg(file.path)}')">${esc(Tree.basename(file.path))}</button><span>${esc(file.path)}</span>${find}<button class="file-browser-pane-close" title="Close file" onclick="event.stopPropagation();HerdrFileBrowser.closeFile('${arg(file.path)}')">&times;</button></div>`;
-      return `<section class="file-browser-pane ${hidePaneHead ? "no-head" : ""} ${file.path === state.selected ? "active" : ""}">${head}<div class="file-browser-pane-body" id="fileBrowserEditor-${hashId(file.path)}">${previewPlaceholder(file)}</div>${file.error ? `<div class="file-browser-error">${esc(file.error)}</div>` : ""}</section>`;
+      return `<section class="file-browser-pane ${file.path === state.selected ? "active" : ""}"><div class="file-browser-pane-body" id="fileBrowserEditor-${hashId(file.path)}">${previewPlaceholder(file)}</div>${file.error ? `<div class="file-browser-error">${esc(file.error)}</div>` : ""}</section>`;
     });
     if (state.contentSearch.active) panes.push(renderContentSearchPane());
     if (!panes.length) return previewPlaceholder(null);
@@ -633,7 +628,7 @@
     const body = contentSearch
       ? contentSearch.render({ query: content.query, files: content.files, expanded: content.expanded, snippets: content.snippets, loading: content.loading, error: content.error, done: content.done, total_files: content.totalFiles, total_matches: content.totalMatches }, { callback: "HerdrFileBrowserContent", inputId: "fileContentSearchInput", hideInput: true })
       : `<div class="file-browser-empty">Content search renderer unavailable.</div>`;
-    return `<section class="file-browser-pane active file-browser-content-pane"><div class="file-browser-pane-head"><button class="git-ui-btn active">Content search</button><span>${esc(content.query || "No query")}</span><button class="file-browser-pane-close" title="Close content search" onclick="event.stopPropagation();HerdrFileBrowser.closeContentSearch()">&times;</button></div><div class="file-browser-pane-body file-browser-content-pane-body">${body}</div></section>`;
+    return `<section class="file-browser-pane active file-browser-content-pane"><div class="file-browser-pane-body file-browser-content-pane-body"><div class="file-browser-content-actions"><span>Content search: ${esc(content.query || "No query")}</span><button class="git-ui-btn" onclick="event.stopPropagation();HerdrFileBrowser.closeContentSearch()">Close search</button></div>${body}</div></section>`;
   }
 
   function renderContextMenu() {

@@ -1079,8 +1079,9 @@ describe("desktop file browser editor integration", () => {
 
     await context.window.HerdrFileBrowser.open(workspaceA);
     const restoredPanel = document.getElementById("fileBrowserPanel").innerHTML;
-    assert.match(restoredPanel, /file-browser-pane-search/);
-    assert.match(restoredPanel, /HerdrFileBrowser\.toggleFind\('src%2Fdemo\.py'\)/);
+    assert.doesNotMatch(restoredPanel, /file-browser-pane-head/);
+    assert.doesNotMatch(restoredPanel, /file-browser-pane-search/);
+    assert.match(restoredPanel, /<span class="file-browser-toolbar-actions">[\s\S]*HerdrFileBrowser\.toggleFind\('src%2Fdemo\.py'\)/);
     assert.doesNotMatch(restoredPanel, /HerdrSearchPalette\.open/);
     context.window.HerdrFileBrowser.toggleFind(encodeURIComponent("src/demo.py"));
     assert.equal(editorCalls.at(-1).toggledFind, true);
