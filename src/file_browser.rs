@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
-use crate::{expand_user_path_string, require_auth, WebState};
+use crate::{expand_user_path_string, home_folder_path, require_auth, WebState};
 
 const MAX_ENTRIES: usize = 1000;
 const MAX_SEARCH_VISITS: usize = 20_000;
@@ -1072,6 +1072,7 @@ async fn file_browser_tree(
     };
     Json(json!({
         "root": root.to_string_lossy(),
+        "home": home_folder_path().to_string_lossy(),
         "path": relative_to_root(&root, &dir),
         "entries": build.entries,
         "truncated": build.truncated,

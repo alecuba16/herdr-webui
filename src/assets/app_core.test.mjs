@@ -1040,12 +1040,13 @@ describe("desktop file browser editor integration", () => {
             if (text.startsWith("/api/file-browser/file")) {
               const cwd = decodeURIComponent((text.match(/cwd=([^&]+)/) || [null, ""])[1]);
               const path = decodeURIComponent((text.match(/path=([^&]+)/) || [null, ""])[1]);
-              return { path, content: cwd === "/repo-a" ? "print('a')" : "print('b')", binary: false, truncated: false };
+              return { path, content: cwd === "/Users/me/repo-a" ? "print('a')" : "print('b')", binary: false, truncated: false };
             }
             if (text.includes("q=")) {
-              return { path: "", entries: [{ kind: "file", name: "demo.py", path: "src/demo.py", level: 1 }], git_status: null, truncated: false };
+              return { root: decodeURIComponent((text.match(/cwd=([^&]+)/) || [null, ""])[1]), home: "/Users/me", path: "", entries: [{ kind: "file", name: "demo.py", path: "src/demo.py", level: 1 }], git_status: null, truncated: false };
             }
-            return { path: "", entries: [{ kind: "dir", name: "src", path: "src" }], git_status: null };
+            const cwd = decodeURIComponent((text.match(/cwd=([^&]+)/) || [null, ""])[1]);
+            return { root: cwd, home: "/Users/me", path: "", entries: [{ kind: "dir", name: "src", path: "src" }], git_status: null };
           },
         };
       },
@@ -1065,22 +1066,31 @@ describe("desktop file browser editor integration", () => {
     vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
     vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
 
-    const workspaceA = { workspace_id: "ws-a", cwd: "/repo-a" };
-    const workspaceB = { workspace_id: "ws-b", cwd: "/repo-b" };
+    const workspaceA = { workspace_id: "ws-a", cwd: "/Users/me/repo-a" };
+    const workspaceB = { workspace_id: "ws-b", cwd: "/opt/repo-b" };
 
     await context.window.HerdrFileBrowser.open(workspaceA);
     context.window.HerdrFileBrowser.select(encodeURIComponent("src/demo.py"));
     await new Promise((resolve) => setTimeout(resolve, 0));
     context.window.HerdrFileBrowser.edit(encodeURIComponent("src/demo.py"));
     editorCalls.at(-1).onChange("print('draft-a')");
+    context.window.HerdrFileBrowser.select(encodeURIComponent("src/other.py"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    context.window.HerdrFileBrowser.focusFile(encodeURIComponent("src/demo.py"));
 
     await context.window.HerdrFileBrowser.open(workspaceB);
+    context.window.HerdrFileBrowser.select(encodeURIComponent("src/demo.py"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    context.window.HerdrFileBrowser.select(encodeURIComponent("src/other.py"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.match(document.getElementById("fileBrowserPanel").innerHTML, /title="\/opt\/repo-b\/src\/demo\.py"/);
     assert.doesNotMatch(document.getElementById("fileBrowserPanel").innerHTML, /print\('draft-a'\)/);
 
     await context.window.HerdrFileBrowser.open(workspaceA);
     const restoredPanel = document.getElementById("fileBrowserPanel").innerHTML;
     assert.doesNotMatch(restoredPanel, /file-browser-pane-head/);
     assert.doesNotMatch(restoredPanel, /file-browser-pane-search/);
+    assert.match(restoredPanel, /title="~\/repo-a\/src\/demo\.py"/);
     assert.match(restoredPanel, /<span class="file-browser-toolbar-actions">[\s\S]*HerdrFileBrowser\.toggleFind\('src%2Fdemo\.py'\)/);
     assert.doesNotMatch(restoredPanel, /HerdrSearchPalette\.open/);
     context.window.HerdrFileBrowser.toggleFind(encodeURIComponent("src/demo.py"));
