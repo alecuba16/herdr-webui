@@ -158,6 +158,33 @@ describe("resetTerminalMouseTracking", () => {
   });
 });
 
+describe("Git log rendering", () => {
+  it("keeps full ref labels available in hover markup and renders copy commit id button", () => {
+    const context = {
+      window: {},
+      document: { querySelectorAll() { return []; } },
+    };
+    context.window.window = context.window;
+    vm.runInNewContext(readFileSync(new URL("./desktop/git_ui/log.js", import.meta.url), "utf8"), context);
+
+    const hash = "0123456789abcdef0123456789abcdef01234567";
+    const longLabel = "origin/feature/very-long-branch-name-that-should-not-be-ellipsis-in-hover-card";
+    const html = context.window.HerdrGitLog.render({
+      esc(value) { return String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\"/g, "&quot;"); },
+      arg: encodeURIComponent,
+      data: { rows: [{ graph: "*", hash, labels: [longLabel], title: "Demo", date: "today", author: "Tester", lane: 0 }] },
+      selected: [],
+      filters: {},
+    });
+
+    assert.match(html, new RegExp(`title="${longLabel}"`));
+    assert.match(html, /class="git-ui-log-hover-card"/);
+    assert.ok(html.includes(`HerdrGitUi.copyCommitId('${hash}')`));
+    assert.match(html, /Copy id/);
+    assert.match(html, new RegExp(`aria-label="Copy full commit id ${hash}"`));
+  });
+});
+
 describe("tabActivityLabel", () => {
   const now = 1_000_000_000;
 

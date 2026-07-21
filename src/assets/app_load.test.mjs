@@ -2474,6 +2474,12 @@ describe("app bundle load", () => {
     match(gitLogSource, /git-ui-log-table-head/);
     match(gitLogSource, /<span>Graph<\/span><span>Description<\/span><span>Date<\/span><span>Author<\/span>/);
     match(gitLogSource, /class="git-ui-log-ref \$\{kind\}"/);
+    match(gitLogSource, /title="\$\{esc\(normalized\)\}"/);
+    match(gitLogSource, /class="git-ui-log-copy-hash"/);
+    match(gitLogSource, /HerdrGitUi\.copyCommitId\('\$\{arg\(hash\)\}'\)/);
+    match(gitUiSource, /async function copyCommitId\(hash\)/);
+    match(gitUiSource, /Commit id copied/);
+    match(gitUiSource, /async copyCommitId\(hash\)/);
     match(gitLogSource, /current: detail\.labels\.some/);
     match(gitLogSource, /const LANE_COLORS = \[/);
     match(gitLogSource, /exact_date/);
@@ -2519,6 +2525,8 @@ describe("app bundle load", () => {
     match(gitLogCss, /\.git-ui-log-filter \.sr-only/);
     match(gitLogCss, /\.git-ui-log-load-more/);
     match(gitLogCss, /\.git-ui-log-hover-card/);
+    match(gitLogCss, /\.git-ui-log-copy-hash/);
+    match(gitLogCss, /\.git-ui-log-hover-card \.git-ui-log-ref \{[\s\S]*?max-width: none;[\s\S]*?overflow-wrap: anywhere;[\s\S]*?white-space: normal;/);
     match(gitLogSource, /function selectedBranchForHash/);
     match(gitActionsSource, />Worktree…<\/button>/);
     match(gitActionsSource, /Selected commit has no branch label/);
