@@ -1,5 +1,15 @@
 # Release notes
 
+## 0.2.76 Release Notes
+
+### File explorer, Git actions, and terminal selection fixes
+
+- Adds right-click Copy permalink actions to the File Explorer and Git file views for immutable remote links.
+- Fixes File Explorer context menu clicks so Rename, Copy permalink, and other actions execute reliably.
+- Shows loading states while Git and worktree operations run.
+- Makes terminal mouse reporting opt-in and keeps normal terminal text selection available by default, including after TUIs such as Jcode enable xterm mouse mode.
+- Moves the file find magnifier to the file editor pane and keeps editor search shortcuts focused on file contents.
+
 ## 0.2.75 Release Notes
 
 ### Git side-by-side editor polish
