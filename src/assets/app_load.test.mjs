@@ -573,6 +573,17 @@ describe("app bundle load", () => {
     ok(!gitUiSource.includes('onclick="HerdrGitUi.toggleStageAll()'));
   });
 
+  it("offers copy permalink actions in file explorer and Git file menus", () => {
+    match(fileBrowserSource, /Copy permalink/);
+    match(fileBrowserSource, /menuAction\('copyPermalink'\)/);
+    match(fileBrowserSource, /\/api\/git-ui\/permalink\?cwd=/);
+    match(fileBrowserSource, /navigator\.clipboard\.writeText\(url\)/);
+    match(gitUiSource, /Copy permalink/);
+    match(gitUiSource, /copyGitPermalink/);
+    match(gitUiSource, /\/api\/git-ui\/permalink\?cwd=/);
+    match(gitUiSource, /Permalink copied/);
+  });
+
   it("offers conflict buttons for HEAD, parent, and remote sides", () => {
     match(gitUiSource, /renderConflictOperationActions/);
     match(gitUiSource, /aria-label="Conflict operation actions"/);

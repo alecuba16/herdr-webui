@@ -1011,11 +1011,11 @@
     const menu = state.contextMenu;
     if (!menu) return "";
     const actions = [];
+    actions.push(`<button onclick="HerdrGitUi.menuAction('copyPermalink')">Copy permalink</button>`);
     if (["S", "M", "?"].includes(menu.kind)) actions.push(`<button onclick="HerdrGitUi.menuAction('stash')">Stash file</button>`);
     if (["M", "?"].includes(menu.kind)) actions.push(`<button onclick="HerdrGitUi.menuAction('discard')">Discard file</button>`);
     if (["M", "?"].includes(menu.kind)) actions.push(`<button onclick="HerdrGitUi.menuAction('stage')">Stage file</button>`);
     if (menu.kind === "S") actions.push(`<button onclick="HerdrGitUi.menuAction('unstage')">Unstage file</button>`);
-    if (!actions.length) actions.push(`<span>No file actions</span>`);
     return `<div class="git-ui-menu" style="left:${Math.max(0, menu.x)}px;top:${Math.max(0, menu.y)}px" onclick="event.stopPropagation()">${actions.join("")}</div>`;
   }
   function normalizeRemoteUrl(raw) {
@@ -1081,6 +1081,24 @@
         if (state.visible) render();
       }
     }, 10000);
+  }
+
+  async function copyGitPermalink(path) {
+    const view = active();
+    if (!view) return;
+    const data = await api(`/api/git-ui/permalink?cwd=${encodeURIComponent(view.cwd)}&path=${encodeURIComponent(path)}`);
+    const url = data && data.url;
+    if (!url) throw new Error("permalink URL was empty");
+    await navigator.clipboard.writeText(url);
+    const id = Date.now();
+    state.gitToast = { id, message: "Permalink copied" };
+    render();
+    setTimeout(() => {
+      if (state.gitToast && state.gitToast.id === id) {
+        state.gitToast = null;
+        if (state.visible) render();
+      }
+    }, 3500);
   }
 
   function renderCommitModal() {
@@ -2564,10 +2582,20 @@
       render();
       return false;
     },
-    menuAction(action) {
+    async menuAction(action) {
       const menu = state.contextMenu;
       if (!menu) return;
       state.contextMenu = null;
+      if (action === "copyPermalink") {
+        try {
+          await copyGitPermalink(menu.file);
+        } catch (err) {
+          const view = active();
+          if (view) view.error = err.message || String(err);
+          render();
+        }
+        return;
+      }
       if (action === "stash") this.stashFile(encodeURIComponent(menu.file));
       if (action === "discard") this.discardFile(encodeURIComponent(menu.file));
       if (action === "stage") this.stageFile(encodeURIComponent(menu.file));

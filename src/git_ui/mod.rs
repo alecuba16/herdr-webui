@@ -54,6 +54,7 @@ pub(crate) fn routes() -> Router<WebState> {
         )
         .route("/api/git-ui/log", get(log::git_ui_log))
         .route("/api/git-ui/path-info", get(git_ui_path_info))
+        .route("/api/git-ui/permalink", get(git_ui_permalink))
         .route("/api/git-ui/blame", get(file::git_ui_blame))
         .route(
             "/api/git-ui/file",
@@ -93,6 +94,12 @@ pub(super) struct GitUiCwdQuery {
 
 #[derive(Deserialize)]
 struct GitUiPathInfoQuery {
+    cwd: String,
+    path: String,
+}
+
+#[derive(Deserialize)]
+struct GitUiPermalinkQuery {
     cwd: String,
     path: String,
 }
@@ -175,6 +182,166 @@ async fn git_ui_path_info(
 ) -> Response {
     check_auth!(&state, &headers, remote);
     match tokio::task::spawn_blocking(move || git_ui_path_info_blocking(query.cwd, query.path))
+        .await
+    {
+        Ok(Ok(response)) => response,
+        Ok(Err((status, msg))) => git_json_error(status, msg),
+        Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    }
+}
+
+fn git_origin_or_upstream_remote(cwd: &str) -> Result<String, String> {
+    if let Ok(remote_text) = git_ui_text(cwd, &["config", "--get", "remote.origin.url"]) {
+        let remote = remote_text.trim().to_string();
+        if !remote.is_empty() {
+            return Ok(remote);
+        }
+    }
+    let upstream = git_ui_text(
+        cwd,
+        &[
+            "rev-parse",
+            "--abbrev-ref",
+            "--symbolic-full-name",
+            "@{upstream}",
+        ],
+    )
+    .map_err(|_| {
+        "git remote origin is not configured and current branch has no upstream".to_string()
+    })?;
+    git_remote_url(cwd, upstream.trim()).ok_or_else(|| "git remote URL was not found".to_string())
+}
+
+fn normalize_git_remote_url(raw: &str) -> Option<String> {
+    let mut value = raw.trim().to_string();
+    if value.is_empty() {
+        return None;
+    }
+    if !value.contains("://") {
+        if let Some((left, path)) = value.split_once(':') {
+            if let Some((_, host)) = left.rsplit_once('@') {
+                value = format!("https://{host}/{path}");
+            }
+        }
+    }
+    if let Some(rest) = value.strip_prefix("ssh://") {
+        value = format!("https://{}", rest.strip_prefix("git@").unwrap_or(rest));
+    } else if let Some(rest) = value.strip_prefix("git+ssh://") {
+        value = format!("https://{}", rest.strip_prefix("git@").unwrap_or(rest));
+    }
+    if !(value.starts_with("https://") || value.starts_with("http://")) {
+        return None;
+    }
+    if let Some((scheme, rest)) = value.split_once("://") {
+        let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
+        let host = host.rsplit('@').next().unwrap_or(host);
+        if host.trim().is_empty() || path.trim().is_empty() {
+            return None;
+        }
+        value = format!("{scheme}://{host}/{path}");
+    }
+    while value.ends_with('/') {
+        value.pop();
+    }
+    if value.ends_with(".git") {
+        value.truncate(value.len() - 4);
+    }
+    while value.ends_with('/') {
+        value.pop();
+    }
+    Some(value)
+}
+
+fn encode_git_permalink_path(path: &str) -> String {
+    fn encode_segment(segment: &str) -> String {
+        let mut out = String::new();
+        for byte in segment.as_bytes() {
+            let ch = *byte as char;
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '~') {
+                out.push(ch);
+            } else {
+                out.push_str(&format!("%{byte:02X}"));
+            }
+        }
+        out
+    }
+    path.split('/')
+        .map(encode_segment)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn git_permalink_url(
+    remote_url: &str,
+    commit: &str,
+    repo_path: &str,
+) -> Result<(String, String), String> {
+    let base = normalize_git_remote_url(remote_url)
+        .ok_or_else(|| "remote URL is not a supported HTTP/SSH Git URL".to_string())?;
+    let path = encode_git_permalink_path(repo_path);
+    if base.contains("bitbucket.org/") {
+        return Ok((
+            format!("{base}/src/{commit}/{path}"),
+            "bitbucket".to_string(),
+        ));
+    }
+    if base.contains("github.com/") {
+        return Ok((format!("{base}/blob/{commit}/{path}"), "github".to_string()));
+    }
+    if base.contains("gitlab.com/") {
+        return Ok((
+            format!("{base}/-/blob/{commit}/{path}"),
+            "gitlab".to_string(),
+        ));
+    }
+    Err(
+        "unsupported remote host for permalink; supported hosts are Bitbucket, GitHub, and GitLab"
+            .to_string(),
+    )
+}
+
+fn git_ui_permalink_blocking(cwd: String, path: String) -> Result<Response, (StatusCode, String)> {
+    let path = safe_repo_path(&path).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    let repo_root = git_repo_root(&cwd).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    let repo_root_path = fs::canonicalize(&repo_root).unwrap_or_else(|_| PathBuf::from(&repo_root));
+    let expanded_cwd_text = expand_user_path_string(&cwd);
+    let expanded_cwd =
+        fs::canonicalize(&expanded_cwd_text).unwrap_or_else(|_| PathBuf::from(&expanded_cwd_text));
+    let repo_path = repo_relative_path(&repo_root_path, &expanded_cwd, path)
+        .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    let commit = git_ui_text(&repo_root, &["rev-parse", "HEAD"])
+        .map_err(|err| (StatusCode::BAD_GATEWAY, err))?
+        .trim()
+        .to_string();
+    let object = format!("HEAD:{repo_path}");
+    git_ui_text(&repo_root, &["cat-file", "-e", &object]).map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            "file is not present at HEAD; commit it before copying a permalink".to_string(),
+        )
+    })?;
+    let remote =
+        git_origin_or_upstream_remote(&repo_root).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    let (url, service) = git_permalink_url(&remote, &commit, &repo_path)
+        .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    Ok(Json(json!({
+        "url": url,
+        "service": service,
+        "commit": commit,
+        "file": repo_path,
+        "remote_url": normalize_git_remote_url(&remote).unwrap_or(remote),
+    }))
+    .into_response())
+}
+
+async fn git_ui_permalink(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    Query(query): Query<GitUiPermalinkQuery>,
+) -> Response {
+    check_auth!(&state, &headers, remote);
+    match tokio::task::spawn_blocking(move || git_ui_permalink_blocking(query.cwd, query.path))
         .await
     {
         Ok(Ok(response)) => response,
@@ -712,6 +879,83 @@ mod tests {
             "src/ui/history.rs"
         );
         assert!(repo_relative_path(repo, Path::new("/tmp/other"), "file.rs").is_err());
+    }
+
+    #[test]
+    fn normalizes_git_remote_urls_for_permalinks() {
+        assert_eq!(
+            normalize_git_remote_url("git@bitbucket.org:team/repo.git").as_deref(),
+            Some("https://bitbucket.org/team/repo")
+        );
+        assert_eq!(
+            normalize_git_remote_url("ssh://git@bitbucket.org/team/repo.git").as_deref(),
+            Some("https://bitbucket.org/team/repo")
+        );
+        assert_eq!(
+            normalize_git_remote_url("https://user@github.com/team/repo.git/").as_deref(),
+            Some("https://github.com/team/repo")
+        );
+        assert!(normalize_git_remote_url("/Users/me/repo").is_none());
+    }
+
+    #[test]
+    fn builds_bitbucket_github_and_gitlab_permalinks() {
+        assert_eq!(
+            git_permalink_url(
+                "git@bitbucket.org:team/repo.git",
+                "abc123",
+                "src/file name.rs"
+            )
+            .unwrap()
+            .0,
+            "https://bitbucket.org/team/repo/src/abc123/src/file%20name.rs"
+        );
+        assert_eq!(
+            git_permalink_url("https://github.com/team/repo.git", "abc123", "src/main.rs")
+                .unwrap()
+                .0,
+            "https://github.com/team/repo/blob/abc123/src/main.rs"
+        );
+        assert_eq!(
+            git_permalink_url("https://gitlab.com/team/repo.git", "abc123", "src/main.rs")
+                .unwrap()
+                .0,
+            "https://gitlab.com/team/repo/-/blob/abc123/src/main.rs"
+        );
+        assert!(
+            git_permalink_url("https://example.com/team/repo.git", "abc123", "src/main.rs")
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn permalink_endpoint_uses_head_and_rejects_untracked_files() {
+        let repo = TempRepo::new();
+        repo.commit_initial();
+        repo.git(&["remote", "add", "origin", "git@bitbucket.org:team/repo.git"]);
+        let commit = repo.git(&["rev-parse", "HEAD"]).trim().to_string();
+
+        let response = git_ui_permalink_blocking(
+            repo.path.to_string_lossy().to_string(),
+            "tracked.txt".to_string(),
+        )
+        .unwrap();
+        let body = response_json(response).await;
+        assert_eq!(body["service"], "bitbucket");
+        assert_eq!(body["commit"], commit);
+        assert_eq!(
+            body["url"],
+            format!("https://bitbucket.org/team/repo/src/{commit}/tracked.txt")
+        );
+
+        repo.write("new.txt", "new\n");
+        let err = git_ui_permalink_blocking(
+            repo.path.to_string_lossy().to_string(),
+            "new.txt".to_string(),
+        )
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert!(err.1.contains("not present at HEAD"));
     }
 
     #[test]
