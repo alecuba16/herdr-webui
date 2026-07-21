@@ -543,6 +543,13 @@ describe("app bundle load", () => {
     match(gitUiSource, /scanCleanup/);
     match(gitUiSource, /selectAllCleanup/);
     match(gitUiSource, /Delete selected/);
+    match(gitUiSource, /function cleanupVisibleBranches\(repo\)/);
+    match(gitUiSource, /cleanupVisibleBranches\(repo\)\.map\(\(branch\) => renderCleanupBranch/);
+    match(gitUiSource, /for \(const branch of cleanupVisibleBranches\(repo\)\)/);
+    match(gitUiSource, /No removable local branches/);
+    const cleanupRs = readFileSync(new URL("../git_ui/cleanup.rs", import.meta.url), "utf8");
+    match(cleanupRs, /\.filter\(\|worktree\| !worktree\.primary\)/);
+    match(cleanupRs, /if checked_out \{\s*return None;\s*\}/);
     match(gitUiSource, /isNotGitRepositoryMessage/);
     match(gitUiSource, /markNoGitRepository\(view\)/);
     match(gitUiSource, /not_git_repository: true/);

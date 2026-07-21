@@ -2079,9 +2079,13 @@
     const repoState = cleanupSelectionState(repoItems);
     const title = `<label class="git-ui-cleanup-repo-title"><input type="checkbox" data-state="${repoState}" onchange="HerdrGitUi.toggleCleanupRepo('${repoIndex}',this.checked)" ${repoState === "checked" ? "checked" : ""} ${repoItems.length ? "" : "disabled"}><span>${treeIcon("folder")}</span><strong>${esc(name)}</strong><small title="${esc(repo.path || "")}">${esc(repo.path || "")}</small></label>`;
     if (repo.error) return `<section class="git-ui-cleanup-repo">${title}<div class="git-ui-error">${esc(repo.error)}</div></section>`;
-    const branches = (repo.branches || []).map((branch) => renderCleanupBranch(repoIndex, branch)).join("") || `<div class="git-ui-empty-row git-ui-cleanup-empty">No local branches</div>`;
+    const branches = cleanupVisibleBranches(repo).map((branch) => renderCleanupBranch(repoIndex, branch)).join("") || `<div class="git-ui-empty-row git-ui-cleanup-empty">No removable local branches</div>`;
     const worktrees = (repo.worktrees || []).map((worktree, index) => worktree.primary ? "" : renderCleanupWorktree(repoIndex, index, worktree)).join("") || `<div class="git-ui-empty-row git-ui-cleanup-empty">No linked worktrees</div>`;
     return `<section class="git-ui-cleanup-repo">${title}<div class="git-ui-cleanup-group">${renderCleanupGroupTitle(repoIndex, "branch", "Branches")}${branches}</div><div class="git-ui-cleanup-group">${renderCleanupGroupTitle(repoIndex, "worktree", "Worktrees")}${worktrees}</div></section>`;
+  }
+
+  function cleanupVisibleBranches(repo) {
+    return (repo.branches || []).filter((branch) => !branch.checked_out);
   }
 
   function renderCleanupGroupTitle(repoIndex, type, label) {
@@ -2129,7 +2133,7 @@
     const items = [];
     for (const repo of (((view.cleanupResult || {}).repos) || [])) {
       if (repo.error) continue;
-      for (const branch of repo.branches || []) {
+      for (const branch of cleanupVisibleBranches(repo)) {
         if (!branch.current) items.push({ type: "branch", repo: repo.path, name: branch.name, key: `branch|${repo.path}|${branch.name}` });
       }
       (repo.worktrees || []).forEach((worktree, index) => {
@@ -2146,7 +2150,7 @@
     if (!repo || repo.error) return [];
     const items = [];
     if (!type || type === "branch") {
-      for (const branch of repo.branches || []) {
+      for (const branch of cleanupVisibleBranches(repo)) {
         if (!branch.current) items.push({ type: "branch", repo: repo.path, name: branch.name, key: `branch|${repo.path}|${branch.name}` });
       }
     }
