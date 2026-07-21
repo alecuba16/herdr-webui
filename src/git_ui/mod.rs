@@ -2234,6 +2234,66 @@ mod tests {
         assert_eq!(got, expected);
     }
 
+    #[tokio::test]
+    async fn cleanup_scan_shows_checked_out_branch_only_as_worktree() {
+        let repo = TempRepo::new();
+        repo.commit_initial();
+        let worktree_dir = repo.path.parent().unwrap().join(format!(
+            "wt-cleanup-{}",
+            repo.path.file_name().unwrap().to_string_lossy()
+        ));
+        let worktree_dir_text = worktree_dir.to_string_lossy().to_string();
+        repo.git(&[
+            "worktree",
+            "add",
+            "-b",
+            "cleanup/linked",
+            &worktree_dir_text,
+            "main",
+        ]);
+
+        let response = git_ui_cleanup_scan(
+            State(test_state()),
+            HeaderMap::new(),
+            ConnectInfo(remote()),
+            Query(GitUiCleanupQuery {
+                root: Some(repo.path.to_string_lossy().to_string()),
+                cwd: None,
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        let repos = body["repos"].as_array().unwrap();
+        let cleanup_repo = repos
+            .iter()
+            .find(|item| item["path"].as_str() == Some(repo.path.to_str().unwrap()))
+            .unwrap();
+        let branch_names = cleanup_repo["branches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|branch| branch["name"].as_str())
+            .collect::<Vec<_>>();
+        assert!(branch_names.contains(&"main"));
+        assert!(
+            !branch_names.contains(&"cleanup/linked"),
+            "linked worktree branch should not render as branch cleanup candidate: {branch_names:?}"
+        );
+        let linked_worktree = cleanup_repo["worktrees"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|worktree| worktree["branch"].as_str() == Some("cleanup/linked"))
+            .unwrap();
+        assert_eq!(
+            linked_worktree["path"].as_str(),
+            Some(worktree_dir_text.as_str())
+        );
+
+        repo.git(&["worktree", "remove", "--force", &worktree_dir_text]);
+    }
+
     #[test]
     fn discover_git_repos_skips_node_modules() {
         let base = TempRepo::new();

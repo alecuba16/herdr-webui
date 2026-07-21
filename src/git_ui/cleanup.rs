@@ -226,17 +226,21 @@ fn cleanup_repo_details(
     let worktrees = cleanup_worktrees(cwd)?;
     let checked_out = worktrees
         .iter()
+        .filter(|worktree| !worktree.primary)
         .filter_map(|worktree| worktree.branch.as_deref())
         .collect::<std::collections::HashSet<_>>();
     let branches = list_local_branches(cwd)?
         .into_iter()
-        .map(|b| {
+        .filter_map(|b| {
             let checked_out = checked_out.contains(b.name.as_str());
-            GitCleanupBranch {
+            if checked_out {
+                return None;
+            }
+            Some(GitCleanupBranch {
                 name: b.name,
                 current: b.current,
                 checked_out,
-            }
+            })
         })
         .collect::<Vec<_>>();
     Ok((branches, worktrees))
