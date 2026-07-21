@@ -1004,8 +1004,7 @@ impl BuiltinState {
             .unwrap_or_default();
         let mut worktrees = parse_git_worktrees(&list);
         enrich_worktree_commit_dates(&mut worktrees);
-        worktrees
-            .sort_by(|left, right| worktree_activity_key(right).cmp(&worktree_activity_key(left)));
+        worktrees.sort_by_key(|row| std::cmp::Reverse(worktree_activity_key(row)));
         Ok(json!({
             "type": "worktree_list",
             "source": {

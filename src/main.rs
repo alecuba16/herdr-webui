@@ -2671,7 +2671,7 @@ fn normalize_worktree_response(value: &mut serde_json::Value) {
 }
 
 fn enrich_worktree_activity(row: &mut serde_json::Value) {
-    if !row_activity_date(row).is_some_and(|value| !value.trim().is_empty()) {
+    if row_activity_date(row).is_none_or(|value| value.trim().is_empty()) {
         if let Some((date, hash)) = latest_worktree_commit(row) {
             if let Some(object) = row.as_object_mut() {
                 object.insert("last_commit_at".to_string(), json!(date));
