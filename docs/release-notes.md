@@ -1,5 +1,16 @@
 # Release notes
 
+## 0.2.77 Release Notes
+
+### File explorer tabs, worktrees, and Git cleanup polish
+
+- Restores File Explorer multi-file tabs and keeps opening files from search additive, preserving the current folder and existing open files while supporting matched-line jumps.
+- Compacts File Explorer open-file tabs, removes the duplicated pane header, adds horizontal scrolling for many tabs, and shows hover paths relative to `~` when inside the home directory or absolute from `/` otherwise.
+- Sorts discovered worktrees by recent activity, shows latest commit dates, and switches Git branch selection to an existing worktree directory when that branch is already checked out there.
+- Reduces browser work by moving worktree activity sorting/enrichment to the backend and caching repeated frontend search/render helpers.
+- Improves Git log labels and commit handling with full hover labels and a copy-commit-id action.
+- Updates Git Cleanup so branches checked out in linked worktrees appear only as worktree removal entries, avoiding duplicate branch-delete choices.
+
 ## 0.2.76 Release Notes
 
 ### File explorer, Git actions, and terminal selection fixes
