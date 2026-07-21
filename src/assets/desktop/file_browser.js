@@ -10,7 +10,7 @@
   }
 
   function createState(initial) {
-    return Object.assign({ open: false, cwd: "", path: "", entries: [], children: {}, expanded: {}, loading: {}, selected: "", files: [], split: false, error: "", permissionRequired: false, contextMenu: null, filter: "", filterTimer: null, filterVisible: false, filterLoading: false, filterOffset: 0, filterDone: true, filterScrollTop: 0, filterKind: "file", gitStatus: null, refreshing: false, contentSearch: createContentSearchState() }, initial || {});
+    return Object.assign({ open: false, cwd: "", root: "", home: "", path: "", entries: [], children: {}, expanded: {}, loading: {}, selected: "", files: [], split: false, error: "", permissionRequired: false, contextMenu: null, filter: "", filterTimer: null, filterVisible: false, filterLoading: false, filterOffset: 0, filterDone: true, filterScrollTop: 0, filterKind: "file", gitStatus: null, refreshing: false, contentSearch: createContentSearchState() }, initial || {});
   }
 
   function esc(value) { return Tree.esc(value); }
@@ -60,6 +60,33 @@
         regex: parsed.fileContentSearchRegex === true,
       };
     } catch (_) { return { minChars: DEFAULT_CONTENT_SEARCH_MIN_CHARS, pageSize: 50, contextLines: 2, autoCollapseFiles: 0, defaultExpanded: true, maxMatchesPerFile: 5, matchCase: false, regex: false }; }
+  }
+
+  function cacheTreeRoots(target, data) {
+    if (!target || !data) return;
+    if (data.root) target.root = String(data.root);
+    if (data.home) target.home = String(data.home);
+  }
+
+  function normalizeDisplayPath(path) {
+    return String(path || "").replace(/\/+/g, "/");
+  }
+
+  function absoluteFilePath(path) {
+    const value = String(path || "");
+    if (!value) return normalizeDisplayPath(state.root || state.cwd || "");
+    if (value === "~" || value.startsWith("~/") || value.startsWith("/")) return normalizeDisplayPath(value);
+    const root = String(state.root || state.cwd || "").replace(/\/+$/, "");
+    if (!root || root === "/") return normalizeDisplayPath(`/${value.replace(/^\/+/, "")}`);
+    return normalizeDisplayPath(`${root}/${value.replace(/^\/+/, "")}`);
+  }
+
+  function fileTabTooltipPath(path) {
+    const absolute = absoluteFilePath(path);
+    const home = normalizeDisplayPath(state.home || "").replace(/\/+$/, "");
+    if (home && absolute === home) return "~";
+    if (home && absolute.startsWith(`${home}/`)) return `~/${absolute.slice(home.length + 1)}`;
+    return absolute;
   }
 
   function defaultContentExpanded(content, fileCount) {
@@ -244,6 +271,7 @@
   async function fetchEntries(path, target = state) {
     if (!target.cwd) return;
     const data = await api(`/api/file-browser/tree?cwd=${encodeURIComponent(target.cwd)}&path=${encodeURIComponent(path || "")}&depth=0${gitStatusEnabled() ? "&include_git_status=true" : ""}`);
+    cacheTreeRoots(target, data);
     return data.entries || [];
   }
 
@@ -256,6 +284,7 @@
     renderIfActive(target, true);
     try {
       const data = await api(`/api/file-browser/tree?cwd=${encodeURIComponent(target.cwd)}&path=${encodeURIComponent(target.path || "")}&q=${encodeURIComponent(target.filter.trim())}&${Tree.searchKindQuery(target.filterKind)}&offset=${offset}&limit=${pageSize}${gitStatusEnabled() ? "&include_git_status=true" : ""}`);
+      cacheTreeRoots(target, data);
       const entries = data.entries || [];
       target.entries = append ? target.entries.concat(entries) : entries;
       target.gitStatus = data.git_status || null;
@@ -283,6 +312,7 @@
       target.error = "";
       target.permissionRequired = false;
       const data = await api(`/api/file-browser/tree?cwd=${encodeURIComponent(target.cwd)}&path=${encodeURIComponent(path || "")}&depth=0${gitStatusEnabled() ? "&include_git_status=true" : ""}`);
+      cacheTreeRoots(target, data);
       target.path = data.path || "";
       target.entries = data.entries || [];
       target.gitStatus = data.git_status || null;
@@ -617,7 +647,8 @@
     const tabs = state.files.map((file) => {
       const active = file.path === state.selected;
       const dirty = file.dirty ? `<span class="file-browser-tab-dirty" title="Modified">●</span>` : "";
-      return `<span class="file-browser-open-tab ${active ? "active" : ""}" role="presentation" title="${esc(file.path)}"><button type="button" class="file-browser-open-tab-label" role="tab" aria-selected="${active ? "true" : "false"}" title="${esc(file.path)}" onclick="HerdrFileBrowser.focusFile('${arg(file.path)}')">${esc(Tree.basename(file.path))}${dirty}</button><button type="button" class="file-browser-open-tab-close" title="Close ${esc(Tree.basename(file.path))}" aria-label="Close ${esc(Tree.basename(file.path))}" onclick="event.stopPropagation();HerdrFileBrowser.closeFile('${arg(file.path)}')">&times;</button></span>`;
+      const tooltip = fileTabTooltipPath(file.path);
+      return `<span class="file-browser-open-tab ${active ? "active" : ""}" role="presentation" title="${esc(tooltip)}"><button type="button" class="file-browser-open-tab-label" role="tab" aria-selected="${active ? "true" : "false"}" title="${esc(tooltip)}" onclick="HerdrFileBrowser.focusFile('${arg(file.path)}')">${esc(Tree.basename(file.path))}${dirty}</button><button type="button" class="file-browser-open-tab-close" title="Close ${esc(Tree.basename(file.path))}" aria-label="Close ${esc(Tree.basename(file.path))}" onclick="event.stopPropagation();HerdrFileBrowser.closeFile('${arg(file.path)}')">&times;</button></span>`;
     }).join("");
     return `<div class="file-browser-open-tabs" role="tablist" aria-label="Open files">${tabs}</div>`;
   }
