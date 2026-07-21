@@ -733,7 +733,13 @@ describe("desktop file browser editor integration", () => {
     const doc = {
       nodes: new Map(),
       activeElement: null,
-      addEventListener() {},
+      listeners: {},
+      addEventListener(type, listener, options) {
+        const phase = options === true || (options && options.capture) ? "capture" : "bubble";
+        const key = `${type}:${phase}`;
+        if (!this.listeners[key]) this.listeners[key] = [];
+        this.listeners[key].push(listener);
+      },
       createElement(tag) { return new FakeElement(doc, tag); },
       getElementById(id) {
         if (!doc.nodes.has(id) && String(id || "").startsWith("fileBrowserEditor-")) {
@@ -802,6 +808,78 @@ describe("desktop file browser editor integration", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.match(requests.at(-1), /cwd=~/);
     assert.match(requests.at(-1), /path=/);
+  });
+
+  it("executes file browser context menu actions from delegated button clicks", async () => {
+    const document = createFakeDocument();
+    const requests = [];
+    const clipboardWrites = [];
+    const context = {
+      window: {
+        addEventListener() {},
+        HerdrEditor: { create() { return { getValue() { return ""; }, setValue() {}, destroy() {} }; } },
+        HerdrGitUi: { hide() {} },
+        HerdrWorkspacePath(workspace) { return workspace.cwd; },
+      },
+      document,
+      localStorage: { getItem() { return JSON.stringify({ fileBrowserAllowParent: true, fileBrowserGitStatus: false }); } },
+      navigator: { clipboard: { async writeText(value) { clipboardWrites.push(value); } } },
+      fetch: async (url, options = {}) => {
+        const text = String(url);
+        requests.push({ url: text, options });
+        return {
+          ok: true,
+          async json() {
+            if (text.startsWith("/api/git-ui/permalink")) return { url: "https://bitbucket.org/team/repo/src/abc/demo.txt" };
+            return { path: "", entries: [{ kind: "file", name: "demo.txt", path: "demo.txt" }], git_status: null };
+          },
+        };
+      },
+      prompt: () => "renamed.txt",
+      confirm: () => true,
+      appRefreshIconButton: () => "<button>Refresh</button>",
+      encodeURIComponent,
+      decodeURIComponent,
+      Error,
+      JSON,
+      Math,
+      String,
+      setTimeout(fn) { fn(); return 1; },
+      clearTimeout() {},
+      getComputedStyle: () => ({ getPropertyValue() { return "14"; } }),
+    };
+    context.window.window = context.window;
+    context.window.document = document;
+    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
+    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
+
+    await context.window.HerdrFileBrowser.open({ cwd: "/repo" });
+    context.window.HerdrFileBrowser.menu({ preventDefault() {}, stopPropagation() {}, clientX: 12, clientY: 34 }, encodeURIComponent("demo.txt"), "file");
+    assert.match(document.getElementById("fileBrowserPanel").innerHTML, /data-file-menu-action="rename"/);
+    assert.match(document.getElementById("fileBrowserPanel").innerHTML, /data-file-menu-action="copyPermalink"/);
+
+    const click = async (action) => {
+      const button = { dataset: { fileMenuAction: action } };
+      button.closest = (selector) => selector === ".file-browser-menu [data-file-menu-action]" ? button : null;
+      const textNodeTarget = { parentElement: button };
+      await document.listeners["click:capture"].at(-1)({
+        target: textNodeTarget,
+        preventDefault() { this.defaultPrevented = true; },
+        stopPropagation() { this.stopped = true; },
+        stopImmediatePropagation() { this.immediateStopped = true; },
+      });
+    };
+
+    await click("rename");
+    assert.ok(requests.some((request) => request.url === "/api/file-browser/rename"));
+    assert.match(requests.find((request) => request.url === "/api/file-browser/rename").options.body, /renamed\.txt/);
+    assert.doesNotMatch(document.getElementById("fileBrowserPanel").innerHTML, /file-browser-menu/);
+
+    context.window.HerdrFileBrowser.menu({ preventDefault() {}, stopPropagation() {}, clientX: 12, clientY: 34 }, encodeURIComponent("demo.txt"), "file");
+    await click("copyPermalink");
+    assert.ok(requests.some((request) => request.url.startsWith("/api/git-ui/permalink?cwd=%2Frepo&path=demo.txt")));
+    assert.deepEqual(clipboardWrites, ["https://bitbucket.org/team/repo/src/abc/demo.txt"]);
+    assert.doesNotMatch(document.getElementById("fileBrowserPanel").innerHTML, /file-browser-menu/);
   });
 
   it("mounts previews as read-only, edit as editable, and cancel as read-only", async () => {

@@ -575,7 +575,8 @@ describe("app bundle load", () => {
 
   it("offers copy permalink actions in file explorer and Git file menus", () => {
     match(fileBrowserSource, /Copy permalink/);
-    match(fileBrowserSource, /menuAction\('copyPermalink'\)/);
+    match(fileBrowserSource, /data-file-menu-action="copyPermalink"/);
+    match(fileBrowserSource, /\.file-browser-menu \[data-file-menu-action\]/);
     match(fileBrowserSource, /\/api\/git-ui\/permalink\?cwd=/);
     match(fileBrowserSource, /navigator\.clipboard\.writeText\(url\)/);
     match(gitUiSource, /Copy permalink/);
@@ -2450,8 +2451,8 @@ describe("app bundle load", () => {
     match(gitUiSource, /const GIT_LOG_MAX_LIMIT = 2000;/);
     match(fileBrowserSource, /HerdrFileBrowser.showHistory/);
     match(fileBrowserSource, />Show history<\/button>/);
-    match(fileBrowserSource, /menu\.kind === "file" \? `<button onclick="HerdrFileBrowser\.menuAction\('history'\)">Show history<\/button>` : ""/);
-    match(fileBrowserSource, /if \(action === "history"\) \{ this\.showHistory\(encodeURIComponent\(menu\.path\)\); return; \}/);
+    match(fileBrowserSource, /menu\.kind === "file" \? `<button type="button" data-file-menu-action="history">Show history<\/button>` : ""/);
+    match(fileBrowserSource, /if \(action === "history"\) \{ showHistoryPath\(menu\.path\); return; \}/);
     match(fileBrowserSource, /showHistory\(encodedPath\)/);
     match(fileBrowserSource, /hide\(\);\n\s+window\.HerdrGitUi\.openFileHistory/);
     match(fileBrowserSource, /openFileHistory\(encodeURIComponent\(state\.cwd\), encodeURIComponent\(path\)\)/);

@@ -103,6 +103,15 @@
     state.contextMenu = null;
     if (state.open) render();
   });
+  document.addEventListener("click", (event) => {
+    const target = event.target && event.target.closest ? event.target : event.target && event.target.parentElement;
+    const button = target && target.closest && target.closest(".file-browser-menu [data-file-menu-action]");
+    if (!button) return undefined;
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.stopImmediatePropagation) event.stopImmediatePropagation();
+    return handleMenuAction(button.dataset.fileMenuAction);
+  }, true);
   window.addEventListener("keydown", (event) => {
     if (!state.open || !state.contextMenu || event.key !== "Escape") return;
     event.preventDefault();
@@ -609,11 +618,11 @@
     const menu = state.contextMenu;
     if (!menu) return "";
     const primary = menu.kind === "dir"
-      ? `<button onclick="HerdrFileBrowser.menuAction('enter')">Enter folder</button>`
-      : `<button onclick="HerdrFileBrowser.menuAction('open')">Open</button><button onclick="HerdrFileBrowser.menuAction('split')">Open in split</button>`;
-    const history = menu.kind === "file" ? `<button onclick="HerdrFileBrowser.menuAction('history')">Show history</button>` : "";
-    const permalink = menu.kind === "file" ? `<button onclick="HerdrFileBrowser.menuAction('copyPermalink')">Copy permalink</button>` : "";
-    return `<div class="git-ui-menu file-browser-menu" style="left:${Math.max(0, menu.x)}px;top:${Math.max(0, menu.y)}px" onclick="event.stopPropagation()">${primary}${history}${permalink}<button onclick="HerdrFileBrowser.menuAction('rename')">Rename</button><button class="danger" onclick="HerdrFileBrowser.menuAction('delete')">Delete</button><button onclick="HerdrFileBrowser.menuAction('copyPath')">Copy path</button></div>`;
+      ? `<button type="button" data-file-menu-action="enter">Enter folder</button>`
+      : `<button type="button" data-file-menu-action="open">Open</button><button type="button" data-file-menu-action="split">Open in split</button>`;
+    const history = menu.kind === "file" ? `<button type="button" data-file-menu-action="history">Show history</button>` : "";
+    const permalink = menu.kind === "file" ? `<button type="button" data-file-menu-action="copyPermalink">Copy permalink</button>` : "";
+    return `<div class="git-ui-menu file-browser-menu" style="left:${Math.max(0, menu.x)}px;top:${Math.max(0, menu.y)}px" onclick="event.stopPropagation()">${primary}${history}${permalink}<button type="button" data-file-menu-action="rename">Rename</button><button type="button" class="danger" data-file-menu-action="delete">Delete</button><button type="button" data-file-menu-action="copyPath">Copy path</button></div>`;
   }
 
   function mountEditors() {
@@ -789,6 +798,32 @@
     await navigator.clipboard.writeText(url);
   }
 
+  function showHistoryPath(path) {
+    if (!path || !window.HerdrGitUi || !window.HerdrGitUi.openFileHistory) return;
+    hide();
+    window.HerdrGitUi.openFileHistory(encodeURIComponent(state.cwd), encodeURIComponent(path));
+  }
+
+  async function handleMenuAction(action) {
+    const menu = state.contextMenu;
+    if (!menu) return;
+    state.contextMenu = null;
+    try {
+      if (action === "open") await loadFile(menu.path);
+      if (action === "split") await loadFile(menu.path, "split");
+      if (action === "enter") await loadTree(menu.path);
+      if (action === "history") { showHistoryPath(menu.path); return; }
+      if (action === "rename") await renamePath(menu.path);
+      if (action === "delete") await deletePath(menu.path);
+      if (action === "copyPermalink") await copyPermalink(menu.path);
+      if (action === "copyPath") await navigator.clipboard.writeText(`${state.cwd}/${menu.path}`);
+    } catch (error) {
+      state.error = error.message || String(error);
+    } finally {
+      if (state.open) render();
+    }
+  }
+
   function runUnifiedSearch(append = false) {
     if (!state.filter.trim()) {
       if (state.filterKind === "content") {
@@ -908,27 +943,7 @@
       render();
       return false;
     },
-    async menuAction(action) {
-      const menu = state.contextMenu;
-      if (!menu) return;
-      state.contextMenu = null;
-      try {
-        if (action === "open") await loadFile(menu.path);
-        if (action === "split") await loadFile(menu.path, "split");
-        if (action === "enter") await loadTree(menu.path);
-        if (action === "history") { this.showHistory(encodeURIComponent(menu.path)); return; }
-        if (action === "rename") await renamePath(menu.path);
-        if (action === "delete") await deletePath(menu.path);
-        if (action === "copyPermalink") await copyPermalink(menu.path);
-        if (action === "copyPath") {
-          await navigator.clipboard.writeText(`${state.cwd}/${menu.path}`);
-          render();
-        }
-      } catch (error) {
-        state.error = error.message || String(error);
-        render();
-      }
-    },
+    menuAction(action) { return handleMenuAction(action); },
     edit(encodedPath) {
       const file = state.files.find((file) => file.path === decodeURIComponent(encodedPath));
       if (!file) return;
@@ -950,9 +965,7 @@
     toggleFind(encodedPath) { toggleFind(decodeURIComponent(encodedPath || "")); },
     showHistory(encodedPath) {
       const path = decodeURIComponent(encodedPath || "");
-      if (!path || !window.HerdrGitUi || !window.HerdrGitUi.openFileHistory) return;
-      hide();
-      window.HerdrGitUi.openFileHistory(encodeURIComponent(state.cwd), encodeURIComponent(path));
+      showHistoryPath(path);
     },
     isVisible() { return state.open; },
     isWorkspaceVisible(workspace) { return state.open && activeKey === workspaceKey(workspace); },
