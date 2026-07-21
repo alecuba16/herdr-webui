@@ -283,7 +283,7 @@
   border: 1px solid var(--border);
   border-radius: 12px;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: minmax(0, 1fr) auto;
   min-height: 0;
   min-width: 0;
   overflow: hidden;
@@ -291,57 +291,25 @@
 .file-browser-pane.active {
   border-color: var(--border2);
 }
-.file-browser-pane.no-head {
-  grid-template-rows: minmax(0, 1fr) auto;
-}
-.file-browser-pane-head {
-  align-items: center;
-  background: var(--panel2);
-  border-bottom: 1px solid var(--border);
-  display: flex;
-  gap: 8px;
-  min-width: 0;
-  padding: 6px;
-}
-.file-browser-pane-head span {
-  color: var(--muted);
-  flex: 1 1 auto;
-  font-size: 11px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.file-browser-pane-search,
-.file-browser-pane-close {
-  align-items: center;
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  color: var(--muted);
-  cursor: pointer;
-  display: inline-flex;
-  flex: 0 0 auto;
-  font: inherit;
-  height: 26px;
-  justify-content: center;
-  width: 26px;
-}
-.file-browser-pane-search:hover,
-.file-browser-pane-close:hover {
-  background: var(--control-hover, var(--panel));
-  border-color: var(--border2);
-  color: var(--fg);
-}
-.file-browser-pane-search span {
-  background: currentColor;
-  display: inline-block;
-  height: 13px;
-  mask: url("/assets/icons/search.svg") center / contain no-repeat;
-  width: 13px;
-}
 .file-browser-pane-body {
   min-height: 0;
   overflow: auto;
+}
+.file-browser-content-actions {
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  display: flex;
+  font-size: 12px;
+  gap: 8px;
+  justify-content: space-between;
+  padding: 8px;
+}
+.file-browser-content-actions span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .file-browser-empty {
   padding: 14px;
