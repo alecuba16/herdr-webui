@@ -20,6 +20,8 @@ const {
   tabActivityLabel,
   terminalPasteInput,
   stripTerminalMouseReports,
+  TERMINAL_MOUSE_RESET_SEQUENCE,
+  resetTerminalMouseTracking,
 } = require("./shared/core.js");
 
 describe("createFaviconNotifier", () => {
@@ -135,6 +137,24 @@ describe("stripTerminalMouseReports", () => {
   it("preserves mouse reports when explicitly enabled", () => {
     const input = "a\x1b[<35;105;1M\x1b[M !!b";
     assert.equal(stripTerminalMouseReports(input, true), input);
+  });
+});
+
+describe("resetTerminalMouseTracking", () => {
+  it("writes xterm mouse protocol reset when terminal mouse reporting is disabled", () => {
+    const writes = [];
+    const term = { write(value) { writes.push(value); } };
+    assert.equal(resetTerminalMouseTracking(term, false), true);
+    assert.deepEqual(writes, [TERMINAL_MOUSE_RESET_SEQUENCE]);
+    assert.match(TERMINAL_MOUSE_RESET_SEQUENCE, /\x1b\[\?9;1000;1002;1003l/);
+    assert.match(TERMINAL_MOUSE_RESET_SEQUENCE, /\x1b\[\?1006;1016l/);
+  });
+
+  it("does not reset xterm mouse protocol when reporting is explicitly enabled", () => {
+    const writes = [];
+    const term = { write(value) { writes.push(value); } };
+    assert.equal(resetTerminalMouseTracking(term, true), false);
+    assert.deepEqual(writes, []);
   });
 });
 

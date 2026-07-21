@@ -630,6 +630,13 @@
     function writeFrame(data) {
       if (!term) return;
       try { term.write(data); } catch (e) { try { term.write(data); } catch (e2) {} }
+      resetMouseTrackingIfDisabled();
+    }
+
+    function resetMouseTrackingIfDisabled() {
+      var helpers = globalThis.HerdrAppHelpers || {};
+      if (typeof helpers.resetTerminalMouseTracking !== "function") return false;
+      return helpers.resetTerminalMouseTracking(term, terminalMouseReportingEnabled());
     }
 
     function isVisible() { return isOpen && !isMinimized; }

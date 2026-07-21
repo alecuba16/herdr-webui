@@ -516,22 +516,31 @@ function maybeAutoScrollToBottom() {
 function followTerminalAfterWrite() {
   requestAnimationFrame(maybeAutoScrollToBottom);
 }
+function resetTerminalMouseTrackingIfDisabled() {
+  const helpers = globalThis.HerdrAppHelpers || {};
+  if (typeof helpers.resetTerminalMouseTracking !== "function") return false;
+  return helpers.resetTerminalMouseTracking(term, options.terminalMouseReporting === true);
+}
 function writeTerminalFrame(data, onDone) {
+  const finish = onDone
+    ? () => { resetTerminalMouseTrackingIfDisabled(); onDone(); }
+    : () => { resetTerminalMouseTrackingIfDisabled(); followTerminalAfterWrite(); };
   // For large frames (the initial attach repaint), use the write callback
   // to know when xterm.js finishes parsing. This avoids the caller
   // revealing the terminal while xterm's WriteBuffer is still in its
   // 12ms time-slice loop, which would show partial renders.
   if (onDone) {
-    try { term.write(data, onDone); return; }
-    catch (e) { term.write(data); onDone(); return; }
+    try { term.write(data, finish); return; }
+    catch (e) { term.write(data); finish(); return; }
   }
   try {
-    term.write(data, followTerminalAfterWrite);
+    term.write(data, finish);
   } catch (e) {
     term.write(data);
-    followTerminalAfterWrite();
+    finish();
   }
 }
+window.HerdrResetTerminalMouseTracking = resetTerminalMouseTrackingIfDisabled;
 function scrollTerminalToBottom(focus = true) {
   sendBackendTail();
   setTerminalFollowPaused(false);

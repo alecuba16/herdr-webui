@@ -176,6 +176,8 @@ el("optTerminalLinks").onchange = () => {
 el("optTerminalMouseReporting").onchange = () => {
   options.terminalMouseReporting = el("optTerminalMouseReporting").checked;
   saveOptions();
+  if (!options.terminalMouseReporting && window.HerdrResetTerminalMouseTracking)
+    window.HerdrResetTerminalMouseTracking();
 };
 el("optAgentSortMode").onchange = () => {
   options.agentSortMode = el("optAgentSortMode").value;
