@@ -85,6 +85,12 @@
   flex-wrap: wrap;
   gap: 6px;
 }
+.file-browser-search-icon span {
+  mask: url("/assets/icons/search.svg") center / contain no-repeat;
+}
+.file-browser-refresh span {
+  mask: url("/assets/icons/refresh.svg") center / contain no-repeat;
+}
 .file-browser-refresh {
   align-items: center;
   background: transparent;
