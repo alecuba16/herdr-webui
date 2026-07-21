@@ -199,19 +199,24 @@
     if (window.HerdrGitUi) window.HerdrGitUi.hide();
     activateState(key, cwd);
     state.open = true;
-    state.filter = "";
-    state.filterVisible = false;
-    state.filterKind = "file";
-    state.contentSearch.active = false;
-    clearContentSearchResults(state.contentSearch);
+    const preserveContext = options.preserveContext === true && options.kind !== "dir";
+    if (!preserveContext) {
+      state.filter = "";
+      state.filterVisible = false;
+      state.filterKind = "file";
+      state.contentSearch.active = false;
+      clearContentSearchResults(state.contentSearch);
+    }
     render();
     if (options.kind === "dir") {
       await loadTree(path || "");
       return;
     }
-    const parent = Tree.parentPath(path || "");
-    await loadTree(parent || "");
-    if (path) await loadFile(path, options.mode, options.highlight || null);
+    if (!preserveContext) {
+      const parent = Tree.parentPath(path || "");
+      await loadTree(parent || "");
+    }
+    if (path) await loadFile(path, options.mode || (preserveContext ? "append" : undefined), options.highlight || null);
   }
 
   function hide() {
@@ -340,6 +345,8 @@
       if (mode === "split") {
         target.files.push(nextFile);
         target.split = true;
+      } else if (mode === "append") {
+        target.files.push(nextFile);
       } else {
         const index = Math.max(0, target.files.findIndex((file) => file.path === replacePath));
         if (target.files.length) target.files[index] = nextFile;
@@ -1013,12 +1020,12 @@
       catch (error) { state.contentSearch.error = error.message || String(error); }
       renderPreservingScroll();
     },
-    openFile(encodedPath) { loadFile(decodeURIComponent(encodedPath)); },
+    openFile(encodedPath) { loadFile(decodeURIComponent(encodedPath), "append"); },
     openMatch(encodedPath, encodedMatchId) {
       const path = decodeURIComponent(encodedPath);
       const file = contentFile(path);
       const match = window.HerdrContentSearch.findMatch(file, decodeURIComponent(encodedMatchId));
-      loadFile(path, undefined, matchHighlight(match, state.contentSearch.query));
+      loadFile(path, "append", matchHighlight(match, state.contentSearch.query));
     },
     expandAll() {
       for (const file of state.contentSearch.files || []) state.contentSearch.expanded[file.path] = true;

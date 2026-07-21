@@ -174,6 +174,8 @@ describe("app bundle load", () => {
     match(source, /Open workspace or worktree/);
     match(source, /Temporary terminal/);
     match(source, /runSearchAction\(result\.action\)/);
+    match(source, /window\.syncShellModeButtons = syncShellModeButtons;/);
+    match(source, /function showTerminalShellMode\(\) \{[\s\S]*?syncShellModeButtons\(\);[\s\S]*?if \(typeof render === "function"\) render\(\);[\s\S]*?requestAnimationFrame\(\(\) => \{[\s\S]*?syncShellModeButtons\(\);/);
   });
 
   it("returns desktop UX actions from a single command-palette candidate path", () => {
@@ -827,6 +829,7 @@ describe("app bundle load", () => {
     const fileContentSearchSource = readFileSync(new URL("./shared/file_content_search.js", import.meta.url), "utf8");
     const workspaceSearchSource = readFileSync(new URL("./shared/workspace_search.js", import.meta.url), "utf8");
     const searchSource = readFileSync(new URL("./desktop/search.js", import.meta.url), "utf8");
+    const mobileAppSource = readFileSync(new URL("./mobile/app.js", import.meta.url), "utf8");
     const lineContextSource = readFileSync(new URL("./shared/line_context.js", import.meta.url), "utf8");
     const sharedColorsCss = readFileSync(new URL("./shared/colors.css", import.meta.url), "utf8");
     const sharedContentSearchCss = readFileSync(new URL("./shared/content_search.css", import.meta.url), "utf8");
@@ -848,6 +851,17 @@ describe("app bundle load", () => {
     ok(!fileContentSearchSource.includes("More above"));
     ok(!fileContentSearchSource.includes("More below"));
     match(fileContentSearchSource, /openMatch/);
+    match(desktopFileBrowserSource, /const preserveContext = options\.preserveContext === true && options\.kind !== "dir";/);
+    match(desktopFileBrowserSource, /if \(!preserveContext\) \{[\s\S]*?clearContentSearchResults\(state\.contentSearch\);[\s\S]*?\}/);
+    match(desktopFileBrowserSource, /if \(path\) await loadFile\(path, options\.mode \|\| \(preserveContext \? "append" : undefined\), options\.highlight \|\| null\);/);
+    match(desktopFileBrowserSource, /mode === "append"/);
+    match(desktopFileBrowserSource, /openFile\(encodedPath\) \{ loadFile\(decodeURIComponent\(encodedPath\), "append"\); \}/);
+    match(desktopFileBrowserSource, /loadFile\(path, "append", matchHighlight\(match, state\.contentSearch\.query\)\);/);
+    match(searchSource, /preserveContext: isFile, mode: isFile \? "append" : undefined/);
+    match(searchSource, /kind: "file", preserveContext: true, mode: "append"/);
+    match(mobileFileBrowserSource, /const preserveContext = options\.preserveContext === true && options\.kind !== "dir";/);
+    match(mobileAppSource, /preserveContext: resolvedKind === "file"/);
+    match(mobileAppSource, /kind: "file", preserveContext: true, highlight/);
     match(searchSource, /Alt\+↑|ArrowUp/);
     match(searchSource, /Digit1/);
     match(workspaceSearchSource, /fileContentSearchDefaultExpanded/);
