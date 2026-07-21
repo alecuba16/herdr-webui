@@ -520,6 +520,13 @@ describe("mobile bundle load", () => {
 
   it("keeps mobile worktree creation progressive and settings filterable", () => {
     match(source, /Create new worktree/);
+    match(source, /worktreeLoadingLabel/);
+    match(source, /Discovering\.\.\./);
+    match(source, /Opening\.\.\./);
+    match(source, /Creating\.\.\./);
+    match(source, /setLoading\(true, "Discovering worktrees\.\.\."\)/);
+    match(source, /setLoading\(true, "Opening worktree\.\.\.", index\)/);
+    match(source, /setLoading\(true, "Creating worktree\.\.\."\)/);
     match(source, /setWorktreeCreateExpanded/);
     match(source, /Filter settings/);
     match(source, /mobile-settings-disclosure/);
@@ -557,6 +564,8 @@ describe("mobile bundle load", () => {
     );
     doesNotThrow(() => ctx.HerdrMobile.setTerminalLinks(false));
     doesNotThrow(() => ctx.HerdrMobile.showScreen("worktrees"));
+    let html = ctx.document.getElementById("mobileScreen").innerHTML;
+    ok(html.includes("Discover worktrees"));
     doesNotThrow(() =>
       ctx.HerdrMobile.updateWorktreeField("worktreeBranch", "feature/mobile"),
     );
@@ -708,6 +717,8 @@ describe("mobile bundle load", () => {
     ctx.HerdrMobile.showScreen("worktrees");
     ctx.HerdrMobile.updateWorktreeField("worktreeDiscoverPath", "~/code/repo");
     await ctx.HerdrMobile.loadWorktrees();
+    let html = ctx.document.getElementById("mobileScreen").innerHTML;
+    ok(html.includes("Discovering...") || source.includes("Discovering..."));
     ok(
       ctx.requests.some(
         (request) => request.url === "/api/worktrees?cwd=~%2Fcode%2Frepo",

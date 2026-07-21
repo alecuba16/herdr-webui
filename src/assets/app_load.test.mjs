@@ -555,7 +555,14 @@ describe("app bundle load", () => {
     match(gitLayoutCss, /\.git-ui-input,[\s\S]*?\.git-ui-textarea,[\s\S]*?\.git-ui-select \{[\s\S]*?box-sizing: border-box;[\s\S]*?min-width: 0;[\s\S]*?width: 100%;/);
     match(gitUiSource, /\/api\/git-ui\/cleanup-scan/);
     match(gitUiSource, /\/api\/git-ui\/branch-delete/);
-    match(gitUiSource, /\/api\/git-ui\/worktree-remove/);
+    match(gitUiSource, /view\.cleanupLoading = true;[\s\S]*?await api\("\/api\/git-ui\/branch-delete"/);
+    match(gitUiSource, /view\.cleanupLoading = true;[\s\S]*?await api\("\/api\/git-ui\/worktree-remove"/);
+    match(gitUiSource, /if \(latest\) latest\.cleanupLoading = false;/);
+    match(source, /setWorktreeLoading\(true, "Opening workspace\.\.\."\)/);
+    match(source, /setOpenWorktreeOperation\("open", index, "Opening worktree\.\.\."\)/);
+    match(source, /setOpenWorktreeOperation\("remove", index, "Removing worktree\.\.\."\)/);
+    match(source, /setOpenWorktreeOperation\("create", null, "Creating worktree\.\.\."\)/);
+    match(source, /setCreateWorktreeLoading\(true, "Creating worktree\.\.\."\)/);
     match(gitUiSource, /openCommitModal\(\)/);
     match(gitUiSource, /Stage changes before committing/);
     match(gitUiSource, /gitCommitIncludeBody/);
