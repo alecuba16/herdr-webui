@@ -617,7 +617,7 @@
     const tabs = state.files.map((file) => {
       const active = file.path === state.selected;
       const dirty = file.dirty ? `<span class="file-browser-tab-dirty" title="Modified">●</span>` : "";
-      return `<span class="file-browser-open-tab ${active ? "active" : ""}" role="presentation"><button type="button" class="file-browser-open-tab-label" role="tab" aria-selected="${active ? "true" : "false"}" title="${esc(file.path)}" onclick="HerdrFileBrowser.focusFile('${arg(file.path)}')">${esc(Tree.basename(file.path))}${dirty}</button><button type="button" class="file-browser-open-tab-close" title="Close ${esc(Tree.basename(file.path))}" aria-label="Close ${esc(Tree.basename(file.path))}" onclick="event.stopPropagation();HerdrFileBrowser.closeFile('${arg(file.path)}')">&times;</button></span>`;
+      return `<span class="file-browser-open-tab ${active ? "active" : ""}" role="presentation" title="${esc(file.path)}"><button type="button" class="file-browser-open-tab-label" role="tab" aria-selected="${active ? "true" : "false"}" title="${esc(file.path)}" onclick="HerdrFileBrowser.focusFile('${arg(file.path)}')">${esc(Tree.basename(file.path))}${dirty}</button><button type="button" class="file-browser-open-tab-close" title="Close ${esc(Tree.basename(file.path))}" aria-label="Close ${esc(Tree.basename(file.path))}" onclick="event.stopPropagation();HerdrFileBrowser.closeFile('${arg(file.path)}')">&times;</button></span>`;
     }).join("");
     return `<div class="file-browser-open-tabs" role="tablist" aria-label="Open files">${tabs}</div>`;
   }

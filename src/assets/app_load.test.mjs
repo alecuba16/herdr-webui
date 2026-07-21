@@ -793,6 +793,7 @@ describe("app bundle load", () => {
     match(desktopFileBrowserSource, /const title = tabs \? "" :/);
     match(desktopFileBrowserSource, /renderIfActive\(target, true\);/);
     match(desktopFileBrowserSource, /file-browser-open-tabs/);
+    match(desktopFileBrowserSource, /role="presentation" title="\$\{esc\(file\.path\)\}"/);
     match(desktopFileBrowserSource, /role="tablist" aria-label="Open files"/);
     match(desktopFileBrowserSource, /HerdrFileBrowser\.focusFile/);
     match(desktopFileBrowserSource, /select\(encodedPath, mode\) \{ loadFile\(decodeURIComponent\(encodedPath\), mode \|\| "append"\); \}/);
