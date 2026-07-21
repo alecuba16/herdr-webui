@@ -565,8 +565,21 @@
         .catch(function () {});
     }
 
+    function terminalMouseReportingEnabled() {
+      try {
+        var storage = globalThis.localStorage;
+        var parsed = JSON.parse((storage && storage.getItem("herdr-web-options")) || "{}");
+        return parsed.terminalMouseReporting === true;
+      } catch (e) {
+        return false;
+      }
+    }
+
     function sendInput(data) {
       if (!termWs || termWs.readyState !== 1 || !data) return;
+      if (globalThis.HerdrAppHelpers && globalThis.HerdrAppHelpers.stripTerminalMouseReports)
+        data = globalThis.HerdrAppHelpers.stripTerminalMouseReports(data, terminalMouseReportingEnabled());
+      if (!data) return;
       var bytes = inputEncoder.encode(data);
       if (bytes.length <= 64 * 1024 && termWs.bufferedAmount < 65536) {
         termWs.send(bytes);

@@ -550,12 +550,15 @@ describe("mobile bundle load", () => {
     ok(settingsHtml.includes("Layout"));
     ok(settingsHtml.includes("Terminal font"));
     ok(settingsHtml.includes("Terminal links"));
+    ok(settingsHtml.includes("Terminal mouse reporting"));
     ok(settingsHtml.includes("Line numbers"));
     ok(settingsHtml.includes("HerdrMobile.setTerminalFontFamily"));
     ok(settingsHtml.includes("HerdrMobile.setFileBrowserLineNumbers"));
     ok(settingsHtml.includes("HerdrMobile.setTerminalLinks"));
+    ok(settingsHtml.includes("HerdrMobile.setTerminalMouseReporting"));
     equal(typeof ctx.HerdrMobile.setTerminalFontFamily, "function");
     equal(typeof ctx.HerdrMobile.setTerminalLinks, "function");
+    equal(typeof ctx.HerdrMobile.setTerminalMouseReporting, "function");
     equal(typeof ctx.HerdrMobile.setFileBrowserLineNumbers, "function");
     equal(typeof ctx.HerdrMobile.applyTerminalFontFamily, "function");
     equal(typeof ctx.HerdrMobile.applyTerminalLinks, "function");
@@ -563,6 +566,7 @@ describe("mobile bundle load", () => {
       ctx.HerdrMobile.setTerminalFontFamily("Hack Nerd Font, monospace"),
     );
     doesNotThrow(() => ctx.HerdrMobile.setTerminalLinks(false));
+    doesNotThrow(() => ctx.HerdrMobile.setTerminalMouseReporting(true));
     doesNotThrow(() => ctx.HerdrMobile.showScreen("worktrees"));
     let html = ctx.document.getElementById("mobileScreen").innerHTML;
     ok(html.includes("Discover worktrees"));

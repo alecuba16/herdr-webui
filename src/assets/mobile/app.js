@@ -1451,6 +1451,7 @@
     setNotificationVolume: mobileSettings.setNotificationVolume,
     setTerminalFontFamily: mobileSettings.setTerminalFontFamily,
     setTerminalLinks: mobileSettings.setTerminalLinks,
+    setTerminalMouseReporting: mobileSettings.setTerminalMouseReporting,
     setWorktreeDefaultDirectory: mobileSettings.setWorktreeDefaultDirectory,
     applyTerminalFontFamily: mobileTerminal.applyFontFamily,
     applyTerminalLinks: mobileTerminal.applyLinks,

@@ -55,12 +55,21 @@
       } catch (_) {}
     }
 
-function terminalLinksEnabled() {
+    function terminalLinksEnabled() {
       try {
         const parsed = JSON.parse((globalThis.localStorage && globalThis.localStorage.getItem("herdr-web-options")) || "{}");
         return parsed.terminalLinks !== false;
       } catch (_) {
         return true;
+      }
+    }
+
+    function terminalMouseReportingEnabled() {
+      try {
+        const parsed = JSON.parse((globalThis.localStorage && globalThis.localStorage.getItem("herdr-web-options")) || "{}");
+        return parsed.terminalMouseReporting === true;
+      } catch (_) {
+        return false;
       }
     }
 
@@ -426,6 +435,9 @@ function terminalLinksEnabled() {
 
     function sendInputData(data) {
       if (!termWs || termWs.readyState !== 1 || !data) return;
+      if (globalThis.HerdrAppHelpers && globalThis.HerdrAppHelpers.stripTerminalMouseReports)
+        data = globalThis.HerdrAppHelpers.stripTerminalMouseReports(data, terminalMouseReportingEnabled());
+      if (!data) return;
       const bytes = typeof data === "string" ? inputEncoder.encode(data) : data;
       const chunkSize = 16 * 1024;
       if (

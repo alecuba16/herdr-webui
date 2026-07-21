@@ -19,6 +19,7 @@ const {
   createFaviconNotifier,
   tabActivityLabel,
   terminalPasteInput,
+  stripTerminalMouseReports,
 } = require("./shared/core.js");
 
 describe("createFaviconNotifier", () => {
@@ -110,6 +111,30 @@ describe("terminalPasteInput", () => {
       terminalPasteInput("hello\n", true),
       "\x1b[200~hello\n\x1b[201~",
     );
+  });
+});
+
+describe("stripTerminalMouseReports", () => {
+  it("removes SGR hover reports that shell prompts echo as text", () => {
+    assert.equal(
+      stripTerminalMouseReports("\x1b[<35;105;1M\x1b[<35;110;2Mcmd"),
+      "cmd",
+    );
+  });
+
+  it("removes SGR click, drag, release, and wheel reports", () => {
+    const input = "a\x1b[<0;10;5M\x1b[<32;11;5M\x1b[<0;11;5m\x1b[<64;11;5Mb";
+    assert.equal(stripTerminalMouseReports(input), "ab");
+  });
+
+  it("removes legacy X10 mouse reports and preserves keyboard input", () => {
+    assert.equal(stripTerminalMouseReports("a\x1b[M !!b"), "ab");
+    assert.equal(stripTerminalMouseReports("hello\r"), "hello\r");
+  });
+
+  it("preserves mouse reports when explicitly enabled", () => {
+    const input = "a\x1b[<35;105;1M\x1b[M !!b";
+    assert.equal(stripTerminalMouseReports(input, true), input);
   });
 });
 

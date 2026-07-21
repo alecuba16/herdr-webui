@@ -49,6 +49,20 @@
     return normalized;
   }
 
+  function stripTerminalMouseReports(data, enabled = false) {
+    if (enabled) return data;
+    if (typeof data !== "string" || data.indexOf("\x1b[") === -1) return data;
+    // xterm.js emits mouse reports when a terminal app enables mouse tracking.
+    // Herdr owns mouse UX at the browser layer: wheel/touch scroll is handled by
+    // terminal.js, and forwarding mouse bytes to the PTY can leave readline
+    // echoing fragments like `35;105;1M` after stale tracking mode. Strip mouse
+    // reports from user input by default while preserving normal keyboard/paste
+    // bytes. Users can opt in when a TUI really needs terminal mouse input.
+    return data
+      .replace(/\x1b\[<\d{1,4};\d{1,5};\d{1,5}[Mm]/g, "")
+      .replace(/\x1b\[M[\s\S]{3}/g, "");
+  }
+
   function tabActivityLabel(updatedAt, now) {
     const age = Math.max(0, Number(now) - Number(updatedAt));
     if (!Number.isFinite(age)) return "";
@@ -240,6 +254,7 @@
     buildWorktreeCreateBody,
     createFaviconNotifier,
     terminalPasteInput,
+    stripTerminalMouseReports,
     tabActivityLabel,
     escapeHtml,
     pathBasename,
