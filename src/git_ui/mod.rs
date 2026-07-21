@@ -794,6 +794,17 @@ mod tests {
         serde_json::from_slice(&bytes).unwrap()
     }
 
+    fn canonical_path_string(path: impl AsRef<Path>) -> String {
+        fs::canonicalize(path.as_ref())
+            .unwrap_or_else(|_| path.as_ref().to_path_buf())
+            .to_string_lossy()
+            .to_string()
+    }
+
+    fn canonical_optional_path_string(path: Option<&str>) -> Option<String> {
+        path.map(canonical_path_string)
+    }
+
     fn remote() -> SocketAddr {
         "127.0.0.1:1234".parse().unwrap()
     }
@@ -1194,8 +1205,8 @@ mod tests {
                 .as_str()
                 .is_some_and(|branch| !branch.is_empty()));
             assert_eq!(
-                json["local"][0]["worktree_path"].as_str(),
-                Some(repo.path.to_str().unwrap())
+                canonical_optional_path_string(json["local"][0]["worktree_path"].as_str()),
+                Some(canonical_path_string(&repo.path))
             );
             assert!(json["branches"]
                 .as_array()
@@ -2287,8 +2298,8 @@ mod tests {
             .find(|worktree| worktree["branch"].as_str() == Some("cleanup/linked"))
             .unwrap();
         assert_eq!(
-            linked_worktree["path"].as_str(),
-            Some(worktree_dir_text.as_str())
+            canonical_optional_path_string(linked_worktree["path"].as_str()),
+            Some(canonical_path_string(&worktree_dir))
         );
 
         repo.git(&["worktree", "remove", "--force", &worktree_dir_text]);
