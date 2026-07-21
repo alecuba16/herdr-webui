@@ -12,7 +12,6 @@
       defaultFolderFn,
     } = deps;
     const worktreeHelpers = globalThis.HerdrAppHelpers || {};
-    const sortWorktreesByRecent = worktreeHelpers.sortWorktreesByRecent || ((rows) => [...(rows || [])]);
     const worktreeActivityLabel = worktreeHelpers.worktreeActivityLabel || (() => "Latest commit unknown");
 
     function renderScreen() {
@@ -77,14 +76,14 @@
       const result = (response && response.result) || {};
       const source = result.source || {};
       state.worktreeSource = source;
-      state.worktreeRows = sortWorktreesByRecent((result.worktrees || []).map((row) =>
+      state.worktreeRows = (result.worktrees || []).map((row) =>
         Object.assign({}, row, {
           source_workspace_id: source.source_workspace_id || null,
           source_cwd: source.source_checkout_path || source.repo_root || null,
           source_repo_name:
             source.repo_name || source.repo_key || source.repo_root || "",
         }),
-      ));
+      );
     }
 
     async function load() {

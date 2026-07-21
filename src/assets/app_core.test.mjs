@@ -338,6 +338,7 @@ describe("worktree recent activity helpers", () => {
 
     assert.deepEqual(sortWorktreesByRecent(rows).map((row) => row.label), ["new", "old", "unknown"]);
     assert.match(worktreeActivityLabel(rows[0]), /^Latest commit \d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
+    assert.equal(worktreeActivityLabel({ last_commit_display: "2025-01-01 09:30" }), "Latest commit 2025-01-01 09:30");
     assert.equal(formatWorktreeActivityDate({}), "");
     assert.equal(worktreeActivityLabel({}), "Latest commit unknown");
   });

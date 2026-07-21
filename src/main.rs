@@ -2643,10 +2643,206 @@ async fn worktrees(
         return response;
     }
     let cwd = query.cwd.as_deref().map(expand_user_path_string);
-    proxy_request(
-        &api_for_headers(&state, &headers),
+    let api = api_for_headers(&state, &headers);
+    match api.request_value(
         json!({ "id": "web:worktree:list", "method": "worktree.list", "params": { "workspace_id": query.workspace_id, "cwd": cwd } }),
-    )
+    ) {
+        Ok(mut value) => {
+            normalize_worktree_response(&mut value);
+            Json(value).into_response()
+        }
+        Err(err) => (StatusCode::BAD_GATEWAY, Json(json!({ "error": err }))).into_response(),
+    }
+}
+
+fn normalize_worktree_response(value: &mut serde_json::Value) {
+    let Some(rows) = value
+        .pointer_mut("/result/worktrees")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return;
+    };
+    for row in rows.iter_mut() {
+        enrich_worktree_activity(row);
+    }
+    rows.sort_by(|left, right| {
+        worktree_activity_sort_key(right).cmp(&worktree_activity_sort_key(left))
+    });
+}
+
+fn enrich_worktree_activity(row: &mut serde_json::Value) {
+    if !row_activity_date(row).is_some_and(|value| !value.trim().is_empty()) {
+        if let Some((date, hash)) = latest_worktree_commit(row) {
+            if let Some(object) = row.as_object_mut() {
+                object.insert("last_commit_at".to_string(), json!(date));
+                if !hash.is_empty() {
+                    object.insert("last_commit_hash".to_string(), json!(hash));
+                }
+            }
+        }
+    }
+    let display = row_activity_date(row).and_then(worktree_activity_display);
+    if let (Some(display), Some(object)) = (display, row.as_object_mut()) {
+        object
+            .entry("last_commit_display".to_string())
+            .or_insert_with(|| json!(display));
+    }
+}
+
+fn latest_worktree_commit(row: &serde_json::Value) -> Option<(String, String)> {
+    let path = row.get("path").and_then(serde_json::Value::as_str)?.trim();
+    if path.is_empty() {
+        return None;
+    }
+    let output = run_git_capture(&["-C", path, "log", "-1", "--format=%cI%x00%H"]).ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let mut parts = text.split('\0');
+    let date = parts.next().unwrap_or_default().trim().to_string();
+    if date.is_empty() {
+        return None;
+    }
+    let hash = parts.next().unwrap_or_default().trim().to_string();
+    Some((date, hash))
+}
+
+fn row_activity_date(row: &serde_json::Value) -> Option<&str> {
+    [
+        "last_commit_at",
+        "latest_commit_at",
+        "last_commit_date",
+        "latest_commit_date",
+        "modified_at",
+        "updated_at",
+        "mtime",
+        "last_modified_at",
+    ]
+    .into_iter()
+    .find_map(|key| row.get(key).and_then(serde_json::Value::as_str))
+}
+
+fn worktree_activity_display(value: &str) -> Option<String> {
+    let value = value.trim();
+    let prefix = || value.chars().take(16).collect::<String>();
+    if value.len() >= 16 && value.as_bytes().get(10) == Some(&b'T') {
+        return Some(prefix().replace('T', " "));
+    }
+    if value.len() >= 16 && value.as_bytes().get(10) == Some(&b' ') {
+        return Some(prefix());
+    }
+    None
+}
+
+fn worktree_activity_sort_key(row: &serde_json::Value) -> String {
+    let string_key = row_activity_date(row).unwrap_or_default().to_string();
+    if !string_key.is_empty() {
+        if let Some(timestamp) = parse_worktree_activity_timestamp(&string_key) {
+            return format!("2:{:020}", timestamp + 20_000_000_000);
+        }
+        return format!("2:{string_key}");
+    }
+    [
+        "last_commit_timestamp",
+        "latest_commit_timestamp",
+        "modified_timestamp",
+        "updated_timestamp",
+    ]
+    .into_iter()
+    .find_map(|key| row.get(key).and_then(serde_json::Value::as_i64))
+    .map(|value| format!("1:{value:020}"))
+    .unwrap_or_else(|| "0:".to_string())
+}
+
+fn parse_worktree_activity_timestamp(value: &str) -> Option<i64> {
+    let value = value.trim();
+    let bytes = value.as_bytes();
+    if bytes.len() < 19
+        || bytes.get(4) != Some(&b'-')
+        || bytes.get(7) != Some(&b'-')
+        || !matches!(bytes.get(10), Some(b'T' | b' '))
+        || bytes.get(13) != Some(&b':')
+        || bytes.get(16) != Some(&b':')
+    {
+        return None;
+    }
+    let year: i32 = value.get(0..4)?.parse().ok()?;
+    let month: u32 = value.get(5..7)?.parse().ok()?;
+    let day: u32 = value.get(8..10)?.parse().ok()?;
+    let hour: i64 = value.get(11..13)?.parse().ok()?;
+    let minute: i64 = value.get(14..16)?.parse().ok()?;
+    let second: i64 = value.get(17..19)?.parse().ok()?;
+    if !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || hour > 23
+        || minute > 59
+        || second > 60
+    {
+        return None;
+    }
+    let days = days_from_civil(year, month, day)?;
+    let local_seconds = days * 86_400 + hour * 3_600 + minute * 60 + second.min(59);
+    let offset_index = if bytes.get(19) == Some(&b'.') {
+        20 + bytes
+            .get(20..)?
+            .iter()
+            .position(|byte| !byte.is_ascii_digit())?
+    } else {
+        19
+    };
+    let offset_seconds = match bytes.get(offset_index) {
+        Some(b'Z') => 0,
+        Some(sign @ (b'+' | b'-')) => {
+            if bytes.len() < offset_index + 6 || bytes.get(offset_index + 3) != Some(&b':') {
+                return None;
+            }
+            let hours: i64 = value
+                .get(offset_index + 1..offset_index + 3)?
+                .parse()
+                .ok()?;
+            let minutes: i64 = value
+                .get(offset_index + 4..offset_index + 6)?
+                .parse()
+                .ok()?;
+            if hours > 23 || minutes > 59 {
+                return None;
+            }
+            let offset = hours * 3_600 + minutes * 60;
+            if *sign == b'+' {
+                offset
+            } else {
+                -offset
+            }
+        }
+        _ => 0,
+    };
+    Some(local_seconds - offset_seconds)
+}
+
+fn days_from_civil(year: i32, month: u32, day: u32) -> Option<i64> {
+    let days_in_month = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if is_leap_year(year) => 29,
+        2 => 28,
+        _ => return None,
+    };
+    if day == 0 || day > days_in_month {
+        return None;
+    }
+    let year = year - i32::from(month <= 2);
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let yoe = year - era * 400;
+    let month = month as i32;
+    let day = day as i32;
+    let doy = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    Some((era * 146_097 + doe - 719_468) as i64)
+}
+
+fn is_leap_year(year: i32) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
 }
 
 #[derive(Deserialize)]
@@ -4940,6 +5136,46 @@ mod tests {
             "/repo/sub"
         );
         assert_eq!(workspaces["result"]["workspaces"][1]["cwd"], "/already");
+    }
+
+    #[test]
+    fn normalizes_worktree_response_server_side() {
+        let mut response = json!({
+            "result": {
+                "worktrees": [
+                    { "path": "/repo/old", "label": "old", "last_commit_at": "2024-01-01T10:00:00+00:00" },
+                    { "path": "/repo/new", "label": "new", "last_commit_at": "2025-01-01T09:30:00+00:00" },
+                    { "path": "/repo/unknown", "label": "unknown" }
+                ]
+            }
+        });
+
+        normalize_worktree_response(&mut response);
+
+        let rows = response["result"]["worktrees"].as_array().unwrap();
+        assert_eq!(rows[0]["label"], "new");
+        assert_eq!(rows[0]["last_commit_display"], "2025-01-01 09:30");
+        assert_eq!(rows[1]["label"], "old");
+        assert_eq!(rows[2]["label"], "unknown");
+        assert!(rows[2]["last_commit_display"].is_null());
+    }
+
+    #[test]
+    fn worktree_activity_sort_uses_timestamp_when_offsets_differ() {
+        let mut response = json!({
+            "result": {
+                "worktrees": [
+                    { "path": "/repo/local-later-string", "label": "older", "last_commit_at": "2025-01-01T10:00:00+02:00" },
+                    { "path": "/repo/utc-earlier-string", "label": "newer", "last_commit_at": "2025-01-01T08:30:00.000Z" }
+                ]
+            }
+        });
+
+        normalize_worktree_response(&mut response);
+
+        let rows = response["result"]["worktrees"].as_array().unwrap();
+        assert_eq!(rows[0]["label"], "newer");
+        assert_eq!(rows[1]["label"], "older");
     }
 
     #[test]

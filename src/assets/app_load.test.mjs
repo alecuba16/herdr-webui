@@ -1079,7 +1079,7 @@ describe("app bundle load", () => {
     match(html, /Update base first/);
     match(html, /id="worktreeOpenRefresh"/);
     match(html, /class="app-refresh-icon"/);
-    match(source, /sortWorktreesByRecent\(\(\(r\.result \|\| \{\}\)\.worktrees \|\| \[\]\)\.map/);
+    match(source, /state\.openWorktreeAllRows = \(\(r\.result \|\| \{\}\)\.worktrees \|\| \[\]\)\.map/);
     match(source, /worktreeActivityLabel\(w\)/);
     match(source, /Latest commit unknown/);
     ok(!source.includes('id = "openWorktrees"'));

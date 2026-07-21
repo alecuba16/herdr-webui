@@ -198,6 +198,8 @@
   }
 
   function worktreeActivityLabel(row) {
+    const display = textValue((row || {}).last_commit_display || (row || {}).latest_commit_display || (row || {}).activity_display);
+    if (display) return `Latest commit ${display}`;
     const date = formatWorktreeActivityDate(row);
     return date ? `Latest commit ${date}` : "Latest commit unknown";
   }

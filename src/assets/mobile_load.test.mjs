@@ -780,8 +780,8 @@ describe("mobile bundle load", () => {
     const html = ctx.document.getElementById("mobileScreen").innerHTML;
     ok(html.includes("<strong>mobile-worktree</strong>"));
     ok(html.includes("<small>alpha · Latest commit"));
-    ok(source.includes("sortWorktreesByRecent"));
     ok(source.includes("worktreeActivityLabel"));
+    ok(!readFileSync(new URL("./mobile/worktrees.js", import.meta.url), "utf8").includes("sortWorktreesByRecent"));
   });
 
   it("creates new panel in selected workspace", async () => {
