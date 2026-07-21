@@ -551,6 +551,7 @@ describe("mobile bundle load", () => {
     ok(settingsHtml.includes("Terminal font"));
     ok(settingsHtml.includes("Terminal links"));
     ok(settingsHtml.includes("Terminal mouse reporting"));
+    match(source, /resetTerminalMouseTracking\(term, terminalMouseReportingEnabled\(\)\)/);
     ok(settingsHtml.includes("Line numbers"));
     ok(settingsHtml.includes("HerdrMobile.setTerminalFontFamily"));
     ok(settingsHtml.includes("HerdrMobile.setFileBrowserLineNumbers"));

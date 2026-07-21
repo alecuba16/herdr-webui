@@ -734,6 +734,7 @@ describe("app bundle load", () => {
     match(tempTerminalSource, /term\.element \|\| \(el\(containerId\) && el\(containerId\)\.querySelector/);
     match(tempTerminalSource, /case "Backspace": return "\\x7f";/);
     match(tempTerminalSource, /case "Tab": return event\.shiftKey \? "\\x1b\[Z" : "\\t";/);
+    match(tempTerminalSource, /resetTerminalMouseTracking\(term, terminalMouseReportingEnabled\(\)\)/);
     match(tempTerminalSource, /String\(event\.key \|\| ""\)\.toLowerCase\(\) === "g"/);
     match(shortcutsSource, /function tempTerminalModalOpen\(\)/);
     match(shortcutsSource, /if \(tempTerminalModalOpen\(\)\) return false;/);
@@ -1372,6 +1373,9 @@ describe("app bundle load", () => {
     match(source, /next\.terminalMouseReporting = next\.terminalMouseReporting === true/);
     match(source, /function sendInputData\(data, inputOptions = \{\}\)/);
     match(source, /stripTerminalMouseReports\(data, options\.terminalMouseReporting === true\)/);
+    match(source, /resetTerminalMouseTracking\(term, options\.terminalMouseReporting === true\)/);
+    match(source, /window\.HerdrResetTerminalMouseTracking = resetTerminalMouseTrackingIfDisabled/);
+    match(source, /!options\.terminalMouseReporting && window\.HerdrResetTerminalMouseTracking/);
     match(source, /JetBrainsMono Nerd Font/);
     match(source, /LEGACY_TERMINAL_FONT_FAMILY/);
     match(source, /HerdrAppHelpers\.resolveTerminalFontFamily\(""\)/);

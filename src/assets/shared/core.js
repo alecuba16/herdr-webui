@@ -63,6 +63,23 @@
       .replace(/\x1b\[M[\s\S]{3}/g, "");
   }
 
+  const TERMINAL_MOUSE_RESET_SEQUENCE = "\x1b[?9;1000;1002;1003l\x1b[?1006;1016l";
+
+  function resetTerminalMouseTracking(term, enabled = false) {
+    if (enabled || !term || typeof term.write !== "function") return false;
+    // Blocking outbound reports is not enough: xterm.js disables normal text
+    // selection as soon as a TUI enables DECSET mouse tracking. Keep Herdr's
+    // default selection UX by locally resetting xterm mouse protocol/encoding
+    // after terminal output is parsed. Users who enable Terminal mouse reporting
+    // keep the original TUI mouse behavior.
+    try {
+      term.write(TERMINAL_MOUSE_RESET_SEQUENCE);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   function tabActivityLabel(updatedAt, now) {
     const age = Math.max(0, Number(now) - Number(updatedAt));
     if (!Number.isFinite(age)) return "";
@@ -255,6 +272,8 @@
     createFaviconNotifier,
     terminalPasteInput,
     stripTerminalMouseReports,
+    TERMINAL_MOUSE_RESET_SEQUENCE,
+    resetTerminalMouseTracking,
     tabActivityLabel,
     escapeHtml,
     pathBasename,

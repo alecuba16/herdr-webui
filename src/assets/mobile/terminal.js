@@ -406,6 +406,7 @@
         shouldPreserve && term && term.buffer ? term.buffer.active.viewportY : null;
       const done = shouldPreserve
         ? () => {
+            resetTerminalMouseTrackingIfDisabled();
             if (Number.isFinite(viewportY)) {
               try {
                 term.scrollToLine(viewportY);
@@ -416,11 +417,21 @@
         : null;
       try {
         if (done) term.write(data, done);
-        else term.write(data);
+        else {
+          term.write(data);
+          resetTerminalMouseTrackingIfDisabled();
+        }
       } catch (_) {
         term.write(data);
         if (done) done();
+        else resetTerminalMouseTrackingIfDisabled();
       }
+    }
+
+    function resetTerminalMouseTrackingIfDisabled() {
+      const helpers = globalThis.HerdrAppHelpers || {};
+      if (typeof helpers.resetTerminalMouseTracking !== "function") return false;
+      return helpers.resetTerminalMouseTracking(term, terminalMouseReportingEnabled());
     }
 
     function scrollToBottom() {
