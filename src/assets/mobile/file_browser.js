@@ -584,17 +584,22 @@
         },
       async openAt(path, opts) {
         const options = opts || {};
-        local.filter = "";
-        local.filterVisible = false;
-        local.filterKind = "file";
-        local.contentSearch.active = false;
-        clearContentSearchResults();
+        const preserveContext = options.preserveContext === true && options.kind !== "dir";
+        if (!preserveContext) {
+          local.filter = "";
+          local.filterVisible = false;
+          local.filterKind = "file";
+          local.contentSearch.active = false;
+          clearContentSearchResults();
+        }
         if (options.kind === "dir") {
           await load(path || "");
           return;
         }
-        const parent = Tree.parentPath(path || "");
-        await load(parent || "");
+        if (!preserveContext) {
+          const parent = Tree.parentPath(path || "");
+          await load(parent || "");
+        }
         if (path) await openFile(path, options.highlight || null);
       },
       backToTree() { local.file = null; deps.render(); },

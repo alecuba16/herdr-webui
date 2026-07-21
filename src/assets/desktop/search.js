@@ -587,7 +587,8 @@ function openWorkspaceSearchPath(path, kind) {
   const workspace = currentSearchWorkspace();
   closeSearchPalette();
   if (!workspace || !window.HerdrFileBrowser || !window.HerdrFileBrowser.openAt) return;
-  window.HerdrFileBrowser.openAt(workspace, path, { kind });
+  const isFile = kind !== "dir";
+  window.HerdrFileBrowser.openAt(workspace, path, { kind, preserveContext: isFile, mode: isFile ? "append" : undefined });
 }
 
 function openWorkspaceSearchContent(file, match) {
@@ -595,7 +596,7 @@ function openWorkspaceSearchContent(file, match) {
   const workspace = currentSearchWorkspace();
   closeSearchPalette();
   if (!workspace || !file || !window.HerdrFileBrowser || !window.HerdrFileBrowser.openAt) return;
-  window.HerdrFileBrowser.openAt(workspace, file.path, { kind: "file", highlight: helper.matchHighlight(match, searchPaletteState.query) });
+  window.HerdrFileBrowser.openAt(workspace, file.path, { kind: "file", preserveContext: true, mode: "append", highlight: helper.matchHighlight(match, searchPaletteState.query) });
 }
 
 const HerdrSearchPalette = {

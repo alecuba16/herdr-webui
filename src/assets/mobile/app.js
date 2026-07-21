@@ -1349,7 +1349,8 @@
     openPath(path, kind) {
       closeMobileSearch();
       showScreen("files");
-      mobileFileBrowser.openAt(path, { kind: kind === "dir" ? "dir" : "file" });
+      const resolvedKind = kind === "dir" ? "dir" : "file";
+      mobileFileBrowser.openAt(path, { kind: resolvedKind, preserveContext: resolvedKind === "file" });
     },
     openContent(path, matchId) {
       const helper = globalThis.HerdrWorkspaceSearch;
@@ -1357,7 +1358,7 @@
       const match = globalThis.HerdrContentSearch && globalThis.HerdrContentSearch.findMatch(file, matchId);
       closeMobileSearch();
       showScreen("files");
-      mobileFileBrowser.openAt(path, { kind: "file", highlight: helper && helper.matchHighlight(match, mobileSearch.query) });
+      mobileFileBrowser.openAt(path, { kind: "file", preserveContext: true, highlight: helper && helper.matchHighlight(match, mobileSearch.query) });
     },
   };
 

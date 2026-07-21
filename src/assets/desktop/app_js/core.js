@@ -245,6 +245,7 @@ function syncShellModeButtons() {
     button.setAttribute("aria-selected", active ? "true" : "false");
   }
 }
+window.syncShellModeButtons = syncShellModeButtons;
 function workspacePath(workspace) {
   if (!workspace) return "";
   if (workspace.worktree && workspace.worktree.checkout_path)
@@ -281,11 +282,13 @@ function showTerminalShellMode() {
   const shell = el("terminalShell");
   if (shell) shell.style.display = "";
   syncShellModeButtons();
+  if (typeof render === "function") render();
   if (state.terminalId && !term && typeof Terminal !== "undefined") connectTerminal();
   fitTerminalShell();
   if (typeof fitTerminalSurface === "function") fitTerminalSurface();
   if (typeof requestAnimationFrame === "function")
     requestAnimationFrame(() => {
+      syncShellModeButtons();
       fitTerminalShell();
       if (typeof fitTerminalSurface === "function") fitTerminalSurface();
     });
