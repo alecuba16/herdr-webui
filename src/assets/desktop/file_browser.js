@@ -457,8 +457,7 @@
     const entries = treeEntries();
     const currentRow = Tree.renderCurrentDirectoryRow({ callback: "HerdrFileBrowser", canGoUp: canGoUp(), path: currentDirectoryPath(), label: currentDirectoryLabel(), title: currentDirectoryTitle() });
     const sideBody = `${currentRow}${Tree.renderEntries(entries, { selectedPath: state.selected, callback: "HerdrFileBrowser", showMeta: true, dirClickMethod: "none", dirDoubleClickMethod: "enter", contextMethod: "menu", shiftSelectMode: true })}`;
-    const fileSearchButton = `<button class="app-refresh-icon file-browser-search-icon" title="Search files and folders" aria-label="Search files and folders" onclick="HerdrSearchPalette.open({ pathKind: 'file', force: true })"><span></span></button>`;
-    panel.innerHTML = `<aside class="file-browser-side ${activeFile ? "previewing" : ""} ${state.contentSearch.active ? "content-searching" : ""}" tabindex="0"><div class="file-browser-head"><div class="file-browser-title-row"><div class="file-browser-title">Files</div><div class="file-browser-actions">${fileSearchButton}${appRefreshIconButton({ className: "file-browser-refresh", title: "Refresh", label: "Refresh files", spinning: !!state.refreshing, onclick: "HerdrFileBrowser.refresh()" })}</div></div><div class="file-browser-subtitle">${esc(state.path || state.cwd || "No workspace")}</div><div class="file-browser-result-count">Use Search files (⌕) to find files, folders, or file contents in this workspace.</div></div>${renderAccessError()}${sideBody}</aside><main class="file-browser-main"><div class="file-browser-toolbar">${renderToolbar(activeFile)}</div><div class="file-browser-preview ${state.split || state.contentSearch.active ? "split" : ""}" id="fileBrowserPreview">${renderPreviewShell()}</div></main>${renderContextMenu()}`;
+    panel.innerHTML = `<aside class="file-browser-side ${activeFile ? "previewing" : ""} ${state.contentSearch.active ? "content-searching" : ""}" tabindex="0"><div class="file-browser-head"><div class="file-browser-title-row"><div class="file-browser-title">Files</div><div class="file-browser-actions">${appRefreshIconButton({ className: "file-browser-refresh", title: "Refresh", label: "Refresh files", spinning: !!state.refreshing, onclick: "HerdrFileBrowser.refresh()" })}</div></div><div class="file-browser-subtitle">${esc(state.path || state.cwd || "No workspace")}</div><div class="file-browser-result-count">Open a file, then use its ⌕ button or Cmd/Ctrl-F to search inside it.</div></div>${renderAccessError()}${sideBody}</aside><main class="file-browser-main"><div class="file-browser-toolbar">${renderToolbar(activeFile)}</div><div class="file-browser-preview ${state.split || state.contentSearch.active ? "split" : ""}" id="fileBrowserPreview">${renderPreviewShell()}</div></main>${renderContextMenu()}`;
     mountEditors();
     mountContentSearchEditors();
   }
@@ -586,7 +585,12 @@
 
   function renderPreviewShell() {
     const files = state.split ? state.files : [currentFile()].filter(Boolean);
-    const panes = files.map((file) => `<section class="file-browser-pane ${file.path === state.selected ? "active" : ""}"><div class="file-browser-pane-head"><button class="git-ui-btn ${file.path === state.selected ? "active" : ""}" onclick="HerdrFileBrowser.focusFile('${arg(file.path)}')">${esc(Tree.basename(file.path))}</button><span>${esc(file.path)}</span><button class="file-browser-pane-close" title="Close file" onclick="event.stopPropagation();HerdrFileBrowser.closeFile('${arg(file.path)}')">&times;</button></div><div class="file-browser-pane-body" id="fileBrowserEditor-${hashId(file.path)}">${previewPlaceholder(file)}</div>${file.error ? `<div class="file-browser-error">${esc(file.error)}</div>` : ""}</section>`);
+    const panes = files.map((file) => {
+      const find = !file.binary && !file.truncated
+        ? `<button class="file-browser-pane-search" title="Find in file" aria-label="Find in ${esc(Tree.basename(file.path))}" onclick="event.stopPropagation();HerdrFileBrowser.toggleFind('${arg(file.path)}')"><span></span></button>`
+        : "";
+      return `<section class="file-browser-pane ${file.path === state.selected ? "active" : ""}"><div class="file-browser-pane-head"><button class="git-ui-btn ${file.path === state.selected ? "active" : ""}" onclick="HerdrFileBrowser.focusFile('${arg(file.path)}')">${esc(Tree.basename(file.path))}</button><span>${esc(file.path)}</span>${find}<button class="file-browser-pane-close" title="Close file" onclick="event.stopPropagation();HerdrFileBrowser.closeFile('${arg(file.path)}')">&times;</button></div><div class="file-browser-pane-body" id="fileBrowserEditor-${hashId(file.path)}">${previewPlaceholder(file)}</div>${file.error ? `<div class="file-browser-error">${esc(file.error)}</div>` : ""}</section>`;
+    });
     if (state.contentSearch.active) panes.push(renderContentSearchPane());
     if (!panes.length) return previewPlaceholder(null);
     return panes.join("");
@@ -630,6 +634,13 @@
         },
       });
     }
+  }
+
+  function toggleFind(path) {
+    const parent = document.getElementById(`fileBrowserEditor-${hashId(path)}`);
+    if (!parent || !parent._herdrEditorApi || !parent._herdrEditorApi.toggleFind) return;
+    state.selected = path;
+    parent._herdrEditorApi.toggleFind(true);
   }
 
   function mountContentSearchEditors() {
@@ -927,6 +938,7 @@
     },
     save(encodedPath) { saveFile(decodeURIComponent(encodedPath)); },
     reload(encodedPath) { reloadFile(decodeURIComponent(encodedPath)).catch((error) => { state.error = error.message || String(error); render(); }); },
+    toggleFind(encodedPath) { toggleFind(decodeURIComponent(encodedPath || "")); },
     showHistory(encodedPath) {
       const path = decodeURIComponent(encodedPath || "");
       if (!path || !window.HerdrGitUi || !window.HerdrGitUi.openFileHistory) return;

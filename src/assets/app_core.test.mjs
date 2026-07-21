@@ -492,7 +492,7 @@ describe("HerdrEditor line number helpers", () => {
     const source = readFileSync(new URL("./shared/editor.js", import.meta.url), "utf8");
     vm.runInNewContext(source, context);
 
-    context.window.HerdrEditor.create({ parent, path: "demo.js", content: "abc", readonly: true });
+    const editor = context.window.HerdrEditor.create({ parent, path: "demo.js", content: "abc", readonly: true });
     let prevented = false;
     parentKeydown({ key: "f", metaKey: true, ctrlKey: false, altKey: false, preventDefault() { prevented = true; }, stopPropagation() {}, stopImmediatePropagation() {} });
     assert.equal(prevented, true);
@@ -502,6 +502,12 @@ describe("HerdrEditor line number helpers", () => {
 
     queryKeydown({ key: "Escape", preventDefault() {}, stopPropagation() {} });
     assert.equal(toolbar.hidden, true);
+
+    editor.toggleFind(true);
+    assert.equal(toolbar.hidden, false);
+    editor.toggleFind(true);
+    assert.equal(toolbar.hidden, true);
+    assert.equal(parent._herdrEditorApi, editor);
 
     toolbar.hidden = true;
     prevented = false;
@@ -844,8 +850,9 @@ describe("desktop file browser editor integration", () => {
         addEventListener() {},
         HerdrEditor: {
           create(opts) {
-            editorCalls.push({ path: opts.path, content: opts.content, readonly: opts.readonly, lineNumbers: opts.lineNumbers, onChange: opts.onChange });
+            editorCalls.push({ path: opts.path, content: opts.content, readonly: opts.readonly, lineNumbers: opts.lineNumbers, onChange: opts.onChange, toggledFind: false });
             opts.parent.innerHTML = `<div class="cm-content cm-lineWrapping" contenteditable="${opts.readonly === false ? "true" : "false"}"></div>`;
+            opts.parent._herdrEditorApi = { toggleFind() { editorCalls.at(-1).toggledFind = true; } };
             return { getValue() { return opts.content; }, setValue() {}, destroy() {} };
           },
         },
@@ -903,8 +910,11 @@ describe("desktop file browser editor integration", () => {
 
     await context.window.HerdrFileBrowser.open(workspaceA);
     const restoredPanel = document.getElementById("fileBrowserPanel").innerHTML;
-    assert.match(restoredPanel, /Search files and folders/);
-    assert.match(restoredPanel, /HerdrSearchPalette\.open\(\{ pathKind: 'file', force: true \}\)/);
+    assert.match(restoredPanel, /file-browser-pane-search/);
+    assert.match(restoredPanel, /HerdrFileBrowser\.toggleFind\('src%2Fdemo\.py'\)/);
+    assert.doesNotMatch(restoredPanel, /HerdrSearchPalette\.open/);
+    context.window.HerdrFileBrowser.toggleFind(encodeURIComponent("src/demo.py"));
+    assert.equal(editorCalls.at(-1).toggledFind, true);
     assert.equal(editorCalls.at(-1).path, "src/demo.py");
     assert.equal(editorCalls.at(-1).readonly, false);
     assert.equal(editorCalls.at(-1).content, "print('draft-a')");

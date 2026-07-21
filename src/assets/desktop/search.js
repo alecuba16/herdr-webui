@@ -19,16 +19,16 @@ function createSearchPaletteState() {
   };
 }
 
-function openSearchPalette(options = {}) {
+function openSearchPalette() {
   try {
-    if (!options.force && JSON.parse(localStorage.getItem("herdr-web-options") || "{}").headerSearchEnabled === false) return false;
+    if (JSON.parse(localStorage.getItem("herdr-web-options") || "{}").headerSearchEnabled === false) return false;
   } catch (_) {}
   const modal = el("searchPalette"),
     input = el("searchPaletteInput");
   if (!modal || !input) return false;
   const previousScope = searchPaletteState.pathKind || "file";
   searchPaletteState = createSearchPaletteState();
-  searchPaletteState.pathKind = options.pathKind === "dir" || options.pathKind === "file" ? options.pathKind : previousScope;
+  searchPaletteState.pathKind = previousScope;
   input.value = "";
   modal.style.display = "grid";
   renderSearchPalette();
@@ -599,7 +599,6 @@ function openWorkspaceSearchContent(file, match) {
 }
 
 const HerdrSearchPalette = {
-  open(options) { return openSearchPalette(options || {}); },
   toggleSection(section) {
     if (!["actions", "workspaces", "files", "content"].includes(section)) return;
     searchPaletteState.sectionsExpanded[section] = searchPaletteState.sectionsExpanded[section] === false;
