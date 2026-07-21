@@ -1,18 +1,14 @@
 function render() {
   cleanupWorkingDismissals();
-  updateTabActivity();
   const wsById = Object.fromEntries(
     state.workspaces.map((w) => [w.workspace_id, w]),
   );
   const tabById = Object.fromEntries(
     state.allTabs.concat(state.tabs).map((t) => [t.tab_id, t]),
   );
-  const panesByTab = new Map();
-  for (const pane of state.panes) {
-    const panes = panesByTab.get(pane.tab_id) || [];
-    panes.push(pane);
-    panesByTab.set(pane.tab_id, panes);
-  }
+  const panesByTab = panesByTabIndex();
+  const agentsByTab = agentsByTabIndex();
+  updateTabActivity(panesByTab, agentsByTab);
   const tabCountsByWorkspace = new Map();
   for (const tab of state.allTabs)
     tabCountsByWorkspace.set(
@@ -76,6 +72,21 @@ function render() {
   if (typeof fitTerminalSurface === "function") fitTerminalSurface();
 }
 
+function panesByTabIndex() {
+  const map = new Map();
+  for (const pane of state.panes) {
+    pushMapList(map, pane.tab_id, pane);
+  }
+  return map;
+}
+function agentsByTabIndex() {
+  const map = new Map();
+  for (const agent of state.agents) {
+    pushMapList(map, workspaceTabKey(agent.workspace_id, agent.tab_id), agent);
+  }
+  return map;
+}
+
 function syncWorkspacePanelMenuSize() {
   const workspacePane = el("workspacePane"),
     menu = workspacePane && workspacePane.querySelector && workspacePane.querySelector(".panel-menu");
@@ -133,12 +144,18 @@ function updateTitle(wsById, tabById, tabCountsByWorkspace, pane) {
 function tabActivityKey(workspaceId, tabId) {
   return `${state.session || "default"}|${workspaceId || ""}|${tabId || ""}`;
 }
-function tabActivitySignature(t) {
-  const panes = state.panes
-    .filter((p) => p.tab_id === t.tab_id)
+function workspaceTabKey(workspaceId, tabId) {
+  return `${workspaceId || ""}|${tabId || ""}`;
+}
+function pushMapList(map, key, value) {
+  const rows = map.get(key) || [];
+  rows.push(value);
+  map.set(key, rows);
+}
+function tabActivitySignature(t, panesByTab, agentsByTab) {
+  const panes = (panesByTab.get(t.tab_id) || [])
     .map((p) => [p.pane_id, p.terminal_id, !!p.focused]);
-  const agents = state.agents
-    .filter((a) => a.workspace_id === t.workspace_id && a.tab_id === t.tab_id)
+  const agents = (agentsByTab.get(workspaceTabKey(t.workspace_id, t.tab_id)) || [])
     .map((a) => [
       a.pane_id,
       a.terminal_id,
@@ -155,12 +172,12 @@ function tabActivitySignature(t) {
     agents,
   ]);
 }
-function updateTabActivity() {
+function updateTabActivity(panesByTab = new Map(), agentsByTab = new Map()) {
   const now = Date.now(),
     seen = new Set();
   for (const t of state.allTabs.concat(state.tabs)) {
     const key = tabActivityKey(t.workspace_id, t.tab_id),
-      signature = tabActivitySignature(t),
+      signature = tabActivitySignature(t, panesByTab, agentsByTab),
       current = tabActivity[key];
     seen.add(key);
     if (!current || current.signature !== signature)

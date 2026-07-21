@@ -14,11 +14,20 @@
     return encodeURIComponent(String(value == null ? "" : value)).replace(/'/g, "%27");
   }
 
+  let cachedOptionsRaw = null;
+  let cachedOptions = null;
+
   function storedOptions() {
     try {
-      const parsed = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
-      return parsed && typeof parsed === "object" ? parsed : {};
+      const raw = localStorage.getItem("herdr-web-options") || "{}";
+      if (raw === cachedOptionsRaw && cachedOptions) return cachedOptions;
+      const parsed = JSON.parse(raw);
+      cachedOptionsRaw = raw;
+      cachedOptions = parsed && typeof parsed === "object" ? parsed : {};
+      return cachedOptions;
     } catch (_) {
+      cachedOptionsRaw = null;
+      cachedOptions = {};
       return {};
     }
   }

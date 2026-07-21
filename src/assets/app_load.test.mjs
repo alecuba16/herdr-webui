@@ -971,6 +971,30 @@ describe("app bundle load", () => {
     equal(helper.normalizePathKind("dir", disabled), "dir");
   });
 
+  it("caches shared search options until localStorage changes", () => {
+    const ctx = context();
+    let parseCount = 0;
+    ctx.JSON = {
+      parse(value) {
+        parseCount += 1;
+        return JSON.parse(value);
+      },
+      stringify: JSON.stringify,
+    };
+    ctx.localStorage.setItem("herdr-web-options", JSON.stringify({ searchFilesEnabled: false, searchFoldersEnabled: true }));
+    loadWorkspaceSearch(ctx);
+    const helper = ctx.HerdrWorkspaceSearch;
+
+    equal(helper.settings().searchFilesEnabled, false);
+    equal(helper.settings().searchFoldersEnabled, true);
+    equal(parseCount, 1);
+
+    ctx.localStorage.setItem("herdr-web-options", JSON.stringify({ searchFilesEnabled: true, searchFoldersEnabled: false }));
+    equal(helper.settings().searchFilesEnabled, true);
+    equal(helper.settings().searchFoldersEnabled, false);
+    equal(parseCount, 2);
+  });
+
   it("normalizes shared search settings order and bounds", () => {
     const ctx = context();
     ctx.localStorage.setItem("herdr-web-options", JSON.stringify({
@@ -2092,6 +2116,10 @@ describe("app bundle load", () => {
     match(source, /id="optShowTabActivity"/);
     match(source, /tab-activity/);
     match(source, /tabActivityLabel/);
+    match(source, /updateTabActivity\(panesByTab, agentsByTab\)/);
+    match(source, /function pushMapList\(map, key, value\)/);
+    ok(!source.includes("const panes = state.panes"));
+    ok(!source.includes("const agents = state.agents"));
   });
 
   it("renders current panel as label with add and close buttons", () => {
