@@ -30,13 +30,14 @@
       const explorationDirectory = explorationDefaultDirectoryValue();
       const volume = notificationVolumeValue();
       const links = terminalLinksEnabled();
+      const mouseReporting = terminalMouseReportingEnabled();
       const groups = [
         { title: "Appearance", keywords: "theme dark light auto", html: appearanceSection(theme), open: true },
         { title: "Layout", keywords: "layout mobile desktop auto", html: layoutSection(layout) },
         { title: "Files and search", keywords: "files search browser content line numbers regex", html: filesSection(depth, lineNumbers, headerSearch, searchOrder, pathSearchPageSize, minChars, contentPageSize, contextLines, autoCollapse, defaultExpanded, matchesPerFile, matchCase, regex) },
         { title: "Workspaces", keywords: "workspace worktree exploration default directory", html: workspacesSection(worktreeDirectory, explorationDirectory) },
         { title: "Alerts", keywords: "alerts notifications sound volume", html: alertsSection(notifications, volume) },
-        { title: "Terminal", keywords: "terminal font links", html: terminalSection(font, links) },
+        { title: "Terminal", keywords: "terminal font links mouse reporting", html: terminalSection(font, links, mouseReporting) },
         { title: "Data", keywords: "refresh reload data", html: dataSection() },
       ];
       const anyVisible = groups.some(settingsGroupVisible);
@@ -90,8 +91,8 @@
       return `<div class="mobile-settings-group"><h3>Alerts</h3><label><input type="checkbox" ${notifications ? "checked" : ""} onchange="HerdrMobile.setBrowserNotifications(this.checked)"><span>Browser notifications</span><small>Show system notifications when an agent is blocked or done.</small></label><label><span>Notification volume (${volume}%)</span><input type="range" min="0" max="100" step="1" value="${volume}" onchange="HerdrMobile.setNotificationVolume(this.value)"></label><small>Controls the local attention tone volume.</small></div>`;
     }
 
-    function terminalSection(font, links) {
-      return `<div class="mobile-settings-group"><h3>Terminal</h3><label><span>Terminal font</span><input placeholder="JetBrainsMono Nerd Font, monospace" value="${escapeHtml(font)}" onchange="HerdrMobile.setTerminalFontFamily(this.value)"></label><label><input type="checkbox" ${links ? "checked" : ""} onchange="HerdrMobile.setTerminalLinks(this.checked)"><span>Terminal links</span><small>Detect http/https URLs and open them when tapped.</small></label><small>Add a Nerd Font family name so icon glyphs render. Leave blank for the default stack.</small></div>`;
+    function terminalSection(font, links, mouseReporting) {
+      return `<div class="mobile-settings-group"><h3>Terminal</h3><label><span>Terminal font</span><input placeholder="JetBrainsMono Nerd Font, monospace" value="${escapeHtml(font)}" onchange="HerdrMobile.setTerminalFontFamily(this.value)"></label><label><input type="checkbox" ${links ? "checked" : ""} onchange="HerdrMobile.setTerminalLinks(this.checked)"><span>Terminal links</span><small>Detect http/https URLs and open them when tapped.</small></label><label><input type="checkbox" ${mouseReporting ? "checked" : ""} onchange="HerdrMobile.setTerminalMouseReporting(this.checked)"><span>Terminal mouse reporting</span><small>Forward mouse input to terminal apps. Disabled by default; scrolling still works.</small></label><small>Add a Nerd Font family name so icon glyphs render. Leave blank for the default stack.</small></div>`;
     }
 
     function dataSection() {
@@ -223,6 +224,10 @@
 
     function terminalLinksEnabled() {
       return readOptions().terminalLinks !== false;
+    }
+
+    function terminalMouseReportingEnabled() {
+      return readOptions().terminalMouseReporting === true;
     }
 
     function setWorktreeDefaultDirectory(value) {
@@ -386,6 +391,13 @@
       if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
     }
 
+    function setTerminalMouseReporting(value) {
+      const parsed = readOptions();
+      parsed.terminalMouseReporting = !!value;
+      writeOptions(parsed);
+      if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
+    }
+
     async function setBrowserNotifications(value) {
       const parsed = readOptions();
       let enabled = !!value;
@@ -429,6 +441,7 @@
       setNotificationVolume,
       setTerminalFontFamily,
       setTerminalLinks,
+      setTerminalMouseReporting,
       setThemeMode,
       setWorktreeDefaultDirectory,
     };

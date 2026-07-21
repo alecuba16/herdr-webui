@@ -173,6 +173,10 @@ el("optTerminalLinks").onchange = () => {
   saveOptions();
   applyTerminalLinks();
 };
+el("optTerminalMouseReporting").onchange = () => {
+  options.terminalMouseReporting = el("optTerminalMouseReporting").checked;
+  saveOptions();
+};
 el("optAgentSortMode").onchange = () => {
   options.agentSortMode = el("optAgentSortMode").value;
   if (options.agentSortMode === "attention_inverted")

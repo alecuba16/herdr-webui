@@ -612,13 +612,15 @@ async function pasteClipboard() {
   if (text) sendPasteToTerminal(text);
   hideClipboardMenu();
 }
-function sendInputData(data, options = {}) {
+function sendInputData(data, inputOptions = {}) {
   if (!termWs || termWs.readyState !== 1 || !data) return;
-  if (!options.allowTerminalReplies) data = stripTerminalQueryReplies(data);
+  if (globalThis.HerdrAppHelpers && globalThis.HerdrAppHelpers.stripTerminalMouseReports)
+    data = globalThis.HerdrAppHelpers.stripTerminalMouseReports(data, options.terminalMouseReporting === true);
+  if (!inputOptions.allowTerminalReplies) data = stripTerminalQueryReplies(data);
   if (!data) return;
   const bytes = inputEncoder.encode(data);
-  const chunkSize = options.chunkSize || 16 * 1024;
-  const maxBufferedAmount = options.maxBufferedAmount || 65536;
+  const chunkSize = inputOptions.chunkSize || 16 * 1024;
+  const maxBufferedAmount = inputOptions.maxBufferedAmount || 65536;
   if (
     bytes.length <= chunkSize &&
     inputQueue.length === 0 &&

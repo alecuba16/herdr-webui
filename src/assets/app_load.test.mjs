@@ -1355,6 +1355,11 @@ describe("app bundle load", () => {
     match(source, /DEFAULT_GLOBAL_SHORTCUT_PREFIX/);
     match(source, /id="optTerminalFontFamily"/);
     match(source, /id="optTerminalLinks"/);
+    match(source, /id="optTerminalMouseReporting"/);
+    match(source, /terminalMouseReporting: false/);
+    match(source, /next\.terminalMouseReporting = next\.terminalMouseReporting === true/);
+    match(source, /function sendInputData\(data, inputOptions = \{\}\)/);
+    match(source, /stripTerminalMouseReports\(data, options\.terminalMouseReporting === true\)/);
     match(source, /JetBrainsMono Nerd Font/);
     match(source, /LEGACY_TERMINAL_FONT_FAMILY/);
     match(source, /HerdrAppHelpers\.resolveTerminalFontFamily\(""\)/);
