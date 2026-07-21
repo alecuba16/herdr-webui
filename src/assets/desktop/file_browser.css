@@ -217,6 +217,64 @@
 .file-browser-preview.split {
   grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
 }
+.file-browser-open-tabs {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+.file-browser-open-tab {
+  align-items: center;
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  display: inline-flex;
+  max-width: min(260px, 100%);
+  min-width: 0;
+  overflow: hidden;
+}
+.file-browser-open-tab.active {
+  border-color: var(--border2);
+  box-shadow: 0 0 0 1px var(--border2) inset;
+}
+.file-browser-open-tab-label,
+.file-browser-open-tab-close {
+  background: transparent;
+  border: 0;
+  color: var(--fg);
+  cursor: pointer;
+  font: inherit;
+}
+.file-browser-open-tab-label {
+  align-items: center;
+  display: inline-flex;
+  gap: 5px;
+  min-width: 0;
+  overflow: hidden;
+  padding: 5px 3px 5px 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file-browser-open-tab:not(.active) .file-browser-open-tab-label {
+  color: var(--muted);
+}
+.file-browser-open-tab-close {
+  border-left: 1px solid var(--border);
+  color: var(--muted);
+  padding: 5px 9px;
+}
+.file-browser-open-tab-label:hover,
+.file-browser-open-tab-close:hover {
+  background: var(--control-hover, var(--panel));
+  color: var(--fg);
+}
+.file-browser-tab-dirty {
+  color: var(--accent);
+  flex: 0 0 auto;
+  font-size: 10px;
+}
 .file-browser-pane {
   border: 1px solid var(--border);
   border-radius: 12px;
