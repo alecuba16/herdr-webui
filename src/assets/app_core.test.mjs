@@ -14,6 +14,9 @@ const {
   textValue,
   resolveWorktreeSource,
   checkedOutWorktreeForBranch,
+  formatWorktreeActivityDate,
+  worktreeActivityLabel,
+  sortWorktreesByRecent,
   validateWorktreeCreate,
   buildWorktreeCreateBody,
   createFaviconNotifier,
@@ -322,6 +325,21 @@ describe("checkedOutWorktreeForBranch", () => {
 
   it("returns null for blank branch", () => {
     assert.equal(checkedOutWorktreeForBranch("", [rows]), null);
+  });
+});
+
+describe("worktree recent activity helpers", () => {
+  it("sorts worktrees by newest commit date and formats the visible label", () => {
+    const rows = [
+      { label: "old", path: "/repo/old", last_commit_at: "2024-01-01T10:00:00Z" },
+      { label: "new", path: "/repo/new", latest_commit_timestamp: 1_800_000_000 },
+      { label: "unknown", path: "/repo/unknown" },
+    ];
+
+    assert.deepEqual(sortWorktreesByRecent(rows).map((row) => row.label), ["new", "old", "unknown"]);
+    assert.match(worktreeActivityLabel(rows[0]), /^Latest commit \d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
+    assert.equal(formatWorktreeActivityDate({}), "");
+    assert.equal(worktreeActivityLabel({}), "Latest commit unknown");
   });
 });
 

@@ -178,7 +178,7 @@ function openWorktreesForRepo(keyToken, fallbackPath = "") {
     repo_root: source.source_repo_root || "",
     default_worktree_directory: source.default_worktree_directory || "",
   };
-  state.openWorktreeAllRows = allRows.map((w) =>
+  state.openWorktreeAllRows = sortWorktreesByRecent(allRows.map((w) =>
     Object.assign({}, w, {
       path: textValue(w.path),
       label: textValue(w.label),
@@ -186,8 +186,8 @@ function openWorktreesForRepo(keyToken, fallbackPath = "") {
       source_cwd: textValue(w.source_cwd),
       source_repo_root: textValue(w.source_repo_root),
     }),
-  );
-  state.openWorktreeRows = rows.map((w) =>
+  ));
+  state.openWorktreeRows = sortWorktreesByRecent(rows.map((w) =>
     Object.assign({}, w, {
       path: textValue(w.path),
       label: textValue(w.label),
@@ -195,7 +195,7 @@ function openWorktreesForRepo(keyToken, fallbackPath = "") {
       source_cwd: textValue(w.source_cwd),
       source_repo_root: textValue(w.source_repo_root),
     }),
-  );
+  ));
   el("worktreeNewBranch").value = "";
   el("worktreeNewBase").value = "";
   el("worktreeNewLabel").value = "";
@@ -603,7 +603,8 @@ function renderWorktreeOpenList() {
         const busy = !!state.openWorktreeOperation;
         const opening = state.openWorktreeOperation === "open" && state.openWorktreeOperationIndex === i;
         const removing = state.openWorktreeOperation === "remove" && state.openWorktreeOperationIndex === i;
-        return `<div class="worktree-open-row ${state.openWorktreeSelected === i ? "selected" : ""}"><span><strong>${escapeHtml(worktreeOpenRowTitle(w))}</strong><small>${escapeHtml(w.branch || "detached")} · ${escapeHtml(w.path)}</small></span><span class="session-controls"><button class="mini danger" title="Remove worktree from disk" ${busy ? "disabled" : ""} onclick="event.stopPropagation();removeDiscoveredWorktree(${i})">${removing ? "…" : "🗑"}</button><button class="btn" ${busy ? "disabled" : ""} onclick="openDiscoveredWorktree(${i})">${opening ? "Opening..." : "Open"}</button></span></div>`;
+        const activity = worktreeActivityLabel(w);
+        return `<div class="worktree-open-row ${state.openWorktreeSelected === i ? "selected" : ""}"><span><strong>${escapeHtml(worktreeOpenRowTitle(w))}</strong><small>${escapeHtml(w.branch || "detached")} · ${escapeHtml(activity)} · ${escapeHtml(w.path)}</small></span><span class="session-controls"><button class="mini danger" title="Remove worktree from disk" ${busy ? "disabled" : ""} onclick="event.stopPropagation();removeDiscoveredWorktree(${i})">${removing ? "…" : "🗑"}</button><button class="btn" ${busy ? "disabled" : ""} onclick="openDiscoveredWorktree(${i})">${opening ? "Opening..." : "Open"}</button></span></div>`;
       },
     )
     .join("");
@@ -637,7 +638,7 @@ async function discoverWorktrees() {
       state.openWorktreeBranchSourceKey = "";
       syncWorktreeBranchOptions([]);
     }
-    state.openWorktreeAllRows = ((r.result || {}).worktrees || []).map((w) =>
+    state.openWorktreeAllRows = sortWorktreesByRecent(((r.result || {}).worktrees || []).map((w) =>
       Object.assign({}, w, {
         path: textValue(w.path),
         label: textValue(w.label),
@@ -647,7 +648,7 @@ async function discoverWorktrees() {
         source_repo_root: textValue(source.repo_root),
         source_cwd: sourceCwd,
       }),
-    );
+    ));
     state.openWorktreeRows = state.openWorktreeAllRows;
     renderWorktreeOpenList();
     loadWorktreeBranchOptions();

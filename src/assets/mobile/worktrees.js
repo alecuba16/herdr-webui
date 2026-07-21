@@ -11,6 +11,9 @@
       state,
       defaultFolderFn,
     } = deps;
+    const worktreeHelpers = globalThis.HerdrAppHelpers || {};
+    const sortWorktreesByRecent = worktreeHelpers.sortWorktreesByRecent || ((rows) => [...(rows || [])]);
+    const worktreeActivityLabel = worktreeHelpers.worktreeActivityLabel || (() => "Latest commit unknown");
 
     function renderScreen() {
       const source = state.worktreeSource || {};
@@ -28,7 +31,7 @@
     function renderRow(row, index) {
       const title =
         pathBasename(row.path) || row.label || row.branch || "worktree";
-      const meta = repoLabel(row);
+      const meta = `${repoLabel(row)} · ${worktreeActivityLabel(row)}`;
       const busy = !!state.worktreeLoading;
       const opening = state.worktreeBusyIndex === index && state.worktreeLoadingLabel === "Opening worktree...";
       return `<div class="mobile-worktree-row"><span><strong>${escapeHtml(title)}</strong><small>${escapeHtml(meta)}</small></span><button class="mobile-btn primary" ${busy ? "disabled" : ""} onclick="HerdrMobile.openWorktree(${index})">${opening ? "Opening..." : "Open"}</button></div>`;
@@ -74,14 +77,14 @@
       const result = (response && response.result) || {};
       const source = result.source || {};
       state.worktreeSource = source;
-      state.worktreeRows = (result.worktrees || []).map((row) =>
+      state.worktreeRows = sortWorktreesByRecent((result.worktrees || []).map((row) =>
         Object.assign({}, row, {
           source_workspace_id: source.source_workspace_id || null,
           source_cwd: source.source_checkout_path || source.repo_root || null,
           source_repo_name:
             source.repo_name || source.repo_key || source.repo_root || "",
         }),
-      );
+      ));
     }
 
     async function load() {
