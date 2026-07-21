@@ -1101,6 +1101,21 @@
     }, 3500);
   }
 
+  async function copyCommitId(hash) {
+    const value = String(hash || "").trim();
+    if (!value) return;
+    await navigator.clipboard.writeText(value);
+    const id = Date.now();
+    state.gitToast = { id, message: "Commit id copied" };
+    render();
+    setTimeout(() => {
+      if (state.gitToast && state.gitToast.id === id) {
+        state.gitToast = null;
+        if (state.visible) render();
+      }
+    }, 3500);
+  }
+
   function renderCommitModal() {
     const modal = state.commitModal;
     if (!modal) return "";
@@ -2600,6 +2615,15 @@
       if (action === "discard") this.discardFile(encodeURIComponent(menu.file));
       if (action === "stage") this.stageFile(encodeURIComponent(menu.file));
       if (action === "unstage") this.unstageFile(encodeURIComponent(menu.file));
+    },
+    async copyCommitId(hash) {
+      try {
+        await copyCommitId(decodeURIComponent(hash || ""));
+      } catch (err) {
+        const view = active();
+        if (view) view.error = err.message || String(err);
+        render();
+      }
     },
     toggleStageAll() {
       const view = active();

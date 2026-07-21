@@ -243,6 +243,9 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.git-ui-log-title {
+  flex: 1 1 auto;
+}
 .git-ui-log-desc {
   align-items: center;
   display: inline-flex;
@@ -267,6 +270,24 @@
   padding: 1px 7px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.git-ui-log-copy-hash {
+  background: color-mix(in srgb, var(--panel2) 82%, transparent);
+  border: 1px solid var(--border2);
+  border-radius: 999px;
+  color: var(--muted);
+  cursor: pointer;
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 800;
+  padding: 2px 7px;
+}
+.git-ui-log-copy-hash:hover,
+.git-ui-log-copy-hash:focus-visible {
+  background: color-mix(in srgb, var(--accent) 16%, var(--panel2));
+  color: var(--accent);
+  outline: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
 }
 .git-ui-log-ref.current {
   background: color-mix(in srgb, var(--lane, var(--accent)) 24%, transparent);
@@ -400,6 +421,14 @@
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
+  max-width: 100%;
+}
+.git-ui-log-hover-card .git-ui-log-ref {
+  max-width: none;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: normal;
 }
 
 .git-ui-log-load-more {
