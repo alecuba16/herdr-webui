@@ -762,6 +762,9 @@ describe("app bundle load", () => {
     match(sharedFileTreeSource, /herdr-tree-up-action/);
     match(sharedFileTreeSource, /value === "~"/);
     match(desktopFileBrowserSource, /Tree\.renderCurrentDirectoryRow/);
+    match(desktopFileBrowserSource, /file-browser-search-icon/);
+    match(desktopFileBrowserSource, /HerdrSearchPalette\.open\(\{ pathKind: 'file', force: true \}\)/);
+    match(readFileSync(new URL("./desktop/file_browser.css", import.meta.url), "utf8"), /\/assets\/icons\/search\.svg/);
     match(mobileFileBrowserSource, /Tree\.renderCurrentDirectoryRow/);
     match(desktopFileBrowserSource, /permission_required/);
     match(desktopFileBrowserSource, /Grant folder access/);
@@ -803,6 +806,7 @@ describe("app bundle load", () => {
     const fileContentSearchSource = readFileSync(new URL("./shared/file_content_search.js", import.meta.url), "utf8");
     const workspaceSearchSource = readFileSync(new URL("./shared/workspace_search.js", import.meta.url), "utf8");
     const searchSource = readFileSync(new URL("./desktop/search.js", import.meta.url), "utf8");
+    match(searchSource, /open\(options\) \{ return openSearchPalette\(options \|\| \{\}\); \}/);
     const lineContextSource = readFileSync(new URL("./shared/line_context.js", import.meta.url), "utf8");
     const sharedColorsCss = readFileSync(new URL("./shared/colors.css", import.meta.url), "utf8");
     const sharedContentSearchCss = readFileSync(new URL("./shared/content_search.css", import.meta.url), "utf8");

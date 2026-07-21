@@ -903,7 +903,8 @@ describe("desktop file browser editor integration", () => {
 
     await context.window.HerdrFileBrowser.open(workspaceA);
     const restoredPanel = document.getElementById("fileBrowserPanel").innerHTML;
-    assert.match(restoredPanel, /Use header search/);
+    assert.match(restoredPanel, /Search files and folders/);
+    assert.match(restoredPanel, /HerdrSearchPalette\.open\(\{ pathKind: 'file', force: true \}\)/);
     assert.equal(editorCalls.at(-1).path, "src/demo.py");
     assert.equal(editorCalls.at(-1).readonly, false);
     assert.equal(editorCalls.at(-1).content, "print('draft-a')");
