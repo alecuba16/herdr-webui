@@ -51,6 +51,7 @@
   gap: 8px;
   justify-content: space-between;
   min-width: 0;
+  padding: 6px 10px;
 }
 .file-browser-toolbar strong {
   overflow: hidden;
@@ -61,7 +62,7 @@
   display: flex;
   flex: 0 0 auto;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 4px;
   justify-content: flex-end;
 }
 .file-browser-dirty {
@@ -208,11 +209,11 @@
 }
 .file-browser-preview {
   display: grid;
-  gap: 10px;
+  gap: 8px;
   grid-auto-rows: minmax(0, 1fr);
   min-height: 0;
   overflow: hidden;
-  padding: 12px;
+  padding: 8px;
 }
 .file-browser-preview.split {
   grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
@@ -220,10 +221,12 @@
 .file-browser-open-tabs {
   align-items: center;
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  grid-column: 1 / -1;
+  flex: 1 1 auto;
+  flex-wrap: nowrap;
+  gap: 4px;
   min-width: 0;
+  overflow-x: auto;
+  padding: 0;
 }
 .file-browser-open-tab {
   align-items: center;
@@ -231,7 +234,8 @@
   border: 1px solid var(--border);
   border-radius: 999px;
   display: inline-flex;
-  max-width: min(260px, 100%);
+  flex: 0 1 180px;
+  max-width: min(220px, 40vw);
   min-width: 0;
   overflow: hidden;
 }
@@ -253,7 +257,7 @@
   gap: 5px;
   min-width: 0;
   overflow: hidden;
-  padding: 5px 3px 5px 10px;
+  padding: 3px 3px 3px 9px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -263,7 +267,7 @@
 .file-browser-open-tab-close {
   border-left: 1px solid var(--border);
   color: var(--muted);
-  padding: 5px 9px;
+  padding: 3px 8px;
 }
 .file-browser-open-tab-label:hover,
 .file-browser-open-tab-close:hover {
@@ -286,6 +290,9 @@
 }
 .file-browser-pane.active {
   border-color: var(--border2);
+}
+.file-browser-pane.no-head {
+  grid-template-rows: minmax(0, 1fr) auto;
 }
 .file-browser-pane-head {
   align-items: center;

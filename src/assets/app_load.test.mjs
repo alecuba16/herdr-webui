@@ -787,6 +787,11 @@ describe("app bundle load", () => {
     match(desktopFileBrowserSource, /file-browser-pane-search/);
     match(desktopFileBrowserSource, /function renderOpenFileTabs\(\)/);
     match(desktopFileBrowserSource, /state\.files\.length < 2/);
+    match(desktopFileBrowserSource, /const tabs = renderOpenFileTabs\(\);/);
+    match(desktopFileBrowserSource, /const title = tabs \? "" :/);
+    match(desktopFileBrowserSource, /const hidePaneHead = state\.files\.length > 1 && !state\.split;/);
+    match(desktopFileBrowserSource, /file-browser-pane \$\{hidePaneHead \? "no-head" : ""\}/);
+    match(desktopFileBrowserSource, /renderIfActive\(target, true\);/);
     match(desktopFileBrowserSource, /file-browser-open-tabs/);
     match(desktopFileBrowserSource, /role="tablist" aria-label="Open files"/);
     match(desktopFileBrowserSource, /HerdrFileBrowser\.focusFile/);
@@ -796,6 +801,8 @@ describe("app bundle load", () => {
     ok(!desktopFileBrowserSource.includes("HerdrSearchPalette.open({ pathKind: 'file', force: true })"));
     match(readFileSync(new URL("./desktop/file_browser.css", import.meta.url), "utf8"), /file-browser-pane-search[\s\S]*?\/assets\/icons\/search\.svg/);
     match(readFileSync(new URL("./desktop/file_browser.css", import.meta.url), "utf8"), /file-browser-open-tabs/);
+    match(readFileSync(new URL("./desktop/file_browser.css", import.meta.url), "utf8"), /overflow-x: auto/);
+    match(readFileSync(new URL("./desktop/file_browser.css", import.meta.url), "utf8"), /\.file-browser-pane\.no-head/);
     match(mobileFileBrowserSource, /Tree\.renderCurrentDirectoryRow/);
     match(desktopFileBrowserSource, /permission_required/);
     match(desktopFileBrowserSource, /Grant folder access/);
