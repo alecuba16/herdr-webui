@@ -427,6 +427,9 @@
   color: var(--muted);
   font-size: 12px;
 }
+.herdr-editor-find[hidden] {
+  display: none;
+}
 .herdr-editor-find {
   align-items: center;
   background: var(--panel);

@@ -23,7 +23,7 @@
       title: "Discover worktrees",
       subtitle: "Find linked Git worktrees from the current or default folder",
       text: "discover find list linked git worktrees",
-      surfaces: ["desktop", "mobile"],
+      surfaces: ["mobile"],
     },
     {
       id: "temp-terminal",

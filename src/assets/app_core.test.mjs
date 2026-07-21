@@ -445,6 +445,72 @@ describe("HerdrEditor line number helpers", () => {
     assert.match(helper.findRanges("text", "[", { matchCase: false, regex: true }).error, /Invalid regex/);
   });
 
+  it("captures Cmd/Ctrl+F inside file editors to show Herdr find", () => {
+    const localStorage = new Map();
+    let parentKeydown = null;
+    let queryKeydown = null;
+    const query = {
+      value: "",
+      focused: false,
+      selected: false,
+      focus() { this.focused = true; },
+      select() { this.selected = true; },
+      addEventListener(type, handler) { if (type === "keydown") queryKeydown = handler; },
+    };
+    const toolbar = {
+      hidden: true,
+      querySelector(selector) {
+        if (selector === ".herdr-editor-find-query") return query;
+        if (selector === ".herdr-editor-find-status") return { textContent: "" };
+        return { checked: false, value: "", addEventListener() {} };
+      },
+    };
+    const mount = { innerHTML: "" };
+    const parent = {
+      innerHTML: "",
+      querySelector(selector) {
+        if (selector === ".herdr-editor-mount") return mount;
+        if (selector === ".herdr-editor-find") return toolbar;
+        return null;
+      },
+      addEventListener(type, handler) { if (type === "keydown") parentKeydown = handler; },
+      removeEventListener() {},
+    };
+    const context = {
+      window: {
+        HerdrCodeMirror: {
+          create() { return { getValue() { return "abc"; }, setValue() {}, destroy() {} }; },
+        },
+      },
+      localStorage: {
+        getItem: (key) => localStorage.get(key) || null,
+        setItem: (key, value) => localStorage.set(key, String(value)),
+      },
+      document: { createElement() { return {}; }, body: { appendChild() {} } },
+      Promise,
+    };
+    const source = readFileSync(new URL("./shared/editor.js", import.meta.url), "utf8");
+    vm.runInNewContext(source, context);
+
+    context.window.HerdrEditor.create({ parent, path: "demo.js", content: "abc", readonly: true });
+    let prevented = false;
+    parentKeydown({ key: "f", metaKey: true, ctrlKey: false, altKey: false, preventDefault() { prevented = true; }, stopPropagation() {}, stopImmediatePropagation() {} });
+    assert.equal(prevented, true);
+    assert.equal(toolbar.hidden, false);
+    assert.equal(query.focused, true);
+    assert.equal(query.selected, true);
+
+    queryKeydown({ key: "Escape", preventDefault() {}, stopPropagation() {} });
+    assert.equal(toolbar.hidden, true);
+
+    toolbar.hidden = true;
+    prevented = false;
+    localStorage.set("herdr-web-options", JSON.stringify({ editorFindShortcutEnabled: false }));
+    parentKeydown({ key: "f", ctrlKey: true, metaKey: false, altKey: false, preventDefault() { prevented = true; }, stopPropagation() {}, stopImmediatePropagation() {} });
+    assert.equal(prevented, false);
+    assert.equal(toolbar.hidden, true);
+  });
+
   it("enables replace controls only for editable fallback editors", async () => {
     const html = await createFallbackEditor({ readonly: false });
     assert.match(html, /<textarea/);

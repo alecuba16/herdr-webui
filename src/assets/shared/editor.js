@@ -34,6 +34,15 @@
     try { localStorage.setItem(FIND_OPTIONS_KEY, JSON.stringify(options || {})); } catch (_) {}
   }
 
+  function editorFindShortcutEnabled() {
+    try {
+      const options = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
+      return !options || options.editorFindShortcutEnabled !== false;
+    } catch (_) {
+      return true;
+    }
+  }
+
   function escapeRegex(value) {
     return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
@@ -66,7 +75,7 @@
     const stored = storedFindOptions();
     const matchCase = stored.matchCase === true;
     const regex = stored.regex === true;
-    return `<div class="herdr-editor-find" data-readonly="${readonly ? "true" : "false"}">
+    return `<div class="herdr-editor-find" data-readonly="${readonly ? "true" : "false"}" hidden>
       <input class="herdr-editor-find-query" placeholder="Find" autocomplete="off" spellcheck="false">
       <input class="herdr-editor-replace-query" placeholder="Replace" autocomplete="off" spellcheck="false" ${readonly ? "disabled" : ""}>
       <button type="button" class="herdr-editor-find-prev" title="Previous match">↑</button>
@@ -96,6 +105,36 @@
     }
     function persist() { saveFindOptions(options()); }
     function setStatus(text) { if (status) status.textContent = text || ""; }
+    function showFind(focus) {
+      toolbar.hidden = false;
+      if (focus !== false && query) {
+        query.focus();
+        if (query.select) query.select();
+      }
+    }
+    function hideFind() {
+      toolbar.hidden = true;
+      if (query) query.value = "";
+      current = -1;
+      lastQuery = "";
+      setStatus("");
+    }
+    function handleFindShortcut(event) {
+      const key = String(event.key || "").toLowerCase();
+      if (key !== "f" || (!event.metaKey && !event.ctrlKey) || event.altKey) return;
+      if (!editorFindShortcutEnabled()) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.stopImmediatePropagation) event.stopImmediatePropagation();
+      showFind(true);
+    }
+    if (parent.addEventListener) {
+      if (parent._herdrEditorFindShortcutHandler && parent.removeEventListener) {
+        parent.removeEventListener("keydown", parent._herdrEditorFindShortcutHandler, true);
+      }
+      parent._herdrEditorFindShortcutHandler = handleFindShortcut;
+      parent.addEventListener("keydown", handleFindShortcut, true);
+    }
     function select(range) {
       if (!range) return;
       if (api.selectRange) api.selectRange(range.from, range.to);
@@ -146,7 +185,11 @@
       query.addEventListener("input", () => { current = -1; choose(1); });
       query.addEventListener("keydown", (event) => {
         if (event.key === "Enter") { event.preventDefault(); choose(event.shiftKey ? -1 : 1); }
-        if (event.key === "Escape") { query.value = ""; current = -1; setStatus(""); }
+        if (event.key === "Escape") {
+          event.preventDefault();
+          if (query.value) { query.value = ""; current = -1; setStatus(""); }
+          else hideFind();
+        }
       });
     }
     if (matchCase) matchCase.addEventListener("change", () => { persist(); current = -1; choose(1); });
@@ -263,5 +306,5 @@
     return codeMirrorPromise;
   }
 
-  window.HerdrEditor = { create, highlight, languageFor, ensureCodeMirror, findRanges };
+  window.HerdrEditor = { create, highlight, languageFor, ensureCodeMirror, findRanges, editorFindShortcutEnabled };
 })();
