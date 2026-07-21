@@ -446,7 +446,7 @@ function renderActionSection(actions) {
   const expanded = searchPaletteState.sectionsExpanded.actions !== false;
   if (!actions.length && searchPaletteState.query.trim()) return "";
   const body = actions.length
-    ? actions.map((result) => renderTargetResult(result, searchPaletteState.results.indexOf(result))).join("")
+    ? actions.map((result) => renderSearchRowResult(result)).join("")
     : '<div class="search-empty">No matching actions.</div>';
   return `<section class="search-section"><button class="search-section-head search-section-toggle" onclick="HerdrSearchPalette.toggleSection('actions')" aria-expanded="${expanded ? "true" : "false"}"><strong><span class="herdr-tree-icon herdr-tree-icon-${expanded ? "chevron-down" : "chevron-right"}" aria-hidden="true"></span>Actions</strong><span>${actions.length}</span></button>${expanded ? body : ""}</section>`;
 }
@@ -454,9 +454,23 @@ function renderActionSection(actions) {
 function renderTargetSection(targets) {
   const expanded = searchPaletteState.sectionsExpanded.workspaces !== false;
   const body = targets.length
-    ? targets.map((result) => renderTargetResult(result, searchPaletteState.results.indexOf(result))).join("")
+    ? targets.map((result) => renderSearchRowResult(result)).join("")
     : '<div class="search-empty">No matching workspace, worktree, panel, or agent.</div>';
   return `<section class="search-section"><button class="search-section-head search-section-toggle" onclick="HerdrSearchPalette.toggleSection('workspaces')" aria-expanded="${expanded ? "true" : "false"}"><strong><span class="herdr-tree-icon herdr-tree-icon-${expanded ? "chevron-down" : "chevron-right"}" aria-hidden="true"></span>Workspaces, worktrees, panels</strong><span>${targets.length}</span></button>${expanded ? body : ""}</section>`;
+}
+
+function searchResultKey(result) {
+  if (!result) return "";
+  if (result.type === "action") return `action:${result.action}`;
+  if (result.type === "path") return `path:${result.kind}:${result.path}`;
+  if (result.type === "content") return `content:${result.file && result.file.path}:${result.match && result.match.id}`;
+  return `target:${result.ws}:${result.tab}:${result.pane}`;
+}
+
+function renderSearchRowResult(result) {
+  const key = searchResultKey(result);
+  const index = searchPaletteState.results.findIndex((row) => row === result || searchResultKey(row) === key);
+  return renderTargetResult(result, index);
 }
 
 function renderTargetResult(result, index) {

@@ -299,6 +299,10 @@ el("optFileBrowserLineNumbers").onchange = () => {
   options.fileBrowserLineNumbers = el("optFileBrowserLineNumbers").checked;
   saveOptions();
 };
+el("optEditorFindShortcutEnabled").onchange = () => {
+  options.editorFindShortcutEnabled = el("optEditorFindShortcutEnabled").checked;
+  saveOptions();
+};
 el("optHeaderSearchEnabled").onchange = () => {
   options.headerSearchEnabled = el("optHeaderSearchEnabled").checked;
   saveOptions();

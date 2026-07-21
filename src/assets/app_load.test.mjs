@@ -183,7 +183,7 @@ describe("app bundle load", () => {
     const actionNames = (query) => Array.from(ctx.searchActionCandidates(query), (action) => action.action);
     deepEqual(
       actionNames(""),
-      ["open-workspace", "discover-worktrees", "temp-terminal", "sessions"],
+      ["open-workspace", "temp-terminal", "sessions"],
     );
     deepEqual(
       actionNames("session"),
@@ -193,6 +193,9 @@ describe("app bundle load", () => {
       actionNames("nonsense"),
       [],
     );
+    ok(!actionNames("").includes("discover-worktrees"));
+    match(source, /function renderSearchRowResult\(result\)/);
+    match(source, /function searchResultKey\(result\)/);
   });
 
   it("wires desktop project dashboard and command actions to expected launchers", () => {
@@ -1320,6 +1323,10 @@ describe("app bundle load", () => {
     match(source, /function filterSettings\(\)/);
     match(source, /settings-filter-hidden/);
     match(source, /title: "Appearance"/);
+    match(source, /id="optEditorFindShortcutEnabled"/);
+    match(source, /File editor search shortcut/);
+    match(source, /editorFindShortcutEnabled: true/);
+    match(source, /options\.editorFindShortcutEnabled = el\("optEditorFindShortcutEnabled"\)\.checked/);
     match(source, /title: "Terminal input"/);
     match(source, /title: "Agents and alerts"/);
     match(source, /id="optBrowserNotifications"/);
