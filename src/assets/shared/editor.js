@@ -119,6 +119,13 @@
       lastQuery = "";
       setStatus("");
     }
+    function toggleFind(focus) {
+      if (toolbar.hidden) showFind(focus !== false);
+      else hideFind();
+    }
+    api.showFind = showFind;
+    api.hideFind = hideFind;
+    api.toggleFind = toggleFind;
     function handleFindShortcut(event) {
       const key = String(event.key || "").toLowerCase();
       if (key !== "f" || (!event.metaKey && !event.ctrlKey) || event.altKey) return;
@@ -219,8 +226,9 @@
         setValue(value) { editor.setValue(value); },
         selectRange(from, to) { if (editor.selectRange) editor.selectRange(from, to); },
         replaceRange(from, to, value) { if (editor.replaceRange) editor.replaceRange(from, to, value); },
-        destroy() { editor.destroy(); parent.innerHTML = ""; },
+        destroy() { editor.destroy(); if (parent._herdrEditorApi === api) delete parent._herdrEditorApi; parent.innerHTML = ""; },
       };
+      parent._herdrEditorApi = api;
       wireFindToolbar(parent, api, opts);
       return api;
     }
@@ -258,9 +266,11 @@
         if (opts.onChange) opts.onChange(api.getValue());
       },
       destroy() {
+        if (parent._herdrEditorApi === api) delete parent._herdrEditorApi;
         parent.innerHTML = "";
       },
     };
+    parent._herdrEditorApi = api;
     wireFindToolbar(parent, api, opts);
     return api;
   }
