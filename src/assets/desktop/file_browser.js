@@ -612,7 +612,8 @@
       ? `<button onclick="HerdrFileBrowser.menuAction('enter')">Enter folder</button>`
       : `<button onclick="HerdrFileBrowser.menuAction('open')">Open</button><button onclick="HerdrFileBrowser.menuAction('split')">Open in split</button>`;
     const history = menu.kind === "file" ? `<button onclick="HerdrFileBrowser.menuAction('history')">Show history</button>` : "";
-    return `<div class="git-ui-menu file-browser-menu" style="left:${Math.max(0, menu.x)}px;top:${Math.max(0, menu.y)}px" onclick="event.stopPropagation()">${primary}${history}<button onclick="HerdrFileBrowser.menuAction('rename')">Rename</button><button class="danger" onclick="HerdrFileBrowser.menuAction('delete')">Delete</button><button onclick="HerdrFileBrowser.menuAction('copyPath')">Copy path</button></div>`;
+    const permalink = menu.kind === "file" ? `<button onclick="HerdrFileBrowser.menuAction('copyPermalink')">Copy permalink</button>` : "";
+    return `<div class="git-ui-menu file-browser-menu" style="left:${Math.max(0, menu.x)}px;top:${Math.max(0, menu.y)}px" onclick="event.stopPropagation()">${primary}${history}${permalink}<button onclick="HerdrFileBrowser.menuAction('rename')">Rename</button><button class="danger" onclick="HerdrFileBrowser.menuAction('delete')">Delete</button><button onclick="HerdrFileBrowser.menuAction('copyPath')">Copy path</button></div>`;
   }
 
   function mountEditors() {
@@ -781,6 +782,13 @@
     await refreshParentAfterMutation(path);
   }
 
+  async function copyPermalink(path) {
+    const data = await api(`/api/git-ui/permalink?cwd=${encodeURIComponent(state.cwd)}&path=${encodeURIComponent(path)}`);
+    const url = data && data.url;
+    if (!url) throw new Error("permalink URL was empty");
+    await navigator.clipboard.writeText(url);
+  }
+
   function runUnifiedSearch(append = false) {
     if (!state.filter.trim()) {
       if (state.filterKind === "content") {
@@ -911,6 +919,7 @@
         if (action === "history") { this.showHistory(encodeURIComponent(menu.path)); return; }
         if (action === "rename") await renamePath(menu.path);
         if (action === "delete") await deletePath(menu.path);
+        if (action === "copyPermalink") await copyPermalink(menu.path);
         if (action === "copyPath") {
           await navigator.clipboard.writeText(`${state.cwd}/${menu.path}`);
           render();
