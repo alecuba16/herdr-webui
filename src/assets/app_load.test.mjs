@@ -803,7 +803,10 @@ describe("app bundle load", () => {
     ok(!desktopFileBrowserCss.includes("file-browser-pane-head"));
     ok(!desktopFileBrowserCss.includes("file-browser-pane-search"));
     match(desktopFileBrowserCss, /file-browser-open-tabs/);
+    match(desktopFileBrowserCss, /flex-wrap: nowrap/);
     match(desktopFileBrowserCss, /overflow-x: auto/);
+    match(desktopFileBrowserCss, /flex: 0 0 auto/);
+    match(desktopFileBrowserCss, /max-width: min\(240px, 42vw\)/);
     match(desktopFileBrowserCss, /file-browser-content-actions/);
     match(mobileFileBrowserSource, /Tree\.renderCurrentDirectoryRow/);
     match(desktopFileBrowserSource, /permission_required/);

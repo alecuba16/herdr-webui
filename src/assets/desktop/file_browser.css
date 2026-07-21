@@ -234,8 +234,8 @@
   border: 1px solid var(--border);
   border-radius: 999px;
   display: inline-flex;
-  flex: 0 1 180px;
-  max-width: min(220px, 40vw);
+  flex: 0 0 auto;
+  max-width: min(240px, 42vw);
   min-width: 0;
   overflow: hidden;
 }
@@ -254,6 +254,7 @@
 .file-browser-open-tab-label {
   align-items: center;
   display: inline-flex;
+  flex: 1 1 auto;
   gap: 5px;
   min-width: 0;
   overflow: hidden;
@@ -267,6 +268,7 @@
 .file-browser-open-tab-close {
   border-left: 1px solid var(--border);
   color: var(--muted);
+  flex: 0 0 auto;
   padding: 3px 8px;
 }
 .file-browser-open-tab-label:hover,
