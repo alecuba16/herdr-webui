@@ -601,6 +601,7 @@
 
   function renderPreviewShell() {
     const files = state.split ? state.files : [currentFile()].filter(Boolean);
+    const tabStrip = renderOpenFileTabs();
     const panes = files.map((file) => {
       const find = !file.binary && !file.truncated
         ? `<button class="file-browser-pane-search" title="Find in file" aria-label="Find in ${esc(Tree.basename(file.path))}" onclick="event.stopPropagation();HerdrFileBrowser.toggleFind('${arg(file.path)}')"><span></span></button>`
@@ -609,7 +610,17 @@
     });
     if (state.contentSearch.active) panes.push(renderContentSearchPane());
     if (!panes.length) return previewPlaceholder(null);
-    return panes.join("");
+    return tabStrip + panes.join("");
+  }
+
+  function renderOpenFileTabs() {
+    if (state.files.length < 2) return "";
+    const tabs = state.files.map((file) => {
+      const active = file.path === state.selected;
+      const dirty = file.dirty ? `<span class="file-browser-tab-dirty" title="Modified">●</span>` : "";
+      return `<span class="file-browser-open-tab ${active ? "active" : ""}" role="presentation"><button type="button" class="file-browser-open-tab-label" role="tab" aria-selected="${active ? "true" : "false"}" title="${esc(file.path)}" onclick="HerdrFileBrowser.focusFile('${arg(file.path)}')">${esc(Tree.basename(file.path))}${dirty}</button><button type="button" class="file-browser-open-tab-close" title="Close ${esc(Tree.basename(file.path))}" aria-label="Close ${esc(Tree.basename(file.path))}" onclick="event.stopPropagation();HerdrFileBrowser.closeFile('${arg(file.path)}')">&times;</button></span>`;
+    }).join("");
+    return `<div class="file-browser-open-tabs" role="tablist" aria-label="Open files">${tabs}</div>`;
   }
 
   function renderContentSearchPane() {
@@ -816,7 +827,7 @@
     if (!menu) return;
     state.contextMenu = null;
     try {
-      if (action === "open") await loadFile(menu.path);
+      if (action === "open") await loadFile(menu.path, "append");
       if (action === "split") await loadFile(menu.path, "split");
       if (action === "enter") await loadTree(menu.path);
       if (action === "history") { showHistoryPath(menu.path); return; }
@@ -931,7 +942,7 @@
     up() { goUp(); },
     toggle(encodedPath) { toggleDir(decodeURIComponent(encodedPath)); },
     enter(encodedPath) { loadTree(decodeURIComponent(encodedPath)); },
-    select(encodedPath, mode) { loadFile(decodeURIComponent(encodedPath), mode); },
+    select(encodedPath, mode) { loadFile(decodeURIComponent(encodedPath), mode || "append"); },
     focusFile(encodedPath) { state.selected = decodeURIComponent(encodedPath); render(); },
     closeFile(encodedPath) {
       const path = decodeURIComponent(encodedPath);
