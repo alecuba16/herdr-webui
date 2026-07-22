@@ -1,5 +1,17 @@
 # Release notes
 
+## 0.2.79 Release Notes
+
+### Browser terminal renderer migration
+
+- Replaces xterm.js with the shared wterm terminal renderer adapter across desktop, mobile, and temporary terminals.
+- Adds Settings-backed renderer selection between wterm and Ghostty, with embedded wterm JS/CSS and Ghostty WASM assets.
+- Preserves terminal theme/font behavior, URL link detection, bounded paste chunking, Tail/follow behavior, and terminal query-reply filtering on the new renderer stack.
+- Makes terminal mouse reporting opt-in, strips accidental mouse reports by default, and keeps normal text selection safe.
+- Improves terminal wheel, trackpad, PageUp/PageDown, scrollback, and viewport fitting behavior for main and temporary terminals.
+- Removes stale xterm/static scroll loading from the current boot path while keeping a compatibility shim for cached older boot scripts.
+- Documents the browser terminal feature set in docs and Help, including renderer selection, Tail behavior, scroll semantics, copy/paste, mouse reporting, and temporary terminal shortcuts.
+
 ## 0.2.78 Release Notes
 
 ### Browser hot-path and terminal reply filtering
@@ -7,7 +19,6 @@
 - Reduces desktop browser work on frequent refreshes by memoizing the workspace sidebar render signature and reusing the previous sidebar HTML when workspace, worktree, panel, shortcut, and selection inputs have not changed.
 - Moves terminal renderer OSC color-query reply filtering into the shared terminal helper and applies it to desktop, mobile, and temporary terminal input paths. This strips `OSC 10/11/12` and palette color replies, including split and bare `10;rgb...`/`11;rgb...` fragments, before they can echo into shell input.
 - Keeps ordinary terminal input safe while filtering query replies, with regressions for numeric keys and Escape so normal shell/TUI input is not delayed.
-- Documents the browser terminal feature set in docs and Help: wterm/Ghostty renderer selection, Tail/follow behavior, scroll and PageUp/PageDown semantics, copy/paste, mouse reporting, and temporary terminal shortcuts.
 
 ## 0.2.77 Release Notes
 
