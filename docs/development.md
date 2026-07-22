@@ -42,9 +42,9 @@ The Rust binary embeds frontend assets with `include_str!`, so release artifacts
 - Desktop shell and Git UI assets are split into plain JS/CSS modules and concatenated by `src/assets.rs`; public URLs stay `/assets/desktop/app.js`, `/assets/desktop/app.css`, `/assets/desktop/git-ui.js`, and `/assets/desktop/git-ui.css`.
 - Desktop Git UI and desktop file browser controller code are lazy-loaded when those panels are opened. Shared helpers, color tokens, shared content-search CSS, file tree rendering, file icons, unified search helpers, content-search rendering, terminal scroll helpers, and the CodeMirror/editor shell load during boot so file previews and search results mount immediately with the final style.
 - The shared editor uses CodeMirror for read-only previews and editable file views, with a lightweight numbered HTML fallback only if CodeMirror fails to load.
-- Desktop terminal output is frame-batched in the browser so bursts of WebSocket terminal frames are coalesced before xterm rendering. Pending frames are flushed before reconnect or close to avoid dropping final output.
-- Large terminal paste input bypasses xterm `paste()` and uses bounded WebSocket input chunks with backpressure, so very large clipboards do not block the renderer or become one huge browser frame.
-- Terminal links are optional in Settings. When enabled, desktop and mobile xterm instances detect `http`/`https` URLs and open them in a new browser tab.
+- Desktop terminal output is frame-batched in the browser so bursts of WebSocket terminal frames are coalesced before terminal rendering. Pending frames are flushed before reconnect or close to avoid dropping final output.
+- Large terminal paste input bypasses terminal renderer `paste()` and uses bounded WebSocket input chunks with backpressure, so very large clipboards do not block the renderer or become one huge browser frame.
+- Terminal links are optional in Settings. When enabled, desktop and mobile browser terminal instances detect `http`/`https` URLs and open them in a new browser tab.
 - Blocking browser confirmation dialogs count as input delay in Chrome traces. Git bulk section actions defer their API/render work until after the confirmation returns so dialog wait time is not mixed with mutation/render cost.
 - Unified search is header-driven. Do not add separate file explorer search inputs; add sections to the header search and keep section enablement/order in Settings.
 - Content-search controllers should call backend routes and shared rendering. Do not scan repository content in browser code.

@@ -20,7 +20,7 @@ Settings:
 - `Worktree default directory` is stored in browser `localStorage` as `worktreeDefaultDirectory`. It is used only as the base for generated worktree checkout paths. Relative values resolve from the source repo root, for example `../worktrees`.
 - `Exploration default directory` is stored in browser `localStorage` as `explorationDefaultDirectory`. It prefills desktop new/open workspace paths, desktop worktree discovery paths, desktop Git cleanup scan roots, Git directory picker roots, and mobile worktree discovery paths.
 - The notification volume setting is stored in browser `localStorage` as `notificationVolume`, a decimal gain from `0` to `1`. Desktop and mobile expose it as a 0-100 slider and default it to `0.24`.
-- The terminal links setting is stored in browser `localStorage` as `terminalLinks`. It defaults to enabled and controls xterm URL link detection on desktop and mobile.
+- The terminal links setting is stored in browser `localStorage` as `terminalLinks`. It defaults to enabled and controls terminal renderer URL link detection on desktop and mobile.
 - The file browser Git status colors setting is stored in browser `localStorage` as `fileBrowserGitStatus`. It defaults to enabled and controls whether the file browser tree shows Git status colors for files and directories.
 - Unified search settings are stored in browser `localStorage` under `herdr-web-options`. They enable/disable workspace, file, folder, and content sections independently, and `searchSectionOrder` controls the order of sections in the search palette.
 - Opening Settings clears the previous search, refreshes option values, reloads server settings, and focuses the search box. Settings → Backend controls `backend_mode`, the optional built-in shell, and per-backend availability toggles. Fresh settings default to built-in, while external Herdr and auto modes remain available for compatibility.
@@ -36,10 +36,10 @@ Built-in backend:
 - Control API coverage includes `ping`, `server.stop`, `session.snapshot`, `workspace.list/create/rename/close`, `tab.list/create/rename/close`, `pane.list/get/layout/close/read`, `agent.list/start`, `worktree.list/open/create`, and explicit unsupported errors for unsafe `worktree.remove`.
 - `ping` reports `builtin_backend: true`, `terminal_attach: true`, `terminal_server_scroll: false`, and `jcode_detection: true` so clients can choose safe feature paths.
 - `session.snapshot` returns focused workspace/tab/pane IDs plus workspace, tab, pane, and agent lists for fast WebUI and TUI bootstrap.
-- Terminals run through `portable-pty`, inherit a login-shell-like macOS/user `PATH`, set xterm-compatible terminal env, collect recent output, and expose attach/input/paste/resize/detach over the terminal socket.
+- Terminals run through `portable-pty`, inherit a login-shell-like macOS/user `PATH`, set standard terminal env, collect recent output, and expose attach/input/paste/resize/detach over the terminal socket.
 - Desktop temporary terminals are fully keyboard-manageable: `Ctrl+B` then `Shift+M` opens, minimizes to the corner restore pill, or restores the same live temporary terminal. While the overlay is visible, `Ctrl+G` detaches it through the close confirmation.
-- Browser terminal input filters terminal-emulator query replies such as OSC 10/11 color responses before they reach the PTY. Native terminals consume those replies internally; xterm.js exposes them through `onData`, so WebUI drops them to avoid leaking `10;rgb:...`/`11;rgb:...` text into shells or agents.
-- Built-in terminal scroll is local xterm/TUI scroll only. Server-side scrollback, search, copy mode, and selection APIs are documented gaps.
+- Browser terminal input filters terminal-emulator query replies such as OSC 10/11 color responses before they reach the PTY. Native terminals consume those replies internally; browser terminal renderer exposes them through `onData`, so WebUI drops them to avoid leaking `10;rgb:...`/`11;rgb:...` text into shells or agents.
+- Built-in terminal scroll is local browser terminal/TUI scroll only. Server-side scrollback, search, copy mode, and selection APIs are documented gaps.
 - Agent identity detection covers Herdr-style direct argv aliases, wrapped shells, and terminal child process trees for Amp, Antigravity, Claude, Cline, Codex, Cursor, Devin, Droid, Gemini, GitHub Copilot, Grok, Hermes, Jcode, Kilo, Kimi, Kiro, Maki, OpenCode, Pi, Qoder CLI, plus legacy OMP and Mastra labels.
 - Agent status detection falls back to terminal screen text for the built-in backend. It mirrors Herdr screen-manifest visible `blocked`, `working`, and `idle` rules where terminal text exposes the same controls for Amp, Antigravity, Claude, Cline, Codex, Cursor, Devin, Droid, Gemini, GitHub Copilot, Grok, Hermes, Jcode, Kilo, Kimi, Kiro, Maki, OpenCode, Pi, and Qoder CLI. Jcode status follows the Herdr `jcode-support` manifest rules and active background-task markers so status does not stay `working` once the prompt returns, but remains `working` while background tasks are still running. Pure OSC/metadata-only Herdr signals are not available to the built-in backend screen-text fallback.
 - Built-in `events.subscribe` now stays open as a real event hub. Workspace, tab, pane, worktree, and agent status mutations publish JSON events immediately, and the WebUI bridge skips its legacy 5s snapshot polling for built-in sessions. External Herdr compatibility remains unchanged and still uses its existing event subscription plus legacy snapshot fallback.
@@ -171,8 +171,8 @@ Parent workspace close with linked worktrees:
 Terminal paste:
 
 - Built-in backend terminal panes start the user's shell as a login shell with an enriched local PATH. This keeps Homebrew, `~/.local/bin`, pyenv, jenv, fzf, and jcode available when WebUI runs as a macOS LaunchAgent.
-- Both desktop and mobile terminals capture browser `paste` events in the capture phase before xterm or native handlers process them.
-- WebUI intentionally does not call xterm.js `terminal.paste(text)`. xterm parses that string synchronously on the browser main thread, which can freeze the UI for large code snippets.
+- Both desktop and mobile terminals capture browser `paste` events in the capture phase before terminal renderer or native handlers process them.
+- WebUI intentionally does not call terminal renderer paste APIs. terminal renderer parses that string synchronously on the browser main thread, which can freeze the UI for large code snippets.
 - Browser paste is normalized through the shared helper in `/assets/shared/core.js`, preserving newlines while converting CRLF/CR to LF.
 - Pasted text is sent through the same binary raw-input WebSocket path as typed input, but with bounded 16 KiB chunks and backpressure instead of one large frame.
 - WebUI still accepts `{"type":"paste","text":"..."}` text WebSocket messages in `terminal_text_messages()` and maps them to semantic Herdr paste events for compatible clients. The browser terminal path uses bounded raw input for backend compatibility.
@@ -181,7 +181,7 @@ Terminal paste:
 
 Terminal rendering performance:
 
-- Desktop terminal output from Herdr is queued and coalesced once per animation frame before being written to xterm.
+- Desktop terminal output from Herdr is queued and coalesced once per animation frame before being written to terminal renderer.
 - This reduces CPU use for rapid terminal refresh workloads, spinner-like carriage-return updates, and command output bursts.
 - Browser scroll-follow state and terminal resize/focus work are also scheduled with the terminal frame batch instead of every raw WebSocket message.
 

@@ -148,7 +148,7 @@ describe("stripTerminalQueryReplies", () => {
     assert.equal(stripTerminalQueryReplies(input, {}), "ab");
   });
 
-  it("removes bare repeated color reply fragments like xterm can echo", () => {
+  it("removes bare repeated color reply fragments like a browser terminal can echo", () => {
     const input = "10;rgb:ffff/ffff/ffff\\11;rgb:0000/0000/0000\\10;rgb:ffff/ffff/ffff";
     assert.equal(stripTerminalQueryReplies(input, {}), "");
   });

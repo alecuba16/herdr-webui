@@ -38,7 +38,7 @@ The session manager adds a per-request backend target on top of the global defau
 - Agent detection first inspects known argv labels, then scans terminal child process trees with a short process-table cache, then falls back to terminal-screen markers. The screen fallback mirrors Herdr screen-manifest rules for visible `blocked`, `working`, and `idle` states in Amp, Antigravity, Claude, Cline, Codex, Cursor, Devin, Droid, Gemini, GitHub Copilot, Grok, Hermes, Jcode, Kilo, Kimi, Kiro, Maki, OpenCode, Pi, and Qoder CLI. Jcode status follows the Herdr `jcode-support` manifest bottom-line rules plus active background-task markers so running tasks remain `working` even when an input prompt is visible. OSC-only or metadata-only Herdr detections are outside this fallback because the built-in backend consumes normalized terminal text.
 - Built-in `events.subscribe` stays open through an in-process event hub. Workspace, tab, pane, worktree, and agent status mutations publish Herdr-shaped JSON events to subscribers. The WebUI bridge uses those events for built-in sessions instead of its legacy 5s snapshot polling branch; external Herdr sessions keep the existing compatibility behavior.
 - Status detection stays backend-core owned, not WebSocket-owned. PTY/process/status detectors publish internal state-change events, then WebSocket, TUI, and smoke clients consume through backend/client APIs. This keeps TUI/headless clients first-class and keeps status tests independent from browser transport.
-- xterm.js terminal query replies are treated as frontend input sanitation, not backend color logic. Native terminals consume OSC 10/11 color query responses internally, but xterm.js can expose those responses through `onData`. WebUI filters those replies before they reach the terminal WebSocket so they cannot be written into the PTY as shell input.
+- browser terminal query replies are treated as frontend input sanitation, not backend color logic. Native terminals consume OSC 10/11 color query responses internally, but browser terminal renderers can expose those responses through `onData`. WebUI filters those replies before they reach the terminal WebSocket so they cannot be written into the PTY as shell input.
 - Unsafe destructive operations stay explicit. `worktree.remove` returns unsupported until validation, preview, and rollback rules are implemented.
 
 ### TUI/client modularity
@@ -134,7 +134,7 @@ Desktop file browser and the folder picker both use the shared `file-tree.js` cu
 
 ### Temporary terminal input
 
-The temporary terminal overlay is implemented in `src/assets/shared/temp_terminal.js` for desktop and mobile. While open, xterm.js keeps ownership of focused terminal key events so shell completions, prompts, and line rewrites use the same terminal parser path as normal terminals. If focus escapes the terminal surface, the overlay captures normal key input, Tab, Backspace, arrows, and paging keys before browser focus navigation can steal them, then forwards the terminal byte sequence to the temporary terminal websocket. The overlay clamps the modal, terminal body, and xterm surface to the viewport and sizes PTY rows with a one-row safety margin so output does not grow below the visible area. `Ctrl+G` opens the detach confirmation, matching the header hint next to the close button and the Help & Shortcuts modal.
+The temporary terminal overlay is implemented in `src/assets/shared/temp_terminal.js` for desktop and mobile. While open, the terminal renderer keeps ownership of focused terminal key events so shell completions, prompts, and line rewrites use the same terminal parser path as normal terminals. If focus escapes the terminal surface, the overlay captures normal key input, Tab, Backspace, arrows, and paging keys before browser focus navigation can steal them, then forwards the terminal byte sequence to the temporary terminal websocket. The overlay clamps the modal, terminal body, and terminal surface to the viewport and sizes PTY rows with a one-row safety margin so output does not grow below the visible area. `Ctrl+G` opens the detach confirmation, matching the header hint next to the close button and the Help & Shortcuts modal.
 
 ### Unified header search
 
@@ -318,7 +318,7 @@ Main user-facing functionality is documented in [Features](features.md). Technic
 
 | Area | Backend owns | Frontend owns |
 | --- | --- | --- |
-| Terminal | Built-in PTY backend by default, external Herdr protocol bridge when selected, auth/session routing, WebSocket frame validation. | xterm attach, scroll-follow state, paste chunking, layout sizing. |
+| Terminal | Built-in PTY backend by default, external Herdr protocol bridge when selected, auth/session routing, WebSocket frame validation. | terminal attach, scroll-follow state, paste chunking, layout sizing. |
 | Workspaces/worktrees | Built-in workspace/worktree basics by default, external Herdr API proxying when selected, compatibility fallback, service-level validation. | List ordering, local labels, action menus, open/create/remove flows. |
 | Git UI | Git CLI commands, path/ref validation, diff/log/status parsing, cleanup scans. | Drawer rendering, shortcuts, staged/unstaged file interactions, diff controls. |
 | File explorer tree | Safe path cleaning, directory listing, backend file/folder search, pagination, Git status propagation. | Tree rendering, selected file state, scroll preservation, open-at-path behavior. |
@@ -342,8 +342,8 @@ This split keeps expensive or repository-sensitive work in Rust and keeps browse
 - Shared modules avoid duplicate browser computation. `file_tree.js`, `file_icons.js`, `workspace_search.js`, `file_content_search.js`, `editor.js`, and terminal helpers are reused by desktop/mobile.
 - File content search groups are collapsed by default when result counts exceed the configured threshold. Full per-file matches are lazy-loaded only when needed.
 - CodeMirror is preloaded once and reused for preview, edit, Git hunk editing, and snippet editing. A numbered HTML fallback exists only for load failure.
-- Desktop terminal output is coalesced once per animation frame before xterm writes. Attach frames have suppression logic so large initial frames do not reveal partial output.
-- Large paste input bypasses xterm synchronous `paste()` and uses bounded WebSocket chunks with backpressure.
+- Desktop terminal output is coalesced once per animation frame before terminal renderer writes. Attach frames have suppression logic so large initial frames do not reveal partial output.
+- Large paste input bypasses terminal renderer synchronous `paste()` and uses bounded WebSocket chunks with backpressure.
 - Git diff views use lazy file loading, context expansion, placeholders, and omitted-line guards for very large diffs.
 
 ### State and refresh model
