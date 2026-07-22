@@ -61,12 +61,15 @@ let term,
   refreshSeq = 0,
   terminalFramePending = false,
   resizeFramePending = false,
+  lastWorkspacesRenderSignature = "",
+  lastWorkspacesRenderedHtml = "",
   lastWorkspacesHtml = "",
   lastAgentsHtml = "",
   lastTabsHtml = "",
   tabActivity = {},
   closeChordUntil = 0,
   inputQueue = [],
+  terminalQueryReplyState = {},
   inputQueueMaxBufferedAmount = 65536,
   inputFlushTimer = null,
   pasteJob = null,
@@ -2536,6 +2539,7 @@ function resetTerminalConnection(clear = false, destroy = false) {
     inputFlushTimer = null;
   }
   inputQueue = [];
+  terminalQueryReplyState = {};
   inputQueueMaxBufferedAmount = 65536;
   if (pasteChunkTimer) {
     clearTimeout(pasteChunkTimer);

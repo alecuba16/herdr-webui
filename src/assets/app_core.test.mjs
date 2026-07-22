@@ -23,6 +23,7 @@ const {
   tabActivityLabel,
   terminalPasteInput,
   stripTerminalMouseReports,
+  stripTerminalQueryReplies,
   TERMINAL_MOUSE_RESET_SEQUENCE,
   resetTerminalMouseTracking,
 } = require("./shared/core.js");
@@ -140,6 +141,33 @@ describe("stripTerminalMouseReports", () => {
   it("preserves mouse reports when explicitly enabled", () => {
     const input = "a\x1b[<35;105;1M\x1b[M !!b";
     assert.equal(stripTerminalMouseReports(input, true), input);
+  });
+});
+
+describe("stripTerminalQueryReplies", () => {
+  it("removes complete OSC color query replies while preserving normal input", () => {
+    const input = "a\x1b]10;rgb:ffff/ffff/ffff\x1b\\\x1b]11;rgb:0000/0000/0000\x07b";
+    assert.equal(stripTerminalQueryReplies(input, {}), "ab");
+  });
+
+  it("removes bare repeated color reply fragments like xterm can echo", () => {
+    const input = "10;rgb:ffff/ffff/ffff\\11;rgb:0000/0000/0000\\10;rgb:ffff/ffff/ffff";
+    assert.equal(stripTerminalQueryReplies(input, {}), "");
+  });
+
+  it("carries split replies across input frames", () => {
+    const state = {};
+    assert.equal(stripTerminalQueryReplies("cmd\n10;rgb:ffff/", state), "cmd\n");
+    assert.equal(stripTerminalQueryReplies("ffff/ffff\\next", state), "next");
+    assert.equal(state.carry || "", "");
+  });
+
+  it("does not hold ordinary numeric input while looking for bare replies", () => {
+    const state = {};
+    assert.equal(stripTerminalQueryReplies("1", state), "1");
+    assert.equal(stripTerminalQueryReplies("0", state), "0");
+    assert.equal(stripTerminalQueryReplies("\x1b", state), "\x1b");
+    assert.equal(state.carry || "", "");
   });
 });
 

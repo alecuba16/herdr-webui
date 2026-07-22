@@ -63,6 +63,47 @@
       .replace(/\x1b\[M[\s\S]{3}/g, "");
   }
 
+  const TERMINAL_QUERY_REPLY_PATTERN = "(?:\\x1b\\])?(?:(?:10|11|12)|4;\\d{1,3});rgb:[0-9a-fA-F]{1,4}\\/[0-9a-fA-F]{1,4}\\/[0-9a-fA-F]{1,4}(?:\\x07|\\x1b\\\\|\\\\)?";
+  const TERMINAL_QUERY_REPLY_RE = new RegExp(TERMINAL_QUERY_REPLY_PATTERN, "g");
+  const TERMINAL_QUERY_REPLY_FULL_RE = new RegExp("^" + TERMINAL_QUERY_REPLY_PATTERN + "$");
+
+  function stripTerminalQueryReplies(data, state) {
+    if (typeof data !== "string") return data;
+    const holder = state && typeof state === "object" ? state : null;
+    let text = ((holder && holder.carry) || "") + data;
+    if (holder) holder.carry = "";
+    text = text.replace(TERMINAL_QUERY_REPLY_RE, "");
+    if (!holder) return text;
+    const pending = terminalQueryReplyPendingSuffix(text);
+    if (pending) {
+      holder.carry = pending;
+      text = text.slice(0, -pending.length);
+    }
+    return text;
+  }
+
+  function terminalQueryReplyPendingSuffix(text) {
+    const value = String(text || ""),
+      start = Math.max(0, value.length - 96);
+    for (let index = start; index < value.length; index += 1) {
+      const suffix = value.slice(index);
+      if (terminalQueryReplyPartial(suffix)) return suffix;
+    }
+    return "";
+  }
+
+  function terminalQueryReplyPartial(value) {
+    let text = String(value || "");
+    if (!text) return false;
+    if (text === "\x1b") return false;
+    if ("\x1b]".startsWith(text)) return true;
+    const oscPrefixed = text.startsWith("\x1b]");
+    if (oscPrefixed) text = text.slice(2);
+    if (!oscPrefixed && !text.includes(";r")) return false;
+    return /^(?:(?:1[012]?)|(?:4(?:;\d{0,3})?))(?:;r(?:g(?:b(?::[0-9a-fA-F]{0,4}(?:\/[0-9a-fA-F]{0,4}(?:\/[0-9a-fA-F]{0,4})?)?)?)?)?)?$/.test(text)
+      && !TERMINAL_QUERY_REPLY_FULL_RE.test(text);
+  }
+
   const TERMINAL_MOUSE_RESET_SEQUENCE = "\x1b[?9;1000;1002;1003l\x1b[?1006;1016l";
 
   function resetTerminalMouseTracking(term, enabled = false) {
@@ -326,6 +367,7 @@
     createFaviconNotifier,
     terminalPasteInput,
     stripTerminalMouseReports,
+    stripTerminalQueryReplies,
     TERMINAL_MOUSE_RESET_SEQUENCE,
     resetTerminalMouseTracking,
     tabActivityLabel,

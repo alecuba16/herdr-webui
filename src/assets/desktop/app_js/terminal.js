@@ -625,7 +625,8 @@ function sendInputData(data, inputOptions = {}) {
   if (!termWs || termWs.readyState !== 1 || !data) return;
   if (globalThis.HerdrAppHelpers && globalThis.HerdrAppHelpers.stripTerminalMouseReports)
     data = globalThis.HerdrAppHelpers.stripTerminalMouseReports(data, options.terminalMouseReporting === true);
-  if (!inputOptions.allowTerminalReplies) data = stripTerminalQueryReplies(data);
+  if (!inputOptions.allowTerminalReplies && globalThis.HerdrAppHelpers && globalThis.HerdrAppHelpers.stripTerminalQueryReplies)
+    data = globalThis.HerdrAppHelpers.stripTerminalQueryReplies(data, terminalQueryReplyState);
   if (!data) return;
   const bytes = inputEncoder.encode(data);
   const chunkSize = inputOptions.chunkSize || 16 * 1024;
@@ -642,13 +643,6 @@ function sendInputData(data, inputOptions = {}) {
     inputQueue.push(bytes.slice(i, i + chunkSize));
   inputQueueMaxBufferedAmount = Math.max(inputQueueMaxBufferedAmount, maxBufferedAmount);
   flushInputQueue();
-}
-
-function stripTerminalQueryReplies(data) {
-  return String(data || "").replace(
-    /(?:\x1b\])?(?:(?:10|11|12)|4;\d{1,3});rgb:[0-9a-fA-F]{1,4}\/[0-9a-fA-F]{1,4}\/[0-9a-fA-F]{1,4}(?:\x07|\x1b\\|\\)?/g,
-    "",
-  );
 }
 
 function sendPasteToTerminal(text) {

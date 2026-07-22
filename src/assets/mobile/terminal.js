@@ -12,6 +12,7 @@
       inputQueue = [],
       writeQueue = [],
       writeFlushPending = false,
+      terminalQueryReplyState = {},
       inputEncoder = new TextEncoder();
 
     // Below this size, a frame is written immediately instead of waiting for
@@ -229,6 +230,7 @@
       connectedTerminalKey = "";
       connectedTerminalSize = "";
       inputQueue = [];
+      terminalQueryReplyState = {};
       writeQueue = [];
       writeFlushPending = false;
       terminalAttachPending = false;
@@ -448,6 +450,8 @@
       if (!termWs || termWs.readyState !== 1 || !data) return;
       if (globalThis.HerdrAppHelpers && globalThis.HerdrAppHelpers.stripTerminalMouseReports)
         data = globalThis.HerdrAppHelpers.stripTerminalMouseReports(data, terminalMouseReportingEnabled());
+      if (globalThis.HerdrAppHelpers && globalThis.HerdrAppHelpers.stripTerminalQueryReplies)
+        data = globalThis.HerdrAppHelpers.stripTerminalQueryReplies(data, terminalQueryReplyState);
       if (!data) return;
       const bytes = typeof data === "string" ? inputEncoder.encode(data) : data;
       const chunkSize = 16 * 1024;
