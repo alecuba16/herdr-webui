@@ -1,7 +1,7 @@
 /**
  * Ephemeral temporary terminal overlay.
  *
- * Opens a modal with a fresh xterm.js Terminal that connects to a new
+ * Opens a modal with a fresh terminal renderer that connects to a new
  * Herdr tab/pane created via the existing tab.create API.  The terminal
  * is purely ephemeral: when the modal closes (X button, websocket drop,
  * or server-side pane.exited event) the tab is closed via tab.close and

@@ -718,7 +718,7 @@ describe("mobile bundle load", () => {
     equal(ctx.terminalAtBottomOverride, true);
   });
 
-  it("captures mobile terminal paste before xterm native paste", () => {
+  it("captures mobile terminal paste before native terminal paste", () => {
     match(source, /addEventListener\(\s*"paste"/);
     match(source, /stopImmediatePropagation\(\)/);
     match(source, /sendPasteToTerminal\(text\)/);

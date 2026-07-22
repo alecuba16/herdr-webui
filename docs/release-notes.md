@@ -5,7 +5,7 @@
 ### Browser hot-path and terminal reply filtering
 
 - Reduces desktop browser work on frequent refreshes by memoizing the workspace sidebar render signature and reusing the previous sidebar HTML when workspace, worktree, panel, shortcut, and selection inputs have not changed.
-- Moves xterm OSC color-query reply filtering into the shared terminal helper and applies it to desktop, mobile, and temporary terminal input paths. This strips `OSC 10/11/12` and palette color replies, including split and bare `10;rgb...`/`11;rgb...` fragments, before they can echo into shell input.
+- Moves terminal renderer OSC color-query reply filtering into the shared terminal helper and applies it to desktop, mobile, and temporary terminal input paths. This strips `OSC 10/11/12` and palette color replies, including split and bare `10;rgb...`/`11;rgb...` fragments, before they can echo into shell input.
 - Keeps ordinary terminal input safe while filtering query replies, with regressions for numeric keys and Escape so normal shell/TUI input is not delayed.
 
 ## 0.2.77 Release Notes
@@ -26,7 +26,7 @@
 - Adds right-click Copy permalink actions to the File Explorer and Git file views for immutable remote links.
 - Fixes File Explorer context menu clicks so Rename, Copy permalink, and other actions execute reliably.
 - Shows loading states while Git and worktree operations run.
-- Makes terminal mouse reporting opt-in and keeps normal terminal text selection available by default, including after TUIs such as Jcode enable xterm mouse mode.
+- Makes terminal mouse reporting opt-in and keeps normal terminal text selection available by default, including after TUIs such as Jcode enable terminal renderer mouse mode.
 - Moves the file find magnifier to the file editor pane and keeps editor search shortcuts focused on file contents.
 
 ## 0.2.75 Release Notes
@@ -138,7 +138,7 @@
 
 ### Terminal Nerd Font icons
 
-- Uses the bundled JetBrainsMono Nerd Font stack when creating desktop xterm terminals so powerline and language icons render by default.
+- Uses the bundled JetBrainsMono Nerd Font stack when creating desktop browser terminals so powerline and language icons render by default.
 - Migrates the old desktop monospace terminal default to the bundled Nerd Font stack while preserving custom user font-family settings.
 - Refreshes the desktop terminal after the web font loads so glyph metrics and icon rendering settle without reconnecting.
 
@@ -175,7 +175,7 @@
 ### Terminal paste
 
 - Restores browser paste in desktop and mobile terminals when the connected Herdr backend does not process semantic paste input events.
-- Keeps the large-paste performance fix by continuing to capture browser `paste` events before xterm native paste handling, avoiding xterm's synchronous `terminal.paste(text)` path.
+- Keeps the large-paste performance fix by continuing to capture browser `paste` events before native terminal paste handling, avoiding terminal renderer's synchronous `terminal.paste(text)` path.
 - Sends pasted text through the existing bounded raw input queue with 16 KiB chunks and WebSocket backpressure, so large clipboards do not become one huge browser frame.
 - Preserves pasted newlines while normalizing CRLF/CR to LF before forwarding to the terminal.
 - Leaves server-side semantic paste message parsing in place for compatible clients, but WebUI's browser terminal path now uses the backend-compatible raw input transport.
@@ -190,7 +190,7 @@
 
 ### Terminal scroll and follow
 
-- Desktop terminal scrolling now preserves browser/xterm layout ownership while explicitly handling wheel input where needed.
+- Desktop terminal scrolling now preserves browser/terminal renderer layout ownership while explicitly handling wheel input where needed.
 - Scrolling up pauses follow mode, new output preserves the current viewport, and the `Tail` button jumps back to latest output and resumes follow.
 - Wheel scroll speed is configurable in Settings → Terminal input. Small trackpad deltas are accumulated before sending scroll commands.
 - Alternate-screen terminal apps receive wheel and PageUp/PageDown scroll events through the backend instead of local browser scrollback.
@@ -198,7 +198,7 @@
 
 ### Terminal paste
 
-- Large terminal paste avoids xterm `paste()` and sends bounded WebSocket input chunks so very large clipboards do not freeze the browser.
+- Large terminal paste avoids terminal renderer `paste()` and sends bounded WebSocket input chunks so very large clipboards do not freeze the browser.
 - Desktop and mobile paste paths share this behavior. Normal typed input, Shift+Enter, scroll, and resize keep their existing paths.
 
 ## 0.2.6 Release Notes
@@ -235,11 +235,11 @@
 
 ### Terminal
 
-- Desktop terminal scrolling now prefers Herdr backend scroll messages over local xterm scrollback. Wheel, touch, PageUp, and PageDown send `{type:"scroll"}` over the terminal WebSocket first, then fall back to local `term.scrollLines()` only when the backend path is unavailable.
-- The desktop terminal shell keeps browser scrolling disabled with `.terminal-shell { overflow: hidden; }` and leaves xterm internals to the vendor stylesheet. `fitTerminalSurface()` resets stale shell scroll offsets during reconnect/resize so tab switches attach at the live bottom instead of a browser-scrolled offset.
+- Desktop terminal scrolling now prefers Herdr backend scroll messages over local terminal scrollback. Wheel, touch, PageUp, and PageDown send `{type:"scroll"}` over the terminal WebSocket first, then fall back to local `term.scrollLines()` only when the backend path is unavailable.
+- The desktop terminal shell keeps browser scrolling disabled with `.terminal-shell { overflow: hidden; }` and leaves terminal renderer internals to the vendor stylesheet. `fitTerminalSurface()` resets stale shell scroll offsets during reconnect/resize so tab switches attach at the live bottom instead of a browser-scrolled offset.
 - The Tail button appears after the user scrolls up. Pressing it sends a backend tail burst, hides the button, focuses the terminal, and resumes the latest output view without any write-time viewport preservation.
 - Settings → Terminal → Scroll speed controls desktop wheel sensitivity. Trackpad pixel deltas are accumulated to row height before scroll messages are sent, which avoids one backend scroll for every tiny trackpad event.
-- Mobile keeps its existing shared `src/assets/shared/terminal_scroll.js` local-scroll helper and follow-button path. Desktop and mobile remain separate because desktop needs backend-first scrolling for Herdr/Jcode terminal rendering while mobile still uses xterm local scrollback behavior.
+- Mobile keeps its existing shared `src/assets/shared/terminal_scroll.js` local-scroll helper and follow-button path. Desktop and mobile remain separate because desktop needs backend-first scrolling for Herdr/Jcode terminal rendering while mobile still uses terminal local scrollback behavior.
 
 ## 0.2.5 Release Notes
 
@@ -274,10 +274,10 @@
 
 ### Terminal
 
-- Restored native xterm.js wheel scrolling by removing the custom terminal shell wheel handler.
-- Enabled xterm viewport scrolling so terminal scrollback uses xterm's own viewport behavior.
+- Restored native terminal wheel scrolling by removing the custom terminal shell wheel handler.
+- Enabled terminal renderer viewport scrolling so terminal scrollback uses terminal renderer's own viewport behavior.
 - Switched terminal shells to dynamic sizing with no inline shell height or width.
-- Removed the custom terminal context menu so browser/xterm defaults handle context actions.
+- Removed the custom terminal context menu so browser/terminal renderer defaults handle context actions.
 - Deduplicated terminal CSS and JavaScript into shared modular helpers for desktop and mobile.
 
 ## 0.2.0 Release Notes
@@ -318,7 +318,7 @@
 - Font loaded via `@font-face` and served from `/assets/fonts/`.
 - Desktop and mobile terminal refresh font family after Nerd Font loads.
 - Fixed wheel scroll in normal buffer mode: wheel events now call `term.scrollLines()` with the same scroll batching as alternate screen mode.
-- Fixed `xterm-viewport` overflow from `visible` to `hidden` to prevent unwanted vertical scrollbar.
+- Fixed terminal viewport overflow from `visible` to `hidden` to prevent unwanted vertical scrollbar.
 
 ### Focus preservation
 

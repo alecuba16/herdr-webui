@@ -1017,10 +1017,6 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
   min-height: 0;
   overflow: hidden;
 }
-.temp-terminal-body .xterm {
-  height: 100%;
-  width: 100%;
-}
 .temp-terminal-modal {
   position: relative;
 }

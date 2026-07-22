@@ -8,7 +8,7 @@ const require = createRequire(import.meta.url);
 const HerdrTerminalFit = require("./shared/terminal_fit.js");
 
 // Minimal mock for the desktop terminal frame pipeline. We only test the
-// enqueue / coalesce / flush logic, not xterm.js itself.
+// enqueue / coalesce / flush logic, not the terminal renderer itself.
 
 function createMockTerminal() {
   const writes = [];
@@ -139,7 +139,7 @@ describe("desktop terminal visible height fitting", () => {
     const followTerminalAfterWrite = () => maybeAutoScrollToBottom();
 
     term.write("new data", followTerminalAfterWrite);
-    assert.equal(scrolled, 0, "scroll waits for xterm parse callback");
+    assert.equal(scrolled, 0, "scroll waits for terminal parse callback");
     callbacks.shift()();
     assert.equal(scrolled, 1, "follow active scrolls after write");
 
@@ -243,7 +243,7 @@ describe("attach frame render suppression", () => {
     const term = {
       write(data, cb) {
         writes.push(data);
-        if (cb) writeCallback = cb;  // Don't auto-fire; simulate xterm parsing
+        if (cb) writeCallback = cb;  // Don't auto-fire; simulate terminal parsing
       },
     };
 
@@ -267,7 +267,7 @@ describe("attach frame render suppression", () => {
 
     assert.equal(writes.length, 1, "single write for attach frame");
     assert.ok(writeCallback, "write callback should be registered");
-    // In real code, the callback fires after xterm finishes parsing,
+    // In real code, the callback fires after the terminal renderer finishes parsing,
     // then RAF reveals the terminal. Until then, loading overlay stays visible.
   });
 

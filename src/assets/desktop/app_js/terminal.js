@@ -221,7 +221,7 @@ function applyTerminalLinks() {
   if (term && typeof term.setLinksEnabled === "function")
     term.setLinksEnabled(options.terminalLinks !== false);
 }
-// Threshold below which a single frame is written immediately to xterm.js
+// Threshold below which a single frame is written immediately to the terminal renderer
 // instead of waiting for the next requestAnimationFrame. Small frames (a
 // few lines of output, a cursor move) have negligible render cost and the
 // RAF delay adds ~16ms of latency for no benefit. Above the threshold we
@@ -482,7 +482,7 @@ function writeTerminalFrame(data, onDone) {
     ? () => { onDone(); }
     : () => { followTerminalAfterWrite(); };
   // For large frames (the initial attach repaint), use the write callback
-  // to know when xterm.js finishes parsing. This avoids the caller
+  // to know when the terminal renderer finishes parsing. This avoids the caller
   // revealing the terminal while wterm render queue is still in its
   // 12ms time-slice loop, which would show partial renders.
   if (onDone) {

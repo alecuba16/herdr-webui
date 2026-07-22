@@ -216,7 +216,7 @@ function terminalInputFrames(ctx) {
 }
 
 describe("temporary terminal", () => {
-  it("captures Tab and Backspace inside xterm before the browser moves focus", async () => {
+  it("captures Tab and Backspace inside terminal before the browser moves focus", async () => {
     const ctx = context();
     await openTempTerminal(ctx);
     const listener = ctx.listeners.get("keydown");
@@ -238,7 +238,7 @@ describe("temporary terminal", () => {
     equal(inputFrames[1], "\x7f");
   });
 
-  it("lets xterm handle ordinary keys from inside the terminal without duplicate input", async () => {
+  it("lets terminal renderer handle ordinary keys from inside the terminal without duplicate input", async () => {
     const ctx = context();
     await openTempTerminal(ctx);
     const listener = ctx.listeners.get("keydown");

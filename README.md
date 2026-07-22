@@ -90,7 +90,7 @@ See [Technical details](docs/technical-details.md) for routes, limits, data flow
 
 - Git status uses one porcelain scan per refresh and propagates parent folder state server-side with priority red > yellow > green.
 - Content search skips dependency/build folders, caps traversal, skips large or binary files, paginates file groups, lazy-loads per-file match details, and validates regex patterns before traversal.
-- Terminal output is frame-batched before xterm writes, large paste input uses bounded WebSocket chunks with backpressure, and browser terminal query replies such as OSC 10/11 colors are filtered before they can leak into PTY input.
+- Terminal output is frame-batched before terminal renderer writes, large paste input uses bounded WebSocket chunks with backpressure, and browser terminal query replies such as OSC 10/11 colors are filtered before they can leak into PTY input.
 - Large Git diffs use lazy loading, placeholders, context expansion, and server-side Git commands rather than browser-side repository scanning.
 - Path inputs are cleaned before file-system operations. Mutating Git/file actions use backend validation, hash guards, and confirmation where destructive.
 

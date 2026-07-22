@@ -89,7 +89,6 @@ function context() {
     navigator: { clipboard: {} },
     window: null,
     globalThis: null,
-    xterm: { Terminal: class {} },
     WebSocket: class {},
     fetch: async () => ({ status: 200, json: async () => ({}) }),
     addEventListener() {},
@@ -350,15 +349,15 @@ describe("app bundle load", () => {
   it("keeps terminal surface min sizes mode-aware", () => {
     match(source, /if \(options\.overflow\) \{\n\s+terminal\.style\.width = width \+ "px";/);
     match(source, /terminal\.style\.minWidth = "0";\n\s+terminal\.style\.minHeight = "0";/);
-    ok(!source.includes('terminal.querySelector(".xterm")'));
+    ok(!source.includes('terminal.querySelector(".wterm")'));
     ok(!source.includes('x.style.'));
     match(source, /shellStyle\.display === "none" \|\|\n\s+shellStyle\.visibility === "hidden" \|\|\n\s+\(shellRects && shellRects\.length === 0\)/);
     match(source, /function fitTerminalShell\(\) \{[\s\S]*?shell\.clientWidth \|\| rect\.width[\s\S]*?shell\.clientHeight \|\| rect\.height[\s\S]*?\};\n\}/);
     match(source, /function browserTerminalSize\(\) \{[\s\S]*?const shellSize = fitTerminalShell\(\);\n\s+if \(!shellSize\) return null;/);
     ok(!source.includes('terminal.style.height = "100%"'));
-    ok(!source.includes('terminal.querySelector(".xterm-screen")'));
-    ok(!source.includes('terminal.querySelector(".xterm-viewport")'));
-    ok(!source.includes('terminal.querySelector(".xterm-rows")'));
+    ok(!source.includes('terminal.querySelector(".term-screen")'));
+    ok(!source.includes('terminal.querySelector(".term-viewport")'));
+    ok(!source.includes('terminal.querySelector(".term-rows")'));
     ok(!source.includes('shell.style.width ='));
     match(desktopTerminalSource, /fontFamily: terminalFontFamily\(\)/);
     match(desktopTerminalSource, /refreshTerminalAfterFontLoad\(target\)/);
@@ -369,12 +368,11 @@ describe("app bundle load", () => {
   it("keeps desktop terminal scrolling delegated to wterm adapter", () => {
     const terminalCss = readFileSync(new URL("./desktop/app_css/terminal.css", import.meta.url), "utf8");
 
-    ok(!terminalCss.includes(".terminal .xterm"));
     ok(terminalCss.includes(".terminal.wterm"));
     match(terminalCss, /\.terminal-shell \{[\s\S]*?overflow: hidden;/);
     match(terminalCss, /\.terminal \{[\s\S]*?height: 100%;/);
-    ok(!terminalCss.match(/\.terminal \.xterm-rows[\s\S]*?height: 100% !important;/));
-    ok(!terminalCss.match(/\.terminal \.xterm-rows[\s\S]*?overflow: hidden !important;/));
+    ok(!terminalCss.match(/\.terminal \.term-rows[\s\S]*?height: 100% !important;/));
+    ok(!terminalCss.match(/\.terminal \.term-rows[\s\S]*?overflow: hidden !important;/));
     ok(!source.includes('el("terminalShell").addEventListener("contextmenu"'));
     match(desktopTerminalSource, /terminal\.addEventListener\("wheel", handleTerminalWheel, \{ passive: false, capture: true \}\);/);
     match(desktopTerminalSource, /terminal\.addEventListener\("touchstart", handleTerminalTouchStart, \{ passive: true, capture: true \}\);/);
@@ -1953,7 +1951,7 @@ describe("app bundle load", () => {
     equal(replaced.at(-1), "/session/default/workspace/ws1");
   });
 
-  it("clears stale terminal DOM when selected pane exits even without xterm object", () => {
+  it("clears stale terminal DOM when selected pane exits even without renderer object", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
     const terminal = ctx.document.getElementById("terminal");
@@ -2232,7 +2230,7 @@ describe("app bundle load", () => {
     match(chromeCss, /\.sidebar-pane\.workspaces-pane\.panel-menu-open \.sidebar-scroll \{[\s\S]*?overflow: visible;/);
   });
 
-  it("captures terminal paste before xterm native paste", () => {
+  it("captures terminal paste before native terminal paste", () => {
     match(source, /addEventListener\(\s*"paste"/);
     match(source, /stopImmediatePropagation\(\)/);
     match(source, /sendPasteToTerminal\(text\)/);
