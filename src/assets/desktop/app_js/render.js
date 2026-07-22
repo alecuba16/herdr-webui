@@ -15,7 +15,7 @@ function render() {
       tab.workspace_id,
       (tabCountsByWorkspace.get(tab.workspace_id) || 0) + 1,
     );
-  const workspacesHtml = renderSpaces();
+  const workspacesHtml = renderSpacesCached();
   const workspaceRenameActive = !!document.querySelector(
     ".workspace-rename-input",
   );
@@ -268,6 +268,62 @@ function renderSpaces() {
       .join("");
   }
   return html;
+}
+
+function renderSpacesCached() {
+  const signature = workspaceSidebarSignature();
+  if (signature === lastWorkspacesRenderSignature) return lastWorkspacesRenderedHtml;
+  const html = renderSpaces();
+  lastWorkspacesRenderSignature = signature;
+  lastWorkspacesRenderedHtml = html;
+  return html;
+}
+
+function workspaceSidebarSignature() {
+  return JSON.stringify({
+    session: state.session || "default",
+    selected: [state.ws, state.tab, state.pane],
+    editing: [state.editingWorkspace, state.editingWorkspaceValue, state.editingTab, state.editingTabValue],
+    panelMenuOpen: !!state.panelMenuOpen,
+    sort: [options.workspaceSort, state.workspaceOrder],
+    shortcuts: [options.globalShortcutPrefix, options.webuiShortcuts || null],
+    workspaces: (state.workspaces || []).map(workspaceSidebarRowSignature),
+    worktrees: (state.worktrees || []).map(worktreeSidebarRowSignature),
+    tabs: (state.tabs || []).map(tabSidebarRowSignature),
+  });
+}
+
+function workspaceSidebarRowSignature(w) {
+  const wt = (w && w.worktree) || {};
+  return [
+    w && w.workspace_id,
+    w && w.label,
+    w && w.pane_count,
+    statusClass(w && w.agent_status),
+    workspaceBranch(w),
+    wt.is_linked_worktree === true,
+    wt.repo_key || "",
+    wt.repo_root || "",
+    wt.repo_name || "",
+    wt.checkout_path || "",
+  ];
+}
+
+function worktreeSidebarRowSignature(w) {
+  return [
+    w && w.open_workspace_id,
+    w && w.path,
+    textValue(w && w.branch),
+    textValue(w && w.label),
+    w && w.source_repo_key,
+    w && w.source_repo_root,
+    w && w.source_repo_name,
+    w && w.is_prunable,
+  ];
+}
+
+function tabSidebarRowSignature(t) {
+  return [t && t.workspace_id, t && t.tab_id, t && t.label, t && t.number];
 }
 function selectedWorkspace() {
   return state.workspaces.find((w) => w.workspace_id === state.ws) || null;

@@ -34,6 +34,7 @@
     var inputEncoder = new TextEncoder();
     var writeQueue = [];
     var writeFlushPending = false;
+    var terminalQueryReplyState = {};
     var resizeTimer = null;
     var linkProvider = null;
     var confirmVisible = false;
@@ -524,6 +525,7 @@
     }
 
     function disconnectWs() {
+      terminalQueryReplyState = {};
       if (termWs) {
         termWs.onclose = null;
         try { termWs.close(); } catch (e) {}
@@ -579,6 +581,8 @@
       if (!termWs || termWs.readyState !== 1 || !data) return;
       if (globalThis.HerdrAppHelpers && globalThis.HerdrAppHelpers.stripTerminalMouseReports)
         data = globalThis.HerdrAppHelpers.stripTerminalMouseReports(data, terminalMouseReportingEnabled());
+      if (globalThis.HerdrAppHelpers && globalThis.HerdrAppHelpers.stripTerminalQueryReplies)
+        data = globalThis.HerdrAppHelpers.stripTerminalQueryReplies(data, terminalQueryReplyState);
       if (!data) return;
       var bytes = inputEncoder.encode(data);
       if (bytes.length <= 64 * 1024 && termWs.bufferedAmount < 65536) {

@@ -744,6 +744,7 @@ describe("app bundle load", () => {
     match(tempTerminalSource, /case "Backspace": return "\\x7f";/);
     match(tempTerminalSource, /case "Tab": return event\.shiftKey \? "\\x1b\[Z" : "\\t";/);
     match(tempTerminalSource, /resetTerminalMouseTracking\(term, terminalMouseReportingEnabled\(\)\)/);
+    match(tempTerminalSource, /stripTerminalQueryReplies\(data, terminalQueryReplyState\)/);
     match(tempTerminalSource, /String\(event\.key \|\| ""\)\.toLowerCase\(\) === "g"/);
     match(shortcutsSource, /function tempTerminalModalOpen\(\)/);
     match(shortcutsSource, /if \(tempTerminalModalOpen\(\)\) return false;/);
@@ -1296,18 +1297,19 @@ describe("app bundle load", () => {
   it("filters OSC color query replies before terminal input reaches the backend", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
+    const strip = ctx.HerdrAppHelpers.stripTerminalQueryReplies;
 
     equal(
-      ctx.stripTerminalQueryReplies("\x1b]10;rgb:4c4c/4f4f/6969\x07hello\x1b]11;rgb:efef/f1f1/f5f5\x1b\\"),
+      strip("\x1b]10;rgb:4c4c/4f4f/6969\x07hello\x1b]11;rgb:efef/f1f1/f5f5\x1b\\"),
       "hello",
     );
     equal(
-      ctx.stripTerminalQueryReplies("\x1b]4;10;rgb:d7d7/ffff/d6d6\x1b\\prompt"),
+      strip("\x1b]4;10;rgb:d7d7/ffff/d6d6\x1b\\prompt"),
       "prompt",
     );
-    equal(ctx.stripTerminalQueryReplies("4;10;rgb:d7d7/ffff/d6d6\\prompt"), "prompt");
-    equal(ctx.stripTerminalQueryReplies("\x1b]12;rgb:d7d7/ffff/d6d6\x07prompt"), "prompt");
-    equal(ctx.stripTerminalQueryReplies("normal input"), "normal input");
+    equal(strip("4;10;rgb:d7d7/ffff/d6d6\\prompt"), "prompt");
+    equal(strip("\x1b]12;rgb:d7d7/ffff/d6d6\x07prompt"), "prompt");
+    equal(strip("normal input"), "normal input");
   });
 
   it("renders default shell panels as numeric panel labels", () => {
@@ -1451,6 +1453,8 @@ describe("app bundle load", () => {
     match(source, /next\.terminalMouseReporting = next\.terminalMouseReporting === true/);
     match(source, /function sendInputData\(data, inputOptions = \{\}\)/);
     match(source, /stripTerminalMouseReports\(data, options\.terminalMouseReporting === true\)/);
+    match(source, /stripTerminalQueryReplies\(data, terminalQueryReplyState\)/);
+    match(source, /terminalQueryReplyState = \{\}/);
     match(source, /resetTerminalMouseTracking\(term, options\.terminalMouseReporting === true\)/);
     match(source, /window\.HerdrResetTerminalMouseTracking = resetTerminalMouseTrackingIfDisabled/);
     match(source, /!options\.terminalMouseReporting && window\.HerdrResetTerminalMouseTracking/);
@@ -1572,6 +1576,46 @@ describe("app bundle load", () => {
 
     match(html, /agent-worktree[^>]*>friendly label</);
     equal(html.includes("feature/demo"), false);
+  });
+
+  it("memoizes unchanged workspace sidebar render work", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    const result = vm.runInContext(
+      `state.ws = "ws1";
+      state.tab = "tab1";
+      state.pane = "pane1";
+      state.workspaces = Array.from({ length: 24 }, (_, i) => ({
+        workspace_id: "ws" + i,
+        label: "Workspace " + i,
+        pane_count: 1,
+        agent_status: i % 2 ? "working" : "idle",
+      }));
+      state.tabs = [{ workspace_id: "ws1", tab_id: "tab1", number: 1, label: "" }];
+      state.allTabs = state.tabs;
+      state.worktrees = [];
+      options.workspaceSort = "state";
+      let priorityCalls = 0;
+      const originalWorkspacePriority = workspacePriority;
+      workspacePriority = function (workspace) { priorityCalls += 1; return originalWorkspacePriority(workspace); };
+      lastWorkspacesRenderSignature = "";
+      lastWorkspacesRenderedHtml = "";
+      const first = renderSpacesCached();
+      const afterFirst = priorityCalls;
+      const second = renderSpacesCached();
+      const afterSecond = priorityCalls;
+      state.workspaces[1].agent_status = "blocked";
+      const third = renderSpacesCached();
+      ({ sameHtml: first === second, firstCalls: afterFirst, secondCalls: afterSecond, invalidated: third !== second, finalCalls: priorityCalls });`,
+      ctx,
+    );
+
+    equal(result.sameHtml, true);
+    ok(result.firstCalls > 0);
+    equal(result.secondCalls, result.firstCalls);
+    ok(result.invalidated);
+    ok(result.finalCalls > result.secondCalls);
   });
 
   it("searches workspaces only after a query using repo tags branches and panel names", () => {
