@@ -45,6 +45,37 @@ Built-in backend:
 - Built-in `events.subscribe` now stays open as a real event hub. Workspace, tab, pane, worktree, and agent status mutations publish JSON events immediately, and the WebUI bridge skips its legacy 5s snapshot polling for built-in sessions. External Herdr compatibility remains unchanged and still uses its existing event subscription plus legacy snapshot fallback.
 - State is runtime-local. Durable layout/session persistence beyond settings and browser state is not complete yet.
 
+Browser terminal:
+
+- Desktop, mobile, and temporary terminals use the shared wterm renderer adapter. Settings → Terminal → Renderer can switch between the default wterm core and the Ghostty core; changing the renderer reconnects the current terminal so the new core owns future output.
+- The renderer bundle, CSS, and Ghostty WASM are embedded static assets served from `/assets/vendor/wterm.js`, `/assets/vendor/wterm.css`, and `/assets/vendor/ghostty-vt.wasm`. The old xterm assets are removed.
+- Terminal font, URL link detection, mouse reporting, scroll speed, Shift+Enter newline behavior, and renderer choice are persisted in browser `localStorage` under `herdr-web-options` and apply to desktop, mobile, and temporary terminals.
+- Terminal URL links are enabled by default. When enabled, detected `http` and `https` links open in a new browser tab. Disable `Terminal links` when terminal apps need raw click handling.
+- Terminal mouse reporting is opt-in. By default WebUI strips SGR/X10 mouse reports emitted by browser terminal renderers so normal text selection and shell input stay safe. Enable `Terminal mouse reporting` only for TUIs that need mouse input.
+- Desktop terminal output is frame-batched before writes to the renderer. Large initial attach frames stay behind the loading overlay until the renderer callback finishes, preventing partial line-by-line reveals.
+- Large paste input bypasses renderer paste APIs. WebUI normalizes pasted text, sends bounded WebSocket chunks with backpressure, and keeps typed input on the same raw-input path.
+- Wheel and touch scrolling use terminal row metrics. Pixel trackpad deltas accumulate before scrolling; line-mode wheel events use the configured `Scroll speed`; page-mode events and PageUp/PageDown scroll almost one viewport.
+- External Herdr sessions try backend scroll first, then fall back to local renderer scrollback when server-side scroll is unavailable. Built-in backend sessions use local renderer scrollback because built-in `ping` reports `terminal_server_scroll: false`.
+- Scrolling up pauses follow mode and shows the Tail button. Tail sends a backend tail burst when possible, scrolls the local renderer to bottom, focuses the terminal, and resumes follow.
+- Alternate-screen applications keep ownership of their own scroll keys and wheel behavior. WebUI does not consume normal scrollback shortcuts when the renderer reports alternate-screen mode.
+- Temporary terminals share the same renderer, theme, font, links, mouse-reporting filter, paste chunking, and scrollback sizing as main terminals. They start from the configured default folder when no workspace/worktree is selected.
+- The legacy `/assets/shared/terminal-scroll.js` route remains as a compatibility shim for cached older boot scripts. Current boot no longer loads it.
+
+Browser terminal shortcuts:
+
+| Shortcut | Scope | Behavior |
+| --- | --- | --- |
+| `Ctrl+B` by default | Desktop WebUI | Opens the WebUI prefix overlay. The next shortcut key is handled by WebUI instead of the terminal. `Esc` cancels. The prefix is configurable in Settings. |
+| Prefix then `F` | Desktop WebUI | Focuses the main terminal. |
+| Prefix then `Shift+M` | Desktop WebUI | Opens the temporary terminal, minimizes it to the restore pill, or restores the same live temporary terminal. |
+| `Ctrl+G` | Temporary terminal overlay | Detaches the temporary terminal through the same close confirmation as the close button. |
+| `Shift+Enter` | Main terminal | Sends the configured newline sequence when `Shift+Enter newline` is enabled. |
+| `PageUp` / `PageDown` | Main terminal | Scrolls terminal output by one visible terminal page in normal scrollback. |
+| Wheel / trackpad / touch drag | Main terminal | Scrolls terminal output. Trackpad deltas accumulate by row height; `Scroll speed` controls line-wheel steps. |
+| `Cmd/Ctrl+C` | Main terminal | Copies selected terminal text. |
+| `Cmd/Ctrl+V` | Main terminal | Pastes clipboard text through bounded WebSocket chunks. |
+| `Tab`, `Backspace`, navigation keys | Temporary terminal overlay | Captured before browser focus movement and sent to the PTY when the event target is inside the temporary terminal. |
+
 Terminal UI:
 
 - `herdr-webui-tui` ships as a second binary beside `herdr-webui`. `make install-mac`, `make update-mac`, `make install-linux`, and `make update-linux` install both binaries into `~/.local/bin` by default.

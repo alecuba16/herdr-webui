@@ -421,7 +421,11 @@ describe("app bundle load", () => {
     match(html, /Functionality map/);
     match(html, /Keyboard shortcuts/);
     match(html, /Workspaces show open roots\/worktrees; agents list status/);
-    match(html, /Wheel, touch, and PageUp\/PageDown scroll the Herdr backend when available; built-in backend uses local terminal scroll/);
+    match(html, /Desktop, mobile, and temporary terminals use the shared wterm renderer adapter/);
+    match(html, /Settings → Terminal → Renderer switches between wterm and Ghostty/);
+    match(html, /external Herdr sessions try backend scroll first, built-in sessions use local renderer scrollback/);
+    match(html, /Links are enabled by default, mouse reporting is opt-in, paste uses bounded WebSocket chunks/);
+    match(html, /Temporary terminal captures Tab\/Backspace\/navigation keys and normal input while open/);
     match(html, /file rows use license-safe type glyphs while folders stay plain except for Git status colors/);
     match(html, /Header search .* is the single search entry point for workspaces\/worktrees, file names, folder names, and file contents/);
     match(html, /File\/folder and content search run in the backend for the focused workspace\/worktree, lazy-load pages, preserve parent folders for path context/);
@@ -448,9 +452,15 @@ describe("app bundle load", () => {
     match(source, /DEFAULT_WEBUI_SHORTCUTS/);
     match(source, /tempTerminalToggle: "Shift\+KeyM"/);
     match(source, /Open\/minimize\/restore temporary terminal/);
-    match(source, /Open, minimize, or restore the temporary terminal/);
-    match(source, /Temporary terminal captures Tab\/Backspace and normal input while open; Ctrl\+G detaches it through the close confirmation; \$\{escapeHtml\(globalShortcutPrefixLabel\(\)\)\} then Shift\+M opens, minimizes, or restores it/);
-    match(readFileSync(new URL("../../docs/features.md", import.meta.url), "utf8"), /Ctrl\+B` then `Shift\+M` opens, minimizes to the corner restore pill, or restores the same live temporary terminal/);
+    match(source, /Open, minimize to the restore pill, or restore the same live temporary terminal/);
+    match(source, /Wheel\/trackpad\/touch drag/);
+    match(source, /Tab \/ Backspace \/ navigation keys/);
+    match(source, /Paste clipboard text into terminal through bounded WebSocket chunks/);
+    const featuresDocs = readFileSync(new URL("../../docs/features.md", import.meta.url), "utf8");
+    match(featuresDocs, /Settings → Terminal → Renderer can switch between the default wterm core and the Ghostty core/);
+    match(featuresDocs, /\| Prefix then `Shift\+M` \| Desktop WebUI \| Opens the temporary terminal, minimizes it to the restore pill, or restores the same live temporary terminal/);
+    match(featuresDocs, /\| `PageUp` \/ `PageDown` \| Main terminal \| Scrolls terminal output by one visible terminal page/);
+    match(featuresDocs, /\| `Tab`, `Backspace`, navigation keys \| Temporary terminal overlay \| Captured before browser focus movement and sent to the PTY/);
     match(source, /removeWorktreeAlt: "Backspace"/);
     match(source, /removeWorktreeAlt: \(\) =>/);
     match(source, /DEFAULT_GIT_SHORTCUTS/);
@@ -770,7 +780,7 @@ describe("app bundle load", () => {
     match(modalCss, /\.temp-terminal-hint/);
     match(modalCss, /\.temp-terminal-restore \{[\s\S]*?position: fixed;[\s\S]*?right: calc\(env\(safe-area-inset-right, 0px\) \+ 18px\);/);
     match(source, /Ctrl\+G<\/kbd><span>Detach temporary terminal/);
-    match(source, /Temporary terminal captures Tab\/Backspace and normal input while open/);
+    match(source, /Temporary terminal captures Tab\/Backspace\/navigation keys and normal input while open/);
   });
 
   it("defines file explorer and Git file filters", () => {
