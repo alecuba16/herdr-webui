@@ -39,6 +39,16 @@ function context({ mobile = false, preference = null } = {}) {
     ctx: vm.createContext(ctx),
     links,
     scripts,
+    async flushScripts() {
+      for (let i = 0; i < 50; i += 1) {
+        const script = scripts.find((node) => !node.__loaded);
+        if (!script) return;
+        script.__loaded = true;
+        script.onload && script.onload();
+        await Promise.resolve();
+      }
+      throw new Error("script loader did not settle");
+    },
     setMobile(value) {
       matches = value;
     },
@@ -57,9 +67,10 @@ describe("app boot", () => {
     "utf8",
   );
 
-  it("loads desktop bundle by default on wide screens", () => {
-    const { ctx, links, scripts } = context();
+  it("loads desktop bundle by default on wide screens", async () => {
+    const { ctx, links, scripts, flushScripts } = context();
     vm.runInContext(source, ctx);
+    await flushScripts();
     equal(ctx.document.documentElement.dataset.herdrLayout, "desktop");
     equal(links[0].href, "/assets/desktop/app.css");
     equal(links[1].href, "/assets/desktop/git-ui.css");
@@ -89,9 +100,10 @@ describe("app boot", () => {
     equal(scripts[16].src, "/assets/desktop/app.js");
   });
 
-  it("loads mobile bundle for narrow screens", () => {
-    const { ctx, links, scripts } = context({ mobile: true });
+  it("loads mobile bundle for narrow screens", async () => {
+    const { ctx, links, scripts, flushScripts } = context({ mobile: true });
     vm.runInContext(source, ctx);
+    await flushScripts();
     equal(ctx.document.documentElement.dataset.herdrLayout, "mobile");
     equal(links[0].href, "/assets/mobile/app.css");
     equal(links[1].href, "/assets/shared/colors.css");
@@ -121,29 +133,32 @@ describe("app boot", () => {
     equal(scripts[20].src, "/assets/mobile/app.js");
   });
 
-  it("honors explicit desktop override", () => {
-    const { ctx, links, scripts } = context({
+  it("honors explicit desktop override", async () => {
+    const { ctx, links, scripts, flushScripts } = context({
       mobile: true,
       preference: "desktop",
     });
     vm.runInContext(source, ctx);
+    await flushScripts();
     equal(ctx.document.documentElement.dataset.herdrLayout, "desktop");
     equal(links[0].href, "/assets/desktop/app.css");
     equal(scripts[0].src, "/assets/shared/core.js");
   });
 
-  it("reloads to switch layout when auto viewport crosses breakpoint", () => {
+  it("reloads to switch layout when auto viewport crosses breakpoint", async () => {
     const env = context({ mobile: false });
     vm.runInContext(source, env.ctx);
+    await env.flushScripts();
     equal(env.ctx.document.documentElement.dataset.herdrLayout, "desktop");
     env.setMobile(true);
     env.triggerMediaChange();
     equal(env.reloads(), 1);
   });
 
-  it("does not reload on viewport change with explicit override", () => {
+  it("does not reload on viewport change with explicit override", async () => {
     const env = context({ mobile: false, preference: "desktop" });
     vm.runInContext(source, env.ctx);
+    await env.flushScripts();
     env.setMobile(true);
     env.triggerMediaChange();
     equal(env.reloads(), 0);

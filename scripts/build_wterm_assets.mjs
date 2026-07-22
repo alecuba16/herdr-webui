@@ -20,7 +20,6 @@ await esbuild.build({
   entryPoints: [entryPath],
   bundle: true,
   format: "iife",
-  globalName: "HerdrWtermBundle",
   outfile: bundlePath,
   minify: true,
   legalComments: "none",
