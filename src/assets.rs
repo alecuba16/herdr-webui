@@ -442,12 +442,18 @@ mod tests {
         );
         assert_eq!(content_type(&shared_terminal_scroll_js().await), javascript);
         assert_eq!(content_type(&shared_terminal_fit_js().await), javascript);
-        assert_eq!(content_type(&shared_terminal_adapter_js().await), javascript);
+        assert_eq!(
+            content_type(&shared_terminal_adapter_js().await),
+            javascript
+        );
         assert_eq!(content_type(&shared_editor_js().await), javascript);
         assert_eq!(content_type(&vendor_codemirror_js().await), javascript);
         assert_eq!(content_type(&vendor_wterm_js().await), javascript);
         assert_eq!(content_type(&vendor_wterm_css().await), css);
-        assert_eq!(content_type(&vendor_ghostty_wasm().await), "application/wasm");
+        assert_eq!(
+            content_type(&vendor_ghostty_wasm().await),
+            "application/wasm"
+        );
         assert_eq!(content_type(&mobile_file_browser_js().await), javascript);
         assert_eq!(content_type(&login_js().await), javascript);
         assert_eq!(content_type(&shared_colors_css().await), css);

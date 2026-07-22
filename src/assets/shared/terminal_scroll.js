@@ -1,3 +1,5 @@
+// Compatibility shim for older cached app-boot.js files. Current boot does not
+// load this asset; active terminal scroll handling lives in terminal_adapter.js.
 (function (root) {
   function usesNormalBuffer(term) {
     try {

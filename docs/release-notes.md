@@ -239,7 +239,7 @@
 - The desktop terminal shell keeps browser scrolling disabled with `.terminal-shell { overflow: hidden; }` and leaves terminal renderer internals to the vendor stylesheet. `fitTerminalSurface()` resets stale shell scroll offsets during reconnect/resize so tab switches attach at the live bottom instead of a browser-scrolled offset.
 - The Tail button appears after the user scrolls up. Pressing it sends a backend tail burst, hides the button, focuses the terminal, and resumes the latest output view without any write-time viewport preservation.
 - Settings → Terminal → Scroll speed controls desktop wheel sensitivity. Trackpad pixel deltas are accumulated to row height before scroll messages are sent, which avoids one backend scroll for every tiny trackpad event.
-- Mobile keeps its existing shared `src/assets/shared/terminal_scroll.js` local-scroll helper and follow-button path. Desktop and mobile remain separate because desktop needs backend-first scrolling for Herdr/Jcode terminal rendering while mobile still uses terminal local scrollback behavior.
+- Terminal scroll handling now lives with the active terminal renderer adapter and fit helpers. New boot scripts no longer load the old standalone scroll helper, while the route remains as a compatibility shim for cached older boot scripts.
 
 ## 0.2.5 Release Notes
 

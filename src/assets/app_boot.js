@@ -73,7 +73,6 @@
       "/assets/vendor/codemirror.js",
       "/assets/vendor/wterm.js",
       "/assets/shared/editor.js",
-      "/assets/shared/terminal-scroll.js",
       "/assets/shared/terminal-fit.js",
       "/assets/shared/terminal-adapter.js",
       "/assets/shared/temp-terminal.js",
