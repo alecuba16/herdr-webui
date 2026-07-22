@@ -1239,10 +1239,7 @@ fn app_router(state: WebState) -> Router {
         .route("/assets/vendor/codemirror.js", get(vendor_codemirror_js))
         .route("/assets/vendor/wterm.js", get(vendor_wterm_js))
         .route("/assets/vendor/wterm.css", get(vendor_wterm_css))
-        .route(
-            "/assets/vendor/ghostty-vt.wasm",
-            get(vendor_ghostty_wasm),
-        )
+        .route("/assets/vendor/ghostty-vt.wasm", get(vendor_ghostty_wasm))
         .route("/assets/shared/editor.js", get(shared_editor_js))
         .route(
             "/assets/shared/terminal-scroll.js",
@@ -5879,7 +5876,10 @@ mod tests {
             .to_str()
             .unwrap()
             .contains("text/css"));
-        assert_eq!(ghostty_wasm.headers()[header::CONTENT_TYPE], "application/wasm");
+        assert_eq!(
+            ghostty_wasm.headers()[header::CONTENT_TYPE],
+            "application/wasm"
+        );
         assert_eq!(font.headers()[header::CONTENT_TYPE], "font/ttf");
         assert!(app_js.headers()[header::CONTENT_TYPE]
             .to_str()
@@ -5973,7 +5973,13 @@ mod tests {
                 > 1000
         );
         assert!(to_bytes(css.into_body(), 1024 * 1024).await.unwrap().len() > 100);
-        assert!(to_bytes(ghostty_wasm.into_body(), 1024 * 1024).await.unwrap().len() > 100 * 1024);
+        assert!(
+            to_bytes(ghostty_wasm.into_body(), 1024 * 1024)
+                .await
+                .unwrap()
+                .len()
+                > 100 * 1024
+        );
         assert!(
             to_bytes(font.into_body(), 4 * 1024 * 1024)
                 .await

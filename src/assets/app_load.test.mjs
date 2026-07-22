@@ -143,8 +143,6 @@ describe("app bundle load", () => {
       "\n" +
       readFileSync(new URL("./shared/actions.js", import.meta.url), "utf8") +
       "\n" +
-      readFileSync(new URL("./shared/terminal_scroll.js", import.meta.url), "utf8") +
-      "\n" +
       readFileSync(new URL("./shared/terminal_fit.js", import.meta.url), "utf8") +
       "\n" +
       readFileSync(new URL("./desktop/search.js", import.meta.url), "utf8") +

@@ -971,8 +971,10 @@ WebUI files inspected:
   - mobile terminal attach
   - frame coalescing
   - paste chunking
-- `src/assets/shared/terminal_scroll.js`
-  - shared scroll helpers
+- `src/assets/shared/terminal_adapter.js`
+  - shared terminal renderer adapter and local scrollback handling
+- `src/assets/shared/terminal_fit.js`
+  - shared terminal sizing helpers
 
 Herdr `jcode-support` files inspected:
 
