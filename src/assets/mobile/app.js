@@ -1456,6 +1456,7 @@
     setWorktreeDefaultDirectory: mobileSettings.setWorktreeDefaultDirectory,
     applyTerminalFontFamily: mobileTerminal.applyFontFamily,
     applyTerminalLinks: mobileTerminal.applyLinks,
+    reloadTerminal() { mobileTerminal.destroy(false); scheduleTerminalResize(); },
     scrollTerminalToBottom: mobileTerminal.scrollToBottom,
     currentScreen,
     currentSelection,

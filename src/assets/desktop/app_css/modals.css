@@ -246,8 +246,14 @@
   min-height: 0;
   overflow: hidden;
 }
-.temp-terminal-body .xterm {
+.temp-terminal-body .wterm {
+  background: var(--bg);
+  border-radius: 0;
+  box-shadow: none;
+  color: var(--fg);
   height: 100%;
+  overflow: auto;
+  padding: 0;
   width: 100%;
 }
 .temp-terminal-modal {

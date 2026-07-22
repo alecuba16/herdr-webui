@@ -18,7 +18,10 @@ function element(id = "") {
     clientWidth: 360,
     clientHeight: 520,
     appendChild() {},
-    addEventListener() {},
+    listeners: {},
+    addEventListener(event, listener) {
+      (this.listeners[event] || (this.listeners[event] = [])).push(listener);
+    },
     setAttribute() {},
     querySelectorAll() {
       return [];
@@ -95,6 +98,7 @@ function context(pathname = "/", options = {}) {
         this.writes = [];
         this.scrolledToLine = null;
         this.scrolledToBottom = false;
+        this._atBottom = true;
         this.onScrollCallback = null;
         ctx.lastTerminal = this;
       }
@@ -108,6 +112,7 @@ function context(pathname = "/", options = {}) {
       resize() {}
       registerLinkProvider() {
         terminalStats.linksRegistered += 1;
+        this.linksEnabled = true;
         return {
           dispose() {
             terminalStats.linkDisposed += 1;
@@ -118,17 +123,35 @@ function context(pathname = "/", options = {}) {
         this.writes.push(data);
         if (callback) callback();
       }
+      usesNormalBuffer() {
+        return true;
+      }
+      atBottom() {
+        if (typeof ctx.terminalAtBottomOverride === "boolean") return ctx.terminalAtBottomOverride;
+        return this._atBottom;
+      }
+      scrollLines(lines) {
+        this.scrolledLines = lines;
+        this._atBottom = false;
+      }
       scrollToLine(line) {
         this.scrolledToLine = line;
       }
       scrollToBottom() {
         this.scrolledToBottom = true;
+        this._atBottom = true;
+        ctx.terminalAtBottomOverride = true;
         this.buffer.active.viewportY = this.buffer.active.baseY;
       }
       focus() {}
       clear() {}
       dispose() {
         terminalStats.disposed += 1;
+        if (this.linksEnabled) terminalStats.linkDisposed += 1;
+      }
+      destroy() {
+        terminalStats.disposed += 1;
+        if (this.linksEnabled) terminalStats.linkDisposed += 1;
       }
     },
     WebSocket: class {
@@ -262,6 +285,17 @@ function context(pathname = "/", options = {}) {
                   ],
                 };
       return { ok: true, status: 200, json: async () => ({ result }) };
+    },
+  };
+  ctx.HerdrTerminalRenderer = {
+    create: async (_target, rendererOptions = {}) => {
+      const term = new ctx.Terminal();
+      terminalStats.opened += 1;
+      if (rendererOptions.links !== false) {
+        terminalStats.linksRegistered += 1;
+        term.linksEnabled = true;
+      }
+      return term;
     },
   };
   ctx.terminalStats = terminalStats;
@@ -552,7 +586,6 @@ describe("mobile bundle load", () => {
     ok(settingsHtml.includes("Terminal font"));
     ok(settingsHtml.includes("Terminal links"));
     ok(settingsHtml.includes("Terminal mouse reporting"));
-    match(source, /resetTerminalMouseTracking\(term, terminalMouseReportingEnabled\(\)\)/);
     match(source, /stripTerminalQueryReplies\(data, terminalQueryReplyState\)/);
     ok(settingsHtml.includes("Line numbers"));
     ok(settingsHtml.includes("HerdrMobile.setTerminalFontFamily"));
@@ -652,12 +685,14 @@ describe("mobile bundle load", () => {
     vm.runInContext(source, ctx);
     await ctx.HerdrMobile.refresh();
     ctx.HerdrMobile.showScreen("terminal");
+    await Promise.resolve();
     ok(ctx.terminalStats.opened >= 1);
     ok(ctx.terminalStats.linksRegistered >= 1);
     ctx.HerdrMobile.showScreen("agents");
     equal(ctx.terminalStats.disposed, 1);
     equal(ctx.terminalStats.linkDisposed, 1);
     ctx.HerdrMobile.showScreen("terminal");
+    await Promise.resolve();
     ok(ctx.terminalStats.opened >= 2);
   });
 
@@ -666,27 +701,28 @@ describe("mobile bundle load", () => {
     vm.runInContext(source, ctx);
     await ctx.HerdrMobile.refresh();
     ctx.HerdrMobile.showScreen("terminal");
+    await Promise.resolve();
     ok(source.includes("mobileTerminalFollowButton"));
     ok(source.includes('terminal.addEventListener("wheel", handleWheel, { passive: false })'));
-    ok(source.includes('terminal.addEventListener("touchmove", handleTouchMove, { passive: false })'));
-    ok(source.includes("function scrollLocal(term, direction, lines, afterScroll)"));
-    ok(source.includes("HerdrTerminalScroll.scrollLocal(term, direction, lines"));
+    ok(source.includes("term.usesNormalBuffer"));
+    ok(source.includes("term.scrollLines"));
     equal(typeof ctx.HerdrMobile.scrollTerminalToBottom, "function");
-    ctx.lastTerminal.buffer.active.baseY = 50;
-    ctx.lastTerminal.buffer.active.viewportY = 20;
-    ctx.lastTerminal.onScrollCallback();
+    ctx.lastTerminal._atBottom = false;
+    ctx.terminalAtBottomOverride = false;
+    const terminalEl = ctx.document.getElementById("terminal");
+    terminalEl.listeners.scroll[0]();
     ok(ctx.document.getElementById("mobileTerminalFollowButton").hidden === false);
     ctx.lastSocket.onmessage({ data: "new output" });
-    equal(ctx.lastTerminal.scrolledToLine, 20);
+    equal(ctx.lastTerminal.scrolledToBottom, false);
     ctx.HerdrMobile.scrollTerminalToBottom();
-    ok(ctx.lastTerminal.scrolledToBottom);
+    equal(ctx.terminalAtBottomOverride, true);
   });
 
   it("captures mobile terminal paste before xterm native paste", () => {
     match(source, /addEventListener\(\s*"paste"/);
     match(source, /stopImmediatePropagation\(\)/);
     match(source, /sendPasteToTerminal\(text\)/);
-    match(source, /sendInputData\(terminalPasteInput\(text, false\)\)/);
+    match(source, /sendInputData\(normalized, \{ chunkSize: 16 \* 1024, maxBufferedAmount: 64 \* 1024 \}\)/);
     ok(!source.includes('JSON.stringify({ type: "paste"'));
     ok(!source.includes('.paste(text)'));
   });

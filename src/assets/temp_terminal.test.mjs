@@ -32,7 +32,7 @@ function makeElement(id = "") {
     },
     querySelector(selector) {
       if (selector === ".temp-terminal-minimize") return this.minimizeButton || null;
-      if (selector === ".xterm") return this.xtermElement || null;
+      if (selector === ".terminal" || selector === ".wterm") return this.terminalElement || null;
       return null;
     },
     removeAttribute(name) {
@@ -61,13 +61,15 @@ function context() {
   modal.minimizeButton = makeElement("tempTerminalMinimize");
   const container = getElement("tempTerminal");
 
+  let ctx;
+
   class FakeTerminal {
     constructor() {
-      this.element = makeElement("xterm");
+      this.element = makeElement("terminal");
       this.element.containsTarget = { insideTerm: true };
       this.focusCount = 0;
       this.resizeCalls = [];
-      context.lastTerminal = this;
+      ctx.lastTerminal = this;
     }
     focus() {
       this.focusCount += 1;
@@ -76,7 +78,7 @@ function context() {
       this.onDataHandler = fn;
     }
     open(target) {
-      target.xtermElement = this.element;
+      target.terminalElement = this.element;
     }
     resize(cols, rows) {
       this.resizeCalls.push([cols, rows]);
@@ -101,9 +103,16 @@ function context() {
     }
   }
 
-  const ctx = {
+  ctx = {
     TextEncoder,
-    Terminal: FakeTerminal,
+    HerdrTerminalRenderer: {
+      create(target, options) {
+        const term = new FakeTerminal(options);
+        term.onData(options && options.onData);
+        term.open(target);
+        return Promise.resolve(term);
+      },
+    },
     WebSocket: FakeWebSocket,
     clearTimeout() {},
     setTimeout(fn) {
@@ -137,7 +146,7 @@ function context() {
       cellSize() {
         return { width: 9, height: 20 };
       },
-      fitXtermToContainer() {},
+      fitTerminalToContainer() {},
       gridSize() {
         return { cols: 88, rows: 22 };
       },

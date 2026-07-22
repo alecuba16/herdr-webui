@@ -214,7 +214,7 @@
 
     function tempTerminalOwnsEventTarget(target) {
       if (!target || !term) return false;
-      var termElement = term.element || (el(containerId) && el(containerId).querySelector && el(containerId).querySelector(".xterm"));
+      var termElement = term.element || el(containerId);
       return !!(termElement && termElement.contains && termElement.contains(target));
     }
 
@@ -353,8 +353,8 @@
     function connectTerminalWs(terminalId) {
       var container = el(containerId);
       if (!container) return;
-      ensureTerminalSurface(container);
-      waitForTerminalFit(container, 0, function (size) {
+      ensureTerminalSurface(container).then(function () {
+        waitForTerminalFit(container, 0, function (size) {
         if (!isOpen || !term) return;
         var cols = size.cols, rows = size.rows;
         resizeTerminalSurface(container, cols, rows);
@@ -380,34 +380,28 @@
             close();
           }
         };
+        });
       });
     }
 
     function ensureTerminalSurface(container) {
-      if (term) return;
-      term = new Terminal({
-        convertEol: false,
+      if (term) return Promise.resolve(term);
+      if (!globalThis.HerdrTerminalRenderer) return Promise.reject(new Error("terminal renderer unavailable"));
+      return globalThis.HerdrTerminalRenderer.create(container, {
+        cols: 80,
+        rows: 24,
+        core: tempTerminalCore(),
         fontFamily: fontFamilyFn(),
-        scrollback: 5000,
         theme: themeFn(),
+        links: true,
+        scrollback: 5000,
+        onData: function (data) { sendInput(data); },
+      }).then(function (created) {
+        term = created;
+        try { term.focus(); } catch (e) {}
+        refreshTerminalFitAfterFontLoad();
+        return term;
       });
-      term.open(container);
-      term.onData(function (data) { sendInput(data); });
-      try { term.focus(); } catch (e) {}
-      // xterm can blur its helper textarea during resize/write; re-grab focus
-      // synchronously so Backspace/Tab never fall through to the background.
-      var helperTextarea = term.textarea;
-      if (helperTextarea && helperTextarea.addEventListener) {
-        helperTextarea.addEventListener("blur", function () {
-          if (!isOpen || isMinimized || confirmVisible || closing) return;
-          // Don't steal focus back from the close-confirm buttons.
-          var active = document.activeElement;
-          if (active && isCloseControl(active)) return;
-          if (active && active.closest && active.closest(".temp-terminal-confirm")) return;
-          try { term.focus(); } catch (e) {}
-        }, true);
-      }
-      refreshTerminalFitAfterFontLoad();
     }
 
     function waitForTerminalFit(container, attempt, callback) {
@@ -536,12 +530,9 @@
     function disposeTerm() {
       writeQueue = [];
       writeFlushPending = false;
-      if (linkProvider && linkProvider.dispose) {
-        try { linkProvider.dispose(); } catch (e) {}
-      }
       linkProvider = null;
       if (term) {
-        try { term.dispose(); } catch (e) {}
+        try { term.destroy(); } catch (e) {}
         term = null;
       }
       var container = el(containerId);
@@ -565,6 +556,16 @@
       if (!workspaceId) return;
       api("/api/workspaces/" + encodeURIComponent(workspaceId) + "/close", { method: "POST" })
         .catch(function () {});
+    }
+
+    function tempTerminalCore() {
+      try {
+        var storage = globalThis.localStorage;
+        var parsed = JSON.parse((storage && storage.getItem("herdr-web-options")) || "{}");
+        return parsed.terminalCore === "ghostty" ? "ghostty" : "wterm";
+      } catch (e) {
+        return "wterm";
+      }
     }
 
     function terminalMouseReportingEnabled() {
@@ -634,13 +635,6 @@
     function writeFrame(data) {
       if (!term) return;
       try { term.write(data); } catch (e) { try { term.write(data); } catch (e2) {} }
-      resetMouseTrackingIfDisabled();
-    }
-
-    function resetMouseTrackingIfDisabled() {
-      var helpers = globalThis.HerdrAppHelpers || {};
-      if (typeof helpers.resetTerminalMouseTracking !== "function") return false;
-      return helpers.resetTerminalMouseTracking(term, terminalMouseReportingEnabled());
     }
 
     function isVisible() { return isOpen && !isMinimized; }
@@ -675,7 +669,7 @@
     }
 
     function fitTerminalDomToContainer(container) {
-      HerdrTerminalFit.fitXtermToContainer(container);
+      HerdrTerminalFit.fitTerminalToContainer(container);
     }
 
     return { open: open, requestClose: requestClose, close: close, minimize: minimize, restore: restore, isVisible: isVisible, handleResize: handleResize, handlePaneExited: handlePaneExited };

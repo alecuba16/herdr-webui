@@ -1089,7 +1089,7 @@ async function closeTab(id) {
     selectFallbackTabAfterClosed(id);
     replaceSelectionHistory();
     render();
-    if (typeof Terminal !== "undefined") connectTerminal();
+    if (window.HerdrTerminalRenderer) connectTerminal();
   } else if (state.tab === id) {
     state.tab = null;
     state.pane = null;

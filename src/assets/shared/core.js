@@ -52,9 +52,9 @@
   function stripTerminalMouseReports(data, enabled = false) {
     if (enabled) return data;
     if (typeof data !== "string" || data.indexOf("\x1b[") === -1) return data;
-    // xterm.js emits mouse reports when a terminal app enables mouse tracking.
-    // Herdr owns mouse UX at the browser layer: wheel/touch scroll is handled by
-    // terminal.js, and forwarding mouse bytes to the PTY can leave readline
+    // Some terminal emulators emit mouse reports when a terminal app enables
+    // mouse tracking. Herdr owns mouse UX at the browser layer, so forwarding
+    // mouse bytes to the PTY can leave readline
     // echoing fragments like `35;105;1M` after stale tracking mode. Strip mouse
     // reports from user input by default while preserving normal keyboard/paste
     // bytes. Users can opt in when a TUI really needs terminal mouse input.
@@ -102,23 +102,6 @@
     if (!oscPrefixed && !text.includes(";r")) return false;
     return /^(?:(?:1[012]?)|(?:4(?:;\d{0,3})?))(?:;r(?:g(?:b(?::[0-9a-fA-F]{0,4}(?:\/[0-9a-fA-F]{0,4}(?:\/[0-9a-fA-F]{0,4})?)?)?)?)?)?$/.test(text)
       && !TERMINAL_QUERY_REPLY_FULL_RE.test(text);
-  }
-
-  const TERMINAL_MOUSE_RESET_SEQUENCE = "\x1b[?9;1000;1002;1003l\x1b[?1006;1016l";
-
-  function resetTerminalMouseTracking(term, enabled = false) {
-    if (enabled || !term || typeof term.write !== "function") return false;
-    // Blocking outbound reports is not enough: xterm.js disables normal text
-    // selection as soon as a TUI enables DECSET mouse tracking. Keep Herdr's
-    // default selection UX by locally resetting xterm mouse protocol/encoding
-    // after terminal output is parsed. Users who enable Terminal mouse reporting
-    // keep the original TUI mouse behavior.
-    try {
-      term.write(TERMINAL_MOUSE_RESET_SEQUENCE);
-      return true;
-    } catch (_) {
-      return false;
-    }
   }
 
   function tabActivityLabel(updatedAt, now) {
@@ -368,8 +351,6 @@
     terminalPasteInput,
     stripTerminalMouseReports,
     stripTerminalQueryReplies,
-    TERMINAL_MOUSE_RESET_SEQUENCE,
-    resetTerminalMouseTracking,
     tabActivityLabel,
     escapeHtml,
     pathBasename,
