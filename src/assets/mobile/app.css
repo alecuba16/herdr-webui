@@ -932,7 +932,7 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
   border-radius: 14px;
   margin: auto;
   width: 95vw;
-  height: min(80vh, calc(var(--herdr-mobile-viewport-height) - 24px));
+  height: calc(var(--herdr-mobile-viewport-height) - 24px);
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -1016,6 +1016,10 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+}
+.temp-terminal-body .wterm {
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 .temp-terminal-modal {
   position: relative;

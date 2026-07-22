@@ -60,9 +60,11 @@
       this.core = normalizeCore(options.core);
       this._destroyed = false;
       this._linkClick = null;
+      this._wheelScroll = null;
       this.setTheme(options.theme || {});
       this.setFontFamily(options.fontFamily || "monospace");
       this.setLinksEnabled(options.links !== false);
+      this.setWheelScrolling(true);
       container.__herdrTerminalAdapter = this;
     }
 
@@ -122,6 +124,7 @@
       if (this._destroyed) return;
       this._destroyed = true;
       this.setLinksEnabled(false);
+      this.setWheelScrolling(false);
       if (this.wterm && this.wterm.destroy) this.wterm.destroy();
       if (this.element && this.element.__herdrTerminalAdapter === this)
         delete this.element.__herdrTerminalAdapter;
@@ -165,6 +168,26 @@
         root.open(url, "_blank", "noopener,noreferrer");
       };
       this.element.addEventListener("click", this._linkClick, true);
+    }
+
+    setWheelScrolling(enabled) {
+      if (this._wheelScroll) {
+        this.element.removeEventListener("wheel", this._wheelScroll, { passive: false });
+        this._wheelScroll = null;
+      }
+      if (!enabled) return;
+      this._wheelScroll = (event) => {
+        if (this._destroyed || event.defaultPrevented || !this.usesNormalBuffer()) return;
+        const deltaY = Number(event.deltaY) || 0;
+        if (!deltaY) return;
+        const maxScroll = Math.max(0, (this.element.scrollHeight || 0) - (this.element.clientHeight || 0));
+        if (maxScroll <= 0) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const lines = wheelLines(this, event, this.rows || 24);
+        this.scrollLines(deltaY < 0 ? -lines : lines);
+      };
+      this.element.addEventListener("wheel", this._wheelScroll, { passive: false });
     }
 
     rowHeight() {
@@ -240,6 +263,16 @@
       if (pos) return { node: pos.offsetNode, offset: pos.offset || 0 };
     }
     return null;
+  }
+
+  function wheelLines(term, event, pageRows) {
+    const unit =
+      event.deltaMode === 1
+        ? 1
+        : event.deltaMode === 2
+          ? pageRows || 24
+          : Math.max(1, term.rowHeight ? term.rowHeight() : 17);
+    return Math.max(1, Math.round(Math.abs((Number(event.deltaY) || 0) / unit)));
   }
 
   root.HerdrTerminalRenderer = {

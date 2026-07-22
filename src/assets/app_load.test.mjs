@@ -749,7 +749,7 @@ describe("app bundle load", () => {
     match(tempTerminalSource, /function waitForTerminalFit\(container, attempt, callback\)/);
     match(tempTerminalSource, /HerdrTerminalFit\.gridSize\(container, term/);
     match(tempTerminalSource, /HerdrTerminalFit\.cellSize\(term, container/);
-    match(tempTerminalSource, /HerdrTerminalFit\.fitTerminalToContainer\(container\)/);
+    match(tempTerminalSource, /HerdrTerminalFit\.fitTerminalToContainer\(container, \{ height: box\.height \}\)/);
     match(terminalFitSource, /function cellSize\(term, container, fallback\)/);
     match(terminalFitSource, /function gridSize\(container, term, options\)/);
     match(terminalFitSource, /function fitTerminalToContainer\(container, options\)/);
@@ -757,14 +757,15 @@ describe("app bundle load", () => {
     match(tempTerminalSource, /resizeTerminalSurface\(container, cols, rows\)/);
     match(tempTerminalSource, /box\.width >= 320 && box\.height >= 120/);
     match(tempTerminalSource, /function afterBrowserLayout\(callback\)/);
-    match(tempTerminalSource, /rowReserve: 1/);
+    match(tempTerminalSource, /rowReserve: 0/);
     match(terminalFitSource, /rows: Math\.max\(opts\.minRows \|\| 8,/);
     ok(!tempTerminalSource.includes("setTimeout(handleResize, 0)"));
-    match(modalCss, /height: min\(80vh, calc\(100dvh - 32px\)\)/);
+    match(modalCss, /height: calc\(100dvh - 32px\)/);
     match(modalCss, /width: calc\(100vw - 32px\);\n\s+max-width: none;/);
     ok(!modalCss.includes("max-width: 1200px"));
     match(modalCss, /\.temp-terminal-body \{[\s\S]*?min-height: 0;[\s\S]*?overflow: hidden;/);
     match(modalCss, /\.temp-terminal-body \.terminal \{[\s\S]*?width: 100%;[\s\S]*?height: 100%;/);
+    match(modalCss, /\.temp-terminal-body \.wterm \{[\s\S]*?overflow-x: hidden;[\s\S]*?overflow-y: auto;/);
     match(html, /Input captured · Ctrl\+G detaches/);
     match(html, /aria-label="Minimize temporary terminal"/);
     match(html, /aria-label="Detach temporary terminal"/);
