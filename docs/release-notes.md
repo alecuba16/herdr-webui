@@ -7,6 +7,7 @@
 - Reduces desktop browser work on frequent refreshes by memoizing the workspace sidebar render signature and reusing the previous sidebar HTML when workspace, worktree, panel, shortcut, and selection inputs have not changed.
 - Moves terminal renderer OSC color-query reply filtering into the shared terminal helper and applies it to desktop, mobile, and temporary terminal input paths. This strips `OSC 10/11/12` and palette color replies, including split and bare `10;rgb...`/`11;rgb...` fragments, before they can echo into shell input.
 - Keeps ordinary terminal input safe while filtering query replies, with regressions for numeric keys and Escape so normal shell/TUI input is not delayed.
+- Documents the browser terminal feature set in docs and Help: wterm/Ghostty renderer selection, Tail/follow behavior, scroll and PageUp/PageDown semantics, copy/paste, mouse reporting, and temporary terminal shortcuts.
 
 ## 0.2.77 Release Notes
 

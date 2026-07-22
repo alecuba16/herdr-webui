@@ -87,6 +87,13 @@ The Rust binary embeds assets with `include_str!` or `include_bytes!`. Public ro
 - `/assets/shared/workspace-search.js`
 - `/assets/vendor/codemirror.js`
 - `/assets/shared/editor.js`
+- `/assets/vendor/wterm.js`
+- `/assets/vendor/wterm.css`
+- `/assets/vendor/ghostty-vt.wasm`
+- `/assets/shared/terminal-fit.js`
+- `/assets/shared/terminal-adapter.js`
+- `/assets/shared/temp-terminal.js`
+- `/assets/shared/terminal-scroll.js`, compatibility shim only for cached older boot scripts
 - desktop assets under `/assets/desktop/...`
 - mobile assets under `/assets/mobile/...`
 
@@ -265,7 +272,9 @@ Browser-local settings are stored in `localStorage` under `herdr-web-options`. R
 | `gitShortcuts` | app default | Git UI shortcut map. |
 | `searchShortcut` | `off` | Optional search prefix. |
 | `terminalFontFamily` | bundled Nerd Font stack | Migrates old monospace default. |
+| `terminalCore` | `wterm` | Browser terminal renderer core. Valid values are `wterm` and `ghostty`; invalid values normalize to `wterm`. Changing it reconnects the active terminal. |
 | `terminalLinks` | `true` | Terminal link detection. |
+| `terminalMouseReporting` | `false` | Allows terminal renderer mouse reports through to the PTY. Disabled by default so text selection and accidental mouse report echoes stay safe. |
 | `agentSortMode` | `off` | Optional attention/status sorting. |
 | `agentStatusOrder` | blocked, idle, done, other, working | Custom status grouping order. |
 | `sidebarWorkspacePercent` | `68` | Clamped 20 to 80. |
@@ -318,7 +327,7 @@ Main user-facing functionality is documented in [Features](features.md). Technic
 
 | Area | Backend owns | Frontend owns |
 | --- | --- | --- |
-| Terminal | Built-in PTY backend by default, external Herdr protocol bridge when selected, auth/session routing, WebSocket frame validation. | terminal attach, scroll-follow state, paste chunking, layout sizing. |
+| Terminal | Built-in PTY backend by default, external Herdr protocol bridge when selected, auth/session routing, WebSocket frame validation. | wterm/Ghostty renderer selection, terminal attach, scroll-follow state, paste chunking, terminal query/mouse filtering, link handling, layout sizing. |
 | Workspaces/worktrees | Built-in workspace/worktree basics by default, external Herdr API proxying when selected, compatibility fallback, service-level validation. | List ordering, local labels, action menus, open/create/remove flows. |
 | Git UI | Git CLI commands, path/ref validation, diff/log/status parsing, cleanup scans. | Drawer rendering, shortcuts, staged/unstaged file interactions, diff controls. |
 | File explorer tree | Safe path cleaning, directory listing, backend file/folder search, pagination, Git status propagation. | Tree rendering, selected file state, scroll preservation, open-at-path behavior. |
@@ -344,6 +353,8 @@ This split keeps expensive or repository-sensitive work in Rust and keeps browse
 - CodeMirror is preloaded once and reused for preview, edit, Git hunk editing, and snippet editing. A numbered HTML fallback exists only for load failure.
 - Desktop terminal output is coalesced once per animation frame before terminal renderer writes. Attach frames have suppression logic so large initial frames do not reveal partial output.
 - Large paste input bypasses terminal renderer synchronous `paste()` and uses bounded WebSocket chunks with backpressure.
+- Browser terminals use `src/assets/shared/terminal_adapter.js` as the renderer boundary over the checked-in wterm bundle. The adapter exposes `write`, `resize`, `focus`, `destroy`, `cellSize`, `rowHeight`, `scrollLines`, `scrollToBottom`, `atBottom`, link toggling, theme variables, font variables, and normal/alternate-screen detection to desktop, mobile, and temporary terminal controllers.
+- `src/assets/shared/terminal_fit.js` owns visible-box measurement and grid sizing. Terminal containers keep `overflow-x: hidden` and `overflow-y: auto` so the renderer can use the full modal/tab viewport while still allowing local scrollback.
 - Git diff views use lazy file loading, context expansion, placeholders, and omitted-line guards for very large diffs.
 
 ### State and refresh model
@@ -401,6 +412,7 @@ Current shared tokens cover:
 The in-app Help and Shortcuts modal documents user-facing behavior, including:
 
 - terminal shortcuts,
+- renderer choice, wterm/Ghostty behavior, terminal links, mouse reporting, paste chunking, Tail, and temporary terminal shortcuts,
 - unified header search, file/folder/content search, Git color priority, icons, read-only preview, line numbers, folding, and workspace state preservation,
 - Git UI actions and diff modes,
 - command palette behavior.
