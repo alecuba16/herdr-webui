@@ -13,13 +13,20 @@ function makeStyle() {
 
 function makeElement() {
   const listeners = new Map();
-  return {
+  const element = {
     listeners,
     style: makeStyle(),
     innerHTML: "",
-    scrollTop: 400,
+    _scrollTop: 400,
     scrollHeight: 1000,
     clientHeight: 200,
+    get scrollTop() {
+      return this._scrollTop;
+    },
+    set scrollTop(value) {
+      const max = Math.max(0, (this.scrollHeight || 0) - (this.clientHeight || 0));
+      this._scrollTop = Math.max(0, Math.min(max, Number(value) || 0));
+    },
     addEventListener(type, fn) {
       listeners.set(type, fn);
     },
@@ -29,6 +36,7 @@ function makeElement() {
     contains() { return false; },
     querySelector() { return null; },
   };
+  return element;
 }
 
 function wheelEvent(deltaY, extra = {}) {
@@ -100,5 +108,26 @@ describe("terminal adapter wheel scrolling", () => {
 
     equal(event.defaultPrevented, false);
     equal(container.scrollTop, 400);
+  });
+
+  it("maps line and page wheel units to terminal rows", async () => {
+    const { container } = await createAdapter();
+    const listener = container.listeners.get("wheel");
+    ok(listener);
+
+    listener(wheelEvent(3, { deltaMode: 1 }));
+    equal(container.scrollTop, 460);
+
+    listener(wheelEvent(-1, { deltaMode: 2 }));
+    equal(container.scrollTop, 0);
+  });
+
+  it("removes the wheel listener on destroy", async () => {
+    const { adapter, container } = await createAdapter();
+    ok(container.listeners.get("wheel"));
+
+    adapter.destroy();
+
+    equal(container.listeners.get("wheel"), undefined);
   });
 });

@@ -12,8 +12,9 @@
   }
 
   function prefersMobile() {
-    if (readLayoutPreference() === "mobile") return true;
-    if (readLayoutPreference() === "desktop") return false;
+    const preference = readLayoutPreference();
+    if (preference === "mobile") return true;
+    if (preference === "desktop") return false;
     return !!(window.matchMedia && window.matchMedia(MOBILE_QUERY).matches);
   }
 

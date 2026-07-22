@@ -17,13 +17,11 @@
   }
 
   function wheelLines(term, event, pageRows) {
-    const unit =
-      event.deltaMode === 1
-        ? 1
-        : event.deltaMode === 2
-          ? pageRows || 24
-          : Math.max(1, rowHeight(term));
-    return Math.max(1, Math.round(Math.abs(event.deltaY) / unit));
+    const delta = Math.abs(Number(event.deltaY) || 0);
+    if (event.deltaMode === 1) return Math.max(1, Math.round(delta));
+    if (event.deltaMode === 2)
+      return Math.max(1, Math.round(delta * (pageRows || 24)));
+    return Math.max(1, Math.round(delta / Math.max(1, rowHeight(term))));
   }
 
   function touchLines(term, deltaY) {

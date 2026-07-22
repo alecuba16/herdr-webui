@@ -6109,6 +6109,49 @@ mod tests {
         .contains("<svg"));
     }
 
+    #[tokio::test]
+    async fn app_boot_skips_terminal_scroll_helper_but_compat_route_remains() {
+        let app = test_app();
+        let app_boot_js = app
+            .clone()
+            .oneshot(
+                request(Method::GET, "/assets/app-boot.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let terminal_scroll_js = app
+            .oneshot(
+                request(Method::GET, "/assets/shared/terminal-scroll.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(app_boot_js.status(), StatusCode::OK);
+        assert_eq!(terminal_scroll_js.status(), StatusCode::OK);
+        let app_boot_body = String::from_utf8(
+            to_bytes(app_boot_js.into_body(), 1024 * 1024)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        let terminal_scroll_body = String::from_utf8(
+            to_bytes(terminal_scroll_js.into_body(), 1024 * 1024)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+
+        assert!(!app_boot_body.contains("/assets/shared/terminal-scroll.js"));
+        assert!(terminal_scroll_body.contains("Compatibility shim"));
+        assert!(terminal_scroll_body.contains("HerdrTerminalScroll"));
+    }
+
     #[test]
     fn list_git_branches_can_include_remote_refs_on_request() {
         let repo =
