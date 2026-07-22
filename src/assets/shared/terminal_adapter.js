@@ -266,13 +266,12 @@
   }
 
   function wheelLines(term, event, pageRows) {
-    const unit =
-      event.deltaMode === 1
-        ? 1
-        : event.deltaMode === 2
-          ? pageRows || 24
-          : Math.max(1, term.rowHeight ? term.rowHeight() : 17);
-    return Math.max(1, Math.round(Math.abs((Number(event.deltaY) || 0) / unit)));
+    const delta = Math.abs(Number(event.deltaY) || 0);
+    if (event.deltaMode === 1) return Math.max(1, Math.round(delta));
+    if (event.deltaMode === 2)
+      return Math.max(1, Math.round(delta * (pageRows || 24)));
+    const rowHeight = Math.max(1, term.rowHeight ? term.rowHeight() : 17);
+    return Math.max(1, Math.round(delta / rowHeight));
   }
 
   root.HerdrTerminalRenderer = {
