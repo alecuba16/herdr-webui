@@ -346,9 +346,19 @@ body.light {
   min-height: max-content;
   white-space: nowrap;
 }
-.mobile-terminal .xterm-viewport {
-  overflow: hidden !important;
-  height: 100% !important;
+.mobile-terminal.wterm,
+.mobile-terminal .wterm {
+  background: var(--bg);
+  border-radius: 0;
+  box-shadow: none;
+  color: var(--fg);
+  font-family: var(--term-font-family, "Herdr JetBrainsMono Nerd Font Mono", ui-monospace, monospace);
+  overflow: auto;
+  padding: 0;
+}
+.mobile-terminal.wterm .term-grid,
+.mobile-terminal .wterm .term-grid {
+  min-width: max-content;
 }
 .mobile-loading {
   display: grid;

@@ -168,6 +168,14 @@ el("optTerminalFontFamily").oninput = () => {
   applyTerminalFont();
   fitTerminalShell();
 };
+const optTerminalCore = el("optTerminalCore");
+if (optTerminalCore)
+  optTerminalCore.onchange = () => {
+    options.terminalCore = optTerminalCore.value === "ghostty" ? "ghostty" : "wterm";
+    saveOptions();
+    resetTerminalConnection(true);
+    connectTerminal();
+  };
 el("optTerminalLinks").onchange = () => {
   options.terminalLinks = el("optTerminalLinks").checked;
   saveOptions();
@@ -176,8 +184,6 @@ el("optTerminalLinks").onchange = () => {
 el("optTerminalMouseReporting").onchange = () => {
   options.terminalMouseReporting = el("optTerminalMouseReporting").checked;
   saveOptions();
-  if (!options.terminalMouseReporting && window.HerdrResetTerminalMouseTracking)
-    window.HerdrResetTerminalMouseTracking();
 };
 el("optAgentSortMode").onchange = () => {
   options.agentSortMode = el("optAgentSortMode").value;

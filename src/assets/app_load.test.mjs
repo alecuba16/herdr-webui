@@ -363,16 +363,14 @@ describe("app bundle load", () => {
     match(desktopTerminalSource, /fontFamily: terminalFontFamily\(\)/);
     match(desktopTerminalSource, /refreshTerminalAfterFontLoad\(target\)/);
     match(source, /theme: terminalTheme\(\)/);
-    match(source, /term\.options\.theme = terminalTheme\(\)/);
-    match(source, /term\.setOption\("theme", terminalTheme\(\)\)/);
+    match(source, /term && term\.setTheme/);
   });
 
-  it("keeps desktop terminal scrolling delegated to vanilla xterm", () => {
+  it("keeps desktop terminal scrolling delegated to wterm adapter", () => {
     const terminalCss = readFileSync(new URL("./desktop/app_css/terminal.css", import.meta.url), "utf8");
 
     ok(!terminalCss.includes(".terminal .xterm"));
-    ok(!terminalCss.includes("xterm-selection"));
-    ok(!terminalCss.includes("xterm-cursor"));
+    ok(terminalCss.includes(".terminal.wterm"));
     match(terminalCss, /\.terminal-shell \{[\s\S]*?overflow: hidden;/);
     match(terminalCss, /\.terminal \{[\s\S]*?height: 100%;/);
     ok(!terminalCss.match(/\.terminal \.xterm-rows[\s\S]*?height: 100% !important;/));
@@ -384,7 +382,7 @@ describe("app bundle load", () => {
     match(desktopTerminalSource, /terminal\.addEventListener\("touchend", handleTerminalTouchEnd, \{ passive: true, capture: true \}\);/);
     ok(!desktopTerminalSource.includes("attachCustomWheelEventHandler"));
     match(desktopTerminalSource, /e\.key === "PageUp" \|\| e\.key === "PageDown"/);
-    match(desktopTerminalSource, /scrollTerminalLines\(\n\s+e\.key === "PageUp"/);
+    match(desktopTerminalSource, /scrollTerminalLines\(e\.key === "PageUp"/);
     ok(!desktopTerminalSource.includes("scrollBrowserOverflow"));
     ok(!source.includes("Option+Wheel"));
     match(desktopTerminalSource, /const stepLines = Math\.max\(1, Number\(options\.scrollLines\) \|\| 1\);/);
@@ -413,7 +411,7 @@ describe("app bundle load", () => {
     match(gitUiSource, /gitShortcutMap\(\)/);
     match(gitUiSource, /activateTreeItem\(event\)/);
     match(gitUiSource, /role="treeitem" tabindex="0" data-git-path=/);
-    match(source, /HerdrGitUi\.isVisible\(\)\)\n\s+return false;/);
+    match(source, /HerdrGitUi\.isVisible\(\)\) return;/);
   });
 
   it("renders shortcut editor with collision detection", () => {
@@ -427,7 +425,7 @@ describe("app bundle load", () => {
     match(html, /Functionality map/);
     match(html, /Keyboard shortcuts/);
     match(html, /Workspaces show open roots\/worktrees; agents list status/);
-    match(html, /Wheel, touch, and PageUp\/PageDown scroll the Herdr backend when available; built-in backend uses xterm local scroll/);
+    match(html, /Wheel, touch, and PageUp\/PageDown scroll the Herdr backend when available; built-in backend uses local terminal scroll/);
     match(html, /file rows use license-safe type glyphs while folders stay plain except for Git status colors/);
     match(html, /Header search .* is the single search entry point for workspaces\/worktrees, file names, folder names, and file contents/);
     match(html, /File\/folder and content search run in the backend for the focused workspace\/worktree, lazy-load pages, preserve parent folders for path context/);
@@ -740,10 +738,9 @@ describe("app bundle load", () => {
     match(readFileSync(new URL("./desktop/app_js/bindings.js", import.meta.url), "utf8"), /shortcutLabelFn: \(\) => shortcutLabel\("webuiShortcuts", "tempTerminalToggle"\)/);
     match(tempTerminalSource, /if \(event\.key === "Backspace"\) return "\\x7f";/);
     match(tempTerminalSource, /if \(event\.key === "Tab"\) return event\.shiftKey \? "\\x1b\[Z" : "\\t";/);
-    match(tempTerminalSource, /term\.element \|\| \(el\(containerId\) && el\(containerId\)\.querySelector/);
+    match(tempTerminalSource, /term\.element \|\| el\(containerId\)/);
     match(tempTerminalSource, /case "Backspace": return "\\x7f";/);
     match(tempTerminalSource, /case "Tab": return event\.shiftKey \? "\\x1b\[Z" : "\\t";/);
-    match(tempTerminalSource, /resetTerminalMouseTracking\(term, terminalMouseReportingEnabled\(\)\)/);
     match(tempTerminalSource, /stripTerminalQueryReplies\(data, terminalQueryReplyState\)/);
     match(tempTerminalSource, /String\(event\.key \|\| ""\)\.toLowerCase\(\) === "g"/);
     match(shortcutsSource, /function tempTerminalModalOpen\(\)/);
@@ -754,10 +751,10 @@ describe("app bundle load", () => {
     match(tempTerminalSource, /function waitForTerminalFit\(container, attempt, callback\)/);
     match(tempTerminalSource, /HerdrTerminalFit\.gridSize\(container, term/);
     match(tempTerminalSource, /HerdrTerminalFit\.cellSize\(term, container/);
-    match(tempTerminalSource, /HerdrTerminalFit\.fitXtermToContainer\(container\)/);
+    match(tempTerminalSource, /HerdrTerminalFit\.fitTerminalToContainer\(container\)/);
     match(terminalFitSource, /function cellSize\(term, container, fallback\)/);
     match(terminalFitSource, /function gridSize\(container, term, options\)/);
-    match(terminalFitSource, /function fitXtermToContainer\(container, options\)/);
+    match(terminalFitSource, /function fitTerminalToContainer\(container, options\)/);
     match(terminalFitSource, /root\.HerdrTerminalFit/);
     match(tempTerminalSource, /resizeTerminalSurface\(container, cols, rows\)/);
     match(tempTerminalSource, /box\.width >= 320 && box\.height >= 120/);
@@ -769,7 +766,7 @@ describe("app bundle load", () => {
     match(modalCss, /width: calc\(100vw - 32px\);\n\s+max-width: none;/);
     ok(!modalCss.includes("max-width: 1200px"));
     match(modalCss, /\.temp-terminal-body \{[\s\S]*?min-height: 0;[\s\S]*?overflow: hidden;/);
-    match(modalCss, /\.temp-terminal-body \.xterm \{[\s\S]*?height: 100%;[\s\S]*?width: 100%;/);
+    match(modalCss, /\.temp-terminal-body \.terminal \{[\s\S]*?width: 100%;[\s\S]*?height: 100%;/);
     match(html, /Input captured · Ctrl\+G detaches/);
     match(html, /aria-label="Minimize temporary terminal"/);
     match(html, /aria-label="Detach temporary terminal"/);
@@ -1455,9 +1452,6 @@ describe("app bundle load", () => {
     match(source, /stripTerminalMouseReports\(data, options\.terminalMouseReporting === true\)/);
     match(source, /stripTerminalQueryReplies\(data, terminalQueryReplyState\)/);
     match(source, /terminalQueryReplyState = \{\}/);
-    match(source, /resetTerminalMouseTracking\(term, options\.terminalMouseReporting === true\)/);
-    match(source, /window\.HerdrResetTerminalMouseTracking = resetTerminalMouseTrackingIfDisabled/);
-    match(source, /!options\.terminalMouseReporting && window\.HerdrResetTerminalMouseTracking/);
     match(source, /JetBrainsMono Nerd Font/);
     match(source, /LEGACY_TERMINAL_FONT_FAMILY/);
     match(source, /HerdrAppHelpers\.resolveTerminalFontFamily\(""\)/);
@@ -1468,8 +1462,8 @@ describe("app bundle load", () => {
     match(source, /selectRelativeAgent\(-1\)/);
     match(source, /terminalFontFamily/);
     match(source, /applyTerminalLinks/);
-    match(source, /registerLinkProvider/);
-    match(source, /buffer\.viewportY/);
+    match(source, /setLinksEnabled\(options\.terminalLinks !== false\)/);
+    match(source, /term\.scrollToBottom\(\)/);
   });
 
   it("migrates the old desktop monospace terminal default to the bundled Nerd Font", () => {
@@ -2494,7 +2488,7 @@ describe("app bundle load", () => {
     match(desktopTerminalSource, /HerdrTerminalFit\.cellSize\(term, terminal/);
     match(desktopTerminalSource, /HerdrTerminalFit\.gridSize\(shell, term/);
     match(mobileTerminalSource, /HerdrTerminalFit\.gridSize\(shell, term/);
-    match(mobileTerminalSource, /HerdrTerminalFit\.fitXtermToContainer\(terminal\)/);
+    match(mobileTerminalSource, /HerdrTerminalRenderer\.create\(terminal/);
     ok(!mobileTerminalSource.includes("Math.floor(shell.clientWidth / 9)"));
   });
 

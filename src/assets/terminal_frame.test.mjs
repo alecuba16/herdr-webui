@@ -91,34 +91,15 @@ describe("desktop terminal visible height fitting", () => {
     return { style: {} };
   }
 
-  it("caps xterm DOM nodes to the visible shell height", () => {
-    const xterm = styleNode();
-    const viewport = styleNode();
-    const screen = styleNode();
-    const helpers = styleNode();
-    const canvas = styleNode();
-    screen.style.height = "1580px";
-    const nodes = {
-      ".xterm": xterm,
-      ".xterm-viewport": viewport,
-      ".xterm-screen": screen,
-      ".xterm-helpers": helpers,
-    };
-    const container = {
-      clientHeight: 1064,
-      querySelector(selector) { return nodes[selector] || null; },
-      querySelectorAll(selector) { return selector === ".xterm-screen canvas" ? [canvas] : []; },
-    };
+  it("caps terminal container to the visible shell height", () => {
+    const container = { clientHeight: 1064, style: {} };
 
-    HerdrTerminalFit.fitXtermToContainer(container, { height: 1064 });
+    HerdrTerminalFit.fitTerminalToContainer(container, { height: 1064 });
 
-    for (const node of [xterm, viewport, screen]) {
-      assert.equal(node.style.height, "1064px");
-      assert.equal(node.style.maxHeight, "1064px");
-    }
-    assert.equal(screen.style.overflow, "hidden");
-    assert.equal(helpers.style.maxHeight, "1064px");
-    assert.equal(canvas.style.maxHeight, "1064px");
+    assert.equal(container.style.height, "1064px");
+    assert.equal(container.style.maxHeight, "1064px");
+    assert.equal(container.style.width, "100%");
+    assert.equal(container.style.overflow, "hidden");
   });
 
   it("uses 20px fallback cell height so a 1080px shell fits 53 rows, not 62", () => {
@@ -143,7 +124,7 @@ describe("desktop terminal visible height fitting", () => {
     assert.ok(size.rows * size.cell.height <= shell.clientHeight - 16);
   });
 
-  it("auto-scrolls after xterm write callback only when follow is active", () => {
+  it("auto-scrolls after terminal write callback only when follow is active", () => {
     let scrolled = 0;
     let paused = false;
     const callbacks = [];

@@ -41,8 +41,9 @@ use assets::{
     mobile_worktrees_js, shared_actions_js, shared_colors_css, shared_content_search_css,
     shared_core_js, shared_editor_js, shared_file_content_search_js, shared_file_icons_css,
     shared_file_icons_js, shared_file_tree_js, shared_line_context_js, shared_temp_terminal_js,
-    shared_terminal_fit_js, shared_terminal_scroll_js, shared_workspace_search_js,
-    vendor_codemirror_js, xterm_css, xterm_js,
+    shared_terminal_adapter_js, shared_terminal_fit_js, shared_terminal_scroll_js,
+    shared_workspace_search_js, vendor_codemirror_js, vendor_ghostty_wasm, vendor_wterm_css,
+    vendor_wterm_js,
 };
 #[cfg(test)]
 use compat::SimpleVersion;
@@ -1236,6 +1237,12 @@ fn app_router(state: WebState) -> Router {
             get(shared_workspace_search_js),
         )
         .route("/assets/vendor/codemirror.js", get(vendor_codemirror_js))
+        .route("/assets/vendor/wterm.js", get(vendor_wterm_js))
+        .route("/assets/vendor/wterm.css", get(vendor_wterm_css))
+        .route(
+            "/assets/vendor/ghostty-vt.wasm",
+            get(vendor_ghostty_wasm),
+        )
         .route("/assets/shared/editor.js", get(shared_editor_js))
         .route(
             "/assets/shared/terminal-scroll.js",
@@ -1244,6 +1251,10 @@ fn app_router(state: WebState) -> Router {
         .route(
             "/assets/shared/terminal-fit.js",
             get(shared_terminal_fit_js),
+        )
+        .route(
+            "/assets/shared/terminal-adapter.js",
+            get(shared_terminal_adapter_js),
         )
         .route(
             "/assets/shared/temp-terminal.js",
@@ -1273,8 +1284,6 @@ fn app_router(state: WebState) -> Router {
         )
         .route("/assets/mobile/app.css", get(mobile_css))
         .route("/assets/mobile/app.js", get(mobile_js))
-        .route("/assets/xterm.js", get(xterm_js))
-        .route("/assets/xterm.css", get(xterm_css))
         .route(
             "/assets/fonts/JetBrainsMonoNerdFontMono-Regular.ttf",
             get(jetbrains_mono_nerd_font),
@@ -5593,7 +5602,7 @@ mod tests {
         let js = app
             .clone()
             .oneshot(
-                request(Method::GET, "/assets/xterm.js")
+                request(Method::GET, "/assets/vendor/wterm.js")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -5602,7 +5611,16 @@ mod tests {
         let css = app
             .clone()
             .oneshot(
-                request(Method::GET, "/assets/xterm.css")
+                request(Method::GET, "/assets/vendor/wterm.css")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let ghostty_wasm = app
+            .clone()
+            .oneshot(
+                request(Method::GET, "/assets/vendor/ghostty-vt.wasm")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -5829,6 +5847,7 @@ mod tests {
 
         assert_eq!(js.status(), StatusCode::OK);
         assert_eq!(css.status(), StatusCode::OK);
+        assert_eq!(ghostty_wasm.status(), StatusCode::OK);
         assert_eq!(font.status(), StatusCode::OK);
         assert_eq!(app_js.status(), StatusCode::OK);
         assert_eq!(app_boot_js.status(), StatusCode::OK);
@@ -5860,6 +5879,7 @@ mod tests {
             .to_str()
             .unwrap()
             .contains("text/css"));
+        assert_eq!(ghostty_wasm.headers()[header::CONTENT_TYPE], "application/wasm");
         assert_eq!(font.headers()[header::CONTENT_TYPE], "font/ttf");
         assert!(app_js.headers()[header::CONTENT_TYPE]
             .to_str()
@@ -5953,6 +5973,7 @@ mod tests {
                 > 1000
         );
         assert!(to_bytes(css.into_body(), 1024 * 1024).await.unwrap().len() > 100);
+        assert!(to_bytes(ghostty_wasm.into_body(), 1024 * 1024).await.unwrap().len() > 100 * 1024);
         assert!(
             to_bytes(font.into_body(), 4 * 1024 * 1024)
                 .await

@@ -51,7 +51,7 @@ function connectEvents() {
       setTimeout(connectEvents, 1500);
   };
 }
-function connectTerminal() {
+async function connectTerminal() {
   if (document.hidden) return;
   if (!state.terminalId) {
     resetTerminalConnection(true);
@@ -80,50 +80,29 @@ function connectTerminal() {
   connectedTerminalId = target;
   connectedSize = size;
   if (!term) {
-    term = new Terminal({
-      convertEol: false,
-      theme: terminalTheme(),
-      fontFamily: terminalFontFamily(),
-      scrollback: 10000,
-    });
-    term.open(terminal);
+    if (!window.HerdrTerminalRenderer) {
+      setTerminalLoading(false);
+      return;
+    }
+    try {
+      term = await window.HerdrTerminalRenderer.create(terminal, {
+        cols,
+        rows,
+        core: options.terminalCore,
+        theme: terminalTheme(),
+        fontFamily: terminalFontFamily(),
+        links: options.terminalLinks !== false,
+        scrollback: 10000,
+        onData: sendInputData,
+      });
+    } catch (e) {
+      setTerminalLoading(false);
+      throw e;
+    }
+    if (connectedTerminalId !== target) return;
     refreshTerminalAfterFontLoad(target);
     applyTerminalLinks();
     applyTheme();
-    term.onData(sendInputData);
-    if (term.attachCustomKeyEventHandler)
-      term.attachCustomKeyEventHandler((e) => {
-        if (window.HerdrGitUi && window.HerdrGitUi.isVisible && window.HerdrGitUi.isVisible())
-          return false;
-        if (e.type === "keydown" && handleCloseShortcut(e)) return false;
-        if (
-          options.shiftEnterNewline !== false &&
-          e.type === "keydown" &&
-          e.key === "Enter" &&
-          e.shiftKey &&
-          !e.altKey &&
-          !e.ctrlKey &&
-          !e.metaKey
-        ) {
-          sendInputData(shiftEnterSequence());
-          return false;
-        }
-        if (
-          e.type === "keydown" &&
-          !e.altKey &&
-          !e.ctrlKey &&
-          !e.metaKey &&
-          (e.key === "PageUp" || e.key === "PageDown")
-        ) {
-          scrollTerminalLines(
-            e.key === "PageUp"
-              ? -Math.max(1, (state.termRows || rows) - 1)
-              : Math.max(1, (state.termRows || rows) - 1),
-          );
-          return false;
-        }
-        return true;
-      });
   }
   if (!termScrollBound) {
     el("terminalShell").addEventListener(
@@ -140,6 +119,23 @@ function connectTerminal() {
     el("terminalShell").addEventListener(
       "keydown",
       (e) => {
+        if (window.HerdrGitUi && window.HerdrGitUi.isVisible && window.HerdrGitUi.isVisible()) return;
+        if (handleCloseShortcut(e)) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          return;
+        }
+        if (
+          !e.altKey &&
+          !e.ctrlKey &&
+          !e.metaKey &&
+          (e.key === "PageUp" || e.key === "PageDown")
+        ) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          scrollTerminalLines(e.key === "PageUp" ? -Math.max(1, (state.termRows || rows) - 1) : Math.max(1, (state.termRows || rows) - 1));
+          return;
+        }
         if (
           options.shiftEnterNewline !== false &&
           e.shiftKey &&
@@ -222,35 +218,8 @@ function refreshTerminalAfterFontLoad(terminalKey) {
     .catch(() => {});
 }
 function applyTerminalLinks() {
-  if (terminalLinkProvider && terminalLinkProvider.dispose) {
-    try { terminalLinkProvider.dispose(); } catch (e) {}
-  }
-  terminalLinkProvider = null;
-  if (!term || options.terminalLinks === false || !term.registerLinkProvider) return;
-  terminalLinkProvider = term.registerLinkProvider({ provideLinks: provideTerminalLinks });
-}
-function provideTerminalLinks(lineNumber, callback) {
-  try {
-    const buffer = term && term.buffer && term.buffer.active;
-    const y = buffer ? Math.max(0, (buffer.viewportY || 0) + lineNumber - 1) : 0;
-    const line = buffer && (buffer.getLine(y) || buffer.getLine(lineNumber - 1) || buffer.getLine(lineNumber));
-    const text = line && line.translateToString ? line.translateToString(true) : "";
-    const links = [];
-    const re = /https?:\/\/[^\s<>"]+/g;
-    let match;
-    while ((match = re.exec(text))) {
-      const url = match[0].replace(/[),.;]+$/g, "");
-      if (!url) continue;
-      links.push({
-        range: { start: { x: match.index + 1, y: lineNumber }, end: { x: match.index + url.length, y: lineNumber } },
-        text: url,
-        activate: (_event, text) => window.open(text, "_blank", "noopener,noreferrer"),
-      });
-    }
-    callback(links);
-  } catch (e) {
-    callback([]);
-  }
+  if (term && typeof term.setLinksEnabled === "function")
+    term.setLinksEnabled(options.terminalLinks !== false);
 }
 // Threshold below which a single frame is written immediately to xterm.js
 // instead of waiting for the next requestAnimationFrame. Small frames (a
@@ -264,7 +233,7 @@ const PASTE_BUFFER_LIMIT = 64 * 1024;
 const PASTE_FLUSH_BUDGET_MS = 8;
 const PASTE_FLUSH_DELAY_MS = 4;
 // Frames above this size are likely full-screen repaints from the backend
-// (the initial attach frame). xterm.js parses these in 12ms time-slices with
+// (the initial attach frame). wterm renders these in 12ms time-slices with
 // setTimeout(0) between slices, and each slice triggers a browser paint of
 // the partially-parsed screen. We keep the loading overlay visible until
 // the write callback fires so the user sees a single clean reveal.
@@ -275,7 +244,7 @@ let terminalAttachPending = false;
 function enqueueTerminalFrame(data) {
   // Attach frame path: the first frame after connecting is a full-screen
   // repaint from the backend (50KB-425KB depending on terminal size).
-  // xterm.js parses it in 12ms time-slices with setTimeout(0) between
+  // wterm renders it in 12ms time-slices with setTimeout(0) between
   // slices, and each slice triggers a browser paint of the partially-parsed
   // screen -> the "line-by-line refresh" effect.
   // We queue it via RAF and use the write callback to reveal only when done.
@@ -328,7 +297,7 @@ function flushTerminalFrames() {
     terminalAttachPending = false;
     writeTerminalFrame(data, () => {
       clearDismissedWorkingForTerminal(state.terminalId);
-      // Wait one RAF so xterm renders the complete screen before revealing
+      // Wait one RAF so wterm renders the complete screen before revealing
       requestAnimationFrame(() => {
         setTerminalLoading(false);
         scrollTerminalToBottom(false);
@@ -376,17 +345,10 @@ function coalesceTerminalFrames(frames) {
 }
 
 function terminalCellHeight() {
-  const dims =
-    term &&
-    term._core &&
-    term._core._renderService &&
-    term._core._renderService.dimensions &&
-    term._core._renderService.dimensions.css &&
-    term._core._renderService.dimensions.css.cell;
-  return Math.max(1, (dims && dims.height) || 17);
+  return Math.max(1, term && typeof term.rowHeight === "function" ? term.rowHeight() : 17);
 }
 function terminalUsesNormalBuffer() {
-  return !term || !term.buffer || !term.buffer.active || term.buffer.active.type !== "alternate";
+  return !term || typeof term.usesNormalBuffer !== "function" || term.usesNormalBuffer();
 }
 function terminalWheelLines(e) {
   const rowHeight = terminalCellHeight();
@@ -487,9 +449,8 @@ function handleTerminalTouchEnd() {
 
 function terminalAtBottom() {
   try {
-    const buffer = term && term.buffer && term.buffer.active;
-    if (!buffer) return true;
-    return Math.max(0, buffer.baseY - buffer.viewportY) <= 1;
+    if (term && typeof term.atBottom === "function") return term.atBottom();
+    return true;
   } catch (e) {
     return true;
   }
@@ -516,18 +477,13 @@ function maybeAutoScrollToBottom() {
 function followTerminalAfterWrite() {
   requestAnimationFrame(maybeAutoScrollToBottom);
 }
-function resetTerminalMouseTrackingIfDisabled() {
-  const helpers = globalThis.HerdrAppHelpers || {};
-  if (typeof helpers.resetTerminalMouseTracking !== "function") return false;
-  return helpers.resetTerminalMouseTracking(term, options.terminalMouseReporting === true);
-}
 function writeTerminalFrame(data, onDone) {
   const finish = onDone
-    ? () => { resetTerminalMouseTrackingIfDisabled(); onDone(); }
-    : () => { resetTerminalMouseTrackingIfDisabled(); followTerminalAfterWrite(); };
+    ? () => { onDone(); }
+    : () => { followTerminalAfterWrite(); };
   // For large frames (the initial attach repaint), use the write callback
   // to know when xterm.js finishes parsing. This avoids the caller
-  // revealing the terminal while xterm's WriteBuffer is still in its
+  // revealing the terminal while wterm render queue is still in its
   // 12ms time-slice loop, which would show partial renders.
   if (onDone) {
     try { term.write(data, finish); return; }
@@ -540,7 +496,6 @@ function writeTerminalFrame(data, onDone) {
     finish();
   }
 }
-window.HerdrResetTerminalMouseTracking = resetTerminalMouseTrackingIfDisabled;
 function scrollTerminalToBottom(focus = true) {
   sendBackendTail();
   setTerminalFollowPaused(false);
@@ -801,22 +756,8 @@ function fitTerminalSurface() {
     terminal.style.minWidth = "0";
     terminal.style.minHeight = "0";
     terminal.style.overflow = "hidden";
-    HerdrTerminalFit.fitXtermToContainer(terminal, { height: visibleHeight });
-    bindTerminalViewportFollow();
+    HerdrTerminalFit.fitTerminalToContainer(terminal, { height: visibleHeight });
   }
-}
-function bindTerminalViewportFollow() {
-  const xtermElement = term && term.element;
-  const viewport = xtermElement && xtermElement.querySelector && xtermElement.querySelector(".xterm-viewport");
-  if (!viewport || typeof viewport.addEventListener !== "function" || terminalViewportScrollElement === viewport) return;
-  if (terminalViewportScrollElement && typeof terminalViewportScrollElement.removeEventListener === "function") {
-    terminalViewportScrollElement.removeEventListener("scroll", handleTerminalViewportScroll);
-  }
-  terminalViewportScrollElement = viewport;
-  viewport.addEventListener("scroll", handleTerminalViewportScroll, { passive: true });
-}
-function handleTerminalViewportScroll() {
-  setTerminalFollowPaused(!terminalAtBottom());
 }
 function cssPixels(value) {
   const parsed = Number.parseFloat(value || "0");
