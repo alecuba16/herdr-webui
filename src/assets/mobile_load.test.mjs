@@ -366,8 +366,9 @@ describe("mobile bundle load", () => {
     match(mobileSource, /aria-label="Detach temporary terminal"/);
     match(mobileCss, /\.temp-terminal-hint/);
     match(mobileCss, /\.temp-terminal-restore \{[\s\S]*?position: fixed;[\s\S]*?right: calc\(env\(safe-area-inset-right, 0px\) \+ 18px\);/);
-    match(mobileCss, /height: min\(80vh, calc\(var\(--herdr-mobile-viewport-height\) - 24px\)\)/);
+    match(mobileCss, /height: calc\(var\(--herdr-mobile-viewport-height\) - 24px\)/);
     match(mobileCss, /\.temp-terminal-body \{[\s\S]*?min-height: 0;[\s\S]*?overflow: hidden;/);
+    match(mobileCss, /\.temp-terminal-body \.wterm \{[\s\S]*?overflow-x: hidden;[\s\S]*?overflow-y: auto;/);
   });
 
   it("loads mobile shell without browser automation", () => {

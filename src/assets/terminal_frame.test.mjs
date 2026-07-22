@@ -99,7 +99,9 @@ describe("desktop terminal visible height fitting", () => {
     assert.equal(container.style.height, "1064px");
     assert.equal(container.style.maxHeight, "1064px");
     assert.equal(container.style.width, "100%");
-    assert.equal(container.style.overflow, "hidden");
+    assert.equal(container.style.overflow, "");
+    assert.equal(container.style.overflowX, "hidden");
+    assert.equal(container.style.overflowY, "auto");
   });
 
   it("uses 20px fallback cell height so a 1080px shell fits 53 rows, not 62", () => {

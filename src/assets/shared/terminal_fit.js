@@ -66,7 +66,9 @@
     container.style.maxHeight = heightPx || "";
     container.style.minWidth = opts.minWidth || "0";
     container.style.minHeight = opts.minHeight || "0";
-    container.style.overflow = opts.overflow || "hidden";
+    container.style.overflow = opts.overflow || "";
+    container.style.overflowX = opts.overflowX || "hidden";
+    container.style.overflowY = opts.overflowY || "auto";
   }
 
   function afterLayout(callback) {
