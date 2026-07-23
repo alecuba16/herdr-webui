@@ -381,6 +381,8 @@
         const index = Math.max(0, target.files.findIndex((file) => file.path === replacePath));
         if (target.files.length) target.files[index] = nextFile;
         else target.files.push(nextFile);
+      } else {
+        target.files.push(nextFile);
       }
     } catch (error) {
       setError(target, error);
