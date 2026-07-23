@@ -1,5 +1,5 @@
 import { describe, it } from "node:test";
-import { equal, ok } from "node:assert/strict";
+import { deepEqual, equal, ok } from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 
@@ -51,6 +51,7 @@ function context() {
   const createdButtons = [];
   const timeouts = [];
   const apiCalls = [];
+  const apiRequests = [];
 
   const getElement = (id) => {
     if (!elements.has(id)) elements.set(id, makeElement(id));
@@ -145,8 +146,10 @@ function context() {
         return { width: 800, height: 420 };
       },
     },
-    api(url) {
+    api(url, opt = {}) {
       apiCalls.push(url);
+      apiRequests.push({ url, opt });
+      if (url === "/api/workspaces" && opt.method === "POST") return Promise.resolve({ result: { workspace: { workspace_id: "workspace-temp" } } });
       if (url === "/api/tabs") return Promise.resolve({ result: { tab: { tab_id: "tab-1" } } });
       if (url.startsWith("/api/panes")) return Promise.resolve({ result: { panes: [{ tab_id: "tab-1", pane_id: "pane-1", terminal_id: "term-1" }] } });
       return Promise.resolve({ result: {} });
@@ -155,6 +158,7 @@ function context() {
     listeners,
     createdButtons,
     apiCalls,
+    apiRequests,
     elements,
     console,
   };
@@ -229,6 +233,65 @@ describe("temporary terminal", () => {
     equal(inputFrames[1], "\x7f");
   });
 
+  it("captures Escape, Tab, and Backspace from the page while the temp terminal is open", async () => {
+    const ctx = context();
+    await openTempTerminal(ctx);
+    const listener = ctx.listeners.get("keydown");
+    ok(listener);
+
+    for (const [key, value] of [["Escape", "\x1b"], ["Tab", "\t"], ["Backspace", "\x7f"]]) {
+      const event = keyEvent(key, ctx.document.body);
+      listener(event);
+      equal(event.defaultPrevented, true, key);
+      equal(event.immediateStopped, true, key);
+      equal(terminalInputFrames(ctx).at(-1), value, key);
+    }
+  });
+
+  it("creates temporary tabs in the active workspace without making a temporary workspace", async () => {
+    const ctx = context();
+    await openTempTerminal(ctx, {
+      state: { ws: "workspace-active", workspaces: [{ workspace_id: "workspace-active" }] },
+      defaultFolderFn: () => "/settings/default",
+    });
+
+    ok(!ctx.apiCalls.includes("/api/workspaces"));
+    const tabRequest = ctx.apiRequests.find((request) => request.url === "/api/tabs");
+    ok(tabRequest);
+    deepEqual(JSON.parse(tabRequest.opt.body), { workspace_id: "workspace-active", label: "temp" });
+    ok(ctx.apiCalls.includes("/api/panes?workspace_id=workspace-active"));
+  });
+
+  it("uses a single opened workspace instead of creating a temporary workspace", async () => {
+    const ctx = context();
+    await openTempTerminal(ctx, {
+      state: { ws: null, workspaces: [{ workspace_id: "workspace-only" }] },
+      defaultFolderFn: () => "/settings/default",
+    });
+
+    ok(!ctx.apiCalls.includes("/api/workspaces"));
+    const tabRequest = ctx.apiRequests.find((request) => request.url === "/api/tabs");
+    ok(tabRequest);
+    deepEqual(JSON.parse(tabRequest.opt.body), { workspace_id: "workspace-only", label: "temp" });
+    ok(ctx.apiCalls.includes("/api/panes?workspace_id=workspace-only"));
+  });
+
+  it("creates a temporary workspace in the configured default folder only when no workspace is open", async () => {
+    const ctx = context();
+    await openTempTerminal(ctx, {
+      state: { ws: null, workspaces: [] },
+      defaultFolderFn: () => "/settings/default",
+    });
+
+    const workspaceRequest = ctx.apiRequests.find((request) => request.url === "/api/workspaces");
+    ok(workspaceRequest);
+    deepEqual(JSON.parse(workspaceRequest.opt.body), { label: "temp", cwd: "/settings/default" });
+    const tabRequest = ctx.apiRequests.find((request) => request.url === "/api/tabs");
+    ok(tabRequest);
+    deepEqual(JSON.parse(tabRequest.opt.body), { workspace_id: "workspace-temp", label: "temp" });
+    ok(ctx.apiCalls.includes("/api/panes?workspace_id=workspace-temp"));
+  });
+
   it("lets xterm handle ordinary keys from inside the terminal without duplicate input", async () => {
     const ctx = context();
     await openTempTerminal(ctx);
@@ -289,5 +352,22 @@ describe("temporary terminal", () => {
     equal(ctx.lastTerminal, firstTerminal);
     equal(ctx.apiCalls.filter((url) => url === "/api/tabs").length, tabCreatesBefore);
     ok(ctx.listeners.get("keydown"));
+  });
+
+  it("styles the temp terminal body and xterm layers to fill available height", () => {
+    for (const cssPath of ["./desktop/app_css/modals.css", "./mobile/app.css"]) {
+      const css = readFileSync(new URL(cssPath, import.meta.url), "utf8");
+      const bodyRule = css.match(/\.temp-terminal-body \{[\s\S]*?\}/)?.[0] || "";
+      const terminalRule = css.match(/\.temp-terminal-body \.terminal \{[\s\S]*?\}/)?.[0] || "";
+      const xtermRule = css.match(/\.temp-terminal-body \.xterm,[\s\S]*?\.temp-terminal-body \.xterm-viewport \{[\s\S]*?\}/)?.[0] || "";
+
+      ok(/padding:\s*0;/.test(bodyRule), cssPath);
+      ok(/flex:\s*1;/.test(bodyRule), cssPath);
+      ok(/display:\s*block;/.test(terminalRule), cssPath);
+      ok(/height:\s*100%;/.test(terminalRule), cssPath);
+      ok(/\.xterm-screen/.test(xtermRule), cssPath);
+      ok(/\.xterm-viewport/.test(xtermRule), cssPath);
+      ok(/height:\s*100%;/.test(xtermRule), cssPath);
+    }
   });
 });
