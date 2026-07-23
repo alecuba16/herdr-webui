@@ -6,16 +6,14 @@ import vm from "node:vm";
 const SHARED_STYLES = [
   "/assets/shared/colors.css",
   "/assets/vendor/wterm.css",
-  "/assets/shared/file-tree.css",
   "/assets/shared/file-icons.css",
   "/assets/shared/content-search.css",
 ];
 const DESKTOP_STYLES = [
   "/assets/desktop/app.css",
-  "/assets/desktop/git-ui.css",
-  "/assets/desktop/file-browser.css",
   "/assets/desktop/shortcuts.css",
   "/assets/desktop/search.css",
+  "/assets/shared/file-tree.css",
   ...SHARED_STYLES,
 ];
 const MOBILE_STYLES = ["/assets/mobile/app.css", ...SHARED_STYLES];
