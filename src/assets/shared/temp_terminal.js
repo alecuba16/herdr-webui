@@ -21,6 +21,11 @@
     var fontFamilyFn = opts.fontFamilyFn || function () { return "monospace"; };
     var themeFn = opts.themeFn || function () { return {}; };
     var defaultFolderFn = opts.defaultFolderFn || function () { return ""; };
+    var workspaceIdFn = opts.workspaceIdFn || function () {
+      if (state.ws) return state.ws;
+      var workspaces = state.workspaces || [];
+      return workspaces.length === 1 && workspaces[0] ? (workspaces[0].workspace_id || "") : "";
+    };
     var shortcutLabelFn = opts.shortcutLabelFn || function () { return ""; };
 
     var term = null;
@@ -47,7 +52,7 @@
         if (isMinimized) restore();
         return;
       }
-      if (!state.ws && !defaultFolderFn()) return;
+      if (!preferredWorkspaceId() && !defaultFolderFn()) return;
       isOpen = true;
       closing = false;
       isMinimized = false;
@@ -168,19 +173,34 @@
     function tempTerminalKeydown(event) {
       if (!isOpen) return;
       // Never let Backspace trigger browser "back" navigation or Tab steal focus
-      // while the temp terminal is open, even if a confirm/minimized state would
-      // otherwise drop the event. These two keys are the reported focus-loss bug.
+      // while the temp terminal is open, and keep Escape from reaching background
+      // modal/drawer shortcuts. These keys are the reported focus-loss bug.
       var key = String(event.key || "");
       if (key === "Backspace" && !event.metaKey && !event.altKey && !event.ctrlKey) {
         event.preventDefault();
         event.stopImmediatePropagation();
-        if (!isMinimized && !confirmVisible && term) sendInput("\x7f");
+        if (!isMinimized && !confirmVisible && term) {
+          focusTerminalSoon();
+          sendInput("\x7f");
+        }
         return;
       }
       if (key === "Tab" && !event.metaKey && !event.altKey && !event.ctrlKey) {
         event.preventDefault();
         event.stopImmediatePropagation();
-        if (!isMinimized && !confirmVisible && term) sendInput(event.shiftKey ? "\x1b[Z" : "\t");
+        if (!isMinimized && !confirmVisible && term) {
+          focusTerminalSoon();
+          sendInput(event.shiftKey ? "\x1b[Z" : "\t");
+        }
+        return;
+      }
+      if (key === "Escape" && !event.metaKey && !event.altKey && !event.ctrlKey && !confirmVisible) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        if (!isMinimized && term) {
+          focusTerminalSoon();
+          sendInput("\x1b");
+        }
         return;
       }
       if (isMinimized || confirmVisible) return;
@@ -308,10 +328,11 @@
     }
 
     function ensureWorkspaceForTempTerminal() {
-      if (state.ws) {
-        createdWorkspaceId = state.ws;
+      var workspaceId = preferredWorkspaceId();
+      if (workspaceId) {
+        createdWorkspaceId = workspaceId;
         ownsWorkspace = false;
-        return Promise.resolve(state.ws);
+        return Promise.resolve(workspaceId);
       }
       var cwd = defaultFolderFn();
       if (!cwd) return Promise.resolve(null);
@@ -325,6 +346,10 @@
         ownsWorkspace = !!createdWorkspaceId;
         return createdWorkspaceId;
       });
+    }
+
+    function preferredWorkspaceId() {
+      try { return workspaceIdFn() || ""; } catch (e) { return state.ws || ""; }
     }
 
     function findCreatedPane(attempt) {
@@ -346,7 +371,7 @@
         fallbackCell: { width: 9, height: 20 },
         minCols: 40,
         minRows: 8,
-        rowReserve: 1,
+        rowReserve: 0,
       });
     }
 

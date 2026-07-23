@@ -306,18 +306,28 @@ function handleGlobalShortcut(e) {
     hideShortcutPrefixOverlay();
     return false;
   }
+  const prefixActive = shortcutPrefixUntil > Date.now();
+  if (tempTerminalOnly) {
+    if (prefixActive) {
+      hideShortcutPrefixOverlay();
+      if (shortcutKey(e) !== (options.webuiShortcuts || {}).tempTerminalToggle)
+        return false;
+      runPrefixedShortcut(e);
+      return consumeShortcutEvent(e);
+    }
+    if (!isShortcutPrefix(e)) return false;
+    showShortcutPrefixOverlay();
+    return consumeShortcutEvent(e);
+  }
   if (isSearchShortcut(e)) {
     if (editableShortcutTarget(e.target) && !terminalShortcutTarget(e.target))
       return false;
     openSearchPalette();
     return consumeShortcutEvent(e);
   }
-  const prefixActive = shortcutPrefixUntil > Date.now();
   if (prefixActive) {
     hideShortcutPrefixOverlay();
     if (e.key === "Escape") return consumeShortcutEvent(e);
-    if (tempTerminalOnly && shortcutKey(e) !== (options.webuiShortcuts || {}).tempTerminalToggle)
-      return consumeShortcutEvent(e);
     runPrefixedShortcut(e);
     return consumeShortcutEvent(e);
   }
