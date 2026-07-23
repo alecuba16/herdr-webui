@@ -152,9 +152,26 @@ async function connectTerminal() {
       true,
     );
     const shell = el("terminalShell");
-    shell.addEventListener("mousedown", () =>
-      setTimeout(focusTerminal, 0),
-    );
+    shell.addEventListener("mousedown", (e) => {
+      // Only shift focus to the terminal on a simple click, not a text
+      // selection drag. Calling textarea.focus() on the next tick
+      // collapses the native DOM selection, making it impossible to
+      // select terminal text for copying.
+      if (e.button !== 0 || e.shiftKey) return;
+      const startX = e.clientX, startY = e.clientY;
+      let dragged = false;
+      const onMove = (ev) => {
+        if (Math.abs(ev.clientX - startX) > 3 || Math.abs(ev.clientY - startY) > 3)
+          dragged = true;
+      };
+      const onUp = () => {
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+        if (!dragged) focusTerminal();
+      };
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+    });
     terminal.addEventListener("wheel", handleTerminalWheel, { passive: false, capture: true });
     terminal.addEventListener("touchstart", handleTerminalTouchStart, { passive: true, capture: true });
     terminal.addEventListener("touchmove", handleTerminalTouchMove, { passive: false, capture: true });
