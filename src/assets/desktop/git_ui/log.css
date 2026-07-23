@@ -16,6 +16,11 @@
   margin-bottom: 10px;
   padding: 8px;
 }
+.git-ui-log-head {
+  position: sticky;
+  top: 0;
+  z-index: 7;
+}
 .git-ui-log-scope-head {
   position: sticky;
   top: 0;
