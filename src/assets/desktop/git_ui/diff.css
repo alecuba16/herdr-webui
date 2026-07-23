@@ -135,6 +135,19 @@
 .git-ui-hunk-editor-grid section + section {
   border-left: 1px solid var(--border);
 }
+.git-ui-editor-conflicts {
+  background: color-mix(in srgb, var(--accent) 7%, var(--panel));
+  border-top: 1px solid var(--border);
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+}
+.git-ui-conflict-block-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
 .git-ui-editor-preview.del .git-ui-editor-line {
   background: rgba(248, 81, 73, 0.18);
   border-left: 4px solid #da3633;

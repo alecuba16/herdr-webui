@@ -608,6 +608,15 @@ describe("app bundle load", () => {
     match(gitUiSource, /renderConflictOperationActions/);
     match(gitUiSource, /renderConflictResolutionButtons/);
     match(gitUiSource, /renderDiffConflictResolutionButtons/);
+    match(gitUiSource, /renderEditableHunkConflictControls/);
+    match(gitUiSource, /function conflictBlocksInText\(text\)/);
+    match(gitUiSource, /function resolveConflictBlockText\(text, blockIndex, mode\)/);
+    match(gitUiSource, /resolveEditorConflictBlock\(hunkIndex, blockIndex, mode\)/);
+    match(gitUiSource, /Resolve individual conflict marker blocks in the editable hunk/);
+    match(gitUiSource, /Parent\/base side is unavailable for this conflict block/);
+    match(gitUiSource, /line\.startsWith\("<<<<<<<"\)/);
+    match(gitUiSource, /line\.startsWith\("\|\|\|\|\|\|\|"\)/);
+    match(gitUiSource, /line\.startsWith\(">>>>>>>"\)/);
     match(gitUiSource, /currentMode\(\) !== "changes" \|\| !isConflictPath\(file\.path\)/);
     match(gitUiSource, /const conflictActions = renderDiffConflictResolutionButtons\(file\)/);
     match(gitUiSource, /\$\{conflictActions\}\$\{restore\}/);
@@ -632,9 +641,13 @@ describe("app bundle load", () => {
     ok(!gitUiSource.includes(">Use branch</button>"));
     const gitLayoutCss = readFileSync(new URL("./desktop/git_ui/layout.css", import.meta.url), "utf8");
     const gitDiffCss = readFileSync(new URL("./desktop/git_ui/diff.css", import.meta.url), "utf8");
+    const gitLogCss = readFileSync(new URL("./desktop/git_ui/log.css", import.meta.url), "utf8");
     match(gitLayoutCss, /\.git-ui-conflict-file-actions \{[\s\S]*?flex-wrap: wrap;/);
     match(gitDiffCss, /\.git-ui-diff-file-actions \{[\s\S]*?flex-wrap: wrap;/);
     match(gitDiffCss, /\.git-ui-conflict-diff-actions \{[\s\S]*?border-left: 1px solid var\(--border\);/);
+    match(gitDiffCss, /\.git-ui-editor-conflicts \{[\s\S]*?display: grid;/);
+    match(gitDiffCss, /\.git-ui-conflict-block-actions \{[\s\S]*?flex-wrap: wrap;/);
+    match(gitLogCss, /\.git-ui-log-head \{[\s\S]*?position: sticky;[\s\S]*?z-index: 7;/);
   });
 
   it("uses a single selected-log reset modal and clear rebase wording", () => {
