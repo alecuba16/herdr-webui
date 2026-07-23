@@ -11,10 +11,9 @@ const SHARED_STYLES = [
 ];
 const DESKTOP_STYLES = [
   "/assets/desktop/app.css",
-  "/assets/desktop/git-ui.css",
-  "/assets/desktop/file-browser.css",
   "/assets/desktop/shortcuts.css",
   "/assets/desktop/search.css",
+  "/assets/shared/file-tree.css",
   ...SHARED_STYLES,
 ];
 const MOBILE_STYLES = ["/assets/mobile/app.css", ...SHARED_STYLES];

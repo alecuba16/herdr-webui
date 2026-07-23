@@ -329,9 +329,12 @@ function worktreeSourceKey(source) {
     ? source.cwd || source.repo_root || source.workspace_id || ""
     : "";
 }
+function worktreeSourceHasGitRepo(source) {
+  return !!(source && source.cwd && (source.repo_root || source.repo_name));
+}
 async function loadWorktreeBranchOptions(fetchRemotes = false) {
   const source = state.openWorktreeSource;
-  if (!source || !source.cwd) {
+  if (!worktreeSourceHasGitRepo(source)) {
     state.openWorktreeBranches = [];
     syncWorktreeBranchOptions([]);
     state.openWorktreeBranchSourceKey = "";
@@ -955,16 +958,18 @@ async function closePaneById(id) {
 }
 async function closeWorkspaceById(id) {
   const closingWorkspace = state.workspaces.find((workspace) => workspace.workspace_id === id) || id;
+  const wasSelected = state.ws === id;
   await api(`/api/workspaces/${encodeURIComponent(id)}/close`, {
     method: "POST",
   });
-  if (window.HerdrFileBrowser && window.HerdrFileBrowser.forgetWorkspace) window.HerdrFileBrowser.forgetWorkspace(closingWorkspace);
-  if (window.HerdrGitUi && window.HerdrGitUi.forgetWorkspace) window.HerdrGitUi.forgetWorkspace(closingWorkspace);
-  if (state.ws === id) {
+  if (wasSelected) {
     state.ws = null;
     state.tab = null;
     state.pane = null;
   }
+  if (window.HerdrFileBrowser && window.HerdrFileBrowser.forgetWorkspace) window.HerdrFileBrowser.forgetWorkspace(closingWorkspace);
+  if (window.HerdrGitUi && window.HerdrGitUi.forgetWorkspace) window.HerdrGitUi.forgetWorkspace(closingWorkspace);
+  if (typeof forgetWorkspaceShell === "function") forgetWorkspaceShell(closingWorkspace);
 }
 async function removeWorktree(id) {
   if (!(await askQuestion({

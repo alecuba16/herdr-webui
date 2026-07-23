@@ -151,10 +151,25 @@ function focusRelativeControl(delta) {
 function editableShortcutTarget(target) {
   if (!target) return false;
   if (target.isContentEditable) return true;
-  return !!target.closest("input, textarea, select, [contenteditable='true']");
+  const node = target.closest && target.closest("input, textarea, select, [contenteditable='true']");
+  if (!node) return false;
+  if (node.isContentEditable) return true;
+  const tagName = String(node.tagName || node.nodeName || "").toLowerCase();
+  if (["input", "textarea", "select"].includes(tagName)) return true;
+  return !!(node.getAttribute && node.getAttribute("contenteditable") === "true");
+}
+function closestClassTarget(target, selector, className) {
+  if (!target || !target.closest) return false;
+  const node = target.closest(selector);
+  return !!(node && node.classList && node.classList.contains(className));
 }
 function terminalShortcutTarget(target) {
-  return !!(target && target.closest && target.closest(".wterm, .terminal"));
+  return closestClassTarget(target, ".wterm", "wterm") ||
+    closestClassTarget(target, ".terminal", "terminal") ||
+    closestClassTarget(target, ".xterm", "xterm");
+}
+function editorShortcutTarget(target) {
+  return closestClassTarget(target, ".herdr-editor", "herdr-editor");
 }
 function shortcutKey(e) {
   const shift = e.shiftKey ? "Shift+" : "";
@@ -194,6 +209,29 @@ function isShortcutPrefix(e) {
 }
 function isSearchShortcut(e) {
   return options.searchShortcut !== "off" && shortcutPrefixFromEvent(e) === options.searchShortcut;
+}
+function isAppFindShortcut(e) {
+  if (!e || e.altKey || e.shiftKey) return false;
+  const key = String(e.key || "").toLowerCase();
+  return key === "f" && (e.ctrlKey || e.metaKey);
+}
+function searchPaletteOpen() {
+  const modal = el("searchPalette");
+  return !!(modal && modal.style.display && modal.style.display !== "none");
+}
+function focusSearchPaletteInput() {
+  const input = el("searchPaletteInput");
+  if (!input || !input.focus) return false;
+  try { input.focus({ preventScroll: true }); }
+  catch (_) { try { input.focus(); } catch (_) { return false; } }
+  if (input.select) try { input.select(); } catch (_) {}
+  return true;
+}
+function openFocusedFileBrowserFind(target) {
+  const fileBrowser = window.HerdrFileBrowser;
+  if (!fileBrowser || !fileBrowser.openFocusedFind) return false;
+  try { return !!fileBrowser.openFocusedFind(target); }
+  catch (_) { return false; }
 }
 function showShortcutPrefixOverlay() {
   shortcutPrefixUntil = Date.now() + 5000;
@@ -301,6 +339,15 @@ function consumeShortcutEvent(e) {
 }
 function handleGlobalShortcut(e) {
   if (e.defaultPrevented || options.globalShortcutsEnabled === false) return false;
+  const appFindShortcut = isAppFindShortcut(e);
+  if (appFindShortcut) {
+    if (editorShortcutTarget(e.target)) return false;
+    if (terminalShortcutTarget(e.target) && e.ctrlKey && !e.metaKey) return false;
+    if (searchPaletteOpen()) {
+      focusSearchPaletteInput();
+      return consumeShortcutEvent(e);
+    }
+  }
   const tempTerminalOnly = modalOpen() && tempTerminalShortcutAllowed();
   if (modalOpen() && !tempTerminalOnly) {
     hideShortcutPrefixOverlay();
@@ -317,6 +364,11 @@ function handleGlobalShortcut(e) {
     }
     if (!isShortcutPrefix(e)) return false;
     showShortcutPrefixOverlay();
+    return consumeShortcutEvent(e);
+  }
+  if (appFindShortcut) {
+    if (openFocusedFileBrowserFind(e.target)) return consumeShortcutEvent(e);
+    openSearchPalette();
     return consumeShortcutEvent(e);
   }
   if (isSearchShortcut(e)) {
