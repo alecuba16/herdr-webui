@@ -32,7 +32,7 @@ function makeElement(id = "") {
     },
     querySelector(selector) {
       if (selector === ".temp-terminal-minimize") return this.minimizeButton || null;
-      if (selector === ".xterm") return this.xtermElement || null;
+      if (selector === ".terminal" || selector === ".wterm") return this.terminalElement || null;
       return null;
     },
     removeAttribute(name) {
@@ -62,13 +62,15 @@ function context() {
   modal.minimizeButton = makeElement("tempTerminalMinimize");
   const container = getElement("tempTerminal");
 
+  let ctx;
+
   class FakeTerminal {
     constructor() {
-      this.element = makeElement("xterm");
+      this.element = makeElement("terminal");
       this.element.containsTarget = { insideTerm: true };
       this.focusCount = 0;
       this.resizeCalls = [];
-      context.lastTerminal = this;
+      ctx.lastTerminal = this;
     }
     focus() {
       this.focusCount += 1;
@@ -77,7 +79,7 @@ function context() {
       this.onDataHandler = fn;
     }
     open(target) {
-      target.xtermElement = this.element;
+      target.terminalElement = this.element;
     }
     resize(cols, rows) {
       this.resizeCalls.push([cols, rows]);
@@ -102,9 +104,16 @@ function context() {
     }
   }
 
-  const ctx = {
+  ctx = {
     TextEncoder,
-    Terminal: FakeTerminal,
+    HerdrTerminalRenderer: {
+      create(target, options) {
+        const term = new FakeTerminal(options);
+        term.onData(options && options.onData);
+        term.open(target);
+        return Promise.resolve(term);
+      },
+    },
     WebSocket: FakeWebSocket,
     clearTimeout() {},
     setTimeout(fn) {
@@ -138,7 +147,7 @@ function context() {
       cellSize() {
         return { width: 9, height: 20 };
       },
-      fitXtermToContainer() {},
+      fitTerminalToContainer() {},
       gridSize() {
         return { cols: 88, rows: 22 };
       },
@@ -211,7 +220,7 @@ function terminalInputFrames(ctx) {
 }
 
 describe("temporary terminal", () => {
-  it("captures Tab and Backspace inside xterm before the browser moves focus", async () => {
+  it("captures Tab and Backspace inside terminal before the browser moves focus", async () => {
     const ctx = context();
     await openTempTerminal(ctx);
     const listener = ctx.listeners.get("keydown");
@@ -239,7 +248,7 @@ describe("temporary terminal", () => {
     const listener = ctx.listeners.get("keydown");
     ok(listener);
 
-    for (const [key, value] of [["Escape", "\x1b"], ["Tab", "\t"], ["Backspace", "\x7f"]]) {
+    for (const [key, value] of [["Escape", ""], ["Tab", "	"], ["Backspace", ""]]) {
       const event = keyEvent(key, ctx.document.body);
       listener(event);
       equal(event.defaultPrevented, true, key);
@@ -292,7 +301,7 @@ describe("temporary terminal", () => {
     ok(ctx.apiCalls.includes("/api/panes?workspace_id=workspace-temp"));
   });
 
-  it("lets xterm handle ordinary keys from inside the terminal without duplicate input", async () => {
+  it("lets terminal renderer handle ordinary keys from inside the terminal without duplicate input", async () => {
     const ctx = context();
     await openTempTerminal(ctx);
     const listener = ctx.listeners.get("keydown");
@@ -354,20 +363,21 @@ describe("temporary terminal", () => {
     ok(ctx.listeners.get("keydown"));
   });
 
-  it("styles the temp terminal body and xterm layers to fill available height", () => {
+  it("styles the temp terminal body and terminal renderer to fill available height", () => {
     for (const cssPath of ["./desktop/app_css/modals.css", "./mobile/app.css"]) {
       const css = readFileSync(new URL(cssPath, import.meta.url), "utf8");
       const bodyRule = css.match(/\.temp-terminal-body \{[\s\S]*?\}/)?.[0] || "";
       const terminalRule = css.match(/\.temp-terminal-body \.terminal \{[\s\S]*?\}/)?.[0] || "";
-      const xtermRule = css.match(/\.temp-terminal-body \.xterm,[\s\S]*?\.temp-terminal-body \.xterm-viewport \{[\s\S]*?\}/)?.[0] || "";
+      const wtermRule = css.match(/\.temp-terminal-body \.wterm \{[\s\S]*?\}/)?.[0] || "";
 
       ok(/padding:\s*0;/.test(bodyRule), cssPath);
       ok(/flex:\s*1;/.test(bodyRule), cssPath);
       ok(/display:\s*block;/.test(terminalRule), cssPath);
       ok(/height:\s*100%;/.test(terminalRule), cssPath);
-      ok(/\.xterm-screen/.test(xtermRule), cssPath);
-      ok(/\.xterm-viewport/.test(xtermRule), cssPath);
-      ok(/height:\s*100%;/.test(xtermRule), cssPath);
+      ok(/height:\s*100%;/.test(wtermRule), cssPath);
+      ok(/width:\s*100%;/.test(wtermRule), cssPath);
+      ok(/overflow-x:\s*hidden;/.test(wtermRule), cssPath);
+      ok(/overflow-y:\s*auto;/.test(wtermRule), cssPath);
     }
   });
 });

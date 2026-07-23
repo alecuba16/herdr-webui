@@ -62,6 +62,7 @@ The README is the project summary and documentation index. Detailed functionalit
 ## Functionality summary
 
 - Multi-workspace terminal UI with desktop and mobile layouts, backed by the built-in backend by default.
+- Browser terminals use a shared wterm/Ghostty renderer adapter with Settings-backed renderer choice, link detection, mouse-reporting opt-in, scroll speed, Tail follow, large-paste chunking, and temporary terminal parity.
 - Backend-aware session manager that detects built-in and external Herdr sessions, switches between them, and can create or launch sessions in either backend.
 - Built-in backend agent detection with Herdr-style argv/process-tree labels and screen status rules for visible idle, working, and blocked states across common coding agents.
 - First-party `herdr-webui-tui` for terminal-native workspace/agent navigation, live attach/input/resize/detach, ANSI colors/styles, `--theme dark|light|system`, Ctrl-B help/menu, and smoke-friendly summary/once modes.
@@ -70,8 +71,8 @@ The README is the project summary and documentation index. Detailed functionalit
 - Unified header search for workspaces/worktrees, panels, file names, folder names, and file-content matches, including match-case and regex options for content search.
 - File explorer with backend Git status colors, parent-aware backend file/folder search, backend content search, type icons, read-only CodeMirror preview, edit mode, line numbers, matched-line opening, folding, in-editor find, and editable find/replace.
 - Per-workspace file explorer state while workspaces/worktrees are open, including selected files, search selections, edit mode, split panes, and drafts.
-- Settings for keyboard shortcuts, theme colors, terminal behavior, notifications, worktree defaults, file browser behavior, enabled search sections, search section ordering, and content-search defaults.
-- Help button documents visible features and shortcuts in-app.
+- Settings for keyboard shortcuts, theme colors, terminal renderer/input behavior, notifications, worktree defaults, file browser behavior, enabled search sections, search section ordering, and content-search defaults.
+- Help button documents visible features and shortcuts in-app, including the terminal renderer switch, Tail behavior, copy/paste, PageUp/PageDown, and temporary terminal shortcuts.
 
 See [Features](docs/features.md) for full behavior details.
 
@@ -79,7 +80,7 @@ See [Features](docs/features.md) for full behavior details.
 
 - Backend: Rust Axum server, explicit authenticated API routes, embedded assets, built-in terminal multiplexer, external Herdr protocol bridge, Git/file-system operations.
 - Built-in status detection: argv/process-tree labels plus screen-text fallbacks for Amp, Antigravity, Claude, Cline, Codex, Cursor, Devin, Droid, Gemini, GitHub Copilot, Grok, Hermes, Jcode, Kilo, Kimi, Kiro, Maki, OpenCode, Pi, and Qoder CLI.
-- Frontend: vanilla JS/CSS assets, no runtime framework, shared modules for tree rendering, icons, editor mounting, content search, terminal helpers, and theme tokens.
+- Frontend: vanilla JS/CSS assets, no runtime framework, shared modules for tree rendering, icons, editor mounting, content search, wterm/Ghostty terminal helpers, and theme tokens.
 - Editor: CodeMirror bundle is preloaded before shared editor code so file previews mount directly with final editor styling; shared editor code provides find in preview plus replace in edit mode.
 - File explorer/search: expensive work is backend-owned: tree listing, file/folder search, Git status propagation, content search traversal, safe file read/write, and hash-guarded snippet/file saves.
 - Static assets: compiled into the binary with `include_str!`/`include_bytes!` and served from stable `/assets/...` routes.
@@ -90,7 +91,7 @@ See [Technical details](docs/technical-details.md) for routes, limits, data flow
 
 - Git status uses one porcelain scan per refresh and propagates parent folder state server-side with priority red > yellow > green.
 - Content search skips dependency/build folders, caps traversal, skips large or binary files, paginates file groups, lazy-loads per-file match details, and validates regex patterns before traversal.
-- Terminal output is frame-batched before xterm writes, large paste input uses bounded WebSocket chunks with backpressure, and browser terminal query replies such as OSC 10/11 colors are filtered before they can leak into PTY input.
+- Terminal output is frame-batched before terminal renderer writes, large paste input uses bounded WebSocket chunks with backpressure, browser terminal query replies such as OSC 10/11 colors are filtered before they can leak into PTY input, and mouse reports are stripped unless the user enables terminal mouse reporting.
 - Large Git diffs use lazy loading, placeholders, context expansion, and server-side Git commands rather than browser-side repository scanning.
 - Path inputs are cleaned before file-system operations. Mutating Git/file actions use backend validation, hash guards, and confirmation where destructive.
 

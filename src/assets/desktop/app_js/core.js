@@ -286,7 +286,7 @@ function showTerminalShellMode() {
   if (shell) shell.style.display = "";
   syncShellModeButtons();
   if (typeof render === "function") render();
-  if (state.terminalId && !term && typeof Terminal !== "undefined") connectTerminal();
+  if (state.terminalId && !term && window.HerdrTerminalRenderer) connectTerminal();
   fitTerminalShell();
   if (typeof fitTerminalSurface === "function") fitTerminalSurface();
   if (typeof requestAnimationFrame === "function")
@@ -540,7 +540,7 @@ function shortcutsModalHtml() {
             <div class="help-row"><strong>Sidebar</strong><span>Workspaces show open roots/worktrees; agents list status. Click to open; double-click names to rename. Drag the workspace/agents separator to resize by percent. Colored badges show blocked, done, working, and idle.</span></div>
             <div class="help-row"><strong>Header</strong><span>＋ opens/creates workspace; ? opens this help; gear opens Settings; moon/theme toggles color mode; sidebar chevron hides/shows navigation.</span></div>
             <div class="help-row"><strong>Panels/Tabs</strong><span>Top panel switcher changes terminal panel; + creates panel; ✕ closes current panel; double-click panel label to rename.</span></div>
-            <div class="help-row"><strong>Terminal</strong><span>Wheel, touch, and PageUp/PageDown scroll the Herdr backend when available; built-in backend uses xterm local scroll. Tail appears after scrolling up and jumps back to latest output. Temporary terminal captures Tab/Backspace and normal input while open; Ctrl+G detaches it through the close confirmation; ${escapeHtml(globalShortcutPrefixLabel())} then Shift+M opens, minimizes, or restores it. Scroll speed is configurable in Settings → Terminal.</span></div>
+            <div class="help-row"><strong>Terminal</strong><span>Desktop, mobile, and temporary terminals use the shared wterm renderer adapter. Settings → Terminal → Renderer switches between wterm and Ghostty and reconnects the current terminal. Wheel, trackpad, touch, and PageUp/PageDown scroll normal scrollback; external Herdr sessions try backend scroll first, built-in sessions use local renderer scrollback, and alternate-screen apps keep their own scroll keys. Tail appears after scrolling up and jumps back to latest output. Links are enabled by default, mouse reporting is opt-in, paste uses bounded WebSocket chunks, and scroll speed is configurable in Settings → Terminal. Temporary terminal captures Tab/Backspace/navigation keys and normal input while open; Ctrl+G detaches it through close confirmation; ${escapeHtml(globalShortcutPrefixLabel())} then Shift+M opens, minimizes, or restores it.</span></div>
             <div class="help-row"><strong>Files</strong><span>Files selector opens browser/editor; the current folder row has an Up button; file rows use license-safe type glyphs while folders stay plain except for Git status colors. Header search (⌕, or prefix then /) is the single search entry point for workspaces/worktrees, file names, folder names, and file contents. File/folder and content search run in the backend for the focused workspace/worktree, lazy-load pages, preserve parent folders for path context, and use Settings to enable sections and sort their order. Content results show as grouped files with highlighted match text, match-case and regex options, colored matched-line context, configurable default expanded/collapsed file groups, per-file disclosure arrows, Git-style arrow controls for more context above/below with overlap merging, lazy per-file loading, opening at the matched line with editor highlight, and full-file open. Text previews use the same CodeMirror editor surface as edit mode but stay read-only until Edit is pressed; Show history opens Git log scoped to the selected file; line numbers show by default, fold controls work for supported languages, editor find supports match case and regex, edit mode enables replace, and syntax/search colors use shared theme tokens. Search selections, selected files, split panes, and unsaved edit drafts stay attached to each open workspace/worktree while switching panels; closing the workspace/worktree forgets them. Git colors are computed server-side and propagate up directories with priority red deleted, yellow modified, green new.</span></div>
             <div class="help-row"><strong>Git</strong><span>Git selector opens repo tools for diff, stage/unstage, discard, commit modal, commit & push, pull, push with force fallback, tag push option, rebase, conflicts, stash, branches, cleanup, and worktree prune. Choosing a folder in the Git directory picker immediately moves the Git panel to that folder and refreshes it; the branch modal's Switch branch button only checks out another branch in the selected Git directory. When the Git panel folder differs from the current workspace/worktree folder, the ↩ button beside Refresh returns Git to the current workspace/worktree folder and refreshes. Changes, log, stash, and cleanup use one exclusive segmented toggle; the file filter sits below the action toolbar; cleanup uses the shared broom icon. Git log has sticky scope and column headers while scrolling; selected commits show compact actions for Compare, Tag, Worktree…, Reset, Rebase…, and Clear. Selecting one commit shows a Committed files side preview; choosing a file opens the commit-vs-parent diff.</span></div>
             <div class="help-row"><strong>Worktrees</strong><span>Use the header ＋ button to open/create workspaces and linked worktrees. WebUI no longer opens a workspace automatically on startup; file browser, Git, temporary terminals, and workspace/worktree pickers start from the configured default folder when no workspace is selected. Selected workspace rows keep only close/remove actions so the sidebar stays simple.</span></div>
@@ -568,15 +568,17 @@ function shortcutsModalHtml() {
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then Shift+A</kbd><span>Jump agents in reverse priority order.</span></div>
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then J / K</kbd><span>Jump to next or previous workspace.</span></div>
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then ] / [</kbd><span>Jump to next or previous panel.</span></div>
-          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then F</kbd><span>Focus terminal.</span></div>
-          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then Shift+M</kbd><span>Open, minimize, or restore the temporary terminal.</span></div>
+          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then F</kbd><span>Focus the main terminal.</span></div>
+          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then Shift+M</kbd><span>Open, minimize to the restore pill, or restore the same live temporary terminal.</span></div>
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then V</kbd><span>In Git UI, open Git directory/branch dialog. Folder selection changes the Git panel cwd; Switch branch only changes branch in that cwd.</span></div>
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then . / ,</kbd><span>Focus next or previous visible UI control.</span></div>
           <div class="shortcut-row"><kbd>Ctrl+G</kbd><span>Detach temporary terminal when its overlay is open. The close button uses the same confirmation.</span></div>
-          <div class="shortcut-row"><kbd>Shift+Enter</kbd><span>Send configured newline sequence to terminal.</span></div>
-          <div class="shortcut-row"><kbd>PageUp/PageDown</kbd><span>Scroll Herdr terminal backend.</span></div>
+          <div class="shortcut-row"><kbd>Shift+Enter</kbd><span>Send the configured newline sequence to the main terminal when Shift+Enter newline is enabled.</span></div>
+          <div class="shortcut-row"><kbd>PageUp/PageDown</kbd><span>Scroll terminal output by one visible page in normal scrollback.</span></div>
+          <div class="shortcut-row"><kbd>Wheel/trackpad/touch drag</kbd><span>Scroll terminal output; trackpad deltas accumulate by row height and line-wheel events use the configured Scroll speed.</span></div>
           <div class="shortcut-row"><kbd>Cmd/Ctrl+C</kbd><span>Copy selected terminal text.</span></div>
-          <div class="shortcut-row"><kbd>Cmd/Ctrl+V</kbd><span>Paste clipboard into terminal.</span></div>
+          <div class="shortcut-row"><kbd>Cmd/Ctrl+V</kbd><span>Paste clipboard text into terminal through bounded WebSocket chunks.</span></div>
+          <div class="shortcut-row"><kbd>Tab / Backspace / navigation keys</kbd><span>Temporary terminal captures these keys before browser focus movement and sends them to the PTY.</span></div>
           <div class="shortcut-row"><kbd>Double-click</kbd><span>Rename workspaces and panels.</span></div>
           <div class="shortcut-row"><kbd>Cmd/Middle-click</kbd><span>Open workspace, agent, or panel link using browser tab behavior.</span></div>
         </div>
@@ -1042,6 +1044,7 @@ const defaultOptions = {
   searchShortcut: "off",
   headerSearchEnabled: true,
   terminalFontFamily: HerdrAppHelpers.resolveTerminalFontFamily(""),
+  terminalCore: "wterm",
   terminalLinks: true,
   terminalMouseReporting: false,
   agentSortMode: "off",
@@ -1185,6 +1188,7 @@ function normalizeOptions(value) {
     next.terminalFontFamily = defaultOptions.terminalFontFamily;
   }
   next.terminalLinks = next.terminalLinks !== false;
+  next.terminalCore = next.terminalCore === "ghostty" ? "ghostty" : "wterm";
   next.terminalMouseReporting = next.terminalMouseReporting === true;
   if (!["off", "attention", "attention_inverted"].includes(next.agentSortMode))
     next.agentSortMode = defaultOptions.agentSortMode;
@@ -1495,7 +1499,7 @@ if (soundSetting && !el("optAgentSortMode"))
     .closest("label")
     .insertAdjacentHTML(
       "afterend",
-      '<label class="option"><input type="checkbox" id="optGlobalShortcutsEnabled"><span>Global keyboard shortcuts<small>Enable prefix WebUI navigation shortcuts listed under ?.</small></span></label><label class="option"><span>Shortcut prefix<small>Click Record, press desired key combination, then use it before WebUI shortcuts.</small></span><span class="shortcut-capture"><input id="optGlobalShortcutPrefix" readonly><button type="button" class="tab add" id="optGlobalShortcutPrefixCapture">Record</button></span></label><label class="option"><span>Search shortcut<small>Optional direct shortcut. Leave disabled if it conflicts with terminal apps.</small></span><span class="shortcut-capture"><input id="optSearchShortcut" readonly><button type="button" class="tab add" id="optSearchShortcutCapture">Record</button><button type="button" class="tab add" id="optSearchShortcutClear">Clear</button></span></label><label class="option"><span>Terminal font<small>Use installed monospaced font family, including Nerd Fonts used by Neovim.</small></span><input id="optTerminalFontFamily" list="terminalFontPresets" placeholder="&quot;MesloLGS Nerd Font Mono&quot;, monospace"><datalist id="terminalFontPresets"><option value="&quot;MesloLGS Nerd Font Mono&quot;, &quot;MesloLGS NF&quot;, monospace"><option value="&quot;MesloLGS Nerd Font&quot;, &quot;MesloLGS NF&quot;, monospace"><option value="&quot;JetBrainsMono Nerd Font Mono&quot;, &quot;JetBrainsMono Nerd Font&quot;, monospace"><option value="&quot;Hack Nerd Font Mono&quot;, &quot;Hack Nerd Font&quot;, monospace"><option value="&quot;FiraCode Nerd Font Mono&quot;, &quot;FiraCode Nerd Font&quot;, monospace"><option value="&quot;CaskaydiaCove Nerd Font Mono&quot;, &quot;CaskaydiaCove Nerd Font&quot;, monospace"><option value="ui-monospace,SFMono-Regular,Menlo,monospace"></datalist></label><label class="option"><input type="checkbox" id="optTerminalLinks"><span>Terminal links<small>Detect http/https URLs in terminal output and open them in a new tab when clicked.</small></span></label><label class="option"><input type="checkbox" id="optTerminalMouseReporting"><span>Terminal mouse reporting<small>Forward mouse clicks and movement to terminal apps. Disabled by default so pointer movement cannot type raw mouse codes into the shell; scrolling still works.</small></span></label><label class="option"><span>Close panel shortcut<small>Stored in browser storage and available after reopening the tab.</small></span><select class="settings-select" id="optCloseShortcut"><option value="off">Disabled</option><option value="altw">Option+W</option><option value="shiftspacew">Shift+Space then W</option></select></label><label class="option"><span>Agent sorting<small>Turn on status group sorting for the agents sidebar.</small></span><select class="settings-select" id="optAgentSortMode"><option value="off">Default order</option><option value="attention">Custom group order</option><option value="attention_inverted">Working-first preset</option></select></label><div class="option agent-sort-order" id="optAgentStatusOrder"><div><strong>Agent group order</strong><small>Move status groups with arrows. Idle green, working yellow, blocked red, done blue, others gray. Saved in this browser.</small></div><div class="agent-sort-list" id="agentStatusOrderList"></div></div><label class="option"><span>Workspace panel size<small>Percent of sidebar height used by Workspaces. Drag separator or type a percent.</small></span><input id="optSidebarWorkspacePercent" type="number" min="20" max="80" step="1"></label><label class="option"><span>Parent workspace close<small>Close panels only (keeps linked worktrees running) or full close with re-open (stops processes, re-opens worktrees with fresh shells).</small></span><select class="settings-select" id="optParentCloseMode"><option value="panels">Close panels only</option><option value="close">Full close + re-open worktrees</option></select></label><label class="option"><input type="checkbox" id="optStuckWorkingEnabled"><span>Ignore stuck working agents<small>Dismiss working agents that appear stuck. Clears automatically on status changes and terminal output.</small></span></label><label class="option"><span>Ignore stuck working for<small>Minutes to keep a local dismissed-working override before showing working again.</small></span><input id="optWorkingDismissMinutes" type="number" min="1" max="1440" step="1"></label><label class="option"><input type="checkbox" id="optShowTabActivity"><span>Show panel last update<small>Display local last-change age on top panel tabs. Updates on refreshes, events, and selected terminal output; no timer polling.</small></span></label><label class="option"><span>Workspace sorting<small>Default tree order, shared drag-and-drop order, or attention state priority.</small></span><select class="settings-select" id="optWorkspaceSort"><option value="default">Default</option><option value="drag">Drag&drop</option><option value="state">State</option></select></label><label class="option"><span>Notification scope<small>Choose whether alerts fire in every open tab or only the tab viewing the agent panel.</small></span><select class="settings-select" id="optSoundScope"><option value="current">Current agent tab</option><option value="all">All tabs</option></select></label><label class="option"><span>Notification volume<small><span id="notificationVolumeValue">24</span>% for local attention tone.</small></span><input type="range" id="optNotificationVolume" min="0" max="100" step="1"></label><label class="option"><input type="checkbox" id="optGenerateWorktreeNames"><span>Generate worktree branch names<small>Allow blank Branch name in Worktrees modal. Herdr generates worktree/&lt;name&gt;.</small></span></label><label class="option"><span>Worktree default directory<small>Base directory for generated worktree checkout paths. Relative paths resolve from repo root. Example: ../worktrees.</small></span><input id="optWorktreeDefaultDirectory" placeholder="../worktrees"></label><label class="option"><span>Exploration default directory<small>Prefills new/open workspace, worktree discovery, and Git cleanup scan paths.</small></span><input id="optExplorationDefaultDirectory" placeholder="~/Documents/code"></label><label class="option"><span>Scroll speed<small><span id="scrollLinesValue">3</span> terminal lines per wheel step.</small></span><input type="range" id="optScrollLines" min="1" max="20" step="1"></label><label class="option"><span>Worktree autodiscover<small>Seconds to wait after path input stops. Set 0 for immediate.</small></span><input type="number" id="optWorktreeAutoDiscover" min="0" max="30" step="0.5"></label>',
+      '<label class="option"><input type="checkbox" id="optGlobalShortcutsEnabled"><span>Global keyboard shortcuts<small>Enable prefix WebUI navigation shortcuts listed under ?.</small></span></label><label class="option"><span>Shortcut prefix<small>Click Record, press desired key combination, then use it before WebUI shortcuts.</small></span><span class="shortcut-capture"><input id="optGlobalShortcutPrefix" readonly><button type="button" class="tab add" id="optGlobalShortcutPrefixCapture">Record</button></span></label><label class="option"><span>Search shortcut<small>Optional direct shortcut. Leave disabled if it conflicts with terminal apps.</small></span><span class="shortcut-capture"><input id="optSearchShortcut" readonly><button type="button" class="tab add" id="optSearchShortcutCapture">Record</button><button type="button" class="tab add" id="optSearchShortcutClear">Clear</button></span></label><label class="option"><span>Terminal renderer<small>wterm is lightweight. Ghostty loads a larger WASM core for stronger VT compatibility.</small></span><select class="settings-select" id="optTerminalCore"><option value="wterm">wterm VT core</option><option value="ghostty">Ghostty VT core</option></select></label><label class="option"><span>Terminal font<small>Use installed monospaced font family, including Nerd Fonts used by Neovim.</small></span><input id="optTerminalFontFamily" list="terminalFontPresets" placeholder="&quot;MesloLGS Nerd Font Mono&quot;, monospace"><datalist id="terminalFontPresets"><option value="&quot;MesloLGS Nerd Font Mono&quot;, &quot;MesloLGS NF&quot;, monospace"><option value="&quot;MesloLGS Nerd Font&quot;, &quot;MesloLGS NF&quot;, monospace"><option value="&quot;JetBrainsMono Nerd Font Mono&quot;, &quot;JetBrainsMono Nerd Font&quot;, monospace"><option value="&quot;Hack Nerd Font Mono&quot;, &quot;Hack Nerd Font&quot;, monospace"><option value="&quot;FiraCode Nerd Font Mono&quot;, &quot;FiraCode Nerd Font&quot;, monospace"><option value="&quot;CaskaydiaCove Nerd Font Mono&quot;, &quot;CaskaydiaCove Nerd Font&quot;, monospace"><option value="ui-monospace,SFMono-Regular,Menlo,monospace"></datalist></label><label class="option"><input type="checkbox" id="optTerminalLinks"><span>Terminal links<small>Detect http/https URLs in terminal output and open them in a new tab when clicked.</small></span></label><label class="option"><input type="checkbox" id="optTerminalMouseReporting"><span>Terminal mouse reporting<small>Forward mouse clicks and movement to terminal apps. Disabled by default so pointer movement cannot type raw mouse codes into the shell; scrolling still works.</small></span></label><label class="option"><span>Close panel shortcut<small>Stored in browser storage and available after reopening the tab.</small></span><select class="settings-select" id="optCloseShortcut"><option value="off">Disabled</option><option value="altw">Option+W</option><option value="shiftspacew">Shift+Space then W</option></select></label><label class="option"><span>Agent sorting<small>Turn on status group sorting for the agents sidebar.</small></span><select class="settings-select" id="optAgentSortMode"><option value="off">Default order</option><option value="attention">Custom group order</option><option value="attention_inverted">Working-first preset</option></select></label><div class="option agent-sort-order" id="optAgentStatusOrder"><div><strong>Agent group order</strong><small>Move status groups with arrows. Idle green, working yellow, blocked red, done blue, others gray. Saved in this browser.</small></div><div class="agent-sort-list" id="agentStatusOrderList"></div></div><label class="option"><span>Workspace panel size<small>Percent of sidebar height used by Workspaces. Drag separator or type a percent.</small></span><input id="optSidebarWorkspacePercent" type="number" min="20" max="80" step="1"></label><label class="option"><span>Parent workspace close<small>Close panels only (keeps linked worktrees running) or full close with re-open (stops processes, re-opens worktrees with fresh shells).</small></span><select class="settings-select" id="optParentCloseMode"><option value="panels">Close panels only</option><option value="close">Full close + re-open worktrees</option></select></label><label class="option"><input type="checkbox" id="optStuckWorkingEnabled"><span>Ignore stuck working agents<small>Dismiss working agents that appear stuck. Clears automatically on status changes and terminal output.</small></span></label><label class="option"><span>Ignore stuck working for<small>Minutes to keep a local dismissed-working override before showing working again.</small></span><input id="optWorkingDismissMinutes" type="number" min="1" max="1440" step="1"></label><label class="option"><input type="checkbox" id="optShowTabActivity"><span>Show panel last update<small>Display local last-change age on top panel tabs. Updates on refreshes, events, and selected terminal output; no timer polling.</small></span></label><label class="option"><span>Workspace sorting<small>Default tree order, shared drag-and-drop order, or attention state priority.</small></span><select class="settings-select" id="optWorkspaceSort"><option value="default">Default</option><option value="drag">Drag&drop</option><option value="state">State</option></select></label><label class="option"><span>Notification scope<small>Choose whether alerts fire in every open tab or only the tab viewing the agent panel.</small></span><select class="settings-select" id="optSoundScope"><option value="current">Current agent tab</option><option value="all">All tabs</option></select></label><label class="option"><span>Notification volume<small><span id="notificationVolumeValue">24</span>% for local attention tone.</small></span><input type="range" id="optNotificationVolume" min="0" max="100" step="1"></label><label class="option"><input type="checkbox" id="optGenerateWorktreeNames"><span>Generate worktree branch names<small>Allow blank Branch name in Worktrees modal. Herdr generates worktree/&lt;name&gt;.</small></span></label><label class="option"><span>Worktree default directory<small>Base directory for generated worktree checkout paths. Relative paths resolve from repo root. Example: ../worktrees.</small></span><input id="optWorktreeDefaultDirectory" placeholder="../worktrees"></label><label class="option"><span>Exploration default directory<small>Prefills new/open workspace, worktree discovery, and Git cleanup scan paths.</small></span><input id="optExplorationDefaultDirectory" placeholder="~/Documents/code"></label><label class="option"><span>Scroll speed<small><span id="scrollLinesValue">3</span> terminal lines per wheel step.</small></span><input type="range" id="optScrollLines" min="1" max="20" step="1"></label><label class="option"><span>Worktree autodiscover<small>Seconds to wait after path input stops. Set 0 for immediate.</small></span><input type="number" id="optWorktreeAutoDiscover" min="0" max="30" step="0.5"></label>',
     );
 const showTabActivitySetting = el("optShowTabActivity");
 if (showTabActivitySetting && !el("optTreeIndentPx"))
@@ -1528,6 +1532,7 @@ function groupSettingsSections() {
         "optFit",
         "optShiftEnterNewline",
         "optScrollLines",
+        "optTerminalCore",
         "optTerminalFontFamily",
         "optTerminalLinks",
         "optTerminalMouseReporting",
@@ -1665,6 +1670,7 @@ function applyOptions() {
     globalShortcutPrefix = el("optGlobalShortcutPrefix"),
     searchShortcut = el("optSearchShortcut"),
     terminalFontFamily = el("optTerminalFontFamily"),
+    terminalCore = el("optTerminalCore"),
     terminalLinks = el("optTerminalLinks"),
     terminalMouseReporting = el("optTerminalMouseReporting"),
     themeSelect = el("optTheme"),
@@ -1720,6 +1726,7 @@ function applyOptions() {
   renderShortcutEditor();
   if (terminalFontFamily)
     terminalFontFamily.value = options.terminalFontFamily || "";
+  if (terminalCore) terminalCore.value = options.terminalCore || "wterm";
   if (terminalLinks)
     terminalLinks.checked = options.terminalLinks !== false;
   if (terminalMouseReporting)
@@ -1817,7 +1824,7 @@ function applyOptions() {
     if (fit) {
       state.termCols = fit.cols;
       state.termRows = fit.rows;
-      if (typeof Terminal !== "undefined") connectTerminal();
+      if (window.HerdrTerminalRenderer) connectTerminal();
     }
   }
   syncShortcutTooltips();
@@ -1971,16 +1978,7 @@ function terminalFontFamily() {
 function applyTerminalFont() {
   if (!term) return;
   const family = terminalFontFamily();
-  try {
-    term.options.fontFamily = family;
-  } catch (e) {
-    try {
-      term.setOption("fontFamily", family);
-    } catch (_) {}
-  }
-  try {
-    term.refresh(0, Math.max(0, (term.rows || 1) - 1));
-  } catch (_) {}
+  if (term.setFontFamily) term.setFontFamily(family);
 }
 function applyTheme() {
   themeMode = normalizeThemeMode(themeMode);
@@ -1998,15 +1996,7 @@ function applyTheme() {
   const themeSelect = el("optTheme");
   if (themeSelect) themeSelect.value = themeMode;
   localStorage.setItem("herdr-web-theme", themeMode);
-  if (term) {
-    try {
-      term.options.theme = terminalTheme();
-    } catch (e) {
-      try {
-        term.setOption("theme", terminalTheme());
-      } catch (_) {}
-    }
-  }
+  if (term && term.setTheme) term.setTheme(terminalTheme());
   fitTerminalShell();
 }
 function applyThemeColorVars(mode) {
@@ -2878,7 +2868,7 @@ function forgetClosedSelection(kind, data) {
       else selectFallbackPaneAfterClosed(data.pane_id);
       render();
       replaceSelectionHistory();
-      if (typeof Terminal !== "undefined") connectTerminal();
+      if (window.HerdrTerminalRenderer) connectTerminal();
     }
   } else if (kind === "tab.closed") {
     if (data && data.tab_id) removeClosedTabFromState(data.tab_id);
@@ -2887,7 +2877,7 @@ function forgetClosedSelection(kind, data) {
       selectFallbackTabAfterClosed(data.tab_id);
       render();
       replaceSelectionHistory();
-      if (typeof Terminal !== "undefined") connectTerminal();
+      if (window.HerdrTerminalRenderer) connectTerminal();
     }
   }
 }

@@ -322,7 +322,7 @@ fn handle_client_connection(
                 }
             }
             ClientMessage::AttachScroll { .. } => {
-                // Built-in MVP keeps xterm.js as the scrollback renderer. The web
+                // Built-in MVP keeps the browser terminal as the scrollback renderer. The web
                 // adapter will fall back to local scrolling for this backend.
             }
             ClientMessage::Detach => break,

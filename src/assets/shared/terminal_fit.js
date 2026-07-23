@@ -15,28 +15,26 @@
     };
   }
 
-  function rendererCell(term) {
-    return term && term._core && term._core._renderService && term._core._renderService.dimensions && term._core._renderService.dimensions.css && term._core._renderService.dimensions.css.cell;
-  }
-
   function measuredCell(container) {
-    var measure = container && container.querySelector && container.querySelector(".xterm-char-measure-element");
-    var measureRect = measure && measure.getBoundingClientRect && measure.getBoundingClientRect();
-    var row = container && container.querySelector && container.querySelector(".xterm-rows > div");
+    var adapter = container && container.__herdrTerminalAdapter;
+    if (adapter && typeof adapter.cellSize === "function") return adapter.cellSize();
+    var row = container && container.querySelector && container.querySelector(".term-row");
+    var span = row && row.querySelector && row.querySelector("span");
+    var spanRect = span && span.getBoundingClientRect && span.getBoundingClientRect();
     var rowRect = row && row.getBoundingClientRect && row.getBoundingClientRect();
     return {
-      width: measureRect && measureRect.width > 2 ? measureRect.width : 0,
+      width: spanRect && spanRect.width > 2 ? spanRect.width / Math.max(1, (span.textContent || "").length || 1) : 0,
       height: rowRect && rowRect.height > 8 ? rowRect.height : 0,
     };
   }
 
   function cellSize(term, container, fallback) {
     var fb = fallback || { width: 9, height: 17 };
-    var rendered = rendererCell(term) || {};
+    var adapterCell = term && typeof term.cellSize === "function" ? term.cellSize() : null;
     var measured = measuredCell(container);
     return {
-      width: rendered.width || measured.width || fb.width || 9,
-      height: rendered.height || measured.height || fb.height || 17,
+      width: (adapterCell && adapterCell.width) || measured.width || fb.width || 9,
+      height: (adapterCell && adapterCell.height) || measured.height || fb.height || 17,
     };
   }
 
@@ -58,45 +56,19 @@
     };
   }
 
-  function fitXtermToContainer(container, options) {
+  function fitTerminalToContainer(container, options) {
     var opts = options || {};
-    if (!container || !container.querySelector) return;
+    if (!container || !container.style) return;
     var height = Math.floor(opts.height || container.clientHeight || 0);
     var heightPx = height > 0 ? height + "px" : "";
-    var xterm = container.querySelector(".xterm");
-    if (xterm) {
-      xterm.style.width = "100%";
-      xterm.style.height = heightPx || "100%";
-      xterm.style.maxHeight = heightPx || "";
-      xterm.style.minWidth = "0";
-      xterm.style.minHeight = "0";
-      xterm.style.overflow = "hidden";
-    }
-    var viewport = container.querySelector(".xterm-viewport");
-    if (viewport) {
-      viewport.style.left = "0";
-      viewport.style.right = "0";
-      if (heightPx) {
-        viewport.style.height = heightPx;
-        viewport.style.maxHeight = heightPx;
-      }
-    }
-    if (!heightPx) return;
-    var screen = container.querySelector(".xterm-screen");
-    if (screen) {
-      screen.style.height = heightPx;
-      screen.style.maxHeight = heightPx;
-      screen.style.overflow = "hidden";
-    }
-    var helpers = container.querySelector(".xterm-helpers");
-    if (helpers) {
-      helpers.style.maxHeight = heightPx;
-      helpers.style.overflow = "hidden";
-    }
-    var canvasNodes = container.querySelectorAll && container.querySelectorAll(".xterm-screen canvas");
-    if (canvasNodes) {
-      for (var i = 0; i < canvasNodes.length; i++) canvasNodes[i].style.maxHeight = heightPx;
-    }
+    container.style.width = opts.width ? Math.floor(opts.width) + "px" : container.style.width || "100%";
+    container.style.height = heightPx || container.style.height || "100%";
+    container.style.maxHeight = heightPx || "";
+    container.style.minWidth = opts.minWidth || "0";
+    container.style.minHeight = opts.minHeight || "0";
+    container.style.overflow = opts.overflow || "";
+    container.style.overflowX = opts.overflowX || "hidden";
+    container.style.overflowY = opts.overflowY || "auto";
   }
 
   function afterLayout(callback) {
@@ -108,7 +80,7 @@
     visibleBox: visibleBox,
     cellSize: cellSize,
     gridSize: gridSize,
-    fitXtermToContainer: fitXtermToContainer,
+    fitTerminalToContainer: fitTerminalToContainer,
     afterLayout: afterLayout,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = root.HerdrTerminalFit;

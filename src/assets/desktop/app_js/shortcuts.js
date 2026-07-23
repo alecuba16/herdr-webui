@@ -154,7 +154,7 @@ function editableShortcutTarget(target) {
   return !!target.closest("input, textarea, select, [contenteditable='true']");
 }
 function terminalShortcutTarget(target) {
-  return !!(target && target.closest && target.closest(".xterm"));
+  return !!(target && target.closest && target.closest(".wterm, .terminal"));
 }
 function shortcutKey(e) {
   const shift = e.shiftKey ? "Shift+" : "";

@@ -18,7 +18,7 @@ use crate::protocol::{
 /// a newline-delimited JSON control socket and a length-prefixed bincode
 /// terminal socket. This is not full Herdr parity yet; it is the stable-ish
 /// MVP layer for listing state, reading pane tails, and attaching ANSI
-/// terminal streams without depending on Axum, WebSocket, DOM, or xterm.js.
+/// terminal streams without depending on Axum, WebSocket, DOM, or browser terminal renderer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BackendClient {
     api_socket: PathBuf,

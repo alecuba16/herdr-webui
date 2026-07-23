@@ -18,6 +18,23 @@
   min-height: 0;
   white-space: nowrap;
 }
+.terminal.wterm,
+.terminal .wterm {
+  background: var(--bg);
+  border-radius: 0;
+  box-shadow: none;
+  color: var(--fg);
+  font-family: var(--term-font-family, "Herdr JetBrainsMono Nerd Font Mono", ui-monospace, monospace);
+  height: 100%;
+  line-height: 1.2;
+  overflow: auto;
+  padding: 0;
+  width: 100%;
+}
+.terminal.wterm .term-grid,
+.terminal .wterm .term-grid {
+  min-width: max-content;
+}
 .terminal-shell::-webkit-scrollbar {
   width: 10px;
   height: 10px;

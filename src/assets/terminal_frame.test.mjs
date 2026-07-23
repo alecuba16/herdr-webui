@@ -8,7 +8,7 @@ const require = createRequire(import.meta.url);
 const HerdrTerminalFit = require("./shared/terminal_fit.js");
 
 // Minimal mock for the desktop terminal frame pipeline. We only test the
-// enqueue / coalesce / flush logic, not xterm.js itself.
+// enqueue / coalesce / flush logic, not the terminal renderer itself.
 
 function createMockTerminal() {
   const writes = [];
@@ -91,34 +91,17 @@ describe("desktop terminal visible height fitting", () => {
     return { style: {} };
   }
 
-  it("caps xterm DOM nodes to the visible shell height", () => {
-    const xterm = styleNode();
-    const viewport = styleNode();
-    const screen = styleNode();
-    const helpers = styleNode();
-    const canvas = styleNode();
-    screen.style.height = "1580px";
-    const nodes = {
-      ".xterm": xterm,
-      ".xterm-viewport": viewport,
-      ".xterm-screen": screen,
-      ".xterm-helpers": helpers,
-    };
-    const container = {
-      clientHeight: 1064,
-      querySelector(selector) { return nodes[selector] || null; },
-      querySelectorAll(selector) { return selector === ".xterm-screen canvas" ? [canvas] : []; },
-    };
+  it("caps terminal container to the visible shell height", () => {
+    const container = { clientHeight: 1064, style: {} };
 
-    HerdrTerminalFit.fitXtermToContainer(container, { height: 1064 });
+    HerdrTerminalFit.fitTerminalToContainer(container, { height: 1064 });
 
-    for (const node of [xterm, viewport, screen]) {
-      assert.equal(node.style.height, "1064px");
-      assert.equal(node.style.maxHeight, "1064px");
-    }
-    assert.equal(screen.style.overflow, "hidden");
-    assert.equal(helpers.style.maxHeight, "1064px");
-    assert.equal(canvas.style.maxHeight, "1064px");
+    assert.equal(container.style.height, "1064px");
+    assert.equal(container.style.maxHeight, "1064px");
+    assert.equal(container.style.width, "100%");
+    assert.equal(container.style.overflow, "");
+    assert.equal(container.style.overflowX, "hidden");
+    assert.equal(container.style.overflowY, "auto");
   });
 
   it("uses 20px fallback cell height so a 1080px shell fits 53 rows, not 62", () => {
@@ -143,7 +126,7 @@ describe("desktop terminal visible height fitting", () => {
     assert.ok(size.rows * size.cell.height <= shell.clientHeight - 16);
   });
 
-  it("auto-scrolls after xterm write callback only when follow is active", () => {
+  it("auto-scrolls after terminal write callback only when follow is active", () => {
     let scrolled = 0;
     let paused = false;
     const callbacks = [];
@@ -158,7 +141,7 @@ describe("desktop terminal visible height fitting", () => {
     const followTerminalAfterWrite = () => maybeAutoScrollToBottom();
 
     term.write("new data", followTerminalAfterWrite);
-    assert.equal(scrolled, 0, "scroll waits for xterm parse callback");
+    assert.equal(scrolled, 0, "scroll waits for terminal parse callback");
     callbacks.shift()();
     assert.equal(scrolled, 1, "follow active scrolls after write");
 
@@ -262,7 +245,7 @@ describe("attach frame render suppression", () => {
     const term = {
       write(data, cb) {
         writes.push(data);
-        if (cb) writeCallback = cb;  // Don't auto-fire; simulate xterm parsing
+        if (cb) writeCallback = cb;  // Don't auto-fire; simulate terminal parsing
       },
     };
 
@@ -286,7 +269,7 @@ describe("attach frame render suppression", () => {
 
     assert.equal(writes.length, 1, "single write for attach frame");
     assert.ok(writeCallback, "write callback should be registered");
-    // In real code, the callback fires after xterm finishes parsing,
+    // In real code, the callback fires after the terminal renderer finishes parsing,
     // then RAF reveals the terminal. Until then, loading overlay stays visible.
   });
 

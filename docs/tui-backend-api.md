@@ -133,7 +133,7 @@ Terminal methods:
 
 ## TUI prototype scope now implemented
 
-The prototype TUI works without Axum, WebSocket, DOM, xterm.js, or browser-local storage:
+The prototype TUI works without Axum, WebSocket, DOM, browser terminal renderer, or browser-local storage:
 
 1. Connect with `BackendClient::builtin_session(None)`.
 2. Call `snapshot()`.
