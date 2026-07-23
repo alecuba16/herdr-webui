@@ -60,6 +60,7 @@
       loadCss("/assets/desktop/app.css");
       loadCss("/assets/desktop/shortcuts.css");
       loadCss("/assets/desktop/search.css");
+      loadCss("/assets/shared/file-tree.css");
     }
     loadCss("/assets/shared/colors.css");
     loadCss("/assets/vendor/wterm.css");
