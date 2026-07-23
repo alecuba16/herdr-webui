@@ -37,7 +37,7 @@ fn git_ui_branches_blocking(cwd: String) -> Result<Response, (StatusCode, String
     };
     let local_json = local
         .iter()
-        .map(|b| json!({ "name": b.name, "current": b.current, "remote": false, "worktree_path": worktree_paths.get(&b.name).cloned() }))
+        .map(|b| json!({ "name": b.name, "current": b.current, "remote": false, "worktree_path": worktree_paths.get(&b.name).cloned(), "pushed": b.pushed, "upstream": b.upstream.as_deref() }))
         .collect::<Vec<_>>();
     let remote_text = match git_ui_text(&cwd, &["branch", "-r", "--format=%(refname:short)"]) {
         Ok(text) => text,
@@ -111,11 +111,46 @@ fn git_ui_branch_delete_blocking(
     branch: String,
     force: bool,
 ) -> Result<Response, (StatusCode, String)> {
+    maybe_switch_before_delete(&cwd, &branch)?;
     let delete_flag = if force { "-D" } else { "-d" };
     match git_ui_text(&cwd, &["branch", delete_flag, "--", &branch]) {
         Ok(text) => Ok(Json(json!({ "ok": true, "message": text })).into_response()),
         Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
     }
+}
+
+fn maybe_switch_before_delete(cwd: &str, branch: &str) -> Result<(), (StatusCode, String)> {
+    let branches = list_local_branches(cwd).map_err(|err| (StatusCode::BAD_GATEWAY, err))?;
+    let Some(target) = branches.iter().find(|candidate| candidate.name == branch) else {
+        return Err((StatusCode::BAD_REQUEST, "branch not found".to_string()));
+    };
+    if !target.current {
+        return Ok(());
+    }
+    if is_default_branch(branch) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "current main/master branch cannot be deleted".to_string(),
+        ));
+    }
+    let Some(default_branch) = branches
+        .iter()
+        .find(|candidate| candidate.name == "main")
+        .or_else(|| branches.iter().find(|candidate| candidate.name == "master"))
+        .map(|candidate| candidate.name.as_str())
+    else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "main or master branch is required before deleting the current branch".to_string(),
+        ));
+    };
+    git_ui_text(cwd, &["switch", "--", default_branch])
+        .map(|_| ())
+        .map_err(|err| (StatusCode::BAD_GATEWAY, err))
+}
+
+fn is_default_branch(branch: &str) -> bool {
+    branch == "main" || branch == "master"
 }
 
 pub(super) async fn git_ui_branch_delete(

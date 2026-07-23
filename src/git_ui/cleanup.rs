@@ -39,6 +39,8 @@ pub(super) struct GitCleanupBranch {
     name: String,
     current: bool,
     checked_out: bool,
+    pushed: bool,
+    upstream: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -48,6 +50,7 @@ pub(super) struct GitCleanupWorktree {
     detached: bool,
     prunable: bool,
     primary: bool,
+    pushed: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -240,6 +243,8 @@ fn cleanup_repo_details(
                 name: b.name,
                 current: b.current,
                 checked_out,
+                pushed: b.pushed,
+                upstream: b.upstream,
             })
         })
         .collect::<Vec<_>>();
@@ -250,6 +255,10 @@ fn cleanup_worktrees(cwd: &str) -> Result<Vec<GitCleanupWorktree>, String> {
     let root = git_ui_text(cwd, &["rev-parse", "--show-toplevel"])?
         .trim()
         .to_string();
+    let pushed_by_branch = list_local_branches(cwd)?
+        .into_iter()
+        .map(|branch| (branch.name, branch.pushed))
+        .collect::<std::collections::HashMap<_, _>>();
     let text = git_ui_text(cwd, &["worktree", "list", "--porcelain"])?;
     let mut rows = Vec::new();
     let mut current: Option<GitCleanupWorktree> = None;
@@ -270,6 +279,7 @@ fn cleanup_worktrees(cwd: &str) -> Result<Vec<GitCleanupWorktree>, String> {
                 detached: false,
                 prunable: false,
                 primary: path == root,
+                pushed: None,
             });
         } else if let Some(branch) = line.strip_prefix("branch ") {
             if let Some(row) = current.as_mut() {
@@ -279,6 +289,10 @@ fn cleanup_worktrees(cwd: &str) -> Result<Vec<GitCleanupWorktree>, String> {
                         .unwrap_or(branch)
                         .to_string(),
                 );
+                row.pushed = row
+                    .branch
+                    .as_ref()
+                    .and_then(|branch| pushed_by_branch.get(branch).copied());
             }
         } else if line == "detached" {
             if let Some(row) = current.as_mut() {
