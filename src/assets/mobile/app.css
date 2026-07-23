@@ -1027,6 +1027,11 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
 .temp-terminal-modal {
   position: relative;
 }
+.temp-terminal-follow {
+  bottom: 14px;
+  right: 14px;
+  z-index: 10;
+}
 .temp-terminal-confirm {
   position: absolute;
   inset: 0;

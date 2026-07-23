@@ -46,6 +46,8 @@
     var keyTrapBound = false;
     var isMinimized = false;
     var restoreButton = null;
+    var followPaused = false;
+    var scrollBound = false;
 
     function open() {
       if (isOpen) {
@@ -80,6 +82,7 @@
       isOpen = false;
       isMinimized = false;
       closing = true;
+      setFollowPaused(false);
       removeInputTrap();
       hideRestoreControl();
       disconnectWs();
@@ -455,6 +458,7 @@
         onData: function (data) { sendInput(data); },
       }).then(function (created) {
         term = created;
+        bindTerminalScrollEvents(container);
         try { term.focus(); } catch (e) {}
         refreshTerminalFitAfterFontLoad();
         return term;
@@ -589,6 +593,8 @@
       writeQueue = [];
       writeFlushPending = false;
       linkProvider = null;
+      scrollBound = false;
+      followPaused = false;
       if (term) {
         try { term.destroy(); } catch (e) {}
         term = null;
@@ -653,6 +659,53 @@
         termWs.send(bytes.slice(i, i + chunkSize));
     }
 
+    function terminalAtBottom() {
+      try { return !term || !term.atBottom || term.atBottom(); }
+      catch (e) { return true; }
+    }
+
+    function setFollowPaused(paused) {
+      followPaused = !!paused;
+      var button = el("tempTerminalFollowButton");
+      if (!button) return;
+      button.hidden = !followPaused;
+      button.setAttribute && button.setAttribute("aria-hidden", followPaused ? "false" : "true");
+    }
+
+    function scrollToTail() {
+      setFollowPaused(false);
+      try { if (term) term.scrollToBottom(); } catch (e) {}
+      try { term.focus(); } catch (e) {}
+    }
+
+    function bindTerminalScrollEvents(container) {
+      if (scrollBound || !term || !term.element) return;
+      scrollBound = true;
+      var termEl = term.element;
+      // Wheel scrolling: scroll lines, pause follow when not at bottom
+      termEl.addEventListener("wheel", function (event) {
+        if (event.ctrlKey || event.metaKey || !term) return;
+        if (term.usesNormalBuffer && !term.usesNormalBuffer()) return;
+        event.preventDefault();
+        var rowH = term.rowHeight ? term.rowHeight() : 17;
+        var lines = Math.max(1, Math.round(Math.abs(event.deltaY) / Math.max(1, rowH)));
+        try { term.scrollLines(event.deltaY < 0 ? -lines : lines); } catch (e) {}
+        setFollowPaused(!terminalAtBottom());
+      }, { passive: false });
+      // Scroll event (touch drag, scrollbar): sync follow state
+      termEl.addEventListener("scroll", function () {
+        setFollowPaused(!terminalAtBottom());
+      }, { passive: true });
+      // Follow button click
+      var button = el("tempTerminalFollowButton");
+      if (button) button.onclick = scrollToTail;
+    }
+
+    function maybeAutoScrollToBottom() {
+      if (followPaused) return;
+      try { if (term) term.scrollToBottom(); } catch (e) {}
+    }
+
     function enqueueFrame(data) {
       var size = typeof data === "string" ? data.length : data.length;
       if (!writeFlushPending && writeQueue.length === 0 && term && size <= 8192) {
@@ -692,7 +745,11 @@
 
     function writeFrame(data) {
       if (!term) return;
-      try { term.write(data); } catch (e) { try { term.write(data); } catch (e2) {} }
+      try { term.write(data, maybeAutoScrollToBottom); } catch (e) { try { term.write(data); maybeAutoScrollToBottom(); } catch (e2) {} }
+      // Fallback: RAF-based auto-scroll in case write callback not called
+      if (typeof globalThis.requestAnimationFrame === "function") {
+        globalThis.requestAnimationFrame(maybeAutoScrollToBottom);
+      }
     }
 
     function isVisible() { return isOpen && !isMinimized; }
