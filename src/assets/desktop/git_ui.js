@@ -55,6 +55,7 @@
 
   function handleKeydown(event) {
     if (!state.visible || !event) return;
+    if (tempTerminalModalVisible()) return;
     const view = active();
     if (!view) return;
     // Git drawer owns keyboard while visible, so terminal/global shortcuts behind it do not receive input.
@@ -120,6 +121,11 @@
     } else {
       window.HerdrGitUi.showChangesList();
     }
+  }
+
+  function tempTerminalModalVisible() {
+    const modal = document.getElementById && document.getElementById("tempTerminalModal");
+    return !!(modal && modal.style.display && modal.style.display !== "none");
   }
 
   function isChangesListView(view) {
@@ -2496,6 +2502,7 @@
     },
     refreshVisible() { if (state.visible) render(); },
     isVisible() { return state.visible; },
+    activeWorkspaceId() { return state.visible ? (state.activeKey || "") : ""; },
     isWorkspaceVisible(key) { return state.visible && state.activeKey === key; },
     workspaceStatus,
     statusLabel() { return state.open ? (state.visible ? "open" : "hidden") : "closed"; },
