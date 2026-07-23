@@ -154,7 +154,15 @@
       document.addEventListener("keydown", tempTerminalKeydown, true);
       var modal = el(modalId);
       if (modal) {
-        modal.addEventListener("pointerdown", focusTerminalFromEvent, true);
+        if (window.HerdrTerminalRenderer && window.HerdrTerminalRenderer.attachClickFocus) {
+          window.HerdrTerminalRenderer.attachClickFocus(
+            modal,
+            focusTerminalSoon,
+            function (event) { return isCloseControl(event && event.target); }
+          );
+        } else {
+          modal.addEventListener("pointerdown", focusTerminalFromEvent, true);
+        }
         modal.addEventListener("focusin", focusTerminalFromEvent, true);
       }
     }
@@ -165,7 +173,9 @@
       document.removeEventListener("keydown", tempTerminalKeydown, true);
       var modal = el(modalId);
       if (modal) {
-        modal.removeEventListener("pointerdown", focusTerminalFromEvent, true);
+        if (!window.HerdrTerminalRenderer || !window.HerdrTerminalRenderer.attachClickFocus) {
+          modal.removeEventListener("pointerdown", focusTerminalFromEvent, true);
+        }
         modal.removeEventListener("focusin", focusTerminalFromEvent, true);
       }
     }
