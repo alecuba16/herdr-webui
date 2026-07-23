@@ -658,67 +658,6 @@
   font-size: 11px;
   padding: 3px 7px;
 }
-.directory-picker-trigger {
-  margin-left: 6px;
-}
-.directory-picker-backdrop {
-  background: #0008;
-  display: grid;
-  inset: 0;
-  place-items: center;
-  position: fixed;
-  z-index: 1200;
-}
-.directory-picker {
-  background: var(--panel);
-  border: 1px solid var(--border2);
-  border-radius: 14px;
-  box-shadow: 0 18px 60px #0009;
-  display: flex;
-  flex-direction: column;
-  max-height: min(720px, 88vh);
-  max-width: min(760px, 92vw);
-  min-height: 420px;
-  overflow: hidden;
-  width: 640px;
-}
-.directory-picker-head,
-.directory-picker-actions {
-  align-items: center;
-  border-bottom: 1px solid var(--border);
-  display: flex;
-  gap: 8px;
-  justify-content: space-between;
-  padding: 10px;
-}
-.directory-picker-actions {
-  justify-content: flex-start;
-}
-.directory-picker-path {
-  color: var(--muted);
-  font: 12px/1.4 var(--mono-font);
-  overflow-wrap: anywhere;
-  padding: 8px 10px;
-}
-.directory-picker-search {
-  border-bottom: 1px solid var(--border);
-  padding: 8px 10px;
-}
-.directory-picker-search input {
-  background: var(--bg);
-  border: 1px solid var(--border2);
-  border-radius: 10px;
-  color: var(--fg);
-  font: inherit;
-  outline: 0;
-  padding: 6px 8px;
-  width: 100%;
-}
-.directory-picker-tree {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-}
 @media (max-width: 900px) {
   .file-browser-panel {
     grid-template-columns: 1fr;
