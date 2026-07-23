@@ -41,7 +41,7 @@ use assets::{
     mobile_settings_js, mobile_terminal_js, mobile_worktrees_js, shared_actions_js,
     shared_colors_css, shared_content_search_css, shared_core_js, shared_editor_js,
     shared_file_content_search_js, shared_file_icons_css, shared_file_icons_js,
-    shared_file_tree_js, shared_line_context_js, shared_terminal_adapter_js,
+    shared_file_tree_css, shared_file_tree_js, shared_line_context_js, shared_terminal_adapter_js,
     shared_terminal_fit_js, shared_terminal_scroll_js, shared_temp_terminal_js,
     shared_workspace_search_js, vendor_codemirror_js, vendor_ghostty_wasm, vendor_wterm_css,
     vendor_wterm_js,
@@ -1223,6 +1223,7 @@ fn app_router(state: WebState) -> Router {
         .route("/assets/shared/actions.js", get(shared_actions_js))
         .route("/assets/shared/file-icons.js", get(shared_file_icons_js))
         .route("/assets/shared/file-icons.css", get(shared_file_icons_css))
+        .route("/assets/shared/file-tree.css", get(shared_file_tree_css))
         .route("/assets/shared/colors.css", get(shared_colors_css))
         .route(
             "/assets/shared/content-search.css",

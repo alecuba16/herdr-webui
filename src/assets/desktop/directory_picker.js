@@ -217,7 +217,7 @@
   function renderAccessError() {
     if (!state.error) return "";
     const action = state.permissionRequired ? `<button class="git-ui-btn primary" onclick="HerdrDirectoryPicker.requestAccess()">Grant folder access</button>` : "";
-    return `<div class="file-browser-error"><span>${esc(state.error)}</span>${action}</div>`;
+    return `<div class="directory-picker-error"><span>${esc(state.error)}</span>${action}</div>`;
   }
 
   async function requestAccess() {

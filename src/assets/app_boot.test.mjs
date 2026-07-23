@@ -6,6 +6,7 @@ import vm from "node:vm";
 const SHARED_STYLES = [
   "/assets/shared/colors.css",
   "/assets/vendor/wterm.css",
+  "/assets/shared/file-tree.css",
   "/assets/shared/file-icons.css",
   "/assets/shared/content-search.css",
 ];
