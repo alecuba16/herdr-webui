@@ -1584,7 +1584,74 @@
     const currentText = hunk.text || "";
     const readonly = hunk.newStart ? "" : " readonly";
     const meta = hunk.newStart ? `current lines ${hunk.newStart}-${hunk.newEnd}` : "no current lines";
-    return `<div class="git-ui-hunk-editor"><div class="git-ui-hunk-head"><span>${esc(hunk.header || "hunk")}</span><span class="git-ui-muted">${esc(meta)}</span></div><div class="git-ui-hunk-editor-grid"><section><div class="git-ui-editor-head"><strong>Previous</strong><span class="git-ui-muted">read-only</span></div><div class="git-ui-hunk-edit-mount git-ui-hunk-old-mount" data-hunk-index="${hunk.index}" data-editor-side="old" data-readonly="true"></div><textarea class="git-ui-hunk-old git-ui-hunk-old-hidden git-ui-hunk-edit-hidden" data-hunk-index="${hunk.index}" spellcheck="false" readonly>${esc(oldText)}</textarea></section><section><div class="git-ui-editor-head"><strong>Current</strong><span class="git-ui-muted">editable hunk</span></div><div class="git-ui-hunk-edit-mount git-ui-hunk-current-mount" data-hunk-index="${hunk.index}" data-editor-side="current" data-readonly="${hunk.newStart ? "false" : "true"}"></div><textarea class="git-ui-hunk-edit git-ui-hunk-current-hidden git-ui-hunk-edit-hidden" data-hunk-index="${hunk.index}" spellcheck="false"${readonly}>${esc(currentText)}</textarea></section></div></div>`;
+    const conflictControls = renderEditableHunkConflictControls(hunk);
+    return `<div class="git-ui-hunk-editor"><div class="git-ui-hunk-head"><span>${esc(hunk.header || "hunk")}</span><span class="git-ui-muted">${esc(meta)}</span></div>${conflictControls}<div class="git-ui-hunk-editor-grid"><section><div class="git-ui-editor-head"><strong>Previous</strong><span class="git-ui-muted">read-only</span></div><div class="git-ui-hunk-edit-mount git-ui-hunk-old-mount" data-hunk-index="${hunk.index}" data-editor-side="old" data-readonly="true"></div><textarea class="git-ui-hunk-old git-ui-hunk-old-hidden git-ui-hunk-edit-hidden" data-hunk-index="${hunk.index}" spellcheck="false" readonly>${esc(oldText)}</textarea></section><section><div class="git-ui-editor-head"><strong>Current</strong><span class="git-ui-muted">editable hunk</span></div><div class="git-ui-hunk-edit-mount git-ui-hunk-current-mount" data-hunk-index="${hunk.index}" data-editor-side="current" data-readonly="${hunk.newStart ? "false" : "true"}"></div><textarea class="git-ui-hunk-edit git-ui-hunk-current-hidden git-ui-hunk-edit-hidden" data-hunk-index="${hunk.index}" spellcheck="false"${readonly}>${esc(currentText)}</textarea></section></div></div>`;
+  }
+
+  function renderEditableHunkConflictControls(hunk) {
+    const blocks = conflictBlocksInText(hunk.text || "");
+    if (!blocks.length) return "";
+    const buttons = blocks.map((block, index) => {
+      const parentDisabled = block.base == null ? " disabled" : "";
+      const parentTitle = block.base == null ? "Parent/base side is unavailable for this conflict block" : "Use parent/base side for this conflict block";
+      return `<div class="git-ui-conflict-block-actions"><span class="git-ui-muted">Conflict block ${index + 1}</span><button class="git-ui-btn" title="Use HEAD/current side for this conflict block" onclick="HerdrGitUi.resolveEditorConflictBlock(${hunk.index},${index},'ours')">Use HEAD</button><button class="git-ui-btn" title="${esc(parentTitle)}" onclick="HerdrGitUi.resolveEditorConflictBlock(${hunk.index},${index},'base')"${parentDisabled}>Use parent</button><button class="git-ui-btn" title="Use remote/incoming side for this conflict block" onclick="HerdrGitUi.resolveEditorConflictBlock(${hunk.index},${index},'theirs')">Use remote</button></div>`;
+    }).join("");
+    return `<div class="git-ui-editor-conflicts"><div class="git-ui-side-edit-note">Resolve individual conflict marker blocks in the editable hunk.</div>${buttons}</div>`;
+  }
+
+  function conflictBlocksInText(text) {
+    const lines = String(text || "").split("\n");
+    const blocks = [];
+    let start = -1;
+    let separator = -1;
+    let end = -1;
+    let baseStart = -1;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i] || "";
+      if (line.startsWith("<<<<<<<")) {
+        start = i;
+        separator = -1;
+        end = -1;
+        baseStart = -1;
+        continue;
+      }
+      if (start < 0) continue;
+      if (line.startsWith("|||||||")) {
+        baseStart = i;
+        continue;
+      }
+      if (line.startsWith("=======")) {
+        separator = i;
+        continue;
+      }
+      if (!line.startsWith(">>>>>>>")) continue;
+      end = i;
+      if (separator > start) {
+        const oursEnd = baseStart > start ? baseStart : separator;
+        blocks.push({
+          start,
+          end,
+          ours: lines.slice(start + 1, oursEnd),
+          base: baseStart > start ? lines.slice(baseStart + 1, separator) : null,
+          theirs: lines.slice(separator + 1, end),
+        });
+      }
+      start = -1;
+      separator = -1;
+      end = -1;
+      baseStart = -1;
+    }
+    return blocks;
+  }
+
+  function resolveConflictBlockText(text, blockIndex, mode) {
+    const lines = String(text || "").split("\n");
+    const block = conflictBlocksInText(text)[blockIndex];
+    if (!block) return text;
+    const replacement = mode === "theirs" ? block.theirs : mode === "base" ? block.base : block.ours;
+    if (!replacement) return text;
+    lines.splice(block.start, block.end - block.start + 1, ...replacement);
+    return lines.join("\n");
   }
 
   function buildEditableHunks(file) {
@@ -1705,6 +1772,20 @@
     return result;
   }
 
+  function isConflictPath(path) {
+    const files = (((active() || {}).status || {}).conflicted || []);
+    return files.includes(path);
+  }
+
+  function renderConflictResolutionButtons(file, className = "git-ui-conflict-file-actions", markLabel = "Mark resolved (stage)") {
+    return `<span class="${className}"><button class="git-ui-btn" title="Use HEAD/current side" onclick="HerdrGitUi.resolve('${arg(file)}','ours')">Use HEAD</button><button class="git-ui-btn" title="Use parent/base version" onclick="HerdrGitUi.resolve('${arg(file)}','base')">Use parent</button><button class="git-ui-btn" title="Use remote/incoming side" onclick="HerdrGitUi.resolve('${arg(file)}','theirs')">Use remote</button><button class="git-ui-btn" title="Stage this manually edited file as resolved" onclick="HerdrGitUi.resolve('${arg(file)}','mark')">${esc(markLabel)}</button></span>`;
+  }
+
+  function renderDiffConflictResolutionButtons(file) {
+    if (currentMode() !== "changes" || !isConflictPath(file.path)) return "";
+    return renderConflictResolutionButtons(file.path, "git-ui-conflict-file-actions git-ui-conflict-diff-actions", "Mark resolved");
+  }
+
   function renderDiffFile(file) {
     const mode = currentMode();
     const view = active() || {};
@@ -1716,6 +1797,7 @@
     const left = mode === "changes" ? fileDiffLeftLabel(file) : (view.compareBase || "base");
     const right = mode === "readonly-compare" ? (view.compareTarget || "target") : "current";
     if (view.showBlame && (!large || loadedLarge)) ensureBlame(file.path);
+    const conflictActions = renderDiffConflictResolutionButtons(file);
     const restore = mode === "changes"
       ? `<button class="git-ui-btn danger" title="Restore complete file" onclick="HerdrGitUi.discardFile('${arg(file.path)}')">Restore file</button>`
       : "";
@@ -1726,7 +1808,7 @@
         : large && !loadedLarge
           ? renderLargeDiffPlaceholder(file)
           : renderDiffFileBody(file, lineCount, large, renderFullLarge);
-    return `<div class="git-ui-diff-file" data-git-path="${esc(file.path)}"><div class="git-ui-diff-file-head"><button class="git-ui-file-collapse" title="${collapsed ? "Show file" : "Collapse file"}" onclick="HerdrGitUi.toggleFile('${arg(file.path)}')">${collapsed ? "+" : "−"}</button><strong>${esc(file.path)}</strong><span class="git-ui-muted">${esc(left)} → ${esc(right)}</span><span class="git-ui-diff-file-actions"><span class="git-ui-badge add">+${file.additions || 0}</span> <span class="git-ui-badge del">-${file.deletions || 0}</span>${restore}</span></div>${body}</div>`;
+    return `<div class="git-ui-diff-file" data-git-path="${esc(file.path)}"><div class="git-ui-diff-file-head"><button class="git-ui-file-collapse" title="${collapsed ? "Show file" : "Collapse file"}" onclick="HerdrGitUi.toggleFile('${arg(file.path)}')">${collapsed ? "+" : "−"}</button><strong>${esc(file.path)}</strong><span class="git-ui-muted">${esc(left)} → ${esc(right)}</span><span class="git-ui-diff-file-actions"><span class="git-ui-badge add">+${file.additions || 0}</span> <span class="git-ui-badge del">-${file.deletions || 0}</span>${conflictActions}${restore}</span></div>${body}</div>`;
   }
 
   function renderDiffFileBody(file, lineCount, large, renderFullLarge) {
@@ -1822,7 +1904,7 @@
     const rows = markChangeGroups(diffLayoutMode() === "unified" ? unifiedRows(chunk) : sideBySideRows(chunk));
     const contextArrows = contextArrowsForChunk(file.chunks || [], index);
     const body = diffLayoutMode() === "unified"
-      ? rows.map((row, rowIndex) => renderUnifiedLine(row, path, index, rows, rowIndex, contextArrows)).join("")
+      ? rows.map((row, rowIndex) => renderUnifiedLine(row, path, index, rows, rowIndex, contextArrows, !!file.preview_large_diff)).join("")
       : rows.map((row, rowIndex) => renderLine(row, path, index, rows, rowIndex, contextArrows, !!file.preview_large_diff)).join("");
     return `<div class="git-ui-hunk ${diffLayoutMode() === "unified" ? "git-ui-hunk-unified" : ""}"><div class="git-ui-hunk-head"><span>${esc(chunk.header)}</span>${actions}</div><div class="git-ui-hunk-viewport">${body}</div><div class="git-ui-hunk-xscroll" aria-hidden="true"><div class="git-ui-hunk-xscroll-inner"></div></div></div>`;
   }
@@ -1903,7 +1985,7 @@
     return `<div class="git-ui-diff-row ${cls}"><div class="git-ui-context-cell">${contextControls}</div><div class="git-ui-code git-ui-code-old"><span class="git-ui-code-text">${oldCode}</span></div><div class="git-ui-line-pair"><span class="git-ui-line-old"><em>${esc(oldAuthor)}</em>${oldNo}</span>${blockButton}<span class="git-ui-line-new"><em>${esc(newAuthor)}</em>${newNo}</span></div><div class="git-ui-code git-ui-code-new"><span class="git-ui-code-text">${newCode}</span></div></div>`;
   }
 
-  function renderUnifiedLine(row, path, hunkIndex, rows, rowIndex, contextArrows) {
+  function renderUnifiedLine(row, path, hunkIndex, rows, rowIndex, contextArrows, previewLargeDiff) {
     const view = active() || {};
     const scope = view.diffScope || "all";
     const line = row.line || {};
@@ -1917,7 +1999,7 @@
     const author = blameName(path, newNo || oldNo);
     const status = view.status || {};
     const canRestorePath = scope === "staged" || scope === "working" || (scope === "all" && ([...(status.staged || []), ...(status.unstaged || []), ...(status.untracked || [])].includes(path)));
-    const blockButton = currentMode() === "changes" && canRestorePath && (add || del) && isFirstChange(rows, rowIndex)
+    const blockButton = !previewLargeDiff && currentMode() === "changes" && canRestorePath && (add || del) && isFirstChange(rows, rowIndex)
       ? `<button class="git-ui-line-action" title="Restore this block" onclick="HerdrGitUi.restoreHunk('${arg(path)}',${hunkIndex})">↩</button>`
       : `<span class="git-ui-line-action-spacer"></span>`;
     const contextControls = rowIndex === 0 && contextArrows.before
@@ -2241,7 +2323,7 @@
     const files = (((active() || {}).status || {}).conflicted || []);
     const operationActions = renderConflictOperationActions();
     const help = files.length ? `<div class="git-ui-muted git-ui-conflict-help">After editing a conflicted file manually, click <strong>Mark resolved (stage)</strong> to run git add. When all conflicted files are staged, continue the rebase, merge, or cherry-pick.</div>` : "";
-    return `${renderFileToolbar("conflicts")}<div class="git-ui-section"><div class="git-ui-muted">Conflicts</div>${files.length ? operationActions : ""}${help}${files.map((file) => `<div class="git-ui-file git-ui-conflict-file"><span>${esc(file)}</span><span class="git-ui-conflict-file-actions"><button class="git-ui-btn" title="Use HEAD/current side" onclick="HerdrGitUi.resolve('${arg(file)}','ours')">Use HEAD</button><button class="git-ui-btn" title="Use parent/base version" onclick="HerdrGitUi.resolve('${arg(file)}','base')">Use parent</button><button class="git-ui-btn" title="Use remote/incoming side" onclick="HerdrGitUi.resolve('${arg(file)}','theirs')">Use remote</button><button class="git-ui-btn" title="Stage this manually edited file as resolved" onclick="HerdrGitUi.resolve('${arg(file)}','mark')">Mark resolved (stage)</button></span></div>`).join("") || `<div class="git-ui-empty-row">No conflicts</div>`}</div>`;
+    return `${renderFileToolbar("conflicts")}<div class="git-ui-section"><div class="git-ui-muted">Conflicts</div>${files.length ? operationActions : ""}${help}${files.map((file) => `<div class="git-ui-file git-ui-conflict-file"><span>${esc(file)}</span>${renderConflictResolutionButtons(file)}</div>`).join("") || `<div class="git-ui-empty-row">No conflicts</div>`}</div>`;
   }
 
   function renderMain() {
@@ -2759,6 +2841,20 @@
         editor.error = err.message || String(err);
         render();
       }
+    },
+    resolveEditorConflictBlock(hunkIndex, blockIndex, mode) {
+      const view = active();
+      const editor = view && view.sideEditor;
+      if (!editor || editor.loading || editor.saving) return;
+      saveSideEditorFromDom();
+      hunkIndex = Number(hunkIndex || 0);
+      blockIndex = Number(blockIndex || 0);
+      const hunk = (editor.hunks || [])[hunkIndex];
+      if (!hunk) return;
+      const next = resolveConflictBlockText(hunk.text || "", blockIndex, mode);
+      if (next === hunk.text) return;
+      hunk.text = next;
+      render();
     },
     toggleFile(path) {
       const view = active();

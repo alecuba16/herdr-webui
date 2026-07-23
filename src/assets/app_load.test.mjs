@@ -606,6 +606,24 @@ describe("app bundle load", () => {
 
   it("offers conflict buttons for HEAD, parent, and remote sides", () => {
     match(gitUiSource, /renderConflictOperationActions/);
+    match(gitUiSource, /renderConflictResolutionButtons/);
+    match(gitUiSource, /renderDiffConflictResolutionButtons/);
+    match(gitUiSource, /renderEditableHunkConflictControls/);
+    match(gitUiSource, /function conflictBlocksInText\(text\)/);
+    match(gitUiSource, /function resolveConflictBlockText\(text, blockIndex, mode\)/);
+    match(gitUiSource, /resolveEditorConflictBlock\(hunkIndex, blockIndex, mode\)/);
+    match(gitUiSource, /Resolve individual conflict marker blocks in the editable hunk/);
+    match(gitUiSource, /Parent\/base side is unavailable for this conflict block/);
+    match(gitUiSource, /line\.startsWith\("<<<<<<<"\)/);
+    match(gitUiSource, /line\.startsWith\("\|\|\|\|\|\|\|"\)/);
+    match(gitUiSource, /line\.startsWith\(">>>>>>>"\)/);
+    match(gitUiSource, /currentMode\(\) !== "changes" \|\| !isConflictPath\(file\.path\)/);
+    match(gitUiSource, /const conflictActions = renderDiffConflictResolutionButtons\(file\)/);
+    match(gitUiSource, /\$\{conflictActions\}\$\{restore\}/);
+    match(gitUiSource, /git-ui-conflict-diff-actions/);
+    match(gitUiSource, /renderUnifiedLine\(row, path, index, rows, rowIndex, contextArrows, !!file\.preview_large_diff\)/);
+    match(gitUiSource, /function renderUnifiedLine\(row, path, hunkIndex, rows, rowIndex, contextArrows, previewLargeDiff\)/);
+    match(gitUiSource, /const blockButton = !previewLargeDiff && currentMode\(\) === "changes"/);
     match(gitUiSource, /aria-label="Conflict operation actions"/);
     match(gitUiSource, /Rebase<\/span>\$\{action\("Continue", "rebase-continue"\)\}\$\{action\("Skip", "rebase-skip"\)\}\$\{action\("Abort", "rebase-abort", true\)\}/);
     match(gitUiSource, /Merge<\/span>\$\{action\("Continue", "merge-continue"\)\}\$\{action\("Abort", "merge-abort", true\)\}/);
@@ -622,7 +640,14 @@ describe("app bundle load", () => {
     match(gitUiSource, /After editing a conflicted file manually/);
     ok(!gitUiSource.includes(">Use branch</button>"));
     const gitLayoutCss = readFileSync(new URL("./desktop/git_ui/layout.css", import.meta.url), "utf8");
+    const gitDiffCss = readFileSync(new URL("./desktop/git_ui/diff.css", import.meta.url), "utf8");
+    const gitLogCss = readFileSync(new URL("./desktop/git_ui/log.css", import.meta.url), "utf8");
     match(gitLayoutCss, /\.git-ui-conflict-file-actions \{[\s\S]*?flex-wrap: wrap;/);
+    match(gitDiffCss, /\.git-ui-diff-file-actions \{[\s\S]*?flex-wrap: wrap;/);
+    match(gitDiffCss, /\.git-ui-conflict-diff-actions \{[\s\S]*?border-left: 1px solid var\(--border\);/);
+    match(gitDiffCss, /\.git-ui-editor-conflicts \{[\s\S]*?display: grid;/);
+    match(gitDiffCss, /\.git-ui-conflict-block-actions \{[\s\S]*?flex-wrap: wrap;/);
+    match(gitLogCss, /\.git-ui-log-head \{[\s\S]*?position: sticky;[\s\S]*?z-index: 7;/);
   });
 
   it("uses a single selected-log reset modal and clear rebase wording", () => {
@@ -2495,7 +2520,7 @@ describe("app bundle load", () => {
     match(gitUiSource, /function renderUnifiedLine\(/);
     match(gitUiSource, /git-ui-unified-row/);
     match(gitUiSource, /sideBySideRows\(chunk\)/);
-    match(gitUiSource, /renderUnifiedLine\(row, path, index, rows, rowIndex, contextArrows\)/);
+    match(gitUiSource, /renderUnifiedLine\(row, path, index, rows, rowIndex, contextArrows, !!file\.preview_large_diff\)/);
     match(gitUiSource, /restoreHunk\('\$\{arg\(path\)\}',\$\{hunkIndex\}\)/);
     match(gitUiSource, /function contextArrowsForChunk\(chunks, index\)/);
     match(gitUiSource, /const after = next \? hiddenGap\(chunk, next\) : false;/);
