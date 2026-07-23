@@ -111,7 +111,7 @@ Mode activation:
 
 Future TUI requirement:
 
-- The backend contract must not depend on Axum, WebSocket, DOM, xterm.js, browser clipboard, or browser localStorage.
+- The backend contract must not depend on Axum, WebSocket, DOM, browser terminal renderer, browser clipboard, or browser localStorage.
 - WebUI HTTP/WebSocket endpoints are only one client adapter.
 - A future TUI should be able to use the same backend through:
   - in-process Rust client API, or
@@ -239,7 +239,7 @@ Routes should call `BackendProvider`, not raw `ApiClient`.
 - Provide scrollback, scroll metrics, search, visible/recent/history reads.
 - Emit scroll change events.
 - Render either:
-  - terminal ANSI frames for xterm/TUI, or
+  - terminal ANSI frames for browser terminal/TUI, or
   - semantic frames for richer clients.
 
 ### 3.9 Agent support
@@ -331,10 +331,10 @@ Settings update behavior:
 Current WebUI already has useful behavior:
 
 - Frontend sends backend scroll first.
-- Local xterm scroll is fallback.
+- Local terminal scroll is fallback.
 - PageUp/PageDown map to backend scroll.
-- Tail button sends repeated backend down-scroll and scrolls xterm bottom.
-- Attach frames are kept hidden until xterm finishes parsing.
+- Tail button sends repeated backend down-scroll and scrolls terminal renderer bottom.
+- Attach frames are kept hidden until terminal renderer finishes parsing.
 
 Built-in backend must preserve and improve:
 
@@ -353,7 +353,7 @@ Built-in backend must preserve and improve:
 
 Current WebUI already has useful behavior:
 
-- Desktop paste is captured before xterm default handling.
+- Desktop paste is captured before native terminal handling.
 - Input is chunked to 16 KiB frames.
 - WebSocket `bufferedAmount` limits paste pressure.
 - Large terminal output is coalesced per animation frame.
@@ -368,7 +368,7 @@ Built-in backend must preserve and improve:
   - Max paste bytes with clear user error.
   - Do not JSON-encode large binary payloads.
 - Copy:
-  - Browser client can keep direct xterm selection copy.
+  - Browser client can keep direct terminal selection copy.
   - Backend must expose read/selection APIs for future TUI and remote clients.
   - Selection extraction must operate on row spans and return text without cloning full scrollback.
   - Large copy should have a max byte cap and stream/page option later.
@@ -379,7 +379,7 @@ Built-in backend must preserve and improve:
 
 ### 4.4 Render performance
 
-- Support `TerminalAnsi` frames first for xterm and TUI.
+- Support `TerminalAnsi` frames first for browser terminal and TUI.
 - Keep semantic frame path possible for richer clients.
 - Maintain a per-client render baseline and dirty-region tracking.
 - Small frames should bypass RAF queue on the frontend.
@@ -521,7 +521,7 @@ Preferred long-term option:
 
 Fallback MVP option:
 
-- Implement raw PTY -> xterm ANSI streaming first.
+- Implement raw PTY -> terminal ANSI streaming first.
 - Add full scrollback/search/selection/layout after.
 - This is faster but will not meet “same functionality as Herdr” without later runtime parity work.
 
@@ -853,7 +853,7 @@ Completed in this iteration:
    - terminal subscribers use bounded sync queues,
    - slow/full subscribers are disconnected instead of blocking PTY reader,
    - drop path kills owned PTY child,
-   - built-in frontend scroll uses xterm local scroll and avoids sending backend scroll spam,
+   - built-in frontend scroll uses terminal local scroll and avoids sending backend scroll spam,
    - built-in socket paths fall back to hashed temp paths when config paths exceed Unix socket limits,
    - startup refuses to unlink an active existing socket, only stale sockets are reclaimed,
    - handle drop unblocks listener accept loops and removes owned sockets,
@@ -887,7 +887,7 @@ Intentional limitations still tracked:
 
 1. No full `BackendProvider` trait extraction yet. The built-in backend is socket-compatible, which reduces frontend disruption, but route handlers still know about external socket APIs.
 2. Built-in `events.subscribe` is an acked placeholder. UI still gets current state through existing route refresh paths, but true event push remains required for parity.
-3. Built-in scroll is browser/xterm-local only. Server-side scroll, selection extraction, terminal search, and diff render frames remain Phase 5.
+3. Built-in scroll is browser-local only. Server-side scroll, selection extraction, terminal search, and diff render frames remain Phase 5.
 4. Foreground process detection is not yet Herdr-equivalent. Shell-launched agents are inferred from terminal tail. True foreground process inspection remains needed.
 5. Worktree remove is not implemented in the built-in API yet. It now returns an explicit unsupported error instead of a false success. Destructive built-in worktree operations must wait for confirmation and safety validation.
 6. Persistence is only settings-level. Built-in mux session/workspace persistence remains to be implemented.
@@ -924,7 +924,7 @@ This audit checks the todos, requirements, non-functional considerations, tests,
 | Worktrees | Partial | Built-in owns `worktree.list`, `worktree.open`, and `worktree.create` via Git CLI. `worktree.remove` returns explicit unsupported error instead of false success. | Safe remove with confirmation/primary protection, worktree events, more typed errors. |
 | Tabs, panes, layouts | Partial | Built-in list/create/rename/close tabs, list/get/close/read panes, and layout/session snapshot are implemented. | Split/move/swap/resize/zoom panes, pane rename/focus process info, layout apply/export parity, live layout events. |
 | Terminal runtime | Partial | `portable-pty` shell/argv spawn, ANSI output, input/paste, resize, detach/reconnect, bounded 8 MiB scrollback, bounded subscriber queues, full attach repaint, child cleanup on drop. Live smoke verifies `/ws/terminal` command output. | Observe/control/takeover, bracketed paste mode detection, image clipboard staging, explicit queued/rejected reconnect input policy, deeper stress tests. |
-| Scroll semantics | Partial | Built-in frontend path uses local xterm scroll and avoids sending backend scroll spam. Terminal tail/recent read uses bounded scrollback. | Server-side scroll offsets/metrics, wheel routing for mouse/alt screen/host scrollback, scroll events, search/selection APIs. |
+| Scroll semantics | Partial | Built-in frontend path uses local terminal scroll and avoids sending backend scroll spam. Terminal tail/recent read uses bounded scrollback. | Server-side scroll offsets/metrics, wheel routing for mouse/alt screen/host scrollback, scroll events, search/selection APIs. |
 | Copy/paste performance | Partial | Existing frontend paste chunking/backpressure and frame coalescing remain; built-in writes bytes to PTY and keeps scrollback bounded. | Backend paste size caps/errors, bracketed paste negotiation, backend selection/read API for TUI, large-copy streaming. |
 | Render performance | Partial | Frontend small/large frame coalescing tests still pass; built-in sends ANSI terminal frames and bounded queues. | Backend render baseline/diff frames, graphics parity, backend batching metrics. |
 | Protocol compatibility/versioning | Partial | `/api/versions` reports backend mode, compatibility, backend version/protocol; built-in `ping` advertises capabilities. External protocol fallback remains. | Independent internal backend protocol/schema generation, method-string isolation. |
@@ -933,7 +933,7 @@ This audit checks the todos, requirements, non-functional considerations, tests,
 | Observability | Partial | `/api/versions` includes mode/compatibility; error paths return explicit messages; tests cover key failures. | Structured counters/logging for terminal bytes, queue drops, paste chunks, scroll commands, reconnects. |
 | Events/subscriptions | Partial | External event bridge remains; built-in `events.subscribe` acks then closes so no thread leak; UI keeps 5s snapshot polling fallback. | Built-in typed event hub, sequence numbers, resume-after-sequence, push events for all mutations. |
 | Agent/Jcode support | Partial | Built-in agent list/start plus bounded tail detection for Jcode/OpenCode and Herdr alias coverage. No-sleep/notifications consume agent list. | Foreground process detection, manifest loader parity, read/send/focus/rename/explain agents, presets. |
-| Future TUI support | Partial | `src/lib.rs` exposes `herdr_webui::backend_client::BackendClient`, which discovers built-in sockets, wraps JSON control calls, and attaches ANSI terminal streams without Axum/WebSocket/DOM/xterm dependencies. Tests cover request unwrapping, terminal handshake, output, input, and detach. | Typed response structs, event stream, smoke CLI/TUI binary, no-Axum backend core beyond the client wrapper. |
+| Future TUI support | Partial | `src/lib.rs` exposes `herdr_webui::backend_client::BackendClient`, which discovers built-in sockets, wraps JSON control calls, and attaches ANSI terminal streams without Axum/WebSocket/DOM/terminal renderer dependencies. Tests cover request unwrapping, terminal handshake, output, input, and detach. | Typed response structs, event stream, smoke CLI/TUI binary, no-Axum backend core beyond the client wrapper. |
 | Test plan | Partial | Rust unit tests cover backend mode/settings/socket safety/events/worktree parsing/Jcode detection and the new TUI backend client request/terminal attach flow; JS tests cover settings and built-in scroll path; live smoke covers versions/snapshot/terminal WebSocket. | State-space tests, large-output/paste/reconnect/multi-client stress, worktree remove integration, TUI client binary tests. |
 | Risks and mitigations | Partial | Biggest immediate risks have mitigations: bounded scrollback/subscriber queues, explicit unsupported destructive remove, socket permission/stale-socket checks, external fallback. | Divergence from Herdr semantics, missing provider abstraction, missing event hub, and missing persistence remain tracked risks. |
 
@@ -971,8 +971,10 @@ WebUI files inspected:
   - mobile terminal attach
   - frame coalescing
   - paste chunking
-- `src/assets/shared/terminal_scroll.js`
-  - shared scroll helpers
+- `src/assets/shared/terminal_adapter.js`
+  - shared terminal renderer adapter and local scrollback handling
+- `src/assets/shared/terminal_fit.js`
+  - shared terminal sizing helpers
 
 Herdr `jcode-support` files inspected:
 

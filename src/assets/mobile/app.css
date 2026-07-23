@@ -346,9 +346,19 @@ body.light {
   min-height: max-content;
   white-space: nowrap;
 }
-.mobile-terminal .xterm-viewport {
-  overflow: hidden !important;
-  height: 100% !important;
+.mobile-terminal.wterm,
+.mobile-terminal .wterm {
+  background: var(--bg);
+  border-radius: 0;
+  box-shadow: none;
+  color: var(--fg);
+  font-family: var(--term-font-family, "Herdr JetBrainsMono Nerd Font Mono", ui-monospace, monospace);
+  overflow: auto;
+  padding: 0;
+}
+.mobile-terminal.wterm .term-grid,
+.mobile-terminal .wterm .term-grid {
+  min-width: max-content;
 }
 .mobile-loading {
   display: grid;
@@ -922,7 +932,7 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
   border-radius: 14px;
   margin: auto;
   width: 95vw;
-  height: min(80vh, calc(var(--herdr-mobile-viewport-height) - 24px));
+  height: calc(var(--herdr-mobile-viewport-height) - 24px);
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -1008,10 +1018,10 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
   min-height: 0;
   overflow: hidden;
 }
-.temp-terminal-body .xterm,
-.temp-terminal-body .xterm-screen,
-.temp-terminal-body .xterm-viewport {
+.temp-terminal-body .wterm {
   height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
   width: 100%;
 }
 .temp-terminal-modal {

@@ -1,37 +1,27 @@
+// Compatibility shim for older cached app-boot.js files. Current boot does not
+// load this asset; active terminal scroll handling lives in terminal_adapter.js.
 (function (root) {
   function usesNormalBuffer(term) {
     try {
-      return (
-        !term ||
-        !term.buffer ||
-        !term.buffer.active ||
-        term.buffer.active.type !== "alternate"
-      );
+      return !term || typeof term.usesNormalBuffer !== "function" || term.usesNormalBuffer();
     } catch (_) {
       return true;
     }
   }
 
   function rowHeight(term) {
-    return (
-      term &&
-      term._core &&
-      term._core._renderService &&
-      term._core._renderService.dimensions &&
-      term._core._renderService.dimensions.css &&
-      term._core._renderService.dimensions.css.cell &&
-      term._core._renderService.dimensions.css.cell.height
-    ) || 17;
+    try {
+      if (term && typeof term.rowHeight === "function") return term.rowHeight();
+    } catch (_) {}
+    return 17;
   }
 
   function wheelLines(term, event, pageRows) {
-    const unit =
-      event.deltaMode === 1
-        ? 1
-        : event.deltaMode === 2
-          ? pageRows || 24
-          : Math.max(1, rowHeight(term));
-    return Math.max(1, Math.round(Math.abs(event.deltaY) / unit));
+    const delta = Math.abs(Number(event.deltaY) || 0);
+    if (event.deltaMode === 1) return Math.max(1, Math.round(delta));
+    if (event.deltaMode === 2)
+      return Math.max(1, Math.round(delta * (pageRows || 24)));
+    return Math.max(1, Math.round(delta / Math.max(1, rowHeight(term))));
   }
 
   function touchLines(term, deltaY) {
@@ -42,31 +32,12 @@
   }
 
   function scrollLocal(term, direction, lines, afterScroll) {
-    let scrolled = false;
     try {
-      if (!term) return false;
-      if (typeof term.scrollLines === "function") {
-        term.scrollLines(direction === "up" ? -lines : lines);
-        scrolled = true;
-      } else if (
-        typeof term.scrollToLine === "function" &&
-        term.buffer &&
-        term.buffer.active
-      ) {
-        const buffer = term.buffer.active;
-        const maxLine = Math.max(0, Number(buffer.baseY) || 0);
-        const currentLine = Math.max(0, Number(buffer.viewportY) || 0);
-        const nextLine = Math.max(
-          0,
-          Math.min(maxLine, currentLine + (direction === "up" ? -lines : lines)),
-        );
-        term.scrollToLine(nextLine);
-        scrolled = true;
-      } else {
-        return false;
-      }
-    } catch (_) {}
-    if (!scrolled) return false;
+      if (!term || typeof term.scrollLines !== "function") return false;
+      term.scrollLines(direction === "up" ? -lines : lines);
+    } catch (_) {
+      return false;
+    }
     if (typeof afterScroll === "function") afterScroll();
     return true;
   }

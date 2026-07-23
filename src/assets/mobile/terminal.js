@@ -1,120 +1,53 @@
 (function () {
   function createMobileTerminal({ el, state, wsUrl }) {
-    let term,
-      termWs,
+    let term = null,
+      termWs = null,
       openedTerminalElement = null,
       connectedTerminalKey = "",
       connectedTerminalSize = "",
       terminalFollowPaused = false,
-      terminalScrollFollowBound = false,
-      terminalLinkProvider = null,
+      terminalScrollBound = false,
       inputFlushTimer = null,
       inputQueue = [],
       writeQueue = [],
       writeFlushPending = false,
       terminalQueryReplyState = {},
-      inputEncoder = new TextEncoder();
+      inputEncoder = new TextEncoder(),
+      terminalAttachPending = false;
 
-    // Below this size, a frame is written immediately instead of waiting for
-    // the next requestAnimationFrame. Small frames have negligible render
-    // cost and the RAF delay adds ~16ms of latency for no benefit.
     const IMMEDIATE_WRITE_THRESHOLD = 8192;
-    // Frames above this size are full-screen repaints from the backend
-    // (the initial attach frame). xterm.js parses these in 12ms time-slices
-    // with setTimeout(0) between slices, causing visible line-by-line
-    // repaints. We suppress the terminal reveal until the write callback fires.
     const LARGE_FRAME_THRESHOLD = 32768;
-    // Set true on WS open, cleared after the first large frame is fully written.
-    let terminalAttachPending = false;
 
-    function terminalFontFamily() {
+    function options() {
       try {
-        const parsed = JSON.parse(
-          (globalThis.localStorage &&
-            globalThis.localStorage.getItem("herdr-web-options")) ||
-            "{}",
-        );
-        return globalThis.HerdrAppHelpers.resolveTerminalFontFamily(
-          parsed && parsed.terminalFontFamily,
-        );
+        return JSON.parse((globalThis.localStorage && globalThis.localStorage.getItem("herdr-web-options")) || "{}");
       } catch (_) {
-        return globalThis.HerdrAppHelpers.resolveTerminalFontFamily("");
+        return {};
       }
     }
+
+    function terminalFontFamily() {
+      return globalThis.HerdrAppHelpers.resolveTerminalFontFamily(options().terminalFontFamily);
+    }
+
+    function terminalCore() {
+      return options().terminalCore === "ghostty" ? "ghostty" : "wterm";
+    }
+
     function applyFontFamily() {
-      if (!term) return;
-      const family = terminalFontFamily();
-      try {
-        term.options.fontFamily = family;
-      } catch (e) {
-        try {
-          term.setOption("fontFamily", family);
-        } catch (_) {}
-      }
-      try {
-        term.refresh(0, Math.max(0, (term.rows || 1) - 1));
-      } catch (_) {}
+      if (term && term.setFontFamily) term.setFontFamily(terminalFontFamily());
     }
 
     function terminalLinksEnabled() {
-      try {
-        const parsed = JSON.parse((globalThis.localStorage && globalThis.localStorage.getItem("herdr-web-options")) || "{}");
-        return parsed.terminalLinks !== false;
-      } catch (_) {
-        return true;
-      }
-    }
-
-    function terminalMouseReportingEnabled() {
-      try {
-        const parsed = JSON.parse((globalThis.localStorage && globalThis.localStorage.getItem("herdr-web-options")) || "{}");
-        return parsed.terminalMouseReporting === true;
-      } catch (_) {
-        return false;
-      }
+      return options().terminalLinks !== false;
     }
 
     function applyLinks() {
-      if (terminalLinkProvider && terminalLinkProvider.dispose) {
-        try { terminalLinkProvider.dispose(); } catch (_) {}
-      }
-      terminalLinkProvider = null;
-      if (!term || !terminalLinksEnabled() || !term.registerLinkProvider) return;
-      terminalLinkProvider = term.registerLinkProvider({ provideLinks });
+      if (term && term.setLinksEnabled) term.setLinksEnabled(terminalLinksEnabled());
     }
 
-    function provideLinks(lineNumber, callback) {
-      try {
-        const buffer = term && term.buffer && term.buffer.active;
-        const y = buffer ? Math.max(0, (buffer.viewportY || 0) + lineNumber - 1) : 0;
-        const line = buffer && (buffer.getLine(y) || buffer.getLine(lineNumber - 1) || buffer.getLine(lineNumber));
-        const text = line && line.translateToString ? line.translateToString(true) : "";
-        const links = [];
-        const re = /https?:\/\/[^\s<>"]+/g;
-        let match;
-        while ((match = re.exec(text))) {
-          const url = match[0].replace(/[),.;]+$/g, "");
-          if (!url) continue;
-          links.push({ range: { start: { x: match.index + 1, y: lineNumber }, end: { x: match.index + url.length, y: lineNumber } }, text: url, activate: (_event, text) => globalThis.open(text, "_blank", "noopener,noreferrer") });
-        }
-        callback(links);
-      } catch (_) {
-        callback([]);
-      }
-    }
-
-    function refreshAfterFontLoad(terminalKey) {
-      const fonts = globalThis.document && globalThis.document.fonts;
-      if (!fonts || !fonts.load) return;
-      Promise.all([
-        fonts.load('14px "Herdr JetBrainsMono Nerd Font Mono"'),
-        fonts.ready,
-      ])
-        .then(() => {
-          if (!term || connectedTerminalKey !== terminalKey) return;
-          applyFontFamily();
-        })
-        .catch(() => {});
+    function terminalMouseReportingEnabled() {
+      return options().terminalMouseReporting === true;
     }
 
     function size() {
@@ -127,88 +60,48 @@
       });
     }
 
-    function connect() {
+    async function connect() {
       const terminal = el("terminal");
-      if (!terminal || !state.terminalId || !globalThis.Terminal) return;
-      if (term && openedTerminalElement && openedTerminalElement !== terminal)
-        destroy(false);
+      if (!terminal || !state.terminalId || !globalThis.HerdrTerminalRenderer) return;
+      if (term && openedTerminalElement && openedTerminalElement !== terminal) destroy(false);
       const nextSize = size();
-      const terminalKey = `${state.session}|${state.ws}|${state.tab}|${state.pane}|${state.terminalId}`;
+      const terminalKey = `${state.session}|${state.ws}|${state.tab}|${state.pane}|${state.terminalId}|${terminalCore()}`;
       const terminalSizeKey = `${nextSize.cols}x${nextSize.rows}`;
       if (
         termWs &&
         termWs.readyState === 1 &&
         connectedTerminalKey === terminalKey &&
         connectedTerminalSize === terminalSizeKey
-      )
-        return;
+      ) return;
       disconnect(false);
       connectedTerminalKey = terminalKey;
       connectedTerminalSize = terminalSizeKey;
       if (!term) {
-        term = new Terminal({
-          convertEol: false,
+        term = await globalThis.HerdrTerminalRenderer.create(terminal, {
+          cols: nextSize.cols,
+          rows: nextSize.rows,
+          core: terminalCore(),
           fontFamily: terminalFontFamily(),
+          links: terminalLinksEnabled(),
           scrollback: 10000,
+          onData: sendInputData,
         });
-        term.onData((data) => {
-          sendInputData(data);
-        });
-        applyLinks();
-        if (!terminalScrollFollowBound && term.onScroll) {
-          term.onScroll(() => {
-            setTerminalFollowPaused(!terminalAtBottom());
-          });
-          terminalScrollFollowBound = true;
-        }
+        openedTerminalElement = terminal;
       }
-      terminal.innerHTML = "";
-      term.open(terminal);
-      refreshAfterFontLoad(terminalKey);
-      if (!terminal.dataset.pasteHandler) {
-        terminal.addEventListener(
-          "paste",
-          (event) => {
-            const text =
-              event.clipboardData && event.clipboardData.getData("text/plain");
-            if (!text || !termWs || termWs.readyState !== 1) return;
-            event.preventDefault();
-            event.stopImmediatePropagation();
-            sendPasteToTerminal(text);
-          },
-          true,
-        );
-        terminal.dataset.pasteHandler = "1";
-      }
-      if (!terminal.dataset.scrollHandler) {
+      if (!terminalScrollBound) {
+        terminal.addEventListener("paste", handlePaste, true);
         terminal.addEventListener("wheel", handleWheel, { passive: false });
-        terminal.addEventListener("touchstart", handleTouchStart, { passive: true });
-        terminal.addEventListener("touchmove", handleTouchMove, { passive: false });
-        terminal.dataset.scrollHandler = "1";
+        terminal.addEventListener("scroll", () => setTerminalFollowPaused(!terminalAtBottom()), { passive: true });
+        terminalScrollBound = true;
       }
-      openedTerminalElement = terminal;
-      try {
-        term.resize(nextSize.cols, nextSize.rows);
-        HerdrTerminalFit.fitXtermToContainer(terminal);
-      } catch (_) {}
-      updateTerminalFollowButton();
-      const ws = new WebSocket(
-        wsUrl(
-          `/ws/terminal?terminal_id=${encodeURIComponent(state.terminalId)}&cols=${nextSize.cols}&rows=${nextSize.rows}`,
-        ),
-      );
+      try { term.resize(nextSize.cols, nextSize.rows); } catch (_) {}
+      const ws = new WebSocket(wsUrl(`/ws/terminal?terminal_id=${encodeURIComponent(state.terminalId)}&cols=${nextSize.cols}&rows=${nextSize.rows}`));
       termWs = ws;
       ws.binaryType = "arraybuffer";
-      ws.onopen = () => {
-        if (termWs === ws) {
-          terminalAttachPending = true;
-        }
-      };
+      ws.onopen = () => { if (termWs === ws) terminalAttachPending = true; };
       ws.onmessage = (event) => {
         if (termWs !== ws) return;
-        enqueueTerminalFrame(
-          typeof event.data === "string" ? event.data : new Uint8Array(event.data),
-        );
+        enqueueTerminalFrame(typeof event.data === "string" ? event.data : new Uint8Array(event.data));
       };
       ws.onclose = () => {
         if (termWs === ws) {
@@ -219,12 +112,27 @@
       };
     }
 
+    function handlePaste(event) {
+      const text = event.clipboardData && event.clipboardData.getData("text/plain");
+      if (!text || !termWs || termWs.readyState !== 1) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      sendPasteToTerminal(text);
+    }
+
+    function handleWheel(event) {
+      if (event.ctrlKey || event.metaKey || !term) return;
+      if (!term.usesNormalBuffer || !term.usesNormalBuffer()) return;
+      event.preventDefault();
+      const lines = Math.max(1, Math.round(Math.abs(event.deltaY) / Math.max(1, term.rowHeight ? term.rowHeight() : 17)));
+      term.scrollLines(event.deltaY < 0 ? -lines : lines);
+      setTerminalFollowPaused(!terminalAtBottom());
+    }
+
     function disconnect(clear) {
       if (termWs) {
         termWs.onclose = null;
-        try {
-          termWs.close();
-        } catch (_) {}
+        try { termWs.close(); } catch (_) {}
         termWs = null;
       }
       connectedTerminalKey = "";
@@ -244,71 +152,17 @@
     function destroy(clear) {
       disconnect(clear);
       if (term) {
-        if (terminalLinkProvider && terminalLinkProvider.dispose) {
-          try { terminalLinkProvider.dispose(); } catch (_) {}
-        }
-        terminalLinkProvider = null;
-        try {
-          term.dispose();
-        } catch (_) {}
+        try { term.destroy(); } catch (_) {}
         term = null;
       }
       openedTerminalElement = null;
-      terminalScrollFollowBound = false;
+      terminalScrollBound = false;
       setTerminalFollowPaused(false);
     }
 
     function terminalAtBottom() {
-      try {
-        const buffer = term && term.buffer && term.buffer.active;
-        if (!buffer) return true;
-        return Math.max(0, buffer.baseY - buffer.viewportY) <= 1;
-      } catch (_) {
-        return true;
-      }
-    }
-
-    function terminalUsesNormalBuffer() {
-      return HerdrTerminalScroll.usesNormalBuffer(term);
-    }
-
-    function scrollLocalTerminal(direction, lines) {
-      return HerdrTerminalScroll.scrollLocal(term, direction, lines, () => {
-        setTerminalFollowPaused(!terminalAtBottom());
-      });
-    }
-
-    function handleWheel(event) {
-      if (!event || event.altKey || !event.deltaY || !terminalUsesNormalBuffer()) return;
-      const lines = HerdrTerminalScroll.wheelLines(
-        term,
-        event,
-        (term && term.rows) || 24,
-      );
-      if (scrollLocalTerminal(event.deltaY < 0 ? "up" : "down", lines)) {
-        event.preventDefault();
-        event.stopPropagation();
-      }
-    }
-
-    function handleTouchStart(event) {
-      const touch = event && event.touches && event.touches[0];
-      handleTouchStart.lastY = touch ? touch.clientY : null;
-    }
-
-    function handleTouchMove(event) {
-      const touch = event && event.touches && event.touches[0];
-      if (!touch || !terminalUsesNormalBuffer()) return;
-      const lastY = handleTouchStart.lastY;
-      handleTouchStart.lastY = touch.clientY;
-      if (!Number.isFinite(lastY)) return;
-      const dy = lastY - touch.clientY;
-      if (Math.abs(dy) < 4) return;
-      const lines = HerdrTerminalScroll.touchLines(term, dy);
-      if (scrollLocalTerminal(dy < 0 ? "up" : "down", lines)) {
-        event.preventDefault();
-        event.stopPropagation();
-      }
+      try { return !term || !term.atBottom || term.atBottom(); }
+      catch (_) { return true; }
     }
 
     function setTerminalFollowPaused(paused) {
@@ -317,36 +171,16 @@
     }
 
     function updateTerminalFollowButton() {
-      const button = el("mobileTerminalFollowButton");
+      const button = el("mobileTerminalFollowButton") || el("terminalFollowButton");
       if (!button) return;
       button.hidden = !terminalFollowPaused;
-      button.setAttribute &&
-        button.setAttribute("aria-hidden", terminalFollowPaused ? "false" : "true");
+      button.setAttribute("aria-hidden", terminalFollowPaused ? "false" : "true");
     }
 
     function enqueueTerminalFrame(data) {
-      const size = typeof data === "string" ? data.length : data.length;
-      // Attach frame path: the first large frame after connecting is a
-      // full-screen repaint. Queue it via RAF and use the write callback
-      // to reveal only when parsing completes, avoiding line-by-line repaint.
-      const isAttachFrame = terminalAttachPending && size >= LARGE_FRAME_THRESHOLD;
-      if (isAttachFrame) {
-        writeQueue.push(data);
-        if (writeFlushPending) return;
-        writeFlushPending = true;
-        requestAnimationFrame(flushTerminalFrames);
-        return;
-      }
-      // Clear the attach flag for small initial frames (e.g. empty terminal)
-      if (terminalAttachPending) terminalAttachPending = false;
-      // Fast path: when no flush is pending and the frame is small, write it
-      // directly. This avoids the requestAnimationFrame round-trip (~16ms).
-      if (
-        !writeFlushPending &&
-        writeQueue.length === 0 &&
-        term &&
-        size <= IMMEDIATE_WRITE_THRESHOLD
-      ) {
+      const isAttachFrame = terminalAttachPending && frameSize(data) >= LARGE_FRAME_THRESHOLD;
+      if (!isAttachFrame && !writeFlushPending && writeQueue.length === 0 && term && frameSize(data) <= IMMEDIATE_WRITE_THRESHOLD) {
+        if (terminalAttachPending) terminalAttachPending = false;
         writeTerminalFrame(data);
         return;
       }
@@ -356,137 +190,69 @@
       requestAnimationFrame(flushTerminalFrames);
     }
 
+    function frameSize(data) { return typeof data === "string" ? data.length : data.length; }
+
     function flushTerminalFrames() {
       writeFlushPending = false;
       if (!writeQueue.length || !term) return;
-      const frames = writeQueue;
+      const data = coalesceTerminalFrames(writeQueue);
       writeQueue = [];
-      const data = coalesceTerminalFrames(frames);
-      const isAttachBatch = terminalAttachPending && (typeof data === "string" ? data.length : data.length) >= LARGE_FRAME_THRESHOLD;
-      if (isAttachBatch) {
+      const done = () => {
         terminalAttachPending = false;
-        // Use write callback to reveal only after parsing completes
-        const done = () => {
-          requestAnimationFrame(() => {
-            scrollToBottom();
-          });
-        };
-        try {
-          term.write(data, done);
-        } catch (_) {
-          term.write(data);
-          done();
-        }
-        return;
-      }
-      // Clear attach flag if it was set but the coalesced frame ended up small
-      if (terminalAttachPending) terminalAttachPending = false;
-      writeTerminalFrame(data);
+        if (!terminalFollowPaused) scrollToBottom(false);
+      };
+      writeTerminalFrame(data, terminalAttachPending && frameSize(data) >= LARGE_FRAME_THRESHOLD ? done : null);
+      if (!(terminalAttachPending && frameSize(data) >= LARGE_FRAME_THRESHOLD) && !terminalFollowPaused)
+        requestAnimationFrame(() => scrollToBottom(false));
     }
 
     function coalesceTerminalFrames(frames) {
       if (frames.every((frame) => typeof frame === "string")) return frames.join("");
-      const bytes = frames.map((frame) =>
-        typeof frame === "string" ? inputEncoder.encode(frame) : frame,
-      );
+      const bytes = frames.map((frame) => typeof frame === "string" ? inputEncoder.encode(frame) : frame);
       const size = bytes.reduce((sum, frame) => sum + frame.length, 0);
       const merged = new Uint8Array(size);
       let offset = 0;
-      for (const frame of bytes) {
-        merged.set(frame, offset);
-        offset += frame.length;
-      }
+      for (const frame of bytes) { merged.set(frame, offset); offset += frame.length; }
       return merged;
     }
 
-    function writeTerminalFrame(data) {
-      // Only use the scroll-preserving callback when follow is actually
-      // paused (user scrolled up). When following the bottom, skip the
-      // callback entirely to avoid per-write overhead.
-      const shouldPreserve = terminalFollowPaused && !terminalAtBottom();
-      const viewportY =
-        shouldPreserve && term && term.buffer ? term.buffer.active.viewportY : null;
-      const done = shouldPreserve
-        ? () => {
-            resetTerminalMouseTrackingIfDisabled();
-            if (Number.isFinite(viewportY)) {
-              try {
-                term.scrollToLine(viewportY);
-              } catch (_) {}
-            }
-            setTerminalFollowPaused(!terminalAtBottom());
-          }
-        : null;
-      try {
-        if (done) term.write(data, done);
-        else {
-          term.write(data);
-          resetTerminalMouseTrackingIfDisabled();
-        }
-      } catch (_) {
-        term.write(data);
-        if (done) done();
-        else resetTerminalMouseTrackingIfDisabled();
-      }
+    function writeTerminalFrame(data, done) {
+      if (!term) return;
+      try { term.write(data, done || undefined); } catch (_) { try { term.write(data); } catch (_) {} if (done) done(); }
     }
 
-    function resetTerminalMouseTrackingIfDisabled() {
-      const helpers = globalThis.HerdrAppHelpers || {};
-      if (typeof helpers.resetTerminalMouseTracking !== "function") return false;
-      return helpers.resetTerminalMouseTracking(term, terminalMouseReportingEnabled());
-    }
-
-    function scrollToBottom() {
+    function scrollToBottom(focus = true) {
       setTerminalFollowPaused(false);
-      try {
-        if (term) term.scrollToBottom();
-      } catch (_) {}
-      try {
-        if (term) term.focus();
-      } catch (_) {}
+      try { if (term) term.scrollToBottom(); } catch (_) {}
+      if (focus && term) term.focus();
     }
 
-    function sendInputData(data) {
+    function sendInputData(data, inputOptions = {}) {
       if (!termWs || termWs.readyState !== 1 || !data) return;
       if (globalThis.HerdrAppHelpers && globalThis.HerdrAppHelpers.stripTerminalMouseReports)
         data = globalThis.HerdrAppHelpers.stripTerminalMouseReports(data, terminalMouseReportingEnabled());
-      if (globalThis.HerdrAppHelpers && globalThis.HerdrAppHelpers.stripTerminalQueryReplies)
+      if (!inputOptions.allowTerminalReplies && globalThis.HerdrAppHelpers && globalThis.HerdrAppHelpers.stripTerminalQueryReplies)
         data = globalThis.HerdrAppHelpers.stripTerminalQueryReplies(data, terminalQueryReplyState);
       if (!data) return;
-      const bytes = typeof data === "string" ? inputEncoder.encode(data) : data;
-      const chunkSize = 16 * 1024;
-      if (
-        bytes.length <= 64 * 1024 &&
-        inputQueue.length === 0 &&
-        termWs.bufferedAmount < 1024 * 1024
-      ) {
+      const bytes = inputEncoder.encode(data);
+      const chunkSize = inputOptions.chunkSize || 16 * 1024;
+      if (bytes.length <= chunkSize && inputQueue.length === 0 && termWs.bufferedAmount < 65536) {
         termWs.send(bytes);
         return;
       }
-      for (let i = 0; i < bytes.length; i += chunkSize)
-        inputQueue.push(bytes.slice(i, i + chunkSize));
-      scheduleInputFlush();
+      for (let i = 0; i < bytes.length; i += chunkSize) inputQueue.push(bytes.slice(i, i + chunkSize));
+      flushInputQueue();
     }
 
     function sendPasteToTerminal(text) {
-      if (!termWs || termWs.readyState !== 1 || !text) return;
-      sendInputData(terminalPasteInput(text, false));
-    }
-
-    function scheduleInputFlush() {
-      if (inputFlushTimer) return;
-      inputFlushTimer = setTimeout(flushInputQueue, 4);
+      const normalized = String(text || "").replace(/\r\n|\r/g, "\n");
+      sendInputData(normalized, { chunkSize: 16 * 1024, maxBufferedAmount: 64 * 1024 });
     }
 
     function flushInputQueue() {
-      inputFlushTimer = null;
-      if (!termWs || termWs.readyState !== 1) {
-        inputQueue = [];
-        return;
-      }
-      while (inputQueue.length && termWs.bufferedAmount < 65536)
-        termWs.send(inputQueue.shift());
-      if (inputQueue.length) scheduleInputFlush();
+      if (!termWs || termWs.readyState !== 1) { inputQueue = []; return; }
+      while (inputQueue.length && termWs.bufferedAmount < 65536) termWs.send(inputQueue.shift());
+      if (inputQueue.length && !inputFlushTimer) inputFlushTimer = setTimeout(() => { inputFlushTimer = null; flushInputQueue(); }, 4);
     }
 
     return { connect, destroy, disconnect, applyFontFamily, applyLinks, scrollToBottom };

@@ -21,6 +21,7 @@ The README is the short project summary. This `docs/` directory holds detailed f
 | --- | --- | --- |
 | Run or install locally | [Installation](installation.md) | CLI flags, HTTPS modes, auth, service commands. |
 | What the app can do | [Features](features.md) | Sidebar, panels, worktrees, file browser, Git UI, terminal, settings. |
+| Browser terminal renderer and shortcuts | [Features: Browser terminal](features.md#browser-terminal) | wterm/Ghostty renderer choice, Tail, scroll, copy/paste, mouse reporting, temporary terminal shortcuts. |
 | Session manager and backend choice | [Installation: Sessions](installation.md#sessions) | Detect/select/create built-in and external Herdr sessions, per-request backend target routing. |
 | File explorer behavior | [Features: File browser](features.md#webui-features) | [Technical details: File explorer](technical-details.md#file-explorer). |
 | Unified header search | [Features: File browser](features.md#webui-features) | [Technical details: Unified header search](technical-details.md#unified-header-search). |

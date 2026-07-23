@@ -12,8 +12,9 @@
   }
 
   function prefersMobile() {
-    if (readLayoutPreference() === "mobile") return true;
-    if (readLayoutPreference() === "desktop") return false;
+    const preference = readLayoutPreference();
+    if (preference === "mobile") return true;
+    if (preference === "desktop") return false;
     return !!(window.matchMedia && window.matchMedia(MOBILE_QUERY).matches);
   }
 
@@ -33,15 +34,19 @@
     const script = document.createElement("script");
     script.async = false;
     script.src = src;
-    document.body.appendChild(script);
     scriptLoads[src] = new Promise((resolve, reject) => {
       script.onload = resolve;
       script.onerror = () => reject(Error("Failed to load " + src));
     });
+    document.body.appendChild(script);
     return scriptLoads[src];
   }
 
-  function loadLayout() {
+  async function loadScriptsSequentially(sources) {
+    for (const src of sources) await loadScript(src);
+  }
+
+  async function loadLayout() {
     const layout = resolvedLayout();
     const mobile = layout === "mobile";
     document.documentElement.dataset.herdrLayout = layout;
@@ -55,32 +60,37 @@
       loadCss("/assets/desktop/search.css");
     }
     loadCss("/assets/shared/colors.css");
+    loadCss("/assets/vendor/wterm.css");
     loadCss("/assets/shared/file-icons.css");
     loadCss("/assets/shared/content-search.css");
-    loadScript("/assets/shared/core.js");
-    loadScript("/assets/shared/actions.js");
-    loadScript("/assets/shared/file-icons.js");
-    loadScript("/assets/shared/file-tree.js");
-    loadScript("/assets/shared/line-context.js");
-    loadScript("/assets/shared/file-content-search.js");
-    loadScript("/assets/shared/workspace-search.js");
-    loadScript("/assets/vendor/codemirror.js");
-    loadScript("/assets/shared/editor.js");
-    loadScript("/assets/shared/terminal-scroll.js");
-    loadScript("/assets/shared/terminal-fit.js");
-    loadScript("/assets/shared/temp-terminal.js");
-    if (mobile) {
-      loadScript("/assets/mobile/core.js");
-      loadScript("/assets/mobile/attention.js");
-      loadScript("/assets/mobile/terminal.js");
-      loadScript("/assets/mobile/worktrees.js");
-      loadScript("/assets/mobile/file-browser.js");
-      loadScript("/assets/mobile/settings.js");
-    } else {
-      loadScript("/assets/desktop/search.js");
-      loadScript("/assets/desktop/directory-picker.js");
-    }
-    loadScript(mobile ? "/assets/mobile/app.js" : "/assets/desktop/app.js");
+    await loadScriptsSequentially([
+      "/assets/shared/core.js",
+      "/assets/shared/actions.js",
+      "/assets/shared/file-icons.js",
+      "/assets/shared/file-tree.js",
+      "/assets/shared/line-context.js",
+      "/assets/shared/file-content-search.js",
+      "/assets/shared/workspace-search.js",
+      "/assets/vendor/codemirror.js",
+      "/assets/vendor/wterm.js",
+      "/assets/shared/editor.js",
+      "/assets/shared/terminal-fit.js",
+      "/assets/shared/terminal-adapter.js",
+      "/assets/shared/temp-terminal.js",
+      ...(mobile ? [
+        "/assets/mobile/core.js",
+        "/assets/mobile/attention.js",
+        "/assets/mobile/terminal.js",
+        "/assets/mobile/worktrees.js",
+        "/assets/mobile/file-browser.js",
+        "/assets/mobile/settings.js",
+        "/assets/mobile/app.js",
+      ] : [
+        "/assets/desktop/search.js",
+        "/assets/desktop/directory-picker.js",
+        "/assets/desktop/app.js",
+      ]),
+    ]);
     watchAutoLayout(layout);
   }
 

@@ -20,8 +20,12 @@ const SHARED_WORKSPACE_SEARCH_JS: &str = include_str!("assets/shared/workspace_s
 const SHARED_EDITOR_JS: &str = include_str!("assets/shared/editor.js");
 const SHARED_TERMINAL_SCROLL_JS: &str = include_str!("assets/shared/terminal_scroll.js");
 const SHARED_TERMINAL_FIT_JS: &str = include_str!("assets/shared/terminal_fit.js");
+const SHARED_TERMINAL_ADAPTER_JS: &str = include_str!("assets/shared/terminal_adapter.js");
 const SHARED_TEMP_TERMINAL_JS: &str = include_str!("assets/shared/temp_terminal.js");
 const VENDOR_CODEMIRROR_JS: &str = include_str!("assets/vendor/codemirror.bundle.js");
+const VENDOR_WTERM_JS: &str = include_str!("assets/vendor/wterm.bundle.js");
+const VENDOR_WTERM_CSS: &str = include_str!("assets/vendor/wterm.css");
+const VENDOR_GHOSTTY_WASM: &[u8] = include_bytes!("assets/vendor/ghostty-vt.wasm");
 const APP_BOOT_JS: &str = include_str!("assets/app_boot.js");
 const DESKTOP_CSS: &str = concat!(
     include_str!("assets/desktop/app_css/base.css"),
@@ -72,8 +76,6 @@ const MOBILE_WORKTREES_JS: &str = include_str!("assets/mobile/worktrees.js");
 const MOBILE_FILE_BROWSER_JS: &str = include_str!("assets/mobile/file_browser.js");
 const MOBILE_CSS: &str = include_str!("assets/mobile/app.css");
 const MOBILE_JS: &str = include_str!("assets/mobile/app.js");
-const XTERM_CSS: &str = include_str!("assets/xterm.css");
-const XTERM_JS: &str = include_str!("assets/xterm.min.js");
 const JETBRAINS_MONO_NERD_FONT: &[u8] =
     include_bytes!("assets/fonts/JetBrainsMonoNerdFontMono-Regular.ttf");
 const HERDR_LOGO: &str = include_str!("assets/herdr-logo.svg");
@@ -99,16 +101,20 @@ pub(crate) fn login_html() -> Response {
     Html(LOGIN_HTML).into_response()
 }
 
-pub(crate) async fn xterm_js() -> Response {
-    static_text(XTERM_JS, "application/javascript; charset=utf-8")
-}
-
-pub(crate) async fn xterm_css() -> Response {
-    static_text(XTERM_CSS, "text/css; charset=utf-8")
-}
-
 pub(crate) async fn jetbrains_mono_nerd_font() -> Response {
     static_bytes(JETBRAINS_MONO_NERD_FONT, "font/ttf")
+}
+
+pub(crate) async fn vendor_wterm_js() -> Response {
+    static_text(VENDOR_WTERM_JS, "application/javascript; charset=utf-8")
+}
+
+pub(crate) async fn vendor_wterm_css() -> Response {
+    static_text(VENDOR_WTERM_CSS, "text/css; charset=utf-8")
+}
+
+pub(crate) async fn vendor_ghostty_wasm() -> Response {
+    static_bytes(VENDOR_GHOSTTY_WASM, "application/wasm")
 }
 
 pub(crate) async fn desktop_js() -> Response {
@@ -189,6 +195,13 @@ pub(crate) async fn shared_terminal_scroll_js() -> Response {
 pub(crate) async fn shared_terminal_fit_js() -> Response {
     static_text(
         SHARED_TERMINAL_FIT_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(crate) async fn shared_terminal_adapter_js() -> Response {
+    static_text(
+        SHARED_TERMINAL_ADAPTER_JS,
         "application/javascript; charset=utf-8",
     )
 }
@@ -429,8 +442,18 @@ mod tests {
         );
         assert_eq!(content_type(&shared_terminal_scroll_js().await), javascript);
         assert_eq!(content_type(&shared_terminal_fit_js().await), javascript);
+        assert_eq!(
+            content_type(&shared_terminal_adapter_js().await),
+            javascript
+        );
         assert_eq!(content_type(&shared_editor_js().await), javascript);
         assert_eq!(content_type(&vendor_codemirror_js().await), javascript);
+        assert_eq!(content_type(&vendor_wterm_js().await), javascript);
+        assert_eq!(content_type(&vendor_wterm_css().await), css);
+        assert_eq!(
+            content_type(&vendor_ghostty_wasm().await),
+            "application/wasm"
+        );
         assert_eq!(content_type(&mobile_file_browser_js().await), javascript);
         assert_eq!(content_type(&login_js().await), javascript);
         assert_eq!(content_type(&shared_colors_css().await), css);
