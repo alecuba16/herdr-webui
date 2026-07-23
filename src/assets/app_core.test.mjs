@@ -520,7 +520,8 @@ describe("HerdrEditor line number helpers", () => {
     const html = await createFallbackEditor();
     assert.match(html, /herdr-editor-numbered-code/);
     assert.match(html, />1<\/span><span>2<\/span>/);
-    assert.match(html, /herdr-editor-find/);
+    assert.match(html, /class="herdr-editor-find"[^>]*hidden/);
+    assert.match(html, /herdr-editor-find-toggle/);
     assert.match(html, /herdr-editor-replace-query[^>]*disabled/);
   });
 
@@ -619,8 +620,37 @@ describe("HerdrEditor line number helpers", () => {
   it("enables replace controls only for editable fallback editors", async () => {
     const html = await createFallbackEditor({ readonly: false });
     assert.match(html, /<textarea/);
-    assert.match(html, /herdr-editor-find/);
+    assert.match(html, /class="herdr-editor-find"[^>]*hidden/);
     assert.doesNotMatch(html, /herdr-editor-replace-query[^>]*disabled/);
+  });
+
+  it("opens and focuses the hidden find toolbar", () => {
+    const context = {
+      window: {},
+      document: { createElement() { return {}; }, body: { appendChild() {} } },
+      Promise,
+      setTimeout(fn) { fn(); },
+    };
+    const source = readFileSync(new URL("./shared/editor.js", import.meta.url), "utf8");
+    vm.runInNewContext(source, context);
+    const query = {
+      focused: false,
+      selected: false,
+      focus() { this.focused = true; },
+      select() { this.selected = true; },
+    };
+    const toolbar = {
+      hidden: true,
+      querySelector(selector) { return selector === ".herdr-editor-find-query" ? query : null; },
+    };
+    const parent = {
+      querySelector(selector) { return selector === ".herdr-editor-find" ? toolbar : null; },
+    };
+
+    assert.equal(context.window.HerdrEditor.openFind(parent), true);
+    assert.equal(toolbar.hidden, false);
+    assert.equal(query.focused, true);
+    assert.equal(query.selected, true);
   });
 
   it("starts read-only previews with the CodeMirror shell and then mounts CodeMirror", async () => {

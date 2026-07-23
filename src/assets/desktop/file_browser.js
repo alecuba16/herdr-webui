@@ -639,9 +639,11 @@
   function renderPreviewShell() {
     const files = state.split ? state.files : [currentFile()].filter(Boolean);
 
+
     const panes = files.map((file) => {
       return `<section class="file-browser-pane ${file.path === state.selected ? "active" : ""}"><div class="file-browser-pane-body" id="fileBrowserEditor-${hashId(file.path)}">${previewPlaceholder(file)}</div>${file.error ? `<div class="file-browser-error">${esc(file.error)}</div>` : ""}</section>`;
     });
+
 
     if (state.contentSearch.active) panes.push(renderContentSearchPane());
     if (!panes.length) return previewPlaceholder(null);
@@ -982,6 +984,20 @@
     enter(encodedPath) { loadTree(decodeURIComponent(encodedPath)); },
     select(encodedPath, mode) { loadFile(decodeURIComponent(encodedPath), mode || "append"); },
     focusFile(encodedPath) { state.selected = decodeURIComponent(encodedPath); render(); },
+    findInFile(encodedPath) {
+      const path = decodeURIComponent(encodedPath);
+      const parent = document.getElementById(`fileBrowserEditor-${hashId(path)}`);
+      if (window.HerdrEditor && window.HerdrEditor.openFind && window.HerdrEditor.openFind(parent)) return;
+      const file = state.files.find((file) => file.path === path);
+      if (file) {
+        state.selected = path;
+        render();
+        setTimeout(() => {
+          const nextParent = document.getElementById(`fileBrowserEditor-${hashId(path)}`);
+          if (window.HerdrEditor && window.HerdrEditor.openFind) window.HerdrEditor.openFind(nextParent);
+        }, 0);
+      }
+    },
     closeFile(encodedPath) {
       const path = decodeURIComponent(encodedPath);
       const file = state.files.find((file) => file.path === path);
