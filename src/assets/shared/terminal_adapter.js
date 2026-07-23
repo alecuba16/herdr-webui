@@ -22,6 +22,191 @@
     return normalizeCore(value) === "ghostty" ? "Ghostty" : "wterm";
   }
 
+  const INLINE_IMAGE_STARTS = ["\x1b]1337;File=", "\x1b_G", "\x1bP"];
+  const INLINE_IMAGE_ST = "\x1b\\";
+
+  function textDecoder() {
+    try {
+      const Decoder = root.TextDecoder;
+      return Decoder ? new Decoder("utf-8", { fatal: false }) : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function decodeTerminalBytes(data) {
+    const decoder = textDecoder();
+    if (decoder) return decoder.decode(data);
+    let text = "";
+    for (let i = 0; i < data.length; i += 8192) {
+      text += String.fromCharCode.apply(null, data.subarray(i, i + 8192));
+    }
+    return text;
+  }
+
+  function asciiBytes(value) {
+    const bytes = [];
+    for (let i = 0; i < value.length; i += 1) bytes.push(value.charCodeAt(i) & 0xff);
+    return bytes;
+  }
+
+  const INLINE_IMAGE_START_BYTES = INLINE_IMAGE_STARTS.map(asciiBytes);
+
+  function bytesContainNeedle(bytes, needle) {
+    if (!bytes || bytes.length < needle.length) return false;
+    outer: for (let i = 0; i <= bytes.length - needle.length; i += 1) {
+      for (let j = 0; j < needle.length; j += 1) {
+        if (bytes[i + j] !== needle[j]) continue outer;
+      }
+      return true;
+    }
+    return false;
+  }
+
+  function bytesEndWithInlineImagePrefix(bytes) {
+    if (!bytes || !bytes.length) return false;
+    return INLINE_IMAGE_START_BYTES.some((marker) => {
+      const limit = Math.min(marker.length - 1, bytes.length);
+      for (let length = limit; length > 0; length -= 1) {
+        let matches = true;
+        for (let i = 0; i < length; i += 1) {
+          if (bytes[bytes.length - length + i] !== marker[i]) {
+            matches = false;
+            break;
+          }
+        }
+        if (matches) return true;
+      }
+      return false;
+    });
+  }
+
+  function dataMayContainInlineImage(data, state) {
+    if (state && state.imageEscapeBuffer) return true;
+    if (typeof data === "string")
+      return INLINE_IMAGE_STARTS.some((start) => data.includes(start)) || pendingInlineImagePrefixLength(data) > 0;
+    if (!data || typeof data.length !== "number") return false;
+    return INLINE_IMAGE_START_BYTES.some((needle) => bytesContainNeedle(data, needle)) || bytesEndWithInlineImagePrefix(data);
+  }
+
+  function endOfOscSequence(text, start) {
+    const bel = text.indexOf("\x07", start);
+    const st = text.indexOf(INLINE_IMAGE_ST, start);
+    if (bel < 0) return st < 0 ? null : { index: st, length: INLINE_IMAGE_ST.length };
+    if (st < 0 || bel < st) return { index: bel, length: 1 };
+    return { index: st, length: INLINE_IMAGE_ST.length };
+  }
+
+  function findNextInlineImageStart(text, from) {
+    let best = null;
+    for (const marker of INLINE_IMAGE_STARTS) {
+      const index = text.indexOf(marker, from);
+      if (index >= 0 && (!best || index < best.index)) best = { index, marker };
+    }
+    return best;
+  }
+
+  function pendingInlineImagePrefixLength(text) {
+    const maxLength = INLINE_IMAGE_STARTS.reduce((max, marker) => Math.max(max, marker.length), 0);
+    const limit = Math.min(maxLength - 1, text.length);
+    for (let length = limit; length > 0; length -= 1) {
+      const suffix = text.slice(text.length - length);
+      if (INLINE_IMAGE_STARTS.some((marker) => marker.startsWith(suffix))) return length;
+    }
+    return 0;
+  }
+
+  function approxBase64Bytes(value) {
+    const cleaned = String(value || "").replace(/\s+/g, "");
+    if (!cleaned) return 0;
+    const padding = cleaned.endsWith("==") ? 2 : cleaned.endsWith("=") ? 1 : 0;
+    return Math.max(0, Math.floor((cleaned.length * 3) / 4) - padding);
+  }
+
+  function formatByteSize(bytes) {
+    const value = Math.max(0, Number(bytes) || 0);
+    if (value >= 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+    if (value >= 1024) return `${Math.round(value / 1024)} KB`;
+    return `${value} B`;
+  }
+
+  function terminalImageProtocolSummary(protocol, sequence) {
+    let detail = "";
+    if (protocol === "iTerm2") {
+      const colon = sequence.indexOf(":");
+      const payload = colon >= 0 ? sequence.slice(colon + 1).replace(/[\x07\x1b\\]+$/g, "") : "";
+      detail = payload ? `, payload ${formatByteSize(approxBase64Bytes(payload))}` : "";
+    } else if (protocol === "Kitty") {
+      const payload = sequence.slice(3, -2).split(";").pop() || "";
+      detail = payload ? `, payload ${formatByteSize(approxBase64Bytes(payload))}` : "";
+    } else if (protocol === "SIXEL") {
+      detail = `, ${formatByteSize(sequence.length)} escape data`;
+    }
+    return `\r\n[inline image omitted: ${protocol} graphics${detail}; wterm does not render raster image protocols yet. Use chafa --symbols=braille --colors=full for text previews.]\r\n`;
+  }
+
+  function isSixelSequence(sequence) {
+    if (!sequence.startsWith("\x1bP") || !sequence.endsWith(INLINE_IMAGE_ST)) return false;
+    const headerEnd = sequence.indexOf("q", 2);
+    if (headerEnd < 0 || headerEnd > 40) return false;
+    return /^[0-9;?]*q$/.test(sequence.slice(2, headerEnd + 1));
+  }
+
+  function filterTerminalImageSequences(data, state) {
+    const imageState = state || {};
+    if (!dataMayContainInlineImage(data, imageState)) return data;
+    const text = (imageState.imageEscapeBuffer || "") + (typeof data === "string" ? data : decodeTerminalBytes(data));
+    imageState.imageEscapeBuffer = "";
+    let output = "";
+    let cursor = 0;
+    while (cursor < text.length) {
+      const next = findNextInlineImageStart(text, cursor);
+      if (!next) {
+        const hold = pendingInlineImagePrefixLength(text.slice(cursor));
+        if (hold > 0) {
+          output += text.slice(cursor, text.length - hold);
+          imageState.imageEscapeBuffer = text.slice(text.length - hold);
+        } else {
+          output += text.slice(cursor);
+        }
+        break;
+      }
+      output += text.slice(cursor, next.index);
+      if (next.marker === "\x1b]1337;File=") {
+        const end = endOfOscSequence(text, next.index);
+        if (!end) {
+          imageState.imageEscapeBuffer = text.slice(next.index);
+          break;
+        }
+        const stop = end.index + end.length;
+        output += terminalImageProtocolSummary("iTerm2", text.slice(next.index, stop));
+        cursor = stop;
+        continue;
+      }
+      if (next.marker === "\x1b_G") {
+        const end = text.indexOf(INLINE_IMAGE_ST, next.index);
+        if (end < 0) {
+          imageState.imageEscapeBuffer = text.slice(next.index);
+          break;
+        }
+        const stop = end + INLINE_IMAGE_ST.length;
+        output += terminalImageProtocolSummary("Kitty", text.slice(next.index, stop));
+        cursor = stop;
+        continue;
+      }
+      const end = text.indexOf(INLINE_IMAGE_ST, next.index);
+      if (end < 0) {
+        imageState.imageEscapeBuffer = text.slice(next.index);
+        break;
+      }
+      const stop = end + INLINE_IMAGE_ST.length;
+      const sequence = text.slice(next.index, stop);
+      output += isSixelSequence(sequence) ? terminalImageProtocolSummary("SIXEL", sequence) : sequence;
+      cursor = stop;
+    }
+    return output;
+  }
+
   function applyThemeVars(element, theme) {
     if (!element || !theme) return;
     const style = element.style;
@@ -61,6 +246,7 @@
       this._destroyed = false;
       this._linkClick = null;
       this._wheelScroll = null;
+      this._imageFallbackState = { imageEscapeBuffer: "" };
       this.setTheme(options.theme || {});
       this.setFontFamily(options.fontFamily || "monospace");
       this.setLinksEnabled(options.links !== false);
@@ -103,7 +289,7 @@
         if (callback) callback();
         return;
       }
-      this.wterm.write(data);
+      this.wterm.write(filterTerminalImageSequences(data, this._imageFallbackState));
       if (callback) afterRender(callback);
     }
 
@@ -279,6 +465,8 @@
     normalizeCore,
     terminalCoreLabel,
     applyThemeVars,
+    filterTerminalImageSequences,
+    terminalImageProtocolSummary,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = root.HerdrTerminalRenderer;
 })(typeof globalThis !== "undefined" ? globalThis : window);
