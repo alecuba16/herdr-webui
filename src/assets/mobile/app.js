@@ -330,6 +330,7 @@
             </div>
           </div>
           <div class="temp-terminal-body">
+            <button class="terminal-follow-button temp-terminal-follow" id="tempTerminalFollowButton" type="button" hidden title="Go to latest terminal output and resume follow" aria-label="Go to latest terminal output and resume follow">↓ Tail</button>
             <div class="terminal" id="tempTerminal"></div>
           </div>
         </div>

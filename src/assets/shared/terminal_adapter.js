@@ -460,6 +460,35 @@
     return Math.max(1, Math.round(delta / rowHeight));
   }
 
+  /**
+   * Attaches a pointerdown listener that calls `focus()` only when the mouse
+   * stays within a 3px radius (a click, not a text-selection drag).  This
+   * prevents textarea.focus() from collapsing native DOM text selection.
+   *
+   * @param {HTMLElement} element - Element to listen on.
+   * @param {function} focus - Called when the gesture is a click, not a drag.
+   * @param {function} [shouldIgnore] - Return true to skip focus for this event.
+   */
+  function attachClickFocus(element, focus, shouldIgnore) {
+    element.addEventListener("pointerdown", function (event) {
+      if (shouldIgnore && shouldIgnore(event)) return;
+      if (event.button !== 0 || event.shiftKey) return;
+      var startX = event.clientX, startY = event.clientY;
+      var dragged = false;
+      var onMove = function (ev) {
+        if (Math.abs(ev.clientX - startX) > 3 || Math.abs(ev.clientY - startY) > 3)
+          dragged = true;
+      };
+      var onUp = function () {
+        root.document.removeEventListener("mousemove", onMove);
+        root.document.removeEventListener("mouseup", onUp);
+        if (!dragged) focus();
+      };
+      root.document.addEventListener("mousemove", onMove);
+      root.document.addEventListener("mouseup", onUp);
+    });
+  }
+
   root.HerdrTerminalRenderer = {
     create: HerdrWtermAdapter.create,
     normalizeCore,
@@ -467,6 +496,7 @@
     applyThemeVars,
     filterTerminalImageSequences,
     terminalImageProtocolSummary,
+    attachClickFocus,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = root.HerdrTerminalRenderer;
 })(typeof globalThis !== "undefined" ? globalThis : window);

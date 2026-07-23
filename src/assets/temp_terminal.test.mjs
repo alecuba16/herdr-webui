@@ -106,6 +106,7 @@ function context() {
 
   ctx = {
     TextEncoder,
+    fitCalls: [],
     HerdrTerminalRenderer: {
       create(target, options) {
         const term = new FakeTerminal(options);
@@ -147,7 +148,9 @@ function context() {
       cellSize() {
         return { width: 9, height: 20 };
       },
-      fitTerminalToContainer() {},
+      fitTerminalToContainer(target, opts) {
+        ctx.fitCalls.push({ target, opts });
+      },
       gridSize() {
         return { cols: 88, rows: 22 };
       },
@@ -378,6 +381,17 @@ describe("temporary terminal", () => {
       ok(/width:\s*100%;/.test(wtermRule), cssPath);
       ok(/overflow-x:\s*hidden;/.test(wtermRule), cssPath);
       ok(/overflow-y:\s*auto;/.test(wtermRule), cssPath);
+    }
+  });
+
+  it("fits the terminal element not the container div", async () => {
+    const ctx = context();
+    await openTempTerminal(ctx);
+    ok(ctx.fitCalls.length > 0, "expected fitTerminalToContainer calls");
+    const container = ctx.elements.get("tempTerminal");
+    for (const call of ctx.fitCalls) {
+      ok(call.target !== container, "fitTerminalToContainer should not target the container div");
+      ok(call.opts && call.opts.height > 0, "fitTerminalToContainer should receive a positive height");
     }
   });
 });
