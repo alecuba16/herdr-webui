@@ -1705,6 +1705,20 @@
     return result;
   }
 
+  function isConflictPath(path) {
+    const files = (((active() || {}).status || {}).conflicted || []);
+    return files.includes(path);
+  }
+
+  function renderConflictResolutionButtons(file, className = "git-ui-conflict-file-actions", markLabel = "Mark resolved (stage)") {
+    return `<span class="${className}"><button class="git-ui-btn" title="Use HEAD/current side" onclick="HerdrGitUi.resolve('${arg(file)}','ours')">Use HEAD</button><button class="git-ui-btn" title="Use parent/base version" onclick="HerdrGitUi.resolve('${arg(file)}','base')">Use parent</button><button class="git-ui-btn" title="Use remote/incoming side" onclick="HerdrGitUi.resolve('${arg(file)}','theirs')">Use remote</button><button class="git-ui-btn" title="Stage this manually edited file as resolved" onclick="HerdrGitUi.resolve('${arg(file)}','mark')">${esc(markLabel)}</button></span>`;
+  }
+
+  function renderDiffConflictResolutionButtons(file) {
+    if (currentMode() !== "changes" || !isConflictPath(file.path)) return "";
+    return renderConflictResolutionButtons(file.path, "git-ui-conflict-file-actions git-ui-conflict-diff-actions", "Mark resolved");
+  }
+
   function renderDiffFile(file) {
     const mode = currentMode();
     const view = active() || {};
@@ -1716,6 +1730,7 @@
     const left = mode === "changes" ? fileDiffLeftLabel(file) : (view.compareBase || "base");
     const right = mode === "readonly-compare" ? (view.compareTarget || "target") : "current";
     if (view.showBlame && (!large || loadedLarge)) ensureBlame(file.path);
+    const conflictActions = renderDiffConflictResolutionButtons(file);
     const restore = mode === "changes"
       ? `<button class="git-ui-btn danger" title="Restore complete file" onclick="HerdrGitUi.discardFile('${arg(file.path)}')">Restore file</button>`
       : "";
@@ -1726,7 +1741,7 @@
         : large && !loadedLarge
           ? renderLargeDiffPlaceholder(file)
           : renderDiffFileBody(file, lineCount, large, renderFullLarge);
-    return `<div class="git-ui-diff-file" data-git-path="${esc(file.path)}"><div class="git-ui-diff-file-head"><button class="git-ui-file-collapse" title="${collapsed ? "Show file" : "Collapse file"}" onclick="HerdrGitUi.toggleFile('${arg(file.path)}')">${collapsed ? "+" : "−"}</button><strong>${esc(file.path)}</strong><span class="git-ui-muted">${esc(left)} → ${esc(right)}</span><span class="git-ui-diff-file-actions"><span class="git-ui-badge add">+${file.additions || 0}</span> <span class="git-ui-badge del">-${file.deletions || 0}</span>${restore}</span></div>${body}</div>`;
+    return `<div class="git-ui-diff-file" data-git-path="${esc(file.path)}"><div class="git-ui-diff-file-head"><button class="git-ui-file-collapse" title="${collapsed ? "Show file" : "Collapse file"}" onclick="HerdrGitUi.toggleFile('${arg(file.path)}')">${collapsed ? "+" : "−"}</button><strong>${esc(file.path)}</strong><span class="git-ui-muted">${esc(left)} → ${esc(right)}</span><span class="git-ui-diff-file-actions"><span class="git-ui-badge add">+${file.additions || 0}</span> <span class="git-ui-badge del">-${file.deletions || 0}</span>${conflictActions}${restore}</span></div>${body}</div>`;
   }
 
   function renderDiffFileBody(file, lineCount, large, renderFullLarge) {
@@ -2241,7 +2256,7 @@
     const files = (((active() || {}).status || {}).conflicted || []);
     const operationActions = renderConflictOperationActions();
     const help = files.length ? `<div class="git-ui-muted git-ui-conflict-help">After editing a conflicted file manually, click <strong>Mark resolved (stage)</strong> to run git add. When all conflicted files are staged, continue the rebase, merge, or cherry-pick.</div>` : "";
-    return `${renderFileToolbar("conflicts")}<div class="git-ui-section"><div class="git-ui-muted">Conflicts</div>${files.length ? operationActions : ""}${help}${files.map((file) => `<div class="git-ui-file git-ui-conflict-file"><span>${esc(file)}</span><span class="git-ui-conflict-file-actions"><button class="git-ui-btn" title="Use HEAD/current side" onclick="HerdrGitUi.resolve('${arg(file)}','ours')">Use HEAD</button><button class="git-ui-btn" title="Use parent/base version" onclick="HerdrGitUi.resolve('${arg(file)}','base')">Use parent</button><button class="git-ui-btn" title="Use remote/incoming side" onclick="HerdrGitUi.resolve('${arg(file)}','theirs')">Use remote</button><button class="git-ui-btn" title="Stage this manually edited file as resolved" onclick="HerdrGitUi.resolve('${arg(file)}','mark')">Mark resolved (stage)</button></span></div>`).join("") || `<div class="git-ui-empty-row">No conflicts</div>`}</div>`;
+    return `${renderFileToolbar("conflicts")}<div class="git-ui-section"><div class="git-ui-muted">Conflicts</div>${files.length ? operationActions : ""}${help}${files.map((file) => `<div class="git-ui-file git-ui-conflict-file"><span>${esc(file)}</span>${renderConflictResolutionButtons(file)}</div>`).join("") || `<div class="git-ui-empty-row">No conflicts</div>`}</div>`;
   }
 
   function renderMain() {
