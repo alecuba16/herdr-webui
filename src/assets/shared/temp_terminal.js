@@ -240,6 +240,25 @@
 
     function focusTerminalFromEvent(event) {
       if (isCloseControl(event && event.target)) return;
+      // Don't steal focus during text selection drag. pointerdown fires
+      // before the user starts dragging; focusing the hidden textarea on
+      // the next tick collapses the native DOM selection.
+      if (event.type === "pointerdown" && event.button === 0 && !event.shiftKey) {
+        var startX = event.clientX, startY = event.clientY;
+        var dragged = false;
+        var onMove = function (ev) {
+          if (Math.abs(ev.clientX - startX) > 3 || Math.abs(ev.clientY - startY) > 3)
+            dragged = true;
+        };
+        var onUp = function () {
+          document.removeEventListener("mousemove", onMove);
+          document.removeEventListener("mouseup", onUp);
+          if (!dragged) focusTerminalSoon();
+        };
+        document.addEventListener("mousemove", onMove);
+        document.addEventListener("mouseup", onUp);
+        return;
+      }
       focusTerminalSoon();
     }
 
