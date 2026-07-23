@@ -60,12 +60,6 @@
   gap: 6px;
   min-width: 0;
 }
-.file-browser-current-file {
-  align-items: center;
-  display: flex;
-  gap: 6px;
-  min-width: 0;
-}
 .file-browser-file-tabs {
   display: flex;
   flex-wrap: nowrap;
@@ -128,14 +122,6 @@
   flex-wrap: wrap;
   gap: 4px;
   justify-content: flex-end;
-}
-.file-browser-dirty {
-  border: 1px solid var(--border2);
-  border-radius: 999px;
-  color: var(--muted);
-  flex: 0 0 auto;
-  font-size: 11px;
-  padding: 2px 7px;
 }
 .file-browser-title {
   font-weight: 800;
@@ -351,6 +337,7 @@
 .file-browser-pane.active {
   border-color: var(--border2);
 }
+
 .file-browser-pane-body {
   min-height: 0;
   overflow: auto;

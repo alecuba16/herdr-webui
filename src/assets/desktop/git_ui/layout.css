@@ -318,55 +318,6 @@
   gap: 6px;
   justify-content: flex-end;
 }
-.git-ui-btn {
-  background: var(--panel2);
-  border: 1px solid var(--border2);
-  border-radius: 8px;
-  color: var(--fg);
-  cursor: pointer;
-  font: inherit;
-  font-size: 12px;
-  padding: 5px 8px;
-  transition:
-    background 120ms ease,
-    border-color 120ms ease,
-    box-shadow 120ms ease,
-    color 120ms ease,
-    transform 80ms ease;
-}
-.git-ui-btn:hover:not(:disabled),
-.git-ui-btn.active {
-  background: var(--control-hover, var(--panel2));
-  border-color: var(--accent-1, var(--accent));
-  color: var(--accent-1, var(--accent));
-}
-.git-ui-btn:disabled {
-  background: var(--panel2);
-  border-color: var(--border);
-  color: var(--muted);
-  cursor: not-allowed;
-  opacity: 0.65;
-}
-.git-ui-btn:hover:not(:disabled) {
-  transform: translateY(-1px);
-}
-.git-ui-btn:active:not(:disabled) {
-  transform: translateY(0);
-}
-.git-ui-btn:focus-visible {
-  box-shadow: var(--focus-ring, 0 0 0 2px rgba(56, 139, 253, 0.22));
-  outline: none;
-}
-.git-ui-btn.primary {
-  background: var(--accent-1, var(--accent));
-  border-color: var(--accent-1, var(--accent));
-  color: var(--accent-fg, var(--bg));
-  font-weight: 800;
-}
-.git-ui-btn.primary:hover {
-  background: var(--accent-hover, var(--accent));
-  color: var(--accent-fg, var(--bg));
-}
 .tab.git-panel-tab {
   border-color: var(--border2);
 }
@@ -399,10 +350,6 @@
 }
 .git-tree-icon-file {
   mask-image: url("/assets/icons/file.svg");
-}
-.git-ui-btn.danger {
-  border-color: #f38ba8;
-  color: #f38ba8;
 }
 .git-ui-main {
   display: flex;
