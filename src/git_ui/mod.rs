@@ -397,10 +397,34 @@ pub(super) fn safe_git_token<'a>(value: &'a str, label: &str) -> Result<&'a str,
 pub(super) struct LocalBranch {
     pub(super) name: String,
     pub(super) current: bool,
+    pub(super) upstream: Option<String>,
+    pub(super) pushed: bool,
 }
 
 pub(super) fn list_local_branches(cwd: &str) -> Result<Vec<LocalBranch>, String> {
-    let text = git_ui_text(cwd, &["branch", "--format=%(refname:short)%00%(HEAD)"])?;
+    let remote_branches = git_ui_text(cwd, &["branch", "-r", "--format=%(refname:short)"])
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| {
+            let name = line.trim();
+            if name.is_empty() || name.ends_with("/HEAD") {
+                return None;
+            }
+            Some(
+                name.split_once('/')
+                    .map(|(_, branch)| branch)
+                    .unwrap_or(name)
+                    .to_string(),
+            )
+        })
+        .collect::<std::collections::HashSet<_>>();
+    let text = git_ui_text(
+        cwd,
+        &[
+            "branch",
+            "--format=%(refname:short)%00%(HEAD)%00%(upstream:short)",
+        ],
+    )?;
     let branches = text
         .lines()
         .filter_map(|line| {
@@ -409,9 +433,17 @@ pub(super) fn list_local_branches(cwd: &str) -> Result<Vec<LocalBranch>, String>
             if name.is_empty() {
                 return None;
             }
+            let current = parts.next() == Some("*");
+            let upstream = parts
+                .next()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
             Some(LocalBranch {
                 name: name.to_string(),
-                current: parts.next() == Some("*"),
+                current,
+                pushed: upstream.is_some() || remote_branches.contains(name),
+                upstream,
             })
         })
         .collect::<Vec<_>>();
@@ -1451,6 +1483,18 @@ mod tests {
             let repo = TempRepo::new();
             repo.commit_initial();
             repo.git(&["branch", "cleanup/delete-me"]);
+            let remote_path = repo.path.parent().unwrap().join(format!(
+                "{}-remote.git",
+                repo.path.file_name().unwrap().to_string_lossy()
+            ));
+            let remote_output = Command::new("git")
+                .args(["init", "--bare"])
+                .arg(&remote_path)
+                .output()
+                .unwrap();
+            assert!(remote_output.status.success());
+            repo.git(&["remote", "add", "origin", remote_path.to_str().unwrap()]);
+            repo.git(&["push", "origin", "cleanup/delete-me"]);
             let cwd = repo.path.to_str().unwrap().to_string();
             let state = test_state();
 
@@ -1472,6 +1516,13 @@ mod tests {
                 .unwrap()
                 .iter()
                 .any(|branch| branch["name"] == "cleanup/delete-me"));
+            let pushed_branch = json["repos"][0]["branches"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|branch| branch["name"] == "cleanup/delete-me")
+                .unwrap();
+            assert_eq!(pushed_branch["pushed"], true);
             assert!(json["repos"][0]["worktrees"]
                 .as_array()
                 .unwrap()
@@ -1508,6 +1559,25 @@ mod tests {
             assert!(!repo
                 .git(&["branch", "--list", "cleanup/delete-me"])
                 .contains("cleanup/delete-me"));
+
+            repo.git(&["checkout", "-b", "cleanup/current"]);
+            let deleted_current = git_ui_branch_delete(
+                State(state.clone()),
+                HeaderMap::new(),
+                ConnectInfo(remote()),
+                Json(GitUiBranchDeleteRequest {
+                    cwd: cwd.clone(),
+                    branch: "cleanup/current".to_string(),
+                    force: Some(true),
+                    confirmed: Some(true),
+                }),
+            )
+            .await;
+            assert_eq!(deleted_current.status(), StatusCode::OK);
+            assert_eq!(repo.git(&["branch", "--show-current"]).trim(), "main");
+            assert!(!repo
+                .git(&["branch", "--list", "cleanup/current"])
+                .contains("cleanup/current"));
 
             let worktree_path = repo.path.parent().unwrap().join(format!(
                 "{}-worktree",
@@ -1551,6 +1621,7 @@ mod tests {
             )
             .await;
             assert_eq!(protected.status(), StatusCode::BAD_REQUEST);
+            let _ = fs::remove_dir_all(remote_path);
         });
     }
 

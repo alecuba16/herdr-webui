@@ -20,6 +20,17 @@
 - Moves terminal renderer OSC color-query reply filtering into the shared terminal helper and applies it to desktop, mobile, and temporary terminal input paths. This strips `OSC 10/11/12` and palette color replies, including split and bare `10;rgb...`/`11;rgb...` fragments, before they can echo into shell input.
 - Keeps ordinary terminal input safe while filtering query replies, with regressions for numeric keys and Escape so normal shell/TUI input is not delayed.
 
+### Temporary terminal and Git cleanup
+
+- Keeps temporary terminals focused while visible by trapping Escape, Tab, and Backspace before browser focus shortcuts, global shortcuts, or the Git drawer can consume them.
+- Starts temporary terminals in the current, single, or visible workspace/worktree when possible. WebUI creates a temporary workspace from the configured default folder only when no workspace is available.
+- Makes the temporary terminal body and xterm layers fill the modal height without the previous padding gap.
+- Allows Git Cleanup to select the primary repository's current non-`main`/`master` branch. The backend checks out `main` or `master` first, then deletes the selected branch, while keeping the current `main`/`master` branch protected.
+- Shows whether each cleanup branch or worktree branch appears to have been pushed before (`pushed before`, `not pushed`, or `push status unknown`).
+- Shows conflict resolution actions (`Use HEAD`, `Use parent`, `Use remote`, and `Mark resolved`) in conflicted file headers for both unified and side-by-side Changes diffs.
+- Keeps unified and side-by-side diff mutation behavior aligned by hiding block-restore controls in large diff previews until the full diff is rendered.
+- Keeps the Git file toolbar visible while scrolling diff/editor content and adds per-conflict-block `Use HEAD`, `Use parent`, and `Use remote` controls inside the side-by-side hunk editor.
+
 ## 0.2.77 Release Notes
 
 ### File explorer tabs, worktrees, and Git cleanup polish
