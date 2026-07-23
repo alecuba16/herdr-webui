@@ -7,6 +7,7 @@
 - Replaces xterm.js with the shared wterm terminal renderer adapter across desktop, mobile, and temporary terminals.
 - Adds Settings-backed renderer selection between wterm and Ghostty, with embedded wterm JS/CSS and Ghostty WASM assets.
 - Preserves terminal theme/font behavior, URL link detection, bounded paste chunking, Tail/follow behavior, and terminal query-reply filtering on the new renderer stack.
+- Detects unsupported iTerm2, Kitty, and SIXEL inline image graphics sequences in wterm output and replaces them with a short chafa fallback hint instead of leaking raw control/base64 data into terminal scrollback.
 - Makes terminal mouse reporting opt-in, strips accidental mouse reports by default, and keeps normal text selection safe.
 - Improves terminal wheel, trackpad, PageUp/PageDown, scrollback, and viewport fitting behavior for main and temporary terminals.
 - Removes stale xterm/static scroll loading from the current boot path while keeping a compatibility shim for cached older boot scripts.
