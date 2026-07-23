@@ -128,6 +128,7 @@ describe("app bundle load", () => {
     appBootSource = readFileSync(new URL("./app_boot.js", import.meta.url), "utf8");
     const desktopAppSource = [
       "./desktop/app_js/core.js",
+      "./desktop/app_js/workspace_shell.js",
       "./desktop/app_js/panel_switcher.js",
       "./desktop/app_js/render.js",
       "./desktop/app_js/terminal.js",
@@ -172,7 +173,7 @@ describe("app bundle load", () => {
     match(source, /Temporary terminal/);
     match(source, /runSearchAction\(result\.action\)/);
     match(source, /window\.syncShellModeButtons = syncShellModeButtons;/);
-    match(source, /function showTerminalShellMode\(\) \{[\s\S]*?syncShellModeButtons\(\);[\s\S]*?if \(typeof render === "function"\) render\(\);[\s\S]*?requestAnimationFrame\(\(\) => \{[\s\S]*?syncShellModeButtons\(\);/);
+    match(source, /function showTerminalShellMode\([^)]*\) \{[\s\S]*?rememberWorkspaceShellMode\("terminal", state\.ws, \{ minimized: false \}\);[\s\S]*?syncShellModeButtons\(\);[\s\S]*?if \(typeof render === "function"\) render\(\);[\s\S]*?requestAnimationFrame\(\(\) => \{[\s\S]*?syncShellModeButtons\(\);/);
   });
 
   it("returns desktop UX actions from a single command-palette candidate path", () => {
@@ -440,6 +441,12 @@ describe("app bundle load", () => {
     match(html, /editor find supports match case and regex/);
     match(html, /edit mode enables replace/);
     match(html, /syntax\/search colors use shared theme tokens/);
+    const editorSource = readFileSync(new URL("./shared/editor.js", import.meta.url), "utf8");
+    match(editorSource, /class="herdr-editor-find"[^`]*hidden/);
+    match(editorSource, /herdr-editor-find-toggle/);
+    match(editorSource, /parent\.addEventListener\("keydown"/);
+    match(editorSource, /event\.ctrlKey \|\| event\.metaKey/);
+    match(editorSource, /openFind/);
     match(html, /Search selections, selected files, split panes, and unsaved edit drafts stay attached to each open workspace\/worktree while switching panels/);
     match(html, /priority red deleted, yellow modified, green new/);
     match(html, /Git selector opens repo tools for diff, stage\/unstage, discard, commit modal, commit & push, pull, push with force fallback, tag push option, rebase, conflicts, stash, branches, cleanup, and worktree prune/);
@@ -528,6 +535,101 @@ describe("app bundle load", () => {
     equal(vm.runInContext("tempTerminal.minimized", ctx), 1);
   });
 
+  it("opens app search with Cmd/Ctrl+F without stealing editor or terminal Ctrl+F", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    const key = (extra = {}) => ({
+      code: "KeyF",
+      key: "f",
+      altKey: false,
+      ctrlKey: false,
+      metaKey: false,
+      shiftKey: false,
+      defaultPrevented: false,
+      propagationStopped: false,
+      immediateStopped: false,
+      target: ctx.document.body,
+      preventDefault() { this.defaultPrevented = true; },
+      stopPropagation() { this.propagationStopped = true; },
+      stopImmediatePropagation() { this.immediateStopped = true; },
+      ...extra,
+    });
+    const closestClassTarget = (className) => ({
+      classList: { contains: (value) => value === className },
+    });
+
+    let event = key({ metaKey: true });
+    ctx.handleGlobalShortcut(event);
+    equal(event.defaultPrevented, true);
+    equal(ctx.document.getElementById("searchPalette").style.display, "grid");
+
+    event = key({ ctrlKey: true });
+    ctx.handleGlobalShortcut(event);
+    equal(event.defaultPrevented, true);
+    equal(ctx.document.getElementById("searchPaletteInput").focused, true);
+    equal(ctx.document.getElementById("searchPaletteInput").selected, true);
+
+    ctx.document.getElementById("searchPalette").style.display = "none";
+    event = key({
+      metaKey: true,
+      target: { closest: (selector) => selector === ".herdr-editor" ? closestClassTarget("herdr-editor") : null },
+    });
+    ctx.handleGlobalShortcut(event);
+    equal(event.defaultPrevented, false);
+    equal(ctx.document.getElementById("searchPalette").style.display, "none");
+
+    event = key({
+      ctrlKey: true,
+      target: { closest: (selector) => selector === ".xterm" ? closestClassTarget("xterm") : null },
+    });
+    ctx.handleGlobalShortcut(event);
+    equal(event.defaultPrevented, false);
+    equal(ctx.document.getElementById("searchPalette").style.display, "none");
+
+    event = key({
+      metaKey: true,
+      target: { closest: (selector) => selector === ".xterm" ? closestClassTarget("xterm") : null },
+    });
+    ctx.handleGlobalShortcut(event);
+    equal(event.defaultPrevented, true);
+    equal(ctx.document.getElementById("searchPalette").style.display, "grid");
+  });
+
+  it("routes Cmd/Ctrl+F to focused file browser editor search before app search", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    let focusedFindTarget = null;
+    const fileTarget = { closest: () => null };
+    ctx.HerdrFileBrowser = {
+      openFocusedFind(target) {
+        focusedFindTarget = target;
+        return true;
+      },
+    };
+    const event = {
+      code: "KeyF",
+      key: "f",
+      altKey: false,
+      ctrlKey: false,
+      metaKey: true,
+      shiftKey: false,
+      defaultPrevented: false,
+      propagationStopped: false,
+      immediateStopped: false,
+      target: fileTarget,
+      preventDefault() { this.defaultPrevented = true; },
+      stopPropagation() { this.propagationStopped = true; },
+      stopImmediatePropagation() { this.immediateStopped = true; },
+    };
+
+    ctx.handleGlobalShortcut(event);
+
+    equal(event.defaultPrevented, true);
+    equal(focusedFindTarget, fileTarget);
+    equal(ctx.document.getElementById("searchPalette").style.display, undefined);
+  });
+
   it("keeps Git prefix shortcuts collision-free with WebUI prefix keys", () => {
     const webuiKeys = new Set([...source.matchAll(/case "([^"]+)":/g)].map((match) => match[1]));
     const gitKeys = ["Digit1", "Digit2", "Digit3", "Digit4", "KeyC", "KeyL", "KeyR", "KeyG", "KeyY", "KeyU", "KeyD", "KeyZ", "KeyH", "KeyM", "KeyE", "KeyO", "KeyV", "KeyI", "Digit0"];
@@ -572,7 +674,10 @@ describe("app bundle load", () => {
     match(gitUiSource, /const fileList = cleanupOnly \? "" : `\$\{filterInput\}\$\{fileSections\}`;/);
     match(gitUiSource, /disabledReason = "Open a Git repository to use this view"/);
     const gitLayoutCss = readFileSync(new URL("./desktop/git_ui/layout.css", import.meta.url), "utf8");
-    match(gitLayoutCss, /\.git-ui-btn:disabled \{[\s\S]*?background: var\(--panel2\);[\s\S]*?color: var\(--muted\);/);
+    const controlsCss = readFileSync(new URL("./desktop/app_css/controls.css", import.meta.url), "utf8");
+    match(controlsCss, /\.git-ui-btn:disabled \{[\s\S]*?background: var\(--panel2\);[\s\S]*?color: var\(--muted\);/);
+    match(controlsCss, /\.git-ui-btn\.primary \{[\s\S]*?background: var\(--accent-1, var\(--accent\)\);/);
+    ok(!/^\.git-ui-btn \{/m.test(gitLayoutCss));
     match(gitLayoutCss, /\.git-ui-view-toggle:disabled \{[\s\S]*?background: var\(--panel2\);[\s\S]*?color: var\(--muted\);/);
     match(gitLayoutCss, /\.git-ui-modal label \{[\s\S]*?box-sizing: border-box;[\s\S]*?width: 100%;/);
     match(gitLayoutCss, /\.git-ui-input,[\s\S]*?\.git-ui-textarea,[\s\S]*?\.git-ui-select \{[\s\S]*?box-sizing: border-box;[\s\S]*?min-width: 0;[\s\S]*?width: 100%;/);
@@ -741,15 +846,50 @@ describe("app bundle load", () => {
     match(gitUiSource, /\/api\/git-ui\/tag/);
   });
 
-  it("keeps Git and file drawers on the newly selected workspace", () => {
-    match(source, /gitWasVisible/);
-    match(source, /fileWasVisible/);
-    match(source, /openWorkspaceGitUi\(ws, \{ forceOpen: true \}\)/);
-    match(source, /openWorkspaceFileBrowser\(ws, \{ forceOpen: true \}\)/);
-    match(readFileSync(new URL("./desktop/app_js/render.js", import.meta.url), "utf8"), /HerdrGitUi\.open\(workspace, options \|\| \{\}\)/);
-    match(readFileSync(new URL("./desktop/app_js/render.js", import.meta.url), "utf8"), /HerdrFileBrowser\.open\(workspace, options \|\| \{\}\)/);
+  it("keeps workspace shell tabs scoped to each workspace", () => {
+    match(source, /workspaceShell: \{\}/);
+    match(source, /function workspaceShellState/);
+    match(source, /function minimizeWorkspaceShell/);
+    match(source, /function restoreWorkspaceShell/);
+    match(source, /applyWorkspaceShellForSelection\(ws\)/);
+    match(source, /function forgetWorkspaceShell/);
+    match(source, /workspaceShellRestore/);
+    const renderSource = readFileSync(new URL("./desktop/app_js/render.js", import.meta.url), "utf8");
+    match(renderSource, /rememberWorkspaceShellMode\("git", id, \{ minimized: false \}\)/);
+    match(renderSource, /rememberWorkspaceShellMode\("files", id, \{ minimized: false \}\)/);
+    match(renderSource, /HerdrGitUi\.open\(workspace, openOptions\)/);
+    match(renderSource, /HerdrFileBrowser\.open\(workspace, openOptions\)/);
+    match(readFileSync(new URL("./desktop/app_js/worktrees.js", import.meta.url), "utf8"), /forgetWorkspaceShell\(closingWorkspace\)/);
     match(gitUiSource, /state\.visible && state\.activeKey === key && !openOptions\.forceOpen/);
     match(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), /state\.open && activeKey === key && !openOptions\.forceOpen/);
+  });
+
+  it("opens search results as file browser tabs with split support", () => {
+    const fileBrowserSource = readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8");
+    const searchSource = readFileSync(new URL("./desktop/search.js", import.meta.url), "utf8");
+    const fileBrowserCss = readFileSync(new URL("./desktop/file_browser.css", import.meta.url), "utf8");
+    match(fileBrowserSource, /function renderOpenFileTabs/);
+    match(fileBrowserSource, /role="tablist" aria-label="Open files"/);
+    match(fileBrowserSource, /file-browser-open-tab/);
+    match(fileBrowserSource, /findInFile\(encodedPath\)/);
+    match(fileBrowserSource, /openFocusedFind\(target\)/);
+    match(readFileSync(new URL("./desktop/app_js/shortcuts.js", import.meta.url), "utf8"), /openFocusedFileBrowserFind\(e\.target\)/);
+    match(fileBrowserSource, /HerdrEditor\.openFind/);
+    ok(!fileBrowserSource.includes("file-browser-current-file"), "active file title is already represented by the file tab");
+    ok(!fileBrowserSource.includes("<span>${esc(file.path)}</span>"), "file panes must not duplicate the selected path next to the tab button");
+    match(fileBrowserSource, /function fileTabTooltipPath\(path\)/);
+    match(fileBrowserSource, /title="\$\{esc\(tooltip\)\}" onclick="HerdrFileBrowser\.focusFile/);
+    match(fileBrowserSource, /target\.files\.push\(nextFile\)/);
+    match(fileBrowserSource, /mode === "split"/);
+    match(fileBrowserSource, /target\.split = true/);
+    match(fileBrowserCss, /\.file-browser-file-tabs \{[\s\S]*?flex-wrap: nowrap;/);
+    match(fileBrowserCss, /\.file-browser-file-tabs \{[\s\S]*?overflow-x: auto;/);
+    ok(!fileBrowserCss.includes(".file-browser-current-file"));
+    ok(!fileBrowserCss.includes(".file-browser-side.previewing"), "file tree must stay visible while previewing files");
+    match(searchSource, /async function openWorkspaceSearchPath/);
+    match(searchSource, /await ensureFileBrowserLoaded\(\)/);
+    match(searchSource, /await window\.HerdrFileBrowser\.openAt/);
+    match(searchSource, /rememberWorkspaceShellMode\("files", workspace, \{ minimized: false \}\)/);
   });
 
   it("moves the diff layout toggle to the bottom of the Git side rail", () => {
@@ -834,6 +974,8 @@ describe("app bundle load", () => {
     const desktopWorktreesSource = readFileSync(new URL("./desktop/app_js/worktrees.js", import.meta.url), "utf8");
     const mobileWorktreesSource = readFileSync(new URL("./mobile/worktrees.js", import.meta.url), "utf8");
     const directoryPickerSource = readFileSync(new URL("./desktop/directory_picker.js", import.meta.url), "utf8");
+    const directoryPickerCss = readFileSync(new URL("./desktop/directory_picker.css", import.meta.url), "utf8");
+    const sharedFileTreeCss = readFileSync(new URL("./shared/file_tree.css", import.meta.url), "utf8");
     match(sharedFileTreeSource, /renderCurrentDirectoryRow/);
     match(sharedFileTreeSource, /herdr-tree-up-action/);
     match(sharedFileTreeSource, /value === "~"/);
@@ -873,6 +1015,15 @@ describe("app bundle load", () => {
     match(desktopFileBrowserSource, /Folder access is required to search file contents\./);
     match(directoryPickerSource, /permission_required/);
     match(directoryPickerSource, /Grant folder access/);
+    match(directoryPickerSource, /function ensureStyles\(\)/);
+    match(directoryPickerSource, /\/assets\/desktop\/directory-picker\.css/);
+    match(directoryPickerSource, /ensureStyles\(\);\n\s+state\.input = input;/);
+    match(directoryPickerSource, /directory-picker-error/);
+    match(directoryPickerCss, /\.directory-picker-error \{/);
+    match(appBootSource, /\/assets\/shared\/file-tree\.css/);
+    match(sharedFileTreeCss, /\.herdr-file-tree \{/);
+    match(sharedFileTreeCss, /\.herdr-tree-row \{/);
+    match(sharedFileTreeCss, /\.herdr-tree-icon-folder/);
     match(directoryPickerSource, /function configuredDefaultFolder\(\)/);
     match(directoryPickerSource, /typeof window\.defaultFolderPath === "function"/);
     match(directoryPickerSource, /function initialPickerPath\(input\)/);
@@ -2803,6 +2954,32 @@ describe("app bundle load", () => {
 
     await ctx.fetchWorktreeRemoteBranches();
     ok(urls.some((url) => url.includes("/api/git-branches?") && url.includes("remote=true") && url.includes("fetch=true")));
+  });
+
+  it("does not load git branch options for non-Git workspace browse folders", async () => {
+    const ctx = context();
+    const urls = [];
+    ctx.fetch = async (url) => {
+      urls.push(String(url));
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        json: async () => ({
+          result: {
+            source: { source_checkout_path: "/Users/alejandro.blanco" },
+            worktrees: [],
+          },
+        }),
+      };
+    };
+    vm.runInContext(source, ctx);
+
+    ctx.openWorktreeOpenModal("/Users/alejandro.blanco", false);
+    await ctx.discoverWorktrees();
+
+    ok(urls.some((url) => url.includes("/api/worktrees?")));
+    ok(!urls.some((url) => url.includes("/api/git-branches?")));
   });
 
   it("uses the same editor mount tooling for previous and current hunk text", () => {

@@ -583,20 +583,34 @@ function searchPaletteKeydown(e) {
   }
 }
 
-function openWorkspaceSearchPath(path, kind) {
+async function openWorkspaceSearchPath(path, kind) {
   const workspace = currentSearchWorkspace();
   closeSearchPalette();
-  if (!workspace || !window.HerdrFileBrowser || !window.HerdrFileBrowser.openAt) return;
-  const isFile = kind !== "dir";
-  window.HerdrFileBrowser.openAt(workspace, path, { kind, preserveContext: isFile, mode: isFile ? "append" : undefined });
+  if (!workspace) return;
+  try {
+    if (typeof ensureFileBrowserLoaded === "function") await ensureFileBrowserLoaded();
+    if (!window.HerdrFileBrowser || !window.HerdrFileBrowser.openAt) return;
+    const isFile = kind !== "dir";
+    await window.HerdrFileBrowser.openAt(workspace, path, { kind, preserveContext: isFile, mode: isFile ? "append" : undefined });
+    if (typeof rememberWorkspaceShellMode === "function") rememberWorkspaceShellMode("files", workspace, { minimized: false });
+  } catch (error) {
+    alert(error.message || String(error));
+  }
 }
 
-function openWorkspaceSearchContent(file, match) {
+async function openWorkspaceSearchContent(file, match) {
   const helper = window.HerdrWorkspaceSearch;
   const workspace = currentSearchWorkspace();
   closeSearchPalette();
-  if (!workspace || !file || !window.HerdrFileBrowser || !window.HerdrFileBrowser.openAt) return;
-  window.HerdrFileBrowser.openAt(workspace, file.path, { kind: "file", preserveContext: true, mode: "append", highlight: helper.matchHighlight(match, searchPaletteState.query) });
+  if (!workspace || !file) return;
+  try {
+    if (typeof ensureFileBrowserLoaded === "function") await ensureFileBrowserLoaded();
+    if (!window.HerdrFileBrowser || !window.HerdrFileBrowser.openAt) return;
+    await window.HerdrFileBrowser.openAt(workspace, file.path, { kind: "file", preserveContext: true, mode: "append", highlight: helper.matchHighlight(match, searchPaletteState.query) });
+    if (typeof rememberWorkspaceShellMode === "function") rememberWorkspaceShellMode("files", workspace, { minimized: false });
+  } catch (error) {
+    alert(error.message || String(error));
+  }
 }
 
 const HerdrSearchPalette = {

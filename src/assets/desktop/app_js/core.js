@@ -39,6 +39,7 @@ let state = {
   backendMode: "builtin",
   sessionBackend: localStorage.getItem("herdr-session-backend") || "builtin",
   defaultFolder: "",
+  workspaceShell: {},
 };
 let term,
   termWs,
@@ -229,12 +230,13 @@ function appIcon(name) {
   return `<span class="app-icon app-icon-${iconName}" aria-hidden="true"></span>`;
 }
 function shellMode() {
-  if (window.HerdrGitUi && window.HerdrGitUi.isVisible && window.HerdrGitUi.isVisible()) return "git";
-  if (window.HerdrFileBrowser && window.HerdrFileBrowser.isVisible && window.HerdrFileBrowser.isVisible()) return "files";
-  return "terminal";
+  return currentWorkspaceShellMode();
 }
 function syncShellModeButtons() {
   const mode = shellMode();
+  const minimized = isWorkspaceShellMinimized();
+  const group = el("shellModeGroup");
+  if (group) group.classList.toggle("minimized", minimized);
   for (const [id, value] of [
     ["terminalWorkspaceToggle", "terminal"],
     ["gitWorkspaceToggle", "git"],
@@ -244,9 +246,12 @@ function syncShellModeButtons() {
     if (!button) continue;
     const active = mode === value;
     button.classList.toggle("active", active);
+    button.classList.toggle("minimized", minimized && active);
     button.setAttribute("aria-pressed", active ? "true" : "false");
     button.setAttribute("aria-selected", active ? "true" : "false");
   }
+  const minimize = el("workspaceShellMinimize");
+  if (minimize) minimize.disabled = minimized;
 }
 window.syncShellModeButtons = syncShellModeButtons;
 function workspacePath(workspace) {
@@ -279,7 +284,8 @@ function appRefreshIconButton({ className = "", title = "Refresh", label = "Refr
   const clickAttr = onclick ? ` onclick="${escapeAttr(onclick)}"` : "";
   return `<button class="${escapeAttr(classes)}" title="${escapeAttr(title)}" aria-label="${escapeAttr(label)}"${clickAttr}><span></span></button>`;
 }
-function showTerminalShellMode() {
+function showTerminalShellMode(options = {}) {
+  rememberWorkspaceShellMode("terminal", state.ws, { minimized: false });
   if (window.HerdrGitUi) window.HerdrGitUi.hide();
   if (window.HerdrFileBrowser) window.HerdrFileBrowser.hide();
   const shell = el("terminalShell");
@@ -2091,7 +2097,10 @@ function setupSessionChrome() {
     t.setAttribute("aria-label", "Show terminal");
     t.setAttribute("role", "tab");
     shellModeGroup.appendChild(t);
-    t.onclick = () => showTerminalShellMode();
+    t.onclick = () => {
+      if (currentWorkspaceShellMode() === "terminal" && !isWorkspaceShellMinimized()) minimizeWorkspaceShell(state.ws);
+      else showTerminalShellMode({ forceOpen: isWorkspaceShellMinimized() });
+    };
   } else if (el("terminalWorkspaceToggle").parentNode !== shellModeGroup) {
     shellModeGroup.appendChild(el("terminalWorkspaceToggle"));
   }
@@ -2108,7 +2117,7 @@ function setupSessionChrome() {
     b.setAttribute("aria-label", "Show Git drawer");
     b.setAttribute("role", "tab");
     shellModeGroup.appendChild(b);
-    b.onclick = () => openWorkspaceGitUi(state.ws);
+    b.onclick = () => openWorkspaceGitUi(state.ws, { forceOpen: isWorkspaceShellMinimized() });
   } else if (el("gitWorkspaceToggle").parentNode !== shellModeGroup) {
     shellModeGroup.appendChild(el("gitWorkspaceToggle"));
   }
@@ -2121,9 +2130,21 @@ function setupSessionChrome() {
     b.setAttribute("aria-label", "Show file browser");
     b.setAttribute("role", "tab");
     shellModeGroup.appendChild(b);
-    b.onclick = () => openWorkspaceFileBrowser(state.ws);
+    b.onclick = () => openWorkspaceFileBrowser(state.ws, { forceOpen: isWorkspaceShellMinimized() });
   } else if (el("fileWorkspaceToggle").parentNode !== shellModeGroup) {
     shellModeGroup.appendChild(el("fileWorkspaceToggle"));
+  }
+  if (!el("workspaceShellMinimize")) {
+    const b = document.createElement("button");
+    b.className = "btn worktree-open-trigger shell-action shell-icon-button workspace-shell-minimize";
+    b.id = "workspaceShellMinimize";
+    b.title = "Minimize workspace view";
+    b.textContent = "−";
+    b.setAttribute("aria-label", "Minimize workspace view");
+    shellModeGroup.appendChild(b);
+    b.onclick = () => minimizeWorkspaceShell(state.ws);
+  } else if (el("workspaceShellMinimize").parentNode !== shellModeGroup) {
+    shellModeGroup.appendChild(el("workspaceShellMinimize"));
   }
   syncShellModeButtons();
   const side = document.querySelector(".side");
@@ -2585,15 +2606,8 @@ function navigateSelection(e, ws, tab, pane) {
   if (e && (e.metaKey || e.ctrlKey || e.shiftKey || e.button === 1))
     return true;
   e.preventDefault();
-  const gitWasVisible = !!(window.HerdrGitUi && window.HerdrGitUi.isVisible && window.HerdrGitUi.isVisible());
-  const fileWasVisible = !!(window.HerdrFileBrowser && window.HerdrFileBrowser.isVisible && window.HerdrFileBrowser.isVisible());
   go(ws, tab, pane);
-  if (gitWasVisible) openWorkspaceGitUi(ws, { forceOpen: true });
-  else if (fileWasVisible) openWorkspaceFileBrowser(ws, { forceOpen: true });
-  else {
-    if (window.HerdrGitUi) window.HerdrGitUi.hide();
-    if (window.HerdrFileBrowser) window.HerdrFileBrowser.hide();
-  }
+  applyWorkspaceShellForSelection(ws);
   return false;
 }
 function go(ws, tab, pane) {
@@ -2610,6 +2624,8 @@ function goSession(name, backend = currentSessionBackend()) {
   state.ws = null;
   state.tab = null;
   state.pane = null;
+  state.workspaceShell = {};
+  syncWorkspaceShellRestoreControl();
   resetTerminalConnection(true);
   setTerminalLoading(true);
   if (eventWs) {
@@ -2633,6 +2649,7 @@ async function refreshOnline(seq) {
   const w = await api("/api/workspaces");
   if (seq !== refreshSeq) return;
   state.workspaces = w.result.workspaces || [];
+  pruneWorkspaceShellStates();
   creatingDefaultWorkspace = false;
   if (state.ws && !state.workspaces.some((w) => w.workspace_id === state.ws)) {
     resetTerminalConnection(true);

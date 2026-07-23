@@ -39,6 +39,19 @@
     return rel ? `${root.replace(/\/+$/, "")}/${rel}` : root;
   }
 
+  function ensureStyles() {
+    const href = "/assets/desktop/directory-picker.css";
+    if (window.HerdrLoadCss) {
+      window.HerdrLoadCss(href);
+      return;
+    }
+    if (document.querySelector && document.querySelector(`link[href="${href}"]`)) return;
+    const link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.href = href;
+    document.head.appendChild(link);
+  }
+
   async function api(url) {
     const res = await fetch(url, { credentials: "same-origin" });
     const body = await res.json();
@@ -79,6 +92,7 @@
   }
 
   function open(input) {
+    ensureStyles();
     state.input = input;
     const parts = splitPath(initialPickerPath(input));
     state.root = parts.root;
@@ -203,7 +217,7 @@
   function renderAccessError() {
     if (!state.error) return "";
     const action = state.permissionRequired ? `<button class="git-ui-btn primary" onclick="HerdrDirectoryPicker.requestAccess()">Grant folder access</button>` : "";
-    return `<div class="file-browser-error"><span>${esc(state.error)}</span>${action}</div>`;
+    return `<div class="directory-picker-error"><span>${esc(state.error)}</span>${action}</div>`;
   }
 
   async function requestAccess() {

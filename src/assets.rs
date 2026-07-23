@@ -11,6 +11,7 @@ const SHARED_CORE_JS: &str = include_str!("assets/shared/core.js");
 const SHARED_ACTIONS_JS: &str = include_str!("assets/shared/actions.js");
 const SHARED_FILE_ICONS_JS: &str = include_str!("assets/shared/file_icons.js");
 const SHARED_FILE_ICONS_CSS: &str = include_str!("assets/shared/file_icons.css");
+const SHARED_FILE_TREE_CSS: &str = include_str!("assets/shared/file_tree.css");
 const SHARED_COLORS_CSS: &str = include_str!("assets/shared/colors.css");
 const SHARED_CONTENT_SEARCH_CSS: &str = include_str!("assets/shared/content_search.css");
 const SHARED_FILE_TREE_JS: &str = include_str!("assets/shared/file_tree.js");
@@ -46,6 +47,7 @@ const DESKTOP_GIT_UI_CSS: &str = concat!(
 );
 const DESKTOP_SEARCH_CSS: &str = include_str!("assets/desktop/search.css");
 const DESKTOP_FILE_BROWSER_CSS: &str = include_str!("assets/desktop/file_browser.css");
+const DESKTOP_DIRECTORY_PICKER_CSS: &str = include_str!("assets/desktop/directory_picker.css");
 const DESKTOP_SHORTCUTS_CSS: &str = include_str!("assets/desktop/shortcuts.css");
 const DESKTOP_GIT_UI_JS: &str = concat!(
     include_str!("assets/desktop/git_ui/settings.js"),
@@ -59,6 +61,7 @@ const DESKTOP_FILE_BROWSER_JS: &str = include_str!("assets/desktop/file_browser.
 const DESKTOP_DIRECTORY_PICKER_JS: &str = include_str!("assets/desktop/directory_picker.js");
 const DESKTOP_JS: &str = concat!(
     include_str!("assets/desktop/app_js/core.js"),
+    include_str!("assets/desktop/app_js/workspace_shell.js"),
     include_str!("assets/desktop/app_js/legacy_polling.js"),
     include_str!("assets/desktop/app_js/panel_switcher.js"),
     include_str!("assets/desktop/app_js/render.js"),
@@ -146,6 +149,10 @@ pub(crate) async fn shared_file_icons_js() -> Response {
 
 pub(crate) async fn shared_file_icons_css() -> Response {
     static_text(SHARED_FILE_ICONS_CSS, "text/css; charset=utf-8")
+}
+
+pub(crate) async fn shared_file_tree_css() -> Response {
+    static_text(SHARED_FILE_TREE_CSS, "text/css; charset=utf-8")
 }
 
 pub(crate) async fn shared_colors_css() -> Response {
@@ -252,6 +259,10 @@ pub(crate) async fn desktop_search_css() -> Response {
 
 pub(crate) async fn desktop_file_browser_css() -> Response {
     static_text(DESKTOP_FILE_BROWSER_CSS, "text/css; charset=utf-8")
+}
+
+pub(crate) async fn desktop_directory_picker_css() -> Response {
+    static_text(DESKTOP_DIRECTORY_PICKER_CSS, "text/css; charset=utf-8")
 }
 
 pub(crate) async fn desktop_shortcuts_css() -> Response {
@@ -436,6 +447,7 @@ mod tests {
         );
         assert_eq!(content_type(&shared_actions_js().await), javascript);
         assert_eq!(content_type(&shared_file_tree_js().await), javascript);
+        assert_eq!(content_type(&shared_file_tree_css().await), css);
         assert_eq!(
             content_type(&shared_workspace_search_js().await),
             javascript
@@ -460,6 +472,7 @@ mod tests {
         assert_eq!(content_type(&shared_content_search_css().await), css);
         assert_eq!(content_type(&desktop_git_ui_css().await), css);
         assert_eq!(content_type(&desktop_file_browser_css().await), css);
+        assert_eq!(content_type(&desktop_directory_picker_css().await), css);
         assert_eq!(content_type(&login_css().await), css);
     }
 

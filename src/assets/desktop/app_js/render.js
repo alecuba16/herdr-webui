@@ -475,19 +475,34 @@ async function loadDesktopFeature(src) {
   });
 }
 
+function loadDesktopFeatureCss(href) {
+  if (window.HerdrLoadCss) {
+    window.HerdrLoadCss(href);
+    return;
+  }
+  if (document.querySelector && document.querySelector(`link[href="${href}"]`)) return;
+  const link = document.createElement("link");
+  link.rel = "stylesheet";
+  link.href = href;
+  document.head.appendChild(link);
+}
+
 async function ensureGitUiLoaded() {
   if (window.HerdrGitUi) return;
+  loadDesktopFeatureCss("/assets/desktop/git-ui.css");
   await loadDesktopFeature("/assets/desktop/directory-picker.js");
   await loadDesktopFeature("/assets/desktop/git-ui.js");
 }
 
 async function ensureFileBrowserLoaded() {
   if (window.HerdrFileBrowser) return;
+  loadDesktopFeatureCss("/assets/desktop/file-browser.css");
   await loadDesktopFeature("/assets/desktop/file-browser.js");
 }
 
 async function openWorkspaceGitUi(id, options) {
   if (!gitUiEnabled()) return;
+  const openOptions = options || {};
   const workspace = selectedOrDefaultWorkspace(id);
   if (!workspace) return;
   try {
@@ -496,8 +511,13 @@ async function openWorkspaceGitUi(id, options) {
     alert(error.message || String(error));
     return;
   }
+  if (!openOptions.forceOpen && currentWorkspaceShellMode(id) === "git" && !isWorkspaceShellMinimized(id) && window.HerdrGitUi.isWorkspaceVisible(workspaceShellKey(workspace))) {
+    minimizeWorkspaceShell(id);
+    return;
+  }
   if (window.HerdrFileBrowser) window.HerdrFileBrowser.hide();
-  window.HerdrGitUi.open(workspace, options || {});
+  rememberWorkspaceShellMode("git", id, { minimized: false });
+  window.HerdrGitUi.open(workspace, openOptions);
   render();
 }
 
@@ -515,6 +535,7 @@ function syncFileWorkspaceToggle() {
 }
 
 async function openWorkspaceFileBrowser(id, options) {
+  const openOptions = options || {};
   const workspace = selectedOrDefaultWorkspace(id);
   if (!workspace) return;
   try {
@@ -523,8 +544,13 @@ async function openWorkspaceFileBrowser(id, options) {
     alert(error.message || String(error));
     return;
   }
+  if (!openOptions.forceOpen && currentWorkspaceShellMode(id) === "files" && !isWorkspaceShellMinimized(id) && window.HerdrFileBrowser.isWorkspaceVisible(workspace)) {
+    minimizeWorkspaceShell(id);
+    return;
+  }
   if (window.HerdrGitUi) window.HerdrGitUi.hide();
-  window.HerdrFileBrowser.open(workspace, options || {}).catch((error) => alert(error.message || String(error)));
+  rememberWorkspaceShellMode("files", id, { minimized: false });
+  window.HerdrFileBrowser.open(workspace, openOptions).catch((error) => alert(error.message || String(error)));
   render();
 }
 function runWorkspaceContextAction(action, button) {

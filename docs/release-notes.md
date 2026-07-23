@@ -13,6 +13,12 @@
 - Removes stale xterm/static scroll loading from the current boot path while keeping a compatibility shim for cached older boot scripts.
 - Documents the browser terminal feature set in docs and Help, including renderer selection, Tail behavior, scroll semantics, copy/paste, mouse reporting, and temporary terminal shortcuts.
 
+### Workspace shell and file explorer UX
+
+- Restores the valuable PR #90 workspace shell improvements on top of the wterm code path: Terminal, Git, and Files shell modes are remembered per workspace/worktree, with minimize/restore state scoped to that workspace.
+- Adds focused editor find routing: `Cmd/Ctrl+F` opens the active file editor find/replace when focus is inside a file editor, opens global WebUI search elsewhere, and leaves terminal `Ctrl+F` as terminal input.
+- Shares file tree styling across desktop file browser and directory picker, keeps search result opens additive as file tabs, and avoids Git branch lookup for non-Git browse folders.
+
 ## 0.2.78 Release Notes
 
 ### Browser hot-path and terminal reply filtering
