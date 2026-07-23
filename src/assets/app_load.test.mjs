@@ -606,6 +606,12 @@ describe("app bundle load", () => {
 
   it("offers conflict buttons for HEAD, parent, and remote sides", () => {
     match(gitUiSource, /renderConflictOperationActions/);
+    match(gitUiSource, /renderConflictResolutionButtons/);
+    match(gitUiSource, /renderDiffConflictResolutionButtons/);
+    match(gitUiSource, /currentMode\(\) !== "changes" \|\| !isConflictPath\(file\.path\)/);
+    match(gitUiSource, /const conflictActions = renderDiffConflictResolutionButtons\(file\)/);
+    match(gitUiSource, /\$\{conflictActions\}\$\{restore\}/);
+    match(gitUiSource, /git-ui-conflict-diff-actions/);
     match(gitUiSource, /aria-label="Conflict operation actions"/);
     match(gitUiSource, /Rebase<\/span>\$\{action\("Continue", "rebase-continue"\)\}\$\{action\("Skip", "rebase-skip"\)\}\$\{action\("Abort", "rebase-abort", true\)\}/);
     match(gitUiSource, /Merge<\/span>\$\{action\("Continue", "merge-continue"\)\}\$\{action\("Abort", "merge-abort", true\)\}/);
@@ -622,7 +628,10 @@ describe("app bundle load", () => {
     match(gitUiSource, /After editing a conflicted file manually/);
     ok(!gitUiSource.includes(">Use branch</button>"));
     const gitLayoutCss = readFileSync(new URL("./desktop/git_ui/layout.css", import.meta.url), "utf8");
+    const gitDiffCss = readFileSync(new URL("./desktop/git_ui/diff.css", import.meta.url), "utf8");
     match(gitLayoutCss, /\.git-ui-conflict-file-actions \{[\s\S]*?flex-wrap: wrap;/);
+    match(gitDiffCss, /\.git-ui-diff-file-actions \{[\s\S]*?flex-wrap: wrap;/);
+    match(gitDiffCss, /\.git-ui-conflict-diff-actions \{[\s\S]*?border-left: 1px solid var\(--border\);/);
   });
 
   it("uses a single selected-log reset modal and clear rebase wording", () => {

@@ -15,6 +15,7 @@
 - Makes the temporary terminal body and xterm layers fill the modal height without the previous padding gap.
 - Allows Git Cleanup to select the primary repository's current non-`main`/`master` branch. The backend checks out `main` or `master` first, then deletes the selected branch, while keeping the current `main`/`master` branch protected.
 - Shows whether each cleanup branch or worktree branch appears to have been pushed before (`pushed before`, `not pushed`, or `push status unknown`).
+- Shows conflict resolution actions (`Use HEAD`, `Use parent`, `Use remote`, and `Mark resolved`) in conflicted file headers for both unified and side-by-side Changes diffs.
 
 ## 0.2.77 Release Notes
 
