@@ -1016,6 +1016,7 @@
       showHistoryPath(path);
     },
     isVisible() { return state.open; },
+    activeWorkspaceId() { return state.open ? (activeKey || "") : ""; },
     isWorkspaceVisible(workspace) { return state.open && activeKey === workspaceKey(workspace); },
     syncTerminalVisibility,
   };
