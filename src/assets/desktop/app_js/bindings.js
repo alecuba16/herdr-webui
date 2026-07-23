@@ -636,6 +636,18 @@ loadServerSettings();
 refresh();
 connectEvents();
 
+function tempTerminalWorkspaceId() {
+  if (state.ws) return state.ws;
+  const workspaceIds = new Set((state.workspaces || []).map((workspace) => workspace.workspace_id).filter(Boolean));
+  const visibleDrawerIds = [
+    window.HerdrFileBrowser && window.HerdrFileBrowser.activeWorkspaceId && window.HerdrFileBrowser.activeWorkspaceId(),
+    window.HerdrGitUi && window.HerdrGitUi.activeWorkspaceId && window.HerdrGitUi.activeWorkspaceId(),
+  ];
+  const drawerId = visibleDrawerIds.find((id) => workspaceIds.has(id));
+  if (drawerId) return drawerId;
+  return workspaceIds.size === 1 ? Array.from(workspaceIds)[0] : "";
+}
+
 // Ephemeral temporary terminal overlay.
 if (globalThis.HerdrTempTerminal && el("tempTerminalModal")) {
   tempTerminal = globalThis.HerdrTempTerminal.create({
@@ -649,6 +661,7 @@ if (globalThis.HerdrTempTerminal && el("tempTerminalModal")) {
     fontFamilyFn: terminalFontFamily,
     themeFn: terminalTheme,
     defaultFolderFn: defaultFolderPath,
+    workspaceIdFn: tempTerminalWorkspaceId,
     shortcutLabelFn: () => shortcutLabel("webuiShortcuts", "tempTerminalToggle"),
   });
   const tempTerminalClose = el("tempTerminalClose");

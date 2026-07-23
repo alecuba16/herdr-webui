@@ -55,6 +55,7 @@
 
   function handleKeydown(event) {
     if (!state.visible || !event) return;
+    if (tempTerminalModalVisible()) return;
     const view = active();
     if (!view) return;
     // Git drawer owns keyboard while visible, so terminal/global shortcuts behind it do not receive input.
@@ -120,6 +121,11 @@
     } else {
       window.HerdrGitUi.showChangesList();
     }
+  }
+
+  function tempTerminalModalVisible() {
+    const modal = document.getElementById && document.getElementById("tempTerminalModal");
+    return !!(modal && modal.style.display && modal.style.display !== "none");
   }
 
   function isChangesListView(view) {
@@ -1166,7 +1172,7 @@
     const modal = state.cleanupConfirm;
     if (!modal) return "";
     const items = modal.items || [];
-    return `<div class="git-ui-modal-backdrop"><div class="git-ui-modal git-ui-cleanup-modal"><div class="git-ui-modal-head"><strong>Delete ${items.length} Git cleanup item${items.length === 1 ? "" : "s"}?</strong></div><div class="git-ui-muted">Git will use safe delete first. If Git rejects that because force is required, Herdr retries with force.</div><pre class="git-ui-cleanup-confirm-list">${esc(items.map(cleanupItemLabel).join("\n"))}</pre><div class="git-ui-modal-actions"><button class="git-ui-btn" onclick="HerdrGitUi.cancelCleanupDelete()">Cancel</button><button class="git-ui-btn danger" onclick="HerdrGitUi.confirmCleanupDelete()">Delete selected</button></div></div></div>`;
+    return `<div class="git-ui-modal-backdrop"><div class="git-ui-modal git-ui-cleanup-modal"><div class="git-ui-modal-head"><strong>Delete ${items.length} Git cleanup item${items.length === 1 ? "" : "s"}?</strong></div><div class="git-ui-muted">Git will use safe delete first. If Git rejects that because force is required, Herdr retries with force. If deleting the current non-main branch in the primary repo, Herdr checks out main/master first.</div><pre class="git-ui-cleanup-confirm-list">${esc(items.map(cleanupItemLabel).join("\n"))}</pre><div class="git-ui-modal-actions"><button class="git-ui-btn" onclick="HerdrGitUi.cancelCleanupDelete()">Cancel</button><button class="git-ui-btn danger" onclick="HerdrGitUi.confirmCleanupDelete()">Delete selected</button></div></div></div>`;
   }
 
   function renderGitOpModal() {
@@ -2088,6 +2094,20 @@
     return (repo.branches || []).filter((branch) => !branch.checked_out);
   }
 
+  function cleanupDefaultBranch(branch) {
+    return branch === "main" || branch === "master";
+  }
+
+  function cleanupBranchSelectable(branch) {
+    return !(branch.current && cleanupDefaultBranch(branch.name));
+  }
+
+  function cleanupPushedLabel(value) {
+    if (value === true) return "pushed before";
+    if (value === false) return "not pushed";
+    return "push status unknown";
+  }
+
   function renderCleanupGroupTitle(repoIndex, type, label) {
     const items = cleanupRepoItems(repoIndex, type);
     const state = cleanupSelectionState(items);
@@ -2095,15 +2115,18 @@
   }
 
   function renderCleanupBranch(repoIndex, branch) {
-    const disabled = branch.current ? "disabled" : "";
+    const disabled = cleanupBranchSelectable(branch) ? "" : "disabled";
     const key = cleanupItemKey("branch", repoIndex, branch.name);
     const checked = cleanupSelected(key) ? "checked" : "";
-    const meta = [branch.current ? "current" : "", branch.checked_out ? "checked out" : ""].filter(Boolean).join(" · ");
+    const current = branch.current
+      ? cleanupDefaultBranch(branch.name) ? "current main/master" : "current · will checkout main/master first"
+      : "";
+    const meta = [current, branch.checked_out ? "checked out" : "", cleanupPushedLabel(branch.pushed)].filter(Boolean).join(" · ");
     return `<label class="git-ui-cleanup-row"><input type="checkbox" onchange="HerdrGitUi.toggleCleanupSelection('${arg(key)}',this.checked)" ${checked} ${disabled}><span class="git-ui-cleanup-indent"></span><span><strong>${esc(branch.name)}</strong>${meta ? `<small>${esc(meta)}</small>` : ""}</span></label>`;
   }
 
   function renderCleanupWorktree(repoIndex, index, worktree) {
-    const meta = [worktree.branch || (worktree.detached ? "detached" : ""), worktree.prunable ? "prunable" : "", worktree.primary ? "primary" : ""].filter(Boolean).join(" · ");
+    const meta = [worktree.branch || (worktree.detached ? "detached" : ""), worktree.prunable ? "prunable" : "", worktree.primary ? "primary" : "", cleanupPushedLabel(worktree.pushed)].filter(Boolean).join(" · ");
     const disabled = worktree.primary ? "disabled" : "";
     const key = cleanupItemKey("worktree", repoIndex, String(index));
     const checked = cleanupSelected(key) ? "checked" : "";
@@ -2134,7 +2157,7 @@
     for (const repo of (((view.cleanupResult || {}).repos) || [])) {
       if (repo.error) continue;
       for (const branch of cleanupVisibleBranches(repo)) {
-        if (!branch.current) items.push({ type: "branch", repo: repo.path, name: branch.name, key: `branch|${repo.path}|${branch.name}` });
+        if (cleanupBranchSelectable(branch)) items.push({ type: "branch", repo: repo.path, name: branch.name, key: `branch|${repo.path}|${branch.name}` });
       }
       (repo.worktrees || []).forEach((worktree, index) => {
         if (!worktree.primary) items.push({ type: "worktree", repo: repo.path, path: worktree.path, key: `worktree|${repo.path}|${index}` });
@@ -2151,7 +2174,7 @@
     const items = [];
     if (!type || type === "branch") {
       for (const branch of cleanupVisibleBranches(repo)) {
-        if (!branch.current) items.push({ type: "branch", repo: repo.path, name: branch.name, key: `branch|${repo.path}|${branch.name}` });
+        if (cleanupBranchSelectable(branch)) items.push({ type: "branch", repo: repo.path, name: branch.name, key: `branch|${repo.path}|${branch.name}` });
       }
     }
     if (!type || type === "worktree") {
@@ -2496,6 +2519,7 @@
     },
     refreshVisible() { if (state.visible) render(); },
     isVisible() { return state.visible; },
+    activeWorkspaceId() { return state.visible ? (state.activeKey || "") : ""; },
     isWorkspaceVisible(key) { return state.visible && state.activeKey === key; },
     workspaceStatus,
     statusLabel() { return state.open ? (state.visible ? "open" : "hidden") : "closed"; },

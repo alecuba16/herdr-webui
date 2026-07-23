@@ -8,6 +8,14 @@
 - Moves xterm OSC color-query reply filtering into the shared terminal helper and applies it to desktop, mobile, and temporary terminal input paths. This strips `OSC 10/11/12` and palette color replies, including split and bare `10;rgb...`/`11;rgb...` fragments, before they can echo into shell input.
 - Keeps ordinary terminal input safe while filtering query replies, with regressions for numeric keys and Escape so normal shell/TUI input is not delayed.
 
+### Temporary terminal and Git cleanup
+
+- Keeps temporary terminals focused while visible by trapping Escape, Tab, and Backspace before browser focus shortcuts, global shortcuts, or the Git drawer can consume them.
+- Starts temporary terminals in the current, single, or visible workspace/worktree when possible. WebUI creates a temporary workspace from the configured default folder only when no workspace is available.
+- Makes the temporary terminal body and xterm layers fill the modal height without the previous padding gap.
+- Allows Git Cleanup to select the primary repository's current non-`main`/`master` branch. The backend checks out `main` or `master` first, then deletes the selected branch, while keeping the current `main`/`master` branch protected.
+- Shows whether each cleanup branch or worktree branch appears to have been pushed before (`pushed before`, `not pushed`, or `push status unknown`).
+
 ## 0.2.77 Release Notes
 
 ### File explorer tabs, worktrees, and Git cleanup polish
