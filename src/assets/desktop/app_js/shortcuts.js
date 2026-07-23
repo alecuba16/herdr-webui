@@ -225,6 +225,12 @@ function focusSearchPaletteInput() {
   if (input.select) try { input.select(); } catch (_) {}
   return true;
 }
+function openFocusedFileBrowserFind(target) {
+  const fileBrowser = window.HerdrFileBrowser;
+  if (!fileBrowser || !fileBrowser.openFocusedFind) return false;
+  try { return !!fileBrowser.openFocusedFind(target); }
+  catch (_) { return false; }
+}
 function showShortcutPrefixOverlay() {
   shortcutPrefixUntil = Date.now() + 5000;
   const overlay = el("shortcutPrefixOverlay");
@@ -359,6 +365,7 @@ function handleGlobalShortcut(e) {
     return consumeShortcutEvent(e);
   }
   if (appFindShortcut) {
+    if (openFocusedFileBrowserFind(e.target)) return consumeShortcutEvent(e);
     openSearchPalette();
     return consumeShortcutEvent(e);
   }
