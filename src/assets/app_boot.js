@@ -1,6 +1,7 @@
 (function () {
   const LAYOUT_KEY = "herdr-web-layout";
   const MOBILE_QUERY = "(max-width: 760px)";
+  const cssLoads = {};
   const scriptLoads = {};
 
   function readLayoutPreference() {
@@ -23,10 +24,13 @@
   }
 
   function loadCss(href) {
+    if (cssLoads[href]) return cssLoads[href];
     const link = document.createElement("link");
     link.rel = "stylesheet";
     link.href = href;
     document.head.appendChild(link);
+    cssLoads[href] = link;
+    return link;
   }
 
   function loadScript(src) {
@@ -54,8 +58,6 @@
       loadCss("/assets/mobile/app.css");
     } else {
       loadCss("/assets/desktop/app.css");
-      loadCss("/assets/desktop/git-ui.css");
-      loadCss("/assets/desktop/file-browser.css");
       loadCss("/assets/desktop/shortcuts.css");
       loadCss("/assets/desktop/search.css");
     }
@@ -107,6 +109,7 @@
     else if (media.addListener) media.addListener(onChange);
   }
 
+  window.HerdrLoadCss = loadCss;
   window.HerdrLoadScript = loadScript;
   loadLayout();
 })();

@@ -475,14 +475,28 @@ async function loadDesktopFeature(src) {
   });
 }
 
+function loadDesktopFeatureCss(href) {
+  if (window.HerdrLoadCss) {
+    window.HerdrLoadCss(href);
+    return;
+  }
+  if (document.querySelector && document.querySelector(`link[href="${href}"]`)) return;
+  const link = document.createElement("link");
+  link.rel = "stylesheet";
+  link.href = href;
+  document.head.appendChild(link);
+}
+
 async function ensureGitUiLoaded() {
   if (window.HerdrGitUi) return;
+  loadDesktopFeatureCss("/assets/desktop/git-ui.css");
   await loadDesktopFeature("/assets/desktop/directory-picker.js");
   await loadDesktopFeature("/assets/desktop/git-ui.js");
 }
 
 async function ensureFileBrowserLoaded() {
   if (window.HerdrFileBrowser) return;
+  loadDesktopFeatureCss("/assets/desktop/file-browser.css");
   await loadDesktopFeature("/assets/desktop/file-browser.js");
 }
 

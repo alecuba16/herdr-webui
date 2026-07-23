@@ -128,6 +128,7 @@ describe("app bundle load", () => {
     appBootSource = readFileSync(new URL("./app_boot.js", import.meta.url), "utf8");
     const desktopAppSource = [
       "./desktop/app_js/core.js",
+      "./desktop/app_js/workspace_shell.js",
       "./desktop/app_js/panel_switcher.js",
       "./desktop/app_js/render.js",
       "./desktop/app_js/terminal.js",
