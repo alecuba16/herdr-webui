@@ -895,6 +895,9 @@ describe("app bundle load", () => {
     match(desktopFileBrowserSource, /Folder access is required to search file contents\./);
     match(directoryPickerSource, /permission_required/);
     match(directoryPickerSource, /Grant folder access/);
+    match(directoryPickerSource, /function ensureStyles\(\)/);
+    match(directoryPickerSource, /\/assets\/desktop\/directory-picker\.css/);
+    match(directoryPickerSource, /ensureStyles\(\);\n\s+state\.input = input;/);
     match(directoryPickerSource, /function configuredDefaultFolder\(\)/);
     match(directoryPickerSource, /typeof window\.defaultFolderPath === "function"/);
     match(directoryPickerSource, /function initialPickerPath\(input\)/);
