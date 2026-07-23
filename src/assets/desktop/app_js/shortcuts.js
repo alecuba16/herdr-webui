@@ -164,7 +164,9 @@ function closestClassTarget(target, selector, className) {
   return !!(node && node.classList && node.classList.contains(className));
 }
 function terminalShortcutTarget(target) {
-  return !!(target && target.closest && target.closest(".wterm, .terminal"));
+  return closestClassTarget(target, ".wterm", "wterm") ||
+    closestClassTarget(target, ".terminal", "terminal") ||
+    closestClassTarget(target, ".xterm", "xterm");
 }
 function editorShortcutTarget(target) {
   return closestClassTarget(target, ".herdr-editor", "herdr-editor");

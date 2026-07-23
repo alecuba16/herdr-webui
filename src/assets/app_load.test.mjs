@@ -173,7 +173,7 @@ describe("app bundle load", () => {
     match(source, /Temporary terminal/);
     match(source, /runSearchAction\(result\.action\)/);
     match(source, /window\.syncShellModeButtons = syncShellModeButtons;/);
-    match(source, /function showTerminalShellMode\(\) \{[\s\S]*?syncShellModeButtons\(\);[\s\S]*?if \(typeof render === "function"\) render\(\);[\s\S]*?requestAnimationFrame\(\(\) => \{[\s\S]*?syncShellModeButtons\(\);/);
+    match(source, /function showTerminalShellMode\([^)]*\) \{[\s\S]*?rememberWorkspaceShellMode\("terminal", state\.ws, \{ minimized: false \}\);[\s\S]*?syncShellModeButtons\(\);[\s\S]*?if \(typeof render === "function"\) render\(\);[\s\S]*?requestAnimationFrame\(\(\) => \{[\s\S]*?syncShellModeButtons\(\);/);
   });
 
   it("returns desktop UX actions from a single command-palette candidate path", () => {
@@ -868,18 +868,17 @@ describe("app bundle load", () => {
     const fileBrowserSource = readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8");
     const searchSource = readFileSync(new URL("./desktop/search.js", import.meta.url), "utf8");
     const fileBrowserCss = readFileSync(new URL("./desktop/file_browser.css", import.meta.url), "utf8");
-    match(fileBrowserSource, /function renderFileTabs/);
+    match(fileBrowserSource, /function renderOpenFileTabs/);
     match(fileBrowserSource, /role="tablist" aria-label="Open files"/);
-    match(fileBrowserSource, /file-browser-pane-find/);
-    match(fileBrowserSource, /data-path="\$\{arg\(file\.path\)\}"/);
-    match(fileBrowserSource, /decodeURIComponent\(pane\.getAttribute\("data-path"\)/);
+    match(fileBrowserSource, /file-browser-open-tab/);
     match(fileBrowserSource, /findInFile\(encodedPath\)/);
     match(fileBrowserSource, /openFocusedFind\(target\)/);
     match(readFileSync(new URL("./desktop/app_js/shortcuts.js", import.meta.url), "utf8"), /openFocusedFileBrowserFind\(e\.target\)/);
     match(fileBrowserSource, /HerdrEditor\.openFind/);
     ok(!fileBrowserSource.includes("file-browser-current-file"), "active file title is already represented by the file tab");
     ok(!fileBrowserSource.includes("<span>${esc(file.path)}</span>"), "file panes must not duplicate the selected path next to the tab button");
-    match(fileBrowserSource, /title="\$\{esc\(file\.path\)\}" onclick="HerdrFileBrowser\.focusFile/);
+    match(fileBrowserSource, /function fileTabTooltipPath\(path\)/);
+    match(fileBrowserSource, /title="\$\{esc\(tooltip\)\}" onclick="HerdrFileBrowser\.focusFile/);
     match(fileBrowserSource, /target\.files\.push\(nextFile\)/);
     match(fileBrowserSource, /mode === "split"/);
     match(fileBrowserSource, /target\.split = true/);

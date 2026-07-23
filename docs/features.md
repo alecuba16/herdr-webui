@@ -48,6 +48,7 @@ Built-in backend:
 Browser terminal:
 
 - Desktop, mobile, and temporary terminals use the shared wterm renderer adapter. Settings → Terminal → Renderer can switch between the default wterm core and the Ghostty core; changing the renderer reconnects the current terminal so the new core owns future output.
+- Desktop workspace shell modes are remembered per workspace/worktree. Terminal, Git, and Files can be minimized/restored independently for each workspace, and switching workspaces restores that workspace's last shell mode without changing other workspaces.
 - The renderer bundle, CSS, and Ghostty WASM are embedded static assets served from `/assets/vendor/wterm.js`, `/assets/vendor/wterm.css`, and `/assets/vendor/ghostty-vt.wasm`. The old xterm assets are removed.
 - Terminal font, URL link detection, mouse reporting, scroll speed, Shift+Enter newline behavior, and renderer choice are persisted in browser `localStorage` under `herdr-web-options` and apply to desktop, mobile, and temporary terminals.
 - Terminal URL links are enabled by default. When enabled, detected `http` and `https` links open in a new browser tab. Disable `Terminal links` when terminal apps need raw click handling.
@@ -122,6 +123,7 @@ Worktrees:
 File browser:
 
 - Desktop workspaces and linked worktrees include a file explorer opened from the sidebar Files button. Git, Files, and terminal views are mutually exclusive foreground modes.
+- File previews use open-file tabs. Search results and content-search hits open as additional file tabs by default so the current folder/tree context stays visible. `Cmd/Ctrl+F` opens the focused file editor search before falling back to the global WebUI search, while terminal `Ctrl+F` remains terminal input.
 - Desktop uses authenticated `/api/file-browser/*` routes for tree, preview, edit/save with hash guard, rename, delete, and contextual open/split/copy actions. Mobile has read-only browse/preview parity.
 - Folders are lazy-loaded and collapsed by default. Double-click enters a folder as root; `...` moves upward and is always visible when a parent directory exists, on desktop, mobile, and the directory picker. File rows use license-safe type glyphs based on special filenames and file extensions. Folder rows keep the plain folder icon and only change color when backend Git status marks them changed. The file browser Refresh button is a rounded icon that spins while loading.
 - Files open in the active preview pane; Shift-click or context `Open in split` opens another pane. Dirty edited files ask before closing. The file explorer keeps an in-memory state per open workspace/worktree, including selected file, search selections, split panes, and unsaved edit drafts while switching panels. Closing that workspace/worktree forgets the cached state.
