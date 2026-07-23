@@ -329,9 +329,12 @@ function worktreeSourceKey(source) {
     ? source.cwd || source.repo_root || source.workspace_id || ""
     : "";
 }
+function worktreeSourceHasGitRepo(source) {
+  return !!(source && source.cwd && (source.repo_root || source.repo_name));
+}
 async function loadWorktreeBranchOptions(fetchRemotes = false) {
   const source = state.openWorktreeSource;
-  if (!source || !source.cwd) {
+  if (!worktreeSourceHasGitRepo(source)) {
     state.openWorktreeBranches = [];
     syncWorktreeBranchOptions([]);
     state.openWorktreeBranchSourceKey = "";

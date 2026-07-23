@@ -573,7 +573,10 @@ describe("app bundle load", () => {
     match(gitUiSource, /const fileList = cleanupOnly \? "" : `\$\{filterInput\}\$\{fileSections\}`;/);
     match(gitUiSource, /disabledReason = "Open a Git repository to use this view"/);
     const gitLayoutCss = readFileSync(new URL("./desktop/git_ui/layout.css", import.meta.url), "utf8");
-    match(gitLayoutCss, /\.git-ui-btn:disabled \{[\s\S]*?background: var\(--panel2\);[\s\S]*?color: var\(--muted\);/);
+    const controlsCss = readFileSync(new URL("./desktop/app_css/controls.css", import.meta.url), "utf8");
+    match(controlsCss, /\.git-ui-btn:disabled \{[\s\S]*?background: var\(--panel2\);[\s\S]*?color: var\(--muted\);/);
+    match(controlsCss, /\.git-ui-btn\.primary \{[\s\S]*?background: var\(--accent-1, var\(--accent\)\);/);
+    ok(!/^\.git-ui-btn \{/m.test(gitLayoutCss));
     match(gitLayoutCss, /\.git-ui-view-toggle:disabled \{[\s\S]*?background: var\(--panel2\);[\s\S]*?color: var\(--muted\);/);
     match(gitLayoutCss, /\.git-ui-modal label \{[\s\S]*?box-sizing: border-box;[\s\S]*?width: 100%;/);
     match(gitLayoutCss, /\.git-ui-input,[\s\S]*?\.git-ui-textarea,[\s\S]*?\.git-ui-select \{[\s\S]*?box-sizing: border-box;[\s\S]*?min-width: 0;[\s\S]*?width: 100%;/);
@@ -766,11 +769,15 @@ describe("app bundle load", () => {
     const fileBrowserCss = readFileSync(new URL("./desktop/file_browser.css", import.meta.url), "utf8");
     match(fileBrowserSource, /function renderFileTabs/);
     match(fileBrowserSource, /role="tablist" aria-label="Open files"/);
+    ok(!fileBrowserSource.includes("file-browser-current-file"), "active file title is already represented by the file tab");
+    ok(!fileBrowserSource.includes("<span>${esc(file.path)}</span>"), "file panes must not duplicate the selected path next to the tab button");
+    match(fileBrowserSource, /title="\$\{esc\(file\.path\)\}" onclick="HerdrFileBrowser\.focusFile/);
     match(fileBrowserSource, /target\.files\.push\(nextFile\)/);
     match(fileBrowserSource, /mode === "split"/);
     match(fileBrowserSource, /target\.split = true/);
     match(fileBrowserCss, /\.file-browser-file-tabs \{[\s\S]*?flex-wrap: nowrap;/);
     match(fileBrowserCss, /\.file-browser-file-tabs \{[\s\S]*?overflow-x: auto;/);
+    ok(!fileBrowserCss.includes(".file-browser-current-file"));
     ok(!fileBrowserCss.includes(".file-browser-side.previewing"), "file tree must stay visible while previewing files");
     match(searchSource, /async function openWorkspaceSearchPath/);
     match(searchSource, /await ensureFileBrowserLoaded\(\)/);
@@ -2840,6 +2847,32 @@ describe("app bundle load", () => {
 
     await ctx.fetchWorktreeRemoteBranches();
     ok(urls.some((url) => url.includes("/api/git-branches?") && url.includes("remote=true") && url.includes("fetch=true")));
+  });
+
+  it("does not load git branch options for non-Git workspace browse folders", async () => {
+    const ctx = context();
+    const urls = [];
+    ctx.fetch = async (url) => {
+      urls.push(String(url));
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        json: async () => ({
+          result: {
+            source: { source_checkout_path: "/Users/alejandro.blanco" },
+            worktrees: [],
+          },
+        }),
+      };
+    };
+    vm.runInContext(source, ctx);
+
+    ctx.openWorktreeOpenModal("/Users/alejandro.blanco", false);
+    await ctx.discoverWorktrees();
+
+    ok(urls.some((url) => url.includes("/api/worktrees?")));
+    ok(!urls.some((url) => url.includes("/api/git-branches?")));
   });
 
   it("uses the same editor mount tooling for previous and current hunk text", () => {
