@@ -1837,7 +1837,7 @@
     const rows = markChangeGroups(diffLayoutMode() === "unified" ? unifiedRows(chunk) : sideBySideRows(chunk));
     const contextArrows = contextArrowsForChunk(file.chunks || [], index);
     const body = diffLayoutMode() === "unified"
-      ? rows.map((row, rowIndex) => renderUnifiedLine(row, path, index, rows, rowIndex, contextArrows)).join("")
+      ? rows.map((row, rowIndex) => renderUnifiedLine(row, path, index, rows, rowIndex, contextArrows, !!file.preview_large_diff)).join("")
       : rows.map((row, rowIndex) => renderLine(row, path, index, rows, rowIndex, contextArrows, !!file.preview_large_diff)).join("");
     return `<div class="git-ui-hunk ${diffLayoutMode() === "unified" ? "git-ui-hunk-unified" : ""}"><div class="git-ui-hunk-head"><span>${esc(chunk.header)}</span>${actions}</div><div class="git-ui-hunk-viewport">${body}</div><div class="git-ui-hunk-xscroll" aria-hidden="true"><div class="git-ui-hunk-xscroll-inner"></div></div></div>`;
   }
@@ -1918,7 +1918,7 @@
     return `<div class="git-ui-diff-row ${cls}"><div class="git-ui-context-cell">${contextControls}</div><div class="git-ui-code git-ui-code-old"><span class="git-ui-code-text">${oldCode}</span></div><div class="git-ui-line-pair"><span class="git-ui-line-old"><em>${esc(oldAuthor)}</em>${oldNo}</span>${blockButton}<span class="git-ui-line-new"><em>${esc(newAuthor)}</em>${newNo}</span></div><div class="git-ui-code git-ui-code-new"><span class="git-ui-code-text">${newCode}</span></div></div>`;
   }
 
-  function renderUnifiedLine(row, path, hunkIndex, rows, rowIndex, contextArrows) {
+  function renderUnifiedLine(row, path, hunkIndex, rows, rowIndex, contextArrows, previewLargeDiff) {
     const view = active() || {};
     const scope = view.diffScope || "all";
     const line = row.line || {};
@@ -1932,7 +1932,7 @@
     const author = blameName(path, newNo || oldNo);
     const status = view.status || {};
     const canRestorePath = scope === "staged" || scope === "working" || (scope === "all" && ([...(status.staged || []), ...(status.unstaged || []), ...(status.untracked || [])].includes(path)));
-    const blockButton = currentMode() === "changes" && canRestorePath && (add || del) && isFirstChange(rows, rowIndex)
+    const blockButton = !previewLargeDiff && currentMode() === "changes" && canRestorePath && (add || del) && isFirstChange(rows, rowIndex)
       ? `<button class="git-ui-line-action" title="Restore this block" onclick="HerdrGitUi.restoreHunk('${arg(path)}',${hunkIndex})">↩</button>`
       : `<span class="git-ui-line-action-spacer"></span>`;
     const contextControls = rowIndex === 0 && contextArrows.before

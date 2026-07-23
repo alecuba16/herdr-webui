@@ -16,6 +16,7 @@
 - Allows Git Cleanup to select the primary repository's current non-`main`/`master` branch. The backend checks out `main` or `master` first, then deletes the selected branch, while keeping the current `main`/`master` branch protected.
 - Shows whether each cleanup branch or worktree branch appears to have been pushed before (`pushed before`, `not pushed`, or `push status unknown`).
 - Shows conflict resolution actions (`Use HEAD`, `Use parent`, `Use remote`, and `Mark resolved`) in conflicted file headers for both unified and side-by-side Changes diffs.
+- Keeps unified and side-by-side diff mutation behavior aligned by hiding block-restore controls in large diff previews until the full diff is rendered.
 
 ## 0.2.77 Release Notes
 
