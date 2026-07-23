@@ -394,7 +394,10 @@
     }
 
     function terminalGridSize(container) {
-      return HerdrTerminalFit.gridSize(container, term, {
+      // Measure the parent (.temp-terminal-body) for available space, since
+      // wterm sets a fixed inline height on container (term.element).
+      var measureTarget = container.parentElement || container;
+      return HerdrTerminalFit.gridSize(measureTarget, term, {
         fallbackWidth: 720,
         fallbackHeight: 420,
         fallbackCell: { width: 9, height: 20 },
@@ -471,7 +474,8 @@
     }
 
     function terminalFitReady(container, size) {
-      var box = HerdrTerminalFit.visibleBox(container, { width: 0, height: 0 }) || { width: 0, height: 0 };
+      var measureTarget = container.parentElement || container;
+      var box = HerdrTerminalFit.visibleBox(measureTarget, { width: 0, height: 0 }) || { width: 0, height: 0 };
       var cell = HerdrTerminalFit.cellSize(term, container, { width: 9, height: 20 });
       return box.width >= 320 && box.height >= 120 && cell.width >= 4 && cell.height >= 8 && size.cols >= 40;
     }
@@ -723,7 +727,13 @@
     }
 
     function fitTerminalDomToContainer(container) {
-      var box = HerdrTerminalFit.visibleBox(container, { width: 0, height: 0 }) || { width: 0, height: 0 };
+      // wterm's _lockHeight() sets a fixed inline pixel height on the terminal
+      // element (container == term.element). Measuring container.clientHeight
+      // returns that locked height, not the available space. Measure the parent
+      // (.temp-terminal-body) instead, then apply the available height to the
+      // terminal element so it fills the full vertical space.
+      var parent = container.parentElement;
+      var box = HerdrTerminalFit.visibleBox(parent || container, { width: 0, height: 0 }) || { width: 0, height: 0 };
       var termEl = term && term.element ? term.element : container.querySelector && container.querySelector(".wterm");
       if (!termEl) termEl = container;
       HerdrTerminalFit.fitTerminalToContainer(termEl, { height: box.height });

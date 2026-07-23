@@ -937,7 +937,7 @@ describe("app bundle load", () => {
     match(tempTerminalSource, /function connectTerminalWsAfterLayout\(terminalId, attempt\)/);
     match(tempTerminalSource, /ensureTerminalSurface\(container\)/);
     match(tempTerminalSource, /function waitForTerminalFit\(container, attempt, callback\)/);
-    match(tempTerminalSource, /HerdrTerminalFit\.gridSize\(container, term/);
+    match(tempTerminalSource, /HerdrTerminalFit\.gridSize\(measureTarget, term/);
     match(tempTerminalSource, /HerdrTerminalFit\.cellSize\(term, container/);
     match(tempTerminalSource, /HerdrTerminalFit\.fitTerminalToContainer\(termEl, \{ height: box\.height \}\)/);
     match(terminalFitSource, /function cellSize\(term, container, fallback\)/);
