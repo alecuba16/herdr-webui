@@ -640,9 +640,11 @@
     const files = state.split ? state.files : [currentFile()].filter(Boolean);
 
 
+
     const panes = files.map((file) => {
       return `<section class="file-browser-pane ${file.path === state.selected ? "active" : ""}"><div class="file-browser-pane-body" id="fileBrowserEditor-${hashId(file.path)}">${previewPlaceholder(file)}</div>${file.error ? `<div class="file-browser-error">${esc(file.error)}</div>` : ""}</section>`;
     });
+
 
 
     if (state.contentSearch.active) panes.push(renderContentSearchPane());
@@ -735,6 +737,37 @@
         });
       }
     }
+  }
+
+  function openFindForPath(path) {
+    if (!path) return false;
+    const parent = document.getElementById(`fileBrowserEditor-${hashId(path)}`);
+    if (window.HerdrEditor && window.HerdrEditor.openFind && window.HerdrEditor.openFind(parent)) return true;
+    const file = state.files.find((file) => file.path === path);
+    if (!file) return false;
+    state.selected = path;
+    render();
+    setTimeout(() => {
+      const nextParent = document.getElementById(`fileBrowserEditor-${hashId(path)}`);
+      if (window.HerdrEditor && window.HerdrEditor.openFind) window.HerdrEditor.openFind(nextParent);
+    }, 0);
+    return true;
+  }
+
+  function focusedFilePath(target) {
+    if (!state.open) return "";
+    const pane = target && target.closest && target.closest(".file-browser-pane");
+    if (pane && pane.classList && pane.classList.contains("file-browser-content-pane")) return "";
+    if (pane && pane.getAttribute) {
+      try { return decodeURIComponent(pane.getAttribute("data-path") || ""); }
+      catch (_) { return ""; }
+    }
+    const panel = document.getElementById("fileBrowserPanel");
+    const active = document.activeElement;
+    const targetInside = !!(panel && target && panel.contains && panel.contains(target));
+    const activeInside = !!(panel && active && panel.contains && panel.contains(active));
+    if (targetInside || activeInside || target === document.body) return currentFilePath();
+    return "";
   }
 
   function previewPlaceholder(file) {
@@ -985,18 +1018,10 @@
     select(encodedPath, mode) { loadFile(decodeURIComponent(encodedPath), mode || "append"); },
     focusFile(encodedPath) { state.selected = decodeURIComponent(encodedPath); render(); },
     findInFile(encodedPath) {
-      const path = decodeURIComponent(encodedPath);
-      const parent = document.getElementById(`fileBrowserEditor-${hashId(path)}`);
-      if (window.HerdrEditor && window.HerdrEditor.openFind && window.HerdrEditor.openFind(parent)) return;
-      const file = state.files.find((file) => file.path === path);
-      if (file) {
-        state.selected = path;
-        render();
-        setTimeout(() => {
-          const nextParent = document.getElementById(`fileBrowserEditor-${hashId(path)}`);
-          if (window.HerdrEditor && window.HerdrEditor.openFind) window.HerdrEditor.openFind(nextParent);
-        }, 0);
-      }
+      return openFindForPath(decodeURIComponent(encodedPath));
+    },
+    openFocusedFind(target) {
+      return openFindForPath(focusedFilePath(target));
     },
     closeFile(encodedPath) {
       const path = decodeURIComponent(encodedPath);

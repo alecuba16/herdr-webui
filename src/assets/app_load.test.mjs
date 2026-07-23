@@ -596,6 +596,40 @@ describe("app bundle load", () => {
     equal(ctx.document.getElementById("searchPalette").style.display, "grid");
   });
 
+  it("routes Cmd/Ctrl+F to focused file browser editor search before app search", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    let focusedFindTarget = null;
+    const fileTarget = { closest: () => null };
+    ctx.HerdrFileBrowser = {
+      openFocusedFind(target) {
+        focusedFindTarget = target;
+        return true;
+      },
+    };
+    const event = {
+      code: "KeyF",
+      key: "f",
+      altKey: false,
+      ctrlKey: false,
+      metaKey: true,
+      shiftKey: false,
+      defaultPrevented: false,
+      propagationStopped: false,
+      immediateStopped: false,
+      target: fileTarget,
+      preventDefault() { this.defaultPrevented = true; },
+      stopPropagation() { this.propagationStopped = true; },
+      stopImmediatePropagation() { this.immediateStopped = true; },
+    };
+
+    ctx.handleGlobalShortcut(event);
+
+    equal(event.defaultPrevented, true);
+    equal(focusedFindTarget, fileTarget);
+    equal(ctx.document.getElementById("searchPalette").style.display, undefined);
+  });
+
   it("keeps Git prefix shortcuts collision-free with WebUI prefix keys", () => {
     const webuiKeys = new Set([...source.matchAll(/case "([^"]+)":/g)].map((match) => match[1]));
     const gitKeys = ["Digit1", "Digit2", "Digit3", "Digit4", "KeyC", "KeyL", "KeyR", "KeyG", "KeyY", "KeyU", "KeyD", "KeyZ", "KeyH", "KeyM", "KeyE", "KeyO", "KeyV", "KeyI", "Digit0"];
@@ -837,7 +871,11 @@ describe("app bundle load", () => {
     match(fileBrowserSource, /function renderFileTabs/);
     match(fileBrowserSource, /role="tablist" aria-label="Open files"/);
     match(fileBrowserSource, /file-browser-pane-find/);
+    match(fileBrowserSource, /data-path="\$\{arg\(file\.path\)\}"/);
+    match(fileBrowserSource, /decodeURIComponent\(pane\.getAttribute\("data-path"\)/);
     match(fileBrowserSource, /findInFile\(encodedPath\)/);
+    match(fileBrowserSource, /openFocusedFind\(target\)/);
+    match(readFileSync(new URL("./desktop/app_js/shortcuts.js", import.meta.url), "utf8"), /openFocusedFileBrowserFind\(e\.target\)/);
     match(fileBrowserSource, /HerdrEditor\.openFind/);
     ok(!fileBrowserSource.includes("file-browser-current-file"), "active file title is already represented by the file tab");
     ok(!fileBrowserSource.includes("<span>${esc(file.path)}</span>"), "file panes must not duplicate the selected path next to the tab button");
