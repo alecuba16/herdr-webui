@@ -1,6 +1,6 @@
 # Release notes
 
-## 0.2.79 Release Notes
+## 0.2.80 Release Notes
 
 ### Browser terminal renderer migration
 
