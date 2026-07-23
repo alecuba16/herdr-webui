@@ -152,9 +152,11 @@ async function connectTerminal() {
       true,
     );
     const shell = el("terminalShell");
-    shell.addEventListener("mousedown", () =>
-      setTimeout(focusTerminal, 0),
-    );
+    if (window.HerdrTerminalRenderer && window.HerdrTerminalRenderer.attachClickFocus) {
+      window.HerdrTerminalRenderer.attachClickFocus(shell, focusTerminal);
+    } else {
+      shell.addEventListener("mousedown", () => setTimeout(focusTerminal, 0));
+    }
     terminal.addEventListener("wheel", handleTerminalWheel, { passive: false, capture: true });
     terminal.addEventListener("touchstart", handleTerminalTouchStart, { passive: true, capture: true });
     terminal.addEventListener("touchmove", handleTerminalTouchMove, { passive: false, capture: true });

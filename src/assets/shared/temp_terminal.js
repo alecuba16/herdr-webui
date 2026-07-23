@@ -46,6 +46,8 @@
     var keyTrapBound = false;
     var isMinimized = false;
     var restoreButton = null;
+    var followPaused = false;
+    var scrollBound = false;
 
     function open() {
       if (isOpen) {
@@ -80,6 +82,7 @@
       isOpen = false;
       isMinimized = false;
       closing = true;
+      setFollowPaused(false);
       removeInputTrap();
       hideRestoreControl();
       disconnectWs();
@@ -154,7 +157,15 @@
       document.addEventListener("keydown", tempTerminalKeydown, true);
       var modal = el(modalId);
       if (modal) {
-        modal.addEventListener("pointerdown", focusTerminalFromEvent, true);
+        if (window.HerdrTerminalRenderer && window.HerdrTerminalRenderer.attachClickFocus) {
+          window.HerdrTerminalRenderer.attachClickFocus(
+            modal,
+            focusTerminalSoon,
+            function (event) { return isCloseControl(event && event.target); }
+          );
+        } else {
+          modal.addEventListener("pointerdown", focusTerminalFromEvent, true);
+        }
         modal.addEventListener("focusin", focusTerminalFromEvent, true);
       }
     }
@@ -165,7 +176,9 @@
       document.removeEventListener("keydown", tempTerminalKeydown, true);
       var modal = el(modalId);
       if (modal) {
-        modal.removeEventListener("pointerdown", focusTerminalFromEvent, true);
+        if (!window.HerdrTerminalRenderer || !window.HerdrTerminalRenderer.attachClickFocus) {
+          modal.removeEventListener("pointerdown", focusTerminalFromEvent, true);
+        }
         modal.removeEventListener("focusin", focusTerminalFromEvent, true);
       }
     }
@@ -240,6 +253,25 @@
 
     function focusTerminalFromEvent(event) {
       if (isCloseControl(event && event.target)) return;
+      // Don't steal focus during text selection drag. pointerdown fires
+      // before the user starts dragging; focusing the hidden textarea on
+      // the next tick collapses the native DOM selection.
+      if (event.type === "pointerdown" && event.button === 0 && !event.shiftKey) {
+        var startX = event.clientX, startY = event.clientY;
+        var dragged = false;
+        var onMove = function (ev) {
+          if (Math.abs(ev.clientX - startX) > 3 || Math.abs(ev.clientY - startY) > 3)
+            dragged = true;
+        };
+        var onUp = function () {
+          document.removeEventListener("mousemove", onMove);
+          document.removeEventListener("mouseup", onUp);
+          if (!dragged) focusTerminalSoon();
+        };
+        document.addEventListener("mousemove", onMove);
+        document.addEventListener("mouseup", onUp);
+        return;
+      }
       focusTerminalSoon();
     }
 
@@ -365,7 +397,10 @@
     }
 
     function terminalGridSize(container) {
-      return HerdrTerminalFit.gridSize(container, term, {
+      // Measure the parent (.temp-terminal-body) for available space, since
+      // wterm sets a fixed inline height on container (term.element).
+      var measureTarget = container.parentElement || container;
+      return HerdrTerminalFit.gridSize(measureTarget, term, {
         fallbackWidth: 720,
         fallbackHeight: 420,
         fallbackCell: { width: 9, height: 20 },
@@ -423,6 +458,7 @@
         onData: function (data) { sendInput(data); },
       }).then(function (created) {
         term = created;
+        bindTerminalScrollEvents(container);
         try { term.focus(); } catch (e) {}
         refreshTerminalFitAfterFontLoad();
         return term;
@@ -442,7 +478,8 @@
     }
 
     function terminalFitReady(container, size) {
-      var box = HerdrTerminalFit.visibleBox(container, { width: 0, height: 0 }) || { width: 0, height: 0 };
+      var measureTarget = container.parentElement || container;
+      var box = HerdrTerminalFit.visibleBox(measureTarget, { width: 0, height: 0 }) || { width: 0, height: 0 };
       var cell = HerdrTerminalFit.cellSize(term, container, { width: 9, height: 20 });
       return box.width >= 320 && box.height >= 120 && cell.width >= 4 && cell.height >= 8 && size.cols >= 40;
     }
@@ -556,6 +593,8 @@
       writeQueue = [];
       writeFlushPending = false;
       linkProvider = null;
+      scrollBound = false;
+      followPaused = false;
       if (term) {
         try { term.destroy(); } catch (e) {}
         term = null;
@@ -620,6 +659,53 @@
         termWs.send(bytes.slice(i, i + chunkSize));
     }
 
+    function terminalAtBottom() {
+      try { return !term || !term.atBottom || term.atBottom(); }
+      catch (e) { return true; }
+    }
+
+    function setFollowPaused(paused) {
+      followPaused = !!paused;
+      var button = el("tempTerminalFollowButton");
+      if (!button) return;
+      button.hidden = !followPaused;
+      button.setAttribute && button.setAttribute("aria-hidden", followPaused ? "false" : "true");
+    }
+
+    function scrollToTail() {
+      setFollowPaused(false);
+      try { if (term) term.scrollToBottom(); } catch (e) {}
+      try { term.focus(); } catch (e) {}
+    }
+
+    function bindTerminalScrollEvents(container) {
+      if (scrollBound || !term || !term.element) return;
+      scrollBound = true;
+      var termEl = term.element;
+      // Wheel scrolling: scroll lines, pause follow when not at bottom
+      termEl.addEventListener("wheel", function (event) {
+        if (event.ctrlKey || event.metaKey || !term) return;
+        if (term.usesNormalBuffer && !term.usesNormalBuffer()) return;
+        event.preventDefault();
+        var rowH = term.rowHeight ? term.rowHeight() : 17;
+        var lines = Math.max(1, Math.round(Math.abs(event.deltaY) / Math.max(1, rowH)));
+        try { term.scrollLines(event.deltaY < 0 ? -lines : lines); } catch (e) {}
+        setFollowPaused(!terminalAtBottom());
+      }, { passive: false });
+      // Scroll event (touch drag, scrollbar): sync follow state
+      termEl.addEventListener("scroll", function () {
+        setFollowPaused(!terminalAtBottom());
+      }, { passive: true });
+      // Follow button click
+      var button = el("tempTerminalFollowButton");
+      if (button) button.onclick = scrollToTail;
+    }
+
+    function maybeAutoScrollToBottom() {
+      if (followPaused) return;
+      try { if (term) term.scrollToBottom(); } catch (e) {}
+    }
+
     function enqueueFrame(data) {
       var size = typeof data === "string" ? data.length : data.length;
       if (!writeFlushPending && writeQueue.length === 0 && term && size <= 8192) {
@@ -659,7 +745,11 @@
 
     function writeFrame(data) {
       if (!term) return;
-      try { term.write(data); } catch (e) { try { term.write(data); } catch (e2) {} }
+      try { term.write(data, maybeAutoScrollToBottom); } catch (e) { try { term.write(data); maybeAutoScrollToBottom(); } catch (e2) {} }
+      // Fallback: RAF-based auto-scroll in case write callback not called
+      if (typeof globalThis.requestAnimationFrame === "function") {
+        globalThis.requestAnimationFrame(maybeAutoScrollToBottom);
+      }
     }
 
     function isVisible() { return isOpen && !isMinimized; }
@@ -694,8 +784,16 @@
     }
 
     function fitTerminalDomToContainer(container) {
-      var box = HerdrTerminalFit.visibleBox(container, { width: 0, height: 0 }) || { width: 0, height: 0 };
-      HerdrTerminalFit.fitTerminalToContainer(container, { height: box.height });
+      // wterm's _lockHeight() sets a fixed inline pixel height on the terminal
+      // element (container == term.element). Measuring container.clientHeight
+      // returns that locked height, not the available space. Measure the parent
+      // (.temp-terminal-body) instead, then apply the available height to the
+      // terminal element so it fills the full vertical space.
+      var parent = container.parentElement;
+      var box = HerdrTerminalFit.visibleBox(parent || container, { width: 0, height: 0 }) || { width: 0, height: 0 };
+      var termEl = term && term.element ? term.element : container.querySelector && container.querySelector(".wterm");
+      if (!termEl) termEl = container;
+      HerdrTerminalFit.fitTerminalToContainer(termEl, { height: box.height });
     }
 
     return { open: open, requestClose: requestClose, close: close, minimize: minimize, restore: restore, isVisible: isVisible, handleResize: handleResize, handlePaneExited: handlePaneExited };
