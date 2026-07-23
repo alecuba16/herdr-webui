@@ -1584,7 +1584,74 @@
     const currentText = hunk.text || "";
     const readonly = hunk.newStart ? "" : " readonly";
     const meta = hunk.newStart ? `current lines ${hunk.newStart}-${hunk.newEnd}` : "no current lines";
-    return `<div class="git-ui-hunk-editor"><div class="git-ui-hunk-head"><span>${esc(hunk.header || "hunk")}</span><span class="git-ui-muted">${esc(meta)}</span></div><div class="git-ui-hunk-editor-grid"><section><div class="git-ui-editor-head"><strong>Previous</strong><span class="git-ui-muted">read-only</span></div><div class="git-ui-hunk-edit-mount git-ui-hunk-old-mount" data-hunk-index="${hunk.index}" data-editor-side="old" data-readonly="true"></div><textarea class="git-ui-hunk-old git-ui-hunk-old-hidden git-ui-hunk-edit-hidden" data-hunk-index="${hunk.index}" spellcheck="false" readonly>${esc(oldText)}</textarea></section><section><div class="git-ui-editor-head"><strong>Current</strong><span class="git-ui-muted">editable hunk</span></div><div class="git-ui-hunk-edit-mount git-ui-hunk-current-mount" data-hunk-index="${hunk.index}" data-editor-side="current" data-readonly="${hunk.newStart ? "false" : "true"}"></div><textarea class="git-ui-hunk-edit git-ui-hunk-current-hidden git-ui-hunk-edit-hidden" data-hunk-index="${hunk.index}" spellcheck="false"${readonly}>${esc(currentText)}</textarea></section></div></div>`;
+    const conflictControls = renderEditableHunkConflictControls(hunk);
+    return `<div class="git-ui-hunk-editor"><div class="git-ui-hunk-head"><span>${esc(hunk.header || "hunk")}</span><span class="git-ui-muted">${esc(meta)}</span></div>${conflictControls}<div class="git-ui-hunk-editor-grid"><section><div class="git-ui-editor-head"><strong>Previous</strong><span class="git-ui-muted">read-only</span></div><div class="git-ui-hunk-edit-mount git-ui-hunk-old-mount" data-hunk-index="${hunk.index}" data-editor-side="old" data-readonly="true"></div><textarea class="git-ui-hunk-old git-ui-hunk-old-hidden git-ui-hunk-edit-hidden" data-hunk-index="${hunk.index}" spellcheck="false" readonly>${esc(oldText)}</textarea></section><section><div class="git-ui-editor-head"><strong>Current</strong><span class="git-ui-muted">editable hunk</span></div><div class="git-ui-hunk-edit-mount git-ui-hunk-current-mount" data-hunk-index="${hunk.index}" data-editor-side="current" data-readonly="${hunk.newStart ? "false" : "true"}"></div><textarea class="git-ui-hunk-edit git-ui-hunk-current-hidden git-ui-hunk-edit-hidden" data-hunk-index="${hunk.index}" spellcheck="false"${readonly}>${esc(currentText)}</textarea></section></div></div>`;
+  }
+
+  function renderEditableHunkConflictControls(hunk) {
+    const blocks = conflictBlocksInText(hunk.text || "");
+    if (!blocks.length) return "";
+    const buttons = blocks.map((block, index) => {
+      const parentDisabled = block.base == null ? " disabled" : "";
+      const parentTitle = block.base == null ? "Parent/base side is unavailable for this conflict block" : "Use parent/base side for this conflict block";
+      return `<div class="git-ui-conflict-block-actions"><span class="git-ui-muted">Conflict block ${index + 1}</span><button class="git-ui-btn" title="Use HEAD/current side for this conflict block" onclick="HerdrGitUi.resolveEditorConflictBlock(${hunk.index},${index},'ours')">Use HEAD</button><button class="git-ui-btn" title="${esc(parentTitle)}" onclick="HerdrGitUi.resolveEditorConflictBlock(${hunk.index},${index},'base')"${parentDisabled}>Use parent</button><button class="git-ui-btn" title="Use remote/incoming side for this conflict block" onclick="HerdrGitUi.resolveEditorConflictBlock(${hunk.index},${index},'theirs')">Use remote</button></div>`;
+    }).join("");
+    return `<div class="git-ui-editor-conflicts"><div class="git-ui-side-edit-note">Resolve individual conflict marker blocks in the editable hunk.</div>${buttons}</div>`;
+  }
+
+  function conflictBlocksInText(text) {
+    const lines = String(text || "").split("\n");
+    const blocks = [];
+    let start = -1;
+    let separator = -1;
+    let end = -1;
+    let baseStart = -1;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i] || "";
+      if (line.startsWith("<<<<<<<")) {
+        start = i;
+        separator = -1;
+        end = -1;
+        baseStart = -1;
+        continue;
+      }
+      if (start < 0) continue;
+      if (line.startsWith("|||||||")) {
+        baseStart = i;
+        continue;
+      }
+      if (line.startsWith("=======")) {
+        separator = i;
+        continue;
+      }
+      if (!line.startsWith(">>>>>>>")) continue;
+      end = i;
+      if (separator > start) {
+        const oursEnd = baseStart > start ? baseStart : separator;
+        blocks.push({
+          start,
+          end,
+          ours: lines.slice(start + 1, oursEnd),
+          base: baseStart > start ? lines.slice(baseStart + 1, separator) : null,
+          theirs: lines.slice(separator + 1, end),
+        });
+      }
+      start = -1;
+      separator = -1;
+      end = -1;
+      baseStart = -1;
+    }
+    return blocks;
+  }
+
+  function resolveConflictBlockText(text, blockIndex, mode) {
+    const lines = String(text || "").split("\n");
+    const block = conflictBlocksInText(text)[blockIndex];
+    if (!block) return text;
+    const replacement = mode === "theirs" ? block.theirs : mode === "base" ? block.base : block.ours;
+    if (!replacement) return text;
+    lines.splice(block.start, block.end - block.start + 1, ...replacement);
+    return lines.join("\n");
   }
 
   function buildEditableHunks(file) {
@@ -2774,6 +2841,20 @@
         editor.error = err.message || String(err);
         render();
       }
+    },
+    resolveEditorConflictBlock(hunkIndex, blockIndex, mode) {
+      const view = active();
+      const editor = view && view.sideEditor;
+      if (!editor || editor.loading || editor.saving) return;
+      saveSideEditorFromDom();
+      hunkIndex = Number(hunkIndex || 0);
+      blockIndex = Number(blockIndex || 0);
+      const hunk = (editor.hunks || [])[hunkIndex];
+      if (!hunk) return;
+      const next = resolveConflictBlockText(hunk.text || "", blockIndex, mode);
+      if (next === hunk.text) return;
+      hunk.text = next;
+      render();
     },
     toggleFile(path) {
       const view = active();
