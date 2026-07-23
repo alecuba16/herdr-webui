@@ -612,6 +612,9 @@ describe("app bundle load", () => {
     match(gitUiSource, /const conflictActions = renderDiffConflictResolutionButtons\(file\)/);
     match(gitUiSource, /\$\{conflictActions\}\$\{restore\}/);
     match(gitUiSource, /git-ui-conflict-diff-actions/);
+    match(gitUiSource, /renderUnifiedLine\(row, path, index, rows, rowIndex, contextArrows, !!file\.preview_large_diff\)/);
+    match(gitUiSource, /function renderUnifiedLine\(row, path, hunkIndex, rows, rowIndex, contextArrows, previewLargeDiff\)/);
+    match(gitUiSource, /const blockButton = !previewLargeDiff && currentMode\(\) === "changes"/);
     match(gitUiSource, /aria-label="Conflict operation actions"/);
     match(gitUiSource, /Rebase<\/span>\$\{action\("Continue", "rebase-continue"\)\}\$\{action\("Skip", "rebase-skip"\)\}\$\{action\("Abort", "rebase-abort", true\)\}/);
     match(gitUiSource, /Merge<\/span>\$\{action\("Continue", "merge-continue"\)\}\$\{action\("Abort", "merge-abort", true\)\}/);
@@ -2504,7 +2507,7 @@ describe("app bundle load", () => {
     match(gitUiSource, /function renderUnifiedLine\(/);
     match(gitUiSource, /git-ui-unified-row/);
     match(gitUiSource, /sideBySideRows\(chunk\)/);
-    match(gitUiSource, /renderUnifiedLine\(row, path, index, rows, rowIndex, contextArrows\)/);
+    match(gitUiSource, /renderUnifiedLine\(row, path, index, rows, rowIndex, contextArrows, !!file\.preview_large_diff\)/);
     match(gitUiSource, /restoreHunk\('\$\{arg\(path\)\}',\$\{hunkIndex\}\)/);
     match(gitUiSource, /function contextArrowsForChunk\(chunks, index\)/);
     match(gitUiSource, /const after = next \? hiddenGap\(chunk, next\) : false;/);
