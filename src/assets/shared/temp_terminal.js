@@ -714,7 +714,9 @@
 
     function fitTerminalDomToContainer(container) {
       var box = HerdrTerminalFit.visibleBox(container, { width: 0, height: 0 }) || { width: 0, height: 0 };
-      HerdrTerminalFit.fitTerminalToContainer(container, { height: box.height });
+      var termEl = term && term.element ? term.element : container.querySelector && container.querySelector(".wterm");
+      if (!termEl) termEl = container;
+      HerdrTerminalFit.fitTerminalToContainer(termEl, { height: box.height });
     }
 
     return { open: open, requestClose: requestClose, close: close, minimize: minimize, restore: restore, isVisible: isVisible, handleResize: handleResize, handlePaneExited: handlePaneExited };

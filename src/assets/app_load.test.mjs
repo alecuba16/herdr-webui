@@ -939,7 +939,7 @@ describe("app bundle load", () => {
     match(tempTerminalSource, /function waitForTerminalFit\(container, attempt, callback\)/);
     match(tempTerminalSource, /HerdrTerminalFit\.gridSize\(container, term/);
     match(tempTerminalSource, /HerdrTerminalFit\.cellSize\(term, container/);
-    match(tempTerminalSource, /HerdrTerminalFit\.fitTerminalToContainer\(container, \{ height: box\.height \}\)/);
+    match(tempTerminalSource, /HerdrTerminalFit\.fitTerminalToContainer\(termEl, \{ height: box\.height \}\)/);
     match(terminalFitSource, /function cellSize\(term, container, fallback\)/);
     match(terminalFitSource, /function gridSize\(container, term, options\)/);
     match(terminalFitSource, /function fitTerminalToContainer\(container, options\)/);
