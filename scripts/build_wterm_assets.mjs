@@ -34,10 +34,17 @@ await esbuild.build({
 const bundledJs = await readFile(bundlePath, "utf8");
 await writeFile(
   bundlePath,
-  bundledJs.replace(
-    /new URL\("\.\.\/wasm\/ghostty-vt\.wasm",[^)]*\)\.href/g,
-    '"/assets/vendor/ghostty-vt.wasm"',
-  ),
+  bundledJs
+    .replace(
+      /new URL\("\.\.\/wasm\/ghostty-vt\.wasm",[^)]*\)\.href/g,
+      '"/assets/vendor/ghostty-vt.wasm"',
+    )
+    // The hidden textarea used for IME composition must not have aria-hidden="true"
+    // because it receives focus. aria-hidden on a focused element violates WAI-ARIA.
+    .replace(
+      'this.textarea.setAttribute("aria-hidden","true")',
+      'this.textarea.setAttribute("aria-hidden","false")',
+    ),
 );
 
 await copyFile(
