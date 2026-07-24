@@ -2350,8 +2350,21 @@
       const scroll = hunk.querySelector(".git-ui-hunk-xscroll");
       const inner = scroll && scroll.querySelector(".git-ui-hunk-xscroll-inner");
       if (!scroll || !inner) return;
+      // Measure the actual rendered width of code-text elements (inside overflow:hidden
+      // parents) rather than relying on scrollWidth, which can under-report when the
+      // cell uses min-width:0 in a CSS grid and the child is inline-block with transform.
+      const textNodes = Array.from(hunk.querySelectorAll(".git-ui-code-text"));
       const codeCells = Array.from(hunk.querySelectorAll(".git-ui-code, .git-ui-unified-text"));
-      const maxScroll = codeCells.reduce((max, cell) => Math.max(max, Math.max(0, cell.scrollWidth - cell.clientWidth)), 0);
+      const maxScroll = textNodes.reduce((max, text) => {
+        const parent = text.parentElement;
+        if (!parent) return max;
+        const cs = getComputedStyle(parent);
+        const padL = parseFloat(cs.paddingLeft) || 0;
+        const padR = parseFloat(cs.paddingRight) || 0;
+        const innerWidth = parent.clientWidth - padL - padR;
+        const overflow = Math.max(0, text.offsetWidth - innerWidth);
+        return Math.max(max, overflow);
+      }, 0);
       scroll.classList.toggle("no-scroll", maxScroll < 2);
       inner.style.width = `${Math.max(scroll.clientWidth + maxScroll, scroll.clientWidth)}px`;
       const apply = () => hunk.style.setProperty("--git-ui-hunk-scroll-left", `${scroll.scrollLeft}px`);
