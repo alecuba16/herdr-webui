@@ -1054,10 +1054,7 @@ impl BuiltinState {
                     data.workspaces.remove(&ws_id);
                     normalize_focus(&mut data);
                     // Publish workspace.closed event
-                    self.publish_event(
-                        "workspace.closed",
-                        json!({ "workspace_id": ws_id }),
-                    );
+                    self.publish_event("workspace.closed", json!({ "workspace_id": ws_id }));
                 }
             }
         }
@@ -4484,10 +4481,11 @@ mod tests {
             workspaces.is_empty(),
             "workspace should be auto-closed when last pane closes"
         );
-        let tabs = snapshot["result"]["snapshot"]["tabs"]
-            .as_array()
-            .unwrap();
-        assert!(tabs.is_empty(), "tab should be auto-closed when last pane closes");
+        let tabs = snapshot["result"]["snapshot"]["tabs"].as_array().unwrap();
+        assert!(
+            tabs.is_empty(),
+            "tab should be auto-closed when last pane closes"
+        );
 
         // Collect events - expect tab.closed and workspace.closed
         let mut got_tab_closed = false;
