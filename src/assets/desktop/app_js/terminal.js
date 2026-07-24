@@ -757,7 +757,8 @@ function fitTerminalSurface() {
     terminal.style.maxHeight = shellHeight > 0 ? shellHeight + "px" : "";
     terminal.style.minWidth = "0";
     terminal.style.minHeight = "0";
-    terminal.style.overflow = "hidden";
+    // Don't force overflow:hidden - wterm needs overflow:auto on .terminal for internal scrollback
+    // terminal.style.overflow = "hidden";  // REMOVED: breaks wterm scrollTop
     HerdrTerminalFit.fitTerminalToContainer(terminal, { height: visibleHeight });
   }
 }
