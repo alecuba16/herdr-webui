@@ -1040,8 +1040,28 @@ impl BuiltinState {
             .data
             .lock()
             .map_err(|_| "state unavailable".to_string())?;
+        // Get the workspace_id before closing the tab
+        let workspace_id = data.tabs.get(tab_id).map(|t| t.workspace_id.clone());
+
         close_tab_locked(&mut data, tab_id);
         normalize_focus(&mut data);
+
+        // If the workspace now has no tabs, close it
+        if let Some(ws_id) = workspace_id {
+            if let Some(workspace) = data.workspaces.get(&ws_id) {
+                if workspace.tab_ids.is_empty() {
+                    // Remove workspace and emit event
+                    data.workspaces.remove(&ws_id);
+                    normalize_focus(&mut data);
+                    // Publish workspace.closed event
+                    self.publish_event(
+                        "workspace.closed",
+                        json!({ "workspace_id": ws_id }),
+                    );
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -1050,7 +1070,40 @@ impl BuiltinState {
             .data
             .lock()
             .map_err(|_| "state unavailable".to_string())?;
+        // Get the tab_id before closing the pane
+        let tab_id = data.panes.get(pane_id).map(|p| p.tab_id.clone());
+
         close_pane_locked(&mut data, pane_id);
+
+        // If the tab now has no panes, close it (which will auto-close workspace if it's the last tab)
+        if let Some(tid) = tab_id {
+            let should_close_tab = data
+                .tabs
+                .get(&tid)
+                .map(|tab| tab.pane_ids.is_empty())
+                .unwrap_or(true);
+            if should_close_tab {
+                let ws_id = data.tabs.get(&tid).map(|t| t.workspace_id.clone());
+                close_tab_locked(&mut data, &tid);
+                normalize_focus(&mut data);
+                // Emit tab.closed event for the auto-closed tab
+                self.publish_event("tab.closed", json!({ "tab_id": tid }));
+                // If the workspace now has no tabs, close it
+                if let Some(ws_id) = ws_id {
+                    if let Some(workspace) = data.workspaces.get(&ws_id) {
+                        if workspace.tab_ids.is_empty() {
+                            data.workspaces.remove(&ws_id);
+                            normalize_focus(&mut data);
+                            self.publish_event(
+                                "workspace.closed",
+                                json!({ "workspace_id": ws_id }),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
         normalize_focus(&mut data);
         Ok(())
     }
@@ -4352,5 +4405,107 @@ mod tests {
         assert_eq!(err.kind(), io::ErrorKind::AddrInUse);
         drop(listener);
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn closing_last_tab_auto_closes_workspace() {
+        let state =
+            BuiltinState::new(std::env::current_dir().unwrap(), Some(default_shell())).unwrap();
+        let workspace = state.handle_request(
+            "seed",
+            "workspace.create",
+            json!({ "label": "Test Workspace" }),
+        );
+        let workspace_id = workspace["result"]["workspace"]["workspace_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let tab_id = workspace["result"]["tab"]["tab_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // Subscribe to events before closing
+        let rx = state.subscribe_events();
+
+        // Close the only tab
+        state.handle_request("close", "tab.close", json!({ "tab_id": tab_id }));
+
+        // Verify workspace is gone from the snapshot
+        let snapshot = state.handle_request("snap", "session.snapshot", json!({}));
+        let workspaces = snapshot["result"]["snapshot"]["workspaces"]
+            .as_array()
+            .unwrap();
+        assert!(
+            workspaces.is_empty(),
+            "workspace should be auto-closed when last tab closes"
+        );
+
+        // Verify workspace.closed event was emitted
+        let event = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!(event["event"], "workspace.closed");
+        assert_eq!(event["data"]["workspace_id"], workspace_id);
+    }
+
+    #[test]
+    fn closing_last_pane_auto_closes_tab_and_workspace() {
+        let state =
+            BuiltinState::new(std::env::current_dir().unwrap(), Some(default_shell())).unwrap();
+        let workspace = state.handle_request(
+            "seed",
+            "workspace.create",
+            json!({ "label": "Test Workspace" }),
+        );
+        let workspace_id = workspace["result"]["workspace"]["workspace_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let tab_id = workspace["result"]["tab"]["tab_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let pane_id = workspace["result"]["root_pane"]["pane_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // Subscribe to events before closing
+        let rx = state.subscribe_events();
+
+        // Close the only pane
+        state.handle_request("close", "pane.close", json!({ "pane_id": pane_id }));
+
+        // Verify workspace is gone from the snapshot
+        let snapshot = state.handle_request("snap", "session.snapshot", json!({}));
+        let workspaces = snapshot["result"]["snapshot"]["workspaces"]
+            .as_array()
+            .unwrap();
+        assert!(
+            workspaces.is_empty(),
+            "workspace should be auto-closed when last pane closes"
+        );
+        let tabs = snapshot["result"]["snapshot"]["tabs"]
+            .as_array()
+            .unwrap();
+        assert!(tabs.is_empty(), "tab should be auto-closed when last pane closes");
+
+        // Collect events - expect tab.closed and workspace.closed
+        let mut got_tab_closed = false;
+        let mut got_workspace_closed = false;
+        while let Ok(event) = rx.recv_timeout(Duration::from_millis(500)) {
+            if event["event"] == "tab.closed" {
+                got_tab_closed = true;
+                assert_eq!(event["data"]["tab_id"], tab_id);
+            }
+            if event["event"] == "workspace.closed" {
+                got_workspace_closed = true;
+                assert_eq!(event["data"]["workspace_id"], workspace_id);
+            }
+        }
+        assert!(got_tab_closed, "tab.closed event should be emitted");
+        assert!(
+            got_workspace_closed,
+            "workspace.closed event should be emitted"
+        );
     }
 }

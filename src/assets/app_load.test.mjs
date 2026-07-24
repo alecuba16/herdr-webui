@@ -1917,7 +1917,7 @@ describe("app bundle load", () => {
     match(html, /workspace-group-main/);
   });
 
-  it("closes the last panel by closing its workspace instead of tab.close", async () => {
+  it("closes the last panel by closing its tab then its workspace", async () => {
     const ctx = context();
     vm.runInContext(source, ctx);
 
@@ -1938,8 +1938,9 @@ describe("app bundle load", () => {
       ctx,
     );
 
-    equal(calls.length, 1);
-    equal(calls[0].url, "/api/workspaces/ws1/close");
+    equal(calls.length, 2);
+    equal(calls[0].url, "/api/tabs/tab1/close");
+    equal(calls[1].url, "/api/workspaces/ws1/close");
   });
 
   it("closes workspace panels through workspace.close", async () => {
@@ -2256,6 +2257,48 @@ describe("app bundle load", () => {
     const closeRequest = requests.find((request) => request.url === "/api/panes/pane_1/close");
     ok(closeRequest);
     equal(closeRequest.method, "POST");
+  });
+
+  it("switches workspace when workspace.closed event fires for selected workspace", () => {
+    const ctx = context();
+    const replaced = [];
+    ctx.history.replaceState = (_state, _title, url) => replaced.push(url);
+    vm.runInContext(source, ctx);
+
+    const result = vm.runInContext(
+      `state.ws = "ws1";
+       state.tab = "tab_1";
+       state.pane = "pane_1";
+       state.terminalId = "term_1";
+       state.workspaces = [
+         { workspace_id: "ws1", label: "alpha" },
+         { workspace_id: "ws2", label: "beta" },
+       ];
+       state.allTabs = [
+         { workspace_id: "ws1", tab_id: "tab_1" },
+         { workspace_id: "ws2", tab_id: "tab_2", focused: true },
+       ];
+       state.tabs = state.allTabs.slice();
+       state.panes = [
+         { workspace_id: "ws1", tab_id: "tab_1", pane_id: "pane_1", terminal_id: "term_1" },
+         { workspace_id: "ws2", tab_id: "tab_2", pane_id: "pane_2", terminal_id: "term_2", focused: true },
+       ];
+       forgetClosedSelection("workspace.closed", { workspace_id: "ws1" });
+       ({ ws: state.ws, tab: state.tab, pane: state.pane, terminalId: state.terminalId, workspaces: state.workspaces.map(w => w.workspace_id) });`,
+      ctx,
+    );
+
+    equal(result.ws, "ws2");
+    equal(result.tab, "tab_2");
+    equal(result.pane, "pane_2");
+    equal(result.terminalId, "term_2");
+    equal(JSON.stringify(result.workspaces), JSON.stringify(["ws2"]));
+  });
+
+  it("fast-refreshes workspace.closed events", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    equal(ctx.eventNeedsFastRefresh("workspace.closed"), true);
   });
 
   it("keeps blocked agents first when attention sorting is inverted", () => {

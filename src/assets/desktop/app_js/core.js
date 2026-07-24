@@ -136,6 +136,7 @@ const FAST_REFRESH_EVENTS = new Set([
   "pane.closed",
   "pane.exited",
   "tab.closed",
+  "workspace.closed",
   "worktree.created",
   "worktree.opened",
   "worktree.removed",
@@ -2896,6 +2897,17 @@ function forgetClosedSelection(kind, data) {
       replaceSelectionHistory();
       if (window.HerdrTerminalRenderer) connectTerminal();
     }
+  } else if (kind === "workspace.closed") {
+    const closedWsId = data && data.workspace_id;
+    const wasSelected = closedWsId && closedWsId === state.ws;
+    if (closedWsId) removeClosedWorkspaceFromState(closedWsId);
+    if (wasSelected) {
+      resetTerminalConnection(true);
+      selectFallbackWorkspaceAfterClosed(closedWsId);
+      render();
+      replaceSelectionHistory();
+      if (window.HerdrTerminalRenderer) connectTerminal();
+    }
   }
 }
 
@@ -2909,6 +2921,48 @@ function removeClosedTabFromState(tabId) {
   state.allTabs = (state.allTabs || []).filter((tab) => tab.tab_id !== tabId);
   state.panes = (state.panes || []).filter((pane) => pane.tab_id !== tabId);
   state.agents = (state.agents || []).filter((agent) => agent.tab_id !== tabId);
+}
+
+function removeClosedWorkspaceFromState(workspaceId) {
+  const tabsToRemove = (state.allTabs || [])
+    .concat(state.tabs || [])
+    .filter((tab) => tab.workspace_id === workspaceId)
+    .map((tab) => tab.tab_id);
+  for (const tabId of tabsToRemove) removeClosedTabFromState(tabId);
+  state.workspaces = (state.workspaces || []).filter(
+    (workspace) => workspace.workspace_id !== workspaceId,
+  );
+  state.agents = (state.agents || []).filter(
+    (agent) => agent.workspace_id !== workspaceId,
+  );
+  if (state.ws === workspaceId) {
+    state.ws = null;
+    state.tab = null;
+    state.pane = null;
+  }
+}
+
+function selectFallbackWorkspaceAfterClosed(closedWorkspaceId) {
+  const nextWorkspace =
+    (state.workspaces || []).find(
+      (workspace) => workspace.workspace_id !== closedWorkspaceId,
+    ) || null;
+  state.ws = nextWorkspace && nextWorkspace.workspace_id;
+  if (!state.ws) {
+    state.tab = null;
+    state.pane = null;
+    state.terminalId = null;
+    return;
+  }
+  const nextTab =
+    (state.tabs || []).find((tab) => tab.workspace_id === state.ws) || null;
+  state.tab = nextTab && nextTab.tab_id;
+  const nextPane =
+    (state.panes || []).find(
+      (pane) => pane.workspace_id === state.ws && pane.tab_id === state.tab,
+    ) || null;
+  state.pane = nextPane && nextPane.pane_id;
+  state.terminalId = (nextPane && nextPane.terminal_id) || null;
 }
 
 function selectFallbackTabAfterClosed(closedTabId) {
