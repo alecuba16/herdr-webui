@@ -345,17 +345,19 @@ function renderWorkspaceContextActions() {
   return "";
 }
 function selectedWorkspaceActionButtons(w) {
-  if (!w || w.workspace_id !== state.ws) return "";
+  if (!w) return "";
   const linked = isLinkedWorktree(w);
+  const isSelected = w.workspace_id === state.ws;
   const buttons = [];
   buttons.push(
-    `<span class="mini warn" data-workspace-action="close" title="${escapeAttr(titleWithWebuiShortcut(`Close selected ${linked ? "worktree" : "workspace"} and its panels`, "closeWorkspace"))}" onclick="event.preventDefault();event.stopPropagation();runWorkspaceContextAction('close',this)">✕</span>`,
+    `<span class="mini warn" data-workspace-action="close" title="${escapeAttr(titleWithWebuiShortcut(`Close ${linked ? "worktree" : "workspace"} and its panels`, "closeWorkspace"))}" onclick="event.preventDefault();event.stopPropagation();runWorkspaceContextAction('close', this, '${escapeAttr(w.workspace_id)}')">✕</span>`,
   );
   if (linked)
     buttons.push(
-      `<span class="mini danger" data-workspace-action="remove-worktree" title="${escapeAttr(titleWithWebuiShortcut("Remove selected worktree from disk after confirmation", "removeWorktree"))}" onclick="event.preventDefault();event.stopPropagation();runWorkspaceContextAction('remove-worktree',this)">🗑</span>`,
+      `<span class="mini danger" data-workspace-action="remove-worktree" title="${escapeAttr(titleWithWebuiShortcut("Remove worktree from disk after confirmation", "removeWorktree"))}" onclick="event.preventDefault();event.stopPropagation();runWorkspaceContextAction('remove-worktree', this, '${escapeAttr(w.workspace_id)}')">🗑</span>`,
     );
-  return `<span class="space-actions selected-space-actions">${buttons.join("")}</span>`;
+  const className = isSelected ? "selected-space-actions" : "space-actions";
+  return `<span class="space-actions ${className}">${buttons.join("")}</span>`;
 }
 function renderRepoHeader(group) {
   return `<div class="repo-header workspace-orphan-header"><span>${escapeHtml(group.label)}</span></div>`;
@@ -553,8 +555,10 @@ async function openWorkspaceFileBrowser(id, options) {
   window.HerdrFileBrowser.open(workspace, openOptions).catch((error) => alert(error.message || String(error)));
   render();
 }
-function runWorkspaceContextAction(action, button) {
-  const w = selectedWorkspace();
+function runWorkspaceContextAction(action, button, workspaceId) {
+  const w = workspaceId
+    ? state.workspaces.find((x) => x.workspace_id === workspaceId)
+    : selectedWorkspace();
   if (!w) return;
   if (action === "create-worktree") openWorktreeCreateModal(w.workspace_id);
   else if (action === "open-worktrees") openWorktreesForWorkspace(w, button.dataset.key || "");

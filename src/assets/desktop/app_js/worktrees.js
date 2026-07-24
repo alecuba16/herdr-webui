@@ -1083,6 +1083,9 @@ async function closeTab(id) {
   if (workspaceTabs.length > 1) {
     await api(`/api/tabs/${encodeURIComponent(id)}/close`, { method: "POST" });
   } else if (workspaceId) {
+    // Close the tab; built-in backend auto-closes the empty workspace.
+    // External backends may keep it, so also close the workspace explicitly.
+    await api(`/api/tabs/${encodeURIComponent(id)}/close`, { method: "POST" });
     await closeWorkspaceById(workspaceId);
   } else {
     const panes = panesForTab(id);
