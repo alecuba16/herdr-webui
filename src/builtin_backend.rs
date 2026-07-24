@@ -27,6 +27,96 @@ const MAX_SCROLLBACK_BYTES: usize = 8 * 1024 * 1024;
 const DETECTION_TAIL_BYTES: usize = 64 * 1024;
 const SOCKET_PERMISSION_MODE: u32 = 0o600;
 
+/// Captures the latest OSC 9 progress payload from raw PTY bytes.
+/// Agents like jcode emit `ESC]9;jcode:<state> BEL` as a structured
+/// side-channel for agent status detection, avoiding fragile screen-scraping.
+/// This is a minimal state machine that tracks the OSC body between
+/// `ESC ]` and `BEL` (0x07) or `ST` (`ESC \`).
+#[derive(Default)]
+struct Osc9Tracker {
+    state: Osc9State,
+    body: Vec<u8>,
+    latest_payload: Option<String>,
+}
+
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+enum Osc9State {
+    #[default]
+    Ground,
+    Escape,
+    OscBody,
+    OscEscape,
+}
+
+impl Osc9Tracker {
+    fn observe(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            match self.state {
+                Osc9State::Ground => {
+                    if byte == 0x1b {
+                        self.state = Osc9State::Escape;
+                    }
+                }
+                Osc9State::Escape => {
+                    if byte == b']' {
+                        self.body.clear();
+                        self.state = Osc9State::OscBody;
+                    } else if byte == 0x1b {
+                        self.state = Osc9State::Escape;
+                    } else {
+                        self.state = Osc9State::Ground;
+                    }
+                }
+                Osc9State::OscBody => match byte {
+                    0x07 => {
+                        self.finalize();
+                        self.state = Osc9State::Ground;
+                    }
+                    0x1b => self.state = Osc9State::OscEscape,
+                    _ => self.body.push(byte),
+                },
+                Osc9State::OscEscape => {
+                    if byte == b'\\' {
+                        self.finalize();
+                        self.state = Osc9State::Ground;
+                    } else {
+                        self.body.push(0x1b);
+                        self.body.push(byte);
+                        self.state = Osc9State::OscBody;
+                    }
+                }
+            }
+
+            if self.body.len() > 4096 {
+                self.body.clear();
+                self.state = Osc9State::Ground;
+            }
+        }
+    }
+
+    fn finalize(&mut self) {
+        if let Some((command, payload)) = parse_osc_body(&self.body) {
+            if command == b"9" {
+                let text = String::from_utf8_lossy(payload);
+                let sanitized: String = text.chars().filter(|c| !c.is_control()).collect();
+                if !sanitized.is_empty() {
+                    self.latest_payload = Some(sanitized);
+                }
+            }
+        }
+        self.body.clear();
+    }
+
+    fn latest_progress(&self) -> &str {
+        self.latest_payload.as_deref().unwrap_or("")
+    }
+}
+
+fn parse_osc_body(body: &[u8]) -> Option<(&[u8], &[u8])> {
+    let sep = body.iter().position(|&b| b == b';')?;
+    Some((&body[..sep], &body[sep + 1..]))
+}
+
 type LocalListener = interprocess::local_socket::Listener;
 type LocalStream = interprocess::local_socket::Stream;
 
@@ -1095,6 +1185,7 @@ struct TerminalRuntime {
     writer: Mutex<Box<dyn Write + Send>>,
     scrollback: Mutex<VecDeque<u8>>,
     subscribers: Mutex<Vec<mpsc::SyncSender<TerminalSubscriberMessage>>>,
+    osc9_tracker: Mutex<Osc9Tracker>,
     exited: AtomicBool,
 }
 
@@ -1169,6 +1260,7 @@ impl TerminalRuntime {
             writer: Mutex::new(writer),
             scrollback: Mutex::new(VecDeque::new()),
             subscribers: Mutex::new(Vec::new()),
+            osc9_tracker: Mutex::new(Osc9Tracker::default()),
             exited: AtomicBool::new(false),
         });
         let runtime_for_reader = Arc::clone(&runtime);
@@ -1253,6 +1345,11 @@ impl TerminalRuntime {
                 scrollback.pop_front();
             }
         }
+        // Feed raw bytes to the OSC 9 tracker so agent status can be detected
+        // via structured payloads (e.g. jcode emits `ESC]9;jcode:working BEL`).
+        if let Ok(mut tracker) = self.osc9_tracker.lock() {
+            tracker.observe(bytes);
+        }
         if let Ok(mut subscribers) = self.subscribers.lock() {
             let payload = TerminalSubscriberMessage::Output(bytes.to_vec());
             subscribers.retain(|tx| match tx.try_send(payload.clone()) {
@@ -1289,6 +1386,11 @@ impl TerminalRuntime {
 
     fn publish_agent_status_if_changed(&self) {
         let tail = self.history_tail_text(DETECTION_TAIL_BYTES);
+        let osc_progress = self
+            .osc9_tracker
+            .lock()
+            .map(|tracker| tracker.latest_progress().to_string())
+            .unwrap_or_default();
         let process_agent = self
             .child_pid()
             .and_then(detect_agent_label_from_process_tree);
@@ -1296,7 +1398,7 @@ impl TerminalRuntime {
             .or(process_agent)
             .or_else(|| detect_agent_label_from_text(&tail))
             .map(str::to_string);
-        let status = match detect_agent_status(agent.as_deref(), &tail) {
+        let status = match detect_agent_status_with_osc(agent.as_deref(), &tail, &osc_progress) {
             "unknown" if agent.is_some() => "idle",
             status => status,
         }
@@ -1561,7 +1663,11 @@ fn pane_agent_presentation(pane: &PaneRecord, data: &BuiltinData) -> PaneAgentPr
     let agent = detect_agent_label(&pane.argv)
         .or(process_agent)
         .or_else(|| detect_agent_label_from_text(&tail));
-    let status = match detect_agent_status(agent, &tail) {
+    let osc_progress = terminal
+        .and_then(|terminal| terminal.osc9_tracker.lock().ok())
+        .map(|tracker| tracker.latest_progress().to_string())
+        .unwrap_or_default();
+    let status = match detect_agent_status_with_osc(agent, &tail, &osc_progress) {
         "unknown" if agent.is_some() => "idle",
         status => status,
     };
@@ -2253,6 +2359,42 @@ fn process_args_tokens(input: &str) -> Vec<String> {
         tokens.push(current);
     }
     tokens
+}
+
+/// Detect agent status using OSC 9 progress payload as primary signal,
+/// falling back to screen-scraping when no OSC payload is present.
+/// This mirrors herdr's manifest-based detection: OSC rules at priority 1100
+/// always win over screen-scrape rules at lower priority.
+fn detect_agent_status_with_osc(
+    agent: Option<&str>,
+    text: &str,
+    osc_progress: &str,
+) -> &'static str {
+    if !osc_progress.is_empty() {
+        let Some(agent) = agent else {
+            return "unknown";
+        };
+        if let Some(status) = osc_progress_status_for_agent(agent, osc_progress) {
+            return status;
+        }
+    }
+    detect_agent_status(agent, text)
+}
+
+/// Map an OSC 9 progress payload to an agent status string.
+/// Currently only jcode emits structured OSC 9 payloads (`jcode:working`,
+/// `jcode:idle`, `jcode:blocked`). Returns `None` for unknown formats
+/// so the caller falls back to screen-scrape detection.
+fn osc_progress_status_for_agent(agent: &str, osc_progress: &str) -> Option<&'static str> {
+    match agent {
+        "jcode" => match osc_progress {
+            "jcode:working" => Some("working"),
+            "jcode:idle" => Some("idle"),
+            "jcode:blocked" => Some("blocked"),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 fn detect_agent_status(agent: Option<&str>, text: &str) -> &'static str {
@@ -3440,6 +3582,94 @@ mod tests {
         assert_eq!(event["event"], "pane.exited");
         assert_eq!(event["data"]["pane_id"], "pane_exit");
         assert_eq!(event["data"]["terminal_id"], "term_exit");
+    }
+
+    #[test]
+    fn osc9_tracker_captures_jcode_progress_payload() {
+        let mut tracker = Osc9Tracker::default();
+        // jcode emits: ESC ] 9 ; jcode:working BEL
+        tracker.observe(b"\x1b]9;jcode:working\x07");
+        assert_eq!(tracker.latest_progress(), "jcode:working");
+
+        tracker.observe(b"\x1b]9;jcode:idle\x07");
+        assert_eq!(tracker.latest_progress(), "jcode:idle");
+
+        tracker.observe(b"\x1b]9;jcode:blocked\x07");
+        assert_eq!(tracker.latest_progress(), "jcode:blocked");
+    }
+
+    #[test]
+    fn osc9_tracker_handles_split_sequence() {
+        let mut tracker = Osc9Tracker::default();
+        tracker.observe(b"\x1b]9;jcode:work");
+        assert_eq!(tracker.latest_progress(), "");
+        tracker.observe(b"ing\x07");
+        assert_eq!(tracker.latest_progress(), "jcode:working");
+    }
+
+    #[test]
+    fn osc9_tracker_ignores_non_osc9_commands() {
+        let mut tracker = Osc9Tracker::default();
+        // OSC 0 (title) should not be captured as progress
+        tracker.observe(b"\x1b]0;some title\x07");
+        assert_eq!(tracker.latest_progress(), "");
+        // OSC 52 (clipboard) should not be captured
+        tracker.observe(b"\x1b]52;c;aGVsbG8=\x07");
+        assert_eq!(tracker.latest_progress(), "");
+    }
+
+    #[test]
+    fn osc9_tracker_ignores_oversized_payload() {
+        let mut tracker = Osc9Tracker::default();
+        let mut oversized = Vec::from(b"\x1b]9;".as_slice());
+        oversized.extend(std::iter::repeat_n(b'x', 5000));
+        oversized.push(0x07);
+        tracker.observe(&oversized);
+        assert_eq!(tracker.latest_progress(), "");
+        // Recovers after oversized payload
+        tracker.observe(b"\x1b]9;jcode:working\x07");
+        assert_eq!(tracker.latest_progress(), "jcode:working");
+    }
+
+    #[test]
+    fn detect_agent_status_with_osc_prefers_osc_over_screen_scrape() {
+        // OSC says "idle" but screen shows working spinner
+        assert_eq!(
+            detect_agent_status_with_osc(Some("jcode"), "⠋ sending… 0.3s", "jcode:idle"),
+            "idle"
+        );
+        // OSC says "working" but screen shows idle prompt
+        assert_eq!(
+            detect_agent_status_with_osc(Some("jcode"), "❯", "jcode:working"),
+            "working"
+        );
+        // OSC says "blocked" with minimal screen
+        assert_eq!(
+            detect_agent_status_with_osc(Some("jcode"), "❯", "jcode:blocked"),
+            "blocked"
+        );
+    }
+
+    #[test]
+    fn detect_agent_status_with_osc_falls_back_to_screen_scrape() {
+        // No OSC payload -> screen-scrape detection
+        assert_eq!(
+            detect_agent_status_with_osc(Some("jcode"), "⠋ sending… 0.3s", ""),
+            "working"
+        );
+        assert_eq!(
+            detect_agent_status_with_osc(Some("jcode"), "Session ready\n❯", ""),
+            "idle"
+        );
+    }
+
+    #[test]
+    fn detect_agent_status_with_osc_unknown_payload_falls_back() {
+        // Unknown OSC payload format -> falls back to screen-scrape
+        assert_eq!(
+            detect_agent_status_with_osc(Some("jcode"), "⠋ sending… 0.3s", "unknown:format"),
+            "working"
+        );
     }
 
     #[test]
