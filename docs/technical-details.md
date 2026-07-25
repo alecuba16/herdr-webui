@@ -363,6 +363,22 @@ This split keeps expensive or repository-sensitive work in Rust and keeps browse
 - Closing a workspace/worktree forgets only UI cache. It does not mutate repository files or Herdr backend state.
 - Refresh retriggers backend calculations for Git status and tree/content search, which avoids stale derived state in the browser.
 
+### Agent status detection performance (built-in backend)
+
+The built-in backend detects agent status (blocked/working/idle/done) for 20+ AI coding agents using two parallel paths:
+
+1. **OSC 9 structured payloads** (preferred): Agents like jcode emit `ESC]9;jcode:working BEL` sequences. The `Osc9Tracker` state machine parses these in O(1) per byte with zero allocations after initial setup.
+2. **Screen-text fallback**: When OSC 9 is unavailable, the backend scans the last 64 KB of terminal scrollback for agent-specific text patterns (spinners, prompts, tool bars). This runs on every terminal output chunk.
+
+To prevent CPU burn during heavy terminal output, the following optimizations are in place:
+
+- **Per-terminal throttling**: `publish_agent_status_if_changed()` runs at most once per 500 ms per terminal (tracked via `last_status_check` timestamp). This caps the expensive screen-text scan to ~2×/second per pane regardless of output rate.
+- **Cached pane presentation**: `pane_agent_presentation()` caches the computed agent/status pair in `PaneRecord.cached_agent_presentation`. The cache is invalidated on terminal output so `agent.list` calls (used by auto no-sleep and the events bridge) read cached values instead of recomputing for every pane.
+- **Event-driven no-sync**: The WebSocket events bridge no longer calls `agent.list` on every `pane.agent_status_changed` event. It reads the `agent_status` field directly from the event payload and updates auto no-sleep state, eliminating a full recomputation storm.
+- **Frontend auto-theme polling removed**: The 2-second `setInterval(pollAutoTheme, 2000)` was replaced with a `matchMedia('(prefers-color-scheme: dark)').addEventListener('change')` listener, eliminating a permanent wake-up on idle tabs.
+
+These changes reduce built-in backend CPU usage during active terminal sessions from continuous polling/spawning to event-driven with bounded periodic checks.
+
 ## Styling and theme architecture
 
 ### Color tokens

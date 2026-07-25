@@ -45,7 +45,6 @@ if (window.matchMedia) {
 document.addEventListener("visibilitychange", () => {
   syncBrowserFavicon();
 });
-setInterval(pollAutoTheme, 2000);
 let settingsBackdropDown = false,
   shortcutsBackdropDown = false;
 el("settingsToggle").onclick = () => {
