@@ -1,5 +1,6 @@
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct TuiTextStyle {
@@ -130,7 +131,7 @@ impl StyledScreen {
         } else {
             line.push(cell);
         }
-        self.col += 1;
+        self.col += ch.width().unwrap_or(1).max(1);
     }
 
     fn carriage_return(&mut self) {
@@ -390,10 +391,18 @@ fn truncate(value: &str, max_width: usize) -> String {
     if max_width == 0 {
         return String::new();
     }
+    // Reserve 1 width for ellipsis if we need to truncate
+    let truncate_width = max_width.saturating_sub(1);
+    if value.width() <= truncate_width {
+        return value.to_string();
+    }
     let mut out = String::new();
     for ch in value.chars() {
-        if out.chars().count() + 1 >= max_width {
-            out.push('…');
+        let ch_width = ch.width().unwrap_or(0);
+        if out.width() + ch_width > truncate_width {
+            if out.width() + 1 <= max_width {
+                out.push('…');
+            }
             return out;
         }
         out.push(ch);
