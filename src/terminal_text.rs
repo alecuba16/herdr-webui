@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+use unicode_width::UnicodeWidthChar;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum StripCarriageReturn {
     Drop,
@@ -162,7 +164,7 @@ impl TextScreen {
         } else {
             line.push(ch);
         }
-        self.col += 1;
+        self.col += ch.width().unwrap_or(1).max(1);
     }
 
     fn carriage_return(&mut self) {

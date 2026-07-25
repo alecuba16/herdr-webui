@@ -105,3 +105,22 @@ fn plain_lines(lines: &[Vec<TuiTextSpan>]) -> Vec<String> {
         .map(|line| line.iter().map(|span| span.text.as_str()).collect())
         .collect()
 }
+
+#[test]
+fn styled_terminal_line_handles_emoji_width_correctly() {
+    let spans = vec![TuiTextSpan {
+        text: "✅done🐝".to_string(),
+        style: TuiTextStyle::default(),
+    }];
+    // Emoji ✅ and 🐝 are 2 columns wide each
+    // "done" is 4 columns
+    // Total width = 2 + 4 + 2 = 8 columns
+    let line = styled_terminal_line(&spans, 10, Color::White);
+    assert_eq!(line.spans[0].content.as_ref(), "✅done🐝");
+
+    // Truncate at 5 columns: ✅(2) + "don"(3) = 5, then ellipsis if space
+    let line = styled_terminal_line(&spans, 5, Color::White);
+    let content = line.spans[0].content.as_ref();
+    // ✅ takes 2 columns, then "don" takes 3, total 5, ellipsis fits in reserved space
+    assert_eq!(content, "✅don…");
+}

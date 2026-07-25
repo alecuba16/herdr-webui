@@ -131,7 +131,7 @@ impl StyledScreen {
         } else {
             line.push(cell);
         }
-        self.col += 1;
+        self.col += ch.width().unwrap_or(1).max(1);
     }
 
     fn carriage_return(&mut self) {
