@@ -3531,8 +3531,22 @@ async fn events_socket(state: WebState, api: ApiClient, mut socket: WebSocket) {
         tokio::select! {
             Some(value) = rx.recv() => {
                 if web_event_kind(&value) == Some("pane.agent_status_changed") {
-                    if let Ok(agents) = api.request_value(json!({ "id": "web:agent:list:event", "method": "agent.list", "params": {} })) {
-                        sync_auto_no_sleep_from_agents(&state, &agents);
+                    // Use the event payload directly instead of calling agent.list
+                    // This avoids recomputing all pane statuses on every status change
+                    if let Some(event) = value.get("event") {
+                        if let Some(data) = event.get("data") {
+                            if let Some(status) = data.get("agent_status").and_then(|s| s.as_str()) {
+                                let has_working = status == "working";
+                                let cooldown = state
+                                    .server_settings
+                                    .lock()
+                                    .map(|settings| settings.no_sleep_auto_cooldown_seconds)
+                                    .unwrap_or(60);
+                                if let Ok(mut no_sleep) = state.no_sleep.lock() {
+                                    sync_auto_no_sleep(&mut no_sleep, has_working, cooldown);
+                                }
+                            }
+                        }
                     }
                 }
                 if socket.send(Message::Text(value.to_string().into())).await.is_err() { break; }
