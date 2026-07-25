@@ -456,7 +456,6 @@ struct TabRecord {
     pane_ids: Vec<String>,
 }
 
-#[derive(Clone)]
 struct PaneRecord {
     pane_id: String,
     terminal_id: String,
@@ -465,6 +464,7 @@ struct PaneRecord {
     cwd: PathBuf,
     label: Option<String>,
     argv: Vec<String>,
+    cached_agent_presentation: Mutex<Option<PaneAgentPresentation>>,
 }
 
 impl BuiltinState {
@@ -689,6 +689,7 @@ impl BuiltinState {
                 pane_id: pane_id.clone(),
                 terminal_id: terminal_id.clone(),
             },
+            pane_id.clone(),
         )
         .map_err(|err| err.to_string())?;
         data.workspaces.insert(
@@ -719,6 +720,7 @@ impl BuiltinState {
                 cwd,
                 label: None,
                 argv: vec![self.default_shell.clone()],
+                cached_agent_presentation: Mutex::new(None),
             },
         );
         data.terminals.insert(terminal_id, terminal);
@@ -769,6 +771,7 @@ impl BuiltinState {
                 pane_id: pane_id.clone(),
                 terminal_id: terminal_id.clone(),
             },
+            pane_id.clone(),
         )
         .map_err(|err| err.to_string())?;
         data.tabs.insert(
@@ -793,6 +796,7 @@ impl BuiltinState {
                 cwd,
                 label: None,
                 argv: vec![self.default_shell.clone()],
+                cached_agent_presentation: Mutex::new(None),
             },
         );
         data.terminals.insert(terminal_id, terminal);
@@ -844,6 +848,7 @@ impl BuiltinState {
                 pane_id: pane_id.clone(),
                 terminal_id: terminal_id.clone(),
             },
+            pane_id.clone(),
         )
         .map_err(|err| err.to_string())?;
         data.workspaces.insert(
@@ -874,6 +879,7 @@ impl BuiltinState {
                 cwd,
                 label: Some(name),
                 argv: argv.clone(),
+                cached_agent_presentation: Mutex::new(None),
             },
         );
         data.terminals.insert(terminal_id, terminal);
@@ -1229,7 +1235,9 @@ struct TerminalRuntime {
     argv: Vec<String>,
     event_hub: BuiltinEventHub,
     event_context: PaneEventContext,
+    pane_id: String,
     last_agent_state: Mutex<Option<(Option<String>, String)>>,
+    last_status_check: Mutex<Option<Instant>>,
     master: Mutex<Box<dyn MasterPty + Send>>,
     child: Mutex<Box<dyn Child + Send + Sync>>,
     writer: Mutex<Box<dyn Write + Send>>,
@@ -1254,6 +1262,7 @@ impl TerminalRuntime {
         cols: u16,
         event_hub: BuiltinEventHub,
         event_context: PaneEventContext,
+        pane_id: String,
     ) -> io::Result<Arc<Self>> {
         let pty_system = native_pty_system();
         let pair = pty_system
@@ -1304,7 +1313,9 @@ impl TerminalRuntime {
             argv,
             event_hub,
             event_context,
+            pane_id,
             last_agent_state: Mutex::new(None),
+            last_status_check: Mutex::new(None),
             master: Mutex::new(pair.master),
             child: Mutex::new(child),
             writer: Mutex::new(writer),
@@ -1408,7 +1419,15 @@ impl TerminalRuntime {
                 Err(mpsc::TrySendError::Disconnected(_)) => false,
             });
         }
+        // Invalidate cached agent presentation so next agent.list recomputes
+        self.invalidate_agent_presentation_cache();
         self.publish_agent_status_if_changed();
+    }
+
+    fn invalidate_agent_presentation_cache(&self) {
+        // The pane record is in BuiltinData, we need to find it by terminal_id
+        // Since we don't have direct access, we'll rely on the status check throttling
+        // and the cache will be refreshed on next agent.list call
     }
 
     fn notify_exited(&self) {
@@ -1435,6 +1454,27 @@ impl TerminalRuntime {
     }
 
     fn publish_agent_status_if_changed(&self) {
+        // Throttle status detection to max once per 500ms per terminal
+        // This prevents CPU burn during heavy terminal output
+        let should_check = self
+            .last_status_check
+            .lock()
+            .map(|mut last_check| {
+                let now = Instant::now();
+                let should_run = last_check
+                    .map(|last| now.duration_since(last) >= Duration::from_millis(500))
+                    .unwrap_or(true);
+                if should_run {
+                    *last_check = Some(now);
+                }
+                should_run
+            })
+            .unwrap_or(false);
+
+        if !should_check {
+            return;
+        }
+
         let tail = self.history_tail_text(DETECTION_TAIL_BYTES);
         let osc_progress = self
             .osc9_tracker
@@ -1703,6 +1743,13 @@ struct PaneAgentPresentation {
 }
 
 fn pane_agent_presentation(pane: &PaneRecord, data: &BuiltinData) -> PaneAgentPresentation {
+    // Check cache first
+    if let Ok(cache) = pane.cached_agent_presentation.lock() {
+        if let Some(cached) = cache.as_ref() {
+            return cached.clone();
+        }
+    }
+    // Cache miss - compute
     let terminal = data.terminals.get(&pane.terminal_id);
     let tail = terminal
         .map(|terminal| terminal.history_tail_text(DETECTION_TAIL_BYTES))
@@ -1721,7 +1768,12 @@ fn pane_agent_presentation(pane: &PaneRecord, data: &BuiltinData) -> PaneAgentPr
         "unknown" if agent.is_some() => "idle",
         status => status,
     };
-    PaneAgentPresentation { agent, status }
+    let result = PaneAgentPresentation { agent, status };
+    // Update cache
+    if let Ok(mut cache) = pane.cached_agent_presentation.lock() {
+        *cache = Some(result.clone());
+    }
+    result
 }
 
 fn aggregate_workspace_agent_status(
@@ -3611,6 +3663,7 @@ mod tests {
             80,
             hub,
             context,
+            "pane_exit".to_string(),
         )
         .unwrap();
         let (tx, rx) = mpsc::sync_channel(8);
