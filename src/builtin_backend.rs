@@ -1235,7 +1235,7 @@ struct TerminalRuntime {
     argv: Vec<String>,
     event_hub: BuiltinEventHub,
     event_context: PaneEventContext,
-    pane_id: String,
+    _pane_id: String,
     last_agent_state: Mutex<Option<(Option<String>, String)>>,
     last_status_check: Mutex<Option<Instant>>,
     master: Mutex<Box<dyn MasterPty + Send>>,
@@ -1313,7 +1313,7 @@ impl TerminalRuntime {
             argv,
             event_hub,
             event_context,
-            pane_id,
+            _pane_id: pane_id,
             last_agent_state: Mutex::new(None),
             last_status_check: Mutex::new(None),
             master: Mutex::new(pair.master),
@@ -1746,7 +1746,7 @@ fn pane_agent_presentation(pane: &PaneRecord, data: &BuiltinData) -> PaneAgentPr
     // Check cache first
     if let Ok(cache) = pane.cached_agent_presentation.lock() {
         if let Some(cached) = cache.as_ref() {
-            return cached.clone();
+            return *cached;
         }
     }
     // Cache miss - compute
@@ -1771,7 +1771,7 @@ fn pane_agent_presentation(pane: &PaneRecord, data: &BuiltinData) -> PaneAgentPr
     let result = PaneAgentPresentation { agent, status };
     // Update cache
     if let Ok(mut cache) = pane.cached_agent_presentation.lock() {
-        *cache = Some(result.clone());
+        *cache = Some(result);
     }
     result
 }
