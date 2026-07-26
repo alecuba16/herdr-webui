@@ -464,7 +464,7 @@
       else body = `<div id="mobileFilePreview"></div>`;
       setTimeout(() => {
         const parent = document.getElementById("mobileFilePreview");
-        if (parent && local.file) Editor.create({ parent, path: local.file.path, content: local.file.content || "", readonly: true, hideHeader: true, lineNumbers: lineNumbersEnabled(), searchHighlight: local.file.searchHighlight || null });
+        if (parent && local.file) Editor.create({ parent, path: local.file.path, content: local.file.content || "", readonly: true, hideHeader: true, lineNumbers: lineNumbersEnabled(), markdownPreview: !local.file.searchHighlight, searchHighlight: local.file.searchHighlight || null });
       }, 0);
       return `<section class="mobile-section mobile-files"><h2>Files</h2><div class="mobile-actions"><button class="mobile-btn" onclick="HerdrMobile.filesBackToTree()">Back</button><button class="mobile-btn" onclick="HerdrMobile.filesRefreshFile()">Refresh</button></div><p class="mobile-help">${deps.escapeHtml(file.path || "")}</p>${local.error ? `<div class="mobile-error">${deps.escapeHtml(local.error)}</div>` : ""}${body}</section>`;
     }

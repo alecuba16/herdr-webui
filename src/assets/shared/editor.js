@@ -251,6 +251,10 @@
     const opts = options || {};
     const parent = opts.parent;
     if (!parent) return null;
+    if (markdownPreviewEnabled(opts)) {
+      parent.innerHTML = markdownPreviewHtml(opts);
+      return createMarkdownPreview(opts);
+    }
     const readonly = opts.readonly !== false;
     if (window.HerdrCodeMirror && window.HerdrCodeMirror.create) {
       parent.innerHTML = codeMirrorShellHtml(opts);
@@ -317,6 +321,43 @@
     return `<div class="herdr-editor cm">${head}${findToolbarHtml(opts)}<div class="herdr-editor-mount"><div class="herdr-editor-loading">Loading editor…</div></div></div>`;
   }
 
+  function isMarkdownPath(path) {
+    const ext = String(path || "").split(".").pop().toLowerCase();
+    return ext === "md" || ext === "markdown";
+  }
+
+  function markdownPreviewHtml(opts) {
+    const head = editorHeaderHtml(opts, opts.path || "Preview");
+    return `<div class="herdr-editor readonly herdr-markdown-preview">${head}${findToolbarHtml(opts)}<div class="herdr-markdown-preview-mount"></div></div>`;
+  }
+
+  function markdownPreviewEnabled(opts) {
+    if (opts.readonly === false) return false;
+    if (opts.markdownPreview === false) return false;
+    if (opts.markdownPreview === true) return isMarkdownPath(opts.path);
+    return isMarkdownPath(opts.path);
+  }
+
+  function createMarkdownPreview(opts) {
+    const parent = opts.parent;
+    const api = {
+      getValue() { return String(opts.content || ""); },
+      setValue(value) {
+        opts.content = String(value == null ? "" : value);
+        const mount = parent && parent.querySelector && parent.querySelector(".herdr-markdown-preview-mount");
+        if (mount && window.HerdrMarkdownPreview) window.HerdrMarkdownPreview.renderInto(mount, opts.content);
+      },
+      selectRange() {},
+      replaceRange() {},
+      destroy() { if (parent._herdrEditorApi === api) delete parent._herdrEditorApi; parent.innerHTML = ""; },
+    };
+    parent._herdrEditorApi = api;
+    wireFindToolbar(parent, api, opts);
+    const mount = parent.querySelector(".herdr-markdown-preview-mount");
+    if (mount && window.HerdrMarkdownPreview) window.HerdrMarkdownPreview.renderInto(mount, opts.content || "");
+    return api;
+  }
+
   function previewHtml(opts) {
     const content = String(opts.content || "");
     const head = editorHeaderHtml(opts, opts.path || "Preview");
@@ -352,5 +393,5 @@
     return codeMirrorPromise;
   }
 
-  window.HerdrEditor = { create, highlight, languageFor, ensureCodeMirror, findRanges, editorFindShortcutEnabled, openFind };
+  window.HerdrEditor = { create, highlight, languageFor, ensureCodeMirror, findRanges, editorFindShortcutEnabled, openFind, isMarkdownPath, markdownPreviewEnabled };
 })();
