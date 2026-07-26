@@ -19,11 +19,16 @@ const SHARED_FILE_CONTENT_SEARCH_JS: &str = include_str!("assets/shared/file_con
 const SHARED_LINE_CONTEXT_JS: &str = include_str!("assets/shared/line_context.js");
 const SHARED_WORKSPACE_SEARCH_JS: &str = include_str!("assets/shared/workspace_search.js");
 const SHARED_EDITOR_JS: &str = include_str!("assets/shared/editor.js");
+const SHARED_MARKDOWN_PREVIEW_JS: &str = include_str!("assets/shared/markdown_preview.js");
+const SHARED_MARKDOWN_PREVIEW_CSS: &str = include_str!("assets/shared/markdown_preview.css");
 const SHARED_TERMINAL_SCROLL_JS: &str = include_str!("assets/shared/terminal_scroll.js");
 const SHARED_TERMINAL_FIT_JS: &str = include_str!("assets/shared/terminal_fit.js");
 const SHARED_TERMINAL_ADAPTER_JS: &str = include_str!("assets/shared/terminal_adapter.js");
 const SHARED_TEMP_TERMINAL_JS: &str = include_str!("assets/shared/temp_terminal.js");
 const VENDOR_CODEMIRROR_JS: &str = include_str!("assets/vendor/codemirror.bundle.js");
+const VENDOR_MARKED_JS: &str = include_str!("assets/vendor/marked.bundle.js");
+const VENDOR_DOMPURIFY_JS: &str = include_str!("assets/vendor/dompurify.bundle.js");
+const VENDOR_MERMAID_JS: &str = include_str!("assets/vendor/mermaid.bundle.js");
 const VENDOR_WTERM_JS: &str = include_str!("assets/vendor/wterm.bundle.js");
 const VENDOR_WTERM_CSS: &str = include_str!("assets/vendor/wterm.css");
 const VENDOR_GHOSTTY_WASM: &[u8] = include_bytes!("assets/vendor/ghostty-vt.wasm");
@@ -192,6 +197,17 @@ pub(crate) async fn shared_editor_js() -> Response {
     static_text(SHARED_EDITOR_JS, "application/javascript; charset=utf-8")
 }
 
+pub(crate) async fn shared_markdown_preview_js() -> Response {
+    static_text(
+        SHARED_MARKDOWN_PREVIEW_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(crate) async fn shared_markdown_preview_css() -> Response {
+    static_text(SHARED_MARKDOWN_PREVIEW_CSS, "text/css; charset=utf-8")
+}
+
 pub(crate) async fn shared_terminal_scroll_js() -> Response {
     static_text(
         SHARED_TERMINAL_SCROLL_JS,
@@ -225,6 +241,18 @@ pub(crate) async fn vendor_codemirror_js() -> Response {
         VENDOR_CODEMIRROR_JS,
         "application/javascript; charset=utf-8",
     )
+}
+
+pub(crate) async fn vendor_marked_js() -> Response {
+    static_text(VENDOR_MARKED_JS, "application/javascript; charset=utf-8")
+}
+
+pub(crate) async fn vendor_dompurify_js() -> Response {
+    static_text(VENDOR_DOMPURIFY_JS, "application/javascript; charset=utf-8")
+}
+
+pub(crate) async fn vendor_mermaid_js() -> Response {
+    static_text(VENDOR_MERMAID_JS, "application/javascript; charset=utf-8")
 }
 
 pub(crate) async fn desktop_search_js() -> Response {
@@ -459,7 +487,15 @@ mod tests {
             javascript
         );
         assert_eq!(content_type(&shared_editor_js().await), javascript);
+        assert_eq!(
+            content_type(&shared_markdown_preview_js().await),
+            javascript
+        );
+        assert_eq!(content_type(&shared_markdown_preview_css().await), css);
         assert_eq!(content_type(&vendor_codemirror_js().await), javascript);
+        assert_eq!(content_type(&vendor_marked_js().await), javascript);
+        assert_eq!(content_type(&vendor_dompurify_js().await), javascript);
+        assert_eq!(content_type(&vendor_mermaid_js().await), javascript);
         assert_eq!(content_type(&vendor_wterm_js().await), javascript);
         assert_eq!(content_type(&vendor_wterm_css().await), css);
         assert_eq!(

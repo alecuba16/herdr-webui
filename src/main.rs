@@ -41,10 +41,11 @@ use assets::{
     mobile_settings_js, mobile_terminal_js, mobile_worktrees_js, shared_actions_js,
     shared_colors_css, shared_content_search_css, shared_core_js, shared_editor_js,
     shared_file_content_search_js, shared_file_icons_css, shared_file_icons_js,
-    shared_file_tree_css, shared_file_tree_js, shared_line_context_js, shared_temp_terminal_js,
-    shared_terminal_adapter_js, shared_terminal_fit_js, shared_terminal_scroll_js,
-    shared_workspace_search_js, vendor_codemirror_js, vendor_ghostty_wasm, vendor_wterm_css,
-    vendor_wterm_js,
+    shared_file_tree_css, shared_file_tree_js, shared_line_context_js, shared_markdown_preview_css,
+    shared_markdown_preview_js, shared_temp_terminal_js, shared_terminal_adapter_js,
+    shared_terminal_fit_js, shared_terminal_scroll_js, shared_workspace_search_js,
+    vendor_codemirror_js, vendor_dompurify_js, vendor_ghostty_wasm, vendor_marked_js,
+    vendor_mermaid_js, vendor_wterm_css, vendor_wterm_js,
 };
 #[cfg(test)]
 use compat::SimpleVersion;
@@ -1243,10 +1244,21 @@ fn app_router(state: WebState) -> Router {
             get(shared_workspace_search_js),
         )
         .route("/assets/vendor/codemirror.js", get(vendor_codemirror_js))
+        .route("/assets/vendor/marked.js", get(vendor_marked_js))
+        .route("/assets/vendor/dompurify.js", get(vendor_dompurify_js))
+        .route("/assets/vendor/mermaid.js", get(vendor_mermaid_js))
         .route("/assets/vendor/wterm.js", get(vendor_wterm_js))
         .route("/assets/vendor/wterm.css", get(vendor_wterm_css))
         .route("/assets/vendor/ghostty-vt.wasm", get(vendor_ghostty_wasm))
         .route("/assets/shared/editor.js", get(shared_editor_js))
+        .route(
+            "/assets/shared/markdown-preview.js",
+            get(shared_markdown_preview_js),
+        )
+        .route(
+            "/assets/shared/markdown-preview.css",
+            get(shared_markdown_preview_css),
+        )
         .route(
             "/assets/shared/terminal-scroll.js",
             get(shared_terminal_scroll_js),

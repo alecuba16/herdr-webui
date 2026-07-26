@@ -11,7 +11,7 @@ BUILD_BIN := $(CURDIR)/$(TARGET_DIR)/release/herdr-webui
 BUILD_TUI_BIN := $(CURDIR)/$(TARGET_DIR)/release/herdr-webui-tui
 INSTALL_LOG_DIR := $(HOME)/Library/Logs/herdr-webui
 
-.PHONY: build check check-rust fmt run-web run-web-local test test-js coverage clean install-mac update-mac start-mac stop-mac restart-mac uninstall-mac install-linux update-linux start-linux stop-linux restart-linux uninstall-linux
+.PHONY: build check check-rust fmt run-web run-web-local test test-js coverage clean install-mac update-mac start-mac stop-mac restart-mac uninstall-mac install-linux update-linux start-linux stop-linux restart-linux uninstall-linux build-markdown
 
 build:
 	$(CARGO) build --release --bins --target-dir $(TARGET_DIR)
@@ -36,6 +36,9 @@ test: test-js
 
 test-js:
 	node --test src/assets/*.test.mjs
+
+build-markdown:
+	node scripts/build_markdown_assets.mjs
 
 coverage:
 	CARGO_TARGET_DIR=$(TARGET_DIR) $(CARGO) llvm-cov --summary-only

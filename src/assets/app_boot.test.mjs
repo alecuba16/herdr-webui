@@ -8,6 +8,7 @@ const SHARED_STYLES = [
   "/assets/vendor/wterm.css",
   "/assets/shared/file-icons.css",
   "/assets/shared/content-search.css",
+  "/assets/shared/markdown-preview.css",
 ];
 const DESKTOP_STYLES = [
   "/assets/desktop/app.css",
@@ -26,7 +27,10 @@ const SHARED_SCRIPTS = [
   "/assets/shared/file-content-search.js",
   "/assets/shared/workspace-search.js",
   "/assets/vendor/codemirror.js",
+  "/assets/vendor/marked.js",
+  "/assets/vendor/dompurify.js",
   "/assets/vendor/wterm.js",
+  "/assets/shared/markdown-preview.js",
   "/assets/shared/editor.js",
   "/assets/shared/terminal-fit.js",
   "/assets/shared/terminal-adapter.js",
