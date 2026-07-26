@@ -371,7 +371,7 @@
       }
       renderIfActive(target, true);
       const file = await api(`/api/file-browser/file?cwd=${encodeURIComponent(target.cwd)}&path=${encodeURIComponent(path)}`);
-      const nextFile = Object.assign(file, { draft: file.content || "", editing: false, dirty: false, saving: false, error: "", searchHighlight: searchHighlight || null });
+      const nextFile = Object.assign(file, { draft: file.content || "", editing: false, dirty: false, saving: false, error: "", searchHighlight: searchHighlight || null, previewSource: !!searchHighlight });
       if (mode === "split") {
         target.files.push(nextFile);
         target.split = true;
@@ -622,6 +622,8 @@
   function renderToolbar(file) {
     if (!file) return `<strong>Select a file</strong>`;
     const canEdit = !file.binary && !file.truncated;
+    const isMarkdown = !!(window.HerdrEditor && window.HerdrEditor.isMarkdownPath && window.HerdrEditor.isMarkdownPath(file.path));
+    const preview = isMarkdown && !file.editing ? `<button class="git-ui-btn ${file.previewSource ? "" : "active"}" onclick="HerdrFileBrowser.togglePreview('${arg(file.path)}')">Preview</button><button class="git-ui-btn ${file.previewSource ? "active" : ""}" onclick="HerdrFileBrowser.toggleSource('${arg(file.path)}')">Source</button>` : "";
     const tabs = renderOpenFileTabs();
     const split = state.files.length > 1 ? `<button class="git-ui-btn ${state.split ? "active" : ""}" onclick="HerdrFileBrowser.toggleSplit()">Split</button>` : "";
     const find = canEdit ? `<button class="git-ui-btn" onclick="HerdrFileBrowser.toggleFind('${arg(file.path)}')">Find</button>` : "";
@@ -630,7 +632,7 @@
 
     const dirty = file.dirty ? `<span class="file-browser-dirty">modified</span>` : "";
     const title = tabs ? "" : `<strong title="${esc(file.path)}">${esc(file.path)}</strong>${dirty}`;
-    return `${tabs || title}<span class="file-browser-toolbar-actions">${split}${find}${edit}${save}<button class="git-ui-btn" onclick="HerdrFileBrowser.showHistory('${arg(file.path)}')">Show history</button><button class="git-ui-btn" onclick="HerdrFileBrowser.reload('${arg(file.path)}')">Reload</button><button class="git-ui-btn" onclick="HerdrFileBrowser.closeFile('${arg(file.path)}')">Close file</button></span>`;
+    return `${tabs || title}<span class="file-browser-toolbar-actions">${preview}${split}${find}${edit}${save}<button class="git-ui-btn" onclick="HerdrFileBrowser.showHistory('${arg(file.path)}')">Show history</button><button class="git-ui-btn" onclick="HerdrFileBrowser.reload('${arg(file.path)}')">Reload</button><button class="git-ui-btn" onclick="HerdrFileBrowser.closeFile('${arg(file.path)}')">Close file</button></span>`;
 
   }
 
@@ -695,6 +697,7 @@
         readonly: !file.editing,
         hideHeader: true,
         lineNumbers: lineNumbersEnabled(),
+        markdownPreview: !file.previewSource,
         searchHighlight: file.searchHighlight || null,
         onChange(value) {
           file.draft = value;
@@ -1058,6 +1061,20 @@
     save(encodedPath) { saveFile(decodeURIComponent(encodedPath)); },
     reload(encodedPath) { reloadFile(decodeURIComponent(encodedPath)).catch((error) => { state.error = error.message || String(error); render(); }); },
     toggleFind(encodedPath) { toggleFind(decodeURIComponent(encodedPath || "")); },
+    togglePreview(encodedPath) {
+      const file = state.files.find((file) => file.path === decodeURIComponent(encodedPath));
+      if (!file) return;
+      file.previewSource = false;
+      file.editing = false;
+      render();
+    },
+    toggleSource(encodedPath) {
+      const file = state.files.find((file) => file.path === decodeURIComponent(encodedPath));
+      if (!file) return;
+      file.previewSource = true;
+      file.editing = false;
+      render();
+    },
     showHistory(encodedPath) {
       const path = decodeURIComponent(encodedPath || "");
       showHistoryPath(path);

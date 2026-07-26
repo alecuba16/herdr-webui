@@ -2495,6 +2495,7 @@
           path: view.file || view.sideEditor.path || "",
           content: textarea.value,
           readonly: mount.dataset.readonly === "true",
+          markdownPreview: false,
           hideFind: true,
           lineClasses: sideEditorOriginalLineClasses(hunk, side),
           dynamicLineClasses: side === "current" ? function (value) { return changedLineClasses(baseContent, value); } : null,

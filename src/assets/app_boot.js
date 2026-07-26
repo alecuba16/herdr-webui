@@ -76,6 +76,7 @@
       "/assets/shared/workspace-search.js",
       "/assets/vendor/codemirror.js",
       "/assets/vendor/wterm.js",
+      "/assets/shared/markdown-preview.js",
       "/assets/shared/editor.js",
       "/assets/shared/terminal-fit.js",
       "/assets/shared/terminal-adapter.js",

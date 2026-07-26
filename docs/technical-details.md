@@ -255,6 +255,14 @@ Supported behavior:
 - replace-one and replace-all controls in edit mode only,
 - fallback numbered `<pre>` rendering if CodeMirror fails to load.
 
+### Markdown preview
+
+Markdown files (`.md`, `.markdown`) open in a rendered preview by default instead of the raw source. The preview is produced by `marked` (12.7 kB gzip), sanitized by `DOMPurify` (10.7 kB gzip) before `innerHTML`, and styled by `src/assets/shared/markdown_preview.css` using the existing theme tokens. The parser, sanitizer, and stylesheet are lazy-loaded when the first markdown preview opens.
+
+Mermaid fenced blocks render as SVG diagrams. The checked-in Mermaid IIFE is approximately 3.45 MB raw and 950 kB gzip. It is lazy-loaded only when a rendered preview contains a `<div class="herdr-mermaid">` element, so most markdown files never pay the Mermaid download cost. Mermaid is initialized with `securityLevel: "strict"` and a theme picked from the current light/dark app mode.
+
+Desktop file browser toolbar exposes `Preview` and `Source` toggle buttons for markdown files. `Preview` shows the rendered view; `Source` switches to the read-only CodeMirror source view with find support. Content-search matches still open in source view so the line highlight and scroll work. Edit mode keeps the CodeMirror editable view unchanged.
+
 ## Settings
 
 Browser-local settings are stored in `localStorage` under `herdr-web-options`. Runtime server settings are stored in `~/.config/herdr-webui/webui-settings.json`. Main browser defaults are defined in `src/assets/desktop/app_js/core.js`; fresh runtime server settings default to `backend_mode: builtin` with both backend types enabled.

@@ -400,7 +400,7 @@ fn truncate(value: &str, max_width: usize) -> String {
     for ch in value.chars() {
         let ch_width = ch.width().unwrap_or(0);
         if out.width() + ch_width > truncate_width {
-            if out.width() + 1 <= max_width {
+            if out.width() < max_width {
                 out.push('…');
             }
             return out;

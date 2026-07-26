@@ -2,7 +2,8 @@
   "private": true,
   "scripts": {
     "build:editor": "esbuild src/assets/vendor/codemirror_entry.mjs --bundle --format=iife --global-name=HerdrCodeMirror --outfile=src/assets/vendor/codemirror.bundle.js --minify",
-    "build:wterm": "node scripts/build_wterm_assets.mjs"
+    "build:wterm": "node scripts/build_wterm_assets.mjs",
+    "build:markdown": "node scripts/build_markdown_assets.mjs"
   },
   "dependencies": {
     "@codemirror/commands": "^6.10.0",
@@ -24,7 +25,10 @@
     "@lezer/highlight": "^1.2.3",
     "@wterm/core": "0.3.0",
     "@wterm/dom": "0.3.0",
-    "@wterm/ghostty": "0.3.0"
+    "@wterm/ghostty": "0.3.0",
+    "dompurify": "^3.4.12",
+    "marked": "^18.0.7",
+    "mermaid": "^11.16.0"
   },
   "devDependencies": {
     "esbuild": "^0.27.2"

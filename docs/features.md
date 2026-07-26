@@ -135,6 +135,7 @@ File browser:
 - The directory picker starts from the configured default folder when the target input is empty or still contains the old root placeholder `/`. This applies to workspace/worktree opening and Git directory selection.
 - File tree indentation is configurable with `Tree indentation` and shared with Git file trees. Search defaults are configurable: search section enablement, section order, file/folder lazy page size, content-search minimum characters, content-search page size, context lines, auto-collapse threshold, initial matches per file, match-case mode, and regex mode.
 - Text previews include an editor find bar with next/previous, match-case, and regex search. Edit mode enables replacement controls for one match or all matches; read-only preview keeps replace disabled.
+- Markdown files (`.md`, `.markdown`) open as a rendered preview by default, with prose styling, tables, code blocks, and Mermaid diagrams rendered as SVG. The file browser toolbar exposes `Preview`/`Source` toggles for markdown files; `Source` returns to the read-only CodeMirror source view with find. Mermaid is lazy-loaded only when a markdown file contains diagrams. Edit mode keeps the CodeMirror editable view.
 
 Git UI:
 
