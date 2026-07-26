@@ -335,10 +335,6 @@
     if (opts.readonly === false) return false;
     if (opts.markdownPreview === false) return false;
     if (opts.markdownPreview === true) return isMarkdownPath(opts.path);
-    try {
-      const options = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
-      if (options.fileBrowserMarkdownPreview === false) return false;
-    } catch (_) {}
     return isMarkdownPath(opts.path);
   }
 

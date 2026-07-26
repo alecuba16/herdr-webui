@@ -66,7 +66,6 @@
     loadCss("/assets/vendor/wterm.css");
     loadCss("/assets/shared/file-icons.css");
     loadCss("/assets/shared/content-search.css");
-    loadCss("/assets/shared/markdown-preview.css");
     await loadScriptsSequentially([
       "/assets/shared/core.js",
       "/assets/shared/actions.js",
@@ -76,8 +75,6 @@
       "/assets/shared/file-content-search.js",
       "/assets/shared/workspace-search.js",
       "/assets/vendor/codemirror.js",
-      "/assets/vendor/marked.js",
-      "/assets/vendor/dompurify.js",
       "/assets/vendor/wterm.js",
       "/assets/shared/markdown-preview.js",
       "/assets/shared/editor.js",

@@ -8,7 +8,7 @@ const vendorDir = join(root, "src/assets/vendor");
 
 await mkdir(vendorDir, { recursive: true });
 
-// marked: small markdown parser, loaded at boot.
+// marked: small markdown parser, lazy-loaded when a markdown preview opens.
 await esbuild.build({
   entryPoints: [join(vendorDir, "marked_entry.mjs")],
   bundle: true,
@@ -20,7 +20,7 @@ await esbuild.build({
   target: "es2020",
 });
 
-// dompurify: sanitizes marked output. Loaded at boot alongside marked.
+// dompurify: sanitizes marked output. Lazy-loaded with marked.
 await esbuild.build({
   entryPoints: [join(vendorDir, "dompurify_entry.mjs")],
   bundle: true,

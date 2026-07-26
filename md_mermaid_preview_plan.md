@@ -10,23 +10,25 @@ raw source. Mermaid fenced blocks render as SVG diagrams.
 
 Repo constraints (from `docs/development.md`): vanilla JS frontend, no build
 step, vendor bundles checked in via esbuild, assets embedded by Rust. So we
-need a small markdown parser bundled at boot, and a heavy mermaid renderer
-lazy-loaded only when a markdown file actually contains mermaid blocks.
+need a small markdown parser and sanitizer lazy-loaded when the first markdown
+preview opens, plus a heavy mermaid renderer lazy-loaded only when a preview
+actually contains Mermaid blocks.
 
 | Lib | Min | Gzip | Role |
 | --- | --- | --- | --- |
-| `marked` | 40 kB | 12.2 kB | Markdown -> HTML parser, bundled at boot |
-| `dompurify` | ~20 kB | ~7 kB | Sanitize marked output (marked does NOT sanitize) |
-| `mermaid` | 641 kB | 153.5 kB | Diagram renderer, lazy-loaded only when needed |
+| `marked` | 40 kB | 12.7 kB | Markdown -> HTML parser, lazy-loaded on first preview |
+| `dompurify` | ~28.5 kB | 10.7 kB | Sanitize marked output, lazy-loaded with marked |
+| `mermaid` | ~3.45 MB | ~950 kB | Diagram renderer, lazy-loaded only when needed |
 
 Why `marked` over `markdown-it` (44.6 kB gzip) / `micromark`: smallest gzip,
 fast, CommonMark+GFM via `marked-gfm-heading-id` is optional. marked does not
 sanitize, so DOMPurify is required on output HTML before injecting. DOMPurify
 is small, vetted, and the recommended pairing in marked's README.
 
-Why lazy-load mermaid: 153.5 kB gzip is too big for boot. Most `.md` files have
-no diagrams. Load `/assets/vendor/mermaid.js` on demand, only when the rendered
-preview contains a `<div class="mermaid">` element.
+Why lazy-load all preview assets: most sessions never open a markdown file, and
+most markdown files have no diagrams. Load marked and DOMPurify on first
+preview. Load `/assets/vendor/mermaid.js` only when the rendered preview
+contains a Mermaid block.
 
 ## Architecture (matches existing patterns)
 
@@ -64,9 +66,8 @@ pattern:
   `.md` files; mount markdown preview instead of CodeMirror when toggled on.
 - `src/assets/mobile/file_browser.js` `renderPreview` (line ~461): same shared
   `HerdrEditor.create` call, so it inherits the change.
-- `src/assets/app_boot.js` load order (line ~69): load `marked.js` and
-  `dompurify.js` during boot (small, needed for instant `.md` open); do NOT
-  load `mermaid.js` at boot.
+- `src/assets/app_boot.js`: load the preview shell during boot, but defer the
+  marked, DOMPurify, stylesheet, and Mermaid assets until needed.
 
 ## Behavior
 
@@ -90,11 +91,6 @@ pattern:
    in source view at the matched line (current behavior) so highlight/scroll
    still works. Rendered preview stays the manual default.
 
-## Settings (optional, small)
-
-Add `fileBrowserMarkdownPreview` (default `true`) to `herdr-web-options`,
-mirroring existing `fileBrowserLineNumbers`. When off, `.md` opens as source.
-
 ## Files touched
 
 New: 8 files listed above.
@@ -103,7 +99,7 @@ Modified:
 - `src/assets/desktop/file_browser.js` (`mountEditors`, `renderToolbar`,
   `previewPlaceholder`, source/preview toggle state)
 - `src/assets/mobile/file_browser.js` (inherits via shared editor; minor)
-- `src/assets/app_boot.js` (load marked + dompurify at boot)
+- `src/assets/app_boot.js` (keep preview dependencies out of boot)
 - `src/assets.rs`, `src/main.rs` (include_str + routes)
 - `package.json` (devDeps: marked, dompurify, mermaid)
 - `docs/technical-details.md`, `docs/features.md`, `docs/development.md`
@@ -117,8 +113,9 @@ Modified:
   instead of crashing the whole preview.
 - Large `.md`: existing truncation rules still apply before render.
 - Mermaid theme mismatch in light/dark: pick theme from current app mode.
-- Bundle size: boot adds ~19 kB gzip (marked+dompurify). Acceptable given
-  CodeMirror is already 281 kB gzip. Mermaid 153.5 kB gzip only loads on demand.
+- Bundle size: boot adds no markdown parser, sanitizer, stylesheet, or Mermaid
+  request. First preview adds ~23 kB gzip for marked and DOMPurify. First
+  Mermaid diagram adds ~950 kB gzip for the generated Mermaid IIFE.
 
 ## Verification
 

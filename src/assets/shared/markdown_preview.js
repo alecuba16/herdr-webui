@@ -1,9 +1,12 @@
 (function () {
   "use strict";
 
-  const MERMAID_FENCE = /(^|\n)```mermaid\b/g;
+  const MERMAID_FENCE = /(^|\n) {0,3}(?:```|~~~)\s*mermaid\b/i;
+  let markedPromise = null;
+  let domPurifyPromise = null;
   let mermaidPromise = null;
   let mermaidInitialized = false;
+  let markdownStylesPromise = null;
 
   function isMarkdownPath(path) {
     const ext = String(path || "").split(".").pop().toLowerCase();
@@ -16,18 +19,28 @@
 
   function ensureMarked() {
     if (window.HerdrMarked && window.HerdrMarked.parse) return Promise.resolve(window.HerdrMarked);
-    return loadScript("/assets/vendor/marked.js").then(() => {
+    if (markedPromise) return markedPromise;
+    markedPromise = loadScript("/assets/vendor/marked.js").then(() => {
       if (!window.HerdrMarked || !window.HerdrMarked.parse) throw Error("marked failed to load");
       return window.HerdrMarked;
+    }).catch((error) => {
+      markedPromise = null;
+      throw error;
     });
+    return markedPromise;
   }
 
   function ensureDOMPurify() {
     if (window.HerdrDOMPurify && window.HerdrDOMPurify.sanitize) return Promise.resolve(window.HerdrDOMPurify);
-    return loadScript("/assets/vendor/dompurify.js").then(() => {
+    if (domPurifyPromise) return domPurifyPromise;
+    domPurifyPromise = loadScript("/assets/vendor/dompurify.js").then(() => {
       if (!window.HerdrDOMPurify || !window.HerdrDOMPurify.sanitize) throw Error("dompurify failed to load");
       return window.HerdrDOMPurify;
+    }).catch((error) => {
+      domPurifyPromise = null;
+      throw error;
     });
+    return domPurifyPromise;
   }
 
   function loadScript(src) {
@@ -47,8 +60,31 @@
     mermaidPromise = loadScript("/assets/vendor/mermaid.js").then(() => {
       if (!window.HerdrMermaid || !window.HerdrMermaid.run) throw Error("mermaid failed to load");
       return window.HerdrMermaid;
+    }).catch((error) => {
+      mermaidPromise = null;
+      throw error;
     });
     return mermaidPromise;
+  }
+
+  function ensureMarkdownStyles() {
+    if (document.querySelector && document.querySelector('link[data-herdr-markdown-preview]')) {
+      return Promise.resolve();
+    }
+    if (markdownStylesPromise) return markdownStylesPromise;
+    markdownStylesPromise = new Promise((resolve, reject) => {
+      const link = document.createElement("link");
+      link.rel = "stylesheet";
+      link.href = "/assets/shared/markdown-preview.css";
+      link.dataset.herdrMarkdownPreview = "true";
+      link.onload = resolve;
+      link.onerror = () => reject(Error("Failed to load markdown preview styles"));
+      document.head.appendChild(link);
+    }).catch((error) => {
+      markdownStylesPromise = null;
+      throw error;
+    });
+    return markdownStylesPromise;
   }
 
   function mermaidTheme() {
@@ -65,9 +101,9 @@
 
   function initMermaid(mermaid) {
     if (mermaidInitialized) return;
-    mermaidInitialized = true;
     try {
       mermaid.initialize({ startOnLoad: false, theme: mermaidTheme(), securityLevel: "strict" });
+      mermaidInitialized = true;
     } catch (_) {}
   }
 
@@ -121,12 +157,16 @@
     if (!container) return Promise.resolve();
     const source = String(markdown == null ? "" : markdown);
     container.innerHTML = '<div class="herdr-markdown-loading">Rendering markdown…</div>';
-    return Promise.all([ensureMarked(), ensureDOMPurify()]).then(([marked, purify]) => {
+    return Promise.all([
+      ensureMarked(),
+      ensureDOMPurify(),
+      ensureMarkdownStyles().catch(() => {}),
+    ]).then(([marked, purify]) => {
       let html = marked.parse(source);
       html = transformMermaidFences(html);
       const clean = purify.sanitize(html, sanitizeConfig());
       container.innerHTML = `<div class="herdr-markdown-body">${clean}</div>`;
-      if (containsMermaid(source)) renderMermaid(container).catch(() => {});
+      renderMermaid(container).catch(() => {});
     }).catch((error) => {
       container.innerHTML = `<div class="herdr-markdown-error">Markdown preview failed: ${esc((error && error.message) || error)}</div>`;
     });
