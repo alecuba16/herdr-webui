@@ -200,7 +200,7 @@
       stageAll: () => window.HerdrGitUi.toggleStageAll(),
       history: () => { if (view.file) window.HerdrGitUi.tab("history"); },
       blame: () => { if (view.file) window.HerdrGitUi.toggleBlame(); },
-      edit: () => { if (view.file && canEditCurrentFile(view)) window.HerdrGitUi.editSideBySide(); },
+      edit: () => { if (view.file && canEditCurrentFile(view)) window.HerdrGitUi.editFile(); },
       stageFile: () => { const path = shortcutFilePath(event, view); if (path) window.HerdrGitUi.stageFile(encodeURIComponent(path)); },
       unstageFile: () => { const path = shortcutFilePath(event, view); if (path) window.HerdrGitUi.unstageFile(encodeURIComponent(path)); },
       discardFile: () => { const path = shortcutFilePath(event, view); if (path) window.HerdrGitUi.discardFile(encodeURIComponent(path)); },
@@ -1507,7 +1507,7 @@
     const sideEditor = view.sideEditor && view.sideEditor.path === view.file
       ? `<button class="git-ui-btn primary" ${view.sideEditor.saving ? "disabled" : ""} onclick="HerdrGitUi.saveSideEditor()">${view.sideEditor.saving ? "Saving..." : "Save edits"}</button><button class="git-ui-btn" onclick="HerdrGitUi.cancelSideEditor()">Cancel edits</button>`
       : activeTab === "changes" && canEditCurrentFile(view)
-        ? `<button class="git-ui-btn" title="${esc(titleWithGitShortcut("Edit side-by-side", "edit"))}" onclick="HerdrGitUi.editSideBySide()">Edit side-by-side</button>`
+        ? `<button class="git-ui-btn" title="${esc(titleWithGitShortcut("Edit file", "edit"))}" onclick="HerdrGitUi.editFile()">Edit</button>`
         : "";
     const search = renderDiffSearchControl(view);
     return `<div class="git-ui-log-head">${back}${stateLabel}${changes}${history}${blame}${sideEditor}${conflicts ? `<button class="git-ui-btn ${activeTab === "conflicts" ? "active" : ""}" onclick="HerdrGitUi.tab('conflicts')">Conflicts</button>` : ""}${collapse}${search}${compare}</div>`;
@@ -1574,9 +1574,19 @@
   function renderSideEditor(view) {
     const editor = view.sideEditor || {};
     if (editor.loading) return `<div class="git-ui-editor"><div class="git-ui-loading"><span></span><strong>Loading file editor</strong></div></div>`;
-    const error = editor.error ? `<div class="git-ui-side-edit-note error">${esc(editor.error)}</div>` : `<div class="git-ui-side-edit-note">Edit current hunk text on right. Previous hunk stays read-only. Save merges hunk edits into file and recalculates diff.</div>`;
-    const hunks = (editor.hunks || []).map(renderEditableHunk).join("") || `<div class="git-ui-muted">No editable hunks for this file.</div>`;
-    return `${error}<div class="git-ui-hunk-editor-list">${hunks}</div>`;
+    const layout = diffLayoutMode();
+    const note = editor.error
+      ? `<div class="git-ui-side-edit-note error">${esc(editor.error)}</div>`
+      : `<div class="git-ui-side-edit-note">${esc(editNoteForLayout(layout))}</div>`;
+    const renderHunk = layout === "unified" ? renderEditableHunkUnified : renderEditableHunk;
+    const hunks = (editor.hunks || []).map(renderHunk).join("") || `<div class="git-ui-muted">No editable hunks for this file.</div>`;
+    return `${note}<div class="git-ui-hunk-editor-list">${hunks}</div>`;
+  }
+
+  function editNoteForLayout(layout) {
+    return layout === "unified"
+      ? "Edit the hunk text below. Save merges hunk edits into the file and recalculates the diff."
+      : "Edit current hunk text on the right. Previous hunk stays read-only. Save merges hunk edits into file and recalculates diff.";
   }
 
   function renderEditableHunk(hunk) {
@@ -1586,6 +1596,14 @@
     const meta = hunk.newStart ? `current lines ${hunk.newStart}-${hunk.newEnd}` : "no current lines";
     const conflictControls = renderEditableHunkConflictControls(hunk);
     return `<div class="git-ui-hunk-editor"><div class="git-ui-hunk-head"><span>${esc(hunk.header || "hunk")}</span><span class="git-ui-muted">${esc(meta)}</span></div>${conflictControls}<div class="git-ui-hunk-editor-grid"><section><div class="git-ui-editor-head"><strong>Previous</strong><span class="git-ui-muted">read-only</span></div><div class="git-ui-hunk-edit-mount git-ui-hunk-old-mount" data-hunk-index="${hunk.index}" data-editor-side="old" data-readonly="true"></div><textarea class="git-ui-hunk-old git-ui-hunk-old-hidden git-ui-hunk-edit-hidden" data-hunk-index="${hunk.index}" spellcheck="false" readonly>${esc(oldText)}</textarea></section><section><div class="git-ui-editor-head"><strong>Current</strong><span class="git-ui-muted">editable hunk</span></div><div class="git-ui-hunk-edit-mount git-ui-hunk-current-mount" data-hunk-index="${hunk.index}" data-editor-side="current" data-readonly="${hunk.newStart ? "false" : "true"}"></div><textarea class="git-ui-hunk-edit git-ui-hunk-current-hidden git-ui-hunk-edit-hidden" data-hunk-index="${hunk.index}" spellcheck="false"${readonly}>${esc(currentText)}</textarea></section></div></div>`;
+  }
+
+  function renderEditableHunkUnified(hunk) {
+    const currentText = hunk.text || "";
+    const readonly = hunk.newStart ? "" : " readonly";
+    const meta = hunk.newStart ? `current lines ${hunk.newStart}-${hunk.newEnd}` : "no current lines";
+    const conflictControls = renderEditableHunkConflictControls(hunk);
+    return `<div class="git-ui-hunk-editor git-ui-hunk-editor-unified"><div class="git-ui-hunk-head"><span>${esc(hunk.header || "hunk")}</span><span class="git-ui-muted">${esc(meta)}</span></div>${conflictControls}<div class="git-ui-hunk-editor-grid git-ui-hunk-editor-grid-unified"><section><div class="git-ui-editor-head"><strong>Current</strong><span class="git-ui-muted">editable hunk</span></div><div class="git-ui-hunk-edit-mount git-ui-hunk-current-mount" data-hunk-index="${hunk.index}" data-editor-side="current" data-readonly="${hunk.newStart ? "false" : "true"}"></div><textarea class="git-ui-hunk-edit git-ui-hunk-current-hidden git-ui-hunk-edit-hidden" data-hunk-index="${hunk.index}" spellcheck="false"${readonly}>${esc(currentText)}</textarea></section></div></div>`;
   }
 
   function renderEditableHunkConflictControls(hunk) {
@@ -2803,7 +2821,7 @@
       setGitUiOption("gitUiDiffLayout", layout === "unified" ? "unified" : "side-by-side");
       render();
     },
-    async editSideBySide() {
+    async editFile() {
       const view = active();
       if (!canEditCurrentFile(view)) return;
       const file = diffFile(view.file);

@@ -19,6 +19,12 @@
 - Adds focused editor find routing: `Cmd/Ctrl+F` opens the active file editor find/replace when focus is inside a file editor, opens global WebUI search elsewhere, and leaves terminal `Ctrl+F` as terminal input.
 - Shares file tree styling across desktop file browser and directory picker, keeps search result opens additive as file tabs, and avoids Git branch lookup for non-Git browse folders.
 
+### Git in-diff editing in both layouts
+
+- Renames the `Edit side-by-side` toolbar button to `Edit` so it is no longer tied to a single diff layout.
+- Makes the Git hunk editor layout-aware: side-by-side keeps the previous (read-only) and current (editable) panes, while unified shows a single editable hunk column (GitHub-style). Edits persist when switching layouts because the renderer syncs DOM edits into the hunk model before re-rendering.
+- Shares conflict-block `Use HEAD`, `Use parent`, and `Use remote` controls across both editor layouts.
+
 ## 0.2.78 Release Notes
 
 ### Browser hot-path and terminal reply filtering
