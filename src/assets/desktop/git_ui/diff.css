@@ -135,6 +135,12 @@
 .git-ui-hunk-editor-grid section + section {
   border-left: 1px solid var(--border);
 }
+.git-ui-hunk-editor-grid-unified {
+  grid-template-columns: minmax(0, 1fr);
+}
+.git-ui-hunk-editor-unified .git-ui-hunk-edit-mount {
+  min-height: 140px;
+}
 .git-ui-editor-conflicts {
   background: color-mix(in srgb, var(--accent) 7%, var(--panel));
   border-top: 1px solid var(--border);
