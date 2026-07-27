@@ -253,6 +253,13 @@ pub(crate) enum ServerMessage {
     MouseCapture {
         enabled: bool,
     },
+    /// Whether the focused terminal requests Kitty report-all keyboard input.
+    /// The backend sends this so the client can adjust its input handling;
+    /// a web client does not act on it, so we only need to deserialize it.
+    /// Added in protocol 18.
+    KittyKeyboardReportAll {
+        enabled: bool,
+    },
     /// Forwarded macOS prefix-mode ASCII input-source switch request. The
     /// backend sends this to the foreground client so it can swap the host
     /// keyboard layout; a web client has no host keyboard to switch, so we
