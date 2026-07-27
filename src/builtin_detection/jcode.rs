@@ -5,14 +5,17 @@
 //! `herdr_detectable` branch) are handled upstream in `detect_agent_status_with_osc` and
 //! take precedence; this module only provides the screen-scrape fallback.
 
-use crate::builtin_detection::JcodeDetectionVariant;
 use crate::builtin_backend::{
-    bottom_non_empty_lines, contains_any, has_jcode_spinner, has_jcode_tool_bar,
-    jcode_blocked, jcode_idle_line, jcode_numbered_prompt_line, jcode_question_blocked,
+    bottom_non_empty_lines, contains_any, has_jcode_spinner, has_jcode_tool_bar, jcode_blocked,
+    jcode_idle_line, jcode_numbered_prompt_line, jcode_question_blocked,
 };
+use crate::builtin_detection::JcodeDetectionVariant;
 
 /// Screen-scrape detection for jcode, selected by variant.
-pub fn detect_jcode_status_with_variant(lower: &str, variant: JcodeDetectionVariant) -> &'static str {
+pub fn detect_jcode_status_with_variant(
+    lower: &str,
+    variant: JcodeDetectionVariant,
+) -> &'static str {
     match variant {
         JcodeDetectionVariant::Vanilla => detect_jcode_status_vanilla(lower),
         JcodeDetectionVariant::Alecuba16 => detect_jcode_status_alecuba16(lower),
@@ -190,7 +193,10 @@ mod tests {
     fn vanilla_blocked() {
         let blocked = "Permission request\n❯ Allow once\n  Deny";
         assert_eq!(
-            detect_jcode_status_with_variant(&blocked.to_lowercase(), JcodeDetectionVariant::Vanilla),
+            detect_jcode_status_with_variant(
+                &blocked.to_lowercase(),
+                JcodeDetectionVariant::Vanilla
+            ),
             "blocked"
         );
     }
@@ -232,7 +238,10 @@ mod tests {
 🧠 47 memories\n\
 🐝 3 sessions";
         assert_eq!(
-            detect_jcode_status_with_variant(&working.to_lowercase(), JcodeDetectionVariant::Alecuba16),
+            detect_jcode_status_with_variant(
+                &working.to_lowercase(),
+                JcodeDetectionVariant::Alecuba16
+            ),
             "working"
         );
     }
@@ -246,7 +255,10 @@ mod tests {
 🧠 47 memories\n\
 🐝 3 sessions";
         assert_eq!(
-            detect_jcode_status_with_variant(&blocked.to_lowercase(), JcodeDetectionVariant::Alecuba16),
+            detect_jcode_status_with_variant(
+                &blocked.to_lowercase(),
+                JcodeDetectionVariant::Alecuba16
+            ),
             "blocked"
         );
     }

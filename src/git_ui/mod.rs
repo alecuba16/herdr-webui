@@ -764,7 +764,9 @@ mod tests {
     use super::log::*;
     use super::stash::*;
     use super::*;
-    use crate::{AuthConfig, BackendMode, JcodeDetectionVariant, NoSleepState, RuntimeServerSettings};
+    use crate::{
+        AuthConfig, BackendMode, JcodeDetectionVariant, NoSleepState, RuntimeServerSettings,
+    };
     use axum::body::to_bytes;
     use serde_json::Value;
     use std::collections::HashMap;

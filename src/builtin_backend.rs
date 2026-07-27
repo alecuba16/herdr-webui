@@ -13,7 +13,7 @@ use interprocess::TryClone as _;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde_json::{json, Value};
 
-use crate::builtin_detection::{JcodeDetectionVariant, jcode::detect_jcode_status_with_variant};
+use crate::builtin_detection::{jcode::detect_jcode_status_with_variant, JcodeDetectionVariant};
 use crate::builtin_events::{BuiltinEventHub, PaneEventContext};
 use crate::protocol::{
     read_message, write_message, ClientInputEvent, ClientMessage, RenderEncoding, ServerMessage,
@@ -170,7 +170,11 @@ impl BuiltinBackendHandle {
         restrict_socket_permissions(&config.api_socket)?;
         restrict_socket_permissions(&config.client_socket)?;
 
-        let state = Arc::new(BuiltinState::new(config.cwd, config.shell, config.jcode_detection_variant)?);
+        let state = Arc::new(BuiltinState::new(
+            config.cwd,
+            config.shell,
+            config.jcode_detection_variant,
+        )?);
         let inner = Arc::new(BuiltinBackendInner {
             running: AtomicBool::new(true),
             api_socket: config.api_socket,
@@ -471,7 +475,11 @@ struct PaneRecord {
 }
 
 impl BuiltinState {
-    fn new(_cwd: PathBuf, shell: Option<String>, jcode_detection_variant: JcodeDetectionVariant) -> io::Result<Self> {
+    fn new(
+        _cwd: PathBuf,
+        shell: Option<String>,
+        jcode_detection_variant: JcodeDetectionVariant,
+    ) -> io::Result<Self> {
         let default_shell = shell.unwrap_or_else(default_shell);
         let state = Self {
             data: Mutex::new(BuiltinData {
@@ -2522,7 +2530,11 @@ fn osc_progress_status_for_agent(agent: &str, osc_progress: &str) -> Option<&'st
     }
 }
 
-fn detect_agent_status(agent: Option<&str>, text: &str, jcode_variant: JcodeDetectionVariant) -> &'static str {
+fn detect_agent_status(
+    agent: Option<&str>,
+    text: &str,
+    jcode_variant: JcodeDetectionVariant,
+) -> &'static str {
     let Some(agent) = agent else {
         return "unknown";
     };
@@ -3517,8 +3529,12 @@ mod tests {
 
     #[test]
     fn builtin_event_hub_publishes_mutation_events() {
-        let state =
-            BuiltinState::new(std::env::current_dir().unwrap(), Some(default_shell()), JcodeDetectionVariant::Vanilla).unwrap();
+        let state = BuiltinState::new(
+            std::env::current_dir().unwrap(),
+            Some(default_shell()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
         state.handle_request("seed", "workspace.create", json!({ "label": "Workspace" }));
         let rx = state.subscribe_events();
 
@@ -3531,8 +3547,12 @@ mod tests {
 
     #[test]
     fn builtin_tab_create_respects_focus_false() {
-        let state =
-            BuiltinState::new(std::env::current_dir().unwrap(), Some(default_shell()), JcodeDetectionVariant::Vanilla).unwrap();
+        let state = BuiltinState::new(
+            std::env::current_dir().unwrap(),
+            Some(default_shell()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
         let workspace =
             state.handle_request("seed", "workspace.create", json!({ "label": "Workspace" }));
         let workspace_id = workspace["result"]["workspace"]["workspace_id"]
@@ -3567,8 +3587,12 @@ mod tests {
 
     #[test]
     fn builtin_display_numbers_are_scoped_by_level() {
-        let state =
-            BuiltinState::new(std::env::current_dir().unwrap(), Some(default_shell()), JcodeDetectionVariant::Vanilla).unwrap();
+        let state = BuiltinState::new(
+            std::env::current_dir().unwrap(),
+            Some(default_shell()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
         let empty_snapshot = state.handle_request("empty", "session.snapshot", json!({}));
         assert_eq!(
             empty_snapshot["result"]["snapshot"]["workspaces"]
@@ -3646,8 +3670,12 @@ mod tests {
 
     #[test]
     fn terminal_output_publishes_agent_status_changes() {
-        let state =
-            BuiltinState::new(std::env::current_dir().unwrap(), Some(default_shell()), JcodeDetectionVariant::Vanilla).unwrap();
+        let state = BuiltinState::new(
+            std::env::current_dir().unwrap(),
+            Some(default_shell()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
         state.handle_request("seed", "workspace.create", json!({ "label": "Workspace" }));
         let rx = state.subscribe_events();
         let terminal = {
@@ -3762,17 +3790,32 @@ mod tests {
     fn detect_agent_status_with_osc_prefers_osc_over_screen_scrape() {
         // OSC says "idle" but screen shows working spinner
         assert_eq!(
-            detect_agent_status_with_osc(Some("jcode"), "⠋ sending… 0.3s", "jcode:idle", JcodeDetectionVariant::Vanilla),
+            detect_agent_status_with_osc(
+                Some("jcode"),
+                "⠋ sending… 0.3s",
+                "jcode:idle",
+                JcodeDetectionVariant::Vanilla
+            ),
             "idle"
         );
         // OSC says "working" but screen shows idle prompt
         assert_eq!(
-            detect_agent_status_with_osc(Some("jcode"), "❯", "jcode:working", JcodeDetectionVariant::Vanilla),
+            detect_agent_status_with_osc(
+                Some("jcode"),
+                "❯",
+                "jcode:working",
+                JcodeDetectionVariant::Vanilla
+            ),
             "working"
         );
         // OSC says "blocked" with minimal screen
         assert_eq!(
-            detect_agent_status_with_osc(Some("jcode"), "❯", "jcode:blocked", JcodeDetectionVariant::Vanilla),
+            detect_agent_status_with_osc(
+                Some("jcode"),
+                "❯",
+                "jcode:blocked",
+                JcodeDetectionVariant::Vanilla
+            ),
             "blocked"
         );
     }
@@ -3825,39 +3868,75 @@ mod tests {
             "blocked"
         );
         assert_eq!(
-            detect_agent_status(Some("jcode"), "Asking user\nEnter your response\nSubmit", JcodeDetectionVariant::Vanilla),
+            detect_agent_status(
+                Some("jcode"),
+                "Asking user\nEnter your response\nSubmit",
+                JcodeDetectionVariant::Vanilla
+            ),
             "blocked"
         );
         assert_eq!(
-            detect_agent_status(Some("jcode"), "⠋ running analysis", JcodeDetectionVariant::Vanilla),
+            detect_agent_status(
+                Some("jcode"),
+                "⠋ running analysis",
+                JcodeDetectionVariant::Vanilla
+            ),
             "working"
         );
         assert_eq!(
-            detect_agent_status(Some("jcode"), "Running tool bash", JcodeDetectionVariant::Vanilla),
+            detect_agent_status(
+                Some("jcode"),
+                "Running tool bash",
+                JcodeDetectionVariant::Vanilla
+            ),
             "working"
         );
         assert_eq!(
-            detect_agent_status(Some("jcode"), "⠋ thinking… 1.2s", JcodeDetectionVariant::Vanilla),
+            detect_agent_status(
+                Some("jcode"),
+                "⠋ thinking… 1.2s",
+                JcodeDetectionVariant::Vanilla
+            ),
             "working"
         );
         assert_eq!(
-            detect_agent_status(Some("jcode"), "⠋ streaming · ↑1.2k ↓42 · 1.2s", JcodeDetectionVariant::Vanilla),
+            detect_agent_status(
+                Some("jcode"),
+                "⠋ streaming · ↑1.2k ↓42 · 1.2s",
+                JcodeDetectionVariant::Vanilla
+            ),
             "working"
         );
         assert_eq!(
-            detect_agent_status(Some("jcode"), "⠋ sending… 0.3s", JcodeDetectionVariant::Vanilla),
+            detect_agent_status(
+                Some("jcode"),
+                "⠋ sending… 0.3s",
+                JcodeDetectionVariant::Vanilla
+            ),
             "working"
         );
         assert_eq!(
-            detect_agent_status(Some("jcode"), "⠋ connecting… 0.3s", JcodeDetectionVariant::Vanilla),
+            detect_agent_status(
+                Some("jcode"),
+                "⠋ connecting… 0.3s",
+                JcodeDetectionVariant::Vanilla
+            ),
             "working"
         );
         assert_eq!(
-            detect_agent_status(Some("jcode"), "··● bash ●·· · 12s", JcodeDetectionVariant::Vanilla),
+            detect_agent_status(
+                Some("jcode"),
+                "··● bash ●·· · 12s",
+                JcodeDetectionVariant::Vanilla
+            ),
             "working"
         );
         assert_eq!(
-            detect_agent_status(Some("jcode"), "··● bash ●··", JcodeDetectionVariant::Vanilla),
+            detect_agent_status(
+                Some("jcode"),
+                "··● bash ●··",
+                JcodeDetectionVariant::Vanilla
+            ),
             "working"
         );
         assert_eq!(
@@ -3869,7 +3948,11 @@ mod tests {
             "working"
         );
         assert_eq!(
-            detect_agent_status(Some("jcode"), "●·· batch ··● · 2/5 done", JcodeDetectionVariant::Vanilla),
+            detect_agent_status(
+                Some("jcode"),
+                "●·· batch ··● · 2/5 done",
+                JcodeDetectionVariant::Vanilla
+            ),
             "working"
         );
         assert_eq!(
@@ -3904,8 +3987,18 @@ mod tests {
             ),
             "idle"
         );
-        assert_eq!(detect_agent_status(Some("jcode"), "Session ready\n❯", JcodeDetectionVariant::Vanilla), "idle");
-        assert_eq!(detect_agent_status(Some("jcode"), "1> ", JcodeDetectionVariant::Vanilla), "idle");
+        assert_eq!(
+            detect_agent_status(
+                Some("jcode"),
+                "Session ready\n❯",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "idle"
+        );
+        assert_eq!(
+            detect_agent_status(Some("jcode"), "1> ", JcodeDetectionVariant::Vanilla),
+            "idle"
+        );
         assert_eq!(
             detect_agent_status(
                 Some("jcode"),
@@ -3947,7 +4040,11 @@ mod tests {
             "idle"
         );
         assert_eq!(
-            detect_agent_status(Some("jcode"), "··● bash ●·· · 12s\nSession ready\n❯ ", JcodeDetectionVariant::Vanilla),
+            detect_agent_status(
+                Some("jcode"),
+                "··● bash ●·· · 12s\nSession ready\n❯ ",
+                JcodeDetectionVariant::Vanilla
+            ),
             "idle"
         );
         assert_eq!(
@@ -3959,27 +4056,51 @@ mod tests {
             "idle"
         );
         assert_eq!(
-            detect_agent_status(Some("jcode"), "··● bash ●·· · 12s\n1> ", JcodeDetectionVariant::Vanilla),
+            detect_agent_status(
+                Some("jcode"),
+                "··● bash ●·· · 12s\n1> ",
+                JcodeDetectionVariant::Vanilla
+            ),
             "idle"
         );
         assert_eq!(
-            detect_agent_status(Some("jcode"), "Running tool bash\n1> typed input", JcodeDetectionVariant::Vanilla),
+            detect_agent_status(
+                Some("jcode"),
+                "Running tool bash\n1> typed input",
+                JcodeDetectionVariant::Vanilla
+            ),
             "idle"
         );
         assert_eq!(
-            detect_agent_status(Some("jcode"), "Session ready\n❯\n··● bash ●·· · 12s", JcodeDetectionVariant::Vanilla),
+            detect_agent_status(
+                Some("jcode"),
+                "Session ready\n❯\n··● bash ●·· · 12s",
+                JcodeDetectionVariant::Vanilla
+            ),
             "working"
         );
         assert_eq!(
-            detect_agent_status(Some("jcode"), "··● not a toolbar\n❯", JcodeDetectionVariant::Vanilla),
+            detect_agent_status(
+                Some("jcode"),
+                "··● not a toolbar\n❯",
+                JcodeDetectionVariant::Vanilla
+            ),
             "idle"
         );
         assert_eq!(
-            detect_agent_status(Some("jcode"), "plain prompt", JcodeDetectionVariant::Vanilla),
+            detect_agent_status(
+                Some("jcode"),
+                "plain prompt",
+                JcodeDetectionVariant::Vanilla
+            ),
             "unknown"
         );
         assert_eq!(
-            detect_agent_status(Some("jcode"), "⠋running analysis", JcodeDetectionVariant::Vanilla),
+            detect_agent_status(
+                Some("jcode"),
+                "⠋running analysis",
+                JcodeDetectionVariant::Vanilla
+            ),
             "unknown"
         );
 
@@ -4085,37 +4206,55 @@ mod tests {
         for allow in ["allow once", "always allow", "allow"] {
             for deny in ["deny", "reject", "cancel"] {
                 let text = format!("Permission request\n{allow}\n{deny}");
-                assert_eq!(detect_agent_status(Some("jcode"), &text, JcodeDetectionVariant::Vanilla), "blocked");
+                assert_eq!(
+                    detect_agent_status(Some("jcode"), &text, JcodeDetectionVariant::Vanilla),
+                    "blocked"
+                );
             }
         }
 
         for allow in ["allow", "yes"] {
             for deny in ["reject", "no", "cancel"] {
                 let text = format!("Approve?\n{allow}\n{deny}");
-                assert_eq!(detect_agent_status(Some("jcode"), &text, JcodeDetectionVariant::Vanilla), "blocked");
+                assert_eq!(
+                    detect_agent_status(Some("jcode"), &text, JcodeDetectionVariant::Vanilla),
+                    "blocked"
+                );
             }
         }
 
         for allow in ["allow", "yes", "proceed"] {
             for deny in ["reject", "no", "cancel"] {
                 let text = format!("Confirm action\n{allow}\n{deny}");
-                assert_eq!(detect_agent_status(Some("jcode"), &text, JcodeDetectionVariant::Vanilla), "blocked");
+                assert_eq!(
+                    detect_agent_status(Some("jcode"), &text, JcodeDetectionVariant::Vanilla),
+                    "blocked"
+                );
             }
         }
 
         for action in ["continue", "submit", "cancel"] {
             let text = format!("Enter your response\n{action}");
-            assert_eq!(detect_agent_status(Some("jcode"), &text, JcodeDetectionVariant::Vanilla), "blocked");
+            assert_eq!(
+                detect_agent_status(Some("jcode"), &text, JcodeDetectionVariant::Vanilla),
+                "blocked"
+            );
         }
 
         for prompt in ["enter your response", "awaiting input", "waiting for user"] {
             let text = format!("Asking user\n{prompt}");
-            assert_eq!(detect_agent_status(Some("jcode"), &text, JcodeDetectionVariant::Vanilla), "blocked");
+            assert_eq!(
+                detect_agent_status(Some("jcode"), &text, JcodeDetectionVariant::Vanilla),
+                "blocked"
+            );
         }
 
         for action in ["enter", "type", "respond"] {
             let text = format!("Awaiting input\n{action}");
-            assert_eq!(detect_agent_status(Some("jcode"), &text, JcodeDetectionVariant::Vanilla), "blocked");
+            assert_eq!(
+                detect_agent_status(Some("jcode"), &text, JcodeDetectionVariant::Vanilla),
+                "blocked"
+            );
         }
 
         for status in [
@@ -4123,11 +4262,17 @@ mod tests {
             "executing tool",
             "network disconnected, waiting to retry",
         ] {
-            assert_eq!(detect_agent_status(Some("jcode"), status, JcodeDetectionVariant::Vanilla), "working");
+            assert_eq!(
+                detect_agent_status(Some("jcode"), status, JcodeDetectionVariant::Vanilla),
+                "working"
+            );
         }
 
         for ready in ["session ready", "ready for input", "❯"] {
-            assert_eq!(detect_agent_status(Some("jcode"), ready, JcodeDetectionVariant::Vanilla), "idle");
+            assert_eq!(
+                detect_agent_status(Some("jcode"), ready, JcodeDetectionVariant::Vanilla),
+                "idle"
+            );
         }
     }
 
@@ -4185,7 +4330,11 @@ mod tests {
         let working_screen =
             terminal_screen_text_lossy("Session ready\n❯\r\u{1b}[2K··● bash ●·· · 12s");
         assert_eq!(
-            detect_agent_status(Some("jcode"), &working_screen, JcodeDetectionVariant::Vanilla),
+            detect_agent_status(
+                Some("jcode"),
+                &working_screen,
+                JcodeDetectionVariant::Vanilla
+            ),
             "working"
         );
 
@@ -4202,7 +4351,11 @@ mod tests {
             "··● bash ●·· · 12s\r\u{1b}[2KApprove?\n❯ Allow\n  Reject\nEsc to cancel",
         );
         assert_eq!(
-            detect_agent_status(Some("jcode"), &blocked_screen, JcodeDetectionVariant::Vanilla),
+            detect_agent_status(
+                Some("jcode"),
+                &blocked_screen,
+                JcodeDetectionVariant::Vanilla
+            ),
             "blocked"
         );
     }
@@ -4316,38 +4469,73 @@ mod tests {
     #[test]
     fn detects_opencode_status_from_manifest_patterns() {
         assert_eq!(
-            detect_agent_status(Some("opencode"), "△ Permission required", JcodeDetectionVariant::Vanilla),
+            detect_agent_status(
+                Some("opencode"),
+                "△ Permission required",
+                JcodeDetectionVariant::Vanilla
+            ),
             "blocked"
         );
         assert_eq!(
-            detect_agent_status(Some("opencode"), "esc dismiss\nenter confirm\n↑↓ select", JcodeDetectionVariant::Vanilla),
+            detect_agent_status(
+                Some("opencode"),
+                "esc dismiss\nenter confirm\n↑↓ select",
+                JcodeDetectionVariant::Vanilla
+            ),
             "blocked"
         );
         assert_eq!(
-            detect_agent_status(Some("opencode"), "esc dismiss\nenter submit\n⇆ tab", JcodeDetectionVariant::Vanilla),
+            detect_agent_status(
+                Some("opencode"),
+                "esc dismiss\nenter submit\n⇆ tab",
+                JcodeDetectionVariant::Vanilla
+            ),
             "blocked"
         );
         assert_eq!(
-            detect_agent_status(Some("opencode"), "esc dismiss\nenter toggle\n↑↓ select", JcodeDetectionVariant::Vanilla),
+            detect_agent_status(
+                Some("opencode"),
+                "esc dismiss\nenter toggle\n↑↓ select",
+                JcodeDetectionVariant::Vanilla
+            ),
             "blocked"
         );
         assert_eq!(
-            detect_agent_status(Some("opencode"), "opencode · esc to interrupt", JcodeDetectionVariant::Vanilla),
+            detect_agent_status(
+                Some("opencode"),
+                "opencode · esc to interrupt",
+                JcodeDetectionVariant::Vanilla
+            ),
             "working"
         );
         assert_eq!(
-            detect_agent_status(Some("opencode"), "opencode · esc again to interrupt", JcodeDetectionVariant::Vanilla),
+            detect_agent_status(
+                Some("opencode"),
+                "opencode · esc again to interrupt",
+                JcodeDetectionVariant::Vanilla
+            ),
             "working"
         );
         assert_eq!(
-            detect_agent_status(Some("opencode"), "opencode escaped interrupt", JcodeDetectionVariant::Vanilla),
+            detect_agent_status(
+                Some("opencode"),
+                "opencode escaped interrupt",
+                JcodeDetectionVariant::Vanilla
+            ),
             "unknown"
         );
         assert_eq!(
-            detect_agent_status(Some("opencode"), "esc interrupt before opencode", JcodeDetectionVariant::Vanilla),
+            detect_agent_status(
+                Some("opencode"),
+                "esc interrupt before opencode",
+                JcodeDetectionVariant::Vanilla
+            ),
             "unknown"
         );
-        assert_eq!(detect_agent_status(Some("opencode"), "■■■■", JcodeDetectionVariant::Vanilla), "working");
+        assert_eq!(
+            detect_agent_status(Some("opencode"), "■■■■", JcodeDetectionVariant::Vanilla),
+            "working"
+        );
     }
 
     #[test]
@@ -4376,7 +4564,12 @@ mod tests {
 
     #[test]
     fn builtin_worktree_remove_reports_unsupported_instead_of_false_success() {
-        let state = BuiltinState::new(std::env::temp_dir(), Some(default_shell()), JcodeDetectionVariant::Vanilla).unwrap();
+        let state = BuiltinState::new(
+            std::env::temp_dir(),
+            Some(default_shell()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
 
         let err = state
             .handle_request_inner("worktree.remove", json!({ "workspace_id": "ws_1" }))
@@ -4387,7 +4580,12 @@ mod tests {
 
     #[test]
     fn builtin_state_starts_without_auto_workspace() {
-        let state = BuiltinState::new(std::env::temp_dir(), Some(default_shell()), JcodeDetectionVariant::Vanilla).unwrap();
+        let state = BuiltinState::new(
+            std::env::temp_dir(),
+            Some(default_shell()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
 
         let snapshot = state.handle_request("snapshot", "session.snapshot", json!({}));
         let snapshot = &snapshot["result"]["snapshot"];
@@ -4512,8 +4710,12 @@ mod tests {
 
     #[test]
     fn closing_last_tab_auto_closes_workspace() {
-        let state =
-            BuiltinState::new(std::env::current_dir().unwrap(), Some(default_shell()), JcodeDetectionVariant::Vanilla).unwrap();
+        let state = BuiltinState::new(
+            std::env::current_dir().unwrap(),
+            Some(default_shell()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
         let workspace = state.handle_request(
             "seed",
             "workspace.create",
@@ -4552,8 +4754,12 @@ mod tests {
 
     #[test]
     fn closing_last_pane_auto_closes_tab_and_workspace() {
-        let state =
-            BuiltinState::new(std::env::current_dir().unwrap(), Some(default_shell()), JcodeDetectionVariant::Vanilla).unwrap();
+        let state = BuiltinState::new(
+            std::env::current_dir().unwrap(),
+            Some(default_shell()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
         let workspace = state.handle_request(
             "seed",
             "workspace.create",
