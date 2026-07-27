@@ -224,6 +224,8 @@
     const key = workspaceKey(workspace);
     if (!cwd) return;
     if (window.HerdrGitUi) window.HerdrGitUi.hide();
+    if (window.rememberWorkspaceShellMode) window.rememberWorkspaceShellMode("files", state.ws, { minimized: false });
+    if (window.syncShellModeButtons) window.syncShellModeButtons();
     activateState(key, cwd);
     state.open = true;
     const preserveContext = options.preserveContext === true && options.kind !== "dir";

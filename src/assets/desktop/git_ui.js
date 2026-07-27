@@ -1017,6 +1017,8 @@
     const menu = state.contextMenu;
     if (!menu) return "";
     const actions = [];
+    actions.push(`<button onclick="HerdrGitUi.menuAction('showInExplorer')">Show in file explorer</button>`);
+    actions.push(`<button onclick="HerdrGitUi.menuAction('showHistory')">Show history</button>`);
     actions.push(`<button onclick="HerdrGitUi.menuAction('copyPermalink')">Copy permalink</button>`);
     if (["S", "M", "?"].includes(menu.kind)) actions.push(`<button onclick="HerdrGitUi.menuAction('stash')">Stash file</button>`);
     if (["M", "?"].includes(menu.kind)) actions.push(`<button onclick="HerdrGitUi.menuAction('discard')">Discard file</button>`);
@@ -2755,6 +2757,29 @@
           const view = active();
           if (view) view.error = err.message || String(err);
           render();
+        }
+        return;
+      }
+      if (action === "showInExplorer") {
+        const parentDir = menu.file.split("/").slice(0, -1).join("/");
+        if (window.HerdrFileBrowser && window.HerdrFileBrowser.openAt) {
+          const view = active();
+          if (view) {
+            if (window.rememberWorkspaceShellMode) window.rememberWorkspaceShellMode("files", state.ws, { minimized: false });
+            if (window.syncShellModeButtons) window.syncShellModeButtons();
+            await window.HerdrFileBrowser.openAt(
+              { workspace_id: `git-file-explorer:${view.cwd}`, cwd: view.cwd, label: compactPath(view.cwd) },
+              parentDir,
+              { kind: "dir" }
+            );
+          }
+        }
+        return;
+      }
+      if (action === "showHistory") {
+        const view = active();
+        if (view) {
+          await window.HerdrGitUi.openFileHistory(encodeURIComponent(view.cwd), encodeURIComponent(menu.file));
         }
         return;
       }
