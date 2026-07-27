@@ -19,8 +19,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
+use crate::builtin_detection::JcodeDetectionVariant;
+
 mod assets;
 mod builtin_backend;
+mod builtin_detection;
 mod builtin_events;
 mod compat;
 mod file_browser;
@@ -181,6 +184,7 @@ struct PersistedServerSettings {
     default_folder: Option<String>,
     builtin_backend_enabled: Option<bool>,
     external_herdr_backend_enabled: Option<bool>,
+    jcode_detection_variant: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -195,6 +199,7 @@ struct RuntimeServerSettings {
     default_folder: String,
     builtin_backend_enabled: bool,
     external_herdr_backend_enabled: bool,
+    jcode_detection_variant: JcodeDetectionVariant,
 }
 
 struct NoSleepGuard {
@@ -596,6 +601,7 @@ fn default_runtime_server_settings(bind: SocketAddr) -> RuntimeServerSettings {
         default_folder: default_working_folder(None),
         builtin_backend_enabled: true,
         external_herdr_backend_enabled: true,
+        jcode_detection_variant: JcodeDetectionVariant::default(),
     }
 }
 
@@ -773,6 +779,9 @@ fn load_runtime_server_settings(default_bind: SocketAddr) -> io::Result<RuntimeS
     if let Some(enabled) = persisted.external_herdr_backend_enabled {
         settings.external_herdr_backend_enabled = enabled;
     }
+    if let Some(variant_str) = persisted.jcode_detection_variant {
+        settings.jcode_detection_variant = JcodeDetectionVariant::from_str(&variant_str);
+    }
     validate_runtime_server_settings(&settings)?;
     if missing_keys {
         save_runtime_server_settings(&settings)?;
@@ -797,6 +806,7 @@ fn save_runtime_server_settings(settings: &RuntimeServerSettings) -> io::Result<
         default_folder: Some(settings.default_folder.clone()),
         builtin_backend_enabled: Some(settings.builtin_backend_enabled),
         external_herdr_backend_enabled: Some(settings.external_herdr_backend_enabled),
+        jcode_detection_variant: Some(settings.jcode_detection_variant.as_str().to_string()),
     })?;
     fs::write(&path, content)?;
     #[cfg(unix)]
@@ -888,6 +898,7 @@ async fn main() -> io::Result<()> {
                 client_socket: _client_socket,
                 cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
                 shell: server_settings.builtin_shell.clone(),
+                jcode_detection_variant: server_settings.jcode_detection_variant,
             },
         )?);
         let api_socket = handle.api_socket().to_path_buf();
@@ -2048,6 +2059,10 @@ async fn update_server_settings(
                     .map(|settings| settings.external_herdr_backend_enabled)
             })
             .unwrap_or(true),
+        jcode_detection_variant: current
+            .as_ref()
+            .map(|settings| settings.jcode_detection_variant)
+            .unwrap_or_default(),
     };
     let bind_changed = current
         .as_ref()
@@ -2204,6 +2219,12 @@ fn ensure_builtin_session(state: &WebState, session: Option<&str>) -> Result<(),
             client_socket,
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             shell,
+            jcode_detection_variant: state
+                .server_settings
+                .lock()
+                .ok()
+                .map(|settings| settings.jcode_detection_variant)
+                .unwrap_or_default(),
         })
         .map_err(|err| err.to_string())?;
     state
@@ -3948,6 +3969,7 @@ mod tests {
                 default_folder: std::env::temp_dir().to_string_lossy().to_string(),
                 builtin_backend_enabled: true,
                 external_herdr_backend_enabled: true,
+                jcode_detection_variant: JcodeDetectionVariant::default(),
             })),
             no_sleep: Arc::new(Mutex::new(NoSleepState::default())),
             rebind_tx,
@@ -4704,6 +4726,7 @@ mod tests {
             default_folder: std::env::temp_dir().to_string_lossy().to_string(),
             builtin_backend_enabled: true,
             external_herdr_backend_enabled: true,
+            jcode_detection_variant: JcodeDetectionVariant::default(),
         })
         .unwrap();
 
@@ -4726,6 +4749,7 @@ mod tests {
             default_folder: std::env::temp_dir().to_string_lossy().to_string(),
             builtin_backend_enabled: true,
             external_herdr_backend_enabled: true,
+            jcode_detection_variant: JcodeDetectionVariant::default(),
         }) {
             Ok(_) => panic!("expected public auth config to fail"),
             Err(err) => err,
