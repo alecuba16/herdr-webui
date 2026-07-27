@@ -69,22 +69,30 @@ mod tests {
 
     #[test]
     fn default_variant_is_alecuba16() {
-        assert_eq!(JcodeDetectionVariant::default(), JcodeDetectionVariant::Alecuba16);
+        assert_eq!(
+            JcodeDetectionVariant::default(),
+            JcodeDetectionVariant::Alecuba16
+        );
     }
 
     #[test]
     fn variant_round_trips_serde() {
-        for variant in [JcodeDetectionVariant::Vanilla, JcodeDetectionVariant::Alecuba16] {
+        for variant in [
+            JcodeDetectionVariant::Vanilla,
+            JcodeDetectionVariant::Alecuba16,
+        ] {
             let json = serde_json::to_string(&variant).expect("serialize");
-            let parsed: JcodeDetectionVariant =
-                serde_json::from_str(&json).expect("deserialize");
+            let parsed: JcodeDetectionVariant = serde_json::from_str(&json).expect("deserialize");
             assert_eq!(variant, parsed, "round trip for {variant:?} via {json:?}");
         }
     }
 
     #[test]
     fn variant_serde_uses_lowercase() {
-        assert_eq!(serde_json::to_string(&JcodeDetectionVariant::Vanilla).unwrap(), "\"vanilla\"");
+        assert_eq!(
+            serde_json::to_string(&JcodeDetectionVariant::Vanilla).unwrap(),
+            "\"vanilla\""
+        );
         assert_eq!(
             serde_json::to_string(&JcodeDetectionVariant::Alecuba16).unwrap(),
             "\"alecuba16\""
@@ -93,7 +101,10 @@ mod tests {
 
     #[test]
     fn from_str_parses_known_variants() {
-        assert_eq!(JcodeDetectionVariant::from_str("vanilla"), JcodeDetectionVariant::Vanilla);
+        assert_eq!(
+            JcodeDetectionVariant::from_str("vanilla"),
+            JcodeDetectionVariant::Vanilla
+        );
         assert_eq!(
             JcodeDetectionVariant::from_str("alecuba16"),
             JcodeDetectionVariant::Alecuba16
@@ -106,7 +117,10 @@ mod tests {
             JcodeDetectionVariant::from_str("unknown"),
             JcodeDetectionVariant::Vanilla
         );
-        assert_eq!(JcodeDetectionVariant::from_str(""), JcodeDetectionVariant::Vanilla);
+        assert_eq!(
+            JcodeDetectionVariant::from_str(""),
+            JcodeDetectionVariant::Vanilla
+        );
         assert_eq!(
             JcodeDetectionVariant::from_str("ALECUBA16"),
             JcodeDetectionVariant::Alecuba16,
@@ -116,10 +130,16 @@ mod tests {
 
     #[test]
     fn as_str_matches_serde_form() {
-        for variant in [JcodeDetectionVariant::Vanilla, JcodeDetectionVariant::Alecuba16] {
+        for variant in [
+            JcodeDetectionVariant::Vanilla,
+            JcodeDetectionVariant::Alecuba16,
+        ] {
             let serde = serde_json::to_string(&variant).unwrap();
             let expected = format!("\"{}\"", variant.as_str());
-            assert_eq!(serde, expected, "as_str should match serde form for {variant:?}");
+            assert_eq!(
+                serde, expected,
+                "as_str should match serde form for {variant:?}"
+            );
         }
     }
 }
