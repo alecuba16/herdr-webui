@@ -3660,9 +3660,9 @@ mod tests {
             let pane = data.panes.values().next().unwrap();
             data.terminals.get(&pane.terminal_id).unwrap().clone()
         };
-        terminal.append_output("●·· batch ··● · 2/5 done".as_bytes());
+        terminal.append_output("jcode session ready\n❯".as_bytes());
         // Give the reader thread time to process.
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(Duration::from_millis(200));
 
         // Now agent.list must reflect the detected jcode agent.
         let agents_after = state.handle_request("seed", "agent.list", json!({}));
@@ -3673,6 +3673,7 @@ mod tests {
             "agent.list should show 1 agent after jcode output"
         );
         assert_eq!(list[0]["agent"], "jcode");
+        assert_eq!(list[0]["agent_status"], "idle");
     }
 
     #[test]
