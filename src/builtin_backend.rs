@@ -471,7 +471,6 @@ struct PaneRecord {
     cwd: PathBuf,
     label: Option<String>,
     argv: Vec<String>,
-    cached_agent_presentation: Mutex<Option<PaneAgentPresentation>>,
 }
 
 impl BuiltinState {
@@ -701,7 +700,6 @@ impl BuiltinState {
                 pane_id: pane_id.clone(),
                 terminal_id: terminal_id.clone(),
             },
-            pane_id.clone(),
             self.jcode_detection_variant,
         )
         .map_err(|err| err.to_string())?;
@@ -733,7 +731,6 @@ impl BuiltinState {
                 cwd,
                 label: None,
                 argv: vec![self.default_shell.clone()],
-                cached_agent_presentation: Mutex::new(None),
             },
         );
         data.terminals.insert(terminal_id, terminal);
@@ -784,7 +781,6 @@ impl BuiltinState {
                 pane_id: pane_id.clone(),
                 terminal_id: terminal_id.clone(),
             },
-            pane_id.clone(),
             self.jcode_detection_variant,
         )
         .map_err(|err| err.to_string())?;
@@ -810,7 +806,6 @@ impl BuiltinState {
                 cwd,
                 label: None,
                 argv: vec![self.default_shell.clone()],
-                cached_agent_presentation: Mutex::new(None),
             },
         );
         data.terminals.insert(terminal_id, terminal);
@@ -862,7 +857,6 @@ impl BuiltinState {
                 pane_id: pane_id.clone(),
                 terminal_id: terminal_id.clone(),
             },
-            pane_id.clone(),
             self.jcode_detection_variant,
         )
         .map_err(|err| err.to_string())?;
@@ -894,7 +888,6 @@ impl BuiltinState {
                 cwd,
                 label: Some(name),
                 argv: argv.clone(),
-                cached_agent_presentation: Mutex::new(None),
             },
         );
         data.terminals.insert(terminal_id, terminal);
@@ -1250,7 +1243,6 @@ struct TerminalRuntime {
     argv: Vec<String>,
     event_hub: BuiltinEventHub,
     event_context: PaneEventContext,
-    _pane_id: String,
     last_agent_state: Mutex<Option<(Option<String>, String)>>,
     last_status_check: Mutex<Option<Instant>>,
     master: Mutex<Box<dyn MasterPty + Send>>,
@@ -1278,7 +1270,6 @@ impl TerminalRuntime {
         cols: u16,
         event_hub: BuiltinEventHub,
         event_context: PaneEventContext,
-        pane_id: String,
         jcode_detection_variant: JcodeDetectionVariant,
     ) -> io::Result<Arc<Self>> {
         let pty_system = native_pty_system();
@@ -1330,7 +1321,6 @@ impl TerminalRuntime {
             argv,
             event_hub,
             event_context,
-            _pane_id: pane_id,
             last_agent_state: Mutex::new(None),
             last_status_check: Mutex::new(None),
             master: Mutex::new(pair.master),
@@ -1438,14 +1428,7 @@ impl TerminalRuntime {
             });
         }
         // Invalidate cached agent presentation so next agent.list recomputes
-        self.invalidate_agent_presentation_cache();
         self.publish_agent_status_if_changed();
-    }
-
-    fn invalidate_agent_presentation_cache(&self) {
-        // The pane record is in BuiltinData, we need to find it by terminal_id
-        // Since we don't have direct access, we'll rely on the status check throttling
-        // and the cache will be refreshed on next agent.list call
     }
 
     fn notify_exited(&self) {
@@ -1766,13 +1749,13 @@ struct PaneAgentPresentation {
 }
 
 fn pane_agent_presentation(pane: &PaneRecord, data: &BuiltinData) -> PaneAgentPresentation {
-    // Check cache first
-    if let Ok(cache) = pane.cached_agent_presentation.lock() {
-        if let Some(cached) = cache.as_ref() {
-            return *cached;
-        }
-    }
-    // Cache miss - compute
+    // Note: we intentionally do NOT cache the result here. The cache introduced
+    // in v0.2.84 was never properly invalidated (invalidate_agent_presentation_cache
+    // is a no-op because TerminalRuntime has no access to BuiltinData). Caching
+    // a `None` agent result meant that once a pane was seen as "no agent" (e.g.
+    // a shell before the user launches jcode), it would never be re-checked, so
+    // the agent would never appear in the list. The 500ms throttle in
+    // publish_agent_status_if_changed already limits how often detection runs.
     let terminal = data.terminals.get(&pane.terminal_id);
     let tail = terminal
         .map(|terminal| terminal.history_tail_text(DETECTION_TAIL_BYTES))
@@ -1798,12 +1781,7 @@ fn pane_agent_presentation(pane: &PaneRecord, data: &BuiltinData) -> PaneAgentPr
         "unknown" if agent.is_some() => "idle",
         status => status,
     };
-    let result = PaneAgentPresentation { agent, status };
-    // Update cache
-    if let Ok(mut cache) = pane.cached_agent_presentation.lock() {
-        *cache = Some(result);
-    }
-    result
+    PaneAgentPresentation { agent, status }
 }
 
 fn aggregate_workspace_agent_status(
@@ -3069,47 +3047,6 @@ fn detect_opencode_like_status(lower: &str) -> Option<&'static str> {
     None
 }
 
-fn detect_jcode_status(lower: &str) -> &'static str {
-    let bottom8 = bottom_non_empty_lines(lower, 8);
-    let bottom6 = bottom_non_empty_lines(lower, 6);
-    let bottom4 = bottom_non_empty_lines(lower, 4);
-    let bottom3 = bottom_non_empty_lines(lower, 3);
-    if jcode_blocked(&bottom8) || jcode_question_blocked(&bottom6) {
-        return "blocked";
-    }
-    if bottom3
-        .lines()
-        .rev()
-        .find(|line| !line.trim().is_empty())
-        .is_some_and(jcode_idle_line)
-    {
-        return "idle";
-    }
-    if has_jcode_spinner(&bottom3)
-        || has_jcode_tool_bar(&bottom4)
-        || contains_any(
-            &bottom4,
-            &[
-                "running tool",
-                "executing tool",
-                "network disconnected, waiting to retry",
-            ],
-        )
-    {
-        return "working";
-    }
-    if (contains_any(&bottom3, &["session ready", "ready for input"])
-        || bottom3.lines().any(|line| line.trim() == "❯"))
-        && !contains_any(
-            &bottom3,
-            &["processing", "embedding", "running tool", "executing"],
-        )
-    {
-        return "idle";
-    }
-    "unknown"
-}
-
 pub(crate) fn jcode_idle_line(line: &str) -> bool {
     let line = line.trim();
     line == "❯"
@@ -3693,6 +3630,52 @@ mod tests {
     }
 
     #[test]
+    fn agent_list_reflects_agent_detected_after_output() {
+        // Regression test for the stale-cache bug (v0.2.84–v0.2.87):
+        // A shell pane starts with no agent. When the user launches jcode inside
+        // the shell, the terminal output changes, but the cached
+        // PaneAgentPresentation (which stored `None`) was never invalidated,
+        // so agent.list kept returning an empty list.
+        let state = BuiltinState::new(
+            std::env::current_dir().unwrap(),
+            Some(default_shell()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        state.handle_request("seed", "workspace.create", json!({ "label": "Workspace" }));
+
+        // Before any agent output, the pane should have no agent.
+        let agents_before = state.handle_request("seed", "agent.list", json!({}));
+        assert!(
+            agents_before["result"]["agents"]
+                .as_array()
+                .unwrap()
+                .is_empty(),
+            "expected no agents before output"
+        );
+
+        // Simulate jcode terminal output appearing in the pane.
+        let terminal = {
+            let data = state.data.lock().unwrap();
+            let pane = data.panes.values().next().unwrap();
+            data.terminals.get(&pane.terminal_id).unwrap().clone()
+        };
+        terminal.append_output("●·· batch ··● · 2/5 done".as_bytes());
+        // Give the reader thread time to process.
+        std::thread::sleep(Duration::from_millis(100));
+
+        // Now agent.list must reflect the detected jcode agent.
+        let agents_after = state.handle_request("seed", "agent.list", json!({}));
+        let list = agents_after["result"]["agents"].as_array().unwrap();
+        assert_eq!(
+            list.len(),
+            1,
+            "agent.list should show 1 agent after jcode output"
+        );
+        assert_eq!(list[0]["agent"], "jcode");
+    }
+
+    #[test]
     fn terminal_exit_notifies_subscribers_and_event_hub() {
         let hub = BuiltinEventHub::new();
         let events = hub.subscribe();
@@ -3714,7 +3697,6 @@ mod tests {
             80,
             hub,
             context,
-            "pane_exit".to_string(),
             JcodeDetectionVariant::Vanilla,
         )
         .unwrap();
