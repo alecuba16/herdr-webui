@@ -1061,6 +1061,7 @@ async fn serve_rebindable(
                         shutdown_handle.graceful_shutdown(None);
                     });
                     axum_server::from_tcp_rustls(listener.into_std()?, tls_config)
+                        .map_err(|err| io::Error::other(err.to_string()))?
                         .handle(handle)
                         .serve(router)
                         .await
@@ -1139,7 +1140,7 @@ fn ensure_self_signed_cert() -> io::Result<(PathBuf, PathBuf)> {
     let certified = rcgen::generate_simple_self_signed(subject_alt_names)
         .map_err(|err| io::Error::other(err.to_string()))?;
     fs::write(&cert_path, certified.cert.pem())?;
-    fs::write(&key_path, certified.key_pair.serialize_pem())?;
+    fs::write(&key_path, certified.signing_key.serialize_pem())?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
