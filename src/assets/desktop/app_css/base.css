@@ -1,3 +1,16 @@
+@font-face {
+  font-family: "Herdr JetBrainsMono Nerd Font Mono";
+  src:
+    local("JetBrainsMono Nerd Font Mono"),
+    local("JetBrainsMonoNerdFontMono-Regular"),
+    url("/assets/fonts/JetBrainsMonoNerdFontMono-Regular.ttf")
+      format("truetype");
+  font-style: normal;
+  font-weight: 400;
+  font-variant: normal;
+  font-display: swap;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -34,7 +47,9 @@ body {
   --editor-syntax-operator: #cdd6f4;
   --editor-syntax-meta: #b4befe;
   --editor-syntax-invalid: #f38ba8;
-  --mono-font: "Herdr JetBrainsMono Nerd Font Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --mono-font:
+    "Herdr JetBrainsMono Nerd Font Mono", ui-monospace, SFMono-Regular, Menlo,
+    Monaco, Consolas, monospace;
   margin: 0;
   background: var(--bg);
   color: var(--fg);

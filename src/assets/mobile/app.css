@@ -1,3 +1,14 @@
+@font-face {
+  font-family: "Herdr JetBrainsMono Nerd Font Mono";
+  src: local("JetBrainsMono Nerd Font Mono"),
+       local("JetBrainsMonoNerdFontMono-Regular"),
+       url("/assets/fonts/JetBrainsMonoNerdFontMono-Regular.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 400;
+  font-variant: normal;
+  font-display: swap;
+}
+
 * {
   box-sizing: border-box;
 }
