@@ -18,6 +18,7 @@
 //! single `detect_jcode_status` implementation. See `docs/features.md` and
 //! `docs/technical-details.md` for the temporary annotation.
 
+pub mod claurst;
 pub mod jcode;
 
 use serde::{Deserialize, Serialize};
