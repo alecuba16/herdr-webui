@@ -4117,6 +4117,10 @@ mod tests {
             detect_agent_label_from_text("yes, always allow (persistent)\nyes, allow this session"),
             Some("claurst")
         );
+        assert_eq!(
+            detect_agent_label_from_text("claurst is ready"),
+            Some("claurst")
+        );
     }
 
     #[test]

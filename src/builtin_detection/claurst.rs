@@ -43,13 +43,9 @@ pub fn detect_claurst_status(lower: &str) -> &'static str {
     // The spinner set is: · ✳ ✻ ✽ ✾ ❃ ❄ ❅ ❆ ❇ ❈ ❉ ❊
     if bottom3.lines().any(|line| {
         let line = line.trim_start();
-        let mut chars = line.chars();
-        let Some(first) = chars.next() else {
-            return false;
-        };
-        is_claurst_spinner(first)
-            && chars.next().is_some_and(|c| c.is_whitespace())
-            && line.contains('…')
+        line.chars().next().is_some_and(|first| {
+            is_claurst_spinner(first) && line.chars().nth(1).is_some_and(|c| c.is_whitespace())
+        }) && line.contains('…')
     }) {
         return "working";
     }
@@ -112,6 +108,8 @@ mod tests {
 
     #[test]
     fn idle_build_status_line() {
+        assert_eq!(detect_claurst_status("build"), "idle");
+        assert_eq!(detect_claurst_status("plan"), "idle");
         assert_eq!(detect_claurst_status("build\n❯"), "idle");
         assert_eq!(detect_claurst_status("plan\n❯"), "idle");
     }
