@@ -2186,6 +2186,7 @@ fn detect_agent_label(argv: &[String]) -> Option<&'static str> {
             "kilo" | "kilo-code" => Some("kilo"),
             "qodercli" | "qoderclicn" | "qoder" | "qodercn" => Some("qodercli"),
             "maki" => Some("maki"),
+            "claurst" => Some("claurst"),
             _ => None,
         }
     })
@@ -2212,6 +2213,13 @@ fn detect_agent_label_from_text(text: &str) -> Option<&'static str> {
         || lower.contains("network disconnected, waiting to retry")
     {
         return Some("jcode");
+    }
+    if lower.contains("claurst")
+        || (lower.contains("yes, allow once") && lower.contains("no, deny"))
+        || (lower.contains("yes, always allow (persistent)")
+            && lower.contains("yes, allow this session"))
+    {
+        return Some("claurst");
     }
     None
 }
@@ -2538,6 +2546,7 @@ fn detect_agent_status(
         "maki" => detect_maki_status(&lower),
         "pi" => detect_pi_status(&lower),
         "qodercli" => detect_qodercli_status(&lower),
+        "claurst" => crate::builtin_detection::claurst::detect_claurst_status(&lower),
         _ => "unknown",
     }
 }
@@ -3134,7 +3143,7 @@ fn starts_with_braille(text: &str) -> bool {
     text.chars().next().is_some_and(is_braille)
 }
 
-fn is_braille(ch: char) -> bool {
+pub(crate) fn is_braille(ch: char) -> bool {
     ('\u{2800}'..='\u{28ff}').contains(&ch)
 }
 
@@ -3461,6 +3470,10 @@ mod tests {
         assert_eq!(detect_agent_label(&["open-code".into()]), Some("opencode"));
         assert_eq!(detect_agent_label(&["cursor-agent".into()]), Some("cursor"));
         assert_eq!(detect_agent_label(&["qodercn".into()]), Some("qodercli"));
+        assert_eq!(
+            detect_agent_label(&["/home/user/.cargo/bin/claurst".into()]),
+            Some("claurst")
+        );
         assert_eq!(detect_agent_label(&["bash".into()]), None);
     }
 
@@ -4095,6 +4108,15 @@ mod tests {
             detect_agent_label_from_text("↻ network disconnected, waiting to retry"),
             Some("jcode")
         );
+
+        assert_eq!(
+            detect_agent_label_from_text("yes, allow once\nno, deny"),
+            Some("claurst")
+        );
+        assert_eq!(
+            detect_agent_label_from_text("yes, always allow (persistent)\nyes, allow this session"),
+            Some("claurst")
+        );
     }
 
     #[test]
@@ -4173,6 +4195,13 @@ mod tests {
                 "blocked",
             ),
             ("qodercli", "(esc to cancel, keep working)", "working"),
+            (
+                "claurst",
+                "yes, allow once\nyes, allow this session\nyes, always allow (persistent)\nno, deny",
+                "blocked",
+            ),
+            ("claurst", "· thinking…", "working"),
+            ("claurst", "❯", "idle"),
         ];
 
         for (agent, text, expected) in cases {
@@ -4395,6 +4424,27 @@ mod tests {
         assert_eq!(
             detect_agent_label_from_processes(30, &processes),
             Some("jcode")
+        );
+        assert_eq!(detect_agent_label_from_processes(999, &processes), None);
+    }
+
+    #[test]
+    fn detects_claurst_from_terminal_process_tree() {
+        let processes = parse_process_table(
+            r#"
+              10     1 /bin/zsh -zsh
+              11    10 /home/user/.cargo/bin/claurst claurst
+              20     1 /usr/local/bin/claurst claurst --provider anthropic
+            "#,
+        );
+
+        assert_eq!(
+            detect_agent_label_from_processes(10, &processes),
+            Some("claurst")
+        );
+        assert_eq!(
+            detect_agent_label_from_processes(20, &processes),
+            Some("claurst")
         );
         assert_eq!(detect_agent_label_from_processes(999, &processes), None);
     }
