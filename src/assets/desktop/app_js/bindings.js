@@ -262,6 +262,12 @@ el("optShowTabActivity").onchange = () => {
   applyOptions();
   render();
 };
+el("optPanelCloseMode").onchange = () => {
+  options.panelCloseMode = el("optPanelCloseMode").value;
+  saveOptions();
+  applyOptions();
+  render();
+};
 el("optWorkspaceSort").onchange = () => {
   options.workspaceSort = el("optWorkspaceSort").value;
   saveOptions();
