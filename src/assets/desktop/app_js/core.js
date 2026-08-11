@@ -1082,6 +1082,7 @@ const defaultOptions = {
   fileContentSearchRegex: false,
   editorFindShortcutEnabled: true,
   showTabActivity: false,
+  panelCloseMode: "smart",
   worktreeAutoDiscoverSeconds: 3,
   generateWorktreeNames: false,
   worktreeDefaultDirectory: "",
@@ -1251,6 +1252,7 @@ function normalizeOptions(value) {
   next.fileContentSearchRegex = next.fileContentSearchRegex === true;
   next.editorFindShortcutEnabled = next.editorFindShortcutEnabled !== false;
   next.showTabActivity = next.showTabActivity === true;
+  next.panelCloseMode = ["always", "smart"].includes(next.panelCloseMode) ? next.panelCloseMode : "smart";
   next.worktreeAutoDiscoverSeconds = Math.max(
     0,
     Math.min(
@@ -1564,6 +1566,7 @@ function groupSettingsSections() {
         "optWorkingDismissMinutes",
         "optCloseShortcut",
         "optShowTabActivity",
+        "optPanelCloseMode",
       ],
     },
     {
@@ -1709,6 +1712,7 @@ function applyOptions() {
     fileContentSearchRegex = el("optFileContentSearchRegex"),
     scrollLinesValue = el("scrollLinesValue"),
     showTabActivity = el("optShowTabActivity"),
+    panelCloseMode = el("optPanelCloseMode"),
     worktreeAutoDiscover = el("optWorktreeAutoDiscover"),
     generateWorktreeNames = el("optGenerateWorktreeNames"),
     worktreeDefaultDirectory = el("optWorktreeDefaultDirectory"),
@@ -1795,6 +1799,7 @@ function applyOptions() {
   if (scrollLinesValue)
     scrollLinesValue.textContent = String(options.scrollLines || 3);
   if (showTabActivity) showTabActivity.checked = !!options.showTabActivity;
+  if (panelCloseMode) panelCloseMode.value = options.panelCloseMode || "smart";
   if (worktreeAutoDiscover)
     worktreeAutoDiscover.value = String(
       options.worktreeAutoDiscoverSeconds ?? 3,
