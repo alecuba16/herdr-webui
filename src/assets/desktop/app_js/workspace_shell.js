@@ -20,6 +20,7 @@ function rememberWorkspaceShellMode(mode, id = state.ws, options = {}) {
   syncWorkspaceShellRestoreControl();
   syncShellModeButtons();
 }
+window.rememberWorkspaceShellMode = rememberWorkspaceShellMode;
 function isWorkspaceShellMinimized(id = state.ws) {
   return !!workspaceShellState(id).minimized;
 }

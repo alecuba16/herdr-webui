@@ -19,8 +19,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
+use crate::builtin_detection::JcodeDetectionVariant;
+
 mod assets;
 mod builtin_backend;
+mod builtin_detection;
 mod builtin_events;
 mod compat;
 mod file_browser;
@@ -58,10 +61,10 @@ const HERDR_WEBUI_VERSION: &str = env!("HERDR_WEBUI_VERSION");
 const INSTALL_LABEL: &str = "herdr-web";
 const MAX_FRAME_SIZE: usize = 2 * 1024 * 1024;
 const MAX_GRAPHICS_FRAME_SIZE: usize = 32 * 1024 * 1024;
-const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 14;
-const PROTOCOL_VERSION: u32 = 16;
-const MIN_BACKEND_VERSION: &str = "0.7.0";
-const MAX_TESTED_BACKEND_VERSION: &str = "0.7.3";
+const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 16;
+const PROTOCOL_VERSION: u32 = 18;
+const MIN_BACKEND_VERSION: &str = "0.7.3";
+const MAX_TESTED_BACKEND_VERSION: &str = "0.7.5";
 const DEFAULT_FOLDER_READ_TIMEOUT: Duration = Duration::from_millis(1500);
 
 type LocalStream = interprocess::local_socket::Stream;
@@ -182,6 +185,7 @@ struct PersistedServerSettings {
     default_folder: Option<String>,
     builtin_backend_enabled: Option<bool>,
     external_herdr_backend_enabled: Option<bool>,
+    jcode_detection_variant: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -196,6 +200,7 @@ struct RuntimeServerSettings {
     default_folder: String,
     builtin_backend_enabled: bool,
     external_herdr_backend_enabled: bool,
+    jcode_detection_variant: JcodeDetectionVariant,
 }
 
 struct NoSleepGuard {
@@ -597,6 +602,7 @@ fn default_runtime_server_settings(bind: SocketAddr) -> RuntimeServerSettings {
         default_folder: default_working_folder(None),
         builtin_backend_enabled: true,
         external_herdr_backend_enabled: true,
+        jcode_detection_variant: JcodeDetectionVariant::default(),
     }
 }
 
@@ -774,6 +780,9 @@ fn load_runtime_server_settings(default_bind: SocketAddr) -> io::Result<RuntimeS
     if let Some(enabled) = persisted.external_herdr_backend_enabled {
         settings.external_herdr_backend_enabled = enabled;
     }
+    if let Some(variant_str) = persisted.jcode_detection_variant {
+        settings.jcode_detection_variant = JcodeDetectionVariant::from_str(&variant_str);
+    }
     validate_runtime_server_settings(&settings)?;
     if missing_keys {
         save_runtime_server_settings(&settings)?;
@@ -798,6 +807,7 @@ fn save_runtime_server_settings(settings: &RuntimeServerSettings) -> io::Result<
         default_folder: Some(settings.default_folder.clone()),
         builtin_backend_enabled: Some(settings.builtin_backend_enabled),
         external_herdr_backend_enabled: Some(settings.external_herdr_backend_enabled),
+        jcode_detection_variant: Some(settings.jcode_detection_variant.as_str().to_string()),
     })?;
     fs::write(&path, content)?;
     #[cfg(unix)]
@@ -889,6 +899,7 @@ async fn main() -> io::Result<()> {
                 client_socket: _client_socket,
                 cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
                 shell: server_settings.builtin_shell.clone(),
+                jcode_detection_variant: server_settings.jcode_detection_variant,
             },
         )?);
         let api_socket = handle.api_socket().to_path_buf();
@@ -1050,6 +1061,7 @@ async fn serve_rebindable(
                         shutdown_handle.graceful_shutdown(None);
                     });
                     axum_server::from_tcp_rustls(listener.into_std()?, tls_config)
+                        .map_err(|err| io::Error::other(err.to_string()))?
                         .handle(handle)
                         .serve(router)
                         .await
@@ -1128,7 +1140,7 @@ fn ensure_self_signed_cert() -> io::Result<(PathBuf, PathBuf)> {
     let certified = rcgen::generate_simple_self_signed(subject_alt_names)
         .map_err(|err| io::Error::other(err.to_string()))?;
     fs::write(&cert_path, certified.cert.pem())?;
-    fs::write(&key_path, certified.key_pair.serialize_pem())?;
+    fs::write(&key_path, certified.signing_key.serialize_pem())?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -2060,6 +2072,10 @@ async fn update_server_settings(
                     .map(|settings| settings.external_herdr_backend_enabled)
             })
             .unwrap_or(true),
+        jcode_detection_variant: current
+            .as_ref()
+            .map(|settings| settings.jcode_detection_variant)
+            .unwrap_or_default(),
     };
     let bind_changed = current
         .as_ref()
@@ -2216,6 +2232,12 @@ fn ensure_builtin_session(state: &WebState, session: Option<&str>) -> Result<(),
             client_socket,
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             shell,
+            jcode_detection_variant: state
+                .server_settings
+                .lock()
+                .ok()
+                .map(|settings| settings.jcode_detection_variant)
+                .unwrap_or_default(),
         })
         .map_err(|err| err.to_string())?;
     state
@@ -3960,6 +3982,7 @@ mod tests {
                 default_folder: std::env::temp_dir().to_string_lossy().to_string(),
                 builtin_backend_enabled: true,
                 external_herdr_backend_enabled: true,
+                jcode_detection_variant: JcodeDetectionVariant::default(),
             })),
             no_sleep: Arc::new(Mutex::new(NoSleepState::default())),
             rebind_tx,
@@ -4083,7 +4106,7 @@ mod tests {
     fn builtin_event_hub_detection_only_matches_builtin_protocol_16() {
         assert!(backend_uses_builtin_event_hub(&BackendInfo {
             version: Some("builtin-0.1.0".to_string()),
-            protocol: Some(16),
+            protocol: Some(18),
         }));
         assert!(!backend_uses_builtin_event_hub(&BackendInfo {
             version: Some("builtin-0.1.0".to_string()),
@@ -4091,11 +4114,11 @@ mod tests {
         }));
         assert!(!backend_uses_builtin_event_hub(&BackendInfo {
             version: Some("1.2.3".to_string()),
-            protocol: Some(16),
+            protocol: Some(18),
         }));
         assert!(!backend_uses_builtin_event_hub(&BackendInfo {
             version: None,
-            protocol: Some(16),
+            protocol: Some(18),
         }));
     }
 
@@ -4716,6 +4739,7 @@ mod tests {
             default_folder: std::env::temp_dir().to_string_lossy().to_string(),
             builtin_backend_enabled: true,
             external_herdr_backend_enabled: true,
+            jcode_detection_variant: JcodeDetectionVariant::default(),
         })
         .unwrap();
 
@@ -4738,6 +4762,7 @@ mod tests {
             default_folder: std::env::temp_dir().to_string_lossy().to_string(),
             builtin_backend_enabled: true,
             external_herdr_backend_enabled: true,
+            jcode_detection_variant: JcodeDetectionVariant::default(),
         }) {
             Ok(_) => panic!("expected public auth config to fail"),
             Err(err) => err,
@@ -5036,22 +5061,14 @@ mod tests {
     #[test]
     fn classifies_backend_compatibility() {
         assert_eq!(
-            backend_compatibility_for_supported_range(Some("0.6.9"), Some(PROTOCOL_VERSION)),
+            backend_compatibility_for_supported_range(Some("0.7.2"), Some(PROTOCOL_VERSION)),
             BackendCompatibility::TooOld
         );
         assert_eq!(
             backend_compatibility_for_supported_range(
-                Some("0.7.0"),
+                Some("0.7.3"),
                 Some(MIN_SUPPORTED_PROTOCOL_VERSION),
             ),
-            BackendCompatibility::Compatible
-        );
-        assert_eq!(
-            backend_compatibility_for_supported_range(Some("0.7.0"), Some(PROTOCOL_VERSION)),
-            BackendCompatibility::Compatible
-        );
-        assert_eq!(
-            backend_compatibility_for_supported_range(Some("0.7.1"), Some(PROTOCOL_VERSION)),
             BackendCompatibility::Compatible
         );
         assert_eq!(
@@ -5060,6 +5077,14 @@ mod tests {
         );
         assert_eq!(
             backend_compatibility_for_supported_range(Some("0.7.4"), Some(PROTOCOL_VERSION)),
+            BackendCompatibility::Compatible
+        );
+        assert_eq!(
+            backend_compatibility_for_supported_range(Some("0.7.5"), Some(PROTOCOL_VERSION)),
+            BackendCompatibility::Compatible
+        );
+        assert_eq!(
+            backend_compatibility_for_supported_range(Some("0.7.6"), Some(PROTOCOL_VERSION)),
             BackendCompatibility::UntestedNewer
         );
         assert_eq!(
@@ -5071,11 +5096,11 @@ mod tests {
             BackendCompatibility::Unknown
         );
         assert_eq!(
-            backend_compatibility_for_supported_range(Some("0.7.0"), None),
+            backend_compatibility_for_supported_range(Some("0.7.3"), None),
             BackendCompatibility::Unknown
         );
         assert_eq!(
-            backend_compatibility_for_supported_range(Some("0.7.0"), Some(PROTOCOL_VERSION + 1)),
+            backend_compatibility_for_supported_range(Some("0.7.3"), Some(PROTOCOL_VERSION + 1)),
             BackendCompatibility::ProtocolMismatch
         );
     }
@@ -5084,19 +5109,19 @@ mod tests {
     fn terminal_protocol_fallback_retries_only_newer_client_mismatch() {
         assert!(should_retry_legacy_protocol(
             PROTOCOL_VERSION,
-            "client version 16 is newer than server version 15; please upgrade the herdr server",
+            "client version 18 is newer than server version 17; please upgrade the herdr server",
         ));
         assert!(should_retry_legacy_protocol(
             PROTOCOL_VERSION - 1,
-            "client version 15 is newer than server version 14; please upgrade the herdr server",
+            "client version 17 is newer than server version 16; please upgrade the herdr server",
         ));
         assert!(!should_retry_legacy_protocol(
             MIN_SUPPORTED_PROTOCOL_VERSION,
-            "client version 14 is newer than server version 13; please upgrade the herdr server",
+            "client version 16 is newer than server version 15; please upgrade the herdr server",
         ));
         assert!(!should_retry_legacy_protocol(
             PROTOCOL_VERSION,
-            "client version 16 is older than the minimum supported version 17",
+            "client version 18 is older than the minimum supported version 19",
         ));
         assert!(!should_retry_legacy_protocol(
             PROTOCOL_VERSION,
@@ -5415,7 +5440,7 @@ mod tests {
     async fn versions_api_reports_backend_compatibility_from_fake_socket() {
         let (socket, handle) = fake_api_socket(json!({
             "id": "web:ping",
-            "result": { "version": "0.7.0", "protocol": PROTOCOL_VERSION }
+            "result": { "version": "0.7.5", "protocol": PROTOCOL_VERSION }
         }));
         let mut state = test_state();
         state.api_socket = Some(socket.clone());
@@ -5432,7 +5457,7 @@ mod tests {
             .unwrap();
         let body = response_json(response).await;
 
-        assert_eq!(body["backend"], "0.7.0");
+        assert_eq!(body["backend"], "0.7.5");
         assert_eq!(body["min_backend"], MIN_BACKEND_VERSION);
         assert_eq!(body["max_tested_backend"], MAX_TESTED_BACKEND_VERSION);
         assert_eq!(body["protocol_version"], PROTOCOL_VERSION);

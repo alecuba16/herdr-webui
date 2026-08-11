@@ -13,6 +13,7 @@ use interprocess::TryClone as _;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde_json::{json, Value};
 
+use crate::builtin_detection::{jcode::detect_jcode_status_with_variant, JcodeDetectionVariant};
 use crate::builtin_events::{BuiltinEventHub, PaneEventContext};
 use crate::protocol::{
     read_message, write_message, ClientInputEvent, ClientMessage, RenderEncoding, ServerMessage,
@@ -126,6 +127,7 @@ pub(crate) struct BuiltinBackendConfig {
     pub client_socket: PathBuf,
     pub cwd: PathBuf,
     pub shell: Option<String>,
+    pub jcode_detection_variant: JcodeDetectionVariant,
 }
 
 pub(crate) struct BuiltinBackendHandle {
@@ -168,7 +170,11 @@ impl BuiltinBackendHandle {
         restrict_socket_permissions(&config.api_socket)?;
         restrict_socket_permissions(&config.client_socket)?;
 
-        let state = Arc::new(BuiltinState::new(config.cwd, config.shell)?);
+        let state = Arc::new(BuiltinState::new(
+            config.cwd,
+            config.shell,
+            config.jcode_detection_variant,
+        )?);
         let inner = Arc::new(BuiltinBackendInner {
             running: AtomicBool::new(true),
             api_socket: config.api_socket,
@@ -427,6 +433,7 @@ struct BuiltinState {
     data: Mutex<BuiltinData>,
     default_shell: String,
     events: BuiltinEventHub,
+    jcode_detection_variant: JcodeDetectionVariant,
 }
 
 struct BuiltinData {
@@ -464,11 +471,14 @@ struct PaneRecord {
     cwd: PathBuf,
     label: Option<String>,
     argv: Vec<String>,
-    cached_agent_presentation: Mutex<Option<PaneAgentPresentation>>,
 }
 
 impl BuiltinState {
-    fn new(_cwd: PathBuf, shell: Option<String>) -> io::Result<Self> {
+    fn new(
+        _cwd: PathBuf,
+        shell: Option<String>,
+        jcode_detection_variant: JcodeDetectionVariant,
+    ) -> io::Result<Self> {
         let default_shell = shell.unwrap_or_else(default_shell);
         let state = Self {
             data: Mutex::new(BuiltinData {
@@ -483,6 +493,7 @@ impl BuiltinState {
             }),
             default_shell,
             events: BuiltinEventHub::new(),
+            jcode_detection_variant,
         };
         Ok(state)
     }
@@ -689,7 +700,7 @@ impl BuiltinState {
                 pane_id: pane_id.clone(),
                 terminal_id: terminal_id.clone(),
             },
-            pane_id.clone(),
+            self.jcode_detection_variant,
         )
         .map_err(|err| err.to_string())?;
         data.workspaces.insert(
@@ -720,7 +731,6 @@ impl BuiltinState {
                 cwd,
                 label: None,
                 argv: vec![self.default_shell.clone()],
-                cached_agent_presentation: Mutex::new(None),
             },
         );
         data.terminals.insert(terminal_id, terminal);
@@ -771,7 +781,7 @@ impl BuiltinState {
                 pane_id: pane_id.clone(),
                 terminal_id: terminal_id.clone(),
             },
-            pane_id.clone(),
+            self.jcode_detection_variant,
         )
         .map_err(|err| err.to_string())?;
         data.tabs.insert(
@@ -796,7 +806,6 @@ impl BuiltinState {
                 cwd,
                 label: None,
                 argv: vec![self.default_shell.clone()],
-                cached_agent_presentation: Mutex::new(None),
             },
         );
         data.terminals.insert(terminal_id, terminal);
@@ -848,7 +857,7 @@ impl BuiltinState {
                 pane_id: pane_id.clone(),
                 terminal_id: terminal_id.clone(),
             },
-            pane_id.clone(),
+            self.jcode_detection_variant,
         )
         .map_err(|err| err.to_string())?;
         data.workspaces.insert(
@@ -879,7 +888,6 @@ impl BuiltinState {
                 cwd,
                 label: Some(name),
                 argv: argv.clone(),
-                cached_agent_presentation: Mutex::new(None),
             },
         );
         data.terminals.insert(terminal_id, terminal);
@@ -1235,7 +1243,6 @@ struct TerminalRuntime {
     argv: Vec<String>,
     event_hub: BuiltinEventHub,
     event_context: PaneEventContext,
-    _pane_id: String,
     last_agent_state: Mutex<Option<(Option<String>, String)>>,
     last_status_check: Mutex<Option<Instant>>,
     master: Mutex<Box<dyn MasterPty + Send>>,
@@ -1245,6 +1252,7 @@ struct TerminalRuntime {
     subscribers: Mutex<Vec<mpsc::SyncSender<TerminalSubscriberMessage>>>,
     osc9_tracker: Mutex<Osc9Tracker>,
     exited: AtomicBool,
+    jcode_detection_variant: JcodeDetectionVariant,
 }
 
 #[derive(Clone)]
@@ -1262,7 +1270,7 @@ impl TerminalRuntime {
         cols: u16,
         event_hub: BuiltinEventHub,
         event_context: PaneEventContext,
-        pane_id: String,
+        jcode_detection_variant: JcodeDetectionVariant,
     ) -> io::Result<Arc<Self>> {
         let pty_system = native_pty_system();
         let pair = pty_system
@@ -1313,7 +1321,6 @@ impl TerminalRuntime {
             argv,
             event_hub,
             event_context,
-            _pane_id: pane_id,
             last_agent_state: Mutex::new(None),
             last_status_check: Mutex::new(None),
             master: Mutex::new(pair.master),
@@ -1323,6 +1330,7 @@ impl TerminalRuntime {
             subscribers: Mutex::new(Vec::new()),
             osc9_tracker: Mutex::new(Osc9Tracker::default()),
             exited: AtomicBool::new(false),
+            jcode_detection_variant,
         });
         let runtime_for_reader = Arc::clone(&runtime);
         thread::spawn(move || {
@@ -1420,14 +1428,7 @@ impl TerminalRuntime {
             });
         }
         // Invalidate cached agent presentation so next agent.list recomputes
-        self.invalidate_agent_presentation_cache();
         self.publish_agent_status_if_changed();
-    }
-
-    fn invalidate_agent_presentation_cache(&self) {
-        // The pane record is in BuiltinData, we need to find it by terminal_id
-        // Since we don't have direct access, we'll rely on the status check throttling
-        // and the cache will be refreshed on next agent.list call
     }
 
     fn notify_exited(&self) {
@@ -1488,7 +1489,12 @@ impl TerminalRuntime {
             .or(process_agent)
             .or_else(|| detect_agent_label_from_text(&tail))
             .map(str::to_string);
-        let status = match detect_agent_status_with_osc(agent.as_deref(), &tail, &osc_progress) {
+        let status = match detect_agent_status_with_osc(
+            agent.as_deref(),
+            &tail,
+            &osc_progress,
+            self.jcode_detection_variant,
+        ) {
             "unknown" if agent.is_some() => "idle",
             status => status,
         }
@@ -1743,13 +1749,13 @@ struct PaneAgentPresentation {
 }
 
 fn pane_agent_presentation(pane: &PaneRecord, data: &BuiltinData) -> PaneAgentPresentation {
-    // Check cache first
-    if let Ok(cache) = pane.cached_agent_presentation.lock() {
-        if let Some(cached) = cache.as_ref() {
-            return *cached;
-        }
-    }
-    // Cache miss - compute
+    // Note: we intentionally do NOT cache the result here. The cache introduced
+    // in v0.2.84 was never properly invalidated (invalidate_agent_presentation_cache
+    // is a no-op because TerminalRuntime has no access to BuiltinData). Caching
+    // a `None` agent result meant that once a pane was seen as "no agent" (e.g.
+    // a shell before the user launches jcode), it would never be re-checked, so
+    // the agent would never appear in the list. The 500ms throttle in
+    // publish_agent_status_if_changed already limits how often detection runs.
     let terminal = data.terminals.get(&pane.terminal_id);
     let tail = terminal
         .map(|terminal| terminal.history_tail_text(DETECTION_TAIL_BYTES))
@@ -1764,16 +1770,18 @@ fn pane_agent_presentation(pane: &PaneRecord, data: &BuiltinData) -> PaneAgentPr
         .and_then(|terminal| terminal.osc9_tracker.lock().ok())
         .map(|tracker| tracker.latest_progress().to_string())
         .unwrap_or_default();
-    let status = match detect_agent_status_with_osc(agent, &tail, &osc_progress) {
+    let status = match detect_agent_status_with_osc(
+        agent,
+        &tail,
+        &osc_progress,
+        terminal
+            .map(|t| t.jcode_detection_variant)
+            .unwrap_or(JcodeDetectionVariant::Vanilla),
+    ) {
         "unknown" if agent.is_some() => "idle",
         status => status,
     };
-    let result = PaneAgentPresentation { agent, status };
-    // Update cache
-    if let Ok(mut cache) = pane.cached_agent_presentation.lock() {
-        *cache = Some(result);
-    }
-    result
+    PaneAgentPresentation { agent, status }
 }
 
 fn aggregate_workspace_agent_status(
@@ -2178,6 +2186,7 @@ fn detect_agent_label(argv: &[String]) -> Option<&'static str> {
             "kilo" | "kilo-code" => Some("kilo"),
             "qodercli" | "qoderclicn" | "qoder" | "qodercn" => Some("qodercli"),
             "maki" => Some("maki"),
+            "claurst" => Some("claurst"),
             _ => None,
         }
     })
@@ -2204,6 +2213,13 @@ fn detect_agent_label_from_text(text: &str) -> Option<&'static str> {
         || lower.contains("network disconnected, waiting to retry")
     {
         return Some("jcode");
+    }
+    if lower.contains("claurst")
+        || (lower.contains("yes, allow once") && lower.contains("no, deny"))
+        || (lower.contains("yes, always allow (persistent)")
+            && lower.contains("yes, allow this session"))
+    {
+        return Some("claurst");
     }
     None
 }
@@ -2471,6 +2487,7 @@ fn detect_agent_status_with_osc(
     agent: Option<&str>,
     text: &str,
     osc_progress: &str,
+    jcode_variant: JcodeDetectionVariant,
 ) -> &'static str {
     if !osc_progress.is_empty() {
         let Some(agent) = agent else {
@@ -2480,7 +2497,7 @@ fn detect_agent_status_with_osc(
             return status;
         }
     }
-    detect_agent_status(agent, text)
+    detect_agent_status(agent, text, jcode_variant)
 }
 
 /// Map an OSC 9 progress payload to an agent status string.
@@ -2499,13 +2516,17 @@ fn osc_progress_status_for_agent(agent: &str, osc_progress: &str) -> Option<&'st
     }
 }
 
-fn detect_agent_status(agent: Option<&str>, text: &str) -> &'static str {
+fn detect_agent_status(
+    agent: Option<&str>,
+    text: &str,
+    jcode_variant: JcodeDetectionVariant,
+) -> &'static str {
     let Some(agent) = agent else {
         return "unknown";
     };
     let lower = text.to_lowercase();
     match agent {
-        "jcode" => detect_jcode_status(&lower),
+        "jcode" => detect_jcode_status_with_variant(&lower, jcode_variant),
         "opencode" => detect_opencode_status(&lower),
         "kilo" => detect_kilo_status(&lower),
         "amp" => detect_amp_status(&lower),
@@ -2525,6 +2546,7 @@ fn detect_agent_status(agent: Option<&str>, text: &str) -> &'static str {
         "maki" => detect_maki_status(&lower),
         "pi" => detect_pi_status(&lower),
         "qodercli" => detect_qodercli_status(&lower),
+        "claurst" => crate::builtin_detection::claurst::detect_claurst_status(&lower),
         _ => "unknown",
     }
 }
@@ -3034,48 +3056,7 @@ fn detect_opencode_like_status(lower: &str) -> Option<&'static str> {
     None
 }
 
-fn detect_jcode_status(lower: &str) -> &'static str {
-    let bottom8 = bottom_non_empty_lines(lower, 8);
-    let bottom6 = bottom_non_empty_lines(lower, 6);
-    let bottom4 = bottom_non_empty_lines(lower, 4);
-    let bottom3 = bottom_non_empty_lines(lower, 3);
-    if jcode_blocked(&bottom8) || jcode_question_blocked(&bottom6) {
-        return "blocked";
-    }
-    if bottom3
-        .lines()
-        .rev()
-        .find(|line| !line.trim().is_empty())
-        .is_some_and(jcode_idle_line)
-    {
-        return "idle";
-    }
-    if has_jcode_spinner(&bottom3)
-        || has_jcode_tool_bar(&bottom4)
-        || contains_any(
-            &bottom4,
-            &[
-                "running tool",
-                "executing tool",
-                "network disconnected, waiting to retry",
-            ],
-        )
-    {
-        return "working";
-    }
-    if (contains_any(&bottom3, &["session ready", "ready for input"])
-        || bottom3.lines().any(|line| line.trim() == "❯"))
-        && !contains_any(
-            &bottom3,
-            &["processing", "embedding", "running tool", "executing"],
-        )
-    {
-        return "idle";
-    }
-    "unknown"
-}
-
-fn jcode_idle_line(line: &str) -> bool {
+pub(crate) fn jcode_idle_line(line: &str) -> bool {
     let line = line.trim();
     line == "❯"
         || jcode_numbered_prompt_line(line)
@@ -3083,7 +3064,7 @@ fn jcode_idle_line(line: &str) -> bool {
         || line.contains("ready for input")
 }
 
-fn jcode_numbered_prompt_line(line: &str) -> bool {
+pub(crate) fn jcode_numbered_prompt_line(line: &str) -> bool {
     let line = line.trim_start();
     let digit_count = line.chars().take_while(|ch| ch.is_ascii_digit()).count();
     digit_count > 0
@@ -3112,7 +3093,7 @@ fn detect_opencode_status(lower: &str) -> &'static str {
     "unknown"
 }
 
-fn jcode_blocked(text: &str) -> bool {
+pub(crate) fn jcode_blocked(text: &str) -> bool {
     (text.contains("permission")
         && contains_any(text, &["allow once", "always allow", "allow"])
         && contains_any(text, &["deny", "reject", "cancel"]))
@@ -3124,7 +3105,7 @@ fn jcode_blocked(text: &str) -> bool {
             && contains_any(text, &["reject", "no", "cancel"]))
 }
 
-fn jcode_question_blocked(text: &str) -> bool {
+pub(crate) fn jcode_question_blocked(text: &str) -> bool {
     (text.contains("enter your response") && contains_any(text, &["continue", "submit", "cancel"]))
         || (text.contains("asking user")
             && contains_any(
@@ -3134,7 +3115,7 @@ fn jcode_question_blocked(text: &str) -> bool {
         || (text.contains("awaiting input") && contains_any(text, &["enter", "type", "respond"]))
 }
 
-fn has_jcode_spinner(text: &str) -> bool {
+pub(crate) fn has_jcode_spinner(text: &str) -> bool {
     text.lines().any(|line| {
         let mut chars = line.trim_start().chars();
         matches!(chars.next(), Some(first) if is_braille(first))
@@ -3162,7 +3143,7 @@ fn starts_with_braille(text: &str) -> bool {
     text.chars().next().is_some_and(is_braille)
 }
 
-fn is_braille(ch: char) -> bool {
+pub(crate) fn is_braille(ch: char) -> bool {
     ('\u{2800}'..='\u{28ff}').contains(&ch)
 }
 
@@ -3257,7 +3238,7 @@ fn has_opencode_interrupt_line(line: &str) -> bool {
     false
 }
 
-fn has_jcode_tool_bar(text: &str) -> bool {
+pub(crate) fn has_jcode_tool_bar(text: &str) -> bool {
     text.lines().any(jcode_tool_bar_line)
 }
 
@@ -3339,7 +3320,7 @@ fn has_opencode_progress(text: &str) -> bool {
     })
 }
 
-fn bottom_non_empty_lines(text: &str, count: usize) -> String {
+pub(crate) fn bottom_non_empty_lines(text: &str, count: usize) -> String {
     let mut lines = text
         .lines()
         .map(str::trim)
@@ -3352,7 +3333,7 @@ fn bottom_non_empty_lines(text: &str, count: usize) -> String {
     lines.join("\n")
 }
 
-fn contains_any(text: &str, needles: &[&str]) -> bool {
+pub(crate) fn contains_any(text: &str, needles: &[&str]) -> bool {
     needles.iter().any(|needle| text.contains(needle))
 }
 
@@ -3489,13 +3470,21 @@ mod tests {
         assert_eq!(detect_agent_label(&["open-code".into()]), Some("opencode"));
         assert_eq!(detect_agent_label(&["cursor-agent".into()]), Some("cursor"));
         assert_eq!(detect_agent_label(&["qodercn".into()]), Some("qodercli"));
+        assert_eq!(
+            detect_agent_label(&["/home/user/.cargo/bin/claurst".into()]),
+            Some("claurst")
+        );
         assert_eq!(detect_agent_label(&["bash".into()]), None);
     }
 
     #[test]
     fn builtin_event_hub_publishes_mutation_events() {
-        let state =
-            BuiltinState::new(std::env::current_dir().unwrap(), Some(default_shell())).unwrap();
+        let state = BuiltinState::new(
+            std::env::current_dir().unwrap(),
+            Some(default_shell()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
         state.handle_request("seed", "workspace.create", json!({ "label": "Workspace" }));
         let rx = state.subscribe_events();
 
@@ -3508,8 +3497,12 @@ mod tests {
 
     #[test]
     fn builtin_tab_create_respects_focus_false() {
-        let state =
-            BuiltinState::new(std::env::current_dir().unwrap(), Some(default_shell())).unwrap();
+        let state = BuiltinState::new(
+            std::env::current_dir().unwrap(),
+            Some(default_shell()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
         let workspace =
             state.handle_request("seed", "workspace.create", json!({ "label": "Workspace" }));
         let workspace_id = workspace["result"]["workspace"]["workspace_id"]
@@ -3544,8 +3537,12 @@ mod tests {
 
     #[test]
     fn builtin_display_numbers_are_scoped_by_level() {
-        let state =
-            BuiltinState::new(std::env::current_dir().unwrap(), Some(default_shell())).unwrap();
+        let state = BuiltinState::new(
+            std::env::current_dir().unwrap(),
+            Some(default_shell()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
         let empty_snapshot = state.handle_request("empty", "session.snapshot", json!({}));
         assert_eq!(
             empty_snapshot["result"]["snapshot"]["workspaces"]
@@ -3623,8 +3620,12 @@ mod tests {
 
     #[test]
     fn terminal_output_publishes_agent_status_changes() {
-        let state =
-            BuiltinState::new(std::env::current_dir().unwrap(), Some(default_shell())).unwrap();
+        let state = BuiltinState::new(
+            std::env::current_dir().unwrap(),
+            Some(default_shell()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
         state.handle_request("seed", "workspace.create", json!({ "label": "Workspace" }));
         let rx = state.subscribe_events();
         let terminal = {
@@ -3639,6 +3640,53 @@ mod tests {
         assert_eq!(event["event"], "pane.agent_status_changed");
         assert_eq!(event["data"]["agent"], "jcode");
         assert_eq!(event["data"]["agent_status"], "working");
+    }
+
+    #[test]
+    fn agent_list_reflects_agent_detected_after_output() {
+        // Regression test for the stale-cache bug (v0.2.84–v0.2.87):
+        // A shell pane starts with no agent. When the user launches jcode inside
+        // the shell, the terminal output changes, but the cached
+        // PaneAgentPresentation (which stored `None`) was never invalidated,
+        // so agent.list kept returning an empty list.
+        let state = BuiltinState::new(
+            std::env::current_dir().unwrap(),
+            Some(default_shell()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        state.handle_request("seed", "workspace.create", json!({ "label": "Workspace" }));
+
+        // Before any agent output, the pane should have no agent.
+        let agents_before = state.handle_request("seed", "agent.list", json!({}));
+        assert!(
+            agents_before["result"]["agents"]
+                .as_array()
+                .unwrap()
+                .is_empty(),
+            "expected no agents before output"
+        );
+
+        // Simulate jcode terminal output appearing in the pane.
+        let terminal = {
+            let data = state.data.lock().unwrap();
+            let pane = data.panes.values().next().unwrap();
+            data.terminals.get(&pane.terminal_id).unwrap().clone()
+        };
+        terminal.append_output("jcode session ready\n❯".as_bytes());
+        // Give the reader thread time to process.
+        std::thread::sleep(Duration::from_millis(200));
+
+        // Now agent.list must reflect the detected jcode agent.
+        let agents_after = state.handle_request("seed", "agent.list", json!({}));
+        let list = agents_after["result"]["agents"].as_array().unwrap();
+        assert_eq!(
+            list.len(),
+            1,
+            "agent.list should show 1 agent after jcode output"
+        );
+        assert_eq!(list[0]["agent"], "jcode");
+        assert_eq!(list[0]["agent_status"], "idle");
     }
 
     #[test]
@@ -3663,7 +3711,7 @@ mod tests {
             80,
             hub,
             context,
-            "pane_exit".to_string(),
+            JcodeDetectionVariant::Vanilla,
         )
         .unwrap();
         let (tx, rx) = mpsc::sync_channel(8);
@@ -3738,17 +3786,32 @@ mod tests {
     fn detect_agent_status_with_osc_prefers_osc_over_screen_scrape() {
         // OSC says "idle" but screen shows working spinner
         assert_eq!(
-            detect_agent_status_with_osc(Some("jcode"), "⠋ sending… 0.3s", "jcode:idle"),
+            detect_agent_status_with_osc(
+                Some("jcode"),
+                "⠋ sending… 0.3s",
+                "jcode:idle",
+                JcodeDetectionVariant::Vanilla
+            ),
             "idle"
         );
         // OSC says "working" but screen shows idle prompt
         assert_eq!(
-            detect_agent_status_with_osc(Some("jcode"), "❯", "jcode:working"),
+            detect_agent_status_with_osc(
+                Some("jcode"),
+                "❯",
+                "jcode:working",
+                JcodeDetectionVariant::Vanilla
+            ),
             "working"
         );
         // OSC says "blocked" with minimal screen
         assert_eq!(
-            detect_agent_status_with_osc(Some("jcode"), "❯", "jcode:blocked"),
+            detect_agent_status_with_osc(
+                Some("jcode"),
+                "❯",
+                "jcode:blocked",
+                JcodeDetectionVariant::Vanilla
+            ),
             "blocked"
         );
     }
@@ -3757,11 +3820,21 @@ mod tests {
     fn detect_agent_status_with_osc_falls_back_to_screen_scrape() {
         // No OSC payload -> screen-scrape detection
         assert_eq!(
-            detect_agent_status_with_osc(Some("jcode"), "⠋ sending… 0.3s", ""),
+            detect_agent_status_with_osc(
+                Some("jcode"),
+                "⠋ sending… 0.3s",
+                "",
+                JcodeDetectionVariant::Vanilla
+            ),
             "working"
         );
         assert_eq!(
-            detect_agent_status_with_osc(Some("jcode"), "Session ready\n❯", ""),
+            detect_agent_status_with_osc(
+                Some("jcode"),
+                "Session ready\n❯",
+                "",
+                JcodeDetectionVariant::Vanilla
+            ),
             "idle"
         );
     }
@@ -3770,7 +3843,12 @@ mod tests {
     fn detect_agent_status_with_osc_unknown_payload_falls_back() {
         // Unknown OSC payload format -> falls back to screen-scrape
         assert_eq!(
-            detect_agent_status_with_osc(Some("jcode"), "⠋ sending… 0.3s", "unknown:format"),
+            detect_agent_status_with_osc(
+                Some("jcode"),
+                "⠋ sending… 0.3s",
+                "unknown:format",
+                JcodeDetectionVariant::Vanilla
+            ),
             "working"
         );
     }
@@ -3780,158 +3858,245 @@ mod tests {
         assert_eq!(
             detect_agent_status(
                 Some("jcode"),
-                "Permission required\nAllow once\nAlways allow\nDeny"
+                "Permission required\nAllow once\nAlways allow\nDeny",
+                JcodeDetectionVariant::Vanilla
             ),
             "blocked"
         );
         assert_eq!(
-            detect_agent_status(Some("jcode"), "Asking user\nEnter your response\nSubmit"),
+            detect_agent_status(
+                Some("jcode"),
+                "Asking user\nEnter your response\nSubmit",
+                JcodeDetectionVariant::Vanilla
+            ),
             "blocked"
         );
         assert_eq!(
-            detect_agent_status(Some("jcode"), "⠋ running analysis"),
-            "working"
-        );
-        assert_eq!(
-            detect_agent_status(Some("jcode"), "Running tool bash"),
-            "working"
-        );
-        assert_eq!(
-            detect_agent_status(Some("jcode"), "⠋ thinking… 1.2s"),
-            "working"
-        );
-        assert_eq!(
-            detect_agent_status(Some("jcode"), "⠋ streaming · ↑1.2k ↓42 · 1.2s"),
-            "working"
-        );
-        assert_eq!(
-            detect_agent_status(Some("jcode"), "⠋ sending… 0.3s"),
-            "working"
-        );
-        assert_eq!(
-            detect_agent_status(Some("jcode"), "⠋ connecting… 0.3s"),
-            "working"
-        );
-        assert_eq!(
-            detect_agent_status(Some("jcode"), "··● bash ●·· · 12s"),
-            "working"
-        );
-        assert_eq!(
-            detect_agent_status(Some("jcode"), "··● bash ●··"),
-            "working"
-        );
-        assert_eq!(
             detect_agent_status(
                 Some("jcode"),
-                "●·· batch ··● · 2/5 done · last done: read · 1m 3s"
-            ),
-            "working"
-        );
-        assert_eq!(
-            detect_agent_status(Some("jcode"), "●·· batch ··● · 2/5 done"),
-            "working"
-        );
-        assert_eq!(
-            detect_agent_status(
-                Some("jcode"),
-                "↻ network disconnected, waiting to retry · websocket · 8s"
+                "⠋ running analysis",
+                JcodeDetectionVariant::Vanilla
             ),
             "working"
         );
         assert_eq!(
             detect_agent_status(
                 Some("jcode"),
-                "Jcode is running this in the background. Progress, checkpoints, and completion will appear here.\n╭ ◌ bg run full Rust and JS tests · 5202362vb9 ╮\nLatest status: bg action=\"status\" task_id=\"5202362vb9\"\n❯"
+                "Running tool bash",
+                JcodeDetectionVariant::Vanilla
             ),
-            "idle"
-        );
-        assert_eq!(
-            detect_agent_status(
-                Some("jcode"),
-                "╭ ✓ bg run full Rust and JS tests completed · 5202362vb9 ╮\nexit 0 · 5.7s\n❯"
-            ),
-            "idle"
-        );
-        assert_eq!(
-            detect_agent_status(
-                Some("jcode"),
-                "Jcode is running this in the background. Progress, checkpoints, and completion will appear here.\n╭ ◌ bg run full Rust and JS tests · 5202362vb9 ╮\nLatest status: bg action=\"status\" task_id=\"5202362vb9\"\n╭ ✓ bg run full Rust and JS tests completed · 5202362vb9 ╮\nexit 0 · 5.7s\n❯"
-            ),
-            "idle"
-        );
-        assert_eq!(
-            detect_agent_status(Some("jcode"), "Session ready\n❯"),
-            "idle"
-        );
-        assert_eq!(detect_agent_status(Some("jcode"), "1> "), "idle");
-        assert_eq!(
-            detect_agent_status(
-                Some("jcode"),
-                "1>                                                            together_ai/revolut ca/glm 5 2 · ~/repo"
-            ),
-            "idle"
-        );
-        assert_eq!(
-            detect_agent_status(
-                Some("jcode"),
-                "We should deny this assumption in the explanation.\n❯ "
-            ),
-            "idle"
-        );
-        assert_eq!(
-            detect_agent_status(
-                Some("jcode"),
-                "Permission request\n❯ Allow once\n  Deny\nold response line 1\nold response line 2\nold response line 3\nold response line 4\nold response line 5\nold response line 6\nold response line 7\nold response line 8\n❯ "
-            ),
-            "idle"
-        );
-        assert_eq!(
-            detect_agent_status(
-                Some("jcode"),
-                "Processing request\nold response line 1\nold response line 2\nold response line 3\nold response line 4\n❯ "
-            ),
-            "idle"
-        );
-        assert_eq!(
-            detect_agent_status(
-                Some("jcode"),
-                "··● bash ●·· · 12s\nold response line 1\nold response line 2\nold response line 3\nold response line 4\n❯ "
-            ),
-            "idle"
-        );
-        assert_eq!(
-            detect_agent_status(Some("jcode"), "··● bash ●·· · 12s\nSession ready\n❯ "),
-            "idle"
-        );
-        assert_eq!(
-            detect_agent_status(
-                Some("jcode"),
-                "Running tool bash\nresult mentions running tool\n❯ "
-            ),
-            "idle"
-        );
-        assert_eq!(
-            detect_agent_status(Some("jcode"), "··● bash ●·· · 12s\n1> "),
-            "idle"
-        );
-        assert_eq!(
-            detect_agent_status(Some("jcode"), "Running tool bash\n1> typed input"),
-            "idle"
-        );
-        assert_eq!(
-            detect_agent_status(Some("jcode"), "Session ready\n❯\n··● bash ●·· · 12s"),
             "working"
         );
         assert_eq!(
-            detect_agent_status(Some("jcode"), "··● not a toolbar\n❯"),
+            detect_agent_status(
+                Some("jcode"),
+                "⠋ thinking… 1.2s",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("jcode"),
+                "⠋ streaming · ↑1.2k ↓42 · 1.2s",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("jcode"),
+                "⠋ sending… 0.3s",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("jcode"),
+                "⠋ connecting… 0.3s",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("jcode"),
+                "··● bash ●·· · 12s",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("jcode"),
+                "··● bash ●··",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("jcode"),
+                "●·· batch ··● · 2/5 done · last done: read · 1m 3s",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("jcode"),
+                "●·· batch ··● · 2/5 done",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("jcode"),
+                "↻ network disconnected, waiting to retry · websocket · 8s",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("jcode"),
+                "Jcode is running this in the background. Progress, checkpoints, and completion will appear here.\n╭ ◌ bg run full Rust and JS tests · 5202362vb9 ╮\nLatest status: bg action=\"status\" task_id=\"5202362vb9\"\n❯",
+                JcodeDetectionVariant::Vanilla
+            ),
             "idle"
         );
         assert_eq!(
-            detect_agent_status(Some("jcode"), "plain prompt"),
+            detect_agent_status(
+                Some("jcode"),
+                "╭ ✓ bg run full Rust and JS tests completed · 5202362vb9 ╮\nexit 0 · 5.7s\n❯",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "idle"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("jcode"),
+                "Jcode is running this in the background. Progress, checkpoints, and completion will appear here.\n╭ ◌ bg run full Rust and JS tests · 5202362vb9 ╮\nLatest status: bg action=\"status\" task_id=\"5202362vb9\"\n╭ ✓ bg run full Rust and JS tests completed · 5202362vb9 ╮\nexit 0 · 5.7s\n❯",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "idle"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("jcode"),
+                "Session ready\n❯",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "idle"
+        );
+        assert_eq!(
+            detect_agent_status(Some("jcode"), "1> ", JcodeDetectionVariant::Vanilla),
+            "idle"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("jcode"),
+                "1>                                                            together_ai/revolut ca/glm 5 2 · ~/repo",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "idle"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("jcode"),
+                "We should deny this assumption in the explanation.\n❯ ",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "idle"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("jcode"),
+                "Permission request\n❯ Allow once\n  Deny\nold response line 1\nold response line 2\nold response line 3\nold response line 4\nold response line 5\nold response line 6\nold response line 7\nold response line 8\n❯ ",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "idle"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("jcode"),
+                "Processing request\nold response line 1\nold response line 2\nold response line 3\nold response line 4\n❯ ",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "idle"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("jcode"),
+                "··● bash ●·· · 12s\nold response line 1\nold response line 2\nold response line 3\nold response line 4\n❯ ",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "idle"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("jcode"),
+                "··● bash ●·· · 12s\nSession ready\n❯ ",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "idle"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("jcode"),
+                "Running tool bash\nresult mentions running tool\n❯ ",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "idle"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("jcode"),
+                "··● bash ●·· · 12s\n1> ",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "idle"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("jcode"),
+                "Running tool bash\n1> typed input",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "idle"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("jcode"),
+                "Session ready\n❯\n··● bash ●·· · 12s",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("jcode"),
+                "··● not a toolbar\n❯",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "idle"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("jcode"),
+                "plain prompt",
+                JcodeDetectionVariant::Vanilla
+            ),
             "unknown"
         );
         assert_eq!(
-            detect_agent_status(Some("jcode"), "⠋running analysis"),
+            detect_agent_status(
+                Some("jcode"),
+                "⠋running analysis",
+                JcodeDetectionVariant::Vanilla
+            ),
             "unknown"
         );
 
@@ -3942,6 +4107,19 @@ mod tests {
         assert_eq!(
             detect_agent_label_from_text("↻ network disconnected, waiting to retry"),
             Some("jcode")
+        );
+
+        assert_eq!(
+            detect_agent_label_from_text("yes, allow once\nno, deny"),
+            Some("claurst")
+        );
+        assert_eq!(
+            detect_agent_label_from_text("yes, always allow (persistent)\nyes, allow this session"),
+            Some("claurst")
+        );
+        assert_eq!(
+            detect_agent_label_from_text("claurst is ready"),
+            Some("claurst")
         );
     }
 
@@ -4021,11 +4199,18 @@ mod tests {
                 "blocked",
             ),
             ("qodercli", "(esc to cancel, keep working)", "working"),
+            (
+                "claurst",
+                "yes, allow once\nyes, allow this session\nyes, always allow (persistent)\nno, deny",
+                "blocked",
+            ),
+            ("claurst", "· thinking…", "working"),
+            ("claurst", "❯", "idle"),
         ];
 
         for (agent, text, expected) in cases {
             assert_eq!(
-                detect_agent_status(Some(agent), text),
+                detect_agent_status(Some(agent), text, JcodeDetectionVariant::Vanilla),
                 expected,
                 "agent {agent} text {text:?}"
             );
@@ -4037,37 +4222,55 @@ mod tests {
         for allow in ["allow once", "always allow", "allow"] {
             for deny in ["deny", "reject", "cancel"] {
                 let text = format!("Permission request\n{allow}\n{deny}");
-                assert_eq!(detect_agent_status(Some("jcode"), &text), "blocked");
+                assert_eq!(
+                    detect_agent_status(Some("jcode"), &text, JcodeDetectionVariant::Vanilla),
+                    "blocked"
+                );
             }
         }
 
         for allow in ["allow", "yes"] {
             for deny in ["reject", "no", "cancel"] {
                 let text = format!("Approve?\n{allow}\n{deny}");
-                assert_eq!(detect_agent_status(Some("jcode"), &text), "blocked");
+                assert_eq!(
+                    detect_agent_status(Some("jcode"), &text, JcodeDetectionVariant::Vanilla),
+                    "blocked"
+                );
             }
         }
 
         for allow in ["allow", "yes", "proceed"] {
             for deny in ["reject", "no", "cancel"] {
                 let text = format!("Confirm action\n{allow}\n{deny}");
-                assert_eq!(detect_agent_status(Some("jcode"), &text), "blocked");
+                assert_eq!(
+                    detect_agent_status(Some("jcode"), &text, JcodeDetectionVariant::Vanilla),
+                    "blocked"
+                );
             }
         }
 
         for action in ["continue", "submit", "cancel"] {
             let text = format!("Enter your response\n{action}");
-            assert_eq!(detect_agent_status(Some("jcode"), &text), "blocked");
+            assert_eq!(
+                detect_agent_status(Some("jcode"), &text, JcodeDetectionVariant::Vanilla),
+                "blocked"
+            );
         }
 
         for prompt in ["enter your response", "awaiting input", "waiting for user"] {
             let text = format!("Asking user\n{prompt}");
-            assert_eq!(detect_agent_status(Some("jcode"), &text), "blocked");
+            assert_eq!(
+                detect_agent_status(Some("jcode"), &text, JcodeDetectionVariant::Vanilla),
+                "blocked"
+            );
         }
 
         for action in ["enter", "type", "respond"] {
             let text = format!("Awaiting input\n{action}");
-            assert_eq!(detect_agent_status(Some("jcode"), &text), "blocked");
+            assert_eq!(
+                detect_agent_status(Some("jcode"), &text, JcodeDetectionVariant::Vanilla),
+                "blocked"
+            );
         }
 
         for status in [
@@ -4075,11 +4278,17 @@ mod tests {
             "executing tool",
             "network disconnected, waiting to retry",
         ] {
-            assert_eq!(detect_agent_status(Some("jcode"), status), "working");
+            assert_eq!(
+                detect_agent_status(Some("jcode"), status, JcodeDetectionVariant::Vanilla),
+                "working"
+            );
         }
 
         for ready in ["session ready", "ready for input", "❯"] {
-            assert_eq!(detect_agent_status(Some("jcode"), ready), "idle");
+            assert_eq!(
+                detect_agent_status(Some("jcode"), ready, JcodeDetectionVariant::Vanilla),
+                "idle"
+            );
         }
     }
 
@@ -4137,21 +4346,32 @@ mod tests {
         let working_screen =
             terminal_screen_text_lossy("Session ready\n❯\r\u{1b}[2K··● bash ●·· · 12s");
         assert_eq!(
-            detect_agent_status(Some("jcode"), &working_screen),
+            detect_agent_status(
+                Some("jcode"),
+                &working_screen,
+                JcodeDetectionVariant::Vanilla
+            ),
             "working"
         );
 
         let idle_screen = terminal_screen_text_lossy(
             "Session ready\n··● bash ●·· · 12s\r\u{1b}[2KSession ready\n❯",
         );
-        assert_eq!(detect_agent_status(Some("jcode"), &idle_screen), "idle");
+        assert_eq!(
+            detect_agent_status(Some("jcode"), &idle_screen, JcodeDetectionVariant::Vanilla),
+            "idle"
+        );
         assert_eq!(detect_agent_label_from_text(&idle_screen), Some("jcode"));
 
         let blocked_screen = terminal_screen_text_lossy(
             "··● bash ●·· · 12s\r\u{1b}[2KApprove?\n❯ Allow\n  Reject\nEsc to cancel",
         );
         assert_eq!(
-            detect_agent_status(Some("jcode"), &blocked_screen),
+            detect_agent_status(
+                Some("jcode"),
+                &blocked_screen,
+                JcodeDetectionVariant::Vanilla
+            ),
             "blocked"
         );
     }
@@ -4213,6 +4433,27 @@ mod tests {
     }
 
     #[test]
+    fn detects_claurst_from_terminal_process_tree() {
+        let processes = parse_process_table(
+            r#"
+              10     1 /bin/zsh -zsh
+              11    10 /home/user/.cargo/bin/claurst claurst
+              20     1 /usr/local/bin/claurst claurst --provider anthropic
+            "#,
+        );
+
+        assert_eq!(
+            detect_agent_label_from_processes(10, &processes),
+            Some("claurst")
+        );
+        assert_eq!(
+            detect_agent_label_from_processes(20, &processes),
+            Some("claurst")
+        );
+        assert_eq!(detect_agent_label_from_processes(999, &processes), None);
+    }
+
+    #[test]
     fn detects_jcode_wrapped_processes_like_herdr() {
         let processes = parse_process_table(
             r#"
@@ -4265,38 +4506,73 @@ mod tests {
     #[test]
     fn detects_opencode_status_from_manifest_patterns() {
         assert_eq!(
-            detect_agent_status(Some("opencode"), "△ Permission required"),
+            detect_agent_status(
+                Some("opencode"),
+                "△ Permission required",
+                JcodeDetectionVariant::Vanilla
+            ),
             "blocked"
         );
         assert_eq!(
-            detect_agent_status(Some("opencode"), "esc dismiss\nenter confirm\n↑↓ select"),
+            detect_agent_status(
+                Some("opencode"),
+                "esc dismiss\nenter confirm\n↑↓ select",
+                JcodeDetectionVariant::Vanilla
+            ),
             "blocked"
         );
         assert_eq!(
-            detect_agent_status(Some("opencode"), "esc dismiss\nenter submit\n⇆ tab"),
+            detect_agent_status(
+                Some("opencode"),
+                "esc dismiss\nenter submit\n⇆ tab",
+                JcodeDetectionVariant::Vanilla
+            ),
             "blocked"
         );
         assert_eq!(
-            detect_agent_status(Some("opencode"), "esc dismiss\nenter toggle\n↑↓ select"),
+            detect_agent_status(
+                Some("opencode"),
+                "esc dismiss\nenter toggle\n↑↓ select",
+                JcodeDetectionVariant::Vanilla
+            ),
             "blocked"
         );
         assert_eq!(
-            detect_agent_status(Some("opencode"), "opencode · esc to interrupt"),
+            detect_agent_status(
+                Some("opencode"),
+                "opencode · esc to interrupt",
+                JcodeDetectionVariant::Vanilla
+            ),
             "working"
         );
         assert_eq!(
-            detect_agent_status(Some("opencode"), "opencode · esc again to interrupt"),
+            detect_agent_status(
+                Some("opencode"),
+                "opencode · esc again to interrupt",
+                JcodeDetectionVariant::Vanilla
+            ),
             "working"
         );
         assert_eq!(
-            detect_agent_status(Some("opencode"), "opencode escaped interrupt"),
+            detect_agent_status(
+                Some("opencode"),
+                "opencode escaped interrupt",
+                JcodeDetectionVariant::Vanilla
+            ),
             "unknown"
         );
         assert_eq!(
-            detect_agent_status(Some("opencode"), "esc interrupt before opencode"),
+            detect_agent_status(
+                Some("opencode"),
+                "esc interrupt before opencode",
+                JcodeDetectionVariant::Vanilla
+            ),
             "unknown"
         );
-        assert_eq!(detect_agent_status(Some("opencode"), "■■■■"), "working");
+        assert_eq!(
+            detect_agent_status(Some("opencode"), "■■■■", JcodeDetectionVariant::Vanilla),
+            "working"
+        );
     }
 
     #[test]
@@ -4325,7 +4601,12 @@ mod tests {
 
     #[test]
     fn builtin_worktree_remove_reports_unsupported_instead_of_false_success() {
-        let state = BuiltinState::new(std::env::temp_dir(), Some(default_shell())).unwrap();
+        let state = BuiltinState::new(
+            std::env::temp_dir(),
+            Some(default_shell()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
 
         let err = state
             .handle_request_inner("worktree.remove", json!({ "workspace_id": "ws_1" }))
@@ -4336,7 +4617,12 @@ mod tests {
 
     #[test]
     fn builtin_state_starts_without_auto_workspace() {
-        let state = BuiltinState::new(std::env::temp_dir(), Some(default_shell())).unwrap();
+        let state = BuiltinState::new(
+            std::env::temp_dir(),
+            Some(default_shell()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
 
         let snapshot = state.handle_request("snapshot", "session.snapshot", json!({}));
         let snapshot = &snapshot["result"]["snapshot"];
@@ -4362,6 +4648,7 @@ mod tests {
             client_socket,
             cwd: std::env::temp_dir(),
             shell: Some(default_shell()),
+            jcode_detection_variant: JcodeDetectionVariant::Vanilla,
         })
         .unwrap();
         {
@@ -4423,6 +4710,7 @@ mod tests {
             client_socket: client_socket.clone(),
             cwd: std::env::temp_dir(),
             shell: Some(default_shell()),
+            jcode_detection_variant: JcodeDetectionVariant::Vanilla,
         })
         .unwrap();
         assert!(api_socket.exists());
@@ -4459,8 +4747,12 @@ mod tests {
 
     #[test]
     fn closing_last_tab_auto_closes_workspace() {
-        let state =
-            BuiltinState::new(std::env::current_dir().unwrap(), Some(default_shell())).unwrap();
+        let state = BuiltinState::new(
+            std::env::current_dir().unwrap(),
+            Some(default_shell()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
         let workspace = state.handle_request(
             "seed",
             "workspace.create",
@@ -4499,8 +4791,12 @@ mod tests {
 
     #[test]
     fn closing_last_pane_auto_closes_tab_and_workspace() {
-        let state =
-            BuiltinState::new(std::env::current_dir().unwrap(), Some(default_shell())).unwrap();
+        let state = BuiltinState::new(
+            std::env::current_dir().unwrap(),
+            Some(default_shell()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
         let workspace = state.handle_request(
             "seed",
             "workspace.create",

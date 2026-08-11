@@ -764,7 +764,9 @@ mod tests {
     use super::log::*;
     use super::stash::*;
     use super::*;
-    use crate::{AuthConfig, BackendMode, NoSleepState, RuntimeServerSettings};
+    use crate::{
+        AuthConfig, BackendMode, JcodeDetectionVariant, NoSleepState, RuntimeServerSettings,
+    };
     use axum::body::to_bytes;
     use serde_json::Value;
     use std::collections::HashMap;
@@ -814,6 +816,7 @@ mod tests {
                 default_folder: std::env::temp_dir().to_string_lossy().to_string(),
                 builtin_backend_enabled: true,
                 external_herdr_backend_enabled: true,
+                jcode_detection_variant: JcodeDetectionVariant::default(),
             })),
             no_sleep: Arc::new(Mutex::new(NoSleepState::default())),
             rebind_tx,
