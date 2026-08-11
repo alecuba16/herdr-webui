@@ -239,6 +239,7 @@ describe("app bundle load", () => {
     ctx.localStorage.setItem("herdr-web-options", JSON.stringify({
       globalShortcutPrefix: "Ctrl+Q",
       webuiShortcuts: { help: "Shift+Slash", settings: "KeyS", newWorkspace: "KeyN", sidebar: "KeyB", newPanel: "KeyP", closePanel: "KeyX", closeWorkspace: "Shift+KeyX", removeWorktree: "Delete" },
+      panelCloseMode: "always"
     }));
     vm.runInContext(source, ctx);
     ctx.applyOptions();
@@ -260,6 +261,48 @@ describe("app bundle load", () => {
     const actions = ctx.selectedWorkspaceActionButtons({ workspace_id: "w1", worktree: { checkout_path: "/tmp/wt", is_linked_worktree: true } });
     ok(actions.includes('Ctrl+Q then Shift+X'));
     ok(actions.includes('Ctrl+Q then Delete'));
+  });
+
+  it("hides panel close button in smart mode when only one panel", () => {
+    const ctx = context();
+    ctx.localStorage.setItem("herdr-web-options", JSON.stringify({
+      globalShortcutPrefix: "Ctrl+Q",
+      webuiShortcuts: { help: "Shift+Slash", settings: "KeyS", newWorkspace: "KeyN", sidebar: "KeyB", newPanel: "KeyP", closePanel: "KeyX", closeWorkspace: "Shift+KeyX", removeWorktree: "Delete" },
+      panelCloseMode: "smart"
+    }));
+    vm.runInContext(source, ctx);
+    ctx.applyOptions();
+
+    vm.runInContext(`
+      state.ws = "w1";
+      state.tab = "t1";
+      state.tabs = [{ workspace_id: "w1", tab_id: "t1", label: "Shell" }];
+    `, ctx);
+    const html = ctx.renderPanelField();
+    ok(!html.includes('class="mini warn panel-close"'), "close button should be hidden with single panel in smart mode");
+  });
+
+  it("shows panel close button in smart mode when multiple panels", () => {
+    const ctx = context();
+    ctx.localStorage.setItem("herdr-web-options", JSON.stringify({
+      globalShortcutPrefix: "Ctrl+Q",
+      webuiShortcuts: { help: "Shift+Slash", settings: "KeyS", newWorkspace: "KeyN", sidebar: "KeyB", newPanel: "KeyP", closePanel: "KeyX", closeWorkspace: "Shift+KeyX", removeWorktree: "Delete" },
+      panelCloseMode: "smart"
+    }));
+    vm.runInContext(source, ctx);
+    ctx.applyOptions();
+
+    vm.runInContext(`
+      state.ws = "w1";
+      state.tab = "t1";
+      state.tabs = [
+        { workspace_id: "w1", tab_id: "t1", label: "Shell" },
+        { workspace_id: "w1", tab_id: "t2", label: "Git" }
+      ];
+    `, ctx);
+    const html = ctx.renderPanelField();
+    ok(html.includes('class="mini warn panel-close"'), "close button should be visible with multiple panels in smart mode");
+    ok(html.includes('title="Close current panel (Ctrl+Q then X)"'), "close button should have shortcut tooltip");
   });
 
   it("adds configured shortcut labels to Git tooltips", () => {
@@ -2448,6 +2491,7 @@ describe("app bundle load", () => {
 
   it("renders current panel as label with add and close buttons", () => {
     const ctx = context();
+    ctx.localStorage.setItem("herdr-web-options", JSON.stringify({ panelCloseMode: "always" }));
     vm.runInContext(source, ctx);
     const html = vm.runInContext(
       `state.ws = "ws1";

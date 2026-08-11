@@ -30,6 +30,12 @@ function panelTooltip(tab, index, tabs = state.tabs || []) {
     : `Current panel: ${visible} · ${title}. Double-click to rename.`;
 }
 
+function canClosePanel(tabs) {
+  if (!tabs || !tabs.length) return false;
+  if (!options || options.panelCloseMode !== "always") return tabs.length > 1;
+  return true;
+}
+
 function renderPanelField() {
   if (!state.ws) return '<span class="panel-field-empty">No panel</span>';
   const tabs = state.tabs || [];
@@ -37,16 +43,16 @@ function renderPanelField() {
   const currentIndex = current ? tabs.findIndex((t) => t.tab_id === current.tab_id) : -1;
   const currentLabel = current ? panelVisibleLabel(current, currentIndex, tabs) : "No panel";
   const hasSwitcher = tabs.length > 1;
+  const showClose = canClosePanel(tabs);
+  const closeButtonAttr = (tabId) => `<button class="mini warn panel-close" title="${escapeAttr(titleWithWebuiShortcut("Close current panel", "closePanel"))}" onclick="event.preventDefault();event.stopPropagation();closeTab('${tabId}')">✕</button>`;
   if (current && state.editingTab === current.tab_id)
-    return `<div class="panel-field"><input class="panel-label panel-rename-input tab-rename-input" value="${escapeAttr(state.editingTabValue)}" onmousedown="event.stopPropagation()" onclick="event.stopPropagation()" onblur="commitTabRename('${current.tab_id}')" oninput="state.editingTabValue=this.value" onkeydown="tabRenameKey(event,'${current.tab_id}')"><button class="mini panel-add" title="${escapeAttr(titleWithWebuiShortcut("New panel", "newPanel"))}" onclick="event.preventDefault();event.stopPropagation();newTab()">+</button><button class="mini warn panel-close" title="${escapeAttr(titleWithWebuiShortcut("Close current panel", "closePanel"))}" onclick="event.preventDefault();event.stopPropagation();closeTab('${current.tab_id}')">✕</button></div>`;
+    return `<div class="panel-field"><input class="panel-label panel-rename-input tab-rename-input" value="${escapeAttr(state.editingTabValue)}" onmousedown="event.stopPropagation()" onclick="event.stopPropagation()" onblur="commitTabRename('${current.tab_id}')" oninput="state.editingTabValue=this.value" onkeydown="tabRenameKey(event,'${current.tab_id}')"><button class="mini panel-add" title="${escapeAttr(titleWithWebuiShortcut("New panel", "newPanel"))}" onclick="event.preventDefault();event.stopPropagation();newTab()">+</button>${showClose ? closeButtonAttr(current.tab_id) : ""}</div>`;
   const menu = hasSwitcher && state.panelMenuOpen
     ? `<div class="panel-menu">${tabs.map((tab, index) => `<button class="panel-menu-item${tab.tab_id === state.tab ? " active" : ""}" title="${escapeAttr(tabTitle(tab))}" onclick="event.preventDefault();event.stopPropagation();state.panelMenuOpen=false;go(state.ws,decodeURIComponent('${encodeURIComponent(tab.tab_id)}'))">${escapeHtml(panelVisibleLabel(tab, index, tabs))}</button>`).join("")}</div>`
     : "";
   const caret = hasSwitcher ? '<span class="panel-caret">▼</span>' : "";
   const click = hasSwitcher ? "togglePanelMenu()" : "";
-  const close = current
-    ? `<button class="mini warn panel-close" title="${escapeAttr(titleWithWebuiShortcut("Close current panel", "closePanel"))}" onclick="event.preventDefault();event.stopPropagation();closeTab('${current.tab_id}')">✕</button>`
-    : "";
+  const close = current && showClose ? closeButtonAttr(current.tab_id) : "";
   return `<div class="panel-field"><button class="panel-label" title="${escapeAttr(current ? panelTooltip(current, currentIndex, tabs) : "No panel")}" onclick="event.preventDefault();event.stopPropagation();${click}" ondblclick="event.preventDefault();event.stopPropagation();state.panelMenuOpen=false;${current ? `startTabRename('${current.tab_id}','${escapeAttr(panelRenameInitialLabel(current))}')` : ""}"><span>${escapeHtml(currentLabel)}</span>${caret}</button>${menu}<button class="mini panel-add" title="${escapeAttr(titleWithWebuiShortcut("New panel", "newPanel"))}" onclick="event.preventDefault();event.stopPropagation();newTab()">+</button>${close}</div>`;
 }
 
