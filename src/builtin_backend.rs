@@ -38,6 +38,8 @@ struct Osc9Tracker {
     state: Osc9State,
     body: Vec<u8>,
     latest_payload: Option<String>,
+    /// Latest OSC 0 terminal title, used for `osc_title` detection rules.
+    latest_title: Option<String>,
 }
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
@@ -103,6 +105,13 @@ impl Osc9Tracker {
                 if !sanitized.is_empty() {
                     self.latest_payload = Some(sanitized);
                 }
+            } else if command == b"0" || command == b"2" {
+                // OSC 0 and OSC 2 both set the terminal title.
+                let text = String::from_utf8_lossy(payload);
+                let sanitized: String = text.chars().filter(|c| !c.is_control()).collect();
+                if !sanitized.is_empty() {
+                    self.latest_title = Some(sanitized);
+                }
             }
         }
         self.body.clear();
@@ -110,6 +119,11 @@ impl Osc9Tracker {
 
     fn latest_progress(&self) -> &str {
         self.latest_payload.as_deref().unwrap_or("")
+    }
+
+    /// Returns the latest OSC 0/2 terminal title, if any.
+    fn latest_title(&self) -> &str {
+        self.latest_title.as_deref().unwrap_or("")
     }
 }
 
@@ -1484,10 +1498,15 @@ impl TerminalRuntime {
         }
 
         let tail = self.history_tail_text(DETECTION_TAIL_BYTES);
-        let osc_progress = self
+        let (osc_progress, osc_title) = self
             .osc9_tracker
             .lock()
-            .map(|tracker| tracker.latest_progress().to_string())
+            .map(|tracker| {
+                (
+                    tracker.latest_progress().to_string(),
+                    tracker.latest_title().to_string(),
+                )
+            })
             .unwrap_or_default();
         let process_agent = self
             .child_pid()
@@ -1500,6 +1519,7 @@ impl TerminalRuntime {
             agent.as_deref(),
             &tail,
             &osc_progress,
+            &osc_title,
             self.jcode_detection_variant,
         ) {
             "unknown" if agent.is_some() => "idle",
@@ -1773,14 +1793,20 @@ fn pane_agent_presentation(pane: &PaneRecord, data: &BuiltinData) -> PaneAgentPr
     let agent = detect_agent_label(&pane.argv)
         .or(process_agent)
         .or_else(|| detect_agent_label_from_text(&tail));
-    let osc_progress = terminal
+    let (osc_progress, osc_title) = terminal
         .and_then(|terminal| terminal.osc9_tracker.lock().ok())
-        .map(|tracker| tracker.latest_progress().to_string())
+        .map(|tracker| {
+            (
+                tracker.latest_progress().to_string(),
+                tracker.latest_title().to_string(),
+            )
+        })
         .unwrap_or_default();
     let status = match detect_agent_status_with_osc(
         agent,
         &tail,
         &osc_progress,
+        &osc_title,
         terminal
             .map(|t| t.jcode_detection_variant)
             .unwrap_or(JcodeDetectionVariant::Vanilla),
@@ -2511,8 +2537,18 @@ fn detect_agent_status_with_osc(
     agent: Option<&str>,
     text: &str,
     osc_progress: &str,
+    osc_title: &str,
     jcode_variant: JcodeDetectionVariant,
 ) -> &'static str {
+    // OSC title rules have the highest priority (up to 1300 in manifests).
+    // Check them before OSC progress and screen-scrape.
+    if !osc_title.is_empty() {
+        if let Some(agent) = agent {
+            if let Some(status) = osc_title_status_for_agent(agent, osc_title) {
+                return status;
+            }
+        }
+    }
     if !osc_progress.is_empty() {
         let Some(agent) = agent else {
             return "unknown";
@@ -2567,6 +2603,121 @@ fn osc_progress_status_for_agent(agent: &str, osc_progress: &str) -> Option<&'st
                 Some("working")
             } else if osc_progress == "4;0;0" {
                 Some("idle")
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Map an OSC 0/2 terminal title to an agent status string based on
+/// `osc_title` manifest rules. Returns `None` when the title doesn't match
+/// any known pattern, letting the caller fall back to OSC progress or
+/// screen-scrape detection.
+///
+/// Mirrors the `osc_title` rules from herdr's detection manifests for:
+/// amp, claude, codex, grok, hermes, qwen.
+fn osc_title_status_for_agent(agent: &str, title: &str) -> Option<&'static str> {
+    match agent {
+        // amp.toml: blocked if "Plugin confirmation needed", working if
+        // braille prefix, idle if " - amp - " without braille/blocker.
+        "amp" => {
+            if title.contains("Plugin confirmation needed") {
+                Some("blocked")
+            } else if starts_with_braille(title) {
+                Some("working")
+            } else if title.contains(" - amp - ") {
+                Some("idle")
+            } else {
+                None
+            }
+        }
+        // claude.toml: working if braille or half-circle prefix, idle if ✳ prefix.
+        "claude" => {
+            if has_claude_half_circle_spinner(title) || starts_with_braille(title) {
+                Some("working")
+            } else if title.starts_with('✳') {
+                // ✳ U+2733 followed by optional FE0E and space.
+                let chars: Vec<char> = title.chars().collect();
+                if chars.len() >= 2 && (chars[1] == ' ' || chars[1] == '\u{fe0e}') {
+                    Some("idle")
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
+        // codex.toml: blocked if "Action Required", working if braille anywhere,
+        // idle if non-empty without braille/blocker.
+        "codex" => {
+            if title.contains("Action Required") {
+                Some("blocked")
+            } else if title.contains(['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']) {
+                Some("working")
+            } else if !title.is_empty() {
+                Some("idle")
+            } else {
+                None
+            }
+        }
+        // grok.toml: blocked if "Action Required", idle if title ends with
+        // "grok" without braille, working if any non-whitespace without idle match.
+        "grok" => {
+            if title.contains("Action Required") {
+                Some("blocked")
+            } else if (title == "grok" || title.ends_with(" - grok"))
+                && !contains_braille(title)
+            {
+                Some("idle")
+            } else if !title.trim().is_empty() {
+                Some("working")
+            } else {
+                None
+            }
+        }
+        // hermes.toml: blocked if ⚠ prefix, working if ⏳ prefix, idle if ✓ prefix.
+        "hermes" => {
+            let mut chars = title.chars();
+            if let Some(first) = chars.next() {
+                let second = chars.next();
+                let after_variant = match second {
+                    Some('\u{fe0e}') | Some('\u{fe0f}') => chars.next(),
+                    Some(_) => second,
+                    None => None,
+                };
+                let is_space_or_end = matches!(after_variant, Some(' ') | None);
+                if first == '⚠' && is_space_or_end {
+                    Some("blocked")
+                } else if first == '⏳' && is_space_or_end {
+                    Some("working")
+                } else if first == '✓' && is_space_or_end {
+                    Some("idle")
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
+        // qwen.toml: blocked if ✳ prefix (U+2733 + optional FE0E + space),
+        // working if ◐ prefix (U+25D0 + optional FE0E + space).
+        "qwen" => {
+            let mut chars = title.chars();
+            if let Some(first) = chars.next() {
+                let second = chars.next();
+                let after_variant = match second {
+                    Some('\u{fe0e}') => chars.next(),
+                    _ => second,
+                };
+                if first == '✳' && after_variant == Some(' ') {
+                    Some("blocked")
+                } else if first == '◐' && after_variant == Some(' ') {
+                    Some("working")
+                } else {
+                    None
+                }
             } else {
                 None
             }
@@ -3483,6 +3634,11 @@ fn starts_with_braille(text: &str) -> bool {
     text.chars().next().is_some_and(is_braille)
 }
 
+/// Returns true if the text contains any Braille pattern character (U+2800-U+28FF).
+fn contains_braille(text: &str) -> bool {
+    text.contains(is_braille)
+}
+
 pub(crate) fn is_braille(ch: char) -> bool {
     ('\u{2800}'..='\u{28ff}').contains(&ch)
 }
@@ -4151,12 +4307,14 @@ mod tests {
     #[test]
     fn osc9_tracker_ignores_non_osc9_commands() {
         let mut tracker = Osc9Tracker::default();
-        // OSC 0 (title) should not be captured as progress
+        // OSC 0 (title) should not be captured as progress but as title
         tracker.observe(b"\x1b]0;some title\x07");
         assert_eq!(tracker.latest_progress(), "");
+        assert_eq!(tracker.latest_title(), "some title");
         // OSC 52 (clipboard) should not be captured
         tracker.observe(b"\x1b]52;c;aGVsbG8=\x07");
         assert_eq!(tracker.latest_progress(), "");
+        assert_eq!(tracker.latest_title(), "some title");
     }
 
     #[test]
@@ -4180,6 +4338,7 @@ mod tests {
                 Some("jcode"),
                 "⠋ sending… 0.3s",
                 "jcode:idle",
+                "",
                 JcodeDetectionVariant::Vanilla
             ),
             "idle"
@@ -4190,6 +4349,7 @@ mod tests {
                 Some("jcode"),
                 "❯",
                 "jcode:working",
+                "",
                 JcodeDetectionVariant::Vanilla
             ),
             "working"
@@ -4200,6 +4360,7 @@ mod tests {
                 Some("jcode"),
                 "❯",
                 "jcode:blocked",
+                "",
                 JcodeDetectionVariant::Vanilla
             ),
             "blocked"
@@ -4214,6 +4375,7 @@ mod tests {
                 Some("jcode"),
                 "⠋ sending… 0.3s",
                 "",
+                "",
                 JcodeDetectionVariant::Vanilla
             ),
             "working"
@@ -4222,6 +4384,7 @@ mod tests {
             detect_agent_status_with_osc(
                 Some("jcode"),
                 "Session ready\n❯",
+                "",
                 "",
                 JcodeDetectionVariant::Vanilla
             ),
@@ -4237,6 +4400,7 @@ mod tests {
                 Some("jcode"),
                 "⠋ sending… 0.3s",
                 "unknown:format",
+                "",
                 JcodeDetectionVariant::Vanilla
             ),
             "working"
@@ -4252,6 +4416,7 @@ mod tests {
                 Some("claude"),
                 "⠋ Thinking about the problem",
                 "4;3",
+                "",
                 JcodeDetectionVariant::Vanilla
             ),
             "working" // falls through to screen-scrape, detects braille spinner
@@ -4261,6 +4426,7 @@ mod tests {
                 Some("qwen"),
                 "> type your message",
                 "4;3",
+                "",
                 JcodeDetectionVariant::Vanilla
             ),
             "working" // OSC 4;3 matches qwen osc_tool_progress_working
@@ -4272,6 +4438,7 @@ mod tests {
                 Some("claude"),
                 "◐ Thinking about the problem",
                 "4;0",
+                "",
                 JcodeDetectionVariant::Vanilla
             ),
             "idle" // OSC 4;0 matches claude osc_progress_idle
@@ -4281,6 +4448,7 @@ mod tests {
                 Some("qwen"),
                 "⠋ 5s · esc to cancel)",
                 "4;0",
+                "",
                 JcodeDetectionVariant::Vanilla
             ),
             "working" // 4;0 falls through, screen-scrape detects cancel hint
@@ -4291,9 +4459,221 @@ mod tests {
                 Some("qwen"),
                 "❯",
                 "4;3;details",
+                "",
                 JcodeDetectionVariant::Vanilla
             ),
             "working"
+        );
+    }
+
+    #[test]
+    fn osc_title_detection_for_all_agents() {
+        // Qwen: ✳ prefix → blocked, ◐ prefix → working.
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("qwen"),
+                "",
+                "",
+                "✳ Waiting for user confirmation",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("qwen"),
+                "",
+                "",
+                "◐ Processing",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+        // Qwen with variation selector FE0E.
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("qwen"),
+                "",
+                "",
+                "✳\u{fe0e} Waiting",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+
+        // Claude: braille/half-circle prefix → working, ✳ prefix → idle.
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("claude"),
+                "",
+                "",
+                "⠋ Thinking",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("claude"),
+                "",
+                "",
+                "◐ Thinking",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("claude"),
+                "",
+                "",
+                "✳ Claude Code",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "idle"
+        );
+
+        // Codex: "Action Required" → blocked, braille → working, other → idle.
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("codex"),
+                "",
+                "",
+                "Action Required: Review changes",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("codex"),
+                "",
+                "",
+                "codex ⠋",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("codex"),
+                "",
+                "",
+                "codex",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "idle"
+        );
+
+        // Hermes: ⚠ → blocked, ⏳ → working, ✓ → idle.
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("hermes"),
+                "",
+                "",
+                "⚠ Approval needed",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("hermes"),
+                "",
+                "",
+                "⏳ Working",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("hermes"),
+                "",
+                "",
+                "✓ Done",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "idle"
+        );
+
+        // Amp: "Plugin confirmation needed" → blocked, braille → working.
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("amp"),
+                "",
+                "",
+                "Plugin confirmation needed",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("amp"),
+                "",
+                "",
+                "⠋ amp",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("amp"),
+                "",
+                "",
+                "project - amp - main",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "idle"
+        );
+
+        // Grok: "Action Required" → blocked, "grok" → idle, other → working.
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("grok"),
+                "",
+                "",
+                "Action Required",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("grok"),
+                "",
+                "",
+                "grok",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "idle"
+        );
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("grok"),
+                "",
+                "",
+                "project - grok",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "idle"
+        );
+    }
+
+    #[test]
+    fn osc_title_takes_priority_over_osc_progress() {
+        // OSC title says blocked, OSC progress says working → blocked wins.
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("qwen"),
+                "",
+                "4;3",
+                "✳ Waiting",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
         );
     }
 
@@ -4303,7 +4683,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "Permission required\nAllow once\nAlways allow\nDeny",
-                JcodeDetectionVariant::Vanilla
+                                JcodeDetectionVariant::Vanilla
             ),
             "blocked"
         );
@@ -4311,7 +4691,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "Asking user\nEnter your response\nSubmit",
-                JcodeDetectionVariant::Vanilla
+                                JcodeDetectionVariant::Vanilla
             ),
             "blocked"
         );
@@ -4319,7 +4699,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "⠋ running analysis",
-                JcodeDetectionVariant::Vanilla
+                                JcodeDetectionVariant::Vanilla
             ),
             "working"
         );
@@ -4327,7 +4707,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "Running tool bash",
-                JcodeDetectionVariant::Vanilla
+                                JcodeDetectionVariant::Vanilla
             ),
             "working"
         );
@@ -4335,7 +4715,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "⠋ thinking… 1.2s",
-                JcodeDetectionVariant::Vanilla
+                                JcodeDetectionVariant::Vanilla
             ),
             "working"
         );
@@ -4343,7 +4723,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "⠋ streaming · ↑1.2k ↓42 · 1.2s",
-                JcodeDetectionVariant::Vanilla
+                                JcodeDetectionVariant::Vanilla
             ),
             "working"
         );
@@ -4351,7 +4731,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "⠋ sending… 0.3s",
-                JcodeDetectionVariant::Vanilla
+                                JcodeDetectionVariant::Vanilla
             ),
             "working"
         );
@@ -4359,7 +4739,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "⠋ connecting… 0.3s",
-                JcodeDetectionVariant::Vanilla
+                                JcodeDetectionVariant::Vanilla
             ),
             "working"
         );
@@ -4367,7 +4747,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "··● bash ●·· · 12s",
-                JcodeDetectionVariant::Vanilla
+                                JcodeDetectionVariant::Vanilla
             ),
             "working"
         );
@@ -4375,7 +4755,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "··● bash ●··",
-                JcodeDetectionVariant::Vanilla
+                                JcodeDetectionVariant::Vanilla
             ),
             "working"
         );
@@ -4383,7 +4763,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "●·· batch ··● · 2/5 done · last done: read · 1m 3s",
-                JcodeDetectionVariant::Vanilla
+                                JcodeDetectionVariant::Vanilla
             ),
             "working"
         );
@@ -4391,7 +4771,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "●·· batch ··● · 2/5 done",
-                JcodeDetectionVariant::Vanilla
+                                JcodeDetectionVariant::Vanilla
             ),
             "working"
         );
@@ -4399,7 +4779,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "↻ network disconnected, waiting to retry · websocket · 8s",
-                JcodeDetectionVariant::Vanilla
+                                JcodeDetectionVariant::Vanilla
             ),
             "working"
         );
@@ -4431,7 +4811,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "Session ready\n❯",
-                JcodeDetectionVariant::Vanilla
+                                JcodeDetectionVariant::Vanilla
             ),
             "idle"
         );
@@ -4443,7 +4823,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "1>                                                            together_ai/revolut ca/glm 5 2 · ~/repo",
-                JcodeDetectionVariant::Vanilla
+                                JcodeDetectionVariant::Vanilla
             ),
             "idle"
         );
@@ -4451,7 +4831,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "We should deny this assumption in the explanation.\n❯ ",
-                JcodeDetectionVariant::Vanilla
+                                JcodeDetectionVariant::Vanilla
             ),
             "idle"
         );
@@ -4459,7 +4839,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "Permission request\n❯ Allow once\n  Deny\nold response line 1\nold response line 2\nold response line 3\nold response line 4\nold response line 5\nold response line 6\nold response line 7\nold response line 8\n❯ ",
-                JcodeDetectionVariant::Vanilla
+                                JcodeDetectionVariant::Vanilla
             ),
             "idle"
         );
@@ -4467,7 +4847,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "Processing request\nold response line 1\nold response line 2\nold response line 3\nold response line 4\n❯ ",
-                JcodeDetectionVariant::Vanilla
+                                JcodeDetectionVariant::Vanilla
             ),
             "idle"
         );
@@ -4475,7 +4855,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "··● bash ●·· · 12s\nold response line 1\nold response line 2\nold response line 3\nold response line 4\n❯ ",
-                JcodeDetectionVariant::Vanilla
+                                JcodeDetectionVariant::Vanilla
             ),
             "idle"
         );
@@ -4483,7 +4863,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "··● bash ●·· · 12s\nSession ready\n❯ ",
-                JcodeDetectionVariant::Vanilla
+                                JcodeDetectionVariant::Vanilla
             ),
             "idle"
         );
@@ -4491,7 +4871,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "Running tool bash\nresult mentions running tool\n❯ ",
-                JcodeDetectionVariant::Vanilla
+                                JcodeDetectionVariant::Vanilla
             ),
             "idle"
         );
@@ -4499,7 +4879,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "··● bash ●·· · 12s\n1> ",
-                JcodeDetectionVariant::Vanilla
+                                JcodeDetectionVariant::Vanilla
             ),
             "idle"
         );
@@ -4507,7 +4887,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "Running tool bash\n1> typed input",
-                JcodeDetectionVariant::Vanilla
+                                JcodeDetectionVariant::Vanilla
             ),
             "idle"
         );
@@ -4515,7 +4895,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "Session ready\n❯\n··● bash ●·· · 12s",
-                JcodeDetectionVariant::Vanilla
+                                JcodeDetectionVariant::Vanilla
             ),
             "working"
         );
@@ -4523,7 +4903,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "··● not a toolbar\n❯",
-                JcodeDetectionVariant::Vanilla
+                                JcodeDetectionVariant::Vanilla
             ),
             "idle"
         );
@@ -4531,7 +4911,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "plain prompt",
-                JcodeDetectionVariant::Vanilla
+                                JcodeDetectionVariant::Vanilla
             ),
             "unknown"
         );
@@ -4539,7 +4919,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "⠋running analysis",
-                JcodeDetectionVariant::Vanilla
+                                JcodeDetectionVariant::Vanilla
             ),
             "unknown"
         );
@@ -5009,7 +5389,7 @@ mod tests {
             detect_agent_status(
                 Some("opencode"),
                 "△ Permission required",
-                JcodeDetectionVariant::Vanilla
+                                JcodeDetectionVariant::Vanilla
             ),
             "blocked"
         );
@@ -5017,7 +5397,7 @@ mod tests {
             detect_agent_status(
                 Some("opencode"),
                 "esc dismiss\nenter confirm\n↑↓ select",
-                JcodeDetectionVariant::Vanilla
+                                JcodeDetectionVariant::Vanilla
             ),
             "blocked"
         );
@@ -5025,7 +5405,7 @@ mod tests {
             detect_agent_status(
                 Some("opencode"),
                 "esc dismiss\nenter submit\n⇆ tab",
-                JcodeDetectionVariant::Vanilla
+                                JcodeDetectionVariant::Vanilla
             ),
             "blocked"
         );
@@ -5033,7 +5413,7 @@ mod tests {
             detect_agent_status(
                 Some("opencode"),
                 "esc dismiss\nenter toggle\n↑↓ select",
-                JcodeDetectionVariant::Vanilla
+                                JcodeDetectionVariant::Vanilla
             ),
             "blocked"
         );
@@ -5041,7 +5421,7 @@ mod tests {
             detect_agent_status(
                 Some("opencode"),
                 "opencode · esc to interrupt",
-                JcodeDetectionVariant::Vanilla
+                                JcodeDetectionVariant::Vanilla
             ),
             "working"
         );
@@ -5049,7 +5429,7 @@ mod tests {
             detect_agent_status(
                 Some("opencode"),
                 "opencode · esc again to interrupt",
-                JcodeDetectionVariant::Vanilla
+                                JcodeDetectionVariant::Vanilla
             ),
             "working"
         );
@@ -5057,7 +5437,7 @@ mod tests {
             detect_agent_status(
                 Some("opencode"),
                 "opencode escaped interrupt",
-                JcodeDetectionVariant::Vanilla
+                                JcodeDetectionVariant::Vanilla
             ),
             "unknown"
         );
@@ -5065,7 +5445,7 @@ mod tests {
             detect_agent_status(
                 Some("opencode"),
                 "esc interrupt before opencode",
-                JcodeDetectionVariant::Vanilla
+                                JcodeDetectionVariant::Vanilla
             ),
             "unknown"
         );
