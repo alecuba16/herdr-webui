@@ -2266,8 +2266,7 @@ fn detect_agent_label_from_text(text: &str) -> Option<&'static str> {
                 "shell command execution",
             ],
         ))
-        || (lower.contains("do you trust this folder?")
-            && lower.contains("don't trust (esc)"))
+        || (lower.contains("do you trust this folder?") && lower.contains("don't trust (esc)"))
     {
         return Some("qwen");
     }
@@ -2654,7 +2653,8 @@ fn osc_title_status_for_agent(agent: &str, title: &str) -> Option<&'static str> 
         "codex" => {
             if title.contains("Action Required") {
                 Some("blocked")
-            } else if title.contains(['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']) {
+            } else if title.contains(['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'])
+            {
                 Some("working")
             } else if !title.is_empty() {
                 Some("idle")
@@ -2667,9 +2667,7 @@ fn osc_title_status_for_agent(agent: &str, title: &str) -> Option<&'static str> 
         "grok" => {
             if title.contains("Action Required") {
                 Some("blocked")
-            } else if (title == "grok" || title.ends_with(" - grok"))
-                && !contains_braille(title)
-            {
+            } else if (title == "grok" || title.ends_with(" - grok")) && !contains_braille(title) {
                 Some("idle")
             } else if !title.trim().is_empty() {
                 Some("working")
@@ -2971,8 +2969,7 @@ fn detect_cursor_status(lower: &str) -> &'static str {
             let line = line.trim_start();
             // "allow ... (y)" or "run ... (y)" with optional → prefix.
             let line = line.strip_prefix("→").map(str::trim_start).unwrap_or(line);
-            (line.starts_with("allow ") || line.starts_with("run "))
-                && line.contains("(y)")
+            (line.starts_with("allow ") || line.starts_with("run ")) && line.contains("(y)")
         })
     {
         return "blocked";
@@ -3173,7 +3170,9 @@ fn detect_hermes_status(lower: &str) -> &'static str {
     // enter/↑/↓ select/↑/↓ to select/other (type].
     if (bottom14.contains("hermes needs your")
         || bottom14.contains("type your answer")
-        || bottom14.lines().any(|line| line.trim_start().starts_with("ask ")))
+        || bottom14
+            .lines()
+            .any(|line| line.trim_start().starts_with("ask ")))
         && contains_any(
             &bottom14,
             &[
@@ -3515,8 +3514,7 @@ fn detect_qwen_status(lower: &str) -> &'static str {
             return false;
         }
         let rest = &line["↑/↓".len()..];
-        rest.contains(':')
-            && (rest.contains("enter") || rest.contains("return"))
+        rest.contains(':') && (rest.contains("enter") || rest.contains("return"))
     }) {
         return "blocked";
     }
@@ -3815,9 +3813,7 @@ fn grok_background_work_chip_line(line: &str) -> bool {
     if num == "0" || num.starts_with('0') {
         return false;
     }
-    rest[digits_end..]
-        .trim_start()
-        .starts_with('│')
+    rest[digits_end..].trim_start().starts_with('│')
 }
 
 fn grok_tool_line(line: &str) -> bool {
@@ -3839,9 +3835,7 @@ fn kimi_background_agents_line(line: &str) -> bool {
         && line.split('[').any(|after_bracket| {
             // Must have a positive number before "agent(s) running]"
             let trimmed = after_bracket.trim_start();
-            let digits_end = trimmed
-                .find(|c: char| !c.is_ascii_digit())
-                .unwrap_or(0);
+            let digits_end = trimmed.find(|c: char| !c.is_ascii_digit()).unwrap_or(0);
             digits_end > 0 && !trimmed[..digits_end].starts_with('0')
         })
 }
@@ -4783,7 +4777,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "Permission required\nAllow once\nAlways allow\nDeny",
-                                JcodeDetectionVariant::Vanilla
+                JcodeDetectionVariant::Vanilla
             ),
             "blocked"
         );
@@ -4791,7 +4785,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "Asking user\nEnter your response\nSubmit",
-                                JcodeDetectionVariant::Vanilla
+                JcodeDetectionVariant::Vanilla
             ),
             "blocked"
         );
@@ -4799,7 +4793,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "⠋ running analysis",
-                                JcodeDetectionVariant::Vanilla
+                JcodeDetectionVariant::Vanilla
             ),
             "working"
         );
@@ -4807,7 +4801,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "Running tool bash",
-                                JcodeDetectionVariant::Vanilla
+                JcodeDetectionVariant::Vanilla
             ),
             "working"
         );
@@ -4815,7 +4809,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "⠋ thinking… 1.2s",
-                                JcodeDetectionVariant::Vanilla
+                JcodeDetectionVariant::Vanilla
             ),
             "working"
         );
@@ -4823,7 +4817,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "⠋ streaming · ↑1.2k ↓42 · 1.2s",
-                                JcodeDetectionVariant::Vanilla
+                JcodeDetectionVariant::Vanilla
             ),
             "working"
         );
@@ -4831,7 +4825,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "⠋ sending… 0.3s",
-                                JcodeDetectionVariant::Vanilla
+                JcodeDetectionVariant::Vanilla
             ),
             "working"
         );
@@ -4839,7 +4833,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "⠋ connecting… 0.3s",
-                                JcodeDetectionVariant::Vanilla
+                JcodeDetectionVariant::Vanilla
             ),
             "working"
         );
@@ -4847,7 +4841,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "··● bash ●·· · 12s",
-                                JcodeDetectionVariant::Vanilla
+                JcodeDetectionVariant::Vanilla
             ),
             "working"
         );
@@ -4855,7 +4849,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "··● bash ●··",
-                                JcodeDetectionVariant::Vanilla
+                JcodeDetectionVariant::Vanilla
             ),
             "working"
         );
@@ -4863,7 +4857,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "●·· batch ··● · 2/5 done · last done: read · 1m 3s",
-                                JcodeDetectionVariant::Vanilla
+                JcodeDetectionVariant::Vanilla
             ),
             "working"
         );
@@ -4871,7 +4865,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "●·· batch ··● · 2/5 done",
-                                JcodeDetectionVariant::Vanilla
+                JcodeDetectionVariant::Vanilla
             ),
             "working"
         );
@@ -4879,7 +4873,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "↻ network disconnected, waiting to retry · websocket · 8s",
-                                JcodeDetectionVariant::Vanilla
+                JcodeDetectionVariant::Vanilla
             ),
             "working"
         );
@@ -4911,7 +4905,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "Session ready\n❯",
-                                JcodeDetectionVariant::Vanilla
+                JcodeDetectionVariant::Vanilla
             ),
             "idle"
         );
@@ -4931,7 +4925,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "We should deny this assumption in the explanation.\n❯ ",
-                                JcodeDetectionVariant::Vanilla
+                JcodeDetectionVariant::Vanilla
             ),
             "idle"
         );
@@ -4963,7 +4957,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "··● bash ●·· · 12s\nSession ready\n❯ ",
-                                JcodeDetectionVariant::Vanilla
+                JcodeDetectionVariant::Vanilla
             ),
             "idle"
         );
@@ -4971,7 +4965,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "Running tool bash\nresult mentions running tool\n❯ ",
-                                JcodeDetectionVariant::Vanilla
+                JcodeDetectionVariant::Vanilla
             ),
             "idle"
         );
@@ -4979,7 +4973,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "··● bash ●·· · 12s\n1> ",
-                                JcodeDetectionVariant::Vanilla
+                JcodeDetectionVariant::Vanilla
             ),
             "idle"
         );
@@ -4987,7 +4981,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "Running tool bash\n1> typed input",
-                                JcodeDetectionVariant::Vanilla
+                JcodeDetectionVariant::Vanilla
             ),
             "idle"
         );
@@ -4995,7 +4989,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "Session ready\n❯\n··● bash ●·· · 12s",
-                                JcodeDetectionVariant::Vanilla
+                JcodeDetectionVariant::Vanilla
             ),
             "working"
         );
@@ -5003,7 +4997,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "··● not a toolbar\n❯",
-                                JcodeDetectionVariant::Vanilla
+                JcodeDetectionVariant::Vanilla
             ),
             "idle"
         );
@@ -5011,7 +5005,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "plain prompt",
-                                JcodeDetectionVariant::Vanilla
+                JcodeDetectionVariant::Vanilla
             ),
             "unknown"
         );
@@ -5019,7 +5013,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "⠋running analysis",
-                                JcodeDetectionVariant::Vanilla
+                JcodeDetectionVariant::Vanilla
             ),
             "unknown"
         );
@@ -5489,7 +5483,7 @@ mod tests {
             detect_agent_status(
                 Some("opencode"),
                 "△ Permission required",
-                                JcodeDetectionVariant::Vanilla
+                JcodeDetectionVariant::Vanilla
             ),
             "blocked"
         );
@@ -5497,7 +5491,7 @@ mod tests {
             detect_agent_status(
                 Some("opencode"),
                 "esc dismiss\nenter confirm\n↑↓ select",
-                                JcodeDetectionVariant::Vanilla
+                JcodeDetectionVariant::Vanilla
             ),
             "blocked"
         );
@@ -5505,7 +5499,7 @@ mod tests {
             detect_agent_status(
                 Some("opencode"),
                 "esc dismiss\nenter submit\n⇆ tab",
-                                JcodeDetectionVariant::Vanilla
+                JcodeDetectionVariant::Vanilla
             ),
             "blocked"
         );
@@ -5513,7 +5507,7 @@ mod tests {
             detect_agent_status(
                 Some("opencode"),
                 "esc dismiss\nenter toggle\n↑↓ select",
-                                JcodeDetectionVariant::Vanilla
+                JcodeDetectionVariant::Vanilla
             ),
             "blocked"
         );
@@ -5521,7 +5515,7 @@ mod tests {
             detect_agent_status(
                 Some("opencode"),
                 "opencode · esc to interrupt",
-                                JcodeDetectionVariant::Vanilla
+                JcodeDetectionVariant::Vanilla
             ),
             "working"
         );
@@ -5529,7 +5523,7 @@ mod tests {
             detect_agent_status(
                 Some("opencode"),
                 "opencode · esc again to interrupt",
-                                JcodeDetectionVariant::Vanilla
+                JcodeDetectionVariant::Vanilla
             ),
             "working"
         );
@@ -5537,7 +5531,7 @@ mod tests {
             detect_agent_status(
                 Some("opencode"),
                 "opencode escaped interrupt",
-                                JcodeDetectionVariant::Vanilla
+                JcodeDetectionVariant::Vanilla
             ),
             "unknown"
         );
@@ -5545,7 +5539,7 @@ mod tests {
             detect_agent_status(
                 Some("opencode"),
                 "esc interrupt before opencode",
-                                JcodeDetectionVariant::Vanilla
+                JcodeDetectionVariant::Vanilla
             ),
             "unknown"
         );

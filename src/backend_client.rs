@@ -339,7 +339,9 @@ impl TerminalClient {
             ServerMessage::Notify { message, body, .. } => {
                 Ok(TerminalEvent::Notify { message, body })
             }
-            ServerMessage::MouseCapture { enabled, .. } => Ok(TerminalEvent::MouseCapture { enabled }),
+            ServerMessage::MouseCapture { enabled, .. } => {
+                Ok(TerminalEvent::MouseCapture { enabled })
+            }
             ServerMessage::TerminalBell { count } => Ok(TerminalEvent::TerminalBell { count }),
             ServerMessage::ServerShutdown { reason } => {
                 Ok(TerminalEvent::ServerShutdown { reason })
@@ -992,7 +994,10 @@ mod tests {
                     message: "message".to_string(),
                     body: Some("body".to_string()),
                 },
-                ServerMessage::MouseCapture { enabled: true, sgr_pixels: false },
+                ServerMessage::MouseCapture {
+                    enabled: true,
+                    sgr_pixels: false,
+                },
                 ServerMessage::TerminalBell { count: 2 },
                 ServerMessage::ServerShutdown {
                     reason: Some("done".to_string()),

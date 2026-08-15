@@ -129,7 +129,10 @@ pub(crate) enum ClientMessage {
     },
     /// The direct command was written and flushed.
     /// Added in protocol 20+ (graphics streaming).
-    GraphicsTransmissionStarted { transfer_id: u64, image_id: u32 },
+    GraphicsTransmissionStarted {
+        transfer_id: u64,
+        image_id: u32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -356,5 +359,8 @@ pub(crate) enum ServerMessage {
     },
     /// Suppress a direct command that expired before terminal delivery.
     /// Added in protocol 20+ (graphics streaming).
-    GraphicsTransmissionRetired { transfer_id: u64, image_id: u32 },
+    GraphicsTransmissionRetired {
+        transfer_id: u64,
+        image_id: u32,
+    },
 }
