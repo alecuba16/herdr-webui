@@ -22,7 +22,7 @@ use crate::protocol::{
 use crate::terminal_text::{self, TerminalTextOptions};
 
 const BUILTIN_VERSION: &str = "builtin-0.1.0";
-const PROTOCOL_VERSION: u32 = 16;
+const PROTOCOL_VERSION: u32 = 20;
 const MAX_FRAME_SIZE: usize = 32 * 1024 * 1024;
 const MAX_SCROLLBACK_BYTES: usize = 8 * 1024 * 1024;
 const DETECTION_TAIL_BYTES: usize = 64 * 1024;
@@ -38,6 +38,8 @@ struct Osc9Tracker {
     state: Osc9State,
     body: Vec<u8>,
     latest_payload: Option<String>,
+    /// Latest OSC 0 terminal title, used for `osc_title` detection rules.
+    latest_title: Option<String>,
 }
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
@@ -103,6 +105,13 @@ impl Osc9Tracker {
                 if !sanitized.is_empty() {
                     self.latest_payload = Some(sanitized);
                 }
+            } else if command == b"0" || command == b"2" {
+                // OSC 0 and OSC 2 both set the terminal title.
+                let text = String::from_utf8_lossy(payload);
+                let sanitized: String = text.chars().filter(|c| !c.is_control()).collect();
+                if !sanitized.is_empty() {
+                    self.latest_title = Some(sanitized);
+                }
             }
         }
         self.body.clear();
@@ -110,6 +119,11 @@ impl Osc9Tracker {
 
     fn latest_progress(&self) -> &str {
         self.latest_payload.as_deref().unwrap_or("")
+    }
+
+    /// Returns the latest OSC 0/2 terminal title, if any.
+    fn latest_title(&self) -> &str {
+        self.latest_title.as_deref().unwrap_or("")
     }
 }
 
@@ -424,6 +438,13 @@ fn handle_client_connection(
             ClientMessage::Detach => break,
             ClientMessage::ClipboardImage { .. } => {}
             ClientMessage::Hello { .. } => {}
+            // Protocol 20+ messages from graphics streaming and terminal
+            // control modes are not used by the built-in backend.
+            ClientMessage::ObserveTerminal { .. }
+            | ClientMessage::ControlTerminal { .. }
+            | ClientMessage::GraphicsTransmissionResult { .. }
+            | ClientMessage::InputPixels { .. }
+            | ClientMessage::GraphicsTransmissionStarted { .. } => {}
         }
     }
     Ok(())
@@ -1477,10 +1498,15 @@ impl TerminalRuntime {
         }
 
         let tail = self.history_tail_text(DETECTION_TAIL_BYTES);
-        let osc_progress = self
+        let (osc_progress, osc_title) = self
             .osc9_tracker
             .lock()
-            .map(|tracker| tracker.latest_progress().to_string())
+            .map(|tracker| {
+                (
+                    tracker.latest_progress().to_string(),
+                    tracker.latest_title().to_string(),
+                )
+            })
             .unwrap_or_default();
         let process_agent = self
             .child_pid()
@@ -1493,6 +1519,7 @@ impl TerminalRuntime {
             agent.as_deref(),
             &tail,
             &osc_progress,
+            &osc_title,
             self.jcode_detection_variant,
         ) {
             "unknown" if agent.is_some() => "idle",
@@ -1766,14 +1793,20 @@ fn pane_agent_presentation(pane: &PaneRecord, data: &BuiltinData) -> PaneAgentPr
     let agent = detect_agent_label(&pane.argv)
         .or(process_agent)
         .or_else(|| detect_agent_label_from_text(&tail));
-    let osc_progress = terminal
+    let (osc_progress, osc_title) = terminal
         .and_then(|terminal| terminal.osc9_tracker.lock().ok())
-        .map(|tracker| tracker.latest_progress().to_string())
+        .map(|tracker| {
+            (
+                tracker.latest_progress().to_string(),
+                tracker.latest_title().to_string(),
+            )
+        })
         .unwrap_or_default();
     let status = match detect_agent_status_with_osc(
         agent,
         &tail,
         &osc_progress,
+        &osc_title,
         terminal
             .map(|t| t.jcode_detection_variant)
             .unwrap_or(JcodeDetectionVariant::Vanilla),
@@ -2187,6 +2220,7 @@ fn detect_agent_label(argv: &[String]) -> Option<&'static str> {
             "qodercli" | "qoderclicn" | "qoder" | "qodercn" => Some("qodercli"),
             "maki" => Some("maki"),
             "claurst" => Some("claurst"),
+            "qwen" | "qwen-code" => Some("qwen"),
             _ => None,
         }
     })
@@ -2220,6 +2254,21 @@ fn detect_agent_label_from_text(text: &str) -> Option<&'static str> {
             && lower.contains("yes, allow this session"))
     {
         return Some("claurst");
+    }
+    // Qwen Code: detect from its signature confirmation and composer patterns.
+    if (lower.contains("yes, allow once")
+        && contains_any(
+            &lower,
+            &[
+                "apply this change?",
+                "allow execution of:",
+                "do you want to proceed?",
+                "shell command execution",
+            ],
+        ))
+        || (lower.contains("do you trust this folder?") && lower.contains("don't trust (esc)"))
+    {
+        return Some("qwen");
     }
     None
 }
@@ -2487,8 +2536,18 @@ fn detect_agent_status_with_osc(
     agent: Option<&str>,
     text: &str,
     osc_progress: &str,
+    osc_title: &str,
     jcode_variant: JcodeDetectionVariant,
 ) -> &'static str {
+    // OSC title rules have the highest priority (up to 1300 in manifests).
+    // Check them before OSC progress and screen-scrape.
+    if !osc_title.is_empty() {
+        if let Some(agent) = agent {
+            if let Some(status) = osc_title_status_for_agent(agent, osc_title) {
+                return status;
+            }
+        }
+    }
     if !osc_progress.is_empty() {
         let Some(agent) = agent else {
             return "unknown";
@@ -2501,9 +2560,15 @@ fn detect_agent_status_with_osc(
 }
 
 /// Map an OSC 9 progress payload to an agent status string.
-/// Currently only jcode emits structured OSC 9 payloads (`jcode:working`,
-/// `jcode:idle`, `jcode:blocked`). Returns `None` for unknown formats
-/// so the caller falls back to screen-scrape detection.
+///
+/// Agents emit structured progress via OSC 9:
+/// - jcode: `jcode:working`, `jcode:idle`, `jcode:blocked`
+/// - Claude: OSC 9;4 `4;0` → idle only (no working rule in manifest)
+/// - Qwen: OSC 9;4 `4;3` → working only (no idle rule in manifest)
+/// - Grok: OSC 9;4 `4;1;-1` → working, `4;0;0` → idle
+///
+/// Returns `None` for unknown formats so the caller falls back to
+/// screen-scrape detection.
 fn osc_progress_status_for_agent(agent: &str, osc_progress: &str) -> Option<&'static str> {
     match agent {
         "jcode" => match osc_progress {
@@ -2512,6 +2577,149 @@ fn osc_progress_status_for_agent(agent: &str, osc_progress: &str) -> Option<&'st
             "jcode:blocked" => Some("blocked"),
             _ => None,
         },
+        // Claude manifest: osc_progress_idle regex '^4;0' → idle only.
+        // No osc_progress_working rule; 4;3 falls through to screen-scrape.
+        "claude" => {
+            if osc_progress.starts_with("4;0") {
+                Some("idle")
+            } else {
+                None
+            }
+        }
+        // Qwen manifest: osc_tool_progress_working regex '^4;3(?:;|$)' →
+        // working only. No osc_progress_idle rule; 4;0 falls through to
+        // screen-scrape.
+        "qwen" => {
+            if osc_progress.starts_with("4;3") {
+                Some("working")
+            } else {
+                None
+            }
+        }
+        // Grok emits OSC 9;4 with payload "4;1;-1" while busy and "4;0;0" idle.
+        "grok" => {
+            if osc_progress == "4;1;-1" {
+                Some("working")
+            } else if osc_progress == "4;0;0" {
+                Some("idle")
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Map an OSC 0/2 terminal title to an agent status string based on
+/// `osc_title` manifest rules. Returns `None` when the title doesn't match
+/// any known pattern, letting the caller fall back to OSC progress or
+/// screen-scrape detection.
+///
+/// Mirrors the `osc_title` rules from herdr's detection manifests for:
+/// amp, claude, codex, grok, hermes, qwen.
+fn osc_title_status_for_agent(agent: &str, title: &str) -> Option<&'static str> {
+    match agent {
+        // amp.toml: blocked if "Plugin confirmation needed", working if
+        // braille prefix, idle if " - amp - " without braille/blocker.
+        "amp" => {
+            if title.contains("Plugin confirmation needed") {
+                Some("blocked")
+            } else if starts_with_braille(title) {
+                Some("working")
+            } else if title.contains(" - amp - ") {
+                Some("idle")
+            } else {
+                None
+            }
+        }
+        // claude.toml: working if braille or half-circle prefix, idle if ✳ prefix.
+        "claude" => {
+            if has_claude_half_circle_spinner(title) || starts_with_braille(title) {
+                Some("working")
+            } else if title.starts_with('✳') {
+                // ✳ U+2733 followed by optional FE0E and space.
+                let chars: Vec<char> = title.chars().collect();
+                if chars.len() >= 2 && (chars[1] == ' ' || chars[1] == '\u{fe0e}') {
+                    Some("idle")
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
+        // codex.toml: blocked if "Action Required", working if braille anywhere,
+        // idle if non-empty without braille/blocker.
+        "codex" => {
+            if title.contains("Action Required") {
+                Some("blocked")
+            } else if title.contains(['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'])
+            {
+                Some("working")
+            } else if !title.is_empty() {
+                Some("idle")
+            } else {
+                None
+            }
+        }
+        // grok.toml: blocked if "Action Required", idle if title ends with
+        // "grok" without braille, working if any non-whitespace without idle match.
+        "grok" => {
+            if title.contains("Action Required") {
+                Some("blocked")
+            } else if (title == "grok" || title.ends_with(" - grok")) && !contains_braille(title) {
+                Some("idle")
+            } else if !title.trim().is_empty() {
+                Some("working")
+            } else {
+                None
+            }
+        }
+        // hermes.toml: blocked if ⚠ prefix, working if ⏳ prefix, idle if ✓ prefix.
+        "hermes" => {
+            let mut chars = title.chars();
+            if let Some(first) = chars.next() {
+                let second = chars.next();
+                let after_variant = match second {
+                    Some('\u{fe0e}') | Some('\u{fe0f}') => chars.next(),
+                    Some(_) => second,
+                    None => None,
+                };
+                let is_space_or_end = matches!(after_variant, Some(' ') | None);
+                if first == '⚠' && is_space_or_end {
+                    Some("blocked")
+                } else if first == '⏳' && is_space_or_end {
+                    Some("working")
+                } else if first == '✓' && is_space_or_end {
+                    Some("idle")
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
+        // qwen.toml: blocked if ✳ prefix (U+2733 + optional FE0E + space),
+        // working if ◐ prefix (U+25D0 + optional FE0E + space).
+        "qwen" => {
+            let mut chars = title.chars();
+            if let Some(first) = chars.next() {
+                let second = chars.next();
+                let after_variant = match second {
+                    Some('\u{fe0e}') => chars.next(),
+                    _ => second,
+                };
+                if first == '✳' && after_variant == Some(' ') {
+                    Some("blocked")
+                } else if first == '◐' && after_variant == Some(' ') {
+                    Some("working")
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
         _ => None,
     }
 }
@@ -2547,6 +2755,7 @@ fn detect_agent_status(
         "pi" => detect_pi_status(&lower),
         "qodercli" => detect_qodercli_status(&lower),
         "claurst" => crate::builtin_detection::claurst::detect_claurst_status(&lower),
+        "qwen" => detect_qwen_status(&lower),
         _ => "unknown",
     }
 }
@@ -2600,7 +2809,20 @@ fn detect_antigravity_status(lower: &str) -> &'static str {
     {
         return "blocked";
     }
-    if has_braille_ing_line(lower) || bottom_non_empty_lines(lower, 5).contains("· 1 task") {
+    // background_tasks_working: "· <N> task" where N >= 1 (no leading zero).
+    let bottom5 = bottom_non_empty_lines(lower, 5);
+    if has_braille_ing_line(lower)
+        || bottom5.lines().any(|line| {
+            let line = line.trim_start();
+            line.contains('·')
+                && line.split_whitespace().any(|word| {
+                    !word.is_empty()
+                        && word.chars().all(|c| c.is_ascii_digit())
+                        && !word.starts_with('0')
+                })
+                && line.contains("task")
+        })
+    {
         return "working";
     }
     "unknown"
@@ -2619,6 +2841,8 @@ fn detect_claude_status(lower: &str) -> &'static str {
                 "↑↓ to navigate",
             ],
         ))
+        // Claude 2.1.228+ confirmation prompts: "Enter to confirm · Esc to cancel"
+        || (lower.contains("enter to confirm") && lower.contains("esc to cancel"))
         || (lower.contains("run a dynamic workflow?") && lower.contains("esc to cancel"))
         || (lower.contains("do you want to proceed?")
             && contains_any(
@@ -2645,6 +2869,7 @@ fn detect_claude_status(lower: &str) -> &'static str {
         return "blocked";
     }
     if has_braille_spinner_line(lower)
+        || has_claude_half_circle_spinner(lower)
         || lower
             .lines()
             .any(|line| line.trim_start().starts_with("/btw"))
@@ -2687,6 +2912,14 @@ fn detect_cline_status(lower: &str) -> &'static str {
 }
 
 fn detect_codex_status(lower: &str) -> &'static str {
+    // Trust directory prompt: "> You are in ..." + "Do you trust the contents
+    // of this directory?" in the top 20 non-empty lines.
+    let top20 = top_non_empty_lines(lower, 20);
+    if top20.contains("> you are in ")
+        && top20.contains("do you trust the contents of this directory?")
+    {
+        return "blocked";
+    }
     if lower.contains("action required")
         || lower.contains("press enter to confirm or esc to cancel")
         || lower.contains("enter to submit answer")
@@ -2700,6 +2933,18 @@ fn detect_codex_status(lower: &str) -> &'static str {
         return "blocked";
     }
     if has_codex_spinner(lower) {
+        return "working";
+    }
+    // Screen working fallback: "• Working (esc to interrupt)" without
+    // "■ Conversation interrupted". Mirrors herdr codex.toml.
+    let bottom3 = bottom_non_empty_lines(lower, 3);
+    if bottom3.lines().any(|line| {
+        let line = line.trim_start();
+        (line.starts_with("• ") || line.starts_with("◦ "))
+            && line.contains("working")
+            && line.contains("esc to interrupt")
+    }) && !lower.contains("conversation interrupted")
+    {
         return "working";
     }
     if !lower.trim().is_empty() {
@@ -2722,7 +2967,9 @@ fn detect_cursor_status(lower: &str) -> &'static str {
         || contains_any(lower, &["(y) (enter)", "keep (n)", "skip (esc or n)"])
         || lower.lines().any(|line| {
             let line = line.trim_start();
-            line.starts_with("allow ") && line.contains("(y)")
+            // "allow ... (y)" or "run ... (y)" with optional → prefix.
+            let line = line.strip_prefix("→").map(str::trim_start).unwrap_or(line);
+            (line.starts_with("allow ") || line.starts_with("run ")) && line.contains("(y)")
         })
     {
         return "blocked";
@@ -2739,14 +2986,23 @@ fn detect_cursor_status(lower: &str) -> &'static str {
 }
 
 fn detect_devin_status(lower: &str) -> &'static str {
-    if lower.contains("do you trust the files in this folder?")
-        || (lower.contains("approve once")
-            && lower.contains("select")
-            && lower.contains("confirm")
-            && lower.contains("esc cancel"))
+    // workspace_trust_prompt: all three strings required.
+    if lower.contains("do you trust the authors of this directory?")
+        && lower.contains("with untrusted content.")
+        && lower.contains("yes, trust ")
     {
         return "blocked";
     }
+    // permission_prompt: all four strings required.
+    if lower.contains("approve once")
+        && lower.contains("select")
+        && lower.contains("confirm")
+        && lower.contains("esc cancel")
+    {
+        return "blocked";
+    }
+    // Working rules have not-gates for "approve once" + "esc cancel", but since
+    // the blocked check above runs first, those are implicitly handled.
     if (lower.contains("running tools") && lower.contains("esc to interrupt"))
         || lower.contains("guide devin while it works")
         || (lower.contains("reading shell ") && lower.contains("timeout:"))
@@ -2765,20 +3021,20 @@ fn detect_devin_status(lower: &str) -> &'static str {
 }
 
 fn detect_droid_status(lower: &str) -> &'static str {
-    if (lower.contains("enter to select")
+    // execute_selection_blocker: enter to select + esc to cancel + ↑↓ to
+    // navigate (or "use ↑↓ to navigate") + (> yes, allow or > no, cancel).
+    if lower.contains("enter to select")
         && lower.contains("esc to cancel")
-        && contains_any(
-            lower,
-            &[
-                "↑↓ to navigate",
-                "use ↑↓ to navigate",
-                "> yes, allow",
-                "> no, cancel",
-            ],
-        ))
-        || (lower.contains("enter select")
-            && lower.contains("esc cancel")
-            && contains_any(lower, &["↑/↓ navigate", "↑↓ navigate"]))
+        && contains_any(lower, &["↑↓ to navigate", "use ↑↓ to navigate"])
+        && contains_any(lower, &["> yes, allow", "> no, cancel"])
+    {
+        return "blocked";
+    }
+    // selection_menu_blocker: enter select + esc cancel + ↑/↓ navigate (or
+    // ↑↓ navigate).
+    if lower.contains("enter select")
+        && lower.contains("esc cancel")
+        && contains_any(lower, &["↑/↓ navigate", "↑↓ navigate"])
     {
         return "blocked";
     }
@@ -2814,10 +3070,17 @@ fn detect_gemini_status(lower: &str) -> &'static str {
 }
 
 fn detect_copilot_status(lower: &str) -> &'static str {
-    if lower.contains("enter to select")
-        || lower.contains("enter to confirm")
-        || lower.contains("enter to submit")
-        || lower.contains("enter accept")
+    // selection_blocker: requires both an cancel hint AND an enter hint.
+    if contains_any(lower, &["esc to cancel", "esc cancel"])
+        && contains_any(
+            lower,
+            &[
+                "enter to select",
+                "enter to confirm",
+                "enter to submit",
+                "enter accept",
+            ],
+        )
     {
         return "blocked";
     }
@@ -2851,6 +3114,12 @@ fn detect_grok_status(lower: &str) -> &'static str {
     {
         return "blocked";
     }
+    // Background work chip: pinned top line shows animated chip + count + │.
+    // Mirrors grok.toml background_work_chip_working.
+    let top1 = top_non_empty_lines(lower, 1);
+    if top1.lines().any(grok_background_work_chip_line) {
+        return "working";
+    }
     if lower.lines().any(grok_spinner_stop_line)
         || (bottom2.contains("esc:cancel") && bottom2.contains("ctrl+.:shortcuts"))
         || (lower.contains("ctrl+c:cancel")
@@ -2870,26 +3139,101 @@ fn detect_grok_status(lower: &str) -> &'static str {
 }
 
 fn detect_hermes_status(lower: &str) -> &'static str {
-    if lower.contains("dangerous command")
-        || (lower.contains("allow once")
-            && lower.contains("allow for this session")
-            && lower.contains("deny"))
-        || contains_any(
-            lower,
-            &["enter to confirm", "↑/↓ to select", "show full command"],
+    let bottom14 = bottom_non_empty_lines(lower, 14);
+
+    // dangerous_command_approval: any of [dangerous, approval, allow once+deny,
+    // line "1. allow"] AND all of [enter confirm/enter to confirm/↑/↓ to
+    // select/show full command].
+    if (bottom14.contains("dangerous")
+        || bottom14.contains("approval")
+        || (bottom14.contains("allow once") && bottom14.contains("deny"))
+        || bottom14.lines().any(|line| {
+            let line = line.trim_start();
+            let line = line.trim_start_matches(['▸', '>']);
+            line.starts_with("1.") && line.contains("allow")
+        }))
+        && contains_any(
+            &bottom14,
+            &[
+                "enter confirm",
+                "enter to confirm",
+                "↑/↓ to select",
+                "show full command",
+            ],
         )
     {
         return "blocked";
     }
-    if lower.contains("msg=interrupt") || lower.contains("ctrl+c cancel") {
+
+    // clarification_prompt: any of [hermes needs your, line "ask <X>", type your
+    // answer] AND all of [enter confirm/enter to confirm/enter send/press
+    // enter/↑/↓ select/↑/↓ to select/other (type].
+    if (bottom14.contains("hermes needs your")
+        || bottom14.contains("type your answer")
+        || bottom14
+            .lines()
+            .any(|line| line.trim_start().starts_with("ask ")))
+        && contains_any(
+            &bottom14,
+            &[
+                "enter confirm",
+                "enter to confirm",
+                "enter send",
+                "press enter",
+                "↑/↓ select",
+                "↑/↓ to select",
+                "other (type",
+            ],
+        )
+    {
+        return "blocked";
+    }
+
+    // credential_prompt: any of [sudo password, skill setup, 🔑 + "for "].
+    if bottom14.contains("sudo password")
+        || bottom14.contains("skill setup")
+        || (bottom14.contains("🔑") && bottom14.contains("for "))
+    {
+        return "blocked";
+    }
+
+    // confirmation_prompt: any of [(approve once + cancel), (start a new session
+    // + keep going)] AND any of [enter to confirm/enter confirm/type 1/2/3/y/n
+    // quick].
+    if ((bottom14.contains("approve once") && bottom14.contains("cancel"))
+        || (bottom14.contains("start a new session") && bottom14.contains("keep going")))
+        && contains_any(
+            &bottom14,
+            &[
+                "enter to confirm",
+                "enter confirm",
+                "type 1/2/3",
+                "y/n quick",
+            ],
+        )
+    {
+        return "blocked";
+    }
+
+    // interrupt_status_working: msg=interrupt or ctrl+c to interrupt.
+    let bottom5 = bottom_non_empty_lines(lower, 5);
+    if bottom5.contains("msg=interrupt") || bottom5.contains("ctrl+c to interrupt") {
         return "working";
     }
+
+    // classic_cancel_working: "ctrl+c cancel".
+    if bottom5.contains("ctrl+c cancel") {
+        return "working";
+    }
+
     "unknown"
 }
 
 fn detect_kimi_status(lower: &str) -> &'static str {
-    if (lower.contains("↵ confirm")
-        && contains_any(
+    // current_approval_panel: ↵ confirm AND any question AND all(" choose" +
+    // approve/reject/revise).
+    if lower.contains("↵ confirm")
+        && (contains_any(
             lower,
             &[
                 "run this command?",
@@ -2897,24 +3241,42 @@ fn detect_kimi_status(lower: &str) -> &'static str {
                 "apply these edits?",
                 "stop this task?",
                 "ready to build with this plan?",
-                " choose",
             ],
-        ))
-        || (lower.contains("↑↓ select")
-            && lower.contains("esc cancel")
-            && (lower.lines().any(|line| line.trim() == "question")
-                || lower
-                    .lines()
-                    .any(|line| line.trim_start().starts_with("? ")))
-            && contains_any(lower, &["↵ choose", "↵ toggle", "↵ save"]))
-        || (lower.contains("requesting approval")
-            && lower.contains("reject")
-            && contains_any(lower, &["approve once", "approve for this session"])
-            && contains_any(lower, &["1/2/3/4 choose", "↵ confirm"]))
+        ) || lower.lines().any(|line| {
+            let line = line.trim_start();
+            let line = line.trim_start_matches('▶');
+            line.starts_with("approve ") && line.ends_with('?')
+        }))
+        && lower.contains(" choose")
+        && contains_any(lower, &["approve", "reject", "revise"])
     {
         return "blocked";
     }
-    if lower.lines().any(kimi_background_agents_line)
+    // question_panel: ↑↓ select + esc cancel + line "question" or "? " + any
+    // ↵ choose/toggle/save.
+    if lower.contains("↑↓ select")
+        && lower.contains("esc cancel")
+        && (lower.lines().any(|line| line.trim() == "question")
+            || lower
+                .lines()
+                .any(|line| line.trim_start().starts_with("? ")))
+        && contains_any(lower, &["↵ choose", "↵ toggle", "↵ save"])
+    {
+        return "blocked";
+    }
+    // legacy_approval_panel: requesting approval + reject + approve once/session
+    // + 1/2/3/4 choose or ↵ confirm.
+    if lower.contains("requesting approval")
+        && lower.contains("reject")
+        && contains_any(lower, &["approve once", "approve for this session"])
+        && contains_any(lower, &["1/2/3/4 choose", "↵ confirm"])
+    {
+        return "blocked";
+    }
+    // background_agent_status_working: bottom 3 non-empty lines.
+    let bottom3 = bottom_non_empty_lines(lower, 3);
+    if bottom3.lines().any(kimi_background_agents_line)
+        // moon_spinner_working and braille_spinner_working: whole_recent.
         || lower.lines().any(|line| {
             matches!(
                 line.trim(),
@@ -2965,6 +3327,15 @@ fn detect_kiro_status(lower: &str) -> &'static str {
             }))
     {
         return "working";
+    }
+    // Idle: composer prompt with "ask a question or describe a task" and
+    // "/copy to clipboard", without working markers. Mirrors herdr kiro.toml.
+    if lower.contains("ask a question or describe a task")
+        && lower.contains("/copy to clipboard")
+        && !lower.contains("kiro is working")
+        && !lower.contains("esc to cancel")
+    {
+        return "idle";
     }
     "unknown"
 }
@@ -3032,6 +3403,211 @@ fn detect_qodercli_status(lower: &str) -> &'static str {
     if lower.contains("(esc to cancel,") || has_braille_spinner_line(lower) {
         return "working";
     }
+    "unknown"
+}
+
+/// Screen-scrape detection for Qwen Code.
+///
+/// Qwen Code keeps its composer visible while responding, so the prompt box
+/// is not idle evidence by itself. The screen fallbacks cover built-in
+/// locales and narrow terminals. This mirrors the upstream herdr
+/// `qwen.toml` detection manifest.
+fn detect_qwen_status(lower: &str) -> &'static str {
+    let bottom20 = bottom_non_empty_lines(lower, 20);
+    let bottom8 = bottom_non_empty_lines(lower, 8);
+
+    // Blocked: tool confirmation dialog with "yes, allow once".
+    if lower.contains("yes, allow once")
+        && contains_any(
+            lower,
+            &[
+                "apply this change?",
+                "allow execution of:",
+                "allow execution of mcp tool",
+                "do you want to proceed?",
+                "shell command execution",
+            ],
+        )
+    {
+        return "blocked";
+    }
+
+    // Blocked: "waiting for user confirmation" spinner line, locale-aware.
+    // Mirrors qwen.toml waiting_for_confirmation:
+    //   line_regex: ^\s*⠏\s+.*\.\.\.\s*$
+    //   any: 9 locale-specific "Waiting for user confirmation..." strings
+    if bottom20.lines().any(|line| {
+        let line = line.trim_start();
+        // Must start with ⠏ followed by whitespace
+        if !line.starts_with('⠏') {
+            return false;
+        }
+        let rest = &line['⠏'.len_utf8()..];
+        if !rest.starts_with(char::is_whitespace) {
+            return false;
+        }
+        // Must end with "..." (possibly trailing whitespace)
+        let trimmed_end = line.trim_end();
+        if !trimmed_end.ends_with("...") {
+            return false;
+        }
+        // Must contain one of the locale-specific confirmation messages
+        contains_any(
+            line,
+            &[
+                "waiting for user confirmation...",
+                "等待用户确认...",
+                "等待用戶確認...",
+                "warten auf benutzerbestätigung...",
+                "en attente de la confirmation de l'utilisateur...",
+                "ユーザーの確認を待っています...",
+                "aguardando confirmação do usuário...",
+                "ожидание подтверждения от пользователя...",
+                "esperant la confirmació de l'usuari...",
+            ],
+        )
+    }) {
+        return "blocked";
+    }
+
+    // Blocked: question dialog with numbered options or arrow navigation.
+    // Mirrors qwen.toml question_dialog line_regex patterns:
+    //   ^\s*[❯›]\s*(?:\[(?: |✓)\]\s*)?\d+\.\s+
+    //   ^\s*↑/↓\s*:.*(?:Enter|Return)\s*:
+    if bottom20.lines().any(|line| {
+        let line = line.trim_start();
+        let mut chars = line.chars().peekable();
+        // Must start with ❯ or ›
+        if !matches!(chars.next(), Some('❯') | Some('›')) {
+            return false;
+        }
+        // Skip whitespace after marker
+        while matches!(chars.peek(), Some(c) if c.is_whitespace()) {
+            chars.next();
+        }
+        // Optional [ ] or [✓] marker
+        if chars.peek() == Some(&'[') {
+            chars.next();
+            match chars.peek() {
+                Some(' ') | Some('✓') => {
+                    chars.next();
+                    if chars.peek() == Some(&']') {
+                        chars.next();
+                    }
+                    while matches!(chars.peek(), Some(c) if c.is_whitespace()) {
+                        chars.next();
+                    }
+                }
+                _ => return false,
+            }
+        }
+        // Must be followed by a number and ". "
+        let mut num = String::new();
+        while matches!(chars.peek(), Some(c) if c.is_ascii_digit()) {
+            num.push(chars.next().unwrap());
+        }
+        !num.is_empty() && chars.peek() == Some(&'.')
+    }) || bottom20.lines().any(|line| {
+        let line = line.trim_start();
+        // Must start with ↑/↓ then : and contain Enter or Return followed by :
+        if !line.starts_with("↑/↓") {
+            return false;
+        }
+        let rest = &line["↑/↓".len()..];
+        rest.contains(':') && (rest.contains("enter") || rest.contains("return"))
+    }) {
+        return "blocked";
+    }
+
+    // Blocked: folder trust dialog.
+    if lower.contains("do you trust this folder?")
+        && lower.contains("trust folder (")
+        && lower.contains("don't trust (esc)")
+    {
+        return "blocked";
+    }
+
+    // Working: cancel hint with elapsed time ("esc to cancel").
+    if bottom8.lines().any(|line| {
+        let line = line.trim_start();
+        // Mirrors qwen.toml cancel_hint_working:
+        // ^\s*(?:[⠁-⣿]|\.{1,2})\s+.*\(\d+(?:m(?:\s+\d+s)?|s).*\s·\sesc to cancel\)\s*$
+        // Braille (U+2801-U+28FF, excluding blank U+2800) or 1-2 dots,
+        // then whitespace, text, time pattern, and " · esc to cancel)" at end.
+        let first = line.chars().next();
+        let is_braille = matches!(first, Some(c) if ('\u{2801}'..='\u{28ff}').contains(&c));
+        let is_two_dots = line.starts_with("..");
+        let is_one_dot = !is_two_dots && line.starts_with('.');
+        if !(is_braille || is_two_dots || is_one_dot) {
+            return false;
+        }
+        // Skip the spinner/dots using char-aware slicing
+        let rest = if is_two_dots {
+            &line[2..]
+        } else if is_one_dot {
+            &line[1..]
+        } else {
+            // Braille: skip first char (3 bytes)
+            &line[first.map(|c| c.len_utf8()).unwrap_or(0)..]
+        };
+        // Must have whitespace after spinner
+        if !rest.starts_with(char::is_whitespace) {
+            return false;
+        }
+        // Must contain "(Nm" or "(Ns" time pattern and " · esc to cancel)"
+        line.contains("esc to cancel)")
+            && line.contains("·")
+            && line.contains(|c: char| c.is_ascii_digit())
+    }) {
+        return "working";
+    }
+
+    // Working: narrow terminal cancel hint without spinner.
+    // Mirrors qwen.toml narrow_cancel_hint_working:
+    // ^\s*\(\d+(?:m(?:\s+\d+s)?|s)\s·\sesc to cancel\)\s*$
+    if bottom8.lines().any(|line| {
+        let trimmed = line.trim();
+        // Must start with ( and end with )
+        if !trimmed.starts_with('(') || !trimmed.ends_with(')') {
+            return false;
+        }
+        // Strip outer parens
+        let inner = &trimmed[1..trimmed.len() - 1];
+        // Must contain " · esc to cancel" suffix
+        if !inner.ends_with(" · esc to cancel") {
+            return false;
+        }
+        // The part before " · " must be a time like "3m 12s" or "45s"
+        let time_part = &inner[..inner.len() - " · esc to cancel".len()];
+        // Must start with a digit
+        time_part.starts_with(|c: char| c.is_ascii_digit())
+    }) {
+        return "working";
+    }
+
+    // Idle: composer prompt box with "> type your message" or "@path/to/file".
+    // Mirrors qwen.toml composer_idle: line starts with ">", contains any of
+    // the known message strings, or fragmented localized match.
+    if bottom_non_empty_lines(lower, 30).lines().any(|line| {
+        let line = line.trim_start();
+        if !line.starts_with('>') {
+            return false;
+        }
+        // English prompts
+        line.contains("type your message")
+            || line.contains("your message or @path/to/file")
+            || line.contains("@path/to/file")
+            // Fragmented localized match: all of these substrings present
+            || (line.contains("type")
+                && line.contains("mes")
+                && line.contains("sage")
+                && line.contains("@pat")
+                && line.contains("h/to")
+                && line.contains("/fil"))
+    }) {
+        return "idle";
+    }
+
     "unknown"
 }
 
@@ -3132,6 +3708,19 @@ fn has_braille_spinner_line(text: &str) -> bool {
     })
 }
 
+/// Detects Claude's half-circle busy spinner frames (U+25D0 to U+25D3).
+/// Claude 2.1.228+ uses ◐◓◑◒ instead of braille for its busy spinner.
+/// The spinner appears as the first character of a line followed by a space.
+fn has_claude_half_circle_spinner(text: &str) -> bool {
+    text.lines().any(|line| {
+        let mut chars = line.trim_start().chars();
+        matches!(
+            chars.next(),
+            Some(first) if matches!(first, '◐' | '◓' | '◑' | '◒')
+        ) && matches!(chars.next(), Some(second) if second.is_whitespace())
+    })
+}
+
 fn has_braille_ing_line(text: &str) -> bool {
     text.lines().any(|line| {
         let line = line.trim_start();
@@ -3141,6 +3730,11 @@ fn has_braille_ing_line(text: &str) -> bool {
 
 fn starts_with_braille(text: &str) -> bool {
     text.chars().next().is_some_and(is_braille)
+}
+
+/// Returns true if the text contains any Braille pattern character (U+2800-U+28FF).
+fn contains_braille(text: &str) -> bool {
+    text.contains(is_braille)
 }
 
 pub(crate) fn is_braille(ch: char) -> bool {
@@ -3196,6 +3790,32 @@ fn grok_spinner_stop_line(line: &str) -> bool {
     starts_with_braille(line) && line.ends_with("[stop]")
 }
 
+/// Grok pinned top-line background work chip: one of the chip glyphs followed
+/// by a space, a positive number, a space, and a │ pipe. Mirrors
+/// grok.toml background_work_chip_working line_regex.
+fn grok_background_work_chip_line(line: &str) -> bool {
+    let line = line.trim_start();
+    let Some(first) = line.chars().next() else {
+        return false;
+    };
+    if !matches!(first, '⋅' | ':' | '⸬' | '⁙' | '.' | '·') {
+        return false;
+    }
+    let rest = line[first.len_utf8()..].trim_start();
+    // Parse a positive integer (at least one digit, no leading zero).
+    let digits_end = rest
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(rest.len());
+    if digits_end == 0 {
+        return false;
+    }
+    let num = &rest[..digits_end];
+    if num == "0" || num.starts_with('0') {
+        return false;
+    }
+    rest[digits_end..].trim_start().starts_with('│')
+}
+
 fn grok_tool_line(line: &str) -> bool {
     let line = line.trim_start();
     if !starts_with_braille(line) {
@@ -3206,11 +3826,18 @@ fn grok_tool_line(line: &str) -> bool {
 }
 
 fn kimi_background_agents_line(line: &str) -> bool {
+    // Manifest: (?i)\bkimi[-\w.]*\s+thinking\b.*\[[1-9][0-9]*\s+agents?\s+running\]
     line.contains("kimi")
         && line.contains("thinking")
         && line.contains("[")
         && line.contains("agent")
         && line.contains("running]")
+        && line.split('[').any(|after_bracket| {
+            // Must have a positive number before "agent(s) running]"
+            let trimmed = after_bracket.trim_start();
+            let digits_end = trimmed.find(|c: char| !c.is_ascii_digit()).unwrap_or(0);
+            digits_end > 0 && !trimmed[..digits_end].starts_with('0')
+        })
 }
 
 fn maki_spinner_status_line(line: &str) -> bool {
@@ -3331,6 +3958,19 @@ pub(crate) fn bottom_non_empty_lines(text: &str, count: usize) -> String {
         .collect::<Vec<_>>();
     lines.reverse();
     lines.join("\n")
+}
+
+/// First `count` non-empty lines (trimmed). Mirrors `bottom_non_empty_lines`
+/// but from the top of the text. Used by manifest rules with
+/// `region = "top_non_empty_lines(N)"`.
+pub(crate) fn top_non_empty_lines(text: &str, count: usize) -> String {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .take(count)
+        .map(str::to_string)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 pub(crate) fn contains_any(text: &str, needles: &[&str]) -> bool {
@@ -3761,12 +4401,14 @@ mod tests {
     #[test]
     fn osc9_tracker_ignores_non_osc9_commands() {
         let mut tracker = Osc9Tracker::default();
-        // OSC 0 (title) should not be captured as progress
+        // OSC 0 (title) should not be captured as progress but as title
         tracker.observe(b"\x1b]0;some title\x07");
         assert_eq!(tracker.latest_progress(), "");
+        assert_eq!(tracker.latest_title(), "some title");
         // OSC 52 (clipboard) should not be captured
         tracker.observe(b"\x1b]52;c;aGVsbG8=\x07");
         assert_eq!(tracker.latest_progress(), "");
+        assert_eq!(tracker.latest_title(), "some title");
     }
 
     #[test]
@@ -3790,6 +4432,7 @@ mod tests {
                 Some("jcode"),
                 "⠋ sending… 0.3s",
                 "jcode:idle",
+                "",
                 JcodeDetectionVariant::Vanilla
             ),
             "idle"
@@ -3800,6 +4443,7 @@ mod tests {
                 Some("jcode"),
                 "❯",
                 "jcode:working",
+                "",
                 JcodeDetectionVariant::Vanilla
             ),
             "working"
@@ -3810,6 +4454,7 @@ mod tests {
                 Some("jcode"),
                 "❯",
                 "jcode:blocked",
+                "",
                 JcodeDetectionVariant::Vanilla
             ),
             "blocked"
@@ -3824,6 +4469,7 @@ mod tests {
                 Some("jcode"),
                 "⠋ sending… 0.3s",
                 "",
+                "",
                 JcodeDetectionVariant::Vanilla
             ),
             "working"
@@ -3832,6 +4478,7 @@ mod tests {
             detect_agent_status_with_osc(
                 Some("jcode"),
                 "Session ready\n❯",
+                "",
                 "",
                 JcodeDetectionVariant::Vanilla
             ),
@@ -3847,9 +4494,280 @@ mod tests {
                 Some("jcode"),
                 "⠋ sending… 0.3s",
                 "unknown:format",
+                "",
                 JcodeDetectionVariant::Vanilla
             ),
             "working"
+        );
+    }
+
+    #[test]
+    fn osc9_progress_reports_claude_and_qwen_statuses() {
+        // OSC 9;4;3 = working (tool executing) for Qwen only; Claude has no
+        // osc_progress_working rule so 4;3 falls through to screen-scrape.
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("claude"),
+                "⠋ Thinking about the problem",
+                "4;3",
+                "",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working" // falls through to screen-scrape, detects braille spinner
+        );
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("qwen"),
+                "> type your message",
+                "4;3",
+                "",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working" // OSC 4;3 matches qwen osc_tool_progress_working
+        );
+        // OSC 9;4;0 = idle for Claude only; Qwen has no osc_progress_idle
+        // rule so 4;0 falls through to screen-scrape.
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("claude"),
+                "◐ Thinking about the problem",
+                "4;0",
+                "",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "idle" // OSC 4;0 matches claude osc_progress_idle
+        );
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("qwen"),
+                "⠋ 5s · esc to cancel)",
+                "4;0",
+                "",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working" // 4;0 falls through, screen-scrape detects cancel hint
+        );
+        // OSC 9;4;3;extra = working (extra data after state is ignored)
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("qwen"),
+                "❯",
+                "4;3;details",
+                "",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+    }
+
+    #[test]
+    fn osc_title_detection_for_all_agents() {
+        // Qwen: ✳ prefix → blocked, ◐ prefix → working.
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("qwen"),
+                "",
+                "",
+                "✳ Waiting for user confirmation",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("qwen"),
+                "",
+                "",
+                "◐ Processing",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+        // Qwen with variation selector FE0E.
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("qwen"),
+                "",
+                "",
+                "✳\u{fe0e} Waiting",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+
+        // Claude: braille/half-circle prefix → working, ✳ prefix → idle.
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("claude"),
+                "",
+                "",
+                "⠋ Thinking",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("claude"),
+                "",
+                "",
+                "◐ Thinking",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("claude"),
+                "",
+                "",
+                "✳ Claude Code",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "idle"
+        );
+
+        // Codex: "Action Required" → blocked, braille → working, other → idle.
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("codex"),
+                "",
+                "",
+                "Action Required: Review changes",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("codex"),
+                "",
+                "",
+                "codex ⠋",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("codex"),
+                "",
+                "",
+                "codex",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "idle"
+        );
+
+        // Hermes: ⚠ → blocked, ⏳ → working, ✓ → idle.
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("hermes"),
+                "",
+                "",
+                "⚠ Approval needed",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("hermes"),
+                "",
+                "",
+                "⏳ Working",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("hermes"),
+                "",
+                "",
+                "✓ Done",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "idle"
+        );
+
+        // Amp: "Plugin confirmation needed" → blocked, braille → working.
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("amp"),
+                "",
+                "",
+                "Plugin confirmation needed",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("amp"),
+                "",
+                "",
+                "⠋ amp",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("amp"),
+                "",
+                "",
+                "project - amp - main",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "idle"
+        );
+
+        // Grok: "Action Required" → blocked, "grok" → idle, other → working.
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("grok"),
+                "",
+                "",
+                "Action Required",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("grok"),
+                "",
+                "",
+                "grok",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "idle"
+        );
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("grok"),
+                "",
+                "",
+                "project - grok",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "idle"
+        );
+    }
+
+    #[test]
+    fn osc_title_takes_priority_over_osc_progress() {
+        // OSC title says blocked, OSC progress says working → blocked wins.
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("qwen"),
+                "",
+                "4;3",
+                "✳ Waiting",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
         );
     }
 
@@ -3999,7 +4917,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "1>                                                            together_ai/revolut ca/glm 5 2 · ~/repo",
-                JcodeDetectionVariant::Vanilla
+                                JcodeDetectionVariant::Vanilla
             ),
             "idle"
         );
@@ -4015,7 +4933,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "Permission request\n❯ Allow once\n  Deny\nold response line 1\nold response line 2\nold response line 3\nold response line 4\nold response line 5\nold response line 6\nold response line 7\nold response line 8\n❯ ",
-                JcodeDetectionVariant::Vanilla
+                                JcodeDetectionVariant::Vanilla
             ),
             "idle"
         );
@@ -4023,7 +4941,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "Processing request\nold response line 1\nold response line 2\nold response line 3\nold response line 4\n❯ ",
-                JcodeDetectionVariant::Vanilla
+                                JcodeDetectionVariant::Vanilla
             ),
             "idle"
         );
@@ -4031,7 +4949,7 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "··● bash ●·· · 12s\nold response line 1\nold response line 2\nold response line 3\nold response line 4\n❯ ",
-                JcodeDetectionVariant::Vanilla
+                                JcodeDetectionVariant::Vanilla
             ),
             "idle"
         );
@@ -4141,21 +5059,53 @@ mod tests {
                 "blocked",
             ),
             ("claude", "/btw\nesc to close", "working"),
+            ("claude", "◐ Thinking about the problem", "working"),
+            ("claude", "◓ Analyzing code", "working"),
+            ("claude", "◑ Searching files", "working"),
+            ("claude", "◒ Writing code", "working"),
+            ("claude", "enter to confirm\nesc to cancel", "blocked"),
             ("claude", "❯", "idle"),
+            (
+                "qwen",
+                "yes, allow once\napply this change?",
+                "blocked",
+            ),
+            (
+                "qwen",
+                "do you trust this folder?\ntrust folder (1)\ndon't trust (esc)",
+                "blocked",
+            ),
+            ("qwen", "⠋ Thinking...(5s · esc to cancel)", "working"),
+            ("qwen", "(3m 12s · esc to cancel)", "working"),
+            ("qwen", "> type your message or @path/to/file", "idle"),
             ("cline", "Let Cline use this tool?", "blocked"),
             ("cline", "Cline is reading context", "working"),
             ("codex", "Allow command?", "blocked"),
             ("codex", "⠋ thinking", "working"),
             ("codex", "codex ready", "idle"),
+            ("codex", "• Working (esc to interrupt)", "working"),
+            ("codex", "■ Conversation interrupted", "idle"),
+            (
+                "codex",
+                "> You are in /home/user/project\nDo you trust the contents of this directory?",
+                "blocked",
+            ),
             (
                 "cursor",
                 "write to this file?\nproceed (y)\nreject & propose changes",
                 "blocked",
             ),
             ("cursor", "⬡ thinking", "working"),
+            ("cursor", "run command (y)", "blocked"),
+            ("cursor", "→ run this (y)", "blocked"),
             (
                 "devin",
                 "approve once\nselect\nconfirm\nesc cancel",
+                "blocked",
+            ),
+            (
+                "devin",
+                "do you trust the authors of this directory?\nwith untrusted content.\nyes, trust ",
                 "blocked",
             ),
             ("devin", "running tools\nesc to interrupt", "working"),
@@ -4166,22 +5116,34 @@ mod tests {
             ),
             (
                 "droid",
-                "enter to select\nesc to cancel\n↑↓ to navigate",
+                "enter to select\nesc to cancel\n↑↓ to navigate\n> yes, allow",
                 "blocked",
             ),
             ("droid", "esc to stop", "working"),
             ("gemini", "│ Apply this change", "blocked"),
             ("gemini", "esc to cancel", "working"),
-            ("copilot", "enter to submit", "blocked"),
+            ("copilot", "esc to cancel\nenter to submit", "blocked"),
             ("copilot", "esc interrupt", "working"),
             ("grok", "┃ a (●) option", "blocked"),
             ("grok", "⠋ Run command", "working"),
             ("grok", "ctrl+.:shortcuts", "idle"),
-            ("hermes", "dangerous command", "blocked"),
+            ("grok", "⋅ 3 │ background", "working"),
+            ("hermes", "dangerous command\nenter to confirm", "blocked"),
+            ("hermes", "approval\n↑/↓ to select", "blocked"),
+            ("hermes", "hermes needs your input\nenter to confirm", "blocked"),
+            ("hermes", "ask a question\ntype your answer\nenter send", "blocked"),
+            ("hermes", "sudo password\nenter to confirm", "blocked"),
+            ("hermes", "🔑 root@host for sudo\nenter confirm", "blocked"),
+            ("hermes", "approve once\ncancel\ntype 1/2/3", "blocked"),
             ("hermes", "msg=interrupt", "working"),
+            ("hermes", "ctrl+c to interrupt", "working"),
+            ("hermes", "ctrl+c cancel", "working"),
             ("kilo", "△ Permission required", "blocked"),
             ("kilo", "esc interrupt", "working"),
-            ("kimi", "↵ confirm\nrun this command?", "blocked"),
+            ("kimi", "↵ confirm\nrun this command?\napprove\n choose", "blocked"),
+            ("kimi", "approve this change?\n↵ confirm\nreject\n choose", "blocked"),
+            ("kimi", "↑↓ select\nesc cancel\nquestion\n↵ choose", "blocked"),
+            ("kimi", "requesting approval\nreject\napprove once\n1/2/3/4 choose", "blocked"),
             ("kimi", "🌕", "working"),
             (
                 "kiro",
@@ -4189,6 +5151,11 @@ mod tests {
                 "blocked",
             ),
             ("kiro", "kiro is working", "working"),
+            (
+                "kiro",
+                "ask a question or describe a task\n/copy to clipboard",
+                "idle",
+            ),
             ("maki", "permission required\ny allow", "blocked"),
             ("maki", "⠋ [build]", "working"),
             ("maki", "[build]", "idle"),
@@ -4206,6 +5173,13 @@ mod tests {
             ),
             ("claurst", "· thinking…", "working"),
             ("claurst", "❯", "idle"),
+            ("qwen", "⠋ 5s · esc to cancel)", "working"),
+            (
+                "qwen",
+                "yes, allow once\nallow execution of: rm -rf",
+                "blocked",
+            ),
+            ("qwen", "> type your message", "idle"),
         ];
 
         for (agent, text, expected) in cases {

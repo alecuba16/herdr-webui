@@ -62,9 +62,9 @@ const INSTALL_LABEL: &str = "herdr-web";
 const MAX_FRAME_SIZE: usize = 2 * 1024 * 1024;
 const MAX_GRAPHICS_FRAME_SIZE: usize = 32 * 1024 * 1024;
 const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 16;
-const PROTOCOL_VERSION: u32 = 18;
+const PROTOCOL_VERSION: u32 = 20;
 const MIN_BACKEND_VERSION: &str = "0.7.3";
-const MAX_TESTED_BACKEND_VERSION: &str = "0.7.5";
+const MAX_TESTED_BACKEND_VERSION: &str = "0.8.0";
 const DEFAULT_FOLDER_READ_TIMEOUT: Duration = Duration::from_millis(1500);
 
 type LocalStream = interprocess::local_socket::Stream;
@@ -3817,6 +3817,9 @@ fn terminal_text_messages(text: &str) -> Vec<ClientMessage> {
                     code: ClientKeyCode::Enter,
                     modifiers,
                     kind: ClientKeyKind::Press,
+                    repeat_count: 1,
+                    generated_text: None,
+                    source: ClientKeySource::Synthesized,
                 }],
             }]
         }
@@ -5084,7 +5087,11 @@ mod tests {
             BackendCompatibility::Compatible
         );
         assert_eq!(
-            backend_compatibility_for_supported_range(Some("0.7.6"), Some(PROTOCOL_VERSION)),
+            backend_compatibility_for_supported_range(Some("0.8.0"), Some(PROTOCOL_VERSION)),
+            BackendCompatibility::Compatible
+        );
+        assert_eq!(
+            backend_compatibility_for_supported_range(Some("0.8.1"), Some(PROTOCOL_VERSION)),
             BackendCompatibility::UntestedNewer
         );
         assert_eq!(
