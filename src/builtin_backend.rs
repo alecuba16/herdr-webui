@@ -2528,9 +2528,9 @@ fn detect_agent_status_with_osc(
 ///
 /// Agents emit structured progress via OSC 9:
 /// - jcode: `jcode:working`, `jcode:idle`, `jcode:blocked`
-/// - Claude and Qwen: OSC 9;4 progress reports (`4;0` = idle,
-///   `4;3` = working/tool-executing). See herdr's `claude.toml` and
-///   `qwen.toml` manifests.
+/// - Claude: OSC 9;4 `4;0` → idle only (no working rule in manifest)
+/// - Qwen: OSC 9;4 `4;3` → working only (no idle rule in manifest)
+/// - Grok: OSC 9;4 `4;1;-1` → working, `4;0;0` → idle
 ///
 /// Returns `None` for unknown formats so the caller falls back to
 /// screen-scrape detection.
@@ -2542,13 +2542,20 @@ fn osc_progress_status_for_agent(agent: &str, osc_progress: &str) -> Option<&'st
             "jcode:blocked" => Some("blocked"),
             _ => None,
         },
-        // OSC 9;4 progress reports. The payload format is `4;<state>` where
-        // state 0 = idle, 3 = working (tool executing). An optional semicolon
-        // and extra data may follow.
-        "claude" | "qwen" => {
+        // Claude manifest: osc_progress_idle regex '^4;0' → idle only.
+        // No osc_progress_working rule; 4;3 falls through to screen-scrape.
+        "claude" => {
             if osc_progress.starts_with("4;0") {
                 Some("idle")
-            } else if osc_progress.starts_with("4;3") {
+            } else {
+                None
+            }
+        }
+        // Qwen manifest: osc_tool_progress_working regex '^4;3(?:;|$)' →
+        // working only. No osc_progress_idle rule; 4;0 falls through to
+        // screen-scrape.
+        "qwen" => {
+            if osc_progress.starts_with("4;3") {
                 Some("working")
             } else {
                 None
@@ -4238,15 +4245,16 @@ mod tests {
 
     #[test]
     fn osc9_progress_reports_claude_and_qwen_statuses() {
-        // OSC 9;4;3 = working (tool executing) for Claude and Qwen
+        // OSC 9;4;3 = working (tool executing) for Qwen only; Claude has no
+        // osc_progress_working rule so 4;3 falls through to screen-scrape.
         assert_eq!(
             detect_agent_status_with_osc(
                 Some("claude"),
-                "❯",
+                "⠋ Thinking about the problem",
                 "4;3",
                 JcodeDetectionVariant::Vanilla
             ),
-            "working"
+            "working" // falls through to screen-scrape, detects braille spinner
         );
         assert_eq!(
             detect_agent_status_with_osc(
@@ -4255,9 +4263,10 @@ mod tests {
                 "4;3",
                 JcodeDetectionVariant::Vanilla
             ),
-            "working"
+            "working" // OSC 4;3 matches qwen osc_tool_progress_working
         );
-        // OSC 9;4;0 = idle for Claude
+        // OSC 9;4;0 = idle for Claude only; Qwen has no osc_progress_idle
+        // rule so 4;0 falls through to screen-scrape.
         assert_eq!(
             detect_agent_status_with_osc(
                 Some("claude"),
@@ -4265,7 +4274,16 @@ mod tests {
                 "4;0",
                 JcodeDetectionVariant::Vanilla
             ),
-            "idle"
+            "idle" // OSC 4;0 matches claude osc_progress_idle
+        );
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("qwen"),
+                "⠋ 5s · esc to cancel)",
+                "4;0",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working" // 4;0 falls through, screen-scrape detects cancel hint
         );
         // OSC 9;4;3;extra = working (extra data after state is ignored)
         assert_eq!(
