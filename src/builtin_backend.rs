@@ -2653,7 +2653,18 @@ fn detect_antigravity_status(lower: &str) -> &'static str {
     {
         return "blocked";
     }
-    if has_braille_ing_line(lower) || bottom_non_empty_lines(lower, 5).contains("· 1 task") {
+    // background_tasks_working: "· <N> task" where N >= 1.
+    let bottom5 = bottom_non_empty_lines(lower, 5);
+    if has_braille_ing_line(lower)
+        || bottom5.lines().any(|line| {
+            let line = line.trim_start();
+            line.contains('·')
+                && line
+                    .split_whitespace()
+                    .any(|word| word.chars().all(|c| c.is_ascii_digit()) && word != "0")
+                && line.contains("task")
+        })
+    {
         return "working";
     }
     "unknown"
@@ -2818,14 +2829,23 @@ fn detect_cursor_status(lower: &str) -> &'static str {
 }
 
 fn detect_devin_status(lower: &str) -> &'static str {
-    if lower.contains("do you trust the files in this folder?")
-        || (lower.contains("approve once")
-            && lower.contains("select")
-            && lower.contains("confirm")
-            && lower.contains("esc cancel"))
+    // workspace_trust_prompt: all three strings required.
+    if lower.contains("do you trust the authors of this directory?")
+        && lower.contains("with untrusted content.")
+        && lower.contains("yes, trust ")
     {
         return "blocked";
     }
+    // permission_prompt: all four strings required.
+    if lower.contains("approve once")
+        && lower.contains("select")
+        && lower.contains("confirm")
+        && lower.contains("esc cancel")
+    {
+        return "blocked";
+    }
+    // Working rules have not-gates for "approve once" + "esc cancel", but since
+    // the blocked check above runs first, those are implicitly handled.
     if (lower.contains("running tools") && lower.contains("esc to interrupt"))
         || lower.contains("guide devin while it works")
         || (lower.contains("reading shell ") && lower.contains("timeout:"))
@@ -2844,20 +2864,20 @@ fn detect_devin_status(lower: &str) -> &'static str {
 }
 
 fn detect_droid_status(lower: &str) -> &'static str {
-    if (lower.contains("enter to select")
+    // execute_selection_blocker: enter to select + esc to cancel + ↑↓ to
+    // navigate (or "use ↑↓ to navigate") + (> yes, allow or > no, cancel).
+    if lower.contains("enter to select")
         && lower.contains("esc to cancel")
-        && contains_any(
-            lower,
-            &[
-                "↑↓ to navigate",
-                "use ↑↓ to navigate",
-                "> yes, allow",
-                "> no, cancel",
-            ],
-        ))
-        || (lower.contains("enter select")
-            && lower.contains("esc cancel")
-            && contains_any(lower, &["↑/↓ navigate", "↑↓ navigate"]))
+        && contains_any(lower, &["↑↓ to navigate", "use ↑↓ to navigate"])
+        && contains_any(lower, &["> yes, allow", "> no, cancel"])
+    {
+        return "blocked";
+    }
+    // selection_menu_blocker: enter select + esc cancel + ↑/↓ navigate (or
+    // ↑↓ navigate).
+    if lower.contains("enter select")
+        && lower.contains("esc cancel")
+        && contains_any(lower, &["↑/↓ navigate", "↑↓ navigate"])
     {
         return "blocked";
     }
@@ -2893,10 +2913,17 @@ fn detect_gemini_status(lower: &str) -> &'static str {
 }
 
 fn detect_copilot_status(lower: &str) -> &'static str {
-    if lower.contains("enter to select")
-        || lower.contains("enter to confirm")
-        || lower.contains("enter to submit")
-        || lower.contains("enter accept")
+    // selection_blocker: requires both an cancel hint AND an enter hint.
+    if contains_any(lower, &["esc to cancel", "esc cancel"])
+        && contains_any(
+            lower,
+            &[
+                "enter to select",
+                "enter to confirm",
+                "enter to submit",
+                "enter accept",
+            ],
+        )
     {
         return "blocked";
     }
@@ -4553,6 +4580,11 @@ mod tests {
                 "approve once\nselect\nconfirm\nesc cancel",
                 "blocked",
             ),
+            (
+                "devin",
+                "do you trust the authors of this directory?\nwith untrusted content.\nyes, trust ",
+                "blocked",
+            ),
             ("devin", "running tools\nesc to interrupt", "working"),
             (
                 "devin",
@@ -4561,13 +4593,13 @@ mod tests {
             ),
             (
                 "droid",
-                "enter to select\nesc to cancel\n↑↓ to navigate",
+                "enter to select\nesc to cancel\n↑↓ to navigate\n> yes, allow",
                 "blocked",
             ),
             ("droid", "esc to stop", "working"),
             ("gemini", "│ Apply this change", "blocked"),
             ("gemini", "esc to cancel", "working"),
-            ("copilot", "enter to submit", "blocked"),
+            ("copilot", "esc to cancel\nenter to submit", "blocked"),
             ("copilot", "esc interrupt", "working"),
             ("grok", "┃ a (●) option", "blocked"),
             ("grok", "⠋ Run command", "working"),
