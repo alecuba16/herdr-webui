@@ -22,7 +22,7 @@ use crate::protocol::{
 use crate::terminal_text::{self, TerminalTextOptions};
 
 const BUILTIN_VERSION: &str = "builtin-0.1.0";
-const PROTOCOL_VERSION: u32 = 16;
+const PROTOCOL_VERSION: u32 = 20;
 const MAX_FRAME_SIZE: usize = 32 * 1024 * 1024;
 const MAX_SCROLLBACK_BYTES: usize = 8 * 1024 * 1024;
 const DETECTION_TAIL_BYTES: usize = 64 * 1024;
@@ -424,6 +424,13 @@ fn handle_client_connection(
             ClientMessage::Detach => break,
             ClientMessage::ClipboardImage { .. } => {}
             ClientMessage::Hello { .. } => {}
+            // Protocol 20+ messages from graphics streaming and terminal
+            // control modes are not used by the built-in backend.
+            ClientMessage::ObserveTerminal { .. }
+            | ClientMessage::ControlTerminal { .. }
+            | ClientMessage::GraphicsTransmissionResult { .. }
+            | ClientMessage::InputPixels { .. }
+            | ClientMessage::GraphicsTransmissionStarted { .. } => {}
         }
     }
     Ok(())
@@ -2187,6 +2194,7 @@ fn detect_agent_label(argv: &[String]) -> Option<&'static str> {
             "qodercli" | "qoderclicn" | "qoder" | "qodercn" => Some("qodercli"),
             "maki" => Some("maki"),
             "claurst" => Some("claurst"),
+            "qwen" | "qwen-code" => Some("qwen"),
             _ => None,
         }
     })
@@ -2220,6 +2228,22 @@ fn detect_agent_label_from_text(text: &str) -> Option<&'static str> {
             && lower.contains("yes, allow this session"))
     {
         return Some("claurst");
+    }
+    // Qwen Code: detect from its signature confirmation and composer patterns.
+    if (lower.contains("yes, allow once")
+        && contains_any(
+            &lower,
+            &[
+                "apply this change?",
+                "allow execution of:",
+                "do you want to proceed?",
+                "shell command execution",
+            ],
+        ))
+        || (lower.contains("do you trust this folder?")
+            && lower.contains("don't trust (esc)"))
+    {
+        return Some("qwen");
     }
     None
 }
@@ -2501,9 +2525,15 @@ fn detect_agent_status_with_osc(
 }
 
 /// Map an OSC 9 progress payload to an agent status string.
-/// Currently only jcode emits structured OSC 9 payloads (`jcode:working`,
-/// `jcode:idle`, `jcode:blocked`). Returns `None` for unknown formats
-/// so the caller falls back to screen-scrape detection.
+///
+/// Agents emit structured progress via OSC 9:
+/// - jcode: `jcode:working`, `jcode:idle`, `jcode:blocked`
+/// - Claude and Qwen: OSC 9;4 progress reports (`4;0` = idle,
+///   `4;3` = working/tool-executing). See herdr's `claude.toml` and
+///   `qwen.toml` manifests.
+///
+/// Returns `None` for unknown formats so the caller falls back to
+/// screen-scrape detection.
 fn osc_progress_status_for_agent(agent: &str, osc_progress: &str) -> Option<&'static str> {
     match agent {
         "jcode" => match osc_progress {
@@ -2512,6 +2542,18 @@ fn osc_progress_status_for_agent(agent: &str, osc_progress: &str) -> Option<&'st
             "jcode:blocked" => Some("blocked"),
             _ => None,
         },
+        // OSC 9;4 progress reports. The payload format is `4;<state>` where
+        // state 0 = idle, 3 = working (tool executing). An optional semicolon
+        // and extra data may follow.
+        "claude" | "qwen" => {
+            if osc_progress.starts_with("4;0") {
+                Some("idle")
+            } else if osc_progress.starts_with("4;3") {
+                Some("working")
+            } else {
+                None
+            }
+        }
         _ => None,
     }
 }
@@ -2547,6 +2589,7 @@ fn detect_agent_status(
         "pi" => detect_pi_status(&lower),
         "qodercli" => detect_qodercli_status(&lower),
         "claurst" => crate::builtin_detection::claurst::detect_claurst_status(&lower),
+        "qwen" => detect_qwen_status(&lower),
         _ => "unknown",
     }
 }
@@ -2619,6 +2662,8 @@ fn detect_claude_status(lower: &str) -> &'static str {
                 "↑↓ to navigate",
             ],
         ))
+        // Claude 2.1.228+ confirmation prompts: "Enter to confirm · Esc to cancel"
+        || (lower.contains("enter to confirm") && lower.contains("esc to cancel"))
         || (lower.contains("run a dynamic workflow?") && lower.contains("esc to cancel"))
         || (lower.contains("do you want to proceed?")
             && contains_any(
@@ -2645,6 +2690,7 @@ fn detect_claude_status(lower: &str) -> &'static str {
         return "blocked";
     }
     if has_braille_spinner_line(lower)
+        || has_claude_half_circle_spinner(lower)
         || lower
             .lines()
             .any(|line| line.trim_start().starts_with("/btw"))
@@ -3035,6 +3081,112 @@ fn detect_qodercli_status(lower: &str) -> &'static str {
     "unknown"
 }
 
+/// Screen-scrape detection for Qwen Code.
+///
+/// Qwen Code keeps its composer visible while responding, so the prompt box
+/// is not idle evidence by itself. The screen fallbacks cover built-in
+/// locales and narrow terminals. This mirrors the upstream herdr
+/// `qwen.toml` detection manifest.
+fn detect_qwen_status(lower: &str) -> &'static str {
+    let bottom20 = bottom_non_empty_lines(lower, 20);
+    let bottom8 = bottom_non_empty_lines(lower, 8);
+
+    // Blocked: tool confirmation dialog with "yes, allow once".
+    if lower.contains("yes, allow once")
+        && contains_any(
+            lower,
+            &[
+                "apply this change?",
+                "allow execution of:",
+                "allow execution of mcp tool",
+                "do you want to proceed?",
+                "shell command execution",
+            ],
+        )
+    {
+        return "blocked";
+    }
+
+    // Blocked: "waiting for user confirmation" spinner line, locale-aware.
+    // Qwen localizes this message; we check the known locales.
+    if bottom20.lines().any(|line| {
+        let line = line.trim_start();
+        line.starts_with('⠏')
+            && line.contains("...")
+            && contains_any(
+                line,
+                &[
+                    "waiting for user confirmation...",
+                    "等待用户确认...",
+                    "等待用戶確認...",
+                    "warten auf benutzerbestätigung...",
+                    "en attente de la confirmation de l'utilisateur...",
+                    "ユーザーの確認を待っています...",
+                    "aguardando confirmação do usuário...",
+                    "ожидание подтверждения от пользователя...",
+                    "esperant la confirmació de l'usuari...",
+                ],
+            )
+    }) {
+        return "blocked";
+    }
+
+    // Blocked: question dialog with numbered options or arrow navigation.
+    if bottom20.lines().any(|line| {
+        let line = line.trim_start();
+        (line.starts_with('❯') || line.starts_with('›'))
+            && line.contains("[") // checkbox-like marker
+            && line.contains(". ") // numbered option
+    }) || bottom20.lines().any(|line| {
+        let line = line.trim_start();
+        line.contains("↑/↓") && line.contains("enter") || line.contains("return")
+    }) {
+        return "blocked";
+    }
+
+    // Blocked: folder trust dialog.
+    if lower.contains("do you trust this folder?")
+        && lower.contains("trust folder (")
+        && lower.contains("don't trust (esc)")
+    {
+        return "blocked";
+    }
+
+    // Working: cancel hint with elapsed time ("esc to cancel").
+    if bottom8.lines().any(|line| {
+        let line = line.trim_start();
+        // Braille or dot spinner followed by text with (Nm Ns · esc to cancel)
+        (starts_with_braille(line) || line.starts_with('.') || line.starts_with(".."))
+            && line.contains("esc to cancel)")
+            && line.contains("·")
+    }) {
+        return "working";
+    }
+
+    // Working: narrow terminal cancel hint without spinner.
+    if bottom8.lines().any(|line| {
+        let line = line.trim_start();
+        line.starts_with('(')
+            && line.contains("esc to cancel)")
+            && line.contains("·")
+    }) {
+        return "working";
+    }
+
+    // Idle: composer prompt box with "> type your message" or "@path/to/file".
+    if bottom_non_empty_lines(lower, 30).lines().any(|line| {
+        let line = line.trim_start();
+        line.starts_with('>')
+            && (line.contains("type your message")
+                || line.contains("your message or @path/to/file")
+                || line.contains("@path/to/file"))
+    }) {
+        return "idle";
+    }
+
+    "unknown"
+}
+
 fn detect_kilo_status(lower: &str) -> &'static str {
     if let Some(status) = detect_opencode_like_status(lower) {
         return status;
@@ -3129,6 +3281,19 @@ fn has_braille_spinner_line(text: &str) -> bool {
         let mut chars = line.trim_start().chars();
         matches!(chars.next(), Some(first) if is_braille(first))
             && matches!(chars.next(), Some(second) if second.is_whitespace())
+    })
+}
+
+/// Detects Claude's half-circle busy spinner frames (U+25D0 to U+25D3).
+/// Claude 2.1.228+ uses ◐◓◑◒ instead of braille for its busy spinner.
+/// The spinner appears as the first character of a line followed by a space.
+fn has_claude_half_circle_spinner(text: &str) -> bool {
+    text.lines().any(|line| {
+        let mut chars = line.trim_start().chars();
+        matches!(
+            chars.next(),
+            Some(first) if matches!(first, '◐' | '◓' | '◑' | '◒')
+        ) && matches!(chars.next(), Some(second) if second.is_whitespace())
     })
 }
 
@@ -3854,6 +4019,49 @@ mod tests {
     }
 
     #[test]
+    fn osc9_progress_reports_claude_and_qwen_statuses() {
+        // OSC 9;4;3 = working (tool executing) for Claude and Qwen
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("claude"),
+                "❯",
+                "4;3",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("qwen"),
+                "> type your message",
+                "4;3",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+        // OSC 9;4;0 = idle for Claude
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("claude"),
+                "◐ Thinking about the problem",
+                "4;0",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "idle"
+        );
+        // OSC 9;4;3;extra = working (extra data after state is ignored)
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("qwen"),
+                "❯",
+                "4;3;details",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+    }
+
+    #[test]
     fn detects_jcode_status_from_jcode_support_manifest_patterns() {
         assert_eq!(
             detect_agent_status(
@@ -4141,7 +4349,25 @@ mod tests {
                 "blocked",
             ),
             ("claude", "/btw\nesc to close", "working"),
+            ("claude", "◐ Thinking about the problem", "working"),
+            ("claude", "◓ Analyzing code", "working"),
+            ("claude", "◑ Searching files", "working"),
+            ("claude", "◒ Writing code", "working"),
+            ("claude", "enter to confirm\nesc to cancel", "blocked"),
             ("claude", "❯", "idle"),
+            (
+                "qwen",
+                "yes, allow once\napply this change?",
+                "blocked",
+            ),
+            (
+                "qwen",
+                "do you trust this folder?\ntrust folder (1)\ndon't trust (esc)",
+                "blocked",
+            ),
+            ("qwen", "⠋ Thinking...(5s · esc to cancel)", "working"),
+            ("qwen", "(3m 12s · esc to cancel)", "working"),
+            ("qwen", "> type your message or @path/to/file", "idle"),
             ("cline", "Let Cline use this tool?", "blocked"),
             ("cline", "Cline is reading context", "working"),
             ("codex", "Allow command?", "blocked"),
