@@ -2653,15 +2653,17 @@ fn detect_antigravity_status(lower: &str) -> &'static str {
     {
         return "blocked";
     }
-    // background_tasks_working: "· <N> task" where N >= 1.
+    // background_tasks_working: "· <N> task" where N >= 1 (no leading zero).
     let bottom5 = bottom_non_empty_lines(lower, 5);
     if has_braille_ing_line(lower)
         || bottom5.lines().any(|line| {
             let line = line.trim_start();
             line.contains('·')
-                && line
-                    .split_whitespace()
-                    .any(|word| word.chars().all(|c| c.is_ascii_digit()) && word != "0")
+                && line.split_whitespace().any(|word| {
+                    !word.is_empty()
+                        && word.chars().all(|c| c.is_ascii_digit())
+                        && !word.starts_with('0')
+                })
                 && line.contains("task")
         })
     {
