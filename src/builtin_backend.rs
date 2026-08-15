@@ -2743,6 +2743,14 @@ fn detect_cline_status(lower: &str) -> &'static str {
 }
 
 fn detect_codex_status(lower: &str) -> &'static str {
+    // Trust directory prompt: "> You are in ..." + "Do you trust the contents
+    // of this directory?" in the top 20 non-empty lines.
+    let top20 = top_non_empty_lines(lower, 20);
+    if top20.contains("> you are in ")
+        && top20.contains("do you trust the contents of this directory?")
+    {
+        return "blocked";
+    }
     if lower.contains("action required")
         || lower.contains("press enter to confirm or esc to cancel")
         || lower.contains("enter to submit answer")
@@ -2790,7 +2798,10 @@ fn detect_cursor_status(lower: &str) -> &'static str {
         || contains_any(lower, &["(y) (enter)", "keep (n)", "skip (esc or n)"])
         || lower.lines().any(|line| {
             let line = line.trim_start();
-            line.starts_with("allow ") && line.contains("(y)")
+            // "allow ... (y)" or "run ... (y)" with optional → prefix.
+            let line = line.strip_prefix("→").map(str::trim_start).unwrap_or(line);
+            (line.starts_with("allow ") || line.starts_with("run "))
+                && line.contains("(y)")
         })
     {
         return "blocked";
@@ -2918,6 +2929,12 @@ fn detect_grok_status(lower: &str) -> &'static str {
             ))
     {
         return "blocked";
+    }
+    // Background work chip: pinned top line shows animated chip + count + │.
+    // Mirrors grok.toml background_work_chip_working.
+    let top1 = top_non_empty_lines(lower, 1);
+    if top1.lines().any(grok_background_work_chip_line) {
+        return "working";
     }
     if lower.lines().any(grok_spinner_stop_line)
         || (bottom2.contains("esc:cancel") && bottom2.contains("ctrl+.:shortcuts"))
@@ -3463,6 +3480,34 @@ fn grok_spinner_stop_line(line: &str) -> bool {
     starts_with_braille(line) && line.ends_with("[stop]")
 }
 
+/// Grok pinned top-line background work chip: one of the chip glyphs followed
+/// by a space, a positive number, a space, and a │ pipe. Mirrors
+/// grok.toml background_work_chip_working line_regex.
+fn grok_background_work_chip_line(line: &str) -> bool {
+    let line = line.trim_start();
+    let Some(first) = line.chars().next() else {
+        return false;
+    };
+    if !matches!(first, '⋅' | ':' | '⸬' | '⁙' | '.' | '·') {
+        return false;
+    }
+    let rest = line[first.len_utf8()..].trim_start();
+    // Parse a positive integer (at least one digit, no leading zero).
+    let digits_end = rest
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(rest.len());
+    if digits_end == 0 {
+        return false;
+    }
+    let num = &rest[..digits_end];
+    if num == "0" || num.starts_with('0') {
+        return false;
+    }
+    rest[digits_end..]
+        .trim_start()
+        .starts_with('│')
+}
+
 fn grok_tool_line(line: &str) -> bool {
     let line = line.trim_start();
     if !starts_with_braille(line) {
@@ -3598,6 +3643,19 @@ pub(crate) fn bottom_non_empty_lines(text: &str, count: usize) -> String {
         .collect::<Vec<_>>();
     lines.reverse();
     lines.join("\n")
+}
+
+/// First `count` non-empty lines (trimmed). Mirrors `bottom_non_empty_lines`
+/// but from the top of the text. Used by manifest rules with
+/// `region = "top_non_empty_lines(N)"`.
+pub(crate) fn top_non_empty_lines(text: &str, count: usize) -> String {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .take(count)
+        .map(str::to_string)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 pub(crate) fn contains_any(text: &str, needles: &[&str]) -> bool {
@@ -4478,11 +4536,18 @@ mod tests {
             ("codex", "• Working (esc to interrupt)", "working"),
             ("codex", "■ Conversation interrupted", "idle"),
             (
+                "codex",
+                "> You are in /home/user/project\nDo you trust the contents of this directory?",
+                "blocked",
+            ),
+            (
                 "cursor",
                 "write to this file?\nproceed (y)\nreject & propose changes",
                 "blocked",
             ),
             ("cursor", "⬡ thinking", "working"),
+            ("cursor", "run command (y)", "blocked"),
+            ("cursor", "→ run this (y)", "blocked"),
             (
                 "devin",
                 "approve once\nselect\nconfirm\nesc cancel",
@@ -4507,6 +4572,7 @@ mod tests {
             ("grok", "┃ a (●) option", "blocked"),
             ("grok", "⠋ Run command", "working"),
             ("grok", "ctrl+.:shortcuts", "idle"),
+            ("grok", "⋅ 3 │ background", "working"),
             ("hermes", "dangerous command\nenter to confirm", "blocked"),
             ("hermes", "approval\n↑/↓ to select", "blocked"),
             ("hermes", "hermes needs your input\nenter to confirm", "blocked"),
