@@ -2554,6 +2554,16 @@ fn osc_progress_status_for_agent(agent: &str, osc_progress: &str) -> Option<&'st
                 None
             }
         }
+        // Grok emits OSC 9;4 with payload "4;1;-1" while busy and "4;0;0" idle.
+        "grok" => {
+            if osc_progress == "4;1;-1" {
+                Some("working")
+            } else if osc_progress == "4;0;0" {
+                Some("idle")
+            } else {
+                None
+            }
+        }
         _ => None,
     }
 }
@@ -2748,6 +2758,18 @@ fn detect_codex_status(lower: &str) -> &'static str {
     if has_codex_spinner(lower) {
         return "working";
     }
+    // Screen working fallback: "• Working (esc to interrupt)" without
+    // "■ Conversation interrupted". Mirrors herdr codex.toml.
+    let bottom3 = bottom_non_empty_lines(lower, 3);
+    if bottom3.lines().any(|line| {
+        let line = line.trim_start();
+        (line.starts_with("• ") || line.starts_with("◦ "))
+            && line.contains("working")
+            && line.contains("esc to interrupt")
+    }) && !lower.contains("conversation interrupted")
+    {
+        return "working";
+    }
     if !lower.trim().is_empty() {
         return "idle";
     }
@@ -2916,20 +2938,91 @@ fn detect_grok_status(lower: &str) -> &'static str {
 }
 
 fn detect_hermes_status(lower: &str) -> &'static str {
-    if lower.contains("dangerous command")
-        || (lower.contains("allow once")
-            && lower.contains("allow for this session")
-            && lower.contains("deny"))
-        || contains_any(
-            lower,
-            &["enter to confirm", "↑/↓ to select", "show full command"],
+    let bottom14 = bottom_non_empty_lines(lower, 14);
+
+    // dangerous_command_approval: any of [dangerous, approval, allow once+deny,
+    // line "1. allow"] AND all of [enter confirm/enter to confirm/↑/↓ to
+    // select/show full command].
+    if (bottom14.contains("dangerous")
+        || bottom14.contains("approval")
+        || (bottom14.contains("allow once") && bottom14.contains("deny"))
+        || bottom14.lines().any(|line| {
+            let line = line.trim_start();
+            let line = line.trim_start_matches(['▸', '>']);
+            line.starts_with("1.") && line.contains("allow")
+        }))
+        && contains_any(
+            &bottom14,
+            &[
+                "enter confirm",
+                "enter to confirm",
+                "↑/↓ to select",
+                "show full command",
+            ],
         )
     {
         return "blocked";
     }
-    if lower.contains("msg=interrupt") || lower.contains("ctrl+c cancel") {
+
+    // clarification_prompt: any of [hermes needs your, line "ask <X>", type your
+    // answer] AND all of [enter confirm/enter to confirm/enter send/press
+    // enter/↑/↓ select/↑/↓ to select/other (type].
+    if (bottom14.contains("hermes needs your")
+        || bottom14.contains("type your answer")
+        || bottom14.lines().any(|line| line.trim_start().starts_with("ask ")))
+        && contains_any(
+            &bottom14,
+            &[
+                "enter confirm",
+                "enter to confirm",
+                "enter send",
+                "press enter",
+                "↑/↓ select",
+                "↑/↓ to select",
+                "other (type",
+            ],
+        )
+    {
+        return "blocked";
+    }
+
+    // credential_prompt: any of [sudo password, skill setup, 🔑 + "for "].
+    if bottom14.contains("sudo password")
+        || bottom14.contains("skill setup")
+        || (bottom14.contains("🔑") && bottom14.contains("for "))
+    {
+        return "blocked";
+    }
+
+    // confirmation_prompt: any of [(approve once + cancel), (start a new session
+    // + keep going)] AND any of [enter to confirm/enter confirm/type 1/2/3/y/n
+    // quick].
+    if ((bottom14.contains("approve once") && bottom14.contains("cancel"))
+        || (bottom14.contains("start a new session") && bottom14.contains("keep going")))
+        && contains_any(
+            &bottom14,
+            &[
+                "enter to confirm",
+                "enter confirm",
+                "type 1/2/3",
+                "y/n quick",
+            ],
+        )
+    {
+        return "blocked";
+    }
+
+    // interrupt_status_working: msg=interrupt or ctrl+c to interrupt.
+    let bottom5 = bottom_non_empty_lines(lower, 5);
+    if bottom5.contains("msg=interrupt") || bottom5.contains("ctrl+c to interrupt") {
         return "working";
     }
+
+    // classic_cancel_working: "ctrl+c cancel".
+    if bottom5.contains("ctrl+c cancel") {
+        return "working";
+    }
+
     "unknown"
 }
 
@@ -3011,6 +3104,15 @@ fn detect_kiro_status(lower: &str) -> &'static str {
             }))
     {
         return "working";
+    }
+    // Idle: composer prompt with "ask a question or describe a task" and
+    // "/copy to clipboard", without working markers. Mirrors herdr kiro.toml.
+    if lower.contains("ask a question or describe a task")
+        && lower.contains("/copy to clipboard")
+        && !lower.contains("kiro is working")
+        && !lower.contains("esc to cancel")
+    {
+        return "idle";
     }
     "unknown"
 }
@@ -4373,6 +4475,8 @@ mod tests {
             ("codex", "Allow command?", "blocked"),
             ("codex", "⠋ thinking", "working"),
             ("codex", "codex ready", "idle"),
+            ("codex", "• Working (esc to interrupt)", "working"),
+            ("codex", "■ Conversation interrupted", "idle"),
             (
                 "cursor",
                 "write to this file?\nproceed (y)\nreject & propose changes",
@@ -4403,8 +4507,16 @@ mod tests {
             ("grok", "┃ a (●) option", "blocked"),
             ("grok", "⠋ Run command", "working"),
             ("grok", "ctrl+.:shortcuts", "idle"),
-            ("hermes", "dangerous command", "blocked"),
+            ("hermes", "dangerous command\nenter to confirm", "blocked"),
+            ("hermes", "approval\n↑/↓ to select", "blocked"),
+            ("hermes", "hermes needs your input\nenter to confirm", "blocked"),
+            ("hermes", "ask a question\ntype your answer\nenter send", "blocked"),
+            ("hermes", "sudo password\nenter to confirm", "blocked"),
+            ("hermes", "🔑 root@host for sudo\nenter confirm", "blocked"),
+            ("hermes", "approve once\ncancel\ntype 1/2/3", "blocked"),
             ("hermes", "msg=interrupt", "working"),
+            ("hermes", "ctrl+c to interrupt", "working"),
+            ("hermes", "ctrl+c cancel", "working"),
             ("kilo", "△ Permission required", "blocked"),
             ("kilo", "esc interrupt", "working"),
             ("kimi", "↵ confirm\nrun this command?", "blocked"),
@@ -4415,6 +4527,11 @@ mod tests {
                 "blocked",
             ),
             ("kiro", "kiro is working", "working"),
+            (
+                "kiro",
+                "ask a question or describe a task\n/copy to clipboard",
+                "idle",
+            ),
             ("maki", "permission required\ny allow", "blocked"),
             ("maki", "⠋ [build]", "working"),
             ("maki", "[build]", "idle"),
@@ -4432,6 +4549,13 @@ mod tests {
             ),
             ("claurst", "· thinking…", "working"),
             ("claurst", "❯", "idle"),
+            ("qwen", "⠋ 5s · esc to cancel)", "working"),
+            (
+                "qwen",
+                "yes, allow once\nallow execution of: rm -rf",
+                "blocked",
+            ),
+            ("qwen", "> type your message", "idle"),
         ];
 
         for (agent, text, expected) in cases {
