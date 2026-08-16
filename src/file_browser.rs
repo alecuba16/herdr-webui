@@ -806,8 +806,7 @@ fn collect_content_search(
                 max_matches_per_file,
             )
             .ok()
-            .flatten()
-            else {
+            .flatten() else {
                 continue;
             };
             build.total_files += 1;
