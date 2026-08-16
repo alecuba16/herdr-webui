@@ -493,7 +493,15 @@ fn push_tree_entries(
     depth: u8,
     compact_single_child_dirs: bool,
 ) -> Result<(), String> {
-    for entry in sorted_directory_entries(dir)? {
+    // The top-level call (level 0) must surface read errors so the UI can
+    // show a permission prompt. Recursive calls skip unreadable subdirectories
+    // (e.g. macOS ~/Library) so one locked folder does not abort the tree.
+    let entries = match sorted_directory_entries(dir) {
+        Ok(entries) => entries,
+        Err(err) if level == 0 => return Err(err),
+        Err(_) => return Ok(()),
+    };
+    for entry in entries {
         if build.entries.len() >= MAX_ENTRIES {
             build.truncated = true;
             break;
@@ -569,8 +577,22 @@ fn push_search_entries_with_visit_limit(
         return Ok(());
     }
     let mut queue = VecDeque::from([dir.to_path_buf()]);
+    let mut is_initial = true;
     while let Some(current_dir) = queue.pop_front() {
-        for entry in sorted_directory_entries(&current_dir)? {
+        // The initial directory must be readable so the UI can surface a
+        // permission prompt when the workspace root itself is inaccessible.
+        // Subdirectories (e.g. macOS ~/Library) are skipped on read failure
+        // so one locked folder does not abort the entire search.
+        let entries = if is_initial {
+            is_initial = false;
+            sorted_directory_entries(&current_dir)?
+        } else {
+            match sorted_directory_entries(&current_dir) {
+                Ok(entries) => entries,
+                Err(_) => continue,
+            }
+        };
+        for entry in entries {
             *visited += 1;
             if *visited >= max_visits {
                 build.truncated = true;
@@ -746,8 +768,22 @@ fn collect_content_search(
         truncated: false,
     };
     let mut queue = VecDeque::from([dir.to_path_buf()]);
+    let mut is_initial = true;
     while let Some(current_dir) = queue.pop_front() {
-        for entry in sorted_directory_entries(&current_dir)? {
+        // The initial directory must be readable so the UI can surface a
+        // permission prompt when the workspace root itself is inaccessible.
+        // Subdirectories (e.g. macOS ~/Library) are skipped on read failure
+        // so one locked folder does not abort the entire content search.
+        let entries = if is_initial {
+            is_initial = false;
+            sorted_directory_entries(&current_dir)?
+        } else {
+            match sorted_directory_entries(&current_dir) {
+                Ok(entries) => entries,
+                Err(_) => continue,
+            }
+        };
+        for entry in entries {
             build.visited += 1;
             if build.visited >= MAX_CONTENT_SEARCH_VISITS {
                 build.truncated = true;
@@ -759,6 +795,8 @@ fn collect_content_search(
                 }
                 continue;
             }
+            // Skip files we cannot read (e.g. permission denied) instead of
+            // failing the whole content search.
             let Some(result) = content_search_file(
                 root,
                 &entry.path,
@@ -766,7 +804,9 @@ fn collect_content_search(
                 &matcher,
                 context_lines,
                 max_matches_per_file,
-            )?
+            )
+            .ok()
+            .flatten()
             else {
                 continue;
             };
@@ -1681,6 +1721,168 @@ mod tests {
             .map(|entry| entry.path.as_str())
             .collect::<Vec<_>>();
         assert!(paths.contains(&"projects/herdr"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    fn is_running_as_root() -> bool {
+        // On Unix, UID 0 is root. Using `id -u` avoids a libc dependency.
+        std::process::Command::new("id")
+            .arg("-u")
+            .output()
+            .ok()
+            .and_then(|out| String::from_utf8(out.stdout).ok())
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            == Some(0)
+    }
+
+    #[cfg(unix)]
+    fn make_unreadable_dir(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        fs::create_dir_all(path).unwrap();
+        let mut perms = fs::metadata(path).unwrap().permissions();
+        perms.set_mode(0o000);
+        fs::set_permissions(path, perms).unwrap();
+    }
+
+    #[cfg(unix)]
+    fn restore_readable_dir(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(path).unwrap().permissions();
+        perms.set_mode(0o755);
+        let _ = fs::set_permissions(path, perms);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn push_search_entries_skips_unreadable_subdirectories() {
+        // Running this test as root would not produce permission errors, so
+        // skip it in that case to avoid a false negative.
+        if is_running_as_root() {
+            eprintln!("skipping permission test because running as root");
+            return;
+        }
+
+        let root = std::env::temp_dir().join(format!(
+            "herdr-webui-file-browser-perm-search-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/app.rs"), "app").unwrap();
+        fs::create_dir_all(root.join("locked")).unwrap();
+        fs::write(root.join("locked/secret.rs"), "secret").unwrap();
+        make_unreadable_dir(&root.join("locked"));
+        fs::write(root.join("other.txt"), "other app file").unwrap();
+
+        let root = root.canonicalize().unwrap();
+        let mut build = TreeBuild {
+            root: &root,
+            entries: Vec::new(),
+            truncated: false,
+        };
+        let mut visited = 0;
+        let mut matched = 0;
+        // Searching for "app" must succeed and find src/app.rs, skipping the
+        // locked directory instead of returning an error.
+        push_search_entries(
+            &mut build,
+            &root,
+            "app",
+            0,
+            10,
+            &mut visited,
+            &mut matched,
+            Some("file"),
+        )
+        .unwrap();
+
+        let paths = build
+            .entries
+            .iter()
+            .map(|entry| entry.path.as_str())
+            .collect::<Vec<_>>();
+        assert!(paths.contains(&"src/app.rs"));
+        // The locked directory's contents must not appear.
+        assert!(!paths.iter().any(|p| p.starts_with("locked/")));
+
+        restore_readable_dir(&root.join("locked"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn push_tree_entries_skips_unreadable_subdirectories() {
+        if is_running_as_root() {
+            eprintln!("skipping permission test because running as root");
+            return;
+        }
+
+        let root = std::env::temp_dir().join(format!(
+            "herdr-webui-file-browser-perm-tree-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("a/b/c")).unwrap();
+        fs::write(root.join("a/root.txt"), "root").unwrap();
+        fs::create_dir_all(root.join("locked/deep")).unwrap();
+        fs::write(root.join("locked/deep/secret.txt"), "secret").unwrap();
+        make_unreadable_dir(&root.join("locked"));
+
+        let root = root.canonicalize().unwrap();
+        let mut build = TreeBuild {
+            root: &root,
+            entries: Vec::new(),
+            truncated: false,
+        };
+        // Expanding from the root must succeed, skipping the locked subdir.
+        push_tree_entries(&mut build, &root, 0, 2, false).unwrap();
+        let paths: Vec<_> = build
+            .entries
+            .iter()
+            .map(|entry| entry.path.as_str())
+            .collect();
+        assert!(paths.contains(&"a"));
+        assert!(paths.contains(&"a/root.txt"));
+        // The locked directory's children must not cause a failure.
+        assert!(!paths.iter().any(|p| p.starts_with("locked/deep")));
+
+        restore_readable_dir(&root.join("locked"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn collect_content_search_skips_unreadable_subdirectories() {
+        if is_running_as_root() {
+            eprintln!("skipping permission test because running as root");
+            return;
+        }
+
+        let root = std::env::temp_dir().join(format!(
+            "herdr-webui-file-browser-perm-content-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/app.rs"), "needle found").unwrap();
+        fs::create_dir_all(root.join("locked")).unwrap();
+        fs::write(root.join("locked/secret.rs"), "needle hidden").unwrap();
+        make_unreadable_dir(&root.join("locked"));
+
+        let root = root.canonicalize().unwrap();
+        // Content search must succeed, finding src/app.rs and skipping locked/.
+        let build =
+            collect_content_search(&root, &root, "needle", false, false, 0, 10, 0, 5).unwrap();
+        let paths: Vec<_> = build
+            .files
+            .iter()
+            .map(|file| file.path.as_str())
+            .collect::<Vec<_>>();
+        assert!(paths.contains(&"src/app.rs"));
+        assert!(!paths.iter().any(|p| p.starts_with("locked/")));
+
+        restore_readable_dir(&root.join("locked"));
         let _ = fs::remove_dir_all(root);
     }
 
