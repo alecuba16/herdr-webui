@@ -14,6 +14,8 @@ The README is the short project summary. This `docs/` directory holds detailed f
 | [TUI backend API and prototype](tui-backend-api.md) | Built-in backend client API, `herdr-webui-tui`, supported features, and remaining parity gaps. |
 | [Development guide](development.md) | Repository layout, frontend module structure, desktop/mobile parity, maintainability rules. |
 | [Release notes](release-notes.md) | Release policy and release history. |
+| [Code quality audit](code-quality-audit.md) | Baseline quality audit, remediated issues, and deferred risks. |
+| [UX flow proposal](ux-flow-proposal.md) | Proposed UX improvements for desktop and mobile navigation. |
 
 ## Topic map
 
