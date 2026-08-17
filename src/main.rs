@@ -2439,7 +2439,10 @@ async fn login(
     };
     if remote.ip().is_loopback() && auth.localhost_no_auth {
         drop(auth);
-        log_event(&state.log_level(), &format!("login: localhost bypass for {remote}"));
+        log_event(
+            &state.log_level(),
+            &format!("login: localhost bypass for {remote}"),
+        );
         return login_response(&state);
     }
     let ok = auth
@@ -2452,14 +2455,20 @@ async fn login(
         });
     drop(auth);
     if !ok {
-        log_event(&state.log_level(), &format!("login: failed for user '{}' from {remote}", body.username));
+        log_event(
+            &state.log_level(),
+            &format!("login: failed for user '{}' from {remote}", body.username),
+        );
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({ "error": "unauthorized" })),
         )
             .into_response();
     }
-    log_event(&state.log_level(), &format!("login: success for user '{}' from {remote}", body.username));
+    log_event(
+        &state.log_level(),
+        &format!("login: success for user '{}' from {remote}", body.username),
+    );
     login_response(&state)
 }
 
@@ -3554,7 +3563,10 @@ async fn events_ws(
     if let Err(response) = require_auth(&state, &headers, remote) {
         return response;
     }
-    log_event(&state.log_level(), &format!("websocket: events connection from {remote}"));
+    log_event(
+        &state.log_level(),
+        &format!("websocket: events connection from {remote}"),
+    );
     let api = api_for_query_session(
         &state,
         &headers,
@@ -3710,7 +3722,10 @@ async fn terminal_ws(
     if let Err(response) = require_auth(&state, &headers, remote) {
         return response;
     }
-    log_event(&state.log_level(), &format!("websocket: terminal connection from {remote}"));
+    log_event(
+        &state.log_level(),
+        &format!("websocket: terminal connection from {remote}"),
+    );
     let client_socket_path = client_socket_for_query_session(
         &state,
         &headers,
