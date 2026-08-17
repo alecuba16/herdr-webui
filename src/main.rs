@@ -186,6 +186,45 @@ struct PersistedServerSettings {
     builtin_backend_enabled: Option<bool>,
     external_herdr_backend_enabled: Option<bool>,
     jcode_detection_variant: Option<String>,
+    log_level: Option<LogLevel>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum LogLevel {
+    None,
+    Info,
+    Debug,
+}
+
+impl Default for LogLevel {
+    fn default() -> Self {
+        LogLevel::None
+    }
+}
+
+impl LogLevel {
+    fn as_str(&self) -> &'static str {
+        match self {
+            LogLevel::None => "none",
+            LogLevel::Info => "info",
+            LogLevel::Debug => "debug",
+        }
+    }
+
+    fn enabled(&self) -> bool {
+        !matches!(self, LogLevel::None)
+    }
+}
+
+fn log_event(level: &LogLevel, message: &str) {
+    if level.enabled() {
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        eprintln!("[{secs}] {message}");
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -201,6 +240,7 @@ struct RuntimeServerSettings {
     builtin_backend_enabled: bool,
     external_herdr_backend_enabled: bool,
     jcode_detection_variant: JcodeDetectionVariant,
+    log_level: LogLevel,
 }
 
 struct NoSleepGuard {
@@ -452,6 +492,15 @@ pub(crate) struct WebState {
     workspace_orders: Arc<Mutex<HashMap<String, Vec<String>>>>,
 }
 
+impl WebState {
+    fn log_level(&self) -> LogLevel {
+        self.server_settings
+            .lock()
+            .map(|settings| settings.log_level.clone())
+            .unwrap_or_default()
+    }
+}
+
 #[derive(Clone)]
 struct ApiClient {
     socket_path: PathBuf,
@@ -603,6 +652,7 @@ fn default_runtime_server_settings(bind: SocketAddr) -> RuntimeServerSettings {
         builtin_backend_enabled: true,
         external_herdr_backend_enabled: true,
         jcode_detection_variant: JcodeDetectionVariant::default(),
+        log_level: LogLevel::default(),
     }
 }
 
@@ -735,6 +785,7 @@ fn load_runtime_server_settings(default_bind: SocketAddr) -> io::Result<RuntimeS
         "default_folder",
         "builtin_backend_enabled",
         "external_herdr_backend_enabled",
+        "log_level",
     ]
     .iter()
     .any(|key| raw_json.get(key).is_none());
@@ -783,6 +834,9 @@ fn load_runtime_server_settings(default_bind: SocketAddr) -> io::Result<RuntimeS
     if let Some(variant_str) = persisted.jcode_detection_variant {
         settings.jcode_detection_variant = JcodeDetectionVariant::from_str(&variant_str);
     }
+    if let Some(log_level) = persisted.log_level {
+        settings.log_level = log_level;
+    }
     validate_runtime_server_settings(&settings)?;
     if missing_keys {
         save_runtime_server_settings(&settings)?;
@@ -808,6 +862,7 @@ fn save_runtime_server_settings(settings: &RuntimeServerSettings) -> io::Result<
         builtin_backend_enabled: Some(settings.builtin_backend_enabled),
         external_herdr_backend_enabled: Some(settings.external_herdr_backend_enabled),
         jcode_detection_variant: Some(settings.jcode_detection_variant.as_str().to_string()),
+        log_level: Some(settings.log_level.clone()),
     })?;
     fs::write(&path, content)?;
     #[cfg(unix)]
@@ -1733,6 +1788,7 @@ struct UpdateServerSettingsRequest {
     default_folder: Option<String>,
     builtin_backend_enabled: Option<bool>,
     external_herdr_backend_enabled: Option<bool>,
+    log_level: Option<LogLevel>,
 }
 
 fn settings_public_json(settings: &RuntimeServerSettings) -> serde_json::Value {
@@ -1747,6 +1803,7 @@ fn settings_public_json(settings: &RuntimeServerSettings) -> serde_json::Value {
         "default_folder": settings.default_folder.clone(),
         "builtin_backend_enabled": settings.builtin_backend_enabled,
         "external_herdr_backend_enabled": settings.external_herdr_backend_enabled,
+        "log_level": settings.log_level.as_str(),
         "enabled_backends": {
             "builtin": settings.builtin_backend_enabled,
             "external-herdr": settings.external_herdr_backend_enabled,
@@ -2076,6 +2133,10 @@ async fn update_server_settings(
             .as_ref()
             .map(|settings| settings.jcode_detection_variant)
             .unwrap_or_default(),
+        log_level: body
+            .log_level
+            .or_else(|| current.as_ref().map(|settings| settings.log_level.clone()))
+            .unwrap_or_default(),
     };
     let bind_changed = current
         .as_ref()
@@ -2378,6 +2439,7 @@ async fn login(
     };
     if remote.ip().is_loopback() && auth.localhost_no_auth {
         drop(auth);
+        log_event(&state.log_level(), &format!("login: localhost bypass for {remote}"));
         return login_response(&state);
     }
     let ok = auth
@@ -2390,12 +2452,14 @@ async fn login(
         });
     drop(auth);
     if !ok {
+        log_event(&state.log_level(), &format!("login: failed for user '{}' from {remote}", body.username));
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({ "error": "unauthorized" })),
         )
             .into_response();
     }
+    log_event(&state.log_level(), &format!("login: success for user '{}' from {remote}", body.username));
     login_response(&state)
 }
 
@@ -3490,6 +3554,7 @@ async fn events_ws(
     if let Err(response) = require_auth(&state, &headers, remote) {
         return response;
     }
+    log_event(&state.log_level(), &format!("websocket: events connection from {remote}"));
     let api = api_for_query_session(
         &state,
         &headers,
@@ -3645,6 +3710,7 @@ async fn terminal_ws(
     if let Err(response) = require_auth(&state, &headers, remote) {
         return response;
     }
+    log_event(&state.log_level(), &format!("websocket: terminal connection from {remote}"));
     let client_socket_path = client_socket_for_query_session(
         &state,
         &headers,
@@ -3986,6 +4052,7 @@ mod tests {
                 builtin_backend_enabled: true,
                 external_herdr_backend_enabled: true,
                 jcode_detection_variant: JcodeDetectionVariant::default(),
+                log_level: LogLevel::default(),
             })),
             no_sleep: Arc::new(Mutex::new(NoSleepState::default())),
             rebind_tx,
@@ -4743,6 +4810,7 @@ mod tests {
             builtin_backend_enabled: true,
             external_herdr_backend_enabled: true,
             jcode_detection_variant: JcodeDetectionVariant::default(),
+            log_level: LogLevel::default(),
         })
         .unwrap();
 
@@ -4766,6 +4834,7 @@ mod tests {
             builtin_backend_enabled: true,
             external_herdr_backend_enabled: true,
             jcode_detection_variant: JcodeDetectionVariant::default(),
+            log_level: LogLevel::default(),
         }) {
             Ok(_) => panic!("expected public auth config to fail"),
             Err(err) => err,
