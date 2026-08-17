@@ -1,5 +1,105 @@
 # Release notes
 
+## 0.2.91 Release Notes
+
+### Herdr v0.8.0 protocol sync
+
+- Syncs herdr-webui to Herdr v0.8.0 (protocol 20). Bumps `PROTOCOL_VERSION` from 18 to 20 in `src/main.rs` and `src/builtin_backend.rs`.
+- Terminal attach now retries protocols 20, 18, and 16 in descending order for compatible older servers.
+- `/api/versions` reports protocol 20, min protocol 16, and max tested backend 0.8.0.
+- Fixes file browser recursive search and tree traversal to skip unreadable subdirectories instead of failing the entire operation.
+
+## 0.2.90 Release Notes
+
+### Markdown preview with Mermaid support
+
+- Markdown files (`.md`, `.markdown`) open as rendered preview by default, with prose styling, tables, code blocks, and Mermaid diagrams rendered as SVG.
+- The file browser toolbar exposes `Preview`/`Source` toggles for markdown files. `Source` returns to the read-only CodeMirror source view with find.
+- Mermaid is lazy-loaded only when a markdown file contains diagrams, using `securityLevel: "strict"` and theme-aware rendering.
+- Markdown preview uses `marked` (sanitized by `DOMPurify`) with styling from `src/assets/shared/markdown_preview.css`.
+
+### Claurst agent detection
+
+- Adds Claurst agent detection to the built-in backend, covering idle, working, and blocked screen-text patterns in `src/builtin_detection/claurst.rs`.
+- Claurst detection includes spinner character sets, build status lines, permission/file-write/bash-prefix dialog detection, and working-takes-priority-over-idle ordering.
+
+### Panel close button visibility setting
+
+- Adds a Settings option for panel close button visibility (`always` or `smart`) to control when close buttons appear on panel tabs.
+
+## 0.2.89 Release Notes
+
+- Fixes missing `@font-face` declaration for the bundled JetBrainsMono Nerd Font so terminal icons render correctly in fresh installs.
+- Adds Claurst agent detection to the built-in backend (initial implementation, expanded in v0.2.90).
+
+## 0.2.88 Release Notes
+
+### Agent detection regression fix
+
+- Fixes a regression where agents (jcode, opencode, etc.) were not shown in the agent list after v0.2.87. A stale `PaneAgentPresentation` cache (introduced in v0.2.84) was never properly invalidated, so once a shell pane was seen as "no agent" it would never be re-checked.
+- Removes the `cached_agent_presentation` field and cache logic from `PaneRecord`.
+- Adds regression test `agent_list_reflects_agent_detected_after_output`.
+
+## 0.2.87 Release Notes
+
+### External Herdr protocol bump
+
+- Bumps wire protocol 16 to 18 for Herdr 0.7.5+ compatibility. Previous protocol 16 caused handshake failures against Herdr 0.7.5+ daemons.
+- Raises minimum supported protocol from 14 to 16 (keeps 3 protocols: 16, 17, 18).
+- Adds `KittyKeyboardReportAll` server message variant (protocol 18).
+- Updates min backend version to 0.7.3, max tested backend to 0.7.5.
+
+### Jcode detection variant support
+
+- Adds jcode detection variant support in `src/builtin_detection/jcode.rs` covering vanilla jcode and the alecuba16 fork.
+- Each variant has its own idle, working, and blocked screen-text patterns, dispatched via `detect_jcode_status_with_variant`.
+
+### Markdown preview with Mermaid support
+
+- Initial markdown preview implementation (expanded in v0.2.90).
+
+## 0.2.86 Release Notes
+
+### Git in-diff editing in both layouts
+
+- Renames the `Edit side-by-side` toolbar button to `Edit` so it is no longer tied to a single diff layout.
+- Makes the Git hunk editor layout-aware: side-by-side keeps the previous (read-only) and current (editable) panes, while unified shows a single editable hunk column.
+- Edits persist when switching layouts because the renderer syncs DOM edits into the hunk model before re-rendering.
+- Shares conflict-block `Use HEAD`, `Use parent`, and `Use remote` controls across both editor layouts.
+
+## 0.2.85 Release Notes
+
+### Terminal emoji/CJK fix
+
+- Fixes emoji rendering in TUI using the `unicode-width` crate.
+- Fixes cursor column advance for wide characters (emoji, CJK) in both `TextScreen` and `StyledScreen`.
+- The `truncate` function now uses proper Unicode width calculation instead of character count.
+
+## 0.2.84 Release Notes
+
+### CPU optimization
+
+- Adds 500ms throttling on agent status detection, capping the expensive screen-text scan to approximately 2 per second per pane regardless of output rate.
+- Caches computed agent/status pair in `PaneRecord.cached_agent_presentation`, invalidated on terminal output so `agent.list` calls read cached values instead of recomputing.
+- Fixes event bridge storm: reads `agent_status` directly from the event payload instead of calling `agent.list` on every `pane.agent_status_changed` event.
+- Removes auto-theme polling: replaces the 2-second `setInterval(pollAutoTheme, 2000)` with a `matchMedia('(prefers-color-scheme: dark)').addEventListener('change')` listener.
+
+## 0.2.83 Release Notes
+
+### OSC 9 progress detection for jcode
+
+- Adds OSC 9 structured payload detection for jcode agent status, parsing `ESC]9;jcode:working BEL` sequences in O(1) per byte with zero allocations after setup.
+- The `Osc9Tracker` state machine handles split sequences, oversized payloads, and non-OSC9 commands gracefully.
+- Fixes diff view not fully scrolling to the right end.
+- Auto-closes workspace when last panel/tab closes; shows close button on all workspace cards.
+
+## 0.2.82 Release Notes
+
+- Fixes terminal scroll and aria-hidden accessibility.
+
+## 0.2.81 Release Notes
+
+- Minor fixes and dependency updates.
 ## 0.2.80 Release Notes
 
 ### Browser terminal renderer migration

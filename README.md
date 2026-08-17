@@ -79,7 +79,7 @@ See [Features](docs/features.md) for full behavior details.
 ## Technical summary
 
 - Backend: Rust Axum server, explicit authenticated API routes, embedded assets, built-in terminal multiplexer, external Herdr protocol bridge, Git/file-system operations.
-- Built-in status detection: argv/process-tree labels plus screen-text fallbacks for Amp, Antigravity, Claude, Cline, Codex, Cursor, Devin, Droid, Gemini, GitHub Copilot, Grok, Hermes, Jcode, Kilo, Kimi, Kiro, Maki, OpenCode, Pi, and Qoder CLI.
+- Built-in status detection: argv/process-tree labels plus screen-text fallbacks for Amp, Antigravity, Claude, Claurst, Cline, Codex, Cursor, Devin, Droid, Gemini, GitHub Copilot, Grok, Hermes, Jcode, Kilo, Kimi, Kiro, Maki, OpenCode, Pi, Qoder CLI, and Qwen.
 - Frontend: vanilla JS/CSS assets, no runtime framework, shared modules for tree rendering, icons, editor mounting, content search, wterm/Ghostty terminal helpers, and theme tokens.
 - Editor: CodeMirror bundle is preloaded before shared editor code so file previews mount directly with final editor styling; shared editor code provides find in preview plus replace in edit mode.
 - File explorer/search: expensive work is backend-owned: tree listing, file/folder search, Git status propagation, content search traversal, safe file read/write, and hash-guarded snippet/file saves.
@@ -111,7 +111,13 @@ See [Development guide](docs/development.md) for project structure and maintaina
 
 ```bash
 cargo test
-node --test src/assets/*.test.mjs
+node --test src/assets/app_core.test.mjs src/assets/app_load.test.mjs src/assets/app_boot.test.mjs src/assets/mobile_load.test.mjs
+```
+
+Or run all checks together:
+
+```sh
+just check
 ```
 
 Use `cargo fmt` before committing Rust changes. Keep Help and docs updated when adding visible features.
