@@ -41,7 +41,7 @@ Compatibility:
 | `0.0.45` | `0.7.1` | `14` | Tested | Improves embedded Git UI navigation with Escape handling, all-changes return behavior, split frontend assets, scoped file history controls, keyboard-owned drawer input, and per-file large diff loading. |
 | `0.0.45` | `0.7.0` | `14` | Minimum supported | Uses WebUI's legacy existing-branch worktree fallback when needed. |
 
-Newer Herdr builds may work when protocol stays compatible, but WebUI reports them as untested. WebUI 0.2.91 treats Herdr 0.8.0 protocol 20 as tested and retries protocols 18 and 16 in descending order for compatible older Herdr servers.
+Newer Herdr builds may work when protocol stays compatible, but WebUI reports them as untested. WebUI 0.2.91 treats Herdr 0.8.0 protocol 20 as tested and retries protocols 18 and 16 in descending order for compatible older Herdr servers. The minimum supported protocol is 16 (raised from 14 in v0.2.87).
 
 ## Build
 

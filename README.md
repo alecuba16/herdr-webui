@@ -111,7 +111,13 @@ See [Development guide](docs/development.md) for project structure and maintaina
 
 ```bash
 cargo test
-node --test src/assets/*.test.mjs
+node --test src/assets/app_core.test.mjs src/assets/app_load.test.mjs src/assets/app_boot.test.mjs src/assets/mobile_load.test.mjs
+```
+
+Or run all checks together:
+
+```sh
+just check
 ```
 
 Use `cargo fmt` before committing Rust changes. Keep Help and docs updated when adding visible features.
