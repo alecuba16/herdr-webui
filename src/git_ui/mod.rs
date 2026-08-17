@@ -765,7 +765,8 @@ mod tests {
     use super::stash::*;
     use super::*;
     use crate::{
-        AuthConfig, BackendMode, JcodeDetectionVariant, NoSleepState, RuntimeServerSettings,
+        AuthConfig, BackendMode, JcodeDetectionVariant, LogLevel, NoSleepState,
+        RuntimeServerSettings,
     };
     use axum::body::to_bytes;
     use serde_json::Value;
@@ -817,6 +818,7 @@ mod tests {
                 builtin_backend_enabled: true,
                 external_herdr_backend_enabled: true,
                 jcode_detection_variant: JcodeDetectionVariant::default(),
+                log_level: LogLevel::default(),
             })),
             no_sleep: Arc::new(Mutex::new(NoSleepState::default())),
             rebind_tx,
