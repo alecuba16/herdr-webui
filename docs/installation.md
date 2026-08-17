@@ -10,7 +10,11 @@ Compatibility:
 
 | WebUI | Herdr | Protocol | Status | Notes |
 | --- | --- | --- | --- | --- |
-| `0.2.13` | `0.7.3` | `16` with `15` and `14` fallback | Current | Adds protocol 16 support with descending fallback to 15 and 14, subscribes to `layout.updated` events for live pane layout snapshots, exposes a `session.snapshot` endpoint for single-request bootstrap, and deserializes the new `PrefixInputSource` server message without acting on it. The legacy per-endpoint polling bootstrap is moved to `legacy_polling.js` with a removal TODO. |
+| `0.2.91` | `0.8.0` | `20` with `18` and `16` fallback | Current | Syncs to Herdr v0.8.0 protocol 20. Terminal attach retries protocols 20, 18, and 16 in descending order for compatible older servers. Adds Claurst and Qwen agent detection. Adds markdown preview with Mermaid support. Adds jcode detection variant support (vanilla + alecuba16 fork). |
+| `0.2.87` | `0.7.5+` | `18` with `17` and `16` fallback | Superseded | Bumps wire protocol 16 to 18 for Herdr 0.7.5+ compatibility. Raises minimum supported protocol from 14 to 16. Adds KittyKeyboardReportAll server message variant. |
+| `0.2.84` | `0.7.3` | `16` with `15` and `14` fallback | Superseded | CPU optimization: 500ms throttling on agent status detection, cached pane presentation, event-driven no-sync for agent status changes, removed auto-theme polling. |
+| `0.2.80` | `0.7.3` | `16` with `15` and `14` fallback | Superseded | Replaces xterm.js with wterm terminal renderer adapter. Adds Settings-backed renderer selection between wterm and Ghostty. Adds terminal mouse reporting opt-in. Adds in-diff Git hunk editing for both side-by-side and unified layouts. |
+| `0.2.13` | `0.7.3` | `16` with `15` and `14` fallback | Superseded | Adds protocol 16 support with descending fallback to 15 and 14, subscribes to `layout.updated` events for live pane layout snapshots, exposes a `session.snapshot` endpoint for single-request bootstrap, and deserializes the new `PrefixInputSource` server message without acting on it. The legacy per-endpoint polling bootstrap is moved to `legacy_polling.js` with a removal TODO. |
 | `0.2.12` | `0.7.2` | `15` with `14` fallback | Superseded | Uses the same CodeMirror editor tooling for both sides of Git hunk editing, keeps the previous side read-only with line numbers on the right, and hides backing textareas so editable text is not duplicated below the highlighted editor. |
 | `0.2.11` | `0.7.2` | `15` with `14` fallback | Superseded | Uses the bundled JetBrainsMono Nerd Font stack when creating desktop browser terminals, migrates the old desktop monospace default, and refreshes terminal metrics after the font loads. |
 | `0.2.9` | `0.7.2` | `15` with `14` fallback | Superseded | Unifies workspace and worktree opening in one modal, adds always-discovered Git branches for worktree creation, shares refresh icon styling across Git/files/modals, and lets users continue worktree creation without pulling when fast-forward update detects diverging branches. |
@@ -37,7 +41,7 @@ Compatibility:
 | `0.0.45` | `0.7.1` | `14` | Tested | Improves embedded Git UI navigation with Escape handling, all-changes return behavior, split frontend assets, scoped file history controls, keyboard-owned drawer input, and per-file large diff loading. |
 | `0.0.45` | `0.7.0` | `14` | Minimum supported | Uses WebUI's legacy existing-branch worktree fallback when needed. |
 
-Newer Herdr builds may work when protocol stays compatible, but WebUI reports them as untested. WebUI 0.2.13 treats Herdr 0.7.3 protocol 16 as tested and retries protocols 15 and 14 in descending order for compatible older Herdr 0.7.x servers.
+Newer Herdr builds may work when protocol stays compatible, but WebUI reports them as untested. WebUI 0.2.91 treats Herdr 0.8.0 protocol 20 as tested and retries protocols 18 and 16 in descending order for compatible older Herdr servers.
 
 ## Build
 
@@ -249,9 +253,9 @@ If `--session NAME` is supplied, launched Herdr processes receive `HERDR_SESSION
 
 ## FAQ
 
-### `herdr rejected terminal connection: client version 16 is newer than server version 13; please upgrade the herdr server`
+### `herdr rejected terminal connection: client version 20 is newer than server version X; please upgrade the herdr server`
 
-This means WebUI is using a newer terminal attach protocol than the Herdr server process handling the session. WebUI retries protocols 16, 15, and 14 in descending order automatically when a newer handshake reaches a compatible older server, so seeing this error usually means the running Herdr server is older than WebUI's fallback range or failed after the fallback retries.
+This means WebUI is using a newer terminal attach protocol than the Herdr server process handling the session. WebUI retries protocols 20, 18, and 16 in descending order automatically when a newer handshake reaches a compatible older server, so seeing this error usually means the running Herdr server is older than WebUI's fallback range or failed after the fallback retries.
 
 Check two things:
 
