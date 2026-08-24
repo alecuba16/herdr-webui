@@ -956,29 +956,35 @@
     return `<span class="git-tree-icon git-tree-icon-${safe}" aria-hidden="true"></span>`;
   }
 
-  function renderFileTree(files, kind, view) {
+  function renderFileTree(files, kind, view, options) {
+    const overrides = options || {};
+    const selectMethod = overrides.selectMethod || "selectFile";
+    const selectedPath = overrides.selectedPath !== undefined ? overrides.selectedPath : view.file;
+    const selectedKind = overrides.selectedKind !== undefined ? overrides.selectedKind : view.diffKind;
+    const metaForPath = overrides.metaForPath !== undefined ? overrides.metaForPath : fileSummary;
+    const statusForPath = overrides.statusForPath !== undefined ? overrides.statusForPath : fileTreeStatus;
     if (FileTree && FileTree.renderPathTree) {
       return FileTree.renderPathTree(files, {
         callback: "HerdrGitUi",
         toggleMethod: "toggleDir",
-        selectMethod: "selectFile",
+        selectMethod,
         activateMethod: "activateTreeItem",
         contextMethod: "fileMenu",
         dataPrefix: "git",
         rowClass: "git-ui-file",
         dirClass: "git-ui-file git-ui-dir",
         kind,
-        selectedPath: view.file,
-        selectedKind: view.diffKind,
+        selectedPath,
+        selectedKind,
         collapsedDirs: view.collapsedDirs || {},
         expandedCompactDirs: view.expandedCompactDirs || {},
         expandCompactMethod: "expandCompactDir",
         filterTerm: view.fileFilter || "",
-        metaForPath: fileSummary,
-        statusForPath: fileTreeStatus,
+        metaForPath,
+        statusForPath,
       });
     }
-    if (fileListMode() === "flat") return renderFlatFileList(files, kind, view);
+    if (fileListMode() === "flat") return renderFlatFileList(files, kind, view, selectMethod, selectedPath, metaForPath);
     const root = { dirs: new Map(), files: [] };
     for (const file of files) {
       const parts = String(file).split("/").filter(Boolean);
@@ -989,14 +995,14 @@
       }
       node.files.push({ name: parts[parts.length - 1] || file, path: file });
     }
-    return renderTreeNode(root, "", kind, view, 0);
+    return renderTreeNode(root, "", kind, view, 0, selectMethod, selectedPath, metaForPath);
   }
 
-  function renderFlatFileList(files, kind, view) {
+  function renderFlatFileList(files, kind, view, selectMethod, selectedPath, metaForPath) {
     return (files || [])
       .slice()
       .sort((a, b) => pathBasename(a).localeCompare(pathBasename(b)) || String(a).localeCompare(String(b)))
-      .map((file) => renderSideFile(file, pathBasename(file), kind, view, 0))
+      .map((file) => renderSideFile(file, pathBasename(file), kind, view, 0, selectMethod, selectedPath, metaForPath))
       .join("");
   }
 
@@ -1005,7 +1011,7 @@
     return parts[parts.length - 1] || String(path || "");
   }
 
-  function renderTreeNode(node, path, kind, view, level) {
+  function renderTreeNode(node, path, kind, view, level, selectMethod, selectedPath, metaForPath) {
     const entries = [
       ...Array.from(node.dirs.entries()).sort((a, b) => a[0].localeCompare(b[0])).map(([dir, child]) => ({ type: "dir", name: dir, child })),
       ...node.files.sort((a, b) => a.name.localeCompare(b.name)).map((file) => ({ type: "file", name: file.name, path: file.path })),
@@ -1014,15 +1020,18 @@
       if (entry.type === "dir") {
         const dirPath = path ? `${path}/${entry.name}` : entry.name;
         const collapsed = !!((view.collapsedDirs || {})[dirPath]);
-        return `<div class="git-ui-file git-ui-dir" role="treeitem" tabindex="0" aria-expanded="${collapsed ? "false" : "true"}" style="--level:${level}" onclick="HerdrGitUi.toggleDir('${arg(dirPath)}')" onkeydown="HerdrGitUi.activateTreeItem(event)"><span class="git-ui-tree-caret">${treeIcon(collapsed ? "chevron-right" : "chevron-down")}</span><span class="git-ui-tree-icon folder">${treeIcon("folder")}</span><span class="git-ui-path">${esc(entry.name)}</span></div>${collapsed ? "" : renderTreeNode(entry.child, dirPath, kind, view, level + 1)}`;
+        return `<div class="git-ui-file git-ui-dir" role="treeitem" tabindex="0" aria-expanded="${collapsed ? "false" : "true"}" style="--level:${level}" onclick="HerdrGitUi.toggleDir('${arg(dirPath)}')" onkeydown="HerdrGitUi.activateTreeItem(event)"><span class="git-ui-tree-caret">${treeIcon(collapsed ? "chevron-right" : "chevron-down")}</span><span class="git-ui-tree-icon folder">${treeIcon("folder")}</span><span class="git-ui-path">${esc(entry.name)}</span></div>${collapsed ? "" : renderTreeNode(entry.child, dirPath, kind, view, level + 1, selectMethod, selectedPath, metaForPath)}`;
       }
-      return renderSideFile(entry.path, entry.name, kind, view, level);
+      return renderSideFile(entry.path, entry.name, kind, view, level, selectMethod, selectedPath, metaForPath);
     }).join("");
   }
 
-  function renderSideFile(file, name, kind, view, level) {
-    const summary = fileSummary(file, kind);
-    return `<div class="git-ui-file ${view.file === file && view.diffKind === kind ? "active" : ""}" role="treeitem" tabindex="0" data-git-path="${esc(file)}" data-git-kind="${esc(kind)}" style="--level:${level}" onclick="HerdrGitUi.selectFile('${arg(file)}','${kind}')" onkeydown="HerdrGitUi.activateTreeItem(event)" oncontextmenu="return HerdrGitUi.fileMenu(event,'${arg(file)}','${kind}')"><span class="git-ui-tree-caret"></span><span class="git-ui-tree-icon file">${treeIcon("file")}</span><span class="git-ui-path" title="${esc(file)}">${FileTree && FileTree.highlight ? FileTree.highlight(name, (active() || {}).fileFilter) : esc(name)}</span><span class="git-ui-file-meta">${summary}</span></div>`;
+  function renderSideFile(file, name, kind, view, level, selectMethod, selectedPath, metaForPath) {
+    const method = selectMethod || "selectFile";
+    const activePath = selectedPath !== undefined ? selectedPath : view.file;
+    const metaFn = metaForPath !== undefined ? metaForPath : fileSummary;
+    const summary = metaFn ? metaFn(file, kind) : "";
+    return `<div class="git-ui-file ${activePath === file ? "active" : ""}" role="treeitem" tabindex="0" data-git-path="${esc(file)}" data-git-kind="${esc(kind)}" style="--level:${level}" onclick="HerdrGitUi.${method}('${arg(file)}','${kind}')" onkeydown="HerdrGitUi.activateTreeItem(event)" oncontextmenu="return HerdrGitUi.fileMenu(event,'${arg(file)}','${kind}')"><span class="git-ui-tree-caret"></span><span class="git-ui-tree-icon file">${treeIcon("file")}</span><span class="git-ui-path" title="${esc(file)}">${FileTree && FileTree.highlight ? FileTree.highlight(name, (active() || {}).fileFilter) : esc(name)}</span><span class="git-ui-file-meta">${summary}</span></div>`;
   }
 
   function renderContextMenu() {
@@ -1360,12 +1369,6 @@
     return section(`Committed files ${label}`, filterFiles(files, filter), "C");
   }
 
-  function stashSideSections(view, filter) {
-    const stashList = stashListHtml(view);
-    const fileSection = stashFileSection(view, filter);
-    return `${stashList}${fileSection}`;
-  }
-
   function stashListHtml(view) {
     const stashes = view.stashData && view.stashData.stashes ? view.stashData.stashes : [];
     const items = stashes.map((s) => {
@@ -1396,76 +1399,8 @@
     const limited = limit > 0 && list.length > limit && !((view.expandedLargeSections || {})[title]);
     const visibleList = limited ? list.slice(0, limit) : list;
     const largeNote = limited ? `<div class="git-ui-large-file-diff"><button class="git-ui-large-file-load" type="button" onclick="HerdrGitUi.expandLargeSection('${arg(title)}')"><strong>Show all ${esc(title.toLowerCase())} files</strong></button><p>Showing first ${limit} of ${list.length} files to keep browser responsive.</p></div>` : "";
-    const body = visibleList.length ? renderStashFileTree(visibleList, view) : `<div class="git-ui-empty-row">No files in this stash</div>`;
+    const body = visibleList.length ? renderFileTree(visibleList, "C", view, { selectMethod: "selectStashFile", selectedPath: view.stashFile, selectedKind: "", metaForPath: null, statusForPath: null }) : `<div class="git-ui-empty-row">No files in this stash</div>`;
     return `<div class="git-ui-section"><div class="git-ui-section-head"><button class="git-ui-section-toggle" onclick="HerdrGitUi.toggleSection('${arg(title)}')"><span>${treeIcon(collapsed ? "chevron-right" : "chevron-down")}</span><strong>${esc(title)}</strong><em>${list.length}</em></button></div>${collapsed ? "" : `<div class="git-ui-list" role="tree" aria-label="${esc(title)} files">${body}${largeNote}</div>`}</div>`;
-  }
-
-  function renderStashFileTree(files, view) {
-    if (FileTree && FileTree.renderPathTree) {
-      return FileTree.renderPathTree(files, {
-        callback: "HerdrGitUi",
-        toggleMethod: "toggleDir",
-        selectMethod: "selectStashFile",
-        activateMethod: "activateTreeItem",
-        contextMethod: "fileMenu",
-        dataPrefix: "git",
-        rowClass: "git-ui-file",
-        dirClass: "git-ui-file git-ui-dir",
-        kind: "C",
-        selectedPath: view.stashFile,
-        selectedKind: "",
-        collapsedDirs: view.collapsedDirs || {},
-        expandedCompactDirs: view.expandedCompactDirs || {},
-        expandCompactMethod: "expandCompactDir",
-        filterTerm: view.fileFilter || "",
-      });
-    }
-    if (fileListMode() === "flat") return renderFlatStashFileList(files, view);
-    const root = { dirs: new Map(), files: [] };
-    for (const file of files) {
-      const parts = String(file).split("/").filter(Boolean);
-      let node = root;
-      for (const part of parts.slice(0, -1)) {
-        if (!node.dirs.has(part)) node.dirs.set(part, { dirs: new Map(), files: [] });
-        node = node.dirs.get(part);
-      }
-      node.files.push({ name: parts[parts.length - 1] || file, path: file });
-    }
-    return renderStashTreeNode(root, "", view, 0);
-  }
-
-  function renderFlatStashFileList(files, view) {
-    return (files || [])
-      .slice()
-      .sort((a, b) => pathBasename(a).localeCompare(pathBasename(b)) || String(a).localeCompare(String(b)))
-      .map((file) => renderStashSideFile(file, pathBasename(file), view, 0))
-      .join("");
-  }
-
-  function renderStashSideFile(file, name, view, level) {
-    const selected = view.stashFile === file ? " active" : "";
-    const indent = level ? ` style="--level:${level}"` : "";
-    return `<div class="herdr-tree-row git-ui-file file${selected}" role="treeitem" aria-label="${esc(name)}" title="${esc(file)}" data-git-path="${esc(file)}" data-git-name="${esc(name)}"${indent} onclick="HerdrGitUi.selectStashFile('${arg(file)}')"><span class="herdr-tree-icon herdr-tree-icon-file" aria-hidden="true"></span><span class="herdr-tree-name">${esc(name)}</span></div>`;
-  }
-
-  function renderStashTreeNode(node, path, view, level) {
-    const dirs = Array.from(node.dirs.entries()).sort((a, b) => a[0].localeCompare(b[0]));
-    const files = (node.files || []).slice().sort((a, b) => a.name.localeCompare(b.name));
-    const dirHtml = dirs.map(([name, child]) => {
-      const childPath = path ? `${path}/${name}` : name;
-      const collapsed = !!((view.collapsedDirs || {})[childPath]);
-      return `<div class="herdr-tree-row git-ui-file git-ui-dir dir" role="treeitem" aria-expanded="${!collapsed}" data-git-dir="${esc(childPath)}" onclick="HerdrGitUi.toggleDir('${arg(childPath)}')"><span class="herdr-tree-caret" aria-hidden="true"></span><span class="herdr-tree-icon herdr-tree-icon-folder" aria-hidden="true"></span><span class="herdr-tree-name">${esc(name)}</span></div>${collapsed ? "" : `<div class="herdr-tree-children" role="group">${renderStashTreeNode(child, childPath, view, level + 1)}</div>`}`;
-    }).join("");
-    const fileHtml = files.map((item) => renderStashSideFile(item.path, item.name, view, level)).join("");
-    return `${dirHtml}${fileHtml}`;
-  }
-
-  function stashSideFileCount(view) {
-    if (!view) return 0;
-    const stashes = (view.stashData && view.stashData.stashes) ? view.stashData.stashes.length : 0;
-    const preview = view.selectedStashDiff;
-    const files = (preview && preview.diff && preview.diff.files) ? preview.diff.files.length : 0;
-    return stashes + files;
   }
 
   function historicalFileCommitLabel(view) {
@@ -1555,7 +1490,7 @@
     const fileSections = view.tab === "log"
       ? commitPreviewSection(view, filter)
       : view.tab === "stash"
-        ? stashSideSections(view, filter)
+        ? stashListHtml(view) + stashFileSection(view, filter)
       : committedSelection && view.file
         ? section(`Committed files ${historicalFileCommitLabel(view)}`, filterFiles(view.compareFilePaths && view.compareFilePaths.length ? view.compareFilePaths : [view.file], filter), "C")
       : currentMode() === "changes"
@@ -1600,7 +1535,12 @@
     if (!view) return 0;
     const status = view.status || {};
     if (view.tab === "log") return (((view.selectedCommitPreview || {}).diff || {}).files || []).length;
-    if (view.tab === "stash") return stashSideFileCount(view);
+    if (view.tab === "stash") {
+      const stashes = (view.stashData && view.stashData.stashes) ? view.stashData.stashes.length : 0;
+      const preview = view.selectedStashDiff;
+      const files = (preview && preview.diff && preview.diff.files) ? preview.diff.files.length : 0;
+      return stashes + files;
+    }
     if (view.temporaryHistoryCompare && view.file) return 1;
     if (currentMode() === "changes") {
       return [status.conflicted, status.staged, status.unstaged, status.untracked]
@@ -2327,7 +2267,7 @@
   function loadStashDiff(view, name) {
     if (!view || !name) return;
     const current = view.selectedStashDiff || {};
-    if (current.name === name && (current.loading || current.diff || current.error)) return;
+    if (current.name === name && (current.loading || current.diff)) return;
     view.selectedStashDiff = { name, loading: true, error: "", diff: null };
     const context = Math.max(0, Math.min(200, Number(view.diffContext || 3)));
     api(`/api/git-ui/stash-show?cwd=${encodeURIComponent(view.cwd)}&stash=${encodeURIComponent(name)}&context=${context}`)

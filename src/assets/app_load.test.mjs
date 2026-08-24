@@ -1191,7 +1191,7 @@ describe("app bundle load", () => {
     const gitLayoutCss = readFileSync(new URL("./desktop/git_ui/layout.css", import.meta.url), "utf8");
 
     match(gitUiSource, /FileTree\.renderPathTree\(files, \{/);
-    match(gitUiSource, /statusForPath: fileTreeStatus/);
+    match(gitUiSource, /statusForPath,/);
     match(gitUiSource, /function fileSummaryEntries\(path, kind\)/);
     match(gitUiSource, /function normalizeFileTreeStatus\(status, kind\)/);
     match(fileTreeSource, /opts\.statusForPath\(dirPath, opts\.kind\)/);
