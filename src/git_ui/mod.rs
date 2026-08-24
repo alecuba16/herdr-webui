@@ -2254,7 +2254,10 @@ mod tests {
             assert_eq!(show.status(), StatusCode::OK);
             let json = response_json(show).await;
             let files = json["files"].as_array().unwrap();
-            assert!(!files.is_empty(), "stash-show should default to stash@{{0}}");
+            assert!(
+                !files.is_empty(),
+                "stash-show should default to stash@{{0}}"
+            );
             let paths: Vec<&str> = files.iter().map(|f| f["path"].as_str().unwrap()).collect();
             assert!(paths.contains(&"default.txt"));
         });

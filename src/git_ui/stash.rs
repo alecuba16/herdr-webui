@@ -115,7 +115,8 @@ pub(super) async fn git_ui_stash_show(
     };
     let context = query.context.unwrap_or(3);
     let cwd = cwd.to_string();
-    match tokio::task::spawn_blocking(move || git_ui_stash_show_blocking(cwd, stash, context)).await {
+    match tokio::task::spawn_blocking(move || git_ui_stash_show_blocking(cwd, stash, context)).await
+    {
         Ok(Ok(response)) => response,
         Ok(Err((status, msg))) => git_json_error(status, msg),
         Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
