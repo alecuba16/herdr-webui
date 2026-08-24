@@ -805,3 +805,41 @@
   min-height: 72px;
   resize: vertical;
 }
+.git-ui-stash-list {
+  max-height: min(200px, 24vh);
+}
+.git-ui-stash-entry {
+  align-items: center;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+}
+.git-ui-stash-entry:hover {
+  background: var(--panel2);
+}
+.git-ui-stash-entry.active {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+.git-ui-stash-name {
+  font-size: 12px;
+  font-weight: 600;
+}
+.git-ui-stash-meta {
+  color: var(--muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  width: 100%;
+}
+.git-ui-stash-actions {
+  margin-bottom: 4px;
+}
+.git-ui-stash-entry-actions {
+  margin: 4px 0;
+}
