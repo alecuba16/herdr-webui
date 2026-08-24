@@ -2303,8 +2303,7 @@
     if (preview.loading) return `${stashActions}<div class="git-ui-loading"><span></span><strong>Loading stash diff</strong></div>`;
     if (preview.error) return `${stashActions}${stashActionsForEntry}<div class="git-ui-error">${esc(preview.error)}</div>`;
     const files = (preview.diff && preview.diff.files) || [];
-    const fileParam = view.stashFile ? files.filter((f) => f.path === view.stashFile) : files;
-    const filteredFiles = view.stashFile ? fileParam : files;
+    const filteredFiles = view.stashFile ? files.filter((f) => f.path === view.stashFile) : files;
     if (!filteredFiles.length) return `${stashActions}${stashActionsForEntry}<div class="git-ui-muted">No changes in this stash.</div>`;
     return `${stashActions}${stashActionsForEntry}${filteredFiles.map(renderStashDiffFile).join("")}`;
   }
@@ -2880,6 +2879,11 @@
       const view = active();
       if (!view) return;
       const path = decodeURIComponent(file);
+      if (view.tab === "stash") {
+        view.loadedLargeDiffFiles = Object.assign({}, view.loadedLargeDiffFiles || {}, { [path]: true });
+        render();
+        return;
+      }
       if (path === "__all__") {
         view.loadLargeChangeSet = true;
         view.loading = true;
@@ -3142,7 +3146,10 @@
       const view = active();
       if (!view) return;
       view.collapsedFiles = {};
-      for (const file of ((view.diff && view.diff.files) || [])) view.collapsedFiles[file.path] = true;
+      const files = view.tab === "stash"
+        ? ((view.selectedStashDiff && view.selectedStashDiff.diff && view.selectedStashDiff.diff.files) || [])
+        : ((view.diff && view.diff.files) || []);
+      for (const file of files) view.collapsedFiles[file.path] = true;
       render();
     },
     expandAllFiles() {
@@ -3158,6 +3165,12 @@
       view.diffContext = window.HerdrLineContext && window.HerdrLineContext.nextContextSize
         ? window.HerdrLineContext.nextContextSize(current, { min: 3, max: 200 })
         : Math.min(200, current < 3 ? 3 : current * 2);
+      if (view.tab === "stash" && view.selectedStash) {
+        view.selectedStashDiff = null;
+        render();
+        loadStashDiff(view, view.selectedStash);
+        return;
+      }
       loadDiff();
     },
     unstageHunk(path, index) { path = decodeURIComponent(path); applyHunk(path, index, { reverse: true, cached: true }); },
