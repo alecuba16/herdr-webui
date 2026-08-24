@@ -62,6 +62,7 @@ pub(crate) fn routes() -> Router<WebState> {
         )
         .route("/api/git-ui/file-history", get(file::git_ui_file_history))
         .route("/api/git-ui/stashes", get(stash::git_ui_stashes))
+        .route("/api/git-ui/stash-show", get(stash::git_ui_stash_show))
         .route("/api/git-ui/conflicts", get(conflict::git_ui_conflicts))
         .route("/api/git-ui/stage", post(git_ui_stage))
         .route("/api/git-ui/unstage", post(git_ui_unstage))
@@ -2129,6 +2130,50 @@ mod tests {
             )
             .await;
             assert_eq!(drop.status(), StatusCode::OK);
+        });
+    }
+
+    #[test]
+    fn git_ui_stash_show_returns_parsed_diff() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let repo = TempRepo::new();
+            repo.commit_initial();
+            repo.write("tracked.txt", "one\ntwo\n");
+            repo.write("new.txt", "new file\n");
+            let cwd = repo.path.to_str().unwrap().to_string();
+            let state = test_state();
+
+            let stash = git_ui_stash(
+                State(state.clone()),
+                HeaderMap::new(),
+                ConnectInfo(remote()),
+                Json(GitUiStashPushRequest {
+                    cwd: cwd.clone(),
+                    message: Some("show me".to_string()),
+                    paths: None,
+                }),
+            )
+            .await;
+            assert_eq!(stash.status(), StatusCode::OK);
+
+            let show = git_ui_stash_show(
+                State(state),
+                HeaderMap::new(),
+                ConnectInfo(remote()),
+                Query(GitUiStashShowQuery {
+                    cwd: Some(cwd),
+                    stash: Some("stash@{0}".to_string()),
+                    context: Some(3),
+                }),
+            )
+            .await;
+            assert_eq!(show.status(), StatusCode::OK);
+            let json = response_json(show).await;
+            let files = json["files"].as_array().unwrap();
+            assert!(!files.is_empty(), "stash-show should return diff files");
+            let paths: Vec<&str> = files.iter().map(|f| f["path"].as_str().unwrap()).collect();
+            assert!(paths.contains(&"tracked.txt"));
+            assert!(paths.contains(&"new.txt"));
         });
     }
 

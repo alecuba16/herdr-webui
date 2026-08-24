@@ -545,6 +545,10 @@
     view.selectedLogCommits = [];
     view.selectedCommitPreview = null;
     view.logFilePath = "";
+    view.selectedStash = "";
+    view.selectedStashDiff = null;
+    view.stashFile = "";
+    view.stashData = null;
     view.historyCommitHash = "";
     view.historySource = "";
     view.fileBackTarget = null;
@@ -563,6 +567,7 @@
     if (view.tab === "history" && view.file) return `History · ${view.file}`;
     if (view.tab === "log" && view.logFilePath) return `Log · ${view.logFilePath}`;
     if (view.tab === "log") return "Log";
+    if (view.tab === "stash" && view.selectedStash) return `Stash · ${view.selectedStash}`;
     if (view.tab === "stash") return "Stash";
     if (view.tab === "cleanup") return "Cleanup";
     if (view.fileBackTarget && view.fileBackTarget.type === "log") return `Committed file · ${view.file || "file"}`;
@@ -753,6 +758,10 @@
         selectedLogCommits: [],
         selectedCommitPreview: null,
         logFilePath: "",
+        selectedStash: "",
+        selectedStashDiff: null,
+        stashFile: "",
+        stashData: null,
         compareFilePaths: [],
         collapsedSections: {},
         expandedLargeSections: {},
@@ -821,12 +830,13 @@
     }
     view.error = "";
     view.loading = true;
+    if (view.tab === "stash") view.selectedStashDiff = null;
     if (state.visible) render();
     try {
       view.status = await api(`/api/git-ui/status?cwd=${encodeURIComponent(view.cwd)}`);
       if (view.tab === "stash" && !canOpenStashView(view)) view.tab = "changes";
       if (state.visible) render();
-      await loadDiff();
+      if (view.tab !== "stash") await loadDiff();
       view.loading = false;
       if (state.visible) render();
     } catch (err) {
@@ -912,6 +922,8 @@
   }
 
   function canMutateDiff() {
+    const view = active() || {};
+    if (view.tab === "stash") return false;
     return currentMode() === "changes" || currentMode() === "current-compare";
   }
 
@@ -1348,6 +1360,114 @@
     return section(`Committed files ${label}`, filterFiles(files, filter), "C");
   }
 
+  function stashSideSections(view, filter) {
+    const stashList = stashListHtml(view);
+    const fileSection = stashFileSection(view, filter);
+    return `${stashList}${fileSection}`;
+  }
+
+  function stashListHtml(view) {
+    const stashes = view.stashData && view.stashData.stashes ? view.stashData.stashes : [];
+    const items = stashes.map((s) => {
+      const name = String(s.name || "");
+      const selected = view.selectedStash === name ? " active" : "";
+      const meta = [s.date, s.message].filter(Boolean).map((v) => esc(v)).join(" · ");
+      return `<div class="git-ui-stash-entry${selected}" data-stash-name="${esc(name)}" onclick="HerdrGitUi.selectStash('${arg(name)}')"><span class="git-ui-stash-name">${esc(name)}</span><span class="git-ui-stash-meta">${meta}</span></div>`;
+    }).join("");
+    return `<div class="git-ui-section"><div class="git-ui-section-head"><strong>Stashes</strong><em>${esc(String(stashes.length))}</em></div><div class="git-ui-list git-ui-stash-list">${items || `<div class="git-ui-empty-row">No stashes</div>`}</div></div>`;
+  }
+
+  function stashFileSection(view, filter) {
+    const name = view.selectedStash;
+    if (!name) return "";
+    const preview = view.selectedStashDiff;
+    const label = String(name).replace(/^stash@\{(\d+)\}$/, "stash $1");
+    if (preview && preview.loading) return `<div class="git-ui-section"><div class="git-ui-section-head"><strong>Stash files</strong><em>${esc(label)}</em></div><div class="git-ui-empty-row">Loading stash files…</div></div>`;
+    if (preview && preview.error) return `<div class="git-ui-section"><div class="git-ui-section-head"><strong>Stash files</strong><em>${esc(label)}</em></div><div class="git-ui-error">${esc(preview.error)}</div></div>`;
+    const files = (preview && preview.diff && preview.diff.files) ? preview.diff.files.map((f) => f.path) : [];
+    const filtered = filterFiles(files, filter);
+    return stashFileSectionList(`Stash files ${label}`, filtered, view);
+  }
+
+  function stashFileSectionList(title, files, view) {
+    const list = files || [];
+    const collapsed = !!((view.collapsedSections || {})[title]);
+    const limit = largeSectionFileLimit();
+    const limited = limit > 0 && list.length > limit && !((view.expandedLargeSections || {})[title]);
+    const visibleList = limited ? list.slice(0, limit) : list;
+    const largeNote = limited ? `<div class="git-ui-large-file-diff"><button class="git-ui-large-file-load" type="button" onclick="HerdrGitUi.expandLargeSection('${arg(title)}')"><strong>Show all ${esc(title.toLowerCase())} files</strong></button><p>Showing first ${limit} of ${list.length} files to keep browser responsive.</p></div>` : "";
+    const body = visibleList.length ? renderStashFileTree(visibleList, view) : `<div class="git-ui-empty-row">No files in this stash</div>`;
+    return `<div class="git-ui-section"><div class="git-ui-section-head"><button class="git-ui-section-toggle" onclick="HerdrGitUi.toggleSection('${arg(title)}')"><span>${treeIcon(collapsed ? "chevron-right" : "chevron-down")}</span><strong>${esc(title)}</strong><em>${list.length}</em></button></div>${collapsed ? "" : `<div class="git-ui-list" role="tree" aria-label="${esc(title)} files">${body}${largeNote}</div>`}</div>`;
+  }
+
+  function renderStashFileTree(files, view) {
+    if (FileTree && FileTree.renderPathTree) {
+      return FileTree.renderPathTree(files, {
+        callback: "HerdrGitUi",
+        toggleMethod: "toggleDir",
+        selectMethod: "selectStashFile",
+        activateMethod: "activateTreeItem",
+        contextMethod: "fileMenu",
+        dataPrefix: "git",
+        rowClass: "git-ui-file",
+        dirClass: "git-ui-file git-ui-dir",
+        kind: "C",
+        selectedPath: view.stashFile,
+        selectedKind: "",
+        collapsedDirs: view.collapsedDirs || {},
+        expandedCompactDirs: view.expandedCompactDirs || {},
+        expandCompactMethod: "expandCompactDir",
+        filterTerm: view.fileFilter || "",
+      });
+    }
+    if (fileListMode() === "flat") return renderFlatStashFileList(files, view);
+    const root = { dirs: new Map(), files: [] };
+    for (const file of files) {
+      const parts = String(file).split("/").filter(Boolean);
+      let node = root;
+      for (const part of parts.slice(0, -1)) {
+        if (!node.dirs.has(part)) node.dirs.set(part, { dirs: new Map(), files: [] });
+        node = node.dirs.get(part);
+      }
+      node.files.push({ name: parts[parts.length - 1] || file, path: file });
+    }
+    return renderStashTreeNode(root, "", view, 0);
+  }
+
+  function renderFlatStashFileList(files, view) {
+    return (files || [])
+      .slice()
+      .sort((a, b) => pathBasename(a).localeCompare(pathBasename(b)) || String(a).localeCompare(String(b)))
+      .map((file) => renderStashSideFile(file, pathBasename(file), view, 0))
+      .join("");
+  }
+
+  function renderStashSideFile(file, name, view, level) {
+    const selected = view.stashFile === file ? " active" : "";
+    const indent = level ? ` style="--level:${level}"` : "";
+    return `<div class="herdr-tree-row git-ui-file file${selected}" role="treeitem" aria-label="${esc(name)}" title="${esc(file)}" data-git-path="${esc(file)}" data-git-name="${esc(name)}"${indent} onclick="HerdrGitUi.selectStashFile('${arg(file)}')"><span class="herdr-tree-icon herdr-tree-icon-file" aria-hidden="true"></span><span class="herdr-tree-name">${esc(name)}</span></div>`;
+  }
+
+  function renderStashTreeNode(node, path, view, level) {
+    const dirs = Array.from(node.dirs.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+    const files = (node.files || []).slice().sort((a, b) => a.name.localeCompare(b.name));
+    const dirHtml = dirs.map(([name, child]) => {
+      const childPath = path ? `${path}/${name}` : name;
+      const collapsed = !!((view.collapsedDirs || {})[childPath]);
+      return `<div class="herdr-tree-row git-ui-file git-ui-dir dir" role="treeitem" aria-expanded="${!collapsed}" data-git-dir="${esc(childPath)}" onclick="HerdrGitUi.toggleDir('${arg(childPath)}')"><span class="herdr-tree-caret" aria-hidden="true"></span><span class="herdr-tree-icon herdr-tree-icon-folder" aria-hidden="true"></span><span class="herdr-tree-name">${esc(name)}</span></div>${collapsed ? "" : `<div class="herdr-tree-children" role="group">${renderStashTreeNode(child, childPath, view, level + 1)}</div>`}`;
+    }).join("");
+    const fileHtml = files.map((item) => renderStashSideFile(item.path, item.name, view, level)).join("");
+    return `${dirHtml}${fileHtml}`;
+  }
+
+  function stashSideFileCount(view) {
+    if (!view) return 0;
+    const stashes = (view.stashData && view.stashData.stashes) ? view.stashData.stashes.length : 0;
+    const preview = view.selectedStashDiff;
+    const files = (preview && preview.diff && preview.diff.files) ? preview.diff.files.length : 0;
+    return stashes + files;
+  }
+
   function historicalFileCommitLabel(view) {
     const hash = view && (view.historyCommitHash || view.compareTarget || "");
     return hash ? String(hash).slice(0, 12) : "selected commit";
@@ -1434,6 +1554,8 @@
     const committedSelection = view.temporaryHistoryCompare || (view.fileBackTarget && view.fileBackTarget.type === "log");
     const fileSections = view.tab === "log"
       ? commitPreviewSection(view, filter)
+      : view.tab === "stash"
+        ? stashSideSections(view, filter)
       : committedSelection && view.file
         ? section(`Committed files ${historicalFileCommitLabel(view)}`, filterFiles(view.compareFilePaths && view.compareFilePaths.length ? view.compareFilePaths : [view.file], filter), "C")
       : currentMode() === "changes"
@@ -1478,6 +1600,7 @@
     if (!view) return 0;
     const status = view.status || {};
     if (view.tab === "log") return (((view.selectedCommitPreview || {}).diff || {}).files || []).length;
+    if (view.tab === "stash") return stashSideFileCount(view);
     if (view.temporaryHistoryCompare && view.file) return 1;
     if (currentMode() === "changes") {
       return [status.conflicted, status.staged, status.unstaged, status.untracked]
@@ -2160,7 +2283,65 @@
   async function renderStash(version) {
     const view = active();
     const data = await api(`/api/git-ui/stashes?cwd=${encodeURIComponent(view.cwd)}`);
-    replaceContent(version, `<div class="git-ui-actions"><button class="git-ui-btn" onclick="HerdrGitUi.stash()">Stash push</button></div><div class="git-ui-list">${(data.stashes || []).map((s) => `<div class="git-ui-file"><span>${esc(s.name)} ${esc(s.message)}</span><span><button class="git-ui-btn" onclick="HerdrGitUi.applyStash('${arg(s.name)}',false)">Apply</button><button class="git-ui-btn" onclick="HerdrGitUi.applyStash('${arg(s.name)}',true)">Pop</button><button class="git-ui-btn danger" onclick="HerdrGitUi.dropStash('${arg(s.name)}')">Drop</button></span></div>`).join("")}</div>`);
+    view.stashData = data;
+    const stashes = data.stashes || [];
+    if (!view.selectedStash && stashes.length) view.selectedStash = String(stashes[0].name || "");
+    if (view.selectedStash && !stashes.some((s) => s.name === view.selectedStash)) view.selectedStash = stashes.length ? String(stashes[0].name || "") : "";
+    replaceContent(version, renderStashDiff());
+    if (view.selectedStash) loadStashDiff(view, view.selectedStash);
+  }
+
+  function renderStashDiff() {
+    const view = active() || {};
+    const stashes = (view.stashData && view.stashData.stashes) ? view.stashData.stashes : [];
+    const name = view.selectedStash;
+    const stashActions = `<div class="git-ui-actions git-ui-stash-actions"><button class="git-ui-btn primary" onclick="HerdrGitUi.stash()">Stash push</button></div>`;
+    if (!stashes.length) return `${stashActions}<div class="git-ui-muted">No stashes found.</div>`;
+    if (!name) return `${stashActions}<div class="git-ui-muted">Select a stash to view its changes.</div>`;
+    const preview = view.selectedStashDiff || {};
+    const stashActionsForEntry = `<div class="git-ui-actions git-ui-stash-entry-actions"><button class="git-ui-btn primary" title="Apply stash without removing it" onclick="HerdrGitUi.applyStash('${arg(name)}',false)">Apply</button><button class="git-ui-btn" title="Pop stash (apply and remove)" onclick="HerdrGitUi.applyStash('${arg(name)}',true)">Pop</button><button class="git-ui-btn danger" title="Drop stash" onclick="HerdrGitUi.dropStash('${arg(name)}')">Drop</button></div>`;
+    if (preview.loading) return `${stashActions}<div class="git-ui-loading"><span></span><strong>Loading stash diff</strong></div>`;
+    if (preview.error) return `${stashActions}${stashActionsForEntry}<div class="git-ui-error">${esc(preview.error)}</div>`;
+    const files = (preview.diff && preview.diff.files) || [];
+    const fileParam = view.stashFile ? files.filter((f) => f.path === view.stashFile) : files;
+    const filteredFiles = view.stashFile ? fileParam : files;
+    if (!filteredFiles.length) return `${stashActions}${stashActionsForEntry}<div class="git-ui-muted">No changes in this stash.</div>`;
+    return `${stashActions}${stashActionsForEntry}${filteredFiles.map(renderStashDiffFile).join("")}`;
+  }
+
+  function renderStashDiffFile(file) {
+    const view = active() || {};
+    const collapsed = !!(view.collapsedFiles || {})[file.path];
+    const lineCount = diffFileLineCount(file);
+    const large = lineCount > LARGE_FILE_DIFF_LINE_LIMIT;
+    const loadedLarge = !!(view.loadedLargeDiffFiles || {})[file.path];
+    const renderFullLarge = !!(view.fullLargeDiffFiles || {})[diffFileKey(file)];
+    const body = collapsed
+      ? ""
+      : large && !loadedLarge
+        ? renderLargeDiffPlaceholder(file)
+        : renderDiffFileBody(file, lineCount, large, renderFullLarge);
+    const stashName = view.selectedStash || "stash@{0}";
+    return `<div class="git-ui-diff-file" data-git-path="${esc(file.path)}"><div class="git-ui-diff-file-head"><button class="git-ui-file-collapse" title="${collapsed ? "Show file" : "Collapse file"}" onclick="HerdrGitUi.toggleFile('${arg(file.path)}')">${collapsed ? "+" : "−"}</button><strong>${esc(file.path)}</strong><span class="git-ui-muted">${esc(stashName)} → working tree</span><span class="git-ui-diff-file-actions"><span class="git-ui-badge add">+${file.additions || 0}</span> <span class="git-ui-badge del">-${file.deletions || 0}</span></span></div>${body}</div>`;
+  }
+
+  function loadStashDiff(view, name) {
+    if (!view || !name) return;
+    const current = view.selectedStashDiff || {};
+    if (current.name === name && (current.loading || current.diff || current.error)) return;
+    view.selectedStashDiff = { name, loading: true, error: "", diff: null };
+    const context = Math.max(0, Math.min(200, Number(view.diffContext || 3)));
+    api(`/api/git-ui/stash-show?cwd=${encodeURIComponent(view.cwd)}&stash=${encodeURIComponent(name)}&context=${context}`)
+      .then((diff) => {
+        if (!view.selectedStashDiff || view.selectedStashDiff.name !== name) return;
+        view.selectedStashDiff = { name, loading: false, error: "", diff };
+        if (state.visible) render();
+      })
+      .catch((err) => {
+        if (!view.selectedStashDiff || view.selectedStashDiff.name !== name) return;
+        view.selectedStashDiff = { name, loading: false, error: err.message || String(err), diff: null };
+        if (state.visible) render();
+      });
   }
 
   function renderCleanup() {
@@ -2354,14 +2535,14 @@
     if (view.tab === "changes") body = renderDiff();
     if (view.tab === "conflicts") body = renderConflicts();
     if (view.tab === "log") body = `<div class="git-ui-muted">Loading log...</div>`;
-    if (view.tab === "stash") body = `<div class="git-ui-muted">Loading stashes...</div>`;
+    if (view.tab === "stash") body = renderStashDiff();
     if (view.tab === "cleanup") body = renderCleanup();
     if (view.tab === "history") body = `<div class="git-ui-muted">Loading history...</div>`;
     return `<main class="git-ui-main"><div class="git-ui-content">${body}</div></main>`;
   }
 
   function preserveContentScroll(tab) {
-    return tab === "cleanup" || tab === "log";
+    return tab === "cleanup" || tab === "log" || tab === "stash";
   }
 
   function setupDiffHunkScrollbars(root) {
@@ -2989,8 +3170,35 @@
       const message = prompt(`Stash message for ${path}`, `herdr-webui stash ${path}`);
       if (message !== null) post("/api/git-ui/stash", { cwd: active().cwd, message, paths: [path] }, "Stashing file");
     },
-    applyStash(stash, pop) { post("/api/git-ui/stash-apply", { cwd: active().cwd, stash: decodeURIComponent(stash), pop }, pop ? "Popping stash" : "Applying stash"); },
-    dropStash(stash) { stash = decodeURIComponent(stash); if (confirm(`Drop ${stash}?`)) post("/api/git-ui/stash-drop", { cwd: active().cwd, stash, confirmed: true }, "Dropping stash"); },
+    applyStash(stash, pop) {
+      stash = decodeURIComponent(stash);
+      post("/api/git-ui/stash-apply", { cwd: active().cwd, stash, pop }, pop ? "Popping stash" : "Applying stash");
+    },
+    dropStash(stash) {
+      stash = decodeURIComponent(stash);
+      if (confirm(`Drop ${stash}?`)) post("/api/git-ui/stash-drop", { cwd: active().cwd, stash, confirmed: true }, "Dropping stash");
+    },
+    selectStash(name) {
+      const view = active();
+      if (!view) return;
+      name = decodeURIComponent(name);
+      view.selectedStash = name;
+      view.selectedStashDiff = null;
+      view.stashFile = "";
+      render();
+      loadStashDiff(view, name);
+    },
+    selectStashFile(path) {
+      const view = active();
+      if (!view) return;
+      path = decodeURIComponent(path);
+      view.stashFile = path;
+      render();
+      requestAnimationFrame(() => {
+        const node = document.querySelector(`.git-ui-diff-file[data-git-path="${CSS.escape(path)}"]`);
+        if (node) node.scrollIntoView({ block: "start", behavior: "smooth" });
+      });
+    },
     async scanCleanup() {
       const view = active();
       if (!view) return;
