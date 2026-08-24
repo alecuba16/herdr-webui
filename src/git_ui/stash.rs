@@ -7,8 +7,16 @@ use axum::Json;
 use serde::Deserialize;
 use serde_json::json;
 
+use super::diff::parse_unified_diff;
 use super::{git_json_error, git_ui_text, safe_git_token, safe_repo_path, GitUiCwdQuery};
 use crate::{require_auth, WebState};
+
+#[derive(Deserialize)]
+pub(super) struct GitUiStashShowQuery {
+    pub(super) cwd: Option<String>,
+    pub(super) stash: Option<String>,
+    pub(super) context: Option<usize>,
+}
 
 #[derive(Deserialize)]
 pub(super) struct GitUiStashPushRequest {
@@ -58,6 +66,57 @@ pub(super) async fn git_ui_stashes(
     };
     let cwd = cwd.to_string();
     match tokio::task::spawn_blocking(move || git_ui_stashes_blocking(cwd)).await {
+        Ok(Ok(response)) => response,
+        Ok(Err((status, msg))) => git_json_error(status, msg),
+        Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    }
+}
+
+fn git_ui_stash_show_blocking(
+    cwd: String,
+    stash: String,
+    context: usize,
+) -> Result<Response, (StatusCode, String)> {
+    let ctx = context.clamp(0, 200).to_string();
+    let args = [
+        "stash",
+        "show",
+        "-p",
+        "--include-untracked",
+        "--no-ext-diff",
+        "--color=never",
+        &format!("-U{ctx}"),
+        &stash,
+    ];
+    match git_ui_text(&cwd, &args) {
+        Ok(text) => {
+            let files = parse_unified_diff(&text);
+            Ok(Json(json!({ "files": files })).into_response())
+        }
+        Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
+    }
+}
+
+pub(super) async fn git_ui_stash_show(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    Query(query): Query<GitUiStashShowQuery>,
+) -> Response {
+    if let Err(response) = require_auth(&state, &headers, remote) {
+        return response;
+    }
+    let Some(cwd) = query.cwd.as_deref() else {
+        return git_json_error(StatusCode::BAD_REQUEST, "cwd is required");
+    };
+    let stash = match safe_git_token(query.stash.as_deref().unwrap_or("stash@{0}"), "stash") {
+        Ok(v) => v.to_string(),
+        Err(err) => return git_json_error(StatusCode::BAD_REQUEST, err),
+    };
+    let context = query.context.unwrap_or(3);
+    let cwd = cwd.to_string();
+    match tokio::task::spawn_blocking(move || git_ui_stash_show_blocking(cwd, stash, context)).await
+    {
         Ok(Ok(response)) => response,
         Ok(Err((status, msg))) => git_json_error(status, msg),
         Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
