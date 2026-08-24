@@ -889,6 +889,143 @@ describe("app bundle load", () => {
     match(gitUiSource, /\/api\/git-ui\/tag/);
   });
 
+  it("renders stash view with diff preview and file tree", () => {
+    const gitLayoutCss = readFileSync(new URL("./desktop/git_ui/layout.css", import.meta.url), "utf8");
+
+    // State initialization
+    match(gitUiSource, /view\.selectedStash = "";/);
+    match(gitUiSource, /view\.selectedStashDiff = null;/);
+    match(gitUiSource, /view\.stashFile = "";/);
+    match(gitUiSource, /view\.stashData = null;/);
+
+    // View cache initialization
+    match(gitUiSource, /selectedStash: ""/);
+    match(gitUiSource, /selectedStashDiff: null/);
+    match(gitUiSource, /stashFile: ""/);
+    match(gitUiSource, /stashData: null/);
+
+    // Title rendering
+    match(gitUiSource, /view\.tab === "stash" && view\.selectedStash\) return `Stash . \$\{view\.selectedStash\}`/);
+    match(gitUiSource, /view\.tab === "stash"\) return "Stash"/);
+
+    // renderStash: loads stash list, auto-selects first, fetches diff
+    match(gitUiSource, /async function renderStash\(version\)/);
+    match(gitUiSource, /\/api\/git-ui\/stashes\?cwd=/);
+    match(gitUiSource, /view\.stashData = data;/);
+    match(gitUiSource, /if \(!view\.selectedStash && stashes\.length\) view\.selectedStash = String\(stashes\[0\]\.name/);
+    match(gitUiSource, /if \(view\.selectedStash && !stashes\.some\(\(s\) => s\.name === view\.selectedStash\)\)/);
+    match(gitUiSource, /replaceContent\(version, renderStashDiff\(\)\)/);
+    match(gitUiSource, /if \(view\.selectedStash\) loadStashDiff\(view, view\.selectedStash\)/);
+
+    // renderStashDiff: renders actions, loading, error, and file list
+    match(gitUiSource, /function renderStashDiff\(\)/);
+    match(gitUiSource, /HerdrGitUi\.stash\(\)">Stash push<\/button>/);
+    match(gitUiSource, /No stashes found\./);
+    match(gitUiSource, /Select a stash to view its changes\./);
+    match(gitUiSource, /Loading stash diff/);
+    match(gitUiSource, /No changes in this stash\./);
+    match(gitUiSource, /HerdrGitUi\.applyStash\('\$\{arg\(name\)\}',false\)">Apply<\/button>/);
+    match(gitUiSource, /HerdrGitUi\.applyStash\('\$\{arg\(name\)\}',true\)">Pop<\/button>/);
+    match(gitUiSource, /HerdrGitUi\.dropStash\('\$\{arg\(name\)\}'\)">Drop<\/button>/);
+
+    // renderStashDiffFile: renders individual file diff with stash label
+    match(gitUiSource, /function renderStashDiffFile\(file\)/);
+    match(gitUiSource, /\$\{esc\(stashName\)\} → working tree/);
+    match(gitUiSource, /view\.selectedStash \|\| "stash@\{0\}"/);
+
+    // loadStashDiff: fetches stash-show API with context parameter
+    match(gitUiSource, /function loadStashDiff\(view, name\)/);
+    match(gitUiSource, /\/api\/git-ui\/stash-show\?cwd=/);
+    match(gitUiSource, /&stash=\$\{encodeURIComponent\(name\)\}/);
+    match(gitUiSource, /&context=\$\{context\}/);
+    match(gitUiSource, /view\.selectedStashDiff = \{ name, loading: true/);
+    match(gitUiSource, /if \(current\.name === name && \(current\.loading \|\| current\.diff\)\) return;/);
+    match(gitUiSource, /view\.selectedStashDiff = \{ name, loading: false, error: "", diff \}/);
+    match(gitUiSource, /view\.selectedStashDiff = \{ name, loading: false, error: err\.message/);
+
+    // Stash side panel: stash list and file tree
+    match(gitUiSource, /function stashListHtml\(view\)/);
+    match(gitUiSource, /git-ui-stash-entry/);
+    match(gitUiSource, /HerdrGitUi\.selectStash\('\$\{arg\(name\)\}'\)/);
+    match(gitUiSource, /git-ui-stash-name/);
+    match(gitUiSource, /git-ui-stash-meta/);
+    match(gitUiSource, /No stashes/);
+
+    match(gitUiSource, /function stashFileSection\(view, filter\)/);
+    match(gitUiSource, /function stashFileSectionList\(title, files, view\)/);
+    match(gitUiSource, /Loading stash files/);
+    match(gitUiSource, /No files in this stash/);
+    match(gitUiSource, /renderFileTree\(visibleList, "C", view, \{ selectMethod: "selectStashFile", selectedPath: view\.stashFile, selectedKind: "", metaForPath: null, statusForPath: null \}\)/);
+
+    // renderFileTree parameterized with overrides
+    match(gitUiSource, /function renderFileTree\(files, kind, view, options\)/);
+    match(gitUiSource, /const selectMethod = overrides\.selectMethod \|\| "selectFile";/);
+    match(gitUiSource, /const selectedPath = overrides\.selectedPath !== undefined \? overrides\.selectedPath : view\.file;/);
+    match(gitUiSource, /const metaForPath = overrides\.metaForPath !== undefined \? overrides\.metaForPath : fileSummary;/);
+    match(gitUiSource, /const statusForPath = overrides\.statusForPath !== undefined \? overrides\.statusForPath : fileTreeStatus;/);
+    match(gitUiSource, /selectMethod,/);
+    match(gitUiSource, /selectedPath,/);
+    match(gitUiSource, /selectedKind,/);
+    match(gitUiSource, /metaForPath,/);
+    match(gitUiSource, /statusForPath,/);
+
+    // Public API: selectStash and selectStashFile
+    match(gitUiSource, /selectStash\(name\)/);
+    match(gitUiSource, /view\.selectedStash = name;/);
+    match(gitUiSource, /view\.stashFile = "";/);
+    match(gitUiSource, /loadStashDiff\(view, name\)/);
+    match(gitUiSource, /selectStashFile\(path\)/);
+    match(gitUiSource, /view\.stashFile = path;/);
+    match(gitUiSource, /node\.scrollIntoView\(\{ block: "start", behavior: "smooth" \}\)/);
+
+    // canMutateDiff: stash tab is read-only
+    match(gitUiSource, /if \(view\.tab === "stash"\) return false;/);
+
+    // Refresh: clears selectedStashDiff, skips loadDiff for stash
+    match(gitUiSource, /if \(view\.tab === "stash"\) view\.selectedStashDiff = null;/);
+    match(gitUiSource, /if \(view\.tab !== "stash"\) await loadDiff\(\)/);
+
+    // renderLoading: uses renderStashDiff for stash tab
+    match(gitUiSource, /view\.tab === "stash"\) body = renderStashDiff\(\)/);
+
+    // renderSide: stash uses stashListHtml + stashFileSection
+    match(gitUiSource, /stashListHtml\(view\) \+ stashFileSection\(view, filter\)/);
+
+    // renderSideFileCount: inline stash count
+    match(gitUiSource, /if \(view\.tab === "stash"\) \{/);
+    match(gitUiSource, /const stashes = \(view\.stashData && view\.stashData\.stashes\) \? view\.stashData\.stashes\.length : 0;/);
+    match(gitUiSource, /const preview = view\.selectedStashDiff;/);
+    match(gitUiSource, /const files = \(preview && preview\.diff && preview\.diff\.files\) \? preview\.diff\.files\.length : 0;/);
+    match(gitUiSource, /return stashes \+ files;/);
+
+    // collapseAllFiles: uses stash diff files
+    match(gitUiSource, /const files = view\.tab === "stash"/);
+    match(gitUiSource, /\? \(\(view\.selectedStashDiff && view\.selectedStashDiff\.diff && view\.selectedStashDiff\.diff\.files\) \|\| \[\]\)/);
+    match(gitUiSource, /: \(\(view\.diff && view\.diff\.files\) \|\| \[\]\)/);
+
+    // expandContext: reloads stash diff instead of loadDiff
+    match(gitUiSource, /if \(view\.tab === "stash" && view\.selectedStash\) \{/);
+    match(gitUiSource, /view\.selectedStashDiff = null;/);
+    match(gitUiSource, /loadStashDiff\(view, view\.selectedStash\)/);
+
+    // loadLargeDiff: stash tab marks file as loaded
+    match(gitUiSource, /if \(view\.tab === "stash"\) \{/);
+    match(gitUiSource, /view\.loadedLargeDiffFiles = Object\.assign\(\{\}, view\.loadedLargeDiffFiles \|\| \{\}, \{ \[path\]: true \}\)/);
+
+    // renderGitUi dispatches to renderStash for stash tab
+    match(gitUiSource, /view\.tab === "stash"\) renderStash\(version\)/);
+
+    // CSS: stash list and entry styles
+    match(gitLayoutCss, /\.git-ui-stash-list \{/);
+    match(gitLayoutCss, /\.git-ui-stash-entry \{/);
+    match(gitLayoutCss, /\.git-ui-stash-entry:hover \{/);
+    match(gitLayoutCss, /\.git-ui-stash-entry\.active \{/);
+    match(gitLayoutCss, /\.git-ui-stash-name \{/);
+    match(gitLayoutCss, /\.git-ui-stash-meta \{/);
+    match(gitLayoutCss, /\.git-ui-stash-actions \{/);
+    match(gitLayoutCss, /\.git-ui-stash-entry-actions \{/);
+  });
+
   it("keeps workspace shell tabs scoped to each workspace", () => {
     match(source, /workspaceShell: \{\}/);
     match(source, /function workspaceShellState/);

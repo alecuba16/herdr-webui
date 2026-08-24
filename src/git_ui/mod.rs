@@ -2178,6 +2178,111 @@ mod tests {
     }
 
     #[test]
+    fn git_ui_stash_show_rejects_missing_cwd() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let state = test_state();
+            let res = git_ui_stash_show(
+                State(state),
+                HeaderMap::new(),
+                ConnectInfo(remote()),
+                Query(GitUiStashShowQuery {
+                    cwd: None,
+                    stash: Some("stash@{0}".to_string()),
+                    context: Some(3),
+                }),
+            )
+            .await;
+            assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        });
+    }
+
+    #[test]
+    fn git_ui_stash_show_rejects_unsafe_stash_token() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let repo = TempRepo::new();
+            repo.commit_initial();
+            let cwd = repo.path.to_str().unwrap().to_string();
+            let state = test_state();
+            let res = git_ui_stash_show(
+                State(state),
+                HeaderMap::new(),
+                ConnectInfo(remote()),
+                Query(GitUiStashShowQuery {
+                    cwd: Some(cwd),
+                    stash: Some("--evil".to_string()),
+                    context: Some(3),
+                }),
+            )
+            .await;
+            assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        });
+    }
+
+    #[test]
+    fn git_ui_stash_show_defaults_to_stash_at_0() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let repo = TempRepo::new();
+            repo.commit_initial();
+            repo.write("default.txt", "content\n");
+            let cwd = repo.path.to_str().unwrap().to_string();
+            let state = test_state();
+
+            let stash = git_ui_stash(
+                State(state.clone()),
+                HeaderMap::new(),
+                ConnectInfo(remote()),
+                Json(GitUiStashPushRequest {
+                    cwd: cwd.clone(),
+                    message: Some("default test".to_string()),
+                    paths: None,
+                }),
+            )
+            .await;
+            assert_eq!(stash.status(), StatusCode::OK);
+
+            let show = git_ui_stash_show(
+                State(state),
+                HeaderMap::new(),
+                ConnectInfo(remote()),
+                Query(GitUiStashShowQuery {
+                    cwd: Some(cwd),
+                    stash: None,
+                    context: None,
+                }),
+            )
+            .await;
+            assert_eq!(show.status(), StatusCode::OK);
+            let json = response_json(show).await;
+            let files = json["files"].as_array().unwrap();
+            assert!(!files.is_empty(), "stash-show should default to stash@{{0}}");
+            let paths: Vec<&str> = files.iter().map(|f| f["path"].as_str().unwrap()).collect();
+            assert!(paths.contains(&"default.txt"));
+        });
+    }
+
+    #[test]
+    fn git_ui_stash_show_returns_empty_files_for_nonexistent_stash() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let repo = TempRepo::new();
+            repo.commit_initial();
+            let cwd = repo.path.to_str().unwrap().to_string();
+            let state = test_state();
+            let show = git_ui_stash_show(
+                State(state),
+                HeaderMap::new(),
+                ConnectInfo(remote()),
+                Query(GitUiStashShowQuery {
+                    cwd: Some(cwd),
+                    stash: Some("stash@{999}".to_string()),
+                    context: Some(3),
+                }),
+            )
+            .await;
+            assert_eq!(show.status(), StatusCode::BAD_GATEWAY);
+        });
+    }
+
+    #[test]
     fn git_ui_conflict_routes_detect_resolve_and_abort_merge() {
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             let repo = TempRepo::new();
