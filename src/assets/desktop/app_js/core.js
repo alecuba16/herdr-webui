@@ -142,6 +142,13 @@ const FAST_REFRESH_EVENTS = new Set([
   "worktree.removed",
 ]);
 let sidebarCollapsed = storedFlag(SIDEBAR_COLLAPSED_KEY);
+// Tracks the workspace id whose shell mode (terminal/git/files) was last
+// applied to the DOM. When refreshOnline finishes for a *different* workspace
+// than the one currently shown, the shell surfaces (terminal/git/file panels)
+// still reflect the previous workspace. Calling applyWorkspaceShellForSelection
+// after render() restores the correct surface for the newly selected workspace.
+// Set to null to force a shell sync on the next refreshOnline.
+let lastShellWorkspace = null;
 let noSleepState = { mode: "off", until_ms: null, error: null, supported: true };
 let noSleepPollTimer = null;
 let noSleepRequestSeq = 0;
@@ -2613,7 +2620,10 @@ function navigateSelection(e, ws, tab, pane) {
     return true;
   e.preventDefault();
   go(ws, tab, pane);
-  applyWorkspaceShellForSelection(ws);
+  // Shell mode (terminal/git/files) is now restored inside refreshOnline
+  // after render() completes. The previous applyWorkspaceShellForSelection
+  // call here raced with the async refresh: it ran before the new workspace
+  // data arrived, so surfaces still showed the previous workspace's mode.
   return false;
 }
 function go(ws, tab, pane) {
@@ -2631,6 +2641,7 @@ function goSession(name, backend = currentSessionBackend()) {
   state.tab = null;
   state.pane = null;
   state.workspaceShell = {};
+  lastShellWorkspace = null;
   syncWorkspaceShellRestoreControl();
   resetTerminalConnection(true);
   setTerminalLoading(true);
@@ -2832,6 +2843,15 @@ async function refreshOnline(seq) {
       );
   }
   render();
+  // Restore the shell mode (terminal/git/files) for the selected workspace
+  // after render() has updated the sidebar and before connectTerminal(). This
+  // ensures the correct surface is visible for the current workspace. We only
+  // call applyWorkspaceShellForSelection when the workspace actually changed
+  // since the last refresh to avoid redundant surface toggles on every poll.
+  if (state.ws && state.ws !== lastShellWorkspace) {
+    applyWorkspaceShellForSelection(state.ws);
+    lastShellWorkspace = state.ws;
+  }
   if (state.ws) connectTerminal();
 }
 async function refresh() {
