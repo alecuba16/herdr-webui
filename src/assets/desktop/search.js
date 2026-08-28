@@ -542,8 +542,11 @@ function runSearchAction(action) {
   else if (action === "create-worktree") {
     if (state.ws) openWorktreeCreateModal(state.ws);
     else openWorktreeOpenModal(selectedWorkspaceRepoPath(), true);
-  } else if (action === "temp-terminal" && tempTerminal) tempTerminal.open();
-  else if (action === "sessions") showSessionManager();
+  } else if (action === "temp-terminal" && tempTerminal) {
+    const ws = currentSearchWorkspace();
+    const folder = ws ? (workspacePath(ws) || "") : "";
+    tempTerminal.open(folder);
+  } else if (action === "sessions") showSessionManager();
   else if (action === "files") openWorkspaceFileBrowser(state.ws);
   else if (action === "git") openWorkspaceGitUi(state.ws);
 }

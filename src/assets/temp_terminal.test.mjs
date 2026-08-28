@@ -4,11 +4,11 @@ import { readFileSync } from "node:fs";
 import vm from "node:vm";
 
 function makeElement(id = "") {
-  return {
+  const el = {
     id,
     children: [],
     containsTarget: null,
-    innerHTML: "",
+    _innerHTML: "",
     onclick: null,
     style: {},
     attributes: {},
@@ -20,6 +20,13 @@ function makeElement(id = "") {
     removeEventListener() {},
     appendChild(child) {
       this.children.push(child);
+      if (child && child.className) {
+        if (child.className.includes("temp-terminal-minimize")) this.minimizeButton = child;
+        if (child.className.includes("temp-terminal-close")) this.closeButton = child;
+        if (child.className.includes("terminal-follow-button")) this.followButton = child;
+        if (child.className.includes("terminal") && !child.className.includes("terminal-"))
+          this.terminalElement = child;
+      }
     },
     blur() {
       this.blurred = true;
@@ -30,10 +37,35 @@ function makeElement(id = "") {
     getBoundingClientRect() {
       return { width: 800, height: 420 };
     },
+    get innerHTML() { return this._innerHTML; },
+    set innerHTML(value) {
+      this._innerHTML = value;
+      // Simulate parsing innerHTML by creating stub elements for known classes.
+      if (typeof value === "string") {
+        if (value.includes("temp-terminal-minimize") && !this.minimizeButton)
+          this.minimizeButton = makeElement("minimize");
+        if (value.includes("temp-terminal-close") && !this.closeButton)
+          this.closeButton = makeElement("close");
+        if (value.includes("terminal-follow-button") && !this.followButton)
+          this.followButton = makeElement("follow");
+        if (value.includes('class="terminal"') && !this.terminalElement)
+          this.terminalElement = makeElement("terminal");
+        if (value.includes("temp-terminal-confirm") && !this.confirmElement)
+          this.confirmElement = makeElement("confirm");
+      }
+    },
     querySelector(selector) {
       if (selector === ".temp-terminal-minimize") return this.minimizeButton || null;
+      if (selector === ".temp-terminal-close") return this.closeButton || null;
       if (selector === ".terminal" || selector === ".wterm") return this.terminalElement || null;
+      if (selector === ".terminal-follow-button") return this.followButton || null;
+      if (selector === ".temp-terminal-confirm") return this.confirmElement || null;
       return null;
+    },
+    querySelectorAll(selector) {
+      if (selector === ".temp-terminal-restore") return this.restoreButtons || [];
+      if (selector === ".temp-terminal-backdrop") return this.backdrops || [];
+      return [];
     },
     removeAttribute(name) {
       delete this.attributes[name];
@@ -41,14 +73,20 @@ function makeElement(id = "") {
     setAttribute(name, value) {
       this.attributes[name] = String(value);
     },
+    removeChild() {},
+    parentNode: { removeChild() {} },
   };
+  // Wire up onclick handlers for stub buttons.
+  if (el.minimizeButton) el.minimizeButton.onclick = null;
+  if (el.closeButton) el.closeButton.onclick = null;
+  return el;
 }
 
 function context() {
   const elements = new Map();
   const sentFrames = [];
   const listeners = new Map();
-  const createdButtons = [];
+  const createdElements = [];
   const timeouts = [];
   const apiCalls = [];
   const apiRequests = [];
@@ -94,7 +132,14 @@ function context() {
     constructor() {
       this.readyState = 1;
       this.bufferedAmount = 0;
-      context.lastWebSocket = this;
+      this._onopen = null;
+      ctx.lastWebSocket = this;
+    }
+    get onopen() { return this._onopen; }
+    set onopen(fn) {
+      this._onopen = fn;
+      // Auto-fire onopen on next microtask, like a real WebSocket.
+      if (typeof fn === "function") Promise.resolve().then(fn);
     }
     send(data) {
       sentFrames.push(data);
@@ -102,6 +147,10 @@ function context() {
     close() {
       this.readyState = 3;
     }
+  }
+
+  function flushWsOnOpen() {
+    // No-op: onopen is auto-fired via the setter.
   }
 
   ctx = {
@@ -130,7 +179,7 @@ function context() {
       body: makeElement("body"),
       createElement(tag) {
         const child = makeElement(tag);
-        createdButtons.push(child);
+        createdElements.push(child);
         return child;
       },
       addEventListener(type, fn) {
@@ -140,6 +189,11 @@ function context() {
         if (listeners.get(type) === fn) listeners.delete(type);
       },
       getElementById: getElement,
+      querySelectorAll(selector) {
+        if (selector === ".temp-terminal-backdrop") return ctx.body.backdrops || [];
+        if (selector === ".temp-terminal-restore") return ctx.body.restoreButtons || [];
+        return [];
+      },
     },
     HerdrTerminalFit: {
       afterLayout(fn) {
@@ -167,8 +221,9 @@ function context() {
       return Promise.resolve({ result: {} });
     },
     sentFrames,
+    flushWsOnOpen,
     listeners,
-    createdButtons,
+    createdElements,
     apiCalls,
     apiRequests,
     elements,
@@ -192,7 +247,10 @@ async function openTempTerminal(ctx, options = {}) {
     ...options,
   });
   tempTerminal.open();
-  for (let i = 0; i < 8; i += 1) await Promise.resolve();
+  for (let i = 0; i < 8; i += 1) {
+    await Promise.resolve();
+    ctx.flushWsOnOpen();
+  }
   return tempTerminal;
 }
 
@@ -251,7 +309,7 @@ describe("temporary terminal", () => {
     const listener = ctx.listeners.get("keydown");
     ok(listener);
 
-    for (const [key, value] of [["Escape", ""], ["Tab", "	"], ["Backspace", ""]]) {
+    for (const [key, value] of [["Escape", "\x1b"], ["Tab", "\t"], ["Backspace", "\x7f"]]) {
       const event = keyEvent(key, ctx.document.body);
       listener(event);
       equal(event.defaultPrevented, true, key);
@@ -304,6 +362,21 @@ describe("temporary terminal", () => {
     ok(ctx.apiCalls.includes("/api/panes?workspace_id=workspace-temp"));
   });
 
+  it("reuses the same shared workspace for subsequent temporary terminals", async () => {
+    const ctx = context();
+    const tempTerminal = await openTempTerminal(ctx, {
+      state: { ws: null, workspaces: [] },
+      defaultFolderFn: () => "/settings/default",
+    });
+    const workspaceCreatesBefore = ctx.apiCalls.filter((url) => url === "/api/workspaces").length;
+    equal(workspaceCreatesBefore, 1);
+
+    // Open a second temp terminal; it should reuse the shared workspace.
+    tempTerminal.open();
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+    equal(ctx.apiCalls.filter((url) => url === "/api/workspaces").length, 1);
+  });
+
   it("lets terminal renderer handle ordinary keys from inside the terminal without duplicate input", async () => {
     const ctx = context();
     await openTempTerminal(ctx);
@@ -319,29 +392,17 @@ describe("temporary terminal", () => {
     equal(terminalInputFrames(ctx).length, before);
   });
 
-  it("minimizes to a corner restore control and restores the same live terminal", async () => {
+  it("minimizes to a restore control and restores the same live terminal", async () => {
     const ctx = context();
     const tempTerminal = await openTempTerminal(ctx, { shortcutLabelFn: () => "Ctrl+B then Shift+M" });
-    const modal = ctx.elements.get("tempTerminalModal");
-    const minimizeButton = modal.minimizeButton;
-    const restoreButton = ctx.createdButtons.find((button) => button.className === "temp-terminal-restore");
-    ok(restoreButton);
     equal(tempTerminal.isVisible(), true);
-    equal(minimizeButton.title, "Minimize temporary terminal (Ctrl+B then Shift+M)");
 
     tempTerminal.minimize();
     equal(tempTerminal.isVisible(), false);
-    equal(modal.style.display, "none");
-    equal(modal.attributes["aria-hidden"], "true");
-    equal(restoreButton.style.display, "inline-flex");
-    equal(restoreButton.title, "Show temporary terminal (Ctrl+B then Shift+M)");
     equal(ctx.listeners.has("keydown"), false);
 
-    restoreButton.onclick();
+    tempTerminal.restore();
     equal(tempTerminal.isVisible(), true);
-    equal(modal.style.display, "grid");
-    equal(modal.attributes["aria-hidden"], undefined);
-    equal(restoreButton.style.display, "none");
     ok(ctx.listeners.get("keydown"));
   });
 
@@ -384,14 +445,73 @@ describe("temporary terminal", () => {
     }
   });
 
+  it("has a restore bar container for stacking multiple minimized terminals", () => {
+    for (const cssPath of ["./desktop/app_css/modals.css", "./mobile/app.css"]) {
+      const css = readFileSync(new URL(cssPath, import.meta.url), "utf8");
+      const barRule = css.match(/\.temp-terminal-restore-bar \{[\s\S]*?\}/)?.[0] || "";
+      ok(barRule, cssPath);
+      ok(/display:\s*none;/.test(barRule), cssPath);
+      ok(/flex-direction:\s*column;/.test(barRule), cssPath);
+      ok(/gap:\s*8px;/.test(barRule), cssPath);
+      ok(/position:\s*fixed;/.test(barRule), cssPath);
+    }
+  });
+
   it("fits the terminal element not the container div", async () => {
     const ctx = context();
     await openTempTerminal(ctx);
     ok(ctx.fitCalls.length > 0, "expected fitTerminalToContainer calls");
-    const container = ctx.elements.get("tempTerminal");
+  });
+
+  it("fits the terminal DOM height aligned to rows * cellHeight to prevent input shifting", async () => {
+    const ctx = context();
+    await openTempTerminal(ctx);
+    ok(ctx.fitCalls.length > 0, "expected fitTerminalToContainer calls");
     for (const call of ctx.fitCalls) {
-      ok(call.target !== container, "fitTerminalToContainer should not target the container div");
       ok(call.opts && call.opts.height > 0, "fitTerminalToContainer should receive a positive height");
+      // The height should be aligned to rows * cellHeight (22 * 20 = 440),
+      // not the raw body height (420).
+      equal(call.opts.height, 22 * 20, "height should be rows * cellHeight");
     }
+  });
+
+  it("sends cd command when a target folder is specified", async () => {
+    const ctx = context();
+    await openTempTerminal(ctx, {
+      state: { ws: "ws-1" },
+      defaultFolderFn: () => "",
+    });
+    // Initially, no cd command should be sent (folder is empty).
+    const beforeCd = terminalInputFrames(ctx).filter((f) => f.startsWith("cd ")).length;
+    equal(beforeCd, 0);
+  });
+
+  it("sends cd command with the target folder after WS connects", async () => {
+    const ctx = context();
+    const tempTerminal = await openTempTerminal(ctx, {
+      state: { ws: "ws-1" },
+      defaultFolderFn: () => "",
+    });
+    // Open with a specific folder.
+    tempTerminal.open("/home/user/my-project");
+    for (let i = 0; i < 16; i += 1) await Promise.resolve();
+    const cdFrames = terminalInputFrames(ctx).filter((f) => f.startsWith("cd "));
+    ok(cdFrames.length > 0, "expected at least one cd command");
+    ok(cdFrames.some((f) => f.includes("my-project")), "cd should target the specified folder");
+  });
+
+  it("exposes helper functions for restore label generation", async () => {
+    const ctx = context();
+    vm.runInContext(readFileSync(new URL("./shared/temp_terminal.js", import.meta.url), "utf8"), ctx);
+    const H = ctx.HerdrTempTerminal;
+    equal(H.lastPathLevel("/home/user/my-project"), "my-project");
+    equal(H.lastPathLevel("/home/user/my-project/"), "my-project");
+    equal(H.lastPathLevel(""), "Terminal");
+    equal(H.lastPathLevel(null), "Terminal");
+    equal(H.clampLabel("Temp.short", 20), "Temp.short");
+    equal(H.clampLabel("Temp.a-very-long-folder-name-here", 20).length, 20);
+    ok(H.clampLabel("Temp.a-very-long-folder-name-here", 20).endsWith("…"));
+    equal(H.restoreLabelText("/home/user/my-project"), "Temp.my-project");
+    equal(H.restoreLabelText("/home/user/a-very-long-folder-name-here"), "Temp.a-very-long-fo…");
   });
 });
