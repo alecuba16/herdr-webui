@@ -1031,7 +1031,15 @@ describe("app bundle load", () => {
     match(source, /function workspaceShellState/);
     match(source, /function minimizeWorkspaceShell/);
     match(source, /function restoreWorkspaceShell/);
-    match(source, /applyWorkspaceShellForSelection\(ws\)/);
+    // Shell mode restoration is centralized in refreshOnline (after render)
+    // rather than navigateSelection to avoid a race with the async refresh.
+    // The lastShellWorkspace guard skips redundant calls on every poll.
+    match(source, /let lastShellWorkspace = null/);
+    match(source, /applyWorkspaceShellForSelection\(state\.ws\)/);
+    ok(
+      !/navigateSelection[\s\S]*?applyWorkspaceShellForSelection\(ws\)/.test(source),
+      "navigateSelection must not call applyWorkspaceShellForSelection directly",
+    );
     match(source, /function forgetWorkspaceShell/);
     match(source, /workspaceShellRestore/);
     const renderSource = readFileSync(new URL("./desktop/app_js/render.js", import.meta.url), "utf8");
