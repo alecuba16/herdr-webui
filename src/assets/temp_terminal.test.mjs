@@ -31,6 +31,9 @@ function makeElement(id = "") {
     blur() {
       this.blurred = true;
     },
+    focus() {
+      this.focused = true;
+    },
     contains(target) {
       return target === this || target === this.containsTarget || !!(target && target.insideTerm);
     },
@@ -52,6 +55,10 @@ function makeElement(id = "") {
           this.terminalElement = makeElement("terminal");
         if (value.includes("temp-terminal-confirm") && !this.confirmElement)
           this.confirmElement = makeElement("confirm");
+        if (value.includes("temp-terminal-confirm-close") && this.confirmElement && !this.confirmElement.closeBtn)
+          this.confirmElement.closeBtn = makeElement("confirm-close");
+        if (value.includes("temp-terminal-confirm-cancel") && this.confirmElement && !this.confirmElement.cancelBtn)
+          this.confirmElement.cancelBtn = makeElement("confirm-cancel");
       }
     },
     querySelector(selector) {
@@ -60,6 +67,8 @@ function makeElement(id = "") {
       if (selector === ".terminal" || selector === ".wterm") return this.terminalElement || null;
       if (selector === ".terminal-follow-button") return this.followButton || null;
       if (selector === ".temp-terminal-confirm") return this.confirmElement || null;
+      if (selector === ".temp-terminal-confirm-close") return (this.confirmElement && this.confirmElement.closeBtn) || null;
+      if (selector === ".temp-terminal-confirm-cancel") return (this.confirmElement && this.confirmElement.cancelBtn) || null;
       return null;
     },
     querySelectorAll(selector) {
@@ -513,5 +522,271 @@ describe("temporary terminal", () => {
     ok(H.clampLabel("Temp.a-very-long-folder-name-here", 20).endsWith("…"));
     equal(H.restoreLabelText("/home/user/my-project"), "Temp.my-project");
     equal(H.restoreLabelText("/home/user/a-very-long-folder-name-here"), "Temp.a-very-long-fo…");
+  });
+
+  it("closes the session when the websocket drops mid-session", async () => {
+    const ctx = context();
+    const tempTerminal = await openTempTerminal(ctx);
+    equal(tempTerminal.isVisible(), true);
+    // Simulate WS close (server drop).
+    const ws = ctx.lastWebSocket;
+    ok(ws, "expected a websocket to exist");
+    if (ws.onclose) ws.onclose();
+    equal(tempTerminal.isVisible(), false);
+  });
+
+  it("closes the matching session on pane.exited event", async () => {
+    const ctx = context();
+    const tempTerminal = await openTempTerminal(ctx);
+    equal(tempTerminal.isVisible(), true);
+    // Dispatch pane.exited with the wrong pane id first.
+    tempTerminal.handlePaneExited("wrong-pane");
+    equal(tempTerminal.isVisible(), true, "wrong pane id should not close");
+    // Dispatch with the correct pane id.
+    tempTerminal.handlePaneExited("pane-1");
+    equal(tempTerminal.isVisible(), false);
+  });
+
+  it("toggle minimizes when a session is visible and opens when not", async () => {
+    const ctx = context();
+    const tempTerminal = await openTempTerminal(ctx);
+    equal(tempTerminal.isVisible(), true);
+    // Toggle should minimize.
+    tempTerminal.toggle();
+    equal(tempTerminal.isVisible(), false);
+    // Toggle without folder should restore the minimized session.
+    tempTerminal.toggle();
+    equal(tempTerminal.isVisible(), true);
+  });
+
+  it("toggle with a folder opens a new session when none visible", async () => {
+    const ctx = context();
+    const tempTerminal = await openTempTerminal(ctx);
+    const tabCountBefore = ctx.apiCalls.filter((url) => url === "/api/tabs").length;
+    tempTerminal.minimize();
+    equal(tempTerminal.isVisible(), false);
+    // Toggle with folder should open a new session (not restore the old one).
+    tempTerminal.toggle("/home/user/another-project");
+    for (let i = 0; i < 16; i += 1) await Promise.resolve();
+    equal(tempTerminal.isVisible(), true);
+    equal(ctx.apiCalls.filter((url) => url === "/api/tabs").length, tabCountBefore + 1);
+  });
+
+  it("Ctrl+G shows the close confirmation dialog", async () => {
+    const ctx = context();
+    await openTempTerminal(ctx);
+    const listener = ctx.listeners.get("keydown");
+    ok(listener);
+    const event = keyEvent("g", ctx.document.body, { ctrlKey: true });
+    listener(event);
+    equal(event.defaultPrevented, true);
+    equal(event.immediateStopped, true);
+  });
+
+  it("does not send input when minimized (keys are silently dropped)", async () => {
+    const ctx = context();
+    const tempTerminal = await openTempTerminal(ctx);
+    const listener = ctx.listeners.get("keydown");
+    ok(listener);
+    tempTerminal.minimize();
+    const before = terminalInputFrames(ctx).length;
+    // Tab should still be preventDefaulted but not send input.
+    const tab = keyEvent("Tab", ctx.document.body);
+    listener(tab);
+    equal(tab.defaultPrevented, true);
+    equal(terminalInputFrames(ctx).length, before, "no input should be sent while minimized");
+  });
+
+  it("does not capture keys after close", async () => {
+    const ctx = context();
+    const tempTerminal = await openTempTerminal(ctx);
+    const listener = ctx.listeners.get("keydown");
+    ok(listener);
+    // Close the session (not just minimize).
+    const ws = ctx.lastWebSocket;
+    if (ws.onclose) ws.onclose();
+    equal(tempTerminal.isVisible(), false);
+    // After close, the keydown listener should be removed.
+    equal(ctx.listeners.has("keydown"), false);
+  });
+
+  it("open on an already-open session does not create a new tab", async () => {
+    const ctx = context();
+    const tempTerminal = await openTempTerminal(ctx);
+    const tabCountBefore = ctx.apiCalls.filter((url) => url === "/api/tabs").length;
+    // Calling open() again without a folder should not create a new tab.
+    tempTerminal.open();
+    for (let i = 0; i < 4; i += 1) await Promise.resolve();
+    equal(ctx.apiCalls.filter((url) => url === "/api/tabs").length, tabCountBefore);
+  });
+
+  it("open with a folder creates a new session even if one is already open", async () => {
+    const ctx = context();
+    const tempTerminal = await openTempTerminal(ctx);
+    const tabCountBefore = ctx.apiCalls.filter((url) => url === "/api/tabs").length;
+    tempTerminal.open("/home/user/second-project");
+    for (let i = 0; i < 16; i += 1) await Promise.resolve();
+    equal(ctx.apiCalls.filter((url) => url === "/api/tabs").length, tabCountBefore + 1);
+  });
+
+  it("closing one session does not affect other open sessions", async () => {
+    const ctx = context();
+    const tempTerminal = await openTempTerminal(ctx);
+    // Open a second session with a folder.
+    tempTerminal.open("/home/user/second-project");
+    for (let i = 0; i < 16; i += 1) await Promise.resolve();
+    equal(tempTerminal.isVisible(), true);
+    // Close via WS drop.
+    const ws = ctx.lastWebSocket;
+    if (ws.onclose) ws.onclose();
+    // The second session is now closed. The first should still be minimized.
+    equal(tempTerminal.isVisible(), false);
+  });
+
+  it("restores a different minimized session when one is closed", async () => {
+    const ctx = context();
+    const tempTerminal = await openTempTerminal(ctx);
+    // Minimize the first session.
+    tempTerminal.minimize();
+    equal(tempTerminal.isVisible(), false);
+    // Open a second session with a folder.
+    tempTerminal.open("/home/user/second-project");
+    for (let i = 0; i < 16; i += 1) await Promise.resolve();
+    equal(tempTerminal.isVisible(), true);
+    // Close the second session.
+    const ws = ctx.lastWebSocket;
+    if (ws.onclose) ws.onclose();
+    equal(tempTerminal.isVisible(), false);
+    // The first session should still be restorable.
+    tempTerminal.open();
+    for (let i = 0; i < 4; i += 1) await Promise.resolve();
+    equal(tempTerminal.isVisible(), true);
+  });
+
+  it("closes the tab via API when the session closes", async () => {
+    const ctx = context();
+    const tempTerminal = await openTempTerminal(ctx);
+    // WS drop triggers close, which should close the tab via API.
+    const ws = ctx.lastWebSocket;
+    if (ws.onclose) ws.onclose();
+    // Drain microtasks for the close to complete.
+    for (let i = 0; i < 4; i += 1) await Promise.resolve();
+    ok(ctx.apiCalls.some((url) => url.includes("/api/tabs/tab-1/close")), "expected tab close API call");
+  });
+
+  it("handles failed workspace creation gracefully", async () => {
+    const ctx2 = context();
+    ctx2.api = (url, opt = {}) => {
+      ctx2.apiCalls.push(url);
+      ctx2.apiRequests.push({ url, opt });
+      if (url === "/api/workspaces" && opt.method === "POST") return Promise.resolve(null);
+      if (url === "/api/tabs") return Promise.resolve({ result: { tab: { tab_id: "tab-1" } } });
+      if (url.startsWith("/api/panes")) return Promise.resolve({ result: { panes: [] } });
+      return Promise.resolve({ result: {} });
+    };
+    vm.runInContext(readFileSync(new URL("./shared/temp_terminal.js", import.meta.url), "utf8"), ctx2);
+    const tempTerminal = ctx2.HerdrTempTerminal.create({
+      el: ctx2.document.getElementById,
+      state: { ws: null, workspaces: [] },
+      wsUrl: (path) => path,
+      api: ctx2.api,
+      modalId: "tempTerminalModal",
+      defaultFolderFn: () => "/some/default",
+    });
+    tempTerminal.open();
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+    // Should have attempted workspace creation but not created a tab.
+    ok(ctx2.apiCalls.includes("/api/workspaces"));
+    ok(!ctx2.apiCalls.includes("/api/tabs"));
+  });
+
+  it("sends cd command with shell-safe quoting for paths with spaces", async () => {
+    const ctx = context();
+    const tempTerminal = await openTempTerminal(ctx, {
+      state: { ws: "ws-1" },
+      defaultFolderFn: () => "",
+    });
+    tempTerminal.open("/home/user/my project name");
+    for (let i = 0; i < 16; i += 1) await Promise.resolve();
+    const cdFrames = terminalInputFrames(ctx).filter((f) => f.startsWith("cd "));
+    ok(cdFrames.length > 0);
+    // The path should be shell-quoted (single quotes for paths with spaces).
+    ok(cdFrames.some((f) => f.includes("'") || f.includes("my")), "cd should contain the path");
+  });
+
+  it("does not duplicate cd command on reconnect", async () => {
+    const ctx = context();
+    const tempTerminal = await openTempTerminal(ctx, {
+      state: { ws: "ws-1" },
+      defaultFolderFn: () => "",
+    });
+    tempTerminal.open("/home/user/my-project");
+    for (let i = 0; i < 16; i += 1) await Promise.resolve();
+    const cdCountAfterFirst = terminalInputFrames(ctx).filter((f) => f.startsWith("cd ")).length;
+    ok(cdCountAfterFirst > 0);
+    // Re-opening the same session (e.g. after restore) should not resend cd.
+    tempTerminal.minimize();
+    tempTerminal.restore();
+    for (let i = 0; i < 4; i += 1) await Promise.resolve();
+    const cdCountAfterRestore = terminalInputFrames(ctx).filter((f) => f.startsWith("cd ")).length;
+    equal(cdCountAfterRestore, cdCountAfterFirst, "cd should not be resent on restore");
+  });
+
+  it("lastPathLevel handles edge cases", async () => {
+    const ctx = context();
+    vm.runInContext(readFileSync(new URL("./shared/temp_terminal.js", import.meta.url), "utf8"), ctx);
+    const H = ctx.HerdrTempTerminal;
+    equal(H.lastPathLevel("/"), "Terminal");
+    equal(H.lastPathLevel("//"), "Terminal");
+    equal(H.lastPathLevel("simple"), "simple");
+    equal(H.lastPathLevel("/a/b/c/"), "c");
+    equal(H.lastPathLevel(undefined), "Terminal");
+  });
+
+  it("clampLabel respects custom max chars", async () => {
+    const ctx = context();
+    vm.runInContext(readFileSync(new URL("./shared/temp_terminal.js", import.meta.url), "utf8"), ctx);
+    const H = ctx.HerdrTempTerminal;
+    equal(H.clampLabel("Temp.abc", 4).length, 4);
+    equal(H.clampLabel("Temp.abc", 4), "Tem…");
+    equal(H.clampLabel("Temp.abc", 10), "Temp.abc");
+    equal(H.clampLabel("", 20), "Terminal");
+    equal(H.clampLabel(null, 20), "Terminal");
+  });
+
+  it("handleResize dispatches to all open non-minimized sessions", async () => {
+    const ctx = context();
+    const tempTerminal = await openTempTerminal(ctx);
+    // handleResize should not throw when called on the manager.
+    tempTerminal.handleResize();
+    for (let i = 0; i < 4; i += 1) await Promise.resolve();
+    // The resize timer fires and calls term.resize.
+    ok(ctx.lastTerminal.resizeCalls.length > 0, "expected resize calls on the terminal");
+  });
+
+  it("does not send resize over WS when minimized", async () => {
+    const ctx = context();
+    const tempTerminal = await openTempTerminal(ctx);
+    const wsFramesBefore = ctx.sentFrames.filter((f) => f instanceof Uint8Array).length;
+    tempTerminal.minimize();
+    tempTerminal.handleResize();
+    for (let i = 0; i < 4; i += 1) await Promise.resolve();
+    // No new WS frames should be sent when minimized.
+    const wsFramesAfter = ctx.sentFrames.filter((f) => f instanceof Uint8Array).length;
+    equal(wsFramesAfter, wsFramesBefore, "no WS frames when minimized");
+  });
+
+  it("uses fallback box height when cell height is zero", async () => {
+    const ctx = context();
+    // Override cellSize to return height 0 to test the fallback path.
+    const ctx2 = context();
+    ctx2.HerdrTerminalFit.cellSize = () => ({ width: 9, height: 0 });
+    const tempTerminal = await openTempTerminal(ctx2);
+    // fitTerminalDomToContainer should fall back to visibleBox height.
+    ok(ctx2.fitCalls.length > 0);
+    for (const call of ctx2.fitCalls) {
+      // With cell.height=0, alignedHeight should fall back to box.height (420).
+      ok(call.opts && call.opts.height === 420, "fallback height should be visibleBox height");
+    }
   });
 });

@@ -961,7 +961,10 @@
         sess.open();
         return sess;
       }
-      // Without a specific folder, restore a minimized session or create new.
+      // Without a specific folder: if a session is already visible, keep it.
+      var visible = getVisibleSession();
+      if (visible) return visible;
+      // Otherwise, restore a minimized session or create new.
       var minimized = getMinimizedSessions();
       if (minimized.length) {
         minimized[minimized.length - 1].restore();
