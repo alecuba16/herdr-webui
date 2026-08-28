@@ -124,8 +124,11 @@
   }
 
   function tempTerminalModalVisible() {
-    const modal = document.getElementById && document.getElementById("tempTerminalModal");
-    return !!(modal && modal.style.display && modal.style.display !== "none");
+    const modals = document.querySelectorAll(".temp-terminal-backdrop");
+    for (const modal of modals) {
+      if (modal.style.display && modal.style.display !== "none") return true;
+    }
+    return false;
   }
 
   function isChangesListView(view) {

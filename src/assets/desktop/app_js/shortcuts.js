@@ -48,14 +48,17 @@ function closeCurrentPanelShortcut(force = false) {
   return true;
 }
 function tempTerminalModalOpen() {
-  const modal = el("tempTerminalModal");
-  return !!(modal && modal.style.display && modal.style.display !== "none");
+  return !!(tempTerminal && tempTerminal.isVisible && tempTerminal.isVisible());
 }
 function tempTerminalShortcutAllowed() {
   if (!tempTerminalModalOpen()) return false;
-  const modal = el("tempTerminalModal");
-  const confirm = modal && modal.querySelector && modal.querySelector(".temp-terminal-confirm");
-  return !(confirm && confirm.style.display && confirm.style.display !== "none");
+  // If a close confirmation dialog is visible, block shortcut toggling.
+  const modals = document.querySelectorAll(".temp-terminal-backdrop");
+  for (const modal of modals) {
+    const confirm = modal.querySelector && modal.querySelector(".temp-terminal-confirm");
+    if (confirm && confirm.style.display && confirm.style.display !== "none") return false;
+  }
+  return true;
 }
 function toggleTempTerminalShortcut() {
   if (!tempTerminal) return false;
@@ -63,7 +66,9 @@ function toggleTempTerminalShortcut() {
     if (tempTerminal.minimize) tempTerminal.minimize();
     return true;
   }
-  tempTerminal.open();
+  const ws = selectedOrDefaultWorkspace();
+  const folder = ws ? (workspacePath(ws) || "") : "";
+  tempTerminal.open(folder);
   return true;
 }
 function closeShortcutKeydown(e) {

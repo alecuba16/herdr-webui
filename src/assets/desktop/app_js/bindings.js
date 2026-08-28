@@ -184,6 +184,10 @@ el("optTerminalMouseReporting").onchange = () => {
   options.terminalMouseReporting = el("optTerminalMouseReporting").checked;
   saveOptions();
 };
+el("optTempTerminalLabelMaxChars").oninput = () => {
+  options.tempTerminalLabelMaxChars = Math.max(4, Math.min(80, Number(el("optTempTerminalLabelMaxChars").value) || 20));
+  saveOptions();
+};
 el("optAgentSortMode").onchange = () => {
   options.agentSortMode = el("optAgentSortMode").value;
   if (options.agentSortMode === "attention_inverted")
@@ -659,24 +663,19 @@ function tempTerminalWorkspaceId() {
   return workspaceIds.size === 1 ? Array.from(workspaceIds)[0] : "";
 }
 
-// Ephemeral temporary terminal overlay.
-if (globalThis.HerdrTempTerminal && el("tempTerminalModal")) {
+// Ephemeral temporary terminal overlay (multi-session manager).
+if (globalThis.HerdrTempTerminal) {
   tempTerminal = globalThis.HerdrTempTerminal.create({
     el,
     state,
     wsUrl,
     api,
     modalId: "tempTerminalModal",
-    containerId: "tempTerminal",
-    closeId: "tempTerminalClose",
     fontFamilyFn: terminalFontFamily,
     themeFn: terminalTheme,
     defaultFolderFn: defaultFolderPath,
     workspaceIdFn: tempTerminalWorkspaceId,
     shortcutLabelFn: () => shortcutLabel("webuiShortcuts", "tempTerminalToggle"),
   });
-  const tempTerminalClose = el("tempTerminalClose");
-  const tempTerminalModal = el("tempTerminalModal");
-  if (tempTerminalClose) tempTerminalClose.onclick = () => tempTerminal.requestClose();
   window.addEventListener("resize", () => tempTerminal.handleResize());
 }

@@ -507,18 +507,24 @@ function scrollTerminalToBottom(focus = true) {
   if (focus) focusTerminal(true);
 }
 function modalOpen() {
-  return [
+  const staticModals = [
     "settingsModal",
     "workspaceCreateModal",
     "worktreeCreateModal",
     "worktreeOpenModal",
     "shortcutsModal",
     "searchPalette",
-    "tempTerminalModal",
-  ].some((id) => {
+  ];
+  if (staticModals.some((id) => {
     const m = el(id);
     return m && m.style.display && m.style.display !== "none";
-  });
+  })) return true;
+  // Check for any visible dynamically-created temp terminal modal.
+  const tempModals = document.querySelectorAll(".temp-terminal-backdrop");
+  for (const modal of tempModals) {
+    if (modal.style.display && modal.style.display !== "none") return true;
+  }
+  return false;
 }
 function preserveActiveElementFocus() {
   const active = document.activeElement;

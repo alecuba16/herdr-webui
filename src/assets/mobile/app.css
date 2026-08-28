@@ -987,21 +987,27 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
   background: var(--border, #313244);
   color: var(--fg, #cdd6f4);
 }
+.temp-terminal-restore-bar {
+  align-items: flex-end;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 18px);
+  display: none;
+  flex-direction: column;
+  gap: 8px;
+  position: fixed;
+  right: calc(env(safe-area-inset-right, 0px) + 18px);
+  z-index: 1199;
+}
 .temp-terminal-restore {
   align-items: center;
   background: var(--panel, #1e1e2e);
   border: 1px solid var(--border2, #45475a);
   border-radius: 999px;
-  bottom: calc(env(safe-area-inset-bottom, 0px) + 18px);
   box-shadow: 0 10px 28px #0008;
   color: var(--fg, #cdd6f4);
   cursor: pointer;
-  display: none;
+  display: inline-flex;
   gap: 8px;
   padding: 8px 12px;
-  position: fixed;
-  right: calc(env(safe-area-inset-right, 0px) + 18px);
-  z-index: 1199;
 }
 .temp-terminal-restore:hover {
   background: var(--border, #313244);

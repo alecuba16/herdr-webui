@@ -356,17 +356,32 @@ describe("mobile bundle load", () => {
 
 
   it("renders temporary terminal capture hint on mobile", () => {
+    const tempTerminalSource = readFileSync(new URL("./shared/temp_terminal.js", import.meta.url), "utf8");
     const mobileSource = readFileSync(new URL("./mobile/app.js", import.meta.url), "utf8");
     const mobileCss = readFileSync(new URL("./mobile/app.css", import.meta.url), "utf8");
 
-    match(mobileSource, /Input captured · Ctrl\+G detaches/);
-    match(mobileSource, /aria-label="Minimize temporary terminal"/);
-    match(mobileSource, /aria-label="Detach temporary terminal"/);
+    // Modal HTML is now created dynamically in temp_terminal.js.
+    match(tempTerminalSource, /Input captured · Ctrl\+G detaches/);
+    match(tempTerminalSource, /temp-terminal-minimize/);
+    match(tempTerminalSource, /temp-terminal-close/);
     match(mobileCss, /\.temp-terminal-hint/);
-    match(mobileCss, /\.temp-terminal-restore \{[\s\S]*?position: fixed;[\s\S]*?right: calc\(env\(safe-area-inset-right, 0px\) \+ 18px\);/);
+    match(mobileCss, /\.temp-terminal-restore-bar \{[\s\S]*?flex-direction: column;/);
+    match(mobileCss, /\.temp-terminal-restore \{[\s\S]*?display: inline-flex;/);
     match(mobileCss, /height: calc\(var\(--herdr-mobile-viewport-height\) - 24px\)/);
     match(mobileCss, /\.temp-terminal-body \{[\s\S]*?min-height: 0;[\s\S]*?overflow: hidden;/);
     match(mobileCss, /\.temp-terminal-body \.wterm \{[\s\S]*?overflow-x: hidden;[\s\S]*?overflow-y: auto;/);
+  });
+
+  it("passes workspace, theme, and folder to temp terminal on mobile for parity with desktop", () => {
+    const mobileSource = readFileSync(new URL("./mobile/app.js", import.meta.url), "utf8");
+    // Mobile must pass workspaceIdFn so the temp terminal reuses the active workspace.
+    match(mobileSource, /workspaceIdFn:/);
+    // Mobile must pass themeFn so the terminal matches the user's theme.
+    match(mobileSource, /themeFn:/);
+    // Mobile must pass currentWorkspaceCwd() to open() so the terminal starts in the right folder.
+    match(mobileSource, /mobileTempTerminal\.open\(currentWorkspaceCwd\(\)\)/);
+    // Mobile must wire handlePaneExited for server-side pane exit events.
+    match(mobileSource, /mobileTempTerminal\.handlePaneExited/);
   });
 
   it("loads mobile shell without browser automation", () => {
