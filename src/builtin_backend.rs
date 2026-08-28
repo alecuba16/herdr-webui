@@ -26,6 +26,11 @@ const PROTOCOL_VERSION: u32 = 20;
 const MAX_FRAME_SIZE: usize = 32 * 1024 * 1024;
 const MAX_SCROLLBACK_BYTES: usize = 8 * 1024 * 1024;
 const DETECTION_TAIL_BYTES: usize = 64 * 1024;
+/// OSC 9 payloads older than this are treated as stale and fall back to
+/// screen-scrape detection. 30s is generous: jcode emits on every redraw when
+/// state changes, so a gap this long means the agent stopped emitting (crash,
+/// hang, or non-OSC build) and the side-channel is no longer authoritative.
+const OSC_STALENESS_TIMEOUT: Duration = Duration::from_secs(30);
 const SOCKET_PERMISSION_MODE: u32 = 0o600;
 
 /// Captures the latest OSC 9 progress payload from raw PTY bytes.
@@ -33,11 +38,17 @@ const SOCKET_PERMISSION_MODE: u32 = 0o600;
 /// side-channel for agent status detection, avoiding fragile screen-scraping.
 /// This is a minimal state machine that tracks the OSC body between
 /// `ESC ]` and `BEL` (0x07) or `ST` (`ESC \`).
+///
+/// The tracker also records the wall-clock time of the last payload so callers
+/// can treat stale OSC data as advisory and fall back to screen-scraping when
+/// the agent has not emitted fresh status for a while.
 #[derive(Default)]
 struct Osc9Tracker {
     state: Osc9State,
     body: Vec<u8>,
     latest_payload: Option<String>,
+    /// Wall-clock time of the last OSC 9 progress payload, used for staleness.
+    latest_payload_at: Option<Instant>,
     /// Latest OSC 0 terminal title, used for `osc_title` detection rules.
     latest_title: Option<String>,
 }
@@ -104,6 +115,7 @@ impl Osc9Tracker {
                 let sanitized: String = text.chars().filter(|c| !c.is_control()).collect();
                 if !sanitized.is_empty() {
                     self.latest_payload = Some(sanitized);
+                    self.latest_payload_at = Some(Instant::now());
                 }
             } else if command == b"0" || command == b"2" {
                 // OSC 0 and OSC 2 both set the terminal title.
@@ -117,8 +129,53 @@ impl Osc9Tracker {
         self.body.clear();
     }
 
+    /// Returns the latest OSC 9 progress payload regardless of age.
+    /// Production callers should prefer [`latest_progress_fresh`] so stale
+    /// payloads fall back to screen-scrape. This raw accessor is kept for tests
+    /// that need to verify the tracker captured a payload without the time
+    /// filter.
+    #[allow(dead_code)]
     fn latest_progress(&self) -> &str {
         self.latest_payload.as_deref().unwrap_or("")
+    }
+
+    /// Returns the latest OSC 9 progress payload only if it was received
+    /// within the `max_age` window. Stale payloads return `None` so the caller
+    /// can fall back to screen-scrape detection. A `max_age` of `Duration::MAX`
+    /// effectively disables staleness filtering.
+    fn latest_progress_fresh(&self, max_age: Duration) -> Option<&str> {
+        let at = self.latest_payload_at?;
+        if at.elapsed() <= max_age {
+            self.latest_payload.as_deref()
+        } else {
+            None
+        }
+    }
+
+    /// Extract a stable agent label from the OSC 9 progress payload when the
+    /// payload follows a `<agent>:<state>` convention (jcode emits
+    /// `jcode:working`, `jcode:idle`, `jcode:blocked`). This lets the backend
+    /// identify the agent from its side-channel even when argv and process-tree
+    /// detection fail (e.g. jcode launched through a wrapper script or shell
+    /// that hides the binary name).
+    fn latest_agent_label(&self) -> Option<&'static str> {
+        let payload = self.latest_payload.as_deref()?;
+        let colon = payload.find(':')?;
+        let prefix = &payload[..colon];
+        match prefix {
+            "jcode" => Some("jcode"),
+            _ => None,
+        }
+    }
+
+    /// Clear all captured payloads. Called when the terminal exits so a stale
+    /// OSC status does not persist after the agent process is gone.
+    fn reset(&mut self) {
+        self.latest_payload = None;
+        self.latest_payload_at = None;
+        self.latest_title = None;
+        self.body.clear();
+        self.state = Osc9State::Ground;
     }
 
     /// Returns the latest OSC 0/2 terminal title, if any.
@@ -1456,6 +1513,46 @@ impl TerminalRuntime {
         if self.exited.swap(true, Ordering::AcqRel) {
             return;
         }
+        // Compute the agent label one last time so we can publish a final
+        // "done" status. After this the tracker is reset, so we capture the
+        // label from argv or screen text before clearing.
+        let tail = self.history_tail_text(DETECTION_TAIL_BYTES);
+        let agent = detect_agent_label(&self.argv)
+            .or_else(|| detect_agent_label_from_text(&tail))
+            .or_else(|| {
+                self.osc9_tracker
+                    .lock()
+                    .ok()
+                    .and_then(|t| t.latest_agent_label())
+            })
+            .map(str::to_string);
+        // Clear OSC 9 state so stale payloads do not persist after the agent
+        // process exits. Without this, a captured `jcode:working` would keep
+        // the pane stuck in "working" even after the process is gone.
+        if let Ok(mut tracker) = self.osc9_tracker.lock() {
+            tracker.reset();
+        }
+        // Publish a final "done" status so the UI does not show a stale
+        // working/idle state after the process is gone.
+        if let Some(ref agent) = agent {
+            self.event_hub.publish(
+                "pane.agent_status_changed",
+                json!({
+                    "workspace_id": self.event_context.workspace_id,
+                    "tab_id": self.event_context.tab_id,
+                    "pane_id": self.event_context.pane_id,
+                    "terminal_id": self.event_context.terminal_id,
+                    "agent": agent,
+                    "agent_status": "done",
+                    "status": "done",
+                }),
+            );
+        }
+        // Clear cached agent state so the next agent.list recomputes from
+        // scratch (pane_agent_presentation will see exited=true → "done").
+        if let Ok(mut previous) = self.last_agent_state.lock() {
+            previous.take();
+        }
         self.event_hub.publish(
             "pane.exited",
             json!({
@@ -1497,14 +1594,28 @@ impl TerminalRuntime {
             return;
         }
 
+        // After the terminal exits, the final "done" status was already
+        // published in notify_exited. Skip further detection to avoid CPU waste
+        // and stale screen-text false positives.
+        if self.exited.load(Ordering::Acquire) {
+            return;
+        }
+
         let tail = self.history_tail_text(DETECTION_TAIL_BYTES);
-        let (osc_progress, osc_title) = self
+        let (osc_progress, osc_title, osc_agent) = self
             .osc9_tracker
             .lock()
             .map(|tracker| {
+                // Treat OSC 9 payloads older than 30s as stale so detection
+                // falls back to screen-scraping if the agent stops emitting.
+                let progress = tracker
+                    .latest_progress_fresh(OSC_STALENESS_TIMEOUT)
+                    .unwrap_or("")
+                    .to_string();
                 (
-                    tracker.latest_progress().to_string(),
+                    progress,
                     tracker.latest_title().to_string(),
+                    tracker.latest_agent_label(),
                 )
             })
             .unwrap_or_default();
@@ -1513,6 +1624,7 @@ impl TerminalRuntime {
             .and_then(detect_agent_label_from_process_tree);
         let agent = detect_agent_label(&self.argv)
             .or(process_agent)
+            .or(osc_agent)
             .or_else(|| detect_agent_label_from_text(&tail))
             .map(str::to_string);
         let status = match detect_agent_status_with_osc(
@@ -1784,6 +1896,27 @@ fn pane_agent_presentation(pane: &PaneRecord, data: &BuiltinData) -> PaneAgentPr
     // the agent would never appear in the list. The 500ms throttle in
     // publish_agent_status_if_changed already limits how often detection runs.
     let terminal = data.terminals.get(&pane.terminal_id);
+    // When the terminal has exited, report "done" instead of letting stale
+    // screen text (e.g. a leftover spinner frame) keep the status stuck in
+    // "working". The OSC 9 tracker was already reset on exit, but screen-scrape
+    // patterns in the scrollback can still match, so this guard is needed.
+    if let Some(terminal) = terminal {
+        if terminal.exited.load(Ordering::Acquire) {
+            let agent = detect_agent_label(&pane.argv)
+                .or_else(|| {
+                    detect_agent_label_from_text(&terminal.history_tail_text(DETECTION_TAIL_BYTES))
+                })
+                .or_else(|| {
+                    terminal
+                        .osc9_tracker
+                        .lock()
+                        .ok()
+                        .and_then(|t| t.latest_agent_label())
+                });
+            let status = if agent.is_some() { "done" } else { "unknown" };
+            return PaneAgentPresentation { agent, status };
+        }
+    }
     let tail = terminal
         .map(|terminal| terminal.history_tail_text(DETECTION_TAIL_BYTES))
         .unwrap_or_default();
@@ -1792,12 +1925,24 @@ fn pane_agent_presentation(pane: &PaneRecord, data: &BuiltinData) -> PaneAgentPr
         .and_then(detect_agent_label_from_process_tree);
     let agent = detect_agent_label(&pane.argv)
         .or(process_agent)
+        .or_else(|| {
+            // Fall back to the OSC 9 side-channel agent label when argv and
+            // process-tree detection both miss (e.g. jcode launched through a
+            // wrapper that hides the binary name). The OSC payload format is
+            // `<agent>:<state>`, so `jcode:working` identifies the agent.
+            terminal
+                .and_then(|t| t.osc9_tracker.lock().ok())
+                .and_then(|t| t.latest_agent_label())
+        })
         .or_else(|| detect_agent_label_from_text(&tail));
     let (osc_progress, osc_title) = terminal
         .and_then(|terminal| terminal.osc9_tracker.lock().ok())
         .map(|tracker| {
             (
-                tracker.latest_progress().to_string(),
+                tracker
+                    .latest_progress_fresh(OSC_STALENESS_TIMEOUT)
+                    .unwrap_or("")
+                    .to_string(),
                 tracker.latest_title().to_string(),
             )
         })
@@ -1846,6 +1991,7 @@ fn strongest_agent_status(statuses: impl IntoIterator<Item = &'static str>) -> &
         match status {
             "blocked" => return "blocked",
             "working" if best != "working" => best = "working",
+            "done" if best == "unknown" || best == "idle" => best = "done",
             "idle" if best == "unknown" => best = "idle",
             _ => {}
         }
@@ -4376,6 +4522,91 @@ mod tests {
     }
 
     #[test]
+    fn strongest_agent_status_handles_done() {
+        // Done is stronger than unknown and idle, weaker than working and blocked.
+        assert_eq!(strongest_agent_status(["done"]), "done");
+        assert_eq!(strongest_agent_status(["unknown", "done"]), "done");
+        assert_eq!(strongest_agent_status(["idle", "done"]), "done");
+        assert_eq!(strongest_agent_status(["done", "working"]), "working");
+        assert_eq!(strongest_agent_status(["done", "blocked"]), "blocked");
+        // Done does not override working once working is already set.
+        assert_eq!(strongest_agent_status(["working", "done"]), "working");
+    }
+
+    #[test]
+    fn pane_agent_presentation_reports_done_after_exit() {
+        let hub = BuiltinEventHub::new();
+        let context = PaneEventContext {
+            workspace_id: "ws_done".to_string(),
+            tab_id: "tab_done".to_string(),
+            pane_id: "pane_done".to_string(),
+            terminal_id: "term_done".to_string(),
+        };
+        // Spawn a shell that exits quickly. We set the pane argv to "jcode" so
+        // detect_agent_label identifies it as jcode. This avoids requiring the
+        // jcode binary to be installed on the CI runner.
+        let terminal = TerminalRuntime::spawn(
+            "term_done".to_string(),
+            std::env::current_dir().unwrap(),
+            vec![
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "printf done".to_string(),
+            ],
+            24,
+            80,
+            hub,
+            context,
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+
+        // Wait for exit.
+        let (tx, rx) = mpsc::sync_channel(8);
+        terminal.subscribe(tx);
+        let mut saw_exit = false;
+        for _ in 0..8 {
+            match rx.recv_timeout(Duration::from_secs(2)).unwrap() {
+                TerminalSubscriberMessage::Output(_) => {}
+                TerminalSubscriberMessage::Exited => {
+                    saw_exit = true;
+                    break;
+                }
+            }
+        }
+        assert!(saw_exit);
+
+        // Verify pane_agent_presentation reports "done" for the exited terminal.
+        // The pane argv is set to "jcode" so detect_agent_label identifies the
+        // agent even though the actual process was /bin/sh.
+        let data = BuiltinData {
+            workspaces: HashMap::new(),
+            tabs: HashMap::new(),
+            panes: HashMap::from([(
+                "pane_done".to_string(),
+                PaneRecord {
+                    pane_id: "pane_done".to_string(),
+                    terminal_id: "term_done".to_string(),
+                    workspace_id: "ws_done".to_string(),
+                    tab_id: "tab_done".to_string(),
+                    cwd: std::env::current_dir().unwrap(),
+                    label: Some("jcode".to_string()),
+                    argv: vec!["jcode".to_string(), "--version".to_string()],
+                },
+            )]),
+            terminals: HashMap::from([("term_done".to_string(), terminal)]),
+            focused_workspace_id: None,
+            focused_tab_id: None,
+            focused_pane_id: None,
+            next_id: 0,
+        };
+        let pane = data.panes.get("pane_done").unwrap();
+        let presentation = pane_agent_presentation(pane, &data);
+        assert_eq!(presentation.agent, Some("jcode"));
+        assert_eq!(presentation.status, "done");
+    }
+
+    #[test]
     fn osc9_tracker_captures_jcode_progress_payload() {
         let mut tracker = Osc9Tracker::default();
         // jcode emits: ESC ] 9 ; jcode:working BEL
@@ -4422,6 +4653,78 @@ mod tests {
         // Recovers after oversized payload
         tracker.observe(b"\x1b]9;jcode:working\x07");
         assert_eq!(tracker.latest_progress(), "jcode:working");
+    }
+
+    #[test]
+    fn osc9_tracker_extracts_agent_label_from_payload() {
+        let mut tracker = Osc9Tracker::default();
+        // No payload yet → no agent label
+        assert_eq!(tracker.latest_agent_label(), None);
+
+        tracker.observe(b"\x1b]9;jcode:working\x07");
+        assert_eq!(tracker.latest_agent_label(), Some("jcode"));
+
+        tracker.observe(b"\x1b]9;jcode:idle\x07");
+        assert_eq!(tracker.latest_agent_label(), Some("jcode"));
+
+        tracker.observe(b"\x1b]9;jcode:blocked\x07");
+        assert_eq!(tracker.latest_agent_label(), Some("jcode"));
+    }
+
+    #[test]
+    fn osc9_tracker_agent_label_none_for_unknown_prefix() {
+        let mut tracker = Osc9Tracker::default();
+        // Unknown agent prefix → no label (falls back to other detection)
+        tracker.observe(b"\x1b]9;unknownagent:working\x07");
+        assert_eq!(tracker.latest_agent_label(), None);
+        // Non-colon payloads → no label
+        tracker.observe(b"\x1b]9;4;0\x07");
+        assert_eq!(tracker.latest_agent_label(), None);
+    }
+
+    #[test]
+    fn osc9_tracker_fresh_payload_within_timeout() {
+        let mut tracker = Osc9Tracker::default();
+        tracker.observe(b"\x1b]9;jcode:working\x07");
+        // Immediately after observing, the payload is fresh
+        assert_eq!(
+            tracker.latest_progress_fresh(Duration::from_secs(30)),
+            Some("jcode:working")
+        );
+    }
+
+    #[test]
+    fn osc9_tracker_stale_payload_returns_none() {
+        let mut tracker = Osc9Tracker::default();
+        // Simulate a payload received 60s ago by manually setting the timestamp.
+        tracker.observe(b"\x1b]9;jcode:working\x07");
+        // Override the timestamp to simulate aging.
+        tracker.latest_payload_at = Some(Instant::now() - Duration::from_secs(60));
+        // With a 30s timeout, the stale payload should be filtered out.
+        assert_eq!(tracker.latest_progress_fresh(Duration::from_secs(30)), None);
+        // But latest_progress() still returns the raw payload (no time filter).
+        assert_eq!(tracker.latest_progress(), "jcode:working");
+    }
+
+    #[test]
+    fn osc9_tracker_reset_clears_all_state() {
+        let mut tracker = Osc9Tracker::default();
+        tracker.observe(b"\x1b]9;jcode:working\x07");
+        tracker.observe(b"\x1b]0;some title\x07");
+        assert_eq!(tracker.latest_progress(), "jcode:working");
+        assert_eq!(tracker.latest_title(), "some title");
+        assert_eq!(tracker.latest_agent_label(), Some("jcode"));
+
+        tracker.reset();
+
+        assert_eq!(tracker.latest_progress(), "");
+        assert_eq!(tracker.latest_title(), "");
+        assert_eq!(tracker.latest_agent_label(), None);
+        assert_eq!(tracker.latest_progress_fresh(Duration::from_secs(30)), None);
+        // Tracker can still capture new payloads after reset.
+        tracker.observe(b"\x1b]9;jcode:idle\x07");
+        assert_eq!(tracker.latest_progress(), "jcode:idle");
+        assert_eq!(tracker.latest_agent_label(), Some("jcode"));
     }
 
     #[test]
