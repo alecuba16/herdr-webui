@@ -1273,7 +1273,19 @@
         return globalThis.HerdrAppHelpers.resolveTerminalFontFamily("");
       }
     },
+    themeFn: () => {
+      const light = document.body.classList.contains("light");
+      const colors = (globalThis.HerdrAppHelpers && globalThis.HerdrAppHelpers.terminalThemeColors) || {};
+      const theme = light ? (colors.light || {}) : (colors.dark || {});
+      return {
+        background: theme.background || (light ? "#ffffff" : "#1e1e2e"),
+        foreground: theme.foreground || (light ? "#4c4f69" : "#cdd6f4"),
+        cursor: theme.cursor || (light ? "#4c4f69" : "#cdd6f4"),
+        selectionBackground: theme.selectionBackground || (light ? "#dce0f8" : "#45475a"),
+      };
+    },
     defaultFolderFn: () => state.defaultFolder || "",
+    workspaceIdFn: () => state.ws || (state.workspaces && state.workspaces.length === 1 ? state.workspaces[0].workspace_id : "") || "",
   });
   window.addEventListener("resize", () => mobileTempTerminal.handleResize());
   mobileSettings = globalThis.HerdrMobileSettings.create({

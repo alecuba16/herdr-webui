@@ -372,6 +372,18 @@ describe("mobile bundle load", () => {
     match(mobileCss, /\.temp-terminal-body \.wterm \{[\s\S]*?overflow-x: hidden;[\s\S]*?overflow-y: auto;/);
   });
 
+  it("passes workspace, theme, and folder to temp terminal on mobile for parity with desktop", () => {
+    const mobileSource = readFileSync(new URL("./mobile/app.js", import.meta.url), "utf8");
+    // Mobile must pass workspaceIdFn so the temp terminal reuses the active workspace.
+    match(mobileSource, /workspaceIdFn:/);
+    // Mobile must pass themeFn so the terminal matches the user's theme.
+    match(mobileSource, /themeFn:/);
+    // Mobile must pass currentWorkspaceCwd() to open() so the terminal starts in the right folder.
+    match(mobileSource, /mobileTempTerminal\.open\(currentWorkspaceCwd\(\)\)/);
+    // Mobile must wire handlePaneExited for server-side pane exit events.
+    match(mobileSource, /mobileTempTerminal\.handlePaneExited/);
+  });
+
   it("loads mobile shell without browser automation", () => {
     const ctx = context();
     doesNotThrow(() => vm.runInContext(source, ctx));
