@@ -671,8 +671,6 @@ if (globalThis.HerdrTempTerminal) {
     wsUrl,
     api,
     modalId: "tempTerminalModal",
-    containerId: "tempTerminal",
-    closeId: "tempTerminalClose",
     fontFamilyFn: terminalFontFamily,
     themeFn: terminalTheme,
     defaultFolderFn: defaultFolderPath,

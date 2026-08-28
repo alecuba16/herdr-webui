@@ -1265,7 +1265,6 @@
     wsUrl,
     api,
     modalId: "tempTerminalModal",
-    containerId: "tempTerminal",
     fontFamilyFn: () => {
       try {
         const parsed = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");

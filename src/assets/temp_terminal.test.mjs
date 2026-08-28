@@ -251,7 +251,6 @@ async function openTempTerminal(ctx, options = {}) {
     wsUrl: (path) => path,
     api: ctx.api,
     modalId: "tempTerminalModal",
-    containerId: "tempTerminal",
     defaultFolderFn: () => "",
     ...options,
   });
