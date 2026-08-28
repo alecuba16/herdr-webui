@@ -356,14 +356,17 @@ describe("mobile bundle load", () => {
 
 
   it("renders temporary terminal capture hint on mobile", () => {
+    const tempTerminalSource = readFileSync(new URL("./shared/temp_terminal.js", import.meta.url), "utf8");
     const mobileSource = readFileSync(new URL("./mobile/app.js", import.meta.url), "utf8");
     const mobileCss = readFileSync(new URL("./mobile/app.css", import.meta.url), "utf8");
 
-    match(mobileSource, /Input captured · Ctrl\+G detaches/);
-    match(mobileSource, /aria-label="Minimize temporary terminal"/);
-    match(mobileSource, /aria-label="Detach temporary terminal"/);
+    // Modal HTML is now created dynamically in temp_terminal.js.
+    match(tempTerminalSource, /Input captured · Ctrl\+G detaches/);
+    match(tempTerminalSource, /temp-terminal-minimize/);
+    match(tempTerminalSource, /temp-terminal-close/);
     match(mobileCss, /\.temp-terminal-hint/);
-    match(mobileCss, /\.temp-terminal-restore \{[\s\S]*?position: fixed;[\s\S]*?right: calc\(env\(safe-area-inset-right, 0px\) \+ 18px\);/);
+    match(mobileCss, /\.temp-terminal-restore-bar \{[\s\S]*?flex-direction: column;/);
+    match(mobileCss, /\.temp-terminal-restore \{[\s\S]*?display: inline-flex;/);
     match(mobileCss, /height: calc\(var\(--herdr-mobile-viewport-height\) - 24px\)/);
     match(mobileCss, /\.temp-terminal-body \{[\s\S]*?min-height: 0;[\s\S]*?overflow: hidden;/);
     match(mobileCss, /\.temp-terminal-body \.wterm \{[\s\S]*?overflow-x: hidden;[\s\S]*?overflow-y: auto;/);
