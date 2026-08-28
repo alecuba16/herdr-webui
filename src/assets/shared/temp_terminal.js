@@ -76,7 +76,6 @@
 
     // Shared workspace state across all temp terminals.
     var sharedWorkspaceId = null;
-    var sharedWorkspaceOwned = false;
 
     // Active sessions keyed by session id.
     var sessions = {};
@@ -524,7 +523,6 @@
         var workspaceId = preferredWorkspaceId();
         if (workspaceId) {
           sharedWorkspaceId = workspaceId;
-          sharedWorkspaceOwned = false;
           return Promise.resolve(workspaceId);
         }
         var cwd = defaultFolderFn();
@@ -536,7 +534,6 @@
         }).then(function (res) {
           var workspace = res && res.result && res.result.workspace;
           sharedWorkspaceId = workspace && workspace.workspace_id;
-          sharedWorkspaceOwned = !!sharedWorkspaceId;
           return sharedWorkspaceId;
         });
       }
@@ -677,12 +674,6 @@
 
       function restoreLabel() {
         return restoreLabelText(targetFolder || defaultFolderFn());
-      }
-
-      function shortcutTitle(action) {
-        var label = "";
-        try { label = shortcutLabelFn() || ""; } catch (e) {}
-        return label ? action + " (" + label + ")" : action;
       }
 
       function minimize() {
