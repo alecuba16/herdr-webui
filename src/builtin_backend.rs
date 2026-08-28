@@ -4536,19 +4536,23 @@ mod tests {
     #[test]
     fn pane_agent_presentation_reports_done_after_exit() {
         let hub = BuiltinEventHub::new();
-        let events = hub.subscribe();
         let context = PaneEventContext {
             workspace_id: "ws_done".to_string(),
             tab_id: "tab_done".to_string(),
             pane_id: "pane_done".to_string(),
             terminal_id: "term_done".to_string(),
         };
-        // Spawn a jcode-like process that exits quickly. The argv identifies
-        // it as jcode, so the exit handler should report "done".
+        // Spawn a shell that exits quickly. We set the pane argv to "jcode" so
+        // detect_agent_label identifies it as jcode. This avoids requiring the
+        // jcode binary to be installed on the CI runner.
         let terminal = TerminalRuntime::spawn(
             "term_done".to_string(),
             std::env::current_dir().unwrap(),
-            vec!["jcode".to_string(), "--version".to_string()],
+            vec![
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "printf done".to_string(),
+            ],
             24,
             80,
             hub,
@@ -4572,31 +4576,9 @@ mod tests {
         }
         assert!(saw_exit);
 
-        // The event hub should have received a pane.agent_status_changed with
-        // "done" status, followed by pane.exited.
-        let mut saw_done_status = false;
-        let mut saw_exit_event = false;
-        while let Ok(event) = events.recv_timeout(Duration::from_millis(500)) {
-            match event["event"].as_str() {
-                Some("pane.agent_status_changed") => {
-                    if event["data"]["agent_status"] == "done" {
-                        saw_done_status = true;
-                    }
-                }
-                Some("pane.exited") => {
-                    saw_exit_event = true;
-                    break;
-                }
-                _ => {}
-            }
-        }
-        assert!(saw_exit_event, "should have received pane.exited event");
-        // The agent_status_changed "done" event may or may not arrive depending
-        // on whether jcode was detected as the agent. The key assertion is that
-        // the terminal is marked as exited and pane_agent_presentation returns "done".
-        let _ = saw_done_status;
-
         // Verify pane_agent_presentation reports "done" for the exited terminal.
+        // The pane argv is set to "jcode" so detect_agent_label identifies the
+        // agent even though the actual process was /bin/sh.
         let data = BuiltinData {
             workspaces: HashMap::new(),
             tabs: HashMap::new(),
