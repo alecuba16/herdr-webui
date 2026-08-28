@@ -69,6 +69,11 @@ function context() {
     setTimeout(fn) {
       return 1;
     },
+    requestAnimationFrame(fn) {
+      if (typeof fn === "function") fn();
+      return 1;
+    },
+    cancelAnimationFrame() {},
     document: {
       body: getElement("body"),
       title: "",
@@ -209,7 +214,7 @@ describe("app bundle load", () => {
     ok(!dashboard.includes("runSearchAction('temp-terminal')"));
     ok(!dashboard.includes("runSearchAction('sessions')"));
     match(source, /if \(action === "open-workspace" \|\| action === "discover-worktrees"\) openWorktreeOpenModal\(selectedWorkspaceRepoPath\(\), true\);/);
-    match(source, /else if \(action === "temp-terminal" && tempTerminal\) tempTerminal\.open\(\);/);
+    match(source, /else if \(action === "temp-terminal" && tempTerminal\) \{[\s\S]*?tempTerminal\.open\(folder\);/);
     match(source, /else if \(action === "sessions"\) showSessionManager\(\);/);
     match(source, /else if \(action === "files"\) openWorkspaceFileBrowser\(state\.ws\);/);
     match(source, /else if \(action === "git"\) openWorkspaceGitUi\(state\.ws\);/);
@@ -248,7 +253,9 @@ describe("app bundle load", () => {
     equal(ctx.document.getElementById("settingsToggle").title, "Settings (Ctrl+Q then S)");
     equal(ctx.document.getElementById("headerActionsButton").title, "Search and actions (Ctrl+Q then /)");
     equal(ctx.document.getElementById("sidebarToggle").title, "Hide sidebar (Ctrl+Q then B)");
-    equal(ctx.document.getElementById("tempTerminalMinimize").title, "Minimize temporary terminal (Ctrl+Q then Shift+M)");
+    // Temp terminal modal is created dynamically; tooltip is set via syncShortcutTooltips.
+    ok(source.includes('temp-terminal-backdrop'));
+    ok(source.includes('Minimize temporary terminal'));
 
     vm.runInContext(`
       state.ws = "w1";
@@ -523,16 +530,21 @@ describe("app bundle load", () => {
   it("uses the WebUI prefix shortcut to manage temporary terminals", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
+    // Set up mock tempTerminal first, then override querySelectorAll to report visible backdrop.
     vm.runInContext(`
-      const modal = document.getElementById("tempTerminalModal");
-      modal.style.display = "grid";
       tempTerminal = {
-        visible: true,
-        minimized: 0,
-        opened: 0,
-        isVisible() { return this.visible; },
-        minimize() { this.minimized += 1; this.visible = false; modal.style.display = "none"; },
-        open() { this.opened += 1; this.visible = true; modal.style.display = "grid"; },
+        _visible: false,
+        _minimized: 0,
+        _opened: 0,
+        isVisible() { return this._visible; },
+        minimize() { this._minimized += 1; this._visible = false; },
+        open(folder) { this._opened += 1; this._visible = true; },
+      };
+      const _origQSA = document.querySelectorAll.bind(document);
+      document.querySelectorAll = function(sel) {
+        if (sel === ".temp-terminal-backdrop" && tempTerminal && tempTerminal.isVisible && tempTerminal.isVisible())
+          return [{ style: { display: "grid" }, querySelector: () => null }];
+        return _origQSA ? _origQSA(sel) : [];
       };
     `, ctx);
 
@@ -556,26 +568,29 @@ describe("app bundle load", () => {
     let prefix = key("KeyB", "b", { ctrlKey: true });
     ctx.handleGlobalShortcut(prefix);
     equal(prefix.defaultPrevented, true);
+    // First Shift+M with no visible terminal: opens a new one.
     let shortcut = key("KeyM", "M", { shiftKey: true });
     ctx.handleGlobalShortcut(shortcut);
     equal(shortcut.defaultPrevented, true);
-    equal(vm.runInContext("tempTerminal.minimized", ctx), 1);
-    equal(vm.runInContext("tempTerminal.opened", ctx), 0);
+    equal(vm.runInContext("tempTerminal._minimized", ctx), 0);
+    equal(vm.runInContext("tempTerminal._opened", ctx), 1);
 
+    // Second Shift+M with visible terminal (open() set _visible=true): minimizes it.
     prefix = key("KeyB", "b", { ctrlKey: true });
     ctx.handleGlobalShortcut(prefix);
     shortcut = key("KeyM", "M", { shiftKey: true });
     ctx.handleGlobalShortcut(shortcut);
-    equal(vm.runInContext("tempTerminal.minimized", ctx), 1);
-    equal(vm.runInContext("tempTerminal.opened", ctx), 1);
+    equal(vm.runInContext("tempTerminal._minimized", ctx), 1);
+    equal(vm.runInContext("tempTerminal._opened", ctx), 1);
 
-    vm.runInContext(`document.getElementById("tempTerminalModal").style.display = "grid"; tempTerminal.visible = true;`, ctx);
+    // When visible, prefix shortcut should block settings from opening.
+    vm.runInContext(`tempTerminal._visible = true;`, ctx);
     prefix = key("KeyB", "b", { ctrlKey: true });
     ctx.handleGlobalShortcut(prefix);
     const settings = key("KeyS", "s");
     ctx.handleGlobalShortcut(settings);
     equal(ctx.document.getElementById("settingsModal").style.display, undefined);
-    equal(vm.runInContext("tempTerminal.minimized", ctx), 1);
+    equal(vm.runInContext("tempTerminal._minimized", ctx), 1);
   });
 
   it("opens app search with Cmd/Ctrl+F without stealing editor or terminal Ctrl+F", () => {
@@ -1101,8 +1116,10 @@ describe("app bundle load", () => {
     match(tempTerminalSource, /if \(tempTerminalOwnsEventTarget\(event\.target\)\) \{/);
     match(tempTerminalSource, /terminalFocusRetainingInputForKey\(event\)/);
     match(tempTerminalSource, /shortcutLabelFn/);
-    match(tempTerminalSource, /setShortcutTitle\(button, "Minimize temporary terminal"\)/);
-    match(tempTerminalSource, /setShortcutTitle\(button, "Show temporary terminal"\)/);
+    match(tempTerminalSource, /setShortcutTitle\(minimizeBtn, "Minimize temporary terminal"\)/);
+    // Restore button tooltip is set via syncShortcutTooltips in core.js, not in temp_terminal.js.
+    const coreSource = readFileSync(new URL("./desktop/app_js/core.js", import.meta.url), "utf8");
+    match(coreSource, /titleWithWebuiShortcut\("Show temporary terminal", "tempTerminalToggle"\)/);
     match(shortcutsSource, /tempTerminalToggle/);
     const bindingsSource = readFileSync(new URL("./desktop/app_js/bindings.js", import.meta.url), "utf8");
     match(bindingsSource, /function tempTerminalWorkspaceId\(\)/);
@@ -1114,20 +1131,20 @@ describe("app bundle load", () => {
     match(readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8"), /activeWorkspaceId\(\) \{ return state\.visible \? \(state\.activeKey \|\| ""\) : ""; \}/);
     match(tempTerminalSource, /if \(event\.key === "Backspace"\) return "\\x7f";/);
     match(tempTerminalSource, /if \(event\.key === "Tab"\) return event\.shiftKey \? "\\x1b\[Z" : "\\t";/);
-    match(tempTerminalSource, /term\.element \|\| el\(containerId\)/);
+    match(tempTerminalSource, /term && term\.element \? term\.element : containerEl\.querySelector/);
     match(tempTerminalSource, /case "Backspace": return "\\x7f";/);
     match(tempTerminalSource, /case "Tab": return event\.shiftKey \? "\\x1b\[Z" : "\\t";/);
     match(tempTerminalSource, /stripTerminalQueryReplies\(data, terminalQueryReplyState\)/);
     match(tempTerminalSource, /String\(event\.key \|\| ""\)\.toLowerCase\(\) === "g"/);
     match(shortcutsSource, /function tempTerminalModalOpen\(\)/);
     match(shortcutsSource, /if \(tempTerminalModalOpen\(\)\) return false;/);
-    match(tempTerminalSource, /function terminalGridSize\(container\)/);
+    match(tempTerminalSource, /function terminalGridSize\(containerEl\)/);
     match(tempTerminalSource, /function connectTerminalWsAfterLayout\(terminalId, attempt\)/);
-    match(tempTerminalSource, /ensureTerminalSurface\(container\)/);
-    match(tempTerminalSource, /function waitForTerminalFit\(container, attempt, callback\)/);
+    match(tempTerminalSource, /ensureTerminalSurface\(containerEl\)/);
+    match(tempTerminalSource, /function waitForTerminalFit\(containerEl, attempt, callback\)/);
     match(tempTerminalSource, /HerdrTerminalFit\.gridSize\(measureTarget, term/);
-    match(tempTerminalSource, /HerdrTerminalFit\.cellSize\(term, container/);
-    match(tempTerminalSource, /HerdrTerminalFit\.fitTerminalToContainer\(termEl, \{ height: box\.height \}\)/);
+    match(tempTerminalSource, /HerdrTerminalFit\.cellSize\(term, containerEl/);
+    match(tempTerminalSource, /HerdrTerminalFit\.fitTerminalToContainer\(termEl, \{ height: alignedHeight \}\)/);
     match(terminalFitSource, /function cellSize\(term, container, fallback\)/);
     match(terminalFitSource, /function gridSize\(container, term, options\)/);
     match(terminalFitSource, /function fitTerminalToContainer\(container, options\)/);
@@ -1144,11 +1161,13 @@ describe("app bundle load", () => {
     match(modalCss, /\.temp-terminal-body \{[\s\S]*?min-height: 0;[\s\S]*?overflow: hidden;/);
     match(modalCss, /\.temp-terminal-body \.terminal \{[\s\S]*?width: 100%;[\s\S]*?height: 100%;/);
     match(modalCss, /\.temp-terminal-body \.wterm \{[\s\S]*?height: 100%;[\s\S]*?overflow-x: hidden;[\s\S]*?overflow-y: auto;[\s\S]*?width: 100%;/);
-    match(html, /Input captured · Ctrl\+G detaches/);
-    match(html, /aria-label="Minimize temporary terminal"/);
-    match(html, /aria-label="Detach temporary terminal"/);
+    // Modal HTML is now created dynamically in temp_terminal.js, not in app.html.
+    match(tempTerminalSource, /Input captured · Ctrl\+G detaches/);
+    match(tempTerminalSource, /temp-terminal-minimize/);
+    match(tempTerminalSource, /temp-terminal-close/);
     match(modalCss, /\.temp-terminal-hint/);
-    match(modalCss, /\.temp-terminal-restore \{[\s\S]*?position: fixed;[\s\S]*?right: calc\(env\(safe-area-inset-right, 0px\) \+ 18px\);/);
+    match(modalCss, /\.temp-terminal-restore-bar \{[\s\S]*?flex-direction: column;/);
+    match(modalCss, /\.temp-terminal-restore \{[\s\S]*?display: inline-flex;/);
     match(source, /Ctrl\+G<\/kbd><span>Detach temporary terminal/);
     match(source, /Temporary terminal captures Tab\/Backspace\/navigation keys and normal input while open/);
   });

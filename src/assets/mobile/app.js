@@ -319,28 +319,11 @@
           <button data-screen="more">More</button>
         </nav>
       </div>
-      <div class="temp-terminal-backdrop" id="tempTerminalModal">
-        <div class="temp-terminal-modal" role="dialog" aria-modal="true" aria-labelledby="tempTerminalTitle">
-          <div class="temp-terminal-head">
-            <h2 id="tempTerminalTitle">Temporary terminal</h2>
-            <div class="temp-terminal-head-actions">
-              <span class="temp-terminal-hint">Input captured · Ctrl+G detaches</span>
-              <button class="temp-terminal-minimize" id="tempTerminalMinimize" title="Minimize temporary terminal" aria-label="Minimize temporary terminal">−</button>
-              <button class="temp-terminal-close" id="tempTerminalClose" title="Detach temporary terminal" aria-label="Detach temporary terminal">✕</button>
-            </div>
-          </div>
-          <div class="temp-terminal-body">
-            <button class="terminal-follow-button temp-terminal-follow" id="tempTerminalFollowButton" type="button" hidden title="Go to latest terminal output and resume follow" aria-label="Go to latest terminal output and resume follow">↓ Tail</button>
-            <div class="terminal" id="tempTerminal"></div>
-          </div>
-        </div>
       </div>`;
     el("mobileBack").onclick = () => showScreen("home");
     el("mobileSearch").onclick = openMobileSearch;
     el("mobileSettings").onclick = () => showScreen("settings");
-    el("mobileTempTerminal").onclick = () => mobileTempTerminal && mobileTempTerminal.open();
-    const tempClose = el("tempTerminalClose");
-    if (tempClose) tempClose.onclick = () => mobileTempTerminal && mobileTempTerminal.requestClose();
+    el("mobileTempTerminal").onclick = () => mobileTempTerminal && mobileTempTerminal.open(currentWorkspaceCwd());
     document.querySelectorAll(".mobile-nav button").forEach((button) => {
       button.onclick = () => showScreen(button.dataset.screen);
     });
@@ -1215,7 +1198,7 @@
       return;
     }
     if (action === "temp-terminal") {
-      if (mobileTempTerminal) mobileTempTerminal.open();
+      if (mobileTempTerminal) mobileTempTerminal.open(currentWorkspaceCwd());
       return;
     }
     if (["terminal", "files", "git", "settings"].includes(action)) showScreen(action);
@@ -1282,7 +1265,6 @@
     wsUrl,
     api,
     modalId: "tempTerminalModal",
-    containerId: "tempTerminal",
     fontFamilyFn: () => {
       try {
         const parsed = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
@@ -1291,7 +1273,19 @@
         return globalThis.HerdrAppHelpers.resolveTerminalFontFamily("");
       }
     },
+    themeFn: () => {
+      const light = document.body.classList.contains("light");
+      const colors = (globalThis.HerdrAppHelpers && globalThis.HerdrAppHelpers.terminalThemeColors) || {};
+      const theme = light ? (colors.light || {}) : (colors.dark || {});
+      return {
+        background: theme.background || (light ? "#ffffff" : "#1e1e2e"),
+        foreground: theme.foreground || (light ? "#4c4f69" : "#cdd6f4"),
+        cursor: theme.cursor || (light ? "#4c4f69" : "#cdd6f4"),
+        selectionBackground: theme.selectionBackground || (light ? "#dce0f8" : "#45475a"),
+      };
+    },
     defaultFolderFn: () => state.defaultFolder || "",
+    workspaceIdFn: () => state.ws || (state.workspaces && state.workspaces.length === 1 ? state.workspaces[0].workspace_id : "") || "",
   });
   window.addEventListener("resize", () => mobileTempTerminal.handleResize());
   mobileSettings = globalThis.HerdrMobileSettings.create({
