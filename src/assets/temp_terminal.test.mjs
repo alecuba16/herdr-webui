@@ -385,6 +385,29 @@ describe("temporary terminal", () => {
     equal(ctx.apiCalls.filter((url) => url === "/api/workspaces").length, 1);
   });
 
+  it("does not create duplicate workspaces when two sessions start concurrently", async () => {
+    const ctx = context();
+    vm.runInContext(readFileSync(new URL("./shared/temp_terminal.js", import.meta.url), "utf8"), ctx);
+    const tempTerminal = ctx.HerdrTempTerminal.create({
+      el: ctx.document.getElementById,
+      state: { ws: null, workspaces: [] },
+      wsUrl: (path) => path,
+      api: ctx.api,
+      modalId: "tempTerminalModal",
+      defaultFolderFn: () => "/settings/default",
+    });
+    // Open two sessions concurrently before the first workspace API resolves.
+    tempTerminal.open("/folder/a");
+    tempTerminal.open("/folder/b");
+    for (let i = 0; i < 12; i += 1) {
+      await Promise.resolve();
+      ctx.flushWsOnOpen();
+    }
+    // Only one workspace creation call should have been made.
+    const workspaceCalls = ctx.apiCalls.filter((url) => url === "/api/workspaces");
+    equal(workspaceCalls.length, 1, "concurrent sessions should share a single workspace creation");
+  });
+
   it("lets terminal renderer handle ordinary keys from inside the terminal without duplicate input", async () => {
     const ctx = context();
     await openTempTerminal(ctx);

@@ -76,6 +76,7 @@
 
     // Shared workspace state across all temp terminals.
     var sharedWorkspaceId = null;
+    var pendingWorkspacePromise = null;
 
     // Active sessions keyed by session id.
     var sessions = {};
@@ -520,6 +521,10 @@
         if (sharedWorkspaceId) {
           return Promise.resolve(sharedWorkspaceId);
         }
+        // If a workspace creation is already in-flight, reuse its promise
+        // to avoid creating duplicate workspaces when multiple sessions
+        // call this concurrently.
+        if (pendingWorkspacePromise) return pendingWorkspacePromise;
         var workspaceId = preferredWorkspaceId();
         if (workspaceId) {
           sharedWorkspaceId = workspaceId;
@@ -527,15 +532,20 @@
         }
         var cwd = defaultFolderFn();
         if (!cwd) return Promise.resolve(null);
-        return api("/api/workspaces", {
+        pendingWorkspacePromise = api("/api/workspaces", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ label: "temp", cwd: cwd }),
         }).then(function (res) {
           var workspace = res && res.result && res.result.workspace;
           sharedWorkspaceId = workspace && workspace.workspace_id;
+          pendingWorkspacePromise = null;
           return sharedWorkspaceId;
+        }).catch(function (err) {
+          pendingWorkspacePromise = null;
+          throw err;
         });
+        return pendingWorkspacePromise;
       }
 
       function preferredWorkspaceId() {
