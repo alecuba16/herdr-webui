@@ -64,8 +64,6 @@
     var wsUrl = opts.wsUrl;
     var api = opts.api;
     var modalId = opts.modalId;
-    var containerId = opts.containerId;
-    var closeId = opts.closeId;
     var fontFamilyFn = opts.fontFamilyFn || function () { return "monospace"; };
     var themeFn = opts.themeFn || function () { return {}; };
     var defaultFolderFn = opts.defaultFolderFn || function () { return ""; };
@@ -187,7 +185,6 @@
       function ensureDom() {
         var doc = globalThis.document;
         if (!doc) return;
-        var existingModal = el(modalId);
         // Create a session-specific modal element.
         modal = doc.createElement("div");
         modal.className = "modal-backdrop temp-terminal-backdrop";
