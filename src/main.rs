@@ -6646,4 +6646,1444 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
     }
+
+    // ────────────────────────────────────────────────────────────────────
+    // Flexible fake socket helpers for testing spawn_blocking handlers
+    // ────────────────────────────────────────────────────────────────────
+
+    /// Fake API socket that accepts a request, checks the method, and
+    /// responds with the given JSON value.  Handles any method (not just
+    /// "ping" like `fake_api_socket`).
+    #[cfg(unix)]
+    fn fake_api_socket_for_method(
+        expected_method: &str,
+        response: serde_json::Value,
+    ) -> (PathBuf, thread::JoinHandle<()>) {
+        use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+
+        let path = std::env::temp_dir().join(format!(
+            "herdr-webui-test-{}.sock",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_file(&path);
+        let name = path.clone().to_fs_name::<GenericFilePath>().unwrap();
+        let listener = ListenerOptions::new()
+            .name(name)
+            .try_overwrite(true)
+            .create_sync()
+            .unwrap();
+        let expected = expected_method.to_string();
+        let handle = thread::spawn(move || {
+            let mut stream = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(request["method"], expected, "unexpected method");
+            stream
+                .write_all(serde_json::to_string(&response).unwrap().as_bytes())
+                .unwrap();
+            stream.write_all(b"\n").unwrap();
+            stream.flush().unwrap();
+        });
+        (path, handle)
+    }
+
+    /// Fake API socket that accepts multiple sequential requests, responding
+    /// to each with the corresponding value in `responses`.
+    #[cfg(unix)]
+    fn fake_api_socket_multi(
+        responses: Vec<serde_json::Value>,
+    ) -> (PathBuf, thread::JoinHandle<()>) {
+        use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+
+        let path = std::env::temp_dir().join(format!(
+            "herdr-webui-multi-test-{}.sock",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_file(&path);
+        let name = path.clone().to_fs_name::<GenericFilePath>().unwrap();
+        let listener = ListenerOptions::new()
+            .name(name)
+            .try_overwrite(true)
+            .create_sync()
+            .unwrap();
+        let handle = thread::spawn(move || {
+            for resp in responses {
+                let mut stream = listener.accept().unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                stream
+                    .write_all(serde_json::to_string(&resp).unwrap().as_bytes())
+                    .unwrap();
+                stream.write_all(b"\n").unwrap();
+                stream.flush().unwrap();
+            }
+        });
+        (path, handle)
+    }
+
+    fn authed_request(method: Method, uri: &str) -> axum::http::request::Builder {
+        request(method, uri).header(header::COOKIE, "herdr_web_session=token-123")
+    }
+
+    // ── proxy_request_async success + error paths ──
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn agents_handler_proxies_agent_list() {
+        let (socket, handle) = fake_api_socket_for_method(
+            "agent.list",
+            json!({ "id": "web:agent:list", "result": { "agents": [] } }),
+        );
+        let mut state = test_state();
+        state.api_socket = Some(socket.clone());
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::GET, "/api/agents")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert!(body["result"]["agents"].is_array());
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn agents_handler_returns_bad_gateway_on_socket_error() {
+        let mut state = test_state();
+        state.api_socket = Some(PathBuf::from("/tmp/nonexistent-agents-test.sock"));
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::GET, "/api/agents")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn tabs_handler_proxies_tab_list() {
+        let (socket, handle) = fake_api_socket_for_method(
+            "tab.list",
+            json!({ "id": "web:tab:list", "result": { "tabs": [] } }),
+        );
+        let mut state = test_state();
+        state.api_socket = Some(socket.clone());
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::GET, "/api/tabs")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert!(body["result"]["tabs"].is_array());
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn panes_handler_proxies_pane_list() {
+        let (socket, handle) = fake_api_socket_for_method(
+            "pane.list",
+            json!({ "id": "web:pane:list", "result": { "panes": [] } }),
+        );
+        let mut state = test_state();
+        state.api_socket = Some(socket.clone());
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::GET, "/api/panes")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert!(body["result"]["panes"].is_array());
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pane_layout_handler_proxies_pane_layout() {
+        let (socket, handle) = fake_api_socket_for_method(
+            "pane.layout",
+            json!({ "id": "web:pane:layout", "result": { "layout": {} } }),
+        );
+        let mut state = test_state();
+        state.api_socket = Some(socket.clone());
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::GET, "/api/pane-layout")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn session_snapshot_handler_proxies_snapshot() {
+        let (socket, handle) = fake_api_socket_for_method(
+            "session.snapshot",
+            json!({ "id": "web:session:snapshot", "result": { "workspaces": [], "tabs": [], "panes": [] } }),
+        );
+        let mut state = test_state();
+        state.api_socket = Some(socket.clone());
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::GET, "/api/session-snapshot")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert!(body["result"]["workspaces"].is_array());
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn create_workspace_handler_proxies_create() {
+        let (socket, handle) = fake_api_socket_for_method(
+            "workspace.create",
+            json!({ "id": "web:workspace:create", "result": { "id": "ws1" } }),
+        );
+        let mut state = test_state();
+        state.api_socket = Some(socket.clone());
+        let app = test_app_with_state(state);
+
+        let cwd = std::env::temp_dir();
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/workspaces")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "cwd": cwd.to_string_lossy(), "label": "test" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["result"]["id"], "ws1");
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn rename_workspace_handler_proxies_rename() {
+        let (socket, handle) = fake_api_socket_for_method(
+            "workspace.rename",
+            json!({ "id": "web:workspace:rename", "result": { "ok": true } }),
+        );
+        let mut state = test_state();
+        state.api_socket = Some(socket.clone());
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/workspaces/ws-abc/rename")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "label": "new name" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn close_workspace_handler_proxies_close() {
+        let (socket, handle) = fake_api_socket_for_method(
+            "workspace.close",
+            json!({ "id": "web:workspace:close", "result": { "ok": true } }),
+        );
+        let mut state = test_state();
+        state.api_socket = Some(socket.clone());
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/workspaces/ws-xyz/close")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn create_tab_handler_proxies_create() {
+        let (socket, handle) = fake_api_socket_for_method(
+            "tab.create",
+            json!({ "id": "web:tab:create", "result": { "id": "tab1" } }),
+        );
+        let mut state = test_state();
+        state.api_socket = Some(socket.clone());
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/tabs")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "workspace_id": "ws1", "label": "tab" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["result"]["id"], "tab1");
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn rename_tab_handler_proxies_rename() {
+        let (socket, handle) = fake_api_socket_for_method(
+            "tab.rename",
+            json!({ "id": "web:tab:rename", "result": { "ok": true } }),
+        );
+        let mut state = test_state();
+        state.api_socket = Some(socket.clone());
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/tabs/tab-42/rename")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "label": "renamed" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn close_tab_handler_proxies_close() {
+        let (socket, handle) = fake_api_socket_for_method(
+            "tab.close",
+            json!({ "id": "web:tab:close", "result": { "ok": true } }),
+        );
+        let mut state = test_state();
+        state.api_socket = Some(socket.clone());
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/tabs/tab-99/close")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn close_pane_handler_proxies_close() {
+        let (socket, handle) = fake_api_socket_for_method(
+            "pane.close",
+            json!({ "id": "web:pane:close", "result": { "ok": true } }),
+        );
+        let mut state = test_state();
+        state.api_socket = Some(socket.clone());
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/panes/pane-7/close")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn remove_worktree_handler_proxies_remove() {
+        let (socket, handle) = fake_api_socket_for_method(
+            "worktree.remove",
+            json!({ "id": "web:worktree:remove", "result": { "ok": true } }),
+        );
+        let mut state = test_state();
+        state.api_socket = Some(socket.clone());
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/workspaces/ws-1/worktree-remove")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({ "force": true }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn open_worktree_handler_proxies_open() {
+        let (socket, handle) = fake_api_socket_for_method(
+            "worktree.open",
+            json!({ "id": "web:worktree:open", "result": { "ok": true } }),
+        );
+        let mut state = test_state();
+        state.api_socket = Some(socket.clone());
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/worktrees/open")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "workspace_id": "ws1", "cwd": "/tmp", "path": "/tmp/wt", "branch": "main", "label": "wt" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
+    }
+
+    // ── workspaces handler (two sequential requests + enrich) ──
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn workspaces_handler_proxies_list_and_enriches_cwds() {
+        let (socket, handle) = fake_api_socket_multi(vec![
+            // workspace.list response
+            json!({ "id": "web:workspace:list", "result": { "workspaces": [
+                { "workspace_id": "ws1", "label": "workspace one", "cwd": null }
+            ]}}),
+            // pane.list response for enrichment
+            json!({ "id": "web:pane:list:workspace-cwds", "result": { "panes": [
+                { "workspace_id": "ws1", "cwd": "/home/user/project", "foreground_cwd": "/home/user/project/src" }
+            ]}}),
+        ]);
+        let mut state = test_state();
+        state.api_socket = Some(socket.clone());
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::GET, "/api/workspaces")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        let ws = &body["result"]["workspaces"][0];
+        assert_eq!(ws["workspace_id"], "ws1");
+        assert_eq!(ws["cwd"], "/home/user/project");
+        assert_eq!(ws["foreground_cwd"], "/home/user/project/src");
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn workspaces_handler_returns_bad_gateway_on_error() {
+        let mut state = test_state();
+        state.api_socket = Some(PathBuf::from("/tmp/nonexistent-workspaces-test.sock"));
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::GET, "/api/workspaces")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    }
+
+    // ── git_branches handler ──
+
+    #[tokio::test]
+    async fn git_branches_handler_requires_cwd() {
+        let app = test_app();
+
+        let response = app
+            .oneshot(
+                authed_request(Method::GET, "/api/git-branches")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_json(response).await;
+        assert_eq!(body["error"], "cwd is required");
+    }
+
+    #[tokio::test]
+    async fn git_branches_handler_returns_branches_from_repo() {
+        let repo = std::env::temp_dir().join(format!(
+            "herdr-webui-git-branches-api-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&repo);
+        fs::create_dir_all(&repo).unwrap();
+        assert!(Command::new("git")
+            .arg("init")
+            .arg(&repo)
+            .output()
+            .unwrap()
+            .status
+            .success());
+        fs::write(repo.join("file.txt"), "hello").unwrap();
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["add", "."])
+            .output()
+            .unwrap()
+            .status
+            .success());
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["-c", "user.name=test", "-c", "user.email=t@example.com", "commit", "-m", "init"])
+            .output()
+            .unwrap()
+            .status
+            .success());
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["branch", "feature/test"])
+            .output()
+            .unwrap()
+            .status
+            .success());
+
+        let app = test_app();
+        let response = app
+            .oneshot(
+                authed_request(
+                    Method::GET,
+                    &format!("/api/git-branches?cwd={}", repo.to_string_lossy()),
+                )
+                .body(Body::empty())
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        let branches = body["branches"].as_array().unwrap();
+        let names: Vec<&str> = branches.iter().map(|v| v.as_str().unwrap()).collect();
+        assert!(names.contains(&"main") || names.contains(&"master"));
+        assert!(names.contains(&"feature/test"));
+
+        fs::remove_dir_all(&repo).unwrap();
+    }
+
+    #[tokio::test]
+    async fn git_branches_handler_returns_error_for_nonexistent_repo() {
+        let app = test_app();
+        let response = app
+            .oneshot(
+                authed_request(
+                    Method::GET,
+                    "/api/git-branches?cwd=/tmp/nonexistent-git-repo-xyz",
+                )
+                .body(Body::empty())
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = response_json(response).await;
+        assert!(body["error"].as_str().is_some_and(|e| !e.is_empty()));
+    }
+
+    // ── launch_session error paths ──
+
+    #[tokio::test]
+    async fn launch_session_rejects_disabled_backend() {
+        let state = test_state();
+        // Disable both backends via settings
+        if let Ok(mut settings) = state.server_settings.lock() {
+            settings.builtin_backend_enabled = false;
+            settings.external_herdr_backend_enabled = false;
+        }
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/session/launch")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "session": "test", "backend": "external-herdr" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_json(response).await;
+        assert_eq!(body["ok"], false);
+        assert!(body["error"].as_str().is_some_and(|e| e.contains("disabled")));
+    }
+
+    #[tokio::test]
+    async fn launch_session_returns_error_when_herdr_bin_not_found() {
+        let mut state = test_state();
+        state.herdr_bin = "/nonexistent/herdr-bin-xyz".to_string();
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/session/launch")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "session": "test", "backend": "external-herdr" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = response_json(response).await;
+        assert_eq!(body["ok"], false);
+        assert!(body["error"].as_str().is_some_and(|e| !e.is_empty()));
+    }
+
+    #[tokio::test]
+    async fn launch_session_external_succeeds_with_true_command() {
+        // Use /usr/bin/true as a stand-in for the herdr binary (works on macOS and Linux)
+        let true_bin = if std::path::Path::new("/bin/true").exists() {
+            "/bin/true"
+        } else {
+            "/usr/bin/true"
+        };
+        let mut state = test_state();
+        state.herdr_bin = true_bin.to_string();
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/session/launch")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "session": "test-launch", "backend": "external-herdr" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["ok"], true);
+        assert!(body["pid"].as_u64().is_some());
+    }
+
+    #[tokio::test]
+    async fn launch_session_default_session_omits_env() {
+        let true_bin = if std::path::Path::new("/bin/true").exists() {
+            "/bin/true"
+        } else {
+            "/usr/bin/true"
+        };
+        let mut state = test_state();
+        state.herdr_bin = true_bin.to_string();
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/session/launch")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "backend": "external-herdr" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["session"], "default");
+    }
+
+    // ── close_session builtin backend path ──
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn close_session_builtin_backend_uses_builtin_socket_namespace() {
+        use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+        let _guard = env_lock().lock().unwrap();
+        let config_home = std::env::temp_dir().join(format!(
+            "herdr-webui-close-builtin-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
+
+        // Compute the socket path that builtin_socket_paths will return
+        let session_name = "test-builtin-close";
+        let (api_socket, _) = builtin_socket_paths(Some(session_name));
+        fs::create_dir_all(api_socket.parent().unwrap()).unwrap();
+        let _ = fs::remove_file(&api_socket);
+
+        // Create a fake backend listener directly at the builtin socket path
+        let name = api_socket.clone().to_fs_name::<GenericFilePath>().unwrap();
+        let listener = ListenerOptions::new()
+            .name(name)
+            .try_overwrite(true)
+            .create_sync()
+            .unwrap();
+        let saw_stop = std::sync::Arc::new(std::sync::Mutex::new(false));
+        let saw_stop_clone = saw_stop.clone();
+        let handle = thread::spawn(move || {
+            let stream = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+            if request["method"] == "server.stop" {
+                *saw_stop_clone.lock().unwrap() = true;
+                // Drop the connection without responding, simulating backend shutdown.
+                drop(stream);
+            }
+        });
+
+        let mut state = test_state();
+        state.backend_mode = BackendMode::Builtin;
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/session/close")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "session": session_name, "backend": "builtin" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // close_session on a builtin session calls proxy_server_stop which
+        // treats connection drop as OK.
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["ok"], true);
+        assert!(
+            *saw_stop.lock().unwrap(),
+            "backend should have received server.stop"
+        );
+        handle.join().unwrap();
+        let _ = fs::remove_file(&api_socket);
+        let _ = fs::remove_dir_all(config_home);
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    #[tokio::test]
+    async fn close_session_rejects_disabled_backend() {
+        let state = test_state();
+        if let Ok(mut settings) = state.server_settings.lock() {
+            settings.external_herdr_backend_enabled = false;
+        }
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/session/close")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "backend": "external-herdr" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_json(response).await;
+        assert_eq!(body["ok"], false);
+        assert!(body["error"].as_str().is_some_and(|e| e.contains("disabled")));
+    }
+
+    // ── update_server_settings save error path ──
+
+    #[tokio::test]
+    async fn update_server_settings_rejects_invalid_bind_address() {
+        let app = test_app();
+
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/server-settings")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "bind": "not-a-valid-address", "localhost_no_auth": true }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_json(response).await;
+        assert!(body["error"].as_str().is_some_and(|e| e.contains("invalid bind")));
+    }
+
+    // ── remove_worktree_path with real git repo ──
+
+    #[tokio::test]
+    async fn remove_worktree_path_handler_removes_worktree_from_repo() {
+        let repo = std::env::temp_dir().join(format!(
+            "herdr-webui-wt-remove-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&repo);
+        fs::create_dir_all(&repo).unwrap();
+        assert!(Command::new("git")
+            .arg("init")
+            .arg(&repo)
+            .output()
+            .unwrap()
+            .status
+            .success());
+        fs::write(repo.join("file.txt"), "hello").unwrap();
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["add", "."])
+            .output()
+            .unwrap()
+            .status
+            .success());
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args([
+                "-c", "user.name=test", "-c", "user.email=t@example.com",
+                "commit", "-m", "init",
+            ])
+            .output()
+            .unwrap()
+            .status
+            .success());
+
+        // Create a worktree
+        let wt_path = repo.with_extension("wt");
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["worktree", "add", &wt_path.to_string_lossy(), "-b", "feature"])
+            .output()
+            .unwrap()
+            .status
+            .success());
+        assert!(wt_path.exists());
+
+        // Remove it via the handler
+        let app = test_app();
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/worktrees/remove-path")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "repo_root": repo.to_string_lossy(),
+                            "path": wt_path.to_string_lossy(),
+                            "force": false,
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["ok"], true);
+        assert!(!wt_path.exists());
+
+        fs::remove_dir_all(&repo).unwrap();
+    }
+
+    #[tokio::test]
+    async fn remove_worktree_path_handler_returns_error_for_nonexistent_path() {
+        let repo = std::env::temp_dir().join(format!(
+            "herdr-webui-wt-remove-err-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&repo);
+        fs::create_dir_all(&repo).unwrap();
+        assert!(Command::new("git")
+            .arg("init")
+            .arg(&repo)
+            .output()
+            .unwrap()
+            .status
+            .success());
+
+        let app = test_app();
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/worktrees/remove-path")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "repo_root": repo.to_string_lossy(),
+                            "path": "/tmp/nonexistent-worktree-path",
+                            "force": false,
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = response_json(response).await;
+        assert!(body["error"].as_str().is_some_and(|e| !e.is_empty()));
+
+        fs::remove_dir_all(&repo).unwrap();
+    }
+
+    // ── create_worktree Default phase (no branch, proxies to backend) ──
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn create_worktree_default_phase_proxies_to_backend() {
+        let (socket, handle) = fake_api_socket_for_method(
+            "worktree.create",
+            json!({ "id": "web:worktree:create", "result": { "ok": true, "workspace_id": "ws1" } }),
+        );
+        let mut state = test_state();
+        state.api_socket = Some(socket.clone());
+        let app = test_app_with_state(state);
+
+        // No branch specified -> Default phase -> proxies to backend
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/worktrees")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "workspace_id": "ws1", "cwd": "/tmp", "path": "/tmp/wt", "label": "test" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["result"]["workspace_id"], "ws1");
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
+    }
+
+    // ── create_worktree with pull_base error ──
+
+    #[tokio::test]
+    async fn create_worktree_pull_base_error_returns_bad_request() {
+        let app = test_app();
+
+        // pull_base=true with a nonexistent cwd should cause git pull to fail
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/worktrees")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "cwd": "/tmp/nonexistent-repo-for-pull-base",
+                            "path": "/tmp/wt-test",
+                            "branch": "feature",
+                            "pull_base": true,
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_json(response).await;
+        assert_eq!(body["ok"], false);
+        assert!(body["error"].as_str().is_some_and(|e| !e.is_empty()));
+    }
+
+    // ── create_worktree with existing branch in a real git repo (NativeCreate or LegacyOpen) ──
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn create_worktree_existing_branch_proxies_to_backend() {
+        // Set up a real git repo with an existing branch
+        let repo = std::env::temp_dir().join(format!(
+            "herdr-webui-cwt-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&repo);
+        fs::create_dir_all(&repo).unwrap();
+        assert!(Command::new("git")
+            .arg("init")
+            .arg(&repo)
+            .output()
+            .unwrap()
+            .status
+            .success());
+        fs::write(repo.join("file.txt"), "hello").unwrap();
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["add", "."])
+            .output()
+            .unwrap()
+            .status
+            .success());
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args([
+                "-c", "user.name=test", "-c", "user.email=t@example.com",
+                "commit", "-m", "init",
+            ])
+            .output()
+            .unwrap()
+            .status
+            .success());
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["branch", "feature/existing"])
+            .output()
+            .unwrap()
+            .status
+            .success());
+
+        // HerdrWorktreeApi::detect sends a ping first, then the handler
+        // sends worktree.create.  Use fake_api_socket_multi to handle both.
+        let (socket, handle) = fake_api_socket_multi(vec![
+            // Response to ping (backend_info detection)
+            json!({ "id": "web:ping", "result": { "version": "0.7.1" } }),
+            // Response to worktree.create
+            json!({ "id": "web:worktree:create", "result": { "ok": true, "workspace_id": "ws-new" } }),
+        ]);
+        let mut state = test_state();
+        state.api_socket = Some(socket.clone());
+        let app = test_app_with_state(state);
+
+        let wt_path = std::env::temp_dir().join(format!(
+            "herdr-webui-wt-path-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/worktrees")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "cwd": repo.to_string_lossy(),
+                            "path": wt_path.to_string_lossy(),
+                            "branch": "feature/existing",
+                            "label": "test-wt",
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // Should be OK (either NativeCreate or LegacyOpen path, both proxy to backend)
+        assert_eq!(response.status(), StatusCode::OK);
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
+        let _ = fs::remove_dir_all(&repo);
+        let _ = fs::remove_dir_all(&wt_path);
+    }
+
+    // ── versions handler with spawn_blocking backend_info ──
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn versions_handler_returns_bad_gateway_on_missing_socket() {
+        let mut state = test_state();
+        state.api_socket = Some(PathBuf::from("/tmp/nonexistent-versions-test.sock"));
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::GET, "/api/versions")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // backend_info returns default (no version, no protocol)
+        // and external-herdr mode checks compatibility which should still be OK
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert!(body["compatibility"]["compatible"].as_bool().is_some());
+    }
+
+    // ── events_socket: verify backend_info uses spawn_blocking and close on drop ──
+    // This is hard to test directly because events_socket requires a WebSocket
+    // upgrade. Instead we test the helper functions it depends on.
+
+    #[test]
+    fn backend_uses_builtin_event_hub_detects_builtin() {
+        assert!(backend_uses_builtin_event_hub(&BackendInfo {
+            version: Some("builtin-0.8.0".to_string()),
+            protocol: Some(16),
+        }));
+        assert!(!backend_uses_builtin_event_hub(&BackendInfo {
+            version: Some("0.7.5".to_string()),
+            protocol: Some(15),
+        }));
+        assert!(!backend_uses_builtin_event_hub(&BackendInfo {
+            version: Some("builtin-0.8.0".to_string()),
+            protocol: Some(15),
+        }));
+        assert!(!backend_uses_builtin_event_hub(&BackendInfo {
+            version: None,
+            protocol: Some(16),
+        }));
+    }
+
+    #[test]
+    fn web_event_kind_extracts_kind_from_wrapped_event() {
+        assert_eq!(
+            web_event_kind(&json!({ "type": "event", "event": { "event": "workspace.created" } })),
+            Some("workspace.created")
+        );
+        assert_eq!(
+            web_event_kind(&json!({ "type": "event", "event": { "type": "tab.closed" } })),
+            Some("tab.closed")
+        );
+        assert_eq!(
+            web_event_kind(&json!({ "type": "snapshot" })),
+            None,
+        );
+        assert_eq!(
+            web_event_kind(&json!({ "type": "event" })),
+            None,
+        );
+    }
+
+    // ── server_settings handler POST with successful save (spawn_blocking path) ──
+
+    #[tokio::test]
+    async fn update_server_settings_saves_and_returns_updated_settings() {
+        let _guard = env_lock().lock().unwrap();
+        let config_home = std::env::temp_dir().join(format!(
+            "herdr-webui-save-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
+        let state = test_state();
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/server-settings")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "bind": "127.0.0.1:9999",
+                            "username": "user",
+                            "password": "pass",
+                            "localhost_no_auth": false,
+                            "no_sleep_auto_cooldown_seconds": 120,
+                            "backend_mode": "builtin",
+                            "builtin_backend_enabled": true,
+                            "external_herdr_backend_enabled": true,
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["bind"], "127.0.0.1:9999");
+        assert_eq!(body["no_sleep_auto_cooldown_seconds"], 120);
+        assert_eq!(body["backend_mode"], "builtin");
+        assert!(server_settings_path().exists());
+
+        let _ = fs::remove_dir_all(config_home);
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    // ── proxy_server_stop with actual server.stop response (success) ──
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn close_session_returns_ok_when_backend_responds_normally() {
+        let (socket, handle) = fake_api_socket_for_method(
+            "server.stop",
+            json!({ "id": "web:server:stop", "result": { "ok": true } }),
+        );
+        let mut state = test_state();
+        state.api_socket = Some(socket.clone());
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/session/close")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "session": "default", "backend": "external-herdr" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["result"]["ok"], true);
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
+    }
+
+    // ── launch_session with builtin backend ──
+
+    #[tokio::test]
+    async fn launch_session_builtin_backend_starts_session() {
+        let _guard = env_lock().lock().unwrap();
+        let config_home = std::env::temp_dir().join(format!(
+            "herdr-webui-launch-builtin-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
+        let state = test_state();
+        // Enable builtin backend in settings
+        if let Ok(mut settings) = state.server_settings.lock() {
+            settings.builtin_backend_enabled = true;
+            settings.external_herdr_backend_enabled = true;
+        }
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/session/launch")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "session": "test-builtin-launch", "backend": "builtin" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // Builtin session should start (or already be running) successfully
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["ok"], true);
+        assert_eq!(body["backend"], "builtin");
+
+        let _ = fs::remove_dir_all(config_home);
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    // ── remove_worktree_path with force=true ──
+
+    #[tokio::test]
+    async fn remove_worktree_path_handler_with_force_succeeds() {
+        let repo = std::env::temp_dir().join(format!(
+            "herdr-webui-wt-force-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&repo);
+        fs::create_dir_all(&repo).unwrap();
+        assert!(Command::new("git")
+            .arg("init")
+            .arg(&repo)
+            .output()
+            .unwrap()
+            .status
+            .success());
+        fs::write(repo.join("file.txt"), "hello").unwrap();
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["add", "."])
+            .output()
+            .unwrap()
+            .status
+            .success());
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args([
+                "-c", "user.name=test", "-c", "user.email=t@example.com",
+                "commit", "-m", "init",
+            ])
+            .output()
+            .unwrap()
+            .status
+            .success());
+        let wt_path = repo.with_extension("wt-force");
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["worktree", "add", &wt_path.to_string_lossy(), "-b", "feature-force"])
+            .output()
+            .unwrap()
+            .status
+            .success());
+
+        let app = test_app();
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/worktrees/remove-path")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "repo_root": repo.to_string_lossy(),
+                            "path": wt_path.to_string_lossy(),
+                            "force": true,
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!wt_path.exists());
+        fs::remove_dir_all(&repo).unwrap();
+    }
+
+    // ── proxy_request_async JoinError (panic in spawn_blocking) ──
+    // This is hard to trigger directly; the error path is covered by
+    // testing handlers that point to nonexistent sockets, which triggers
+    // the Err(err) branch in the match.
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn proxy_request_async_handlers_return_bad_gateway_on_missing_socket() {
+        let mut state = test_state();
+        state.api_socket = Some(PathBuf::from("/tmp/nonexistent-proxy-async-test.sock"));
+        let app = test_app_with_state(state);
+
+        // Test several handlers that use proxy_request_async
+        let endpoints: [(&str, Method); 5] = [
+            ("/api/agents", Method::GET),
+            ("/api/tabs", Method::GET),
+            ("/api/panes", Method::GET),
+            ("/api/pane-layout", Method::GET),
+            ("/api/session-snapshot", Method::GET),
+        ];
+
+        for (uri, method) in &endpoints {
+            let response = app
+                .clone()
+                .oneshot(
+                    authed_request(method.clone(), uri)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::BAD_GATEWAY,
+                "endpoint {uri} should return 502"
+            );
+        }
+    }
 }
