@@ -9352,72 +9352,38 @@ mod tests {
             .await
             .expect("Failed to connect to WebSocket");
 
-        // Read the "ready" message from the server
-        let msg = tokio::time::timeout(std::time::Duration::from_secs(5), ws_stream.next())
-            .await
-            .expect("timeout waiting for ready message")
-            .expect("stream closed")
-            .expect("websocket error");
-
-        // The first message should be the "ready" event. But a "snapshot" poll
-        // message may arrive first (from the interval timer). Skip snapshots.
-        let text = msg.to_text().expect("expected text message");
-        let first: serde_json::Value = serde_json::from_str(text).expect("invalid json");
-        // If first message is a snapshot, read again to get "ready"
-        if first["type"] != "ready" {
-            let msg = tokio::time::timeout(std::time::Duration::from_secs(5), ws_stream.next())
-                .await
-                .expect("timeout waiting for ready message")
-                .expect("stream closed")
-                .expect("websocket error");
-            let text = msg.to_text().expect("expected text message");
-            let ready: serde_json::Value = serde_json::from_str(text).expect("invalid json");
-            assert_eq!(ready["type"], "ready");
-        } else {
-            assert_eq!(first["type"], "ready");
-        }
-
-        // Read the forwarded event. A "snapshot" message may interleave.
-        let mut event: Option<serde_json::Value> = None;
-        for _ in 0..10 {
-            let msg2 = tokio::time::timeout(std::time::Duration::from_secs(5), ws_stream.next())
-                .await
-                .expect("timeout waiting for event")
-                .expect("stream closed")
-                .expect("websocket error");
-
-            let text2 = msg2.to_text().expect("expected text message");
-            let value: serde_json::Value = serde_json::from_str(text2).expect("invalid json");
-            if value["type"] == "event" {
-                event = Some(value);
-                break;
-            }
-            // Skip "snapshot" or other messages
-        }
-        let event = event.expect("did not receive event message");
-        assert_eq!(event["type"], "event");
-        assert_eq!(event["event"]["type"], "workspace.created");
-
-        // Wait for the "snapshot" message from the interval poll (5s timer).
-        // Read messages until we see a "snapshot" type or timeout.
+        // Collect messages: we expect "ready", "event", and "snapshot" (in any order).
+        // The interval timer fires immediately, so "snapshot" can arrive before "ready".
+        let mut got_ready = false;
+        let mut got_event = false;
         let mut got_snapshot = false;
-        for _ in 0..20 {
-            let msg3 =
-                tokio::time::timeout(std::time::Duration::from_secs(8), ws_stream.next()).await;
-            if msg3.is_err() {
-                break;
-            } // timeout
-            let msg3 = match msg3.unwrap() {
-                Some(Ok(m)) => m,
-                _ => break, // stream closed or error
-            };
-            let text3 = msg3.to_text().expect("expected text message");
-            let value: serde_json::Value = serde_json::from_str(text3).expect("invalid json");
-            if value["type"] == "snapshot" {
-                got_snapshot = true;
+
+        for _ in 0..30 {
+            let msg =
+                match tokio::time::timeout(std::time::Duration::from_secs(15), ws_stream.next())
+                    .await
+                {
+                    Ok(Some(Ok(m))) => m,
+                    _ => break, // timeout, stream closed, or error
+                };
+            let text = msg.to_text().expect("expected text message");
+            let value: serde_json::Value = serde_json::from_str(text).expect("invalid json");
+            match value["type"].as_str() {
+                Some("ready") => got_ready = true,
+                Some("event") => {
+                    assert_eq!(value["event"]["type"], "workspace.created");
+                    got_event = true;
+                }
+                Some("snapshot") => got_snapshot = true,
+                _ => {}
+            }
+            if got_ready && got_event && got_snapshot {
                 break;
             }
         }
+
+        assert!(got_ready, "did not receive ready message");
+        assert!(got_event, "did not receive event message");
         assert!(
             got_snapshot,
             "did not receive snapshot message from interval poll"
@@ -9449,81 +9415,80 @@ mod tests {
             .try_overwrite(true)
             .create_sync()
             .unwrap();
+
         let handle = thread::spawn(move || {
-            // Connection 1: ping (backend_info)
-            {
-                let mut stream = listener.accept().unwrap();
-                let mut reader = BufReader::new(stream.try_clone().unwrap());
-                let mut line = String::new();
-                reader.read_line(&mut line).unwrap();
-                let request: serde_json::Value = serde_json::from_str(&line).unwrap();
-                assert_eq!(request["method"], "ping");
-                stream
-                    .write_all(
-                        json!({ "id": "web:ping", "result": { "version": "0.7.2", "protocol": 16 } })
-                            .to_string()
-                            .as_bytes(),
-                    )
-                    .unwrap();
-                stream.write_all(b"\n").unwrap();
-                stream.flush().unwrap();
-            }
-            // Connection 2: events.subscribe
-            {
-                let mut stream = listener.accept().unwrap();
-                let mut reader = BufReader::new(stream.try_clone().unwrap());
-                let mut line = String::new();
-                reader.read_line(&mut line).unwrap();
-                let request: serde_json::Value = serde_json::from_str(&line).unwrap();
-                assert_eq!(request["method"], "events.subscribe");
-                // Send the response line for subscribe
-                stream
-                    .write_all(
-                        json!({ "id": "web:events", "result": { "ok": true } })
-                            .to_string()
-                            .as_bytes(),
-                    )
-                    .unwrap();
-                stream.write_all(b"\n").unwrap();
-                stream.flush().unwrap();
-                // Now stream some events as newline-delimited JSON
-                // The EventStream reads lines, each being a JSON value
-                stream
-                    .write_all(
-                        json!({ "type": "workspace.created", "data": { "workspace_id": "ws1" } })
-                            .to_string()
-                            .as_bytes(),
-                    )
-                    .unwrap();
-                stream.write_all(b"\n").unwrap();
-                stream.flush().unwrap();
-                // Keep the stream open so the WebSocket event loop keeps running.
-                // The interval timer (5s) will fire and send a "snapshot" poll.
-                thread::sleep(std::time::Duration::from_secs(6));
-                // Close the stream to end the event loop
-            }
-            // Connection 3+: poll (agent.list, workspace.list)
-            // The interval timer fires immediately and spawns poll requests.
-            // Accept and respond to them so the test doesn't hang.
-            for _ in 0..10 {
+            // Accept connections in a loop and handle each on a separate thread
+            // so the subscribe stream stays alive while poll requests are served.
+            for _ in 0..20 {
                 let Ok(mut stream) = listener.accept() else {
                     break;
                 };
-                let mut reader = BufReader::new(stream.try_clone().unwrap());
-                let mut line = String::new();
-                let _ = reader.read_line(&mut line);
-                let request: serde_json::Value = serde_json::from_str(&line).unwrap_or_default();
-                let id = request.get("id").cloned().unwrap_or(json!("web:poll"));
-                let method = request.get("method").and_then(|m| m.as_str()).unwrap_or("");
-                let result = match method {
-                    "agent.list" => json!({ "agents": [] }),
-                    "workspace.list" => json!({ "workspaces": [] }),
-                    _ => json!({}),
-                };
-                let _ =
-                    stream.write_all(json!({ "id": id, "result": result }).to_string().as_bytes());
-                let _ = stream.write_all(b"\n");
-                let _ = stream.flush();
+                thread::spawn(move || {
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    let mut line = String::new();
+                    let _ = reader.read_line(&mut line);
+                    let request: serde_json::Value =
+                        serde_json::from_str(&line).unwrap_or_default();
+                    let method = request.get("method").and_then(|m| m.as_str()).unwrap_or("");
+                    let id = request.get("id").cloned().unwrap_or(json!("web:poll"));
+                    match method {
+                        "ping" => {
+                            let _ = stream.write_all(
+                                json!({ "id": "web:ping", "result": { "version": "0.7.2", "protocol": 16 } })
+                                    .to_string()
+                                    .as_bytes(),
+                            );
+                            let _ = stream.write_all(b"\n");
+                            let _ = stream.flush();
+                        }
+                        "events.subscribe" => {
+                            // Send the response line for subscribe
+                            let _ = stream.write_all(
+                                json!({ "id": "web:events", "result": { "ok": true } })
+                                    .to_string()
+                                    .as_bytes(),
+                            );
+                            let _ = stream.write_all(b"\n");
+                            let _ = stream.flush();
+                            // Stream one event as newline-delimited JSON
+                            let _ = stream.write_all(
+                                json!({ "type": "workspace.created", "data": { "workspace_id": "ws1" } })
+                                    .to_string()
+                                    .as_bytes(),
+                            );
+                            let _ = stream.write_all(b"\n");
+                            let _ = stream.flush();
+                            // Keep the stream alive so the WebSocket loop doesn't end
+                            // immediately. The interval timer will fire and send snapshots.
+                            thread::sleep(std::time::Duration::from_secs(10));
+                        }
+                        "agent.list" => {
+                            let _ = stream.write_all(
+                                json!({ "id": id, "result": { "agents": [] } })
+                                    .to_string()
+                                    .as_bytes(),
+                            );
+                            let _ = stream.write_all(b"\n");
+                            let _ = stream.flush();
+                        }
+                        "workspace.list" => {
+                            let _ = stream.write_all(
+                                json!({ "id": id, "result": { "workspaces": [] } })
+                                    .to_string()
+                                    .as_bytes(),
+                            );
+                            let _ = stream.write_all(b"\n");
+                            let _ = stream.flush();
+                        }
+                        _ => {
+                            let _ = stream.write_all(
+                                json!({ "id": id, "result": {} }).to_string().as_bytes(),
+                            );
+                            let _ = stream.write_all(b"\n");
+                            let _ = stream.flush();
+                        }
+                    }
+                });
             }
         });
         (path, handle)
