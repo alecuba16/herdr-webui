@@ -2145,8 +2145,7 @@ async fn update_server_settings(
     // offload to avoid stalling the async runtime.
     let save_result = {
         let next_clone = next.clone();
-        tokio::task::spawn_blocking(move || save_runtime_server_settings(&next_clone))
-            .await
+        tokio::task::spawn_blocking(move || save_runtime_server_settings(&next_clone)).await
     };
     match save_result {
         Ok(Ok(())) => {}
@@ -3309,7 +3308,9 @@ async fn remove_worktree_path(
         }
         command.arg(&path);
         command.output()
-    }).await {
+    })
+    .await
+    {
         Ok(Ok(output)) if output.status.success() => {
             Json(json!({ "ok": true, "path": path_for_response })).into_response()
         }
@@ -3450,11 +3451,7 @@ async fn git_branches(
     // which can block for seconds; offload to avoid stalling the async runtime.
     match tokio::task::spawn_blocking(move || list_git_branches(&cwd, remote, fetch)).await {
         Ok(Ok(branches)) => Json(GitBranchesResponse { branches }).into_response(),
-        Ok(Err(err)) => (
-            StatusCode::BAD_GATEWAY,
-            Json(json!({ "error": err })),
-        )
-            .into_response(),
+        Ok(Err(err)) => (StatusCode::BAD_GATEWAY, Json(json!({ "error": err }))).into_response(),
         Err(err) => (
             StatusCode::BAD_GATEWAY,
             Json(json!({ "error": err.to_string() })),
@@ -3738,8 +3735,9 @@ async fn events_socket(state: WebState, api: ApiClient, mut socket: WebSocket) {
     // blocking thread so it does not stall the async runtime while waiting
     // for the backend to respond (or time out) during connection setup.
     let backend_info_api = api.clone();
-    let backend_info =
-        tokio::task::spawn_blocking(move || backend_info_api.backend_info()).await.unwrap_or_default();
+    let backend_info = tokio::task::spawn_blocking(move || backend_info_api.backend_info())
+        .await
+        .unwrap_or_default();
     let use_builtin_event_hub = backend_uses_builtin_event_hub(&backend_info);
     let backend_protocol = backend_info.protocol;
     std::thread::spawn(move || {
@@ -4278,7 +4276,9 @@ mod tests {
     /// Lock the env mutex, recovering from a poisoned state so a panicking
     /// test does not cascade failures into every other env-lock test.
     fn lock_env() -> std::sync::MutexGuard<'static, ()> {
-        env_lock().lock().unwrap_or_else(|poison| poison.into_inner())
+        env_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
     }
 
     #[cfg(unix)]
@@ -6563,8 +6563,11 @@ mod tests {
     /// Fake API socket that reads one request then closes the connection
     /// without responding, simulating a backend that shuts down on server.stop.
     #[cfg(unix)]
-    fn fake_api_socket_drop_on_stop(
-    ) -> (PathBuf, std::sync::Arc<std::sync::Mutex<bool>>, thread::JoinHandle<()>) {
+    fn fake_api_socket_drop_on_stop() -> (
+        PathBuf,
+        std::sync::Arc<std::sync::Mutex<bool>>,
+        thread::JoinHandle<()>,
+    ) {
         use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
         use std::sync::Arc;
         use std::sync::Mutex;
@@ -6624,7 +6627,10 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = response_json(response).await;
         assert_eq!(body["ok"], true);
-        assert!(*saw_stop.lock().unwrap(), "backend should have received server.stop");
+        assert!(
+            *saw_stop.lock().unwrap(),
+            "backend should have received server.stop"
+        );
         handle.join().unwrap();
         let _ = fs::remove_file(socket);
     }
@@ -6933,9 +6939,7 @@ mod tests {
             .oneshot(
                 authed_request(Method::POST, "/api/workspaces/ws-abc/rename")
                     .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(
-                        json!({ "label": "new name" }).to_string(),
-                    ))
+                    .body(Body::from(json!({ "label": "new name" }).to_string()))
                     .unwrap(),
             )
             .await
@@ -7013,9 +7017,7 @@ mod tests {
             .oneshot(
                 authed_request(Method::POST, "/api/tabs/tab-42/rename")
                     .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(
-                        json!({ "label": "renamed" }).to_string(),
-                    ))
+                    .body(Body::from(json!({ "label": "renamed" }).to_string()))
                     .unwrap(),
             )
             .await
@@ -7229,7 +7231,15 @@ mod tests {
         assert!(Command::new("git")
             .arg("-C")
             .arg(&repo)
-            .args(["-c", "user.name=test", "-c", "user.email=t@example.com", "commit", "-m", "init"])
+            .args([
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=t@example.com",
+                "commit",
+                "-m",
+                "init"
+            ])
             .output()
             .unwrap()
             .status
@@ -7310,7 +7320,9 @@ mod tests {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let body = response_json(response).await;
         assert_eq!(body["ok"], false);
-        assert!(body["error"].as_str().is_some_and(|e| e.contains("disabled")));
+        assert!(body["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("disabled")));
     }
 
     #[tokio::test]
@@ -7353,7 +7365,8 @@ mod tests {
                 authed_request(Method::POST, "/api/session/launch")
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(
-                        json!({ "session": "test-launch", "backend": "external-herdr" }).to_string(),
+                        json!({ "session": "test-launch", "backend": "external-herdr" })
+                            .to_string(),
                     ))
                     .unwrap(),
             )
@@ -7488,7 +7501,9 @@ mod tests {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let body = response_json(response).await;
         assert_eq!(body["ok"], false);
-        assert!(body["error"].as_str().is_some_and(|e| e.contains("disabled")));
+        assert!(body["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("disabled")));
     }
 
     // ── update_server_settings save error path ──
@@ -7502,7 +7517,8 @@ mod tests {
                 authed_request(Method::POST, "/api/server-settings")
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(
-                        json!({ "bind": "not-a-valid-address", "localhost_no_auth": true }).to_string(),
+                        json!({ "bind": "not-a-valid-address", "localhost_no_auth": true })
+                            .to_string(),
                     ))
                     .unwrap(),
             )
@@ -7510,7 +7526,9 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let body = response_json(response).await;
-        assert!(body["error"].as_str().is_some_and(|e| e.contains("invalid bind")));
+        assert!(body["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("invalid bind")));
     }
 
     // ── remove_worktree_path with real git repo ──
@@ -7546,8 +7564,13 @@ mod tests {
             .arg("-C")
             .arg(&repo)
             .args([
-                "-c", "user.name=test", "-c", "user.email=t@example.com",
-                "commit", "-m", "init",
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=t@example.com",
+                "commit",
+                "-m",
+                "init",
             ])
             .output()
             .unwrap()
@@ -7559,7 +7582,13 @@ mod tests {
         assert!(Command::new("git")
             .arg("-C")
             .arg(&repo)
-            .args(["worktree", "add", &wt_path.to_string_lossy(), "-b", "feature"])
+            .args([
+                "worktree",
+                "add",
+                &wt_path.to_string_lossy(),
+                "-b",
+                "feature"
+            ])
             .output()
             .unwrap()
             .status
@@ -7732,8 +7761,13 @@ mod tests {
             .arg("-C")
             .arg(&repo)
             .args([
-                "-c", "user.name=test", "-c", "user.email=t@example.com",
-                "commit", "-m", "init",
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=t@example.com",
+                "commit",
+                "-m",
+                "init",
             ])
             .output()
             .unwrap()
@@ -7851,14 +7885,8 @@ mod tests {
             web_event_kind(&json!({ "type": "event", "event": { "type": "tab.closed" } })),
             Some("tab.closed")
         );
-        assert_eq!(
-            web_event_kind(&json!({ "type": "snapshot" })),
-            None,
-        );
-        assert_eq!(
-            web_event_kind(&json!({ "type": "event" })),
-            None,
-        );
+        assert_eq!(web_event_kind(&json!({ "type": "snapshot" })), None,);
+        assert_eq!(web_event_kind(&json!({ "type": "event" })), None,);
     }
 
     // ── server_settings handler POST with successful save (spawn_blocking path) ──
@@ -7966,7 +7994,8 @@ mod tests {
                 authed_request(Method::POST, "/api/session/launch")
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(
-                        json!({ "session": "test-builtin-launch", "backend": "builtin" }).to_string(),
+                        json!({ "session": "test-builtin-launch", "backend": "builtin" })
+                            .to_string(),
                     ))
                     .unwrap(),
             )
@@ -8015,8 +8044,13 @@ mod tests {
             .arg("-C")
             .arg(&repo)
             .args([
-                "-c", "user.name=test", "-c", "user.email=t@example.com",
-                "commit", "-m", "init",
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=t@example.com",
+                "commit",
+                "-m",
+                "init",
             ])
             .output()
             .unwrap()
@@ -8026,7 +8060,13 @@ mod tests {
         assert!(Command::new("git")
             .arg("-C")
             .arg(&repo)
-            .args(["worktree", "add", &wt_path.to_string_lossy(), "-b", "feature-force"])
+            .args([
+                "worktree",
+                "add",
+                &wt_path.to_string_lossy(),
+                "-b",
+                "feature-force"
+            ])
             .output()
             .unwrap()
             .status
@@ -8110,11 +8150,7 @@ mod tests {
 
         for (uri, method) in &endpoints {
             let response = test_app()
-                .oneshot(
-                    request(method.clone(), uri)
-                        .body(Body::empty())
-                        .unwrap(),
-                )
+                .oneshot(request(method.clone(), uri).body(Body::empty()).unwrap())
                 .await
                 .unwrap();
             assert_eq!(
@@ -8362,8 +8398,13 @@ mod tests {
             .arg("-C")
             .arg(&repo)
             .args([
-                "-c", "user.name=test", "-c", "user.email=t@example.com",
-                "commit", "-m", "init",
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=t@example.com",
+                "commit",
+                "-m",
+                "init",
             ])
             .output()
             .unwrap()
@@ -8455,8 +8496,13 @@ mod tests {
             .arg("-C")
             .arg(&repo)
             .args([
-                "-c", "user.name=test", "-c", "user.email=t@example.com",
-                "commit", "-m", "init",
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=t@example.com",
+                "commit",
+                "-m",
+                "init",
             ])
             .output()
             .unwrap()
@@ -8474,9 +8520,12 @@ mod tests {
         let app = test_app();
         let response = app
             .oneshot(
-                authed_request(Method::GET, &format!("/api/git-branches?cwd={}", repo.to_string_lossy()))
-                    .body(Body::empty())
-                    .unwrap(),
+                authed_request(
+                    Method::GET,
+                    &format!("/api/git-branches?cwd={}", repo.to_string_lossy()),
+                )
+                .body(Body::empty())
+                .unwrap(),
             )
             .await
             .unwrap();
@@ -8525,8 +8574,13 @@ mod tests {
             .arg("-C")
             .arg(&repo)
             .args([
-                "-c", "user.name=test", "-c", "user.email=t@example.com",
-                "commit", "-m", "init",
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=t@example.com",
+                "commit",
+                "-m",
+                "init",
             ])
             .output()
             .unwrap()
@@ -8538,7 +8592,10 @@ mod tests {
             .oneshot(
                 authed_request(
                     Method::GET,
-                    &format!("/api/git-branches?cwd={}&remote=true&fetch=true", repo.to_string_lossy()),
+                    &format!(
+                        "/api/git-branches?cwd={}&remote=true&fetch=true",
+                        repo.to_string_lossy()
+                    ),
                 )
                 .body(Body::empty())
                 .unwrap(),
@@ -8644,9 +8701,7 @@ mod tests {
             .oneshot(
                 authed_request(Method::POST, "/api/workspaces/ws1/rename")
                     .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(
-                        json!({ "label": "renamed" }).to_string(),
-                    ))
+                    .body(Body::from(json!({ "label": "renamed" }).to_string()))
                     .unwrap(),
             )
             .await
@@ -8864,9 +8919,7 @@ mod tests {
             .oneshot(
                 authed_request(Method::POST, "/api/tabs/t1/rename")
                     .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(
-                        json!({ "label": "renamed" }).to_string(),
-                    ))
+                    .body(Body::from(json!({ "label": "renamed" }).to_string()))
                     .unwrap(),
             )
             .await
@@ -8911,8 +8964,13 @@ mod tests {
             .arg("-C")
             .arg(&repo)
             .args([
-                "-c", "user.name=test", "-c", "user.email=t@example.com",
-                "commit", "-m", "init",
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=t@example.com",
+                "commit",
+                "-m",
+                "init",
             ])
             .output()
             .unwrap()
@@ -9007,8 +9065,13 @@ mod tests {
             .arg("-C")
             .arg(&repo)
             .args([
-                "-c", "user.name=test", "-c", "user.email=t@example.com",
-                "commit", "-m", "init",
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=t@example.com",
+                "commit",
+                "-m",
+                "init",
             ])
             .output()
             .unwrap()
@@ -9225,7 +9288,8 @@ mod tests {
                 authed_request(Method::POST, "/api/session/launch")
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(
-                        json!({ "session": "test-spawn-err", "backend": "external-herdr" }).to_string(),
+                        json!({ "session": "test-spawn-err", "backend": "external-herdr" })
+                            .to_string(),
                     ))
                     .unwrap(),
             )
@@ -9289,14 +9353,11 @@ mod tests {
             .expect("Failed to connect to WebSocket");
 
         // Read the "ready" message from the server
-        let msg = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            ws_stream.next(),
-        )
-        .await
-        .expect("timeout waiting for ready message")
-        .expect("stream closed")
-        .expect("websocket error");
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(5), ws_stream.next())
+            .await
+            .expect("timeout waiting for ready message")
+            .expect("stream closed")
+            .expect("websocket error");
 
         // The first message should be the "ready" event. But a "snapshot" poll
         // message may arrive first (from the interval timer). Skip snapshots.
@@ -9304,14 +9365,11 @@ mod tests {
         let first: serde_json::Value = serde_json::from_str(text).expect("invalid json");
         // If first message is a snapshot, read again to get "ready"
         if first["type"] != "ready" {
-            let msg = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                ws_stream.next(),
-            )
-            .await
-            .expect("timeout waiting for ready message")
-            .expect("stream closed")
-            .expect("websocket error");
+            let msg = tokio::time::timeout(std::time::Duration::from_secs(5), ws_stream.next())
+                .await
+                .expect("timeout waiting for ready message")
+                .expect("stream closed")
+                .expect("websocket error");
             let text = msg.to_text().expect("expected text message");
             let ready: serde_json::Value = serde_json::from_str(text).expect("invalid json");
             assert_eq!(ready["type"], "ready");
@@ -9322,14 +9380,11 @@ mod tests {
         // Read the forwarded event. A "snapshot" message may interleave.
         let mut event: Option<serde_json::Value> = None;
         for _ in 0..10 {
-            let msg2 = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                ws_stream.next(),
-            )
-            .await
-            .expect("timeout waiting for event")
-            .expect("stream closed")
-            .expect("websocket error");
+            let msg2 = tokio::time::timeout(std::time::Duration::from_secs(5), ws_stream.next())
+                .await
+                .expect("timeout waiting for event")
+                .expect("stream closed")
+                .expect("websocket error");
 
             let text2 = msg2.to_text().expect("expected text message");
             let value: serde_json::Value = serde_json::from_str(text2).expect("invalid json");
@@ -9347,12 +9402,11 @@ mod tests {
         // Read messages until we see a "snapshot" type or timeout.
         let mut got_snapshot = false;
         for _ in 0..20 {
-            let msg3 = tokio::time::timeout(
-                std::time::Duration::from_secs(8),
-                ws_stream.next(),
-            )
-            .await;
-            if msg3.is_err() { break; } // timeout
+            let msg3 =
+                tokio::time::timeout(std::time::Duration::from_secs(8), ws_stream.next()).await;
+            if msg3.is_err() {
+                break;
+            } // timeout
             let msg3 = match msg3.unwrap() {
                 Some(Ok(m)) => m,
                 _ => break, // stream closed or error
@@ -9364,7 +9418,10 @@ mod tests {
                 break;
             }
         }
-        assert!(got_snapshot, "did not receive snapshot message from interval poll");
+        assert!(
+            got_snapshot,
+            "did not receive snapshot message from interval poll"
+        );
 
         // The fake socket thread may still be accepting connections.
         // Don't join it - just abort the server and clean up.
@@ -9449,7 +9506,9 @@ mod tests {
             // The interval timer fires immediately and spawns poll requests.
             // Accept and respond to them so the test doesn't hang.
             for _ in 0..10 {
-                let Ok(mut stream) = listener.accept() else { break };
+                let Ok(mut stream) = listener.accept() else {
+                    break;
+                };
                 let mut reader = BufReader::new(stream.try_clone().unwrap());
                 let mut line = String::new();
                 let _ = reader.read_line(&mut line);
@@ -9461,7 +9520,8 @@ mod tests {
                     "workspace.list" => json!({ "workspaces": [] }),
                     _ => json!({}),
                 };
-                let _ = stream.write_all(json!({ "id": id, "result": result }).to_string().as_bytes());
+                let _ =
+                    stream.write_all(json!({ "id": id, "result": result }).to_string().as_bytes());
                 let _ = stream.write_all(b"\n");
                 let _ = stream.flush();
             }
