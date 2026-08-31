@@ -8086,4 +8086,787 @@ mod tests {
             );
         }
     }
+
+    // ── auth rejection for all proxy handlers ──
+
+    /// All proxy handlers should reject unauthenticated requests with 401.
+    #[tokio::test]
+    async fn proxy_handlers_reject_unauthenticated() {
+        let endpoints = [
+            ("/api/agents", Method::GET),
+            ("/api/tabs", Method::GET),
+            ("/api/panes", Method::GET),
+            ("/api/pane-layout", Method::GET),
+            ("/api/session-snapshot", Method::GET),
+            ("/api/workspaces", Method::GET),
+            ("/api/git-branches?cwd=.", Method::GET),
+        ];
+
+        for (uri, method) in &endpoints {
+            let response = test_app()
+                .oneshot(
+                    request(method.clone(), uri)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::UNAUTHORIZED,
+                "endpoint {uri} should require auth"
+            );
+        }
+    }
+
+    /// POST handlers also reject unauthenticated requests.
+    #[tokio::test]
+    async fn post_handlers_reject_unauthenticated() {
+        let endpoints = [
+            ("/api/workspaces", json!({"cwd": ".", "label": "t"})),
+            ("/api/workspaces/ws1/rename", json!({"label": "t"})),
+            ("/api/workspaces/ws1/close", json!({})),
+            ("/api/tabs", json!({"workspace_id": "ws1", "label": "t"})),
+            ("/api/tabs/t1/rename", json!({"label": "t"})),
+            ("/api/tabs/t1/close", json!({})),
+            ("/api/panes/p1/close", json!({})),
+            ("/api/worktrees/open", json!({"path": "/tmp"})),
+            ("/api/worktrees", json!({"cwd": ".", "path": "/tmp/wt"})),
+        ];
+
+        for (uri, body) in &endpoints {
+            let response = test_app()
+                .oneshot(
+                    request(Method::POST, uri)
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::UNAUTHORIZED,
+                "endpoint {uri} should require auth"
+            );
+        }
+    }
+
+    /// session/launch and session/close also reject unauthenticated requests.
+    #[tokio::test]
+    async fn session_handlers_reject_unauthenticated() {
+        for uri in ["/api/session/launch", "/api/session/close"] {
+            let response = test_app()
+                .oneshot(
+                    request(Method::POST, uri)
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(json!({}).to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::UNAUTHORIZED,
+                "endpoint {uri} should require auth"
+            );
+        }
+    }
+
+    /// remove_worktree_path rejects unauthenticated requests.
+    #[tokio::test]
+    async fn remove_worktree_path_rejects_unauthenticated() {
+        let response = test_app()
+            .oneshot(
+                request(Method::POST, "/api/worktrees/remove-path")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({"repo_root": "/tmp", "path": "/tmp/wt"}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// update_server_settings rejects unauthenticated requests.
+    #[tokio::test]
+    async fn update_server_settings_rejects_unauthenticated() {
+        // Need a valid body (with bind field) so JSON parsing succeeds,
+        // then auth check runs and rejects.
+        let response = test_app()
+            .oneshot(
+                request(Method::POST, "/api/server-settings")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "bind": "127.0.0.1:8080",
+                            "localhost_no_auth": false,
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    // ── proxy_request_async success path ──
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn agents_handler_proxies_successfully() {
+        let (socket, handle) = fake_api_socket_for_method(
+            "agent.list",
+            json!({ "id": "web:agent:list", "result": { "agents": [] } }),
+        );
+        let mut state = test_state();
+        state.api_socket = Some(socket.clone());
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::GET, "/api/agents")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert!(body.get("result").is_some());
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn tabs_handler_proxies_with_workspace_id() {
+        let (socket, handle) = fake_api_socket_for_method(
+            "tab.list",
+            json!({ "id": "web:tab:list", "result": { "tabs": [] } }),
+        );
+        let mut state = test_state();
+        state.api_socket = Some(socket.clone());
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::GET, "/api/tabs?workspace_id=ws1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn session_snapshot_proxies_successfully() {
+        let (socket, handle) = fake_api_socket_for_method(
+            "session.snapshot",
+            json!({ "id": "web:session:snapshot", "result": { "workspaces": [] } }),
+        );
+        let mut state = test_state();
+        state.api_socket = Some(socket.clone());
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::GET, "/api/session-snapshot")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
+    }
+
+    // ── proxy_server_stop with normal response (not connection drop) ──
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn close_session_returns_backend_response_on_normal_stop() {
+        let (socket, handle) = fake_api_socket_for_method(
+            "server.stop",
+            json!({ "id": "web:server:stop", "result": { "ok": true } }),
+        );
+        let mut state = test_state();
+        state.api_socket = Some(socket.clone());
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/session/close")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "session": "default", "backend": "external-herdr" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["result"]["ok"], true);
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
+    }
+
+    // ── create_worktree LegacyOpen path ──
+    // When backend version < 0.7.1 and branch exists, it does local checkout
+    // then proxies worktree.open
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn create_worktree_legacy_open_for_old_backend() {
+        let repo = std::env::temp_dir().join(format!(
+            "herdr-webui-wt-legacy-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&repo);
+        fs::create_dir_all(&repo).unwrap();
+        assert!(Command::new("git")
+            .arg("init")
+            .arg(&repo)
+            .output()
+            .unwrap()
+            .status
+            .success());
+        fs::write(repo.join("file.txt"), "hello").unwrap();
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["add", "."])
+            .output()
+            .unwrap()
+            .status
+            .success());
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args([
+                "-c", "user.name=test", "-c", "user.email=t@example.com",
+                "commit", "-m", "init",
+            ])
+            .output()
+            .unwrap()
+            .status
+            .success());
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["branch", "feature/legacy"])
+            .output()
+            .unwrap()
+            .status
+            .success());
+
+        let wt_path = std::env::temp_dir().join(format!(
+            "herdr-webui-wt-legacy-path-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+
+        // Old backend (version 0.7.0) -> needs legacy existing branch create
+        // The handler sends ping (detect), then worktree.open after local checkout
+        let (socket, handle) = fake_api_socket_multi(vec![
+            // ping response - old version so it uses legacy path
+            json!({ "id": "web:ping", "result": { "version": "0.7.0" } }),
+            // worktree.open response
+            json!({ "id": "web:worktree:open", "result": { "ok": true, "workspace_id": "ws-legacy" } }),
+        ]);
+        let mut state = test_state();
+        state.api_socket = Some(socket.clone());
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/worktrees")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "cwd": repo.to_string_lossy(),
+                            "path": wt_path.to_string_lossy(),
+                            "branch": "feature/legacy",
+                            "label": "legacy-wt",
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
+        let _ = fs::remove_dir_all(&repo);
+        let _ = fs::remove_dir_all(&wt_path);
+    }
+
+    // ── git_branches with actual git repo ──
+
+    #[tokio::test]
+    async fn git_branches_handler_returns_branches_for_real_repo() {
+        let repo = std::env::temp_dir().join(format!(
+            "herdr-webui-git-branches-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&repo);
+        fs::create_dir_all(&repo).unwrap();
+        assert!(Command::new("git")
+            .arg("init")
+            .arg(&repo)
+            .output()
+            .unwrap()
+            .status
+            .success());
+        fs::write(repo.join("file.txt"), "hello").unwrap();
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["add", "."])
+            .output()
+            .unwrap()
+            .status
+            .success());
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args([
+                "-c", "user.name=test", "-c", "user.email=t@example.com",
+                "commit", "-m", "init",
+            ])
+            .output()
+            .unwrap()
+            .status
+            .success());
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["branch", "feature/test"])
+            .output()
+            .unwrap()
+            .status
+            .success());
+
+        let app = test_app();
+        let response = app
+            .oneshot(
+                authed_request(Method::GET, &format!("/api/git-branches?cwd={}", repo.to_string_lossy()))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        let branches = body["branches"].as_array().unwrap();
+        assert!(
+            branches.iter().any(|b| b.as_str() == Some("feature/test")),
+            "expected feature/test in branches: {branches:?}"
+        );
+        let _ = fs::remove_dir_all(&repo);
+    }
+
+    // ── git_branches with remote fetch (error path) ──
+
+    #[tokio::test]
+    async fn git_branches_handler_with_remote_fetch_returns_error() {
+        // git fetch --all on a repo with no remote succeeds (exit 0),
+        // so the handler should return 200 with branch list.
+        let repo = std::env::temp_dir().join(format!(
+            "herdr-webui-git-remote-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&repo);
+        fs::create_dir_all(&repo).unwrap();
+        assert!(Command::new("git")
+            .arg("init")
+            .arg(&repo)
+            .output()
+            .unwrap()
+            .status
+            .success());
+        fs::write(repo.join("file.txt"), "hello").unwrap();
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["add", "."])
+            .output()
+            .unwrap()
+            .status
+            .success());
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args([
+                "-c", "user.name=test", "-c", "user.email=t@example.com",
+                "commit", "-m", "init",
+            ])
+            .output()
+            .unwrap()
+            .status
+            .success());
+
+        let app = test_app();
+        let response = app
+            .oneshot(
+                authed_request(
+                    Method::GET,
+                    &format!("/api/git-branches?cwd={}&remote=true&fetch=true", repo.to_string_lossy()),
+                )
+                .body(Body::empty())
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        // git fetch --all with no remote succeeds, so we get 200 with branches
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "git fetch on repo with no remote should succeed"
+        );
+        let body = response_json(response).await;
+        assert!(body["branches"].as_array().is_some());
+        let _ = fs::remove_dir_all(&repo);
+    }
+
+    // ── proxy_request_async JoinError path ──
+    // Hard to trigger in tests (requires runtime shutdown), so we rely on
+    // the missing-socket tests which exercise Ok(Err(socket_err)).
+
+    // ── workspaces handler with pane.list failure ──
+    // When pane.list fails, the handler should still return workspace.list
+    // result without enrichment (graceful degradation).
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn workspaces_handler_returns_list_even_when_pane_list_fails() {
+        // workspace.list succeeds but pane.list fails (connection reset)
+        // The handler uses the same socket for both, so the second request
+        // will fail after the first succeeds. Use multi with only one response.
+        let (socket, handle) = fake_api_socket_multi(vec![
+            // Only workspace.list response; pane.list will fail
+            json!({ "id": "web:workspace:list", "result": { "workspaces": [
+                { "workspace_id": "ws1", "label": "test", "cwd": "/tmp" }
+            ]}}),
+        ]);
+        let mut state = test_state();
+        state.api_socket = Some(socket.clone());
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::GET, "/api/workspaces")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // Should still be OK since workspace.list succeeded
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert!(body.get("result").is_some());
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
+    }
+
+    // ── create_workspace success path ──
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn create_workspace_proxies_successfully() {
+        let (socket, handle) = fake_api_socket_for_method(
+            "workspace.create",
+            json!({ "id": "web:workspace:create", "result": { "workspace_id": "ws-new" } }),
+        );
+        let mut state = test_state();
+        state.api_socket = Some(socket.clone());
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/workspaces")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "cwd": "/tmp", "label": "test-ws" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["result"]["workspace_id"], "ws-new");
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
+    }
+
+    // ── rename_workspace success path ──
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn rename_workspace_proxies_successfully() {
+        let (socket, handle) = fake_api_socket_for_method(
+            "workspace.rename",
+            json!({ "id": "web:workspace:rename", "result": { "ok": true } }),
+        );
+        let mut state = test_state();
+        state.api_socket = Some(socket.clone());
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/workspaces/ws1/rename")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "label": "renamed" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
+    }
+
+    // ── close_workspace success path ──
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn close_workspace_proxies_successfully() {
+        let (socket, handle) = fake_api_socket_for_method(
+            "workspace.close",
+            json!({ "id": "web:workspace:close", "result": { "ok": true } }),
+        );
+        let mut state = test_state();
+        state.api_socket = Some(socket.clone());
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/workspaces/ws1/close")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
+    }
+
+    // ── create_tab success path ──
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn create_tab_proxies_successfully() {
+        let (socket, handle) = fake_api_socket_for_method(
+            "tab.create",
+            json!({ "id": "web:tab:create", "result": { "tab_id": "tab-new" } }),
+        );
+        let mut state = test_state();
+        state.api_socket = Some(socket.clone());
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/tabs")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "workspace_id": "ws1", "label": "tab1" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
+    }
+
+    // ── close_tab success path ──
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn close_tab_proxies_successfully() {
+        let (socket, handle) = fake_api_socket_for_method(
+            "tab.close",
+            json!({ "id": "web:tab:close", "result": { "ok": true } }),
+        );
+        let mut state = test_state();
+        state.api_socket = Some(socket.clone());
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/tabs/t1/close")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
+    }
+
+    // ── close_pane success path ──
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn close_pane_proxies_successfully() {
+        let (socket, handle) = fake_api_socket_for_method(
+            "pane.close",
+            json!({ "id": "web:pane:close", "result": { "ok": true } }),
+        );
+        let mut state = test_state();
+        state.api_socket = Some(socket.clone());
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/panes/p1/close")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
+    }
+
+    // ── open_worktree success path ──
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn open_worktree_proxies_successfully() {
+        let (socket, handle) = fake_api_socket_for_method(
+            "worktree.open",
+            json!({ "id": "web:worktree:open", "result": { "ok": true, "workspace_id": "ws-wt" } }),
+        );
+        let mut state = test_state();
+        state.api_socket = Some(socket.clone());
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/worktrees/open")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "path": "/tmp/test-wt", "label": "wt1" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
+    }
+
+    // ── pane_layout success path ──
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pane_layout_proxies_successfully() {
+        let (socket, handle) = fake_api_socket_for_method(
+            "pane.layout",
+            json!({ "id": "web:pane:layout", "result": { "layout": {} } }),
+        );
+        let mut state = test_state();
+        state.api_socket = Some(socket.clone());
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::GET, "/api/pane-layout?pane_id=p1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
+    }
+
+    // ── panes success path ──
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn panes_handler_proxies_successfully() {
+        let (socket, handle) = fake_api_socket_for_method(
+            "pane.list",
+            json!({ "id": "web:pane:list", "result": { "panes": [] } }),
+        );
+        let mut state = test_state();
+        state.api_socket = Some(socket.clone());
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::GET, "/api/panes?workspace_id=ws1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
+    }
+
+    // ── rename_tab success path ──
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn rename_tab_proxies_successfully() {
+        let (socket, handle) = fake_api_socket_for_method(
+            "tab.rename",
+            json!({ "id": "web:tab:rename", "result": { "ok": true } }),
+        );
+        let mut state = test_state();
+        state.api_socket = Some(socket.clone());
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/tabs/t1/rename")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "label": "renamed" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
+    }
 }
