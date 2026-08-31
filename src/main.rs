@@ -85,7 +85,7 @@ fn backend_compatibility_for_supported_range(
     )
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct BackendInfo {
     version: Option<String>,
     protocol: Option<u32>,
@@ -2141,12 +2141,29 @@ async fn update_server_settings(
     let bind_changed = current
         .as_ref()
         .is_none_or(|settings| settings.bind != next.bind);
-    if let Err(err) = save_runtime_server_settings(&next) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": err.to_string() })),
-        )
-            .into_response();
+    // save_runtime_server_settings does file I/O (fs::write + permissions);
+    // offload to avoid stalling the async runtime.
+    let save_result = {
+        let next_clone = next.clone();
+        tokio::task::spawn_blocking(move || save_runtime_server_settings(&next_clone))
+            .await
+    };
+    match save_result {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": err.to_string() })),
+            )
+                .into_response();
+        }
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": err.to_string() })),
+            )
+                .into_response();
+        }
     }
     let auth = match AuthConfig::from_settings(&next) {
         Ok(auth) => auth,
@@ -2201,7 +2218,10 @@ async fn versions(
     let session = session_from_headers(&state, &headers);
     let current_backend = backend_target_for_headers(&state, &headers);
     let api = api_for_headers(&state, &headers);
-    let backend = api.backend_info();
+    // backend_info() does a blocking ping; offload to avoid stalling the runtime.
+    let backend = tokio::task::spawn_blocking(move || api.backend_info())
+        .await
+        .unwrap_or_default();
     let compatibility = if current_backend == SessionBackendTarget::Builtin {
         BackendCompatibility::Compatible
     } else {
@@ -2333,44 +2353,69 @@ async fn launch_session(
             .into_response();
     }
     if backend == SessionBackendTarget::Builtin {
-        return match ensure_builtin_session(&state, session.as_deref()) {
-            Ok(()) => Json(json!({
+        // ensure_builtin_session does socket connect and process spawning;
+        // offload to avoid stalling the async runtime.
+        let state_clone = state.clone();
+        let session_clone = session.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            ensure_builtin_session(&state_clone, session_clone.as_deref())
+        })
+        .await;
+        return match result {
+            Ok(Ok(())) => Json(json!({
                 "ok": true,
                 "backend": backend.as_str(),
                 "session": session_display_name(session.as_deref()),
             }))
             .into_response(),
-            Err(err) => (
+            Ok(Err(err)) => (
                 StatusCode::BAD_GATEWAY,
                 Json(json!({ "ok": false, "error": err })),
             )
                 .into_response(),
+            Err(err) => (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "ok": false, "error": err.to_string() })),
+            )
+                .into_response(),
         };
     }
-    let mut command = std::process::Command::new(&state.herdr_bin);
-    command
-        .arg("server")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .env_remove("HERDR_SOCKET_PATH")
-        .env_remove("HERDR_CLIENT_SOCKET_PATH");
-    if let Some(session) = session.as_deref().filter(|value| *value != "default") {
-        command.env("HERDR_SESSION", session);
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        command.process_group(0);
-    }
-    match command.spawn() {
-        Ok(child) => Json(json!({
+    // command.spawn() is a blocking fork+exec; offload it.
+    let herdr_bin = state.herdr_bin.clone();
+    let session_name = session.clone();
+    let spawn_result = tokio::task::spawn_blocking(move || {
+        let mut command = std::process::Command::new(&herdr_bin);
+        command
+            .arg("server")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .env_remove("HERDR_SOCKET_PATH")
+            .env_remove("HERDR_CLIENT_SOCKET_PATH");
+        if let Some(session) = session_name.as_deref().filter(|value| *value != "default") {
+            command.env("HERDR_SESSION", session);
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
+        command.spawn()
+    })
+    .await;
+    match spawn_result {
+        Ok(Ok(child)) => Json(json!({
             "ok": true,
             "pid": child.id(),
             "backend": backend.as_str(),
             "session": session_display_name(session.as_deref()),
         }))
         .into_response(),
+        Ok(Err(err)) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "ok": false, "error": err.to_string() })),
+        )
+            .into_response(),
         Err(err) => (
             StatusCode::BAD_GATEWAY,
             Json(json!({ "ok": false, "error": err.to_string() })),
@@ -2404,19 +2449,51 @@ async fn close_session(
     }
     if backend == SessionBackendTarget::Builtin {
         let session_name = canonical_session_name(session.as_deref());
-        let response = proxy_request(
-            &api_for_target_session(&state, backend, session.as_deref()),
-            json!({ "id": "web:server:stop", "method": "server.stop", "params": {} }),
-        );
+        let api = api_for_target_session(&state, backend, session.as_deref());
+        let response = proxy_server_stop(api).await;
         if let Ok(mut sessions) = state.builtin_sessions.lock() {
             sessions.remove(&session_name);
         }
         return response;
     }
-    proxy_request(
-        &api_for_target_session(&state, backend, session.as_deref()),
-        json!({ "id": "web:server:stop", "method": "server.stop", "params": {} }),
-    )
+    let api = api_for_target_session(&state, backend, session.as_deref());
+    proxy_server_stop(api).await
+}
+
+/// Sends `server.stop` to the backend and treats a connection drop as success.
+///
+/// The backend may close the socket before sending a response (or send a
+/// partial/truncated one) because it is shutting down. That manifests as an
+/// `UnexpectedEof` or `ConnectionReset` error from `read_json_line`, which
+/// `proxy_request` would turn into a 502 Bad Gateway. For a stop command that
+/// is the expected outcome, so we return ok instead.
+///
+/// Runs the blocking socket I/O on a `spawn_blocking` thread so it does not
+/// stall the async runtime (and by extension, active WebSocket loops) while
+/// waiting for the backend to respond or drop the connection.
+async fn proxy_server_stop(api: ApiClient) -> Response {
+    let request = json!({ "id": "web:server:stop", "method": "server.stop", "params": {} });
+    match tokio::task::spawn_blocking(move || api.request_value(request)).await {
+        Ok(Ok(value)) => Json(value).into_response(),
+        Ok(Err(err)) => {
+            let is_connection_drop = err.contains("empty response")
+                || err.contains("UnexpectedEof")
+                || err.contains("ConnectionReset")
+                || err.contains("Connection reset")
+                || err.contains("broken pipe")
+                || err.contains("Broken pipe");
+            if is_connection_drop {
+                Json(json!({ "ok": true })).into_response()
+            } else {
+                (StatusCode::BAD_GATEWAY, Json(json!({ "error": err }))).into_response()
+            }
+        }
+        Err(err) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": err.to_string() })),
+        )
+            .into_response(),
+    }
 }
 
 #[derive(Deserialize)]
@@ -2490,13 +2567,6 @@ fn login_response(state: &WebState) -> Response {
     response
 }
 
-fn proxy_request(api: &ApiClient, request: serde_json::Value) -> Response {
-    match api.request_value(request) {
-        Ok(value) => Json(value).into_response(),
-        Err(err) => (StatusCode::BAD_GATEWAY, Json(json!({ "error": err }))).into_response(),
-    }
-}
-
 async fn proxy_request_async(api: ApiClient, request: serde_json::Value) -> Response {
     match tokio::task::spawn_blocking(move || api.request_value(request)).await {
         Ok(Ok(value)) => Json(value).into_response(),
@@ -2518,16 +2588,28 @@ async fn workspaces(
         return response;
     }
     let api = api_for_headers(&state, &headers);
-    match api.request_value(
-        json!({ "id": "web:workspace:list", "method": "workspace.list", "params": {} }),
-    ) {
-        Ok(mut value) => {
-            if let Ok(panes) = api.request_value(json!({ "id": "web:pane:list:workspace-cwds", "method": "pane.list", "params": { "workspace_id": null } })) {
-                enrich_workspace_cwds(&mut value, &panes);
+    // request_value() does blocking socket I/O; offload to a blocking thread
+    // so it does not stall the async runtime (and active WebSocket loops).
+    match tokio::task::spawn_blocking(move || {
+        match api.request_value(
+            json!({ "id": "web:workspace:list", "method": "workspace.list", "params": {} }),
+        ) {
+            Ok(mut value) => {
+                if let Ok(panes) = api.request_value(json!({ "id": "web:pane:list:workspace-cwds", "method": "pane.list", "params": { "workspace_id": null } })) {
+                    enrich_workspace_cwds(&mut value, &panes);
+                }
+                Ok(value)
             }
-            Json(value).into_response()
+            Err(err) => Err(err),
         }
-        Err(err) => (StatusCode::BAD_GATEWAY, Json(json!({ "error": err }))).into_response(),
+    }).await {
+        Ok(Ok(value)) => Json(value).into_response(),
+        Ok(Err(err)) => (StatusCode::BAD_GATEWAY, Json(json!({ "error": err }))).into_response(),
+        Err(err) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": err.to_string() })),
+        )
+            .into_response(),
     }
 }
 
@@ -3008,54 +3090,99 @@ async fn create_worktree(
     let cwd = body.cwd.as_deref().map(expand_user_path_string);
     let path = body.path.as_deref().map(expand_user_path_string);
     let api = api_for_headers(&state, &headers);
-    if body.pull_base.unwrap_or(false) {
-        if let Some(cwd) = cwd.as_deref() {
-            let base = body
-                .base
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .unwrap_or("HEAD");
-            if let Err(err) = pull_base_branch(cwd, base) {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({ "ok": false, "error": err })),
-                )
-                    .into_response();
-            }
-        }
+
+    // Phase 1: git operations (pull, branch check, worktree checkout, and
+    // backend API version detection) are blocking subprocesses or socket I/O
+    // that can take seconds (git pull involves network). Offload them all to
+    // spawn_blocking to avoid stalling the async runtime.
+    enum CreateWorktreePhase {
+        Error(Response),
+        NativeCreate,
+        LegacyOpen,
+        Default,
     }
-    if let (Some(cwd), Some(path), Some(branch)) = (&cwd, &path, body.branch.as_deref()) {
-        let branch = branch.trim();
-        if !branch.is_empty() && git_branch_exists(cwd, branch).unwrap_or(false) {
-            let worktree_api = HerdrWorktreeApi::detect(api.clone());
-            if !worktree_api.needs_legacy_existing_branch_create() {
-                let request =
-                    worktree_api.create_request(body, Some(cwd.clone()), Some(path.clone()));
+    let phase = {
+        let cwd = cwd.clone();
+        let path = path.clone();
+        let api_clone = api.clone();
+        let pull_base = body.pull_base.unwrap_or(false);
+        let branch = body.branch.clone();
+        let base = body.base.clone();
+        tokio::task::spawn_blocking(move || {
+            if pull_base {
+                if let Some(cwd) = cwd.as_deref() {
+                    let base = base
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .unwrap_or("HEAD");
+                    if let Err(err) = pull_base_branch(cwd, base) {
+                        return CreateWorktreePhase::Error(
+                            (
+                                StatusCode::BAD_REQUEST,
+                                Json(json!({ "ok": false, "error": err })),
+                            )
+                                .into_response(),
+                        );
+                    }
+                }
+            }
+            if let (Some(cwd), Some(path), Some(branch)) = (&cwd, &path, branch.as_deref()) {
+                let branch = branch.trim();
+                if !branch.is_empty() && git_branch_exists(cwd, branch).unwrap_or(false) {
+                    let worktree_api = HerdrWorktreeApi::detect(api_clone);
+                    if !worktree_api.needs_legacy_existing_branch_create() {
+                        // Native API handles existing-branch create; no local
+                        // checkout needed. Phase 2 will call the native API.
+                        return CreateWorktreePhase::NativeCreate;
+                    }
+                    let base = base
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .unwrap_or("HEAD");
+                    if let Err(err) = create_worktree_checkout(cwd, path, branch, base) {
+                        return CreateWorktreePhase::Error(
+                            (
+                                StatusCode::BAD_REQUEST,
+                                Json(json!({ "ok": false, "error": err })),
+                            )
+                                .into_response(),
+                        );
+                    }
+                    // Legacy checkout done; Phase 2 will call worktree.open.
+                    return CreateWorktreePhase::LegacyOpen;
+                }
+            }
+            CreateWorktreePhase::Default
+        })
+        .await
+        .unwrap_or_else(|err| {
+            CreateWorktreePhase::Error(
+                (
+                    StatusCode::BAD_GATEWAY,
+                    Json(json!({ "ok": false, "error": err.to_string() })),
+                )
+                    .into_response(),
+            )
+        })
+    };
+
+    match phase {
+        CreateWorktreePhase::Error(response) => return response,
+        CreateWorktreePhase::NativeCreate => {
+            let worktree_api = HerdrWorktreeApi::new(api);
+            let request = worktree_api.create_request(body, cwd, path);
+            return proxy_request_async(worktree_api.client, request).await;
+        }
+        CreateWorktreePhase::LegacyOpen => {
+            if let (Some(cwd), Some(path)) = (&cwd, &path) {
+                let worktree_api = HerdrWorktreeApi::new(api);
+                let request = worktree_api.legacy_open_created_request(cwd, path, body.label);
                 return proxy_request_async(worktree_api.client, request).await;
             }
-            let base = body
-                .base
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .unwrap_or("HEAD");
-            match create_worktree_checkout(cwd, path, branch, base) {
-                Ok(()) => {
-                    return proxy_request(
-                        &worktree_api.client,
-                        worktree_api.legacy_open_created_request(cwd, path, body.label),
-                    );
-                }
-                Err(err) => {
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(json!({ "ok": false, "error": err })),
-                    )
-                        .into_response();
-                }
-            }
         }
+        CreateWorktreePhase::Default => {}
     }
     let worktree_api = HerdrWorktreeApi::new(api);
     let request = worktree_api.create_request(body, cwd, path);
@@ -3139,8 +3266,8 @@ async fn open_worktree(
     }
     let cwd = body.cwd.as_deref().map(expand_user_path_string);
     let path = body.path.as_deref().map(expand_user_path_string);
-    proxy_request(
-        &api_for_headers(&state, &headers),
+    proxy_request_async(
+        api_for_headers(&state, &headers),
         json!({
             "id": "web:worktree:open",
             "method": "worktree.open",
@@ -3154,6 +3281,7 @@ async fn open_worktree(
             },
         }),
     )
+    .await
 }
 
 async fn remove_worktree_path(
@@ -3167,22 +3295,32 @@ async fn remove_worktree_path(
     }
     let repo_root = expand_user_path_string(&body.repo_root);
     let path = expand_user_path_string(&body.path);
-    let mut command = Command::new("git");
-    command
-        .arg("-C")
-        .arg(&repo_root)
-        .args(["worktree", "remove"]);
-    if body.force.unwrap_or(false) {
-        command.arg("--force");
-    }
-    command.arg(&path);
-    match command.output() {
-        Ok(output) if output.status.success() => {
-            Json(json!({ "ok": true, "path": path })).into_response()
+    let force = body.force.unwrap_or(false);
+    // git worktree remove is a subprocess that can block; offload it.
+    let path_for_response = path.clone();
+    match tokio::task::spawn_blocking(move || {
+        let mut command = Command::new("git");
+        command
+            .arg("-C")
+            .arg(&repo_root)
+            .args(["worktree", "remove"]);
+        if force {
+            command.arg("--force");
         }
-        Ok(output) => (
+        command.arg(&path);
+        command.output()
+    }).await {
+        Ok(Ok(output)) if output.status.success() => {
+            Json(json!({ "ok": true, "path": path_for_response })).into_response()
+        }
+        Ok(Ok(output)) => (
             StatusCode::BAD_GATEWAY,
             Json(json!({ "error": String::from_utf8_lossy(&output.stderr).trim() })),
+        )
+            .into_response(),
+        Ok(Err(err)) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": err.to_string() })),
         )
             .into_response(),
         Err(err) => (
@@ -3200,10 +3338,11 @@ async fn agents(
     if let Err(response) = require_auth(&state, &headers, remote) {
         return response;
     }
-    proxy_request(
-        &api_for_headers(&state, &headers),
+    proxy_request_async(
+        api_for_headers(&state, &headers),
         json!({ "id": "web:agent:list", "method": "agent.list", "params": {} }),
     )
+    .await
 }
 
 #[derive(Deserialize)]
@@ -3298,19 +3437,24 @@ async fn git_branches(
     if let Err(response) = require_auth(&state, &headers, remote) {
         return response;
     }
-    let Some(cwd) = query.cwd.as_deref() else {
+    let Some(cwd) = query.cwd.as_deref().map(str::to_string) else {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": "cwd is required" })),
         )
             .into_response();
     };
-    match list_git_branches(
-        cwd,
-        query.remote.unwrap_or(false),
-        query.fetch.unwrap_or(false),
-    ) {
-        Ok(branches) => Json(GitBranchesResponse { branches }).into_response(),
+    let remote = query.remote.unwrap_or(false);
+    let fetch = query.fetch.unwrap_or(false);
+    // list_git_branches runs git subprocesses (potentially git fetch --all)
+    // which can block for seconds; offload to avoid stalling the async runtime.
+    match tokio::task::spawn_blocking(move || list_git_branches(&cwd, remote, fetch)).await {
+        Ok(Ok(branches)) => Json(GitBranchesResponse { branches }).into_response(),
+        Ok(Err(err)) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": err })),
+        )
+            .into_response(),
         Err(err) => (
             StatusCode::BAD_GATEWAY,
             Json(json!({ "error": err.to_string() })),
@@ -3328,10 +3472,11 @@ async fn tabs(
     if let Err(response) = require_auth(&state, &headers, remote) {
         return response;
     }
-    proxy_request(
-        &api_for_headers(&state, &headers),
+    proxy_request_async(
+        api_for_headers(&state, &headers),
         json!({ "id": "web:tab:list", "method": "tab.list", "params": { "workspace_id": query.workspace_id } }),
     )
+    .await
 }
 
 async fn panes(
@@ -3343,10 +3488,11 @@ async fn panes(
     if let Err(response) = require_auth(&state, &headers, remote) {
         return response;
     }
-    proxy_request(
-        &api_for_headers(&state, &headers),
+    proxy_request_async(
+        api_for_headers(&state, &headers),
         json!({ "id": "web:pane:list", "method": "pane.list", "params": { "workspace_id": query.workspace_id } }),
     )
+    .await
 }
 
 #[derive(Deserialize)]
@@ -3363,10 +3509,11 @@ async fn pane_layout(
     if let Err(response) = require_auth(&state, &headers, remote) {
         return response;
     }
-    proxy_request(
-        &api_for_headers(&state, &headers),
+    proxy_request_async(
+        api_for_headers(&state, &headers),
         json!({ "id": "web:pane:layout", "method": "pane.layout", "params": { "pane_id": query.pane_id } }),
     )
+    .await
 }
 
 /// Returns the full backend `session.snapshot` response in one round trip so
@@ -3380,10 +3527,11 @@ async fn session_snapshot(
     if let Err(response) = require_auth(&state, &headers, remote) {
         return response;
     }
-    proxy_request(
-        &api_for_headers(&state, &headers),
+    proxy_request_async(
+        api_for_headers(&state, &headers),
         json!({ "id": "web:session:snapshot", "method": "session.snapshot", "params": {} }),
     )
+    .await
 }
 
 #[derive(Deserialize)]
@@ -3422,10 +3570,11 @@ async fn create_workspace(
         Ok(cwd) => cwd,
         Err(response) => return *response,
     };
-    proxy_request(
-        &api_for_headers(&state, &headers),
+    proxy_request_async(
+        api_for_headers(&state, &headers),
         json!({ "id": "web:workspace:create", "method": "workspace.create", "params": { "cwd": cwd, "focus": false, "label": body.label, "env": {} } }),
     )
+    .await
 }
 
 #[derive(Deserialize)]
@@ -3443,10 +3592,11 @@ async fn rename_workspace(
     if let Err(response) = require_auth(&state, &headers, remote) {
         return response;
     }
-    proxy_request(
-        &api_for_headers(&state, &headers),
+    proxy_request_async(
+        api_for_headers(&state, &headers),
         json!({ "id": "web:workspace:rename", "method": "workspace.rename", "params": { "workspace_id": workspace_id, "label": body.label } }),
     )
+    .await
 }
 
 async fn close_workspace(
@@ -3458,10 +3608,11 @@ async fn close_workspace(
     if let Err(response) = require_auth(&state, &headers, remote) {
         return response;
     }
-    proxy_request(
-        &api_for_headers(&state, &headers),
+    proxy_request_async(
+        api_for_headers(&state, &headers),
         json!({ "id": "web:workspace:close", "method": "workspace.close", "params": { "workspace_id": workspace_id } }),
     )
+    .await
 }
 
 async fn remove_worktree(
@@ -3496,10 +3647,11 @@ async fn create_tab(
     if let Err(response) = require_auth(&state, &headers, remote) {
         return response;
     }
-    proxy_request(
-        &api_for_headers(&state, &headers),
+    proxy_request_async(
+        api_for_headers(&state, &headers),
         json!({ "id": "web:tab:create", "method": "tab.create", "params": { "workspace_id": body.workspace_id, "focus": false, "label": body.label, "env": {} } }),
     )
+    .await
 }
 
 #[derive(Deserialize)]
@@ -3517,10 +3669,11 @@ async fn rename_tab(
     if let Err(response) = require_auth(&state, &headers, remote) {
         return response;
     }
-    proxy_request(
-        &api_for_headers(&state, &headers),
+    proxy_request_async(
+        api_for_headers(&state, &headers),
         json!({ "id": "web:tab:rename", "method": "tab.rename", "params": { "tab_id": tab_id, "label": body.label } }),
     )
+    .await
 }
 
 async fn close_tab(
@@ -3532,10 +3685,11 @@ async fn close_tab(
     if let Err(response) = require_auth(&state, &headers, remote) {
         return response;
     }
-    proxy_request(
-        &api_for_headers(&state, &headers),
+    proxy_request_async(
+        api_for_headers(&state, &headers),
         json!({ "id": "web:tab:close", "method": "tab.close", "params": { "tab_id": tab_id } }),
     )
+    .await
 }
 
 async fn close_pane(
@@ -3547,10 +3701,11 @@ async fn close_pane(
     if let Err(response) = require_auth(&state, &headers, remote) {
         return response;
     }
-    proxy_request(
-        &api_for_headers(&state, &headers),
+    proxy_request_async(
+        api_for_headers(&state, &headers),
         json!({ "id": "web:pane:close", "method": "pane.close", "params": { "pane_id": pane_id } }),
     )
+    .await
 }
 
 async fn events_ws(
@@ -3579,7 +3734,12 @@ async fn events_ws(
 async fn events_socket(state: WebState, api: ApiClient, mut socket: WebSocket) {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
     let subscribe_api = api.clone();
-    let backend_info = api.backend_info();
+    // backend_info() does a blocking ping over a Unix socket; run it on a
+    // blocking thread so it does not stall the async runtime while waiting
+    // for the backend to respond (or time out) during connection setup.
+    let backend_info_api = api.clone();
+    let backend_info =
+        tokio::task::spawn_blocking(move || backend_info_api.backend_info()).await.unwrap_or_default();
     let use_builtin_event_hub = backend_uses_builtin_event_hub(&backend_info);
     let backend_protocol = backend_info.protocol;
     std::thread::spawn(move || {
@@ -3640,7 +3800,11 @@ async fn events_socket(state: WebState, api: ApiClient, mut socket: WebSocket) {
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
     loop {
         tokio::select! {
-            Some(value) = rx.recv() => {
+            // When the subscription thread exits (backend died), it drops tx
+            // and rx.recv() returns None. Break so the WebSocket closes and the
+            // client can reconnect to a fresh backend instead of hanging.
+            value = rx.recv() => {
+                let Some(value) = value else { break; };
                 if web_event_kind(&value) == Some("pane.agent_status_changed") {
                     // Use the event payload directly instead of calling agent.list
                     // This avoids recomputing all pane statuses on every status change
@@ -3663,11 +3827,22 @@ async fn events_socket(state: WebState, api: ApiClient, mut socket: WebSocket) {
                 if socket.send(Message::Text(value.to_string().into())).await.is_err() { break; }
             }
             _ = interval.tick(), if !use_builtin_event_hub => {
-                let agents = api.request_value(json!({ "id": "web:agent:list:poll", "method": "agent.list", "params": {} })).ok();
+                // request_value() does blocking socket I/O; offload it so the
+                // async runtime and other WebSocket loops are not stalled while
+                // waiting for the backend to respond.
+                let poll_api = api.clone();
+                let poll_result = tokio::task::spawn_blocking(move || {
+                    let agents = poll_api.request_value(json!({ "id": "web:agent:list:poll", "method": "agent.list", "params": {} })).ok();
+                    let workspaces = poll_api.request_value(json!({ "id": "web:workspace:list:poll", "method": "workspace.list", "params": {} })).ok();
+                    (agents, workspaces)
+                }).await;
+                let (agents, workspaces) = match poll_result {
+                    Ok(pair) => pair,
+                    Err(_) => break,
+                };
                 if let Some(agents) = &agents {
                     sync_auto_no_sleep_from_agents(&state, agents);
                 }
-                let workspaces = api.request_value(json!({ "id": "web:workspace:list:poll", "method": "workspace.list", "params": {} })).ok();
                 let value = json!({ "type": "snapshot", "agents": agents, "workspaces": workspaces });
                 if socket.send(Message::Text(value.to_string().into())).await.is_err() { break; }
             }
@@ -6377,5 +6552,98 @@ mod tests {
         assert!(!remote.contains(&"origin/HEAD".to_string()));
 
         fs::remove_dir_all(repo).unwrap();
+    }
+
+    /// Fake API socket that reads one request then closes the connection
+    /// without responding, simulating a backend that shuts down on server.stop.
+    #[cfg(unix)]
+    fn fake_api_socket_drop_on_stop(
+    ) -> (PathBuf, std::sync::Arc<std::sync::Mutex<bool>>, thread::JoinHandle<()>) {
+        use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+        use std::sync::Arc;
+        use std::sync::Mutex;
+
+        let path = std::env::temp_dir().join(format!(
+            "herdr-webui-stop-test-{}.sock",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_file(&path);
+        let name = path.clone().to_fs_name::<GenericFilePath>().unwrap();
+        let listener = ListenerOptions::new()
+            .name(name)
+            .try_overwrite(true)
+            .create_sync()
+            .unwrap();
+        let saw_stop = Arc::new(Mutex::new(false));
+        let saw_stop_clone = saw_stop.clone();
+        let handle = thread::spawn(move || {
+            let stream = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+            if request["method"] == "server.stop" {
+                *saw_stop_clone.lock().unwrap() = true;
+                // Drop the connection without responding, simulating backend shutdown.
+                drop(stream);
+            }
+        });
+        (path, saw_stop, handle)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn close_session_returns_ok_when_backend_drops_connection() {
+        let (socket, saw_stop, handle) = fake_api_socket_drop_on_stop();
+        let mut state = test_state();
+        state.api_socket = Some(socket.clone());
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                request(Method::POST, "/api/session/close")
+                    .header(header::COOKIE, "herdr_web_session=token-123")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "session": "default", "backend": "external-herdr" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["ok"], true);
+        assert!(*saw_stop.lock().unwrap(), "backend should have received server.stop");
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn close_session_returns_bad_gateway_on_real_error() {
+        // Point to a socket path that doesn't exist, so the connection itself fails.
+        let mut state = test_state();
+        state.api_socket = Some(PathBuf::from("/tmp/nonexistent-herdr-test-socket.sock"));
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                request(Method::POST, "/api/session/close")
+                    .header(header::COOKIE, "herdr_web_session=token-123")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "session": "default", "backend": "external-herdr" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
     }
 }
