@@ -4275,6 +4275,12 @@ mod tests {
         LOCK.get_or_init(|| StdMutex::new(()))
     }
 
+    /// Lock the env mutex, recovering from a poisoned state so a panicking
+    /// test does not cascade failures into every other env-lock test.
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        env_lock().lock().unwrap_or_else(|poison| poison.into_inner())
+    }
+
     #[cfg(unix)]
     fn fake_api_socket(response: serde_json::Value) -> (PathBuf, thread::JoinHandle<()>) {
         use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
@@ -4582,7 +4588,7 @@ mod tests {
 
     #[test]
     fn derives_session_paths() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = lock_env();
         std::env::set_var("XDG_CONFIG_HOME", "/tmp/herdr-config");
 
         assert_eq!(session_dir(None), PathBuf::from("/tmp/herdr-config/herdr"));
@@ -4608,7 +4614,7 @@ mod tests {
 
     #[test]
     fn derives_safe_builtin_socket_paths() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = lock_env();
         std::env::set_var("XDG_CONFIG_HOME", "/tmp/herdr-config");
 
         let (api, client) = builtin_socket_paths(Some("team/session 1"));
@@ -4624,7 +4630,7 @@ mod tests {
     fn builtin_socket_paths_fall_back_when_unix_path_would_be_too_long() {
         use std::os::unix::ffi::OsStrExt;
 
-        let _guard = env_lock().lock().unwrap();
+        let _guard = lock_env();
         let long_component = "x".repeat(140);
         std::env::set_var("XDG_CONFIG_HOME", format!("/tmp/{long_component}"));
 
@@ -4690,7 +4696,7 @@ mod tests {
 
     #[test]
     fn builtin_mode_routes_header_sessions_to_builtin_socket_namespace() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = lock_env();
         std::env::set_var("XDG_CONFIG_HOME", "/tmp/herdr-config");
         let mut state = test_state();
         state.backend_mode = BackendMode::Builtin;
@@ -4738,7 +4744,7 @@ mod tests {
 
     #[test]
     fn disabled_backend_type_is_hidden_and_not_selected() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = lock_env();
         let root = std::env::temp_dir().join(format!(
             "herdr-webui-disabled-backends-{}",
             std::process::id()
@@ -4781,7 +4787,7 @@ mod tests {
 
     #[test]
     fn known_sessions_reports_external_and_builtin_entries() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = lock_env();
         let root =
             std::env::temp_dir().join(format!("herdr-webui-sessions-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
@@ -4827,7 +4833,7 @@ mod tests {
     fn known_sessions_is_passive_and_does_not_execute_herdr_bin() {
         use std::os::unix::fs::PermissionsExt;
 
-        let _guard = env_lock().lock().unwrap();
+        let _guard = lock_env();
         let root = std::env::temp_dir().join(format!(
             "herdr-webui-passive-sessions-test-{}",
             std::process::id()
@@ -4919,7 +4925,7 @@ mod tests {
 
     #[test]
     fn missing_runtime_settings_file_creates_defaults() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = lock_env();
         let config_home = std::env::temp_dir().join(format!(
             "herdr-webui-settings-test-{}",
             SystemTime::now()
@@ -4949,7 +4955,7 @@ mod tests {
 
     #[test]
     fn existing_runtime_settings_file_backfills_missing_keys() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = lock_env();
         let config_home = std::env::temp_dir().join(format!(
             "herdr-webui-settings-backfill-test-{}",
             SystemTime::now()
@@ -5036,7 +5042,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn server_settings_api_reports_and_updates_runtime_settings() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = lock_env();
         let config_home = std::env::temp_dir().join(format!(
             "herdr-webui-settings-api-test-{}",
             SystemTime::now()
@@ -7392,7 +7398,7 @@ mod tests {
     #[tokio::test]
     async fn close_session_builtin_backend_uses_builtin_socket_namespace() {
         use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
-        let _guard = env_lock().lock().unwrap();
+        let _guard = lock_env();
         let config_home = std::env::temp_dir().join(format!(
             "herdr-webui-close-builtin-{}",
             SystemTime::now()
@@ -7859,7 +7865,7 @@ mod tests {
 
     #[tokio::test]
     async fn update_server_settings_saves_and_returns_updated_settings() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = lock_env();
         let config_home = std::env::temp_dir().join(format!(
             "herdr-webui-save-test-{}",
             SystemTime::now()
@@ -7938,7 +7944,7 @@ mod tests {
 
     #[tokio::test]
     async fn launch_session_builtin_backend_starts_session() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = lock_env();
         let config_home = std::env::temp_dir().join(format!(
             "herdr-webui-launch-builtin-{}",
             SystemTime::now()
@@ -9083,5 +9089,352 @@ mod tests {
             .unwrap();
         // Without proper WS upgrade headers, Axum returns 400
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // ── launch_session builtin Ok(Err) path ──
+    // ensure_builtin_session fails when BuiltinBackendHandle::start fails.
+    // We trigger this by pre-creating a regular file at the builtin socket path
+    // so bind_local_listener fails.
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn launch_session_builtin_returns_error_on_socket_bind_failure() {
+        let _guard = lock_env();
+        let config_home = std::env::temp_dir().join(format!(
+            "herdr-webui-launch-err-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
+
+        let session_name = "test-builtin-err";
+        let (api_socket, client_socket) = builtin_socket_paths(Some(session_name));
+        fs::create_dir_all(api_socket.parent().unwrap()).unwrap();
+        fs::create_dir_all(client_socket.parent().unwrap()).unwrap();
+
+        // Create a directory at the api_socket path.
+        // prepare_socket_path() calls fs::remove_file(path) which fails on
+        // directories (ErrorKind::Other or IsADirectory), causing start() to
+        // return an io::Error.
+        let _ = fs::remove_file(&api_socket);
+        fs::create_dir(&api_socket).unwrap();
+
+        let mut state = test_state();
+        state.backend_mode = BackendMode::Builtin;
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/session/launch")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "session": session_name, "backend": "builtin" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // ensure_builtin_session fails because socket is already bound
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = response_json(response).await;
+        assert_eq!(body["ok"], false);
+        assert!(body["error"].as_str().is_some());
+
+        let _ = fs::remove_dir(&api_socket);
+        let _ = fs::remove_dir_all(config_home);
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    // ── remove_worktree_path Ok(Err) path ──
+    // The Ok(Err(err)) path triggers when `Command::new("git").output()` fails
+    // to spawn (git binary not found). This is hard to test without modifying
+    // global PATH (which breaks parallel tests), so we skip it.
+
+    // ── update_server_settings Ok(Err) path (save_runtime_server_settings fails) ──
+    // We set XDG_CONFIG_HOME to a path where the settings file can't be written
+    // (parent dir is a regular file, not a directory).
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn update_server_settings_returns_error_on_save_failure() {
+        let _guard = lock_env();
+        let config_home = std::env::temp_dir().join(format!(
+            "herdr-webui-save-err-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        // Create config_home as a regular FILE, not a directory.
+        // server_settings_path() will be config_home/herdr-webui/webui-settings.json
+        // and fs::create_dir_all will fail because config_home is a file.
+        std::fs::write(&config_home, "not a directory").unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
+
+        let app = test_app();
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/server-settings")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "bind": "127.0.0.1:8080",
+                            "localhost_no_auth": false,
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_json(response).await;
+        assert!(body["error"].as_str().is_some());
+
+        let _ = fs::remove_file(&config_home);
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    // ── git_branches Ok(Err) path (git not found) ──
+    // Same issue as remove_worktree_path: requires clearing PATH which breaks
+    // parallel tests. The Ok(Err) path is already covered by other error tests
+    // that trigger non-zero exit status. Skip this specific path.
+
+    // ── launch_session external spawn Ok(Err) path ──
+    // Command::new(herdr_bin).spawn() fails when herdr_bin is not on PATH
+    // and PATH is empty. But we use a full path so this doesn't apply.
+    // Instead, use a binary that exists but can't be spawned (e.g., /dev/null).
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn launch_session_external_returns_error_on_spawn_failure() {
+        let mut state = test_state();
+        // /dev/null is not an executable, so spawn() will fail
+        state.herdr_bin = "/dev/null".to_string();
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/session/launch")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "session": "test-spawn-err", "backend": "external-herdr" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = response_json(response).await;
+        assert_eq!(body["ok"], false);
+        assert!(body["error"].as_str().is_some());
+    }
+
+    // ── create_worktree spawn_blocking JoinError path ──
+    // The JoinError path (lines 3161-3166) triggers when the spawn_blocking
+    // task itself panics. We can't easily trigger this, but the
+    // unwrap_or_else catches it and returns an error response.
+
+    // ── events_socket WebSocket test ──
+    // We test the events_socket by creating a real TCP server with the axum
+    // app, connecting via tokio-tungstenite, and verifying events are forwarded.
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn events_socket_sends_ready_and_forwards_events() {
+        use futures_util::StreamExt;
+        use tokio_tungstenite::connect_async;
+
+        // Create a fake backend socket that responds to ping and
+        // accepts events.subscribe, then sends one event and closes.
+        let (socket, _handle) = fake_api_socket_events_streaming();
+        let mut state = test_state();
+        state.api_socket = Some(socket.clone());
+        let app = test_app_with_state(state);
+
+        // Start a real TCP server
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server_handle = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+
+        // Connect via WebSocket with auth cookie
+        let url = format!("ws://{addr}/ws/events");
+        let request = tokio_tungstenite::tungstenite::http::Request::builder()
+            .uri(&url)
+            .header("cookie", "herdr_web_session=token-123")
+            .header("host", addr.to_string())
+            .header("connection", "Upgrade")
+            .header("upgrade", "websocket")
+            .header("sec-websocket-version", "13")
+            .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+            .body(())
+            .unwrap();
+        let (mut ws_stream, _response) = connect_async(request)
+            .await
+            .expect("Failed to connect to WebSocket");
+
+        // Read the "ready" message from the server
+        let msg = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            ws_stream.next(),
+        )
+        .await
+        .expect("timeout waiting for ready message")
+        .expect("stream closed")
+        .expect("websocket error");
+
+        // The first message should be the "ready" event. But a "snapshot" poll
+        // message may arrive first (from the interval timer). Skip snapshots.
+        let text = msg.to_text().expect("expected text message");
+        let first: serde_json::Value = serde_json::from_str(text).expect("invalid json");
+        // If first message is a snapshot, read again to get "ready"
+        if first["type"] != "ready" {
+            let msg = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                ws_stream.next(),
+            )
+            .await
+            .expect("timeout waiting for ready message")
+            .expect("stream closed")
+            .expect("websocket error");
+            let text = msg.to_text().expect("expected text message");
+            let ready: serde_json::Value = serde_json::from_str(text).expect("invalid json");
+            assert_eq!(ready["type"], "ready");
+        } else {
+            assert_eq!(first["type"], "ready");
+        }
+
+        // Read the forwarded event. A "snapshot" message may interleave.
+        let mut event: Option<serde_json::Value> = None;
+        for _ in 0..10 {
+            let msg2 = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                ws_stream.next(),
+            )
+            .await
+            .expect("timeout waiting for event")
+            .expect("stream closed")
+            .expect("websocket error");
+
+            let text2 = msg2.to_text().expect("expected text message");
+            let value: serde_json::Value = serde_json::from_str(text2).expect("invalid json");
+            if value["type"] == "event" {
+                event = Some(value);
+                break;
+            }
+            // Skip "snapshot" or other messages
+        }
+        let event = event.expect("did not receive event message");
+        assert_eq!(event["type"], "event");
+        assert_eq!(event["event"]["type"], "workspace.created");
+
+        // The fake socket thread may still be accepting connections.
+        // Don't join it - just abort the server and clean up.
+        server_handle.abort();
+        let _ = fs::remove_file(socket);
+    }
+
+    /// Fake API socket that responds to ping, accepts events.subscribe,
+    /// and streams a "ready" event followed by one test event.
+    #[cfg(unix)]
+    fn fake_api_socket_events_streaming() -> (PathBuf, thread::JoinHandle<()>) {
+        use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+
+        let path = std::env::temp_dir().join(format!(
+            "herdr-webui-events-test-{}.sock",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_file(&path);
+        let name = path.clone().to_fs_name::<GenericFilePath>().unwrap();
+        let listener = ListenerOptions::new()
+            .name(name)
+            .try_overwrite(true)
+            .create_sync()
+            .unwrap();
+        let handle = thread::spawn(move || {
+            // Connection 1: ping (backend_info)
+            {
+                let mut stream = listener.accept().unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                assert_eq!(request["method"], "ping");
+                stream
+                    .write_all(
+                        json!({ "id": "web:ping", "result": { "version": "0.7.2", "protocol": 16 } })
+                            .to_string()
+                            .as_bytes(),
+                    )
+                    .unwrap();
+                stream.write_all(b"\n").unwrap();
+                stream.flush().unwrap();
+            }
+            // Connection 2: events.subscribe
+            {
+                let mut stream = listener.accept().unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                assert_eq!(request["method"], "events.subscribe");
+                // Send the response line for subscribe
+                stream
+                    .write_all(
+                        json!({ "id": "web:events", "result": { "ok": true } })
+                            .to_string()
+                            .as_bytes(),
+                    )
+                    .unwrap();
+                stream.write_all(b"\n").unwrap();
+                stream.flush().unwrap();
+                // Now stream some events as newline-delimited JSON
+                // The EventStream reads lines, each being a JSON value
+                stream
+                    .write_all(
+                        json!({ "type": "workspace.created", "data": { "workspace_id": "ws1" } })
+                            .to_string()
+                            .as_bytes(),
+                    )
+                    .unwrap();
+                stream.write_all(b"\n").unwrap();
+                stream.flush().unwrap();
+                // Close the stream to end the event loop
+            }
+            // Connection 3+: poll (agent.list, workspace.list)
+            // The interval timer fires immediately and spawns poll requests.
+            // Accept and respond to them so the test doesn't hang.
+            for _ in 0..10 {
+                let Ok(mut stream) = listener.accept() else { break };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                let _ = reader.read_line(&mut line);
+                let request: serde_json::Value = serde_json::from_str(&line).unwrap_or_default();
+                let id = request.get("id").cloned().unwrap_or(json!("web:poll"));
+                let method = request.get("method").and_then(|m| m.as_str()).unwrap_or("");
+                let result = match method {
+                    "agent.list" => json!({ "agents": [] }),
+                    "workspace.list" => json!({ "workspaces": [] }),
+                    _ => json!({}),
+                };
+                let _ = stream.write_all(json!({ "id": id, "result": result }).to_string().as_bytes());
+                let _ = stream.write_all(b"\n");
+                let _ = stream.flush();
+            }
+        });
+        (path, handle)
     }
 }
