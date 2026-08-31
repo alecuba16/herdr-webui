@@ -9149,10 +9149,15 @@ mod tests {
 
     // ── remove_worktree_path Ok(Err) path ──
     // The Ok(Err(err)) path triggers when `Command::new("git").output()` fails
-    // to spawn (git binary not found). This is hard to test without modifying
-    // global PATH (which breaks parallel tests), so we skip it.
+    // to spawn (git binary not found). This requires modifying global PATH
+    // which would break parallel tests that also use git subprocesses.
+    // Skipping this path.
 
-    // ── update_server_settings Ok(Err) path (save_runtime_server_settings fails) ──
+    // ── git_branches Ok(Err) path (git not found) ──
+    // Same issue as remove_worktree_path: requires modifying global PATH.
+    // Skipping this path.
+
+    // ── launch_session external spawn Ok(Err) path ──
     // We set XDG_CONFIG_HOME to a path where the settings file can't be written
     // (parent dir is a regular file, not a directory).
 
@@ -9338,6 +9343,29 @@ mod tests {
         assert_eq!(event["type"], "event");
         assert_eq!(event["event"]["type"], "workspace.created");
 
+        // Wait for the "snapshot" message from the interval poll (5s timer).
+        // Read messages until we see a "snapshot" type or timeout.
+        let mut got_snapshot = false;
+        for _ in 0..20 {
+            let msg3 = tokio::time::timeout(
+                std::time::Duration::from_secs(8),
+                ws_stream.next(),
+            )
+            .await;
+            if msg3.is_err() { break; } // timeout
+            let msg3 = match msg3.unwrap() {
+                Some(Ok(m)) => m,
+                _ => break, // stream closed or error
+            };
+            let text3 = msg3.to_text().expect("expected text message");
+            let value: serde_json::Value = serde_json::from_str(text3).expect("invalid json");
+            if value["type"] == "snapshot" {
+                got_snapshot = true;
+                break;
+            }
+        }
+        assert!(got_snapshot, "did not receive snapshot message from interval poll");
+
         // The fake socket thread may still be accepting connections.
         // Don't join it - just abort the server and clean up.
         server_handle.abort();
@@ -9412,6 +9440,9 @@ mod tests {
                     .unwrap();
                 stream.write_all(b"\n").unwrap();
                 stream.flush().unwrap();
+                // Keep the stream open so the WebSocket event loop keeps running.
+                // The interval timer (5s) will fire and send a "snapshot" poll.
+                thread::sleep(std::time::Duration::from_secs(6));
                 // Close the stream to end the event loop
             }
             // Connection 3+: poll (agent.list, workspace.list)
