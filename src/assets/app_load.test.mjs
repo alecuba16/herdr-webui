@@ -1090,6 +1090,19 @@ describe("app bundle load", () => {
     match(fileBrowserCss, /\.file-browser-file-tabs \{[\s\S]*?overflow-x: auto;/);
     ok(!fileBrowserCss.includes(".file-browser-current-file"));
     ok(!fileBrowserCss.includes(".file-browser-side.previewing"), "file tree must stay visible while previewing files");
+    match(fileBrowserSource, /function renderTabMenu/);
+    match(fileBrowserSource, /HerdrFileBrowser\.tabMenu/);
+    match(fileBrowserSource, /data-file-menu-action="copyPathTab"/);
+    match(fileBrowserSource, /data-file-menu-action="focus"/);
+    match(fileBrowserSource, /data-file-menu-action="close"/);
+    match(fileBrowserCss, /\.file-browser-menu-label/);
+    match(fileBrowserCss, /\.file-browser-menu-sep/);
+    match(fileBrowserCss, /\.cm-foldGutter/);
+    match(fileBrowserCss, /\.cm-foldPlaceholder/);
+    match(fileBrowserCss, /\.cm-activeLineGutter/);
+    match(fileBrowserCss, /\.cm-matchingBracket/);
+    match(fileBrowserCss, /\.file-browser-open-tab\.active \{/);
+    match(fileBrowserCss, /--accent-2/);
     match(searchSource, /async function openWorkspaceSearchPath/);
     match(searchSource, /await ensureFileBrowserLoaded\(\)/);
     match(searchSource, /await window\.HerdrFileBrowser\.openAt/);
@@ -1316,6 +1329,8 @@ describe("app bundle load", () => {
     const editorSource = readFileSync(new URL("./vendor/codemirror_entry.mjs", import.meta.url), "utf8");
     match(editorSource, /foldGutter/);
     match(editorSource, /foldKeymap/);
+    match(editorSource, /highlightActiveLineGutter/);
+    match(editorSource, /bracketMatching/);
     match(editorSource, /readableHighlightStyle/);
     match(editorSource, /--editor-syntax-keyword/);
     match(editorSource, /languageNameForPath/);
