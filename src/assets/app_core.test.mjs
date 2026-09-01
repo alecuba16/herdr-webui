@@ -1251,4 +1251,544 @@ describe("desktop file browser editor integration", () => {
     await click("close");
     assert.doesNotMatch(document.getElementById("fileBrowserPanel").innerHTML, /file-browser-open-tab[\s\S]*demo\.py/);
   });
-});
+
+  it("hides tab menu actions for binary and truncated files", async () => {
+    const document = createFakeDocument();
+    const context = {
+      window: {
+        addEventListener() {},
+        HerdrEditor: {
+          create(opts) { opts.parent.innerHTML = `<div class="cm-content"></div>`; opts.parent._herdrEditorApi = { toggleFind() {} }; return { getValue() { return opts.content; }, setValue() {}, destroy() {} }; },
+          isMarkdownPath() { return false; },
+        },
+        HerdrGitUi: { hide() {} },
+        HerdrWorkspacePath(workspace) { return workspace.cwd; },
+      },
+      document,
+      localStorage: { getItem() { return JSON.stringify({ fileBrowserLineNumbers: true, fileBrowserGitStatus: false }); } },
+      navigator: { clipboard: { writeText: async () => {} } },
+      fetch: async (url) => {
+        const text = String(url);
+        return {
+          ok: true,
+          async json() {
+            if (text.startsWith("/api/file-browser/file")) {
+              const path = decodeURIComponent((text.match(/path=([^&]+)/) || [null, ""])[1]);
+              if (path === "src/binary.bin") return { path, content: "", binary: true, truncated: false };
+              if (path === "src/huge.log") return { path, content: "", binary: false, truncated: true, size: 99999999 };
+              return { path, content: `content of ${path}`, binary: false, truncated: false };
+            }
+            return { root: "/repo", home: "/home", path: "", entries: [{ kind: "file", name: "binary.bin", path: "src/binary.bin" }, { kind: "file", name: "huge.log", path: "src/huge.log" }], git_status: null };
+          },
+        };
+      },
+      confirm: () => true,
+      appRefreshIconButton: () => "<button>Refresh</button>",
+      encodeURIComponent, decodeURIComponent, Error, JSON, Math, String,
+      setTimeout(fn) { fn(); return 1; },
+      clearTimeout() {},
+    };
+    context.window.window = context.window;
+    context.window.document = document;
+    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
+    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
+
+    await context.window.HerdrFileBrowser.open({ cwd: "/repo" });
+    context.window.HerdrFileBrowser.select(encodeURIComponent("src/binary.bin"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    context.window.HerdrFileBrowser.tabMenu({ preventDefault() {}, stopPropagation() {}, clientX: 10, clientY: 20 }, encodeURIComponent("src/binary.bin"));
+    const html = document.getElementById("fileBrowserPanel").innerHTML;
+    assert.match(html, /data-file-menu-action="history"/);
+    assert.match(html, /data-file-menu-action="reload"/);
+    assert.match(html, /data-file-menu-action="copyPathTab"/);
+    assert.match(html, /data-file-menu-action="close"/);
+    assert.doesNotMatch(html, /data-file-menu-action="find"/);
+    assert.doesNotMatch(html, /data-file-menu-action="edit"/);
+    assert.doesNotMatch(html, /data-file-menu-action="save"/);
+    assert.doesNotMatch(html, /data-file-menu-action="cancelEdit"/);
+  });
+
+  it("shows Save and Cancel edit instead of Edit when file is being edited", async () => {
+    const document = createFakeDocument();
+    const context = {
+      window: {
+        addEventListener() {},
+        HerdrEditor: {
+          create(opts) { opts.parent.innerHTML = `<div class="cm-content"></div>`; opts.parent._herdrEditorApi = { toggleFind() {} }; return { getValue() { return opts.content; }, setValue() {}, destroy() {} }; },
+          isMarkdownPath() { return false; },
+        },
+        HerdrGitUi: { hide() {} },
+        HerdrWorkspacePath(workspace) { return workspace.cwd; },
+      },
+      document,
+      localStorage: { getItem() { return JSON.stringify({ fileBrowserLineNumbers: true, fileBrowserGitStatus: false }); } },
+      navigator: { clipboard: { writeText: async () => {} } },
+      fetch: async (url) => {
+        const text = String(url);
+        return {
+          ok: true,
+          async json() {
+            if (text.startsWith("/api/file-browser/file")) {
+              const path = decodeURIComponent((text.match(/path=([^&]+)/) || [null, ""])[1]);
+              return { path, content: `content of ${path}`, binary: false, truncated: false };
+            }
+            return { root: "/repo", home: "/home", path: "", entries: [{ kind: "file", name: "demo.py", path: "src/demo.py" }], git_status: null };
+          },
+        };
+      },
+      confirm: () => true,
+      appRefreshIconButton: () => "<button>Refresh</button>",
+      encodeURIComponent, decodeURIComponent, Error, JSON, Math, String,
+      setTimeout(fn) { fn(); return 1; },
+      clearTimeout() {},
+    };
+    context.window.window = context.window;
+    context.window.document = document;
+    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
+    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
+
+    await context.window.HerdrFileBrowser.open({ cwd: "/repo" });
+    context.window.HerdrFileBrowser.select(encodeURIComponent("src/demo.py"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    context.window.HerdrFileBrowser.edit(encodeURIComponent("src/demo.py"));
+
+    context.window.HerdrFileBrowser.tabMenu({ preventDefault() {}, stopPropagation() {}, clientX: 10, clientY: 20 }, encodeURIComponent("src/demo.py"));
+    const html = document.getElementById("fileBrowserPanel").innerHTML;
+    assert.match(html, /data-file-menu-action="save"/);
+    assert.match(html, /data-file-menu-action="cancelEdit"/);
+    assert.doesNotMatch(html, /data-file-menu-action="edit"/);
+  });
+
+  it("hides Split in tab menu when only one file is open", async () => {
+    const document = createFakeDocument();
+    const context = {
+      window: {
+        addEventListener() {},
+        HerdrEditor: {
+          create(opts) { opts.parent.innerHTML = `<div class="cm-content"></div>`; opts.parent._herdrEditorApi = { toggleFind() {} }; return { getValue() { return opts.content; }, setValue() {}, destroy() {} }; },
+          isMarkdownPath() { return false; },
+        },
+        HerdrGitUi: { hide() {} },
+        HerdrWorkspacePath(workspace) { return workspace.cwd; },
+      },
+      document,
+      localStorage: { getItem() { return JSON.stringify({ fileBrowserLineNumbers: true, fileBrowserGitStatus: false }); } },
+      navigator: { clipboard: { writeText: async () => {} } },
+      fetch: async (url) => {
+        const text = String(url);
+        return {
+          ok: true,
+          async json() {
+            if (text.startsWith("/api/file-browser/file")) {
+              const path = decodeURIComponent((text.match(/path=([^&]+)/) || [null, ""])[1]);
+              return { path, content: `content of ${path}`, binary: false, truncated: false };
+            }
+            return { root: "/repo", home: "/home", path: "", entries: [{ kind: "file", name: "demo.py", path: "src/demo.py" }], git_status: null };
+          },
+        };
+      },
+      confirm: () => true,
+      appRefreshIconButton: () => "<button>Refresh</button>",
+      encodeURIComponent, decodeURIComponent, Error, JSON, Math, String,
+      setTimeout(fn) { fn(); return 1; },
+      clearTimeout() {},
+    };
+    context.window.window = context.window;
+    context.window.document = document;
+    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
+    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
+
+    await context.window.HerdrFileBrowser.open({ cwd: "/repo" });
+    context.window.HerdrFileBrowser.select(encodeURIComponent("src/demo.py"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    context.window.HerdrFileBrowser.tabMenu({ preventDefault() {}, stopPropagation() {}, clientX: 10, clientY: 20 }, encodeURIComponent("src/demo.py"));
+    const html = document.getElementById("fileBrowserPanel").innerHTML;
+    assert.doesNotMatch(html, /data-file-menu-action="split"/);
+    assert.doesNotMatch(html, /data-file-menu-action="focus"/);
+    assert.match(html, /data-file-menu-action="edit"/);
+  });
+
+  it("includes danger class and separator in tab menu", async () => {
+    const document = createFakeDocument();
+    const context = {
+      window: {
+        addEventListener() {},
+        HerdrEditor: {
+          create(opts) { opts.parent.innerHTML = `<div class="cm-content"></div>`; opts.parent._herdrEditorApi = { toggleFind() {} }; return { getValue() { return opts.content; }, setValue() {}, destroy() {} }; },
+          isMarkdownPath() { return false; },
+        },
+        HerdrGitUi: { hide() {} },
+        HerdrWorkspacePath(workspace) { return workspace.cwd; },
+      },
+      document,
+      localStorage: { getItem() { return JSON.stringify({ fileBrowserLineNumbers: true, fileBrowserGitStatus: false }); } },
+      navigator: { clipboard: { writeText: async () => {} } },
+      fetch: async (url) => {
+        const text = String(url);
+        return {
+          ok: true,
+          async json() {
+            if (text.startsWith("/api/file-browser/file")) {
+              const path = decodeURIComponent((text.match(/path=([^&]+)/) || [null, ""])[1]);
+              return { path, content: `content of ${path}`, binary: false, truncated: false };
+            }
+            return { root: "/repo", home: "/home", path: "", entries: [{ kind: "file", name: "a.py", path: "src/a.py" }, { kind: "file", name: "b.py", path: "src/b.py" }], git_status: null };
+          },
+        };
+      },
+      confirm: () => true,
+      appRefreshIconButton: () => "<button>Refresh</button>",
+      encodeURIComponent, decodeURIComponent, Error, JSON, Math, String,
+      setTimeout(fn) { fn(); return 1; },
+      clearTimeout() {},
+    };
+    context.window.window = context.window;
+    context.window.document = document;
+    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
+    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
+
+    await context.window.HerdrFileBrowser.open({ cwd: "/repo" });
+    context.window.HerdrFileBrowser.select(encodeURIComponent("src/a.py"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    context.window.HerdrFileBrowser.tabMenu({ preventDefault() {}, stopPropagation() {}, clientX: 10, clientY: 20 }, encodeURIComponent("src/a.py"));
+    const html = document.getElementById("fileBrowserPanel").innerHTML;
+    assert.match(html, /class="danger"[^>]*data-file-menu-action="close"/);
+    assert.match(html, /file-browser-menu-sep/);
+  });
+
+  it("renders single file as tab with oncontextmenu, not as plain title", async () => {
+    const document = createFakeDocument();
+    const context = {
+      window: {
+        addEventListener() {},
+        HerdrEditor: {
+          create(opts) { opts.parent.innerHTML = `<div class="cm-content"></div>`; opts.parent._herdrEditorApi = { toggleFind() {} }; return { getValue() { return opts.content; }, setValue() {}, destroy() {} }; },
+          isMarkdownPath() { return false; },
+        },
+        HerdrGitUi: { hide() {} },
+        HerdrWorkspacePath(workspace) { return workspace.cwd; },
+      },
+      document,
+      localStorage: { getItem() { return JSON.stringify({ fileBrowserLineNumbers: true, fileBrowserGitStatus: false }); } },
+      navigator: { clipboard: { writeText: async () => {} } },
+      fetch: async (url) => {
+        const text = String(url);
+        return {
+          ok: true,
+          async json() {
+            if (text.startsWith("/api/file-browser/file")) {
+              const path = decodeURIComponent((text.match(/path=([^&]+)/) || [null, ""])[1]);
+              return { path, content: `content of ${path}`, binary: false, truncated: false };
+            }
+            return { root: "/repo", home: "/home", path: "", entries: [{ kind: "file", name: "only.py", path: "src/only.py" }], git_status: null };
+          },
+        };
+      },
+      confirm: () => true,
+      appRefreshIconButton: () => "<button>Refresh</button>",
+      encodeURIComponent, decodeURIComponent, Error, JSON, Math, String,
+      setTimeout(fn) { fn(); return 1; },
+      clearTimeout() {},
+    };
+    context.window.window = context.window;
+    context.window.document = document;
+    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
+    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
+
+    await context.window.HerdrFileBrowser.open({ cwd: "/repo" });
+    context.window.HerdrFileBrowser.select(encodeURIComponent("src/only.py"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const html = document.getElementById("fileBrowserPanel").innerHTML;
+    assert.match(html, /file-browser-open-tab active/);
+    assert.match(html, /oncontextmenu="event\.preventDefault\(\);event\.stopPropagation\(\);return HerdrFileBrowser\.tabMenu/);
+    assert.doesNotMatch(html, /<strong[^>]*>src\/only\.py<\/strong>/);
+  });
+
+  it("dispatches split, cancelEdit, and reload from tab menu", async () => {
+    const document = createFakeDocument();
+    const context = {
+      window: {
+        addEventListener() {},
+        HerdrEditor: {
+          create(opts) { opts.parent.innerHTML = `<div class="cm-content"></div>`; opts.parent._herdrEditorApi = { toggleFind() {} }; return { getValue() { return opts.content; }, setValue() {}, destroy() {} }; },
+          isMarkdownPath() { return false; },
+        },
+        HerdrGitUi: { hide() {} },
+        HerdrWorkspacePath(workspace) { return workspace.cwd; },
+      },
+      document,
+      localStorage: { getItem() { return JSON.stringify({ fileBrowserLineNumbers: true, fileBrowserGitStatus: false }); } },
+      navigator: { clipboard: { writeText: async () => {} } },
+      fetch: async (url) => {
+        const text = String(url);
+        return {
+          ok: true,
+          async json() {
+            if (text.startsWith("/api/file-browser/file")) {
+              const path = decodeURIComponent((text.match(/path=([^&]+)/) || [null, ""])[1]);
+              return { path, content: `content of ${path}`, binary: false, truncated: false };
+            }
+            return { root: "/repo", home: "/home", path: "", entries: [{ kind: "file", name: "a.py", path: "src/a.py" }, { kind: "file", name: "b.py", path: "src/b.py" }], git_status: null };
+          },
+        };
+      },
+      confirm: () => true,
+      appRefreshIconButton: () => "<button>Refresh</button>",
+      encodeURIComponent, decodeURIComponent, Error, JSON, Math, String,
+      setTimeout(fn) { fn(); return 1; },
+      clearTimeout() {},
+    };
+    context.window.window = context.window;
+    context.window.document = document;
+    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
+    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
+
+    await context.window.HerdrFileBrowser.open({ cwd: "/repo" });
+    context.window.HerdrFileBrowser.select(encodeURIComponent("src/a.py"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    context.window.HerdrFileBrowser.select(encodeURIComponent("src/b.py"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const click = async (action) => {
+      const button = { dataset: { fileMenuAction: action } };
+      button.closest = (selector) => selector === ".file-browser-menu [data-file-menu-action]" ? button : null;
+      const textNodeTarget = { parentElement: button };
+      await document.listeners["click:capture"].at(-1)({
+        target: textNodeTarget,
+        preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {},
+      });
+    };
+
+    // Split from tab menu
+    context.window.HerdrFileBrowser.tabMenu({ preventDefault() {}, stopPropagation() {}, clientX: 10, clientY: 20 }, encodeURIComponent("src/a.py"));
+    await click("split");
+    assert.ok(context.window.HerdrFileBrowser.isVisible());
+
+    // Cancel edit from tab menu: first enter edit mode, then cancel
+    context.window.HerdrFileBrowser.edit(encodeURIComponent("src/a.py"));
+    context.window.HerdrFileBrowser.tabMenu({ preventDefault() {}, stopPropagation() {}, clientX: 10, clientY: 20 }, encodeURIComponent("src/a.py"));
+    await click("cancelEdit");
+    // Open menu again to verify edit is shown (not save)
+    context.window.HerdrFileBrowser.tabMenu({ preventDefault() {}, stopPropagation() {}, clientX: 10, clientY: 20 }, encodeURIComponent("src/a.py"));
+    const htmlAfterCancel = document.getElementById("fileBrowserPanel").innerHTML;
+    assert.match(htmlAfterCancel, /data-file-menu-action="edit"/);
+    assert.doesNotMatch(htmlAfterCancel, /data-file-menu-action="save"/);
+
+    // Reload from tab menu
+    context.window.HerdrFileBrowser.tabMenu({ preventDefault() {}, stopPropagation() {}, clientX: 10, clientY: 20 }, encodeURIComponent("src/a.py"));
+    await click("reload");
+    assert.ok(context.window.HerdrFileBrowser.isVisible());
+  });
+
+  it("dispatches find and history from tab menu", async () => {
+    const findCalls = [];
+    const historyCalls = [];
+    const document = createFakeDocument();
+    const context = {
+      window: {
+        addEventListener() {},
+        HerdrEditor: {
+          create(opts) { opts.parent.innerHTML = `<div class="cm-content"></div>`; opts.parent._herdrEditorApi = { toggleFind(f) { findCalls.push(f); } }; return { getValue() { return opts.content; }, setValue() {}, destroy() {} }; },
+          isMarkdownPath() { return false; },
+          openFind: () => true,
+        },
+        HerdrGitUi: { hide() {}, openFileHistory(cwd, path) { historyCalls.push({ cwd, path }); } },
+        HerdrWorkspacePath(workspace) { return workspace.cwd; },
+      },
+      document,
+      localStorage: { getItem() { return JSON.stringify({ fileBrowserLineNumbers: true, fileBrowserGitStatus: false }); } },
+      navigator: { clipboard: { writeText: async () => {} } },
+      fetch: async (url) => {
+        const text = String(url);
+        return {
+          ok: true,
+          async json() {
+            if (text.startsWith("/api/file-browser/file")) {
+              const path = decodeURIComponent((text.match(/path=([^&]+)/) || [null, ""])[1]);
+              return { path, content: `content of ${path}`, binary: false, truncated: false };
+            }
+            return { root: "/repo", home: "/home", path: "", entries: [{ kind: "file", name: "a.py", path: "src/a.py" }, { kind: "file", name: "b.py", path: "src/b.py" }], git_status: null };
+          },
+        };
+      },
+      confirm: () => true,
+      appRefreshIconButton: () => "<button>Refresh</button>",
+      encodeURIComponent, decodeURIComponent, Error, JSON, Math, String,
+      setTimeout(fn) { fn(); return 1; },
+      clearTimeout() {},
+    };
+    context.window.window = context.window;
+    context.window.document = document;
+    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
+    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
+
+    await context.window.HerdrFileBrowser.open({ cwd: "/repo" });
+    context.window.HerdrFileBrowser.select(encodeURIComponent("src/a.py"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    context.window.HerdrFileBrowser.select(encodeURIComponent("src/b.py"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const click = async (action) => {
+      const button = { dataset: { fileMenuAction: action } };
+      button.closest = (selector) => selector === ".file-browser-menu [data-file-menu-action]" ? button : null;
+      const textNodeTarget = { parentElement: button };
+      await document.listeners["click:capture"].at(-1)({
+        target: textNodeTarget,
+        preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {},
+      });
+    };
+
+    // Find from tab menu
+    context.window.HerdrFileBrowser.tabMenu({ preventDefault() {}, stopPropagation() {}, clientX: 10, clientY: 20 }, encodeURIComponent("src/a.py"));
+    await click("find");
+    assert.ok(findCalls.length > 0, "toggleFind was called");
+    assert.equal(findCalls.at(-1), true);
+
+    // History from tab menu
+    context.window.HerdrFileBrowser.tabMenu({ preventDefault() {}, stopPropagation() {}, clientX: 10, clientY: 20 }, encodeURIComponent("src/a.py"));
+    await click("history");
+    assert.ok(historyCalls.length > 0, "openFileHistory was called");
+    assert.ok(decodeURIComponent(historyCalls.at(-1).path).includes("src/a.py"));
+  });
+
+  it("prevents closing a dirty file when user cancels the confirm dialog", async () => {
+    const document = createFakeDocument();
+    let confirmCalls = 0;
+    const context = {
+      window: {
+        addEventListener() {},
+        HerdrEditor: {
+          create(opts) { opts.parent.innerHTML = `<div class="cm-content"></div>`; opts.parent._herdrEditorApi = { toggleFind() {} }; return { getValue() { return opts.content; }, setValue() {}, destroy() {} }; },
+          isMarkdownPath() { return false; },
+        },
+        HerdrGitUi: { hide() {} },
+        HerdrWorkspacePath(workspace) { return workspace.cwd; },
+      },
+      document,
+      localStorage: { getItem() { return JSON.stringify({ fileBrowserLineNumbers: true, fileBrowserGitStatus: false }); } },
+      navigator: { clipboard: { writeText: async () => {} } },
+      fetch: async (url) => {
+        const text = String(url);
+        return {
+          ok: true,
+          async json() {
+            if (text.startsWith("/api/file-browser/file")) {
+              const path = decodeURIComponent((text.match(/path=([^&]+)/) || [null, ""])[1]);
+              return { path, content: `content of ${path}`, binary: false, truncated: false };
+            }
+            return { root: "/repo", home: "/home", path: "", entries: [{ kind: "file", name: "a.py", path: "src/a.py" }], git_status: null };
+          },
+        };
+      },
+      confirm: () => { confirmCalls++; return false; },
+      appRefreshIconButton: () => "<button>Refresh</button>",
+      encodeURIComponent, decodeURIComponent, Error, JSON, Math, String,
+      setTimeout(fn) { fn(); return 1; },
+      clearTimeout() {},
+    };
+    context.window.window = context.window;
+    context.window.document = document;
+    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
+    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
+
+    await context.window.HerdrFileBrowser.open({ cwd: "/repo" });
+    context.window.HerdrFileBrowser.select(encodeURIComponent("src/a.py"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // Make file dirty by editing and simulating a content change
+    let editorOnChange = null;
+    const origCreate = context.window.HerdrEditor.create;
+    context.window.HerdrEditor.create = function(opts) {
+      editorOnChange = opts.onChange;
+      return origCreate.call(this, opts);
+    };
+    context.window.HerdrFileBrowser.edit(encodeURIComponent("src/a.py"));
+    // Simulate content change that sets dirty
+    if (editorOnChange) editorOnChange("modified content");
+
+    const click = async (action) => {
+      const button = { dataset: { fileMenuAction: action } };
+      button.closest = (selector) => selector === ".file-browser-menu [data-file-menu-action]" ? button : null;
+      const textNodeTarget = { parentElement: button };
+      await document.listeners["click:capture"].at(-1)({
+        target: textNodeTarget,
+        preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {},
+      });
+    };
+
+    context.window.HerdrFileBrowser.tabMenu({ preventDefault() {}, stopPropagation() {}, clientX: 10, clientY: 20 }, encodeURIComponent("src/a.py"));
+    await click("close");
+    assert.ok(confirmCalls > 0, "confirm was called for dirty file");
+    assert.match(document.getElementById("fileBrowserPanel").innerHTML, /file-browser-open-tab[\s\S]*a\.py/);
+  });
+
+  it("dispatches save from tab menu and persists content", async () => {
+    const document = createFakeDocument();
+    const postCalls = [];
+    const context = {
+      window: {
+        addEventListener() {},
+        HerdrEditor: {
+          create(opts) { opts.parent.innerHTML = `<div class="cm-content"></div>`; opts.parent._herdrEditorApi = { toggleFind() {} }; return { getValue() { return opts.content; }, setValue() {}, destroy() {} }; },
+          isMarkdownPath() { return false; },
+        },
+        HerdrGitUi: { hide() {} },
+        HerdrWorkspacePath(workspace) { return workspace.cwd; },
+      },
+      document,
+      localStorage: { getItem() { return JSON.stringify({ fileBrowserLineNumbers: true, fileBrowserGitStatus: false }); } },
+      navigator: { clipboard: { writeText: async () => {} } },
+      fetch: async (url, opts) => {
+        const text = String(url);
+        if (opts && opts.method === "POST") {
+          postCalls.push({ url: text, body: opts.body });
+          return { ok: true, async json() { return { hash: "newhash" }; } };
+        }
+        return {
+          ok: true,
+          async json() {
+            if (text.startsWith("/api/file-browser/file")) {
+              const path = decodeURIComponent((text.match(/path=([^&]+)/) || [null, ""])[1]);
+              return { path, content: `content of ${path}`, binary: false, truncated: false };
+            }
+            return { root: "/repo", home: "/home", path: "", entries: [{ kind: "file", name: "a.py", path: "src/a.py" }], git_status: null };
+          },
+        };
+      },
+      confirm: () => true,
+      appRefreshIconButton: () => "<button>Refresh</button>",
+      encodeURIComponent, decodeURIComponent, Error, JSON, Math, String,
+      setTimeout(fn) { fn(); return 1; },
+      clearTimeout() {},
+    };
+    context.window.window = context.window;
+    context.window.document = document;
+    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
+    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
+
+    await context.window.HerdrFileBrowser.open({ cwd: "/repo" });
+    context.window.HerdrFileBrowser.select(encodeURIComponent("src/a.py"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    context.window.HerdrFileBrowser.edit(encodeURIComponent("src/a.py"));
+
+    const click = async (action) => {
+      const button = { dataset: { fileMenuAction: action } };
+      button.closest = (selector) => selector === ".file-browser-menu [data-file-menu-action]" ? button : null;
+      const textNodeTarget = { parentElement: button };
+      await document.listeners["click:capture"].at(-1)({
+        target: textNodeTarget,
+        preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {},
+      });
+    };
+
+    context.window.HerdrFileBrowser.tabMenu({ preventDefault() {}, stopPropagation() {}, clientX: 10, clientY: 20 }, encodeURIComponent("src/a.py"));
+    await click("save");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(postCalls.length > 0, "save POST was made");
+    assert.ok(postCalls[0].body.includes("src/a.py"));
+  });
+  });
