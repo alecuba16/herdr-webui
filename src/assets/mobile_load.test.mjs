@@ -372,6 +372,22 @@ describe("mobile bundle load", () => {
     match(mobileCss, /\.temp-terminal-body \.wterm \{[\s\S]*?overflow-x: hidden;[\s\S]*?overflow-y: auto;/);
   });
 
+  it("has mobile CSS parity for CodeMirror Zed-like editor enhancements", () => {
+    const mobileCss = readFileSync(new URL("./mobile/app.css", import.meta.url), "utf8");
+    match(mobileCss, /\.cm-foldGutter/);
+    match(mobileCss, /\.cm-foldPlaceholder/);
+    match(mobileCss, /\.cm-activeLineGutter/);
+    match(mobileCss, /\.cm-matchingBracket/);
+    match(mobileCss, /\.cm-nonmatchingBracket/);
+    match(mobileCss, /\.cm-cursor \{[\s\S]*?border-left-color: var\(--accent\)/);
+    match(mobileCss, /\.cm-selectionBackground/);
+    match(mobileCss, /--accent-1:/);
+    match(mobileCss, /--accent-2:/);
+    match(mobileCss, /--accent-2-border:/);
+    match(mobileCss, /--accent-soft:/);
+    match(mobileCss, /--accent-border:/);
+  });
+
   it("passes workspace, theme, and folder to temp terminal on mobile for parity with desktop", () => {
     const mobileSource = readFileSync(new URL("./mobile/app.js", import.meta.url), "utf8");
     // Mobile must pass workspaceIdFn so the temp terminal reuses the active workspace.
