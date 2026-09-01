@@ -86,9 +86,9 @@
   padding: 4px 6px 4px 9px;
 }
 .file-browser-file-tab.active {
-  background: var(--accent-2);
-  border-color: var(--border2);
-  color: var(--accent-1);
+  background: var(--accent-2, color-mix(in srgb, var(--accent), transparent 84%));
+  border-color: var(--accent-2-border, color-mix(in srgb, var(--accent), transparent 45%));
+  color: var(--accent-1, var(--accent));
   font-weight: 800;
 }
 .file-browser-file-tab span:first-child {
@@ -276,16 +276,18 @@
   align-items: center;
   background: var(--panel2);
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: 9px;
   display: inline-flex;
   flex: 0 0 auto;
   max-width: min(240px, 42vw);
   min-width: 0;
   overflow: hidden;
+  transition: border-color 120ms ease, box-shadow 120ms ease, background 120ms ease;
 }
 .file-browser-open-tab.active {
-  border-color: var(--border2);
-  box-shadow: 0 0 0 1px var(--border2) inset;
+  background: var(--accent-2, color-mix(in srgb, var(--accent), transparent 84%));
+  border-color: var(--accent-2-border, color-mix(in srgb, var(--accent), transparent 45%));
+  box-shadow: 0 0 0 1px var(--accent-2-border, color-mix(in srgb, var(--accent), transparent 45%)) inset;
 }
 .file-browser-open-tab-label,
 .file-browser-open-tab-close {
@@ -309,6 +311,10 @@
 .file-browser-open-tab:not(.active) .file-browser-open-tab-label {
   color: var(--muted);
 }
+.file-browser-open-tab.active .file-browser-open-tab-label {
+  color: var(--accent-1, var(--accent));
+  font-weight: 700;
+}
 .file-browser-open-tab-close {
   border-left: 1px solid var(--border);
   color: var(--muted);
@@ -324,6 +330,22 @@
   color: var(--accent);
   flex: 0 0 auto;
   font-size: 10px;
+}
+.file-browser-menu .file-browser-menu-sep {
+  border: 0;
+  border-top: 1px solid var(--border);
+  height: 0;
+  margin: 4px 2px;
+  padding: 0;
+}
+.file-browser-menu .file-browser-menu-label {
+  color: var(--muted);
+  cursor: default;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 4px 8px 2px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 .file-browser-pane {
   border: 1px solid var(--border);
@@ -533,6 +555,155 @@
   font-size: 11px;
   min-width: 72px;
   white-space: nowrap;
+}
+/* ── CodeMirror Zed-like editor enhancements ── */
+.cm-foldGutter {
+  width: 14px;
+}
+.cm-foldGutter .cm-gutterElement {
+  align-items: center;
+  color: var(--muted);
+  cursor: pointer;
+  display: flex;
+  font-size: 13px;
+  height: 18px;
+  justify-content: center;
+  padding: 0;
+  transition: color 100ms ease;
+}
+.cm-foldGutter .cm-gutterElement:hover {
+  color: var(--accent);
+}
+.cm-foldPlaceholder {
+  background: var(--accent-2, color-mix(in srgb, var(--accent), transparent 84%));
+  border: 1px solid var(--accent-2-border, color-mix(in srgb, var(--accent), transparent 45%));
+  border-radius: 4px;
+  color: var(--accent-1, var(--accent));
+  cursor: pointer;
+  font-size: 11px;
+  margin: 0 3px;
+  padding: 0 4px;
+}
+.cm-foldPlaceholder:hover {
+  background: var(--accent-2, color-mix(in srgb, var(--accent), transparent 70%));
+}
+.cm-gutters {
+  border-right: 1px solid var(--border);
+  color: var(--muted);
+}
+.cm-gutter.cm-lineNumbers .cm-gutterElement {
+  padding: 0 6px 0 4px;
+  text-align: right;
+  user-select: none;
+}
+.cm-activeLineGutter {
+  background: color-mix(in srgb, var(--accent), transparent 88%);
+  color: var(--fg);
+}
+.cm-lineNumbers .cm-gutterElement.cm-activeLineGutter {
+  font-weight: 600;
+}
+.cm-editor {
+  height: 100%;
+}
+.cm-editor .cm-scroller {
+  font-family: var(--mono-font, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.cm-content {
+  caret-color: var(--accent);
+  padding: 8px 0;
+}
+.cm-line {
+  padding: 0 8px;
+}
+.cm-cursor {
+  border-left-color: var(--accent);
+  border-left-width: 2px;
+}
+.cm-selectionBackground {
+  background: color-mix(in srgb, var(--accent), transparent 72%) !important;
+}
+.cm-focused .cm-selectionBackground {
+  background: color-mix(in srgb, var(--accent), transparent 62%) !important;
+}
+.cm-matchingBracket {
+  background: color-mix(in srgb, var(--accent), transparent 75%);
+  border: 1px solid color-mix(in srgb, var(--accent), transparent 40%);
+  border-radius: 2px;
+  color: inherit !important;
+}
+.cm-nonmatchingBracket {
+  background: color-mix(in srgb, #f38ba8, transparent 75%);
+  border: 1px solid color-mix(in srgb, #f38ba8, transparent 40%);
+  border-radius: 2px;
+}
+.cm-panels {
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  color: var(--fg);
+}
+.cm-panels input {
+  background: var(--panel2);
+  border: 1px solid var(--border2);
+  border-radius: 6px;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 6px;
+}
+.cm-panels input:focus {
+  border-color: var(--accent);
+  outline: 0;
+}
+.cm-textfield {
+  background: var(--panel2);
+  border: 1px solid var(--border2);
+  border-radius: 6px;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 6px;
+}
+.cm-button {
+  background: var(--panel2);
+  border: 1px solid var(--border2);
+  border-radius: 6px;
+  color: var(--fg);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 8px;
+}
+.cm-button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.cm-tooltip {
+  background: var(--panel);
+  border: 1px solid var(--border2);
+  border-radius: 8px;
+  box-shadow: 0 6px 18px #0006;
+  color: var(--fg);
+  font-size: 12px;
+}
+.cm-tooltip-autocomplete {
+  border-radius: 8px;
+}
+.cm-tooltip-autocomplete > ul > li[aria-selected] {
+  background: var(--accent-2, color-mix(in srgb, var(--accent), transparent 84%));
+  color: var(--accent-1, var(--accent));
+}
+.cm-searchMatch {
+  background: color-mix(in srgb, var(--accent), transparent 85%);
+  border-radius: 2px;
+}
+.cm-searchMatch-selected {
+  background: color-mix(in srgb, var(--accent), transparent 65%);
+}
+.cm-searchMatch-selected span {
+  background: color-mix(in srgb, var(--accent), transparent 55%);
 }
 .cm-herdr-hunk-add { background: color-mix(in srgb, #1db910, transparent 88%); }
 .cm-herdr-hunk-delete,

@@ -623,19 +623,14 @@
 
   function renderToolbar(file) {
     if (!file) return `<strong>Select a file</strong>`;
-    const canEdit = !file.binary && !file.truncated;
     const isMarkdown = !!(window.HerdrEditor && window.HerdrEditor.isMarkdownPath && window.HerdrEditor.isMarkdownPath(file.path));
     const preview = isMarkdown && !file.editing ? `<button class="git-ui-btn ${file.previewSource ? "" : "active"}" onclick="HerdrFileBrowser.togglePreview('${arg(file.path)}')">Preview</button><button class="git-ui-btn ${file.previewSource ? "active" : ""}" onclick="HerdrFileBrowser.toggleSource('${arg(file.path)}')">Source</button>` : "";
     const tabs = renderOpenFileTabs();
     const split = state.files.length > 1 ? `<button class="git-ui-btn ${state.split ? "active" : ""}" onclick="HerdrFileBrowser.toggleSplit()">Split</button>` : "";
-    const find = canEdit ? `<button class="git-ui-btn" onclick="HerdrFileBrowser.toggleFind('${arg(file.path)}')">Find</button>` : "";
-    const edit = canEdit && !file.editing ? `<button class="git-ui-btn" onclick="HerdrFileBrowser.edit('${arg(file.path)}')">Edit</button>` : "";
-    const save = canEdit && file.editing ? `<button class="git-ui-btn primary" ${file.saving ? "disabled" : ""} onclick="HerdrFileBrowser.save('${arg(file.path)}')">${file.saving ? "Saving..." : "Save"}</button><button class="git-ui-btn" onclick="HerdrFileBrowser.cancelEdit('${arg(file.path)}')">Cancel</button>` : "";
-
-    const dirty = file.dirty ? `<span class="file-browser-dirty">modified</span>` : "";
-    const title = tabs ? "" : `<strong title="${esc(file.path)}">${esc(file.path)}</strong>${dirty}`;
-    return `${tabs || title}<span class="file-browser-toolbar-actions">${preview}${split}${find}${edit}${save}<button class="git-ui-btn" onclick="HerdrFileBrowser.showHistory('${arg(file.path)}')">Show history</button><button class="git-ui-btn" onclick="HerdrFileBrowser.reload('${arg(file.path)}')">Reload</button><button class="git-ui-btn" onclick="HerdrFileBrowser.closeFile('${arg(file.path)}')">Close file</button></span>`;
-
+    const dirty = file.dirty ? `<span class="file-browser-tab-dirty" title="Modified">●</span>` : "";
+    const tooltip = fileTabTooltipPath(file.path);
+    const singleTab = tabs ? "" : `<div class="file-browser-open-tabs" role="tablist" aria-label="Open files"><span class="file-browser-open-tab active" role="presentation" title="${esc(tooltip)}" oncontextmenu="event.preventDefault();event.stopPropagation();return HerdrFileBrowser.tabMenu(event,'${arg(file.path)}')"><button type="button" class="file-browser-open-tab-label" role="tab" aria-selected="true" title="${esc(tooltip)}" onclick="HerdrFileBrowser.focusFile('${arg(file.path)}')">${esc(Tree.basename(file.path))}${dirty}</button><button type="button" class="file-browser-open-tab-close" title="Close ${esc(Tree.basename(file.path))}" aria-label="Close ${esc(Tree.basename(file.path))}" onclick="event.stopPropagation();HerdrFileBrowser.closeFile('${arg(file.path)}')">&times;</button></span></div>`;
+    return `${tabs || singleTab}<span class="file-browser-toolbar-actions">${preview}${split}<button class="git-ui-btn" onclick="HerdrFileBrowser.toggleFind('${arg(file.path)}')">Find</button></span>`;
   }
 
   function renderPreviewShell() {
@@ -660,7 +655,8 @@
       const active = file.path === state.selected;
       const dirty = file.dirty ? `<span class="file-browser-tab-dirty" title="Modified">●</span>` : "";
       const tooltip = fileTabTooltipPath(file.path);
-      return `<span class="file-browser-open-tab ${active ? "active" : ""}" role="presentation" title="${esc(tooltip)}"><button type="button" class="file-browser-open-tab-label" role="tab" aria-selected="${active ? "true" : "false"}" title="${esc(tooltip)}" onclick="HerdrFileBrowser.focusFile('${arg(file.path)}')">${esc(Tree.basename(file.path))}${dirty}</button><button type="button" class="file-browser-open-tab-close" title="Close ${esc(Tree.basename(file.path))}" aria-label="Close ${esc(Tree.basename(file.path))}" onclick="event.stopPropagation();HerdrFileBrowser.closeFile('${arg(file.path)}')">&times;</button></span>`;
+      const ctxMenu = ` oncontextmenu="event.preventDefault();event.stopPropagation();return HerdrFileBrowser.tabMenu(event,'${arg(file.path)}')"`;
+      return `<span class="file-browser-open-tab ${active ? "active" : ""}" role="presentation" title="${esc(tooltip)}"${ctxMenu}><button type="button" class="file-browser-open-tab-label" role="tab" aria-selected="${active ? "true" : "false"}" title="${esc(tooltip)}" onclick="HerdrFileBrowser.focusFile('${arg(file.path)}')">${esc(Tree.basename(file.path))}${dirty}</button><button type="button" class="file-browser-open-tab-close" title="Close ${esc(Tree.basename(file.path))}" aria-label="Close ${esc(Tree.basename(file.path))}" onclick="event.stopPropagation();HerdrFileBrowser.closeFile('${arg(file.path)}')">&times;</button></span>`;
     }).join("");
     return `<div class="file-browser-open-tabs" role="tablist" aria-label="Open files">${tabs}</div>`;
   }
@@ -679,12 +675,34 @@
   function renderContextMenu() {
     const menu = state.contextMenu;
     if (!menu) return "";
+    if (menu.type === "tab") return renderTabMenu(menu);
     const primary = menu.kind === "dir"
       ? `<button type="button" data-file-menu-action="enter">Enter folder</button>`
       : `<button type="button" data-file-menu-action="open">Open</button><button type="button" data-file-menu-action="split">Open in split</button>`;
     const history = menu.kind === "file" ? `<button type="button" data-file-menu-action="history">Show history</button>` : "";
     const permalink = menu.kind === "file" ? `<button type="button" data-file-menu-action="copyPermalink">Copy permalink</button>` : "";
     return `<div class="git-ui-menu file-browser-menu" style="left:${Math.max(0, menu.x)}px;top:${Math.max(0, menu.y)}px" onclick="event.stopPropagation()">${primary}${history}${permalink}<button type="button" data-file-menu-action="rename">Rename</button><button type="button" class="danger" data-file-menu-action="delete">Delete</button><button type="button" data-file-menu-action="copyPath">Copy path</button></div>`;
+  }
+
+  function renderTabMenu(menu) {
+    const file = state.files.find((f) => f.path === menu.path);
+    if (!file) return "";
+    const canEdit = !file.binary && !file.truncated;
+    const isActive = file.path === state.selected;
+    const editing = !!file.editing;
+    const hasMultiple = state.files.length > 1;
+    const sep = `<span class="file-browser-menu-sep"></span>`;
+    const labelHtml = `<span class="file-browser-menu-label">${esc(Tree.basename(file.path))}</span>`;
+    const focus = !isActive ? `<button type="button" data-file-menu-action="focus">Focus</button>` : "";
+    const split = hasMultiple ? `<button type="button" data-file-menu-action="split">Open in split</button>` : "";
+    const find = canEdit ? `<button type="button" data-file-menu-action="find">Find in file</button>` : "";
+    const edit = canEdit && !editing ? `<button type="button" data-file-menu-action="edit">Edit</button>` : "";
+    const save = canEdit && editing ? `<button type="button" data-file-menu-action="save">Save</button><button type="button" data-file-menu-action="cancelEdit">Cancel edit</button>` : "";
+    const history = `<button type="button" data-file-menu-action="history">Show history</button>`;
+    const reload = `<button type="button" data-file-menu-action="reload">Reload</button>`;
+    const copyPath = `<button type="button" data-file-menu-action="copyPathTab">Copy path</button>`;
+    const close = `<button type="button" data-file-menu-action="close">Close file</button>`;
+    return `<div class="git-ui-menu file-browser-menu" style="left:${Math.max(0, menu.x)}px;top:${Math.max(0, menu.y)}px" onclick="event.stopPropagation()">${labelHtml}${focus}${split}${find}${edit}${save}${history}${reload}${copyPath}${sep}${close}</div>`;
   }
 
   function mountEditors() {
@@ -916,13 +934,21 @@
     state.contextMenu = null;
     try {
       if (action === "open") await loadFile(menu.path, "append");
-      if (action === "split") await loadFile(menu.path, "split");
+      if (action === "split") { await loadFile(menu.path, "split"); if (state.split === false) state.split = true; }
       if (action === "enter") await loadTree(menu.path);
       if (action === "history") { showHistoryPath(menu.path); return; }
       if (action === "rename") await renamePath(menu.path);
       if (action === "delete") await deletePath(menu.path);
       if (action === "copyPermalink") await copyPermalink(menu.path);
       if (action === "copyPath") await navigator.clipboard.writeText(`${state.cwd}/${menu.path}`);
+      if (action === "copyPathTab") await navigator.clipboard.writeText(absoluteFilePath(menu.path));
+      if (action === "focus") { state.selected = menu.path; render(); return; }
+      if (action === "find") { toggleFind(menu.path); return; }
+      if (action === "edit") { const file = state.files.find((f) => f.path === menu.path); if (file) { file.editing = true; file.draft = file.content || ""; file.dirty = false; } state.selected = menu.path; render(); return; }
+      if (action === "save") { state.selected = menu.path; render(); saveFile(menu.path); return; }
+      if (action === "cancelEdit") { const file = state.files.find((f) => f.path === menu.path); if (file) { file.editing = false; file.draft = file.content || ""; file.dirty = false; } state.selected = menu.path; render(); return; }
+      if (action === "reload") { state.selected = menu.path; render(); await reloadFile(menu.path); return; }
+      if (action === "close") { const file = state.files.find((f) => f.path === menu.path); if (file && file.dirty && !confirm(`Close ${menu.path} with unsaved changes?`)) return; state.files = state.files.filter((f) => f.path !== menu.path); if (state.selected === menu.path) state.selected = (state.files[state.files.length - 1] || {}).path || ""; if (state.files.length < 2) state.split = false; render(); return; }
     } catch (error) {
       state.error = error.message || String(error);
     } finally {
@@ -1052,6 +1078,13 @@
       event.preventDefault();
       event.stopPropagation();
       state.contextMenu = { x: event.clientX, y: event.clientY, path: decodeURIComponent(encodedPath), kind };
+      render();
+      return false;
+    },
+    tabMenu(event, encodedPath) {
+      event.preventDefault();
+      event.stopPropagation();
+      state.contextMenu = { type: "tab", x: event.clientX, y: event.clientY, path: decodeURIComponent(encodedPath) };
       render();
       return false;
     },

@@ -658,6 +658,13 @@
   background: var(--panel2);
   color: var(--accent);
 }
+.git-ui-menu button.danger {
+  color: #f38ba8;
+}
+.git-ui-menu button.danger:hover {
+  background: color-mix(in srgb, #f38ba8, transparent 82%);
+  color: #f38ba8;
+}
 .git-ui-empty-row {
   border: 1px dashed var(--border);
   border-radius: 6px;
