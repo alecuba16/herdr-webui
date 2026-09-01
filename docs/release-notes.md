@@ -1,5 +1,36 @@
 # Release notes
 
+## 0.2.96 Release Notes
+
+### Zed-like editor enhancements
+
+- CodeMirror editor gains fold gutter (code collapsing with accent-colored hover), active line + active line gutter highlighting, and bracket matching (matching brackets get accent background, non-matching get red).
+- Cursor is accent-colored (2px), selection background uses accent at 62-72% transparency, and content has 8px padding with accent caret-color.
+- The `highlightActiveLineGutter` extension was added to the CodeMirror bundle — the `.cm-activeLineGutter` CSS class was defined in the theme but never applied to DOM.
+- CodeMirror tooltip, autocomplete, and search match styling use accent color via `color-mix`.
+
+### Accent-colored file tabs
+
+- Open file tabs use `--accent-2` background, `--accent-1` text, and `--accent-2-border` border when active.
+- Border radius changed from 999px (pill) to 9px (rounded rectangle). Smooth 120ms transitions on border-color, box-shadow, and background.
+- Dirty file indicator changed from "modified" text to accent-colored dot (●).
+
+### Tab context menu
+
+- Right-clicking any file tab (single or multi-file) opens a context menu with: Focus, Open in split, Find in file, Edit, Save, Cancel edit, Show history, Reload, Copy path, and Close.
+- Close action has danger styling (red text) and confirms unsaved changes. Separator before Close to visually separate the destructive action.
+- Single file now renders as a proper tab with context menu support (previously a plain `<strong>` title).
+- Old Edit/Save/History/Reload/Close buttons removed from toolbar (moved to context menu). Toolbar keeps Preview/Source, Split, and Find.
+
+### Mobile parity
+
+- Mobile CSS gains the same CodeMirror enhancement rules as desktop: fold gutter, active line gutter, bracket matching, cursor, selection, tooltip, autocomplete, and search match styling.
+- Accent variables (`--accent-1`, `--accent-2`, `--accent-2-border`, `--accent-soft`, `--accent-border`) added to both dark and light mobile themes for parity with desktop `controls.css`.
+
+### Help text
+
+- Shortcuts modal updated to mention right-click context menu actions on file tabs.
+
 ## 0.2.91 Release Notes
 
 ### Herdr v0.8.0 protocol sync
