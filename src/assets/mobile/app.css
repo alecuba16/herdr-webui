@@ -33,6 +33,11 @@ body {
   --git-changed-color: #89b4fa;
   --git-conflict-color: #fab387;
   --accent-fg: #11111b;
+  --accent-1: var(--accent);
+  --accent-soft: color-mix(in srgb, var(--accent), transparent 84%);
+  --accent-2: var(--accent-soft);
+  --accent-border: color-mix(in srgb, var(--accent), transparent 45%);
+  --accent-2-border: var(--accent-border);
   --editor-syntax-keyword: #cba6f7;
   --editor-syntax-constant: #f38ba8;
   --editor-syntax-number: #fab387;
@@ -72,6 +77,11 @@ body.light {
   --git-changed-color: #3a6ee8;
   --git-conflict-color: #c45c00;
   --accent-fg: #eff1f5;
+  --accent-1: var(--accent);
+  --accent-soft: color-mix(in srgb, var(--accent), transparent 84%);
+  --accent-2: var(--accent-soft);
+  --accent-border: color-mix(in srgb, var(--accent), transparent 45%);
+  --accent-2-border: var(--accent-border);
   --editor-syntax-keyword: #8839ef;
   --editor-syntax-constant: #d20f39;
   --editor-syntax-number: #fe640b;
@@ -802,6 +812,114 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
   font: inherit;
   font-size: 11px;
   padding: 4px 8px;
+}
+/* ── CodeMirror Zed-like editor enhancements (mobile parity) ── */
+.cm-foldGutter {
+  width: 14px;
+}
+.cm-foldGutter .cm-gutterElement {
+  align-items: center;
+  color: var(--muted);
+  cursor: pointer;
+  display: flex;
+  font-size: 13px;
+  height: 18px;
+  justify-content: center;
+  padding: 0;
+  transition: color 100ms ease;
+}
+.cm-foldGutter .cm-gutterElement:hover {
+  color: var(--accent);
+}
+.cm-foldPlaceholder {
+  background: var(--accent-2, color-mix(in srgb, var(--accent), transparent 84%));
+  border: 1px solid var(--accent-2-border, color-mix(in srgb, var(--accent), transparent 45%));
+  border-radius: 4px;
+  color: var(--accent-1, var(--accent));
+  cursor: pointer;
+  font-size: 11px;
+  margin: 0 3px;
+  padding: 0 4px;
+}
+.cm-foldPlaceholder:hover {
+  background: var(--accent-2, color-mix(in srgb, var(--accent), transparent 70%));
+}
+.cm-gutters {
+  border-right: 1px solid var(--border);
+  color: var(--muted);
+}
+.cm-gutter.cm-lineNumbers .cm-gutterElement {
+  padding: 0 6px 0 4px;
+  text-align: right;
+  user-select: none;
+}
+.cm-activeLineGutter {
+  background: color-mix(in srgb, var(--accent), transparent 88%);
+  color: var(--fg);
+}
+.cm-lineNumbers .cm-gutterElement.cm-activeLineGutter {
+  font-weight: 600;
+}
+.cm-editor {
+  height: 100%;
+}
+.cm-editor .cm-scroller {
+  font-family: var(--mono-font, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.cm-content {
+  caret-color: var(--accent);
+  padding: 8px 0;
+}
+.cm-line {
+  padding: 0 8px;
+}
+.cm-cursor {
+  border-left-color: var(--accent);
+  border-left-width: 2px;
+}
+.cm-selectionBackground {
+  background: color-mix(in srgb, var(--accent), transparent 72%) !important;
+}
+.cm-focused .cm-selectionBackground {
+  background: color-mix(in srgb, var(--accent), transparent 62%) !important;
+}
+.cm-matchingBracket {
+  background: color-mix(in srgb, var(--accent), transparent 75%);
+  border: 1px solid color-mix(in srgb, var(--accent), transparent 40%);
+  border-radius: 2px;
+  color: inherit !important;
+}
+.cm-nonmatchingBracket {
+  background: color-mix(in srgb, #f38ba8, transparent 75%);
+  border: 1px solid color-mix(in srgb, #f38ba8, transparent 40%);
+  border-radius: 2px;
+}
+.cm-tooltip {
+  background: var(--panel);
+  border: 1px solid var(--border2);
+  border-radius: 8px;
+  box-shadow: 0 6px 18px #0006;
+  color: var(--fg);
+  font-size: 12px;
+}
+.cm-tooltip-autocomplete {
+  border-radius: 8px;
+}
+.cm-tooltip-autocomplete > ul > li[aria-selected] {
+  background: var(--accent-2, color-mix(in srgb, var(--accent), transparent 84%));
+  color: var(--accent-1, var(--accent));
+}
+.cm-searchMatch {
+  background: color-mix(in srgb, var(--accent), transparent 85%);
+  border-radius: 2px;
+}
+.cm-searchMatch-selected {
+  background: color-mix(in srgb, var(--accent), transparent 65%);
+}
+.cm-searchMatch-selected span {
+  background: color-mix(in srgb, var(--accent), transparent 55%);
 }
 .mobile-nav-status {
   display: block;
