@@ -801,6 +801,7 @@
     file.saving = true;
     file.error = "";
     render();
+    if (typeof showBlocking === "function") showBlocking("Saving file...");
     try {
       const result = await api("/api/file-browser/file", {
         method: "POST",
@@ -816,6 +817,7 @@
     }
     file.saving = false;
     render();
+    if (typeof hideBlocking === "function") hideBlocking();
   }
 
   function fileName(path) {
@@ -863,26 +865,36 @@
     const nextName = prompt("Rename to", fileName(path));
     if (!nextName || nextName === fileName(path)) return;
     if (!confirm(`Rename ${path} to ${nextName}?`)) return;
-    await api("/api/file-browser/rename", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ cwd: state.cwd, path, new_name: nextName }),
-    });
-    const parent = Tree.parentPath(path);
-    const to = parent ? `${parent}/${nextName}` : nextName;
-    mutateTreeForRename(path, to, nextName);
-    await refreshParentAfterMutation(to);
+    if (typeof showBlocking === "function") showBlocking("Renaming...");
+    try {
+      await api("/api/file-browser/rename", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ cwd: state.cwd, path, new_name: nextName }),
+      });
+      const parent = Tree.parentPath(path);
+      const to = parent ? `${parent}/${nextName}` : nextName;
+      mutateTreeForRename(path, to, nextName);
+      await refreshParentAfterMutation(to);
+    } finally {
+      if (typeof hideBlocking === "function") hideBlocking();
+    }
   }
 
   async function deletePath(path) {
     if (!confirm(`Delete ${path}? This cannot be undone.`)) return;
-    await api("/api/file-browser/delete", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ cwd: state.cwd, path }),
-    });
-    mutateTreeForDelete(path);
-    await refreshParentAfterMutation(path);
+    if (typeof showBlocking === "function") showBlocking("Deleting...");
+    try {
+      await api("/api/file-browser/delete", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ cwd: state.cwd, path }),
+      });
+      mutateTreeForDelete(path);
+      await refreshParentAfterMutation(path);
+    } finally {
+      if (typeof hideBlocking === "function") hideBlocking();
+    }
   }
 
   async function copyPermalink(path) {

@@ -885,6 +885,7 @@
     view.mutating = true;
     view.mutatingLabel = label || "";
     if (state.visible) render();
+    if (typeof showBlocking === "function") showBlocking(label || "Working...");
     try {
       await api(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
       await refresh();
@@ -895,6 +896,7 @@
       view.mutating = false;
       view.mutatingLabel = "";
       if (state.visible) render();
+      if (typeof hideBlocking === "function") hideBlocking();
     }
   }
 
@@ -904,6 +906,7 @@
     view.mutating = true;
     view.mutatingLabel = label || "";
     if (state.visible) render();
+    if (typeof showBlocking === "function") showBlocking(label || "Working...");
     try {
       const result = await api(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
       await refresh();
@@ -916,6 +919,7 @@
       view.mutating = false;
       view.mutatingLabel = "";
       if (state.visible) render();
+      if (typeof hideBlocking === "function") hideBlocking();
     }
   }
 
@@ -3013,6 +3017,7 @@
       editor.saving = true;
       editor.error = "";
       render();
+      if (typeof showBlocking === "function") showBlocking("Saving file...");
       try {
         await api("/api/git-ui/file", {
           method: "POST",
@@ -3025,6 +3030,8 @@
         editor.saving = false;
         editor.error = err.message || String(err);
         render();
+      } finally {
+        if (typeof hideBlocking === "function") hideBlocking();
       }
     },
     resolveEditorConflictBlock(hunkIndex, blockIndex, mode) {
@@ -3272,23 +3279,28 @@
       view.cleanupLoading = true;
       view.cleanupError = "";
       render();
+      if (typeof showBlocking === "function") showBlocking("Deleting items...");
       const failures = [];
-      for (const item of items) {
-        try {
-          await deleteCleanupItem(item, false);
-        } catch (err) {
-          if (!cleanupForceRetryLikelyNeeded(err)) {
-            failures.push(`${cleanupItemLabel(item)}: ${(err && err.message) || err}`);
-            continue;
-          }
+      try {
+        for (const item of items) {
           try {
-            await deleteCleanupItem(item, true);
-          } catch (forceErr) {
-            failures.push(`${cleanupItemLabel(item)}: ${(forceErr && forceErr.message) || forceErr || err}`);
+            await deleteCleanupItem(item, false);
+          } catch (err) {
+            if (!cleanupForceRetryLikelyNeeded(err)) {
+              failures.push(`${cleanupItemLabel(item)}: ${(err && err.message) || err}`);
+              continue;
+            }
+            try {
+              await deleteCleanupItem(item, true);
+            } catch (forceErr) {
+              failures.push(`${cleanupItemLabel(item)}: ${(forceErr && forceErr.message) || forceErr || err}`);
+            }
           }
         }
+      } finally {
+        view.cleanupLoading = false;
+        if (typeof hideBlocking === "function") hideBlocking();
       }
-      view.cleanupLoading = false;
       if (failures.length) view.cleanupError = failures.join("\n");
       await this.scanCleanup();
       if (failures.length) {
@@ -3307,6 +3319,7 @@
       view.cleanupLoading = true;
       view.cleanupError = "";
       render();
+      if (typeof showBlocking === "function") showBlocking("Deleting branch...");
       try {
         await api("/api/git-ui/branch-delete", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ cwd: repo.path, branch, force, confirmed: true }) });
         await this.scanCleanup();
@@ -3317,6 +3330,7 @@
         const latest = active();
         if (latest) latest.cleanupLoading = false;
         render();
+        if (typeof hideBlocking === "function") hideBlocking();
       }
     },
     async deleteCleanupWorktree(repoIndex, worktreeIndex, force) {
@@ -3329,6 +3343,7 @@
       view.cleanupLoading = true;
       view.cleanupError = "";
       render();
+      if (typeof showBlocking === "function") showBlocking("Removing worktree...");
       try {
         await api("/api/git-ui/worktree-remove", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ cwd: repo.path, path: worktree.path, force, confirmed: true }) });
         await this.scanCleanup();
@@ -3339,6 +3354,7 @@
         const latest = active();
         if (latest) latest.cleanupLoading = false;
         render();
+        if (typeof hideBlocking === "function") hideBlocking();
       }
     },
     saveDraft() {

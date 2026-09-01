@@ -529,4 +529,85 @@ mod tests {
         assert_eq!(content_type(&icon_trash_svg().await), svg);
         assert_eq!(content_type(&icon_search_svg().await), svg);
     }
+
+    #[test]
+    fn app_html_contains_blocking_overlay() {
+        assert!(APP_HTML.contains(r#"id="blockingOverlay""#));
+        assert!(APP_HTML.contains(r#"class="blocking-overlay""#));
+        assert!(APP_HTML.contains(r#"id="blockingOverlayLabel""#));
+    }
+
+    #[test]
+    fn desktop_css_contains_blocking_overlay_styles() {
+        assert!(DESKTOP_CSS.contains(".blocking-overlay"));
+        assert!(DESKTOP_CSS.contains("z-index: 1300"));
+    }
+
+    #[test]
+    fn desktop_js_defines_blocking_functions() {
+        assert!(DESKTOP_JS.contains("function showBlocking("));
+        assert!(DESKTOP_JS.contains("function hideBlocking("));
+        assert!(DESKTOP_JS.contains("function resetBlocking("));
+        assert!(DESKTOP_JS.contains("window.showBlocking"));
+        assert!(DESKTOP_JS.contains("window.hideBlocking"));
+        assert!(DESKTOP_JS.contains("window.resetBlocking"));
+        assert!(DESKTOP_JS.contains("unhandledrejection"));
+        assert!(DESKTOP_JS.contains("blockingOverlayDepth"));
+    }
+
+    #[test]
+    fn desktop_js_wraps_actions_with_blocking() {
+        // Worktree actions
+        assert!(DESKTOP_JS.contains(r#"showBlocking("Creating worktree"#));
+        assert!(DESKTOP_JS.contains(r#"showBlocking("Opening worktree"#));
+        assert!(DESKTOP_JS.contains(r#"showBlocking("Removing worktree"#));
+        assert!(DESKTOP_JS.contains(r#"showBlocking("Closing workspace"#));
+        assert!(DESKTOP_JS.contains(r#"showBlocking("Creating panel"#));
+        assert!(DESKTOP_JS.contains(r#"showBlocking("Closing panel"#));
+
+        // Session/settings actions
+        assert!(DESKTOP_JS.contains(r#"showBlocking("Launching session"#));
+        assert!(DESKTOP_JS.contains(r#"showBlocking("Closing session"#));
+        assert!(DESKTOP_JS.contains(r#"showBlocking("Saving settings"#));
+
+        // Workspace create
+        assert!(DESKTOP_JS.contains(r#"showBlocking("Creating workspace"#));
+
+        // catch-block hideBlocking before confirmation dialogs
+        assert!(DESKTOP_JS.contains("confirmForceWorktreeRemove"));
+        assert!(DESKTOP_JS.contains("confirmContinueWithoutPull"));
+    }
+
+    #[test]
+    fn git_ui_js_wraps_actions_with_blocking() {
+        assert!(DESKTOP_GIT_UI_JS.contains("showBlocking"));
+        assert!(DESKTOP_GIT_UI_JS.contains("hideBlocking"));
+        assert!(DESKTOP_GIT_UI_JS.contains(r#"showBlocking("Saving file"#));
+        assert!(DESKTOP_GIT_UI_JS.contains(r#"showBlocking("Deleting"#));
+        assert!(DESKTOP_GIT_UI_JS.contains(r#"showBlocking("Removing worktree"#));
+        // Defensive guards for test compatibility
+        assert!(DESKTOP_GIT_UI_JS.contains(r#"typeof showBlocking === "function""#));
+        assert!(DESKTOP_GIT_UI_JS.contains(r#"typeof hideBlocking === "function""#));
+    }
+
+    #[test]
+    fn file_browser_js_wraps_actions_with_blocking() {
+        assert!(DESKTOP_FILE_BROWSER_JS.contains("showBlocking"));
+        assert!(DESKTOP_FILE_BROWSER_JS.contains("hideBlocking"));
+        assert!(DESKTOP_FILE_BROWSER_JS.contains(r#"showBlocking("Saving file"#));
+        assert!(DESKTOP_FILE_BROWSER_JS.contains(r#"showBlocking("Renaming"#));
+        assert!(DESKTOP_FILE_BROWSER_JS.contains(r#"showBlocking("Deleting"#));
+        // Defensive guards for test compatibility
+        assert!(DESKTOP_FILE_BROWSER_JS.contains(r#"typeof showBlocking === "function""#));
+        assert!(DESKTOP_FILE_BROWSER_JS.contains(r#"typeof hideBlocking === "function""#));
+    }
+
+    #[test]
+    fn modals_css_has_blocking_overlay_above_modals() {
+        // The blocking overlay must sit above the question modal (z-index 1100)
+        // and the command palette (z-index 1200) to prevent interaction.
+        assert!(DESKTOP_CSS.contains("z-index: 1300"));
+        assert!(DESKTOP_CSS.contains(".blocking-overlay"));
+        assert!(DESKTOP_CSS.contains("blocking-overlay-label"));
+    }
 }

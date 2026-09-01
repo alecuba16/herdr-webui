@@ -799,6 +799,16 @@ describe("desktop file browser editor integration", () => {
       this.parentNode = null;
       this.className = "";
       this.style = {};
+      this.classList = {
+        _classes: new Set(),
+        add(...tokens) { for (const t of tokens) this._classes.add(t); },
+        remove(...tokens) { for (const t of tokens) this._classes.delete(t); },
+        contains(token) { return this._classes.has(token); },
+        toggle(token, force) {
+          if (force === true || (force === undefined && !this._classes.has(token))) this._classes.add(token);
+          else this._classes.delete(token);
+        },
+      };
       this.scrollTop = 0;
       this.value = "";
       this._id = "";
