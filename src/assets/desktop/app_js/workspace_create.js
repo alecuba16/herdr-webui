@@ -41,6 +41,7 @@ async function createWorkspaceFromModal() {
     return;
   }
   submit.disabled = true;
+  showBlocking("Creating workspace...");
   try {
     const r = await api("/api/workspaces", {
       method: "POST",
@@ -54,6 +55,7 @@ async function createWorkspaceFromModal() {
     err.textContent = ex.message || String(ex);
   } finally {
     submit.disabled = false;
+    hideBlocking();
   }
 }
 el("workspaceCreateClose").onclick = closeWorkspaceCreateModal;

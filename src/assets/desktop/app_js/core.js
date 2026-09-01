@@ -142,6 +142,33 @@ const FAST_REFRESH_EVENTS = new Set([
   "worktree.removed",
 ]);
 let sidebarCollapsed = storedFlag(SIDEBAR_COLLAPSED_KEY);
+let blockingOverlayDepth = 0;
+function showBlocking(message) {
+  const overlay = document.getElementById("blockingOverlay");
+  if (!overlay) return;
+  const label = document.getElementById("blockingOverlayLabel");
+  if (label) label.textContent = message || "Working...";
+  blockingOverlayDepth = Math.max(0, blockingOverlayDepth) + 1;
+  overlay.classList.add("show");
+  overlay.setAttribute("aria-hidden", "false");
+}
+function hideBlocking() {
+  blockingOverlayDepth = Math.max(0, blockingOverlayDepth - 1);
+  if (blockingOverlayDepth > 0) return;
+  const overlay = document.getElementById("blockingOverlay");
+  if (!overlay) return;
+  overlay.classList.remove("show");
+  overlay.setAttribute("aria-hidden", "true");
+}
+function resetBlocking() {
+  blockingOverlayDepth = 0;
+  const overlay = document.getElementById("blockingOverlay");
+  if (!overlay) return;
+  overlay.classList.remove("show");
+  overlay.setAttribute("aria-hidden", "true");
+}
+window.showBlocking = showBlocking;
+window.hideBlocking = hideBlocking;
 // Tracks the workspace id whose shell mode (terminal/git/files) was last
 // applied to the DOM. When refreshOnline finishes for a *different* workspace
 // than the one currently shown, the shell surfaces (terminal/git/file panels)
@@ -2316,6 +2343,7 @@ function hideSessionManager() {
 async function launchBackend(session = state.session, backend = currentSessionBackend()) {
   const textEl = el("sessionManagerText");
   if (textEl) textEl.textContent = `Launching ${sessionBackendLabel(backend)} session...`;
+  showBlocking("Launching session...");
   try {
     const r = await api("/api/session/launch", {
       method: "POST",
@@ -2331,10 +2359,13 @@ async function launchBackend(session = state.session, backend = currentSessionBa
     setTimeout(refresh, 1200);
   } catch (e) {
     if (textEl) textEl.textContent = e.message || String(e);
+  } finally {
+    hideBlocking();
   }
 }
 async function closeCurrentSession() {
   if (!confirm(`Close current ${sessionBackendLabel(currentSessionBackend())} session?`)) return;
+  showBlocking("Closing session...");
   try {
     await api("/api/session/close", {
       method: "POST",
@@ -2348,21 +2379,28 @@ async function closeCurrentSession() {
     setTimeout(refresh, 800);
   } catch (e) {
     showSessionManager("Close failed", e.message || String(e));
+  } finally {
+    hideBlocking();
   }
 }
 async function resetSession() {
   if (!confirm("Close all workspaces in this session?")) return;
-  for (const w of [...state.workspaces]) {
-    try {
-      await api(`/api/workspaces/${encodeURIComponent(w.workspace_id)}/close`, {
-        method: "POST",
-      });
-    } catch (e) {}
+  showBlocking("Closing workspaces...");
+  try {
+    for (const w of [...state.workspaces]) {
+      try {
+        await api(`/api/workspaces/${encodeURIComponent(w.workspace_id)}/close`, {
+          method: "POST",
+        });
+      } catch (e) {}
+    }
+    state.ws = null;
+    state.tab = null;
+    state.pane = null;
+    refresh();
+  } finally {
+    hideBlocking();
   }
-  state.ws = null;
-  state.tab = null;
-  state.pane = null;
-  refresh();
 }
 const statusClass = (s) => (s === "done" ? "done" : s || "unknown");
 function statusMark(status, withText = false) {
@@ -2473,6 +2511,7 @@ async function applyServerSettings() {
     return;
   }
   submit.disabled = true;
+  showBlocking("Saving settings...");
   try {
     const updatedSettings = await api("/api/server-settings", {
       method: "POST",
@@ -2500,6 +2539,7 @@ async function applyServerSettings() {
     if (err) err.textContent = ex.message || String(ex);
   } finally {
     submit.disabled = false;
+    hideBlocking();
   }
 }
 async function loadVersions() {
