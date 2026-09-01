@@ -489,7 +489,9 @@ async function submitWorktreeCreate(input) {
     );
   } catch (ex) {
     const message = ex.message || String(ex);
+    hideBlocking();
     if (pullBase && await confirmContinueWithoutPull(message)) {
+      showBlocking("Creating worktree...");
       await submitWorktreeCreate(Object.assign({}, input, { pullBase: false }));
       return;
     }
@@ -780,7 +782,9 @@ async function removeDiscoveredWorktree(index) {
     refresh();
   } catch (ex) {
     const message = ex.message || String(ex);
+    hideBlocking();
     if (await confirmForceWorktreeRemove(message)) {
+      showBlocking("Removing worktree...");
       await forceRemoveDiscoveredWorktree(row);
       await discoverWorktrees();
       refresh();
@@ -871,8 +875,10 @@ async function createDiscoveredWorktree() {
     );
   } catch (ex) {
     const message = ex.message || String(ex);
+    hideBlocking();
     if (pullBase && await confirmContinueWithoutPull(message)) {
       el("worktreeNewPullBase").checked = false;
+      showBlocking("Creating worktree...");
       await createDiscoveredWorktree();
       return;
     }
@@ -1012,7 +1018,9 @@ async function removeWorktree(id) {
       });
     } catch (ex) {
       const message = ex.message || String(ex);
+      hideBlocking();
       if (!(await confirmForceWorktreeRemove(message))) return;
+      showBlocking("Removing worktree...");
       await api(`/api/workspaces/${encodeURIComponent(id)}/worktree-remove`, {
         method: "POST",
         headers: { "content-type": "application/json" },
