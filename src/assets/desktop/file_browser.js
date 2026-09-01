@@ -701,7 +701,7 @@
     const history = `<button type="button" data-file-menu-action="history">Show history</button>`;
     const reload = `<button type="button" data-file-menu-action="reload">Reload</button>`;
     const copyPath = `<button type="button" data-file-menu-action="copyPathTab">Copy path</button>`;
-    const close = `<button type="button" data-file-menu-action="close">Close file</button>`;
+    const close = `<button type="button" class="danger" data-file-menu-action="close">Close file</button>`;
     return `<div class="git-ui-menu file-browser-menu" style="left:${Math.max(0, menu.x)}px;top:${Math.max(0, menu.y)}px" onclick="event.stopPropagation()">${labelHtml}${focus}${split}${find}${edit}${save}${history}${reload}${copyPath}${sep}${close}</div>`;
   }
 
