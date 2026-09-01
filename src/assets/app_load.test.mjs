@@ -3070,7 +3070,7 @@ describe("app bundle load", () => {
     match(gitLogSource, /name="git-log-filter-\$\{field\}"/);
     match(gitUiSource, /id="gitUiFileFilter"/);
     match(gitUiSource, /name="git-ui-file-filter"/);
-    match(source, /Show history opens Git log scoped to the selected file/);
+    match(source, /right-click a file tab for context menu actions/);
     match(source, /Committed files side preview/);
     ok(!gitLogSource.includes("Filter description"));
     match(gitLogSource, /git-ui-log-filter-spacer/);
