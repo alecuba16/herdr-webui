@@ -13,7 +13,7 @@ import { xml } from "@codemirror/lang-xml";
 import { yaml } from "@codemirror/lang-yaml";
 import { bracketMatching, foldGutter, foldKeymap, HighlightStyle, indentOnInput, syntaxHighlighting } from "@codemirror/language";
 import { EditorState } from "@codemirror/state";
-import { Decoration, drawSelection, dropCursor, EditorView, GutterMarker, gutter, highlightActiveLine, highlightSpecialChars, keymap, lineNumbers, rectangularSelection, ViewPlugin, WidgetType } from "@codemirror/view";
+import { Decoration, drawSelection, dropCursor, EditorView, GutterMarker, gutter, highlightActiveLine, highlightActiveLineGutter, highlightSpecialChars, keymap, lineNumbers, rectangularSelection, ViewPlugin, WidgetType } from "@codemirror/view";
 import { tags } from "@lezer/highlight";
 
 const theme = EditorView.theme({
@@ -290,6 +290,7 @@ function create(options) {
   ];
   if (opts.lineNumbers !== false) extensions.unshift(lineNumbers());
   extensions.push(highlightActiveLine());
+  extensions.push(highlightActiveLineGutter());
   const language = languageForPath(opts.path);
   if (language) extensions.push(language);
   if (opts.onChange) {
