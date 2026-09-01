@@ -885,7 +885,7 @@
     view.mutating = true;
     view.mutatingLabel = label || "";
     if (state.visible) render();
-    showBlocking(label || "Working...");
+    if (typeof showBlocking === "function") showBlocking(label || "Working...");
     try {
       await api(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
       await refresh();
@@ -896,7 +896,7 @@
       view.mutating = false;
       view.mutatingLabel = "";
       if (state.visible) render();
-      hideBlocking();
+      if (typeof hideBlocking === "function") hideBlocking();
     }
   }
 
@@ -906,7 +906,7 @@
     view.mutating = true;
     view.mutatingLabel = label || "";
     if (state.visible) render();
-    showBlocking(label || "Working...");
+    if (typeof showBlocking === "function") showBlocking(label || "Working...");
     try {
       const result = await api(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
       await refresh();
@@ -919,7 +919,7 @@
       view.mutating = false;
       view.mutatingLabel = "";
       if (state.visible) render();
-      hideBlocking();
+      if (typeof hideBlocking === "function") hideBlocking();
     }
   }
 
@@ -3017,7 +3017,7 @@
       editor.saving = true;
       editor.error = "";
       render();
-      showBlocking("Saving file...");
+      if (typeof showBlocking === "function") showBlocking("Saving file...");
       try {
         await api("/api/git-ui/file", {
           method: "POST",
@@ -3031,7 +3031,7 @@
         editor.error = err.message || String(err);
         render();
       } finally {
-        hideBlocking();
+        if (typeof hideBlocking === "function") hideBlocking();
       }
     },
     resolveEditorConflictBlock(hunkIndex, blockIndex, mode) {
@@ -3279,7 +3279,7 @@
       view.cleanupLoading = true;
       view.cleanupError = "";
       render();
-      showBlocking("Deleting items...");
+      if (typeof showBlocking === "function") showBlocking("Deleting items...");
       const failures = [];
       try {
         for (const item of items) {
@@ -3299,7 +3299,7 @@
         }
       } finally {
         view.cleanupLoading = false;
-        hideBlocking();
+        if (typeof hideBlocking === "function") hideBlocking();
       }
       if (failures.length) view.cleanupError = failures.join("\n");
       await this.scanCleanup();
@@ -3319,7 +3319,7 @@
       view.cleanupLoading = true;
       view.cleanupError = "";
       render();
-      showBlocking("Deleting branch...");
+      if (typeof showBlocking === "function") showBlocking("Deleting branch...");
       try {
         await api("/api/git-ui/branch-delete", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ cwd: repo.path, branch, force, confirmed: true }) });
         await this.scanCleanup();
@@ -3330,7 +3330,7 @@
         const latest = active();
         if (latest) latest.cleanupLoading = false;
         render();
-        hideBlocking();
+        if (typeof hideBlocking === "function") hideBlocking();
       }
     },
     async deleteCleanupWorktree(repoIndex, worktreeIndex, force) {
@@ -3343,7 +3343,7 @@
       view.cleanupLoading = true;
       view.cleanupError = "";
       render();
-      showBlocking("Removing worktree...");
+      if (typeof showBlocking === "function") showBlocking("Removing worktree...");
       try {
         await api("/api/git-ui/worktree-remove", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ cwd: repo.path, path: worktree.path, force, confirmed: true }) });
         await this.scanCleanup();
@@ -3354,7 +3354,7 @@
         const latest = active();
         if (latest) latest.cleanupLoading = false;
         render();
-        hideBlocking();
+        if (typeof hideBlocking === "function") hideBlocking();
       }
     },
     saveDraft() {

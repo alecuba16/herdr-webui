@@ -801,7 +801,7 @@
     file.saving = true;
     file.error = "";
     render();
-    showBlocking("Saving file...");
+    if (typeof showBlocking === "function") showBlocking("Saving file...");
     try {
       const result = await api("/api/file-browser/file", {
         method: "POST",
@@ -817,7 +817,7 @@
     }
     file.saving = false;
     render();
-    hideBlocking();
+    if (typeof hideBlocking === "function") hideBlocking();
   }
 
   function fileName(path) {
@@ -865,7 +865,7 @@
     const nextName = prompt("Rename to", fileName(path));
     if (!nextName || nextName === fileName(path)) return;
     if (!confirm(`Rename ${path} to ${nextName}?`)) return;
-    showBlocking("Renaming...");
+    if (typeof showBlocking === "function") showBlocking("Renaming...");
     try {
       await api("/api/file-browser/rename", {
         method: "POST",
@@ -877,13 +877,13 @@
       mutateTreeForRename(path, to, nextName);
       await refreshParentAfterMutation(to);
     } finally {
-      hideBlocking();
+      if (typeof hideBlocking === "function") hideBlocking();
     }
   }
 
   async function deletePath(path) {
     if (!confirm(`Delete ${path}? This cannot be undone.`)) return;
-    showBlocking("Deleting...");
+    if (typeof showBlocking === "function") showBlocking("Deleting...");
     try {
       await api("/api/file-browser/delete", {
         method: "POST",
@@ -893,7 +893,7 @@
       mutateTreeForDelete(path);
       await refreshParentAfterMutation(path);
     } finally {
-      hideBlocking();
+      if (typeof hideBlocking === "function") hideBlocking();
     }
   }
 
