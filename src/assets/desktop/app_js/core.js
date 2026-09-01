@@ -169,6 +169,8 @@ function resetBlocking() {
 }
 window.showBlocking = showBlocking;
 window.hideBlocking = hideBlocking;
+window.resetBlocking = resetBlocking;
+window.addEventListener("unhandledrejection", () => resetBlocking());
 // Tracks the workspace id whose shell mode (terminal/git/files) was last
 // applied to the DOM. When refreshOnline finishes for a *different* workspace
 // than the one currently shown, the shell surfaces (terminal/git/file panels)
