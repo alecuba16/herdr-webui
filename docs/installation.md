@@ -10,7 +10,8 @@ Compatibility:
 
 | WebUI | Herdr | Protocol | Status | Notes |
 | --- | --- | --- | --- | --- |
-| `0.2.91` | `0.8.0` | `20` with `18` and `16` fallback | Current | Syncs to Herdr v0.8.0 protocol 20. Terminal attach retries protocols 20, 18, and 16 in descending order for compatible older servers. Adds Claurst and Qwen agent detection. Adds markdown preview with Mermaid support. Adds jcode detection variant support (vanilla + alecuba16 fork). |
+| `0.2.96` | `0.8.0` | `20` with `18` and `16` fallback | Current | Adds Zed-like CodeMirror editor enhancements (fold gutter, active line highlighting, bracket matching, accent cursor/selection). Adds accent-colored file tabs with right-click context menu (Focus, Split, Find, Edit, Save, History, Reload, Copy path, Close). Adds mobile CSS parity for all editor enhancements. |
+| `0.2.91` | `0.8.0` | `20` with `18` and `16` fallback | Superseded | Syncs to Herdr v0.8.0 protocol 20. Terminal attach retries protocols 20, 18, and 16 in descending order for compatible older servers. Adds Claurst and Qwen agent detection. Adds markdown preview with Mermaid support. Adds jcode detection variant support (vanilla + alecuba16 fork). |
 | `0.2.87` | `0.7.5+` | `18` with `17` and `16` fallback | Superseded | Bumps wire protocol 16 to 18 for Herdr 0.7.5+ compatibility. Raises minimum supported protocol from 14 to 16. Adds KittyKeyboardReportAll server message variant. |
 | `0.2.84` | `0.7.3` | `16` with `15` and `14` fallback | Superseded | CPU optimization: 500ms throttling on agent status detection, cached pane presentation, event-driven no-sync for agent status changes, removed auto-theme polling. |
 | `0.2.80` | `0.7.3` | `16` with `15` and `14` fallback | Superseded | Replaces xterm.js with wterm terminal renderer adapter. Adds Settings-backed renderer selection between wterm and Ghostty. Adds terminal mouse reporting opt-in. Adds in-diff Git hunk editing for both side-by-side and unified layouts. |
