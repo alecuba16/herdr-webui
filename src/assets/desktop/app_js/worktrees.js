@@ -471,6 +471,7 @@ async function submitWorktreeCreate(input) {
   }
   submitEl.disabled = true;
   setCreateWorktreeLoading(true, "Creating worktree...");
+  showBlocking("Creating worktree...");
   try {
     const r = await api("/api/worktrees", {
       method: "POST",
@@ -488,7 +489,9 @@ async function submitWorktreeCreate(input) {
     );
   } catch (ex) {
     const message = ex.message || String(ex);
+    hideBlocking();
     if (pullBase && await confirmContinueWithoutPull(message)) {
+      showBlocking("Creating worktree...");
       await submitWorktreeCreate(Object.assign({}, input, { pullBase: false }));
       return;
     }
@@ -496,6 +499,7 @@ async function submitWorktreeCreate(input) {
   } finally {
     submitEl.disabled = false;
     setCreateWorktreeLoading(false);
+    hideBlocking();
   }
 }
 function pullFastForwardFailed(message) {
@@ -695,6 +699,7 @@ async function createWorkspaceFromSmartModal() {
   }
   submit.disabled = true;
   setWorktreeLoading(true, "Opening workspace...");
+  showBlocking("Opening workspace...");
   try {
     const r = await api("/api/workspaces", {
       method: "POST",
@@ -708,6 +713,7 @@ async function createWorkspaceFromSmartModal() {
   } finally {
     submit.disabled = false;
     setWorktreeLoading(false);
+    hideBlocking();
   }
 }
 async function openDiscoveredWorktree(index) {
@@ -716,6 +722,7 @@ async function openDiscoveredWorktree(index) {
   const err = el("worktreeOpenError");
   err.textContent = "";
   setOpenWorktreeOperation("open", index, "Opening worktree...");
+  showBlocking("Opening worktree...");
   try {
     const r = await api("/api/worktrees/open", {
       method: "POST",
@@ -738,6 +745,7 @@ async function openDiscoveredWorktree(index) {
     err.textContent = ex.message || String(ex);
   } finally {
     setOpenWorktreeOperation("", null);
+    hideBlocking();
   }
 }
 async function removeDiscoveredWorktree(index) {
@@ -753,6 +761,7 @@ async function removeDiscoveredWorktree(index) {
   const err = el("worktreeOpenError");
   err.textContent = "";
   setOpenWorktreeOperation("remove", index, "Removing worktree...");
+  showBlocking("Removing worktree...");
   try {
     if (row.open_workspace_id)
       await api(
@@ -773,7 +782,9 @@ async function removeDiscoveredWorktree(index) {
     refresh();
   } catch (ex) {
     const message = ex.message || String(ex);
+    hideBlocking();
     if (await confirmForceWorktreeRemove(message)) {
+      showBlocking("Removing worktree...");
       await forceRemoveDiscoveredWorktree(row);
       await discoverWorktrees();
       refresh();
@@ -782,6 +793,7 @@ async function removeDiscoveredWorktree(index) {
     err.textContent = message;
   } finally {
     setOpenWorktreeOperation("", null);
+    hideBlocking();
   }
 }
 async function confirmForceWorktreeRemove(message) {
@@ -830,6 +842,7 @@ async function createDiscoveredWorktree() {
   }
   submit.disabled = true;
   setOpenWorktreeOperation("create", null, "Creating worktree...");
+  showBlocking("Creating worktree...");
   try {
     if (sourcePath && !state.openWorktreeSource) await discoverWorktrees();
     const checkedOut = checkedOutWorktreeForBranch(branch);
@@ -862,8 +875,10 @@ async function createDiscoveredWorktree() {
     );
   } catch (ex) {
     const message = ex.message || String(ex);
+    hideBlocking();
     if (pullBase && await confirmContinueWithoutPull(message)) {
       el("worktreeNewPullBase").checked = false;
+      showBlocking("Creating worktree...");
       await createDiscoveredWorktree();
       return;
     }
@@ -871,6 +886,7 @@ async function createDiscoveredWorktree() {
   } finally {
     submit.disabled = false;
     setOpenWorktreeOperation("", null);
+    hideBlocking();
   }
 }
 async function closeWorkspace(id) {
@@ -901,25 +917,30 @@ async function closeWorkspace(id) {
       if (linkedToReopen.length)
         msg += `\n\nThis will close ${linkedToReopen.length} linked worktree(s) and stop their processes. They will be re-opened with fresh shells.`;
       if (!(await askQuestion({ title: "Close workspace?", message: msg, confirmText: "Close", danger: true }))) return;
-      await api(`/api/workspaces/${encodeURIComponent(id)}/close`, {
-        method: "POST",
-      });
-      if (state.ws === id) {
-        state.ws = null;
-        state.tab = null;
-        state.pane = null;
+      showBlocking("Closing workspace...");
+      try {
+        await api(`/api/workspaces/${encodeURIComponent(id)}/close`, {
+          method: "POST",
+        });
+        if (state.ws === id) {
+          state.ws = null;
+          state.tab = null;
+          state.pane = null;
+        }
+        await refresh();
+        for (const wt of linkedToReopen) {
+          try {
+            await api("/api/worktrees/open", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ path: wt.path, label: wt.label }),
+            });
+          } catch (e) {}
+        }
+        refresh();
+      } finally {
+        hideBlocking();
       }
-      await refresh();
-      for (const wt of linkedToReopen) {
-        try {
-          await api("/api/worktrees/open", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ path: wt.path, label: wt.label }),
-          });
-        } catch (e) {}
-      }
-      refresh();
       return;
     }
     if (!(await askQuestion({
@@ -929,8 +950,13 @@ async function closeWorkspace(id) {
       danger: true,
     })))
       return;
-    await closeWorkspaceById(id);
-    refresh();
+    showBlocking("Closing workspace...");
+    try {
+      await closeWorkspaceById(id);
+      refresh();
+    } finally {
+      hideBlocking();
+    }
     return;
   }
   if (!(await askQuestion({
@@ -939,8 +965,13 @@ async function closeWorkspace(id) {
     confirmText: "Close",
     danger: true,
   }))) return;
-  await closeWorkspaceById(id);
-  refresh();
+  showBlocking("Closing workspace...");
+  try {
+    await closeWorkspaceById(id);
+    refresh();
+  } finally {
+    hideBlocking();
+  }
 }
 function tabsForWorkspace(id) {
   return state.allTabs
@@ -979,35 +1010,47 @@ async function removeWorktree(id) {
     danger: true,
   })))
     return;
+  showBlocking("Removing worktree...");
   try {
-    await api(`/api/workspaces/${encodeURIComponent(id)}/worktree-remove`, {
-      method: "POST",
-    });
-  } catch (ex) {
-    const message = ex.message || String(ex);
-    if (!(await confirmForceWorktreeRemove(message))) return;
-    await api(`/api/workspaces/${encodeURIComponent(id)}/worktree-remove`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ force: true }),
-    });
+    try {
+      await api(`/api/workspaces/${encodeURIComponent(id)}/worktree-remove`, {
+        method: "POST",
+      });
+    } catch (ex) {
+      const message = ex.message || String(ex);
+      hideBlocking();
+      if (!(await confirmForceWorktreeRemove(message))) return;
+      showBlocking("Removing worktree...");
+      await api(`/api/workspaces/${encodeURIComponent(id)}/worktree-remove`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ force: true }),
+      });
+    }
+    if (state.ws === id) {
+      state.ws = null;
+      state.tab = null;
+      state.pane = null;
+    }
+    refresh();
+  } finally {
+    hideBlocking();
   }
-  if (state.ws === id) {
-    state.ws = null;
-    state.tab = null;
-    state.pane = null;
-  }
-  refresh();
 }
 async function newTab() {
   if (!state.ws) return;
-  const r = await api("/api/tabs", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ workspace_id: state.ws }),
-  });
-  const tab = r.result.tab.tab_id;
-  go(state.ws, tab);
+  showBlocking("Creating panel...");
+  try {
+    const r = await api("/api/tabs", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ workspace_id: state.ws }),
+    });
+    const tab = r.result.tab.tab_id;
+    go(state.ws, tab);
+  } finally {
+    hideBlocking();
+  }
 }
 function startWorkspaceRename(id, label) {
   state.editingWorkspace = id;
@@ -1080,28 +1123,33 @@ async function closeTab(id) {
   const tab = state.allTabs.concat(state.tabs).find((t) => t.tab_id === id),
     workspaceId = tab && tab.workspace_id,
     workspaceTabs = workspaceId ? tabsForWorkspace(workspaceId) : [];
-  if (workspaceTabs.length > 1) {
-    await api(`/api/tabs/${encodeURIComponent(id)}/close`, { method: "POST" });
-  } else if (workspaceId) {
-    // Close the tab; built-in backend auto-closes the empty workspace.
-    // External backends may keep it, so also close the workspace explicitly.
-    await api(`/api/tabs/${encodeURIComponent(id)}/close`, { method: "POST" });
-    await closeWorkspaceById(workspaceId);
-  } else {
-    const panes = panesForTab(id);
-    if (panes.length) await closePaneById(panes[0].pane_id);
+  showBlocking("Closing panel...");
+  try {
+    if (workspaceTabs.length > 1) {
+      await api(`/api/tabs/${encodeURIComponent(id)}/close`, { method: "POST" });
+    } else if (workspaceId) {
+      // Close the tab; built-in backend auto-closes the empty workspace.
+      // External backends may keep it, so also close the workspace explicitly.
+      await api(`/api/tabs/${encodeURIComponent(id)}/close`, { method: "POST" });
+      await closeWorkspaceById(workspaceId);
+    } else {
+      const panes = panesForTab(id);
+      if (panes.length) await closePaneById(panes[0].pane_id);
+    }
+    if (typeof removeClosedTabFromState === "function") removeClosedTabFromState(id);
+    if (state.tab === id && typeof selectFallbackTabAfterClosed === "function") {
+      resetTerminalConnection(true);
+      selectFallbackTabAfterClosed(id);
+      replaceSelectionHistory();
+      render();
+      if (window.HerdrTerminalRenderer) connectTerminal();
+    } else if (state.tab === id) {
+      state.tab = null;
+      state.pane = null;
+      render();
+    }
+    refresh();
+  } finally {
+    hideBlocking();
   }
-  if (typeof removeClosedTabFromState === "function") removeClosedTabFromState(id);
-  if (state.tab === id && typeof selectFallbackTabAfterClosed === "function") {
-    resetTerminalConnection(true);
-    selectFallbackTabAfterClosed(id);
-    replaceSelectionHistory();
-    render();
-    if (window.HerdrTerminalRenderer) connectTerminal();
-  } else if (state.tab === id) {
-    state.tab = null;
-    state.pane = null;
-    render();
-  }
-  refresh();
 }

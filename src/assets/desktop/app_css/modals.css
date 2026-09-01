@@ -143,6 +143,47 @@
   background: var(--border);
 }
 
+/* Global blocking overlay for async actions */
+.blocking-overlay {
+  position: fixed;
+  inset: 0;
+  display: none;
+  place-items: center;
+  background: #0006;
+  z-index: 1300;
+}
+
+.blocking-overlay.show {
+  display: grid;
+}
+
+.blocking-overlay-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--panel);
+  border: 1px solid var(--border2);
+  border-radius: 12px;
+  padding: 16px 24px;
+  box-shadow: 0 14px 40px #000a;
+}
+
+.blocking-overlay-spinner {
+  width: 20px;
+  height: 20px;
+  border: 2.5px solid var(--border2);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+
+.blocking-overlay-label {
+  color: var(--fg);
+  font-size: 14px;
+  font-weight: 500;
+}
+
 /* Ephemeral temporary terminal overlay */
 .temp-terminal-backdrop {
   position: fixed;

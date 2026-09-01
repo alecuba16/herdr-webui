@@ -31,6 +31,9 @@ jobs:
       - name: Check
         run: cargo check --target-dir target
 
+      - name: JS tests
+        run: node --test src/assets/*.test.mjs
+
       - name: Test
         run: cargo test --target-dir target
 

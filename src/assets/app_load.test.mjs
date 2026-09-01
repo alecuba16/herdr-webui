@@ -9,6 +9,7 @@ function element(id = "") {
     id,
     classList: {
       add() {},
+      remove() {},
       contains() {
         return false;
       },
