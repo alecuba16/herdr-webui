@@ -632,6 +632,7 @@
           links: true,
           scrollback: 5000,
           onData: function (data) { sendInput(data); },
+          onWheelMouseReport: function (report) { sendInput(report, { allowMouseReports: true }); },
         }).then(function (created) {
           term = created;
           bindTerminalScrollEvents(containerEl);
@@ -780,9 +781,10 @@
         }
       }
 
-      function sendInput(data) {
+      function sendInput(data, inputOptions) {
+        inputOptions = inputOptions || {};
         if (!termWs || termWs.readyState !== 1 || !data) return;
-        if (globalThis.HerdrAppHelpers && globalThis.HerdrAppHelpers.stripTerminalMouseReports)
+        if (!inputOptions.allowMouseReports && globalThis.HerdrAppHelpers && globalThis.HerdrAppHelpers.stripTerminalMouseReports)
           data = globalThis.HerdrAppHelpers.stripTerminalMouseReports(data, terminalMouseReportingEnabled());
         if (globalThis.HerdrAppHelpers && globalThis.HerdrAppHelpers.stripTerminalQueryReplies)
           data = globalThis.HerdrAppHelpers.stripTerminalQueryReplies(data, terminalQueryReplyState);
@@ -822,6 +824,8 @@
         var termEl = term.element;
         termEl.addEventListener("wheel", function (event) {
           if (event.ctrlKey || event.metaKey || !term) return;
+          // Alt screen + mouse tracking: the adapter already forwarded the wheel
+          // as SGR mouse reports, so local scrollback scrolling must not happen.
           if (term.usesNormalBuffer && !term.usesNormalBuffer()) return;
           event.preventDefault();
           var rowH = term.rowHeight ? term.rowHeight() : 17;

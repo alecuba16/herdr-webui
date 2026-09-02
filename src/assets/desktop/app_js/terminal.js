@@ -94,6 +94,7 @@ async function connectTerminal() {
         links: options.terminalLinks !== false,
         scrollback: 10000,
         onData: sendInputData,
+        onWheelMouseReport: (report) => sendInputData(report, { allowMouseReports: true }),
       });
     } catch (e) {
       setTerminalLoading(false);
@@ -420,6 +421,10 @@ function sendBackendTail() {
 }
 function handleTerminalWheel(e) {
   if (e.ctrlKey || e.metaKey) return;
+  // Builtin + alt screen: the shared adapter owns wheel behavior there (SGR
+  // mouse forwarding when the program tracks the mouse), so never consume.
+  // External backends still scroll through their server-side buffer.
+  if (state.backendMode === "builtin" && !terminalUsesNormalBuffer()) return;
   const lines = terminalWheelLines(e);
   if (!lines) {
     e.preventDefault();
@@ -586,7 +591,7 @@ async function pasteClipboard() {
 }
 function sendInputData(data, inputOptions = {}) {
   if (!termWs || termWs.readyState !== 1 || !data) return;
-  if (globalThis.HerdrAppHelpers && globalThis.HerdrAppHelpers.stripTerminalMouseReports)
+  if (!inputOptions.allowMouseReports && globalThis.HerdrAppHelpers && globalThis.HerdrAppHelpers.stripTerminalMouseReports)
     data = globalThis.HerdrAppHelpers.stripTerminalMouseReports(data, options.terminalMouseReporting === true);
   if (!inputOptions.allowTerminalReplies && globalThis.HerdrAppHelpers && globalThis.HerdrAppHelpers.stripTerminalQueryReplies)
     data = globalThis.HerdrAppHelpers.stripTerminalQueryReplies(data, terminalQueryReplyState);
