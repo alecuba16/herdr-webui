@@ -1,5 +1,20 @@
 # Release notes
 
+## 0.2.97 Release Notes
+
+### Alt-screen mouse wheel scrolling
+
+- Forwards mouse wheel events as SGR mouse reports when the terminal is on the alt screen with mouse tracking enabled, so TUIs like jcode that use mouse mode (DECSET 1000;1006) scroll correctly inside the builtin backend.
+- The shared `HerdrWtermAdapter` sniffs output for private-mode mouse tracking sequences (both string and binary frames, with a carry buffer for split writes) and emits one SGR wheel report per wheel event, matching xterm.js semantics.
+- Wheel reports are sent via a dedicated input path that bypasses `stripTerminalMouseReports`, so the default keyboard/paste path still strips mouse reports for safety.
+- Desktop, mobile, and temporary terminal clients pass an `onWheelMouseReport` callback to the adapter. External backends keep their existing server-side scroll path unchanged.
+- Removes the parallel `{type:"scroll"}` WebSocket protocol and the Rust `sgr_scroll_reports` handler from the previous split approach.
+- Pointer cell tracking clamps to grid bounds; adapter cleans up listeners on `destroy()`.
+
+### Dependency updates
+
+- Bumps `interprocess`, `rcgen`, `tokio-tungstenite`, and `futures-util` to their latest patch versions.
+
 ## 0.2.96 Release Notes
 
 ### Zed-like editor enhancements
