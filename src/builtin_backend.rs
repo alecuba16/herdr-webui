@@ -6191,4 +6191,24 @@ mod tests {
         let out = sgr_scroll_reports(&AttachScrollDirection::Down, 1, None, None, 100, 30);
         assert_eq!(out, b"\x1b[<65;50;15M");
     }
+
+    #[test]
+    fn sgr_scroll_reports_clamps_zero_lines_to_one() {
+        let out = sgr_scroll_reports(&AttachScrollDirection::Down, 0, None, None, 80, 24);
+        assert_eq!(out, b"\x1b[<65;40;12M");
+    }
+
+    #[test]
+    fn sgr_scroll_reports_down_multiple_lines() {
+        let out = sgr_scroll_reports(&AttachScrollDirection::Down, 2, Some(20), Some(10), 80, 24);
+        assert_eq!(out, b"\x1b[<65;20;10M\x1b[<65;20;10M");
+    }
+
+    #[test]
+    fn sgr_scroll_reports_clamps_default_position_to_one() {
+        // cols=0 and rows=0 would make cols/2 = 0 and rows/2 = 0; max(1) ensures
+        // the SGR coordinates are at least 1 (1-based).
+        let out = sgr_scroll_reports(&AttachScrollDirection::Up, 1, None, None, 0, 0);
+        assert_eq!(out, b"\x1b[<64;1;1M");
+    }
 }

@@ -2957,6 +2957,7 @@ describe("app bundle load", () => {
     match(mobileTerminalSource, /HerdrTerminalFit\.gridSize\(shell, term/);
     match(mobileTerminalSource, /HerdrTerminalRenderer\.create\(terminal/);
     ok(!mobileTerminalSource.includes("Math.floor(shell.clientWidth / 9)"));
+    match(mobileTerminalSource, /usesNormalBuffer && !term\.usesNormalBuffer\(\)[\s\S]*?type: "scroll"[\s\S]*?direction: event\.deltaY < 0 \? "up" : "down"/);
   });
 
 
