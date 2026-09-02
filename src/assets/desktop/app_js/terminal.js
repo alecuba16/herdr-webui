@@ -94,6 +94,7 @@ async function connectTerminal() {
         links: options.terminalLinks !== false,
         scrollback: 10000,
         onData: sendInputData,
+        onWheelMouseReport: (report) => sendInputData(report, { allowMouseReports: true }),
       });
     } catch (e) {
       setTerminalLoading(false);
@@ -366,10 +367,7 @@ function terminalWheelLines(e) {
 function scrollTerminalLines(lines) {
   if (!term || !Number.isFinite(lines) || lines === 0) return false;
   if (state.backendMode === "builtin") {
-    // When a TUI app switches to the alt screen (e.g. jcode), the wterm renderer
-    // cannot scroll locally. Forward the wheel event as a scroll message so the
-    // backend can inject SGR mouse scroll reports into the PTY.
-    if (!terminalUsesNormalBuffer()) return sendBackendScroll(lines);
+    if (!terminalUsesNormalBuffer()) return false;
     try {
       term.scrollLines(Math.trunc(lines));
       setTerminalFollowPaused(!terminalAtBottom());
@@ -400,6 +398,7 @@ function updateTerminalScrollbackEstimate(lines) {
   setTerminalFollowPaused(terminalScrollbackOffsetEstimate > 0);
 }
 function sendBackendScroll(lines) {
+  if (state.backendMode === "builtin") return false;
   if (!termWs || termWs.readyState !== 1 || !Number.isFinite(lines) || lines === 0) return false;
   try {
     const message = JSON.stringify({
@@ -588,7 +587,7 @@ async function pasteClipboard() {
 }
 function sendInputData(data, inputOptions = {}) {
   if (!termWs || termWs.readyState !== 1 || !data) return;
-  if (globalThis.HerdrAppHelpers && globalThis.HerdrAppHelpers.stripTerminalMouseReports)
+  if (!inputOptions.allowMouseReports && globalThis.HerdrAppHelpers && globalThis.HerdrAppHelpers.stripTerminalMouseReports)
     data = globalThis.HerdrAppHelpers.stripTerminalMouseReports(data, options.terminalMouseReporting === true);
   if (!inputOptions.allowTerminalReplies && globalThis.HerdrAppHelpers && globalThis.HerdrAppHelpers.stripTerminalQueryReplies)
     data = globalThis.HerdrAppHelpers.stripTerminalQueryReplies(data, terminalQueryReplyState);

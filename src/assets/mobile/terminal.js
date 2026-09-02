@@ -85,6 +85,7 @@
           links: terminalLinksEnabled(),
           scrollback: 10000,
           onData: sendInputData,
+          onWheelMouseReport: (report) => sendInputData(report, { allowMouseReports: true }),
         });
         openedTerminalElement = terminal;
       }
@@ -122,22 +123,11 @@
 
     function handleWheel(event) {
       if (event.ctrlKey || event.metaKey || !term) return;
-      const lines = Math.max(1, Math.round(Math.abs(event.deltaY) / Math.max(1, term.rowHeight ? term.rowHeight() : 17)));
-      if (term.usesNormalBuffer && !term.usesNormalBuffer()) {
-        // Alt screen: forward as scroll message so the backend can inject
-        // SGR mouse scroll reports into the PTY.
-        if (!termWs || termWs.readyState !== 1) return;
-        event.preventDefault();
-        try {
-          termWs.send(JSON.stringify({
-            type: "scroll",
-            direction: event.deltaY < 0 ? "up" : "down",
-            lines: lines,
-          }));
-        } catch (_) {}
-        return;
-      }
+      // Alt screen + mouse tracking: the adapter already forwarded the wheel as
+      // SGR mouse reports, so local scrollback scrolling must not happen.
+      if (!term.usesNormalBuffer || !term.usesNormalBuffer()) return;
       event.preventDefault();
+      const lines = Math.max(1, Math.round(Math.abs(event.deltaY) / Math.max(1, term.rowHeight ? term.rowHeight() : 17)));
       term.scrollLines(event.deltaY < 0 ? -lines : lines);
       setTerminalFollowPaused(!terminalAtBottom());
     }
@@ -242,7 +232,7 @@
 
     function sendInputData(data, inputOptions = {}) {
       if (!termWs || termWs.readyState !== 1 || !data) return;
-      if (globalThis.HerdrAppHelpers && globalThis.HerdrAppHelpers.stripTerminalMouseReports)
+      if (!inputOptions.allowMouseReports && globalThis.HerdrAppHelpers && globalThis.HerdrAppHelpers.stripTerminalMouseReports)
         data = globalThis.HerdrAppHelpers.stripTerminalMouseReports(data, terminalMouseReportingEnabled());
       if (!inputOptions.allowTerminalReplies && globalThis.HerdrAppHelpers && globalThis.HerdrAppHelpers.stripTerminalQueryReplies)
         data = globalThis.HerdrAppHelpers.stripTerminalQueryReplies(data, terminalQueryReplyState);

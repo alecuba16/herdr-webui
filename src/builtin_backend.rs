@@ -16,34 +16,10 @@ use serde_json::{json, Value};
 use crate::builtin_detection::{jcode::detect_jcode_status_with_variant, JcodeDetectionVariant};
 use crate::builtin_events::{BuiltinEventHub, PaneEventContext};
 use crate::protocol::{
-    read_message, write_message, AttachScrollDirection, ClientInputEvent, ClientMessage,
-    RenderEncoding, ServerMessage, TerminalFrame,
+    read_message, write_message, ClientInputEvent, ClientMessage, RenderEncoding, ServerMessage,
+    TerminalFrame,
 };
 use crate::terminal_text::{self, TerminalTextOptions};
-
-/// Build SGR mouse scroll reports for a wheel event. crossterm parses
-/// `ESC[<cb;cx;cyM` where cb 64 = ScrollUp, 65 = ScrollDown.
-fn sgr_scroll_reports(
-    direction: &AttachScrollDirection,
-    lines: u16,
-    column: Option<u16>,
-    row: Option<u16>,
-    cols: u16,
-    rows: u16,
-) -> Vec<u8> {
-    let cb = match direction {
-        AttachScrollDirection::Up => 64u8,
-        AttachScrollDirection::Down => 65u8,
-    };
-    let cx = column.unwrap_or(cols / 2).max(1);
-    let cy = row.unwrap_or(rows / 2).max(1);
-    let mut out = Vec::new();
-    for _ in 0..lines.max(1) {
-        // ESC [ < cb ; cx ; cy M
-        out.extend_from_slice(format!("\x1b[<{cb};{cx};{cy}M").as_bytes());
-    }
-    out
-}
 
 const BUILTIN_VERSION: &str = "builtin-0.1.0";
 const PROTOCOL_VERSION: u32 = 20;
@@ -512,20 +488,9 @@ fn handle_client_connection(
                     terminal.resize(rows.max(1), cols.max(1));
                 }
             }
-            ClientMessage::AttachScroll {
-                direction,
-                lines,
-                column,
-                row,
-                ..
-            } => {
-                if let Some(terminal) = &attached {
-                    let (cols, rows) = terminal_size.lock().map(|size| *size).unwrap_or((80, 24));
-                    let report = sgr_scroll_reports(&direction, lines, column, row, cols, rows);
-                    if !report.is_empty() {
-                        let _ = terminal.write_input(&report);
-                    }
-                }
+            ClientMessage::AttachScroll { .. } => {
+                // Built-in MVP keeps the browser terminal as the scrollback renderer. The web
+                // adapter will fall back to local scrolling for this backend.
             }
             ClientMessage::Detach => break,
             ClientMessage::ClipboardImage { .. } => {}
@@ -6166,49 +6131,5 @@ mod tests {
             got_workspace_closed,
             "workspace.closed event should be emitted"
         );
-    }
-
-    #[test]
-    fn sgr_scroll_reports_up_uses_button_4() {
-        let out = sgr_scroll_reports(&AttachScrollDirection::Up, 1, None, None, 80, 24);
-        assert_eq!(out, b"\x1b[<64;40;12M");
-    }
-
-    #[test]
-    fn sgr_scroll_reports_down_uses_button_5() {
-        let out = sgr_scroll_reports(&AttachScrollDirection::Down, 1, None, None, 80, 24);
-        assert_eq!(out, b"\x1b[<65;40;12M");
-    }
-
-    #[test]
-    fn sgr_scroll_reports_repeats_for_multiple_lines() {
-        let out = sgr_scroll_reports(&AttachScrollDirection::Up, 3, Some(10), Some(5), 80, 24);
-        assert_eq!(out, b"\x1b[<64;10;5M\x1b[<64;10;5M\x1b[<64;10;5M");
-    }
-
-    #[test]
-    fn sgr_scroll_reports_defaults_to_center_when_no_position() {
-        let out = sgr_scroll_reports(&AttachScrollDirection::Down, 1, None, None, 100, 30);
-        assert_eq!(out, b"\x1b[<65;50;15M");
-    }
-
-    #[test]
-    fn sgr_scroll_reports_clamps_zero_lines_to_one() {
-        let out = sgr_scroll_reports(&AttachScrollDirection::Down, 0, None, None, 80, 24);
-        assert_eq!(out, b"\x1b[<65;40;12M");
-    }
-
-    #[test]
-    fn sgr_scroll_reports_down_multiple_lines() {
-        let out = sgr_scroll_reports(&AttachScrollDirection::Down, 2, Some(20), Some(10), 80, 24);
-        assert_eq!(out, b"\x1b[<65;20;10M\x1b[<65;20;10M");
-    }
-
-    #[test]
-    fn sgr_scroll_reports_clamps_default_position_to_one() {
-        // cols=0 and rows=0 would make cols/2 = 0 and rows/2 = 0; max(1) ensures
-        // the SGR coordinates are at least 1 (1-based).
-        let out = sgr_scroll_reports(&AttachScrollDirection::Up, 1, None, None, 0, 0);
-        assert_eq!(out, b"\x1b[<64;1;1M");
     }
 }
