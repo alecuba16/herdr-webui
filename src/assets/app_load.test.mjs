@@ -435,8 +435,8 @@ describe("app bundle load", () => {
     ok(!source.includes("Option+Wheel"));
     match(desktopTerminalSource, /const stepLines = Math\.max\(1, Number\(options\.scrollLines\) \|\| 1\);/);
     match(desktopTerminalSource, /terminalWheelDeltaPixels \+= e\.deltaY;[\s\S]*?Math\.abs\(terminalWheelDeltaPixels\) < rowHeight/);
-    match(desktopTerminalSource, /function scrollTerminalLines\(lines\) \{[\s\S]*?state\.backendMode === "builtin"[\s\S]*?term\.scrollLines\(Math\.trunc\(lines\)\);[\s\S]*?if \(sendBackendScroll\(lines\)\) \{[\s\S]*?updateTerminalScrollbackEstimate\(lines\);[\s\S]*?!terminalUsesNormalBuffer\(\)[\s\S]*?term\.scrollLines\(Math\.trunc\(lines\)\);/);
-    match(desktopTerminalSource, /function sendBackendScroll\(lines\) \{[\s\S]*?state\.backendMode === "builtin"[\s\S]*?type: "scroll"[\s\S]*?direction: lines < 0 \? "up" : "down"/);
+    match(desktopTerminalSource, /function scrollTerminalLines\(lines\) \{[\s\S]*?state\.backendMode === "builtin"[\s\S]*?sendBackendScroll\(lines\)[\s\S]*?term\.scrollLines\(Math\.trunc\(lines\)\);[\s\S]*?if \(sendBackendScroll\(lines\)\) \{[\s\S]*?updateTerminalScrollbackEstimate\(lines\);[\s\S]*?!terminalUsesNormalBuffer\(\)[\s\S]*?term\.scrollLines\(Math\.trunc\(lines\)\);/);
+    match(desktopTerminalSource, /function sendBackendScroll\(lines\) \{[\s\S]*?type: "scroll"[\s\S]*?direction: lines < 0 \? "up" : "down"/);
     match(desktopTerminalSource, /function setTerminalFollowPaused\(paused\) \{[\s\S]*?button\.hidden = !paused;/);
     match(desktopTerminalSource, /function updateTerminalScrollbackEstimate\(lines\) \{[\s\S]*?terminalScrollbackOffsetEstimate[\s\S]*?setTerminalFollowPaused\(terminalScrollbackOffsetEstimate > 0\);/);
     ok(!desktopTerminalSource.includes("term.onScroll"));

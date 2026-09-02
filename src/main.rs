@@ -5434,6 +5434,22 @@ mod tests {
     }
 
     #[test]
+    fn terminal_text_messages_parses_scroll_message() {
+        let messages = terminal_text_messages(r#"{"type":"scroll","direction":"up","lines":3}"#);
+        assert_eq!(
+            messages,
+            vec![ClientMessage::AttachScroll {
+                source: AttachScrollSource::Wheel,
+                direction: AttachScrollDirection::Up,
+                lines: 3,
+                column: None,
+                row: None,
+                modifiers: 0,
+            }]
+        );
+    }
+
+    #[test]
     fn computes_workspace_order_key_from_session() {
         let state = test_state();
         let mut headers = HeaderMap::new();

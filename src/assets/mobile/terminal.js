@@ -122,9 +122,22 @@
 
     function handleWheel(event) {
       if (event.ctrlKey || event.metaKey || !term) return;
-      if (!term.usesNormalBuffer || !term.usesNormalBuffer()) return;
-      event.preventDefault();
       const lines = Math.max(1, Math.round(Math.abs(event.deltaY) / Math.max(1, term.rowHeight ? term.rowHeight() : 17)));
+      if (term.usesNormalBuffer && !term.usesNormalBuffer()) {
+        // Alt screen: forward as scroll message so the backend can inject
+        // SGR mouse scroll reports into the PTY.
+        if (!termWs || termWs.readyState !== 1) return;
+        event.preventDefault();
+        try {
+          termWs.send(JSON.stringify({
+            type: "scroll",
+            direction: event.deltaY < 0 ? "up" : "down",
+            lines: lines,
+          }));
+        } catch (_) {}
+        return;
+      }
+      event.preventDefault();
       term.scrollLines(event.deltaY < 0 ? -lines : lines);
       setTerminalFollowPaused(!terminalAtBottom());
     }

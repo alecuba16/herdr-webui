@@ -366,7 +366,10 @@ function terminalWheelLines(e) {
 function scrollTerminalLines(lines) {
   if (!term || !Number.isFinite(lines) || lines === 0) return false;
   if (state.backendMode === "builtin") {
-    if (!terminalUsesNormalBuffer()) return false;
+    // When a TUI app switches to the alt screen (e.g. jcode), the wterm renderer
+    // cannot scroll locally. Forward the wheel event as a scroll message so the
+    // backend can inject SGR mouse scroll reports into the PTY.
+    if (!terminalUsesNormalBuffer()) return sendBackendScroll(lines);
     try {
       term.scrollLines(Math.trunc(lines));
       setTerminalFollowPaused(!terminalAtBottom());
@@ -397,7 +400,6 @@ function updateTerminalScrollbackEstimate(lines) {
   setTerminalFollowPaused(terminalScrollbackOffsetEstimate > 0);
 }
 function sendBackendScroll(lines) {
-  if (state.backendMode === "builtin") return false;
   if (!termWs || termWs.readyState !== 1 || !Number.isFinite(lines) || lines === 0) return false;
   try {
     const message = JSON.stringify({
