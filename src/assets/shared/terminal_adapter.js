@@ -207,6 +207,78 @@
     return output;
   }
 
+  // Mouse tracking DECSET/DECRST params: 1000 (click tracking), 1002 (button
+  // event tracking), 1003 (any event tracking), 1006 (SGR encoding). When a TUI
+  // enables tracking and switches to the alt screen, the renderer cannot
+  // scroll locally, so wheel events must become SGR mouse reports instead.
+  const MOUSE_TRACKING_PARAMS = { 1000: 1, 1002: 1, 1003: 1 };
+  const MOUSE_SGR_PARAM = 1006;
+  const MOUSE_MODE_CSI_RE = /\x1b\[\?([\d;]*)([hl])/g;
+  const MOUSE_MODE_CSI_PREFIX_TAIL_RE = /^\x1b\[?\??[\d;]*$/;
+
+  /**
+   * Longest suffix of `text` that could still grow into an `ESC[?...h/l`
+   * sequence. Returns "" when the text ends with a complete or impossible
+   * sequence. This lets split DECSET/DECRST writes be rejoined.
+   */
+  function mouseModeCarrySuffix(text) {
+    const esc = text.lastIndexOf("\x1b");
+    if (esc < 0) return "";
+    const tail = text.slice(esc);
+    if (tail.length > 16) return "";
+    return MOUSE_MODE_CSI_PREFIX_TAIL_RE.test(tail) ? tail : "";
+  }
+
+  /**
+   * Update a mouse-mode state object from terminal output. Emulators must
+   * sniff these DECSET/DECRST sequences because wheel forwarding needs to know
+   * whether the attached program asked for mouse bytes. Sequences can split
+   * across write() chunks, so an incomplete `ESC[?...` tail is kept in
+   * `state.carry` and prepended to the next chunk.
+   */
+  function applyMouseModeSequences(text, state) {
+    if (!text || !state) return;
+    if (typeof text !== "string") {
+      if (typeof text.length !== "number") return;
+      let decoded = "";
+      for (let i = 0; i < text.length; i += 1) decoded += String.fromCharCode(text[i]);
+      text = decoded;
+    }
+    if (state.carry) {
+      text = state.carry + text;
+      state.carry = "";
+    }
+    const carry = mouseModeCarrySuffix(text);
+    if (carry) {
+      text = text.slice(0, text.length - carry.length);
+      state.carry = carry;
+    }
+    MOUSE_MODE_CSI_RE.lastIndex = 0;
+    let match;
+    while ((match = MOUSE_MODE_CSI_RE.exec(text))) {
+      const enable = match[2] === "h";
+      for (const param of match[1].split(";")) {
+        if (!param) continue;
+        const value = parseInt(param, 10);
+        if (!Number.isFinite(value)) continue;
+        if (MOUSE_TRACKING_PARAMS[value]) state.tracking = enable;
+        else if (value === MOUSE_SGR_PARAM) state.sgrMouse = enable;
+      }
+    }
+  }
+
+  /**
+   * Build the SGR mouse wheel report for one wheel event. crossterm parses
+   * `ESC[<cb;cx;cyM` where cb 64 = ScrollUp and 65 = ScrollDown. xterm.js
+   * sends one report per wheel event, so the magnitude is left to the app.
+   */
+  function sgrWheelReport(up, column, row) {
+    const cb = up ? 64 : 65;
+    const cx = Math.max(1, Math.trunc(column) || 1);
+    const cy = Math.max(1, Math.trunc(row) || 1);
+    return `\x1b[<${cb};${cx};${cy}M`;
+  }
+
   function applyThemeVars(element, theme) {
     if (!element || !theme) return;
     const style = element.style;
@@ -247,6 +319,9 @@
       this._linkClick = null;
       this._wheelScroll = null;
       this._imageFallbackState = { imageEscapeBuffer: "" };
+      this._mouseMode = { tracking: false, sgrMouse: false };
+      this._onWheelMouseReport = typeof options.onWheelMouseReport === "function" ? options.onWheelMouseReport : null;
+      if (this._onWheelMouseReport) this._trackPointer();
       this.setTheme(options.theme || {});
       this.setFontFamily(options.fontFamily || "monospace");
       this.setLinksEnabled(options.links !== false);
@@ -289,6 +364,8 @@
         if (callback) callback();
         return;
       }
+      if (data != null && (typeof data === "string" || typeof data.length === "number"))
+        applyMouseModeSequences(data, this._mouseMode);
       this.wterm.write(filterTerminalImageSequences(data, this._imageFallbackState));
       if (callback) afterRender(callback);
     }
@@ -311,6 +388,10 @@
       this._destroyed = true;
       this.setLinksEnabled(false);
       this.setWheelScrolling(false);
+      if (this._pointerBound && this._pointerMove) {
+        this.element.removeEventListener("pointermove", this._pointerMove);
+        this._pointerBound = false;
+      }
       if (this.wterm && this.wterm.destroy) this.wterm.destroy();
       if (this.element && this.element.__herdrTerminalAdapter === this)
         delete this.element.__herdrTerminalAdapter;
@@ -363,9 +444,24 @@
       }
       if (!enabled) return;
       this._wheelScroll = (event) => {
-        if (this._destroyed || event.defaultPrevented || !this.usesNormalBuffer()) return;
+        if (this._destroyed || event.defaultPrevented) return;
         const deltaY = Number(event.deltaY) || 0;
         if (!deltaY) return;
+        if (!this.usesNormalBuffer()) {
+          // Alt screen: a TUI owns the viewport, so local scrolling cannot work.
+          // Only forward when the program requested SGR mouse encoding (1006);
+          // other encodings cannot carry wheel events safely. This mirrors how
+          // xterm.js forwards wheel events as SGR mouse reports.
+          if (this._mouseMode.tracking && this._mouseMode.sgrMouse && this._onWheelMouseReport) {
+            const report = sgrWheelReport(deltaY < 0, this._pointerCell.column, this._pointerCell.row);
+            if (report) {
+              event.preventDefault();
+              event.stopImmediatePropagation();
+              this._onWheelMouseReport(report);
+            }
+          }
+          return;
+        }
         const maxScroll = Math.max(0, (this.element.scrollHeight || 0) - (this.element.clientHeight || 0));
         if (maxScroll <= 0) return;
         event.preventDefault();
@@ -417,6 +513,27 @@
       } catch (_) {
         return true;
       }
+    }
+
+    mouseMode() {
+      return { tracking: !!(this._mouseMode && this._mouseMode.tracking), sgr: !!(this._mouseMode && this._mouseMode.sgrMouse) };
+    }
+
+    // Track the pointer cell for wheel reports. wterm reports pointer cell
+    // coordinates relative to the terminal element.
+    _trackPointer() {
+      if (this._pointerBound || !this.element) return;
+      this._pointerBound = true;
+      this._pointerCell = { column: 1, row: 1 };
+      this._pointerMove = (event) => {
+        const rect = this.element.getBoundingClientRect();
+        const size = this.cellSize();
+        this._pointerCell = {
+          column: Math.max(1, Math.min(this.cols, Math.floor((event.clientX - rect.left) / Math.max(1, size.width)) + 1)),
+          row: Math.max(1, Math.min(this.rows, Math.floor((event.clientY - rect.top) / Math.max(1, size.height)) + 1)),
+        };
+      };
+      this.element.addEventListener("pointermove", this._pointerMove);
     }
 
     getSelection() {
@@ -497,6 +614,8 @@
     filterTerminalImageSequences,
     terminalImageProtocolSummary,
     attachClickFocus,
+    applyMouseModeSequences,
+    sgrWheelReport,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = root.HerdrTerminalRenderer;
 })(typeof globalThis !== "undefined" ? globalThis : window);

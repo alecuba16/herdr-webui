@@ -85,6 +85,7 @@
           links: terminalLinksEnabled(),
           scrollback: 10000,
           onData: sendInputData,
+          onWheelMouseReport: (report) => sendInputData(report, { allowMouseReports: true }),
         });
         openedTerminalElement = terminal;
       }
@@ -122,6 +123,8 @@
 
     function handleWheel(event) {
       if (event.ctrlKey || event.metaKey || !term) return;
+      // Alt screen + mouse tracking: the adapter already forwarded the wheel as
+      // SGR mouse reports, so local scrollback scrolling must not happen.
       if (!term.usesNormalBuffer || !term.usesNormalBuffer()) return;
       event.preventDefault();
       const lines = Math.max(1, Math.round(Math.abs(event.deltaY) / Math.max(1, term.rowHeight ? term.rowHeight() : 17)));
@@ -229,7 +232,7 @@
 
     function sendInputData(data, inputOptions = {}) {
       if (!termWs || termWs.readyState !== 1 || !data) return;
-      if (globalThis.HerdrAppHelpers && globalThis.HerdrAppHelpers.stripTerminalMouseReports)
+      if (!inputOptions.allowMouseReports && globalThis.HerdrAppHelpers && globalThis.HerdrAppHelpers.stripTerminalMouseReports)
         data = globalThis.HerdrAppHelpers.stripTerminalMouseReports(data, terminalMouseReportingEnabled());
       if (!inputOptions.allowTerminalReplies && globalThis.HerdrAppHelpers && globalThis.HerdrAppHelpers.stripTerminalQueryReplies)
         data = globalThis.HerdrAppHelpers.stripTerminalQueryReplies(data, terminalQueryReplyState);

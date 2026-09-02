@@ -1872,7 +1872,9 @@ describe("app bundle load", () => {
     match(source, /terminalMouseReporting: false/);
     match(source, /next\.terminalMouseReporting = next\.terminalMouseReporting === true/);
     match(source, /function sendInputData\(data, inputOptions = \{\}\)/);
+    match(source, /allowMouseReports && globalThis\.HerdrAppHelpers && globalThis\.HerdrAppHelpers\.stripTerminalMouseReports/);
     match(source, /stripTerminalMouseReports\(data, options\.terminalMouseReporting === true\)/);
+    match(source, /onWheelMouseReport: \(report\) => sendInputData\(report, \{ allowMouseReports: true \}\)/);
     match(source, /stripTerminalQueryReplies\(data, terminalQueryReplyState\)/);
     match(source, /terminalQueryReplyState = \{\}/);
     match(source, /JetBrainsMono Nerd Font/);
