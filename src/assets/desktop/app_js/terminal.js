@@ -421,6 +421,10 @@ function sendBackendTail() {
 }
 function handleTerminalWheel(e) {
   if (e.ctrlKey || e.metaKey) return;
+  // Builtin + alt screen: the shared adapter owns wheel behavior there (SGR
+  // mouse forwarding when the program tracks the mouse), so never consume.
+  // External backends still scroll through their server-side buffer.
+  if (state.backendMode === "builtin" && !terminalUsesNormalBuffer()) return;
   const lines = terminalWheelLines(e);
   if (!lines) {
     e.preventDefault();
