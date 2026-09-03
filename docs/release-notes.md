@@ -1,5 +1,14 @@
 # Release notes
 
+## 0.2.98 Release Notes
+
+### Truecolor support for builtin PTY sessions
+
+- Sets `COLORTERM=truecolor` on builtin-backend PTY children alongside the existing `TERM=xterm-256color`.
+- TUIs that resolve skin colors to exact RGB (k9s via tcell `TrueColor()`) previously quantized them back to 256-color palette indexes because tcell only adds truecolor escape capabilities when `COLORTERM` advertises them. Palette index 0 then mapped to the theme's `--term-color-0` (dark theme: `#6c7086`), rendering k9s's black background as a grayish overlay.
+- With truecolor advertised, tcell emits SGR `38;2;r;g;b` / `48;2;r;g;b`. Both terminal cores render it exactly: the wterm core maps 24-bit values to the 6x6x6 cube (black becomes literal `rgb(0,0,0)`) and the Ghostty core keeps per-cell `fgRgb`/`bgRgb`.
+- Verified end to end against a live server: pre-fix k9s frames emitted `ESC[38;5;73;40m` (cadetblue quantized to index 73, palette-black background) and parsed to 4671 cells on the gray `--term-color-0` path; post-fix frames emit `ESC[48;2;0;0;0m` and parse to the same 4671 cells as literal black with zero gray-path cells. The 256-color `38;5;n` / `48;5;n` path is unchanged.
+
 ## 0.2.97 Release Notes
 
 ### Alt-screen mouse wheel scrolling
