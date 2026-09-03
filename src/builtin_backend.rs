@@ -1380,6 +1380,7 @@ impl TerminalRuntime {
         }
         command.cwd(cwd);
         command.env("TERM", "xterm-256color");
+        command.env("COLORTERM", "truecolor");
         let child = pair
             .slave
             .spawn_command(command)
