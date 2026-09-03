@@ -1573,6 +1573,18 @@ impl TerminalRuntime {
         }
     }
 
+    /// Resets the status-detection throttle so the next output-driven
+    /// `publish_agent_status_if_changed` run is guaranteed to execute.
+    /// Only used by tests to avoid racing the spawned shell's prompt output,
+    /// which can consume the 500ms throttle window before the synthetic
+    /// append_output call lands.
+    #[cfg(test)]
+    fn reset_status_throttle(&self) {
+        if let Ok(mut last_check) = self.last_status_check.lock() {
+            *last_check = None;
+        }
+    }
+
     fn publish_agent_status_if_changed(&self) {
         // Throttle status detection to max once per 500ms per terminal
         // This prevents CPU burn during heavy terminal output
@@ -4421,6 +4433,11 @@ mod tests {
             data.terminals.get(&pane.terminal_id).unwrap().clone()
         };
 
+        // The spawned shell's prompt output may have already consumed the
+        // 500ms status-check throttle window. Reset it so our synthetic
+        // output is guaranteed to trigger the status-change publish instead
+        // of racing the reader thread on a loaded CI runner.
+        terminal.reset_status_throttle();
         terminal.append_output("●·· batch ··● · 2/5 done".as_bytes());
 
         let event = rx.recv_timeout(Duration::from_secs(1)).unwrap();
