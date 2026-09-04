@@ -303,3 +303,24 @@ test("current-compare keeps the working tree on the target (right) side", async 
   assert.equal(call.params.get("target"), ".", "working tree must be the target (right side)");
   assert.equal(call.params.get("merge_base"), "true", "current-compare must request a merge base");
 });
+test("showChangesList exits current-compare back to plain working-tree diff", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [{ hash: NEW }], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui } = booted;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  ui.selectLogCommit({ shiftKey: true }, NEW);
+  ui.openSelectedCompareModal();
+  await ui.compareSelectedWithCurrent();
+  let call = lastCompareCall(booted.calls);
+  assert.ok(call, "expected the current-compare request");
+  assert.equal(call.params.get("target"), ".");
+  // Leaving compare mode must reload the working-tree diff, not the compare.
+  await ui.showChangesList();
+  const last = booted.calls[booted.calls.length - 1];
+  assert.equal(last.path, "/api/git-ui/diff", "returning to changes must fetch the working-tree diff");
+  assert.equal(last.params.get("cwd"), "/tmp/demo-repo");
+});
