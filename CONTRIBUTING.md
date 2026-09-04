@@ -39,6 +39,16 @@ It builds an isolated server (own config dir and session, so a locally
 running instance is never touched), drives the served app in headless
 Chrome over CDP, and tears everything down. See `scripts/e2e/README.md`.
 
+When changing the Git explorer (folder actions, compare modes, discard),
+also run the no-browser acceptance harness:
+
+```sh
+just git-e2e        # or: scripts/e2e/run-git-e2e.sh
+```
+
+It boots the served git-ui bundle in a node vm with fetch proxied to the
+real backend, so it runs anywhere node and cargo do (no Chrome needed).
+
 ## Releases
 
 WebUI releases use `v0.0.x` tags and GitHub Release notes. Do not prepare root Herdr release commits or tags from this repository.
