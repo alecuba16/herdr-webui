@@ -4585,7 +4585,14 @@ mod tests {
         // so agent.list kept returning an empty list.
         let state = BuiltinState::new(
             std::env::current_dir().unwrap(),
-            Some(default_shell()),
+            // Use a silent program instead of an interactive shell: a real
+            // zsh prints its prompt bytes into the scrollback after the
+            // synthetic jcode output below, and those prompt lines become the
+            // bottom of the detection tail. That makes the expected "idle"
+            // status depend on the machine's prompt format (CI runners fail
+            // with "unknown"). `/bin/cat` blocks on stdin and never writes, so
+            // the detection tail contains exactly the synthetic bytes.
+            Some("/bin/cat".to_string()),
             JcodeDetectionVariant::Vanilla,
         )
         .unwrap();
