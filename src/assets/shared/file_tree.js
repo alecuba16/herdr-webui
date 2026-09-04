@@ -84,8 +84,18 @@
     const opts = Object.assign({ indentPx: treeIndentPx() }, options || {});
     const root = { dirs: new Map(), files: [] };
     for (const file of files || []) {
-      const parts = String(file).split("/").filter(Boolean);
+      const raw = String(file);
+      const parts = raw.split("/").filter(Boolean);
       let node = root;
+      if (raw.endsWith("/")) {
+        // Status lines report untracked directories as "dir/": make them real
+        // dir nodes so the tree shows a folder instead of a phantom file row.
+        for (const part of parts) {
+          if (!node.dirs.has(part)) node.dirs.set(part, { dirs: new Map(), files: [] });
+          node = node.dirs.get(part);
+        }
+        continue;
+      }
       for (const part of parts.slice(0, -1)) {
         if (!node.dirs.has(part)) node.dirs.set(part, { dirs: new Map(), files: [] });
         node = node.dirs.get(part);
@@ -112,7 +122,8 @@
         const status = typeof opts.statusForPath === "function" ? opts.statusForPath(dirPath, opts.kind) : "";
         const meta = typeof opts.metaForPath === "function" ? opts.metaForPath(dirPath, opts.kind) : "";
         const name = renderCompactDirName(compact.parts, opts, callback);
-        return `<div class="herdr-tree-row dir${dirClass}${status ? ` git-${status}` : ""}" role="treeitem" tabindex="0" aria-expanded="${collapsed ? "false" : "true"}" style="${indentStyle(level, opts)}" onclick="${callback}.${opts.toggleMethod || "toggle"}('${arg(dirPath)}')"${keydown}><span class="herdr-tree-caret">${icon(collapsed ? "closed" : "open")}</span><span class="herdr-tree-kind">${icon("dir", dirPath)}</span><span class="herdr-tree-name">${name}</span>${statusBadge(status)}${meta}</div>${collapsed ? "" : renderPathNode(compact.child, dirPath, opts, level + 1)}`;
+        const dirContext = opts.contextMethod ? ` oncontextmenu="return ${callback}.${opts.contextMethod}(event,'${arg(dirPath)}'${kindArg}${opts.dirContextKind ? `,'${opts.dirContextKind}'` : ""})"` : "";
+        return `<div class="herdr-tree-row dir${dirClass}${status ? ` git-${status}` : ""}" role="treeitem" tabindex="0" aria-expanded="${collapsed ? "false" : "true"}" style="${indentStyle(level, opts)}" onclick="${callback}.${opts.toggleMethod || "toggle"}('${arg(dirPath)}')"${keydown}${dirContext}><span class="herdr-tree-caret">${icon(collapsed ? "closed" : "open")}</span><span class="herdr-tree-kind">${icon("dir", dirPath)}</span><span class="herdr-tree-name">${name}</span>${statusBadge(status)}${meta}</div>${collapsed ? "" : renderPathNode(compact.child, dirPath, opts, level + 1)}`;
       }
       const selected = opts.selectedPath === entry.path && (!opts.selectedKind || opts.selectedKind === opts.kind);
       const meta = typeof opts.metaForPath === "function" ? opts.metaForPath(entry.path, opts.kind) : "";
