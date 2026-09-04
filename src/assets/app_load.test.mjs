@@ -1398,7 +1398,7 @@ describe("app bundle load", () => {
     match(gitUiSource, /if \(currentMode\(\) === "readonly-compare"\) return false;/);
     match(gitUiSource, /const right = mode === "changes" \? "current" : compareRefLabel\(view\.compareTarget\);/);
     match(gitUiSource, /const order = new Map\(\(\(\(view\.logData \|\| \{\}\)\.commits\) \|\| \[\]\)\.map\(\(commit, index\) => \[String\(commit\.hash \|\| ""\), index\]\)\);/);
-    match(gitUiSource, /const \[base, target\] = selected\.slice\(\)\.sort\(\(a, b\) => rank\(a\) - rank\(b\)\);/);
+    match(gitUiSource, /const \[target, base\] = selected\.slice\(\)\.sort\(\(a, b\) => rank\(a\) - rank\(b\)\);/);
     match(gitUiSource, /Comparing \$\{esc\(compareRefLabel\(view\.compareBase\)\)\} → \$\{esc\(compareRefLabel\(view\.compareTarget\)\)\}/);
   });
 
