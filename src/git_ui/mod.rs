@@ -712,7 +712,17 @@ fn git_ui_discard_blocking(
         let tracked = git_ui_output(&repo, &["ls-files", "--error-unmatch", "--", path])
             .is_ok_and(|output| output.status.success());
         if tracked {
-            if let Err(err) = git_ui_text(&repo, &["restore", "--source=HEAD", "--staged", "--worktree", "--", path]) {
+            if let Err(err) = git_ui_text(
+                &repo,
+                &[
+                    "restore",
+                    "--source=HEAD",
+                    "--staged",
+                    "--worktree",
+                    "--",
+                    path,
+                ],
+            ) {
                 return Err((StatusCode::BAD_GATEWAY, err));
             }
             // Folders can also contain untracked leftovers that restore ignores.
@@ -1807,7 +1817,8 @@ mod tests {
             repo.write("nested/second.txt", "two\n");
             repo.git(&["add", "."]);
             repo.git(&["commit", "-m", "second"]);
-            let root = repo.git(&["rev-list", "--max-parents=0", "HEAD"])
+            let root = repo
+                .git(&["rev-list", "--max-parents=0", "HEAD"])
                 .trim()
                 .to_string();
             let cwd = repo.path.to_str().unwrap().to_string();
@@ -1939,7 +1950,10 @@ mod tests {
             .await;
             assert_eq!(discard_staged.status(), StatusCode::OK);
             assert_eq!(repo.git(&["status", "--porcelain"]).trim(), "");
-            assert_eq!(fs::read_to_string(repo.path.join("tracked.txt")).unwrap(), "one\n");
+            assert_eq!(
+                fs::read_to_string(repo.path.join("tracked.txt")).unwrap(),
+                "one\n"
+            );
 
             // A staged new file disappears from disk and index.
             repo.write("staged-only.txt", "fresh\n");

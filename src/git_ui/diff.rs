@@ -304,7 +304,8 @@ async fn git_ui_diff_common(query: GitUiDiffQuery, compare: bool) -> Response {
                     args[index] = empty_tree;
                     // The empty tree is not a commit, so --merge-base cannot
                     // resolve a merge base against it.
-                    if let Some(index) = args.iter().position(|arg| arg.as_str() == "--merge-base") {
+                    if let Some(index) = args.iter().position(|arg| arg.as_str() == "--merge-base")
+                    {
                         args.remove(index);
                     }
                 }
