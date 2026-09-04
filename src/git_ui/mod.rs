@@ -712,8 +712,14 @@ fn git_ui_discard_blocking(
         let tracked = git_ui_output(&repo, &["ls-files", "--error-unmatch", "--", path])
             .is_ok_and(|output| output.status.success());
         if tracked {
-            if let Err(err) = git_ui_text(&repo, &["restore", "--", path]) {
+            if let Err(err) = git_ui_text(&repo, &["restore", "--source=HEAD", "--staged", "--worktree", "--", path]) {
                 return Err((StatusCode::BAD_GATEWAY, err));
+            }
+            // Folders can also contain untracked leftovers that restore ignores.
+            if Path::new(&repo).join(path).is_dir() {
+                if let Err(err) = git_ui_text(&repo, &["clean", "-fd", "--", path]) {
+                    return Err((StatusCode::BAD_GATEWAY, err));
+                }
             }
         } else {
             let full = Path::new(&repo).join(path);
@@ -1794,6 +1800,60 @@ mod tests {
     }
 
     #[test]
+    fn git_ui_compare_root_commit_against_empty_tree() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let repo = TempRepo::new();
+            repo.commit_initial();
+            repo.write("nested/second.txt", "two\n");
+            repo.git(&["add", "."]);
+            repo.git(&["commit", "-m", "second"]);
+            let root = repo.git(&["rev-list", "--max-parents=0", "HEAD"])
+                .trim()
+                .to_string();
+            let cwd = repo.path.to_str().unwrap().to_string();
+
+            // The root commit has no parent, so `<root>^` does not resolve.
+            // The compare must fall back to the empty tree and still work.
+            let compare = git_ui_compare(
+                State(test_state()),
+                HeaderMap::new(),
+                ConnectInfo(remote()),
+                Query(GitUiDiffQuery {
+                    cwd: Some(cwd.clone()),
+                    base: Some(format!("{root}^")),
+                    target: Some(root.clone()),
+                    ..query()
+                }),
+            )
+            .await;
+            assert_eq!(compare.status(), StatusCode::OK);
+            let json = response_json(compare).await;
+            let files = json["files"].as_array().unwrap();
+            assert_eq!(files.len(), 1);
+            assert_eq!(files[0]["path"], "tracked.txt");
+            assert_eq!(files[0]["status"], "added");
+
+            // A non-root commit keeps its normal parent diff.
+            let head = repo.git(&["rev-parse", "HEAD"]).trim().to_string();
+            let compare = git_ui_compare(
+                State(test_state()),
+                HeaderMap::new(),
+                ConnectInfo(remote()),
+                Query(GitUiDiffQuery {
+                    cwd: Some(cwd),
+                    base: Some(format!("{head}^")),
+                    target: Some(head),
+                    ..query()
+                }),
+            )
+            .await;
+            assert_eq!(compare.status(), StatusCode::OK);
+            let json = response_json(compare).await;
+            assert_eq!(json["files"][0]["path"], "nested/second.txt");
+        });
+    }
+
+    #[test]
     fn git_ui_write_file_and_destructive_guards_work() {
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             let repo = TempRepo::new();
@@ -1862,6 +1922,66 @@ mod tests {
                 fs::read_to_string(repo.path.join("tracked.txt")).unwrap(),
                 "one\n"
             );
+
+            // Staged changes must be discarded too, not just worktree edits.
+            repo.write("tracked.txt", "staged\n");
+            repo.git(&["add", "tracked.txt"]);
+            let discard_staged = git_ui_discard(
+                State(state.clone()),
+                HeaderMap::new(),
+                ConnectInfo(remote()),
+                Json(GitUiPathsRequest {
+                    cwd: cwd.clone(),
+                    paths: vec!["tracked.txt".to_string()],
+                    confirmed: Some(true),
+                }),
+            )
+            .await;
+            assert_eq!(discard_staged.status(), StatusCode::OK);
+            assert_eq!(repo.git(&["status", "--porcelain"]).trim(), "");
+            assert_eq!(fs::read_to_string(repo.path.join("tracked.txt")).unwrap(), "one\n");
+
+            // A staged new file disappears from disk and index.
+            repo.write("staged-only.txt", "fresh\n");
+            repo.git(&["add", "staged-only.txt"]);
+            let discard_new = git_ui_discard(
+                State(state.clone()),
+                HeaderMap::new(),
+                ConnectInfo(remote()),
+                Json(GitUiPathsRequest {
+                    cwd: cwd.clone(),
+                    paths: vec!["staged-only.txt".to_string()],
+                    confirmed: Some(true),
+                }),
+            )
+            .await;
+            assert_eq!(discard_new.status(), StatusCode::OK);
+            assert!(!repo.path.join("staged-only.txt").exists());
+            assert_eq!(repo.git(&["status", "--porcelain"]).trim(), "");
+
+            // Mixed folder: tracked file restored plus untracked leftovers removed.
+            repo.write("mix/inner.txt", "inner\n");
+            repo.git(&["add", "mix/inner.txt"]);
+            repo.git(&["commit", "-m", "add mix"]);
+            repo.write("mix/inner.txt", "changed\n");
+            repo.write("mix/untracked.txt", "left\n");
+            let discard_folder = git_ui_discard(
+                State(state.clone()),
+                HeaderMap::new(),
+                ConnectInfo(remote()),
+                Json(GitUiPathsRequest {
+                    cwd: cwd.clone(),
+                    paths: vec!["mix".to_string()],
+                    confirmed: Some(true),
+                }),
+            )
+            .await;
+            assert_eq!(discard_folder.status(), StatusCode::OK);
+            assert_eq!(
+                fs::read_to_string(repo.path.join("mix/inner.txt")).unwrap(),
+                "inner\n"
+            );
+            assert!(!repo.path.join("mix/untracked.txt").exists());
 
             let reset_without_confirm = git_ui_reset(
                 State(state),

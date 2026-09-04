@@ -7,7 +7,7 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::{git_json_error, git_ui_text_strings, safe_git_token, safe_repo_path};
+use super::{git_json_error, git_ui_output, git_ui_text_strings, safe_git_token, safe_repo_path};
 use crate::{require_auth, WebState};
 
 #[derive(Deserialize)]
@@ -253,6 +253,30 @@ pub(super) fn git_ui_diff_args(
     Ok(args)
 }
 
+/// When a compare base is `<commit>^` and `<commit>` is the repository's root
+/// commit, the parent ref does not exist and `git diff` would fail. Compare
+/// from the empty tree instead so the root commit renders a full-tree diff.
+fn root_parent_fallback(cwd: &str, commit: &str) -> Result<Option<String>, String> {
+    let output = git_ui_output(cwd, &["rev-list", "--parents", "-n", "1", commit])?;
+    if !output.status.success() {
+        // Unknown commit: let the diff surface git's own error.
+        return Ok(None);
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut parts = stdout.split_whitespace();
+    if parts.next().is_none() || parts.next().is_some() {
+        return Ok(None);
+    }
+    // `git mktree` with an empty stdin prints the hash of the empty tree for
+    // the repository's object format (SHA-1 or SHA-256).
+    let tree = git_ui_output(cwd, &["mktree"])?;
+    if !tree.status.success() {
+        return Ok(None);
+    }
+    let hash = String::from_utf8_lossy(&tree.stdout).trim().to_string();
+    Ok((!hash.is_empty()).then_some(hash))
+}
+
 async fn git_ui_diff_common(query: GitUiDiffQuery, compare: bool) -> Response {
     let Some(cwd) = query.cwd.as_deref() else {
         return git_json_error(StatusCode::BAD_REQUEST, "cwd is required");
@@ -261,8 +285,35 @@ async fn git_ui_diff_common(query: GitUiDiffQuery, compare: bool) -> Response {
         Ok(args) => args,
         Err(err) => return git_json_error(StatusCode::BAD_REQUEST, err),
     };
+    let root_parent_base = if compare {
+        query
+            .base
+            .as_deref()
+            .and_then(|base| base.trim().strip_suffix('^'))
+            .map(str::to_string)
+    } else {
+        None
+    };
     let cwd = cwd.to_string();
-    match tokio::task::spawn_blocking(move || git_ui_text_strings(&cwd, &args)).await {
+    match tokio::task::spawn_blocking(move || {
+        let mut args = args;
+        if let Some(commit) = root_parent_base.as_deref() {
+            if let Ok(Some(empty_tree)) = root_parent_fallback(&cwd, commit) {
+                let base = format!("{commit}^");
+                if let Some(index) = args.iter().position(|arg| arg == &base) {
+                    args[index] = empty_tree;
+                    // The empty tree is not a commit, so --merge-base cannot
+                    // resolve a merge base against it.
+                    if let Some(index) = args.iter().position(|arg| arg.as_str() == "--merge-base") {
+                        args.remove(index);
+                    }
+                }
+            }
+        }
+        git_ui_text_strings(&cwd, &args)
+    })
+    .await
+    {
         Ok(Ok(text)) => Json(json!({ "files": parse_unified_diff(&text) })).into_response(),
         Ok(Err(err)) => git_json_error(StatusCode::BAD_GATEWAY, err),
         Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
