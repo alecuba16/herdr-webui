@@ -22,8 +22,22 @@ Or run pieces directly:
 cargo fmt --check
 cargo clippy --target-dir target --all-targets -- -D warnings
 cargo test --target-dir target
-node --test src/assets/app_core.test.mjs src/assets/app_load.test.mjs src/assets/app_boot.test.mjs src/assets/mobile_load.test.mjs
+node --test src/assets/*.test.mjs
 ```
+
+## End-to-end checks
+
+The synthetic suites run in a fake DOM and cannot catch DOM-liveness bugs.
+When changing the file browser editor flow (lock toggle, dirty tabs, save),
+also run the real-browser acceptance harness:
+
+```sh
+just e2e            # or: scripts/e2e/run-e2e.sh
+```
+
+It builds an isolated server (own config dir and session, so a locally
+running instance is never touched), drives the served app in headless
+Chrome over CDP, and tears everything down. See `scripts/e2e/README.md`.
 
 ## Releases
 

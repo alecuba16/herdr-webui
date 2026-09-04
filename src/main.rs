@@ -38,17 +38,17 @@ use assets::{
     desktop_js, desktop_search_css, desktop_search_js, desktop_shortcuts_css,
     favicon_attention_svg, favicon_error_svg, favicon_svg, icon_chevron_down_svg,
     icon_chevron_right_svg, icon_file_svg, icon_folder_svg, icon_folder_up_svg, icon_git_svg,
-    icon_help_svg, icon_refresh_svg, icon_search_svg, icon_settings_svg, icon_terminal_svg,
-    icon_theme_auto_svg, icon_trash_svg, jetbrains_mono_nerd_font, login_css, login_html, login_js,
-    mobile_attention_js, mobile_core_js, mobile_css, mobile_file_browser_js, mobile_js,
-    mobile_settings_js, mobile_terminal_js, mobile_worktrees_js, shared_actions_js,
-    shared_colors_css, shared_content_search_css, shared_core_js, shared_editor_js,
-    shared_file_content_search_js, shared_file_icons_css, shared_file_icons_js,
-    shared_file_tree_css, shared_file_tree_js, shared_line_context_js, shared_markdown_preview_css,
-    shared_markdown_preview_js, shared_temp_terminal_js, shared_terminal_adapter_js,
-    shared_terminal_fit_js, shared_terminal_scroll_js, shared_workspace_search_js,
-    vendor_codemirror_js, vendor_dompurify_js, vendor_ghostty_wasm, vendor_marked_js,
-    vendor_mermaid_js, vendor_wterm_css, vendor_wterm_js,
+    icon_help_svg, icon_lock_open_svg, icon_lock_svg, icon_refresh_svg, icon_search_svg,
+    icon_settings_svg, icon_terminal_svg, icon_theme_auto_svg, icon_trash_svg,
+    jetbrains_mono_nerd_font, login_css, login_html, login_js, mobile_attention_js, mobile_core_js,
+    mobile_css, mobile_file_browser_js, mobile_js, mobile_settings_js, mobile_terminal_js,
+    mobile_worktrees_js, shared_actions_js, shared_colors_css, shared_content_search_css,
+    shared_core_js, shared_editor_js, shared_file_content_search_js, shared_file_icons_css,
+    shared_file_icons_js, shared_file_tree_css, shared_file_tree_js, shared_line_context_js,
+    shared_markdown_preview_css, shared_markdown_preview_js, shared_temp_terminal_js,
+    shared_terminal_adapter_js, shared_terminal_fit_js, shared_terminal_scroll_js,
+    shared_workspace_search_js, vendor_codemirror_js, vendor_dompurify_js, vendor_ghostty_wasm,
+    vendor_marked_js, vendor_mermaid_js, vendor_wterm_css, vendor_wterm_js,
 };
 #[cfg(test)]
 use compat::SimpleVersion;
@@ -1384,6 +1384,8 @@ fn app_router(state: WebState) -> Router {
         .route("/assets/icons/folder-up.svg", get(icon_folder_up_svg))
         .route("/assets/icons/file.svg", get(icon_file_svg))
         .route("/assets/icons/trash.svg", get(icon_trash_svg))
+        .route("/assets/icons/lock.svg", get(icon_lock_svg))
+        .route("/assets/icons/lock-open.svg", get(icon_lock_open_svg))
         .route("/assets/icons/search.svg", get(icon_search_svg))
         .route("/assets/icons/refresh.svg", get(icon_refresh_svg))
         .route("/favicon.svg", get(favicon_svg))
