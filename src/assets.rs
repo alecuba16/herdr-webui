@@ -100,6 +100,8 @@ const ICON_FILE: &str = include_str!("assets/icons/file.svg");
 const ICON_TRASH: &str = include_str!("assets/icons/trash.svg");
 const ICON_SEARCH: &str = include_str!("assets/icons/search.svg");
 const ICON_REFRESH: &str = include_str!("assets/icons/refresh.svg");
+const ICON_LOCK: &str = include_str!("assets/icons/lock.svg");
+const ICON_LOCK_OPEN: &str = include_str!("assets/icons/lock-open.svg");
 
 pub(crate) fn app_html() -> Response {
     Html(APP_HTML).into_response()
@@ -449,6 +451,14 @@ pub(crate) async fn icon_refresh_svg() -> Response {
     static_svg(ICON_REFRESH)
 }
 
+pub(crate) async fn icon_lock_svg() -> Response {
+    static_svg(ICON_LOCK)
+}
+
+pub(crate) async fn icon_lock_open_svg() -> Response {
+    static_svg(ICON_LOCK_OPEN)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -528,6 +538,8 @@ mod tests {
         assert_eq!(content_type(&icon_file_svg().await), svg);
         assert_eq!(content_type(&icon_trash_svg().await), svg);
         assert_eq!(content_type(&icon_search_svg().await), svg);
+        assert_eq!(content_type(&icon_lock_svg().await), svg);
+        assert_eq!(content_type(&icon_lock_open_svg().await), svg);
     }
 
     #[test]
