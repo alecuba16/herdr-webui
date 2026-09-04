@@ -11,7 +11,7 @@
 # Environment overrides:
 #   E2E_PORT     server port (default 8899)
 #   CDP_PORT     Chrome remote debugging port (default 9222)
-#   E2E_WORKDIR  scratch dir for fixture repo + server config (default: mktemp)
+#   CHROME_BIN   path to Chrome/Chromium if not auto-detected
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -21,10 +21,27 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/herdr-e2e.XXXXXX")"
 KEEP=0
 [[ "${1:-}" == "--keep" ]] && KEEP=1
 
+session_id() {
+  # Unique per run so two concurrent runs never share server state.
+  printf 'e2e-%s-%s' "$$" "$(date +%s)"
+}
+
+stop_pid() {
+  # The server ignores SIGTERM while in its bind-retry sleep; escalate to KILL.
+  local pid="$1"
+  [[ -n "$pid" ]] || return 0
+  kill "$pid" 2>/dev/null || true
+  for i in 1 2 3 4 5; do
+    kill -0 "$pid" 2>/dev/null || return 0
+    sleep 0.4
+  done
+  kill -9 "$pid" 2>/dev/null || true
+}
+
 cleanup() {
   [[ $KEEP -eq 1 ]] && { echo "--keep set: leaving $WORK running"; return; }
-  [[ -n "${CHROME_PID:-}" ]] && kill "$CHROME_PID" 2>/dev/null || true
-  [[ -n "${SERVER_PID:-}" ]] && kill "$SERVER_PID" 2>/dev/null || true
+  stop_pid "${CHROME_PID:-}"
+  stop_pid "${SERVER_PID:-}"
   # Chrome's crash-updater can hold profile files briefly; retry the removal.
   for i in 1 2 3 4 5; do
     rm -rf "$WORK" 2>/dev/null && break
@@ -51,16 +68,23 @@ git -C "$REPO" init -q
 git -C "$REPO" add -A
 git -C "$REPO" -c user.name=e2e -c user.email=e2e@local commit -qm init
 
+wait_for() {
+  # wait_for <desc> <url> [-k]
+  local desc="$1" url="$2" kflag="$3"
+  for i in $(seq 1 50); do
+    if curl -sf $kflag "$url" >/dev/null 2>&1; then return 0; fi
+    sleep 0.2
+  done
+  echo "error: $desc never became reachable at $url" >&2
+  return 1
+}
+
 echo "==> starting isolated server on https://127.0.0.1:$PORT"
 XDG_CONFIG_HOME="$WORK/xdg" "$ROOT/target/debug/herdr-webui" \
-  --bind "127.0.0.1:$PORT" --session "e2e-$PORT" &
+  --bind "127.0.0.1:$PORT" --session "$(session_id)" &
 SERVER_PID=$!
 
-# Wait for the server to accept connections.
-for i in $(seq 1 50); do
-  if curl -ksf "https://127.0.0.1:$PORT/" >/dev/null 2>&1; then break; fi
-  sleep 0.2
-done
+wait_for "server" "https://127.0.0.1:$PORT/" -k || exit 1
 
 echo "==> launching headless Chrome (CDP port $CDP)"
 CHROME_BIN="${CHROME_BIN:-}"
@@ -79,10 +103,7 @@ fi
   --remote-debugging-port="$CDP" --remote-allow-origins='*' \
   --user-data-dir="$WORK/chrome-profile" about:blank &
 CHROME_PID=$!
-for i in $(seq 1 50); do
-  if curl -sf "http://127.0.0.1:$CDP/json/version" >/dev/null 2>&1; then break; fi
-  sleep 0.2
-done
+wait_for "headless Chrome CDP" "http://127.0.0.1:$CDP/json/version" "" || exit 1
 
 echo "==> running acceptance checks"
 ACCEPT_REPO="$REPO" E2E_BASE_URL="https://127.0.0.1:$PORT/" CDP_PORT="$CDP" \

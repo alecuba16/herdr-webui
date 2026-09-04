@@ -14,6 +14,10 @@ test-js:
 test: test-js
     cargo test --target-dir {{target_dir}}
 
+# Real-browser acceptance run (file explorer edit flow). See scripts/e2e/README.md.
+e2e:
+    scripts/e2e/run-e2e.sh
+
 check: lint test
 
 build:
