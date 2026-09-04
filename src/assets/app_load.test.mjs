@@ -1368,6 +1368,40 @@ describe("app bundle load", () => {
     match(gitUiSource, /filterFiles/);
   });
 
+  it("supports folder-level stage, unstage, and discard in the Git changes tree", () => {
+    const fileTreeSource = readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8");
+
+    match(fileTreeSource, /raw\.endsWith\("\/"\)/);
+    match(fileTreeSource, /Status lines report untracked directories as "dir\/"/);
+    match(fileTreeSource, /dirContextKind/);
+    match(gitUiSource, /dirContextKind: "dir",/);
+    match(gitUiSource, /function dirMenuTargetPaths\(menu\)/);
+    match(gitUiSource, /function renderDirContextMenu\(menu\)/);
+    match(gitUiSource, /Stage folder \(\$\{countLabel\}\)/);
+    match(gitUiSource, /Unstage folder \(\$\{countLabel\}\)/);
+    match(gitUiSource, /Discard folder \(\$\{countLabel\}\)/);
+    match(gitUiSource, /if \(menu\.kind === "dir"\) \{/);
+    match(gitUiSource, /post\("\/api\/git-ui\/stage", \{ cwd: active\(\)\.cwd, paths: targets \}/);
+    match(gitUiSource, /post\("\/api\/git-ui\/unstage", \{ cwd: active\(\)\.cwd, paths: targets \}/);
+    match(gitUiSource, /post\("\/api\/git-ui\/discard", \{ cwd: active\(\)\.cwd, paths: \[path\], confirmed: true \}/);
+    match(gitUiSource, /fileMenu\(event, file, kind, rowKind\)/);
+    match(gitUiSource, /kind: rowKind === "dir" \? "dir" : kind/);
+  });
+
+  it("compares commits with working tree and puts the newest ref on the right", () => {
+    match(gitUiSource, /function compareRefLabel\(ref\)/);
+    match(gitUiSource, /if \(!value \|\| value === "\."\) return "working tree";/);
+    match(gitUiSource, /view\.compareTarget = "\.";\s*\n\s*view\.mode = "current-compare";/);
+    match(gitUiSource, /const mergeBase = currentMode\(\) === "current-compare" \? "&merge_base=true" : "";/);
+    match(gitUiSource, /return currentMode\(\) === "changes" \|\| currentMode\(\) === "current-compare";/);
+    match(gitUiSource, /const ref = currentMode\(\) === "changes" \|\| currentMode\(\) === "current-compare" \? "working" : \(view\.compareTarget \|\| "HEAD"\);/);
+    match(gitUiSource, /if \(currentMode\(\) === "readonly-compare"\) return false;/);
+    match(gitUiSource, /const right = mode === "changes" \? "current" : compareRefLabel\(view\.compareTarget\);/);
+    match(gitUiSource, /const order = new Map\(\(\(\(view\.logData \|\| \{\}\)\.commits\) \|\| \[\]\)\.map\(\(commit, index\) => \[String\(commit\.hash \|\| ""\), index\]\)\);/);
+    match(gitUiSource, /const \[base, target\] = selected\.slice\(\)\.sort\(\(a, b\) => rank\(a\) - rank\(b\)\);/);
+    match(gitUiSource, /Comparing \$\{esc\(compareRefLabel\(view\.compareBase\)\)\} → \$\{esc\(compareRefLabel\(view\.compareTarget\)\)\}/);
+  });
+
   it("uses shared file tree rows for Git files with Git metadata", () => {
     const fileTreeSource = readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8");
     const gitLayoutCss = readFileSync(new URL("./desktop/git_ui/layout.css", import.meta.url), "utf8");
