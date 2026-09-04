@@ -9,7 +9,7 @@ These scripts drive the **actually served app** in a real browser.
 ## One command
 
 ```sh
-scripts/e2e/run-e2e.sh
+just e2e            # or: scripts/e2e/run-e2e.sh
 ```
 
 What it does:
