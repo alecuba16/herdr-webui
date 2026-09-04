@@ -728,6 +728,31 @@
     return `<div class="git-ui-menu file-browser-menu" style="left:${Math.max(0, menu.x)}px;top:${Math.max(0, menu.y)}px" onclick="event.stopPropagation()">${labelHtml}${focus}${split}${find}${lock}${save}${history}${reload}${copyPath}${sep}${close}</div>`;
   }
 
+  function syncDirtyDots() {
+    if (typeof document.querySelectorAll !== "function") return;
+    const tabs = document.querySelectorAll(".file-browser-open-tab");
+    tabs.forEach((tab) => {
+      const label = tab.querySelector(".file-browser-open-tab-label");
+      if (!label) return;
+      const path = tab.getAttribute("title") || "";
+      const file = state.files.find((f) => fileTabTooltipPath(f.path) === path);
+      if (!file) return;
+      const showDot = !!file.dirty && !!file.editing;
+      const hasDot = !!label.querySelector(".file-browser-tab-dirty");
+      if (showDot === hasDot) return;
+      if (showDot) {
+        const dot = document.createElement("span");
+        dot.className = "file-browser-tab-dirty";
+        dot.title = "Modified";
+        dot.textContent = "●";
+        label.appendChild(dot);
+      } else {
+        const dot = label.querySelector(".file-browser-tab-dirty");
+        if (dot) dot.remove();
+      }
+    });
+  }
+
   function mountEditors() {
     const files = state.split ? state.files : [currentFile()].filter(Boolean);
     for (const file of files) {
@@ -745,6 +770,7 @@
         onChange(value) {
           file.draft = value;
           file.dirty = value !== (file.content || "");
+          syncDirtyDots();
         },
       });
     }
