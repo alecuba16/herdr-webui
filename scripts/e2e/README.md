@@ -49,3 +49,24 @@ The harness needs HTTPS with a self-signed cert; the CDP session sets
 
 Note: run this locally; it is not wired into CI (macos-latest runners have
 Chrome, but the suite is intentionally kept as a pre-merge manual gate).
+## Git explorer acceptance (no browser needed)
+
+`scripts/e2e/run-git-e2e.sh` covers the Git explorer rework (folder rows,
+folder stage/unstage/discard, compare modes) against the real server. It
+boots the JS bundles the server actually serves in a node vm and proxies
+every fetch to the backend, so it needs no browser and runs anywhere node
+and cargo do.
+
+What it verifies on a throwaway dirty repo:
+
+- the Git panel loads status from the real backend
+- untracked `scratchdir/` renders as a dir row with no phantom file row
+- the dir context menu posts `discard` with the folder path and
+  `confirmed: true` to the real backend
+- the folder is really gone from the repo afterwards
+
+| Variable    | Default | Meaning                            |
+| ----------- | ------- | ---------------------------------- |
+| `E2E_PORT`  | `8898`  | HTTPS port of the isolated server  |
+
+Run it locally with `just git-e2e` (also not wired into CI).
