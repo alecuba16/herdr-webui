@@ -31,7 +31,34 @@ const DETECTION_TAIL_BYTES: usize = 64 * 1024;
 /// state changes, so a gap this long means the agent stopped emitting (crash,
 /// hang, or non-OSC build) and the side-channel is no longer authoritative.
 const OSC_STALENESS_TIMEOUT: Duration = Duration::from_secs(30);
+/// Optional TTL for `RecentAgentProcessExit` records. `None` matches upstream
+/// herdr: the record never expires on its own in production and is only
+/// cleared when a live agent process is detected again (or the record is
+/// explicitly reset). Set to `Some(Duration)` to auto-expire records if the
+/// suppression ever needs to be time-bounded.
+const RECENT_AGENT_EXIT_TTL: Option<Duration> = None;
 const SOCKET_PERMISSION_MODE: u32 = 0o600;
+
+/// Mirrors upstream herdr's `terminal::state::RecentAgentProcessExit`:
+/// recorded once when a previously-live agent process disappears from the
+/// pane's process tree (the user quit jcode inside the shell, so the pane
+/// itself keeps running). While present, the pane must stop reporting the
+/// exited agent, otherwise stale screen text / OSC payloads keep a ghost
+/// agent row alive in `agent.list`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RecentAgentProcessExit {
+    agent: &'static str,
+    observed_at: Instant,
+}
+
+impl RecentAgentProcessExit {
+    /// A record is active until an optional TTL elapses. With
+    /// `RECENT_AGENT_EXIT_TTL = None` records stay active until a live agent
+    /// process is detected again, matching upstream herdr's behavior.
+    fn is_active(&self, now: Instant) -> bool {
+        RECENT_AGENT_EXIT_TTL.is_none_or(|ttl| now.duration_since(self.observed_at) < ttl)
+    }
+}
 
 /// Captures the latest OSC 9 progress payload from raw PTY bytes.
 /// Agents like jcode emit `ESC]9;jcode:<state> BEL` as a structured
@@ -1323,6 +1350,14 @@ struct TerminalRuntime {
     event_context: PaneEventContext,
     last_agent_state: Mutex<Option<(Option<String>, String)>>,
     last_status_check: Mutex<Option<Instant>>,
+    /// Set once when a previously-live agent process disappears from the
+    /// process tree while the pane shell keeps running. Suppresses the
+    /// exited agent's label until a live agent is detected again.
+    recent_agent_process_exit: Mutex<Option<RecentAgentProcessExit>>,
+    /// Last agent label seen live in this pane's process tree. Arms the
+    /// exit record: only a successful process-table read that comes back
+    /// empty after this was set records an exit.
+    last_live_process_agent: Mutex<Option<&'static str>>,
     master: Mutex<Box<dyn MasterPty + Send>>,
     child: Mutex<Box<dyn Child + Send + Sync>>,
     writer: Mutex<Box<dyn Write + Send>>,
@@ -1402,6 +1437,8 @@ impl TerminalRuntime {
             event_context,
             last_agent_state: Mutex::new(None),
             last_status_check: Mutex::new(None),
+            recent_agent_process_exit: Mutex::new(None),
+            last_live_process_agent: Mutex::new(None),
             master: Mutex::new(pair.master),
             child: Mutex::new(child),
             writer: Mutex::new(writer),
@@ -1428,6 +1465,64 @@ impl TerminalRuntime {
 
     fn child_pid(&self) -> Option<u32> {
         self.child_pid
+    }
+
+    /// Probes the pane's process tree for a live agent and updates the exit
+    /// record, mirroring upstream herdr's live→absent transition:
+    /// - A live agent clears any exit record (the agent is back) and becomes
+    ///   the new `last_live_process_agent`.
+    /// - A successful read that finds no agent after a previously-live agent
+    ///   records the exit exactly once (the armed flag is cleared so repeat
+    ///   empty reads do not re-set it).
+    /// - A failed `ps` read is a no-op: we cannot distinguish "agent gone"
+    ///   from "probe broken", so we keep the previous record state.
+    fn update_agent_exit_record(&self, live_agent: Option<&'static str>, probe_ok: bool) {
+        if !probe_ok {
+            return;
+        }
+        if let Some(agent) = live_agent {
+            if let Ok(mut last_live) = self.last_live_process_agent.lock() {
+                *last_live = Some(agent);
+            }
+            if let Ok(mut record) = self.recent_agent_process_exit.lock() {
+                *record = None;
+            }
+            return;
+        }
+        let exited_agent = self
+            .last_live_process_agent
+            .lock()
+            .ok()
+            .and_then(|mut last_live| last_live.take());
+        let Some(agent) = exited_agent else {
+            return;
+        };
+        if let Ok(mut record) = self.recent_agent_process_exit.lock() {
+            *record = Some(RecentAgentProcessExit {
+                agent,
+                observed_at: Instant::now(),
+            });
+        }
+    }
+
+    /// True while an agent process previously seen live in this pane has
+    /// exited and no live agent has been detected since. Suppresses the
+    /// exited agent's label in presentation and status publishing.
+    fn recent_agent_exit_active(&self) -> bool {
+        self.recent_agent_process_exit
+            .lock()
+            .ok()
+            .and_then(|record| *record)
+            .is_some_and(|record| record.is_active(Instant::now()))
+    }
+
+    /// Live agent in this pane's process tree, or `None` when the table
+    /// read fails (the failure is propagated so callers can treat a broken
+    /// probe as a no-op rather than an exit).
+    fn probe_live_process_agent(&self) -> Option<Option<&'static str>> {
+        let pid = self.child_pid()?;
+        let processes = process_table().ok()?;
+        Some(detect_agent_label_from_processes(pid, &processes))
     }
 
     fn write_input(&self, bytes: &[u8]) -> io::Result<()> {
@@ -1518,15 +1613,24 @@ impl TerminalRuntime {
         // "done" status. After this the tracker is reset, so we capture the
         // label from argv or screen text before clearing.
         let tail = self.history_tail_text(DETECTION_TAIL_BYTES);
-        let agent = detect_agent_label(&self.argv)
-            .or_else(|| detect_agent_label_from_text(&tail))
-            .or_else(|| {
-                self.osc9_tracker
-                    .lock()
-                    .ok()
-                    .and_then(|t| t.latest_agent_label())
-            })
-            .map(str::to_string);
+        // If the agent process exited recently while the pane shell kept
+        // running (jcode quit inside the shell), the exit record is active and
+        // the pane must not keep reporting the agent. Only publish a final
+        // "done" for an agent the pane still legitimately reports.
+        let agent_suppressed = self.recent_agent_exit_active();
+        let agent = if agent_suppressed {
+            None
+        } else {
+            detect_agent_label(&self.argv)
+                .or_else(|| detect_agent_label_from_text(&tail))
+                .or_else(|| {
+                    self.osc9_tracker
+                        .lock()
+                        .ok()
+                        .and_then(|t| t.latest_agent_label())
+                })
+                .map(str::to_string)
+        };
         // Clear OSC 9 state so stale payloads do not persist after the agent
         // process exits. Without this, a captured `jcode:working` would keep
         // the pane stuck in "working" even after the process is gone.
@@ -1633,23 +1737,33 @@ impl TerminalRuntime {
             })
             .unwrap_or_default();
         let process_agent = self
-            .child_pid()
-            .and_then(detect_agent_label_from_process_tree);
-        let agent = detect_agent_label(&self.argv)
-            .or(process_agent)
-            .or(osc_agent)
-            .or_else(|| detect_agent_label_from_text(&tail))
-            .map(str::to_string);
-        let status = match detect_agent_status_with_osc(
+            .probe_live_process_agent()
+            .inspect(|&live_agent| {
+                self.update_agent_exit_record(live_agent, true);
+            })
+            // Probe unavailable (no child pid or `ps` failed): treat as a
+            // no-op so a broken probe never fabricates an exit record.
+            .unwrap_or(None);
+        // While a recent agent-process exit is active, stop reporting the
+        // exited agent: stale OSC 9 labels and leftover screen text (spinner
+        // frames, banners) would otherwise keep the ghost agent alive.
+        let agent_suppressed = self.recent_agent_exit_active();
+        let agent = if agent_suppressed {
+            None
+        } else {
+            detect_agent_label(&self.argv)
+                .or(process_agent)
+                .or(osc_agent)
+                .or_else(|| detect_agent_label_from_text(&tail))
+                .map(str::to_string)
+        };
+        let status = detect_agent_status_with_osc(
             agent.as_deref(),
             &tail,
             &osc_progress,
             &osc_title,
             self.jcode_detection_variant,
-        ) {
-            "unknown" if agent.is_some() => "idle",
-            status => status,
-        }
+        )
         .to_string();
         let current = (agent.clone(), status.clone());
         let should_publish = self
@@ -1657,11 +1771,17 @@ impl TerminalRuntime {
             .lock()
             .map(|mut previous| {
                 let changed = previous.as_ref() != Some(&current);
+                // A Some→None agent transition must emit an event so the
+                // frontend drops the exited agent from its list; plain shell
+                // panes (previous was already None) must not spam events.
+                let previous_agent_was_some = previous
+                    .as_ref()
+                    .is_some_and(|(previous_agent, _)| previous_agent.is_some());
                 *previous = Some(current);
-                changed
+                changed && (agent.is_some() || previous_agent_was_some)
             })
             .unwrap_or(false);
-        if should_publish && agent.is_some() {
+        if should_publish {
             self.event_hub.publish(
                 "pane.agent_status_changed",
                 json!({
@@ -1909,23 +2029,36 @@ fn pane_agent_presentation(pane: &PaneRecord, data: &BuiltinData) -> PaneAgentPr
     // the agent would never appear in the list. The 500ms throttle in
     // publish_agent_status_if_changed already limits how often detection runs.
     let terminal = data.terminals.get(&pane.terminal_id);
+    // Mirror upstream herdr's RecentAgentProcessExit suppression: when the
+    // pane's agent process exited (jcode quit inside the shell) the pane must
+    // stop reporting that agent even if stale screen text or OSC payloads
+    // still match, so `agent.list` drops the ghost row.
+    let agent_exited_recently = terminal
+        .map(|terminal| terminal.recent_agent_exit_active())
+        .unwrap_or(false);
     // When the terminal has exited, report "done" instead of letting stale
     // screen text (e.g. a leftover spinner frame) keep the status stuck in
     // "working". The OSC 9 tracker was already reset on exit, but screen-scrape
     // patterns in the scrollback can still match, so this guard is needed.
     if let Some(terminal) = terminal {
         if terminal.exited.load(Ordering::Acquire) {
-            let agent = detect_agent_label(&pane.argv)
-                .or_else(|| {
-                    detect_agent_label_from_text(&terminal.history_tail_text(DETECTION_TAIL_BYTES))
-                })
-                .or_else(|| {
-                    terminal
-                        .osc9_tracker
-                        .lock()
-                        .ok()
-                        .and_then(|t| t.latest_agent_label())
-                });
+            let agent = if agent_exited_recently {
+                None
+            } else {
+                detect_agent_label(&pane.argv)
+                    .or_else(|| {
+                        detect_agent_label_from_text(
+                            &terminal.history_tail_text(DETECTION_TAIL_BYTES),
+                        )
+                    })
+                    .or_else(|| {
+                        terminal
+                            .osc9_tracker
+                            .lock()
+                            .ok()
+                            .and_then(|t| t.latest_agent_label())
+                    })
+            };
             let status = if agent.is_some() { "done" } else { "unknown" };
             return PaneAgentPresentation { agent, status };
         }
@@ -1934,20 +2067,24 @@ fn pane_agent_presentation(pane: &PaneRecord, data: &BuiltinData) -> PaneAgentPr
         .map(|terminal| terminal.history_tail_text(DETECTION_TAIL_BYTES))
         .unwrap_or_default();
     let process_agent = terminal
-        .and_then(|terminal| terminal.child_pid())
-        .and_then(detect_agent_label_from_process_tree);
-    let agent = detect_agent_label(&pane.argv)
-        .or(process_agent)
-        .or_else(|| {
-            // Fall back to the OSC 9 side-channel agent label when argv and
-            // process-tree detection both miss (e.g. jcode launched through a
-            // wrapper that hides the binary name). The OSC payload format is
-            // `<agent>:<state>`, so `jcode:working` identifies the agent.
-            terminal
-                .and_then(|t| t.osc9_tracker.lock().ok())
-                .and_then(|t| t.latest_agent_label())
-        })
-        .or_else(|| detect_agent_label_from_text(&tail));
+        .and_then(|terminal| terminal.probe_live_process_agent())
+        .flatten();
+    let agent = if agent_exited_recently {
+        None
+    } else {
+        detect_agent_label(&pane.argv)
+            .or(process_agent)
+            .or_else(|| {
+                // Fall back to the OSC 9 side-channel agent label when argv and
+                // process-tree detection both miss (e.g. jcode launched through a
+                // wrapper that hides the binary name). The OSC payload format is
+                // `<agent>:<state>`, so `jcode:working` identifies the agent.
+                terminal
+                    .and_then(|t| t.osc9_tracker.lock().ok())
+                    .and_then(|t| t.latest_agent_label())
+            })
+            .or_else(|| detect_agent_label_from_text(&tail))
+    };
     let (osc_progress, osc_title) = terminal
         .and_then(|terminal| terminal.osc9_tracker.lock().ok())
         .map(|tracker| {
@@ -1960,7 +2097,7 @@ fn pane_agent_presentation(pane: &PaneRecord, data: &BuiltinData) -> PaneAgentPr
             )
         })
         .unwrap_or_default();
-    let status = match detect_agent_status_with_osc(
+    let status = detect_agent_status_with_osc(
         agent,
         &tail,
         &osc_progress,
@@ -1968,10 +2105,7 @@ fn pane_agent_presentation(pane: &PaneRecord, data: &BuiltinData) -> PaneAgentPr
         terminal
             .map(|t| t.jcode_detection_variant)
             .unwrap_or(JcodeDetectionVariant::Vanilla),
-    ) {
-        "unknown" if agent.is_some() => "idle",
-        status => status,
-    };
+    );
     PaneAgentPresentation { agent, status }
 }
 
@@ -2441,10 +2575,6 @@ struct ProcessInfo {
 }
 
 type ProcessCache = Option<(Instant, Vec<ProcessInfo>)>;
-
-fn detect_agent_label_from_process_tree(root_pid: u32) -> Option<&'static str> {
-    detect_agent_label_from_processes(root_pid, &process_table().ok()?)
-}
 
 #[cfg(unix)]
 fn process_table() -> io::Result<Vec<ProcessInfo>> {
@@ -4622,6 +4752,339 @@ mod tests {
         let presentation = pane_agent_presentation(pane, &data);
         assert_eq!(presentation.agent, Some("jcode"));
         assert_eq!(presentation.status, "done");
+    }
+
+    #[test]
+    fn agent_exit_record_lifecycle_is_deterministic() {
+        // Pure state-machine test for update_agent_exit_record, no live ps.
+        let hub = BuiltinEventHub::new();
+        let context = PaneEventContext {
+            workspace_id: "ws_rec".to_string(),
+            tab_id: "tab_rec".to_string(),
+            pane_id: "pane_rec".to_string(),
+            terminal_id: "term_rec".to_string(),
+        };
+        let terminal = TerminalRuntime::spawn(
+            "term_rec".to_string(),
+            std::env::current_dir().unwrap(),
+            vec![
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "sleep 30".to_string(),
+            ],
+            24,
+            80,
+            hub,
+            context,
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+
+        // Initially no exit record and nothing armed.
+        assert!(!terminal.recent_agent_exit_active());
+        assert_eq!(
+            terminal.last_live_process_agent.lock().unwrap().take(),
+            None
+        );
+
+        // Empty reads without a previously-live agent never arm the record:
+        // a plain shell pane must never fabricate an agent exit.
+        terminal.update_agent_exit_record(None, true);
+        assert!(!terminal.recent_agent_exit_active());
+
+        // Failed probe is a no-op even after a live agent was seen.
+        terminal.update_agent_exit_record(Some("jcode"), true);
+        assert!(!terminal.recent_agent_exit_active());
+        assert_eq!(
+            *terminal.last_live_process_agent.lock().unwrap(),
+            Some("jcode")
+        );
+        terminal.update_agent_exit_record(None, false);
+        assert!(!terminal.recent_agent_exit_active());
+        assert_eq!(
+            *terminal.last_live_process_agent.lock().unwrap(),
+            Some("jcode")
+        );
+
+        // Successful empty read after a live agent sets the record exactly once.
+        terminal.update_agent_exit_record(None, true);
+        assert!(terminal.recent_agent_exit_active());
+        let record = terminal
+            .recent_agent_process_exit
+            .lock()
+            .unwrap()
+            .expect("exit record must be set");
+        assert_eq!(record.agent, "jcode");
+        // Second empty read must not re-set (already disarmed).
+        terminal.update_agent_exit_record(None, true);
+        assert!(terminal.recent_agent_exit_active());
+        assert_eq!(
+            *terminal.last_live_process_agent.lock().unwrap(),
+            None,
+            "second empty read must not re-arm"
+        );
+
+        // Live re-detection clears the record.
+        terminal.update_agent_exit_record(Some("jcode"), true);
+        assert!(!terminal.recent_agent_exit_active());
+        assert_eq!(
+            *terminal.last_live_process_agent.lock().unwrap(),
+            Some("jcode")
+        );
+
+        // A fresh live→absent transition records the exit again: the cycle
+        // repeats deterministically once another agent run happens.
+        terminal.update_agent_exit_record(None, true);
+        assert!(terminal.recent_agent_exit_active());
+        let record = terminal
+            .recent_agent_process_exit
+            .lock()
+            .unwrap()
+            .expect("exit record must be set again");
+        assert_eq!(record.agent, "jcode");
+    }
+
+    #[test]
+    fn pane_agent_presentation_suppresses_agent_after_process_exit() {
+        // jcode exited inside the shell pane: screen text still shows its
+        // banner and idle marker, but the exit record must suppress the
+        // ghost agent from pane_agent_presentation (and thus agent.list).
+        let hub = BuiltinEventHub::new();
+        let context = PaneEventContext {
+            workspace_id: "ws_ghost".to_string(),
+            tab_id: "tab_ghost".to_string(),
+            pane_id: "pane_ghost".to_string(),
+            terminal_id: "term_ghost".to_string(),
+        };
+        let terminal = TerminalRuntime::spawn(
+            "term_ghost".to_string(),
+            std::env::current_dir().unwrap(),
+            vec![
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "sleep 30".to_string(),
+            ],
+            24,
+            80,
+            hub,
+            context,
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        // Stale screen text that would otherwise detect jcode + idle.
+        terminal.append_output(b"jcode session ready\nready for input\n\xe2\x9d\xaf\n");
+        // Simulate the live→absent transition: jcode was live, then gone.
+        terminal.update_agent_exit_record(Some("jcode"), true);
+        terminal.update_agent_exit_record(None, true);
+        assert!(terminal.recent_agent_exit_active());
+
+        let data = BuiltinData {
+            // agent_list_json walks workspaces → tabs → panes, so the pane
+            // must be linked from a tab and workspace to appear in the list.
+            workspaces: HashMap::from([(
+                "ws_ghost".to_string(),
+                WorkspaceRecord {
+                    workspace_id: "ws_ghost".to_string(),
+                    label: "Ghost".to_string(),
+                    cwd: std::env::current_dir().unwrap(),
+                    tab_ids: vec!["tab_ghost".to_string()],
+                },
+            )]),
+            tabs: HashMap::from([(
+                "tab_ghost".to_string(),
+                TabRecord {
+                    tab_id: "tab_ghost".to_string(),
+                    workspace_id: "ws_ghost".to_string(),
+                    label: "Ghost".to_string(),
+                    pane_ids: vec!["pane_ghost".to_string()],
+                },
+            )]),
+            panes: HashMap::from([(
+                "pane_ghost".to_string(),
+                PaneRecord {
+                    pane_id: "pane_ghost".to_string(),
+                    terminal_id: "term_ghost".to_string(),
+                    workspace_id: "ws_ghost".to_string(),
+                    tab_id: "tab_ghost".to_string(),
+                    cwd: std::env::current_dir().unwrap(),
+                    label: None,
+                    argv: vec!["/bin/zsh".to_string()],
+                },
+            )]),
+            terminals: HashMap::from([("term_ghost".to_string(), terminal.clone())]),
+            focused_workspace_id: None,
+            focused_tab_id: None,
+            focused_pane_id: None,
+            next_id: 0,
+        };
+        let pane = data.panes.get("pane_ghost").unwrap();
+        let presentation = pane_agent_presentation(pane, &data);
+        assert_eq!(
+            presentation.agent, None,
+            "exited agent must be suppressed even with stale jcode screen text"
+        );
+        assert_eq!(presentation.status, "unknown");
+
+        // agent.list must not include the pane: no label and no agent.
+        assert!(agent_list_json(&data).is_empty());
+
+        // Live re-detection clears the record and the agent re-appears.
+        terminal.update_agent_exit_record(Some("jcode"), true);
+        let presentation = pane_agent_presentation(pane, &data);
+        assert_eq!(presentation.agent, Some("jcode"));
+        assert!(!agent_list_json(&data).is_empty());
+    }
+
+    #[test]
+    fn pane_agent_presentation_suppresses_done_after_terminal_exit_with_record() {
+        // The pane's shell itself exits while an agent exit record is active:
+        // notify_exited must not publish a final "done" for the suppressed
+        // agent, and the exited-terminal presentation branch must report no
+        // agent.
+        let hub = BuiltinEventHub::new();
+        let context = PaneEventContext {
+            workspace_id: "ws_gd".to_string(),
+            tab_id: "tab_gd".to_string(),
+            pane_id: "pane_gd".to_string(),
+            terminal_id: "term_gd".to_string(),
+        };
+        let events = hub.subscribe();
+        let terminal = TerminalRuntime::spawn(
+            "term_gd".to_string(),
+            std::env::current_dir().unwrap(),
+            vec![
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "printf 'jcode session ready' && sleep 0.1".to_string(),
+            ],
+            24,
+            80,
+            hub,
+            context,
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        // jcode was live, then exited inside the shell before the shell quit.
+        terminal.update_agent_exit_record(Some("jcode"), true);
+        terminal.update_agent_exit_record(None, true);
+
+        // Wait for the reader thread to see the shell exit.
+        let (tx, rx) = mpsc::sync_channel(8);
+        terminal.subscribe(tx);
+        let mut saw_exit = false;
+        for _ in 0..16 {
+            match rx.recv_timeout(Duration::from_secs(2)).unwrap() {
+                TerminalSubscriberMessage::Output(_) => {}
+                TerminalSubscriberMessage::Exited => {
+                    saw_exit = true;
+                    break;
+                }
+            }
+        }
+        assert!(saw_exit);
+
+        // notify_exited must not have published a "done" agent_status_changed
+        // event for the suppressed agent. Drain events and verify.
+        let mut saw_agent_done = false;
+        while let Ok(event) = events.try_recv() {
+            if event["event"] == "pane.agent_status_changed"
+                && !event["data"]["agent"].is_null()
+                && event["data"]["agent_status"] == "done"
+            {
+                saw_agent_done = true;
+            }
+        }
+        assert!(
+            !saw_agent_done,
+            "suppressed agent must not get a final done publish"
+        );
+
+        // Presentation after terminal exit: no agent, unknown status.
+        let data = BuiltinData {
+            workspaces: HashMap::new(),
+            tabs: HashMap::new(),
+            panes: HashMap::from([(
+                "pane_gd".to_string(),
+                PaneRecord {
+                    pane_id: "pane_gd".to_string(),
+                    terminal_id: "term_gd".to_string(),
+                    workspace_id: "ws_gd".to_string(),
+                    tab_id: "tab_gd".to_string(),
+                    cwd: std::env::current_dir().unwrap(),
+                    label: None,
+                    argv: vec!["/bin/zsh".to_string()],
+                },
+            )]),
+            terminals: HashMap::from([("term_gd".to_string(), terminal)]),
+            focused_workspace_id: None,
+            focused_tab_id: None,
+            focused_pane_id: None,
+            next_id: 0,
+        };
+        let pane = data.panes.get("pane_gd").unwrap();
+        let presentation = pane_agent_presentation(pane, &data);
+        assert_eq!(presentation.agent, None);
+        assert_eq!(presentation.status, "unknown");
+    }
+
+    #[test]
+    fn agent_status_publishes_null_agent_after_exit_record() {
+        // Some→None agent transition must emit a single null-agent event so
+        // the frontend drops the row, without spamming for plain shell panes.
+        let hub = BuiltinEventHub::new();
+        let context = PaneEventContext {
+            workspace_id: "ws_null".to_string(),
+            tab_id: "tab_null".to_string(),
+            pane_id: "pane_null".to_string(),
+            terminal_id: "term_null".to_string(),
+        };
+        let events = hub.subscribe();
+        let terminal = TerminalRuntime::spawn(
+            "term_null".to_string(),
+            std::env::current_dir().unwrap(),
+            vec![
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "sleep 30".to_string(),
+            ],
+            24,
+            80,
+            hub,
+            context,
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+
+        // Seed last_agent_state with a live jcode detection via screen text.
+        terminal.append_output(b"jcode session ready\nready for input\n\xe2\x9d\xaf\n");
+        terminal.reset_status_throttle();
+        terminal.publish_agent_status_if_changed();
+        let event = events.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!(event["event"], "pane.agent_status_changed");
+        assert_eq!(event["data"]["agent"], "jcode");
+
+        // jcode exits inside the shell: the exit record arms.
+        terminal.update_agent_exit_record(Some("jcode"), true);
+        terminal.update_agent_exit_record(None, true);
+
+        // Next detection run must publish a null-agent transition event.
+        terminal.reset_status_throttle();
+        terminal.publish_agent_status_if_changed();
+        let event = events.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!(event["event"], "pane.agent_status_changed");
+        assert_eq!(
+            event["data"]["agent"],
+            Value::Null,
+            "agent must be null in the transition event"
+        );
+
+        // Further runs with no agent must not spam: same state, no publish.
+        terminal.reset_status_throttle();
+        terminal.publish_agent_status_if_changed();
+        assert!(
+            events.try_recv().is_err(),
+            "no further events expected for unchanged None state"
+        );
     }
 
     #[test]
