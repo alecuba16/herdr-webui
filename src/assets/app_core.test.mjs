@@ -813,7 +813,10 @@ describe("desktop file browser editor integration", () => {
       this.value = "";
       this._id = "";
       this._innerHTML = "";
+      this._attributes = {};
     }
+    getAttribute(name) { return Object.prototype.hasOwnProperty.call(this._attributes, name) ? this._attributes[name] : null; }
+    setAttribute(name, value) { this._attributes[name] = String(value); }
     set id(value) {
       this._id = String(value || "");
       if (this._id) this.ownerDocument.nodes.set(this._id, this);
@@ -830,6 +833,26 @@ describe("desktop file browser editor integration", () => {
       }
     }
     get innerHTML() { return this._innerHTML; }
+    querySelector(selector) {
+      return this.querySelectorAll(selector)[0] || null;
+    }
+    querySelectorAll(selector) {
+      // Minimal selector support for the class-based lookups the file browser uses.
+      const results = [];
+      const visit = (node) => {
+        for (const child of node.children || []) {
+          const classAttr = String(child.className || "");
+          if (selector.startsWith(".") && classAttr.split(/\s+/).includes(selector.slice(1))) results.push(child);
+          if (selector.includes(".") && !selector.startsWith(".")) {
+            const [tag, cls] = selector.split(".");
+            if (String(child.tag || "").toLowerCase() === tag.toLowerCase() && classAttr.split(/\s+/).includes(cls)) results.push(child);
+          }
+          visit(child);
+        }
+      };
+      visit(this);
+      return results;
+    }
     appendChild(child) {
       child.parentNode = this;
       this.children.push(child);
@@ -838,6 +861,10 @@ describe("desktop file browser editor integration", () => {
     }
     remove() {
       if (this.id) this.ownerDocument.nodes.delete(this.id);
+      if (this.parentNode && Array.isArray(this.parentNode.children)) {
+        const index = this.parentNode.children.indexOf(this);
+        if (index >= 0) this.parentNode.children.splice(index, 1);
+      }
     }
     focus() {}
     setSelectionRange() {}
@@ -862,7 +889,8 @@ describe("desktop file browser editor integration", () => {
         }
         return doc.nodes.get(id) || null;
       },
-      querySelector() { return null; },
+      querySelector(selector) { return doc.body ? doc.body.querySelectorAll(selector)[0] || null : null; },
+      querySelectorAll(selector) { return doc.body ? doc.body.querySelectorAll(selector) : []; },
     };
     doc.body = new FakeElement(doc, "body");
     doc.head = new FakeElement(doc, "head");
@@ -1060,6 +1088,94 @@ describe("desktop file browser editor integration", () => {
     assert.equal(editorCalls.at(-1).readonly, false);
     assert.equal(editorCalls.at(-1).content, "print('x')");
     assert.match(document.getElementById("fileBrowserPanel").innerHTML, /file-browser-open-tab active/);
+  });
+
+  it("syncs the dirty dot live from editor changes and never resurrects it after locking", async () => {
+    const document = createFakeDocument();
+    const editorCalls = [];
+    const context = {
+      window: {
+        addEventListener() {},
+        HerdrEditor: {
+          create(opts) {
+            editorCalls.push({ path: opts.path, content: opts.content, readonly: opts.readonly, onChange: opts.onChange });
+            opts.parent.innerHTML = `<div class="cm-content cm-lineWrapping" contenteditable="${opts.readonly === false ? "true" : "false"}" data-language="python"></div>`;
+            return { getValue() { return opts.content; }, setValue() {}, destroy() {} };
+          },
+        },
+        HerdrGitUi: { hide() {} },
+        HerdrWorkspacePath(workspace) { return workspace.cwd; },
+      },
+      document,
+      localStorage: { getItem() { return JSON.stringify({ fileBrowserLineNumbers: true, fileBrowserGitStatus: false }); } },
+      navigator: { clipboard: { writeText: async () => {} } },
+      fetch: async (url) => ({
+        ok: true,
+        async json() {
+          if (String(url).startsWith("/api/file-browser/file")) return { path: "src/demo.py", content: "print('x')", binary: false, truncated: false };
+          return { path: "", entries: [], git_status: null };
+        },
+      }),
+      confirm: () => true,
+      appRefreshIconButton: () => "<button>Refresh</button>",
+      encodeURIComponent,
+      decodeURIComponent,
+      Error,
+      JSON,
+      Math,
+      String,
+      setTimeout,
+      clearTimeout,
+    };
+    context.window.window = context.window;
+    context.window.document = document;
+    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
+    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
+
+    await context.window.HerdrFileBrowser.open({ cwd: "/repo" });
+    context.window.HerdrFileBrowser.select(encodeURIComponent("src/demo.py"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // Materialize a real tab node the way the browser DOM would hold it, so the
+    // targeted dot sync can be exercised on element children (not innerHTML strings).
+    const panel = document.getElementById("fileBrowserPanel");
+    const tab = document.createElement("div");
+    tab.className = "file-browser-open-tab";
+    tab.setAttribute("title", "/repo/src/demo.py");
+    const label = document.createElement("span");
+    label.className = "file-browser-open-tab-label";
+    tab.appendChild(label);
+    panel.appendChild(tab);
+
+    const dotFor = () => label.querySelector(".file-browser-tab-dirty");
+    assert.equal(dotFor(), null, "no dirty dot before any change");
+
+    editorCalls.at(-1).onChange();
+    assert.ok(dotFor(), "dirty dot appears live on first change");
+    assert.equal(dotFor().textContent, "●");
+    assert.equal(dotFor().title, "Modified");
+
+    editorCalls.at(-1).onChange();
+    assert.equal(label.querySelectorAll(".file-browser-tab-dirty").length, 1, "dot is not duplicated");
+
+    // Locking a dirty file discards the draft and re-renders the tab markup
+    // without the dirty span (the fake DOM keeps children across innerHTML
+    // writes, so assert on the regenerated markup like the browser would).
+    context.window.HerdrFileBrowser.toggleLock(encodeURIComponent("src/demo.py"));
+    assert.equal(editorCalls.at(-1).readonly, true);
+    assert.doesNotMatch(document.getElementById("fileBrowserPanel").innerHTML, /file-browser-tab-dirty/);
+
+    // A stale change event after the lock must not resurrect the dot on the
+    // rebuilt read-only tab.
+    const rebuiltTab = document.createElement("div");
+    rebuiltTab.className = "file-browser-open-tab";
+    rebuiltTab.setAttribute("title", "/repo/src/demo.py");
+    const rebuiltLabel = document.createElement("span");
+    rebuiltLabel.className = "file-browser-open-tab-label";
+    rebuiltTab.appendChild(rebuiltLabel);
+    document.getElementById("fileBrowserPanel").appendChild(rebuiltTab);
+    editorCalls.at(-1).onChange();
+    assert.equal(rebuiltLabel.querySelector(".file-browser-tab-dirty"), null, "stale change after lock does not resurrect the dot");
   });
 
   it("keeps editing draft per workspace, then forgets closed workspace state", async () => {
