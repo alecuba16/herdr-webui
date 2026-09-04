@@ -69,7 +69,7 @@ The TUI is intentionally separated from backend internals:
 - Render panes, tabs, sidebars, file trees, editor surfaces, terminal surfaces, and modals.
 - Store browser-local UI options in `localStorage`.
 - Preserve transient panel state while workspaces/worktrees stay open.
-- Keep CodeMirror preview and edit mode behavior consistent.
+- Keep CodeMirror editable/locked behavior consistent.
 - Load shared modules once through `app_boot.js`.
 
 ## Static asset model
@@ -167,7 +167,7 @@ Keyboard behavior:
 - `Alt+1`, `Alt+2`, and `Alt+3` toggle the workspaces, files, and content sections,
 - `Alt+↑` and `Alt+↓` request more content context above or below the selected content match.
 
-Opening a content match calls the file browser with path, line, and query highlight data. The file opens in the same read-only CodeMirror surface used by normal previews and scrolls to the matched line when supported.
+Opening a content match calls the file browser with path, line, and query highlight data. The file opens in the same CodeMirror surface used by normal file views (editable by default, with a lock toggle for read-only) and scrolls to the matched line when supported.
 
 ### Content search
 
@@ -211,7 +211,7 @@ Shared theme extension tokens live in `src/assets/shared/colors.css`. New featur
 
 ### File preview and editing
 
-File open uses the same CodeMirror shell as edit mode from the first render. Preview is read-only by default. Edit only changes the editable state and enables save behavior. Cancel returns to the same read-only editor style.
+File open uses the same CodeMirror shell from the first render. Text files are editable by default; the toolbar lock toggle switches the focused file between editable and read-only. Tabs show a dirty dot for unsaved changes, and `Cmd/Ctrl+S` saves the focused file. Locking a dirty file asks before discarding the draft. Saving keeps the file editable.
 
 Text files show line numbers by default. The setting can disable them.
 
@@ -244,15 +244,14 @@ The editor stack is CodeMirror. The WebUI preloads `/assets/vendor/codemirror.js
 
 Supported behavior:
 
-- read-only preview with CodeMirror style,
-- edit mode with the same style,
+- editable file views with CodeMirror style (lock toggle switches to read-only),
 - syntax highlighting by detected language,
 - fold gutter and folding keymaps for compatible languages,
 - default line numbers for text preview,
 - high-contrast syntax palette tokens for light and dark themes,
 - match-line highlight/scroll when opening a content-search result,
-- find toolbar in read-only preview and edit mode, with next/previous, match-case, and regex search,
-- replace-one and replace-all controls in edit mode only,
+- find toolbar in editable and read-only (locked) views, with next/previous, match-case, and regex search,
+- replace-one and replace-all controls in editable views only,
 - fallback numbered `<pre>` rendering if CodeMirror fails to load.
 
 ### Markdown preview
@@ -261,7 +260,7 @@ Markdown files (`.md`, `.markdown`) open in a rendered preview by default instea
 
 Mermaid fenced blocks render as SVG diagrams. The checked-in Mermaid IIFE is approximately 3.45 MB raw and 950 kB gzip. It is lazy-loaded only when a rendered preview contains a `<div class="herdr-mermaid">` element, so most markdown files never pay the Mermaid download cost. Mermaid is initialized with `securityLevel: "strict"` and a theme picked from the current light/dark app mode.
 
-Desktop file browser toolbar exposes `Preview` and `Source` toggle buttons for markdown files. `Preview` shows the rendered view; `Source` switches to the read-only CodeMirror source view with find support. Content-search matches still open in source view so the line highlight and scroll work. Edit mode keeps the CodeMirror editable view unchanged.
+Desktop file browser toolbar exposes `Preview` and `Source` toggle buttons for markdown files. `Preview` shows the rendered view; `Source` switches to the CodeMirror source view with find support (editable when unlocked). Content-search matches still open in source view so the line highlight and scroll work. Editing a markdown file keeps the CodeMirror editable view unchanged.
 
 ## Settings
 
@@ -367,7 +366,7 @@ This split keeps expensive or repository-sensitive work in Rust and keeps browse
 
 ### State and refresh model
 
-- File explorer state is scoped by open workspace/worktree identity. Switching panels restores selected files, last search selections, split panes, edit mode, and drafts without refetching unrelated UI state.
+- File explorer state is scoped by open workspace/worktree identity. Switching panels restores selected files, last search selections, split panes, lock state, and drafts without refetching unrelated UI state.
 - Closing a workspace/worktree forgets only UI cache. It does not mutate repository files or Herdr backend state.
 - Refresh retriggers backend calculations for Git status and tree/content search, which avoids stale derived state in the browser.
 
@@ -417,8 +416,8 @@ Current shared tokens cover:
 
 ### Editor visual rules
 
-- Preview and edit mode share the same CodeMirror shell.
-- Edit mode changes only editability and save controls.
+- Editable and read-only (locked) views share the same CodeMirror shell.
+- The lock toggle changes only editability and save controls.
 - Syntax colors use editor-specific theme tokens so code remains readable in both light and dark themes.
 
 ## Code structure and maintainability

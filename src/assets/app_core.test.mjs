@@ -813,7 +813,10 @@ describe("desktop file browser editor integration", () => {
       this.value = "";
       this._id = "";
       this._innerHTML = "";
+      this._attributes = {};
     }
+    getAttribute(name) { return Object.prototype.hasOwnProperty.call(this._attributes, name) ? this._attributes[name] : null; }
+    setAttribute(name, value) { this._attributes[name] = String(value); }
     set id(value) {
       this._id = String(value || "");
       if (this._id) this.ownerDocument.nodes.set(this._id, this);
@@ -830,6 +833,26 @@ describe("desktop file browser editor integration", () => {
       }
     }
     get innerHTML() { return this._innerHTML; }
+    querySelector(selector) {
+      return this.querySelectorAll(selector)[0] || null;
+    }
+    querySelectorAll(selector) {
+      // Minimal selector support for the class-based lookups the file browser uses.
+      const results = [];
+      const visit = (node) => {
+        for (const child of node.children || []) {
+          const classAttr = String(child.className || "");
+          if (selector.startsWith(".") && classAttr.split(/\s+/).includes(selector.slice(1))) results.push(child);
+          if (selector.includes(".") && !selector.startsWith(".")) {
+            const [tag, cls] = selector.split(".");
+            if (String(child.tag || "").toLowerCase() === tag.toLowerCase() && classAttr.split(/\s+/).includes(cls)) results.push(child);
+          }
+          visit(child);
+        }
+      };
+      visit(this);
+      return results;
+    }
     appendChild(child) {
       child.parentNode = this;
       this.children.push(child);
@@ -838,6 +861,10 @@ describe("desktop file browser editor integration", () => {
     }
     remove() {
       if (this.id) this.ownerDocument.nodes.delete(this.id);
+      if (this.parentNode && Array.isArray(this.parentNode.children)) {
+        const index = this.parentNode.children.indexOf(this);
+        if (index >= 0) this.parentNode.children.splice(index, 1);
+      }
     }
     focus() {}
     setSelectionRange() {}
@@ -862,7 +889,8 @@ describe("desktop file browser editor integration", () => {
         }
         return doc.nodes.get(id) || null;
       },
-      querySelector() { return null; },
+      querySelector(selector) { return doc.body ? doc.body.querySelectorAll(selector)[0] || null : null; },
+      querySelectorAll(selector) { return doc.body ? doc.body.querySelectorAll(selector) : []; },
     };
     doc.body = new FakeElement(doc, "body");
     doc.head = new FakeElement(doc, "head");
@@ -1000,7 +1028,7 @@ describe("desktop file browser editor integration", () => {
     assert.doesNotMatch(document.getElementById("fileBrowserPanel").innerHTML, /file-browser-menu/);
   });
 
-  it("mounts previews as read-only, edit as editable, and cancel as read-only", async () => {
+  it("opens files editable by default and toggles read-only via lock", async () => {
     const document = createFakeDocument();
     const editorCalls = [];
     const context = {
@@ -1047,17 +1075,107 @@ describe("desktop file browser editor integration", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     assert.equal(editorCalls.at(-1).path, "src/demo.py");
-    assert.equal(editorCalls.at(-1).readonly, true);
+    assert.equal(editorCalls.at(-1).readonly, false);
     assert.equal(editorCalls.at(-1).lineNumbers, true);
+    assert.match(document.getElementById("fileBrowserPanel").innerHTML, /file-browser-lock-toggle/);
 
-    context.window.HerdrFileBrowser.edit(encodeURIComponent("src/demo.py"));
+    context.window.HerdrFileBrowser.toggleLock(encodeURIComponent("src/demo.py"));
+    assert.equal(editorCalls.at(-1).readonly, true);
+    assert.equal(editorCalls.at(-1).content, "print('x')");
+    assert.match(document.getElementById("fileBrowserPanel").innerHTML, /file-browser-lock-toggle active/);
+
+    context.window.HerdrFileBrowser.toggleLock(encodeURIComponent("src/demo.py"));
     assert.equal(editorCalls.at(-1).readonly, false);
     assert.equal(editorCalls.at(-1).content, "print('x')");
     assert.match(document.getElementById("fileBrowserPanel").innerHTML, /file-browser-open-tab active/);
+  });
 
-    context.window.HerdrFileBrowser.cancelEdit(encodeURIComponent("src/demo.py"));
+  it("syncs the dirty dot live from editor changes and never resurrects it after locking", async () => {
+    const document = createFakeDocument();
+    const editorCalls = [];
+    const context = {
+      window: {
+        addEventListener() {},
+        HerdrEditor: {
+          create(opts) {
+            editorCalls.push({ path: opts.path, content: opts.content, readonly: opts.readonly, onChange: opts.onChange });
+            opts.parent.innerHTML = `<div class="cm-content cm-lineWrapping" contenteditable="${opts.readonly === false ? "true" : "false"}" data-language="python"></div>`;
+            return { getValue() { return opts.content; }, setValue() {}, destroy() {} };
+          },
+        },
+        HerdrGitUi: { hide() {} },
+        HerdrWorkspacePath(workspace) { return workspace.cwd; },
+      },
+      document,
+      localStorage: { getItem() { return JSON.stringify({ fileBrowserLineNumbers: true, fileBrowserGitStatus: false }); } },
+      navigator: { clipboard: { writeText: async () => {} } },
+      fetch: async (url) => ({
+        ok: true,
+        async json() {
+          if (String(url).startsWith("/api/file-browser/file")) return { path: "src/demo.py", content: "print('x')", binary: false, truncated: false };
+          return { path: "", entries: [], git_status: null };
+        },
+      }),
+      confirm: () => true,
+      appRefreshIconButton: () => "<button>Refresh</button>",
+      encodeURIComponent,
+      decodeURIComponent,
+      Error,
+      JSON,
+      Math,
+      String,
+      setTimeout,
+      clearTimeout,
+    };
+    context.window.window = context.window;
+    context.window.document = document;
+    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
+    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
+
+    await context.window.HerdrFileBrowser.open({ cwd: "/repo" });
+    context.window.HerdrFileBrowser.select(encodeURIComponent("src/demo.py"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // Materialize a real tab node the way the browser DOM would hold it, so the
+    // targeted dot sync can be exercised on element children (not innerHTML strings).
+    const panel = document.getElementById("fileBrowserPanel");
+    const tab = document.createElement("div");
+    tab.className = "file-browser-open-tab";
+    tab.setAttribute("title", "/repo/src/demo.py");
+    const label = document.createElement("span");
+    label.className = "file-browser-open-tab-label";
+    tab.appendChild(label);
+    panel.appendChild(tab);
+
+    const dotFor = () => label.querySelector(".file-browser-tab-dirty");
+    assert.equal(dotFor(), null, "no dirty dot before any change");
+
+    editorCalls.at(-1).onChange();
+    assert.ok(dotFor(), "dirty dot appears live on first change");
+    assert.equal(dotFor().textContent, "●");
+    assert.equal(dotFor().title, "Modified");
+
+    editorCalls.at(-1).onChange();
+    assert.equal(label.querySelectorAll(".file-browser-tab-dirty").length, 1, "dot is not duplicated");
+
+    // Locking a dirty file discards the draft and re-renders the tab markup
+    // without the dirty span (the fake DOM keeps children across innerHTML
+    // writes, so assert on the regenerated markup like the browser would).
+    context.window.HerdrFileBrowser.toggleLock(encodeURIComponent("src/demo.py"));
     assert.equal(editorCalls.at(-1).readonly, true);
-    assert.equal(editorCalls.at(-1).content, "print('x')");
+    assert.doesNotMatch(document.getElementById("fileBrowserPanel").innerHTML, /file-browser-tab-dirty/);
+
+    // A stale change event after the lock must not resurrect the dot on the
+    // rebuilt read-only tab.
+    const rebuiltTab = document.createElement("div");
+    rebuiltTab.className = "file-browser-open-tab";
+    rebuiltTab.setAttribute("title", "/repo/src/demo.py");
+    const rebuiltLabel = document.createElement("span");
+    rebuiltLabel.className = "file-browser-open-tab-label";
+    rebuiltTab.appendChild(rebuiltLabel);
+    document.getElementById("fileBrowserPanel").appendChild(rebuiltTab);
+    editorCalls.at(-1).onChange();
+    assert.equal(rebuiltLabel.querySelector(".file-browser-tab-dirty"), null, "stale change after lock does not resurrect the dot");
   });
 
   it("keeps editing draft per workspace, then forgets closed workspace state", async () => {
@@ -1215,7 +1333,8 @@ describe("desktop file browser editor integration", () => {
     assert.match(html, /data-file-menu-action="focus"/);
     assert.match(html, /data-file-menu-action="split"/);
     assert.match(html, /data-file-menu-action="find"/);
-    assert.match(html, /data-file-menu-action="edit"/);
+    assert.match(html, /data-file-menu-action="cancelEdit"/);
+    assert.match(html, /Lock \(read-only\)/);
     assert.match(html, /data-file-menu-action="history"/);
     assert.match(html, /data-file-menu-action="reload"/);
     assert.match(html, /data-file-menu-action="close"/);
@@ -1237,6 +1356,11 @@ describe("desktop file browser editor integration", () => {
     await click("focus");
     assert.match(document.getElementById("fileBrowserPanel").innerHTML, /file-browser-open-tab active[\s\S]*demo\.py/);
     assert.doesNotMatch(document.getElementById("fileBrowserPanel").innerHTML, /file-browser-menu/);
+
+    context.window.HerdrFileBrowser.tabMenu({ preventDefault() {}, stopPropagation() {}, clientX: 10, clientY: 20 }, encodeURIComponent("src/demo.py"));
+    await click("cancelEdit");
+    assert.equal(editorCalls.at(-1).readonly, true);
+    assert.equal(editorCalls.at(-1).path, "src/demo.py");
 
     context.window.HerdrFileBrowser.tabMenu({ preventDefault() {}, stopPropagation() {}, clientX: 10, clientY: 20 }, encodeURIComponent("src/demo.py"));
     await click("edit");
@@ -1309,7 +1433,7 @@ describe("desktop file browser editor integration", () => {
     assert.doesNotMatch(html, /data-file-menu-action="cancelEdit"/);
   });
 
-  it("shows Save and Cancel edit instead of Edit when file is being edited", async () => {
+  it("shows Save when a dirty editable file is open, hidden when clean or locked", async () => {
     const document = createFakeDocument();
     const context = {
       window: {
@@ -1348,16 +1472,29 @@ describe("desktop file browser editor integration", () => {
     vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
     vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
 
+    let editorOnChange = null;
+    const origCreate = context.window.HerdrEditor.create;
+    context.window.HerdrEditor.create = function(opts) {
+      editorOnChange = opts.onChange;
+      return origCreate.call(this, opts);
+    };
     await context.window.HerdrFileBrowser.open({ cwd: "/repo" });
     context.window.HerdrFileBrowser.select(encodeURIComponent("src/demo.py"));
     await new Promise((resolve) => setTimeout(resolve, 0));
-    context.window.HerdrFileBrowser.edit(encodeURIComponent("src/demo.py"));
+    editorOnChange("content of src/demo.py\nplus edits");
 
     context.window.HerdrFileBrowser.tabMenu({ preventDefault() {}, stopPropagation() {}, clientX: 10, clientY: 20 }, encodeURIComponent("src/demo.py"));
     const html = document.getElementById("fileBrowserPanel").innerHTML;
     assert.match(html, /data-file-menu-action="save"/);
     assert.match(html, /data-file-menu-action="cancelEdit"/);
+    assert.match(html, /file-browser-tab-dirty/);
     assert.doesNotMatch(html, /data-file-menu-action="edit"/);
+
+    context.window.HerdrFileBrowser.toggleLock(encodeURIComponent("src/demo.py"));
+    context.window.HerdrFileBrowser.tabMenu({ preventDefault() {}, stopPropagation() {}, clientX: 10, clientY: 20 }, encodeURIComponent("src/demo.py"));
+    const lockedHtml = document.getElementById("fileBrowserPanel").innerHTML;
+    assert.doesNotMatch(lockedHtml, /data-file-menu-action="save"/);
+    assert.match(lockedHtml, /data-file-menu-action="edit"/);
   });
 
   it("hides Split in tab menu when only one file is open", async () => {
@@ -1407,7 +1544,7 @@ describe("desktop file browser editor integration", () => {
     const html = document.getElementById("fileBrowserPanel").innerHTML;
     assert.doesNotMatch(html, /data-file-menu-action="split"/);
     assert.doesNotMatch(html, /data-file-menu-action="focus"/);
-    assert.match(html, /data-file-menu-action="edit"/);
+    assert.match(html, /data-file-menu-action="cancelEdit"/);
   });
 
   it("includes danger class and separator in tab menu", async () => {
@@ -1699,14 +1836,14 @@ describe("desktop file browser editor integration", () => {
     context.window.HerdrFileBrowser.select(encodeURIComponent("src/a.py"));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    // Make file dirty by editing and simulating a content change
+    // Make file dirty by simulating a content change (files open editable by default)
     let editorOnChange = null;
     const origCreate = context.window.HerdrEditor.create;
     context.window.HerdrEditor.create = function(opts) {
       editorOnChange = opts.onChange;
       return origCreate.call(this, opts);
     };
-    context.window.HerdrFileBrowser.edit(encodeURIComponent("src/a.py"));
+    context.window.HerdrFileBrowser.focusFile(encodeURIComponent("src/a.py"));
     // Simulate content change that sets dirty
     if (editorOnChange) editorOnChange("modified content");
 
@@ -1790,5 +1927,103 @@ describe("desktop file browser editor integration", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.ok(postCalls.length > 0, "save POST was made");
     assert.ok(postCalls[0].body.includes("src/a.py"));
+  });
+
+  it("saves dirty file with Cmd+S, keeps editing after save, and lock discards draft after confirm", async () => {
+    const document = createFakeDocument();
+    const postCalls = [];
+    let confirmCalls = 0;
+    let editorOnChange = null;
+    const keydownListeners = [];
+    const context = {
+      window: {
+        addEventListener(type, listener) { if (type === "keydown") keydownListeners.push(listener); },
+        HerdrEditor: {
+          create(opts) {
+            editorOnChange = opts.onChange;
+            opts.parent.innerHTML = `<div class="cm-content"></div>`;
+            opts.parent._herdrEditorApi = { toggleFind() {} };
+            return { getValue() { return opts.content; }, setValue() {}, destroy() {} };
+          },
+          isMarkdownPath() { return false; },
+        },
+        HerdrGitUi: { hide() {} },
+        HerdrWorkspacePath(workspace) { return workspace.cwd; },
+      },
+      document,
+      localStorage: { getItem() { return JSON.stringify({ fileBrowserLineNumbers: true, fileBrowserGitStatus: false }); } },
+      navigator: { clipboard: { writeText: async () => {} } },
+      fetch: async (url, opts) => {
+        const text = String(url);
+        if (opts && opts.method === "POST") {
+          postCalls.push({ url: text, body: opts.body });
+          return { ok: true, async json() { return { hash: "newhash" }; } };
+        }
+        return {
+          ok: true,
+          async json() {
+            if (text.startsWith("/api/file-browser/file")) {
+              const path = decodeURIComponent((text.match(/path=([^&]+)/) || [null, ""])[1]);
+              return { path, content: `content of ${path}`, binary: false, truncated: false };
+            }
+            return { root: "/repo", home: "/home", path: "", entries: [{ kind: "file", name: "a.py", path: "src/a.py" }], git_status: null };
+          },
+        };
+      },
+      confirm: () => { confirmCalls++; return true; },
+      appRefreshIconButton: () => "<button>Refresh</button>",
+      encodeURIComponent, decodeURIComponent, Error, JSON, Math, String,
+      setTimeout(fn) { fn(); return 1; },
+      clearTimeout() {},
+    };
+    context.window.window = context.window;
+    context.window.document = document;
+    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
+    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
+
+    await context.window.HerdrFileBrowser.open({ cwd: "/repo" });
+    context.window.HerdrFileBrowser.select(encodeURIComponent("src/a.py"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // Dirty state shows tab indicator and Save in tab menu
+    editorOnChange("content of src/a.py\nplus edits");
+    context.window.HerdrFileBrowser.focusFile(encodeURIComponent("src/a.py"));
+    assert.match(document.getElementById("fileBrowserPanel").innerHTML, /file-browser-tab-dirty/);
+
+    // Cmd+S saves the focused file
+    const pane = { getAttribute: (name) => name === "data-path" ? "src%2Fa.py" : "", classList: { contains() { return false; } } };
+    const keydownTarget = { closest: (selector) => selector === ".file-browser-pane" ? pane : null };
+    let defaultPrevented = false;
+    await keydownListeners.at(-1)({
+      target: keydownTarget, key: "s", metaKey: true, ctrlKey: false, altKey: false, shiftKey: false,
+      preventDefault() { defaultPrevented = true; }, stopPropagation() {}, defaultPrevented: false,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(defaultPrevented, "Cmd+S prevented default");
+    assert.equal(postCalls.length, 1, "Cmd+S made one save POST");
+    assert.ok(postCalls[0].body.includes("plus edits"));
+    assert.doesNotMatch(document.getElementById("fileBrowserPanel").innerHTML, /file-browser-tab-dirty/);
+    // Still editable after save: menu shows Lock, not Edit
+    context.window.HerdrFileBrowser.tabMenu({ preventDefault() {}, stopPropagation() {}, clientX: 10, clientY: 20 }, encodeURIComponent("src/a.py"));
+    const savedHtml = document.getElementById("fileBrowserPanel").innerHTML;
+    assert.match(savedHtml, /data-file-menu-action="cancelEdit"/);
+    assert.doesNotMatch(savedHtml, /data-file-menu-action="edit"/);
+    assert.doesNotMatch(savedHtml, /data-file-menu-action="save"/);
+
+    // Locking a dirty file confirms, then discards the draft
+    editorOnChange("content of src/a.py\nmore edits");
+    context.window.HerdrFileBrowser.toggleLock(encodeURIComponent("src/a.py"));
+    assert.equal(confirmCalls, 1, "locking dirty file asked for confirmation");
+    assert.doesNotMatch(document.getElementById("fileBrowserPanel").innerHTML, /file-browser-tab-dirty/);
+
+    // Cmd+S on a locked (read-only) file prevents the browser save dialog but makes no POST
+    let lockedPrevented = false;
+    await keydownListeners.at(-1)({
+      target: keydownTarget, key: "s", metaKey: true, ctrlKey: false, altKey: false, shiftKey: false,
+      preventDefault() { lockedPrevented = true; }, stopPropagation() {}, defaultPrevented: false,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(postCalls.length, 1, "Cmd+S on locked file made no POST");
+    assert.ok(lockedPrevented, "Cmd+S on locked file still prevented browser save dialog");
   });
   });

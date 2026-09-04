@@ -123,6 +123,33 @@
   gap: 4px;
   justify-content: flex-end;
 }
+.file-browser-lock-toggle {
+  align-items: center;
+  background: var(--panel2);
+  border: 1px solid var(--border2);
+  border-radius: 999px;
+  color: var(--muted);
+  cursor: pointer;
+  display: inline-flex;
+  flex: none;
+  height: 28px;
+  justify-content: center;
+  padding: 0;
+  width: 28px;
+}
+.file-browser-lock-toggle span {
+  background: currentColor;
+  display: inline-block;
+  height: 15px;
+  mask: url("/assets/icons/lock.svg") center / contain no-repeat;
+  width: 15px;
+}
+.file-browser-lock-toggle.active {
+  color: var(--accent);
+}
+.file-browser-lock-toggle:not(.active) span {
+  mask-image: url("/assets/icons/lock-open.svg");
+}
 .file-browser-title {
   font-weight: 800;
 }

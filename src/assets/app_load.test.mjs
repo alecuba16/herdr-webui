@@ -486,11 +486,12 @@ describe("app bundle load", () => {
     match(html, /configurable default expanded\/collapsed file groups/);
     match(html, /Git-style arrow controls for more context above\/below/);
     match(html, /opening at the matched line with editor highlight/);
-    match(html, /same CodeMirror editor surface as edit mode but stay read-only until Edit is pressed/);
+    match(html, /editable by default with a lock toggle in the toolbar that flips the file to read-only/);
+    match(html, /save with Cmd\/Ctrl\+S \(undo\/redo stays free for CodeMirror history\)/);
     match(html, /line numbers show by default/);
     match(html, /fold controls work for supported languages/);
     match(html, /editor find supports match case and regex/);
-    match(html, /edit mode enables replace/);
+    match(html, /replace works while a file is editable \(locked files keep replace disabled\)/);
     match(html, /syntax\/search colors use shared theme tokens/);
     const editorSource = readFileSync(new URL("./shared/editor.js", import.meta.url), "utf8");
     match(editorSource, /class="herdr-editor-find"[^`]*hidden/);
@@ -1207,7 +1208,8 @@ describe("app bundle load", () => {
     match(desktopFileBrowserSource, /function renderOpenFileTabs\(\)/);
     match(desktopFileBrowserSource, /state\.files\.length < 2/);
     match(desktopFileBrowserSource, /const tabs = renderOpenFileTabs\(\);/);
-    match(desktopFileBrowserSource, /const singleTab = tabs \? "" :/);
+    match(desktopFileBrowserSource, /function singleTab\(file\)/);
+    match(desktopFileBrowserSource, /\$\{tabs \|\| singleTab\(file\)\}/);
     match(desktopFileBrowserSource, /renderIfActive\(target, true\);/);
     match(desktopFileBrowserSource, /file-browser-open-tabs/);
     match(desktopFileBrowserSource, /function fileTabTooltipPath\(path\)/);
