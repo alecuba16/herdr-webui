@@ -1065,10 +1065,14 @@
     const targets = dirMenuTargetPaths(menu);
     const count = targets.length;
     const countLabel = count === 1 ? "1 file" : `${count} files`;
+    // Folder mutations target the working tree, so they only make sense in
+    // the changes view. Compare and stash trees keep their dir menus read-only,
+    // matching file rows which hide mutations outside changes mode.
+    const mutable = currentMode() === "changes";
     const actions = [];
     actions.push(`<button onclick="HerdrGitUi.menuAction('showInExplorer')">Show in file explorer</button>`);
     actions.push(`<button onclick="HerdrGitUi.menuAction('showHistory')">Show history</button>`);
-    if (count) {
+    if (count && mutable) {
       actions.push(`<button onclick="HerdrGitUi.menuAction('stage')">Stage folder (${countLabel})</button>`);
       actions.push(`<button onclick="HerdrGitUi.menuAction('unstage')">Unstage folder (${countLabel})</button>`);
       actions.push(`<button onclick="HerdrGitUi.menuAction('discard')">Discard folder (${countLabel})</button>`);
@@ -2952,6 +2956,7 @@
         return;
       }
       if (menu.kind === "dir") {
+        if (currentMode() !== "changes") return;
         const path = menu.file.replace(/\/+$/, "");
         const targets = dirMenuTargetPaths(menu);
         if (!targets.length) return;

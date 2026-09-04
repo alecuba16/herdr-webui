@@ -324,3 +324,24 @@ test("showChangesList exits current-compare back to plain working-tree diff", as
   assert.equal(last.path, "/api/git-ui/diff", "returning to changes must fetch the working-tree diff");
   assert.equal(last.params.get("cwd"), "/tmp/demo-repo");
 });
+
+test("folder mutations are hidden and refused outside the changes view", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [{ hash: NEW }, { hash: OLD }], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui } = booted;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  // Enter a compare mode with a dirty working tree to simulate the Compared
+  // section showing a dir row.
+  ui.selectLogCommit({ shiftKey: true }, NEW);
+  ui.openSelectedCompareModal();
+  await ui.compareSelectedWithCurrent();
+  const before = booted.calls.length;
+  ui.fileMenu({ preventDefault() {}, stopPropagation() {}, clientX: 10, clientY: 10 }, "src/", "M", "dir");
+  await ui.menuAction("stage");
+  const staged = booted.calls.slice(before).filter((call) => call.path === "/api/git-ui/stage");
+  assert.equal(staged.length, 0, "no stage POST may fire outside changes mode");
+});
