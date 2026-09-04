@@ -928,6 +928,12 @@
     return view.mode || "changes";
   }
 
+  function compareRefLabel(ref) {
+    const value = String(ref || "").trim();
+    if (!value || value === ".") return "working tree";
+    return value;
+  }
+
   function canMutateDiff() {
     const view = active() || {};
     if (view.tab === "stash") return false;
@@ -1597,7 +1603,7 @@
     const viewStateLabel = fileViewStateLabel(view, activeTab);
     const stateLabel = breadcrumbs || `<span class="git-ui-compare-state git-ui-file-view-state" title="${esc(viewStateLabel)}">${esc(viewStateLabel)}</span>`;
     const compare = activeTab !== "history" && currentMode() !== "changes" && !view.temporaryHistoryCompare && !view.fileBackTarget
-      ? `<span class="git-ui-compare-state">Comparing ${esc(view.compareBase || "base")} → ${esc(view.compareTarget || "target")}</span>`
+      ? `<span class="git-ui-compare-state">Comparing ${esc(compareRefLabel(view.compareBase))} → ${esc(compareRefLabel(view.compareTarget))}</span>`
       : "";
     const files = (view.diff && view.diff.files) || [];
     const collapsible = activeTab === "changes" && files.length > 0;
@@ -1626,7 +1632,7 @@
 
   function canEditCurrentFile(view) {
     if (!view || !view.file || view.file.endsWith("/")) return false;
-    if (currentMode() === "readonly-compare" && view.compareTarget !== ".") return false;
+    if (currentMode() === "readonly-compare") return false;
     if (view.diffKind === "S" || view.diffScope === "staged") return false;
     const file = diffFile(view.file);
     return !file || file.status !== "deleted";
@@ -1914,8 +1920,8 @@
     const large = lineCount > LARGE_FILE_DIFF_LINE_LIMIT;
     const loadedLarge = !!(view.loadedLargeDiffFiles || {})[file.path];
     const renderFullLarge = !!(view.fullLargeDiffFiles || {})[diffFileKey(file)];
-    const left = mode === "changes" ? fileDiffLeftLabel(file) : (view.compareBase || "base");
-    const right = mode === "readonly-compare" ? (view.compareTarget || "target") : "current";
+    const left = mode === "changes" ? fileDiffLeftLabel(file) : compareRefLabel(view.compareBase);
+    const right = mode === "changes" ? "current" : compareRefLabel(view.compareTarget);
     if (view.showBlame && (!large || loadedLarge)) ensureBlame(file.path);
     const conflictActions = renderDiffConflictResolutionButtons(file);
     const restore = mode === "changes"
@@ -1967,7 +1973,7 @@
     const view = active();
     if (!view || !path || view.blame[path] !== undefined || currentMode() === "readonly-compare") return;
     view.blame[path] = null;
-    const ref = currentMode() === "changes" ? "working" : (view.compareTarget || "HEAD");
+    const ref = currentMode() === "changes" || currentMode() === "current-compare" ? "working" : (view.compareTarget || "HEAD");
     api(`/api/git-ui/blame?cwd=${encodeURIComponent(view.cwd)}&file=${encodeURIComponent(path)}&ref_name=${encodeURIComponent(ref)}`)
       .then((data) => {
         view.blame[path] = parseBlame(data.text || "");
@@ -3721,9 +3727,16 @@
       render();
     },
     compareSelectedLog() {
-      const selected = ((active() || {}).selectedLogCommits || []).slice(0, 2);
+      const view = active();
+      const selected = ((view && view.selectedLogCommits) || []).slice(0, 2);
       if (selected.length === 1) this.openSelectedCompareModal();
-      if (selected.length === 2) this.compareCommits(selected[0], selected[1]);
+      if (selected.length !== 2) return;
+      // The right side must always show the newest ref: order the pair by
+      // position in the commit log, not by click order.
+      const order = new Map((((view.logData || {}).commits) || []).map((commit, index) => [String(commit.hash || ""), index]));
+      const rank = (hash) => (order.has(hash) ? order.get(hash) : Number.MAX_SAFE_INTEGER);
+      const [base, target] = selected.slice().sort((a, b) => rank(a) - rank(b));
+      this.compareCommits(base, target);
     },
     openSelectedCompareModal() {
       const selected = ((active() || {}).selectedLogCommits || []).slice(0, 1);
@@ -3745,7 +3758,15 @@
       const hash = state.compareSelectedModal && state.compareSelectedModal.ref;
       state.compareSelectedModal = null;
       if (!hash) return;
-      await this.compareCommits(hash, ".");
+      const view = active();
+      if (!view) return;
+      pushNavigationSnapshot(view);
+      view.compareBase = hash;
+      view.compareTarget = ".";
+      view.mode = "current-compare";
+      clearHistoryCompareState(view, { clearBackTarget: true });
+      view.tab = "changes";
+      await loadDiff();
     },
     setLogAll(value) {
       const view = active();
