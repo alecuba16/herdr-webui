@@ -491,7 +491,7 @@ describe("app bundle load", () => {
     match(html, /line numbers show by default/);
     match(html, /fold controls work for supported languages/);
     match(html, /editor find supports match case and regex/);
-    match(html, /edit mode enables replace/);
+    match(html, /replace works while a file is editable \(locked files keep replace disabled\)/);
     match(html, /syntax\/search colors use shared theme tokens/);
     const editorSource = readFileSync(new URL("./shared/editor.js", import.meta.url), "utf8");
     match(editorSource, /class="herdr-editor-find"[^`]*hidden/);
