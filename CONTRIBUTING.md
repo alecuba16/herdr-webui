@@ -25,6 +25,20 @@ cargo test --target-dir target
 node --test src/assets/app_core.test.mjs src/assets/app_load.test.mjs src/assets/app_boot.test.mjs src/assets/mobile_load.test.mjs
 ```
 
+## End-to-end checks
+
+The synthetic suites run in a fake DOM and cannot catch DOM-liveness bugs.
+When changing the file browser editor flow (lock toggle, dirty tabs, save),
+also run the real-browser acceptance harness:
+
+```sh
+scripts/e2e/run-e2e.sh
+```
+
+It builds an isolated server (own config dir and session, so a locally
+running instance is never touched), drives the served app in headless
+Chrome over CDP, and tears everything down. See `scripts/e2e/README.md`.
+
 ## Releases
 
 WebUI releases use `v0.0.x` tags and GitHub Release notes. Do not prepare root Herdr release commits or tags from this repository.
