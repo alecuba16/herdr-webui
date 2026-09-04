@@ -145,6 +145,18 @@
     state.contextMenu = null;
     render();
   }, true);
+  window.addEventListener("keydown", (event) => {
+    if (!state.open || !event || event.defaultPrevented || event.altKey || event.shiftKey) return;
+    const key = String(event.key || "").toLowerCase();
+    if (key !== "s" || !(event.metaKey || event.ctrlKey)) return;
+    const path = focusedFilePath(event.target);
+    const file = path ? state.files.find((f) => f.path === path) : null;
+    if (!file || file.binary || file.truncated) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (file.saving) return;
+    saveFile(file.path);
+  }, true);
 
   function workspaceCwd(workspace) {
     if (!workspace) return "";
@@ -373,7 +385,7 @@
       }
       renderIfActive(target, true);
       const file = await api(`/api/file-browser/file?cwd=${encodeURIComponent(target.cwd)}&path=${encodeURIComponent(path)}`);
-      const nextFile = Object.assign(file, { draft: file.content || "", editing: false, dirty: false, saving: false, error: "", searchHighlight: searchHighlight || null, previewSource: !!searchHighlight });
+      const nextFile = Object.assign(file, { draft: file.content || "", editing: true, dirty: false, saving: false, error: "", searchHighlight: searchHighlight || null, previewSource: !!searchHighlight });
       if (mode === "split") {
         target.files.push(nextFile);
         target.split = true;
@@ -627,10 +639,21 @@
     const preview = isMarkdown && !file.editing ? `<button class="git-ui-btn ${file.previewSource ? "" : "active"}" onclick="HerdrFileBrowser.togglePreview('${arg(file.path)}')">Preview</button><button class="git-ui-btn ${file.previewSource ? "active" : ""}" onclick="HerdrFileBrowser.toggleSource('${arg(file.path)}')">Source</button>` : "";
     const tabs = renderOpenFileTabs();
     const split = state.files.length > 1 ? `<button class="git-ui-btn ${state.split ? "active" : ""}" onclick="HerdrFileBrowser.toggleSplit()">Split</button>` : "";
+    const canEdit = !file.binary && !file.truncated;
+    const lock = canEdit ? lockToggleHtml(file) : "";
+    return `${tabs || singleTab(file)}<span class="file-browser-toolbar-actions">${preview}${split}${lock}<button class="git-ui-btn" onclick="HerdrFileBrowser.toggleFind('${arg(file.path)}')">Find</button></span>`;
+  }
+
+  function lockToggleHtml(file) {
+    const locked = !file.editing;
+    const title = locked ? "Unlock to edit" : "Lock (read-only)";
+    return `<button type="button" class="file-browser-lock-toggle ${locked ? "active" : ""}" title="${esc(title)}" aria-label="${esc(title)}" aria-pressed="${locked ? "true" : "false"}" onclick="HerdrFileBrowser.toggleLock('${arg(file.path)}')"><span></span></button>`;
+  }
+
+  function singleTab(file) {
     const dirty = file.dirty ? `<span class="file-browser-tab-dirty" title="Modified">●</span>` : "";
     const tooltip = fileTabTooltipPath(file.path);
-    const singleTab = tabs ? "" : `<div class="file-browser-open-tabs" role="tablist" aria-label="Open files"><span class="file-browser-open-tab active" role="presentation" title="${esc(tooltip)}" oncontextmenu="event.preventDefault();event.stopPropagation();return HerdrFileBrowser.tabMenu(event,'${arg(file.path)}')"><button type="button" class="file-browser-open-tab-label" role="tab" aria-selected="true" title="${esc(tooltip)}" onclick="HerdrFileBrowser.focusFile('${arg(file.path)}')">${esc(Tree.basename(file.path))}${dirty}</button><button type="button" class="file-browser-open-tab-close" title="Close ${esc(Tree.basename(file.path))}" aria-label="Close ${esc(Tree.basename(file.path))}" onclick="event.stopPropagation();HerdrFileBrowser.closeFile('${arg(file.path)}')">&times;</button></span></div>`;
-    return `${tabs || singleTab}<span class="file-browser-toolbar-actions">${preview}${split}<button class="git-ui-btn" onclick="HerdrFileBrowser.toggleFind('${arg(file.path)}')">Find</button></span>`;
+    return `<div class="file-browser-open-tabs" role="tablist" aria-label="Open files"><span class="file-browser-open-tab active" role="presentation" title="${esc(tooltip)}" oncontextmenu="event.preventDefault();event.stopPropagation();return HerdrFileBrowser.tabMenu(event,'${arg(file.path)}')"><button type="button" class="file-browser-open-tab-label" role="tab" aria-selected="true" title="${esc(tooltip)}" onclick="HerdrFileBrowser.focusFile('${arg(file.path)}')">${esc(Tree.basename(file.path))}${dirty}</button><button type="button" class="file-browser-open-tab-close" title="Close ${esc(Tree.basename(file.path))}" aria-label="Close ${esc(Tree.basename(file.path))}" onclick="event.stopPropagation();HerdrFileBrowser.closeFile('${arg(file.path)}')">&times;</button></span></div>`;
   }
 
   function renderPreviewShell() {
@@ -639,7 +662,7 @@
 
 
     const panes = files.map((file) => {
-      return `<section class="file-browser-pane ${file.path === state.selected ? "active" : ""}"><div class="file-browser-pane-body" id="fileBrowserEditor-${hashId(file.path)}">${previewPlaceholder(file)}</div>${file.error ? `<div class="file-browser-error">${esc(file.error)}</div>` : ""}</section>`;
+      return `<section class="file-browser-pane ${file.path === state.selected ? "active" : ""}" data-path="${arg(file.path)}"><div class="file-browser-pane-body" id="fileBrowserEditor-${hashId(file.path)}">${previewPlaceholder(file)}</div>${file.error ? `<div class="file-browser-error">${esc(file.error)}</div>` : ""}</section>`;
     });
 
 
@@ -696,13 +719,13 @@
     const focus = !isActive ? `<button type="button" data-file-menu-action="focus">Focus</button>` : "";
     const split = hasMultiple ? `<button type="button" data-file-menu-action="split">Open in split</button>` : "";
     const find = canEdit ? `<button type="button" data-file-menu-action="find">Find in file</button>` : "";
-    const edit = canEdit && !editing ? `<button type="button" data-file-menu-action="edit">Edit</button>` : "";
-    const save = canEdit && editing ? `<button type="button" data-file-menu-action="save">Save</button><button type="button" data-file-menu-action="cancelEdit">Cancel edit</button>` : "";
+    const lock = canEdit ? `<button type="button" data-file-menu-action="${editing ? "cancelEdit" : "edit"}">${editing ? "Lock (read-only)" : "Unlock to edit"}</button>` : "";
+    const save = canEdit && editing && file.dirty ? `<button type="button" data-file-menu-action="save">Save</button>` : "";
     const history = `<button type="button" data-file-menu-action="history">Show history</button>`;
     const reload = `<button type="button" data-file-menu-action="reload">Reload</button>`;
     const copyPath = `<button type="button" data-file-menu-action="copyPathTab">Copy path</button>`;
     const close = `<button type="button" class="danger" data-file-menu-action="close">Close file</button>`;
-    return `<div class="git-ui-menu file-browser-menu" style="left:${Math.max(0, menu.x)}px;top:${Math.max(0, menu.y)}px" onclick="event.stopPropagation()">${labelHtml}${focus}${split}${find}${edit}${save}${history}${reload}${copyPath}${sep}${close}</div>`;
+    return `<div class="git-ui-menu file-browser-menu" style="left:${Math.max(0, menu.x)}px;top:${Math.max(0, menu.y)}px" onclick="event.stopPropagation()">${labelHtml}${focus}${split}${find}${lock}${save}${history}${reload}${copyPath}${sep}${close}</div>`;
   }
 
   function mountEditors() {
@@ -807,15 +830,16 @@
   async function reloadFile(path) {
     const index = state.files.findIndex((file) => file.path === path);
     if (index < 0) return loadFile(path);
+    const keepEditing = !!state.files[index].editing;
     const next = await api(`/api/file-browser/file?cwd=${encodeURIComponent(state.cwd)}&path=${encodeURIComponent(path)}`);
-    state.files[index] = Object.assign(next, { draft: next.content || "", editing: false, dirty: false, saving: false, error: "" });
+    state.files[index] = Object.assign(next, { draft: next.content || "", editing: keepEditing, dirty: false, saving: false, error: "" });
     state.selected = path;
     render();
   }
 
   async function saveFile(path) {
     const file = state.files.find((file) => file.path === path);
-    if (!file || file.saving) return;
+    if (!file || file.saving || !file.editing) return;
     file.saving = true;
     file.error = "";
     render();
@@ -829,7 +853,6 @@
       file.content = file.draft;
       file.hash = result.hash || file.hash;
       file.dirty = false;
-      file.editing = false;
     } catch (error) {
       file.error = error.message || String(error);
     }
@@ -946,7 +969,7 @@
       if (action === "find") { toggleFind(menu.path); return; }
       if (action === "edit") { const file = state.files.find((f) => f.path === menu.path); if (file) { file.editing = true; file.draft = file.content || ""; file.dirty = false; } state.selected = menu.path; render(); return; }
       if (action === "save") { state.selected = menu.path; render(); saveFile(menu.path); return; }
-      if (action === "cancelEdit") { const file = state.files.find((f) => f.path === menu.path); if (file) { file.editing = false; file.draft = file.content || ""; file.dirty = false; } state.selected = menu.path; render(); return; }
+      if (action === "cancelEdit") { const file = state.files.find((f) => f.path === menu.path); if (file) { if (file.dirty && !confirm(`Discard unsaved changes to ${menu.path}?`)) return; file.editing = false; file.draft = file.content || ""; file.dirty = false; } state.selected = menu.path; render(); return; }
       if (action === "reload") { state.selected = menu.path; render(); await reloadFile(menu.path); return; }
       if (action === "close") { const file = state.files.find((f) => f.path === menu.path); if (file && file.dirty && !confirm(`Close ${menu.path} with unsaved changes?`)) return; state.files = state.files.filter((f) => f.path !== menu.path); if (state.selected === menu.path) state.selected = (state.files[state.files.length - 1] || {}).path || ""; if (state.files.length < 2) state.split = false; render(); return; }
     } catch (error) {
@@ -1091,15 +1114,16 @@
     menuAction(action) { return handleMenuAction(action); },
     edit(encodedPath) {
       const file = state.files.find((file) => file.path === decodeURIComponent(encodedPath));
-      if (!file) return;
+      if (!file || file.editing) return;
       file.editing = true;
-      file.draft = file.content || "";
-      file.dirty = false;
+      if (file.draft == null) file.draft = file.content || "";
       render();
     },
     cancelEdit(encodedPath) {
-      const file = state.files.find((file) => file.path === decodeURIComponent(encodedPath));
-      if (!file) return;
+      const path = decodeURIComponent(encodedPath || "");
+      const file = state.files.find((file) => file.path === path);
+      if (!file || !file.editing) return;
+      if (file.dirty && !confirm(`Discard unsaved changes to ${path}?`)) return;
       file.editing = false;
       file.draft = file.content || "";
       file.dirty = false;
@@ -1108,18 +1132,32 @@
     save(encodedPath) { saveFile(decodeURIComponent(encodedPath)); },
     reload(encodedPath) { reloadFile(decodeURIComponent(encodedPath)).catch((error) => { state.error = error.message || String(error); render(); }); },
     toggleFind(encodedPath) { toggleFind(decodeURIComponent(encodedPath || "")); },
+    toggleLock(encodedPath) {
+      const path = decodeURIComponent(encodedPath || "");
+      const file = state.files.find((file) => file.path === path);
+      if (!file || file.binary || file.truncated) return;
+      if (file.editing) {
+        if (file.dirty && !confirm(`Discard unsaved changes to ${path}?`)) return;
+        file.editing = false;
+        file.draft = file.content || "";
+        file.dirty = false;
+      } else {
+        file.editing = true;
+        if (file.draft == null) file.draft = file.content || "";
+      }
+      state.selected = path;
+      render();
+    },
     togglePreview(encodedPath) {
       const file = state.files.find((file) => file.path === decodeURIComponent(encodedPath));
       if (!file) return;
       file.previewSource = false;
-      file.editing = false;
       render();
     },
     toggleSource(encodedPath) {
       const file = state.files.find((file) => file.path === decodeURIComponent(encodedPath));
       if (!file) return;
       file.previewSource = true;
-      file.editing = false;
       render();
     },
     showHistory(encodedPath) {
