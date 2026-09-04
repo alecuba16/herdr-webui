@@ -18,6 +18,10 @@ test: test-js
 e2e:
     scripts/e2e/run-e2e.sh
 
+# No-browser acceptance run for the Git explorer rework. See scripts/e2e/README.md.
+git-e2e:
+    scripts/e2e/run-git-e2e.sh
+
 check: lint test
 
 build:

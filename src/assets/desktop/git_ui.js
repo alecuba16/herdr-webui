@@ -928,6 +928,12 @@
     return view.mode || "changes";
   }
 
+  function compareRefLabel(ref) {
+    const value = String(ref || "").trim();
+    if (!value || value === ".") return "working tree";
+    return value;
+  }
+
   function canMutateDiff() {
     const view = active() || {};
     if (view.tab === "stash") return false;
@@ -977,6 +983,7 @@
         selectMethod,
         activateMethod: "activateTreeItem",
         contextMethod: "fileMenu",
+        dirContextKind: "dir",
         dataPrefix: "git",
         rowClass: "git-ui-file",
         dirClass: "git-ui-file git-ui-dir",
@@ -1041,9 +1048,42 @@
     return `<div class="git-ui-file ${activePath === file ? "active" : ""}" role="treeitem" tabindex="0" data-git-path="${esc(file)}" data-git-kind="${esc(kind)}" style="--level:${level}" onclick="HerdrGitUi.${method}('${arg(file)}','${kind}')" onkeydown="HerdrGitUi.activateTreeItem(event)" oncontextmenu="return HerdrGitUi.fileMenu(event,'${arg(file)}','${kind}')"><span class="git-ui-tree-caret"></span><span class="git-ui-tree-icon file">${treeIcon("file")}</span><span class="git-ui-path" title="${esc(file)}">${FileTree && FileTree.highlight ? FileTree.highlight(name, (active() || {}).fileFilter) : esc(name)}</span><span class="git-ui-file-meta">${summary}</span></div>`;
   }
 
+  function dirMenuTargetPaths(menu) {
+    const view = active() || {};
+    const status = view.status || {};
+    const dir = String(menu.file || "").replace(/\/+$/, "");
+    if (!dir) return [];
+    const prefix = `${dir}/`;
+    return [...(status.staged || []), ...(status.unstaged || []), ...(status.untracked || []), ...(status.conflicted || [])]
+      .map((path) => String(path || ""))
+      .filter((path) => path === dir || path === `${dir}/` || path.startsWith(prefix))
+      .filter((path, index, all) => all.indexOf(path) === index);
+  }
+
+  function renderDirContextMenu(menu) {
+    const dir = String(menu.file || "");
+    const targets = dirMenuTargetPaths(menu);
+    const count = targets.length;
+    const countLabel = count === 1 ? "1 file" : `${count} files`;
+    // Folder mutations target the working tree, so they only make sense in
+    // the changes view. Compare and stash trees keep their dir menus read-only,
+    // matching file rows which hide mutations outside changes mode.
+    const mutable = currentMode() === "changes";
+    const actions = [];
+    actions.push(`<button onclick="HerdrGitUi.menuAction('showInExplorer')">Show in file explorer</button>`);
+    actions.push(`<button onclick="HerdrGitUi.menuAction('showHistory')">Show history</button>`);
+    if (count && mutable) {
+      actions.push(`<button onclick="HerdrGitUi.menuAction('stage')">Stage folder (${countLabel})</button>`);
+      actions.push(`<button onclick="HerdrGitUi.menuAction('unstage')">Unstage folder (${countLabel})</button>`);
+      actions.push(`<button onclick="HerdrGitUi.menuAction('discard')">Discard folder (${countLabel})</button>`);
+    }
+    return `<div class="git-ui-menu" style="left:${Math.max(0, menu.x)}px;top:${Math.max(0, menu.y)}px" onclick="event.stopPropagation()">${actions.join("")}</div>`;
+  }
+
   function renderContextMenu() {
     const menu = state.contextMenu;
     if (!menu) return "";
+    if (menu.kind === "dir") return renderDirContextMenu(menu);
     const actions = [];
     actions.push(`<button onclick="HerdrGitUi.menuAction('showInExplorer')">Show in file explorer</button>`);
     actions.push(`<button onclick="HerdrGitUi.menuAction('showHistory')">Show history</button>`);
@@ -1567,7 +1607,7 @@
     const viewStateLabel = fileViewStateLabel(view, activeTab);
     const stateLabel = breadcrumbs || `<span class="git-ui-compare-state git-ui-file-view-state" title="${esc(viewStateLabel)}">${esc(viewStateLabel)}</span>`;
     const compare = activeTab !== "history" && currentMode() !== "changes" && !view.temporaryHistoryCompare && !view.fileBackTarget
-      ? `<span class="git-ui-compare-state">Comparing ${esc(view.compareBase || "base")} → ${esc(view.compareTarget || "target")}</span>`
+      ? `<span class="git-ui-compare-state">Comparing ${esc(compareRefLabel(view.compareBase))} → ${esc(compareRefLabel(view.compareTarget))}</span>`
       : "";
     const files = (view.diff && view.diff.files) || [];
     const collapsible = activeTab === "changes" && files.length > 0;
@@ -1596,7 +1636,7 @@
 
   function canEditCurrentFile(view) {
     if (!view || !view.file || view.file.endsWith("/")) return false;
-    if (currentMode() === "readonly-compare" && view.compareTarget !== ".") return false;
+    if (currentMode() === "readonly-compare") return false;
     if (view.diffKind === "S" || view.diffScope === "staged") return false;
     const file = diffFile(view.file);
     return !file || file.status !== "deleted";
@@ -1884,8 +1924,8 @@
     const large = lineCount > LARGE_FILE_DIFF_LINE_LIMIT;
     const loadedLarge = !!(view.loadedLargeDiffFiles || {})[file.path];
     const renderFullLarge = !!(view.fullLargeDiffFiles || {})[diffFileKey(file)];
-    const left = mode === "changes" ? fileDiffLeftLabel(file) : (view.compareBase || "base");
-    const right = mode === "readonly-compare" ? (view.compareTarget || "target") : "current";
+    const left = mode === "changes" ? fileDiffLeftLabel(file) : compareRefLabel(view.compareBase);
+    const right = mode === "changes" ? "current" : compareRefLabel(view.compareTarget);
     if (view.showBlame && (!large || loadedLarge)) ensureBlame(file.path);
     const conflictActions = renderDiffConflictResolutionButtons(file);
     const restore = mode === "changes"
@@ -1937,7 +1977,7 @@
     const view = active();
     if (!view || !path || view.blame[path] !== undefined || currentMode() === "readonly-compare") return;
     view.blame[path] = null;
-    const ref = currentMode() === "changes" ? "working" : (view.compareTarget || "HEAD");
+    const ref = currentMode() === "changes" || currentMode() === "current-compare" ? "working" : (view.compareTarget || "HEAD");
     api(`/api/git-ui/blame?cwd=${encodeURIComponent(view.cwd)}&file=${encodeURIComponent(path)}&ref_name=${encodeURIComponent(ref)}`)
       .then((data) => {
         view.blame[path] = parseBlame(data.text || "");
@@ -2871,10 +2911,10 @@
       event.preventDefault();
       event.currentTarget.click();
     },
-    fileMenu(event, file, kind) {
+    fileMenu(event, file, kind, rowKind) {
       event.preventDefault();
       event.stopPropagation();
-      state.contextMenu = { x: event.clientX, y: event.clientY, file: decodeURIComponent(file), kind };
+      state.contextMenu = { x: event.clientX, y: event.clientY, file: decodeURIComponent(file), kind: rowKind === "dir" ? "dir" : kind };
       render();
       return false;
     },
@@ -2893,7 +2933,7 @@
         return;
       }
       if (action === "showInExplorer") {
-        const parentDir = menu.file.split("/").slice(0, -1).join("/");
+        const parentDir = menu.kind === "dir" ? menu.file.replace(/\/+$/, "") : menu.file.split("/").slice(0, -1).join("/");
         if (window.HerdrFileBrowser && window.HerdrFileBrowser.openAt) {
           const view = active();
           if (view) {
@@ -2912,6 +2952,20 @@
         const view = active();
         if (view) {
           await window.HerdrGitUi.openFileHistory(encodeURIComponent(view.cwd), encodeURIComponent(menu.file));
+        }
+        return;
+      }
+      if (menu.kind === "dir") {
+        if (currentMode() !== "changes") return;
+        const path = menu.file.replace(/\/+$/, "");
+        const targets = dirMenuTargetPaths(menu);
+        if (!targets.length) return;
+        if (action === "stage" && confirm(`Stage ${targets.length} file${targets.length === 1 ? "" : "s"} under ${path}?`)) {
+          post("/api/git-ui/stage", { cwd: active().cwd, paths: targets }, `Staging ${path}`);
+        } else if (action === "unstage" && confirm(`Unstage ${targets.length} file${targets.length === 1 ? "" : "s"} under ${path}?`)) {
+          post("/api/git-ui/unstage", { cwd: active().cwd, paths: targets }, `Unstaging ${path}`);
+        } else if (action === "discard" && confirm(`Discard all changes under ${path}? This restores ${targets.length} file${targets.length === 1 ? "" : "s"} and deletes untracked ones. This cannot be undone.`)) {
+          post("/api/git-ui/discard", { cwd: active().cwd, paths: [path], confirmed: true }, `Discarding ${path}`);
         }
         return;
       }
@@ -3678,9 +3732,18 @@
       render();
     },
     compareSelectedLog() {
-      const selected = ((active() || {}).selectedLogCommits || []).slice(0, 2);
+      const view = active();
+      const selected = ((view && view.selectedLogCommits) || []).slice(0, 2);
       if (selected.length === 1) this.openSelectedCompareModal();
-      if (selected.length === 2) this.compareCommits(selected[0], selected[1]);
+      if (selected.length !== 2) return;
+      // The right side must always show the newest ref: order the pair by
+      // position in the commit log, not by click order. logData.commits[0] is
+      // the newest commit, so the ascending sort puts the newest first and it
+      // becomes the compare target (right side).
+      const order = new Map((((view.logData || {}).commits) || []).map((commit, index) => [String(commit.hash || ""), index]));
+      const rank = (hash) => (order.has(hash) ? order.get(hash) : Number.MAX_SAFE_INTEGER);
+      const [target, base] = selected.slice().sort((a, b) => rank(a) - rank(b));
+      this.compareCommits(base, target);
     },
     openSelectedCompareModal() {
       const selected = ((active() || {}).selectedLogCommits || []).slice(0, 1);
@@ -3702,7 +3765,15 @@
       const hash = state.compareSelectedModal && state.compareSelectedModal.ref;
       state.compareSelectedModal = null;
       if (!hash) return;
-      await this.compareCommits(hash, ".");
+      const view = active();
+      if (!view) return;
+      pushNavigationSnapshot(view);
+      view.compareBase = hash;
+      view.compareTarget = ".";
+      view.mode = "current-compare";
+      clearHistoryCompareState(view, { clearBackTarget: true });
+      view.tab = "changes";
+      await loadDiff();
     },
     setLogAll(value) {
       const view = active();
