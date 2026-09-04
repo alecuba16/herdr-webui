@@ -3732,10 +3732,12 @@
       if (selected.length === 1) this.openSelectedCompareModal();
       if (selected.length !== 2) return;
       // The right side must always show the newest ref: order the pair by
-      // position in the commit log, not by click order.
+      // position in the commit log, not by click order. logData.commits[0] is
+      // the newest commit, so the ascending sort puts the newest first and it
+      // becomes the compare target (right side).
       const order = new Map((((view.logData || {}).commits) || []).map((commit, index) => [String(commit.hash || ""), index]));
       const rank = (hash) => (order.has(hash) ? order.get(hash) : Number.MAX_SAFE_INTEGER);
-      const [base, target] = selected.slice().sort((a, b) => rank(a) - rank(b));
+      const [target, base] = selected.slice().sort((a, b) => rank(a) - rank(b));
       this.compareCommits(base, target);
     },
     openSelectedCompareModal() {
