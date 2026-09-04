@@ -977,6 +977,7 @@
         selectMethod,
         activateMethod: "activateTreeItem",
         contextMethod: "fileMenu",
+        dirContextKind: "dir",
         dataPrefix: "git",
         rowClass: "git-ui-file",
         dirClass: "git-ui-file git-ui-dir",
@@ -1041,9 +1042,38 @@
     return `<div class="git-ui-file ${activePath === file ? "active" : ""}" role="treeitem" tabindex="0" data-git-path="${esc(file)}" data-git-kind="${esc(kind)}" style="--level:${level}" onclick="HerdrGitUi.${method}('${arg(file)}','${kind}')" onkeydown="HerdrGitUi.activateTreeItem(event)" oncontextmenu="return HerdrGitUi.fileMenu(event,'${arg(file)}','${kind}')"><span class="git-ui-tree-caret"></span><span class="git-ui-tree-icon file">${treeIcon("file")}</span><span class="git-ui-path" title="${esc(file)}">${FileTree && FileTree.highlight ? FileTree.highlight(name, (active() || {}).fileFilter) : esc(name)}</span><span class="git-ui-file-meta">${summary}</span></div>`;
   }
 
+  function dirMenuTargetPaths(menu) {
+    const view = active() || {};
+    const status = view.status || {};
+    const dir = String(menu.file || "").replace(/\/+$/, "");
+    if (!dir) return [];
+    const prefix = `${dir}/`;
+    return [...(status.staged || []), ...(status.unstaged || []), ...(status.untracked || []), ...(status.conflicted || [])]
+      .map((path) => String(path || ""))
+      .filter((path) => path === dir || path === `${dir}/` || path.startsWith(prefix))
+      .filter((path, index, all) => all.indexOf(path) === index);
+  }
+
+  function renderDirContextMenu(menu) {
+    const dir = String(menu.file || "");
+    const targets = dirMenuTargetPaths(menu);
+    const count = targets.length;
+    const countLabel = count === 1 ? "1 file" : `${count} files`;
+    const actions = [];
+    actions.push(`<button onclick="HerdrGitUi.menuAction('showInExplorer')">Show in file explorer</button>`);
+    actions.push(`<button onclick="HerdrGitUi.menuAction('showHistory')">Show history</button>`);
+    if (count) {
+      actions.push(`<button onclick="HerdrGitUi.menuAction('stage')">Stage folder (${countLabel})</button>`);
+      actions.push(`<button onclick="HerdrGitUi.menuAction('unstage')">Unstage folder (${countLabel})</button>`);
+      actions.push(`<button onclick="HerdrGitUi.menuAction('discard')">Discard folder (${countLabel})</button>`);
+    }
+    return `<div class="git-ui-menu" style="left:${Math.max(0, menu.x)}px;top:${Math.max(0, menu.y)}px" onclick="event.stopPropagation()">${actions.join("")}</div>`;
+  }
+
   function renderContextMenu() {
     const menu = state.contextMenu;
     if (!menu) return "";
+    if (menu.kind === "dir") return renderDirContextMenu(menu);
     const actions = [];
     actions.push(`<button onclick="HerdrGitUi.menuAction('showInExplorer')">Show in file explorer</button>`);
     actions.push(`<button onclick="HerdrGitUi.menuAction('showHistory')">Show history</button>`);
@@ -2871,10 +2901,10 @@
       event.preventDefault();
       event.currentTarget.click();
     },
-    fileMenu(event, file, kind) {
+    fileMenu(event, file, kind, rowKind) {
       event.preventDefault();
       event.stopPropagation();
-      state.contextMenu = { x: event.clientX, y: event.clientY, file: decodeURIComponent(file), kind };
+      state.contextMenu = { x: event.clientX, y: event.clientY, file: decodeURIComponent(file), kind: rowKind === "dir" ? "dir" : kind };
       render();
       return false;
     },
@@ -2893,7 +2923,7 @@
         return;
       }
       if (action === "showInExplorer") {
-        const parentDir = menu.file.split("/").slice(0, -1).join("/");
+        const parentDir = menu.kind === "dir" ? menu.file.replace(/\/+$/, "") : menu.file.split("/").slice(0, -1).join("/");
         if (window.HerdrFileBrowser && window.HerdrFileBrowser.openAt) {
           const view = active();
           if (view) {
@@ -2912,6 +2942,19 @@
         const view = active();
         if (view) {
           await window.HerdrGitUi.openFileHistory(encodeURIComponent(view.cwd), encodeURIComponent(menu.file));
+        }
+        return;
+      }
+      if (menu.kind === "dir") {
+        const path = menu.file.replace(/\/+$/, "");
+        const targets = dirMenuTargetPaths(menu);
+        if (!targets.length) return;
+        if (action === "stage" && confirm(`Stage ${targets.length} file${targets.length === 1 ? "" : "s"} under ${path}?`)) {
+          post("/api/git-ui/stage", { cwd: active().cwd, paths: targets }, `Staging ${path}`);
+        } else if (action === "unstage" && confirm(`Unstage ${targets.length} file${targets.length === 1 ? "" : "s"} under ${path}?`)) {
+          post("/api/git-ui/unstage", { cwd: active().cwd, paths: targets }, `Unstaging ${path}`);
+        } else if (action === "discard" && confirm(`Discard all changes under ${path}? This restores ${targets.length} file${targets.length === 1 ? "" : "s"} and deletes untracked ones. This cannot be undone.`)) {
+          post("/api/git-ui/discard", { cwd: active().cwd, paths: [path], confirmed: true }, `Discarding ${path}`);
         }
         return;
       }
