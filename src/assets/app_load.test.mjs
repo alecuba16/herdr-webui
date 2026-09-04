@@ -832,7 +832,7 @@ describe("app bundle load", () => {
     match(gitUiSource, /compareSelectedWithPrevious/);
     match(gitUiSource, /await this\.showHistoryCommit\(hash\)/);
     match(gitUiSource, /compareSelectedWithCurrent/);
-    match(gitUiSource, /await this\.compareCommits\(hash, "\."\)/);
+    match(gitUiSource, /view\.compareTarget = "\.";\s*\n\s*view\.mode = "current-compare";/);
     match(gitUiSource, /Soft reset/);
     match(gitUiSource, /Hard reset/);
     match(gitUiSource, /selectedLogToolbar\(selected, \{ allowRewrite: currentMode\(\) === "changes", selectedBranch \}\)/);
@@ -881,7 +881,7 @@ describe("app bundle load", () => {
     match(gitUiSource, /window\.HerdrFileBrowser\.openAt\(\{ workspace_id: state\.activeKey \|\| `git-file-history:\$\{cwd\}`/);
     match(gitUiSource, /view\.historySource = "file-browser";/);
     match(gitUiSource, /const compare = activeTab !== "history" && currentMode\(\) !== "changes"/);
-    match(gitUiSource, /const ref = currentMode\(\) === "changes" \? "working" : \(view\.compareTarget \|\| "HEAD"\);/);
+    match(gitUiSource, /const ref = currentMode\(\) === "changes" \|\| currentMode\(\) === "current-compare" \? "working" : \(view\.compareTarget \|\| "HEAD"\);/);
     match(gitUiSource, /ref_name=\$\{encodeURIComponent\(ref\)\}/);
     match(gitUiSource, /blame unavailable/);
     match(gitUiSource, /function sideFileCount\(view\)/);
