@@ -1,5 +1,29 @@
 # Release notes
 
+## 0.2.99 Release Notes
+
+### File explorer editing
+
+- Files open editable by default with a lock toggle in the toolbar; locking a dirty file asks before discarding the draft.
+- Unsaved edits mark the tab with a dirty dot, Save only appears in the tab menu for dirty editable files, and Cmd/Ctrl+S saves the focused file.
+- The dirty dot syncs live while editing without remounting editors; stale change flags clear after a lock.
+- Tab menu collapses Edit/Cancel into one state-driven Lock/Unlock entry; help modal documents the new behavior.
+
+### Git UI improvements
+
+- Changes tree renders folder rows (including untracked directories) with stage/unstage/discard context actions; folder mutations are scoped to the changes view.
+- Comparing a commit with current changes uses the current-compare mode so Edit and blame target the working tree; `.` renders as "working tree" in compare labels and diff file headers.
+- Shift-clicked log pairs order by log position so the newer commit is always the compare target; commit-vs-commit compares stay read-only.
+- Comparing the root commit falls back to the empty tree when the parent is missing.
+- Help modal replaces stale edit-mode replace wording with lock semantics.
+
+### Builtin backend agent detection
+
+- Records a `RecentAgentProcessExit` when a live agent process disappears from the pane's process tree, mirroring upstream herdr semantics: set once on live→absent, cleared on live re-detection, no TTL in production.
+- While a recent agent exit is active, agent.list suppresses the pane's agent so stale screen text or OSC 9 payloads cannot keep a ghost agent row alive after jcode exits.
+- `pane_agent_presentation` becomes a pure read: the probe no longer updates the exit record, so an `agent.list` request can never fabricate an exit from a stale `ps` cache. Only the output-driven publish path records exits.
+- "Unknown" agent status is reported as `unknown` instead of being coerced to `idle`.
+
 ## 0.2.98 Release Notes
 
 ### Truecolor support for builtin PTY sessions
