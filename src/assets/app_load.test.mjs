@@ -1073,7 +1073,7 @@ describe("app bundle load", () => {
     const fileBrowserSource = readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8");
     const searchSource = readFileSync(new URL("./desktop/search.js", import.meta.url), "utf8");
     const fileBrowserCss = readFileSync(new URL("./desktop/file_browser.css", import.meta.url), "utf8");
-    match(fileBrowserSource, /function renderOpenFileTabs/);
+    const editorSource = readFileSync(new URL("./vendor/codemirror_entry.mjs", import.meta.url), "utf8");
     match(fileBrowserSource, /role="tablist" aria-label="Open files"/);
     match(fileBrowserSource, /file-browser-open-tab/);
     match(fileBrowserSource, /findInFile\(encodedPath\)/);
@@ -1097,9 +1097,11 @@ describe("app bundle load", () => {
     match(fileBrowserSource, /menuIcon\("copyPathTab"/);
     match(fileBrowserSource, /menuIcon\("focus"/);
     match(fileBrowserSource, /menuIcon\("close"/);
-    match(fileBrowserCss, /\.file-browser-menu-label/);
-    match(fileBrowserCss, /\.file-browser-menu-sep/);
-    match(fileBrowserCss, /\.cm-foldGutter/);
+    match(fileBrowserCss, /\.file-browser-panel \{[\s\S]*?overflow: visible;/);
+    match(fileBrowserCss, /\.file-browser-menu \{[\s\S]*?z-index: 1500;/);
+    match(editorSource, /if \(ext === "json"\) return json\(\);/);
+    match(editorSource, /if \(ext === "json"\) return "json";/);
+
     match(fileBrowserCss, /\.cm-foldPlaceholder/);
     match(fileBrowserCss, /\.cm-activeLineGutter/);
     match(fileBrowserCss, /\.cm-matchingBracket/);
@@ -1336,7 +1338,13 @@ describe("app bundle load", () => {
     match(editorSource, /bracketMatching/);
     match(editorSource, /readableHighlightStyle/);
     match(editorSource, /--editor-syntax-keyword/);
-    match(editorSource, /languageNameForPath/);
+    match(editorSource, /if \(ext === "json"\) return json\(\);/);
+    match(editorSource, /if \(\["yaml", "yml"\]\.includes\(ext\)\) return yaml\(\);/);
+    match(editorSource, /if \(ext === "java" \|\| \["kt", "kts"\]\.includes\(ext\)\) return java\(\);/);
+    match(editorSource, /if \(ext === "rs"\) return rust\(\);/);
+    match(editorSource, /if \(ext === "go"\) return go\(\);/);
+    match(editorSource, /if \(\["py", "pyw"\]\.includes\(ext\)\) return python\(\);/);
+
     match(editorSource, /EditorView\.contentAttributes\.of\(\{ "data-language": languageNameForPath\(opts\.path\) \}\)/);
     match(editorSource, /searchHighlightExtensions/);
     match(editorSource, /scrollToSearchHighlight/);
