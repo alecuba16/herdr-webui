@@ -1113,6 +1113,15 @@ const defaultOptions = {
   fileBrowserAllowParent: true,
   fileBrowserGitStatus: true,
   fileBrowserLineNumbers: true,
+  editorEnabled: true,
+  editorWordWrap: true,
+  editorTabSize: 2,
+  editorIndentUnit: 2,
+  editorBracketMatching: true,
+  editorFolding: true,
+  editorActiveLine: true,
+  editorWhitespace: false,
+  editorLargeFileBytes: 1048576,
   searchWorkspacesEnabled: true,
   searchFilesEnabled: true,
   searchFoldersEnabled: true,
@@ -1282,6 +1291,15 @@ function normalizeOptions(value) {
   next.fileBrowserAllowParent = next.fileBrowserAllowParent !== false;
   next.fileBrowserGitStatus = next.fileBrowserGitStatus !== false;
   next.fileBrowserLineNumbers = next.fileBrowserLineNumbers !== false;
+  next.editorEnabled = next.editorEnabled !== false;
+  next.editorWordWrap = next.editorWordWrap !== false;
+  next.editorTabSize = Math.max(1, Math.min(8, Number(next.editorTabSize) || 2));
+  next.editorIndentUnit = Math.max(1, Math.min(8, Number(next.editorIndentUnit) || 2));
+  next.editorBracketMatching = next.editorBracketMatching !== false;
+  next.editorFolding = next.editorFolding !== false;
+  next.editorActiveLine = next.editorActiveLine !== false;
+  next.editorWhitespace = next.editorWhitespace === true;
+  next.editorLargeFileBytes = Math.max(65536, Math.min(52428800, Number(next.editorLargeFileBytes) || 1048576));
   next.searchWorkspacesEnabled = next.searchWorkspacesEnabled !== false;
   next.searchFilesEnabled = next.searchFilesEnabled !== false;
   next.searchFoldersEnabled = next.searchFoldersEnabled !== false;
@@ -1564,7 +1582,7 @@ if (showTabActivitySetting && !el("optTreeIndentPx"))
     .closest("label")
     .insertAdjacentHTML(
       "afterend",
-      '<label class="option"><span>Tree indentation<small>Pixels added per folder level in file trees.</small></span><input id="optTreeIndentPx" type="number" min="0" max="40" step="1"></label><label class="option"><input type="checkbox" id="optFileBrowserAllowParent"><span>File browser parent folders<small>Allow Files to go above the workspace/worktree directory with the current folder Up button.</small></span></label><label class="option"><input type="checkbox" id="optFileBrowserGitStatus"><span>File browser git status colors<small>Color files and directories in the file browser by Git status: red for deleted, yellow for modified, green for new.</small></span></label><label class="option"><input type="checkbox" id="optFileBrowserLineNumbers"><span>File browser line numbers<small>Show line numbers by default when previewing text files.</small></span></label><label class="option"><input type="checkbox" id="optEditorFindShortcutEnabled"><span>File editor search shortcut<small>Let text editors capture Cmd/Ctrl-F for in-editor search. Disable to keep global browser search.</small></span></label><label class="option"><input type="checkbox" id="optHeaderSearchEnabled"><span>Header search button and shortcut<small>Show the header magnifier and allow the configured search shortcut to open the palette.</small></span></label><div class="option" id="optSearchSectionOrder"><span>Header search section order<small>Use arrows to move sections. Use the middle button to show or hide each section.</small></span><div id="searchSectionOrderList" class="agent-sort-list"></div></div><label class="option"><span>File/folder search page size<small>Backend result count loaded per lazy page.</small></span><input id="optFileBrowserSearchPageSize" type="number" min="10" max="500" step="10"></label><label class="option"><span>Content search minimum characters<small>Minimum typed characters before searching file contents.</small></span><input id="optFileContentSearchMinChars" type="number" min="1" max="20" step="1"></label><label class="option"><span>Content search page size<small>Backend file groups loaded per lazy page.</small></span><input id="optFileContentSearchPageSize" type="number" min="10" max="500" step="10"></label><label class="option"><span>Content search context lines<small>Default lines above and below each match.</small></span><input id="optFileContentSearchContextLines" type="number" min="0" max="20" step="1"></label><label class="option"><span>Content search auto-collapse<small>Collapse file groups when result files exceed this count. 0 means never auto-collapse.</small></span><input id="optFileContentSearchAutoCollapseFiles" type="number" min="0" max="200" step="1"></label><label class="option"><input type="checkbox" id="optFileContentSearchDefaultExpanded"><span>Content results expanded by default<small>Expand each file group when content results load. Auto-collapse can still collapse very large result sets.</small></span></label><label class="option"><span>Content search matches per file<small>Initial match count loaded per file before lazy expansion.</small></span><input id="optFileContentSearchMatchesPerFile" type="number" min="1" max="50" step="1"></label><label class="option"><input type="checkbox" id="optFileContentSearchMatchCase"><span>Content search match case<small>Match upper/lower case exactly in backend content search.</small></span></label><label class="option"><input type="checkbox" id="optFileContentSearchRegex"><span>Content search regular expression<small>Treat content search text as a Rust regex pattern.</small></span></label>',
+      '<label class="option"><span>Tree indentation<small>Pixels added per folder level in file trees.</small></span><input id="optTreeIndentPx" type="number" min="0" max="40" step="1"></label><label class="option"><input type="checkbox" id="optFileBrowserAllowParent"><span>File browser parent folders<small>Allow Files to go above the workspace/worktree directory with the current folder Up button.</small></span></label><label class="option"><input type="checkbox" id="optFileBrowserGitStatus"><span>File browser git status colors<small>Color files and directories in the file browser by Git status: red for deleted, yellow for modified, green for new.</small></span></label><label class="option"><input type="checkbox" id="optFileBrowserLineNumbers"><span>File browser line numbers<small>Show line numbers by default when previewing text files.</small></span></label><label class="option"><input type="checkbox" id="optEditorFindShortcutEnabled"><span>File editor search shortcut<small>Let text editors capture Cmd/Ctrl-F for in-editor search. Disable to keep global browser search.</small></span></label><label class="option"><input type="checkbox" id="optEditorEnabled"><span>Code editor enhancements<small>Enable CodeMirror editing enhancements. Files remain editable when this is disabled.</small></span></label><label class="option"><input type="checkbox" id="optEditorWordWrap"><span>Editor word wrap</span></label><label class="option"><span>Editor tab size</span><input id="optEditorTabSize" type="number" min="1" max="8" step="1"></label><label class="option"><input type="checkbox" id="optEditorBracketMatching"><span>Editor bracket matching</span></label><label class="option"><input type="checkbox" id="optEditorFolding"><span>Editor code folding</span></label><label class="option"><input type="checkbox" id="optEditorActiveLine"><span>Editor active line highlight</span></label><label class="option"><input type="checkbox" id="optEditorWhitespace"><span>Editor whitespace markers</span></label><label class="option"><input type="checkbox" id="optHeaderSearchEnabled"><span>Header search button and shortcut<small>Show the header magnifier and allow the configured search shortcut to open the palette.</small></span></label><div class="option" id="optSearchSectionOrder"><span>Header search section order<small>Use arrows to move sections. Use the middle button to show or hide each section.</small></span><div id="searchSectionOrderList" class="agent-sort-list"></div></div><label class="option"><span>File/folder search page size<small>Backend result count loaded per lazy page.</small></span><input id="optFileBrowserSearchPageSize" type="number" min="10" max="500" step="10"></label><label class="option"><span>Content search minimum characters<small>Minimum typed characters before searching file contents.</small></span><input id="optFileContentSearchMinChars" type="number" min="1" max="20" step="1"></label><label class="option"><span>Content search page size<small>Backend file groups loaded per lazy page.</small></span><input id="optFileContentSearchPageSize" type="number" min="10" max="500" step="10"></label><label class="option"><span>Content search context lines<small>Default lines above and below each match.</small></span><input id="optFileContentSearchContextLines" type="number" min="0" max="20" step="1"></label><label class="option"><span>Content search auto-collapse<small>Collapse file groups when result files exceed this count. 0 means never auto-collapse.</small></span><input id="optFileContentSearchAutoCollapseFiles" type="number" min="0" max="200" step="1"></label><label class="option"><input type="checkbox" id="optFileContentSearchDefaultExpanded"><span>Content results expanded by default<small>Expand each file group when content results load. Auto-collapse can still collapse very large result sets.</small></span></label><label class="option"><span>Content search matches per file<small>Initial match count loaded per file before lazy expansion.</small></span><input id="optFileContentSearchMatchesPerFile" type="number" min="1" max="50" step="1"></label><label class="option"><input type="checkbox" id="optFileContentSearchMatchCase"><span>Content search match case<small>Match upper/lower case exactly in backend content search.</small></span></label><label class="option"><input type="checkbox" id="optFileContentSearchRegex"><span>Content search regular expression<small>Treat content search text as a Rust regex pattern.</small></span></label>',
     );
 groupSettingsSections();
 function groupSettingsSections() {
@@ -1580,6 +1598,11 @@ function groupSettingsSections() {
       title: "File browser",
       desc: "Tree display, navigation, and Git status colors.",
       ids: ["optTreeIndentPx", "optFileBrowserAllowParent", "optFileBrowserGitStatus", "optFileBrowserLineNumbers", "optEditorFindShortcutEnabled", "optHeaderSearchEnabled", "optSearchSectionOrder", "optFileBrowserSearchPageSize", "optFileContentSearchMinChars", "optFileContentSearchPageSize", "optFileContentSearchContextLines", "optFileContentSearchAutoCollapseFiles", "optFileContentSearchDefaultExpanded", "optFileContentSearchMatchesPerFile", "optFileContentSearchMatchCase", "optFileContentSearchRegex"],
+    },
+    {
+      title: "Editor",
+      desc: "Editing behavior, readability, and performance controls.",
+      ids: ["optEditorEnabled", "optEditorWordWrap", "optEditorTabSize", "optEditorBracketMatching", "optEditorFolding", "optEditorActiveLine", "optEditorWhitespace"],
     },
     {
       title: "Terminal input",
@@ -1750,6 +1773,13 @@ function applyOptions() {
     fileBrowserGitStatus = el("optFileBrowserGitStatus"),
     fileBrowserLineNumbers = el("optFileBrowserLineNumbers"),
     editorFindShortcutEnabled = el("optEditorFindShortcutEnabled"),
+    editorEnabled = el("optEditorEnabled"),
+    editorWordWrap = el("optEditorWordWrap"),
+    editorTabSize = el("optEditorTabSize"),
+    editorBracketMatching = el("optEditorBracketMatching"),
+    editorFolding = el("optEditorFolding"),
+    editorActiveLine = el("optEditorActiveLine"),
+    editorWhitespace = el("optEditorWhitespace"),
     headerSearchEnabled = el("optHeaderSearchEnabled"),
     fileBrowserSearchPageSize = el("optFileBrowserSearchPageSize"),
     fileContentSearchMinChars = el("optFileContentSearchMinChars"),
@@ -1826,6 +1856,13 @@ function applyOptions() {
     fileBrowserLineNumbers.checked = !!options.fileBrowserLineNumbers;
   if (editorFindShortcutEnabled)
     editorFindShortcutEnabled.checked = options.editorFindShortcutEnabled !== false;
+  if (editorEnabled) editorEnabled.checked = options.editorEnabled !== false;
+  if (editorWordWrap) editorWordWrap.checked = options.editorWordWrap !== false;
+  if (editorTabSize) editorTabSize.value = String(options.editorTabSize || 2);
+  if (editorBracketMatching) editorBracketMatching.checked = options.editorBracketMatching !== false;
+  if (editorFolding) editorFolding.checked = options.editorFolding !== false;
+  if (editorActiveLine) editorActiveLine.checked = options.editorActiveLine !== false;
+  if (editorWhitespace) editorWhitespace.checked = options.editorWhitespace === true;
   if (headerSearchEnabled)
     headerSearchEnabled.checked = options.headerSearchEnabled !== false;
   renderSearchSectionOrderSettings();

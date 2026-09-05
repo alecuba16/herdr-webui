@@ -30,6 +30,23 @@
     } catch (_) { return true; }
   }
 
+  function editorOptions() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
+      return {
+        editorEnabled: parsed.editorEnabled !== false,
+        wordWrap: parsed.editorEnabled !== false && parsed.editorWordWrap !== false,
+        tabSize: Math.max(1, Math.min(8, Number(parsed.editorTabSize) || 2)),
+        bracketMatching: parsed.editorEnabled !== false && parsed.editorBracketMatching !== false,
+        folding: parsed.editorEnabled !== false && parsed.editorFolding !== false,
+        activeLine: parsed.editorEnabled !== false && parsed.editorActiveLine !== false,
+        whitespace: parsed.editorEnabled === true && parsed.editorWhitespace === true,
+      };
+    } catch (_) {
+      return { editorEnabled: true, wordWrap: true, tabSize: 2, bracketMatching: true, folding: true, activeLine: true, whitespace: false };
+    }
+  }
+
   function parentFoldersEnabled() {
     try {
       const parsed = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
@@ -814,6 +831,7 @@
   }
 
   function mountEditors() {
+    const configured = editorOptions();
     const files = state.split ? state.files : [currentFile()].filter(Boolean);
     for (const file of files) {
       const parent = document.getElementById(`fileBrowserEditor-${hashId(file.path)}`);
@@ -823,8 +841,15 @@
         path: file.path,
         content: file.editing ? file.draft : file.content || "",
         readonly: !file.editing,
+        editorEnabled: configured.editorEnabled,
         hideHeader: true,
         lineNumbers: lineNumbersEnabled(),
+        wordWrap: configured.wordWrap,
+        tabSize: configured.tabSize,
+        bracketMatching: configured.bracketMatching,
+        folding: configured.folding,
+        activeLine: configured.activeLine,
+        whitespace: configured.whitespace,
         markdownPreview: !file.previewSource,
         searchHighlight: file.searchHighlight || null,
         onChange(value) {
@@ -844,6 +869,7 @@
   }
 
   function mountContentSearchEditors() {
+    const configured = editorOptions();
     if (!state.contentSearch.active) return;
     for (const file of state.contentSearch.files || []) {
       for (const match of file.matches || []) {
@@ -860,6 +886,12 @@
           readonly: false,
           hideHeader: true,
           lineNumbers: lineNumbersEnabled(),
+          wordWrap: configured.wordWrap,
+          tabSize: configured.tabSize,
+          bracketMatching: configured.bracketMatching,
+          folding: configured.folding,
+          activeLine: configured.activeLine,
+          whitespace: configured.whitespace,
           onChange(value) {
             snippet.draft = value;
             snippet.dirty = value !== (match.content || "");

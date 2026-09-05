@@ -324,6 +324,18 @@ el("optEditorFindShortcutEnabled").onchange = () => {
   options.editorFindShortcutEnabled = el("optEditorFindShortcutEnabled").checked;
   saveOptions();
 };
+for (const [id, key] of [["optEditorEnabled", "editorEnabled"], ["optEditorWordWrap", "editorWordWrap"], ["optEditorBracketMatching", "editorBracketMatching"], ["optEditorFolding", "editorFolding"], ["optEditorActiveLine", "editorActiveLine"], ["optEditorWhitespace", "editorWhitespace"]]) {
+  el(id).onchange = () => {
+    options[key] = el(id).checked;
+    saveOptions();
+    if (typeof render === "function") render();
+  };
+}
+el("optEditorTabSize").onchange = () => {
+  options.editorTabSize = Math.max(1, Math.min(8, Number(el("optEditorTabSize").value) || 2));
+  saveOptions();
+  if (typeof render === "function") render();
+};
 el("optHeaderSearchEnabled").onchange = () => {
   options.headerSearchEnabled = el("optHeaderSearchEnabled").checked;
   saveOptions();
