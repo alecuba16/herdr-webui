@@ -1,5 +1,16 @@
 # Release notes
 
+## 0.4.3 Release Notes
+
+### Crash-recovery regression coverage
+
+- The v0.4.2 language-server crash-recovery fix now ships with permanent regression coverage: `/api/lsp/status` exposes the language server child `pid` (additive field), and the LSP acceptance suite gained an opt-in check (`HERDR_CRASH_RECOVERY=1`) that SIGKILLs exactly the backend's own child mid-session and verifies the page stays responsive, the backend drops the dead entry, and reopening the file respawns the server with diagnostics on the same open (21/21 checks with the flag, 17/17 without).
+- The suite now dumps live UI state (open tabs, editor mount, editor API attachment, tree rows, dashboard) when any check times out, so the rare cold-start editor-mount flake is diagnosable on its next occurrence instead of showing an empty trace.
+
+### Deterministic PTY agent-status test
+
+- `terminal_output_publishes_agent_status_changes` failed once in CI with `Err(Timeout)`, which means the status event was never published: a real zsh prompt write can land after the throttle reset and consume the 500ms detection window, so the synthetic output is throttled out. The test now spawns `/bin/cat` (silent, blocks on stdin) like its sibling test, removing the race instead of widening a timeout, plus a 5s receive window for CI load (6/6 isolated runs, 367/367 full suite at 4 threads).
+
 ## 0.4.2 Release Notes
 
 ### Language server crash recovery
