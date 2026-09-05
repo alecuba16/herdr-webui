@@ -3301,4 +3301,29 @@ describe("app bundle load", () => {
     match(gitDiffCss, /\.git-ui-hunk-current-mount \.cm-content/);
     match(gitDiffCss, /\.git-ui-hunk-edit \{[\s\S]*?display: block;[\s\S]*?\.git-ui-hunk-editor textarea\.git-ui-hunk-edit-hidden \{\n\s+display: none;/);
   });
+
+  it("exposes settings-backed editor controls and bounded defaults", () => {
+    match(source, /id="optEditorEnabled"/);
+    match(source, /id="optEditorWordWrap"/);
+    match(source, /id="optEditorTabSize"/);
+    match(source, /id="optEditorBracketMatching"/);
+    match(source, /id="optEditorFolding"/);
+    match(source, /id="optEditorActiveLine"/);
+    match(source, /id="optEditorWhitespace"/);
+    match(source, /next\.editorTabSize = Math\.max\(1, Math\.min\(8/);
+    match(source, /next\.editorIndentUnit = Math\.max\(1, Math\.min\(8/);
+    match(fileBrowserSource, /function editorOptions\(\)/);
+    match(fileBrowserSource, /tabSize: Math\.max\(1, Math\.min\(8/);
+  });
+
+  it("configures CodeMirror extensions without forcing expensive features", () => {
+    const codeMirrorSource = readFileSync(new URL("./vendor/codemirror_entry.mjs", import.meta.url), "utf8");
+    match(codeMirrorSource, /opts\.whitespace \? \[highlightSpecialChars\(\)\]/);
+    match(codeMirrorSource, /opts\.bracketMatching !== false/);
+    match(codeMirrorSource, /opts\.folding !== false/);
+    match(codeMirrorSource, /opts\.wordWrap !== false/);
+    match(codeMirrorSource, /opts\.activeLine !== false/);
+    match(codeMirrorSource, /EditorState\.tabSize\.of/);
+    match(codeMirrorSource, /indentUnit\.of/);
+  });
 });

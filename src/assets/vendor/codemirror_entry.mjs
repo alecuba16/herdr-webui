@@ -11,7 +11,7 @@ import { rust } from "@codemirror/lang-rust";
 import { sql } from "@codemirror/lang-sql";
 import { xml } from "@codemirror/lang-xml";
 import { yaml } from "@codemirror/lang-yaml";
-import { bracketMatching, foldGutter, foldKeymap, HighlightStyle, indentOnInput, syntaxHighlighting } from "@codemirror/language";
+import { bracketMatching, foldGutter, foldKeymap, HighlightStyle, indentOnInput, indentUnit, syntaxHighlighting } from "@codemirror/language";
 import { EditorState } from "@codemirror/state";
 import { Decoration, drawSelection, dropCursor, EditorView, GutterMarker, gutter, highlightActiveLine, highlightActiveLineGutter, highlightSpecialChars, keymap, lineNumbers, rectangularSelection, ViewPlugin, WidgetType } from "@codemirror/view";
 import { tags } from "@lezer/highlight";
@@ -272,25 +272,25 @@ function buildHunkDecorations(view, hunks, actions) {
 function create(options) {
   const opts = options || {};
   const extensions = [
-    highlightSpecialChars(),
+    ...(opts.whitespace ? [highlightSpecialChars()] : []),
     history(),
     drawSelection(),
     dropCursor(),
     rectangularSelection(),
-    bracketMatching(),
+    ...(opts.bracketMatching !== false ? [bracketMatching()] : []),
     indentOnInput(),
     syntaxHighlighting(readableHighlightStyle, { fallback: true }),
-    foldGutter(),
-    keymap.of([...defaultKeymap, ...historyKeymap, ...foldKeymap]),
+    ...(opts.folding !== false ? [foldGutter(), keymap.of([...defaultKeymap, ...historyKeymap, ...foldKeymap])] : [keymap.of([...defaultKeymap, ...historyKeymap])]),
     theme,
-    EditorView.lineWrapping,
+    ...(opts.wordWrap !== false ? [EditorView.lineWrapping] : []),
     EditorView.contentAttributes.of({ "data-language": languageNameForPath(opts.path) }),
     EditorView.editable.of(opts.readonly === false),
     EditorState.readOnly.of(opts.readonly !== false),
   ];
   if (opts.lineNumbers !== false) extensions.unshift(lineNumbers());
-  extensions.push(highlightActiveLine());
-  extensions.push(highlightActiveLineGutter());
+  if (opts.activeLine !== false) extensions.push(highlightActiveLine(), highlightActiveLineGutter());
+  extensions.push(EditorState.tabSize.of(Math.max(1, Math.min(8, Number(opts.tabSize) || 2))));
+  extensions.push(indentUnit.of(" ".repeat(Math.max(1, Math.min(8, Number(opts.indentUnit || opts.tabSize) || 2)))));
   const language = languageForPath(opts.path);
   if (language) extensions.push(language);
   if (opts.onChange) {
