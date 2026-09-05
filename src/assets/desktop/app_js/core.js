@@ -1022,17 +1022,20 @@ const themeColorProfiles = {
 const settingsModules = window.HerdrSettingsModules || [];
 window.HerdrSettingsModules = settingsModules;
 window.HerdrWebUiModules = settingsModules;
-const moduleOptionDefaults = settingsModules.reduce(
-  (acc, module) => Object.assign(acc, module.defaults || {}),
-  {},
-);
+const moduleOptionDefaults = {};
+function syncModuleOptionDefaults() {
+  for (const key of Object.keys(moduleOptionDefaults)) delete moduleOptionDefaults[key];
+  for (const module of settingsModules) Object.assign(moduleOptionDefaults, module.defaults || {});
+}
+syncModuleOptionDefaults();
 const settingsBody =
   settingsModal && settingsModal.querySelector(".settings-body");
-if (settingsBody && !el("optServerBind"))
-  settingsBody.insertAdjacentHTML("beforeend", serverSettingsHtml());
-if (settingsBody && !el("themeColorsApply"))
-  settingsBody.insertAdjacentHTML("beforeend", themeCustomizerHtml());
-if (settingsBody) {
+function injectSettingsModuleHtml() {
+  if (!settingsBody) return;
+  if (!el("optServerBind"))
+    settingsBody.insertAdjacentHTML("beforeend", serverSettingsHtml());
+  if (!el("themeColorsApply"))
+    settingsBody.insertAdjacentHTML("beforeend", themeCustomizerHtml());
   for (const module of settingsModules) {
     if (module.html && !el(`moduleSettings-${module.id}`)) {
       settingsBody.insertAdjacentHTML(
@@ -1040,7 +1043,49 @@ if (settingsBody) {
         `<div id="moduleSettings-${module.id}">${module.html}</div>`,
       );
     }
+    // Some modules ship a complete .settings-section in their html. Unwrap
+    // it into the body so it becomes a real peer section (not a duplicate
+    // built from ids) and the wrapper cannot orphan its extra rows.
+    const wrapper = el(`moduleSettings-${module.id}`);
+    if (wrapper) {
+      for (const section of Array.from(
+        wrapper.querySelectorAll(":scope > .settings-section"),
+      )) {
+        wrapper.parentElement.insertBefore(section, wrapper);
+      }
+      if (!wrapper.children.length) wrapper.remove();
+    }
   }
+}
+injectSettingsModuleHtml();
+// Modules that load after core.js (lsp_settings.js is concatenated after
+// app_js in the desktop bundle) still need their section rendered, their
+// defaults merged, and their controls bound. Intercept late pushes and run
+// the same registration path core.js uses at startup.
+const settingsModulesPush = settingsModules.push.bind(settingsModules);
+settingsModules.push = function (...items) {
+  const out = settingsModulesPush(...items);
+  syncModuleOptionDefaults();
+  injectSettingsModuleHtml();
+  groupSettingsSections();
+  if (typeof bindSettingsModule === "function") {
+    for (const module of items) bindSettingsModule(module);
+  }
+  return out;
+};
+function bindSettingsModule(module) {
+  if (!module || typeof module.bind !== "function") return;
+  module.bind({
+    el,
+    saveOptions,
+    applyOptions,
+    setOption(key, value) {
+      options[key] = value;
+    },
+    getOption(key) {
+      return options[key];
+    },
+  });
 }
 function normalizeThemeMode(value) {
   if (value === "night") return "dark";
@@ -1585,8 +1630,59 @@ if (showTabActivitySetting && !el("optTreeIndentPx"))
       '<label class="option"><span>Tree indentation<small>Pixels added per folder level in file trees.</small></span><input id="optTreeIndentPx" type="number" min="0" max="40" step="1"></label><label class="option"><input type="checkbox" id="optFileBrowserAllowParent"><span>File browser parent folders<small>Allow Files to go above the workspace/worktree directory with the current folder Up button.</small></span></label><label class="option"><input type="checkbox" id="optFileBrowserGitStatus"><span>File browser git status colors<small>Color files and directories in the file browser by Git status: red for deleted, yellow for modified, green for new.</small></span></label><label class="option"><input type="checkbox" id="optFileBrowserLineNumbers"><span>File browser line numbers<small>Show line numbers by default when previewing text files.</small></span></label><label class="option"><input type="checkbox" id="optEditorFindShortcutEnabled"><span>File editor search shortcut<small>Let text editors capture Cmd/Ctrl-F for in-editor search. Disable to keep global browser search.</small></span></label><label class="option"><input type="checkbox" id="optEditorEnabled"><span>Code editor enhancements<small>Enable CodeMirror editing enhancements. Files remain editable when this is disabled.</small></span></label><label class="option"><input type="checkbox" id="optEditorWordWrap"><span>Editor word wrap</span></label><label class="option"><span>Editor tab size</span><input id="optEditorTabSize" type="number" min="1" max="8" step="1"></label><label class="option"><input type="checkbox" id="optEditorBracketMatching"><span>Editor bracket matching</span></label><label class="option"><input type="checkbox" id="optEditorFolding"><span>Editor code folding</span></label><label class="option"><input type="checkbox" id="optEditorActiveLine"><span>Editor active line highlight</span></label><label class="option"><input type="checkbox" id="optEditorWhitespace"><span>Editor whitespace markers</span></label><label class="option"><input type="checkbox" id="optHeaderSearchEnabled"><span>Header search button and shortcut<small>Show the header magnifier and allow the configured search shortcut to open the palette.</small></span></label><div class="option" id="optSearchSectionOrder"><span>Header search section order<small>Use arrows to move sections. Use the middle button to show or hide each section.</small></span><div id="searchSectionOrderList" class="agent-sort-list"></div></div><label class="option"><span>File/folder search page size<small>Backend result count loaded per lazy page.</small></span><input id="optFileBrowserSearchPageSize" type="number" min="10" max="500" step="10"></label><label class="option"><span>Content search minimum characters<small>Minimum typed characters before searching file contents.</small></span><input id="optFileContentSearchMinChars" type="number" min="1" max="20" step="1"></label><label class="option"><span>Content search page size<small>Backend file groups loaded per lazy page.</small></span><input id="optFileContentSearchPageSize" type="number" min="10" max="500" step="10"></label><label class="option"><span>Content search context lines<small>Default lines above and below each match.</small></span><input id="optFileContentSearchContextLines" type="number" min="0" max="20" step="1"></label><label class="option"><span>Content search auto-collapse<small>Collapse file groups when result files exceed this count. 0 means never auto-collapse.</small></span><input id="optFileContentSearchAutoCollapseFiles" type="number" min="0" max="200" step="1"></label><label class="option"><input type="checkbox" id="optFileContentSearchDefaultExpanded"><span>Content results expanded by default<small>Expand each file group when content results load. Auto-collapse can still collapse very large result sets.</small></span></label><label class="option"><span>Content search matches per file<small>Initial match count loaded per file before lazy expansion.</small></span><input id="optFileContentSearchMatchesPerFile" type="number" min="1" max="50" step="1"></label><label class="option"><input type="checkbox" id="optFileContentSearchMatchCase"><span>Content search match case<small>Match upper/lower case exactly in backend content search.</small></span></label><label class="option"><input type="checkbox" id="optFileContentSearchRegex"><span>Content search regular expression<small>Treat content search text as a Rust regex pattern.</small></span></label>',
     );
 groupSettingsSections();
+function settingsCollapseKey(title) {
+  return "herdr-settings-collapsed:" + String(title).toLowerCase();
+}
+function isSettingsSectionCollapsed(title) {
+  try {
+    return localStorage.getItem(settingsCollapseKey(title)) === "1";
+  } catch (_) {
+    return false;
+  }
+}
+function setSettingsSectionCollapsed(title, collapsed) {
+  try {
+    if (collapsed) localStorage.setItem(settingsCollapseKey(title), "1");
+    else localStorage.removeItem(settingsCollapseKey(title));
+  } catch (_) {}
+}
+function settingsSectionStateKey(title) {
+  return String(title).toLowerCase();
+}
+function decorateSettingsSectionHead(section) {
+  const head = section.querySelector(":scope > .settings-section-head");
+  if (!head || head.dataset.collapsible === "1") return;
+  head.dataset.collapsible = "1";
+  head.classList.add("settings-collapsible");
+  head.setAttribute("role", "button");
+  head.tabIndex = 0;
+  head.insertAdjacentHTML(
+    "afterbegin",
+    '<span class="settings-caret" aria-hidden="true">▾</span>',
+  );
+  const title = head.querySelector("h3");
+  const titleText = title ? title.textContent : "";
+  applySettingsSectionCollapsed(section, isSettingsSectionCollapsed(titleText));
+  const toggle = () => {
+    const next = !section.classList.contains("settings-collapsed");
+    applySettingsSectionCollapsed(section, next);
+    setSettingsSectionCollapsed(titleText, next);
+  };
+  head.addEventListener("click", toggle);
+  head.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      toggle();
+    }
+  });
+}
+function applySettingsSectionCollapsed(section, collapsed) {
+  section.classList.toggle("settings-collapsed", !!collapsed);
+  const head = section.querySelector(":scope > .settings-section-head");
+  if (head) head.setAttribute("aria-expanded", collapsed ? "false" : "true");
+}
 function groupSettingsSections() {
-  if (!settingsBody || settingsBody.dataset.sections === "1") return;
+  if (!settingsBody) return;
   const sectionDefs = [
     {
       title: "Appearance",
@@ -1598,11 +1694,6 @@ function groupSettingsSections() {
       title: "File browser",
       desc: "Tree display, navigation, and Git status colors.",
       ids: ["optTreeIndentPx", "optFileBrowserAllowParent", "optFileBrowserGitStatus", "optFileBrowserLineNumbers", "optEditorFindShortcutEnabled", "optHeaderSearchEnabled", "optSearchSectionOrder", "optFileBrowserSearchPageSize", "optFileContentSearchMinChars", "optFileContentSearchPageSize", "optFileContentSearchContextLines", "optFileContentSearchAutoCollapseFiles", "optFileContentSearchDefaultExpanded", "optFileContentSearchMatchesPerFile", "optFileContentSearchMatchCase", "optFileContentSearchRegex"],
-    },
-    {
-      title: "Editor",
-      desc: "Editing behavior, readability, and performance controls.",
-      ids: ["optEditorEnabled", "optEditorWordWrap", "optEditorTabSize", "optEditorBracketMatching", "optEditorFolding", "optEditorActiveLine", "optEditorWhitespace"],
     },
     {
       title: "Editor",
@@ -1662,13 +1753,25 @@ function groupSettingsSections() {
       desc: "Network access and server-side power behavior.",
       blocks: ["optServerBind"],
     },
-    ...settingsModules.map((module) => ({
-      title: module.title,
-      desc: module.desc || "Module settings.",
-      ids: module.ids || [],
-      blocks: module.blocks || [],
-    })),
+    ...settingsModules.flatMap((module) => {
+      // A module whose html already contains a complete .settings-section
+      // is unwrapped into the body; building another section from ids would
+      // duplicate it, so only modules without their own section get one.
+      const hasOwnSection = module.html && module.html.includes("settings-section-head");
+      if (hasOwnSection) return [];
+      return [{
+        title: module.title,
+        desc: module.desc || "Module settings.",
+        ids: module.ids || [],
+        blocks: module.blocks || [],
+      }];
+    }),
   ];
+  const existing = new Map();
+  for (const section of Array.from(settingsBody.querySelectorAll(":scope > .settings-section"))) {
+    const head = section.querySelector(":scope > .settings-section-head h3");
+    if (head) existing.set(settingsSectionStateKey(head.textContent), section);
+  }
   for (const def of sectionDefs) {
     const nodes = [];
     for (const id of def.ids || []) {
@@ -1685,13 +1788,24 @@ function groupSettingsSections() {
       if (block && !nodes.includes(block)) nodes.push(block);
     }
     if (!nodes.length) continue;
-    const section = document.createElement("section");
+    let section = existing.get(settingsSectionStateKey(def.title));
+    if (section) {
+      for (const node of nodes) {
+        if (node.parentElement !== section) section.appendChild(node);
+      }
+      continue;
+    }
+    section = document.createElement("section");
     section.className = "settings-section";
     section.innerHTML = `<div class="settings-section-head"><h3>${def.title}</h3><p>${def.desc}</p></div>`;
     for (const node of nodes) section.appendChild(node);
     settingsBody.appendChild(section);
+    existing.set(settingsSectionStateKey(def.title), section);
   }
-  settingsBody.dataset.sections = "1";
+  for (const section of Array.from(settingsBody.querySelectorAll(":scope > .settings-section"))) {
+    decorateSettingsSectionHead(section);
+  }
+  if (typeof filterSettings === "function") filterSettings();
 }
 function setupSettingsSearch() {
   const input = el("settingsSearch"),
@@ -1719,6 +1833,9 @@ function filterSettings() {
     body = settingsBody;
   if (!input || !body) return;
   const query = input.value.trim().toLowerCase();
+  // An active search expands collapsed sections so matching rows are
+  // visible; clearing the search restores the user's collapse choices.
+  const searching = !!query;
   let visibleSections = 0;
   const sections = Array.from(body.children || []).filter((node) =>
     node.classList.contains("settings-section"),
@@ -1740,6 +1857,11 @@ function filterSettings() {
     const visible = sectionMatches || visibleRows > 0;
     section.classList.toggle("settings-filter-hidden", !visible);
     if (visible) visibleSections += 1;
+    if (searching && visible) {
+      section.classList.add("settings-search-expanded");
+    } else {
+      section.classList.remove("settings-search-expanded");
+    }
   }
   const empty = body.querySelector(".settings-empty");
   if (empty) empty.classList.toggle("settings-filter-hidden", visibleSections > 0);

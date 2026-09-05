@@ -56,37 +56,58 @@ try {
   record(cfg.settings.enabled === false, 'LSP disabled by default in server settings');
 
   // 3. User enables LSP through the real settings UI.
-  // Open settings modal through the app's own UI API, check the checkbox.
+  // Click the footer Settings button like a user, then the LSP checkbox
+  // inside the modal. Regression: lsp_settings.js loads after core.js, so
+  // the Language servers section used to never render at all; the modal
+  // must now show it with its checkbox.
   const toggled = await evalExpr(`(async () => {
-    // The app persists options via localStorage; the settings modal binds
-    // the same option id used by lsp_settings.js (optLspEnabled).
-    if (typeof window.HerdrSettings === 'undefined') return 'no-settings-global';
-    if (typeof window.HerdrSettings.open !== 'function') return 'no-open-api';
-    window.HerdrSettings.open();
-    await new Promise((r) => setTimeout(r, 300));
+    const btn = document.getElementById('footerSettingsButton');
+    if (!btn) return 'no-settings-button';
+    btn.click();
+    await new Promise((r) => setTimeout(r, 500));
+    const modal = document.getElementById('settingsModal');
+    if (!modal || modal.style.display === 'none') return 'modal-not-open';
+    const lspSection = [...document.querySelectorAll('.settings-section-head')].find((h) => (h.textContent || '').toLowerCase().includes('language servers'));
+    if (!lspSection) return 'no-lsp-section';
     const box = document.getElementById('optLspEnabled');
     if (!box) return 'no-lsp-checkbox-in-settings';
     box.click();
     await new Promise((r) => setTimeout(r, 300));
     const stored = JSON.parse(localStorage.getItem('herdr-web-options') || '{}');
+    const closeBtn = document.getElementById('settingsCloseTop') || document.getElementById('settingsClose');
+    if (closeBtn) closeBtn.click();
     return { checked: box.checked, stored: stored.lspEnabled === true };
   })()`, true);
-  if (toggled === 'no-settings-global' || toggled === 'no-open-api') {
-    // Settings modal may not be exposed as a global; fall back to the exact
-    // same persistence path the settings UI uses (localStorage), then verify
-    // the UI checkbox reflects it once the modal is opened by the app.
-    const viaStorage = await evalExpr(`(async () => {
-      const stored = JSON.parse(localStorage.getItem('herdr-web-options') || '{}');
-      stored.lspEnabled = true;
-      localStorage.setItem('herdr-web-options', JSON.stringify(stored));
-      return stored.lspEnabled === true;
-    })()`, true);
-    record(viaStorage === true, 'user enables LSP option (localStorage persistence path)');
-  } else if (toggled && typeof toggled === 'object') {
-    record(toggled.checked === true && toggled.stored === true, 'user enables LSP via settings UI checkbox');
-  } else {
-    record(false, 'user enables LSP via settings UI', JSON.stringify(toggled));
-  }
+  record(toggled && typeof toggled === 'object' && toggled.checked === true && toggled.stored === true,
+    'user enables LSP via settings UI checkbox', JSON.stringify(toggled));
+
+  // 3b. Settings sections are collapsible: clicking a section head hides its
+  // rows, clicking again restores them, and the choice persists across a
+  // modal reopen (stored per section in localStorage).
+  const collapsible = await evalExpr(`(async () => {
+    const btn = document.getElementById('footerSettingsButton');
+    if (!btn) return 'no-settings-button';
+    btn.click();
+    await new Promise((r) => setTimeout(r, 500));
+    const heads = [...document.querySelectorAll('.settings-section-head')].filter((h) => h.classList.contains('settings-collapsible'));
+    if (!heads.length) return 'no-collapsible-heads';
+    const head = heads[0];
+    const section = head.closest('.settings-section');
+    const rowsBefore = [...section.querySelectorAll(':scope > *:not(.settings-section-head)')].filter((n) => n.offsetParent !== null).length;
+    head.click();
+    await new Promise((r) => setTimeout(r, 200));
+    const collapsedHidden = [...section.querySelectorAll(':scope > *:not(.settings-section-head)')].every((n) => n.offsetParent === null);
+    const storedCollapsed = localStorage.getItem('herdr-settings-collapsed:' + (head.querySelector('h3') || {}).textContent.toLowerCase()) === '1';
+    head.click();
+    await new Promise((r) => setTimeout(r, 200));
+    const rowsAfter = [...section.querySelectorAll(':scope > *:not(.settings-section-head)')].filter((n) => n.offsetParent !== null).length;
+    const storedRestored = localStorage.getItem('herdr-settings-collapsed:' + (head.querySelector('h3') || {}).textContent.toLowerCase()) === null;
+    const closeBtn = document.getElementById('settingsCloseTop') || document.getElementById('settingsClose');
+    if (closeBtn) closeBtn.click();
+    return { collapsed: collapsedHidden && storedCollapsed, restored: rowsAfter === rowsBefore && rowsBefore > 0 && storedRestored };
+  })()`, true);
+  record(collapsible && typeof collapsible === 'object' && collapsible.collapsed === true && collapsible.restored === true,
+    'settings sections collapse and expand with persistence', JSON.stringify(collapsible));
 
   // 4. Server-side config: the user enables the json language in settings.
   const detected = (await pageFetch(`${BASE}api/lsp/detect`)).body;

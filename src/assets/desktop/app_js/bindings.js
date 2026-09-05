@@ -410,19 +410,7 @@ el("optBrowserNotifications").onchange = () => {
   setBrowserNotifications(el("optBrowserNotifications").checked);
 };
 for (const module of settingsModules) {
-  if (typeof module.bind === "function") {
-    module.bind({
-      el,
-      saveOptions,
-      applyOptions,
-      setOption(key, value) {
-        options[key] = value;
-      },
-      getOption(key) {
-        return options[key];
-      },
-    });
-  }
+  bindSettingsModule(module);
 }
 el("worktreeCreateClose").onclick = closeWorktreeCreateModal;
 el("worktreeCreateCancel").onclick = closeWorktreeCreateModal;
