@@ -46,6 +46,7 @@ use assets::{
     mobile_core_js, mobile_css, mobile_file_browser_js, mobile_js, mobile_settings_js,
     mobile_terminal_js, mobile_worktrees_js, shared_actions_js, shared_colors_css,
     shared_content_search_css, shared_core_js, shared_editor_js, shared_file_content_search_js,
+    shared_lsp_js,
     shared_file_icons_css, shared_file_icons_js, shared_file_tree_css, shared_file_tree_js,
     shared_line_context_js, shared_markdown_preview_css, shared_markdown_preview_js,
     shared_temp_terminal_js, shared_terminal_adapter_js, shared_terminal_fit_js,
@@ -1358,6 +1359,7 @@ fn app_router(state: WebState) -> Router {
         .route("/assets/vendor/wterm.css", get(vendor_wterm_css))
         .route("/assets/vendor/ghostty-vt.wasm", get(vendor_ghostty_wasm))
         .route("/assets/shared/editor.js", get(shared_editor_js))
+        .route("/assets/shared/lsp.js", get(shared_lsp_js))
         .route(
             "/assets/shared/markdown-preview.js",
             get(shared_markdown_preview_js),
@@ -9356,6 +9358,191 @@ mod tests {
         let body = response_json(response).await;
         assert_eq!(body["ok"], false);
         assert!(body["error"].as_str().is_some());
+    }
+
+    // ── LSP API tests ──
+
+    async fn lsp_post(
+        app: &axum::Router,
+        uri: &str,
+        payload: serde_json::Value,
+    ) -> (StatusCode, Value) {
+        let response = app
+            .clone()
+            .oneshot(
+                authed_request(Method::POST, uri)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        (status, response_json(response).await)
+    }
+
+    #[tokio::test]
+    async fn lsp_config_api_reports_and_updates_settings() {
+        let _guard = lock_env();
+        let config_home = std::env::temp_dir().join(format!(
+            "herdr-webui-lsp-config-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
+        let state = test_state();
+        let app = test_app_with_state(state);
+
+        let initial = app
+            .clone()
+            .oneshot(
+                authed_request(Method::GET, "/api/lsp/config")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(initial.status(), StatusCode::OK);
+        let initial_body = response_json(initial).await;
+        assert_eq!(initial_body["settings"]["enabled"], false);
+        assert!(initial_body["languages"]
+            .as_array()
+            .is_some_and(|langs| langs.iter().any(|l| l == "json")));
+
+        let (status, updated) = lsp_post(
+            &app,
+            "/api/lsp/config",
+            json!({
+                "settings": {
+                    "enabled": true,
+                    "servers": {
+                        "json": {
+                            "enabled": true,
+                            "command": "vscode-json-language-server",
+                            "args": ["--stdio"]
+                        }
+                    }
+                }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(updated["settings"]["enabled"], true);
+        assert_eq!(
+            updated["settings"]["servers"]["json"]["command"],
+            "vscode-json-language-server"
+        );
+
+        // Rejected: unknown language.
+        let (status, rejected) = lsp_post(
+            &app,
+            "/api/lsp/config",
+            json!({
+                "settings": {
+                    "enabled": true,
+                    "servers": {
+                        "cobol": { "enabled": true, "command": "cobol-ls", "args": [] }
+                    }
+                }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(rejected["error"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn lsp_start_rejects_unconfigured_language() {
+        let state = test_state();
+        let app = test_app_with_state(state);
+        let (status, body) = lsp_post(
+            &app,
+            "/api/lsp/start",
+            json!({ "language": "json", "cwd": std::env::temp_dir().to_string_lossy() }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body["error"], "language servers are disabled");
+    }
+
+    #[tokio::test]
+    async fn lsp_request_rejects_disallowed_method() {
+        let state = test_state();
+        let app = test_app_with_state(state);
+        let (status, _) = lsp_post(
+            &app,
+            "/api/lsp/request",
+            json!({
+                "language": "json",
+                "cwd": std::env::temp_dir().to_string_lossy(),
+                "method": "workspace/executeCommand",
+                "params": {}
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn lsp_status_reports_running_servers() {
+        let state = test_state();
+        let app = test_app_with_state(state);
+        let response = app
+            .clone()
+            .oneshot(
+                authed_request(Method::GET, "/api/lsp/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert!(body["servers"].as_array().is_some());
+    }
+
+    #[tokio::test]
+    async fn lsp_apis_require_auth() {
+        let state = test_state();
+        let app = test_app_with_state(state);
+        for (uri, method) in [
+            ("/api/lsp/config", Method::GET),
+            ("/api/lsp/detect", Method::GET),
+            ("/api/lsp/status", Method::GET),
+            ("/api/lsp/notifications", Method::GET),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    request(method, uri)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{uri}");
+        }
+        for uri in [
+            ("/api/lsp/config", json!({ "settings": {} })),
+            ("/api/lsp/start", json!({ "language": "json", "cwd": "/tmp" })),
+            ("/api/lsp/request", json!({ "language": "json", "cwd": "/tmp", "method": "initialize" })),
+            ("/api/lsp/notify", json!({ "language": "json", "cwd": "/tmp", "method": "initialized" })),
+            ("/api/lsp/stop", json!({})),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    request(Method::POST, uri.0)
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(uri.1.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{}", uri.0);
+        }
     }
 
     // ── create_worktree spawn_blocking JoinError path ──
