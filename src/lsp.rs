@@ -251,10 +251,7 @@ impl LspRegistry {
     }
 
     pub(crate) fn settings(&self) -> LspSettings {
-        self.settings
-            .lock()
-            .map(|s| s.clone())
-            .unwrap_or_default()
+        self.settings.lock().map(|s| s.clone()).unwrap_or_default()
     }
 
     pub(crate) fn set_settings(&self, settings: LspSettings) {
@@ -290,7 +287,10 @@ impl LspRegistry {
             }));
         }
         if !dead.is_empty() {
-            self.servers.lock().await.retain(|key, _| !dead.contains(key));
+            self.servers
+                .lock()
+                .await
+                .retain(|key, _| !dead.contains(key));
         }
         out
     }
@@ -506,7 +506,8 @@ async fn lsp_start(
         let servers = state.lsp.servers.lock().await;
         if let Some(handle) = servers.get(&key) {
             if handle.is_running().await {
-                return Json(json!({ "ok": true, "key": key, "already_running": true })).into_response();
+                return Json(json!({ "ok": true, "key": key, "already_running": true }))
+                    .into_response();
             }
         }
     }
@@ -514,9 +515,7 @@ async fn lsp_start(
         return lsp_error(StatusCode::TOO_MANY_REQUESTS, err);
     }
     let mut args = config.args.clone();
-    let known = known_servers()
-        .into_iter()
-        .find(|s| s.language == language);
+    let known = known_servers().into_iter().find(|s| s.language == language);
     if let (Some(known), true) = (known.as_ref(), args.is_empty()) {
         args = known
             .detect_args
@@ -525,7 +524,10 @@ async fn lsp_start(
             .collect();
     }
     match spawn_server(&state, &language, &root_string, &command, &args).await {
-        Ok(spawned_key) => Json(json!({ "ok": true, "key": spawned_key, "already_running": false })).into_response(),
+        Ok(spawned_key) => {
+            Json(json!({ "ok": true, "key": spawned_key, "already_running": false }))
+                .into_response()
+        }
         Err(err) => lsp_error(StatusCode::BAD_GATEWAY, err),
     }
 }
@@ -539,7 +541,9 @@ async fn can_spawn_more(state: &WebState) -> Result<(), String> {
         }
     }
     if running >= MAX_SERVERS {
-        return Err(format!("too many running language servers (max {MAX_SERVERS})"));
+        return Err(format!(
+            "too many running language servers (max {MAX_SERVERS})"
+        ));
     }
     Ok(())
 }
@@ -570,9 +574,7 @@ async fn spawn_server(
 ) -> Result<String, String> {
     // Resolve the command: absolute path or PATH lookup. Never a shell.
     let resolved = resolve_command(command).ok_or_else(|| {
-        format!(
-            "language server command not found: {command}. Install it or set an absolute path."
-        )
+        format!("language server command not found: {command}. Install it or set an absolute path.")
     })?;
     let mut cmd = Command::new(&resolved);
     cmd.args(args)
@@ -581,7 +583,9 @@ async fn spawn_server(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
-    let mut child = cmd.spawn().map_err(|err| format!("failed to start {command}: {err}"))?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|err| format!("failed to start {command}: {err}"))?;
     let stdin = child.stdin.take().ok_or("no stdin handle")?;
     let stdout = child.stdout.take().ok_or("no stdout handle")?;
     let stderr = child.stderr.take().ok_or("no stderr handle")?;
@@ -671,7 +675,9 @@ async fn spawn_server(
                     content_length = Some(value);
                 }
             }
-            let Some(length) = content_length else { continue };
+            let Some(length) = content_length else {
+                continue;
+            };
             if length > MAX_LSP_RESPONSE_BYTES {
                 // Oversized frame: kill the server and drop it from the registry.
                 let mut child_guard = handle_for_reader.child.lock().await;
@@ -746,7 +752,10 @@ async fn spawn_server(
             if !trimmed.is_empty() {
                 if let Ok(mut last_error) = handle_for_stderr.last_error.lock() {
                     if last_error.is_none() {
-                        *last_error = Some(format!("stderr: {}", trimmed.chars().take(500).collect::<String>()));
+                        *last_error = Some(format!(
+                            "stderr: {}",
+                            trimmed.chars().take(500).collect::<String>()
+                        ));
                     }
                 }
             }
@@ -1226,7 +1235,9 @@ mod tests {
 
     #[test]
     fn notify_whitelist_blocks_arbitrary_methods() {
-        assert!(!is_allowed_notify_method("workspace/didChangeConfiguration"));
+        assert!(!is_allowed_notify_method(
+            "workspace/didChangeConfiguration"
+        ));
         assert!(!is_allowed_notify_method("exit/whatever"));
         assert!(is_allowed_notify_method("textDocument/didOpen"));
         assert!(is_allowed_notify_method("textDocument/didChange"));
@@ -1343,15 +1354,9 @@ function handleMessage(msg) {
             .expect("node path");
         let command = node_bin;
         let script_arg = script_abs.to_string_lossy().to_string();
-        let key = spawn_server_test(
-            registry.as_ref(),
-            "json",
-            &root,
-            &command,
-            &[script_arg],
-        )
-        .await
-        .expect("spawn failed");
+        let key = spawn_server_test(registry.as_ref(), "json", &root, &command, &[script_arg])
+            .await
+            .expect("spawn failed");
         assert!(key.starts_with("json:"));
 
         let handle = {
@@ -1424,8 +1429,8 @@ function handleMessage(msg) {
         command: &str,
         args: &[String],
     ) -> Result<Arc<LspServerHandle>, String> {
-        let resolved = resolve_command(command)
-            .ok_or_else(|| format!("command not found: {command}"))?;
+        let resolved =
+            resolve_command(command).ok_or_else(|| format!("command not found: {command}"))?;
         let mut cmd = Command::new(&resolved);
         cmd.args(args)
             .current_dir(root)
@@ -1486,7 +1491,9 @@ function handleMessage(msg) {
                         content_length = Some(value);
                     }
                 }
-                let Some(length) = content_length else { continue };
+                let Some(length) = content_length else {
+                    continue;
+                };
                 if length > MAX_LSP_RESPONSE_BYTES {
                     return;
                 }
@@ -1550,16 +1557,14 @@ function handleMessage(msg) {
             .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
             .expect("node path");
         let registry = Arc::new(LspRegistry::new(LspSettings::default()));
-        let script_arg = script_path.canonicalize().unwrap().to_string_lossy().to_string();
-        let key = spawn_server_test(
-            registry.as_ref(),
-            "json",
-            &root,
-            &node_bin,
-            &[script_arg],
-        )
-        .await
-        .expect("spawn failed");
+        let script_arg = script_path
+            .canonicalize()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let key = spawn_server_test(registry.as_ref(), "json", &root, &node_bin, &[script_arg])
+            .await
+            .expect("spawn failed");
 
         // The process exits; is_running() must flip to false and the next
         // status() call must drop it from the registry.

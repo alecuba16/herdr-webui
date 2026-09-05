@@ -46,9 +46,8 @@ use assets::{
     mobile_core_js, mobile_css, mobile_file_browser_js, mobile_js, mobile_settings_js,
     mobile_terminal_js, mobile_worktrees_js, shared_actions_js, shared_colors_css,
     shared_content_search_css, shared_core_js, shared_editor_js, shared_file_content_search_js,
-    shared_lsp_js,
     shared_file_icons_css, shared_file_icons_js, shared_file_tree_css, shared_file_tree_js,
-    shared_line_context_js, shared_markdown_preview_css, shared_markdown_preview_js,
+    shared_line_context_js, shared_lsp_js, shared_markdown_preview_css, shared_markdown_preview_js,
     shared_temp_terminal_js, shared_terminal_adapter_js, shared_terminal_fit_js,
     shared_terminal_scroll_js, shared_workspace_search_js, vendor_codemirror_js,
     vendor_dompurify_js, vendor_ghostty_wasm, vendor_marked_js, vendor_mermaid_js,
@@ -9515,20 +9514,25 @@ mod tests {
         ] {
             let response = app
                 .clone()
-                .oneshot(
-                    request(method, uri)
-                        .body(Body::empty())
-                        .unwrap(),
-                )
+                .oneshot(request(method, uri).body(Body::empty()).unwrap())
                 .await
                 .unwrap();
             assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{uri}");
         }
         for uri in [
             ("/api/lsp/config", json!({ "settings": {} })),
-            ("/api/lsp/start", json!({ "language": "json", "cwd": "/tmp" })),
-            ("/api/lsp/request", json!({ "language": "json", "cwd": "/tmp", "method": "initialize" })),
-            ("/api/lsp/notify", json!({ "language": "json", "cwd": "/tmp", "method": "initialized" })),
+            (
+                "/api/lsp/start",
+                json!({ "language": "json", "cwd": "/tmp" }),
+            ),
+            (
+                "/api/lsp/request",
+                json!({ "language": "json", "cwd": "/tmp", "method": "initialize" }),
+            ),
+            (
+                "/api/lsp/notify",
+                json!({ "language": "json", "cwd": "/tmp", "method": "initialized" }),
+            ),
             ("/api/lsp/stop", json!({})),
         ] {
             let response = app
