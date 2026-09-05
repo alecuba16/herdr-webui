@@ -1605,6 +1605,11 @@ function groupSettingsSections() {
       ids: ["optEditorEnabled", "optEditorWordWrap", "optEditorTabSize", "optEditorBracketMatching", "optEditorFolding", "optEditorActiveLine", "optEditorWhitespace"],
     },
     {
+      title: "Editor",
+      desc: "Editing behavior, readability, and performance controls.",
+      ids: ["optEditorEnabled", "optEditorWordWrap", "optEditorTabSize", "optEditorBracketMatching", "optEditorFolding", "optEditorActiveLine", "optEditorWhitespace"],
+    },
+    {
       title: "Terminal input",
       desc: "Viewport sizing, scrolling, and keyboard behavior.",
       ids: [
