@@ -8,6 +8,7 @@
 - Unsaved edits mark the tab with a dirty dot, Save only appears in the tab menu for dirty editable files, and Cmd/Ctrl+S saves the focused file.
 - The dirty dot syncs live while editing without remounting editors; stale change flags clear after a lock.
 - Tab menu collapses Edit/Cancel into one state-driven Lock/Unlock entry; help modal documents the new behavior.
+- File-tab and tree-row context menus now use self-contained themed panels with grouped actions, icons, viewport clamping, and keyboard navigation.
 
 ### Git UI improvements
 

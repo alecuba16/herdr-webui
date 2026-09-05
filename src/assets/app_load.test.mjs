@@ -763,7 +763,7 @@ describe("app bundle load", () => {
 
   it("offers copy permalink actions in file explorer and Git file menus", () => {
     match(fileBrowserSource, /Copy permalink/);
-    match(fileBrowserSource, /data-file-menu-action="copyPermalink"/);
+    match(fileBrowserSource, /menuIcon\("copyPermalink"/);
     match(fileBrowserSource, /\.file-browser-menu \[data-file-menu-action\]/);
     match(fileBrowserSource, /\/api\/git-ui\/permalink\?cwd=/);
     match(fileBrowserSource, /navigator\.clipboard\.writeText\(url\)/);
@@ -1093,9 +1093,10 @@ describe("app bundle load", () => {
     ok(!fileBrowserCss.includes(".file-browser-side.previewing"), "file tree must stay visible while previewing files");
     match(fileBrowserSource, /function renderTabMenu/);
     match(fileBrowserSource, /HerdrFileBrowser\.tabMenu/);
-    match(fileBrowserSource, /data-file-menu-action="copyPathTab"/);
-    match(fileBrowserSource, /data-file-menu-action="focus"/);
-    match(fileBrowserSource, /data-file-menu-action="close"/);
+    match(fileBrowserSource, /data-file-menu-action="\$\{action\}"/);
+    match(fileBrowserSource, /menuIcon\("copyPathTab"/);
+    match(fileBrowserSource, /menuIcon\("focus"/);
+    match(fileBrowserSource, /menuIcon\("close"/);
     match(fileBrowserCss, /\.file-browser-menu-label/);
     match(fileBrowserCss, /\.file-browser-menu-sep/);
     match(fileBrowserCss, /\.cm-foldGutter/);
@@ -3079,10 +3080,10 @@ describe("app bundle load", () => {
     match(gitUiSource, /const GIT_LOG_PAGE_SIZE = 80;/);
     match(gitUiSource, /const GIT_LOG_MAX_LIMIT = 2000;/);
     match(fileBrowserSource, /showHistory\(encodedPath\)/);
-    match(fileBrowserSource, />Show history<\/button>/);
-    match(fileBrowserSource, /menu\.kind === "file" \? `<button type="button" data-file-menu-action="history">Show history<\/button>` : ""/);
+    match(fileBrowserSource, /menuIcon\("history", "Show history"\)/);
+    match(fileBrowserSource, /menu\.kind === "file" \? menuIcon\("history", "Show history"\) : ""/);
     match(fileBrowserSource, /if \(action === "history"\) \{ showHistoryPath\(menu\.path\); return; \}/);
-    match(fileBrowserSource, /data-file-menu-action="history">Show history<\/button>/);
+    match(fileBrowserSource, /role="menuitem"/);
     match(fileBrowserSource, /hide\(\);\n\s+window\.HerdrGitUi\.openFileHistory/);
     match(fileBrowserSource, /openFileHistory\(encodeURIComponent\(state\.cwd\), encodeURIComponent\(path\)\)/);
     match(gitUiSource, /\/api\/git-ui\/path-info\?cwd=\$\{encodeURIComponent\(cwd\)\}&path=\$\{encodeURIComponent\(path\)\}/);
