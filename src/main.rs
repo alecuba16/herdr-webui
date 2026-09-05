@@ -28,6 +28,7 @@ mod builtin_events;
 mod compat;
 mod file_browser;
 mod git_ui;
+mod lsp;
 mod protocol;
 mod service;
 mod terminal_text;
@@ -189,6 +190,8 @@ struct PersistedServerSettings {
     external_herdr_backend_enabled: Option<bool>,
     jcode_detection_variant: Option<String>,
     log_level: Option<LogLevel>,
+    #[serde(default)]
+    lsp: Option<lsp::LspSettings>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -243,6 +246,7 @@ struct RuntimeServerSettings {
     external_herdr_backend_enabled: bool,
     jcode_detection_variant: JcodeDetectionVariant,
     log_level: LogLevel,
+    lsp: lsp::LspSettings,
 }
 
 struct NoSleepGuard {
@@ -492,6 +496,7 @@ pub(crate) struct WebState {
     no_sleep: Arc<Mutex<NoSleepState>>,
     rebind_tx: tokio::sync::watch::Sender<SocketAddr>,
     workspace_orders: Arc<Mutex<HashMap<String, Vec<String>>>>,
+    lsp: Arc<lsp::LspRegistry>,
 }
 
 impl WebState {
@@ -500,6 +505,29 @@ impl WebState {
             .lock()
             .map(|settings| settings.log_level.clone())
             .unwrap_or_default()
+    }
+
+    /// Update LSP settings in memory, persisted server settings, and the registry.
+    async fn update_lsp_settings(&self, lsp_settings: lsp::LspSettings) -> io::Result<()> {
+        let next = {
+            let Ok(mut guard) = self.server_settings.lock() else {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "server settings unavailable",
+                ));
+            };
+            guard.lsp = lsp_settings.clone();
+            guard.clone()
+        };
+        let save = {
+            let next_clone = next.clone();
+            tokio::task::spawn_blocking(move || save_runtime_server_settings(&next_clone))
+                .await
+                .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?
+        };
+        save?;
+        self.lsp.set_settings(lsp_settings);
+        Ok(())
     }
 }
 
@@ -655,6 +683,7 @@ fn default_runtime_server_settings(bind: SocketAddr) -> RuntimeServerSettings {
         external_herdr_backend_enabled: true,
         jcode_detection_variant: JcodeDetectionVariant::default(),
         log_level: LogLevel::default(),
+        lsp: lsp::LspSettings::default(),
     }
 }
 
@@ -839,6 +868,9 @@ fn load_runtime_server_settings(default_bind: SocketAddr) -> io::Result<RuntimeS
     if let Some(log_level) = persisted.log_level {
         settings.log_level = log_level;
     }
+    if let Some(lsp) = persisted.lsp {
+        settings.lsp = lsp;
+    }
     validate_runtime_server_settings(&settings)?;
     if missing_keys {
         save_runtime_server_settings(&settings)?;
@@ -865,6 +897,7 @@ fn save_runtime_server_settings(settings: &RuntimeServerSettings) -> io::Result<
         external_herdr_backend_enabled: Some(settings.external_herdr_backend_enabled),
         jcode_detection_variant: Some(settings.jcode_detection_variant.as_str().to_string()),
         log_level: Some(settings.log_level.clone()),
+        lsp: Some(settings.lsp.clone()),
     })?;
     fs::write(&path, content)?;
     #[cfg(unix)]
@@ -972,6 +1005,9 @@ async fn main() -> io::Result<()> {
         (config.api_socket.clone(), config.client_socket.clone())
     };
     let server_settings = Arc::new(Mutex::new(server_settings.clone()));
+    let lsp_registry = Arc::new(lsp::LspRegistry::new(
+        server_settings.lock().unwrap().lsp.clone(),
+    ));
     let (rebind_tx, rebind_rx) = tokio::sync::watch::channel(server_settings.lock().unwrap().bind);
     let state = WebState {
         api_socket,
@@ -986,6 +1022,7 @@ async fn main() -> io::Result<()> {
         no_sleep: Arc::new(Mutex::new(NoSleepState::default())),
         rebind_tx,
         workspace_orders: Arc::new(Mutex::new(HashMap::new())),
+        lsp: lsp_registry,
     };
 
     serve_rebindable(state, rebind_rx, config.tls).await
@@ -1256,6 +1293,7 @@ fn app_router(state: WebState) -> Router {
         .route("/api/git-branches", get(git_branches))
         .merge(file_browser::routes())
         .merge(git_ui::routes())
+        .merge(lsp::routes())
         .route(
             "/api/workspaces/{workspace_id}/rename",
             post(rename_workspace),
@@ -2092,6 +2130,10 @@ async fn update_server_settings(
         .map(|settings| settings.clone());
     let next = RuntimeServerSettings {
         bind,
+        lsp: current
+            .as_ref()
+            .map(|settings| settings.lsp.clone())
+            .unwrap_or_default(),
         user: body
             .username
             .map(|value| value.trim().to_string())
@@ -4252,10 +4294,12 @@ mod tests {
                 external_herdr_backend_enabled: true,
                 jcode_detection_variant: JcodeDetectionVariant::default(),
                 log_level: LogLevel::default(),
+                lsp: lsp::LspSettings::default(),
             })),
             no_sleep: Arc::new(Mutex::new(NoSleepState::default())),
             rebind_tx,
             workspace_orders: Arc::new(Mutex::new(HashMap::new())),
+            lsp: Arc::new(lsp::LspRegistry::new(Default::default())),
         }
     }
 
@@ -5018,6 +5062,7 @@ mod tests {
             external_herdr_backend_enabled: true,
             jcode_detection_variant: JcodeDetectionVariant::default(),
             log_level: LogLevel::default(),
+            lsp: lsp::LspSettings::default(),
         })
         .unwrap();
 
@@ -5042,6 +5087,7 @@ mod tests {
             external_herdr_backend_enabled: true,
             jcode_detection_variant: JcodeDetectionVariant::default(),
             log_level: LogLevel::default(),
+            lsp: lsp::LspSettings::default(),
         }) {
             Ok(_) => panic!("expected public auth config to fail"),
             Err(err) => err,
