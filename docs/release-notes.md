@@ -1,5 +1,14 @@
 # Release notes
 
+## 0.4.4 Release Notes
+
+### Settings modal fixes
+
+- Fixed the Language servers section never appearing in the settings modal: `lsp_settings.js` is concatenated after `core.js` in the desktop bundle, so it registered its module after the settings modal was already built. Late-registered settings modules now get the same treatment as startup modules (defaults merge, HTML injection, section grouping, control binding), and modules that ship a complete settings section in their HTML are unwrapped instead of duplicated or orphaned from their rows (the scan button and server list render inside the Language servers section again).
+- Removed a duplicate "Editor" section definition.
+- Every settings section is now collapsible: click the section head (or press Enter/Space when focused) to hide or show its rows, with a rotating chevron and `aria-expanded` kept in sync. The choice persists per section across sessions, and an active search expands collapsed sections so matching rows stay visible; clearing the search restores your collapse choices.
+- The acceptance suite now enables LSP through the real footer Settings button and the real checkbox (the previous localStorage fallback masked the missing section), and a new check verifies collapse/expand with persistence.
+
 ## 0.4.3 Release Notes
 
 ### Crash-recovery regression coverage
