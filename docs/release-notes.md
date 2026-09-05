@@ -1,5 +1,19 @@
 # Release notes
 
+## 0.4.2 Release Notes
+
+### Language server crash recovery
+
+- Found by a SIGKILL failure-mode probe against the real UI: killing the json language server mid-session left the frontend stuck forever. The backend detected the death and dropped the entry, but the frontend kept its cached capabilities, so `ensureServer` short-circuited and every later `didOpen` skipped `/api/lsp/start`; diagnostics never came back until a full page reload.
+- The backend answers 404 (not running) or 410 (exited) once a server is gone. Those responses now invalidate the cached server state, and a failed `didOpen` notification respawns the server and retries once, so diagnostics return on the same open.
+- Verified end to end in the real browser: page main thread stays responsive after the crash, the backend drops the dead entry, a fresh server spawns on reopen, and diagnostics reappear (10/10 probe checks).
+
+### Acceptance suite hardening
+
+- The CDP driver auto-accepts native `confirm()`/`prompt()` dialogs; an unanswered dialog in headless Chrome blocks the page main thread forever, which wedged the suite on dirty-tab close flows. The suite grew to 17 checks including a close-tab/reopen/version-reset check, and `HERDR_BIN` lets it run against any prebuilt binary (verified against the downloaded v0.4.1 tarball).
+- Widened the editor-mount wait to 30s: the first suite run after `cargo build --release` competes with the compiler and the language server for CPU/disk and can exceed the old 10s window (reproduced once in five runs, verified fixed with a clean rebuild + immediate run).
+- Failure-mode probes added to the validation record: missing language server binary (clean 502 with an install hint, editor still usable, 9/9), malformed settings config (400/422 rejection, page responsive, 6/6), and double-open/external-delete edge cases (single tab, sane state, 9/9).
+
 ## 0.4.1 Release Notes
 
 ### LSP diagnostics fixes found by real-UI acceptance testing
