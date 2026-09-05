@@ -190,6 +190,40 @@ body.light .chip.label {
   font-size: 12px;
   margin: 3px 0 0;
 }
+.settings-section-head.settings-collapsible {
+  cursor: pointer;
+  user-select: none;
+  border-radius: 10px;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 10px;
+  align-items: start;
+  padding: 4px 6px;
+  margin: -4px -6px;
+}
+.settings-section-head.settings-collapsible:hover {
+  background: var(--panel2);
+}
+.settings-section-head.settings-collapsible .settings-caret {
+  color: var(--muted);
+  display: inline-block;
+  font-size: 12px;
+  grid-row: 1 / span 2;
+  margin-top: 1px;
+  transition: transform 0.15s ease;
+}
+.settings-section.settings-collapsed .settings-section-head.settings-collapsible .settings-caret {
+  transform: rotate(-90deg);
+}
+.settings-section.settings-collapsed > :not(.settings-section-head) {
+  display: none;
+}
+.settings-section.settings-search-expanded.settings-collapsed > :not(.settings-section-head) {
+  display: block;
+}
+.settings-section.settings-search-expanded.settings-collapsed > .settings-section-head.settings-collapsible .settings-caret {
+  transform: none;
+}
 .settings-filter-hidden {
   display: none !important;
 }
