@@ -920,20 +920,43 @@
     const mount = document.getElementById(`fileBrowserEditor-${hashId(path)}`);
     if (!mount) return;
     const api = mount._herdrEditorApi;
-    const view = api && api._view;
-    if (!view || !view.state) return;
-    // Mark error and warning lines with a simple lint effect: mark whole line.
+    if (!api) return;
+    const view = api._view;
     const effects = [];
-    const doc = view.state.doc;
-    for (const diagnostic of diagnostics) {
-      const range = diagnostic && diagnostic.range;
-      if (!range || !range.start) continue;
-      const line = Math.max(0, Number(range.start.line) || 0);
-      if (line >= doc.lines) continue;
-      const from = doc.line(line + 1).from;
-      const to = doc.line(line + 1).to;
-      const severity = Number(diagnostic.severity) === 1 ? "error" : Number(diagnostic.severity) === 2 ? "warning" : "info";
-      effects.push({ from, to, severity, message: diagnostic.message || "" });
+    if (view && view.state) {
+      const doc = view.state.doc;
+      for (const diagnostic of diagnostics) {
+        const range = diagnostic && diagnostic.range;
+        if (!range || !range.start) continue;
+        const line = Math.max(0, Number(range.start.line) || 0);
+        if (line >= doc.lines) continue;
+        const from = doc.line(line + 1).from;
+        const to = doc.line(line + 1).to;
+        const severity = Number(diagnostic.severity) === 1 ? "error" : Number(diagnostic.severity) === 2 ? "warning" : "info";
+        effects.push({ from, to, severity, message: diagnostic.message || "" });
+      }
+    } else if (typeof api.getValue === "function") {
+      // Fallback without a live view: approximate offsets by splitting lines.
+      const text = String(api.getValue() || "");
+      const lines = text.split("\n");
+      let offset = 0;
+      const lineOffsets = lines.map((text2) => {
+        const start = offset;
+        offset += text2.length + 1;
+        return start;
+      });
+      for (const diagnostic of diagnostics) {
+        const range = diagnostic && diagnostic.range;
+        if (!range || !range.start) continue;
+        const line = Math.max(0, Number(range.start.line) || 0);
+        if (line >= lineOffsets.length) continue;
+        const from = lineOffsets[line];
+        const to = from + (lines[line] ? lines[line].length : 0);
+        const severity = Number(diagnostic.severity) === 1 ? "error" : Number(diagnostic.severity) === 2 ? "warning" : "info";
+        effects.push({ from, to, severity, message: diagnostic.message || "" });
+      }
+    } else {
+      return;
     }
     renderDiagnosticsInline(mount, effects);
   }
@@ -968,6 +991,10 @@
     for (const file of state.files) {
       if (!file.binary && !file.truncated) lspRenderDiagnostics(file.path);
     }
+    // Diagnostics changed the toolbar badge counts: re-render it in place.
+    const current = currentFile();
+    const toolbar = document.querySelector(".file-browser-toolbar");
+    if (toolbar && current) toolbar.innerHTML = renderToolbar(current);
   }
 
   if (typeof window !== "undefined") {

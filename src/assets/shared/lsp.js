@@ -53,9 +53,9 @@
         language: "",
         initialized: false,
         capabilities: null,
-        documents: new Map(),
+        documents: new Map(), // uri -> relative path
         diagnostics: new Map(),
-        diagnosticsVersion: 0,
+        docVersions: new Map(), // uri -> current textDocument.version
         changeTimers: new Map(),
       };
       workspaces.set(key, ws);
@@ -179,6 +179,7 @@
     const languageId = language === "javascript" ? "typescript" : language;
     const uri = fileUri(ws, path);
     ws.documents.set(uri, path);
+    ws.docVersions.set(uri, 1); // didOpen starts every document at version 1
     await post("/api/lsp/notify", {
       language: languageId,
       cwd: ws.cwd,
@@ -201,7 +202,11 @@
     const language = languageFor(path);
     const languageId = language === "javascript" ? "typescript" : language;
     clearTimeout(ws.changeTimers.get(uri));
-    const version = (ws.diagnosticsVersion = (ws.diagnosticsVersion || 0) + 1);
+    // Language servers drop didChange notifications whose version is not
+    // strictly greater than the document's current version (LSP spec), so
+    // track the version per document: first change after didOpen is 2.
+    const version = (ws.docVersions.get(uri) || 1) + 1;
+    ws.docVersions.set(uri, version);
     ws.changeTimers.set(
       uri,
       setTimeout(() => {
@@ -224,6 +229,7 @@
     if (!ws.documents.has(uri)) return;
     ws.documents.delete(uri);
     ws.diagnostics.delete(uri);
+    ws.docVersions.delete(uri);
     clearTimeout(ws.changeTimers.get(uri));
     ws.changeTimers.delete(uri);
     const language = languageFor(path);
