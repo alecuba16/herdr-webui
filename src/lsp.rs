@@ -294,6 +294,19 @@ impl LspRegistry {
         }
         out
     }
+
+    /// Stop every running language server and empty the registry. Used when
+    /// the process exits (SIGTERM/SIGINT) so no child outlives the backend.
+    pub(crate) async fn shutdown_all(&self) {
+        let snapshot: Vec<Arc<LspServerHandle>> = {
+            let servers = self.servers.lock().await;
+            servers.values().map(Arc::clone).collect()
+        };
+        for handle in snapshot {
+            let _ = stop_handle(&handle).await;
+        }
+        self.servers.lock().await.clear();
+    }
 }
 
 struct LspServerHandle {
