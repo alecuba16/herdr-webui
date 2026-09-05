@@ -116,6 +116,16 @@
     return !!(ws.capabilities && ws.language === language);
   }
 
+  // The backend answers 404 (not running) or 410 (exited) once a server is
+  // gone. Clear the cached server state so the next didOpen respawns it;
+  // otherwise ensureServer trusts stale capabilities forever and a crashed
+  // server never comes back until the page is reloaded.
+  function invalidateServer(ws, err) {
+    if (!err || (err.status !== 404 && err.status !== 410)) return;
+    ws.capabilities = null;
+    ws.language = "";
+  }
+
   // Start the language server for a workspace and initialize it.
   async function ensureServer(ws, language) {
     if (!language || serverRunning(ws, language)) return ws.capabilities;
@@ -180,19 +190,35 @@
     const uri = fileUri(ws, path);
     ws.documents.set(uri, path);
     ws.docVersions.set(uri, 1); // didOpen starts every document at version 1
-    await post("/api/lsp/notify", {
-      language: languageId,
-      cwd: ws.cwd,
-      method: "textDocument/didOpen",
-      params: {
-        textDocument: {
-          uri,
-          languageId: language,
-          version: 1,
-          text: String(content == null ? "" : content),
+    const notify = () =>
+      post("/api/lsp/notify", {
+        language: languageId,
+        cwd: ws.cwd,
+        method: "textDocument/didOpen",
+        params: {
+          textDocument: {
+            uri,
+            languageId: language,
+            version: 1,
+            text: String(content == null ? "" : content),
+          },
         },
-      },
-    }).catch(() => {});
+      });
+    try {
+      await notify();
+    } catch (err) {
+      // A crashed server answers 404/410 here (stale capabilities passed the
+      // ensureServer check). Drop the cache, respawn, and retry once so the
+      // user sees diagnostics again on the very same open, not the next one.
+      invalidateServer(ws, err);
+      if (err && (err.status === 404 || err.status === 410)) {
+        try {
+          await ensureServer(ws, language);
+          ws.docVersions.set(uri, 1);
+          await notify();
+        } catch (_) {}
+      }
+    }
     startDiagnosticsPolling();
   }
 
@@ -219,7 +245,7 @@
             textDocument: { uri, version },
             contentChanges: [{ text: String(content == null ? "" : content) }],
           },
-        }).catch(() => {});
+        }).catch((err) => invalidateServer(ws, err));
       }, DID_CHANGE_DEBOUNCE_MS),
     );
   }
@@ -239,7 +265,7 @@
       cwd: ws.cwd,
       method: "textDocument/didClose",
       params: { textDocument: { uri } },
-    }).catch(() => {});
+    }).catch((err) => invalidateServer(ws, err));
   }
 
   async function request(ws, path, method, params) {
@@ -253,7 +279,8 @@
         method,
       }, params ? { params } : {}));
       return body && body.result !== undefined ? body.result : null;
-    } catch (_) {
+    } catch (err) {
+      invalidateServer(ws, err);
       return null;
     }
   }
