@@ -83,7 +83,7 @@ function languageForPath(path) {
   if (["md", "markdown"].includes(ext)) return markdown();
   if (["yaml", "yml"].includes(ext)) return yaml();
   if (ext === "xml") return xml();
-  if (ext === "java") return java();
+  if (ext === "java" || ["kt", "kts"].includes(ext)) return java();
   if (["sql", "psql"].includes(ext)) return sql();
   return null;
 }
@@ -103,7 +103,7 @@ function languageNameForPath(path) {
   if (["md", "markdown"].includes(ext)) return "markdown";
   if (["yaml", "yml"].includes(ext)) return "yaml";
   if (ext === "xml") return "xml";
-  if (ext === "java") return "java";
+  if (ext === "java" || ["kt", "kts"].includes(ext)) return ext === "java" ? "java" : "kotlin";
   if (["sql", "psql"].includes(ext)) return "sql";
   return ext || "text";
 }
