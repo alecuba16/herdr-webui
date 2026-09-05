@@ -1172,11 +1172,9 @@ async fn serve_rebindable(
         // Best-effort language server sweep; bounded so a hung server cannot
         // delay exit (children are also killed on drop as a backstop).
         let sweep = async {
-            let _ = tokio::time::timeout(
-                std::time::Duration::from_secs(3),
-                state.lsp.shutdown_all(),
-            )
-            .await;
+            let _ =
+                tokio::time::timeout(std::time::Duration::from_secs(3), state.lsp.shutdown_all())
+                    .await;
         };
         tokio::pin!(sweep);
         tokio::select! {
