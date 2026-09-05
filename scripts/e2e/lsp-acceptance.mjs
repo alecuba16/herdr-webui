@@ -181,7 +181,7 @@ try {
     if (btn) btn.click();
     return true;
   })()`);
-  const treeReady = await waitFor('file tree rendered', `!!document.querySelector('.herdr-file-tree .herdr-tree-row')`, 100, 250);
+  const treeReady = await waitFor('file tree rendered', `!!document.querySelector('.herdr-file-tree .herdr-tree-row')`, 100, 250); // 25s; cold start after cargo build
   record(!!treeReady, 'file tree renders after switching to files mode');
 
   const fileClicked = await evalExpr(`(async () => {
@@ -204,11 +204,13 @@ try {
   })()`, true);
   record(fileClicked === 'clicked', 'broken.json opened by clicking the real tree row', String(fileClicked));
 
-  // 7. Wait for the editor to mount.
+  // 7. Wait for the editor to mount. Generous window: the first run after
+  // cargo build competes with the compiler for CPU and the language server
+  // for disk, which can push mount past the old 10s and flake the suite.
   const editorUp = await waitFor('editor mounted', `(() => {
     const mount = document.querySelector('[id^="fileBrowserEditor-"]');
     return !!(mount && mount._herdrEditorApi);
-  })()`);
+  })()`, 120, 250);
   record(!!editorUp, 'broken.json opens in the real editor');
 
   // 8. Wait for diagnostics to arrive and the badge + list to render.
