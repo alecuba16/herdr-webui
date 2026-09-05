@@ -836,10 +836,12 @@ mod tests {
                 external_herdr_backend_enabled: true,
                 jcode_detection_variant: JcodeDetectionVariant::default(),
                 log_level: LogLevel::default(),
+                lsp: crate::lsp::LspSettings::default(),
             })),
             no_sleep: Arc::new(Mutex::new(NoSleepState::default())),
             rebind_tx,
             workspace_orders: Arc::new(Mutex::new(HashMap::new())),
+            lsp: Arc::new(crate::lsp::LspRegistry::new(Default::default())),
         }
     }
 

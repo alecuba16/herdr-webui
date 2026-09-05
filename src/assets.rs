@@ -19,6 +19,7 @@ const SHARED_FILE_CONTENT_SEARCH_JS: &str = include_str!("assets/shared/file_con
 const SHARED_LINE_CONTEXT_JS: &str = include_str!("assets/shared/line_context.js");
 const SHARED_WORKSPACE_SEARCH_JS: &str = include_str!("assets/shared/workspace_search.js");
 const SHARED_EDITOR_JS: &str = include_str!("assets/shared/editor.js");
+const SHARED_LSP_JS: &str = include_str!("assets/shared/lsp.js");
 const SHARED_MARKDOWN_PREVIEW_JS: &str = include_str!("assets/shared/markdown_preview.js");
 const SHARED_MARKDOWN_PREVIEW_CSS: &str = include_str!("assets/shared/markdown_preview.css");
 const SHARED_TERMINAL_SCROLL_JS: &str = include_str!("assets/shared/terminal_scroll.js");
@@ -74,6 +75,7 @@ const DESKTOP_JS: &str = concat!(
     include_str!("assets/desktop/app_js/worktrees.js"),
     include_str!("assets/desktop/app_js/shortcuts.js"),
     include_str!("assets/desktop/app_js/workspace_create.js"),
+    include_str!("assets/desktop/lsp_settings.js"),
     include_str!("assets/desktop/app_js/bindings.js"),
 );
 const MOBILE_ATTENTION_JS: &str = include_str!("assets/mobile/attention.js");
@@ -204,6 +206,10 @@ pub(crate) async fn shared_workspace_search_js() -> Response {
 
 pub(crate) async fn shared_editor_js() -> Response {
     static_text(SHARED_EDITOR_JS, "application/javascript; charset=utf-8")
+}
+
+pub(crate) async fn shared_lsp_js() -> Response {
+    static_text(SHARED_LSP_JS, "application/javascript; charset=utf-8")
 }
 
 pub(crate) async fn shared_markdown_preview_js() -> Response {

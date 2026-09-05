@@ -965,3 +965,53 @@
 .herdr-content-search-editor .herdr-editor-loading {
   min-height: var(--herdr-content-editor-min-height);
 }
+
+/* Language server integration */
+.file-browser-lsp-badge {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+}
+.file-browser-lsp-count {
+  border-radius: 4px;
+  font-size: 11px;
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+.file-browser-lsp-count.error {
+  background: color-mix(in srgb, var(--error, #d22), transparent 85%);
+  color: var(--error, #d22);
+}
+.file-browser-lsp-count.warning {
+  background: color-mix(in srgb, var(--warning, #d92), transparent 85%);
+  color: var(--warning, #d92);
+}
+.file-browser-lsp-count.info {
+  background: color-mix(in srgb, var(--accent), transparent 85%);
+  color: var(--accent);
+}
+.herdr-lsp-diagnostics {
+  border-top: 1px solid var(--border);
+  max-height: 132px;
+  overflow: auto;
+  padding: 4px 0;
+}
+.herdr-lsp-diagnostic {
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 2px 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.herdr-lsp-diagnostic:hover {
+  background: color-mix(in srgb, var(--accent), transparent 94%);
+  color: var(--fg);
+}
+.herdr-lsp-diagnostic.error {
+  color: var(--error, #d22);
+}
+.herdr-lsp-diagnostic.warning {
+  color: var(--warning, #d92);
+}

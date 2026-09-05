@@ -676,7 +676,8 @@
     const split = state.files.length > 1 ? `<button class="git-ui-btn ${state.split ? "active" : ""}" onclick="HerdrFileBrowser.toggleSplit()">Split</button>` : "";
     const canEdit = !file.binary && !file.truncated;
     const lock = canEdit ? lockToggleHtml(file) : "";
-    return `${tabs || singleTab(file)}<span class="file-browser-toolbar-actions">${preview}${split}${lock}<button class="git-ui-btn" onclick="HerdrFileBrowser.toggleFind('${arg(file.path)}')">Find</button></span>`;
+    const lspBadge = lspDiagnosticBadge(file.path);
+    return `${tabs || singleTab(file)}<span class="file-browser-toolbar-actions">${lspBadge}${preview}${split}${lock}<button class="git-ui-btn" onclick="HerdrFileBrowser.toggleFind('${arg(file.path)}')">Find</button></span>`;
   }
 
   function lockToggleHtml(file) {
@@ -856,9 +857,124 @@
           file.draft = value;
           file.dirty = value !== (file.content || "");
           syncDirtyDots();
+          lspDidChange(file.path, value);
         },
       });
+      lspDidOpen(file);
     }
+  }
+
+  // ── Language server integration ──────────────────────────────────────
+
+  function lspEnabled() {
+    if (!window.HerdrLsp) return false;
+    try {
+      const parsed = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
+      return parsed.lspEnabled === true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function lspDidChange(path, value) {
+    if (!lspEnabled() || !window.HerdrLsp || !state.cwd) return;
+    const ws = window.HerdrLsp.workspaceFor(state.cwd);
+    window.HerdrLsp.didChange(ws, path, value);
+  }
+
+  function lspDidOpen(file) {
+    if (!lspEnabled() || !window.HerdrLsp || !state.cwd || file.binary || file.truncated) return;
+    const ws = window.HerdrLsp.workspaceFor(state.cwd);
+    window.HerdrLsp.didOpen(ws, file.path, file.editing ? file.draft : file.content || "").catch(() => {});
+    lspRenderDiagnostics(file.path);
+  }
+
+  function lspDidClose(path) {
+    if (!lspEnabled() || !window.HerdrLsp || !state.cwd) return;
+    const ws = window.HerdrLsp.workspaceFor(state.cwd);
+    window.HerdrLsp.didClose(ws, path).catch(() => {});
+  }
+
+  function lspDiagnosticsFor(path) {
+    if (!lspEnabled() || !window.HerdrLsp || !state.cwd) return [];
+    const ws = window.HerdrLsp.workspaceFor(state.cwd);
+    return window.HerdrLsp.diagnosticsFor(ws, path) || [];
+  }
+
+  function lspDiagnosticBadge(path) {
+    const diagnostics = lspDiagnosticsFor(path);
+    if (!diagnostics.length) return "";
+    const errors = diagnostics.filter((d) => d.severity === 1).length;
+    const warnings = diagnostics.filter((d) => d.severity === 2).length;
+    const info = diagnostics.length - errors - warnings;
+    const parts = [];
+    if (errors) parts.push(`<span class="file-browser-lsp-count error">${errors} error${errors === 1 ? "" : "s"}</span>`);
+    if (warnings) parts.push(`<span class="file-browser-lsp-count warning">${warnings} warning${warnings === 1 ? "" : "s"}</span>`);
+    if (info > 0) parts.push(`<span class="file-browser-lsp-count info">${info} hint${info === 1 ? "" : "s"}</span>`);
+    return `<span class="file-browser-lsp-badge" title="${diagnostics.map((d) => esc(d.message || "").replace(/"/g, "&quot;")).slice(0, 5).join("\n")}">${parts.join("")}</span>`;
+  }
+
+  function lspRenderDiagnostics(path) {
+    if (typeof document.querySelectorAll !== "function") return;
+    const diagnostics = lspDiagnosticsFor(path);
+    const mount = document.getElementById(`fileBrowserEditor-${hashId(path)}`);
+    if (!mount) return;
+    const api = mount._herdrEditorApi;
+    const view = api && api._view;
+    if (!view || !view.state) return;
+    // Mark error and warning lines with a simple lint effect: mark whole line.
+    const effects = [];
+    const doc = view.state.doc;
+    for (const diagnostic of diagnostics) {
+      const range = diagnostic && diagnostic.range;
+      if (!range || !range.start) continue;
+      const line = Math.max(0, Number(range.start.line) || 0);
+      if (line >= doc.lines) continue;
+      const from = doc.line(line + 1).from;
+      const to = doc.line(line + 1).to;
+      const severity = Number(diagnostic.severity) === 1 ? "error" : Number(diagnostic.severity) === 2 ? "warning" : "info";
+      effects.push({ from, to, severity, message: diagnostic.message || "" });
+    }
+    renderDiagnosticsInline(mount, effects);
+  }
+
+  function renderDiagnosticsInline(mount, diagnostics) {
+    let list = mount.querySelector(".herdr-lsp-diagnostics");
+    if (!diagnostics.length) {
+      if (list) list.remove();
+      return;
+    }
+    if (!list) {
+      list = document.createElement("div");
+      list.className = "herdr-lsp-diagnostics";
+      mount.appendChild(list);
+    }
+    list.innerHTML = diagnostics
+      .slice(0, 50)
+      .map((d) => `<div class="herdr-lsp-diagnostic ${esc(d.severity)}" data-from="${d.from}" data-to="${d.to}">${esc(d.message)}</div>`)
+      .join("");
+    list.querySelectorAll(".herdr-lsp-diagnostic").forEach((item) => {
+      item.addEventListener("click", () => {
+        const mount2 = item.closest(".herdr-editor-mount") || mount;
+        const editorApi = (mount2.closest("[id^='fileBrowserEditor-']") || mount)._herdrEditorApi;
+        if (!editorApi || !editorApi.selectRange) return;
+        editorApi.selectRange(Number(item.dataset.from), Number(item.dataset.to));
+      });
+    });
+  }
+
+  function refreshLspDiagnostics() {
+    if (!lspEnabled()) return;
+    for (const file of state.files) {
+      if (!file.binary && !file.truncated) lspRenderDiagnostics(file.path);
+    }
+  }
+
+  if (typeof window !== "undefined") {
+    window.HerdrLspHooks = window.HerdrLspHooks || [];
+    window.HerdrLspHooks.push(function lspFileBrowserHook() {
+      refreshLspDiagnostics();
+    });
   }
 
   function toggleFind(path) {
@@ -1124,6 +1240,7 @@
     hide,
     forgetWorkspace,
     refresh() { loadTree(state.path); },
+    refreshLsp() { refreshLspDiagnostics(); },
     requestAccess,
     setFilterKind(kind) {
       state.filterKind = normalizeSearchScope(kind);
@@ -1209,6 +1326,7 @@
       const path = decodeURIComponent(encodedPath);
       const file = state.files.find((file) => file.path === path);
       if (file && file.dirty && !confirm(`Close ${path} with unsaved changes?`)) return;
+      lspDidClose(path);
       state.files = state.files.filter((file) => file.path !== path);
       if (state.selected === path) state.selected = (state.files[state.files.length - 1] || {}).path || "";
       if (state.files.length < 2) state.split = false;

@@ -78,6 +78,7 @@
       "/assets/vendor/wterm.js",
       "/assets/shared/markdown-preview.js",
       "/assets/shared/editor.js",
+      "/assets/shared/lsp.js",
       "/assets/shared/terminal-fit.js",
       "/assets/shared/terminal-adapter.js",
       "/assets/shared/temp-terminal.js",
