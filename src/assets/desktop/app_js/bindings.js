@@ -331,7 +331,7 @@ for (const [id, key] of [["optEditorEnabled", "editorEnabled"], ["optEditorWordW
     if (typeof render === "function") render();
   };
 }
-el("optEditorTabSize").onchange = () => {
+el("optEditorTabSize").oninput = () => {
   options.editorTabSize = Math.max(1, Math.min(8, Number(el("optEditorTabSize").value) || 2));
   saveOptions();
   if (typeof render === "function") render();

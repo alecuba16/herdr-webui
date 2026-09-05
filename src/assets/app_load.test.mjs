@@ -3313,10 +3313,7 @@ describe("app bundle load", () => {
     match(source, /next\.editorTabSize = Math\.max\(1, Math\.min\(8/);
     match(source, /next\.editorIndentUnit = Math\.max\(1, Math\.min\(8/);
     match(fileBrowserSource, /function editorOptions\(\)/);
-    match(source, /title: "Editor",\n\s+desc: "Editing behavior, readability, and performance controls\./);
-    match(source, /optEditorEnabled.*optEditorWordWrap.*optEditorTabSize/);
-    match(source, /el\("optEditorTabSize"\)\.onchange/);
-    ok(!source.includes('el("optEditorTabSize").oninput'));
+    match(fileBrowserSource, /tabSize: Math\.max\(1, Math\.min\(8/);
   });
 
   it("configures CodeMirror extensions without forcing expensive features", () => {

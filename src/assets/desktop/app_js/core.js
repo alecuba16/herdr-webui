@@ -1597,7 +1597,7 @@ function groupSettingsSections() {
     {
       title: "File browser",
       desc: "Tree display, navigation, and Git status colors.",
-      ids: ["optTreeIndentPx", "optFileBrowserAllowParent", "optFileBrowserGitStatus", "optFileBrowserLineNumbers", "optEditorFindShortcutEnabled", "optHeaderSearchEnabled", "optSearchSectionOrder", "optFileBrowserSearchPageSize", "optFileContentSearchMinChars", "optFileContentSearchPageSize", "optFileContentSearchContextLines", "optFileContentSearchAutoCollapseFiles", "optFileContentSearchDefaultExpanded", "optFileContentSearchMatchesPerFile", "optFileContentSearchMatchCase", "optFileContentSearchRegex"],
+      ids: ["optTreeIndentPx", "optFileBrowserAllowParent", "optFileBrowserGitStatus", "optFileBrowserLineNumbers", "optEditorFindShortcutEnabled", "optEditorEnabled", "optEditorWordWrap", "optEditorTabSize", "optEditorBracketMatching", "optEditorFolding", "optEditorActiveLine", "optEditorWhitespace", "optHeaderSearchEnabled", "optSearchSectionOrder", "optFileBrowserSearchPageSize", "optFileContentSearchMinChars", "optFileContentSearchPageSize", "optFileContentSearchContextLines", "optFileContentSearchAutoCollapseFiles", "optFileContentSearchDefaultExpanded", "optFileContentSearchMatchesPerFile", "optFileContentSearchMatchCase", "optFileContentSearchRegex"],
     },
     {
       title: "Editor",
