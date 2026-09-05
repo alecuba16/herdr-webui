@@ -32,6 +32,15 @@ export async function connectToPage() {
       pending.get(msg.id)(msg);
       pending.delete(msg.id);
     }
+    // The app's desktop UI uses native confirm()/prompt() for destructive
+    // actions (dirty tab close, discard, delete). In headless Chrome those
+    // dialogs block the page main thread until answered, which would hang
+    // every later eval. Auto-accept them: acceptance flows treat "yes" as
+    // the expected user choice, and the dialog text is visible in the trace.
+    if (msg.method === 'Page.javascriptDialogOpening') {
+      const mid = ++id;
+      ws.send(JSON.stringify({ id: mid, method: 'Page.handleJavaScriptDialog', params: { accept: true } }));
+    }
   };
   const send = (method, params = {}) =>
     new Promise((res, rej) => {
@@ -41,6 +50,11 @@ export async function connectToPage() {
       );
       ws.send(JSON.stringify({ id: mid, method, params }));
     });
+  // Required to receive Page.javascriptDialogOpening events. Best effort:
+  // every page target supports the Page domain.
+  try {
+    await send('Page.enable');
+  } catch (_) {}
   const evalExpr = async (expression, awaitPromise = false) => {
     const r = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise });
     if (r.exceptionDetails)
