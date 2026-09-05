@@ -264,19 +264,35 @@ impl LspRegistry {
     }
 
     pub(crate) async fn status(&self) -> Vec<serde_json::Value> {
-        let servers = self.servers.lock().await;
-        servers
-            .values()
-            .map(|handle| {
-                json!({
-                    "language": handle.language,
-                    "root": handle.root_string,
-                    "command": format!("{} {}", handle.command, handle.args.join(" ")),
-                    "state": handle.state(),
-                    "last_error": handle.last_error(),
-                })
-            })
-            .collect()
+        // Snapshot handles first so we never hold the registry lock while
+        // probing child processes (the stdout reader cleanup takes the
+        // child lock before the registry lock; avoid the inverse order).
+        let snapshot: Vec<(String, std::sync::Arc<LspServerHandle>)> = {
+            let servers = self.servers.lock().await;
+            servers
+                .iter()
+                .map(|(key, handle)| (key.clone(), Arc::clone(handle)))
+                .collect()
+        };
+        let mut out = Vec::new();
+        let mut dead: Vec<String> = Vec::new();
+        for (key, handle) in snapshot {
+            if !handle.is_running().await {
+                dead.push(key);
+                continue;
+            }
+            out.push(json!({
+                "language": handle.language,
+                "root": handle.root_string,
+                "command": format!("{} {}", handle.command, handle.args.join(" ")),
+                "state": handle.state(),
+                "last_error": handle.last_error(),
+            }));
+        }
+        if !dead.is_empty() {
+            self.servers.lock().await.retain(|key, _| !dead.contains(key));
+        }
+        out
     }
 }
 
@@ -587,6 +603,7 @@ async fn spawn_server(
     });
 
     // stdin writer task
+    let key = server_key(language, root);
     let stdin_writer = stdin;
     tokio::spawn(async move {
         let mut writer = stdin_writer;
@@ -601,6 +618,8 @@ async fn spawn_server(
 
     // stdout reader: parse LSP frames, dispatch responses and notifications.
     let handle_for_reader = Arc::clone(&handle);
+    let registry_for_reader = Arc::clone(&state.lsp);
+    let key_for_reader = key.clone();
     tokio::spawn(async move {
         let mut reader = BufReader::new(stdout);
         loop {
@@ -610,9 +629,35 @@ async fn spawn_server(
             loop {
                 header.clear();
                 match reader.read_line(&mut header).await {
-                    Ok(0) => return, // EOF: server exited
+                    Ok(0) => {
+                        // EOF: server exited; drop it from the registry.
+                        let mut child_guard = handle_for_reader.child.lock().await;
+                        if let Some(mut child) = child_guard.take() {
+                            let _ = child.kill().await;
+                        }
+                        *handle_for_reader.exited.lock().await = true;
+                        registry_for_reader
+                            .servers
+                            .lock()
+                            .await
+                            .remove(&key_for_reader);
+                        return;
+                    }
                     Ok(_) => {}
-                    Err(_) => return,
+                    Err(_) => {
+                        // Read error: treat like exit and clean up.
+                        let mut child_guard = handle_for_reader.child.lock().await;
+                        if let Some(mut child) = child_guard.take() {
+                            let _ = child.kill().await;
+                        }
+                        *handle_for_reader.exited.lock().await = true;
+                        registry_for_reader
+                            .servers
+                            .lock()
+                            .await
+                            .remove(&key_for_reader);
+                        return;
+                    }
                 }
                 let line = header.trim_end();
                 if line.is_empty() {
@@ -628,10 +673,32 @@ async fn spawn_server(
             }
             let Some(length) = content_length else { continue };
             if length > MAX_LSP_RESPONSE_BYTES {
+                // Oversized frame: kill the server and drop it from the registry.
+                let mut child_guard = handle_for_reader.child.lock().await;
+                if let Some(mut child) = child_guard.take() {
+                    let _ = child.kill().await;
+                }
+                *handle_for_reader.exited.lock().await = true;
+                registry_for_reader
+                    .servers
+                    .lock()
+                    .await
+                    .remove(&key_for_reader);
                 return;
             }
             let mut body = vec![0u8; length];
             if reader.read_exact(&mut body).await.is_err() {
+                // Truncated frame: treat like exit and clean up.
+                let mut child_guard = handle_for_reader.child.lock().await;
+                if let Some(mut child) = child_guard.take() {
+                    let _ = child.kill().await;
+                }
+                *handle_for_reader.exited.lock().await = true;
+                registry_for_reader
+                    .servers
+                    .lock()
+                    .await
+                    .remove(&key_for_reader);
                 return;
             }
             let Ok(message) = serde_json::from_slice::<serde_json::Value>(&body) else {
@@ -688,7 +755,6 @@ async fn spawn_server(
 
     // Exit watcher + idle shutdown.
     let handle_for_exit = Arc::clone(&handle);
-    let key = server_key(language, root);
     let registry = Arc::clone(&state.lsp);
     let key_for_task = key.clone();
     tokio::spawn(async move {
@@ -731,9 +797,20 @@ fn resolve_command(command: &str) -> Option<PathBuf> {
 
 impl LspServerHandle {
     async fn is_running(&self) -> bool {
+        // A server is running only while its child process is alive and no
+        // exit (EOF on stdout, idle shutdown, or stop) has been observed.
         let mut guard = self.child.lock().await;
         match guard.as_mut() {
-            Some(child) => matches!(child.try_wait(), Ok(None)),
+            Some(child) => match child.try_wait() {
+                Ok(None) => !*self.exited.lock().await,
+                // Reap the dead child so callers stop seeing it as a slot.
+                Ok(_) => {
+                    guard.take();
+                    *self.exited.lock().await = true;
+                    false
+                }
+                Err(_) => false,
+            },
             None => false,
         }
     }
@@ -1001,7 +1078,8 @@ async fn lsp_stop(
     if let Err(response) = require_auth(&state, &headers, remote) {
         return response;
     }
-    let servers = state.lsp.servers.lock().await;
+    // Stop handles first, then prune dead entries, so a stopped server is
+    // removed from the registry instead of lingering as a dead slot.
     let mut stopped = 0;
     if let (Some(language), Some(cwd)) = (body.language.as_deref(), body.cwd.as_deref()) {
         let root = match resolve_workspace_root(cwd) {
@@ -1009,19 +1087,29 @@ async fn lsp_stop(
             Err(err) => return lsp_error(StatusCode::BAD_REQUEST, err),
         };
         let key = server_key(&language.to_lowercase(), &root.to_string_lossy());
-        if let Some(handle) = servers.get(&key) {
-            if let Err(err) = stop_handle(handle).await {
+        let handle = {
+            let servers = state.lsp.servers.lock().await;
+            servers.get(&key).cloned()
+        };
+        if let Some(handle) = handle {
+            if let Err(err) = stop_handle(&handle).await {
                 return lsp_error(StatusCode::BAD_GATEWAY, err);
             }
             stopped += 1;
+            state.lsp.servers.lock().await.remove(&key);
         }
     } else {
-        for handle in servers.values() {
-            if let Err(err) = stop_handle(handle).await {
+        let snapshot: Vec<_> = {
+            let servers = state.lsp.servers.lock().await;
+            servers.values().map(Arc::clone).collect()
+        };
+        for handle in snapshot {
+            if let Err(err) = stop_handle(&handle).await {
                 return lsp_error(StatusCode::BAD_GATEWAY, err);
             }
             stopped += 1;
         }
+        state.lsp.servers.lock().await.clear();
     }
     Json(json!({ "ok": true, "stopped": stopped })).into_response()
 }
@@ -1033,6 +1121,7 @@ async fn stop_handle(handle: &Arc<LspServerHandle>) -> Result<(), String> {
     if let Some(mut child) = child_guard.take() {
         let _ = child.kill().await;
     }
+    *handle.exited.lock().await = true;
     Ok(())
 }
 
@@ -1429,8 +1518,78 @@ function handleMessage(msg) {
                     Ok(_) => {}
                     Err(_) => return,
                 }
+                let _ = handle_for_stderr;
             }
         });
         Ok(handle)
+    }
+
+    #[tokio::test]
+    async fn dead_server_is_pruned_from_status() {
+        // A server that exits right away must disappear from status() and
+        // the registry instead of lingering as a phantom "running" entry.
+        let node = std::process::Command::new("which")
+            .arg("node")
+            .output()
+            .map(|out| out.status.success())
+            .unwrap_or(false);
+        if !node {
+            eprintln!("skipping: node not found");
+            return;
+        }
+        let dir = std::env::temp_dir().join("herdr-lsp-dies-immediately");
+        std::fs::create_dir_all(&dir).ok();
+        let script_path = dir.join("die-immediately.js");
+        std::fs::write(&script_path, "process.exit(0);\n").unwrap();
+        let root = dir.canonicalize().unwrap().to_string_lossy().to_string();
+        let node_bin = std::process::Command::new("which")
+            .arg("node")
+            .output()
+            .ok()
+            .filter(|out| out.status.success())
+            .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+            .expect("node path");
+        let registry = Arc::new(LspRegistry::new(LspSettings::default()));
+        let script_arg = script_path.canonicalize().unwrap().to_string_lossy().to_string();
+        let key = spawn_server_test(
+            registry.as_ref(),
+            "json",
+            &root,
+            &node_bin,
+            &[script_arg],
+        )
+        .await
+        .expect("spawn failed");
+
+        // The process exits; is_running() must flip to false and the next
+        // status() call must drop it from the registry.
+        let mut running = true;
+        for _ in 0..100 {
+            let servers = registry.servers.lock().await;
+            let handle = servers.get(&key).cloned();
+            drop(servers);
+            if let Some(handle) = handle {
+                if !handle.is_running().await {
+                    running = false;
+                    break;
+                }
+            } else {
+                // Already removed by the stdout reader cleanup.
+                running = false;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(!running, "dead server was never detected as exited");
+
+        let status = registry.status().await;
+        assert!(
+            status.is_empty(),
+            "dead server must be pruned from status, got: {status:?}"
+        );
+        assert!(
+            registry.servers.lock().await.get(&key).is_none(),
+            "dead server must be removed from the registry"
+        );
     }
 }
