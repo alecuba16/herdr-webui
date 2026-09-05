@@ -102,6 +102,13 @@ const ICON_SEARCH: &str = include_str!("assets/icons/search.svg");
 const ICON_REFRESH: &str = include_str!("assets/icons/refresh.svg");
 const ICON_LOCK: &str = include_str!("assets/icons/lock.svg");
 const ICON_LOCK_OPEN: &str = include_str!("assets/icons/lock-open.svg");
+const ICON_COLUMNS: &str = include_str!("assets/icons/columns.svg");
+const ICON_SAVE: &str = include_str!("assets/icons/save.svg");
+const ICON_CLOCK: &str = include_str!("assets/icons/clock.svg");
+const ICON_COPY: &str = include_str!("assets/icons/copy.svg");
+const ICON_X: &str = include_str!("assets/icons/x.svg");
+const ICON_LINK: &str = include_str!("assets/icons/link.svg");
+const ICON_PENCIL: &str = include_str!("assets/icons/pencil.svg");
 
 pub(crate) fn app_html() -> Response {
     Html(APP_HTML).into_response()
@@ -457,6 +464,34 @@ pub(crate) async fn icon_lock_svg() -> Response {
 
 pub(crate) async fn icon_lock_open_svg() -> Response {
     static_svg(ICON_LOCK_OPEN)
+}
+
+pub(crate) async fn icon_columns_svg() -> Response {
+    static_svg(ICON_COLUMNS)
+}
+
+pub(crate) async fn icon_save_svg() -> Response {
+    static_svg(ICON_SAVE)
+}
+
+pub(crate) async fn icon_clock_svg() -> Response {
+    static_svg(ICON_CLOCK)
+}
+
+pub(crate) async fn icon_copy_svg() -> Response {
+    static_svg(ICON_COPY)
+}
+
+pub(crate) async fn icon_x_svg() -> Response {
+    static_svg(ICON_X)
+}
+
+pub(crate) async fn icon_link_svg() -> Response {
+    static_svg(ICON_LINK)
+}
+
+pub(crate) async fn icon_pencil_svg() -> Response {
+    static_svg(ICON_PENCIL)
 }
 
 #[cfg(test)]
