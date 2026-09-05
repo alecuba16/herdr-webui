@@ -146,6 +146,24 @@
     render();
   }, true);
   window.addEventListener("keydown", (event) => {
+    if (!state.open || !state.contextMenu || !event || event.defaultPrevented) return;
+    const key = event.key;
+    if (key !== "ArrowDown" && key !== "ArrowUp" && key !== "Home" && key !== "End") return;
+    const items = Array.from(document.querySelectorAll('.file-browser-menu [role="menuitem"]') || []);
+    if (!items.length) return;
+    event.preventDefault();
+    const active = items.find((b) => b === document.activeElement);
+    const delta = key === "ArrowDown" ? 1 : -1;
+    const activeIndex = items.indexOf(active);
+    let index;
+    if (key === "Home") index = 0;
+    else if (key === "End") index = items.length - 1;
+    else if (activeIndex < 0) index = key === "ArrowDown" ? 0 : items.length - 1;
+    else index = (activeIndex + delta + items.length) % items.length;
+    const target = items[index];
+    if (target && typeof target.focus === "function") target.focus();
+  }, true);
+  window.addEventListener("keydown", (event) => {
     if (!state.open || !event || event.defaultPrevented || event.altKey || event.shiftKey) return;
     const key = String(event.key || "").toLowerCase();
     if (key !== "s" || !(event.metaKey || event.ctrlKey)) return;
@@ -695,16 +713,57 @@
 
   }
 
+  function menuIcon(action, label, extra = "") {
+    const icons = {
+      open: "/assets/icons/file.svg",
+      enter: "/assets/icons/folder-up.svg",
+      split: "/assets/icons/columns.svg",
+      focus: "/assets/icons/chevron-right.svg",
+      find: "/assets/icons/search.svg",
+      edit: "/assets/icons/pencil.svg",
+      cancelEdit: "/assets/icons/lock.svg",
+      save: "/assets/icons/save.svg",
+      history: "/assets/icons/clock.svg",
+      reload: "/assets/icons/refresh.svg",
+      copyPath: "/assets/icons/copy.svg",
+      copyPathTab: "/assets/icons/copy.svg",
+      copyPermalink: "/assets/icons/link.svg",
+      rename: "/assets/icons/pencil.svg",
+      delete: "/assets/icons/trash.svg",
+      close: "/assets/icons/x.svg",
+    };
+    const src = icons[action];
+    const icon = src ? ` style="mask-image:url('${src}');-webkit-mask-image:url('${src}')"` : "";
+    const attrs = extra ? ` ${extra.trim()}` : "";
+    return `<button type="button" role="menuitem"${attrs} data-file-menu-action="${action}"><span class="file-browser-menu-icon"${icon} aria-hidden="true"></span><span class="file-browser-menu-text">${esc(label)}</span></button>`;
+  }
+
+  function menuPos(menu) {
+    const x = Math.max(0, Number(menu.x) || 0);
+    const y = Math.max(0, Number(menu.y) || 0);
+    const vw = (typeof window !== "undefined" && window.innerWidth) || 0;
+    const vh = (typeof window !== "undefined" && window.innerHeight) || 0;
+    const width = 240;
+    const height = 320;
+    let left = x;
+    let top = y;
+    if (vw && x + width > vw - 8) left = Math.max(8, vw - width - 8);
+    if (vh && y + height > vh - 8) top = Math.max(8, vh - height - 8);
+    return `left:${left}px;top:${top}px`;
+  }
+
   function renderContextMenu() {
     const menu = state.contextMenu;
     if (!menu) return "";
     if (menu.type === "tab") return renderTabMenu(menu);
+    const name = Tree.basename(menu.path) || menu.path;
+    const title = `<span class="file-browser-menu-label" title="${arg(menu.path)}">${esc(name)}</span><span class="file-browser-menu-sep"></span>`;
     const primary = menu.kind === "dir"
-      ? `<button type="button" data-file-menu-action="enter">Enter folder</button>`
-      : `<button type="button" data-file-menu-action="open">Open</button><button type="button" data-file-menu-action="split">Open in split</button>`;
-    const history = menu.kind === "file" ? `<button type="button" data-file-menu-action="history">Show history</button>` : "";
-    const permalink = menu.kind === "file" ? `<button type="button" data-file-menu-action="copyPermalink">Copy permalink</button>` : "";
-    return `<div class="git-ui-menu file-browser-menu" style="left:${Math.max(0, menu.x)}px;top:${Math.max(0, menu.y)}px" onclick="event.stopPropagation()">${primary}${history}${permalink}<button type="button" data-file-menu-action="rename">Rename</button><button type="button" class="danger" data-file-menu-action="delete">Delete</button><button type="button" data-file-menu-action="copyPath">Copy path</button></div>`;
+      ? menuIcon("enter", "Enter folder")
+      : `${menuIcon("open", "Open")}${menuIcon("split", "Open in split")}`;
+    const history = menu.kind === "file" ? menuIcon("history", "Show history") : "";
+    const permalink = menu.kind === "file" ? menuIcon("copyPermalink", "Copy permalink") : "";
+    return `<div class="file-browser-menu" role="menu" style="${menuPos(menu)}" onclick="event.stopPropagation()">${title}<div class="file-browser-menu-section">${primary}${history}${permalink}</div><span class="file-browser-menu-sep"></span><div class="file-browser-menu-section">${menuIcon("rename", "Rename")}${menuIcon("copyPath", "Copy path")}</div><span class="file-browser-menu-sep"></span><div class="file-browser-menu-section">${menuIcon("delete", "Delete", ' class="danger"')}</div></div>`;
   }
 
   function renderTabMenu(menu) {
@@ -714,18 +773,19 @@
     const isActive = file.path === state.selected;
     const editing = !!file.editing;
     const hasMultiple = state.files.length > 1;
-    const sep = `<span class="file-browser-menu-sep"></span>`;
-    const labelHtml = `<span class="file-browser-menu-label">${esc(Tree.basename(file.path))}</span>`;
-    const focus = !isActive ? `<button type="button" data-file-menu-action="focus">Focus</button>` : "";
-    const split = hasMultiple ? `<button type="button" data-file-menu-action="split">Open in split</button>` : "";
-    const find = canEdit ? `<button type="button" data-file-menu-action="find">Find in file</button>` : "";
-    const lock = canEdit ? `<button type="button" data-file-menu-action="${editing ? "cancelEdit" : "edit"}">${editing ? "Lock (read-only)" : "Unlock to edit"}</button>` : "";
-    const save = canEdit && editing && file.dirty ? `<button type="button" data-file-menu-action="save">Save</button>` : "";
-    const history = `<button type="button" data-file-menu-action="history">Show history</button>`;
-    const reload = `<button type="button" data-file-menu-action="reload">Reload</button>`;
-    const copyPath = `<button type="button" data-file-menu-action="copyPathTab">Copy path</button>`;
-    const close = `<button type="button" class="danger" data-file-menu-action="close">Close file</button>`;
-    return `<div class="git-ui-menu file-browser-menu" style="left:${Math.max(0, menu.x)}px;top:${Math.max(0, menu.y)}px" onclick="event.stopPropagation()">${labelHtml}${focus}${split}${find}${lock}${save}${history}${reload}${copyPath}${sep}${close}</div>`;
+    const label = `<span class="file-browser-menu-label" title="${arg(file.path)}">${esc(Tree.basename(file.path))}</span><span class="file-browser-menu-sep"></span>`;
+    const focus = !isActive ? menuIcon("focus", "Focus") : "";
+    const split = hasMultiple ? menuIcon("split", "Open in split") : "";
+    const find = canEdit ? menuIcon("find", "Find in file", ' title="Cmd/Ctrl-F"') : "";
+    const lock = canEdit ? menuIcon(editing ? "cancelEdit" : "edit", editing ? "Lock (read-only)" : "Unlock to edit") : "";
+    const save = canEdit && editing && file.dirty ? menuIcon("save", "Save", ' title="Cmd/Ctrl-S"') : "";
+    const history = menuIcon("history", "Show history");
+    const reload = menuIcon("reload", "Reload");
+    const copyPath = menuIcon("copyPathTab", "Copy path");
+    const close = menuIcon("close", "Close file", ' class="danger"');
+    const fileSection = `${focus}${split}${find}${lock}${save}`;
+    const viewSection = `${history}${reload}${copyPath}`;
+    return `<div class="file-browser-menu" role="menu" style="${menuPos(menu)}" onclick="event.stopPropagation()">${label}<div class="file-browser-menu-section">${fileSection}</div>${fileSection ? `<span class="file-browser-menu-sep"></span>` : ""}<div class="file-browser-menu-section">${viewSection}</div><span class="file-browser-menu-sep"></span><div class="file-browser-menu-section">${close}</div></div>`;
   }
 
   function syncDirtyDots() {
