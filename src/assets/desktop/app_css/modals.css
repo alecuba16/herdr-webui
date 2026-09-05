@@ -375,3 +375,50 @@
   letter-spacing: -0.5px;
   margin-top: -1px;
 }
+
+/* Language server settings */
+.lsp-settings-servers {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+.lsp-server-row {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+}
+.lsp-server-row-head {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+.lsp-server-language {
+  font-weight: 600;
+  min-width: 90px;
+}
+.lsp-server-name {
+  color: var(--muted);
+  flex: 1;
+  font-size: 11px;
+}
+.lsp-server-status {
+  border-radius: 4px;
+  font-size: 10px;
+  padding: 1px 6px;
+  text-transform: uppercase;
+}
+.lsp-server-status.found {
+  background: color-mix(in srgb, #2a2, transparent 85%);
+  color: #2a2;
+}
+.lsp-server-status.missing {
+  background: color-mix(in srgb, var(--muted), transparent 85%);
+  color: var(--muted);
+}
+.lsp-server-hint {
+  color: var(--muted);
+  display: block;
+  font-size: 11px;
+  margin-top: 2px;
+}

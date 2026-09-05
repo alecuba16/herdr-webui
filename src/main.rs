@@ -28,6 +28,7 @@ mod builtin_events;
 mod compat;
 mod file_browser;
 mod git_ui;
+mod lsp;
 mod protocol;
 mod service;
 mod terminal_text;
@@ -46,7 +47,7 @@ use assets::{
     mobile_terminal_js, mobile_worktrees_js, shared_actions_js, shared_colors_css,
     shared_content_search_css, shared_core_js, shared_editor_js, shared_file_content_search_js,
     shared_file_icons_css, shared_file_icons_js, shared_file_tree_css, shared_file_tree_js,
-    shared_line_context_js, shared_markdown_preview_css, shared_markdown_preview_js,
+    shared_line_context_js, shared_lsp_js, shared_markdown_preview_css, shared_markdown_preview_js,
     shared_temp_terminal_js, shared_terminal_adapter_js, shared_terminal_fit_js,
     shared_terminal_scroll_js, shared_workspace_search_js, vendor_codemirror_js,
     vendor_dompurify_js, vendor_ghostty_wasm, vendor_marked_js, vendor_mermaid_js,
@@ -189,6 +190,8 @@ struct PersistedServerSettings {
     external_herdr_backend_enabled: Option<bool>,
     jcode_detection_variant: Option<String>,
     log_level: Option<LogLevel>,
+    #[serde(default)]
+    lsp: Option<lsp::LspSettings>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -243,6 +246,7 @@ struct RuntimeServerSettings {
     external_herdr_backend_enabled: bool,
     jcode_detection_variant: JcodeDetectionVariant,
     log_level: LogLevel,
+    lsp: lsp::LspSettings,
 }
 
 struct NoSleepGuard {
@@ -492,6 +496,7 @@ pub(crate) struct WebState {
     no_sleep: Arc<Mutex<NoSleepState>>,
     rebind_tx: tokio::sync::watch::Sender<SocketAddr>,
     workspace_orders: Arc<Mutex<HashMap<String, Vec<String>>>>,
+    lsp: Arc<lsp::LspRegistry>,
 }
 
 impl WebState {
@@ -500,6 +505,29 @@ impl WebState {
             .lock()
             .map(|settings| settings.log_level.clone())
             .unwrap_or_default()
+    }
+
+    /// Update LSP settings in memory, persisted server settings, and the registry.
+    async fn update_lsp_settings(&self, lsp_settings: lsp::LspSettings) -> io::Result<()> {
+        let next = {
+            let Ok(mut guard) = self.server_settings.lock() else {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "server settings unavailable",
+                ));
+            };
+            guard.lsp = lsp_settings.clone();
+            guard.clone()
+        };
+        let save = {
+            let next_clone = next.clone();
+            tokio::task::spawn_blocking(move || save_runtime_server_settings(&next_clone))
+                .await
+                .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?
+        };
+        save?;
+        self.lsp.set_settings(lsp_settings);
+        Ok(())
     }
 }
 
@@ -655,6 +683,7 @@ fn default_runtime_server_settings(bind: SocketAddr) -> RuntimeServerSettings {
         external_herdr_backend_enabled: true,
         jcode_detection_variant: JcodeDetectionVariant::default(),
         log_level: LogLevel::default(),
+        lsp: lsp::LspSettings::default(),
     }
 }
 
@@ -839,6 +868,9 @@ fn load_runtime_server_settings(default_bind: SocketAddr) -> io::Result<RuntimeS
     if let Some(log_level) = persisted.log_level {
         settings.log_level = log_level;
     }
+    if let Some(lsp) = persisted.lsp {
+        settings.lsp = lsp;
+    }
     validate_runtime_server_settings(&settings)?;
     if missing_keys {
         save_runtime_server_settings(&settings)?;
@@ -865,6 +897,7 @@ fn save_runtime_server_settings(settings: &RuntimeServerSettings) -> io::Result<
         external_herdr_backend_enabled: Some(settings.external_herdr_backend_enabled),
         jcode_detection_variant: Some(settings.jcode_detection_variant.as_str().to_string()),
         log_level: Some(settings.log_level.clone()),
+        lsp: Some(settings.lsp.clone()),
     })?;
     fs::write(&path, content)?;
     #[cfg(unix)]
@@ -972,6 +1005,9 @@ async fn main() -> io::Result<()> {
         (config.api_socket.clone(), config.client_socket.clone())
     };
     let server_settings = Arc::new(Mutex::new(server_settings.clone()));
+    let lsp_registry = Arc::new(lsp::LspRegistry::new(
+        server_settings.lock().unwrap().lsp.clone(),
+    ));
     let (rebind_tx, rebind_rx) = tokio::sync::watch::channel(server_settings.lock().unwrap().bind);
     let state = WebState {
         api_socket,
@@ -986,6 +1022,7 @@ async fn main() -> io::Result<()> {
         no_sleep: Arc::new(Mutex::new(NoSleepState::default())),
         rebind_tx,
         workspace_orders: Arc::new(Mutex::new(HashMap::new())),
+        lsp: lsp_registry,
     };
 
     serve_rebindable(state, rebind_rx, config.tls).await
@@ -1256,6 +1293,7 @@ fn app_router(state: WebState) -> Router {
         .route("/api/git-branches", get(git_branches))
         .merge(file_browser::routes())
         .merge(git_ui::routes())
+        .merge(lsp::routes())
         .route(
             "/api/workspaces/{workspace_id}/rename",
             post(rename_workspace),
@@ -1320,6 +1358,7 @@ fn app_router(state: WebState) -> Router {
         .route("/assets/vendor/wterm.css", get(vendor_wterm_css))
         .route("/assets/vendor/ghostty-vt.wasm", get(vendor_ghostty_wasm))
         .route("/assets/shared/editor.js", get(shared_editor_js))
+        .route("/assets/shared/lsp.js", get(shared_lsp_js))
         .route(
             "/assets/shared/markdown-preview.js",
             get(shared_markdown_preview_js),
@@ -2092,6 +2131,10 @@ async fn update_server_settings(
         .map(|settings| settings.clone());
     let next = RuntimeServerSettings {
         bind,
+        lsp: current
+            .as_ref()
+            .map(|settings| settings.lsp.clone())
+            .unwrap_or_default(),
         user: body
             .username
             .map(|value| value.trim().to_string())
@@ -4252,10 +4295,12 @@ mod tests {
                 external_herdr_backend_enabled: true,
                 jcode_detection_variant: JcodeDetectionVariant::default(),
                 log_level: LogLevel::default(),
+                lsp: lsp::LspSettings::default(),
             })),
             no_sleep: Arc::new(Mutex::new(NoSleepState::default())),
             rebind_tx,
             workspace_orders: Arc::new(Mutex::new(HashMap::new())),
+            lsp: Arc::new(lsp::LspRegistry::new(Default::default())),
         }
     }
 
@@ -5018,6 +5063,7 @@ mod tests {
             external_herdr_backend_enabled: true,
             jcode_detection_variant: JcodeDetectionVariant::default(),
             log_level: LogLevel::default(),
+            lsp: lsp::LspSettings::default(),
         })
         .unwrap();
 
@@ -5042,6 +5088,7 @@ mod tests {
             external_herdr_backend_enabled: true,
             jcode_detection_variant: JcodeDetectionVariant::default(),
             log_level: LogLevel::default(),
+            lsp: lsp::LspSettings::default(),
         }) {
             Ok(_) => panic!("expected public auth config to fail"),
             Err(err) => err,
@@ -9310,6 +9357,196 @@ mod tests {
         let body = response_json(response).await;
         assert_eq!(body["ok"], false);
         assert!(body["error"].as_str().is_some());
+    }
+
+    // ── LSP API tests ──
+
+    async fn lsp_post(
+        app: &axum::Router,
+        uri: &str,
+        payload: serde_json::Value,
+    ) -> (StatusCode, Value) {
+        let response = app
+            .clone()
+            .oneshot(
+                authed_request(Method::POST, uri)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        (status, response_json(response).await)
+    }
+
+    #[tokio::test]
+    async fn lsp_config_api_reports_and_updates_settings() {
+        let _guard = lock_env();
+        let config_home = std::env::temp_dir().join(format!(
+            "herdr-webui-lsp-config-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
+        let state = test_state();
+        let app = test_app_with_state(state);
+
+        let initial = app
+            .clone()
+            .oneshot(
+                authed_request(Method::GET, "/api/lsp/config")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(initial.status(), StatusCode::OK);
+        let initial_body = response_json(initial).await;
+        assert_eq!(initial_body["settings"]["enabled"], false);
+        assert!(initial_body["languages"]
+            .as_array()
+            .is_some_and(|langs| langs.iter().any(|l| l == "json")));
+
+        let (status, updated) = lsp_post(
+            &app,
+            "/api/lsp/config",
+            json!({
+                "settings": {
+                    "enabled": true,
+                    "servers": {
+                        "json": {
+                            "enabled": true,
+                            "command": "vscode-json-language-server",
+                            "args": ["--stdio"]
+                        }
+                    }
+                }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(updated["settings"]["enabled"], true);
+        assert_eq!(
+            updated["settings"]["servers"]["json"]["command"],
+            "vscode-json-language-server"
+        );
+
+        // Rejected: unknown language.
+        let (status, rejected) = lsp_post(
+            &app,
+            "/api/lsp/config",
+            json!({
+                "settings": {
+                    "enabled": true,
+                    "servers": {
+                        "cobol": { "enabled": true, "command": "cobol-ls", "args": [] }
+                    }
+                }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(rejected["error"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn lsp_start_rejects_unconfigured_language() {
+        let state = test_state();
+        let app = test_app_with_state(state);
+        let (status, body) = lsp_post(
+            &app,
+            "/api/lsp/start",
+            json!({ "language": "json", "cwd": std::env::temp_dir().to_string_lossy() }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body["error"], "language servers are disabled");
+    }
+
+    #[tokio::test]
+    async fn lsp_request_rejects_disallowed_method() {
+        let state = test_state();
+        let app = test_app_with_state(state);
+        let (status, _) = lsp_post(
+            &app,
+            "/api/lsp/request",
+            json!({
+                "language": "json",
+                "cwd": std::env::temp_dir().to_string_lossy(),
+                "method": "workspace/executeCommand",
+                "params": {}
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn lsp_status_reports_running_servers() {
+        let state = test_state();
+        let app = test_app_with_state(state);
+        let response = app
+            .clone()
+            .oneshot(
+                authed_request(Method::GET, "/api/lsp/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert!(body["servers"].as_array().is_some());
+    }
+
+    #[tokio::test]
+    async fn lsp_apis_require_auth() {
+        let state = test_state();
+        let app = test_app_with_state(state);
+        for (uri, method) in [
+            ("/api/lsp/config", Method::GET),
+            ("/api/lsp/detect", Method::GET),
+            ("/api/lsp/status", Method::GET),
+            ("/api/lsp/notifications", Method::GET),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(request(method, uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{uri}");
+        }
+        for uri in [
+            ("/api/lsp/config", json!({ "settings": {} })),
+            (
+                "/api/lsp/start",
+                json!({ "language": "json", "cwd": "/tmp" }),
+            ),
+            (
+                "/api/lsp/request",
+                json!({ "language": "json", "cwd": "/tmp", "method": "initialize" }),
+            ),
+            (
+                "/api/lsp/notify",
+                json!({ "language": "json", "cwd": "/tmp", "method": "initialized" }),
+            ),
+            ("/api/lsp/stop", json!({})),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    request(Method::POST, uri.0)
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(uri.1.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{}", uri.0);
+        }
     }
 
     // ── create_worktree spawn_blocking JoinError path ──
