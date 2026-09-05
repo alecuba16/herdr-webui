@@ -266,6 +266,9 @@
         setValue(value) { editor.setValue(value); },
         selectRange(from, to) { if (editor.selectRange) editor.selectRange(from, to); },
         replaceRange(from, to, value) { if (editor.replaceRange) editor.replaceRange(from, to, value); },
+        // Expose the underlying CodeMirror view (if present) so integrations
+        // like the LSP diagnostics list can compute line positions.
+        get _view() { return editor.view || null; },
         destroy() { editor.destroy(); if (parent._herdrEditorApi === api) delete parent._herdrEditorApi; parent.innerHTML = ""; },
       };
       parent._herdrEditorApi = api;

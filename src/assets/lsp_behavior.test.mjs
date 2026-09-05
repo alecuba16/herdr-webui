@@ -174,9 +174,40 @@ describe("shared LSP client", () => {
     for (const fn of sandbox._pendingTimeouts.splice(0)) {
       await fn();
     }
+    const changeCall = calls.find((c) => c.body && c.body.method === "textDocument/didChange");
+    ok(changeCall, "must send didChange after debounce");
+    // LSP requires versions to strictly increase per document: didOpen is
+    // version 1, so the first didChange must be 2. Servers (json, tsserver)
+    // silently drop didChange notifications with a stale version, which
+    // froze diagnostics at the didOpen content in the real UI.
+    const openCall = calls.find((c) => c.body && c.body.method === "textDocument/didOpen");
     ok(
-      calls.some((c) => c.body && c.body.method === "textDocument/didChange"),
-      "must send didChange after debounce",
+      changeCall && openCall && changeCall.body.params.textDocument.version > openCall.body.params.textDocument.version,
+      "first didChange version must be strictly greater than the didOpen version",
+    );
+    // A second edit keeps increasing the version per document.
+    sandbox.HerdrLsp.didChange(ws, "src/config.json", "{}");
+    for (const fn of sandbox._pendingTimeouts.splice(0)) {
+      await fn();
+    }
+    const changes = calls.filter((c) => c.body && c.body.method === "textDocument/didChange");
+    equal2(changes.length, 2, "two didChange notifications sent");
+    ok(
+      changes[1].body.params.textDocument.version > changes[0].body.params.textDocument.version,
+      "didChange versions strictly increase per document",
+    );
+    // Two documents in the same workspace track versions independently.
+    await sandbox.HerdrLsp.didOpen(ws, "src/other.json", "{}");
+    sandbox.HerdrLsp.didChange(ws, "src/other.json", "{}");
+    for (const fn of sandbox._pendingTimeouts.splice(0)) {
+      await fn();
+    }
+    const otherChange = calls
+      .filter((c) => c.body && c.body.method === "textDocument/didChange")
+      .find((c) => c.body.params.textDocument.uri === "file:///tmp/proj/src/other.json");
+    ok(
+      otherChange && otherChange.body.params.textDocument.version === 2,
+      "second document didChange starts at version 2 (independent tracking)",
     );
     await sandbox.HerdrLsp.didClose(ws, "src/config.json");
     ok(
