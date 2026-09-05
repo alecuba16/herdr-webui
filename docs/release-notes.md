@@ -1,5 +1,26 @@
 # Release notes
 
+## 0.4.1 Release Notes
+
+### LSP diagnostics fixes found by real-UI acceptance testing
+
+- A new 15-check CDP acceptance suite (`scripts/e2e/lsp-acceptance.mjs`, `scripts/e2e/run-lsp-e2e.sh`) drives the real release binary in headless Chrome through the full language-server user path: settings toggle, dashboard workspace modal, file tree click, real `vscode-json-language-server`, didChange round trip, and an orphan process check.
+- Fixed diagnostics never rendering in the editor: `lspRenderDiagnostics` gated on `api._view`, which the editor wrapper never exposed. The wrapper now exposes the underlying CodeMirror view, with a `getValue()`-based line-offset fallback for mounts without a live view.
+- Fixed the diagnostics badge never appearing: `refreshLspDiagnostics` re-renders the toolbar in place, so the error count no longer waits for an unrelated re-render.
+- Fixed diagnostics never clearing on edit: `didOpen` sends `version: 1` and the first `didChange` also sent `version: 1` (a workspace-wide counter starting at 0). Language servers drop `didChange` whose version is not strictly greater than the document's current version, so the first edit after opening a file was silently discarded and the server kept analyzing the opened text forever. Versions are now tracked per document and strictly increase.
+- Backend shutdown (SIGTERM/SIGINT) now sweeps all language servers, bounded by 3s, so no child process outlives the backend.
+- The E2E wrapper tears down the stack before its orphan check and fixes a `set -e pipefail` abort in cleanup that leaked workdirs on every run.
+
+## 0.4.0 Release Notes
+
+### Zed-style language server integration for the browser editor
+
+- New LSP bridge in the Rust backend (`src/lsp.rs`): per-language server registry keyed by language and workspace root, stdio JSON-RPC framing with request timeout, notification buffering for the frontend, and HTTP endpoints under `/api/lsp/` (config, detect, start, stop, request, notify, status, notifications).
+- New frontend client (`window.HerdrLsp`): workspace-per-cwd state, didOpen/didChange (debounced)/didClose document sync, diagnostics polling with per-file storage, and hooks for UI re-render.
+- Diagnostics surface in the file browser as a toolbar badge (errors/warnings/hints) and an inline clickable list that selects the offending line.
+- Language servers are disabled by default (conservative security posture), enabled per language in settings with auto-detection of installed servers and install hints; JavaScript maps to the typescript server.
+- Method whitelists on both request and notify endpoints block dangerous or custom LSP methods.
+
 ## 0.2.99 Release Notes
 
 ### File explorer editing
