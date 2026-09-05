@@ -316,6 +316,51 @@ try {
     record(false, 'first edit after reopen clears diagnostics (version reset)', 'skipped: no badge after reopen');
   }
 
+  // 12b. Crash recovery (opt-in via HERDR_CRASH_RECOVERY=1): SIGKILL the
+  //      backend's own language server child mid-session. The backend must
+  //      drop the dead entry, and reopening the file must respawn the
+  //      server and bring diagnostics back on the same open. Guards the fix
+  //      where cached capabilities made ensureServer skip the respawn.
+  //      Off by default because it needs the wrapper to read the PID from
+  //      /api/lsp/status and signal exactly that child.
+  if (process.env.HERDR_CRASH_RECOVERY === '1') {
+    const { execFileSync } = await import('node:child_process');
+    const statusKill = await pageFetch(`${BASE}api/lsp/status`);
+    const pid = ((statusKill.body || {}).servers || []).find((s) => s.language === 'json')?.pid ?? null;
+    record(!!pid, 'status exposes the json server pid for a scoped kill', String(pid));
+    if (pid) {
+      execFileSync('kill', ['-9', String(pid)]);
+      await sleep(1500);
+      const responsive = await evalExpr(`1 + 1`);
+      record(responsive === 2, 'page responsive after server SIGKILL', String(responsive));
+      // waitFor() does not await promises, so poll status with pageFetch here.
+      let gone = false;
+      for (let i = 0; i < 40 && !gone; i++) {
+        const s = await pageFetch(`${BASE}api/lsp/status`);
+        gone = !((s.body || {}).servers || []).some((x) => x.language === 'json' && x.state === 'running');
+        if (!gone) await sleep(250);
+      }
+      record(gone, 'backend no longer reports the killed server', String(gone));
+      // Close and reopen the tab: the same open must respawn and show diagnostics.
+      const recovered = await evalExpr(`(async () => {
+        const closeBtn = document.querySelector('.file-browser-open-tab-close');
+        if (closeBtn) { closeBtn.click(); await new Promise((r) => setTimeout(r, 800)); }
+        for (let i = 0; i < 20; i++) {
+          const broken = [...document.querySelectorAll('.herdr-tree-row')].find((r) => (r.textContent || '').trim().startsWith('broken.json'));
+          if (broken) { broken.click(); break; }
+          await new Promise((r) => setTimeout(r, 300));
+        }
+        for (let i = 0; i < 60; i++) {
+          const badge = document.querySelector('.file-browser-lsp-badge');
+          if (badge && /error/i.test(badge.textContent || '')) return badge.textContent;
+          await new Promise((r) => setTimeout(r, 250));
+        }
+        return 'no-badge';
+      })()`, true);
+      record(/error/i.test(String(recovered)), 'server respawns and diagnostics reappear on the same open (crash recovery)', String(recovered));
+    }
+  }
+
   // 13. Close the file: didClose must reach the server (no crash, state sane).
   await evalExpr(`window.HerdrFileBrowser.close()`);
   await sleep(500);
@@ -326,6 +371,20 @@ try {
   try {
     const trace = await evalExpr(`JSON.stringify((window.__lspTrace || []).slice(-40))`);
     console.log('LSP trace tail:', trace);
+  } catch (_) {}
+  // Dump live UI state to make mount/tree timeouts diagnosable: which tab is
+  // open, whether the editor mount element exists, and whether the editor
+  // API ever attached. Caught flakes with empty state here point at app
+  // code never running (frozen tab), not at slow rendering.
+  try {
+    const state = await evalExpr(`(() => ({
+      tabs: [...document.querySelectorAll('.file-browser-open-tab')].map((t) => (t.textContent || '').trim().slice(0, 30)),
+      mountEl: !!document.querySelector('[id^="fileBrowserEditor-"]'),
+      editorApi: !!(document.querySelector('[id^="fileBrowserEditor-"]') || {})._herdrEditorApi,
+      treeRows: document.querySelectorAll('.herdr-tree-row').length,
+      dashboard: !!document.querySelector('.project-dashboard-card'),
+    }))()`);
+    console.log('UI state at failure:', JSON.stringify(state));
   } catch (_) {}
 } finally {
   await close();

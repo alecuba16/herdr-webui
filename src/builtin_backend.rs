@@ -4549,9 +4549,17 @@ mod tests {
 
     #[test]
     fn terminal_output_publishes_agent_status_changes() {
+        // Use a silent program instead of a real shell: zsh can write its
+        // prompt bytes at any moment (on a loaded CI runner the shell can
+        // start slowly and emit the prompt AFTER the throttle reset below).
+        // That write consumes the 500ms throttle window, so the synthetic
+        // append_output is skipped and the expected event never fires. No
+        // widening of recv_timeout can fix a publish that never happens.
+        // /bin/cat blocks on stdin and never writes, so the only output the
+        // throttle window can be consumed by is the synthetic bytes below.
         let state = BuiltinState::new(
             std::env::current_dir().unwrap(),
-            Some(default_shell()),
+            Some("/bin/cat".to_string()),
             JcodeDetectionVariant::Vanilla,
         )
         .unwrap();
@@ -4563,14 +4571,18 @@ mod tests {
             data.terminals.get(&pane.terminal_id).unwrap().clone()
         };
 
-        // The spawned shell's prompt output may have already consumed the
-        // 500ms status-check throttle window. Reset it so our synthetic
-        // output is guaranteed to trigger the status-change publish instead
-        // of racing the reader thread on a loaded CI runner.
+        // Defense in depth on top of the silent shell: reset the throttle so
+        // the synthetic output is guaranteed to trigger the status-change
+        // publish even if some earlier byte slipped through.
         terminal.reset_status_throttle();
         terminal.append_output("●·· batch ··● · 2/5 done".as_bytes());
 
-        let event = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        // Generous window: on a loaded CI runner the detection scan itself
+        // (tail extraction + regex) can take a moment; 5s leaves room without
+        // masking a real regression.
+        let event = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("agent status event");
         assert_eq!(event["event"], "pane.agent_status_changed");
         assert_eq!(event["data"]["agent"], "jcode");
         assert_eq!(event["data"]["agent_status"], "working");

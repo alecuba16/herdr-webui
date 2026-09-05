@@ -282,6 +282,7 @@ impl LspRegistry {
                 "language": handle.language,
                 "root": handle.root_string,
                 "command": format!("{} {}", handle.command, handle.args.join(" ")),
+                "pid": handle.child_pid().await,
                 "state": handle.state(),
                 "last_error": handle.last_error(),
             }));
@@ -339,6 +340,16 @@ impl LspServerHandle {
             .lock()
             .map(|guard| *guard)
             .unwrap_or(ServerState::Starting)
+    }
+    /// PID of the live language server child, if still running. Exposed via
+    /// /api/lsp/status so tooling (the crash-recovery acceptance check) can
+    /// signal exactly this child and no unrelated same-named process.
+    async fn child_pid(&self) -> Option<u32> {
+        self.child
+            .lock()
+            .await
+            .as_ref()
+            .and_then(|child| child.id())
     }
     fn last_error(&self) -> Option<String> {
         self.last_error.lock().ok().and_then(|g| g.clone())
