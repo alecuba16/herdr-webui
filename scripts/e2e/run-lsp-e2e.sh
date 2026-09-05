@@ -15,6 +15,7 @@
 #   E2E_PORT     server port (default 8899)
 #   CDP_PORT     Chrome remote debugging port (default 9222)
 #   CHROME_BIN   path to Chrome/Chromium if not auto-detected
+#   HERDR_BIN    server binary to test; defaults to building $ROOT (release)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -66,8 +67,14 @@ trap cleanup EXIT
 ORPHAN_EXIT=0
 echo "==> workdir: $WORK"
 
-echo "==> building herdr-webui (release)"
-(cd "$ROOT" && cargo build --release --target-dir target --quiet)
+if [[ -n "${HERDR_BIN:-}" ]]; then
+  echo "==> using provided binary: $HERDR_BIN"
+  [[ -x "$HERDR_BIN" ]] || { echo "error: HERDR_BIN not executable: $HERDR_BIN" >&2; exit 2; }
+else
+  echo "==> building herdr-webui (release)"
+  (cd "$ROOT" && cargo build --release --target-dir target --quiet)
+  HERDR_BIN="$ROOT/target/release/herdr-webui"
+fi
 
 echo "==> creating fixture repo with src/broken.json and src/good.json"
 REPO="$WORK/lsp-accept-repo"
@@ -90,7 +97,7 @@ wait_for() {
 }
 
 echo "==> starting isolated server on https://127.0.0.1:$PORT"
-XDG_CONFIG_HOME="$WORK/xdg" "$ROOT/target/release/herdr-webui" \
+XDG_CONFIG_HOME="$WORK/xdg" "$HERDR_BIN" \
   --bind "127.0.0.1:$PORT" --session "$(session_id)" &
 SERVER_PID=$!
 

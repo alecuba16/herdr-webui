@@ -262,7 +262,59 @@ try {
   })()`);
   record(goodBadge === '', 'valid json file shows no diagnostics badge', JSON.stringify(goodBadge));
 
-  // 12. Close the file: didClose must reach the server (no crash, state sane).
+  // 12. Version-reset edge case: close the broken.json tab (didClose),
+  //     reopen it from disk (fresh didOpen resets the version to 1), and
+  //     require the FIRST edit to clear diagnostics again. Guards the fix
+  //     where a stale didChange version made servers ignore edits.
+  await evalExpr(`(async () => {
+    // Close every open tab so the next tree click reopens from disk.
+    for (let i = 0; i < 5; i++) {
+      const closeBtn = document.querySelector('.file-browser-open-tab-close');
+      if (!closeBtn) break;
+      // A dirty tab may prompt; accept the discard when asked.
+      closeBtn.click();
+      for (let j = 0; j < 10; j++) {
+        const q = document.getElementById('questionModal');
+        if (q && getComputedStyle(q).display === 'grid') {
+          const confirmBtn = document.getElementById('questionConfirm');
+          if (confirmBtn) confirmBtn.click();
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 150));
+      }
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    return true;
+  })()`, true);
+  const reopenedBadge = await evalExpr(`(async () => {
+    const broken = [...document.querySelectorAll('.herdr-tree-row')].find((r) => (r.textContent || '').trim().startsWith('broken.json'));
+    if (!broken) return 'no-broken-row';
+    broken.click();
+    await new Promise((r) => setTimeout(r, 3500));
+    const badge = document.querySelector('.file-browser-lsp-badge');
+    return badge ? badge.textContent : 'absent';
+  })()`, true);
+  record(/error/.test(String(reopenedBadge)), 'diagnostics reappear after close and reopen', String(reopenedBadge));
+  if (/error/.test(String(reopenedBadge))) {
+    await evalExpr(`(() => {
+      const mount = document.querySelector('[id^="fileBrowserEditor-"]');
+      const api = mount && mount._herdrEditorApi;
+      if (api && typeof api.setValue === 'function') {
+        api.setValue('{\\n  "name": "lsp-ui-accept",\\n  "version": "1.0.0"\\n}\\n');
+        return true;
+      }
+      return false;
+    })()`, true);
+    const recleared = await waitFor('diagnostics recleared after reopen', `(() => {
+      const badge = document.querySelector('.file-browser-lsp-badge');
+      return !badge || badge.textContent === '' ? 'cleared' : '';
+    })()`, 80, 250);
+    record(recleared === 'cleared', 'first edit after reopen clears diagnostics (version reset)', String(recleared));
+  } else {
+    record(false, 'first edit after reopen clears diagnostics (version reset)', 'skipped: no badge after reopen');
+  }
+
+  // 13. Close the file: didClose must reach the server (no crash, state sane).
   await evalExpr(`window.HerdrFileBrowser.close()`);
   await sleep(500);
   record(true, 'file browser closes cleanly');
