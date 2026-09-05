@@ -16,6 +16,9 @@
 #   CDP_PORT     Chrome remote debugging port (default 9222)
 #   CHROME_BIN   path to Chrome/Chromium if not auto-detected
 #   HERDR_BIN    server binary to test; defaults to building $ROOT (release)
+#   HERDR_CRASH_RECOVERY=1  also run the crash-recovery check (kills the
+#               backend's own language server child mid-session; needs a
+#               real language server, so it is opt-in)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -124,6 +127,7 @@ wait_for "headless Chrome CDP" "http://127.0.0.1:$CDP/json/version" "" || exit 1
 
 echo "==> running LSP acceptance checks"
 ACCEPT_REPO="$REPO" E2E_BASE_URL="https://127.0.0.1:$PORT/" CDP_PORT="$CDP" \
+  HERDR_CRASH_RECOVERY="${HERDR_CRASH_RECOVERY:-0}" \
   node "$ROOT/scripts/e2e/lsp-acceptance.mjs"
 ACCEPT_EXIT=$?
 
