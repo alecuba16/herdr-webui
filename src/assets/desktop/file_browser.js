@@ -12,7 +12,7 @@
   let state = createState();
 
   function createContentSearchState() {
-    return { active: false, query: "", timer: null, files: [], expanded: {}, loading: false, error: "", offset: 0, done: true, totalFiles: 0, totalMatches: 0, contextLines: 2, maxMatchesPerFile: 5, autoCollapseFiles: 0, defaultExpanded: true };
+    return { active: false, query: "", timer: null, files: [], expanded: {}, loading: false, error: "", offset: 0, done: true, totalFiles: 0, totalMatches: 0, visited: 0, truncated: false, contextLines: 2, maxMatchesPerFile: 5, autoCollapseFiles: 0, defaultExpanded: true };
   }
 
   function createState(initial) {
@@ -146,6 +146,8 @@
     content.done = true;
     content.totalFiles = 0;
     content.totalMatches = 0;
+    content.visited = 0;
+    content.truncated = false;
   }
 
   document.addEventListener("click", () => {
@@ -502,6 +504,8 @@
       target.permissionRequired = false;
       content.totalFiles = data.total_files || files.length;
       content.totalMatches = data.total_matches || 0;
+      content.visited = Number(data.visited || 0);
+      content.truncated = data.truncated === true;
       content.offset = offset + files.length;
       content.done = !data.truncated || files.length === 0;
       if (!append) {
@@ -733,7 +737,7 @@
     const content = state.contentSearch;
     const contentSearch = window.HerdrContentSearch;
     const body = contentSearch
-      ? contentSearch.render({ query: content.query, files: content.files, expanded: content.expanded, loading: content.loading, error: content.error, done: content.done, total_files: content.totalFiles, total_matches: content.totalMatches }, { callback: "HerdrFileBrowserContent", inputId: "fileContentSearchInput", hideInput: true })
+      ? contentSearch.render({ query: content.query, files: content.files, expanded: content.expanded, loading: content.loading, error: content.error, done: content.done, total_files: content.totalFiles, total_matches: content.totalMatches, visited: content.visited, truncated: content.truncated }, { callback: "HerdrFileBrowserContent", inputId: "fileContentSearchInput", hideInput: true })
       : `<div class="file-browser-empty">Content search renderer unavailable.</div>`;
 
     return `<section class="file-browser-pane active file-browser-content-pane"><div class="file-browser-pane-body file-browser-content-pane-body"><div class="file-browser-content-actions"><span>Content search: ${esc(content.query || "No query")}</span><button class="git-ui-btn" onclick="event.stopPropagation();HerdrFileBrowser.closeContentSearch()">Close search</button></div>${body}</div></section>`;
@@ -1504,6 +1508,8 @@
       content.done = true;
       content.totalFiles = 0;
       content.totalMatches = 0;
+    content.visited = 0;
+    content.truncated = false;
       render();
     },
     loadMore() { runContentSearch(true); },

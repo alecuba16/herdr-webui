@@ -195,6 +195,17 @@ const html2 = renderer.render(
 assert(file._renderChunks === cacheBefore, "second render reuses cached normalized chunks");
 assert(html === html2, "repeat render output is identical");
 
+// 6b. The summary surfaces the backend visited count and truncation flag (D4).
+assert(Number.isFinite(Number(data.visited)) && data.visited > 0, `content search reports visited files (got ${data.visited})`);
+assert(data.truncated === false, "small walk is not truncated");
+const summaryHtml = renderer.render(
+  { query: "e2eneedle", files: data.files, expanded: {}, done: true, total_files: data.total_files, total_matches: data.total_matches, visited: data.visited, truncated: data.truncated },
+  { callback: "E2EContent", hideInput: true },
+);
+const expectedNote = `searched ${Number(data.visited).toLocaleString("en-US")} files`;
+assert(summaryHtml.includes(expectedNote), "summary line includes the visited count");
+assert(!summaryHtml.includes("search stopped at the file limit"), "no truncation hint when not truncated");
+
 // 7. The single-file route (expand "Load all matches") also returns chunks.
 const single = await httpsJson(`${ORIGIN}/api/file-browser/content-search/file?cwd=${encodeURIComponent(REPO)}&file=${encodeURIComponent(file.path)}&q=e2eneedle&context_lines=2&max_matches_per_file=500`);
 const singleBody = await single.json();

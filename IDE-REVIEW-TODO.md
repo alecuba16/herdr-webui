@@ -300,11 +300,31 @@ Priority: P0 must land in this review, P1 should land, P2 next iteration.
   0.0003 ms (~500x on repeat navigation). Regression test in
   app_core.test.mjs covers memo reuse, and invalidation on query, option
   and text change. 415 JS + 377 Rust pass, acceptance e2e 21/21.
-- [ ] **D4 (P1, B)** Content-search `regex` mode builds a Rust regex per line
+- [x] **D4 (P1, B)** Content-search `regex` mode builds a Rust regex per line
   via `ContentMatcher::new` per file; hoist compiled matcher across the walk
   (already thread-local? verify) and add a walk-wide visit cap so pathological
   repos cannot exceed request budget; surface `visited` count for "searched N
   files" UI.
+  DONE (mostly verified-already-in-place; the gap was UI surfacing): the
+  matcher is NOT built per file — `collect_content_search` builds one
+  `ContentMatcher` per request (line ~950) and passes `&matcher` into every
+  `content_search_file` call, and the single-file route builds its own once
+  per request. The walk-wide visit cap already exists
+  (`MAX_CONTENT_SEARCH_VISITS = 20_000`, sets `truncated`). Both were already
+  covered by Rust tests. The missing piece was the UI: `visited` and
+  `truncated` were returned by the backend but dropped by every consumer, so
+  a capped/truncated search looked complete. Now all consumers capture both:
+  desktop + mobile file-browser content-search state, and
+  `workspace_search.applyContentResults` (which feeds the desktop search
+  palette and the mobile unified search sheet); the shared renderer summary
+  shows `X matches in Y files, searched N files` plus
+  `(search stopped at the file limit)` when truncated. New tests: renderer
+  summary (file_content_search.test.mjs), applyContentResults propagation
+  and reset (app_load.test.mjs), and real-backend e2e assertions for
+  visited/truncated (content-search-acceptance.mjs, now passing against the
+  rebuilt server; a stale server on port 8897 was serving old assets and
+  had to be killed first). 417 JS + 377 Rust pass, content-search e2e
+  PASSED.
 - [ ] **D5 (P2, M)** Mobile `renderPreservingFocus` re-renders the entire
   screen HTML per keystroke in the filter input (type-to-filter); keep the
   input node, patch only the results container (same pattern as desktop

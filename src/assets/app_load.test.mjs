@@ -1453,6 +1453,25 @@ describe("app bundle load", () => {
     match(gitDiffCss, /\.git-ui-search-match \{/);
   });
 
+  it("captures visited and truncated flags from content-search responses (D4)", () => {
+    const ctx = context();
+    loadWorkspaceSearch(ctx);
+    const helper = ctx.HerdrWorkspaceSearch;
+
+    const state = helper.createContentState();
+    helper.applyContentResults(state, { files: [{ path: "src/a.js" }], total_matches: 1, total_files: 1, visited: 512, truncated: false }, false);
+    equal(state.visited, 512);
+    equal(state.truncated, false);
+
+    helper.applyContentResults(state, { files: [{ path: "src/b.js" }], total_matches: 1, total_files: 1, visited: 20000, truncated: true }, false);
+    equal(state.visited, 20000);
+    equal(state.truncated, true);
+
+    helper.resetContentState(state, "");
+    equal(state.visited, 0);
+    equal(state.truncated, false);
+  });
+
   it("keeps content search file expansion when context is reloaded", () => {
     const ctx = context();
     ctx.localStorage.setItem("herdr-web-options", JSON.stringify({ fileContentSearchDefaultExpanded: false }));

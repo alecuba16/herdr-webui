@@ -5,7 +5,7 @@
     const DEFAULT_CONTENT_SEARCH_MIN_CHARS = 3;
     const state = deps.state;
     function createContentSearchState() {
-      return { active: false, query: "", timer: null, files: [], expanded: {}, loading: false, error: "", offset: 0, done: true, totalFiles: 0, totalMatches: 0, contextLines: 2, maxMatchesPerFile: 5, autoCollapseFiles: 0, defaultExpanded: true };
+      return { active: false, query: "", timer: null, files: [], expanded: {}, loading: false, error: "", offset: 0, done: true, totalFiles: 0, totalMatches: 0, visited: 0, truncated: false, contextLines: 2, maxMatchesPerFile: 5, autoCollapseFiles: 0, defaultExpanded: true };
     }
     const local = { path: "", entries: [], selected: "", file: null, error: "", loading: false, filter: "", filterVisible: false, filterTimer: null, filterOffset: 0, filterDone: true, filterKind: "file", scrollTop: 0, cwdOverride: "", gitStatus: null, editing: false, draft: "", dirty: false, saving: false, saveError: "", actionSheet: null, rename: null, newFile: null, mutating: false, contentSearch: createContentSearchState() };
 
@@ -200,6 +200,8 @@
       local.contentSearch.offset = 0;
       local.contentSearch.totalFiles = 0;
       local.contentSearch.totalMatches = 0;
+      local.contentSearch.visited = 0;
+      local.contentSearch.truncated = false;
     }
 
     async function load(path, preserveFocus = false) {
@@ -529,6 +531,8 @@
         content.files = append ? content.files.concat(files) : files;
         content.totalFiles = data.total_files || files.length;
         content.totalMatches = data.total_matches || 0;
+        content.visited = Number(data.visited || 0);
+        content.truncated = data.truncated === true;
         content.offset = offset + files.length;
         content.done = !data.truncated || files.length === 0;
         if (!append) {

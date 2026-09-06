@@ -115,6 +115,8 @@
       offset: 0,
       total_files: 0,
       total_matches: 0,
+      visited: 0,
+      truncated: false,
       contextLines: opts.contextLines,
     }, initial || {});
   }
@@ -128,6 +130,8 @@
     state.offset = 0;
     state.total_files = 0;
     state.total_matches = 0;
+    state.visited = 0;
+    state.truncated = false;
     state.contextLines = settings().contextLines;
   }
 
@@ -137,6 +141,8 @@
     state.files = append ? state.files.concat(files) : files;
     state.total_files = data.total_files || state.files.length;
     state.total_matches = data.total_matches || 0;
+    state.visited = Number(data.visited || 0);
+    state.truncated = data.truncated === true;
     state.offset = (append ? state.offset : 0) + files.length;
     state.done = !data.truncated || files.length === 0;
     if (!append) {

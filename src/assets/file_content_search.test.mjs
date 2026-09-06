@@ -44,6 +44,23 @@ function backendFile() {
   };
 }
 
+describe("HerdrContentSearch summary (D4)", () => {
+  it("surfaces visited count and truncation in the summary line", () => {
+    const renderer = loadRenderer();
+    const files = [backendFile()];
+    const base = { query: "needle", files, total_matches: 2, total_files: 1 };
+    const plain = renderer.render(base, {});
+    match(plain, /2 matches in 1 files/);
+    ok(!plain.includes("searched"), "no visited note when the backend does not report visited");
+
+    const visited = renderer.render(Object.assign({}, base, { visited: 1234 }), {});
+    match(visited, /2 matches in 1 files, searched 1,234 files/);
+
+    const truncated = renderer.render(Object.assign({}, base, { visited: 20000, truncated: true }), {});
+    match(truncated, /searched 20,000 files \(search stopped at the file limit\)/);
+  });
+});
+
 describe("HerdrContentSearch backend chunks", () => {
   it("renders prebuilt backend chunks without rebuilding highlight HTML", () => {
     const mod = loadRenderer();

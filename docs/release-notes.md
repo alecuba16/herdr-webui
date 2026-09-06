@@ -1,6 +1,12 @@
 # Release notes
 
 ## 0.4.7 Release Notes
+- Content search: the summary line now reports how many files were
+  searched ("X matches in Y files, searched N files") and flags when the
+  walk stopped at the 20 000-file visit cap, so truncated searches are no
+  longer indistinguishable from complete ones. The backend already computed
+  both fields; every consumer now surfaces them (desktop file browser,
+  desktop search palette, mobile file browser, mobile unified search).
 - Find-in-editor: repeated match navigation (prev/next, Enter) no longer
   rescans the full document on every click; the last scan is memoized and
   invalidated on any text, query or option change (~500x cheaper repeat
