@@ -298,6 +298,39 @@ check('file stays editable after save', saveParsed.editable === 'true');
 const onDisk = readFileSync(DEMO_FILE, 'utf8');
 check('saved content persisted to disk', onDisk.includes('# acceptance edit'), JSON.stringify(onDisk.slice(0, 80)));
 
+// 6b. A6: hash_only probe + external change detection on refocus
+const a6Round = await cdp.evalExpr(`(async () => {
+  // Probe endpoint returns only hash/size with empty content.
+  const probe = await fetch('/api/file-browser/file?cwd=' + encodeURIComponent('${REPO}') + '&path=' + encodeURIComponent('src/demo.py') + '&hash_only=true');
+  if (!probe.ok) return JSON.stringify({ err: 'probe-status-' + probe.status });
+  const probeBody = await probe.json();
+  if (probeBody.content !== "" || !probeBody.hash || probeBody.truncated !== false) {
+    return JSON.stringify({ probeBad: { content: probeBody.content, hash: !!probeBody.hash, truncated: probeBody.truncated } });
+  }
+  // External change: rewrite the file behind the browser's back via fs (the
+  // e2e shell gave us no node access; the POST endpoint is the same server
+  // the browser uses, so use it as the "other tool").
+  const save = await fetch('/api/file-browser/file', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ cwd: '${REPO}', path: 'src/demo.py', content: 'external edit', expected_hash: probeBody.hash }),
+  });
+  if (!save.ok) return JSON.stringify({ err: 'save-status-' + save.status });
+  // Focus watcher: stub confirm to accept, then trigger the visibilitychange
+  // path the way a real refocus does.
+  let confirmMsg = null;
+  window.confirm = (m) => { confirmMsg = m; return true; };
+  Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
+  document.dispatchEvent(new Event('visibilitychange'));
+  await new Promise(r => setTimeout(r, 1500));
+  const editorHost = document.querySelector('[id^="fileBrowserEditor-"]');
+  const value = editorHost && editorHost._herdrEditorApi ? editorHost._herdrEditorApi.getValue() : null;
+  return JSON.stringify({ probeOk: true, confirmMsg, reloadedTo: value });
+})()`, true);
+const a6Parsed = (() => { try { return JSON.parse(a6Round || '{}'); } catch { return { raw: a6Round }; } })();
+check('hash_only probe returns hash with empty content (A6)', a6Parsed.probeOk === true, JSON.stringify(a6Parsed));
+check('refocus after external change prompts and reloads (A6)', a6Parsed.confirmMsg === "src/demo.py\nchanged on disk. Reload?" && a6Parsed.reloadedTo === 'external edit', JSON.stringify(a6Parsed));
+
 // 7. Lock with dirty prompts confirm; discard works
 await cdp.evalExpr(`(async () => {
   window.__acceptConfirm = null;

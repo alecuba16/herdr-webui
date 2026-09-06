@@ -2051,6 +2051,96 @@ describe("desktop file browser editor integration", () => {
     assert.match(panelHtml(), /File too large to preview/);
   });
 
+  it("prompts to reload when an open file changed on disk (A6)", async () => {
+    const document = createFakeDocument();
+    const confirmCalls = [];
+    let diskContent = "version 1";
+    const fileRequests = [];
+    const context = {
+      window: {
+        addEventListener() {},
+        HerdrEditor: {
+          create(opts) { opts.parent.innerHTML = "<div class='cm-content'></div>"; opts.parent._herdrEditorApi = { toggleFind() {} }; return { getValue() { return opts.content; }, setValue() {}, destroy() {} }; },
+          isMarkdownPath() { return false; },
+        },
+        HerdrGitUi: { hide() {} },
+        HerdrWorkspacePath(workspace) { return workspace.cwd; },
+      },
+      document,
+      localStorage: { getItem() { return JSON.stringify({ fileBrowserGitStatus: false }); } },
+      navigator: { clipboard: { writeText: async () => {} } },
+      fetch: async (url) => {
+        const text = String(url);
+        fileRequests.push(text);
+        return {
+          ok: true,
+          async json() {
+            if (text.startsWith("/api/file-browser/file")) {
+              const path = decodeURIComponent((text.match(/path=([^&]+)/) || [null, ""])[1]);
+              // Same hash formula for full loads and hash_only probes, so
+              // the watcher only flags real external changes.
+              let h = 0;
+              for (const ch of diskContent) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+              return { path, content: text.includes("hash_only=true") ? "" : diskContent, hash: `hash-${h}`, binary: false, truncated: false, size: diskContent.length };
+            }
+            const cwd = decodeURIComponent((text.match(/cwd=([^&]+)/) || [null, ""])[1]);
+            return { root: cwd, home: "/Users/me", path: "", entries: [{ kind: "file", name: "watched.txt", path: "watched.txt" }], git_status: null };
+          },
+        };
+      },
+      confirm(message) { confirmCalls.push(String(message)); return true; },
+      HerdrAppHelpers: require("./shared/core.js"),
+      appRefreshIconButton: () => "<button>Refresh</button>",
+      encodeURIComponent,
+      decodeURIComponent,
+      Error,
+      JSON,
+      Math,
+      String,
+      setTimeout(fn) { fn(); return 1; },
+      clearTimeout() {},
+      getComputedStyle: () => ({ getPropertyValue() { return "14"; } }),
+    };
+    context.window.window = context.window;
+    context.window.document = document;
+    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
+    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
+
+    await context.window.HerdrFileBrowser.open({ workspace_id: "ws", cwd: "/Users/me/repo" });
+    await context.window.HerdrFileBrowser.select(encodeURIComponent("watched.txt"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // Refocus with no external change: no probe (nothing to compare) when
+    // hash matches? The watcher always probes clean files; with identical
+    // state there must be NO prompt.
+    confirmCalls.length = 0;
+    fileRequests.length = 0;
+    await context.window.HerdrFileBrowser.checkOpenFilesForExternalChanges();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(confirmCalls.length, 0, "no prompt when disk matches");
+    assert.ok(fileRequests.some((url) => url.includes("hash_only=true")), "probe uses the cheap hash endpoint");
+
+    // External change: the probe hash no longer matches the loaded hash.
+    diskContent = "version 2 from another tool";
+    confirmCalls.length = 0;
+    await context.window.HerdrFileBrowser.checkOpenFilesForExternalChanges();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(confirmCalls.length, 1, "prompted once about the external change");
+    assert.match(confirmCalls[0], /watched.txt[\s\S]*changed on disk/);
+    // Confirmed reload: the watcher re-fetches the full file after the
+    // prompt, so the tab picks up the new content and hash.
+    assert.ok(fileRequests.some((url) => url.includes("version") === false && url.includes("hash_only=true") === false && url.includes("watched.txt")), "full reload fetched after confirm");
+
+    // Declining the prompt keeps the stale tab untouched.
+    context.confirm = (message) => { confirmCalls.push(String(message)); return false; };
+    diskContent = "version 3 nobody wants";
+    confirmCalls.length = 0;
+    await context.window.HerdrFileBrowser.checkOpenFilesForExternalChanges();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(confirmCalls.length, 1, "prompted for the second change");
+    assert.doesNotMatch(document.getElementById("fileBrowserPanel").innerHTML, /version 3/, "declined reload keeps old content");
+  });
+
   it("hides tab menu actions for binary and truncated files", async () => {
     const document = createFakeDocument();
     const context = {

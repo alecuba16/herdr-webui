@@ -117,10 +117,31 @@ Priority: P0 must land in this review, P1 should land, P2 next iteration.
   readout shows Ln 1, Col 1 on open, gotoLine(2) updates it, real Ctrl+G
   keydown with stubbed prompt clamps an out-of-range answer to the last
   line. 424 JS + 379 Rust pass, fmt clean, clippy 0.
-- [ ] **A6 (P2, D)** Diff awareness: an externally-changed file (hash mismatch
+- [x] **A6 (P2, D)** Diff awareness: an externally-changed file (hash mismatch
   on save is handled, but no reload prompt on tab focus). On `visibilitychange`
   or tab refocus, re-hash open files cheaply and offer "File changed on disk —
   reload?".
+  DONE (backend hash_only probe + desktop focus watcher): the file route
+  accepts `hash_only=true`, which skips the content read and returns only
+  the current hash + size with empty content (Rust computes the hash; the
+  JS stays thin). The desktop browser registers a single window focus +
+  visibilitychange watcher: on regain-focus it probes each open, clean,
+  non-truncated file via hash_only and, when the probe hash differs from
+  the loaded hash, prompts "<path> changed on disk. Reload?" and reloads
+  through the existing reloadFile on confirm. Dirty files are skipped
+  (their draft is newer than disk; the save path already surfaces hash
+  mismatches), deleted/unreadable files are left alone (probe errors are
+  swallowed), and a re-entrancy guard prevents overlapping checks. Axum
+  bool queries need `=true` (hash_only=1 is a 400; caught by the e2e).
+  Tests: Rust unit test proves file_hash changes across an external
+  rewrite (content read is skipped by construction in the route branch).
+  Vm test drives the real watcher: no prompt when disk matches, probe hits
+  hash_only=true, external change prompts once with the right message and
+  reloads on confirm, decline keeps the stale tab. Real-browser e2e 28/28:
+  probe shape (empty content + real hash + truncated:false), an external
+  POST save behind the browser's back, the visibilitychange path prompts
+  and the tab re-renders with the new content. 425 JS + 380 Rust pass,
+  fmt clean, clippy 0.
 
 ## B. Mobile ↔ desktop parity
 

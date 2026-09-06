@@ -1348,6 +1348,42 @@
     }
   }
 
+  // ── A6: external-change awareness ────────────────────────────────────
+  // When the window regains focus (tab refocus, Cmd+Tab back), re-hash the
+  // open files via the cheap hash_only endpoint. If a file changed on disk
+  // while we hold no local edits, offer a reload prompt. Dirty files are
+  // skipped: their draft is newer than disk and the save path already
+  // surfaces hash mismatches.
+  let a6CheckInFlight = false;
+  async function checkOpenFilesForExternalChanges() {
+    if (a6CheckInFlight) return;
+    const candidates = state.files.filter((file) => file && !file.dirty && !file.truncated && file.hash);
+    if (!candidates.length) return;
+    a6CheckInFlight = true;
+    try {
+      for (const file of candidates) {
+        let remote = null;
+        try {
+          remote = await api(`/api/file-browser/file?cwd=${encodeURIComponent(state.cwd)}&path=${encodeURIComponent(file.path)}&hash_only=true`);
+        } catch (_) { continue; } // deleted or unreadable: leave the tab alone
+        const fresh = state.files.find((open) => open.path === file.path);
+        if (!fresh || fresh.dirty) continue;
+        if (remote && remote.hash && remote.hash !== fresh.hash) {
+          if (confirm(`${file.path}\nchanged on disk. Reload?`)) await reloadFile(file.path);
+        }
+      }
+    } finally {
+      a6CheckInFlight = false;
+    }
+  }
+  if (typeof document !== "undefined" && document.addEventListener && !document.__herdrA6FocusWatcher) {
+    document.__herdrA6FocusWatcher = true;
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") checkOpenFilesForExternalChanges();
+    });
+    window.addEventListener("focus", checkOpenFilesForExternalChanges);
+  }
+
   window.HerdrFileBrowser = {
     open,
     openAt,
@@ -1430,6 +1466,7 @@
     toggle(encodedPath) { toggleDir(decodeURIComponent(encodedPath)); },
     enter(encodedPath) { loadTree(decodeURIComponent(encodedPath)); },
     select(encodedPath, mode) { loadFile(decodeURIComponent(encodedPath), mode || "append"); },
+    checkOpenFilesForExternalChanges,
     focusFile(encodedPath) { state.selected = decodeURIComponent(encodedPath); render(); },
     findInFile(encodedPath) {
       return openFindForPath(decodeURIComponent(encodedPath));

@@ -1,6 +1,10 @@
 # Release notes
 
 ## 0.4.7 Release Notes
+- Open desktop files now detect external changes: on window refocus the
+  browser cheaply re-hashes clean tabs via a new hash_only endpoint and
+  offers a reload prompt when the disk content changed. Dirty tabs are
+  never clobbered.
 - Editors now support Ctrl/Cmd+G goto-line with a clamping prompt, and
   CodeMirror mounts show a live "Ln x, Col y" cursor readout. The
   editorFindShortcutEnabled option actually works now: a legacy
