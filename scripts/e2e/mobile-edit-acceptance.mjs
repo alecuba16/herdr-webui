@@ -343,6 +343,37 @@ const lspOpt = await evalx(`(function () { const o = JSON.parse(localStorage.get
 check('LSP diagnostics option persisted on', lspOpt === 'true', `lspEnabled=${lspOpt}`);
 await evalx(`HerdrMobile.setLspEnabled(false)`);
 
+// ---- B5: search scope parity (section order + Load more) ----
+// Shrink the path page size so the backend truncates and the button shows.
+await evalx(`(function () { const o = JSON.parse(localStorage.getItem('herdr-web-options') || '{}'); o.fileBrowserSearchPageSize = 10; localStorage.setItem('herdr-web-options', JSON.stringify(o)); })()`);
+await evalx(`(async () => { await HerdrMobile.showScreen('search'); })()`);
+await new Promise((r) => setTimeout(r, 500));
+await evalx(`(function () { window.__e2eUrls = []; const origFetch = window.fetch; window.fetch = function (input) { try { window.__e2eUrls.push(String(input)); } catch (e) {} return origFetch.apply(this, arguments); }; const input = document.getElementById('mobileSearchInput'); input.value = 'bulk'; input.oninput(); })()`);
+await new Promise((r) => setTimeout(r, 900));
+const searchHtml = await evalx(`document.getElementById('mobileSearchResults').innerHTML`);
+check('search renders Files and folders section', searchHtml.includes('Files and folders'), searchHtml.slice(0, 120));
+check('search renders File content section', searchHtml.includes('File content'), '');
+const orderOk = (() => { const f = searchHtml.indexOf('Files and folders'); const c = searchHtml.indexOf('File content'); return f >= 0 && c >= 0 && f < c; })();
+check('default section order files before content', orderOk, `filesAt=${searchHtml.indexOf('Files and folders')} contentAt=${searchHtml.indexOf('File content')}`);
+const loadMoreCount = (searchHtml.match(/Load more/g) || []).length;
+check('Load more button present when results are truncated', loadMoreCount >= 1, `loadMoreButtons=${loadMoreCount}`);
+const searchUrls = await evalx(`(function () { return (window.__e2eUrls || []).filter((u) => u.includes('search_kind')).join(' | '); })()`);
+const pageOption2 = await evalx(`(function () { const h = window.HerdrWorkspaceSearch; return String(h && h.settings ? h.settings().pathPageSize : 'missing'); })()`);
+check('mobile search used shrunk page size', searchUrls.includes('limit=10') || pageOption2 === '10', `urls=${searchUrls.slice(0, 200)} helper=${pageOption2}`);
+const searchProbe = await evalx(`(async () => { const r = await fetch('/api/file-browser/tree?cwd=${encodeURIComponent(repoPath)}&path=&q=bulk&search_kind=file&offset=0&limit=10'); const j = await r.json(); return JSON.stringify({ count: (j.entries || []).length, truncated: j.truncated }); })()`);
+check('backend truncates at limit 10', searchProbe.includes('"truncated":true'), searchProbe);
+const pageOption = await evalx(`(function () { const o = JSON.parse(localStorage.getItem('herdr-web-options') || '{}'); return String(o.fileBrowserSearchPageSize); })()`);
+check('page uses shrunk path page size', pageOption === '10', `pageOption=${pageOption}`);
+const rowsFirst = await evalx(`(function () { const sections = Array.from(document.querySelectorAll('#mobileSearchResults .mobile-search-section')); const files = sections.find((sec) => sec.textContent.indexOf('Files and folders') === 0 || (sec.querySelector('strong') && sec.querySelector('strong').textContent === 'Files and folders')); return String(files ? files.querySelectorAll('.herdr-tree-row').length : -1); })()`);
+await evalx(`(function () { const btn = document.querySelector('.mobile-search-more'); if (btn) btn.click(); })()`);
+await new Promise((r) => setTimeout(r, 900));
+const rowsAfterMore = await evalx(`(function () { const sections = Array.from(document.querySelectorAll('#mobileSearchResults .mobile-search-section')); const files = sections.find((sec) => sec.textContent.indexOf('Files and folders') === 0 || (sec.querySelector('strong') && sec.querySelector('strong').textContent === 'Files and folders')); return String(files ? files.querySelectorAll('.herdr-tree-row').length : -1); })()`);
+check('load more appends path rows', Number(rowsAfterMore) > Number(rowsFirst), `first=${rowsFirst} after=${rowsAfterMore}`);
+
+await evalx(`(function () { const o = JSON.parse(localStorage.getItem('herdr-web-options') || '{}'); o.fileBrowserSearchPageSize = 100; localStorage.setItem('herdr-web-options', JSON.stringify(o)); })()`);
+await evalx(`(async () => { await HerdrMobile.showScreen('home'); })()`);
+await new Promise((r) => setTimeout(r, 400));
+
 const failed = results.filter((r) => !r.ok);
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
 if (failed.length) {

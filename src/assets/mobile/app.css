@@ -1625,6 +1625,12 @@ body.light .mobile-nav-status.working {
 }
 
 /* LSP diagnostics under the mobile editor (IDE-review B4, desktop parity) */
+.mobile-search-more {
+  display: block;
+  margin: 10px auto 2px;
+  min-width: 140px;
+}
+
 .herdr-lsp-diagnostics {
   border-top: 1px solid var(--border);
   max-height: 132px;

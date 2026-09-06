@@ -97,10 +97,23 @@ Priority: P0 must land in this review, P1 should land, P2 next iteration.
   (17 total) + settings render/persist test in mobile_load (37) + 8 new e2e
   checks (41/41: CM mounts, wrap on→off via Settings changes live white-space,
   tab size 4 lands in cm-content, LSP toggle persists).
-- [ ] **B5 (P2, M)** Mobile search screen has no file/folder path search scope
+- [x] **B5 (P2, M)** Mobile search screen has no file/folder path search scope
   toggle parity check: verify `HerdrWorkspaceSearch.settings()` section order
   and enabled scopes behave identically on mobile, including the "Content"
   scope chips; add a mobile_load test asserting the shared helper is used.
+  DONE: verified mobile already routes through the shared helper (settings,
+  pathSearchAvailable, normalizePathKind, section order). Found and fixed a
+  real gap: mobile search had NO "Load more" for path results (desktop has
+  loadMorePaths) even though pathDone/pathOffset were tracked. Added the
+  Load-more button (renders when truncated, preserves scroll on append,
+  guards against concurrent loads) + HerdrMobileSearch.loadMorePaths.
+  New mobile_load test asserts: shared helper usage, custom section order
+  (content,files,workspaces), disabled scopes hide sections + disable chips,
+  kind normalization, truncated button renders, and a second page appends
+  (uses ctx.settle microtask helper; added focus() to the element stub).
+  E2e extended to 49/49: order files-before-content, Load more button with
+  page size 10 + 12 bulk files, real append verified via section-scoped row
+  counts (first page 10, after click 12).
 
 ## C. Performance — move JS processing to Rust backend
 

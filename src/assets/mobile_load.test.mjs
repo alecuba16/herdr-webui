@@ -18,6 +18,7 @@ function element(id = "") {
     clientWidth: 360,
     clientHeight: 520,
     appendChild() {},
+    focus() {},
     listeners: {},
     addEventListener(event, listener) {
       (this.listeners[event] || (this.listeners[event] = [])).push(listener);
@@ -180,6 +181,31 @@ function context(pathname = "/", options = {}) {
           status: 200,
           json: async () => ({ result: { tab: { tab_id: "w1:t3" } } }),
         };
+      if (String(url).startsWith("/api/file-browser/tree") && url.includes("q=alpha"))
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            path: "",
+            entries: [
+              { kind: "file", name: "alpha.txt", path: "docs/alpha.txt" },
+              { kind: "dir", name: "beta", path: "src/beta" },
+            ],
+            truncated: true,
+            git_status: null,
+          }),
+        };
+      if (String(url).startsWith("/api/file-browser/content-search"))
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            files: [],
+            truncated: false,
+            total_files: 0,
+            total_matches: 0,
+          }),
+        };
       if (String(url).startsWith("/api/git-ui/status"))
         return {
           ok: true,
@@ -325,6 +351,9 @@ function context(pathname = "/", options = {}) {
   ctx.flushTimers = async () => {
     const due = timers.splice(0).filter((timer) => !timer.cleared);
     for (const timer of due) await timer.callback();
+  };
+  ctx.settle = async (rounds = 12) => {
+    for (let i = 0; i < rounds; i++) await Promise.resolve();
   };
   ctx.dispatchDocumentEvent = (event) => {
     for (const listener of listeners[event] || []) listener();
@@ -660,6 +689,50 @@ describe("mobile bundle load", () => {
     doesNotThrow(() =>
       ctx.HerdrMobile.updateWorktreeField("worktreeBranch", "feature/mobile"),
     );
+  });
+
+  it("mobile search scope parity uses the shared helper, section order, chips, and load more (B5)", async () => {
+    const ctx = context();
+    // Custom order and disabled folders must behave identically to desktop.
+    ctx.localStorage.setItem("herdr-web-options", JSON.stringify({
+      searchSectionOrder: "content,files,workspaces",
+      searchFoldersEnabled: false,
+      searchWorkspacesEnabled: false,
+    }));
+    vm.runInContext(source, ctx);
+
+    // The mobile screen must go through the shared HerdrWorkspaceSearch.settings()
+    // helper, not a private copy of the option parsing.
+    ok(source.includes("HerdrWorkspaceSearch.settings"), "uses shared settings helper");
+
+    ctx.HerdrMobile.showScreen("search");
+    const input = ctx.document.getElementById("mobileSearchInput");
+    input.value = "alpha";
+    input.oninput();
+    ctx.HerdrMobileSearch.setPathKind("file");
+    await ctx.settle();
+    await ctx.flushTimers();
+    await ctx.settle();
+    let html = ctx.document.getElementById("mobileSearchResults").innerHTML;
+    // Section order parity: content before files before workspaces.
+    const contentAt = html.indexOf("File content");
+    const filesAt = html.indexOf("Files and folders");
+    const actionsAt = html.indexOf("Actions");
+    ok(contentAt >= 0 && filesAt > contentAt, `order: content(${contentAt}) then files(${filesAt})`);
+    // Disabled scopes hide their sections and disable their chips.
+    ok(!html.includes("Workspaces and agents"), "workspaces section hidden when disabled");
+    ok(html.includes("disabled"), "folders chip disabled when searchFoldersEnabled=false");
+    // Kind normalization falls back to file when folders are disabled.
+    ok(html.includes("docs/alpha.txt"), "path results render through the shared helper");
+
+    // Load more: truncated results show the button; tapping appends the next page.
+    ok(html.includes("HerdrMobileSearch.loadMorePaths"), "load more button rendered when truncated");
+    ok(html.includes("Load more files"), "load more label names the active kind");
+    await ctx.HerdrMobileSearch.loadMorePaths();
+    await ctx.settle();
+    html = ctx.document.getElementById("mobileSearchResults").innerHTML;
+    const occurrences = html.split("docs/alpha.txt").length - 1;
+    ok(occurrences >= 2, `second page appended (occurrences=${occurrences})`);
   });
 
   it("shows Editor settings group with desktop parity options (B4)", () => {

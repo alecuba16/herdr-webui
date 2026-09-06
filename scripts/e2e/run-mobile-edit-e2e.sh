@@ -56,6 +56,10 @@ REPO="$WORK/repo"
 mkdir -p "$REPO"
 printf 'original content\n' > "$REPO/edit-target.txt"
 # A real git repo so the mobile Git screen can stage/unstage/discard/switch.
+# Enough files so a shrunk page size truncates path search results (B5 e2e).
+for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  printf 'bulk %s\n' "$i" > "$REPO/bulk-file-$i.txt"
+done
 if command -v git >/dev/null 2>&1; then
   git -C "$REPO" init -q 2>/dev/null || true
   git -C "$REPO" -c user.email=e2e@herdr -c user.name="herdr e2e" add edit-target.txt 2>/dev/null || true

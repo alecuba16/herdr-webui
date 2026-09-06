@@ -1,6 +1,8 @@
 # Release notes
 
 ## 0.4.7 Release Notes
+- Mobile search: path results now offer a "Load more" button matching the desktop
+  palette, appending the next backend page in place with scroll preserved.
 - Mobile: the editor now applies the same options as desktop (word wrap, tab
   size, bracket matching, folding, active line, whitespace) with a new Editor
   section in Settings, and LSP diagnostics render under the preview when the
