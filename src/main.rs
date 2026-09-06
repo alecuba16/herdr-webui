@@ -4362,16 +4362,29 @@ mod tests {
             .unwrap_or_else(|poison| poison.into_inner())
     }
 
+    /// Monotonic suffix for fake-socket names. Timestamps alone can collide
+    /// when parallel tests start within the same clock tick on loaded CI
+    /// runners; a collision makes the second create clobber the first
+    /// listener and the first accept() fail (observed as flaky 502s in
+    /// proxy tests that never fail locally).
+    fn fake_socket_suffix() -> u64 {
+        static COUNTER: OnceLock<std::sync::atomic::AtomicU64> = OnceLock::new();
+        COUNTER
+            .get_or_init(|| std::sync::atomic::AtomicU64::new(0))
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+
     #[cfg(unix)]
     fn fake_api_socket(response: serde_json::Value) -> (PathBuf, thread::JoinHandle<()>) {
         use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
 
         let path = std::env::temp_dir().join(format!(
-            "herdr-webui-api-test-{}.sock",
+            "herdr-webui-api-test-{}-{}.sock",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            fake_socket_suffix()
         ));
         let _ = fs::remove_file(&path);
         let name = path.clone().to_fs_name::<GenericFilePath>().unwrap();
@@ -6757,11 +6770,12 @@ mod tests {
         use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
 
         let path = std::env::temp_dir().join(format!(
-            "herdr-webui-test-{}.sock",
+            "herdr-webui-test-{}-{}.sock",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            fake_socket_suffix()
         ));
         let _ = fs::remove_file(&path);
         let name = path.clone().to_fs_name::<GenericFilePath>().unwrap();
@@ -6796,11 +6810,12 @@ mod tests {
         use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
 
         let path = std::env::temp_dir().join(format!(
-            "herdr-webui-multi-test-{}.sock",
+            "herdr-webui-multi-test-{}-{}.sock",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            fake_socket_suffix()
         ));
         let _ = fs::remove_file(&path);
         let name = path.clone().to_fs_name::<GenericFilePath>().unwrap();

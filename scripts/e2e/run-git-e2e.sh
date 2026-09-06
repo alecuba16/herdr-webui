@@ -66,7 +66,26 @@ EOF
 git -C "$REPO" init -q -b main
 git -C "$REPO" add README.md src/app.js
 git -C "$REPO" -c user.name=e2e -c user.email=e2e@local commit -qm init
+# A bare "origin" so fetch/pull/upstream flows exercise a real remote.
+ORIGIN="$WORK/origin.git"
+git init -q --bare -b main "$ORIGIN"
+git -C "$REPO" remote add origin "$ORIGIN"
+git -C "$REPO" push -q -u origin main 2>/dev/null || git -C "$REPO" push -u origin main
+# A second branch so the branch list offers a real switch target.
+git -C "$REPO" checkout -q -b feature-lane
+echo "// lane" >> "$REPO/src/app.js"
+git -C "$REPO" add src/app.js
+git -C "$REPO" -c user.name=lane -c user.email=lane@local commit -qm "lane work"
+git -C "$REPO" push -q -u origin feature-lane 2>/dev/null || git -C "$REPO" push -u origin feature-lane
+git -C "$REPO" checkout -q main
+# A clean clone for the branch-switch checks (the main fixture keeps a dirty
+# tree for the staged/unstaged/untracked assertions; git refuses checkout
+# over conflicting local edits, so switching needs a clean worktree).
+CLEAN="$WORK/git-clean-repo"
+git clone -q "$ORIGIN" "$CLEAN"
 # Dirty state: staged edit, unstaged edit, untracked dir.
+# NOTE: the branch-list switch runs while the tree is still clean (before
+# this block), because git refuses checkout with conflicting local edits.
 echo "// staged" >> "$REPO/src/app.js"
 git -C "$REPO" add src/app.js
 echo "// unstaged" >> "$REPO/src/app.js"
@@ -94,7 +113,7 @@ wait_for() {
 wait_for "server" "https://127.0.0.1:$PORT/" || exit 1
 
 echo "==> running git-ui acceptance checks"
-E2E_ORIGIN="https://127.0.0.1:$PORT" E2E_REPO="$REPO" node "$ROOT/scripts/e2e/git-acceptance.mjs"
+E2E_ORIGIN="https://127.0.0.1:$PORT" E2E_REPO="$REPO" E2E_CLEAN_REPO="$CLEAN" node "$ROOT/scripts/e2e/git-acceptance.mjs"
 status=$?
 
 if [[ $status -eq 0 ]]; then

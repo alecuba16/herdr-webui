@@ -81,7 +81,17 @@ function context(fetchImpl) {
       execCommand: () => true,
       querySelector: () => element(),
       querySelectorAll: () => [],
-      getElementById: () => element(),
+      __panelHtml: "",
+      getElementById(id) {
+        const el = element();
+        if (id === "gitUiPanel") {
+          Object.defineProperty(el, "innerHTML", {
+            get() { return ctx.document.__panelHtml; },
+            set(value) { ctx.document.__panelHtml = String(value); },
+          });
+        }
+        return el;
+      },
       addEventListener() {},
     },
     localStorage: {
@@ -165,6 +175,12 @@ async function openedWithStatus(status) {
 function lastPostCall(calls, path) {
   const posts = calls.filter((call) => call.path === path);
   return posts[posts.length - 1] || null;
+}
+
+// The vm document stub captures the git panel's rendered HTML so tests can
+// assert on toolbar buttons and modal markup.
+function ctxHtml(booted) {
+  return (booted.ctx.document.__panelHtml || "");
 }
 
 test("folder context menu stages, unstages, and discards files under a directory", async () => {
@@ -344,4 +360,131 @@ test("folder mutations are hidden and refused outside the changes view", async (
   await ui.menuAction("stage");
   const staged = booted.calls.slice(before).filter((call) => call.path === "/api/git-ui/stage");
   assert.equal(staged.length, 0, "no stage POST may fire outside changes mode");
+});
+
+test("Update button fetch+ff from upstream and Pull modal default to update mode (GitHub flow)", async () => {
+  const booted = await openedWithStatus(emptyStatus());
+  const { ui, calls } = booted;
+
+  // The worktree toolbar exposes the dedicated Update button.
+  const html = String(ctxHtml(booted));
+  assert.match(html, /onclick="HerdrGitUi.updateFromUpstream\(\)">↓ Update<\/button>/);
+  assert.match(html, /title="Fetch and fast-forward from the upstream \(never creates a merge commit\)"/);
+
+  // Update posts mode=update with no branch (ff-only @{u}).
+  const before = calls.length;
+  await ui.updateFromUpstream();
+  const updateCall = lastPostCall(calls.slice(before), "/api/git-ui/pull") || lastPostCall(calls.slice(before).map(c => c), "/api/git-ui/pull");
+  const updatePosts = calls.slice(before).filter((call) => call.path === "/api/git-ui/pull");
+  assert.equal(updatePosts.length, 1, "exactly one pull POST fired");
+  assert.equal(JSON.parse(updatePosts[0].init.body).mode, "update");
+  assert.equal(JSON.parse(updatePosts[0].init.body).branch, undefined);
+
+  // Pull modal offers Update as the default mode and Rebase fetches main/master.
+  await ui.openPullModal();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const pullHtml = String(ctxHtml(booted));
+  assert.match(pullHtml, /<option value="update" selected>Update \(fetch \+ fast-forward\)<\/option>/);
+
+  await ui.closeGitOpModal();
+  await ui.rebase();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const rebaseHtml = String(ctxHtml(booted));
+  assert.match(rebaseHtml, /id="gitUiRebasePullFirst" type="checkbox" checked/);
+  assert.match(rebaseHtml, /Fetch selected branch \(and main\/master\) before rebasing onto origin/);
+  await ui.closeGitOpModal();
+});
+
+test("header menu dropdown offers fetch, pull and push variants", async () => {
+  const booted = await openedWithStatus(emptyStatus());
+  const { ui, calls } = booted;
+
+  const chipEvent = { stopPropagation() {}, currentTarget: null, clientX: 0, clientY: 0 };
+  await ui.openBranchList(chipEvent); // opens then closes (toggle) — leave closed
+  const toggleEvent = { stopPropagation() {}, currentTarget: { getBoundingClientRect: () => ({ left: 40, bottom: 60 }) }, clientX: 40, clientY: 60 };
+  ui.toggleHeaderMenu(toggleEvent);
+  let html = String(ctxHtml(booted));
+  assert.match(html, /class="git-ui-menu git-ui-header-menu"/);
+  assert.match(html, /HerdrGitUi\.fetchOrigin\(\)/);
+  assert.match(html, /HerdrGitUi\.openFetchFromModal\(\)/);
+  assert.match(html, /HerdrGitUi\.openPullModal\(\)/);
+  assert.match(html, /HerdrGitUi\.pullWithRebase\(\)/);
+  assert.match(html, /HerdrGitUi\.openPushModal\(\)/);
+  assert.match(html, /HerdrGitUi\.openPushToModal\(\)/);
+  assert.match(html, /HerdrGitUi\.openForcePushModal\(\)/);
+
+  // Fetch from the menu posts to the fetch endpoint.
+  const before = calls.length;
+  await ui.fetchOrigin();
+  const fetchPosts = calls.slice(before).filter((call) => call.path === "/api/git-ui/fetch");
+  assert.equal(fetchPosts.length, 1, "fetch POST fired");
+  assert.equal(JSON.parse(fetchPosts[0].init.body).cwd, "/tmp/demo-repo");
+  assert.equal(JSON.parse(fetchPosts[0].init.body).branch, undefined);
+
+  // Pull (Rebase) posts mode=rebase.
+  ui.toggleHeaderMenu(toggleEvent); // reopen
+  const beforeRebase = calls.length;
+  await ui.pullWithRebase();
+  const pullPosts = calls.slice(beforeRebase).filter((call) => call.path === "/api/git-ui/pull");
+  assert.equal(pullPosts.length, 1, "pull POST fired");
+  assert.equal(JSON.parse(pullPosts[0].init.body).mode, "rebase");
+  const menuHtml = String(ctxHtml(booted));
+  assert.ok(!menuHtml.includes("git-ui-header-menu"), "menu closes after action");
+});
+
+test("branch chip shows sync arrows when diverged and opens the branch list", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": { branch: "feature-x", ahead: 2, behind: 3, staged: [], unstaged: [], untracked: [], conflicted: [], upstream: "origin/feature-x" },
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+    "/api/git-ui/branches": { local: [{ name: "main", author: "Ada", date: "2026-01-02T03:04:05Z", subject: "initial" }, { name: "feature-x", author: "Bob", date: "2026-01-03T03:04:05Z", subject: "wip" }], remote: [{ name: "origin/main", author: "Ada", date: "2026-01-02T03:04:05Z", subject: "initial" }] },
+  });
+  const { ui } = booted;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+
+  let html = String(ctxHtml(booted));
+  assert.match(html, /git-ui-branch-chip/);
+  assert.match(html, /<b class="git-ui-chip-count behind"[^>]*>↓3<\/b>/);
+  assert.match(html, /<b class="git-ui-chip-count ahead"[^>]*>↑2<\/b>/);
+
+  const chipEvent = { stopPropagation() {}, currentTarget: null, clientX: 0, clientY: 0 };
+  await ui.openBranchList(chipEvent);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  html = String(ctxHtml(booted));
+  assert.match(html, /git-ui-branch-list"/);
+  assert.match(html, /Local branches/);
+  assert.match(html, /Remote branches/);
+  assert.match(html, /Switching to feature-x|Ada · /);
+  // Rows carry author + relative time and a hover title with details.
+  assert.match(html, /title="[^"]*Ada[^"]*"/);
+
+  // Filter narrows the visible rows: in the vm the DOM stub cannot swap
+  // nodes, so assert the renderer honors the filter by re-rendering.
+  ui.branchListFilter("main");
+  html = String(ctxHtml(booted));
+  assert.ok(html.includes("main"), "matching branch stays visible");
+  const renderedNames = (html.match(/git-ui-branch-row-name">[^<]*/g) || []).join(" ");
+  assert.ok(!renderedNames.includes("feature-x"), "filtered rows hide non-matching branch");
+
+  // Switching to another local branch posts to /switch with the bare name.
+  const before = booted.calls.length;
+  await ui.switchFromBranchList(encodeURIComponent("main"), false);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const switchPosts = booted.calls.slice(before).filter((call) => call.path === "/api/git-ui/switch");
+  assert.equal(switchPosts.length, 1, "switch POST fired");
+  assert.equal(JSON.parse(switchPosts[0].init.body).branch, "main");
+  assert.ok(!String(ctxHtml(booted)).includes("git-ui-branch-list"), "list closes after switch");
+});
+
+test("branch chip shows a synced check when in sync with upstream", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": { branch: "main", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [], upstream: "origin/main" },
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  await booted.ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  const html = String(ctxHtml(booted));
+  assert.match(html, /<b class="git-ui-chip-count synced" title="In sync with origin\/main">✓<\/b>/);
 });

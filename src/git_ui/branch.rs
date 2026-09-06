@@ -27,6 +27,25 @@ pub(super) struct GitUiBranchDeleteRequest {
     pub(super) confirmed: Option<bool>,
 }
 
+/// One git call per branch keeps this simple and correct; branch lists are
+/// small and the endpoint is invoked when the popover opens, not per render.
+fn branch_tip_details(cwd: &str, ref_name: &str) -> Option<String> {
+    git_ui_text(cwd, &["show", "-s", "--format=%an%x00%cI%x00%s", ref_name])
+        .ok()
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty())
+}
+
+/// Splits the NUL-delimited tip details into (author, ISO date, subject).
+/// Missing pieces come back as empty strings.
+fn split_branch_tip_details(details: &str) -> (String, String, String) {
+    let mut parts = details.splitn(3, '\0');
+    let author = parts.next().unwrap_or("").to_string();
+    let date = parts.next().unwrap_or("").to_string();
+    let subject = parts.next().unwrap_or("").to_string();
+    (author, date, subject)
+}
+
 fn git_ui_branches_blocking(cwd: String) -> Result<Response, (StatusCode, String)> {
     let worktree_paths = git_ui_text(&cwd, &["worktree", "list", "--porcelain"])
         .map(|raw| parse_worktree_branch_paths(&raw))
@@ -37,7 +56,22 @@ fn git_ui_branches_blocking(cwd: String) -> Result<Response, (StatusCode, String
     };
     let local_json = local
         .iter()
-        .map(|b| json!({ "name": b.name, "current": b.current, "remote": false, "worktree_path": worktree_paths.get(&b.name).cloned(), "pushed": b.pushed, "upstream": b.upstream.as_deref() }))
+        .map(|b| {
+            let tip = branch_tip_details(&cwd, &format!("refs/heads/{}", b.name));
+            let details = tip.as_deref().unwrap_or("");
+            let (author, date, subject) = split_branch_tip_details(details);
+            json!({
+                "name": b.name,
+                "current": b.current,
+                "remote": false,
+                "worktree_path": worktree_paths.get(&b.name).cloned(),
+                "pushed": b.pushed,
+                "upstream": b.upstream.as_deref(),
+                "author": author,
+                "date": date,
+                "subject": subject,
+            })
+        })
         .collect::<Vec<_>>();
     let remote_text = match git_ui_text(&cwd, &["branch", "-r", "--format=%(refname:short)"]) {
         Ok(text) => text,
@@ -51,7 +85,18 @@ fn git_ui_branches_blocking(cwd: String) -> Result<Response, (StatusCode, String
                 return None;
             }
             let local = local_branch_name_for_remote(name);
-            Some(json!({ "name": name, "current": false, "remote": true, "worktree_path": worktree_paths.get(local).cloned() }))
+            let tip = branch_tip_details(&cwd, &format!("refs/remotes/{name}"));
+            let details = tip.as_deref().unwrap_or("");
+            let (author, date, subject) = split_branch_tip_details(details);
+            Some(json!({
+                "name": name,
+                "current": false,
+                "remote": true,
+                "worktree_path": worktree_paths.get(local).cloned(),
+                "author": author,
+                "date": date,
+                "subject": subject,
+            }))
         })
         .collect::<Vec<_>>();
     let mut branches = local_json.clone();
@@ -84,6 +129,69 @@ pub(super) fn parse_worktree_branch_paths(raw: &str) -> HashMap<String, String> 
         }
     }
     paths
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_branch_tip_details_parses_all_fields() {
+        let (author, date, subject) =
+            split_branch_tip_details("Ada\02026-09-01T10:00:00+02:00\0fix the thing");
+        assert_eq!(author, "Ada");
+        assert_eq!(date, "2026-09-01T10:00:00+02:00");
+        assert_eq!(subject, "fix the thing");
+        let (author, date, subject) = split_branch_tip_details("Ada");
+        assert_eq!(author, "Ada");
+        assert_eq!(date, "");
+        assert_eq!(subject, "");
+    }
+
+    #[test]
+    fn branches_payload_includes_author_and_date() {
+        let root =
+            std::env::temp_dir().join(format!("herdr-webui-branch-details-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["init", "-b", "main"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        for args in [
+            ["config", "user.email", "t@t"],
+            ["config", "user.name", "T"],
+        ] {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(&args)
+                .output()
+                .unwrap();
+            assert!(out.status.success());
+        }
+        std::fs::write(root.join("a.txt"), "base\n").unwrap();
+        for args in [vec!["add", "-A"], vec!["commit", "-m", "hello"]] {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success());
+        }
+        let details = branch_tip_details(root.to_str().unwrap(), "refs/heads/main");
+        assert!(details.is_some());
+        let (author, date, subject) = split_branch_tip_details(&details.unwrap());
+        assert_eq!(author, "T");
+        assert!(date.starts_with("20"), "date: {date}");
+        assert_eq!(subject, "hello");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
 
 pub(super) async fn git_ui_branches(
