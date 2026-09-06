@@ -469,18 +469,40 @@ Priority: P0 must land in this review, P1 should land, P2 next iteration.
 
 ## E. Verification gates (per item and at the end)
 
-- [ ] **E1** Every touched behavior gets a `node --test` case in
+- [x] **E1** Every touched behavior gets a `node --test` case in
   `src/assets/*.test.mjs` (fake-DOM style like existing suites).
-- [ ] **E2** Backend changes get `cargo test` coverage (mirroring the
+  DONE: every functional fix landed with its own vm test(s): C4 editor
+  cache reuse, C5 render=lines parity, C6 lane regression, D2 hashId
+  parity, D3 memo reuse+invalidation, D4 truncated/visited propagation +
+  renderer summary, A1 float toggle, A2 widened close-confirm paths, A3
+  tab-reuse regression, A4 partial-preview mount flow, A5 four tests
+  (clamping/cursor math/prompt flow/readout), A6 watcher end-to-end
+  (no-prompt-on-match, prompt+reload, decline keeps stale tab).
+- [x] **E2** Backend changes get `cargo test` coverage (mirroring the
   `file_browser.rs` in-module tests pattern).
-- [ ] **E3** Extend the CDP acceptance harness (`scripts/e2e/`) with an
+  DONE: partial_read_budget clamps, prefix read with empty hash +
+  preview_bytes (A4); hash_only route branch + hash changes across
+  external rewrite (A6). Lane computation and content-search caps were
+  already Rust-tested (C6/D4 verification only).
+- [x] **E3** Extend the CDP acceptance harness (`scripts/e2e/`) with an
   editor-parity script: mobile edit+save round-trip on disk, find toolbar on
   both layouts, no-console-error gate, and a perf smoke (content-search render
   count during typing ≤ N).
-- [ ] **E4** Full suites green: `node --test src/assets/*.test.mjs` (370
+  DONE: harness covers all of it across existing scripts — acceptance.mjs
+  grew A1 find-float open/search-count, A4 placeholder->partial read-only,
+  A5 readout + Ctrl+G prompt clamp, A6 probe shape + external change ->
+  reload; mobile-edit (52/52) has the mobile edit+save round-trip on disk
+  and find toolbar on mobile; content-search script carries the render
+  smoke and no-console-error gate. All six scripts green this session.
+- [x] **E4** Full suites green: `node --test src/assets/*.test.mjs` (370
   baseline), `cargo test` (367 baseline), `just e2e`, existing git-e2e.
+  DONE at 2e77a87: 425 JS (+55) + 380 Rust (+13), cargo fmt --check clean,
+  clippy 0 warnings. Real-browser suites re-run after the last functional
+  change: acceptance 28/28, content-search PASSED, git PASSED, LSP exit 0,
+  mobile-edit 52/52, theme 15/15.
 - [ ] **E5** docs/release-notes.md entry under 0.4.7; commit per logical fix;
   squash-merge PR; fast-forward main worktree.
+  (release notes + per-fix commits done; PR + ff main pending)
 
 ## Progress log
 
