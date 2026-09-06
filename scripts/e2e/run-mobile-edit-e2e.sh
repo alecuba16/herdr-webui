@@ -55,6 +55,15 @@ echo "==> building herdr-webui (debug)"
 REPO="$WORK/repo"
 mkdir -p "$REPO"
 printf 'original content\n' > "$REPO/edit-target.txt"
+# A real git repo so the mobile Git screen can stage/unstage/discard/switch.
+if command -v git >/dev/null 2>&1; then
+  git -C "$REPO" init -q 2>/dev/null || true
+  git -C "$REPO" -c user.email=e2e@herdr -c user.name="herdr e2e" add edit-target.txt 2>/dev/null || true
+  git -C "$REPO" -c user.email=e2e@herdr -c user.name="herdr e2e" commit -qm "initial" 2>/dev/null || true
+  git -C "$REPO" checkout -q -b feature/e2e 2>/dev/null || true
+  git -C "$REPO" checkout -q main 2>/dev/null || git -C "$REPO" checkout -q master 2>/dev/null || true
+  printf 'unstaged line\n' >> "$REPO/edit-target.txt"
+fi
 
 echo "==> starting isolated server on https://127.0.0.1:$PORT"
 XDG_CONFIG_HOME="$WORK/xdg" "$ROOT/target/debug/herdr-webui" \

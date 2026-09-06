@@ -236,6 +236,67 @@ await new Promise((r) => setTimeout(r, 400));
 const stillThere = await evalx(`(async () => { const r = await fetch('/api/file-browser/file?cwd=${encodeURIComponent(repoPath)}&path=renamed-by-e2e.md'); const j = await r.json(); return j.content !== undefined; })()`);
 check('declined delete keeps the file (native confirm auto-declined? driver accepts)', true, `file still exists: ${stillThere}`);
 
+// ---- B3: git stage / unstage / discard / branch switch on mobile ----
+await evalx(`HerdrMobile.showScreen('git')`);
+await new Promise((r) => setTimeout(r, 600));
+await evalx(`(async () => { await HerdrMobile.loadGitStatus(); })()`);
+await new Promise((r) => setTimeout(r, 600));
+let gitHtml = await evalx('document.getElementById("mobileScreen").innerHTML');
+check('git status shows file with unstaged changes', gitHtml.includes('edit-target.txt'), gitHtml.slice(0, 120));
+
+// Open the file detail: Stage + Discard should be present.
+await evalx(`HerdrMobile.selectGitFile("edit-target.txt", "M")`);
+await new Promise((r) => setTimeout(r, 800));
+gitHtml = await evalx('document.getElementById("mobileScreen").innerHTML');
+check('git file detail shows Stage', gitHtml.includes('gitStageFile'));
+check('git file detail shows Discard', gitHtml.includes('gitDiscardFile'));
+
+// Stage the file through the real API path.
+await evalx(`HerdrMobile.gitStageFile()`);
+await new Promise((r) => setTimeout(r, 1200));
+const stagedStatus = await evalx(`(async () => { const r = await fetch('/api/git-ui/status?cwd=${encodeURIComponent(repoPath)}'); return await r.json(); })()`);
+check('file staged on disk', (stagedStatus.staged || []).includes('edit-target.txt'), JSON.stringify({ staged: stagedStatus.staged, unstaged: stagedStatus.unstaged }));
+gitHtml = await evalx('document.getElementById("mobileScreen").innerHTML');
+check('detail flips to Unstage after staging', gitHtml.includes('gitUnstageFile'));
+
+// Unstage it back.
+await evalx(`HerdrMobile.gitUnstageFile()`);
+await new Promise((r) => setTimeout(r, 1200));
+const unstagedStatus = await evalx(`(async () => { const r = await fetch('/api/git-ui/status?cwd=${encodeURIComponent(repoPath)}'); return await r.json(); })()`);
+check('file unstaged again', (unstagedStatus.unstaged || []).includes('edit-target.txt') && !(unstagedStatus.staged || []).includes('edit-target.txt'), JSON.stringify({ staged: unstagedStatus.staged, unstaged: unstagedStatus.unstaged }));
+
+// Branch list + switch to feature/e2e.
+await evalx(`HerdrMobile.backGitFiles()`);
+await new Promise((r) => setTimeout(r, 400));
+await evalx(`(async () => { await HerdrMobile.toggleGitBranches(); })()`);
+await new Promise((r) => setTimeout(r, 800));
+gitHtml = await evalx('document.getElementById("mobileScreen").innerHTML');
+check('branch list shows both branches', gitHtml.includes('feature/e2e') && /main|master/.test(gitHtml), gitHtml.slice(gitHtml.indexOf('Local') >= 0 ? gitHtml.indexOf('Local') : 0, (gitHtml.indexOf('Local') >= 0 ? gitHtml.indexOf('Local') : 0) + 200));
+await evalx(`(async () => { await HerdrMobile.gitSwitchBranch('feature/e2e'); })()`);
+await new Promise((r) => setTimeout(r, 1500));
+const branchAfter = await evalx(`(async () => { const r = await fetch('/api/git-ui/status?cwd=${encodeURIComponent(repoPath)}'); const j = await r.json(); return j.branch; })()`);
+check('branch switched to feature/e2e', branchAfter === 'feature/e2e', `branch=${branchAfter}`);
+const homeBranch = await evalx(`(async () => { const r = await fetch('/api/git-ui/status?cwd=${encodeURIComponent(repoPath)}'); const j = await r.json(); return j; })()`);
+// main may be named master; switch back via the branch list data instead of guessing
+const branchesData = await evalx(`(async () => { const r = await fetch('/api/git-ui/branches?cwd=${encodeURIComponent(repoPath)}'); const j = await r.json(); return (j.branches || []).map((b) => b.name); })()`);
+const targetBack = branchesData.find((b) => b === 'main' || b === 'master') || branchesData[0];
+if (targetBack && targetBack !== branchAfter) {
+  await evalx(`(async () => { await HerdrMobile.gitSwitchBranch(${JSON.stringify(targetBack)}); })()`);
+  await new Promise((r) => setTimeout(r, 1500));
+}
+
+// Discard the unstaged edit (confirm auto-accepted by the CDP driver).
+await evalx(`(async () => { await HerdrMobile.showScreen('git'); })()`);
+await new Promise((r) => setTimeout(r, 600));
+await evalx(`(async () => { await HerdrMobile.loadGitStatus(); })()`);
+await new Promise((r) => setTimeout(r, 600));
+await evalx(`(async () => { await HerdrMobile.selectGitFile("edit-target.txt", "M"); })()`);
+await new Promise((r) => setTimeout(r, 800));
+await evalx(`(async () => { await HerdrMobile.gitDiscardFile(); })()`);
+await new Promise((r) => setTimeout(r, 1500));
+const afterDiscard = await evalx(`(async () => { const r = await fetch('/api/git-ui/status?cwd=${encodeURIComponent(repoPath)}'); const j = await r.json(); const clean = !(j.unstaged || []).includes('edit-target.txt') && !(j.staged || []).includes('edit-target.txt'); return String(clean); })()`);
+check('discard reverted the unstaged change', afterDiscard === 'true', `clean=${afterDiscard}`);
+
 const failed = results.filter((r) => !r.ok);
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
 if (failed.length) {

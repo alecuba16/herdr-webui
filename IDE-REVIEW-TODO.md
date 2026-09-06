@@ -63,11 +63,22 @@ Priority: P0 must land in this review, P1 should land, P2 next iteration.
   Esc handling and inline errors; delete with confirm + open-preview cleanup;
   "+ File" header action; sheets respect dirty drafts. 6 new unit tests +
   9 new e2e checks (25/25 total).
-- [ ] **B3 (P1, M)** Mobile Git screen exposes only `status` + per-file `diff`
+- [x] **B3 (P1, M)** Mobile Git screen exposes only `status` + per-file `diff`
   (2 of ~25 desktop git APIs). Ship a minimal parity set: stage/unstage file,
   discard file changes (confirm), branch list + checkout. Keep heavy actions
   (rebase, stash, conflict resolution) desktop-only but list them as
   "Desktop only" in the UI so parity expectations are explicit.
+  DONE: git state (`gitBranches/gitBranchesError/gitBusy/gitMutating`, cleared by
+  `resetGitForCwd`) + `gitMutate(label, run)` helper; file detail gains Stage
+  (M/?), Unstage (S), Discard (M/S, confirm-gated, disabled while mutating);
+  Branches toggle renders Local/Remote lists via `renderGitBranchList` with the
+  current branch disabled and confirm-gated `gitSwitchBranch`. Fixed a real bug
+  found by the test: `toggleGitBranches` was fire-and-forget so callers could not
+  await the branches fetch (now async, returns the load promise). Heavy actions
+  listed under a "Desktop only" note in the screen. 6 new unit tests (36 total
+  in mobile_load) + 9 new e2e checks against a real git repo (34/34 total:
+  status renders, Stage/Discard buttons, staged-on-disk via API, Unstage flip,
+  branch list, real checkout to feature/e2e and back, discard reverts the file).
 - [ ] **B4 (P1, M)** `shared/lsp.js` is loaded on mobile but never used, and
   `editorOptions()` (word wrap, tab size, folding, bracket matching) is
   desktop-only. Either wire LSP diagnostics into the mobile editor (with a

@@ -716,6 +716,23 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
   grid-template-columns: auto minmax(0, 1fr);
   padding: 12px;
 }
+.mobile-git-file-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.mobile-git-branch strong,
+.mobile-git-branch span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+.mobile-git-branch.active {
+  opacity: 0.65;
+  cursor: default;
+}
 .mobile-git-file-head div {
   min-width: 0;
 }

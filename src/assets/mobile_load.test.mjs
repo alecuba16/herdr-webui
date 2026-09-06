@@ -193,6 +193,24 @@ function context(pathname = "/", options = {}) {
             untracked: [],
           }),
         };
+      if (String(url).startsWith("/api/git-ui/branches"))
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            local: [{ name: "main", current: true, remote: false }, { name: "feature/mobile", current: false, remote: false }],
+            remote: [{ name: "origin/main", current: false, remote: true }],
+            branches: [
+              { name: "main", current: true, remote: false },
+              { name: "feature/mobile", current: false, remote: false },
+              { name: "origin/main", current: false, remote: true },
+            ],
+          }),
+        };
+      if (String(url).startsWith("/api/git-ui/stage") || String(url).startsWith("/api/git-ui/unstage") || String(url).startsWith("/api/git-ui/discard"))
+        return { ok: true, status: 200, json: async () => ({ ok: true }) };
+      if (String(url).startsWith("/api/git-ui/switch"))
+        return { ok: true, status: 200, json: async () => ({ ok: true }) };
       if (String(url).startsWith("/api/git-ui/diff"))
         return {
           ok: true,
@@ -785,6 +803,61 @@ describe("mobile bundle load", () => {
         String(request.url).includes("/api/git-ui/diff?cwd=%2Ftmp%2Falpha"),
       ),
     );
+  });
+
+  it("mobile git screen stages, unstages, discards, and switches branches (B3)", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    ctx.HerdrMobile.showScreen("git");
+    await ctx.HerdrMobile.loadGitStatus();
+
+    // Unstaged file detail shows Stage + Discard (not Unstage).
+    await ctx.HerdrMobile.selectGitFile("src/mobile.js", "M");
+    let html = ctx.document.getElementById("mobileScreen").innerHTML;
+    ok(html.includes("HerdrMobile.gitStageFile()"), "stage action rendered");
+    ok(html.includes("HerdrMobile.gitDiscardFile()"), "discard action rendered");
+    ok(!html.includes("HerdrMobile.gitUnstageFile()"), "no unstage for unstaged file");
+
+    // Stage posts to the stage API with the file path.
+    await ctx.HerdrMobile.gitStageFile();
+    const stageCall = ctx.requests.find((request) => String(request.url) === "/api/git-ui/stage");
+    ok(stageCall, "stage request sent");
+    ok(JSON.parse(stageCall.opt.body).paths[0] === "src/mobile.js");
+    html = ctx.document.getElementById("mobileScreen").innerHTML;
+    ok(html.includes("HerdrMobile.gitUnstageFile()"), "kind flips to staged after staging");
+
+    // Staged file detail offers Unstage, not Stage.
+    await ctx.HerdrMobile.selectGitFile("src/staged.js", "S");
+    html = ctx.document.getElementById("mobileScreen").innerHTML;
+    ok(html.includes("HerdrMobile.gitUnstageFile()"), "unstage rendered for staged file");
+    ok(!html.includes("HerdrMobile.gitStageFile()"), "no stage for staged file");
+
+    // Discard is confirmed before posting.
+    ctx.confirm = () => false;
+    await ctx.HerdrMobile.gitDiscardFile();
+    ok(!ctx.requests.some((request) => String(request.url) === "/api/git-ui/discard"), "declined discard posts nothing");
+    ctx.confirm = () => true;
+    await ctx.HerdrMobile.gitDiscardFile();
+    const discardCall = ctx.requests.find((request) => String(request.url) === "/api/git-ui/discard");
+    ok(discardCall, "confirmed discard posts");
+    ok(JSON.parse(discardCall.opt.body).confirmed === true);
+
+    // Branches load through the branches API and switching requires confirm.
+    await ctx.HerdrMobile.backGitFiles();
+    ctx.confirm = () => false;
+    await ctx.HerdrMobile.toggleGitBranches();
+    let branchesHtml = ctx.document.getElementById("mobileScreen").innerHTML;
+    ok(branchesHtml.includes("feature/mobile"), "branch list renders local branches");
+    ok(branchesHtml.includes("origin/main"), "branch list renders remote branches");
+    ok(ctx.requests.some((request) => String(request.url).startsWith("/api/git-ui/branches")), "branches fetched");
+    await ctx.HerdrMobile.gitSwitchBranch("feature/mobile");
+    ok(!ctx.requests.some((request) => String(request.url) === "/api/git-ui/switch"), "declined switch posts nothing");
+    ctx.confirm = () => true;
+    await ctx.HerdrMobile.gitSwitchBranch("feature/mobile");
+    const switchCall = ctx.requests.find((request) => String(request.url) === "/api/git-ui/switch");
+    ok(switchCall, "confirmed switch posts");
+    ok(JSON.parse(switchCall.opt.body).branch === "feature/mobile");
   });
 
   it("renders mobile worktree path input and discovers by cwd", async () => {

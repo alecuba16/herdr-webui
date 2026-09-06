@@ -1,6 +1,9 @@
 # Release notes
 
 ## 0.4.7 Release Notes
+- Mobile: the Git screen now covers the core desktop flow — stage, unstage,
+  discard (with confirmation), branch list and checkout. Heavy actions
+  (rebase, stash, conflicts) remain desktop-only and are labeled as such.
 
 ### Mobile file editing (IDE review)
 
