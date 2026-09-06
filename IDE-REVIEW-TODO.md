@@ -50,7 +50,7 @@ Priority: P0 must land in this review, P1 should land, P2 next iteration.
   confirmation is declined and closes it when confirmed"); this review
   extended it to lock the duplicated context-menu close guard as well
   (declined keeps the tab, confirmed closes). Split panes share the same
-  markup callback, so they are covered by the same path. 419 JS pass.
+  markup callback, so they are covered by the same path. 418 JS pass.
 - [ ] **A3 (P1, D)** `loadFile` opens a duplicate fetch when the same path is
   opened from content-search twice (`openFile` mode "append" pushes a second
   file object with same path, `state.files.some(...)` only short-circuits the
