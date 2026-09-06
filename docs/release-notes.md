@@ -1,5 +1,23 @@
 # Release notes
 
+## 0.4.7 Release Notes
+
+### Mobile file editing (IDE review)
+
+- Mobile file previews are now editable. The preview screen offers an Edit
+  action (hidden for binary/truncated files); edit mode shows Cancel and Save
+  with an unsaved-changes marker (`Save ●`) and the file path annotated with
+  "unsaved changes".
+- Saves are hash-checked (`expected_hash`) exactly like desktop, so concurrent
+  edits on the workspace surface a conflict error instead of silently
+  overwriting, and the preview stays in edit mode when a save fails so the
+  draft is never lost.
+- Navigating away with a dirty draft (tree toggle, file select, search jump,
+  back, refresh) now asks for confirmation before discarding, matching the
+  desktop dirty-tab guard.
+- Fixed a latent race where tapping a file in the mobile tree did not await
+  the file fetch, letting renders interleave with the load.
+
 ## 0.4.6 Release Notes
 
 ### Theme system accessibility and UX rework

@@ -7,7 +7,7 @@
     function createContentSearchState() {
       return { active: false, query: "", timer: null, files: [], expanded: {}, snippets: {}, loading: false, error: "", offset: 0, done: true, totalFiles: 0, totalMatches: 0, contextLines: 2, maxMatchesPerFile: 5, autoCollapseFiles: 0, defaultExpanded: true };
     }
-    const local = { path: "", entries: [], selected: "", file: null, error: "", loading: false, filter: "", filterVisible: false, filterTimer: null, filterOffset: 0, filterDone: true, filterKind: "file", scrollTop: 0, cwdOverride: "", gitStatus: null, contentSearch: createContentSearchState() };
+    const local = { path: "", entries: [], selected: "", file: null, error: "", loading: false, filter: "", filterVisible: false, filterTimer: null, filterOffset: 0, filterDone: true, filterKind: "file", scrollTop: 0, cwdOverride: "", gitStatus: null, editing: false, draft: "", dirty: false, saving: false, saveError: "", contentSearch: createContentSearchState() };
 
     function cwd() {
       return local.cwdOverride || deps.currentWorkspaceCwd() || "";
@@ -150,6 +150,11 @@
       const root = cwd();
       local.selected = path;
       local.file = null;
+      local.editing = false;
+      local.draft = "";
+      local.dirty = false;
+      local.saving = false;
+      local.saveError = "";
       local.loading = true;
       deps.render();
       try {
@@ -160,6 +165,62 @@
         local.error = error.message || String(error);
       }
       local.loading = false;
+      deps.render();
+    }
+
+    function canEditFile(file) {
+      return !!(file && !file.binary && !file.truncated);
+    }
+
+    function confirmDiscardDraft() {
+      if (!local.editing || !local.dirty) return true;
+      const ok = deps.confirm(`Discard unsaved changes to ${local.file ? local.file.path : "this file"}?`);
+      if (!ok) return false;
+      local.draft = local.file ? local.file.content || "" : "";
+      local.dirty = false;
+      return true;
+    }
+
+    function startEdit() {
+      const file = local.file;
+      if (!canEditFile(file) || local.editing) return;
+      if (file.searchHighlight) file.searchHighlight = null;
+      local.editing = true;
+      local.draft = file.content || "";
+      local.dirty = false;
+      local.saveError = "";
+      deps.render();
+    }
+
+    function cancelEdit() {
+      if (!local.editing) return;
+      if (!confirmDiscardDraft()) return;
+      local.editing = false;
+      local.saveError = "";
+      deps.render();
+    }
+
+    async function saveFile() {
+      const file = local.file;
+      if (!file || !local.editing || local.saving) return;
+      local.saving = true;
+      local.saveError = "";
+      deps.render();
+      try {
+        const result = await deps.api("/api/file-browser/file", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ cwd: cwd(), path: file.path, content: local.draft, expected_hash: file.hash || "" }),
+        });
+        file.content = local.draft;
+        file.hash = result.hash || file.hash;
+        local.dirty = false;
+        local.editing = false;
+        local.draft = "";
+      } catch (error) {
+        local.saveError = error.message || String(error);
+      }
+      local.saving = false;
       deps.render();
     }
 
@@ -462,11 +523,29 @@
       if (file.binary) body = '<div class="mobile-loading">Binary file preview unavailable</div>';
       else if (file.truncated) body = `<div class="mobile-loading">File too large to preview (${Tree.formatBytes(file.size)})</div>`;
       else body = `<div id="mobileFilePreview"></div>`;
+      const editing = local.editing;
+      const editActions = editing
+        ? `<button class="mobile-btn" onclick="HerdrMobile.filesCancelEdit()">Cancel</button><button class="mobile-btn primary" id="mobileFileSaveButton" ${local.saving ? "disabled" : ""} onclick="HerdrMobile.filesSaveFile()">${local.saving ? "Saving…" : "Save"}${local.dirty ? " ●" : ""}</button>`
+        : canEditFile(file)
+          ? `<button class="mobile-btn" onclick="HerdrMobile.filesStartEdit()">Edit</button>`
+          : "";
       setTimeout(() => {
         const parent = document.getElementById("mobileFilePreview");
-        if (parent && local.file) Editor.create({ parent, path: local.file.path, content: local.file.content || "", readonly: true, hideHeader: true, lineNumbers: lineNumbersEnabled(), markdownPreview: !local.file.searchHighlight, searchHighlight: local.file.searchHighlight || null });
+        if (parent && local.file) {
+          if (local.editing) {
+            Editor.create({ parent, path: local.file.path, content: local.draft || local.file.content || "", readonly: false, hideHeader: true, lineNumbers: lineNumbersEnabled(), markdownPreview: false, onChange(value) { local.draft = value; local.dirty = value !== (local.file.content || ""); syncPreviewDirtyState(); } });
+          } else {
+            Editor.create({ parent, path: local.file.path, content: local.file.content || "", readonly: true, hideHeader: true, lineNumbers: lineNumbersEnabled(), markdownPreview: !local.file.searchHighlight, searchHighlight: local.file.searchHighlight || null });
+          }
+        }
       }, 0);
-      return `<section class="mobile-section mobile-files"><h2>Files</h2><div class="mobile-actions"><button class="mobile-btn" onclick="HerdrMobile.filesBackToTree()">Back</button><button class="mobile-btn" onclick="HerdrMobile.filesRefreshFile()">Refresh</button></div><p class="mobile-help">${deps.escapeHtml(file.path || "")}</p>${local.error ? `<div class="mobile-error">${deps.escapeHtml(local.error)}</div>` : ""}${body}</section>`;
+      return `<section class="mobile-section mobile-files"><h2>Files</h2><div class="mobile-actions"><button class="mobile-btn" onclick="HerdrMobile.filesBackToTree()">Back</button><button class="mobile-btn" onclick="HerdrMobile.filesRefreshFile()">Refresh</button>${editActions}</div><p class="mobile-help">${deps.escapeHtml(file.path || "")}${editing && local.dirty ? " — unsaved changes" : ""}</p>${local.error ? `<div class="mobile-error">${deps.escapeHtml(local.error)}</div>` : ""}${local.saveError ? `<div class="mobile-error">${deps.escapeHtml(local.saveError)}</div>` : ""}${body}</section>`;
+    }
+
+    function syncPreviewDirtyState() {
+      const saveButton = document.getElementById("mobileFileSaveButton");
+      if (!saveButton) return;
+      saveButton.textContent = local.saving ? "Saving…" : `Save${local.dirty ? " ●" : ""}`;
     }
 
     return {
@@ -478,14 +557,26 @@
         local.selected = "";
         local.file = null;
         local.error = "";
-          local.filter = "";
-          local.filterVisible = false;
-          local.filterKind = "file";
-          local.cwdOverride = "";
-          local.contentSearch = createContentSearchState();
-        },
-      toggle(encodedPath) { load(decodeURIComponent(encodedPath)); },
-      select(encodedPath) { openFile(decodeURIComponent(encodedPath)); },
+        local.filter = "";
+        local.filterVisible = false;
+        local.filterKind = "file";
+        local.cwdOverride = "";
+        local.editing = false;
+        local.draft = "";
+        local.dirty = false;
+        local.saving = false;
+        local.saveError = "";
+        local.contentSearch = createContentSearchState();
+      },
+      toggle(encodedPath) {
+        if (!confirmDiscardDraft()) return;
+        load(decodeURIComponent(encodedPath));
+      },
+      async select(encodedPath) {
+        if (local.file && local.file.path === decodeURIComponent(encodedPath)) return;
+        if (!confirmDiscardDraft()) return;
+        await openFile(decodeURIComponent(encodedPath));
+      },
         setFilterKind(kind) {
           local.filterKind = normalizeSearchScope(kind);
           local.filterVisible = true;
@@ -584,6 +675,8 @@
         },
       async openAt(path, opts) {
         const options = opts || {};
+        if (options.kind !== "dir" && local.file && local.file.path === path) return;
+        if (!confirmDiscardDraft()) return;
         const preserveContext = options.preserveContext === true && options.kind !== "dir";
         if (!preserveContext) {
           local.filter = "";
@@ -602,8 +695,23 @@
         }
         if (path) await openFile(path, options.highlight || null);
       },
-      backToTree() { local.file = null; deps.render(); },
-      refreshFile() { if (local.file) openFile(local.file.path); },
+      backToTree() {
+        if (!confirmDiscardDraft()) return;
+        local.file = null;
+        local.editing = false;
+        local.draft = "";
+        local.dirty = false;
+        deps.render();
+      },
+      refreshFile() {
+        if (!local.file) return;
+        if (!confirmDiscardDraft()) return;
+        local.editing = false;
+        openFile(local.file.path);
+      },
+      startEdit,
+      cancelEdit,
+      saveFile,
     };
   }
 

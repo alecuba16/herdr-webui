@@ -1,0 +1,144 @@
+==> workdir: /Users/alejandro.blanco/.jcode/scratch/herdr-theme-e2e.tBf5dP
+==> building herdr-webui (debug)
+==> starting isolated server on https://127.0.0.1:8897
+herdr-webui listening on https://127.0.0.1:8897
+==> launching headless Chrome (CDP port 9222)
+
+DevTools listening on ws://127.0.0.1:9222/devtools/browser/ee4ead40-141e-4d3e-a39b-687fd2890f43
+Trying to load the allocator multiple times. This is *not* supported.
+[26863:27482287:0906/170026.569370:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[26863:27482354:0906/170026.570540:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[26863:27482287:0906/170026.570944:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[26863:27482354:0906/170026.571026:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[26863:27482287:0906/170026.571253:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[26863:27482354:0906/170026.571503:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[26863:27482287:0906/170026.571669:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[26863:27482354:0906/170026.571758:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[26863:27482287:0906/170026.571923:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[26863:27482354:0906/170026.572035:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+==> running theme acceptance checks
+[26863:27482287:0906/170026.714381:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[26863:27482354:0906/170026.721835:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[26864:27482325:0906/170026.948109:ERROR:net/socket/ssl_client_socket_impl.cc:962] handshake failed; returned -1, SSL error code 1, net_error -202
+[26864:27482325:0906/170026.950924:ERROR:net/socket/ssl_client_socket_impl.cc:962] handshake failed; returned -1, SSL error code 1, net_error -202
+[26864:27482325:0906/170026.951107:ERROR:net/socket/ssl_client_socket_impl.cc:962] handshake failed; returned -1, SSL error code 1, net_error -202
+[26864:27482325:0906/170027.042224:ERROR:net/socket/ssl_client_socket_impl.cc:962] handshake failed; returned -1, SSL error code 1, net_error -202
+[26864:27482325:0906/170027.044241:ERROR:net/socket/ssl_client_socket_impl.cc:962] handshake failed; returned -1, SSL error code 1, net_error -202
+[26864:27482325:0906/170027.044853:ERROR:net/socket/ssl_client_socket_impl.cc:962] handshake failed; returned -1, SSL error code 1, net_error -202
+[26864:27482325:0906/170027.045076:ERROR:net/socket/ssl_client_socket_impl.cc:962] handshake failed; returned -1, SSL error code 1, net_error -202
+[26864:27482325:0906/170027.045401:ERROR:net/socket/ssl_client_socket_impl.cc:962] handshake failed; returned -1, SSL error code 1, net_error -202
+[26864:27482325:0906/170027.045516:ERROR:net/socket/ssl_client_socket_impl.cc:962] handshake failed; returned -1, SSL error code 1, net_error -202
+[26864:27482325:0906/170027.046264:ERROR:net/socket/ssl_client_socket_impl.cc:962] handshake failed; returned -1, SSL error code 1, net_error -202
+[26864:27482325:0906/170027.046842:ERROR:net/socket/ssl_client_socket_impl.cc:962] handshake failed; returned -1, SSL error code 1, net_error -202
+[26864:27482325:0906/170027.046967:ERROR:net/socket/ssl_client_socket_impl.cc:962] handshake failed; returned -1, SSL error code 1, net_error -202
+[26864:27482325:0906/170027.047024:ERROR:net/socket/ssl_client_socket_impl.cc:962] handshake failed; returned -1, SSL error code 1, net_error -202
+[26864:27482325:0906/170027.185289:ERROR:net/socket/ssl_client_socket_impl.cc:962] handshake failed; returned -1, SSL error code 1, net_error -202
+[26863:27482354:0906/170027.270436:ERROR:components/viz/service/display/display.cc:271] Frame latency is negative: -0.286 ms
+[26863:27482287:0906/170029.153923:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[26863:27482354:0906/170029.154073:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[26863:27482287:0906/170029.269323:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[26863:27482354:0906/170029.269411:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[26863:27482287:0906/170029.326870:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[26863:27482354:0906/170029.326942:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[26863:27482287:0906/170029.403962:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[26863:27482354:0906/170029.404032:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+PASS  app loads (title present) :: title="default • panel"
+[26863:27482287:0906/170029.489903:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[26863:27482354:0906/170029.489998:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[26863:27482287:0906/170029.622505:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[26863:27482354:0906/170029.622612:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[26863:27482287:0906/170029.700403:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[26863:27482354:0906/170029.700523:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[26843:27482272:0906/170029.706143:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: DEPRECATED_ENDPOINT
+[26864:27482325:0906/170031.494180:ERROR:net/socket/ssl_client_socket_impl.cc:962] handshake failed; returned -1, SSL error code 1, net_error -202
+[26863:27482287:0906/170031.808256:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[26863:27482354:0906/170031.808409:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+PASS  auto follows system (dark emulated) :: attr=dark light=false
+PASS  toggle aria/labels present :: label="Theme: auto, currently dark. Activate to switch."
+PASS  dark accent var applied :: accent=#89b4fa
+[26843:27482116:0906/170034.000272:ERROR:components/policy/core/browser/policy_conversions_client.cc:311] CloudUserPolicyMerge has an error of type: This policy is ignored because the user is unaffiliated. For this policy to be applied, the Chrome browser and profile must be managed through the Admin console by the same organisation.
+[26843:27482116:0906/170034.005523:ERROR:components/policy/core/browser/policy_conversions_client.cc:311] DeveloperToolsDisabled has an error of type: Ignored because it was overridden by DeveloperToolsAvailability.
+PASS  toggle: auto -> dark :: mode=dark
+[26843:27482266:0906/170034.303528:ERROR:components/policy/core/common/cloud/component_cloud_policy_store.cc:221] Discarding policy for component app:com.cloudflare.cloudflareoneagent due to data validation failure: The JSON blob dictionary value is not a dictionary.
+PASS  toggle: dark -> light :: mode=light attr=light
+PASS  light palette active :: fg=rgb(76, 79, 105) bg=rgb(239, 241, 245)
+PASS  light body text >= 4.5:1 :: #4c4f69 on #eff1f5 = 7.06:1
+PASS  toggle: light -> auto :: mode=auto
+PASS  auto re-resolves on system change (dark->light) :: attr=light
+PASS  toggle updates on system change :: eff=light pressed=true
+PASS  auto re-resolves back to dark :: attr=dark
+PASS  settings select applies light :: attr=light stored=light
+[26864:27482325:0906/170036.376884:ERROR:net/socket/ssl_client_socket_impl.cc:962] handshake failed; returned -1, SSL error code 1, net_error -202
+[26864:27482325:0906/170036.785130:ERROR:net/socket/ssl_client_socket_impl.cc:962] handshake failed; returned -1, SSL error code 1, net_error -202
+PASS  theme persists across reload :: attr=light stored=light
+PASS  git pills use theme colors :: pill=not rendered accent=#1957d2
+
+15/15 theme checks passed
+[26863:27482287:0906/170040.854759:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[26863:27482354:0906/170040.855301:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[26843:27482272:0906/170041.326019:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: DEPRECATED_ENDPOINT
+[26843:27482272:0906/170041.373089:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: PHONE_REGISTRATION_ERROR
+[26843:27482272:0906/170041.527898:ERROR:google_apis/gcm/engine/mcs_client.cc:702]   Error code: 401  Error message: Authentication Failed: wrong_secret
+[26843:27482272:0906/170041.527923:ERROR:google_apis/gcm/engine/mcs_client.cc:704] Failed to log in to GCM, resetting connection.
+Created TensorFlow Lite XNNPACK delegate for CPU.
+[28260:27492100:0906/170046.029443:VERBOSE1:chrome/updater/event_history.cc:175] Failed to set permissions on /Library/Application Support/Google/GoogleUpdater/updater_history.jsonl: Operation not permitted (1)
+[28260:27492100:0906/170046.032461:VERBOSE1:chrome/updater/updater.cc:374] Version: 152.0.7933.0, opt, ARM_64, command line: /Library/Application Support/Google/GoogleUpdater/152.0.7933.0/GoogleUpdater.app/Contents/MacOS/GoogleUpdater --wake-all --system --enable-logging --vmodule=*/components/update_client/*=2,*/chrome/enterprise_companion/*=2,*/chrome/updater/*=2
+[28260:27492100:0906/170046.032523:VERBOSE1:chrome/updater/updater.cc:377] OS version: 26.6.2, arch: arm64, System uptime (seconds): 347773, parent pid: 26843
+[28260:27492100:0906/170046.035896:VERBOSE1:chrome/updater/updater.cc:382] Available disk space in install directory (/Library/Application Support/Google/GoogleUpdater): 229239382016B (213.496GiB) / 494384795648B (460.432GiB)
+[28260:27492100:0906/170046.035967:VERBOSE1:chrome/updater/updater.cc:386] Available disk space in temporary directory (/var/folders/_k/vz2dmvhj77nc31yhyghpjqs00000gp/T/): 229239382016B (213.496GiB) / 494384795648B (460.432GiB)
+[28260:27492100:0906/170046.036055:VERBOSE1:chrome/updater/event_history.cc:238] Failed to write history event: logging not initialized
+[28262:27492104:0906/170046.046827:VERBOSE1:chrome/updater/event_history.cc:175] Failed to set permissions on /Library/Application Support/Google/GoogleUpdater/updater_history.jsonl: Operation not permitted (1)
+[28262:27492104:0906/170046.049714:VERBOSE1:chrome/updater/updater.cc:374] Version: 152.0.7933.0, opt, ARM_64, command line: /Library/Application Support/Google/GoogleUpdater/152.0.7933.0/GoogleUpdater.app/Contents/MacOS/GoogleUpdater --crash-handler --system --database=/Library/Application Support/Google/GoogleUpdater/152.0.7933.0/Crashpad --url=https://clients2.google.com/cr/report --annotation=prod=Update4 --annotation=ver=152.0.7933.0 --handshake-fd=4 --enable-logging --vmodule=*/components/update_client/*=2,*/chrome/enterprise_companion/*=2,*/chrome/updater/*=2
+[28262:27492104:0906/170046.049771:VERBOSE1:chrome/updater/updater.cc:377] OS version: 26.6.2, arch: arm64, System uptime (seconds): 347773, parent pid: 1
+[28262:27492104:0906/170046.052446:VERBOSE1:chrome/updater/updater.cc:382] Available disk space in install directory (/Library/Application Support/Google/GoogleUpdater): 229239115776B (213.496GiB) / 494384795648B (460.432GiB)
+[28262:27492104:0906/170046.052498:VERBOSE1:chrome/updater/updater.cc:386] Available disk space in temporary directory (/var/folders/_k/vz2dmvhj77nc31yhyghpjqs00000gp/T/): 229239115776B (213.496GiB) / 494384795648B (460.432GiB)
+[28262:27492104:0906/170046.052568:VERBOSE1:chrome/updater/event_history.cc:238] Failed to write history event: logging not initialized
+[28262:27492104:0906/170046.052640:ERROR:third_party/crashpad/crashpad/client/crash_report_database_mac.mm:109] mkdir /Library/Application Support/Google/GoogleUpdater/152.0.7933.0/Crashpad/new: Permission denied (13)
+[28262:27492104:0906/170046.052691:VERBOSE1:chrome/updater/event_history.cc:238] Failed to write history event: logging not initialized
+[28262:27492104:0906/170046.052718:VERBOSE1:chrome/updater/updater.cc:419] UpdaterMain (--crash-handler) returned 1.
+[28260:27492100:0906/170046.053501:ERROR:third_party/crashpad/crashpad/util/file/file_io.cc:103] ReadExactly: expected 8, observed 0
+[28260:27492100:0906/170046.053660:VERBOSE1:chrome/updater/crash_reporter.cc:120] Failed to start handler.
+[28260:27492100:0906/170046.053801:ERROR:third_party/crashpad/crashpad/client/crash_report_database_mac.mm:109] mkdir /Library/Application Support/Google/GoogleUpdater/152.0.7933.0/Crashpad/new: Permission denied (13)
+[28260:27492100:0906/170046.053846:ERROR:chrome/updater/crash_client.cc:76] Failed to initialize Crashpad database.
+[28260:27492100:0906/170046.053897:VERBOSE1:chrome/updater/updater.cc:99] Crash reporting is not available.
+[28260:27492110:0906/170046.054335:VERBOSE1:chrome/updater/app/app_wakeall.cc:58] Launching `/Library/Application Support/Google/GoogleUpdater/152.0.7933.0/GoogleUpdater.app/Contents/MacOS/GoogleUpdater --wake --system`
+[28263:27492114:0906/170046.063204:VERBOSE1:chrome/updater/event_history.cc:175] Failed to set permissions on /Library/Application Support/Google/GoogleUpdater/updater_history.jsonl: Operation not permitted (1)
+[28263:27492114:0906/170046.065980:VERBOSE1:chrome/updater/updater.cc:374] Version: 152.0.7933.0, opt, ARM_64, command line: /Library/Application Support/Google/GoogleUpdater/152.0.7933.0/GoogleUpdater.app/Contents/MacOS/GoogleUpdater --wake --system --enable-logging --vmodule=*/components/update_client/*=2,*/chrome/enterprise_companion/*=2,*/chrome/updater/*=2
+[28263:27492114:0906/170046.066043:VERBOSE1:chrome/updater/updater.cc:377] OS version: 26.6.2, arch: arm64, System uptime (seconds): 347773, parent pid: 28260
+[28263:27492114:0906/170046.068792:VERBOSE1:chrome/updater/updater.cc:382] Available disk space in install directory (/Library/Application Support/Google/GoogleUpdater): 229238915072B (213.495GiB) / 494384795648B (460.432GiB)
+[28263:27492114:0906/170046.068830:VERBOSE1:chrome/updater/updater.cc:386] Available disk space in temporary directory (/var/folders/_k/vz2dmvhj77nc31yhyghpjqs00000gp/T/): 229238915072B (213.495GiB) / 494384795648B (460.432GiB)
+[28263:27492114:0906/170046.068905:VERBOSE1:chrome/updater/event_history.cc:238] Failed to write history event: logging not initialized
+[28265:27492118:0906/170046.077931:VERBOSE1:chrome/updater/event_history.cc:175] Failed to set permissions on /Library/Application Support/Google/GoogleUpdater/updater_history.jsonl: Operation not permitted (1)
+[28265:27492118:0906/170046.080366:VERBOSE1:chrome/updater/updater.cc:374] Version: 152.0.7933.0, opt, ARM_64, command line: /Library/Application Support/Google/GoogleUpdater/152.0.7933.0/GoogleUpdater.app/Contents/MacOS/GoogleUpdater --crash-handler --system --database=/Library/Application Support/Google/GoogleUpdater/152.0.7933.0/Crashpad --url=https://clients2.google.com/cr/report --annotation=prod=Update4 --annotation=ver=152.0.7933.0 --handshake-fd=4 --enable-logging --vmodule=*/components/update_client/*=2,*/chrome/enterprise_companion/*=2,*/chrome/updater/*=2
+[28265:27492118:0906/170046.080415:VERBOSE1:chrome/updater/updater.cc:377] OS version: 26.6.2, arch: arm64, System uptime (seconds): 347773, parent pid: 1
+[28265:27492118:0906/170046.083020:VERBOSE1:chrome/updater/updater.cc:382] Available disk space in install directory (/Library/Application Support/Google/GoogleUpdater): 229238652928B (213.495GiB) / 494384795648B (460.432GiB)
+[28265:27492118:0906/170046.083074:VERBOSE1:chrome/updater/updater.cc:386] Available disk space in temporary directory (/var/folders/_k/vz2dmvhj77nc31yhyghpjqs00000gp/T/): 229238652928B (213.495GiB) / 494384795648B (460.432GiB)
+[28265:27492118:0906/170046.083158:VERBOSE1:chrome/updater/event_history.cc:238] Failed to write history event: logging not initialized
+[28265:27492118:0906/170046.083232:ERROR:third_party/crashpad/crashpad/client/crash_report_database_mac.mm:109] mkdir /Library/Application Support/Google/GoogleUpdater/152.0.7933.0/Crashpad/new: Permission denied (13)
+[28265:27492118:0906/170046.083292:VERBOSE1:chrome/updater/event_history.cc:238] Failed to write history event: logging not initialized
+[28265:27492118:0906/170046.083323:VERBOSE1:chrome/updater/updater.cc:419] UpdaterMain (--crash-handler) returned 1.
+[28263:27492114:0906/170046.084046:ERROR:third_party/crashpad/crashpad/util/file/file_io.cc:103] ReadExactly: expected 8, observed 0
+[28263:27492114:0906/170046.084211:VERBOSE1:chrome/updater/crash_reporter.cc:120] Failed to start handler.
+[28263:27492114:0906/170046.084308:ERROR:third_party/crashpad/crashpad/client/crash_report_database_mac.mm:109] mkdir /Library/Application Support/Google/GoogleUpdater/152.0.7933.0/Crashpad/new: Permission denied (13)
+[28263:27492114:0906/170046.084362:ERROR:chrome/updater/crash_client.cc:76] Failed to initialize Crashpad database.
+[28263:27492114:0906/170046.084394:VERBOSE1:chrome/updater/updater.cc:99] Crash reporting is not available.
+[28263:27492114:0906/170046.084627:VERBOSE1:chrome/updater/ipc/update_service_internal_proxy_mojo.cc:61] Run
+[26843:27482272:0906/170056.129582:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: QUOTA_EXCEEDED
+[26843:27482272:0906/170101.715397:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: DEPRECATED_ENDPOINT
+[28263:27492114:0906/170106.049868:VERBOSE1:chrome/updater/app/app.cc:52] Shutdown: 0
+[28263:27492114:0906/170106.050365:VERBOSE1:chrome/updater/event_history.cc:238] Failed to write history event: logging not initialized
+[28263:27492114:0906/170106.050410:VERBOSE1:chrome/updater/updater.cc:419] UpdaterMain (--wake) returned 0.
+[28260:27492110:0906/170106.248879:VERBOSE1:chrome/updater/app/app_wakeall.cc:68] `/Library/Application Support/Google/GoogleUpdater/152.0.7933.0/GoogleUpdater.app/Contents/MacOS/GoogleUpdater --wake --system` exited 0
+[28260:27492100:0906/170106.249039:VERBOSE1:chrome/updater/app/app.cc:52] Shutdown: 0
+[28260:27492100:0906/170106.249487:VERBOSE1:chrome/updater/event_history.cc:238] Failed to write history event: logging not initialized
+[28260:27492100:0906/170106.249552:VERBOSE1:chrome/updater/updater.cc:419] UpdaterMain (--wake-all) returned 0.
+[26843:27482272:0906/170142.819916:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: DEPRECATED_ENDPOINT
+[26843:27482272:0906/170307.869772:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: DEPRECATED_ENDPOINT
+Trying to load the allocator multiple times. This is *not* supported.
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1788707006.494003 27538877 environment.cc:523] Selected adapter: Apple M4 Pro, arch=metal-3, vendor=apple, backend=Metal, adapterType=Integrated GPU
+I0000 00:00:1788707006.497602 27538908 environment.cc:523] Selected adapter: Apple M4 Pro, arch=metal-3, vendor=apple, backend=Metal, adapterType=Integrated GPU
+[26843:27482272:0906/170556.412897:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: DEPRECATED_ENDPOINT
+[26863:27482287:0906/170612.977088:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[26863:27482354:0906/170612.977246:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+scripts/e2e/run-theme-e2e.sh: line 92: 26843 Killed: 9               "$CHROME_BIN" --headless=new --window-size=1600,1000 --remote-debugging-port="$CDP" --remote-allow-origins='*' --user-data-dir="$WORK/chrome-profile" about:blank

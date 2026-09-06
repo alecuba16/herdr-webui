@@ -42,11 +42,17 @@ Priority: P0 must land in this review, P1 should land, P2 next iteration.
 
 ## B. Mobile ↔ desktop parity
 
-- [ ] **B1 (P0, M)** Mobile file preview is strictly read-only: no unlock/edit
+- [x] **B1 (P0, M)** Mobile file preview is strictly read-only: no unlock/edit
   toggle, no save, no dirty state, no Cmd+S equivalent ("Save" button). The
   backend write API (`POST /api/file-browser/file`) is already used by desktop
   and snippet editing on mobile proves the plumbing exists. Add edit mode with
   a visible Save action + unsaved-changes guard on screen switch.
+  DONE: `editing/draft/dirty/saving/saveError` state + `startEdit/cancelEdit/saveFile`
+  exported as `filesStartEdit/filesCancelEdit/filesSaveFile`; Edit/Cancel/Save(●)
+  buttons with hash-checked save; discard guards on toggle/select/openAt/backToTree/
+  refreshFile; `deps.confirm` wired in mobile app.js. 6 tests in
+  `src/assets/mobile_file_browser.test.mjs`. Also fixed: `select()` did not await
+  `openFile()` (fire-and-forget race).
 - [ ] **B2 (P0, M)** No rename/delete/new-file actions in mobile file browser.
   Backend endpoints exist (`/api/file-browser/rename`, `/delete`). Add a
   long-press (or ⋯ row button) action sheet: rename, delete (with confirm),

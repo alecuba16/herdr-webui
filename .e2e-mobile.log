@@ -1,0 +1,73 @@
+==> workdir: /Users/alejandro.blanco/.jcode/scratch/herdr-mobile-edit-e2e.ia2bHk
+==> building herdr-webui (debug)
+==> starting isolated server on https://127.0.0.1:8898
+herdr-webui listening on https://127.0.0.1:8898
+==> launching headless Chrome (CDP port 9223)
+
+DevTools listening on ws://127.0.0.1:9223/devtools/browser/23d1f545-1503-4cf3-922b-3d96908e661f
+Trying to load the allocator multiple times. This is *not* supported.
+[49478:27636868:0906/170944.303154:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[49478:27636932:0906/170944.304217:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[49478:27636868:0906/170944.304422:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[49478:27636932:0906/170944.304487:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[49478:27636868:0906/170944.304628:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[49478:27636932:0906/170944.304689:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[49478:27636868:0906/170944.304819:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[49478:27636932:0906/170944.304886:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[49478:27636868:0906/170944.305064:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[49478:27636932:0906/170944.305135:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[49478:27636868:0906/170944.346734:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[49478:27636932:0906/170944.350704:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+==> running mobile edit acceptance checks
+[49479:27636918:0906/170944.461490:ERROR:net/socket/ssl_client_socket_impl.cc:962] handshake failed; returned -1, SSL error code 1, net_error -202
+[49479:27636918:0906/170944.463256:ERROR:net/socket/ssl_client_socket_impl.cc:962] handshake failed; returned -1, SSL error code 1, net_error -202
+[49479:27636918:0906/170944.463312:ERROR:net/socket/ssl_client_socket_impl.cc:962] handshake failed; returned -1, SSL error code 1, net_error -202
+[49479:27636918:0906/170944.534514:ERROR:net/socket/ssl_client_socket_impl.cc:962] handshake failed; returned -1, SSL error code 1, net_error -202
+[49479:27636918:0906/170944.550957:ERROR:net/socket/ssl_client_socket_impl.cc:962] handshake failed; returned -1, SSL error code 1, net_error -202
+[49479:27636918:0906/170944.701426:ERROR:net/socket/ssl_client_socket_impl.cc:962] handshake failed; returned -1, SSL error code 1, net_error -202
+[49478:27636868:0906/170946.497833:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[49478:27636932:0906/170946.498017:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[49478:27636868:0906/170946.578801:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[49478:27636932:0906/170946.578885:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[49478:27636868:0906/170946.619312:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[49478:27636932:0906/170946.619386:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[49478:27636868:0906/170946.653349:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[49478:27636932:0906/170946.653434:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[49478:27636868:0906/170946.693647:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[49478:27636932:0906/170946.693749:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[49478:27636868:0906/170946.735911:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[49478:27636932:0906/170946.735987:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[49478:27636868:0906/170946.772409:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[49478:27636932:0906/170946.772503:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+PASS  app loads (title present) :: title="herdr web"
+[49478:27636868:0906/170947.004681:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[49478:27636932:0906/170947.005039:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[49467:27636847:0906/170947.012740:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: DEPRECATED_ENDPOINT
+PASS  mobile shell present
+[49479:27636918:0906/170947.975154:ERROR:net/socket/ssl_client_socket_impl.cc:962] handshake failed; returned -1, SSL error code 1, net_error -202
+PASS  workspace created :: {"id":"web:workspace:create","result":{"root_pane":{"agent":null,"agent_session":null,"agent_status":"unknown","custom_status":null,"cwd":"/Users/alejandro.blanco/.jcode/scratch/herdr-mobile-edit-e2e.
+[49479:27636918:0906/170948.111553:ERROR:net/socket/ssl_client_socket_impl.cc:962] handshake failed; returned -1, SSL error code 1, net_error -202
+[49467:27636780:0906/170949.829366:ERROR:components/policy/core/browser/policy_conversions_client.cc:311] CloudUserPolicyMerge has an error of type: This policy is ignored because the user is unaffiliated. For this policy to be applied, the Chrome browser and profile must be managed through the Admin console by the same organisation.
+[49467:27636780:0906/170949.829401:ERROR:components/policy/core/browser/policy_conversions_client.cc:311] DeveloperToolsDisabled has an error of type: Ignored because it was overridden by DeveloperToolsAvailability.
+[49467:27636840:0906/170950.024938:ERROR:components/policy/core/common/cloud/component_cloud_policy_store.cc:221] Discarding policy for component app:com.cloudflare.cloudflareoneagent due to data validation failure: The JSON blob dictionary value is not a dictionary.
+[49467:27636847:0906/170950.159400:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: DEPRECATED_ENDPOINT
+[49467:27636847:0906/170950.276457:ERROR:google_apis/gcm/engine/mcs_client.cc:702]   Error code: 401  Error message: Authentication Failed: wrong_secret
+[49467:27636847:0906/170950.276491:ERROR:google_apis/gcm/engine/mcs_client.cc:704] Failed to log in to GCM, resetting connection.
+PASS  Files card found in More screen
+PASS  files screen opens
+PASS  preview shows file :: <section class="mobile-section mobile-files"><h2>Files</h2><div class="mobile-ac
+PASS  Edit button present
+PASS  edit mode shows Save
+PASS  edit mode shows Cancel
+PASS  editor focused :: {"x":56,"y":254.1875}
+PASS  dirty marker shown :: save button text="Save ●"
+[49478:27636868:0906/170954.943518:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[49478:27636932:0906/170954.943593:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+PASS  save persisted to disk :: before="original content\n" after="original content\n edited from mobile e2e"
+PASS  back to read-only after save
+PASS  external change landed :: {"hash":"777d52f823646fef531a25eea8d5531406c9a071fd9817a4993709c5d19ae0e1","ok":true,"path":"edit-target.txt"}
+Created TensorFlow Lite XNNPACK delegate for CPU.
+PASS  conflict surfaced, draft kept :: nges</p><div class="mobile-error">file changed on disk; reload before saving</div><div id="mobileFilePreview"><div class="herdr-editor cm"><div class="herdr-editor-find" data-reado
+PASS  declined discard keeps edit mode
+
+16/16 checks passed

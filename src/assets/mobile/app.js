@@ -1318,6 +1318,7 @@
   });
   mobileFileBrowser = globalThis.HerdrMobileFileBrowser.create({
     api,
+    confirm: (...args) => confirm(...args),
     currentWorkspaceCwd,
     escapeHtml,
     render,
@@ -1418,6 +1419,9 @@
     filesRefresh: mobileFileBrowser.refresh,
     filesBackToTree: mobileFileBrowser.backToTree,
     filesRefreshFile: mobileFileBrowser.refreshFile,
+    filesStartEdit: mobileFileBrowser.startEdit,
+    filesCancelEdit: mobileFileBrowser.cancelEdit,
+    filesSaveFile: mobileFileBrowser.saveFile,
     filesFilter: mobileFileBrowser.filter,
     filesClearFilter: mobileFileBrowser.clearFilter,
     filesSearchKeydown: mobileFileBrowser.searchKeydown,
