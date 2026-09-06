@@ -194,6 +194,37 @@ describe("Git log rendering", () => {
     assert.match(html, /Copy id/);
     assert.match(html, new RegExp(`aria-label="Copy full commit id ${hash}"`));
   });
+
+  it("uses the backend-provided lane instead of recomputing it from the graph (C6)", () => {
+    const context = {
+      window: {},
+      document: { querySelectorAll() { return []; } },
+    };
+    context.window.window = context.window;
+    vm.runInNewContext(readFileSync(new URL("./desktop/git_ui/log.js", import.meta.url), "utf8"), context);
+    const laneColor = context.window.HerdrGitLog.laneColor;
+
+    const render = (lane) => context.window.HerdrGitLog.render({
+      esc(value) { return String(value); },
+      arg: encodeURIComponent,
+      data: { rows: [{ graph: "* |", hash: "h1", labels: [], title: "Demo", date: "", author: "", lane }] },
+      selected: [],
+      filters: {},
+    });
+
+    // lane=2 (backend-computed) must win: the graph string alone would put
+    // this commit on lane 0. Assert on the row's own --lane style so the
+    // commit-dot accent (always var(--accent)) does not mask the check.
+    const html = render(2);
+    const laneMatch = html.match(/git-ui-log-row[^>]*style="--lane:([^;"]+)/);
+    assert.ok(laneMatch, "row carries a --lane style");
+    assert.equal(laneMatch[1], laneColor(2), "row --lane matches the payload lane color");
+    assert.notEqual(laneMatch[1], laneColor(0), "row does not fall back to the graph-parsed lane 0");
+
+    // Legacy rows without lane still fall back to graph parsing.
+    const legacy = render(undefined);
+    assert.ok(legacy.includes(laneColor(0)), "legacy row without lane falls back to graph lane 0");
+  });
 });
 
 describe("tabActivityLabel", () => {

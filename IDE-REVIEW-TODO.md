@@ -239,10 +239,23 @@ Priority: P0 must land in this review, P1 should land, P2 next iteration.
   numbered gutter and Rust-escaped code matching an in-page escape of the
   content. 412 JS + 377 Rust pass, fmt clean, clippy 0, mobile-edit 49/49,
   LSP 20/20, git + content-search + theme e2e green.
-- [ ] **C6 (P2, B/P)** Git log graph lane computation (`git_ui/log.js`,
+- [x] **C6 (P2, B/P)** Git log graph lane computation (`git_ui/log.js`,
   `log_graph.rs` exists) — verify lane assignment is computed in Rust already;
   if the JS recomputes lanes or dots, move it into `log_graph.rs` and ship
   lanes in the API response.
+  DONE (verified, no migration needed): `graph_lane()` in
+  `src/git_ui/log_graph.rs` computes the lane (position of `*`, else `|`) and
+  `/api/git-ui/log` ships it as `row.lane` inside the `rows` array (unit
+  tests in `log_graph.rs` assert lane 2 parsing; `git_ui/mod.rs:1313` asserts
+  the JSON payload carries a numeric lane). The endpoint is a direct axum
+  route (no backend proxy), so every current response includes rows with
+  lanes. The JS `graphLane()` in `log.js` is a 6-line compatibility fallback
+  for the legacy `lines`-only shape (older backends); the current backend
+  always sends `rows`, so the fallback never runs in practice. Added a
+  regression test (app_core.test.mjs) proving the renderer uses the
+  payload lane color (row `--lane` == laneColor(2) for lane=2, not the
+  graph-parsed lane 0) while legacy lane-less rows still fall back to
+  graph parsing. 413 JS + 377 Rust pass.
 
 ## D. Correctness / robustness found during review (fix as encountered)
 
