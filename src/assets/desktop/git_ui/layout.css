@@ -96,7 +96,31 @@
   color: var(--muted);
   font-size: 12px;
 }
-.git-ui-branch-pill {
+.git-ui-ahead-behind-group {
+  align-items: center;
+  display: inline-flex;
+  flex: none;
+  gap: 3px;
+  margin-left: 2px;
+}
+
+/* ── Worktree actions row with branch chip (GitHub-flow header) ────── */
+.git-ui-worktree-row {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+.git-ui-worktree-left {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.git-ui-worktree-right {
+  flex: none;
+  justify-content: flex-end;
+  margin-left: auto;
+}
+.git-ui-branch-chip {
   align-items: center;
   background: rgba(56, 139, 253, 0.12);
   border: 1px solid rgba(56, 139, 253, 0.45);
@@ -108,32 +132,126 @@
   font-size: 12px;
   font-weight: 800;
   gap: 6px;
-  margin-top: 5px;
   max-width: 100%;
   overflow: hidden;
   padding: 3px 8px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.git-ui-branch-pill span {
+.git-ui-branch-chip-name {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.git-ui-branch-pill b {
+.git-ui-chip-count {
+  border-radius: 999px;
   flex: none;
   font-size: 11px;
-  line-height: 1;
+  padding: 0 6px;
 }
-.git-ui-branch-pill:hover {
-  background: rgba(56, 139, 253, 0.2);
+.git-ui-chip-count.behind { background: rgba(56, 139, 253, 0.2); }
+.git-ui-chip-count.ahead { background: rgba(63, 185, 80, 0.2); }
+.git-ui-chip-count.synced { background: rgba(63, 185, 80, 0.16); color: var(--success, #3fb950); }
+.git-ui-chip-caret { font-size: 10px; }
+.git-ui-split { padding-right: 4px; }
+.git-ui-split .git-ui-chip-caret { margin-left: 2px; }
+
+/* Header pull/fetch dropdown */
+.git-ui-header-menu {
+  max-height: 320px;
+  overflow-y: auto;
 }
-.git-ui-ahead-behind-group {
+.git-ui-menu-hint {
+  color: var(--muted);
+  float: right;
+  font-size: 11px;
+  font-weight: 400;
+  margin-left: 12px;
+}
+
+/* Branch list popover */
+.git-ui-branch-list {
+  background: var(--panel);
+  border: 1px solid var(--border2);
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+  left: 10px;
+  max-height: 420px;
+  overflow-y: auto;
+  padding: 8px;
+  position: absolute;
+  right: 10px;
+  top: 10px;
+  z-index: 40;
+}
+.git-ui-branch-list-filter {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+.git-ui-branch-list-filter span {
+  color: var(--muted);
+  font-size: 11px;
+}
+.git-ui-branch-list-filter input {
+  background: var(--panel2);
+  border: 1px solid var(--border2);
+  border-radius: 7px;
+  color: var(--fg);
+  font: 12px var(--font);
+  padding: 6px 8px;
+}
+.git-ui-branch-list-section {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  margin: 8px 0 4px;
+  text-transform: uppercase;
+}
+.git-ui-branch-row {
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  color: var(--fg);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  font: inherit;
+  gap: 2px;
+  padding: 6px 8px;
+  text-align: left;
+  width: 100%;
+}
+.git-ui-branch-row:hover,
+.git-ui-branch-row.current {
+  background: var(--panel2);
+}
+.git-ui-branch-row-name {
   align-items: center;
-  display: inline-flex;
-  flex: none;
-  gap: 3px;
-  margin-left: 2px;
+  display: flex;
+  font-size: 13px;
+  font-weight: 700;
+  gap: 6px;
+}
+.git-ui-branch-row-name b { color: var(--accent); font-size: 10px; }
+.git-ui-branch-row-remote {
+  background: var(--panel2);
+  border: 1px solid var(--border2);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 600;
+  padding: 0 6px;
+}
+.git-ui-branch-row-meta {
+  color: var(--muted);
+  font-size: 11px;
+}
+.git-ui-branch-list-empty {
+  padding: 8px;
 }
 .git-ui-ahead-behind {
   align-items: center;

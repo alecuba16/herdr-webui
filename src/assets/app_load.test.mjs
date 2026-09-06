@@ -320,7 +320,7 @@ describe("app bundle load", () => {
   it("adds configured shortcut labels to Git tooltips", () => {
     match(gitUiSource, /function titleWithGitShortcut\(title, action\)/);
     match(gitUiSource, /titleWithGitShortcut\("Refresh", "refresh"\)/);
-    match(gitUiSource, /titleWithGitShortcut\("Change Git directory or switch branch", "branch"\)/);
+    match(gitUiSource, /titleWithGitShortcut\("Switch branch", "branch"\)/);
     match(gitUiSource, /titleWithGitShortcut\("File history", "history"\)/);
     match(gitUiSource, /titleWithGitShortcut\("Blame", "blame"\)/);
   });
@@ -733,7 +733,7 @@ describe("app bundle load", () => {
     match(gitUiSource, /isNotGitRepositoryMessage/);
     match(gitUiSource, /markNoGitRepository\(view\)/);
     match(gitUiSource, /not_git_repository: true/);
-    match(gitUiSource, /cleanupOnly \? "" : `<div class="git-ui-toolbar">/);
+    match(gitUiSource, /cleanupOnly \? "" : renderWorktreeActions/);
     match(gitUiSource, /const filterInput = sideFileCount\(view\)/);
     match(gitUiSource, /const fileList = cleanupOnly \? "" : `\$\{filterInput\}\$\{fileSections\}`;/);
     match(gitUiSource, /disabledReason = "Open a Git repository to use this view"/);
@@ -760,7 +760,7 @@ describe("app bundle load", () => {
     match(gitUiSource, /gitCommitIncludeBody/);
     match(gitUiSource, /gitUiPushTags/);
     match(gitUiSource, /Open PR/);
-    ok(!gitUiSource.includes("openForcePushModal"));
+    match(gitUiSource, /openForcePushModal/);
     ok(!gitUiSource.includes("HerdrGitUi.tab('commit')"));
     ok(!gitUiSource.includes('onclick="HerdrGitUi.toggleStageAll()'));
   });

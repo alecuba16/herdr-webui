@@ -623,6 +623,48 @@ pub(super) async fn git_ui_pull(
     }
 }
 
+fn git_ui_fetch_blocking(
+    cwd: String,
+    branch: Option<String>,
+) -> Result<Response, (StatusCode, String)> {
+    let mut args = vec!["fetch".to_string(), "origin".to_string()];
+    if let Some(branch) = branch.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+        args.push(branch.to_string());
+    }
+    match git_ui_text_strings(&cwd, &args) {
+        Ok(text) => Ok(Json(json!({ "ok": true, "message": text })).into_response()),
+        Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
+    }
+}
+
+pub(super) async fn git_ui_fetch(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    Json(body): Json<GitUiPullPushRequest>,
+) -> Response {
+    if let Err(response) = require_auth(&state, &headers, remote) {
+        return response;
+    }
+    let branch = match body
+        .branch
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        Some(value) => match safe_git_token(value, "branch") {
+            Ok(v) => Some(v.to_string()),
+            Err(err) => return git_json_error(StatusCode::BAD_REQUEST, err),
+        },
+        None => None,
+    };
+    let cwd = body.cwd;
+    match tokio::task::spawn_blocking(move || git_ui_fetch_blocking(cwd, branch)).await {
+        Ok(Ok(response)) => response,
+        Ok(Err((status, msg))) => git_json_error(status, msg),
+        Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    }
+}
+
 fn git_ui_push_blocking(
     cwd: String,
     mode: String,
