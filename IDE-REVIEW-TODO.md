@@ -282,11 +282,24 @@ Priority: P0 must land in this review, P1 should land, P2 next iteration.
   long inputs before deleting it. Added a `hashId` unit test in
   app_core.test.mjs; all 18 vm contexts that execute desktop file_browser.js
   now load the real shared/core.js. 414 JS + 377 Rust pass.
-- [ ] **D3 (P1, D)** `escapeRegex` + `findRanges` cap at 10 000 matches but
+- [x] **D3 (P1, D)** `escapeRegex` + `findRanges` cap at 10 000 matches but
   still scan the whole text with a live regex on every keystroke in the find
   input; debounce matches (120 ms) and cap scan to the visible document size
   (already bounded by MAX_FILE_BYTES 1 MB, still 10k-iteration loops on huge
   files per keypress).
+  DONE (memoization instead of debounce — see measurement): baseline scan on
+  a 1 MB doc is only 0.06-0.37 ms (rare needle / capped 10k matches), so a
+  120 ms debounce would regress jump-to-match UX for no measurable win; the
+  exec loop already stops at the 10k cap. The real waste was repeated
+  identical scans: every prev/next click and Enter re-ran the full regex
+  over the document even when neither text nor query had changed. `matches()`
+  in `shared/editor.js` now memoizes the last scan (text, query, matchCase,
+  regex compared by reference/value, no key allocation) and invalidates on
+  any change. Measured (measure-d3.mjs, 1 MB doc, 500 prev/next clicks,
+  3 stable rounds): 0.30/0.31/0.32 ms per navigation -> 0.0006/0.0003/
+  0.0003 ms (~500x on repeat navigation). Regression test in
+  app_core.test.mjs covers memo reuse, and invalidation on query, option
+  and text change. 415 JS + 377 Rust pass, acceptance e2e 21/21.
 - [ ] **D4 (P1, B)** Content-search `regex` mode builds a Rust regex per line
   via `ContentMatcher::new` per file; hoist compiled matcher across the walk
   (already thread-local? verify) and add a walk-wide visit cap so pathological

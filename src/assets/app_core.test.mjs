@@ -642,6 +642,84 @@ describe("HerdrEditor line number helpers", () => {
   });
 
 
+  it("memoizes find scans and invalidates on text or query change (D3)", () => {
+    const source = readFileSync(new URL("./shared/editor.js", import.meta.url), "utf8");
+    let text = "needle one needle two needle three";
+    const toolbarParts = {};
+    function makePart() {
+      return { value: "", checked: false, hidden: false, textContent: "", handlers: {}, addEventListener(type, fn) { (this.handlers[type] ||= []).push(fn); }, fire(type, event) { for (const fn of this.handlers[type] || []) fn(Object.assign({ key: "", preventDefault() {}, stopPropagation() {} }, event)); } };
+    }
+    for (const key of ["query", "status", "matchCase", "regex", "prev", "next", "one", "all", "replacement"]) toolbarParts[key] = makePart();
+    const toolbar = {
+      hidden: true,
+      querySelector(selector) {
+        const map = {
+          ".herdr-editor-find-query": "query", ".herdr-editor-find-status": "status",
+          ".herdr-editor-find-case": "matchCase", ".herdr-editor-find-regex": "regex",
+          ".herdr-editor-find-prev": "prev", ".herdr-editor-find-next": "next",
+          ".herdr-editor-replace-query": "replacement",
+          ".herdr-editor-replace-one": "one", ".herdr-editor-replace-all": "all",
+        };
+        return toolbarParts[map[selector]] || null;
+      },
+    };
+    const textareaNode = { value: text };
+    const parent = {
+      querySelector(selector) {
+        if (selector === ".herdr-editor-find") return toolbar;
+        if (selector === "textarea") return textareaNode;
+        return null;
+      },
+      addEventListener() {},
+    };
+    const context = {
+      window: {},
+      document: { createElement() { return {}; }, body: { appendChild(script) { script.onerror(); } } },
+      Promise, localStorage: { getItem() { return null; }, setItem() {} },
+    };
+    vm.runInNewContext(source, context);
+    const api = context.window.HerdrEditor.create({ parent, path: "demo.txt", content: text, readonly: true });
+    assert.equal(typeof api.getValue, "function");
+    const setText = (value) => { textareaNode.value = value; };
+
+    const { query, status, prev, next, matchCase } = toolbarParts;
+    query.value = "needle";
+    next.fire("click");
+    assert.match(status.textContent, /^1\/3$/);
+    next.fire("click");
+    assert.match(status.textContent, /^2\/3$/);
+    prev.fire("click");
+    assert.match(status.textContent, /^1\/3$/);
+
+    // New query must invalidate the memo and rescan.
+    query.value = "two";
+    next.fire("click");
+    assert.match(status.textContent, /^1\/1$/);
+
+    // Option change must invalidate too: case-insensitive "Needle" finds 3.
+    matchCase.checked = false;
+    query.value = "Needle";
+    next.fire("click");
+    assert.match(status.textContent, /^1\/3$/);
+    // Flipping matchCase on must rescan and find nothing.
+    matchCase.checked = true;
+    next.fire("click");
+    assert.match(status.textContent, /No matches/);
+
+    // Text change must invalidate: a changed document rescans.
+    setText("needle fresh");
+    query.value = "fresh";
+    next.fire("click");
+    assert.match(status.textContent, /^1\/1$/);
+
+    // Full navigation cycle still lands on correct ranges (memo reuse path).
+    setText("a needle b needle c needle");
+    query.value = "needle";
+    next.fire("click"); next.fire("click");
+    assert.match(status.textContent, /^2\/3$/);
+    assert.equal(api.getValue().length > 0, true);
+  });
+
   it("supports match-case and regex range detection", () => {
     const context = { window: {}, document: { createElement() { return {}; }, body: { appendChild() {} } }, Promise };
     const source = readFileSync(new URL("./shared/editor.js", import.meta.url), "utf8");

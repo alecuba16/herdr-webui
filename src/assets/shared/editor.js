@@ -189,11 +189,23 @@
       if (!range) return;
       if (api.selectRange) api.selectRange(range.from, range.to);
     }
+    // IDE-review D3: findRanges scanned the full document text on every
+    // keystroke, prev/next click and replace recompute, even when neither the
+    // query nor the document had changed. Memoize the last scan keyed by
+    // (query, matchCase, regex, text) so repeat navigation costs O(1).
+    let lastScan = null;
     function matches() {
       const value = query ? query.value : "";
-      const result = findRanges(api.getValue(), value, options());
+      const opts = options();
+      const text = api.getValue();
+      if (lastScan && lastScan.text === text && lastScan.query === value && lastScan.matchCase === opts.matchCase && lastScan.regex === opts.regex) {
+        return lastScan.result;
+      }
+      const result = findRanges(text, value, opts);
       if (result.error) setStatus(result.error);
-      return Object.assign({ query: value }, result);
+      const combined = Object.assign({ query: value }, result);
+      lastScan = { text, query: value, matchCase: opts.matchCase, regex: opts.regex, result: combined };
+      return combined;
     }
     function choose(direction) {
       const result = matches();
