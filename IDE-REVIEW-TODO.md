@@ -51,10 +51,20 @@ Priority: P0 must land in this review, P1 should land, P2 next iteration.
   extended it to lock the duplicated context-menu close guard as well
   (declined keeps the tab, confirmed closes). Split panes share the same
   markup callback, so they are covered by the same path. 418 JS pass.
-- [ ] **A3 (P1, D)** `loadFile` opens a duplicate fetch when the same path is
+- [x] **A3 (P1, D)** `loadFile` opens a duplicate fetch when the same path is
   opened from content-search twice (`openFile` mode "append" pushes a second
   file object with same path, `state.files.some(...)` only short-circuits the
   non-append path). Dedupe by path; reuse the existing tab.
+  DONE (verified already correct; locked with a regression test): the
+  `target.files.some((file) => file.path === path)` guard in `loadFile` runs
+  for EVERY mode including "append" — it updates `existing.searchHighlight`
+  and returns before any fetch, so re-opening the same path from content
+  search (via `HerdrFileBrowserContent.openFile`/`openMatch`, both "append")
+  reuses the existing tab with zero duplicate fetches. The TODO's premise
+  ("only short-circuits the non-append path") does not match the code.
+  Added a regression test: open the same path twice via
+  `HerdrFileBrowserContent.openFile`, assert exactly one file fetch and one
+  rendered tab. 419 JS pass.
 - [ ] **A4 (P1, D)** Binary/truncated (>1 MB) files show a bare placeholder with
   no "open anyway (first N KB)" or "download" affordance. Add a backend range
   read (`?offset=&limit=`) and a "Load first 256 KB" button; keep write blocked

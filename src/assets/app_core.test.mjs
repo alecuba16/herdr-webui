@@ -1798,6 +1798,70 @@ describe("desktop file browser editor integration", () => {
     assert.equal(openTabCount(), 0, "confirmed menu close removes the tab");
   });
 
+  it("opening the same path twice from content search reuses the tab without a duplicate fetch (A3)", async () => {
+    const document = createFakeDocument();
+    const editorCalls = [];
+    const fileFetches = [];
+    const context = {
+      window: {
+        addEventListener() {},
+        HerdrEditor: {
+          create(opts) { editorCalls.push({ path: opts.path }); opts.parent.innerHTML = "<div class='cm-content'></div>"; opts.parent._herdrEditorApi = { toggleFind() {} }; return { getValue() { return opts.content; }, setValue() {}, destroy() {} }; },
+          isMarkdownPath() { return false; },
+        },
+        HerdrGitUi: { hide() {} },
+        HerdrWorkspacePath(workspace) { return workspace.cwd; },
+      },
+      document,
+      localStorage: { getItem() { return JSON.stringify({ fileBrowserGitStatus: false }); } },
+      navigator: { clipboard: { writeText: async () => {} } },
+      fetch: async (url) => {
+        const text = String(url);
+        if (text.startsWith("/api/file-browser/file")) fileFetches.push(text);
+        return {
+          ok: true,
+          async json() {
+            if (text.startsWith("/api/file-browser/file")) {
+              const path = decodeURIComponent((text.match(/path=([^&]+)/) || [null, ""])[1]);
+              return { path, content: "print('hello')", binary: false, truncated: false };
+            }
+            const cwd = decodeURIComponent((text.match(/cwd=([^&]+)/) || [null, ""])[1]);
+            return { root: cwd, home: "/Users/me", path: "", entries: [{ kind: "file", name: "demo.py", path: "demo.py" }], git_status: null };
+          },
+        };
+      },
+      confirm: () => true,
+      HerdrAppHelpers: require("./shared/core.js"),
+      appRefreshIconButton: () => "<button>Refresh</button>",
+      encodeURIComponent,
+      decodeURIComponent,
+      Error,
+      JSON,
+      Math,
+      String,
+      setTimeout(fn) { fn(); return 1; },
+      clearTimeout() {},
+      getComputedStyle: () => ({ getPropertyValue() { return "14"; } }),
+    };
+    context.window.window = context.window;
+    context.window.document = document;
+    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
+    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
+
+    await context.window.HerdrFileBrowser.open({ workspace_id: "ws", cwd: "/Users/me/repo" });
+    // First open from content search (append mode).
+    context.window.HerdrFileBrowserContent.openFile(encodeURIComponent("demo.py"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // Second open of the SAME path from content search (append mode).
+    context.window.HerdrFileBrowserContent.openFile(encodeURIComponent("demo.py"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const panelHtml = () => document.getElementById("fileBrowserPanel").innerHTML;
+    const tabCount = () => (panelHtml().match(/file-browser-open-tab\s/g) || []).length;
+    assert.equal(fileFetches.length, 1, "same path fetched exactly once");
+    assert.equal(tabCount(), 1, "one tab for the path, no duplicates");
+  });
+
   it("hides tab menu actions for binary and truncated files", async () => {
     const document = createFakeDocument();
     const context = {
