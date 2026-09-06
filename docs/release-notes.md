@@ -1,10 +1,10 @@
+# Release notes
+
+## 0.4.7 Release Notes
 - Find-in-editor: repeated match navigation (prev/next, Enter) no longer
   rescans the full document on every click; the last scan is memoized and
   invalidated on any text, query or option change (~500x cheaper repeat
   navigation on 1 MB files, measured).
-# Release notes
-
-## 0.4.7 Release Notes
 - Options reads now go through a shared cached module (`HerdrOptions`) instead
   of every consumer doing its own `JSON.parse(localStorage.getItem(...))` on
   each access. The payload is parsed once, callers get shallow copies, and the
