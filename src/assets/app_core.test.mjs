@@ -48,6 +48,18 @@ describe("createFaviconNotifier", () => {
   });
 });
 
+describe("hashId", () => {
+  it("hashes short stable base36 ids (shared editor-mount key helper)", () => {
+    const { hashId } = require("./shared/core.js");
+    assert.equal(typeof hashId("src/app.rs"), "string");
+    assert.equal(hashId("src/app.rs"), hashId("src/app.rs"));
+    assert.notEqual(hashId("src/app.rs"), hashId("src/app2.rs"));
+    assert.equal(hashId(""), "0");
+    assert.equal(hashId(null), "0");
+    assert.match(hashId("x".repeat(500)), /^[0-9a-z]+$/);
+  });
+});
+
 describe("branchPathSlug", () => {
   it("lowercases and collapses separators", () => {
     assert.equal(
@@ -1022,6 +1034,7 @@ describe("desktop file browser editor integration", () => {
         };
       },
       confirm: () => true,
+      HerdrAppHelpers: require("./shared/core.js"),
       appRefreshIconButton: () => "<button>Refresh</button>",
       encodeURIComponent,
       decodeURIComponent,
@@ -1082,6 +1095,7 @@ describe("desktop file browser editor integration", () => {
       },
       prompt: () => "renamed.txt",
       confirm: () => true,
+      HerdrAppHelpers: require("./shared/core.js"),
       appRefreshIconButton: () => "<button>Refresh</button>",
       encodeURIComponent,
       decodeURIComponent,
@@ -1154,6 +1168,7 @@ describe("desktop file browser editor integration", () => {
         },
       }),
       confirm: () => true,
+      HerdrAppHelpers: require("./shared/core.js"),
       appRefreshIconButton: () => "<button>Refresh</button>",
       encodeURIComponent,
       decodeURIComponent,
@@ -1216,6 +1231,7 @@ describe("desktop file browser editor integration", () => {
         },
       }),
       confirm: () => true,
+      HerdrAppHelpers: require("./shared/core.js"),
       appRefreshIconButton: () => "<button>Refresh</button>",
       encodeURIComponent,
       decodeURIComponent,
@@ -1325,6 +1341,7 @@ describe("desktop file browser editor integration", () => {
         };
       },
       confirm: () => true,
+      HerdrAppHelpers: require("./shared/core.js"),
       appRefreshIconButton: () => "<button>Refresh</button>",
       encodeURIComponent, decodeURIComponent, Error, JSON, Math, String,
       setTimeout(fn) { fn(); return 1; },
@@ -1415,6 +1432,7 @@ describe("desktop file browser editor integration", () => {
         };
       },
       confirm: () => true,
+      HerdrAppHelpers: require("./shared/core.js"),
       appRefreshIconButton: () => "<button>Refresh</button>",
       encodeURIComponent,
       decodeURIComponent,
@@ -1503,6 +1521,7 @@ describe("desktop file browser editor integration", () => {
         };
       },
       confirm: () => true,
+      HerdrAppHelpers: require("./shared/core.js"),
       appRefreshIconButton: () => "<button>Refresh</button>",
       encodeURIComponent,
       decodeURIComponent,
@@ -1610,6 +1629,7 @@ describe("desktop file browser editor integration", () => {
         };
       },
       confirm: () => { confirmResults.push(confirmAnswer); return confirmAnswer; },
+      HerdrAppHelpers: require("./shared/core.js"),
       appRefreshIconButton: () => "<button>Refresh</button>",
       encodeURIComponent,
       decodeURIComponent,
@@ -1677,6 +1697,7 @@ describe("desktop file browser editor integration", () => {
         };
       },
       confirm: () => true,
+      HerdrAppHelpers: require("./shared/core.js"),
       appRefreshIconButton: () => "<button>Refresh</button>",
       encodeURIComponent, decodeURIComponent, Error, JSON, Math, String,
       setTimeout(fn) { fn(); return 1; },
@@ -1732,6 +1753,7 @@ describe("desktop file browser editor integration", () => {
         };
       },
       confirm: () => true,
+      HerdrAppHelpers: require("./shared/core.js"),
       appRefreshIconButton: () => "<button>Refresh</button>",
       encodeURIComponent, decodeURIComponent, Error, JSON, Math, String,
       setTimeout(fn) { fn(); return 1; },
@@ -1796,6 +1818,7 @@ describe("desktop file browser editor integration", () => {
         };
       },
       confirm: () => true,
+      HerdrAppHelpers: require("./shared/core.js"),
       appRefreshIconButton: () => "<button>Refresh</button>",
       encodeURIComponent, decodeURIComponent, Error, JSON, Math, String,
       setTimeout(fn) { fn(); return 1; },
@@ -1846,6 +1869,7 @@ describe("desktop file browser editor integration", () => {
         };
       },
       confirm: () => true,
+      HerdrAppHelpers: require("./shared/core.js"),
       appRefreshIconButton: () => "<button>Refresh</button>",
       encodeURIComponent, decodeURIComponent, Error, JSON, Math, String,
       setTimeout(fn) { fn(); return 1; },
@@ -1895,6 +1919,7 @@ describe("desktop file browser editor integration", () => {
         };
       },
       confirm: () => true,
+      HerdrAppHelpers: require("./shared/core.js"),
       appRefreshIconButton: () => "<button>Refresh</button>",
       encodeURIComponent, decodeURIComponent, Error, JSON, Math, String,
       setTimeout(fn) { fn(); return 1; },
@@ -1944,6 +1969,7 @@ describe("desktop file browser editor integration", () => {
         };
       },
       confirm: () => true,
+      HerdrAppHelpers: require("./shared/core.js"),
       appRefreshIconButton: () => "<button>Refresh</button>",
       encodeURIComponent, decodeURIComponent, Error, JSON, Math, String,
       setTimeout(fn) { fn(); return 1; },
@@ -2023,6 +2049,7 @@ describe("desktop file browser editor integration", () => {
         };
       },
       confirm: () => true,
+      HerdrAppHelpers: require("./shared/core.js"),
       appRefreshIconButton: () => "<button>Refresh</button>",
       encodeURIComponent, decodeURIComponent, Error, JSON, Math, String,
       setTimeout(fn) { fn(); return 1; },
@@ -2092,6 +2119,7 @@ describe("desktop file browser editor integration", () => {
         };
       },
       confirm: () => { confirmCalls++; return false; },
+      HerdrAppHelpers: require("./shared/core.js"),
       appRefreshIconButton: () => "<button>Refresh</button>",
       encodeURIComponent, decodeURIComponent, Error, JSON, Math, String,
       setTimeout(fn) { fn(); return 1; },
@@ -2167,6 +2195,7 @@ describe("desktop file browser editor integration", () => {
         };
       },
       confirm: () => true,
+      HerdrAppHelpers: require("./shared/core.js"),
       appRefreshIconButton: () => "<button>Refresh</button>",
       encodeURIComponent, decodeURIComponent, Error, JSON, Math, String,
       setTimeout(fn) { fn(); return 1; },
@@ -2241,6 +2270,7 @@ describe("desktop file browser editor integration", () => {
         };
       },
       confirm: () => { confirmCalls++; return true; },
+      HerdrAppHelpers: require("./shared/core.js"),
       appRefreshIconButton: () => "<button>Refresh</button>",
       encodeURIComponent, decodeURIComponent, Error, JSON, Math, String,
       setTimeout(fn) { fn(); return 1; },

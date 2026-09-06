@@ -152,15 +152,9 @@
     </div>`;
   }
 
-  function hashId(value) {
-    let hash = 0;
-    for (const ch of String(value || "")) hash = ((hash << 5) - hash + ch.charCodeAt(0)) | 0;
-    return Math.abs(hash).toString(36);
-  }
-
   function findMatch(file, matchId) {
     return (file && file.matches || []).find((match) => String(match.id) === String(matchId)) || null;
   }
 
-  window.HerdrContentSearch = { render, hashId, findMatch };
+  window.HerdrContentSearch = { render, findMatch };
 })();

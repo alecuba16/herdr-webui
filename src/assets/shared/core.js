@@ -307,6 +307,12 @@
       .replace(/"/g, "&quot;");
   }
 
+  function hashId(value) {
+    let hash = 0;
+    for (const ch of String(value || "")) hash = ((hash << 5) - hash + ch.charCodeAt(0)) | 0;
+    return Math.abs(hash).toString(36);
+  }
+
   function pathBasename(path) {
     const parts = String(path || "").split("/").filter(Boolean);
     return parts[parts.length - 1] || String(path || "");
@@ -354,6 +360,7 @@
     tabActivityLabel,
     escapeHtml,
     pathBasename,
+    hashId,
     gitApi,
   };
   root.HerdrAppHelpers = helpers;

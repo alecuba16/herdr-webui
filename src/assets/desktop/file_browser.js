@@ -20,6 +20,7 @@
   }
 
   function esc(value) { return Tree.esc(value); }
+  const hashId = HerdrAppHelpers.hashId;
   function arg(value) { return Tree.arg(value); }
 
   function gitStatusEnabled() {
@@ -1113,12 +1114,6 @@
     if (file.binary) return '<div class="file-browser-empty">Binary file preview unavailable.</div>';
     if (file.truncated) return `<div class="file-browser-empty">File too large to preview (${Tree.formatBytes(file.size)}).</div>`;
     return "";
-  }
-
-  function hashId(path) {
-    let hash = 0;
-    for (const ch of String(path || "")) hash = ((hash << 5) - hash + ch.charCodeAt(0)) | 0;
-    return Math.abs(hash).toString(36);
   }
 
   async function reloadFile(path) {
