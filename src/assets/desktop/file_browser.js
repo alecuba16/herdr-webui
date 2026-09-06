@@ -887,7 +887,11 @@
     pruneEditorCache(files.map((file) => file.path));
     for (const file of files) {
       const parent = document.getElementById(`fileBrowserEditor-${hashId(file.path)}`);
-      if (!parent || file.binary || file.truncated) continue;
+      if (!parent || file.binary) continue;
+      // Truncated files never get an editable editor. A partial preview
+      // (A4) renders read-only; a plain truncated file shows the
+      // placeholder with the "Load first 256 KB" affordance.
+      if (file.truncated && !file.partialPreview) continue;
       const signature = editorSignature(file, configured);
       const cacheKey = editorCacheKey(file.path);
       const cached = editorCache.get(cacheKey);
@@ -900,11 +904,12 @@
         continue;
       }
       forgetEditor(file.path);
+      const partialPreview = !!(file.truncated && file.partialPreview);
       window.HerdrEditor.create({
         parent,
         path: file.path,
-        content: file.editing ? file.draft : file.content || "",
-        readonly: !file.editing,
+        content: file.editing && !partialPreview ? file.draft : file.content || "",
+        readonly: !file.editing || partialPreview,
         editorEnabled: configured.editorEnabled,
         hideHeader: true,
         lineNumbers: lineNumbersEnabled(),
@@ -914,11 +919,12 @@
         folding: configured.folding,
         activeLine: configured.activeLine,
         whitespace: configured.whitespace,
-        markdownPreview: !file.previewSource,
+        markdownPreview: !file.previewSource && !partialPreview,
         searchHighlight: file.searchHighlight || null,
-        linesHtml: file.editing ? null : file.linesHtml || null,
+        linesHtml: file.editing && !partialPreview ? null : file.linesHtml || null,
         size: file.size,
         onChange(value) {
+          if (partialPreview) return; // read-only partial view; no draft tracking
           file.draft = value;
           file.dirty = value !== (file.content || "");
           syncDirtyDots();
@@ -1116,8 +1122,43 @@
   function previewPlaceholder(file) {
     if (!file) return '<div class="file-browser-empty">Choose a file to preview.</div>';
     if (file.binary) return '<div class="file-browser-empty">Binary file preview unavailable.</div>';
-    if (file.truncated) return `<div class="file-browser-empty">File too large to preview (${Tree.formatBytes(file.size)}).</div>`;
+    if (file.truncated) {
+      // A4: oversize text files offer a backend partial read instead of a
+      // dead end. Editing stays blocked (truncated implies no edit button).
+      if (file.partialPreview) return "";
+      return `<div class="file-browser-empty">File too large to preview (${Tree.formatBytes(file.size)}).<button class="git-ui-btn file-browser-load-partial" onclick="HerdrFileBrowser.loadPartial('${arg(file.path)}')">Load first 256 KB</button></div>`;
+    }
     return "";
+  }
+
+  // A4: partial read of an oversized text file. The backend clamps the
+  // budget (16 KB..1 MB) and returns truncated=true with the first N bytes;
+  // the editor mounts read-only and the save path is unreachable (empty
+  // hash can never satisfy the expected_hash check).
+  async function loadPartial(path) {
+    try {
+      state.error = "";
+      const file = await api(`/api/file-browser/file?cwd=${encodeURIComponent(state.cwd)}&path=${encodeURIComponent(path)}&max_bytes=262144`);
+      const index = state.files.findIndex((entry) => entry.path === path);
+      const partial = Object.assign(file, {
+        draft: file.content || "",
+        editing: true,
+        dirty: false,
+        saving: false,
+        error: "",
+        searchHighlight: null,
+        previewSource: true,
+        partialPreview: true,
+      });
+      partial.linesHtml = file.lines_gutter_html != null && file.lines_code_html != null ? { gutter: file.lines_gutter_html, code: file.lines_code_html } : null;
+      if (index >= 0) state.files[index] = Object.assign({}, state.files[index], partial);
+      else state.files.push(partial);
+      state.selected = path;
+      render();
+    } catch (error) {
+      setError(state, error);
+      render();
+    }
   }
 
   async function reloadFile(path) {
@@ -1442,6 +1483,7 @@
     },
     save(encodedPath) { saveFile(decodeURIComponent(encodedPath)); },
     reload(encodedPath) { reloadFile(decodeURIComponent(encodedPath)).catch((error) => { state.error = error.message || String(error); render(); }); },
+    loadPartial(encodedPath) { loadPartial(decodeURIComponent(encodedPath)); },
     toggleFind(encodedPath) { toggleFind(decodeURIComponent(encodedPath || "")); },
     toggleLock(encodedPath) {
       const path = decodeURIComponent(encodedPath || "");

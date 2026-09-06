@@ -1862,6 +1862,83 @@ describe("desktop file browser editor integration", () => {
     assert.equal(tabCount(), 1, "one tab for the path, no duplicates");
   });
 
+  it("offers and serves a partial preview for oversized files (A4)", async () => {
+    const document = createFakeDocument();
+    const editorCalls = [];
+    const fileRequests = [];
+    const context = {
+      window: {
+        addEventListener() {},
+        HerdrEditor: {
+          create(opts) { editorCalls.push({ readonly: opts.readonly, content: opts.content, markdownPreview: opts.markdownPreview }); opts.parent.innerHTML = "<div class='cm-content'></div>"; opts.parent._herdrEditorApi = { toggleFind() {} }; return { getValue() { return opts.content; }, setValue() {}, destroy() {} }; },
+          isMarkdownPath() { return false; },
+        },
+        HerdrGitUi: { hide() {} },
+        HerdrWorkspacePath(workspace) { return workspace.cwd; },
+      },
+      document,
+      localStorage: { getItem() { return JSON.stringify({ fileBrowserGitStatus: false }); } },
+      navigator: { clipboard: { writeText: async () => {} } },
+      fetch: async (url) => {
+        const text = String(url);
+        fileRequests.push(text);
+        return {
+          ok: true,
+          async json() {
+            if (text.startsWith("/api/file-browser/file")) {
+              const path = decodeURIComponent((text.match(/path=([^&]+)/) || [null, ""])[1]);
+              if (text.includes("max_bytes=262144")) {
+                return { path, content: "x".repeat(262144), hash: "", binary: false, truncated: true, size: 2 * 1024 * 1024, preview_bytes: 262144 };
+              }
+              return { path, content: "", hash: "", binary: false, truncated: true, size: 2 * 1024 * 1024 };
+            }
+            const cwd = decodeURIComponent((text.match(/cwd=([^&]+)/) || [null, ""])[1]);
+            return { root: cwd, home: "/Users/me", path: "", entries: [{ kind: "file", name: "big.log", path: "big.log" }], git_status: null };
+          },
+        };
+      },
+      confirm: () => true,
+      HerdrAppHelpers: require("./shared/core.js"),
+      appRefreshIconButton: () => "<button>Refresh</button>",
+      encodeURIComponent,
+      decodeURIComponent,
+      Error,
+      JSON,
+      Math,
+      String,
+      setTimeout(fn) { fn(); return 1; },
+      clearTimeout() {},
+      getComputedStyle: () => ({ getPropertyValue() { return "14"; } }),
+    };
+    context.window.window = context.window;
+    context.window.document = document;
+    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
+    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
+
+    await context.window.HerdrFileBrowser.open({ workspace_id: "ws", cwd: "/Users/me/repo" });
+    // Open the oversized file: plain truncated placeholder with the button.
+    await context.window.HerdrFileBrowser.select(encodeURIComponent("big.log"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const panelHtml = () => document.getElementById("fileBrowserPanel").innerHTML;
+    assert.match(panelHtml(), /File too large to preview/);
+    assert.match(panelHtml(), /Load first 256 KB/);
+    assert.doesNotMatch(panelHtml(), /filesStartEdit|lockToggle/);
+
+    // Load the partial preview: backend partial read mounts read-only.
+    await context.window.HerdrFileBrowser.loadPartial(encodeURIComponent("big.log"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(fileRequests.some((url) => url.includes("max_bytes=262144")), "partial fetch uses the budget param");
+    assert.ok(editorCalls.length >= 1, "editor mounted for the partial preview");
+    assert.equal(editorCalls.at(-1).readonly, true, "partial preview mounts read-only");
+    assert.equal(editorCalls.at(-1).markdownPreview, false, "partial preview is source view");
+    assert.doesNotMatch(panelHtml(), /Load first 256 KB/);
+
+    // Reload (plain path) clears the partial marker back to the placeholder.
+    await context.window.HerdrFileBrowser.reload(encodeURIComponent("big.log"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.match(panelHtml(), /File too large to preview/);
+  });
+
   it("hides tab menu actions for binary and truncated files", async () => {
     const document = createFakeDocument();
     const context = {

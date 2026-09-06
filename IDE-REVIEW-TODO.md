@@ -65,10 +65,31 @@ Priority: P0 must land in this review, P1 should land, P2 next iteration.
   Added a regression test: open the same path twice via
   `HerdrFileBrowserContent.openFile`, assert exactly one file fetch and one
   rendered tab. 419 JS pass.
-- [ ] **A4 (P1, D)** Binary/truncated (>1 MB) files show a bare placeholder with
+- [x] **A4 (P1, D)** Binary/truncated (>1 MB) files show a bare placeholder with
   no "open anyway (first N KB)" or "download" affordance. Add a backend range
   read (`?offset=&limit=`) and a "Load first 256 KB" button; keep write blocked
   with a clear reason.
+  DONE (backend partial read + desktop AND mobile affordances): the file
+  route now accepts `?max_bytes=` (clamped to 16 KB..=1 MB; out-of-window
+  values fall back to the plain truncated placeholder). When set and the
+  file exceeds the budget, Rust returns the first N bytes
+  (`file_browser_partial_read`, lossy UTF-8 so a split multibyte char
+  degrades to U+FFFD once) with `truncated: true`, full `size`, and
+  `preview_bytes`. Safety: the partial response carries an EMPTY hash, so a
+  save can never pass the expected_hash check, and every edit affordance
+  stays hidden while `truncated` is true. Desktop: the too-large
+  placeholder gains a "Load first 256 KB" button (`loadPartial`), the
+  partial preview mounts a read-only source-view editor (no markdown
+  preview, no draft tracking, onChange short-circuits). Mobile parity:
+  same button on the truncated state (`filesLoadPartial`), partial view
+  shows "Previewing the first X of Y. Editing is disabled for partial
+  views." above the read-only editor. Rust unit tests: budget clamping
+  (in-window, 0/15KB/1MB+1/64MB rejected) and prefix read correctness
+  (length, empty hash, preview_bytes). Desktop vm test: placeholder
+  button, partial fetch uses max_bytes=262144, mounts readonly +
+  source view, reload restores the placeholder. Real-browser e2e
+  (2 MB fixture): placeholder+button render, click loads a read-only
+  editor, 23/23 checks. 420 JS + 379 Rust pass, fmt clean, clippy 0.
 - [ ] **A5 (P1, D)** No goto-line / goto-symbol affordance in the editor. Add
   `Ctrl+G` goto-line (CodeMirror `gotoLine` extension is already available via
   `@codemirror/search` or a minimal keymap prompt), plus a "line:col" status

@@ -1578,6 +1578,7 @@
     filesSearchKeydown: mobileFileBrowser.searchKeydown,
     filesShowSearch: mobileFileBrowser.showSearch,
     filesCloseContentSearch: mobileFileBrowser.closeContentSearch,
+    filesLoadPartial: mobileFileBrowser.loadPartial,
     filesFocusTree: mobileFileBrowser.focusTree,
     filesBlurTree: mobileFileBrowser.blurTree,
     filesToggleContentSearch: mobileFileBrowser.toggleContentSearch,

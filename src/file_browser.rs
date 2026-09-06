@@ -77,6 +77,12 @@ struct FileBrowserQuery {
     // markup (gutter + escaped code HTML) so the browser does not have to
     // escape and join per-line HTML on the main thread.
     render: Option<String>,
+    // Partial-read budget for oversized text files (A4): when set, files
+    // larger than the budget return their first N bytes (lossy UTF-8) with
+    // truncated=true instead of an empty placeholder. Editing stays blocked
+    // client-side and the response carries an empty hash so a save attempt
+    // can never pass the expected_hash check.
+    max_bytes: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -1303,6 +1309,49 @@ async fn file_browser_request_access(
     }
 }
 
+/// Clamp the requested partial-read budget (A4). Accepts 16 KB..=1 MB so a
+/// typo cannot ask for gigabytes; anything outside the window is ignored
+/// (falls back to the plain truncated placeholder).
+fn partial_read_budget(max_bytes: Option<u64>) -> Option<u64> {
+    let requested = max_bytes?;
+    const MIN_BUDGET: u64 = 16 * 1024;
+    if (MIN_BUDGET..=MAX_FILE_BYTES).contains(&requested) {
+        Some(requested)
+    } else {
+        None
+    }
+}
+
+/// Read the first `budget` bytes of an oversized text file for preview.
+/// The content is lossily decoded (a multibyte char split at the boundary
+/// degrades to U+FFFD once) and marked truncated. The hash is empty on
+/// purpose: a partial view must never satisfy the save path's
+/// expected_hash check.
+fn file_browser_partial_read(file: &Path, rel: &str, size: u64, budget: u64) -> Response {
+    let mut handle = match fs::File::open(file) {
+        Ok(handle) => handle,
+        Err(err) => return file_browser_json_error(StatusCode::BAD_GATEWAY, err.to_string()),
+    };
+    use std::io::Read;
+    let take = budget.min(size);
+    let mut bytes = Vec::with_capacity(take as usize);
+    if let Err(err) = Read::by_ref(&mut handle).take(take).read_to_end(&mut bytes) {
+        return file_browser_json_error(StatusCode::BAD_GATEWAY, err.to_string());
+    }
+    let content = String::from_utf8_lossy(&bytes).into_owned();
+    let preview_bytes = bytes.len() as u64;
+    Json(json!({
+        "path": rel,
+        "content": content,
+        "hash": "",
+        "binary": false,
+        "truncated": true,
+        "size": size,
+        "preview_bytes": preview_bytes,
+    }))
+    .into_response()
+}
+
 async fn file_browser_file(
     State(state): State<WebState>,
     headers: HeaderMap,
@@ -1333,6 +1382,10 @@ async fn file_browser_file(
         Err(err) => return file_browser_json_error(StatusCode::BAD_GATEWAY, err.to_string()),
     };
     if metadata.len() > MAX_FILE_BYTES {
+        let budget = partial_read_budget(query.max_bytes);
+        if let Some(budget) = budget {
+            return file_browser_partial_read(&file, &rel, metadata.len(), budget);
+        }
         return Json(json!({
             "path": rel,
             "content": "",
@@ -2231,6 +2284,52 @@ mod tests {
         assert_eq!(app.matches[0].end_line, 3);
         assert_eq!(app.matches[0].before, vec!["before".to_string()]);
         assert_eq!(app.matches[0].after, vec!["after".to_string()]);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn partial_read_budget_clamps_requests() {
+        // In-window budgets pass through.
+        assert_eq!(partial_read_budget(Some(16 * 1024)), Some(16 * 1024));
+        assert_eq!(
+            partial_read_budget(Some(MAX_FILE_BYTES)),
+            Some(MAX_FILE_BYTES)
+        );
+        // Out-of-window or missing budgets are ignored (None -> placeholder).
+        assert_eq!(partial_read_budget(None), None);
+        assert_eq!(partial_read_budget(Some(0)), None);
+        assert_eq!(partial_read_budget(Some(15 * 1024)), None);
+        assert_eq!(partial_read_budget(Some(MAX_FILE_BYTES + 1)), None);
+        assert_eq!(partial_read_budget(Some(64 * 1024 * 1024)), None);
+    }
+
+    #[tokio::test]
+    async fn partial_read_returns_prefix_with_empty_hash() {
+        let root = std::env::temp_dir().join(format!(
+            "herdr-webui-partial-read-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        // 64 KB of ASCII text: larger than the 16 KB budget but far under
+        // MAX_FILE_BYTES, so the read is a pure prefix slice.
+        let body = "x".repeat(64 * 1024);
+        let path = root.join("big.txt");
+        fs::write(&path, &body).unwrap();
+
+        let response = file_browser_partial_read(&path, "big.txt", body.len() as u64, 16 * 1024);
+        let bytes = axum::body::to_bytes(response.into_body(), 10 * 1024 * 1024)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(payload["truncated"], serde_json::json!(true));
+        assert_eq!(payload["size"], serde_json::json!(body.len() as u64));
+        assert_eq!(payload["preview_bytes"], serde_json::json!(16 * 1024));
+        assert_eq!(payload["hash"], serde_json::json!(""));
+        let content = payload["content"].as_str().unwrap();
+        assert_eq!(content.len(), 16 * 1024);
+        assert!(content.chars().all(|ch| ch == 'x'));
 
         let _ = fs::remove_dir_all(root);
     }

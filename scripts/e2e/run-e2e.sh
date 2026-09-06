@@ -64,6 +64,8 @@ EOF
 cat > "$REPO/src/demo.py" <<'EOF'
 print('hello')
 EOF
+# Oversized text file (2 MB) for the A4 partial-preview acceptance checks.
+node -e "require('fs').writeFileSync(process.argv[1], 'partial line\n'.repeat(262144))" "$REPO/src/big.log"
 git -C "$REPO" init -q
 git -C "$REPO" add -A
 git -C "$REPO" -c user.name=e2e -c user.email=e2e@local commit -qm init

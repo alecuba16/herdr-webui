@@ -255,6 +255,30 @@
       renderPreservingFocus();
     }
 
+    // A4 (desktop parity): partial read of an oversized text file. The
+    // backend clamps the budget; the view stays read-only (canEditFile
+    // checks truncated) and the empty hash keeps saves impossible.
+    async function loadPartial(path) {
+      const root = cwd();
+      if (!root) return;
+      local.loading = true;
+      local.error = "";
+      deps.render();
+      try {
+        const file = await deps.api(`/api/file-browser/file?cwd=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}&max_bytes=262144`);
+        file.partialPreview = file.truncated === true;
+        file.linesHtml = file.lines_gutter_html != null && file.lines_code_html != null ? { gutter: file.lines_gutter_html, code: file.lines_code_html } : null;
+        local.file = file;
+        local.editing = false;
+        local.draft = "";
+        local.dirty = false;
+      } catch (error) {
+        local.error = error.message || String(error);
+      }
+      local.loading = false;
+      deps.render();
+    }
+
     async function openFile(path, searchHighlight) {
       const root = cwd();
       if (local.file && local.file.path && local.file.path !== path) lspDidClose(local.file.path);
@@ -666,6 +690,7 @@
         }
       },
       openFile(encodedPath) { openFile(decodeURIComponent(encodedPath)); },
+      loadPartial(encodedPath) { loadPartial(decodeURIComponent(encodedPath)); },
       openMatch(encodedPath, encodedMatchId) {
         const path = decodeURIComponent(encodedPath);
         const file = contentFile(path);
@@ -740,7 +765,8 @@
       const file = local.file;
       let body = '<div class="mobile-loading">No preview</div>';
       if (file.binary) body = '<div class="mobile-loading">Binary file preview unavailable</div>';
-      else if (file.truncated) body = `<div class="mobile-loading">File too large to preview (${Tree.formatBytes(file.size)})</div>`;
+      else if (file.truncated && !file.partialPreview) body = `<div class="mobile-loading">File too large to preview (${Tree.formatBytes(file.size)})<button class="mobile-btn" onclick="HerdrMobile.filesLoadPartial(${JSON.stringify(encodeURIComponent(file.path))})">Load first 256 KB</button></div>`;
+      else if (file.truncated && file.partialPreview) body = `<div class="mobile-loading">Previewing the first ${Tree.formatBytes(file.preview_bytes || 262144)} of ${Tree.formatBytes(file.size)}. Editing is disabled for partial views.</div><div id="mobileFilePreview"></div>`;
       else body = `<div id="mobileFilePreview"></div>`;
       const editing = local.editing;
       const editActions = editing
@@ -939,6 +965,7 @@
       startEdit,
       cancelEdit,
       saveFile,
+      loadPartial,
       rowActions: openActionSheet,
       closeActionSheet,
       openRename,

@@ -296,6 +296,33 @@ const lockDirtyParsed = (() => { try { return JSON.parse(lockDirty || '{}'); } c
 check('locking dirty file asked for confirmation', typeof lockDirtyParsed.confirmMsg === 'string' && lockDirtyParsed.confirmMsg.includes('Discard unsaved changes'), lockDirtyParsed.confirmMsg);
 check('lock discards draft and clears dirty dot', lockDirtyParsed.dot === false && lockDirtyParsed.editable === 'false', JSON.stringify(lockDirtyParsed));
 
+// 7b. A4: oversized text files offer a backend partial read.
+const bigOpen = await cdp.evalExpr(`(async () => {
+  HerdrFileBrowser.select(encodeURIComponent('src/big.log'));
+  await new Promise((r) => setTimeout(r, 1500));
+  const panel = document.getElementById('fileBrowserPanel').innerHTML;
+  return JSON.stringify({
+    placeholder: panel.includes('File too large to preview'),
+    loadButton: !!document.querySelector('.file-browser-load-partial'),
+  });
+})()`, true);
+const bigOpenParsed = (() => { try { return JSON.parse(bigOpen || '{}'); } catch { return { raw: bigOpen }; } })();
+check('oversized file shows placeholder with load-partial button (A4)', bigOpenParsed.placeholder === true && bigOpenParsed.loadButton === true, JSON.stringify(bigOpenParsed));
+
+const bigLoaded = await cdp.evalExpr(`(async () => {
+  document.querySelector('.file-browser-load-partial').click();
+  await new Promise((r) => setTimeout(r, 2000));
+  const pane = document.querySelector('.file-browser-pane .cm-content, .file-browser-pane [contenteditable]');
+  const panel = document.getElementById('fileBrowserPanel').innerHTML;
+  return JSON.stringify({
+    editable: pane ? pane.getAttribute('contenteditable') : 'none',
+    hasEditor: !!pane,
+    noLoadButton: !panel.includes('Load first 256 KB'),
+  });
+})()`, true);
+const bigLoadedParsed = (() => { try { return JSON.parse(bigLoaded || '{}'); } catch { return { raw: bigLoaded }; } })();
+check('partial preview mounts read-only (A4)', bigLoadedParsed.hasEditor === true && bigLoadedParsed.editable === 'false', JSON.stringify(bigLoadedParsed));
+
 // 8. Cmd+S on locked file does not change disk
 const diskBefore = readFileSync(DEMO_FILE, 'utf8');
 await cdp.evalExpr(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 's', metaKey: true, bubbles: true, cancelable: true }))`);

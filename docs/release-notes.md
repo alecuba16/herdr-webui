@@ -1,6 +1,11 @@
 # Release notes
 
 ## 0.4.7 Release Notes
+- Oversized text files (>1 MB) now offer a "Load first 256 KB" preview on
+  desktop and mobile instead of a dead-end placeholder. The read is
+  performed and clamped in Rust (16 KB..1 MB budgets accepted); partial
+  previews are strictly read-only, carry an empty hash so saving is
+  impossible, and clearly state they are partial.
 - Mobile file preview and edit: a compact floating Find (⌕) button now
   appears on headerless editors, so the find toolbar is reachable without a
   keyboard shortcut. Verified in a real browser (toggle opens the toolbar,
