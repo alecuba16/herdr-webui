@@ -2,6 +2,15 @@
 .git-ui-panel {
   --git-add-color: var(--git-added-color);
   --git-del-color: var(--git-deleted-color);
+  /* Diff markers need stronger hues than the status text colors, tuned per
+     theme for WCAG 3:1 non-text contrast against panel2. */
+  --git-diff-add: var(--git-added-color);
+  --git-diff-del: var(--git-deleted-color);
+  /* Log graph lane hues, tuned per theme so 2px lanes and mixed ref text stay
+     readable on the panel background in both themes. */
+  --git-log-main: #3b82f6;
+  --git-log-origin: #f59e0b;
+  --git-log-current: #ef4444;
   --git-syn-com: var(--muted);
   --git-syn-fn: var(--accent);
   --git-syn-kw: var(--fg);
@@ -23,6 +32,11 @@
   resize: horizontal;
   min-height: 0;
   width: 100%;
+}
+body.light .git-ui-panel {
+  --git-log-main: #2150ae;
+  --git-log-origin: #92400e;
+  --git-log-current: #b91c1c;
 }
 
 .git-ui-panel.mutating button {

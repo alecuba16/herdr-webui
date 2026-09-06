@@ -22,6 +22,10 @@ e2e:
 git-e2e:
     scripts/e2e/run-git-e2e.sh
 
+# Real-browser acceptance run for the theme system. See scripts/e2e/README.md.
+theme-e2e:
+    scripts/e2e/run-theme-e2e.sh
+
 check: lint test
 
 build:

@@ -61,6 +61,7 @@ function context(pathname = "/", options = {}) {
     },
     document: {
       body: element("body"),
+      documentElement: element("html"),
       createElement: () => element(),
       getElementById: getElement,
       querySelectorAll: (selector) =>

@@ -856,7 +856,7 @@ function themeCustomizerHtml() {
           `<label><span>${label}</span><input class="theme-color-input" type="color" data-theme-mode="${mode}" data-theme-key="${key}" id="${themeColorInputId(mode, key)}"></label>`,
       )
       .join("");
-  return `<div class="theme-customizer"><div><strong>Theme colors</strong><small>Saved in this browser. Uses current defaults as reset reference.</small></div><div class="theme-customizer-actions"><label><span>Profile</span><select class="settings-select" id="themeColorProfile"><option value="default">Default</option><option value="catppuccin">Catppuccin</option><option value="tokyo">Tokyo Night</option><option value="nord">Nord</option></select></label><button type="button" class="tab add" id="themeColorsApplyProfile">Apply profile</button><button type="button" class="tab add" id="themeColorsApply">Apply / reload UI</button><button type="button" class="tab add" id="themeColorsReset">Reset theme colors</button></div><div class="theme-customizer-grid"><section><h3>Dark</h3>${rows("dark")}</section><section><h3>Light</h3>${rows("light")}</section></div></div>`;
+  return `<div class="theme-customizer"><div><strong>Theme colors</strong><small>Saved in this browser. Uses current defaults as reset reference.</small></div><div class="theme-customizer-actions"><label><span>Profile</span><select class="settings-select" id="themeColorProfile"><option value="default">Default</option><option value="catppuccin">Catppuccin</option><option value="tokyo">Tokyo Night</option><option value="nord">Nord</option><option value="dracula">Dracula</option><option value="monokai">Monokai</option><option value="apple">Apple</option></select></label><button type="button" class="tab add" id="themeColorsApplyProfile">Apply profile</button><button type="button" class="tab add" id="themeColorsApply">Apply / reload UI</button><button type="button" class="tab add" id="themeColorsReset">Reset theme colors</button></div><div class="theme-customizer-grid"><section><h3>Dark</h3>${rows("dark")}</section><section><h3>Light</h3>${rows("light")}</section></div></div>`;
 }
 function serverSettingsHtml() {
   return `<div class="server-settings"><section class="settings-section"><div class="settings-section-head"><h3>Network access</h3><p>Saved in ~/.config/herdr-webui/webui-settings.json. Changing Bind restarts the WebUI listener.</p></div><label class="option"><span>Bind address<small>Use 127.0.0.1:8787 for local only or 0.0.0.0:8787 for LAN/public access.</small></span><input id="optServerBind" placeholder="127.0.0.1:8787"></label><label class="option"><span>Username<small>Required when binding outside localhost.</small></span><input id="optServerUser" autocomplete="username"></label><label class="option"><span>Password<small>Required when binding outside localhost. Leave blank to keep current password.</small></span><input id="optServerPassword" type="password" autocomplete="new-password"></label><label class="option"><input type="checkbox" id="optServerLocalBypass"><span>Allow localhost without login<small>Only applies to loopback requests.</small></span></label></section><section class="settings-section"><div class="settings-section-head"><h3>Backend</h3><p>Switch between external Herdr and the built-in terminal backend. Restart WebUI after changing backend mode.</p></div><label class="option"><span>Backend mode<small>Built-in is the default and starts local PTYs from this WebUI process. External Herdr uses Herdr sockets. Auto uses Herdr when available, otherwise built-in.</small></span><select class="settings-select" id="optBackendMode"><option value="builtin">Built-in terminal backend</option><option value="external-herdr">External Herdr</option><option value="auto">Auto</option></select></label><label class="option"><input type="checkbox" id="optBuiltinBackendEnabled"><span>Enable built-in backend<small>Allows local PTY sessions managed by this WebUI process.</small></span></label><label class="option"><input type="checkbox" id="optExternalHerdrBackendEnabled"><span>Enable external Herdr<small>Allows detecting and explicitly launching external Herdr sessions. Discovery stays passive until you create one.</small></span></label><label class="option"><span>Built-in shell<small>Optional shell or command path for new built-in panes. Leave empty for SHELL or /bin/zsh.</small></span><input id="optBuiltinShell" placeholder="/bin/zsh"></label><label class="option"><span>Default folder<small>Used by Files, Git, and temporary terminals when no workspace is selected. The backend verifies access and falls back to home.</small></span><input id="optDefaultFolder" placeholder="~"></label></section><section class="settings-section"><div class="settings-section-head"><h3>Power behavior</h3><p>Server-side sleep prevention defaults.</p></div><label class="option"><span>No-sleep Auto cooldown<small>Seconds to wait after agents stop working before releasing no-sleep.</small></span><input id="optNoSleepAutoCooldown" type="number" min="0" max="3600" step="1"></label></section><div class="worktree-error" id="serverSettingsError"></div><div class="modal-actions"><button type="button" class="tab add" id="serverSettingsLoad">Reload server settings</button><button type="button" class="btn" id="serverSettingsApply">Apply server settings</button></div></div>`;
@@ -868,9 +868,9 @@ const themes = {
   dark: {
     background: "#11111b",
     foreground: "#cdd6f4",
-    cursor: "#1e66f5",
-    cursorAccent: "#ffffff",
-    selectionBackground: "#1e66f5aa",
+    cursor: "#89b4fa",
+    cursorAccent: "#11111b",
+    selectionBackground: "#89b4faaa",
     black: "#6c7086",
     brightBlack: "#9399b2",
     red: "#f38ba8",
@@ -885,17 +885,17 @@ const themes = {
   light: {
     background: "#eff1f5",
     foreground: "#4c4f69",
-    cursor: "#1e66f5",
+    cursor: "#1957d2",
     cursorAccent: "#ffffff",
-    selectionBackground: "#1e66f599",
+    selectionBackground: "#1957d299",
     black: "#5c5f77",
     brightBlack: "#6c6f85",
-    red: "#d20f39",
-    green: "#40a02b",
-    yellow: "#df8e1d",
-    blue: "#1e66f5",
-    magenta: "#8839ef",
-    cyan: "#179299",
+    red: "#be1239",
+    green: "#116329",
+    yellow: "#91600a",
+    blue: "#1957d2",
+    magenta: "#6d28d9",
+    cyan: "#0a5a86",
     white: "#acb0be",
     brightWhite: "#4c4f69",
   },
@@ -922,8 +922,8 @@ const themeColorDefaults = {
     border2: "#45475a",
     muted: "#a6adc8",
     accent: "#89b4fa",
-    cursor: "#1e66f5",
-    selectionBackground: "#1e66f5",
+    cursor: "#89b4fa",
+    selectionBackground: "#89b4fa",
   },
   light: {
     background: "#eff1f5",
@@ -931,11 +931,11 @@ const themeColorDefaults = {
     panel: "#e6e9ef",
     panel2: "#ccd0da",
     border: "#bcc0cc",
-    border2: "#9ca0b0",
-    muted: "#6c6f85",
-    accent: "#1e66f5",
-    cursor: "#1e66f5",
-    selectionBackground: "#1e66f5",
+    border2: "#7a8296",
+    muted: "#525769",
+    accent: "#1957d2",
+    cursor: "#1957d2",
+    selectionBackground: "#1957d2",
   },
 };
 const themeColorProfiles = {
@@ -950,20 +950,20 @@ const themeColorProfiles = {
       border2: "#45475a",
       muted: "#a6adc8",
       accent: "#89b4fa",
-      cursor: "#1e66f5",
-      selectionBackground: "#1e66f5",
+      cursor: "#89b4fa",
+      selectionBackground: "#89b4fa",
     },
     light: {
       background: "#eff1f5",
-      foreground: "#4c4f69",
+      foreground: "#363a4f",
       panel: "#e6e9ef",
       panel2: "#ccd0da",
       border: "#bcc0cc",
-      border2: "#9ca0b0",
-      muted: "#6c6f85",
-      accent: "#1e66f5",
-      cursor: "#1e66f5",
-      selectionBackground: "#1e66f5",
+      border2: "#7a8296",
+      muted: "#525769",
+      accent: "#1957d2",
+      cursor: "#1957d2",
+      selectionBackground: "#1957d2",
     },
   },
   tokyo: {
@@ -1016,6 +1016,84 @@ const themeColorProfiles = {
       accent: "#5e81ac",
       cursor: "#5e81ac",
       selectionBackground: "#5e81ac",
+    },
+  },
+  dracula: {
+    dark: {
+      background: "#282a36",
+      foreground: "#f8f8f2",
+      panel: "#21222c",
+      panel2: "#343746",
+      border: "#44475a",
+      border2: "#6272a4",
+      muted: "#b7bce0",
+      accent: "#bd93f9",
+      cursor: "#bd93f9",
+      selectionBackground: "#bd93f9",
+    },
+    light: {
+      background: "#f8f8f2",
+      foreground: "#282a36",
+      panel: "#eff0eb",
+      panel2: "#e3e4d8",
+      border: "#c5c6b0",
+      border2: "#82839a",
+      muted: "#565f89",
+      accent: "#8f4cd9",
+      cursor: "#8f4cd9",
+      selectionBackground: "#8f4cd9",
+    },
+  },
+  monokai: {
+    dark: {
+      background: "#272822",
+      foreground: "#f8f8f2",
+      panel: "#1e1f1c",
+      panel2: "#3e3d32",
+      border: "#49483e",
+      border2: "#75715e",
+      muted: "#b8b294",
+      accent: "#66d9ef",
+      cursor: "#f8f8f2",
+      selectionBackground: "#66d9ef",
+    },
+    light: {
+      background: "#f2eeea",
+      foreground: "#444155",
+      panel: "#eae6e1",
+      panel2: "#dcd8d3",
+      border: "#c9c5c0",
+      border2: "#84817d",
+      muted: "#5c5a57",
+      accent: "#017085",
+      cursor: "#017085",
+      selectionBackground: "#017085",
+    },
+  },
+  apple: {
+    dark: {
+      background: "#1c1c1e",
+      foreground: "#f5f5f7",
+      panel: "#242426",
+      panel2: "#2c2c2e",
+      border: "#3a3a3c",
+      border2: "#717175",
+      muted: "#98989d",
+      accent: "#0a84ff",
+      cursor: "#0a84ff",
+      selectionBackground: "#0a84ff",
+    },
+    light: {
+      background: "#f5f5f7",
+      foreground: "#1d1d1f",
+      panel: "#ececef",
+      panel2: "#dcdce0",
+      border: "#c7c7cc",
+      border2: "#848489",
+      muted: "#6e6e73",
+      accent: "#0069d9",
+      cursor: "#0069d9",
+      selectionBackground: "#0069d9",
     },
   },
 };
@@ -2178,8 +2256,9 @@ function applyThemeColorProfile(name) {
   render();
 }
 function effectiveTheme() {
-  if (themeMode === "dark") return "dark";
-  if (themeMode === "light") return "light";
+  const mode = normalizeThemeMode(themeMode);
+  if (mode === "dark") return "dark";
+  if (mode === "light") return "light";
   if (window.matchMedia)
     return window.matchMedia("(prefers-color-scheme: dark)").matches
       ? "dark"
@@ -2214,29 +2293,41 @@ function applyTheme() {
   lastEffectiveTheme = current;
   const light = current === "light";
   document.body.classList.toggle("light", light);
+  document.documentElement.dataset.herdrTheme = current;
   applyThemeColorVars(current);
   const toggle = el("themeToggle");
   if (toggle) {
     toggle.textContent =
       themeMode === "auto" ? "A" : themeMode === "dark" ? "☾" : "☀";
-    toggle.title = "Theme: " + themeMode + " (" + current + ")";
+    toggle.dataset.themeMode = themeMode;
+    toggle.dataset.effectiveTheme = current;
+    toggle.title = themeModeTitle(current);
+    toggle.setAttribute("aria-pressed", light ? "true" : "false");
+    toggle.setAttribute(
+      "aria-label",
+      "Theme: " + themeMode + ", currently " + current + ". Activate to switch.",
+    );
   }
   const themeSelect = el("optTheme");
   if (themeSelect) themeSelect.value = themeMode;
   localStorage.setItem("herdr-web-theme", themeMode);
   if (term && term.setTheme) term.setTheme(terminalTheme());
+  if (tempTerminal && tempTerminal.applyTheme) tempTerminal.applyTheme();
+  if (window.HerdrMarkdownPreview && window.HerdrMarkdownPreview.refreshTheme)
+    window.HerdrMarkdownPreview.refreshTheme();
   fitTerminalShell();
+}
+function themeModeTitle(current) {
+  if (themeMode === "auto")
+    return "Theme: auto (currently " + current + ") - follows system. Activate for dark.";
+  if (themeMode === "dark") return "Theme: dark. Activate for light.";
+  return "Theme: light. Activate for auto (follows system).";
 }
 function applyThemeColorVars(mode) {
   const colors = options.themeColors[mode] || themeColorDefaults[mode];
   for (const [key, , cssVar] of themeColorFields) {
     if (cssVar) document.body.style.setProperty(cssVar, colors[key]);
   }
-}
-function pollAutoTheme() {
-  if (themeMode !== "auto") return;
-  const current = effectiveTheme();
-  if (current !== lastEffectiveTheme) applyTheme();
 }
 function el(id) {
   return document.getElementById(id);

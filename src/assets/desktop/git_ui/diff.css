@@ -155,13 +155,13 @@
   gap: 6px;
 }
 .git-ui-editor-preview.del .git-ui-editor-line {
-  background: rgba(248, 81, 73, 0.18);
-  border-left: 4px solid #da3633;
+  background: color-mix(in srgb, var(--git-diff-del), transparent 82);
+  border-left: 4px solid var(--git-diff-del);
 }
 .git-ui-hunk-edit {
-  background: rgba(46, 160, 67, 0.1);
+  background: color-mix(in srgb, var(--git-diff-add), transparent 90);
   border: 0;
-  border-left: 4px solid #1b7c3d;
+  border-left: 4px solid var(--git-diff-add);
   box-sizing: border-box;
   color: var(--fg);
   display: block;
@@ -193,8 +193,8 @@
   padding: 0 4px;
 }
 .git-ui-editor-line.changed {
-  background: rgba(248, 81, 73, 0.18);
-  border-left: 4px solid #da3633;
+  background: color-mix(in srgb, var(--git-diff-del), transparent 82);
+  border-left: 4px solid var(--git-diff-del);
   padding-left: 8px;
 }
 .git-ui-editor-stack {
@@ -214,8 +214,8 @@
   top: 0;
 }
 .git-ui-editor-bands span {
-  background: rgba(46, 160, 67, 0.18);
-  border-left: 4px solid #1b7c3d;
+  background: color-mix(in srgb, var(--git-diff-add), transparent 82);
+  border-left: 4px solid var(--git-diff-add);
   height: calc(var(--line-count) * 1.5em);
   left: 0;
   position: absolute;
@@ -241,8 +241,8 @@
   padding: 8px 10px;
 }
 .git-ui-side-edit-note.error {
-  border-color: #da3633;
-  color: #da3633;
+  border-color: var(--git-diff-del);
+  color: var(--git-diff-del);
 }
 .git-ui-diff-file-head {
   align-items: center;
@@ -523,23 +523,23 @@
 .git-ui-add .git-ui-code-new,
 .git-ui-change .git-ui-code-new,
 .git-ui-add .git-ui-code-unified {
-  background: rgba(46, 160, 67, 0.18);
-  border-left: 4px solid #1b7c3d;
+  background: color-mix(in srgb, var(--git-diff-add), transparent 82);
+  border-left: 4px solid var(--git-diff-add);
 }
 .git-ui-del .git-ui-code-old,
 .git-ui-change .git-ui-code-old,
 .git-ui-del .git-ui-code-unified {
-  background: rgba(248, 81, 73, 0.18);
-  border-left: 4px solid #da3633;
+  background: color-mix(in srgb, var(--git-diff-del), transparent 82);
+  border-left: 4px solid var(--git-diff-del);
 }
 .git-ui-add .git-ui-word-change,
 .git-ui-change .git-ui-code-new .git-ui-word-change {
-  background: rgba(46, 160, 67, 0.42);
+  background: color-mix(in srgb, var(--git-diff-add), transparent 58);
   border-radius: 2px;
 }
 .git-ui-del .git-ui-word-change,
 .git-ui-change .git-ui-code-old .git-ui-word-change {
-  background: rgba(248, 81, 73, 0.36);
+  background: color-mix(in srgb, var(--git-diff-del), transparent 64);
   border-radius: 2px;
 }
 .git-ui-search-match {
@@ -550,14 +550,14 @@
 }
 .git-ui-hunk-old-mount .git-ui-side-line-del,
 .git-ui-hunk-current-mount .git-ui-side-line-del {
-  background: rgba(248, 81, 73, 0.14);
-  border-left: 4px solid #da3633;
+  background: color-mix(in srgb, var(--git-diff-del), transparent 86);
+  border-left: 4px solid var(--git-diff-del);
 }
 .git-ui-hunk-old-mount .git-ui-side-line-add,
 .git-ui-hunk-current-mount .git-ui-side-line-add {
-  background: rgba(46, 160, 67, 0.14);
-  border-left: 4px solid #1b7c3d;
+  background: color-mix(in srgb, var(--git-diff-add), transparent 86);
+  border-left: 4px solid var(--git-diff-add);
 }
 .git-ui-hunk-current-mount .git-ui-side-line-edit {
-  background: rgba(251, 191, 36, 0.22);
+  background: color-mix(in srgb, var(--git-changed-color), transparent 78);
 }

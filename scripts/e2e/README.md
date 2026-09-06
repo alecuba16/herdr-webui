@@ -70,3 +70,26 @@ What it verifies on a throwaway dirty repo:
 | `E2E_PORT`  | `8898`  | HTTPS port of the isolated server  |
 
 Run it locally with `just git-e2e` (also not wired into CI).
+
+## Theme system acceptance
+
+`just theme-e2e` (or `scripts/e2e/run-theme-e2e.sh`) covers the theme system
+in a real browser over CDP. It boots the isolated server plus headless
+Chrome, emulates `prefers-color-scheme` flips, and drives the real UI:
+
+- auto mode follows the emulated system preference
+- the toggle cycles auto -> dark -> light -> auto and updates
+  `aria-pressed`, `aria-label`, `title`, and `data-herdr-theme` in sync
+- light mode applies immediately (a regression where the effective theme
+  lagged one click behind the toggle was caught here)
+- auto mode re-resolves live when the system theme flips
+- the settings `Default theme` select drives the same state machine
+- the choice persists across reload
+- body text contrast is measured on the actually rendered light palette
+
+| Variable    | Default | Meaning                              |
+| ----------- | ------- | ------------------------------------ |
+| `E2E_PORT`  | `8897`  | HTTPS port of the isolated server    |
+| `CDP_PORT`  | `9222`  | Chrome remote debugging port         |
+
+Run it locally; it is also kept as a pre-merge manual gate (not in CI).
