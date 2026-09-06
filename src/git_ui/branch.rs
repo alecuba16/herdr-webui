@@ -131,69 +131,6 @@ pub(super) fn parse_worktree_branch_paths(raw: &str) -> HashMap<String, String> 
     paths
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn split_branch_tip_details_parses_all_fields() {
-        let (author, date, subject) =
-            split_branch_tip_details("Ada\02026-09-01T10:00:00+02:00\0fix the thing");
-        assert_eq!(author, "Ada");
-        assert_eq!(date, "2026-09-01T10:00:00+02:00");
-        assert_eq!(subject, "fix the thing");
-        let (author, date, subject) = split_branch_tip_details("Ada");
-        assert_eq!(author, "Ada");
-        assert_eq!(date, "");
-        assert_eq!(subject, "");
-    }
-
-    #[test]
-    fn branches_payload_includes_author_and_date() {
-        let root =
-            std::env::temp_dir().join(format!("herdr-webui-branch-details-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
-        let output = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&root)
-            .args(["init", "-b", "main"])
-            .output()
-            .unwrap();
-        assert!(output.status.success());
-        for args in [
-            ["config", "user.email", "t@t"],
-            ["config", "user.name", "T"],
-        ] {
-            let out = std::process::Command::new("git")
-                .arg("-C")
-                .arg(&root)
-                .args(&args)
-                .output()
-                .unwrap();
-            assert!(out.status.success());
-        }
-        std::fs::write(root.join("a.txt"), "base\n").unwrap();
-        for args in [vec!["add", "-A"], vec!["commit", "-m", "hello"]] {
-            let out = std::process::Command::new("git")
-                .arg("-C")
-                .arg(&root)
-                .args(args)
-                .output()
-                .unwrap();
-            assert!(out.status.success());
-        }
-        let details = branch_tip_details(root.to_str().unwrap(), "refs/heads/main");
-        assert!(details.is_some());
-        let (author, date, subject) = split_branch_tip_details(&details.unwrap());
-        assert_eq!(author, "T");
-        assert!(date.starts_with("20"), "date: {date}");
-        assert_eq!(subject, "hello");
-
-        let _ = std::fs::remove_dir_all(&root);
-    }
-}
-
 pub(super) async fn git_ui_branches(
     State(state): State<WebState>,
     headers: HeaderMap,
@@ -337,5 +274,73 @@ pub(super) async fn git_ui_switch(
         Ok(Ok(response)) => response,
         Ok(Err((status, msg))) => git_json_error(status, msg),
         Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_branch_tip_details_parses_all_fields() {
+        let (author, date, subject) = split_branch_tip_details(concat!(
+            "Ada",
+            '\u{0}',
+            "2026-09-01T10:00:00+02:00",
+            '\u{0}',
+            "fix the thing"
+        ));
+        assert_eq!(author, "Ada");
+        assert_eq!(date, "2026-09-01T10:00:00+02:00");
+        assert_eq!(subject, "fix the thing");
+        let (author, date, subject) = split_branch_tip_details("Ada");
+        assert_eq!(author, "Ada");
+        assert_eq!(date, "");
+        assert_eq!(subject, "");
+    }
+
+    #[test]
+    fn branches_payload_includes_author_and_date() {
+        let root =
+            std::env::temp_dir().join(format!("herdr-webui-branch-details-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["init", "-b", "main"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        for args in [
+            ["config", "user.email", "t@t"],
+            ["config", "user.name", "T"],
+        ] {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success());
+        }
+        std::fs::write(root.join("a.txt"), "base\n").unwrap();
+        for args in [vec!["add", "-A"], vec!["commit", "-m", "hello"]] {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success());
+        }
+        let details = branch_tip_details(root.to_str().unwrap(), "refs/heads/main");
+        assert!(details.is_some());
+        let (author, date, subject) = split_branch_tip_details(&details.unwrap());
+        assert_eq!(author, "T");
+        assert!(date.starts_with("20"), "date: {date}");
+        assert_eq!(subject, "hello");
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
