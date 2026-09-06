@@ -1779,6 +1779,23 @@ describe("desktop file browser editor integration", () => {
     context.window.HerdrFileBrowser.closeFile(encodeURIComponent("src/demo.py"));
     assert.equal(confirmResults.length, 2);
     assert.equal(openTabCount(), 0, "confirmed close removes the tab");
+
+    // The tab context-menu "close" action carries its own duplicated guard;
+    // it must behave identically (declined keeps the tab, confirmed closes).
+    await context.window.HerdrFileBrowser.select(encodeURIComponent("src/demo.py"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    context.window.HerdrFileBrowser.edit(encodeURIComponent("src/demo.py"));
+    editorCalls.at(-1).onChange("print('dirty draft 2')");
+    confirmAnswer = false;
+    context.window.HerdrFileBrowser.tabMenu({ preventDefault() {}, stopPropagation() {}, clientX: 1, clientY: 1 }, encodeURIComponent("src/demo.py"));
+    context.window.HerdrFileBrowser.menuAction("close");
+    assert.equal(confirmResults.at(-1), false, "menu close asked for confirmation");
+    assert.ok(openTabCount() >= 1, "declined menu close keeps the dirty tab open");
+    confirmAnswer = true;
+    context.window.HerdrFileBrowser.tabMenu({ preventDefault() {}, stopPropagation() {}, clientX: 1, clientY: 1 }, encodeURIComponent("src/demo.py"));
+    context.window.HerdrFileBrowser.menuAction("close");
+    assert.equal(confirmResults.at(-1), true, "confirmed menu close");
+    assert.equal(openTabCount(), 0, "confirmed menu close removes the tab");
   });
 
   it("hides tab menu actions for binary and truncated files", async () => {

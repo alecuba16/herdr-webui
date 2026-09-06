@@ -37,10 +37,20 @@ Priority: P0 must land in this review, P1 should land, P2 next iteration.
   Real-browser e2e (mobile-edit-acceptance.mjs, 52/52): toggle renders on
   the live preview, click opens the toolbar, typing finds and counts 1/1.
   418 JS + 377 Rust pass, fmt clean, clippy 0.
-- [ ] **A2 (P0, D)** No unsaved-changes guard when closing a tab via the tab `✕`:
+- [x] **A2 (P0, D)** No unsaved-changes guard when closing a tab via the tab `✕`:
   desktop uses `confirm()` for the lock-discard path but the tab close path only
   checks `dirty` in some flows. Verify: dirty tab close asks to save/discard,
   split panes included. Add a regression test.
+  DONE (verified already fixed in `0e488ec` + widened coverage): every close
+  path guards dirty files — `closeFile` (used by ALL tab `✕` buttons, single
+  and split panes, lines 705/731) asks `Close <path> with unsaved changes?`
+  and returns on decline; the tab context-menu "close" action carries the
+  same guard; `cancelEdit` and the lock path likewise confirm. The
+  regression test existed since `0e488ec` ("keeps a dirty tab when close
+  confirmation is declined and closes it when confirmed"); this review
+  extended it to lock the duplicated context-menu close guard as well
+  (declined keeps the tab, confirmed closes). Split panes share the same
+  markup callback, so they are covered by the same path. 419 JS pass.
 - [ ] **A3 (P1, D)** `loadFile` opens a duplicate fetch when the same path is
   opened from content-search twice (`openFile` mode "append" pushes a second
   file object with same path, `state.files.some(...)` only short-circuits the
