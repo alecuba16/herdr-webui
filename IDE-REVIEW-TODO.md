@@ -212,11 +212,33 @@ Priority: P0 must land in this review, P1 should land, P2 next iteration.
   377 Rust pass, fmt clean, 20/20 acceptance e2e. Out of scope:
   `mountContentSearchEditors` (snippet editing) is unreachable dead code —
   see D6.
-- [ ] **C5 (P2, B/P)** The desktop preview fallback path (`previewHtml` with
+- [x] **C5 (P2, B/P)** The desktop preview fallback path (`previewHtml` with
   line numbers + regex highlight) is heavy JS for big files; when CodeMirror is
   available it is unused. Gate the numbered-preview path to files < 256 KB and
   add backend `?render=lines` returning pre-joined gutter/code HTML for larger
   readonly previews (reuse for mobile read-only preview too).
+  DONE: `GET /api/file-browser/file?render=lines` now returns
+  `lines_gutter_html` + `lines_code_html` built once in Rust
+  (`numbered_lines_html`, escaping via the existing `escape_html`; unit test
+  covers gutter numbering, `<` escaping, and empty-content single-line
+  parity with the browser's split). Desktop `loadFile`/`reloadFile` and
+  mobile `openFile` request `render=lines`, normalize it into
+  `file.linesHtml`, and pass `{linesHtml, size}` into `HerdrEditor.create`;
+  desktop's editor-cache signature includes `linesHtml` so a reload with
+  changed prebuilt HTML recreates the view. `previewHtml` prefers prebuilt
+  markup, falls back to client-side building only under 256 KB
+  (`MAX_CLIENT_NUMBERED_PREVIEW_BYTES`), and renders a size hint above the
+  gate (new `.herdr-editor-too-large` wrapper so the hint is
+  distinguishable from real numbered markup in tests). Note: the fallback
+  only renders when CodeMirror fails to load (app_boot preloads it), and
+  `HerdrGitSyntax` is desktop-git-ui-lazy, so the fallback usually shows
+  plain-escaped code; the 256 KB gate plus backend prebuilt HTML makes that
+  path safe for large files on both layouts. Measured (vm, 512 KB / 20k-line
+  file, 3 stable runs): ~5.5 ms per preview render -> ~0.01 ms with prebuilt
+  inject. Real-browser e2e (new check, 21/21): `?render=lines` returns the
+  numbered gutter and Rust-escaped code matching an in-page escape of the
+  content. 412 JS + 377 Rust pass, fmt clean, clippy 0, mobile-edit 49/49,
+  LSP 20/20, git + content-search + theme e2e green.
 - [ ] **C6 (P2, B/P)** Git log graph lane computation (`git_ui/log.js`,
   `log_graph.rs` exists) — verify lane assignment is computed in Rust already;
   if the JS recomputes lanes or dots, move it into `log_graph.rs` and ship

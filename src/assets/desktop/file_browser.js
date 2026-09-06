@@ -427,8 +427,9 @@
         return;
       }
       renderIfActive(target, true);
-      const file = await api(`/api/file-browser/file?cwd=${encodeURIComponent(target.cwd)}&path=${encodeURIComponent(path)}`);
-      const nextFile = Object.assign(file, { draft: file.content || "", editing: true, dirty: false, saving: false, error: "", searchHighlight: searchHighlight || null, previewSource: !!searchHighlight });
+      const file = await api(`/api/file-browser/file?cwd=${encodeURIComponent(target.cwd)}&path=${encodeURIComponent(path)}&render=lines`);
+      const linesHtml = file.lines_gutter_html != null && file.lines_code_html != null ? { gutter: file.lines_gutter_html, code: file.lines_code_html } : null;
+      const nextFile = Object.assign(file, { draft: file.content || "", editing: true, dirty: false, saving: false, error: "", searchHighlight: searchHighlight || null, previewSource: !!searchHighlight, linesHtml });
       if (mode === "split") {
         target.files.push(nextFile);
         target.split = true;
@@ -850,6 +851,7 @@
       searchHighlight: file.searchHighlight || null,
       lineNumbers: lineNumbersEnabled(),
       options: configured,
+      linesHtml: file.linesHtml || null,
     });
   }
 
@@ -909,6 +911,8 @@
         whitespace: configured.whitespace,
         markdownPreview: !file.previewSource,
         searchHighlight: file.searchHighlight || null,
+        linesHtml: file.editing ? null : file.linesHtml || null,
+        size: file.size,
         onChange(value) {
           file.draft = value;
           file.dirty = value !== (file.content || "");
@@ -1121,7 +1125,7 @@
     const index = state.files.findIndex((file) => file.path === path);
     if (index < 0) return loadFile(path);
     const keepEditing = !!state.files[index].editing;
-    const next = await api(`/api/file-browser/file?cwd=${encodeURIComponent(state.cwd)}&path=${encodeURIComponent(path)}`);
+    const next = await api(`/api/file-browser/file?cwd=${encodeURIComponent(state.cwd)}&path=${encodeURIComponent(path)}&render=lines`);
     state.files[index] = Object.assign(next, { draft: next.content || "", editing: keepEditing, dirty: false, saving: false, error: "" });
     state.selected = path;
     render();

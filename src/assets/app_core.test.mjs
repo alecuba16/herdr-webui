@@ -530,6 +530,45 @@ describe("HerdrEditor line number helpers", () => {
     assert.doesNotMatch(html, /herdr-editor-numbered-code/);
   });
 
+  it("prefers backend-prebuilt numbered preview HTML and gates client-built previews at 256 KB (C5)", async () => {
+    const source = readFileSync(new URL("./shared/editor.js", import.meta.url), "utf8");
+    const boot = () => {
+      const parent = { innerHTML: "", querySelector() { return null; } };
+      const context = { window: {}, document: { createElement() { return {}; }, body: { appendChild(script) { script.onerror(); } } }, Promise };
+      vm.runInNewContext(source, context);
+      return { parent, create: (opts) => context.window.HerdrEditor.create(Object.assign({ parent, path: "big.log", content: "a\nb", readonly: true }, opts)) };
+    };
+
+    // Prebuilt backend HTML is injected verbatim (already escaped in Rust).
+    let env = boot();
+    env.create({ linesHtml: { gutter: "<span>1</span><span>2</span>", code: "a&lt;b\nb" } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.match(env.parent.innerHTML, /herdr-editor-numbered-code/);
+    assert.match(env.parent.innerHTML, /<span>1<\/span><span>2<\/span>/);
+    assert.match(env.parent.innerHTML, /a&lt;b/);
+
+    // Files larger than the gate without prebuilt HTML render a size hint
+    // instead of building per-line HTML on the main thread.
+    env = boot();
+    env.create({ size: 512 * 1024, content: "x".repeat(512 * 1024) });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.match(env.parent.innerHTML, /File too large for the fallback preview \(512\.0 KB\)/);
+    assert.doesNotMatch(env.parent.innerHTML, /herdr-editor-numbered-code/);
+
+    // Small files still build the numbered preview client-side.
+    env = boot();
+    env.create({ size: 2048, content: "a\nb" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.match(env.parent.innerHTML, /herdr-editor-numbered-code/);
+    assert.match(env.parent.innerHTML, /<span>1<\/span><span>2<\/span>/);
+
+    // Gated preview keeps a working editor api (find toolbar wiring intact).
+    env = boot();
+    const api = env.create({ size: 512 * 1024, content: "x".repeat(512 * 1024) });
+    assert.equal(typeof api.getValue, "function");
+    assert.equal(api.getValue().length, 512 * 1024);
+  });
+
   it("wires a working editor api in the CodeMirror-load-failure fallback", async () => {
     const textarea = { value: "a\nb", addEventListener() {}, focus() {}, setSelectionRange() {} };
     const toolbar = { hidden: true, querySelector() { return null; } };

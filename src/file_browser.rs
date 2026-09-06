@@ -73,6 +73,10 @@ struct FileBrowserQuery {
     offset: Option<usize>,
     limit: Option<usize>,
     include_git_status: Option<bool>,
+    // "lines" asks the backend to also build the numbered read-only preview
+    // markup (gutter + escaped code HTML) so the browser does not have to
+    // escape and join per-line HTML on the main thread.
+    render: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1361,15 +1365,44 @@ async fn file_browser_file(
         Ok(hash) => hash,
         Err(err) => return file_browser_json_error(StatusCode::BAD_GATEWAY, err),
     };
-    Json(json!({
+    let mut payload = json!({
         "path": rel,
         "content": content,
         "hash": hash,
         "binary": false,
         "truncated": false,
         "size": metadata.len(),
-    }))
-    .into_response()
+    });
+    if query.render.as_deref() == Some("lines") {
+        // Numbered read-only preview: the gutter and the escaped code lines
+        // are prebuilt here (one pass in Rust) instead of per-render string
+        // building in the browser. The frontend gates this to files it would
+        // otherwise render through the fallback numbered preview.
+        let (gutter, code) = numbered_lines_html(payload["content"].as_str().unwrap_or(""));
+        payload["lines_gutter_html"] = json!(gutter);
+        payload["lines_code_html"] = json!(code);
+    }
+    Json(payload).into_response()
+}
+
+// Builds the two <pre> bodies used by the fallback numbered preview: the
+// gutter (one <span> per line number) and the escaped code. The browser
+// injects these strings directly; escaping happened here.
+fn numbered_lines_html(content: &str) -> (String, String) {
+    let mut gutter = String::new();
+    let mut code = String::new();
+    for (index, line) in content.split('\n').enumerate() {
+        gutter.push_str("<span>");
+        gutter.push_str(&(index + 1).to_string());
+        gutter.push_str("</span>");
+        code.push_str(&escape_html(line));
+        code.push('\n');
+    }
+    // The trailing newline belongs to the line list, not the markup.
+    if code.ends_with('\n') {
+        code.pop();
+    }
+    (gutter, code)
 }
 
 async fn file_browser_write_file(
@@ -1642,6 +1675,18 @@ async fn file_browser_delete(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn numbered_lines_html_builds_gutter_and_escaped_code() {
+        let (gutter, code) = numbered_lines_html("fn main() {\n    let x = 1 < 2;\n}");
+        assert_eq!(gutter, "<span>1</span><span>2</span><span>3</span>");
+        assert_eq!(code, "fn main() {\n    let x = 1 &lt; 2;\n}");
+        // Empty content renders a single empty line, mirroring the browser's
+        // "".split("\n") behavior.
+        let (gutter, code) = numbered_lines_html("");
+        assert_eq!(gutter, "<span>1</span>");
+        assert_eq!(code, "");
+    }
 
     #[test]
     fn clean_relative_path_rejects_escape() {

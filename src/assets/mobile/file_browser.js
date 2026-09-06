@@ -267,8 +267,9 @@
       deps.render();
       try {
         local.error = "";
-        local.file = await deps.api(`/api/file-browser/file?cwd=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}`);
+        local.file = await deps.api(`/api/file-browser/file?cwd=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}&render=lines`);
         local.file.searchHighlight = searchHighlight || null;
+        local.file.linesHtml = local.file.lines_gutter_html != null && local.file.lines_code_html != null ? { gutter: local.file.lines_gutter_html, code: local.file.lines_code_html } : null;
       } catch (error) {
         local.error = error.message || String(error);
       }
@@ -750,7 +751,7 @@
           if (local.editing) {
             Editor.create({ parent, path: local.file.path, content: local.draft || local.file.content || "", readonly: false, hideHeader: true, lineNumbers: lineNumbersEnabled(), wordWrap: configured.wordWrap, tabSize: configured.tabSize, bracketMatching: configured.bracketMatching, folding: configured.folding, activeLine: configured.activeLine, whitespace: configured.whitespace, markdownPreview: false, onChange(value) { local.draft = value; local.dirty = value !== (local.file.content || ""); syncPreviewDirtyState(); lspDidChange(local.file.path, value); } });
           } else {
-            Editor.create({ parent, path: local.file.path, content: local.file.content || "", readonly: true, hideHeader: true, lineNumbers: lineNumbersEnabled(), wordWrap: configured.wordWrap, tabSize: configured.tabSize, bracketMatching: configured.bracketMatching, folding: configured.folding, activeLine: configured.activeLine, whitespace: configured.whitespace, markdownPreview: !local.file.searchHighlight, searchHighlight: local.file.searchHighlight || null });
+            Editor.create({ parent, path: local.file.path, content: local.file.content || "", readonly: true, hideHeader: true, lineNumbers: lineNumbersEnabled(), wordWrap: configured.wordWrap, tabSize: configured.tabSize, bracketMatching: configured.bracketMatching, folding: configured.folding, activeLine: configured.activeLine, whitespace: configured.whitespace, markdownPreview: !local.file.searchHighlight, searchHighlight: local.file.searchHighlight || null, linesHtml: local.file.linesHtml || null, size: local.file.size });
           }
           lspDidOpen(local.file);
         }

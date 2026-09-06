@@ -18,6 +18,14 @@
   mixed byte offsets with UTF-16 indices and could misplace the mark on
   multibyte lines). Older backends without chunks still work: the renderer
   keeps its client-side merge fallback.
+- Read-only fallback previews (shown when the CodeMirror bundle fails to
+  load) now get their numbered gutter and escaped code prebuilt by the
+  backend: `GET /api/file-browser/file?render=lines` returns
+  `lines_gutter_html` and `lines_code_html`, and both desktop and mobile
+  file browsers request it when opening files. The browser-side builder is
+  now capped at 256 KB; larger files without prebuilt markup render a size
+  hint instead of stalling the main thread. Measured on a 512 KB / 20k-line
+  file: ~5.5 ms of per-render string building down to ~0.01 ms.
 - Removed the content-search "edit snippet" dead path (unreachable since the
   search results were redesigned around merged chunks): both layouts kept
   edit/cancel/save handlers and the backend kept a hash-guarded

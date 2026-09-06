@@ -2,6 +2,12 @@
   let codeMirrorPromise = null;
   const FIND_OPTIONS_KEY = "herdr-editor-search-options";
 
+  // Numbered read-only previews built client-side are capped: building
+  // per-line HTML for huge files stalls the main thread. Larger readonly
+  // files must come with backend-prebuilt linesHtml (see previewHtml) or
+  // they render with a size hint instead.
+  const MAX_CLIENT_NUMBERED_PREVIEW_BYTES = 256 * 1024;
+
   function esc(value) {
     return String(value == null ? "" : value)
       .replace(/&/g, "&amp;")
@@ -368,15 +374,39 @@
     const content = String(opts.content || "");
     const head = editorHeaderHtml(opts, opts.path || "Preview");
     const lineNumbers = opts.lineNumbers !== false;
-    const code = lineNumbers ? numberedPreviewHtml(content, opts.path) : `<pre class="herdr-editor-code"><code>${highlight(content, opts.path)}</code></pre>`;
+    const lines = numberedPreviewHtml(content, opts);
+    if (lines === null) {
+      const sizeHint = typeof opts.size === "number" ? ` (${formatBytes(opts.size)})` : "";
+      return `<div class="herdr-editor readonly">${head}${findToolbarHtml(opts)}<div class="herdr-editor-too-large"><div class="file-browser-empty">File too large for the fallback preview${sizeHint}. Use the editor view.</div></div>`;
+    }
+    const code = lines || `<pre class="herdr-editor-code"><code>${highlight(content, opts.path)}</code></pre>`;
     return `<div class="herdr-editor readonly${lineNumbers ? " with-line-numbers" : ""}">${head}${findToolbarHtml(opts)}${code}</div>`;
   }
 
-  function numberedPreviewHtml(content, path) {
-    const lines = String(content || "").split("\n");
-    const gutter = lines.map((_, index) => `<span>${index + 1}</span>`).join("");
-    const code = lines.map((line) => highlight(line, path)).join("\n");
-    return `<div class="herdr-editor-numbered-code"><pre class="herdr-editor-lines" aria-hidden="true">${gutter}</pre><pre class="herdr-editor-code"><code>${code}</code></pre></div>`;
+  function formatBytes(value) {
+    const size = Number(value) || 0;
+    if (size >= 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+    if (size >= 1024) return `${(size / 1024).toFixed(1)} KB`;
+    return `${size} B`;
+  }
+
+  // Returns the numbered-preview markup, or null when the file is too large
+  // to build client-side and no backend-prebuilt HTML was provided.
+  function numberedPreviewHtml(content, opts) {
+    const useLineNumbers = (opts && opts.lineNumbers) !== false;
+    const prebuilt = opts && opts.linesHtml;
+    if (useLineNumbers) {
+      if (prebuilt && prebuilt.gutter != null && prebuilt.code != null) {
+        return `<div class="herdr-editor-numbered-code"><pre class="herdr-editor-lines" aria-hidden="true">${prebuilt.gutter}</pre><pre class="herdr-editor-code"><code>${prebuilt.code}</code></pre></div>`;
+      }
+      const bytes = (opts && opts.size) || content.length;
+      if (bytes > MAX_CLIENT_NUMBERED_PREVIEW_BYTES) return null;
+      const lines = String(content || "").split("\n");
+      const gutter = lines.map((_, index) => `<span>${index + 1}</span>`).join("");
+      const code = lines.map((line) => highlight(line, opts.path)).join("\n");
+      return `<div class="herdr-editor-numbered-code"><pre class="herdr-editor-lines" aria-hidden="true">${gutter}</pre><pre class="herdr-editor-code"><code>${code}</code></pre></div>`;
+    }
+    return "";
   }
 
   function editHtml(opts) {

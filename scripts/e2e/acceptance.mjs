@@ -178,6 +178,27 @@ const unlockParsed = (() => { try { return JSON.parse(unlockRound || '{}'); } ca
 check('unlock click restores editing', unlockParsed.editable === 'true', JSON.stringify(unlockParsed));
 check('lock button inactive when unlocked', unlockParsed.active === false);
 
+// 2b. Backend-prebuilt numbered preview markup (IDE-review C5): the file
+// endpoint with render=lines must return gutter/code HTML built and escaped
+// in Rust so the browser fallback never builds per-line HTML for big files.
+const renderLines = await cdp.evalExpr(`(async () => {
+  const res = await fetch('/api/file-browser/file?cwd=' + encodeURIComponent('${REPO}') + '&path=' + encodeURIComponent('src/demo.py') + '&render=lines');
+  if (!res.ok) return JSON.stringify({ ok: false, status: res.status });
+  const body = await res.json();
+  // The fixture is print('hello') - the single quote must arrive escaped
+  // as &#39; (proving Rust-side escaping) and the gutter must be numbered.
+  const nl = String.fromCharCode(10);
+  const expectedCode = (body.content || '').split(nl).map((line) => line.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/'/g, '&#39;').replace(/"/g, '&quot;')).join(nl);
+  return JSON.stringify({
+    ok: true,
+    hasGutter: typeof body.lines_gutter_html === 'string' && body.lines_gutter_html.startsWith('<span>1</span>'),
+    hasCode: typeof body.lines_code_html === 'string' && body.lines_code_html === expectedCode,
+    truncatedFlag: body.truncated === false,
+  });
+})()`, true);
+const renderParsed = (() => { try { return JSON.parse(renderLines || '{}'); } catch { return { raw: renderLines }; } })();
+check('render=lines returns backend-prebuilt numbered preview HTML (C5)', renderParsed.ok === true && renderParsed.hasGutter === true && renderParsed.hasCode === true, JSON.stringify(renderParsed));
+
 // 3b. Editor instance reuse across renders (IDE-review C4): a re-render with
 // unchanged file state must reattach the SAME CodeMirror DOM node instead of
 // recreating the editor (legacy code recreated CodeMirror on every render).

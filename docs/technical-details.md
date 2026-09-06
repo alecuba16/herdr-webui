@@ -173,6 +173,11 @@ Opening a content match calls the file browser with path, line, and query highli
 
 Content search uses backend-owned repository traversal and matching. Results render in the unified header search and in the file explorer content-result renderer when a dedicated content panel is needed. Routes:
 
+- `GET /api/file-browser/file?render=lines`: same file response plus
+  `lines_gutter_html` / `lines_code_html` - the numbered read-only fallback
+  preview markup, escaped and joined once in Rust so the browser injects it
+  directly. Client-side fallback building is capped at 256 KB; larger
+  readonly files without prebuilt markup show a size hint.
 - `GET /api/file-browser/content-search`: bounded breadth-first scan from the current file tree root, grouped by file.
 - `GET /api/file-browser/content-search/file`: lazy full match load for one file when the group is expanded.
 
