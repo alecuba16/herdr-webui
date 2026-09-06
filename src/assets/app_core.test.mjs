@@ -530,6 +530,35 @@ describe("HerdrEditor line number helpers", () => {
     assert.doesNotMatch(html, /herdr-editor-numbered-code/);
   });
 
+  it("wires a working editor api in the CodeMirror-load-failure fallback", async () => {
+    const textarea = { value: "a\nb", addEventListener() {}, focus() {}, setSelectionRange() {} };
+    const toolbar = { hidden: true, querySelector() { return null; } };
+    const parent = {
+      innerHTML: "",
+      _herdrEditorApi: null,
+      querySelector(selector) {
+        if (selector === "textarea") return textarea;
+        if (selector === ".herdr-editor-find") return toolbar;
+        return null;
+      },
+    };
+    const context = { window: {}, document: { createElement() { return {}; }, body: { appendChild(script) { script.onerror(); } } }, Promise, localStorage: { getItem() { return null; }, setItem() {} } };
+    const source = readFileSync(new URL("./shared/editor.js", import.meta.url), "utf8");
+    vm.runInNewContext(source, context);
+
+    const editor = context.window.HerdrEditor.create({ parent, path: "demo.txt", content: "a\nb", readonly: true });
+    assert.equal(parent._herdrEditorApi, editor);
+    assert.equal(typeof editor.getValue, "function");
+    assert.equal(editor.getValue(), "a\nb");
+    // The fallback path previously referenced `api` before definition, so
+    // opening the find toolbar after a load failure threw. openFind must
+    // work against the fallback api.
+    assert.equal(context.window.HerdrEditor.openFind(parent), true);
+    assert.equal(toolbar.hidden, false);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(parent.innerHTML.includes("herdr-editor-numbered-code") || parent.innerHTML.includes("herdr-editor-find"), true);
+  });
+
 
   it("supports match-case and regex range detection", () => {
     const context = { window: {}, document: { createElement() { return {}; }, body: { appendChild() {} } }, Promise };
@@ -1374,6 +1403,80 @@ describe("desktop file browser editor integration", () => {
     context.window.HerdrFileBrowser.tabMenu({ preventDefault() {}, stopPropagation() {}, clientX: 10, clientY: 20 }, encodeURIComponent("src/demo.py"));
     await click("close");
     assert.doesNotMatch(document.getElementById("fileBrowserPanel").innerHTML, /file-browser-open-tab[\s\S]*demo\.py/);
+  });
+
+  it("keeps a dirty tab when close confirmation is declined and closes it when confirmed", async () => {
+    const document = createFakeDocument();
+    const editorCalls = [];
+    const confirmResults = [];
+    let confirmAnswer = true;
+    const context = {
+      window: {
+        addEventListener() {},
+        HerdrEditor: {
+          create(opts) {
+            editorCalls.push({ path: opts.path, content: opts.content, readonly: opts.readonly, onChange: opts.onChange });
+            opts.parent.innerHTML = `<div class="cm-content" contenteditable="${opts.readonly === false ? "true" : "false"}"></div>`;
+            opts.parent._herdrEditorApi = { toggleFind() {} };
+            return { getValue() { return opts.content; }, setValue() {}, destroy() {} };
+          },
+        },
+        HerdrGitUi: { hide() {} },
+        HerdrWorkspacePath(workspace) { return workspace.cwd; },
+      },
+      document,
+      localStorage: { getItem() { return JSON.stringify({ fileBrowserLineNumbers: true, fileBrowserGitStatus: false }); } },
+      navigator: { clipboard: { writeText: async () => {} } },
+      fetch: async (url) => {
+        const text = String(url);
+        return {
+          ok: true,
+          async json() {
+            if (text.startsWith("/api/file-browser/file")) {
+              const cwd = decodeURIComponent((text.match(/cwd=([^&]+)/) || [null, ""])[1]);
+              const path = decodeURIComponent((text.match(/path=([^&]+)/) || [null, ""])[1]);
+              return { path, content: "print('hello')", binary: false, truncated: false };
+            }
+            const cwd = decodeURIComponent((text.match(/cwd=([^&]+)/) || [null, ""])[1]);
+            return { root: cwd, home: "/Users/me", path: "", entries: [{ kind: "dir", name: "src", path: "src" }], git_status: null };
+          },
+        };
+      },
+      confirm: () => { confirmResults.push(confirmAnswer); return confirmAnswer; },
+      appRefreshIconButton: () => "<button>Refresh</button>",
+      encodeURIComponent,
+      decodeURIComponent,
+      Error,
+      JSON,
+      Math,
+      String,
+      setTimeout(fn) { fn(); return 1; },
+      clearTimeout() {},
+    };
+    context.window.window = context.window;
+    context.window.document = document;
+    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
+    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
+
+    await context.window.HerdrFileBrowser.open({ workspace_id: "ws", cwd: "/Users/me/repo" });
+    context.window.HerdrFileBrowser.select(encodeURIComponent("src/demo.py"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    context.window.HerdrFileBrowser.edit(encodeURIComponent("src/demo.py"));
+    editorCalls.at(-1).onChange("print('dirty draft')");
+
+    const panelHtml = () => document.getElementById("fileBrowserPanel").innerHTML;
+    const openTabCount = () => (panelHtml().match(/file-browser-open-tab\b/g) || []).length;
+    assert.ok(openTabCount() >= 1, "file tab is open");
+
+    confirmAnswer = false;
+    context.window.HerdrFileBrowser.closeFile(encodeURIComponent("src/demo.py"));
+    assert.equal(confirmResults.length, 1, "dirty close asked for confirmation");
+    assert.ok(openTabCount() >= 1, "declined close keeps the dirty tab open");
+
+    confirmAnswer = true;
+    context.window.HerdrFileBrowser.closeFile(encodeURIComponent("src/demo.py"));
+    assert.equal(confirmResults.length, 2);
+    assert.equal(openTabCount(), 0, "confirmed close removes the tab");
   });
 
   it("hides tab menu actions for binary and truncated files", async () => {

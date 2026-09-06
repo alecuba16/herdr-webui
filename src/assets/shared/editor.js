@@ -276,16 +276,6 @@
       return api;
     }
     parent.innerHTML = codeMirrorShellHtml(opts);
-    ensureCodeMirror().then(() => {
-      if (!window.HerdrCodeMirror || !window.HerdrCodeMirror.create) return;
-      const value = opts.content;
-      create(Object.assign({}, opts, { content: value, readonly }));
-    }).catch(() => {
-      parent.innerHTML = readonly ? previewHtml(opts) : editHtml(opts);
-      const textarea = parent.querySelector("textarea");
-      if (textarea && opts.onChange) textarea.addEventListener("input", () => opts.onChange(textarea.value));
-      wireFindToolbar(parent, api, opts);
-    });
     const api = {
       getValue() {
         const node = parent.querySelector("textarea");
@@ -315,6 +305,16 @@
     };
     parent._herdrEditorApi = api;
     wireFindToolbar(parent, api, opts);
+    ensureCodeMirror().then(() => {
+      if (!window.HerdrCodeMirror || !window.HerdrCodeMirror.create) return;
+      const value = api.getValue();
+      create(Object.assign({}, opts, { content: value, readonly }));
+    }).catch(() => {
+      parent.innerHTML = readonly ? previewHtml(opts) : editHtml(opts);
+      const textarea = parent.querySelector("textarea");
+      if (textarea && opts.onChange) textarea.addEventListener("input", () => opts.onChange(textarea.value));
+      wireFindToolbar(parent, api, opts);
+    });
     return api;
   }
 
