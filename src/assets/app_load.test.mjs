@@ -109,6 +109,7 @@ function context() {
 }
 
 function loadWorkspaceSearch(ctx) {
+  vm.runInContext(readFileSync(new URL("./shared/options.js", import.meta.url), "utf8"), ctx);
   vm.runInContext(readFileSync(new URL("./shared/core.js", import.meta.url), "utf8"), ctx);
   vm.runInContext(
     readFileSync(new URL("./shared/workspace_search.js", import.meta.url), "utf8"),
@@ -147,6 +148,8 @@ describe("app bundle load", () => {
       .map((path) => readFileSync(new URL(path, import.meta.url), "utf8"))
       .join("");
     source =
+      readFileSync(new URL("./shared/options.js", import.meta.url), "utf8") +
+      "\n" +
       readFileSync(new URL("./shared/core.js", import.meta.url), "utf8") +
       "\n" +
       readFileSync(new URL("./shared/actions.js", import.meta.url), "utf8") +
@@ -1448,6 +1451,25 @@ describe("app bundle load", () => {
     match(gitUiSource, /highlightDiffText\(content\.slice\(changed\.start, changed\.end\), path\)/);
     match(gitLogCss, /\.git-ui-diff-search \{/);
     match(gitDiffCss, /\.git-ui-search-match \{/);
+  });
+
+  it("captures visited and truncated flags from content-search responses (D4)", () => {
+    const ctx = context();
+    loadWorkspaceSearch(ctx);
+    const helper = ctx.HerdrWorkspaceSearch;
+
+    const state = helper.createContentState();
+    helper.applyContentResults(state, { files: [{ path: "src/a.js" }], total_matches: 1, total_files: 1, visited: 512, truncated: false }, false);
+    equal(state.visited, 512);
+    equal(state.truncated, false);
+
+    helper.applyContentResults(state, { files: [{ path: "src/b.js" }], total_matches: 1, total_files: 1, visited: 20000, truncated: true }, false);
+    equal(state.visited, 20000);
+    equal(state.truncated, true);
+
+    helper.resetContentState(state, "");
+    equal(state.visited, 0);
+    equal(state.truncated, false);
   });
 
   it("keeps content search file expansion when context is reloaded", () => {

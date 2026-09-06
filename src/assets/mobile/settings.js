@@ -32,9 +32,14 @@
       const links = terminalLinksEnabled();
       const core = terminalCoreValue();
       const mouseReporting = terminalMouseReportingEnabled();
+      const editorEnhanced = editorEnhancedEnabled();
+      const editorWordWrap = editorWordWrapEnabled();
+      const editorTabSize = editorTabSizeValue();
+      const lsp = lspEnabled();
       const groups = [
         { title: "Appearance", keywords: "theme dark light auto", html: appearanceSection(theme), open: true },
         { title: "Layout", keywords: "layout mobile desktop auto", html: layoutSection(layout) },
+        { title: "Editor", keywords: "editor word wrap tab size codemirror lsp diagnostics language server", html: editorSection(editorEnhanced, editorWordWrap, editorTabSize, lsp) },
         { title: "Files and search", keywords: "files search browser content line numbers regex", html: filesSection(depth, lineNumbers, headerSearch, searchOrder, pathSearchPageSize, minChars, contentPageSize, contextLines, autoCollapse, defaultExpanded, matchesPerFile, matchCase, regex) },
         { title: "Workspaces", keywords: "workspace worktree exploration default directory", html: workspacesSection(worktreeDirectory, explorationDirectory) },
         { title: "Alerts", keywords: "alerts notifications sound volume", html: alertsSection(notifications, volume) },
@@ -75,6 +80,10 @@
       return `<div class="mobile-settings-group"><h3>Files and search</h3><label><span>Browser depth</span><input type="number" min="0" max="8" step="1" value="${depth}" onchange="HerdrMobile.setFileBrowserDepth(this.value)"></label><small>0 shows current folder only. 3 expands three folder levels.</small><label><input type="checkbox" ${lineNumbers ? "checked" : ""} onchange="HerdrMobile.setFileBrowserLineNumbers(this.checked)"><span>Line numbers</span><small>Show line numbers when previewing text files.</small></label><label><input type="checkbox" ${headerSearch ? "checked" : ""} onchange="HerdrMobile.setHeaderSearchEnabled(this.checked)"><span>Header search button</span><small>Show the search action and allow the palette to open.</small></label><div><span>Search section order</span>${renderSearchSectionOrder(searchOrder)}</div><small>Use arrows to move sections. Use Shown/Hidden to include or remove a section.</small><label><span>File/folder page size</span><input type="number" min="10" max="500" step="10" value="${pathSearchPageSize}" onchange="HerdrMobile.setFileBrowserSearchPageSize(this.value)"></label><label><span>Content minimum characters</span><input type="number" min="1" max="20" step="1" value="${minChars}" onchange="HerdrMobile.setFileContentSearchMinChars(this.value)"></label><label><span>Content page size</span><input type="number" min="10" max="500" step="10" value="${contentPageSize}" onchange="HerdrMobile.setFileContentSearchPageSize(this.value)"></label><label><span>Content context lines</span><input type="number" min="0" max="20" step="1" value="${contextLines}" onchange="HerdrMobile.setFileContentSearchContextLines(this.value)"></label><label><span>Content auto-collapse files</span><input type="number" min="0" max="200" step="1" value="${autoCollapse}" onchange="HerdrMobile.setFileContentSearchAutoCollapseFiles(this.value)"></label><label><input type="checkbox" ${defaultExpanded ? "checked" : ""} onchange="HerdrMobile.setFileContentSearchDefaultExpanded(this.checked)"><span>Content results expanded by default</span><small>Expand each file group when content results load.</small></label><label><span>Content matches per file</span><input type="number" min="1" max="50" step="1" value="${matchesPerFile}" onchange="HerdrMobile.setFileContentSearchMatchesPerFile(this.value)"></label><label><input type="checkbox" ${matchCase ? "checked" : ""} onchange="HerdrMobile.setFileContentSearchMatchCase(this.checked)"><span>Content search match case</span></label><label><input type="checkbox" ${regex ? "checked" : ""} onchange="HerdrMobile.setFileContentSearchRegex(this.checked)"><span>Content search regex</span></label></div>`;
     }
 
+    function editorSection(enhanced, wordWrap, tabSize, lsp) {
+      return `<div class="mobile-settings-group"><h3>Editor</h3><label><input type="checkbox" ${enhanced ? "checked" : ""} onchange="HerdrMobile.setEditorEnabled(this.checked)"><span>Code editor enhancements</span><small>Enable CodeMirror editing enhancements. Files remain editable when this is disabled.</small></label><label><input type="checkbox" ${wordWrap ? "checked" : ""} onchange="HerdrMobile.setEditorWordWrap(this.checked)"><span>Editor word wrap</span></label><label><span>Editor tab size</span><input type="number" min="1" max="8" step="1" value="${tabSize}" onchange="HerdrMobile.setEditorTabSize(this.value)"></label><label><input type="checkbox" ${lsp ? "checked" : ""} onchange="HerdrMobile.setLspEnabled(this.checked)"><span>LSP diagnostics</span><small>Show language server diagnostics under the editor. Off by default.</small></label></div>`;
+    }
+
     function renderSearchSectionOrder(value) {
       const labels = { workspaces: "Workspaces", files: "Files", content: "Content" };
       const order = normalizeSearchSectionOrder(value);
@@ -102,14 +111,15 @@
 
     function readOptions() {
       try {
-        return JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
+        return globalThis.HerdrOptions ? globalThis.HerdrOptions.read() : {};
       } catch (_) {
         return {};
       }
     }
 
     function writeOptions(options) {
-      localStorage.setItem("herdr-web-options", JSON.stringify(options || {}));
+      if (globalThis.HerdrOptions) globalThis.HerdrOptions.write(options || {});
+      else localStorage.setItem("herdr-web-options", JSON.stringify(options || {}));
     }
 
     function browserNotificationsEnabled() {
@@ -141,6 +151,18 @@
       localStorage.setItem("herdr-web-layout", value);
     }
 
+    function setEditorEnabled(value) { setBooleanOption("editorEnabled", value); }
+    function setEditorWordWrap(value) { setBooleanOption("editorWordWrap", value); }
+
+    function setEditorTabSize(value) {
+      const parsed = readOptions();
+      parsed.editorTabSize = Math.max(1, Math.min(8, Number(value) || 2));
+      writeOptions(parsed);
+      if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
+    }
+
+    function setLspEnabled(value) { setBooleanOption("lspEnabled", value); }
+
     function terminalFontValue() {
       return readOptions().terminalFontFamily || "";
     }
@@ -156,6 +178,24 @@
 
     function fileBrowserLineNumbersEnabled() {
       return readOptions().fileBrowserLineNumbers !== false;
+    }
+
+    // Editor options mirror the desktop settings (IDE-review B4).
+    function editorEnhancedEnabled() {
+      return readOptions().editorEnabled !== false;
+    }
+
+    function editorWordWrapEnabled() {
+      return readOptions().editorEnabled !== false && readOptions().editorWordWrap !== false;
+    }
+
+    function editorTabSizeValue() {
+      const value = Number(readOptions().editorTabSize);
+      return Math.max(1, Math.min(8, Number.isFinite(value) ? value : 2));
+    }
+
+    function lspEnabled() {
+      return readOptions().lspEnabled === true;
     }
 
     function headerSearchEnabled() { return readOptions().headerSearchEnabled !== false; }
@@ -452,6 +492,10 @@
       setFileContentSearchMatchCase,
       setFileContentSearchRegex,
       setLayoutPreference,
+      setEditorEnabled,
+      setEditorWordWrap,
+      setEditorTabSize,
+      setLspEnabled,
       setNotificationVolume,
       setTerminalFontFamily,
       setTerminalCore,

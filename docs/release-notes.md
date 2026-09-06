@@ -1,5 +1,118 @@
 # Release notes
 
+## 0.4.7 Release Notes
+- Open desktop files now detect external changes: on window refocus the
+  browser cheaply re-hashes clean tabs via a new hash_only endpoint and
+  offers a reload prompt when the disk content changed. Dirty tabs are
+  never clobbered.
+- Editors now support Ctrl/Cmd+G goto-line with a clamping prompt, and
+  CodeMirror mounts show a live "Ln x, Col y" cursor readout. The
+  editorFindShortcutEnabled option actually works now: a legacy
+  unconditional Ctrl/Cmd+F binding that ignored it was removed.
+- Oversized text files (>1 MB) now offer a "Load first 256 KB" preview on
+  desktop and mobile instead of a dead-end placeholder. The read is
+  performed and clamped in Rust (16 KB..1 MB budgets accepted); partial
+  previews are strictly read-only, carry an empty hash so saving is
+  impossible, and clearly state they are partial.
+- Mobile file preview and edit: a compact floating Find (⌕) button now
+  appears on headerless editors, so the find toolbar is reachable without a
+  keyboard shortcut. Verified in a real browser (toggle opens the toolbar,
+  search counts matches).
+- Content search: the summary line now reports how many files were
+  searched ("X matches in Y files, searched N files") and flags when the
+  walk stopped at the 20 000-file visit cap, so truncated searches are no
+  longer indistinguishable from complete ones. The backend already computed
+  both fields; every consumer now surfaces them (desktop file browser,
+  desktop search palette, mobile file browser, mobile unified search).
+- Find-in-editor: repeated match navigation (prev/next, Enter) no longer
+  rescans the full document on every click; the last scan is memoized and
+  invalidated on any text, query or option change (~500x cheaper repeat
+  navigation on 1 MB files, measured).
+- Options reads now go through a shared cached module (`HerdrOptions`) instead
+  of every consumer doing its own `JSON.parse(localStorage.getItem(...))` on
+  each access. The payload is parsed once, callers get shallow copies, and the
+  cache invalidates on writes and cross-tab `storage` events. Measured on a
+  representative desktop file-browser session (10 tree refreshes + 5 file
+  opens): 65 parses to 1; mobile file-browser session (10 loads + 5
+  previews): 22 to 1. Modules served without the shared bundle keep the
+  direct-parse fallback, so older bundles behave exactly as before.
+- Content search: the backend now builds the merged line chunks and per-row
+  highlight markup (HTML-escaped, with `<mark>` around the hit) for both the
+  workspace route and the single-file route, so the browser renders results
+  without re-merging or re-highlighting on every render. Measured on a
+  10-file results page (30 matches each): ~7.4 ms → ~1.0 ms per render
+  (~7x). Non-ASCII lines now highlight the exact hit (the legacy JS slicing
+  mixed byte offsets with UTF-16 indices and could misplace the mark on
+  multibyte lines). Older backends without chunks still work: the renderer
+  keeps its client-side merge fallback.
+- Read-only fallback previews (shown when the CodeMirror bundle fails to
+  load) now get their numbered gutter and escaped code prebuilt by the
+  backend: `GET /api/file-browser/file?render=lines` returns
+  `lines_gutter_html` and `lines_code_html`, and both desktop and mobile
+  file browsers request it when opening files. The browser-side builder is
+  now capped at 256 KB; larger files without prebuilt markup render a size
+  hint instead of stalling the main thread. Measured on a 512 KB / 20k-line
+  file: ~5.5 ms of per-render string building down to ~0.01 ms.
+- Removed the content-search "edit snippet" dead path (unreachable since the
+  search results were redesigned around merged chunks): both layouts kept
+  edit/cancel/save handlers and the backend kept a hash-guarded
+  line-range-save endpoint that no UI could ever trigger. Content matches
+  open in the full editor (editable, hash-guarded save) instead. Also fixed
+  the last clippy warnings (derived `Default`, `io::Error::other`).
+- Desktop file editor: CodeMirror instances are now cached per open file and
+  reattached on re-renders instead of being rebuilt every time the panel HTML
+  is rewritten (tab switches, tree refreshes, and any toolbar re-render used
+  to recreate every open editor). Editors are only recreated when something
+  that must change them changes (content on disk, lock/unlock, preview mode,
+  search highlight, editor options) and are released on close, delete, or
+  workspace switch. Measured in a representative session (two files open,
+  10 tab focus switches): 44 editor creations down to 2, and the live editor
+  DOM node now survives re-renders (verified in the browser via node
+  identity).
+- LSP diagnostics now arrive as pushed events over the /ws/events websocket
+  instead of a 2-second HTTP poll. The HTTP endpoint remains for
+  compatibility and as an automatic fallback when the socket is
+  unavailable; while push is live the UI only drains a 30-second safety
+  pass, cutting per-2s JSON parsing of the full server registry.
+- Mobile search: path results now offer a "Load more" button matching the desktop
+  palette, appending the next backend page in place with scroll preserved.
+- Mobile: the editor now applies the same options as desktop (word wrap, tab
+  size, bracket matching, folding, active line, whitespace) with a new Editor
+  section in Settings, and LSP diagnostics render under the preview when the
+  existing LSP option is enabled.
+- Mobile: the Git screen now covers the core desktop flow — stage, unstage,
+  discard (with confirmation), branch list and checkout. Heavy actions
+  (rebase, stash, conflicts) remain desktop-only and are labeled as such.
+
+### Mobile file editing (IDE review)
+
+- Mobile file previews are now editable. The preview screen offers an Edit
+  action (hidden for binary/truncated files); edit mode shows Cancel and Save
+  with an unsaved-changes marker (`Save ●`) and the file path annotated with
+  "unsaved changes".
+- Saves are hash-checked (`expected_hash`) exactly like desktop, so concurrent
+  edits on the workspace surface a conflict error instead of silently
+  overwriting, and the preview stays in edit mode when a save fails so the
+  draft is never lost.
+- Navigating away with a dirty draft (tree toggle, file select, search jump,
+  back, refresh) now asks for confirmation before discarding, matching the
+  desktop dirty-tab guard.
+- Fixed a latent race where tapping a file in the mobile tree did not await
+  the file fetch, letting renders interleave with the load.
+
+### Mobile file management (rename, delete, new file)
+
+- Every mobile tree row now carries a ⋯ action trigger (the shared file tree
+  gained a generic `rowActionMethod` render option); tapping it opens a
+  bottom sheet with Rename and Delete, plus "New file here" for folders, and
+  the preview header gets the same ⋯ for the open file.
+- Rename opens an inline sheet modal (mobile keyboards + native `prompt()` do
+  not mix) with Enter to submit, Esc to cancel, and backend errors shown
+  inline; a "+ File" header action creates empty files in the current listing.
+- Delete asks for confirmation, closes an open preview of the deleted file,
+  and clears stale selection state; all mutations refresh the listing and
+  respect unsaved edit drafts.
+
 ## 0.4.6 Release Notes
 
 ### Theme system accessibility and UX rework

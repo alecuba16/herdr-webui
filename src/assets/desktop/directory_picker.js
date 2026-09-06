@@ -6,7 +6,7 @@
 
   function gitStatusEnabled() {
     try {
-      const parsed = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
+      const parsed = window.HerdrOptions ? window.HerdrOptions.read() : {};
       return parsed.fileBrowserGitStatus !== false;
     } catch (_) { return true; }
   }

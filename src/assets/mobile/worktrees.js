@@ -61,11 +61,9 @@
       const defaultFolder = typeof defaultFolderFn === "function" ? String(defaultFolderFn() || "").trim() : "";
       if (defaultFolder) return defaultFolder;
       try {
-        const parsed = JSON.parse(
-          (globalThis.localStorage &&
-            globalThis.localStorage.getItem("herdr-web-options")) ||
-            "{}",
-        );
+        const parsed = globalThis.HerdrOptions
+          ? globalThis.HerdrOptions.read()
+          : {};
         return String(parsed.explorationDefaultDirectory || "").trim() || "~";
       } catch (_) {
         return "~";
@@ -150,11 +148,9 @@
         branch = state.worktreeBranch.trim();
       let generateWorktreeNames = false;
       try {
-        const parsed = JSON.parse(
-          (globalThis.localStorage &&
-            globalThis.localStorage.getItem("herdr-web-options")) ||
-            "{}",
-        );
+        const parsed = globalThis.HerdrOptions
+          ? globalThis.HerdrOptions.read()
+          : {};
         generateWorktreeNames = !!parsed.generateWorktreeNames;
       } catch (_) {}
       const resolved = helpers.resolveWorktreeSource({

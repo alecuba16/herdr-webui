@@ -2,6 +2,12 @@
   let codeMirrorPromise = null;
   const FIND_OPTIONS_KEY = "herdr-editor-search-options";
 
+  // Numbered read-only previews built client-side are capped: building
+  // per-line HTML for huge files stalls the main thread. Larger readonly
+  // files must come with backend-prebuilt linesHtml (see previewHtml) or
+  // they render with a size hint instead.
+  const MAX_CLIENT_NUMBERED_PREVIEW_BYTES = 256 * 1024;
+
   function esc(value) {
     return String(value == null ? "" : value)
       .replace(/&/g, "&amp;")
@@ -34,13 +40,16 @@
     try { localStorage.setItem(FIND_OPTIONS_KEY, JSON.stringify(options || {})); } catch (_) {}
   }
 
-  function editorFindShortcutEnabled() {
-    try {
-      const options = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
-      return !options || options.editorFindShortcutEnabled !== false;
-    } catch (_) {
-      return true;
+  function editorFindOptions() {
+    if (globalThis.HerdrOptions) {
+      try { return globalThis.HerdrOptions.read(); } catch (_) { return null; }
     }
+    try { return JSON.parse(localStorage.getItem("herdr-web-options") || "{}"); } catch (_) { return null; }
+  }
+
+  function editorFindShortcutEnabled() {
+    const options = editorFindOptions();
+    return !options || options.editorFindShortcutEnabled !== false;
   }
 
   function escapeRegex(value) {
@@ -104,9 +113,94 @@
     return true;
   }
 
+  // IDE-review A5: cursor line:col readout. Returns null when the editor
+  // does not expose a cursor (CodeMirror absent, fallback preview).
+  function cursorPosition(api) {
+    const view = api && api._view;
+    if (!view || !view.state) return null;
+    const head = view.state.selection.main.head;
+    const line = view.state.doc.lineAt(head);
+    return { line: line.number, col: head - line.from + 1 };
+  }
+
+  function positionText(position) {
+    if (!position) return "";
+    return `Ln ${position.line}, Col ${position.col}`;
+  }
+
+  function wirePositionReadout(parent, api) {
+    if (!parent || !api) return;
+    const readout = parent.querySelector(".herdr-editor-position");
+    if (!readout) return;
+    let last = null;
+    const render = () => {
+      const text = positionText(cursorPosition(api));
+      if (text === last) return; // write-on-change: no DOM churn while idle
+      last = text;
+      readout.hidden = !text;
+      readout.textContent = text;
+    };
+    render();
+    const view = api._view;
+    if (!view) return;
+    // The view instance is recreated on re-render; stop tracking when it is
+    // replaced so the next mount installs its own tracker.
+    const track = () => {
+      if (api._view !== view) return;
+      render();
+      if (typeof requestAnimationFrame === "function") requestAnimationFrame(track);
+    };
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(track);
+  }
+
+  // IDE-review A5: goto-line. Uses the same shell prompt() the desktop
+  // file tree already uses for rename, so no new modal plumbing; programmatic
+  // callers pass a line number as `input`. Returns true when a jump happened.
+  function gotoLine(parent, api, input) {
+    const view = api && api._view;
+    if (!view || !view.state) return false;
+    const lineCount = view.state.doc.lines;
+    let target = Number(input);
+    if (input == null) {
+      const answer = typeof prompt === "function" ? prompt(`Go to line (1-${lineCount})`, "") : null;
+      if (answer == null) return false;
+      target = Number(String(answer).trim());
+    }
+    if (!Number.isFinite(target)) return false;
+    const lineNo = Math.max(1, Math.min(lineCount, Math.floor(target)));
+    const line = view.state.doc.line(lineNo);
+    if (api.selectRange) api.selectRange(line.from, line.from);
+    return true;
+  }
+
+  function wireGotoShortcut(parent, api) {
+    if (!parent || !api || !parent.addEventListener) return;
+    if (parent.__herdrEditorGotoBound) return;
+    parent.__herdrEditorGotoBound = true;
+    const handler = (event) => {
+      if (!event || event.defaultPrevented || event.altKey || event.shiftKey) return;
+      const key = String(event.key || "").toLowerCase();
+      if (key !== "g" || !(event.ctrlKey || event.metaKey)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      gotoLine(parent, api);
+    };
+    parent.__herdrEditorGotoHandler = handler;
+    parent.addEventListener("keydown", handler, true);
+  }
+
   function editorHeaderHtml(opts, title) {
     if (opts.hideHeader) return "";
     return `<div class="herdr-editor-head"><strong>${esc(title)}</strong><span>${esc(languageFor(opts.path))}</span><button type="button" class="herdr-editor-find-toggle" title="Find / replace (Ctrl+F)" aria-label="Find / replace" onclick="HerdrEditor.openFind(this.closest('.herdr-editor'))">⌕</button></div>`;
+  }
+
+  // IDE-review A1: headerless mounts (mobile preview/edit) previously had no
+  // visible Find entry — the toolbar existed but only Ctrl/Cmd+F could open
+  // it, which mobile keyboards cannot reach. Render a compact floating
+  // toggle whenever the header is hidden and find is not disabled.
+  function findToggleHtml(opts) {
+    if (!opts.hideHeader || opts.hideFind) return "";
+    return `<button type="button" class="herdr-editor-find-toggle herdr-editor-find-float" title="Find / replace" aria-label="Find / replace" onclick="HerdrEditor.openFind(this.closest('.herdr-editor'))">⌕</button>`;
   }
 
   function wireFindToolbar(parent, api, opts) {
@@ -121,18 +215,11 @@
     let current = -1;
     let lastQuery = "";
     api.openFind = function () { return openFind(parent); };
-    if (!parent.__herdrEditorFindShortcutBound && parent.addEventListener) {
-      parent.__herdrEditorFindShortcutBound = true;
-      parent.addEventListener("keydown", (event) => {
-        if (!event || event.defaultPrevented || event.altKey || event.shiftKey) return;
-        const key = String(event.key || "").toLowerCase();
-        if (key !== "f" || !(event.ctrlKey || event.metaKey)) return;
-        event.preventDefault();
-        event.stopPropagation();
-        if (event.stopImmediatePropagation) event.stopImmediatePropagation();
-        openFind(parent);
-      }, true);
-    }
+    // History: an earlier unconditional Ctrl/Cmd+F binding (32b0a6a) was kept
+    // alongside the option-aware handler added in ff3b8ff. Because it ran
+    // first and never checked editorFindShortcutEnabled, the option was
+    // silently ineffective in real browsers. The single option-aware
+    // handler below is authoritative now.
 
     function options() {
       return { matchCase: !!(matchCase && matchCase.checked), regex: !!(regex && regex.checked) };
@@ -180,11 +267,23 @@
       if (!range) return;
       if (api.selectRange) api.selectRange(range.from, range.to);
     }
+    // IDE-review D3: findRanges scanned the full document text on every
+    // keystroke, prev/next click and replace recompute, even when neither the
+    // query nor the document had changed. Memoize the last scan keyed by
+    // (query, matchCase, regex, text) so repeat navigation costs O(1).
+    let lastScan = null;
     function matches() {
       const value = query ? query.value : "";
-      const result = findRanges(api.getValue(), value, options());
+      const opts = options();
+      const text = api.getValue();
+      if (lastScan && lastScan.text === text && lastScan.query === value && lastScan.matchCase === opts.matchCase && lastScan.regex === opts.regex) {
+        return lastScan.result;
+      }
+      const result = findRanges(text, value, opts);
       if (result.error) setStatus(result.error);
-      return Object.assign({ query: value }, result);
+      const combined = Object.assign({ query: value }, result);
+      lastScan = { text, query: value, matchCase: opts.matchCase, regex: opts.regex, result: combined };
+      return combined;
     }
     function choose(direction) {
       const result = matches();
@@ -273,19 +372,11 @@
       };
       parent._herdrEditorApi = api;
       wireFindToolbar(parent, api, opts);
+      wirePositionReadout(parent, api);
+      wireGotoShortcut(parent, api);
       return api;
     }
     parent.innerHTML = codeMirrorShellHtml(opts);
-    ensureCodeMirror().then(() => {
-      if (!window.HerdrCodeMirror || !window.HerdrCodeMirror.create) return;
-      const value = opts.content;
-      create(Object.assign({}, opts, { content: value, readonly }));
-    }).catch(() => {
-      parent.innerHTML = readonly ? previewHtml(opts) : editHtml(opts);
-      const textarea = parent.querySelector("textarea");
-      if (textarea && opts.onChange) textarea.addEventListener("input", () => opts.onChange(textarea.value));
-      wireFindToolbar(parent, api, opts);
-    });
     const api = {
       getValue() {
         const node = parent.querySelector("textarea");
@@ -315,13 +406,34 @@
     };
     parent._herdrEditorApi = api;
     wireFindToolbar(parent, api, opts);
+    ensureCodeMirror().then(() => {
+      if (!window.HerdrCodeMirror || !window.HerdrCodeMirror.create) return;
+      const value = api.getValue();
+      create(Object.assign({}, opts, { content: value, readonly }));
+    }).catch(() => {
+      parent.innerHTML = readonly ? previewHtml(opts) : editHtml(opts);
+      const textarea = parent.querySelector("textarea");
+      if (textarea && opts.onChange) textarea.addEventListener("input", () => opts.onChange(textarea.value));
+      wireFindToolbar(parent, api, opts);
+    });
     return api;
   }
 
   function codeMirrorShellHtml(opts) {
     const title = opts.path || (opts.readonly === false ? "Editor" : "Preview");
     const head = editorHeaderHtml(opts, title);
-    return `<div class="herdr-editor cm">${head}${findToolbarHtml(opts)}<div class="herdr-editor-mount"><div class="herdr-editor-loading">Loading editor…</div></div></div>`;
+    const readout = gotoReadoutHtml(opts);
+    return `<div class="herdr-editor cm">${head}${readout}${findToggleHtml(opts)}${findToolbarHtml(opts)}<div class="herdr-editor-mount"><div class="herdr-editor-loading">Loading editor…</div></div></div>`;
+  }
+
+  // IDE-review A5: a small floating "Ln x, Col y" readout for mounts
+  // without a header (desktop file browser panes hide the header). Only
+  // rendered when CodeMirror is available: the fallback textarea/preview
+  // shells have no cursor position to report.
+  function gotoReadoutHtml(opts) {
+    if (!opts.hideHeader) return "";
+    if (!(window.HerdrCodeMirror && window.HerdrCodeMirror.create)) return "";
+    return `<span class="herdr-editor-position" hidden></span>`;
   }
 
   function isMarkdownPath(path) {
@@ -331,7 +443,7 @@
 
   function markdownPreviewHtml(opts) {
     const head = editorHeaderHtml(opts, opts.path || "Preview");
-    return `<div class="herdr-editor readonly herdr-markdown-preview">${head}${findToolbarHtml(opts)}<div class="herdr-markdown-preview-mount"></div></div>`;
+    return `<div class="herdr-editor readonly herdr-markdown-preview">${head}${findToggleHtml(opts)}${findToolbarHtml(opts)}<div class="herdr-markdown-preview-mount"></div></div>`;
   }
 
   function markdownPreviewEnabled(opts) {
@@ -365,20 +477,44 @@
     const content = String(opts.content || "");
     const head = editorHeaderHtml(opts, opts.path || "Preview");
     const lineNumbers = opts.lineNumbers !== false;
-    const code = lineNumbers ? numberedPreviewHtml(content, opts.path) : `<pre class="herdr-editor-code"><code>${highlight(content, opts.path)}</code></pre>`;
-    return `<div class="herdr-editor readonly${lineNumbers ? " with-line-numbers" : ""}">${head}${findToolbarHtml(opts)}${code}</div>`;
+    const lines = numberedPreviewHtml(content, opts);
+    if (lines === null) {
+      const sizeHint = typeof opts.size === "number" ? ` (${formatBytes(opts.size)})` : "";
+      return `<div class="herdr-editor readonly">${head}${findToggleHtml(opts)}${findToolbarHtml(opts)}<div class="herdr-editor-too-large"><div class="file-browser-empty">File too large for the fallback preview${sizeHint}. Use the editor view.</div></div>`;
+    }
+    const code = lines || `<pre class="herdr-editor-code"><code>${highlight(content, opts.path)}</code></pre>`;
+    return `<div class="herdr-editor readonly${lineNumbers ? " with-line-numbers" : ""}">${head}${findToggleHtml(opts)}${findToolbarHtml(opts)}${code}</div>`;
   }
 
-  function numberedPreviewHtml(content, path) {
-    const lines = String(content || "").split("\n");
-    const gutter = lines.map((_, index) => `<span>${index + 1}</span>`).join("");
-    const code = lines.map((line) => highlight(line, path)).join("\n");
-    return `<div class="herdr-editor-numbered-code"><pre class="herdr-editor-lines" aria-hidden="true">${gutter}</pre><pre class="herdr-editor-code"><code>${code}</code></pre></div>`;
+  function formatBytes(value) {
+    const size = Number(value) || 0;
+    if (size >= 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+    if (size >= 1024) return `${(size / 1024).toFixed(1)} KB`;
+    return `${size} B`;
+  }
+
+  // Returns the numbered-preview markup, or null when the file is too large
+  // to build client-side and no backend-prebuilt HTML was provided.
+  function numberedPreviewHtml(content, opts) {
+    const useLineNumbers = (opts && opts.lineNumbers) !== false;
+    const prebuilt = opts && opts.linesHtml;
+    if (useLineNumbers) {
+      if (prebuilt && prebuilt.gutter != null && prebuilt.code != null) {
+        return `<div class="herdr-editor-numbered-code"><pre class="herdr-editor-lines" aria-hidden="true">${prebuilt.gutter}</pre><pre class="herdr-editor-code"><code>${prebuilt.code}</code></pre></div>`;
+      }
+      const bytes = (opts && opts.size) || content.length;
+      if (bytes > MAX_CLIENT_NUMBERED_PREVIEW_BYTES) return null;
+      const lines = String(content || "").split("\n");
+      const gutter = lines.map((_, index) => `<span>${index + 1}</span>`).join("");
+      const code = lines.map((line) => highlight(line, opts.path)).join("\n");
+      return `<div class="herdr-editor-numbered-code"><pre class="herdr-editor-lines" aria-hidden="true">${gutter}</pre><pre class="herdr-editor-code"><code>${code}</code></pre></div>`;
+    }
+    return "";
   }
 
   function editHtml(opts) {
     const head = editorHeaderHtml(opts, opts.path || "Editor");
-    return `<div class="herdr-editor">${head}${findToolbarHtml(opts)}<textarea spellcheck="false">${esc(opts.content || "")}</textarea></div>`;
+    return `<div class="herdr-editor">${head}${findToggleHtml(opts)}${findToolbarHtml(opts)}<textarea spellcheck="false">${esc(opts.content || "")}</textarea></div>`;
   }
 
   function ensureCodeMirror() {
@@ -396,5 +532,5 @@
     return codeMirrorPromise;
   }
 
-  window.HerdrEditor = { create, highlight, languageFor, ensureCodeMirror, findRanges, editorFindShortcutEnabled, openFind, isMarkdownPath, markdownPreviewEnabled };
+  window.HerdrEditor = { create, highlight, languageFor, ensureCodeMirror, findRanges, editorFindShortcutEnabled, openFind, isMarkdownPath, markdownPreviewEnabled, gotoLine, cursorPosition };
 })();

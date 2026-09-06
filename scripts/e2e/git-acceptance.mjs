@@ -139,6 +139,7 @@ function context() {
 // Boot exactly the bundle set the server serves for the desktop git-ui feature.
 const SHARED_BUNDLES = [
   "/assets/shared/core.js",
+  "/assets/shared/options.js",
   "/assets/shared/actions.js",
   "/assets/shared/file-icons.js",
   "/assets/shared/file-tree.js",

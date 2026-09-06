@@ -14,20 +14,10 @@
     return encodeURIComponent(String(value == null ? "" : value)).replace(/'/g, "%27");
   }
 
-  let cachedOptionsRaw = null;
-  let cachedOptions = null;
-
   function storedOptions() {
     try {
-      const raw = localStorage.getItem("herdr-web-options") || "{}";
-      if (raw === cachedOptionsRaw && cachedOptions) return cachedOptions;
-      const parsed = JSON.parse(raw);
-      cachedOptionsRaw = raw;
-      cachedOptions = parsed && typeof parsed === "object" ? parsed : {};
-      return cachedOptions;
+      return globalThis.HerdrOptions ? globalThis.HerdrOptions.read() : {};
     } catch (_) {
-      cachedOptionsRaw = null;
-      cachedOptions = {};
       return {};
     }
   }
@@ -119,13 +109,14 @@
       query: "",
       files: [],
       expanded: {},
-      snippets: {},
       loading: false,
       error: "",
       done: true,
       offset: 0,
       total_files: 0,
       total_matches: 0,
+      visited: 0,
+      truncated: false,
       contextLines: opts.contextLines,
     }, initial || {});
   }
@@ -134,12 +125,13 @@
     state.query = query || "";
     state.files = [];
     state.expanded = {};
-    state.snippets = {};
     state.error = "";
     state.done = true;
     state.offset = 0;
     state.total_files = 0;
     state.total_matches = 0;
+    state.visited = 0;
+    state.truncated = false;
     state.contextLines = settings().contextLines;
   }
 
@@ -149,6 +141,8 @@
     state.files = append ? state.files.concat(files) : files;
     state.total_files = data.total_files || state.files.length;
     state.total_matches = data.total_matches || 0;
+    state.visited = Number(data.visited || 0);
+    state.truncated = data.truncated === true;
     state.offset = (append ? state.offset : 0) + files.length;
     state.done = !data.truncated || files.length === 0;
     if (!append) {
@@ -206,7 +200,6 @@
     return contentSearch.render(state, Object.assign({
       callback: opts.callback || "HerdrWorkspaceSearchContent",
       hideInput: true,
-      disableSnippetEditing: true,
       idPrefix: opts.idPrefix || "workspaceSearchContent",
     }, opts || {}));
   }

@@ -172,7 +172,10 @@
     const action = entry.kind === "up" ? "up" : kind === "dir" ? dirClickMethod : selectMethod;
     const click = action ? ` onclick="${callback}.${action}('${arg(path)}'${kind === "file" && opts.shiftSelectMode ? `,event.shiftKey?'split':''` : ""})"` : "";
     const meta = opts.showMeta && entry.size != null ? `<span class="herdr-tree-meta">${formatBytes(entry.size)}</span>` : "";
-    return `<button class="herdr-tree-row ${kind}${entry.kind === "up" ? " up" : ""}${active}${entry.status ? ` git-${entry.status}` : ""}" role="treeitem" style="${indentStyle(level, opts)}" title="${esc(path)}"${click}${dbl}${context}>${caret}<span class="herdr-tree-kind">${icon(entry.kind === "up" ? "up" : kind, path || entry.name)}</span><span class="herdr-tree-name">${highlight(entry.name || basename(path), opts.filterTerm)}</span>${statusBadge(entry.status)}${meta}</button>`;
+    // Optional trailing row action (e.g. a "..." sheet trigger on mobile).
+    // Rendered as its own element so the row click handler is untouched.
+    const rowAction = opts.rowActionMethod && entry.kind !== "up" ? `<span class="herdr-tree-row-action" role="button" tabindex="0" aria-label="Actions for ${esc(basename(path) || path)}" onclick="event.preventDefault();event.stopPropagation();${callback}.${opts.rowActionMethod}('${arg(path)}','${kind}')">${opts.rowActionLabel || "⋯"}</span>` : "";
+    return `<button class="herdr-tree-row ${kind}${entry.kind === "up" ? " up" : ""}${active}${entry.status ? ` git-${entry.status}` : ""}" role="treeitem" style="${indentStyle(level, opts)}" title="${esc(path)}"${click}${dbl}${context}>${caret}<span class="herdr-tree-kind">${icon(entry.kind === "up" ? "up" : kind, path || entry.name)}</span><span class="herdr-tree-name">${highlight(entry.name || basename(path), opts.filterTerm)}</span>${statusBadge(entry.status)}${meta}${rowAction}</button>`;
   }
 
   function buildGitEntries(files, status) {

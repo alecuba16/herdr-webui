@@ -150,6 +150,40 @@ const editableDefault = await cdp.evalExpr(`(() => {
 })()`);
 check('file opens editable by default', editableDefault === 'true', `contenteditable="${editableDefault}"`);
 
+// 2c. A5: position readout + Ctrl+G goto-line in the editor
+const gotoRound = await cdp.evalExpr(`(async () => {
+  // The editor mount for the open file, its HerdrEditor api, and the readout.
+  const pane = document.querySelector('.file-browser-pane');
+  if (!pane) return JSON.stringify({ err: 'no-pane' });
+  const apiHost = pane.querySelector('[id^="fileBrowserEditor-"]');
+  const api = apiHost && apiHost._herdrEditorApi ? apiHost._herdrEditorApi : null;
+  const readout = pane.querySelector('.herdr-editor-position');
+  const before = readout ? readout.textContent : null;
+  // Programmatic goto-line to line 2 (bypasses prompt; same code path as Ctrl+G).
+  let jumped = false;
+  if (api && window.HerdrEditor) jumped = window.HerdrEditor.gotoLine(apiHost, api, 2);
+  await new Promise(r => setTimeout(r, 400));
+  const after = readout ? readout.textContent : null;
+  // Now exercise the real Ctrl+G key path with a stubbed prompt (headless
+  // Chrome has no native prompt implementation over CDP eval).
+  let promptAnswer = null;
+  window.prompt = (msg) => { window.__gotoPrompt = msg; return promptAnswer; };
+  promptAnswer = '3';
+  const target = pane.querySelector('.cm-content') || apiHost;
+  const ev = new KeyboardEvent('keydown', { key: 'g', ctrlKey: true, bubbles: true, cancelable: true });
+  (target || pane).dispatchEvent(ev);
+  await new Promise(r => setTimeout(r, 300));
+  const finalPos = readout ? readout.textContent : null;
+  return JSON.stringify({ hasApi: !!api, before, jumped, after, promptMsg: window.__gotoPrompt || null, finalPos });
+})()`, true);
+const gotoParsed = (() => { try { return JSON.parse(gotoRound || '{}'); } catch { return { raw: gotoRound }; } })();
+check('editor exposes a live position readout (A5)', gotoParsed.before === 'Ln 1, Col 1', JSON.stringify(gotoParsed));
+check('gotoLine(2) moves the cursor and updates the readout (A5)', gotoParsed.jumped === true && gotoParsed.after === 'Ln 2, Col 1', JSON.stringify(gotoParsed));
+// The doc has 2 lines at this point ("# acceptance edit" + print('hello'));
+// an out-of-range answer (3) must clamp to the last line, proving the
+// prompt path runs and clamps exactly like the programmatic one.
+check('Ctrl+G prompts and clamps to the document (A5)', gotoParsed.promptMsg === 'Go to line (1-2)' && gotoParsed.finalPos === 'Ln 2, Col 1', JSON.stringify(gotoParsed));
+
 // 3. Lock flips to read-only and back
 const lockRound = await cdp.evalExpr(`(async () => {
   const btn = document.querySelector('.file-browser-lock-toggle');
@@ -177,6 +211,54 @@ const unlockRound = await cdp.evalExpr(`(async () => {
 const unlockParsed = (() => { try { return JSON.parse(unlockRound || '{}'); } catch { return { raw: unlockRound }; } })();
 check('unlock click restores editing', unlockParsed.editable === 'true', JSON.stringify(unlockParsed));
 check('lock button inactive when unlocked', unlockParsed.active === false);
+
+// 2b. Backend-prebuilt numbered preview markup (IDE-review C5): the file
+// endpoint with render=lines must return gutter/code HTML built and escaped
+// in Rust so the browser fallback never builds per-line HTML for big files.
+const renderLines = await cdp.evalExpr(`(async () => {
+  const res = await fetch('/api/file-browser/file?cwd=' + encodeURIComponent('${REPO}') + '&path=' + encodeURIComponent('src/demo.py') + '&render=lines');
+  if (!res.ok) return JSON.stringify({ ok: false, status: res.status });
+  const body = await res.json();
+  // The fixture is print('hello') - the single quote must arrive escaped
+  // as &#39; (proving Rust-side escaping) and the gutter must be numbered.
+  const nl = String.fromCharCode(10);
+  const expectedCode = (body.content || '').split(nl).map((line) => line.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/'/g, '&#39;').replace(/"/g, '&quot;')).join(nl);
+  return JSON.stringify({
+    ok: true,
+    hasGutter: typeof body.lines_gutter_html === 'string' && body.lines_gutter_html.startsWith('<span>1</span>'),
+    hasCode: typeof body.lines_code_html === 'string' && body.lines_code_html === expectedCode,
+    truncatedFlag: body.truncated === false,
+  });
+})()`, true);
+const renderParsed = (() => { try { return JSON.parse(renderLines || '{}'); } catch { return { raw: renderLines }; } })();
+check('render=lines returns backend-prebuilt numbered preview HTML (C5)', renderParsed.ok === true && renderParsed.hasGutter === true && renderParsed.hasCode === true, JSON.stringify(renderParsed));
+
+// 3b. Editor instance reuse across renders (IDE-review C4): a re-render with
+// unchanged file state must reattach the SAME CodeMirror DOM node instead of
+// recreating the editor (legacy code recreated CodeMirror on every render).
+// Mark the live editor view, trigger plain re-renders (focusFile on the
+// already-open file, plus a tree refresh), and verify node identity and the
+// editor API survive.
+const reuseRound = await cdp.evalExpr(`(async () => {
+  const mount = document.querySelector('.file-browser-pane .herdr-editor-mount');
+  const view = mount && mount.querySelector('.cm-editor');
+  if (!view) return 'no-editor';
+  view.setAttribute('data-herdr-c4-mark', 'live');
+  // Any pending editor boot must settle before the re-render.
+  await new Promise(r => setTimeout(r, 600));
+  const path = document.querySelector('.file-browser-pane').getAttribute('data-path');
+  window.HerdrFileBrowser.focusFile(encodeURIComponent(path));
+  await new Promise(r => setTimeout(r, 600));
+  const after = document.querySelector('.file-browser-pane .cm-editor');
+  const api = document.querySelector('.file-browser-pane-body');
+  return JSON.stringify({
+    sameNode: !!after && after.getAttribute('data-herdr-c4-mark') === 'live',
+    apiAttached: !!(api && api._herdrEditorApi),
+  });
+})()`, true);
+const reuseParsed = (() => { try { return JSON.parse(reuseRound || '{}'); } catch { return { raw: reuseRound }; } })();
+check('re-render reattaches the same editor node (C4)', reuseParsed.sameNode === true, JSON.stringify(reuseParsed));
+check('editor api survives re-render (C4)', reuseParsed.apiAttached === true, JSON.stringify(reuseParsed));
 
 // 4. Type an edit -> dirty dot appears on the tab
 const typed = await cdp.evalExpr(`(async () => {
@@ -216,6 +298,39 @@ check('file stays editable after save', saveParsed.editable === 'true');
 const onDisk = readFileSync(DEMO_FILE, 'utf8');
 check('saved content persisted to disk', onDisk.includes('# acceptance edit'), JSON.stringify(onDisk.slice(0, 80)));
 
+// 6b. A6: hash_only probe + external change detection on refocus
+const a6Round = await cdp.evalExpr(`(async () => {
+  // Probe endpoint returns only hash/size with empty content.
+  const probe = await fetch('/api/file-browser/file?cwd=' + encodeURIComponent('${REPO}') + '&path=' + encodeURIComponent('src/demo.py') + '&hash_only=true');
+  if (!probe.ok) return JSON.stringify({ err: 'probe-status-' + probe.status });
+  const probeBody = await probe.json();
+  if (probeBody.content !== "" || !probeBody.hash || probeBody.truncated !== false) {
+    return JSON.stringify({ probeBad: { content: probeBody.content, hash: !!probeBody.hash, truncated: probeBody.truncated } });
+  }
+  // External change: rewrite the file behind the browser's back via fs (the
+  // e2e shell gave us no node access; the POST endpoint is the same server
+  // the browser uses, so use it as the "other tool").
+  const save = await fetch('/api/file-browser/file', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ cwd: '${REPO}', path: 'src/demo.py', content: 'external edit', expected_hash: probeBody.hash }),
+  });
+  if (!save.ok) return JSON.stringify({ err: 'save-status-' + save.status });
+  // Focus watcher: stub confirm to accept, then trigger the visibilitychange
+  // path the way a real refocus does.
+  let confirmMsg = null;
+  window.confirm = (m) => { confirmMsg = m; return true; };
+  Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
+  document.dispatchEvent(new Event('visibilitychange'));
+  await new Promise(r => setTimeout(r, 1500));
+  const editorHost = document.querySelector('[id^="fileBrowserEditor-"]');
+  const value = editorHost && editorHost._herdrEditorApi ? editorHost._herdrEditorApi.getValue() : null;
+  return JSON.stringify({ probeOk: true, confirmMsg, reloadedTo: value });
+})()`, true);
+const a6Parsed = (() => { try { return JSON.parse(a6Round || '{}'); } catch { return { raw: a6Round }; } })();
+check('hash_only probe returns hash with empty content (A6)', a6Parsed.probeOk === true, JSON.stringify(a6Parsed));
+check('refocus after external change prompts and reloads (A6)', a6Parsed.confirmMsg === "src/demo.py\nchanged on disk. Reload?" && a6Parsed.reloadedTo === 'external edit', JSON.stringify(a6Parsed));
+
 // 7. Lock with dirty prompts confirm; discard works
 await cdp.evalExpr(`(async () => {
   window.__acceptConfirm = null;
@@ -247,6 +362,33 @@ const lockDirty = await cdp.evalExpr(`(() => {
 const lockDirtyParsed = (() => { try { return JSON.parse(lockDirty || '{}'); } catch { return { raw: lockDirty }; } })();
 check('locking dirty file asked for confirmation', typeof lockDirtyParsed.confirmMsg === 'string' && lockDirtyParsed.confirmMsg.includes('Discard unsaved changes'), lockDirtyParsed.confirmMsg);
 check('lock discards draft and clears dirty dot', lockDirtyParsed.dot === false && lockDirtyParsed.editable === 'false', JSON.stringify(lockDirtyParsed));
+
+// 7b. A4: oversized text files offer a backend partial read.
+const bigOpen = await cdp.evalExpr(`(async () => {
+  HerdrFileBrowser.select(encodeURIComponent('src/big.log'));
+  await new Promise((r) => setTimeout(r, 1500));
+  const panel = document.getElementById('fileBrowserPanel').innerHTML;
+  return JSON.stringify({
+    placeholder: panel.includes('File too large to preview'),
+    loadButton: !!document.querySelector('.file-browser-load-partial'),
+  });
+})()`, true);
+const bigOpenParsed = (() => { try { return JSON.parse(bigOpen || '{}'); } catch { return { raw: bigOpen }; } })();
+check('oversized file shows placeholder with load-partial button (A4)', bigOpenParsed.placeholder === true && bigOpenParsed.loadButton === true, JSON.stringify(bigOpenParsed));
+
+const bigLoaded = await cdp.evalExpr(`(async () => {
+  document.querySelector('.file-browser-load-partial').click();
+  await new Promise((r) => setTimeout(r, 2000));
+  const pane = document.querySelector('.file-browser-pane .cm-content, .file-browser-pane [contenteditable]');
+  const panel = document.getElementById('fileBrowserPanel').innerHTML;
+  return JSON.stringify({
+    editable: pane ? pane.getAttribute('contenteditable') : 'none',
+    hasEditor: !!pane,
+    noLoadButton: !panel.includes('Load first 256 KB'),
+  });
+})()`, true);
+const bigLoadedParsed = (() => { try { return JSON.parse(bigLoaded || '{}'); } catch { return { raw: bigLoaded }; } })();
+check('partial preview mounts read-only (A4)', bigLoadedParsed.hasEditor === true && bigLoadedParsed.editable === 'false', JSON.stringify(bigLoadedParsed));
 
 // 8. Cmd+S on locked file does not change disk
 const diskBefore = readFileSync(DEMO_FILE, 'utf8');

@@ -71,6 +71,28 @@ What it verifies on a throwaway dirty repo:
 
 Run it locally with `just git-e2e` (also not wired into CI).
 
+## Content search acceptance (no browser needed)
+
+`scripts/e2e/run-content-search-e2e.sh` covers the backend-built content
+search chunks. Like the git acceptance it boots the served JS bundles in a
+node vm and proxies every fetch to the real backend, so it runs anywhere
+node and cargo do.
+
+What it verifies on a fixture repo with two overlapping matches:
+
+- both search routes return pre-merged chunks with per-row `highlight_html`
+- overlapping context windows arrive as one continuous chunk
+- matched rows carry `match_id` and the hit is wrapped in `<mark>`
+- HTML in the fixture line arrives escaped from the backend
+- the served renderer emits the markup verbatim (no double-escaping) and
+  wires `openMatch` / `expandSnippet` from backend ids
+- repeat renders reuse the normalized chunk cache
+- the single-file route (Load all matches) also returns chunks
+
+| Variable    | Default | Meaning                            |
+| ----------- | ------- | ---------------------------------- |
+| `E2E_PORT`  | `8897`  | HTTPS port of the isolated server |
+
 ## Theme system acceptance
 
 `just theme-e2e` (or `scripts/e2e/run-theme-e2e.sh`) covers the theme system

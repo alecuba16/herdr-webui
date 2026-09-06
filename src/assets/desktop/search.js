@@ -14,14 +14,14 @@ function createSearchPaletteState() {
     pathDone: true,
     pathLoading: false,
     pathError: "",
-    content: window.HerdrWorkspaceSearch ? window.HerdrWorkspaceSearch.createContentState() : { query: "", files: [], expanded: {}, snippets: {}, loading: false, error: "", done: true, offset: 0, total_files: 0, total_matches: 0 },
+    content: window.HerdrWorkspaceSearch ? window.HerdrWorkspaceSearch.createContentState() : { query: "", files: [], expanded: {}, loading: false, error: "", done: true, offset: 0, total_files: 0, total_matches: 0 },
     sectionsExpanded: { actions: true, workspaces: true, files: true, content: true },
   };
 }
 
 function openSearchPalette() {
   try {
-    if (JSON.parse(localStorage.getItem("herdr-web-options") || "{}").headerSearchEnabled === false) return false;
+    if ((window.HerdrOptions ? window.HerdrOptions.read() : {}).headerSearchEnabled === false) return false;
   } catch (_) {}
   const modal = el("searchPalette"),
     input = el("searchPaletteInput");
