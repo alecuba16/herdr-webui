@@ -1,6 +1,11 @@
 # Release notes
 
 ## 0.4.7 Release Notes
+- LSP diagnostics now arrive as pushed events over the /ws/events websocket
+  instead of a 2-second HTTP poll. The HTTP endpoint remains for
+  compatibility and as an automatic fallback when the socket is
+  unavailable; while push is live the UI only drains a 30-second safety
+  pass, cutting per-2s JSON parsing of the full server registry.
 - Mobile search: path results now offer a "Load more" button matching the desktop
   palette, appending the next backend page in place with scroll preserved.
 - Mobile: the editor now applies the same options as desktop (word wrap, tab

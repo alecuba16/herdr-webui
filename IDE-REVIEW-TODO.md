@@ -117,7 +117,7 @@ Priority: P0 must land in this review, P1 should land, P2 next iteration.
 
 ## C. Performance — move JS processing to Rust backend
 
-- [ ] **C1 (P0, B/P)** LSP diagnostics use a 2 s HTTP poll
+- [x] **C1 (P0, B/P)** LSP diagnostics use a 2 s HTTP poll
   (`/api/lsp/notifications`) that drains a global queue for all servers and
   ships `servers` status on every call. The backend already has a websocket
   hub (`/ws/events`) with per-subscription filtering. Push
@@ -125,6 +125,24 @@ Priority: P0 must land in this review, P1 should land, P2 next iteration.
   type `lsp.diagnostics`), keep the HTTP endpoint for compat, and make the
   frontend prefer push with poll fallback. Removes per-2s JSON parse of the
   full server registry on the UI thread.
+  DONE: LspRegistry now carries a tokio broadcast channel (128 slots); the
+  server stdout reader publishes an LspDiagnosticsEvent {language, root,
+  notification} for every publishDiagnostics(/Thin) batch alongside the
+  legacy per-server queue. /ws/events subscribes to the registry and
+  forwards events as {type:"event", event:{type:"lsp.diagnostics"}} — same
+  envelope as workspace/pane events, zero extra backend round trips.
+  shared/lsp.js opens its own /ws/events push socket on first didOpen,
+  applies pushed diagnostics immediately, resets the slow-drain clock on
+  each live push, and degrades to a 30s safety drain while the socket is
+  live (catches broadcast lag; diagnostics are full snapshots). On socket
+  loss it reconnects with capped backoff while the fast 2s poll covers the
+  gap (older backends keep the fast poll permanently). applyNotifications
+  now also accepts the Thin variant. Measured in the real-browser
+  acceptance with a real vscode-json-language-server: 1 push event,
+  0 /api/lsp/notifications calls in a 5s window (old behavior: 2-3),
+  20/20 checks. 2 Rust tests (broadcast reach, lagged receiver) + 1 WS
+  forwarding test via a real axum server + 2 JS transport tests (push
+  applied + poll fallback on drop).
 - [ ] **C2 (P0, B/P)** Content-search snippet merging/highlight chunking is
   done per render in JS (`lineChunks` + `mergeChunk` + per-row HTML string
   building on every `render()` call). The backend already computes matches,

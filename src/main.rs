@@ -3809,6 +3809,11 @@ async fn events_socket(state: WebState, api: ApiClient, mut socket: WebSocket) {
         .unwrap_or_default();
     let use_builtin_event_hub = backend_uses_builtin_event_hub(&backend_info);
     let backend_protocol = backend_info.protocol;
+    // Push channel for LSP diagnostics (C1): the registry broadcasts every
+    // publishDiagnostics batch and we forward it to connected UIs. Receivers
+    // that lag a burst simply miss those batches; diagnostics are full-state
+    // snapshots so the next event restores the view.
+    let mut lsp_rx = state.lsp.subscribe_diagnostics();
     std::thread::spawn(move || {
         // Detect the backend protocol so we only subscribe to layout.updated
         // on protocol 16+. Older backends reject unknown subscription types
@@ -3891,6 +3896,18 @@ async fn events_socket(state: WebState, api: ApiClient, mut socket: WebSocket) {
                         }
                     }
                 }
+                if socket.send(Message::Text(value.to_string().into())).await.is_err() { break; }
+            }
+            lsp_event = lsp_rx.recv() => {
+                let Ok(event) = lsp_event else { break; };
+                let value = json!({
+                    "type": "event",
+                    "event": {
+                        "type": "lsp.diagnostics",
+                        "event": "lsp.diagnostics",
+                        "data": event,
+                    }
+                });
                 if socket.send(Message::Text(value.to_string().into())).await.is_err() { break; }
             }
             _ = interval.tick(), if !use_builtin_event_hub => {
@@ -9661,7 +9678,90 @@ mod tests {
     /// Fake API socket that responds to ping, accepts events.subscribe,
     /// and streams a "ready" event followed by one test event.
     #[cfg(unix)]
-    fn fake_api_socket_events_streaming() -> (PathBuf, thread::JoinHandle<()>) {
+        #[cfg(unix)]
+    #[tokio::test]
+    async fn events_socket_forwards_lsp_diagnostics_push() {
+        use futures_util::StreamExt;
+        use tokio_tungstenite::connect_async;
+
+        // C1: lsp.diagnostics published on the registry must reach /ws/events
+        // subscribers as {type:"event", event:{type:"lsp.diagnostics"}}.
+        let (socket, _handle) = fake_api_socket_events_streaming();
+        let mut state = test_state();
+        state.api_socket = Some(socket.clone());
+        let lsp = state.lsp.clone();
+        let app = test_app_with_state(state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server_handle = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+
+        let url = format!("ws://{addr}/ws/events");
+        let request = tokio_tungstenite::tungstenite::http::Request::builder()
+            .uri(&url)
+            .header("cookie", "herdr_web_session=token-123")
+            .header("host", addr.to_string())
+            .header("connection", "Upgrade")
+            .header("upgrade", "websocket")
+            .header("sec-websocket-version", "13")
+            .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+            .body(())
+            .unwrap();
+        let (mut ws_stream, _response) = connect_async(request)
+            .await
+            .expect("Failed to connect to WebSocket");
+
+        // Give the socket loop a moment to enter select! before publishing.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        lsp.publish_diagnostics_for_test(lsp::LspDiagnosticsEvent {
+            language: "rust".to_string(),
+            root: "/tmp/repo".to_string(),
+            notification: json!({
+                "method": "textDocument/publishDiagnostics",
+                "params": {
+                    "uri": "file:///tmp/repo/src/main.rs",
+                    "diagnostics": [
+                        { "range": { "start": { "line": 3, "character": 0 } }, "severity": 1, "message": "pushed!" }
+                    ]
+                }
+            }),
+        });
+
+        let mut got_push = false;
+        for _ in 0..30 {
+            let msg = match tokio::time::timeout(std::time::Duration::from_secs(15), ws_stream.next()).await {
+                Ok(Some(Ok(m))) => m,
+                _ => break,
+            };
+            let text = msg.to_text().expect("expected text message");
+            let value: serde_json::Value = serde_json::from_str(text).expect("invalid json");
+            if value["type"].as_str() == Some("event") {
+                let event = &value["event"];
+                if event["type"].as_str() == Some("lsp.diagnostics") || event["event"].as_str() == Some("lsp.diagnostics") {
+                    let data = &event["data"];
+                    assert_eq!(data["language"], "rust");
+                    assert_eq!(data["root"], "/tmp/repo");
+                    assert_eq!(
+                        data["notification"]["params"]["diagnostics"][0]["message"],
+                        "pushed!"
+                    );
+                    got_push = true;
+                    break;
+                }
+            }
+        }
+        assert!(got_push, "lsp.diagnostics push must reach the events socket");
+        server_handle.abort();
+    }
+
+fn fake_api_socket_events_streaming() -> (PathBuf, thread::JoinHandle<()>) {
         use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
 
         let path = std::env::temp_dir().join(format!(
