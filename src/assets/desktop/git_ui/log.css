@@ -346,24 +346,24 @@
   display: none;
 }
 .git-ui-log-ref.main {
-  --lane: #3b82f6;
-  background: color-mix(in srgb, #3b82f6 24%, transparent);
-  border-color: color-mix(in srgb, #3b82f6 72%, var(--border2));
-  color: color-mix(in srgb, #3b82f6 70%, var(--fg));
+  --lane: var(--git-log-main, #3b82f6);
+  background: color-mix(in srgb, var(--git-log-main, #3b82f6) 24%, transparent);
+  border-color: color-mix(in srgb, var(--git-log-main, #3b82f6) 72%, var(--border2));
+  color: color-mix(in srgb, var(--git-log-main, #3b82f6) 70%, var(--fg));
   font-weight: 700;
 }
 .git-ui-log-ref.origin {
-  --lane: #f59e0b;
-  background: color-mix(in srgb, #f59e0b 14%, transparent);
-  border: 1px solid color-mix(in srgb, #f59e0b 60%, var(--border2));
-  color: color-mix(in srgb, #f59e0b 72%, var(--fg));
+  --lane: var(--git-log-origin, #f59e0b);
+  background: color-mix(in srgb, var(--git-log-origin, #f59e0b) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--git-log-origin, #f59e0b) 60%, var(--border2));
+  color: color-mix(in srgb, var(--git-log-origin, #f59e0b) 72%, var(--fg));
   font-weight: 700;
 }
 .git-ui-log-ref.current {
-  --lane: #ef4444;
-  background: color-mix(in srgb, #ef4444 24%, transparent);
-  border-color: color-mix(in srgb, #ef4444 72%, var(--border2));
-  color: color-mix(in srgb, #ef4444 68%, var(--fg));
+  --lane: var(--git-log-current, #ef4444);
+  background: color-mix(in srgb, var(--git-log-current, #ef4444) 24%, transparent);
+  border-color: color-mix(in srgb, var(--git-log-current, #ef4444) 72%, var(--border2));
+  color: color-mix(in srgb, var(--git-log-current, #ef4444) 68%, var(--fg));
 }
 .git-ui-log-ref.remote {
   --lane: var(--muted);
@@ -372,9 +372,9 @@
   color: color-mix(in srgb, var(--muted) 70%, var(--fg));
 }
 .git-ui-log-dot.origin {
-  background: color-mix(in srgb, #f59e0b 22%, var(--bg));
-  border: 2px solid #f59e0b;
-  box-shadow: 0 0 0 3px color-mix(in srgb, #f59e0b 22%, transparent);
+  background: color-mix(in srgb, var(--git-log-origin, #f59e0b) 22%, var(--bg));
+  border: 2px solid var(--git-log-origin, #f59e0b);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--git-log-origin, #f59e0b) 22%, transparent);
   height: 11px;
   width: 11px;
 }
@@ -388,11 +388,11 @@
   width: 13px;
 }
 .git-ui-log-row.origin-tip .git-ui-log-title {
-  color: color-mix(in srgb, #f59e0b 70%, var(--fg));
+  color: color-mix(in srgb, var(--git-log-origin, #f59e0b) 70%, var(--fg));
   font-weight: 700;
 }
 .git-ui-log-row.origin-tip {
-  box-shadow: inset 3px 0 0 #f59e0b;
+  box-shadow: inset 3px 0 0 var(--git-log-origin, #f59e0b);
 }
 .git-ui-log-row.current .git-ui-log-title {
   color: var(--accent);

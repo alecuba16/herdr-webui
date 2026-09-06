@@ -1027,6 +1027,11 @@
       return open(folder);
     }
 
+    function applyTheme() {
+      if (!term || !term.setTheme) return;
+      try { term.setTheme(themeFn()); } catch (e) {}
+    }
+
     return {
       open: open,
       requestClose: requestClose,
@@ -1037,6 +1042,7 @@
       handleResize: handleResize,
       handlePaneExited: handlePaneExited,
       toggle: toggle,
+      applyTheme: applyTheme,
     };
   }
 

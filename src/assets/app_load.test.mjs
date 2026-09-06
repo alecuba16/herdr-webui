@@ -77,6 +77,7 @@ function context() {
     cancelAnimationFrame() {},
     document: {
       body: getElement("body"),
+      documentElement: element("html"),
       title: "",
       createElement: () => element(),
       execCommand: () => true,

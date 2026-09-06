@@ -147,14 +147,14 @@
   white-space: nowrap;
 }
 .git-ui-ahead-behind.ahead {
-  background: color-mix(in srgb, #34d399 18%, transparent);
-  border: 1px solid color-mix(in srgb, #34d399 60%, var(--border2));
-  color: #34d399;
+  background: color-mix(in srgb, var(--git-added-color) 18%, transparent);
+  border: 1px solid color-mix(in srgb, var(--git-added-color) 60%, var(--border2));
+  color: var(--git-added-color);
 }
 .git-ui-ahead-behind.behind {
-  background: color-mix(in srgb, #fbbf24 18%, transparent);
-  border: 1px solid color-mix(in srgb, #fbbf24 60%, var(--border2));
-  color: #fbbf24;
+  background: color-mix(in srgb, var(--git-conflict-color) 18%, transparent);
+  border: 1px solid color-mix(in srgb, var(--git-conflict-color) 60%, var(--border2));
+  color: var(--git-conflict-color);
 }
 .git-ui-ahead-behind.synced {
   background: color-mix(in srgb, var(--muted) 12%, transparent);
@@ -278,9 +278,9 @@
   width: 14px;
 }
 .herdr-tree-hit {
-  background: #f9e2af;
+  background: var(--herdr-search-hit-bg, #f9e2af);
   border-radius: 3px;
-  color: #11111b;
+  color: var(--herdr-search-hit-fg, #11111b);
   padding: 0 2px;
 }
 .git-ui-action-group {
@@ -326,7 +326,7 @@
   color: var(--accent);
 }
 .tab.git-panel-close {
-  color: #f38ba8;
+  color: var(--git-deleted-color);
   padding-left: 10px;
   padding-right: 10px;
 }
@@ -659,11 +659,11 @@
   color: var(--accent);
 }
 .git-ui-menu button.danger {
-  color: #f38ba8;
+  color: var(--git-deleted-color);
 }
 .git-ui-menu button.danger:hover {
-  background: color-mix(in srgb, #f38ba8, transparent 82%);
-  color: #f38ba8;
+  background: color-mix(in srgb, var(--git-deleted-color), transparent 82%);
+  color: var(--git-deleted-color);
 }
 .git-ui-empty-row {
   border: 1px dashed var(--border);
@@ -787,10 +787,10 @@
 .git-ui-badge.add { color: var(--git-add-color); }
 .git-ui-badge.del { color: var(--git-del-color); }
 .git-ui-error {
-  background: rgba(243, 139, 168, 0.12);
-  border: 1px solid #f38ba8;
+  background: color-mix(in srgb, var(--git-deleted-color), transparent 88%);
+  border: 1px solid var(--git-deleted-color);
   border-radius: 8px;
-  color: #f38ba8;
+  color: var(--git-deleted-color);
   margin: 10px;
   padding: 8px;
   white-space: pre-wrap;
