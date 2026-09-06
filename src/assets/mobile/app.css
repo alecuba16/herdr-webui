@@ -27,6 +27,8 @@ body {
   --border2: #45475a;
   --muted: #a6adc8;
   --accent: #89b4fa;
+  --editor-caret: #f2f5ff;
+  --editor-caret-dim: #a6adc8;
   --git-modified-color: #e9d07a;
   --git-added-color: #a6e3a1;
   --git-deleted-color: #f38ba8;
@@ -71,6 +73,8 @@ body.light {
   --border2: #9ca0b0;
   --muted: #6c6f85;
   --accent: #1e66f5;
+  --editor-caret: #1e2a50;
+  --editor-caret-dim: #6c6f85;
   --git-modified-color: #8a6d00;
   --git-added-color: #2a8c2f;
   --git-deleted-color: #cc2b3e;
@@ -869,15 +873,27 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
   line-height: 1.5;
 }
 .cm-content {
-  caret-color: var(--accent);
+  caret-color: var(--editor-caret);
   padding: 8px 0;
 }
 .cm-line {
   padding: 0 8px;
 }
-.cm-cursor {
-  border-left-color: var(--accent);
-  border-left-width: 2px;
+/* CodeMirror's injected theme styles the caret with a generated class prefix
+   (".ͼN .cm-cursor", specificity 0,2,0) and defaults it to black, which is
+   invisible on the dark editor background. Scope our rules with .cm-editor so
+   they win the cascade and stay theme-aware: bright while focused, dimmed but
+   still contrasted while unfocused. */
+.cm-editor .cm-cursor,
+.cm-editor .cm-dropCursor {
+  border-left: 2px solid var(--editor-caret);
+  margin-left: -1px;
+}
+.cm-editor.cm-focused .cm-cursor {
+  border-left-color: var(--editor-caret);
+}
+.cm-editor:not(.cm-focused) .cm-cursor {
+  border-left-color: var(--editor-caret-dim);
 }
 .cm-selectionBackground {
   background: color-mix(in srgb, var(--accent), transparent 72%) !important;

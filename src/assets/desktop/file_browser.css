@@ -727,15 +727,27 @@
   line-height: 1.5;
 }
 .cm-content {
-  caret-color: var(--accent);
+  caret-color: var(--editor-caret);
   padding: 8px 0;
 }
 .cm-line {
   padding: 0 8px;
 }
-.cm-cursor {
-  border-left-color: var(--accent);
-  border-left-width: 2px;
+/* CodeMirror's injected theme styles the caret with a generated class prefix
+   (".ͼN .cm-cursor", specificity 0,2,0) and defaults it to black, which is
+   invisible on the dark editor background. Scope our rules with .cm-editor so
+   they win the cascade and stay theme-aware: bright while focused, dimmed but
+   still contrasted while unfocused. */
+.cm-editor .cm-cursor,
+.cm-editor .cm-dropCursor {
+  border-left: 2px solid var(--editor-caret);
+  margin-left: -1px;
+}
+.cm-editor.cm-focused .cm-cursor {
+  border-left-color: var(--editor-caret);
+}
+.cm-editor:not(.cm-focused) .cm-cursor {
+  border-left-color: var(--editor-caret-dim);
 }
 .cm-selectionBackground {
   background: color-mix(in srgb, var(--accent), transparent 72%) !important;
