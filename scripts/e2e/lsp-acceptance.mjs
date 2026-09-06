@@ -149,6 +149,32 @@ try {
     return true;
   })()`);
 
+  // ── Push transport instrumentation (IDE-review C1) ──────────────────
+  // Wrap window.WebSocket BEFORE any LSP document opens so the push socket
+  // (created lazily on the first didOpen) is captured from the start.
+  await evalExpr(`(() => {
+    window.__lspPush = { events: 0, sockets: 0 };
+    const OrigWebSocket = window.WebSocket;
+    function WrappedWebSocket(url) {
+      const ws = new OrigWebSocket(...arguments);
+      if (String(url).includes('/ws/events')) {
+        window.__lspPush.sockets += 1;
+        ws.addEventListener('message', (event) => {
+          try {
+            const msg = JSON.parse(event.data);
+            const evt = msg && msg.event;
+            const kind = evt && (evt.event || evt.type);
+            if (kind === 'lsp.diagnostics') window.__lspPush.events += 1;
+          } catch (_) {}
+        });
+      }
+      return ws;
+    }
+    WrappedWebSocket.prototype = OrigWebSocket.prototype;
+    window.WebSocket = WrappedWebSocket;
+    return 'wrapped';
+  })()`);
+
   // 5. Close stale workspace(s) from prior runs via their real sidebar buttons,
   //    then open the fixture repo through the real dashboard UI.
   await evalExpr(`(async () => {
@@ -240,6 +266,31 @@ try {
     return badge ? badge.textContent : '';
   })()`, 200, 250);
   record(/error/.test(String(badge)), 'diagnostics badge shows error count in toolbar', String(badge).trim());
+
+  // ── Push transport verification (IDE-review C1) ──────────────────────
+  // Diagnostics above must arrive via /ws/events. Verify:
+  //  1) an events socket carried at least one lsp.diagnostics event, and
+  //  2) zero /api/lsp/notifications polls in 5s while the push is live
+  //     (the old 2s poll would hit 2-3 times).
+  const pushStats = await evalExpr(`(() => JSON.stringify(window.__lspPush || {}) )()`);
+  const parsed = JSON.parse(pushStats || '{}');
+  record(Number(parsed.events) >= 1,
+    'lsp.diagnostics arrived over /ws/events push (C1)', `events=${parsed.events} sockets=${parsed.sockets}`);
+
+  const pollCount = await evalExpr(`(async () => {
+    let hits = 0;
+    const origFetch = window.fetch;
+    window.fetch = function (input) {
+      const url = String(input);
+      if (url.includes('/api/lsp/notifications')) hits += 1;
+      return origFetch.apply(this, arguments);
+    };
+    await new Promise((r) => setTimeout(r, 5000));
+    window.fetch = origFetch;
+    return String(hits);
+  })()`, true);
+  record(Number(pollCount) === 0,
+    'no diagnostics HTTP poll while push transport is live (C1)', `pollHits=${pollCount} in 5s`);
 
   const list = await waitFor('diagnostics list rendered', `(() => {
     const mount = document.querySelector('[id^="fileBrowserEditor-"]');

@@ -488,6 +488,99 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
   font-size: 12px;
   overflow-wrap: anywhere;
 }
+
+/* ---- Mobile file action sheet (rename/delete/new-file, IDE review B2) ---- */
+.herdr-tree-row-action {
+  flex: none;
+  margin-left: auto;
+  min-width: 34px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+.herdr-tree-row-action:active,
+.herdr-tree-row-action:focus-visible {
+  color: var(--accent, inherit);
+  border-color: var(--accent, currentColor);
+  outline: none;
+}
+.mobile-sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  background: rgba(0, 0, 0, 0.45);
+}
+.mobile-sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 91;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 14px calc(14px + env(safe-area-inset-bottom, 0px));
+  background: var(--bg, #1e1e2e);
+  border-top: 1px solid var(--border);
+  border-radius: 14px 14px 0 0;
+  box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.35);
+  max-height: 70vh;
+  overflow-y: auto;
+}
+.mobile-sheet-handle {
+  width: 40px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--border);
+  margin: 0 auto 2px;
+}
+.mobile-sheet-title {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.mobile-sheet-action {
+  display: block;
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-soft, rgba(255, 255, 255, 0.04));
+  color: inherit;
+  font-size: 15px;
+  text-align: left;
+  cursor: pointer;
+}
+.mobile-sheet-action.danger {
+  color: #f38ba8;
+  border-color: #f38ba8;
+}
+.mobile-sheet-action:active {
+  filter: brightness(1.15);
+}
+.mobile-sheet-input {
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-soft, rgba(255, 255, 255, 0.04));
+  color: inherit;
+  font-size: 15px;
+}
+.mobile-sheet-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
 .herdr-file-tree {
   display: flex;
   flex-direction: column;
@@ -596,6 +689,7 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
   overflow: hidden;
+  position: relative;
 }
 .mobile-git {
   display: grid;
@@ -622,6 +716,23 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
   gap: 10px;
   grid-template-columns: auto minmax(0, 1fr);
   padding: 12px;
+}
+.mobile-git-file-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.mobile-git-branch strong,
+.mobile-git-branch span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+.mobile-git-branch.active {
+  opacity: 0.65;
+  cursor: default;
 }
 .mobile-git-file-head div {
   min-width: 0;
@@ -702,6 +813,49 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
 .herdr-editor-head span {
   color: var(--muted);
   font-size: 12px;
+}
+.herdr-editor-find-toggle {
+  align-items: center;
+  background: var(--panel);
+  border: 1px solid var(--border2);
+  border-radius: 9px;
+  color: var(--muted);
+  display: inline-flex;
+  flex: 0 0 auto;
+  font: inherit;
+  height: 30px;
+  justify-content: center;
+  width: 30px;
+}
+.herdr-editor-find-toggle:active,
+.herdr-editor-find-toggle:focus-visible {
+  border-color: var(--accent);
+  color: var(--accent);
+  outline: 0;
+}
+.herdr-editor-find-float {
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  z-index: 4;
+}
+
+/* IDE-review A5: cursor position readout on headerless editor mounts. */
+.herdr-editor-position {
+  background: color-mix(in srgb, var(--panel2) 88%, transparent);
+  border: 1px solid var(--border2);
+  border-radius: 7px;
+  bottom: 8px;
+  color: var(--muted);
+  font: 11px var(--mono-font);
+  padding: 2px 7px;
+  pointer-events: none;
+  position: absolute;
+  right: 8px;
+  z-index: 4;
+}
+.herdr-editor-position[hidden] {
+  display: none;
 }
 .herdr-editor-find[hidden] {
   display: none;
@@ -1512,4 +1666,37 @@ body.light .mobile-nav-status.working {
   border-radius: 14px;
   margin: 10px 0;
   padding: 12px;
+}
+
+/* LSP diagnostics under the mobile editor (IDE-review B4, desktop parity) */
+.mobile-search-more {
+  display: block;
+  margin: 10px auto 2px;
+  min-width: 140px;
+}
+
+.herdr-lsp-diagnostics {
+  border-top: 1px solid var(--border);
+  max-height: 132px;
+  overflow: auto;
+  padding: 4px 0;
+  margin-top: 8px;
+}
+.herdr-lsp-diagnostic {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+  padding: 3px 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.herdr-lsp-diagnostic strong {
+  font-variant-numeric: tabular-nums;
+}
+.herdr-lsp-diagnostic.error {
+  color: var(--error, #f38ba8);
+}
+.herdr-lsp-diagnostic.warning {
+  color: var(--warning, #f9e2af);
 }

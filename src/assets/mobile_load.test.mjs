@@ -18,6 +18,7 @@ function element(id = "") {
     clientWidth: 360,
     clientHeight: 520,
     appendChild() {},
+    focus() {},
     listeners: {},
     addEventListener(event, listener) {
       (this.listeners[event] || (this.listeners[event] = [])).push(listener);
@@ -180,6 +181,31 @@ function context(pathname = "/", options = {}) {
           status: 200,
           json: async () => ({ result: { tab: { tab_id: "w1:t3" } } }),
         };
+      if (String(url).startsWith("/api/file-browser/tree") && url.includes("q=alpha"))
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            path: "",
+            entries: [
+              { kind: "file", name: "alpha.txt", path: "docs/alpha.txt" },
+              { kind: "dir", name: "beta", path: "src/beta" },
+            ],
+            truncated: true,
+            git_status: null,
+          }),
+        };
+      if (String(url).startsWith("/api/file-browser/content-search"))
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            files: [],
+            truncated: false,
+            total_files: 0,
+            total_matches: 0,
+          }),
+        };
       if (String(url).startsWith("/api/git-ui/status"))
         return {
           ok: true,
@@ -193,6 +219,24 @@ function context(pathname = "/", options = {}) {
             untracked: [],
           }),
         };
+      if (String(url).startsWith("/api/git-ui/branches"))
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            local: [{ name: "main", current: true, remote: false }, { name: "feature/mobile", current: false, remote: false }],
+            remote: [{ name: "origin/main", current: false, remote: true }],
+            branches: [
+              { name: "main", current: true, remote: false },
+              { name: "feature/mobile", current: false, remote: false },
+              { name: "origin/main", current: false, remote: true },
+            ],
+          }),
+        };
+      if (String(url).startsWith("/api/git-ui/stage") || String(url).startsWith("/api/git-ui/unstage") || String(url).startsWith("/api/git-ui/discard"))
+        return { ok: true, status: 200, json: async () => ({ ok: true }) };
+      if (String(url).startsWith("/api/git-ui/switch"))
+        return { ok: true, status: 200, json: async () => ({ ok: true }) };
       if (String(url).startsWith("/api/git-ui/diff"))
         return {
           ok: true,
@@ -308,6 +352,9 @@ function context(pathname = "/", options = {}) {
     const due = timers.splice(0).filter((timer) => !timer.cleared);
     for (const timer of due) await timer.callback();
   };
+  ctx.settle = async (rounds = 12) => {
+    for (let i = 0; i < rounds; i++) await Promise.resolve();
+  };
   ctx.dispatchDocumentEvent = (event) => {
     for (const listener of listeners[event] || []) listener();
   };
@@ -321,6 +368,8 @@ function context(pathname = "/", options = {}) {
 
 describe("mobile bundle load", () => {
   const source =
+    readFileSync(new URL("./shared/options.js", import.meta.url), "utf8") +
+    "\n" +
     readFileSync(new URL("./shared/core.js", import.meta.url), "utf8") +
     "\n" +
     readFileSync(new URL("./shared/actions.js", import.meta.url), "utf8") +
@@ -644,6 +693,75 @@ describe("mobile bundle load", () => {
     );
   });
 
+  it("mobile search scope parity uses the shared helper, section order, chips, and load more (B5)", async () => {
+    const ctx = context();
+    // Custom order and disabled folders must behave identically to desktop.
+    ctx.localStorage.setItem("herdr-web-options", JSON.stringify({
+      searchSectionOrder: "content,files,workspaces",
+      searchFoldersEnabled: false,
+      searchWorkspacesEnabled: false,
+    }));
+    vm.runInContext(source, ctx);
+
+    // The mobile screen must go through the shared HerdrWorkspaceSearch.settings()
+    // helper, not a private copy of the option parsing.
+    ok(source.includes("HerdrWorkspaceSearch.settings"), "uses shared settings helper");
+
+    ctx.HerdrMobile.showScreen("search");
+    const input = ctx.document.getElementById("mobileSearchInput");
+    input.value = "alpha";
+    input.oninput();
+    ctx.HerdrMobileSearch.setPathKind("file");
+    await ctx.settle();
+    await ctx.flushTimers();
+    await ctx.settle();
+    let html = ctx.document.getElementById("mobileSearchResults").innerHTML;
+    // Section order parity: content before files before workspaces.
+    const contentAt = html.indexOf("File content");
+    const filesAt = html.indexOf("Files and folders");
+    const actionsAt = html.indexOf("Actions");
+    ok(contentAt >= 0 && filesAt > contentAt, `order: content(${contentAt}) then files(${filesAt})`);
+    // Disabled scopes hide their sections and disable their chips.
+    ok(!html.includes("Workspaces and agents"), "workspaces section hidden when disabled");
+    ok(html.includes("disabled"), "folders chip disabled when searchFoldersEnabled=false");
+    // Kind normalization falls back to file when folders are disabled.
+    ok(html.includes("docs/alpha.txt"), "path results render through the shared helper");
+
+    // Load more: truncated results show the button; tapping appends the next page.
+    ok(html.includes("HerdrMobileSearch.loadMorePaths"), "load more button rendered when truncated");
+    ok(html.includes("Load more files"), "load more label names the active kind");
+    await ctx.HerdrMobileSearch.loadMorePaths();
+    await ctx.settle();
+    html = ctx.document.getElementById("mobileSearchResults").innerHTML;
+    const occurrences = html.split("docs/alpha.txt").length - 1;
+    ok(occurrences >= 2, `second page appended (occurrences=${occurrences})`);
+  });
+
+  it("shows Editor settings group with desktop parity options (B4)", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    ctx.HerdrMobile.showScreen("settings");
+    const settingsHtml = ctx.document.getElementById("mobileScreen").innerHTML;
+    ok(settingsHtml.includes("Editor"));
+    ok(settingsHtml.includes("Editor word wrap"));
+    ok(settingsHtml.includes("Editor tab size"));
+    ok(settingsHtml.includes("LSP diagnostics"));
+    ok(settingsHtml.includes("HerdrMobile.setEditorWordWrap"));
+    ok(settingsHtml.includes("HerdrMobile.setEditorTabSize"));
+    ok(settingsHtml.includes("HerdrMobile.setLspEnabled"));
+    equal(typeof ctx.HerdrMobile.setEditorEnabled, "function");
+    equal(typeof ctx.HerdrMobile.setEditorWordWrap, "function");
+    equal(typeof ctx.HerdrMobile.setEditorTabSize, "function");
+    equal(typeof ctx.HerdrMobile.setLspEnabled, "function");
+    doesNotThrow(() => ctx.HerdrMobile.setEditorWordWrap(true));
+    doesNotThrow(() => ctx.HerdrMobile.setEditorTabSize("4"));
+    doesNotThrow(() => ctx.HerdrMobile.setLspEnabled(true));
+    const stored = ctx.localStorage.getItem("herdr-web-options");
+    ok(stored && stored.includes('"editorWordWrap":true'), "word wrap persisted");
+    ok(stored && stored.includes('"editorTabSize":4'), "tab size persisted");
+    ok(stored && stored.includes('"lspEnabled":true'), "lsp persisted");
+  });
+
   it("requests mobile browser notification permission before enabling notifications", async () => {
     const ctx = context();
     let requested = false;
@@ -785,6 +903,61 @@ describe("mobile bundle load", () => {
         String(request.url).includes("/api/git-ui/diff?cwd=%2Ftmp%2Falpha"),
       ),
     );
+  });
+
+  it("mobile git screen stages, unstages, discards, and switches branches (B3)", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    ctx.HerdrMobile.showScreen("git");
+    await ctx.HerdrMobile.loadGitStatus();
+
+    // Unstaged file detail shows Stage + Discard (not Unstage).
+    await ctx.HerdrMobile.selectGitFile("src/mobile.js", "M");
+    let html = ctx.document.getElementById("mobileScreen").innerHTML;
+    ok(html.includes("HerdrMobile.gitStageFile()"), "stage action rendered");
+    ok(html.includes("HerdrMobile.gitDiscardFile()"), "discard action rendered");
+    ok(!html.includes("HerdrMobile.gitUnstageFile()"), "no unstage for unstaged file");
+
+    // Stage posts to the stage API with the file path.
+    await ctx.HerdrMobile.gitStageFile();
+    const stageCall = ctx.requests.find((request) => String(request.url) === "/api/git-ui/stage");
+    ok(stageCall, "stage request sent");
+    ok(JSON.parse(stageCall.opt.body).paths[0] === "src/mobile.js");
+    html = ctx.document.getElementById("mobileScreen").innerHTML;
+    ok(html.includes("HerdrMobile.gitUnstageFile()"), "kind flips to staged after staging");
+
+    // Staged file detail offers Unstage, not Stage.
+    await ctx.HerdrMobile.selectGitFile("src/staged.js", "S");
+    html = ctx.document.getElementById("mobileScreen").innerHTML;
+    ok(html.includes("HerdrMobile.gitUnstageFile()"), "unstage rendered for staged file");
+    ok(!html.includes("HerdrMobile.gitStageFile()"), "no stage for staged file");
+
+    // Discard is confirmed before posting.
+    ctx.confirm = () => false;
+    await ctx.HerdrMobile.gitDiscardFile();
+    ok(!ctx.requests.some((request) => String(request.url) === "/api/git-ui/discard"), "declined discard posts nothing");
+    ctx.confirm = () => true;
+    await ctx.HerdrMobile.gitDiscardFile();
+    const discardCall = ctx.requests.find((request) => String(request.url) === "/api/git-ui/discard");
+    ok(discardCall, "confirmed discard posts");
+    ok(JSON.parse(discardCall.opt.body).confirmed === true);
+
+    // Branches load through the branches API and switching requires confirm.
+    await ctx.HerdrMobile.backGitFiles();
+    ctx.confirm = () => false;
+    await ctx.HerdrMobile.toggleGitBranches();
+    let branchesHtml = ctx.document.getElementById("mobileScreen").innerHTML;
+    ok(branchesHtml.includes("feature/mobile"), "branch list renders local branches");
+    ok(branchesHtml.includes("origin/main"), "branch list renders remote branches");
+    ok(ctx.requests.some((request) => String(request.url).startsWith("/api/git-ui/branches")), "branches fetched");
+    await ctx.HerdrMobile.gitSwitchBranch("feature/mobile");
+    ok(!ctx.requests.some((request) => String(request.url) === "/api/git-ui/switch"), "declined switch posts nothing");
+    ctx.confirm = () => true;
+    await ctx.HerdrMobile.gitSwitchBranch("feature/mobile");
+    const switchCall = ctx.requests.find((request) => String(request.url) === "/api/git-ui/switch");
+    ok(switchCall, "confirmed switch posts");
+    ok(JSON.parse(switchCall.opt.body).branch === "feature/mobile");
   });
 
   it("renders mobile worktree path input and discovers by cwd", async () => {

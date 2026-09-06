@@ -240,14 +240,52 @@ pub(crate) struct LspRegistry {
     servers: Mutex<HashMap<String, Arc<LspServerHandle>>>,
     /// Shared LSP settings, kept in sync with persisted server settings.
     settings: std::sync::Mutex<LspSettings>,
+    /// Push channel for diagnostics events: /ws/events forwards these to the
+    /// UI so the frontend does not need a 2s HTTP poll per workspace (C1).
+    diagnostics_tx: tokio::sync::broadcast::Sender<serde_json::Value>,
+}
+
+/// Event payload pushed to /ws/events for every publishDiagnostics batch.
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct LspDiagnosticsEvent {
+    pub(crate) language: String,
+    pub(crate) root: String,
+    /// The raw server notification (method + params.diagnostics).
+    pub(crate) notification: serde_json::Value,
 }
 
 impl LspRegistry {
     pub(crate) fn new(settings: LspSettings) -> Self {
+        // Room for a burst of diagnostics; slow receivers just miss a batch
+        // and catch up on the next event (diagnostics are stateless snapshots).
+        let (diagnostics_tx, _) = tokio::sync::broadcast::channel(128);
         Self {
             servers: Mutex::new(HashMap::new()),
             settings: std::sync::Mutex::new(settings),
+            diagnostics_tx,
         }
+    }
+
+    /// Subscribe to pushed diagnostics events. Receivers that lag beyond the
+    /// channel capacity get a `RecvError::Lagged`, which callers treat as a
+    /// "drain the HTTP queue once" signal, not a failure.
+    pub(crate) fn subscribe_diagnostics(
+        &self,
+    ) -> tokio::sync::broadcast::Receiver<serde_json::Value> {
+        self.diagnostics_tx.subscribe()
+    }
+
+    fn publish_diagnostics(&self, event: &LspDiagnosticsEvent) {
+        let _ = self
+            .diagnostics_tx
+            .send(serde_json::to_value(event).unwrap_or_default());
+    }
+
+    /// Test-only hook: publish a diagnostics event from outside the reader
+    /// task so /ws/events forwarding can be exercised end to end.
+    #[cfg(test)]
+    pub(crate) fn publish_diagnostics_for_test(&self, event: LspDiagnosticsEvent) {
+        self.publish_diagnostics(&event);
     }
 
     pub(crate) fn settings(&self) -> LspSettings {
@@ -744,7 +782,22 @@ async fn spawn_server(
             } else if let Some(method) = message.get("method").and_then(|m| m.as_str()) {
                 if method == "textDocument/publishDiagnostics"
                     || method == "textDocument/publishDiagnosticsThin"
-                    || method == "$/progress"
+                {
+                    // Push to the events hub first so connected UIs update in
+                    // real time (C1), then keep the poll queue for compat.
+                    registry_for_reader.publish_diagnostics(&LspDiagnosticsEvent {
+                        language: handle_for_reader.language.clone(),
+                        root: handle_for_reader.root_string.clone(),
+                        notification: message.clone(),
+                    });
+                    let mut notifications = handle_for_reader.notifications.lock().await;
+                    notifications.push(message);
+                    // Keep the latest 200 notifications.
+                    let len = notifications.len();
+                    if len > 200 {
+                        notifications.drain(0..len - 200);
+                    }
+                } else if method == "$/progress"
                     || method == "window/showMessage"
                     || method == "window/logMessage"
                 {
@@ -1161,6 +1214,61 @@ async fn stop_handle(handle: &Arc<LspServerHandle>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn diagnostics_broadcast_reaches_subscribers() {
+        // C1: publishDiagnostics from a server reader task must reach every
+        // /ws/events subscriber through the registry broadcast channel.
+        let registry = LspRegistry::new(LspSettings::default());
+        let mut rx = registry.subscribe_diagnostics();
+        let notification = json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/publishDiagnostics",
+            "params": {
+                "uri": "file:///tmp/repo/src/main.rs",
+                "diagnostics": [
+                    { "range": { "start": { "line": 0, "character": 0 } }, "severity": 1, "message": "boom" }
+                ]
+            }
+        });
+        registry.publish_diagnostics(&LspDiagnosticsEvent {
+            language: "rust".to_string(),
+            root: "/tmp/repo".to_string(),
+            notification: notification.clone(),
+        });
+        let event = rx
+            .recv()
+            .await
+            .expect("subscriber must receive the pushed event");
+        assert_eq!(event["language"], "rust");
+        assert_eq!(event["root"], "/tmp/repo");
+        assert_eq!(event["notification"], notification);
+        assert_eq!(
+            event["notification"]["params"]["diagnostics"][0]["message"],
+            "boom"
+        );
+    }
+
+    #[tokio::test]
+    async fn diagnostics_broadcast_lagged_receiver_errors_not_panics() {
+        // A slow receiver that falls behind must get a Lagged error, not a
+        // panic or silent hang; callers treat it as "drain HTTP once".
+        let registry = LspRegistry::new(LspSettings::default());
+        let mut rx = registry.subscribe_diagnostics();
+        // Burst beyond the 128-slot capacity.
+        for i in 0..200 {
+            registry.publish_diagnostics(&LspDiagnosticsEvent {
+                language: "rust".to_string(),
+                root: "/tmp/repo".to_string(),
+                notification: json!({ "method": "textDocument/publishDiagnostics", "params": { "n": i } }),
+            });
+        }
+        match rx.recv().await {
+            Ok(event) => assert_eq!(event["language"], "rust"),
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+            Err(err) => panic!("unexpected error: {err}"),
+        }
+    }
 
     #[test]
     fn validate_lsp_settings_rejects_unknown_language() {

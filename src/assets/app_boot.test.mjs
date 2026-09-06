@@ -19,6 +19,7 @@ const DESKTOP_STYLES = [
 const MOBILE_STYLES = ["/assets/mobile/app.css", ...SHARED_STYLES];
 const SHARED_SCRIPTS = [
   "/assets/shared/core.js",
+  "/assets/shared/options.js",
   "/assets/shared/actions.js",
   "/assets/shared/file-icons.js",
   "/assets/shared/file-tree.js",

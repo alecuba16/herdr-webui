@@ -20,7 +20,7 @@
 
     function options() {
       try {
-        return JSON.parse((globalThis.localStorage && globalThis.localStorage.getItem("herdr-web-options")) || "{}");
+        return globalThis.HerdrOptions ? globalThis.HerdrOptions.read() : {};
       } catch (_) {
         return {};
       }

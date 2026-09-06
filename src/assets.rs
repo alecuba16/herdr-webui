@@ -8,6 +8,7 @@ pub(crate) const APP_HTML: &str = include_str!("assets/app.html");
 const LOGIN_CSS: &str = include_str!("assets/login.css");
 const LOGIN_JS: &str = include_str!("assets/login.js");
 const SHARED_CORE_JS: &str = include_str!("assets/shared/core.js");
+const SHARED_OPTIONS_JS: &str = include_str!("assets/shared/options.js");
 const SHARED_ACTIONS_JS: &str = include_str!("assets/shared/actions.js");
 const SHARED_FILE_ICONS_JS: &str = include_str!("assets/shared/file_icons.js");
 const SHARED_FILE_ICONS_CSS: &str = include_str!("assets/shared/file_icons.css");
@@ -150,6 +151,10 @@ pub(crate) async fn app_boot_js() -> Response {
 
 pub(crate) async fn shared_core_js() -> Response {
     static_text(SHARED_CORE_JS, "application/javascript; charset=utf-8")
+}
+
+pub(crate) async fn shared_options_js() -> Response {
+    static_text(SHARED_OPTIONS_JS, "application/javascript; charset=utf-8")
 }
 
 pub(crate) async fn shared_actions_js() -> Response {

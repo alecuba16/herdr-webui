@@ -2,11 +2,17 @@
   const Tree = window.HerdrFileTree;
   const DEFAULT_CONTENT_SEARCH_MIN_CHARS = 3;
   const stateCache = {};
+  // Per-workspace editor instance cache (IDE-review C4): CodeMirror views are
+  // expensive to create, and render() rewrites panel.innerHTML on every pass,
+  // so mountEditors() reattaches the cached editor DOM node when the file's
+  // editor signature (content, editability, preview mode, search highlight,
+  // editor options) is unchanged instead of recreating the instance.
+  const editorCache = new Map();
   let activeKey = "";
   let state = createState();
 
   function createContentSearchState() {
-    return { active: false, query: "", timer: null, files: [], expanded: {}, snippets: {}, loading: false, error: "", offset: 0, done: true, totalFiles: 0, totalMatches: 0, contextLines: 2, maxMatchesPerFile: 5, autoCollapseFiles: 0, defaultExpanded: true };
+    return { active: false, query: "", timer: null, files: [], expanded: {}, loading: false, error: "", offset: 0, done: true, totalFiles: 0, totalMatches: 0, visited: 0, truncated: false, contextLines: 2, maxMatchesPerFile: 5, autoCollapseFiles: 0, defaultExpanded: true };
   }
 
   function createState(initial) {
@@ -14,25 +20,26 @@
   }
 
   function esc(value) { return Tree.esc(value); }
+  const hashId = HerdrAppHelpers.hashId;
   function arg(value) { return Tree.arg(value); }
 
   function gitStatusEnabled() {
     try {
-      const parsed = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
+      const parsed = window.HerdrOptions ? window.HerdrOptions.read() : {};
       return parsed.fileBrowserGitStatus !== false;
     } catch (_) { return true; }
   }
 
   function lineNumbersEnabled() {
     try {
-      const parsed = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
+      const parsed = window.HerdrOptions ? window.HerdrOptions.read() : {};
       return parsed.fileBrowserLineNumbers !== false;
     } catch (_) { return true; }
   }
 
   function editorOptions() {
     try {
-      const parsed = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
+      const parsed = window.HerdrOptions ? window.HerdrOptions.read() : {};
       return {
         editorEnabled: parsed.editorEnabled !== false,
         wordWrap: parsed.editorEnabled !== false && parsed.editorWordWrap !== false,
@@ -49,21 +56,21 @@
 
   function parentFoldersEnabled() {
     try {
-      const parsed = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
+      const parsed = window.HerdrOptions ? window.HerdrOptions.read() : {};
       return parsed.fileBrowserAllowParent === true;
     } catch (_) { return false; }
   }
 
   function pathSearchOptions() {
     try {
-      const parsed = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
+      const parsed = window.HerdrOptions ? window.HerdrOptions.read() : {};
       return { pageSize: Math.max(10, Math.min(500, Number(parsed.fileBrowserSearchPageSize) || 100)) };
     } catch (_) { return { pageSize: 100 }; }
   }
 
   function contentSearchOptions() {
     try {
-      const parsed = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
+      const parsed = window.HerdrOptions ? window.HerdrOptions.read() : {};
       const contextRaw = Number(parsed.fileContentSearchContextLines);
       const autoCollapseRaw = Number(parsed.fileContentSearchAutoCollapseFiles);
       return {
@@ -134,12 +141,13 @@
   function clearContentSearchResults(content = state.contentSearch) {
     content.files = [];
     content.expanded = {};
-    content.snippets = {};
     content.error = "";
     content.offset = 0;
     content.done = true;
     content.totalFiles = 0;
     content.totalMatches = 0;
+    content.visited = 0;
+    content.truncated = false;
   }
 
   document.addEventListener("click", () => {
@@ -307,6 +315,9 @@
     const key = workspaceKey(workspace);
     const cached = stateCache[key];
     stopTransientWork(cached);
+    for (const cacheKey of Array.from(editorCache.keys())) {
+      if (cacheKey.startsWith(`${key}|`)) forgetEditor(cacheKey.slice(key.length + 1));
+    }
     delete stateCache[key];
     if (activeKey !== key) return;
     state.open = false;
@@ -419,8 +430,9 @@
         return;
       }
       renderIfActive(target, true);
-      const file = await api(`/api/file-browser/file?cwd=${encodeURIComponent(target.cwd)}&path=${encodeURIComponent(path)}`);
-      const nextFile = Object.assign(file, { draft: file.content || "", editing: true, dirty: false, saving: false, error: "", searchHighlight: searchHighlight || null, previewSource: !!searchHighlight });
+      const file = await api(`/api/file-browser/file?cwd=${encodeURIComponent(target.cwd)}&path=${encodeURIComponent(path)}&render=lines`);
+      const linesHtml = file.lines_gutter_html != null && file.lines_code_html != null ? { gutter: file.lines_gutter_html, code: file.lines_code_html } : null;
+      const nextFile = Object.assign(file, { draft: file.content || "", editing: true, dirty: false, saving: false, error: "", searchHighlight: searchHighlight || null, previewSource: !!searchHighlight, linesHtml });
       if (mode === "split") {
         target.files.push(nextFile);
         target.split = true;
@@ -492,6 +504,8 @@
       target.permissionRequired = false;
       content.totalFiles = data.total_files || files.length;
       content.totalMatches = data.total_matches || 0;
+      content.visited = Number(data.visited || 0);
+      content.truncated = data.truncated === true;
       content.offset = offset + files.length;
       content.done = !data.truncated || files.length === 0;
       if (!append) {
@@ -554,7 +568,6 @@
     const sideBody = `${currentRow}${Tree.renderEntries(entries, { selectedPath: state.selected, callback: "HerdrFileBrowser", showMeta: true, dirClickMethod: "none", dirDoubleClickMethod: "enter", contextMethod: "menu", shiftSelectMode: true })}`;
     panel.innerHTML = `<aside class="file-browser-side ${activeFile ? "previewing" : ""} ${state.contentSearch.active ? "content-searching" : ""}" tabindex="0"><div class="file-browser-head"><div class="file-browser-title-row"><div class="file-browser-title">Files</div><div class="file-browser-actions">${appRefreshIconButton({ className: "file-browser-refresh", title: "Refresh", label: "Refresh files", spinning: !!state.refreshing, onclick: "HerdrFileBrowser.refresh()" })}</div></div><div class="file-browser-subtitle">${esc(state.path || state.cwd || "No workspace")}</div><div class="file-browser-result-count">Open a file, then use its ⌕ button or Cmd/Ctrl-F to search inside it.</div></div>${renderAccessError()}${sideBody}</aside><main class="file-browser-main"><div class="file-browser-toolbar">${renderToolbar(activeFile)}</div><div class="file-browser-preview ${state.split || state.contentSearch.active ? "split" : ""}" id="fileBrowserPreview">${renderPreviewShell()}</div></main>${renderContextMenu()}`;
     mountEditors();
-    mountContentSearchEditors();
   }
 
   function renderAccessError() {
@@ -724,7 +737,7 @@
     const content = state.contentSearch;
     const contentSearch = window.HerdrContentSearch;
     const body = contentSearch
-      ? contentSearch.render({ query: content.query, files: content.files, expanded: content.expanded, snippets: content.snippets, loading: content.loading, error: content.error, done: content.done, total_files: content.totalFiles, total_matches: content.totalMatches }, { callback: "HerdrFileBrowserContent", inputId: "fileContentSearchInput", hideInput: true })
+      ? contentSearch.render({ query: content.query, files: content.files, expanded: content.expanded, loading: content.loading, error: content.error, done: content.done, total_files: content.totalFiles, total_matches: content.totalMatches, visited: content.visited, truncated: content.truncated }, { callback: "HerdrFileBrowserContent", inputId: "fileContentSearchInput", hideInput: true })
       : `<div class="file-browser-empty">Content search renderer unavailable.</div>`;
 
     return `<section class="file-browser-pane active file-browser-content-pane"><div class="file-browser-pane-body file-browser-content-pane-body"><div class="file-browser-content-actions"><span>Content search: ${esc(content.query || "No query")}</span><button class="git-ui-btn" onclick="event.stopPropagation();HerdrFileBrowser.closeContentSearch()">Close search</button></div>${body}</div></section>`;
@@ -831,17 +844,72 @@
     });
   }
 
+  function editorCacheKey(path) {
+    return `${activeKey}|${path}`;
+  }
+
+  function editorSignature(file, configured) {
+    return JSON.stringify({
+      content: file.editing ? file.draft : file.content || "",
+      editing: !!file.editing,
+      previewSource: !!file.previewSource,
+      searchHighlight: file.searchHighlight || null,
+      lineNumbers: lineNumbersEnabled(),
+      options: configured,
+      linesHtml: file.linesHtml || null,
+    });
+  }
+
+  function forgetEditor(path) {
+    const key = editorCacheKey(path);
+    const entry = editorCache.get(key);
+    if (!entry) return;
+    editorCache.delete(key);
+    if (entry.api && entry.api.destroy) {
+      try { entry.api.destroy(); } catch (_) {}
+    }
+  }
+
+  // Drop cache entries for paths the current workspace no longer has open so
+  // closed/renamed/deleted files release their editor instances' memory.
+  // Other workspaces' entries are preserved for when the user switches back.
+  function pruneEditorCache(openPaths) {
+    const prefix = `${activeKey}|`;
+    const keep = new Set(openPaths.map((path) => `${prefix}${path}`));
+    for (const key of Array.from(editorCache.keys())) {
+      if (key.startsWith(prefix) && !keep.has(key)) forgetEditor(key.slice(prefix.length));
+    }
+  }
+
   function mountEditors() {
     const configured = editorOptions();
     const files = state.split ? state.files : [currentFile()].filter(Boolean);
+    pruneEditorCache(files.map((file) => file.path));
     for (const file of files) {
       const parent = document.getElementById(`fileBrowserEditor-${hashId(file.path)}`);
-      if (!parent || file.binary || file.truncated) continue;
+      if (!parent || file.binary) continue;
+      // Truncated files never get an editable editor. A partial preview
+      // (A4) renders read-only; a plain truncated file shows the
+      // placeholder with the "Load first 256 KB" affordance.
+      if (file.truncated && !file.partialPreview) continue;
+      const signature = editorSignature(file, configured);
+      const cacheKey = editorCacheKey(file.path);
+      const cached = editorCache.get(cacheKey);
+      if (cached && cached.signature === signature && cached.mount) {
+        // Same content, editability, and options: reattach the existing
+        // editor DOM (and its listeners) instead of recreating the instance.
+        // Note: no destroy here; the cache entry is reused, not dropped.
+        try { parent.appendChild(cached.mount); } catch (_) { editorCache.delete(cacheKey); continue; }
+        parent._herdrEditorApi = cached.api;
+        continue;
+      }
+      forgetEditor(file.path);
+      const partialPreview = !!(file.truncated && file.partialPreview);
       window.HerdrEditor.create({
         parent,
         path: file.path,
-        content: file.editing ? file.draft : file.content || "",
-        readonly: !file.editing,
+        content: file.editing && !partialPreview ? file.draft : file.content || "",
+        readonly: !file.editing || partialPreview,
         editorEnabled: configured.editorEnabled,
         hideHeader: true,
         lineNumbers: lineNumbersEnabled(),
@@ -851,15 +919,24 @@
         folding: configured.folding,
         activeLine: configured.activeLine,
         whitespace: configured.whitespace,
-        markdownPreview: !file.previewSource,
+        markdownPreview: !file.previewSource && !partialPreview,
         searchHighlight: file.searchHighlight || null,
+        linesHtml: file.editing && !partialPreview ? null : file.linesHtml || null,
+        size: file.size,
         onChange(value) {
+          if (partialPreview) return; // read-only partial view; no draft tracking
           file.draft = value;
           file.dirty = value !== (file.content || "");
           syncDirtyDots();
           lspDidChange(file.path, value);
         },
       });
+      // Cache the editor's own wrapper node (not the pane container) so the
+      // next render can reattach it. When create() produced no wrapper (plain
+      // fallback markup), there is no stable node to reattach; skip caching
+      // instead of accidentally reattaching the container itself.
+      const wrapper = parent.querySelector(".herdr-editor");
+      if (wrapper) editorCache.set(editorCacheKey(file.path), { api: parent._herdrEditorApi, mount: wrapper, signature });
       lspDidOpen(file);
     }
   }
@@ -869,7 +946,7 @@
   function lspEnabled() {
     if (!window.HerdrLsp) return false;
     try {
-      const parsed = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
+      const parsed = window.HerdrOptions ? window.HerdrOptions.read() : {};
       return parsed.lspEnabled === true;
     } catch (_) {
       return false;
@@ -1011,39 +1088,6 @@
     parent._herdrEditorApi.toggleFind(true);
   }
 
-  function mountContentSearchEditors() {
-    const configured = editorOptions();
-    if (!state.contentSearch.active) return;
-    for (const file of state.contentSearch.files || []) {
-      for (const match of file.matches || []) {
-        const key = window.HerdrContentSearch.snippetKey(file.path, match);
-        const snippet = state.contentSearch.snippets[key];
-        if (!snippet || !snippet.editing) continue;
-        const editorId = `contentSearchSnippet-${window.HerdrContentSearch.hashId(key)}`;
-        const parent = document.getElementById(editorId);
-        if (!parent) continue;
-        window.HerdrEditor.create({
-          parent,
-          path: file.path,
-          content: snippet.draft == null ? match.content || "" : snippet.draft,
-          readonly: false,
-          hideHeader: true,
-          lineNumbers: lineNumbersEnabled(),
-          wordWrap: configured.wordWrap,
-          tabSize: configured.tabSize,
-          bracketMatching: configured.bracketMatching,
-          folding: configured.folding,
-          activeLine: configured.activeLine,
-          whitespace: configured.whitespace,
-          onChange(value) {
-            snippet.draft = value;
-            snippet.dirty = value !== (match.content || "");
-          },
-        });
-      }
-    }
-  }
-
   function openFindForPath(path) {
     if (!path) return false;
     const parent = document.getElementById(`fileBrowserEditor-${hashId(path)}`);
@@ -1078,21 +1122,50 @@
   function previewPlaceholder(file) {
     if (!file) return '<div class="file-browser-empty">Choose a file to preview.</div>';
     if (file.binary) return '<div class="file-browser-empty">Binary file preview unavailable.</div>';
-    if (file.truncated) return `<div class="file-browser-empty">File too large to preview (${Tree.formatBytes(file.size)}).</div>`;
+    if (file.truncated) {
+      // A4: oversize text files offer a backend partial read instead of a
+      // dead end. Editing stays blocked (truncated implies no edit button).
+      if (file.partialPreview) return "";
+      return `<div class="file-browser-empty">File too large to preview (${Tree.formatBytes(file.size)}).<button class="git-ui-btn file-browser-load-partial" onclick="HerdrFileBrowser.loadPartial('${arg(file.path)}')">Load first 256 KB</button></div>`;
+    }
     return "";
   }
 
-  function hashId(path) {
-    let hash = 0;
-    for (const ch of String(path || "")) hash = ((hash << 5) - hash + ch.charCodeAt(0)) | 0;
-    return Math.abs(hash).toString(36);
+  // A4: partial read of an oversized text file. The backend clamps the
+  // budget (16 KB..1 MB) and returns truncated=true with the first N bytes;
+  // the editor mounts read-only and the save path is unreachable (empty
+  // hash can never satisfy the expected_hash check).
+  async function loadPartial(path) {
+    try {
+      state.error = "";
+      const file = await api(`/api/file-browser/file?cwd=${encodeURIComponent(state.cwd)}&path=${encodeURIComponent(path)}&max_bytes=262144`);
+      const index = state.files.findIndex((entry) => entry.path === path);
+      const partial = Object.assign(file, {
+        draft: file.content || "",
+        editing: true,
+        dirty: false,
+        saving: false,
+        error: "",
+        searchHighlight: null,
+        previewSource: true,
+        partialPreview: true,
+      });
+      partial.linesHtml = file.lines_gutter_html != null && file.lines_code_html != null ? { gutter: file.lines_gutter_html, code: file.lines_code_html } : null;
+      if (index >= 0) state.files[index] = Object.assign({}, state.files[index], partial);
+      else state.files.push(partial);
+      state.selected = path;
+      render();
+    } catch (error) {
+      setError(state, error);
+      render();
+    }
   }
 
   async function reloadFile(path) {
     const index = state.files.findIndex((file) => file.path === path);
     if (index < 0) return loadFile(path);
     const keepEditing = !!state.files[index].editing;
-    const next = await api(`/api/file-browser/file?cwd=${encodeURIComponent(state.cwd)}&path=${encodeURIComponent(path)}`);
+    const next = await api(`/api/file-browser/file?cwd=${encodeURIComponent(state.cwd)}&path=${encodeURIComponent(path)}&render=lines`);
     state.files[index] = Object.assign(next, { draft: next.content || "", editing: keepEditing, dirty: false, saving: false, error: "" });
     state.selected = path;
     render();
@@ -1128,6 +1201,17 @@
   }
 
   function mutateTreeForRename(from, to, nextName) {
+    // Remap editor cache entries to the renamed path so the cached instance
+    // is reused (not recreated) for the renamed file.
+    for (const cacheKey of Array.from(editorCache.keys())) {
+      if (!cacheKey.startsWith(`${activeKey}|`)) continue;
+      const cachedPath = cacheKey.slice(activeKey.length + 1);
+      const nextPath = Tree.replacePathPrefix(cachedPath, from, to);
+      if (nextPath === cachedPath) continue;
+      const entry = editorCache.get(cacheKey);
+      editorCache.delete(cacheKey);
+      editorCache.set(editorCacheKey(nextPath), entry);
+    }
     state.entries = Tree.renamePathInEntries(state.entries, from, to, nextName);
     state.children = Tree.remapPathMap(state.children, from, to, (entries) => Tree.renamePathInEntries(entries, from, to, nextName));
     state.expanded = Tree.remapPathMap(state.expanded, from, to);
@@ -1137,6 +1221,10 @@
   }
 
   function mutateTreeForDelete(path) {
+    for (const cacheKey of Array.from(editorCache.keys())) {
+      const cachedPath = cacheKey.slice(activeKey.length + 1);
+      if (cachedPath === path || cachedPath.startsWith(`${path}/`)) forgetEditor(cachedPath);
+    }
     state.entries = Tree.removePathFromEntries(state.entries, path);
     state.children = Tree.prunePathMap(state.children, path, (entries) => Tree.removePathFromEntries(entries, path));
     state.expanded = Tree.prunePathMap(state.expanded, path);
@@ -1260,6 +1348,42 @@
     }
   }
 
+  // ── A6: external-change awareness ────────────────────────────────────
+  // When the window regains focus (tab refocus, Cmd+Tab back), re-hash the
+  // open files via the cheap hash_only endpoint. If a file changed on disk
+  // while we hold no local edits, offer a reload prompt. Dirty files are
+  // skipped: their draft is newer than disk and the save path already
+  // surfaces hash mismatches.
+  let a6CheckInFlight = false;
+  async function checkOpenFilesForExternalChanges() {
+    if (a6CheckInFlight) return;
+    const candidates = state.files.filter((file) => file && !file.dirty && !file.truncated && file.hash);
+    if (!candidates.length) return;
+    a6CheckInFlight = true;
+    try {
+      for (const file of candidates) {
+        let remote = null;
+        try {
+          remote = await api(`/api/file-browser/file?cwd=${encodeURIComponent(state.cwd)}&path=${encodeURIComponent(file.path)}&hash_only=true`);
+        } catch (_) { continue; } // deleted or unreadable: leave the tab alone
+        const fresh = state.files.find((open) => open.path === file.path);
+        if (!fresh || fresh.dirty) continue;
+        if (remote && remote.hash && remote.hash !== fresh.hash) {
+          if (confirm(`${file.path}\nchanged on disk. Reload?`)) await reloadFile(file.path);
+        }
+      }
+    } finally {
+      a6CheckInFlight = false;
+    }
+  }
+  if (typeof document !== "undefined" && document.addEventListener && !document.__herdrA6FocusWatcher) {
+    document.__herdrA6FocusWatcher = true;
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") checkOpenFilesForExternalChanges();
+    });
+    window.addEventListener("focus", checkOpenFilesForExternalChanges);
+  }
+
   window.HerdrFileBrowser = {
     open,
     openAt,
@@ -1342,6 +1466,7 @@
     toggle(encodedPath) { toggleDir(decodeURIComponent(encodedPath)); },
     enter(encodedPath) { loadTree(decodeURIComponent(encodedPath)); },
     select(encodedPath, mode) { loadFile(decodeURIComponent(encodedPath), mode || "append"); },
+    checkOpenFilesForExternalChanges,
     focusFile(encodedPath) { state.selected = decodeURIComponent(encodedPath); render(); },
     findInFile(encodedPath) {
       return openFindForPath(decodeURIComponent(encodedPath));
@@ -1354,6 +1479,7 @@
       const file = state.files.find((file) => file.path === path);
       if (file && file.dirty && !confirm(`Close ${path} with unsaved changes?`)) return;
       lspDidClose(path);
+      forgetEditor(path);
       state.files = state.files.filter((file) => file.path !== path);
       if (state.selected === path) state.selected = (state.files[state.files.length - 1] || {}).path || "";
       if (state.files.length < 2) state.split = false;
@@ -1394,6 +1520,7 @@
     },
     save(encodedPath) { saveFile(decodeURIComponent(encodedPath)); },
     reload(encodedPath) { reloadFile(decodeURIComponent(encodedPath)).catch((error) => { state.error = error.message || String(error); render(); }); },
+    loadPartial(encodedPath) { loadPartial(decodeURIComponent(encodedPath)); },
     toggleFind(encodedPath) { toggleFind(decodeURIComponent(encodedPath || "")); },
     toggleLock(encodedPath) {
       const path = decodeURIComponent(encodedPath || "");
@@ -1455,12 +1582,13 @@
       content.query = "";
       content.files = [];
       content.expanded = {};
-      content.snippets = {};
       content.error = "";
       content.offset = 0;
       content.done = true;
       content.totalFiles = 0;
       content.totalMatches = 0;
+    content.visited = 0;
+    content.truncated = false;
       render();
     },
     loadMore() { runContentSearch(true); },
@@ -1488,52 +1616,6 @@
     collapseAll() {
       state.contentSearch.expanded = {};
       renderPreservingScroll();
-    },
-    editSnippet(encodedPath, encodedMatchId) {
-      const path = decodeURIComponent(encodedPath);
-      const matchId = decodeURIComponent(encodedMatchId);
-      const file = contentFile(path);
-      const match = window.HerdrContentSearch.findMatch(file, matchId);
-      if (!file || !match) return;
-      const key = window.HerdrContentSearch.snippetKey(path, match);
-      state.contentSearch.snippets[key] = { editing: true, draft: match.content || "", dirty: false, saving: false, error: "" };
-      render();
-    },
-    cancelSnippet(encodedPath, encodedMatchId) {
-      const path = decodeURIComponent(encodedPath);
-      const matchId = decodeURIComponent(encodedMatchId);
-      const file = contentFile(path);
-      const match = window.HerdrContentSearch.findMatch(file, matchId);
-      if (!match) return;
-      delete state.contentSearch.snippets[window.HerdrContentSearch.snippetKey(path, match)];
-      render();
-    },
-    async saveSnippet(encodedPath, encodedMatchId) {
-      const path = decodeURIComponent(encodedPath);
-      const matchId = decodeURIComponent(encodedMatchId);
-      const file = contentFile(path);
-      const match = window.HerdrContentSearch.findMatch(file, matchId);
-      if (!file || !match) return;
-      const key = window.HerdrContentSearch.snippetKey(path, match);
-      const snippet = state.contentSearch.snippets[key];
-      if (!snippet || snippet.saving) return;
-      snippet.saving = true;
-      snippet.error = "";
-      render();
-      try {
-        const result = await api("/api/file-browser/content-search/snippet", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ cwd: state.cwd, path, expected_hash: file.hash || "", start_line: match.start_line, end_line: match.end_line, content: snippet.draft || "" }),
-        });
-        file.hash = result.hash || file.hash;
-        delete state.contentSearch.snippets[key];
-        await loadContentSearchFile(path);
-      } catch (error) {
-        snippet.error = error.message || String(error);
-      }
-      if (snippet) snippet.saving = false;
-      render();
     },
     async expandSnippet(encodedPath, _encodedMatchId, _direction) {
       const path = decodeURIComponent(encodedPath);

@@ -12,10 +12,6 @@
     return encodeURIComponent(String(value == null ? "" : value)).replace(/'/g, "%27");
   }
 
-  function snippetKey(path, match) {
-    return `${path}:${match && match.id ? match.id : `${match.start_line || 0}:${match.line || 0}`}`;
-  }
-
   function highlightLine(line, match, query) {
     const text = String(line || "");
     const start = Number(match && match.match_start);
@@ -45,7 +41,26 @@
     return rows.filter((row) => row.line > 0).map((row) => Object.assign(row, { html: row.matched ? highlightLine(row.text, row.match, query) : esc(row.text) }));
   }
 
+  function backendChunks(file) {
+    const chunks = Array.isArray(file.chunks) ? file.chunks : null;
+    if (!chunks) return null;
+    // The backend sends pre-merged chunks with pre-escaped highlight markup.
+    // Normalize to the render shape once and reuse it on every render.
+    if (!file._renderChunks) {
+      file._renderChunks = chunks.map((chunk) => ({
+        start: Number(chunk.start) || 0,
+        end: Number(chunk.end) || 0,
+        match_ids: (chunk.match_ids || []).map(String),
+        rows: (chunk.rows || []).map((row) => ({ line: Number(row.line) || 0, matched: !!row.matched, match_id: row.match_id == null ? "" : String(row.match_id), html: String(row.highlight_html == null ? "" : row.highlight_html) })).filter((row) => row.line > 0),
+      })).filter((chunk) => chunk.rows.length);
+    }
+    return file._renderChunks;
+  }
+
   function lineChunks(file, state) {
+    const prebuilt = backendChunks(file);
+    if (prebuilt) return prebuilt;
+    // Older backends send raw matches only: merge client-side as before.
     const chunks = [];
     const matches = [...(file.matches || [])].sort((a, b) => matchLineNumber(a) - matchLineNumber(b));
     for (const match of matches) {
@@ -76,19 +91,20 @@
 
   function renderLineChunk(file, chunk, state, opts) {
     const callback = opts.callback || "HerdrContentSearch";
-    const firstMatch = chunk.matches[0] || {};
+    const firstMatchId = chunk.match_ids && chunk.match_ids.length ? chunk.match_ids[0] : (chunk.matches && chunk.matches[0] ? chunk.matches[0].id : "");
     const canExpand = !opts.disableSnippetExpand;
     const above = canExpand && chunk.start > 1
-      ? `<button class="git-ui-context-arrow herdr-content-search-context-arrow" title="Show more above; chunks merge when context overlaps" aria-label="Show more above" onclick="${callback}.expandSnippet('${arg(file.path)}','${arg(firstMatch.id)}','up')">↑</button>`
+      ? `<button class="git-ui-context-arrow herdr-content-search-context-arrow" title="Show more above; chunks merge when context overlaps" aria-label="Show more above" onclick="${callback}.expandSnippet('${arg(file.path)}','${arg(firstMatchId)}','up')">↑</button>`
       : "";
     const below = canExpand && chunk.rows.length
-      ? `<button class="git-ui-context-arrow herdr-content-search-context-arrow" title="Show more below; chunks merge when context overlaps" aria-label="Show more below" onclick="${callback}.expandSnippet('${arg(file.path)}','${arg(firstMatch.id)}','down')">↓</button>`
+      ? `<button class="git-ui-context-arrow herdr-content-search-context-arrow" title="Show more below; chunks merge when context overlaps" aria-label="Show more below" onclick="${callback}.expandSnippet('${arg(file.path)}','${arg(firstMatchId)}','down')">↓</button>`
       : "";
     return `<div class="herdr-content-search-preview herdr-content-search-chunk">
       ${chunk.rows.map((row, index) => {
         const top = index === 0 ? above : "";
         const bottom = index === chunk.rows.length - 1 ? below : "";
-        const open = row.matched && row.match ? ` ondblclick="${callback}.openMatch('${arg(file.path)}','${arg(row.match.id)}')" title="Double-click to open this match"` : "";
+        const rowMatchId = row.match_id || (row.match && row.match.id) || "";
+        const open = row.matched && rowMatchId ? ` ondblclick="${callback}.openMatch('${arg(file.path)}','${arg(rowMatchId)}')" title="Double-click to open this match"` : "";
         return `<div class="herdr-content-search-line ${row.matched ? "matched" : "muted"}"${open}><div class="herdr-content-search-context-cell">${top}${bottom}</div><span>${row.line}</span><code>${row.html}</code></div>`;
       }).join("")}
     </div>`;
@@ -114,7 +130,10 @@
     const callback = opts.callback || "HerdrContentSearch";
     const files = state.files || [];
     const query = String(state.query || "");
-    const summary = query ? `${Number(state.total_matches || 0)} matches in ${Number(state.total_files || files.length || 0)} files` : "Type a content query";
+    const visited = Number(state.visited || 0);
+    const visitedNote = visited ? `, searched ${visited.toLocaleString()} files` : "";
+    const truncationNote = state.truncated ? " (search stopped at the file limit)" : "";
+    const summary = query ? `${Number(state.total_matches || 0)} matches in ${Number(state.total_files || files.length || 0)} files${visitedNote}${truncationNote}` : "Type a content query";
     const head = opts.hideInput ? "" : `<div class="herdr-content-search-head">
         <label class="file-browser-filter"><span class="file-browser-search-icon ${state.loading ? "searching" : ""}" aria-hidden="true"></span><input id="${esc(opts.inputId || "fileContentSearchInput")}" value="${esc(query)}" placeholder="Search file contents" oninput="${callback}.setQuery(this.value)" onkeydown="${callback}.inputKeydown(event)"></label>
         <button class="git-ui-btn primary" onclick="${callback}.run()">Search</button>
@@ -136,15 +155,9 @@
     </div>`;
   }
 
-  function hashId(value) {
-    let hash = 0;
-    for (const ch of String(value || "")) hash = ((hash << 5) - hash + ch.charCodeAt(0)) | 0;
-    return Math.abs(hash).toString(36);
-  }
-
   function findMatch(file, matchId) {
     return (file && file.matches || []).find((match) => String(match.id) === String(matchId)) || null;
   }
 
-  window.HerdrContentSearch = { render, snippetKey, hashId, findMatch };
+  window.HerdrContentSearch = { render, findMatch };
 })();

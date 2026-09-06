@@ -232,6 +232,100 @@ describe("shared LSP client", () => {
     );
   });
 
+  it("applies diagnostics pushed over /ws/events and slows the poll (C1)", async () => {
+    let pollCalls = 0;
+    const sockets = [];
+    class FakeWebSocket {
+      constructor(url) {
+        this.url = url;
+        this.readyState = 1;
+        sockets.push(this);
+      }
+      close() { if (this.onclose) this.onclose(); }
+      send() {}
+    }
+    const notification = {
+      jsonrpc: "2.0",
+      method: "textDocument/publishDiagnostics",
+      params: {
+        uri: "file:///tmp/proj/src/config.json",
+        diagnostics: [{ range: { start: { line: 1, character: 0 } }, severity: 1, message: "pushed error" }],
+      },
+    };
+    let intervalCallback = null;
+    const sandbox = loadLsp({
+      WebSocket: FakeWebSocket,
+      location: { protocol: "http:", host: "127.0.0.1:8787" },
+      setInterval: (fn, ms) => { intervalCallback = { fn, ms }; return 1; },
+      fetch: async (url) => {
+        if (url === "/api/lsp/notifications") { pollCalls += 1; return jsonResponse({ notifications: [] }); }
+        return jsonResponse({ ok: true, result: { capabilities: {} } });
+      },
+    });
+    const ws = sandbox.HerdrLsp.workspaceFor("/tmp/proj");
+    await sandbox.HerdrLsp.didOpen(ws, "src/config.json", "{");
+    // didOpen starts the push transport: one socket to /ws/events.
+    ok(sockets.length === 1, `push socket opened (${sockets.length})`);
+    ok(sockets[0].url.includes("/ws/events"), `socket url ${sockets[0].url}`);
+    ok(intervalCallback, "interval fallback timer armed");
+    ok(intervalCallback.ms === 2000, `poll interval ${intervalCallback.ms}`);
+    // Simulate the backend pushing an lsp.diagnostics event.
+    const event = JSON.stringify({
+      type: "event",
+      event: {
+        type: "lsp.diagnostics",
+        event: "lsp.diagnostics",
+        data: { language: "json", root: "/tmp/proj", notification },
+      },
+    });
+    sockets[0].onmessage({ data: event });
+    const diagnostics = sandbox.HerdrLsp.diagnosticsFor(ws, "src/config.json");
+    ok(diagnostics.length === 1, "pushed diagnostic applied");
+    match(diagnostics[0].message, /pushed error/, "message matches push payload");
+    // With the push live the poll degrades to a 30s safety drain. A freshly
+    // applied push resets the drain clock, so even the first tick must stay
+    // silent until 30s of push silence elapses.
+    await intervalCallback.fn();
+    await intervalCallback.fn();
+    ok(pollCalls === 0, `no HTTP poll while push is live (calls=${pollCalls})`);
+  });
+
+  it("falls back to the fast HTTP poll when the push socket drops (C1)", async () => {
+    let pollCalls = 0;
+    const sockets = [];
+    class FakeWebSocket {
+      constructor(url) { this.url = url; sockets.push(this); }
+      close() { if (this.onclose) this.onclose(); }
+      send() {}
+    }
+    const notification = {
+      method: "textDocument/publishDiagnostics",
+      params: {
+        uri: "file:///tmp/proj/src/config.json",
+        diagnostics: [{ range: { start: { line: 2, character: 0 } }, severity: 2, message: "polled warning" }],
+      },
+    };
+    let intervalCallback = null;
+    const sandbox = loadLsp({
+      WebSocket: FakeWebSocket,
+      location: { protocol: "http:", host: "127.0.0.1:8787" },
+      setInterval: (fn, ms) => { intervalCallback = { fn, ms }; return 1; },
+      fetch: async (url) => {
+        if (url === "/api/lsp/notifications") { pollCalls += 1; return jsonResponse({ notifications: [notification] }); }
+        return jsonResponse({ ok: true, result: { capabilities: {} } });
+      },
+    });
+    const ws = sandbox.HerdrLsp.workspaceFor("/tmp/proj");
+    await sandbox.HerdrLsp.didOpen(ws, "src/config.json", "{");
+    ok(sockets.length === 1, "push socket opened");
+    // Drop the socket; the transport must reconnect but the fast poll covers the gap.
+    sockets[0].onclose();
+    await intervalCallback.fn();
+    ok(pollCalls >= 1, `fast poll resumed after socket drop (calls=${pollCalls})`);
+    const diagnostics = sandbox.HerdrLsp.diagnosticsFor(ws, "src/config.json");
+    ok(diagnostics.length === 1 && diagnostics[0].message === "polled warning", "polled diagnostics applied");
+  });
+
   it("stores diagnostics per file after polling", async () => {
     const notifications = [
       {

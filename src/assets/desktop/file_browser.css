@@ -519,6 +519,7 @@
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
   min-height: 100%;
+  position: relative;
 }
 .herdr-editor.cm {
   height: 100%;
@@ -568,6 +569,24 @@
   outline: 0;
 }
 .herdr-editor-find[hidden] {
+  display: none;
+}
+
+/* IDE-review A5: cursor position readout on headerless editor mounts. */
+.herdr-editor-position {
+  background: color-mix(in srgb, var(--panel2) 88%, transparent);
+  border: 1px solid var(--border2);
+  border-radius: 7px;
+  bottom: 8px;
+  color: var(--muted);
+  font: 11px var(--mono-font);
+  padding: 2px 7px;
+  pointer-events: none;
+  position: absolute;
+  right: 8px;
+  z-index: 4;
+}
+.herdr-editor-position[hidden] {
   display: none;
 }
 

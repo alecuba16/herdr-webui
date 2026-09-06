@@ -48,6 +48,18 @@ describe("createFaviconNotifier", () => {
   });
 });
 
+describe("hashId", () => {
+  it("hashes short stable base36 ids (shared editor-mount key helper)", () => {
+    const { hashId } = require("./shared/core.js");
+    assert.equal(typeof hashId("src/app.rs"), "string");
+    assert.equal(hashId("src/app.rs"), hashId("src/app.rs"));
+    assert.notEqual(hashId("src/app.rs"), hashId("src/app2.rs"));
+    assert.equal(hashId(""), "0");
+    assert.equal(hashId(null), "0");
+    assert.match(hashId("x".repeat(500)), /^[0-9a-z]+$/);
+  });
+});
+
 describe("branchPathSlug", () => {
   it("lowercases and collapses separators", () => {
     assert.equal(
@@ -193,6 +205,37 @@ describe("Git log rendering", () => {
     assert.ok(html.includes(`HerdrGitUi.copyCommitId('${hash}')`));
     assert.match(html, /Copy id/);
     assert.match(html, new RegExp(`aria-label="Copy full commit id ${hash}"`));
+  });
+
+  it("uses the backend-provided lane instead of recomputing it from the graph (C6)", () => {
+    const context = {
+      window: {},
+      document: { querySelectorAll() { return []; } },
+    };
+    context.window.window = context.window;
+    vm.runInNewContext(readFileSync(new URL("./desktop/git_ui/log.js", import.meta.url), "utf8"), context);
+    const laneColor = context.window.HerdrGitLog.laneColor;
+
+    const render = (lane) => context.window.HerdrGitLog.render({
+      esc(value) { return String(value); },
+      arg: encodeURIComponent,
+      data: { rows: [{ graph: "* |", hash: "h1", labels: [], title: "Demo", date: "", author: "", lane }] },
+      selected: [],
+      filters: {},
+    });
+
+    // lane=2 (backend-computed) must win: the graph string alone would put
+    // this commit on lane 0. Assert on the row's own --lane style so the
+    // commit-dot accent (always var(--accent)) does not mask the check.
+    const html = render(2);
+    const laneMatch = html.match(/git-ui-log-row[^>]*style="--lane:([^;"]+)/);
+    assert.ok(laneMatch, "row carries a --lane style");
+    assert.equal(laneMatch[1], laneColor(2), "row --lane matches the payload lane color");
+    assert.notEqual(laneMatch[1], laneColor(0), "row does not fall back to the graph-parsed lane 0");
+
+    // Legacy rows without lane still fall back to graph parsing.
+    const legacy = render(undefined);
+    assert.ok(legacy.includes(laneColor(0)), "legacy row without lane falls back to graph lane 0");
   });
 });
 
@@ -530,6 +573,189 @@ describe("HerdrEditor line number helpers", () => {
     assert.doesNotMatch(html, /herdr-editor-numbered-code/);
   });
 
+  it("prefers backend-prebuilt numbered preview HTML and gates client-built previews at 256 KB (C5)", async () => {
+    const source = readFileSync(new URL("./shared/editor.js", import.meta.url), "utf8");
+    const boot = () => {
+      const parent = { innerHTML: "", querySelector() { return null; } };
+      const context = { window: {}, document: { createElement() { return {}; }, body: { appendChild(script) { script.onerror(); } } }, Promise };
+      vm.runInNewContext(source, context);
+      return { parent, create: (opts) => context.window.HerdrEditor.create(Object.assign({ parent, path: "big.log", content: "a\nb", readonly: true }, opts)) };
+    };
+
+    // Prebuilt backend HTML is injected verbatim (already escaped in Rust).
+    let env = boot();
+    env.create({ linesHtml: { gutter: "<span>1</span><span>2</span>", code: "a&lt;b\nb" } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.match(env.parent.innerHTML, /herdr-editor-numbered-code/);
+    assert.match(env.parent.innerHTML, /<span>1<\/span><span>2<\/span>/);
+    assert.match(env.parent.innerHTML, /a&lt;b/);
+
+    // Files larger than the gate without prebuilt HTML render a size hint
+    // instead of building per-line HTML on the main thread.
+    env = boot();
+    env.create({ size: 512 * 1024, content: "x".repeat(512 * 1024) });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.match(env.parent.innerHTML, /File too large for the fallback preview \(512\.0 KB\)/);
+    assert.doesNotMatch(env.parent.innerHTML, /herdr-editor-numbered-code/);
+
+    // Small files still build the numbered preview client-side.
+    env = boot();
+    env.create({ size: 2048, content: "a\nb" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.match(env.parent.innerHTML, /herdr-editor-numbered-code/);
+    assert.match(env.parent.innerHTML, /<span>1<\/span><span>2<\/span>/);
+
+    // Gated preview keeps a working editor api (find toolbar wiring intact).
+    env = boot();
+    const api = env.create({ size: 512 * 1024, content: "x".repeat(512 * 1024) });
+    assert.equal(typeof api.getValue, "function");
+    assert.equal(api.getValue().length, 512 * 1024);
+  });
+
+  it("wires a working editor api in the CodeMirror-load-failure fallback", async () => {
+    const textarea = { value: "a\nb", addEventListener() {}, focus() {}, setSelectionRange() {} };
+    const toolbar = { hidden: true, querySelector() { return null; } };
+    const parent = {
+      innerHTML: "",
+      _herdrEditorApi: null,
+      querySelector(selector) {
+        if (selector === "textarea") return textarea;
+        if (selector === ".herdr-editor-find") return toolbar;
+        return null;
+      },
+    };
+    const context = { window: {}, document: { createElement() { return {}; }, body: { appendChild(script) { script.onerror(); } } }, Promise, localStorage: { getItem() { return null; }, setItem() {} } };
+    const source = readFileSync(new URL("./shared/editor.js", import.meta.url), "utf8");
+    vm.runInNewContext(source, context);
+
+    const editor = context.window.HerdrEditor.create({ parent, path: "demo.txt", content: "a\nb", readonly: true });
+    assert.equal(parent._herdrEditorApi, editor);
+    assert.equal(typeof editor.getValue, "function");
+    assert.equal(editor.getValue(), "a\nb");
+    // The fallback path previously referenced `api` before definition, so
+    // opening the find toolbar after a load failure threw. openFind must
+    // work against the fallback api.
+    assert.equal(context.window.HerdrEditor.openFind(parent), true);
+    assert.equal(toolbar.hidden, false);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(parent.innerHTML.includes("herdr-editor-numbered-code") || parent.innerHTML.includes("herdr-editor-find"), true);
+  });
+
+
+  it("renders a floating find toggle on headerless mounts (A1)", async () => {
+    const source = readFileSync(new URL("./shared/editor.js", import.meta.url), "utf8");
+    const boot = () => {
+      const parent = { innerHTML: "", querySelector() { return null; } };
+      const context = { window: {}, document: { createElement() { return {}; }, body: { appendChild(script) { script.onerror(); } } }, Promise, localStorage: { getItem() { return null; }, setItem() {} } };
+      vm.runInNewContext(source, context);
+      return { parent, create: (opts) => context.window.HerdrEditor.create(Object.assign({ parent, path: "demo.txt", content: "a\nb", readonly: true }, opts)) };
+    };
+
+    // Headerless readonly preview: the floating toggle must exist and open the toolbar.
+    let env = boot();
+    env.create({ hideHeader: true });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.match(env.parent.innerHTML, /herdr-editor-find-toggle herdr-editor-find-float/);
+    assert.equal((env.parent.innerHTML.match(/herdr-editor-find-toggle/g) || []).length, 1, "no duplicate toggles");
+
+    // Headerless edit mode (mobile editor) also gets one.
+    env = boot();
+    env.create({ hideHeader: true, readonly: false });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal((env.parent.innerHTML.match(/herdr-editor-find-float/g) || []).length, 1);
+
+    // Headered mounts keep the header toggle only (no float).
+    env = boot();
+    env.create({});
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.match(env.parent.innerHTML, /class="herdr-editor-head"/);
+    assert.doesNotMatch(env.parent.innerHTML, /herdr-editor-find-float/);
+
+    // hideFind suppresses every find affordance.
+    env = boot();
+    env.create({ hideHeader: true, hideFind: true });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.doesNotMatch(env.parent.innerHTML, /herdr-editor-find-toggle/);
+    assert.doesNotMatch(env.parent.innerHTML, /herdr-editor-find"/);
+  });
+
+  it("memoizes find scans and invalidates on text or query change (D3)", () => {
+    const source = readFileSync(new URL("./shared/editor.js", import.meta.url), "utf8");
+    let text = "needle one needle two needle three";
+    const toolbarParts = {};
+    function makePart() {
+      return { value: "", checked: false, hidden: false, textContent: "", handlers: {}, addEventListener(type, fn) { (this.handlers[type] ||= []).push(fn); }, fire(type, event) { for (const fn of this.handlers[type] || []) fn(Object.assign({ key: "", preventDefault() {}, stopPropagation() {} }, event)); } };
+    }
+    for (const key of ["query", "status", "matchCase", "regex", "prev", "next", "one", "all", "replacement"]) toolbarParts[key] = makePart();
+    const toolbar = {
+      hidden: true,
+      querySelector(selector) {
+        const map = {
+          ".herdr-editor-find-query": "query", ".herdr-editor-find-status": "status",
+          ".herdr-editor-find-case": "matchCase", ".herdr-editor-find-regex": "regex",
+          ".herdr-editor-find-prev": "prev", ".herdr-editor-find-next": "next",
+          ".herdr-editor-replace-query": "replacement",
+          ".herdr-editor-replace-one": "one", ".herdr-editor-replace-all": "all",
+        };
+        return toolbarParts[map[selector]] || null;
+      },
+    };
+    const textareaNode = { value: text };
+    const parent = {
+      querySelector(selector) {
+        if (selector === ".herdr-editor-find") return toolbar;
+        if (selector === "textarea") return textareaNode;
+        return null;
+      },
+      addEventListener() {},
+    };
+    const context = {
+      window: {},
+      document: { createElement() { return {}; }, body: { appendChild(script) { script.onerror(); } } },
+      Promise, localStorage: { getItem() { return null; }, setItem() {} },
+    };
+    vm.runInNewContext(source, context);
+    const api = context.window.HerdrEditor.create({ parent, path: "demo.txt", content: text, readonly: true });
+    assert.equal(typeof api.getValue, "function");
+    const setText = (value) => { textareaNode.value = value; };
+
+    const { query, status, prev, next, matchCase } = toolbarParts;
+    query.value = "needle";
+    next.fire("click");
+    assert.match(status.textContent, /^1\/3$/);
+    next.fire("click");
+    assert.match(status.textContent, /^2\/3$/);
+    prev.fire("click");
+    assert.match(status.textContent, /^1\/3$/);
+
+    // New query must invalidate the memo and rescan.
+    query.value = "two";
+    next.fire("click");
+    assert.match(status.textContent, /^1\/1$/);
+
+    // Option change must invalidate too: case-insensitive "Needle" finds 3.
+    matchCase.checked = false;
+    query.value = "Needle";
+    next.fire("click");
+    assert.match(status.textContent, /^1\/3$/);
+    // Flipping matchCase on must rescan and find nothing.
+    matchCase.checked = true;
+    next.fire("click");
+    assert.match(status.textContent, /No matches/);
+
+    // Text change must invalidate: a changed document rescans.
+    setText("needle fresh");
+    query.value = "fresh";
+    next.fire("click");
+    assert.match(status.textContent, /^1\/1$/);
+
+    // Full navigation cycle still lands on correct ranges (memo reuse path).
+    setText("a needle b needle c needle");
+    query.value = "needle";
+    next.fire("click"); next.fire("click");
+    assert.match(status.textContent, /^2\/3$/);
+    assert.equal(api.getValue().length > 0, true);
+  });
 
   it("supports match-case and regex range detection", () => {
     const context = { window: {}, document: { createElement() { return {}; }, body: { appendChild() {} } }, Promise };
@@ -547,8 +773,9 @@ describe("HerdrEditor line number helpers", () => {
 
   it("captures Cmd/Ctrl+F inside file editors to show Herdr find", () => {
     const localStorage = new Map();
-    let parentKeydown = null;
+    const parentKeydowns = [];
     let queryKeydown = null;
+    const parentKeydown = (event) => { for (const handler of parentKeydowns.slice().reverse()) handler(event); };
     const query = {
       value: "",
       focused: false,
@@ -573,13 +800,13 @@ describe("HerdrEditor line number helpers", () => {
         if (selector === ".herdr-editor-find") return toolbar;
         return null;
       },
-      addEventListener(type, handler) { if (type === "keydown") parentKeydown = handler; },
+      addEventListener(type, handler) { if (type === "keydown") parentKeydowns.push(handler); },
       removeEventListener() {},
     };
     const context = {
       window: {
         HerdrCodeMirror: {
-          create() { return { getValue() { return "abc"; }, setValue() {}, destroy() {} }; },
+          create() { return { getValue() { return "abc"; }, setValue() {}, selectRange() {}, destroy() {} }; },
         },
       },
       localStorage: {
@@ -615,6 +842,11 @@ describe("HerdrEditor line number helpers", () => {
     parentKeydown({ key: "f", ctrlKey: true, metaKey: false, altKey: false, preventDefault() { prevented = true; }, stopPropagation() {}, stopImmediatePropagation() {} });
     assert.equal(prevented, false);
     assert.equal(toolbar.hidden, true);
+    // Ctrl+G still works with the find shortcut disabled (different feature).
+    context.prompt = () => null;
+    parentKeydown({ key: "g", ctrlKey: true, metaKey: false, altKey: false, preventDefault() { prevented = true; }, stopPropagation() {}, stopImmediatePropagation() {} });
+    assert.equal(prevented, true);
+    prevented = false;
   });
 
   it("enables replace controls only for editable fallback editors", async () => {
@@ -790,6 +1022,112 @@ describe("HerdrEditor line number helpers", () => {
   });
 });
 
+
+describe("HerdrEditor goto-line and position readout (A5)", () => {
+  function makeLine(number) { return { number, from: (number - 1) * 4, to: number * 4 - 1 }; }
+  function makeView() {
+    return {
+      state: {
+        doc: {
+          lines: 3,
+          lineAt(pos) { return makeLine(Math.floor(pos / 4) + 1); },
+          line(no) { return makeLine(Math.min(Math.max(1, no), 3)); },
+        },
+        selection: { main: { head: 4 } },
+      },
+    };
+  }
+  // Doc model: 3 lines of 3 chars + separators => line N starts at (N-1)*4.
+  function makeContext() {
+    const readout = { hidden: true, textContent: "" };
+    const calls = { selected: [] };
+    const cm = {
+      create() {
+        return {
+          getValue() { return "aaa\nbbb\nccc"; },
+          setValue() {},
+          selectRange(from, to) { calls.selected.push({ from, to }); },
+          destroy() {},
+          view: makeView(),
+        };
+      },
+    };
+    const context = {
+      window: { HerdrCodeMirror: cm },
+      document: { createElement() { return {}; }, body: { appendChild() {} } },
+      localStorage: { getItem: () => null, setItem: () => {} },
+      Promise,
+    };
+    const source = readFileSync(new URL("./shared/editor.js", import.meta.url), "utf8");
+    vm.runInNewContext(source, context);
+    return { context, readout, calls };
+  }
+
+  it("gotoLine clamps, jumps, and rejects bad input", () => {
+    const { context, calls } = makeContext();
+    const parent = { querySelector: () => null, addEventListener() {}, removeEventListener() {} };
+    const editor = context.window.HerdrEditor.create({ parent, path: "demo.js", content: "aaa\nbbb\nccc", readonly: true });
+    assert.equal(context.window.HerdrEditor.gotoLine(parent, editor, 2), true);
+    assert.deepEqual(calls.selected, [{ from: 4, to: 4 }]);
+    assert.equal(context.window.HerdrEditor.gotoLine(parent, editor, 99), true); // clamps to line 3
+    assert.deepEqual(calls.selected.slice(-1), [{ from: 8, to: 8 }]);
+    assert.equal(context.window.HerdrEditor.gotoLine(parent, editor, 0), true); // clamps to line 1
+    assert.deepEqual(calls.selected.slice(-1), [{ from: 0, to: 0 }]);
+    assert.equal(context.window.HerdrEditor.gotoLine(parent, editor, "abc"), false); // NaN
+    assert.equal(context.window.HerdrEditor.gotoLine(parent, editor, null), false); // no prompt -> cancelled
+  });
+
+  it("cursorPosition reads line and col from the CodeMirror view", () => {
+    const { context } = makeContext();
+    const api = context.window.HerdrEditor;
+    const view = makeView(); // head 4 -> line 2, col 1 (line.from = 4)
+    const position = api.cursorPosition({ _view: view });
+    assert.equal(position.line, 2);
+    assert.equal(position.col, 1);
+    assert.equal(api.cursorPosition({ _view: null }), null);
+    assert.equal(api.cursorPosition(null), null);
+  });
+
+  it("Ctrl+G inside an editor triggers goto-line via prompt", () => {
+    const { context, calls } = makeContext();
+    const parent = { querySelector: () => null, addEventListener() {}, removeEventListener() {} };
+    context.window.HerdrEditor.create({ parent, path: "demo.js", content: "aaa\nbbb\nccc", readonly: true });
+    const handler = parent.__herdrEditorGotoHandler;
+    assert.ok(handler, "goto handler bound");
+    context.prompt = (message) => { context.lastPrompt = message; return "2"; };
+    let prevented = false;
+    handler({ key: "g", ctrlKey: true, metaKey: false, altKey: false, shiftKey: false, preventDefault() { prevented = true; }, stopPropagation() {} });
+    assert.equal(prevented, true);
+    assert.match(context.lastPrompt, /Go to line \(1-3\)/);
+    assert.deepEqual(calls.selected, [{ from: 4, to: 4 }]);
+  });
+
+  it("position readout updates from the view without DOM churn", () => {
+    const { context, readout } = makeContext();
+    const parentHandlers = {};
+    const nodes = {};
+    const parent = {
+      _herdrEditorApi: null,
+      get innerHTML() { return ""; },
+      set innerHTML(html) {
+        nodes[".herdr-editor-find"] = { hidden: true, querySelector: () => null, addEventListener() {} };
+        nodes[".herdr-editor-position"] = readout;
+      },
+      querySelector(selector) { return nodes[selector] || null; },
+      addEventListener(type, handler) {
+        if (type !== "keydown") return;
+        parentHandlers.__all = (parentHandlers.__all || []).concat(handler);
+        parentHandlers.keydown = (event) => { for (const h of parentHandlers.__all.slice().reverse()) h(event); };
+      },
+      removeEventListener() {},
+    };
+    context.window.HerdrEditor.create({ parent, path: "demo.js", content: "aaa\nbbb\nccc", readonly: true });
+    assert.equal(readout.hidden, false, "readout visible once a view exists");
+    assert.equal(readout.textContent, "Ln 2, Col 1");
+  });
+});
+
+
 describe("desktop file browser editor integration", () => {
   class FakeElement {
     constructor(document, tag = "div") {
@@ -923,6 +1261,7 @@ describe("desktop file browser editor integration", () => {
         };
       },
       confirm: () => true,
+      HerdrAppHelpers: require("./shared/core.js"),
       appRefreshIconButton: () => "<button>Refresh</button>",
       encodeURIComponent,
       decodeURIComponent,
@@ -983,6 +1322,7 @@ describe("desktop file browser editor integration", () => {
       },
       prompt: () => "renamed.txt",
       confirm: () => true,
+      HerdrAppHelpers: require("./shared/core.js"),
       appRefreshIconButton: () => "<button>Refresh</button>",
       encodeURIComponent,
       decodeURIComponent,
@@ -1055,6 +1395,7 @@ describe("desktop file browser editor integration", () => {
         },
       }),
       confirm: () => true,
+      HerdrAppHelpers: require("./shared/core.js"),
       appRefreshIconButton: () => "<button>Refresh</button>",
       encodeURIComponent,
       decodeURIComponent,
@@ -1117,6 +1458,7 @@ describe("desktop file browser editor integration", () => {
         },
       }),
       confirm: () => true,
+      HerdrAppHelpers: require("./shared/core.js"),
       appRefreshIconButton: () => "<button>Refresh</button>",
       encodeURIComponent,
       decodeURIComponent,
@@ -1178,6 +1520,104 @@ describe("desktop file browser editor integration", () => {
     assert.equal(rebuiltLabel.querySelector(".file-browser-tab-dirty"), null, "stale change after lock does not resurrect the dot");
   });
 
+  it("reuses the editor instance across renders and recreates it on state changes (C4)", async () => {
+    const document = createFakeDocument();
+    const creates = [];
+    const destroys = [];
+    const context = {
+      window: {
+        addEventListener() {},
+        HerdrEditor: {
+          create(opts) {
+            creates.push({ path: opts.path, content: opts.content, readonly: opts.readonly, onChange: opts.onChange });
+            // Build a real child node so the file browser can find and
+            // cache the .herdr-editor wrapper across renders.
+            const wrapper = new FakeElement(document, "div");
+            wrapper.className = "herdr-editor";
+            const mount = new FakeElement(document, "div");
+            mount.className = "herdr-editor-mount";
+            wrapper.appendChild(mount);
+            opts.parent.appendChild(wrapper);
+            opts.parent._wrapper = wrapper;
+            const api = {
+              toggleFind() {},
+              destroy() { destroys.push(opts.path); },
+            };
+            opts.parent._herdrEditorApi = api;
+            return api;
+          },
+          isMarkdownPath() { return false; },
+        },
+        HerdrGitUi: { hide() {} },
+        HerdrWorkspacePath(workspace) { return workspace.cwd; },
+      },
+      document,
+      localStorage: { getItem() { return JSON.stringify({ fileBrowserLineNumbers: true, fileBrowserGitStatus: false }); } },
+      navigator: { clipboard: { writeText: async () => {} } },
+      fetch: async (url) => {
+        const text = String(url);
+        return {
+          ok: true,
+          async json() {
+            if (text.startsWith("/api/file-browser/file")) {
+              const path = decodeURIComponent((text.match(/path=([^&]+)/) || [null, ""])[1]);
+              return { path, content: `content of ${path}`, binary: false, truncated: false };
+            }
+            return { root: "/repo", home: "/home", path: "", entries: [{ kind: "file", name: "a.py", path: "src/a.py" }], git_status: null };
+          },
+        };
+      },
+      confirm: () => true,
+      HerdrAppHelpers: require("./shared/core.js"),
+      appRefreshIconButton: () => "<button>Refresh</button>",
+      encodeURIComponent, decodeURIComponent, Error, JSON, Math, String,
+      setTimeout(fn) { fn(); return 1; },
+      clearTimeout() {},
+    };
+    context.window.window = context.window;
+    context.window.document = document;
+    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
+    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
+
+    const FB = context.window.HerdrFileBrowser;
+    await FB.open({ cwd: "/repo" });
+    FB.select(encodeURIComponent("src/a.py"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(creates.length, 1, "editor created once on first open");
+    const firstMount = creates[0];
+
+    // Re-render with unchanged state: the editor DOM must be reattached,
+    // not recreated.
+    FB.refresh && await Promise.resolve();
+    FB.focusFile(encodeURIComponent("src/a.py"));
+    assert.equal(creates.length, 1, "unchanged render reuses the cached editor instance");
+    const paneAfter = document.getElementById("fileBrowserEditor-" + creates[0].path.split("/").join(""));
+    assert.ok(paneAfter, "pane container exists after re-render");
+
+    // Files open editable by default, so locking (read-only) recreates
+    // the editor and the new instance must be readonly.
+    FB.toggleLock(encodeURIComponent("src/a.py"));
+    assert.equal(creates.length, 2, "editability change recreates the editor");
+    assert.equal(creates[1].readonly, true, "new editor is readonly after lock");
+
+    // Closing the file destroys the cached editor and drops it.
+    const destroyedBeforeClose = destroys.length;
+    FB.closeFile(encodeURIComponent("src/a.py"));
+    assert.equal(creates.length, 2, "closing does not create editors");
+    assert.equal(destroys.length, destroyedBeforeClose + 1, "closing destroys the cached editor");
+    assert.ok(destroys.includes("src/a.py"), "destroy received the closed path");
+
+    // Reopening the same file creates a fresh editor (cache was dropped).
+    FB.select(encodeURIComponent("src/a.py"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(creates.length, 3, "reopen after close creates a fresh editor");
+
+    // forgetWorkspace drops every cached editor for that workspace.
+    const beforeForget = destroys.length;
+    FB.forgetWorkspace({ cwd: "/repo" });
+    assert.equal(destroys.length, beforeForget + 1, "forgetWorkspace destroys the workspace editors");
+  });
+
   it("keeps editing draft per workspace, then forgets closed workspace state", async () => {
     const document = createFakeDocument();
     const editorCalls = [];
@@ -1219,6 +1659,7 @@ describe("desktop file browser editor integration", () => {
         };
       },
       confirm: () => true,
+      HerdrAppHelpers: require("./shared/core.js"),
       appRefreshIconButton: () => "<button>Refresh</button>",
       encodeURIComponent,
       decodeURIComponent,
@@ -1307,6 +1748,7 @@ describe("desktop file browser editor integration", () => {
         };
       },
       confirm: () => true,
+      HerdrAppHelpers: require("./shared/core.js"),
       appRefreshIconButton: () => "<button>Refresh</button>",
       encodeURIComponent,
       decodeURIComponent,
@@ -1376,6 +1818,329 @@ describe("desktop file browser editor integration", () => {
     assert.doesNotMatch(document.getElementById("fileBrowserPanel").innerHTML, /file-browser-open-tab[\s\S]*demo\.py/);
   });
 
+  it("keeps a dirty tab when close confirmation is declined and closes it when confirmed", async () => {
+    const document = createFakeDocument();
+    const editorCalls = [];
+    const confirmResults = [];
+    let confirmAnswer = true;
+    const context = {
+      window: {
+        addEventListener() {},
+        HerdrEditor: {
+          create(opts) {
+            editorCalls.push({ path: opts.path, content: opts.content, readonly: opts.readonly, onChange: opts.onChange });
+            opts.parent.innerHTML = `<div class="cm-content" contenteditable="${opts.readonly === false ? "true" : "false"}"></div>`;
+            opts.parent._herdrEditorApi = { toggleFind() {} };
+            return { getValue() { return opts.content; }, setValue() {}, destroy() {} };
+          },
+        },
+        HerdrGitUi: { hide() {} },
+        HerdrWorkspacePath(workspace) { return workspace.cwd; },
+      },
+      document,
+      localStorage: { getItem() { return JSON.stringify({ fileBrowserLineNumbers: true, fileBrowserGitStatus: false }); } },
+      navigator: { clipboard: { writeText: async () => {} } },
+      fetch: async (url) => {
+        const text = String(url);
+        return {
+          ok: true,
+          async json() {
+            if (text.startsWith("/api/file-browser/file")) {
+              const cwd = decodeURIComponent((text.match(/cwd=([^&]+)/) || [null, ""])[1]);
+              const path = decodeURIComponent((text.match(/path=([^&]+)/) || [null, ""])[1]);
+              return { path, content: "print('hello')", binary: false, truncated: false };
+            }
+            const cwd = decodeURIComponent((text.match(/cwd=([^&]+)/) || [null, ""])[1]);
+            return { root: cwd, home: "/Users/me", path: "", entries: [{ kind: "dir", name: "src", path: "src" }], git_status: null };
+          },
+        };
+      },
+      confirm: () => { confirmResults.push(confirmAnswer); return confirmAnswer; },
+      HerdrAppHelpers: require("./shared/core.js"),
+      appRefreshIconButton: () => "<button>Refresh</button>",
+      encodeURIComponent,
+      decodeURIComponent,
+      Error,
+      JSON,
+      Math,
+      String,
+      setTimeout(fn) { fn(); return 1; },
+      clearTimeout() {},
+    };
+    context.window.window = context.window;
+    context.window.document = document;
+    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
+    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
+
+    await context.window.HerdrFileBrowser.open({ workspace_id: "ws", cwd: "/Users/me/repo" });
+    context.window.HerdrFileBrowser.select(encodeURIComponent("src/demo.py"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    context.window.HerdrFileBrowser.edit(encodeURIComponent("src/demo.py"));
+    editorCalls.at(-1).onChange("print('dirty draft')");
+
+    const panelHtml = () => document.getElementById("fileBrowserPanel").innerHTML;
+    const openTabCount = () => (panelHtml().match(/file-browser-open-tab\b/g) || []).length;
+    assert.ok(openTabCount() >= 1, "file tab is open");
+
+    confirmAnswer = false;
+    context.window.HerdrFileBrowser.closeFile(encodeURIComponent("src/demo.py"));
+    assert.equal(confirmResults.length, 1, "dirty close asked for confirmation");
+    assert.ok(openTabCount() >= 1, "declined close keeps the dirty tab open");
+
+    confirmAnswer = true;
+    context.window.HerdrFileBrowser.closeFile(encodeURIComponent("src/demo.py"));
+    assert.equal(confirmResults.length, 2);
+    assert.equal(openTabCount(), 0, "confirmed close removes the tab");
+
+    // The tab context-menu "close" action carries its own duplicated guard;
+    // it must behave identically (declined keeps the tab, confirmed closes).
+    await context.window.HerdrFileBrowser.select(encodeURIComponent("src/demo.py"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    context.window.HerdrFileBrowser.edit(encodeURIComponent("src/demo.py"));
+    editorCalls.at(-1).onChange("print('dirty draft 2')");
+    confirmAnswer = false;
+    context.window.HerdrFileBrowser.tabMenu({ preventDefault() {}, stopPropagation() {}, clientX: 1, clientY: 1 }, encodeURIComponent("src/demo.py"));
+    context.window.HerdrFileBrowser.menuAction("close");
+    assert.equal(confirmResults.at(-1), false, "menu close asked for confirmation");
+    assert.ok(openTabCount() >= 1, "declined menu close keeps the dirty tab open");
+    confirmAnswer = true;
+    context.window.HerdrFileBrowser.tabMenu({ preventDefault() {}, stopPropagation() {}, clientX: 1, clientY: 1 }, encodeURIComponent("src/demo.py"));
+    context.window.HerdrFileBrowser.menuAction("close");
+    assert.equal(confirmResults.at(-1), true, "confirmed menu close");
+    assert.equal(openTabCount(), 0, "confirmed menu close removes the tab");
+  });
+
+  it("opening the same path twice from content search reuses the tab without a duplicate fetch (A3)", async () => {
+    const document = createFakeDocument();
+    const editorCalls = [];
+    const fileFetches = [];
+    const context = {
+      window: {
+        addEventListener() {},
+        HerdrEditor: {
+          create(opts) { editorCalls.push({ path: opts.path }); opts.parent.innerHTML = "<div class='cm-content'></div>"; opts.parent._herdrEditorApi = { toggleFind() {} }; return { getValue() { return opts.content; }, setValue() {}, destroy() {} }; },
+          isMarkdownPath() { return false; },
+        },
+        HerdrGitUi: { hide() {} },
+        HerdrWorkspacePath(workspace) { return workspace.cwd; },
+      },
+      document,
+      localStorage: { getItem() { return JSON.stringify({ fileBrowserGitStatus: false }); } },
+      navigator: { clipboard: { writeText: async () => {} } },
+      fetch: async (url) => {
+        const text = String(url);
+        if (text.startsWith("/api/file-browser/file")) fileFetches.push(text);
+        return {
+          ok: true,
+          async json() {
+            if (text.startsWith("/api/file-browser/file")) {
+              const path = decodeURIComponent((text.match(/path=([^&]+)/) || [null, ""])[1]);
+              return { path, content: "print('hello')", binary: false, truncated: false };
+            }
+            const cwd = decodeURIComponent((text.match(/cwd=([^&]+)/) || [null, ""])[1]);
+            return { root: cwd, home: "/Users/me", path: "", entries: [{ kind: "file", name: "demo.py", path: "demo.py" }], git_status: null };
+          },
+        };
+      },
+      confirm: () => true,
+      HerdrAppHelpers: require("./shared/core.js"),
+      appRefreshIconButton: () => "<button>Refresh</button>",
+      encodeURIComponent,
+      decodeURIComponent,
+      Error,
+      JSON,
+      Math,
+      String,
+      setTimeout(fn) { fn(); return 1; },
+      clearTimeout() {},
+      getComputedStyle: () => ({ getPropertyValue() { return "14"; } }),
+    };
+    context.window.window = context.window;
+    context.window.document = document;
+    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
+    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
+
+    await context.window.HerdrFileBrowser.open({ workspace_id: "ws", cwd: "/Users/me/repo" });
+    // First open from content search (append mode).
+    context.window.HerdrFileBrowserContent.openFile(encodeURIComponent("demo.py"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // Second open of the SAME path from content search (append mode).
+    context.window.HerdrFileBrowserContent.openFile(encodeURIComponent("demo.py"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const panelHtml = () => document.getElementById("fileBrowserPanel").innerHTML;
+    const tabCount = () => (panelHtml().match(/file-browser-open-tab\s/g) || []).length;
+    assert.equal(fileFetches.length, 1, "same path fetched exactly once");
+    assert.equal(tabCount(), 1, "one tab for the path, no duplicates");
+  });
+
+  it("offers and serves a partial preview for oversized files (A4)", async () => {
+    const document = createFakeDocument();
+    const editorCalls = [];
+    const fileRequests = [];
+    const context = {
+      window: {
+        addEventListener() {},
+        HerdrEditor: {
+          create(opts) { editorCalls.push({ readonly: opts.readonly, content: opts.content, markdownPreview: opts.markdownPreview }); opts.parent.innerHTML = "<div class='cm-content'></div>"; opts.parent._herdrEditorApi = { toggleFind() {} }; return { getValue() { return opts.content; }, setValue() {}, destroy() {} }; },
+          isMarkdownPath() { return false; },
+        },
+        HerdrGitUi: { hide() {} },
+        HerdrWorkspacePath(workspace) { return workspace.cwd; },
+      },
+      document,
+      localStorage: { getItem() { return JSON.stringify({ fileBrowserGitStatus: false }); } },
+      navigator: { clipboard: { writeText: async () => {} } },
+      fetch: async (url) => {
+        const text = String(url);
+        fileRequests.push(text);
+        return {
+          ok: true,
+          async json() {
+            if (text.startsWith("/api/file-browser/file")) {
+              const path = decodeURIComponent((text.match(/path=([^&]+)/) || [null, ""])[1]);
+              if (text.includes("max_bytes=262144")) {
+                return { path, content: "x".repeat(262144), hash: "", binary: false, truncated: true, size: 2 * 1024 * 1024, preview_bytes: 262144 };
+              }
+              return { path, content: "", hash: "", binary: false, truncated: true, size: 2 * 1024 * 1024 };
+            }
+            const cwd = decodeURIComponent((text.match(/cwd=([^&]+)/) || [null, ""])[1]);
+            return { root: cwd, home: "/Users/me", path: "", entries: [{ kind: "file", name: "big.log", path: "big.log" }], git_status: null };
+          },
+        };
+      },
+      confirm: () => true,
+      HerdrAppHelpers: require("./shared/core.js"),
+      appRefreshIconButton: () => "<button>Refresh</button>",
+      encodeURIComponent,
+      decodeURIComponent,
+      Error,
+      JSON,
+      Math,
+      String,
+      setTimeout(fn) { fn(); return 1; },
+      clearTimeout() {},
+      getComputedStyle: () => ({ getPropertyValue() { return "14"; } }),
+    };
+    context.window.window = context.window;
+    context.window.document = document;
+    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
+    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
+
+    await context.window.HerdrFileBrowser.open({ workspace_id: "ws", cwd: "/Users/me/repo" });
+    // Open the oversized file: plain truncated placeholder with the button.
+    await context.window.HerdrFileBrowser.select(encodeURIComponent("big.log"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const panelHtml = () => document.getElementById("fileBrowserPanel").innerHTML;
+    assert.match(panelHtml(), /File too large to preview/);
+    assert.match(panelHtml(), /Load first 256 KB/);
+    assert.doesNotMatch(panelHtml(), /filesStartEdit|lockToggle/);
+
+    // Load the partial preview: backend partial read mounts read-only.
+    await context.window.HerdrFileBrowser.loadPartial(encodeURIComponent("big.log"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(fileRequests.some((url) => url.includes("max_bytes=262144")), "partial fetch uses the budget param");
+    assert.ok(editorCalls.length >= 1, "editor mounted for the partial preview");
+    assert.equal(editorCalls.at(-1).readonly, true, "partial preview mounts read-only");
+    assert.equal(editorCalls.at(-1).markdownPreview, false, "partial preview is source view");
+    assert.doesNotMatch(panelHtml(), /Load first 256 KB/);
+
+    // Reload (plain path) clears the partial marker back to the placeholder.
+    await context.window.HerdrFileBrowser.reload(encodeURIComponent("big.log"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.match(panelHtml(), /File too large to preview/);
+  });
+
+  it("prompts to reload when an open file changed on disk (A6)", async () => {
+    const document = createFakeDocument();
+    const confirmCalls = [];
+    let diskContent = "version 1";
+    const fileRequests = [];
+    const context = {
+      window: {
+        addEventListener() {},
+        HerdrEditor: {
+          create(opts) { opts.parent.innerHTML = "<div class='cm-content'></div>"; opts.parent._herdrEditorApi = { toggleFind() {} }; return { getValue() { return opts.content; }, setValue() {}, destroy() {} }; },
+          isMarkdownPath() { return false; },
+        },
+        HerdrGitUi: { hide() {} },
+        HerdrWorkspacePath(workspace) { return workspace.cwd; },
+      },
+      document,
+      localStorage: { getItem() { return JSON.stringify({ fileBrowserGitStatus: false }); } },
+      navigator: { clipboard: { writeText: async () => {} } },
+      fetch: async (url) => {
+        const text = String(url);
+        fileRequests.push(text);
+        return {
+          ok: true,
+          async json() {
+            if (text.startsWith("/api/file-browser/file")) {
+              const path = decodeURIComponent((text.match(/path=([^&]+)/) || [null, ""])[1]);
+              // Same hash formula for full loads and hash_only probes, so
+              // the watcher only flags real external changes.
+              let h = 0;
+              for (const ch of diskContent) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+              return { path, content: text.includes("hash_only=true") ? "" : diskContent, hash: `hash-${h}`, binary: false, truncated: false, size: diskContent.length };
+            }
+            const cwd = decodeURIComponent((text.match(/cwd=([^&]+)/) || [null, ""])[1]);
+            return { root: cwd, home: "/Users/me", path: "", entries: [{ kind: "file", name: "watched.txt", path: "watched.txt" }], git_status: null };
+          },
+        };
+      },
+      confirm(message) { confirmCalls.push(String(message)); return true; },
+      HerdrAppHelpers: require("./shared/core.js"),
+      appRefreshIconButton: () => "<button>Refresh</button>",
+      encodeURIComponent,
+      decodeURIComponent,
+      Error,
+      JSON,
+      Math,
+      String,
+      setTimeout(fn) { fn(); return 1; },
+      clearTimeout() {},
+      getComputedStyle: () => ({ getPropertyValue() { return "14"; } }),
+    };
+    context.window.window = context.window;
+    context.window.document = document;
+    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
+    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
+
+    await context.window.HerdrFileBrowser.open({ workspace_id: "ws", cwd: "/Users/me/repo" });
+    await context.window.HerdrFileBrowser.select(encodeURIComponent("watched.txt"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // Refocus with no external change: no probe (nothing to compare) when
+    // hash matches? The watcher always probes clean files; with identical
+    // state there must be NO prompt.
+    confirmCalls.length = 0;
+    fileRequests.length = 0;
+    await context.window.HerdrFileBrowser.checkOpenFilesForExternalChanges();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(confirmCalls.length, 0, "no prompt when disk matches");
+    assert.ok(fileRequests.some((url) => url.includes("hash_only=true")), "probe uses the cheap hash endpoint");
+
+    // External change: the probe hash no longer matches the loaded hash.
+    diskContent = "version 2 from another tool";
+    confirmCalls.length = 0;
+    await context.window.HerdrFileBrowser.checkOpenFilesForExternalChanges();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(confirmCalls.length, 1, "prompted once about the external change");
+    assert.match(confirmCalls[0], /watched.txt[\s\S]*changed on disk/);
+    // Confirmed reload: the watcher re-fetches the full file after the
+    // prompt, so the tab picks up the new content and hash.
+    assert.ok(fileRequests.some((url) => url.includes("version") === false && url.includes("hash_only=true") === false && url.includes("watched.txt")), "full reload fetched after confirm");
+
+    // Declining the prompt keeps the stale tab untouched.
+    context.confirm = (message) => { confirmCalls.push(String(message)); return false; };
+    diskContent = "version 3 nobody wants";
+    confirmCalls.length = 0;
+    await context.window.HerdrFileBrowser.checkOpenFilesForExternalChanges();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(confirmCalls.length, 1, "prompted for the second change");
+    assert.doesNotMatch(document.getElementById("fileBrowserPanel").innerHTML, /version 3/, "declined reload keeps old content");
+  });
+
   it("hides tab menu actions for binary and truncated files", async () => {
     const document = createFakeDocument();
     const context = {
@@ -1407,6 +2172,7 @@ describe("desktop file browser editor integration", () => {
         };
       },
       confirm: () => true,
+      HerdrAppHelpers: require("./shared/core.js"),
       appRefreshIconButton: () => "<button>Refresh</button>",
       encodeURIComponent, decodeURIComponent, Error, JSON, Math, String,
       setTimeout(fn) { fn(); return 1; },
@@ -1462,6 +2228,7 @@ describe("desktop file browser editor integration", () => {
         };
       },
       confirm: () => true,
+      HerdrAppHelpers: require("./shared/core.js"),
       appRefreshIconButton: () => "<button>Refresh</button>",
       encodeURIComponent, decodeURIComponent, Error, JSON, Math, String,
       setTimeout(fn) { fn(); return 1; },
@@ -1526,6 +2293,7 @@ describe("desktop file browser editor integration", () => {
         };
       },
       confirm: () => true,
+      HerdrAppHelpers: require("./shared/core.js"),
       appRefreshIconButton: () => "<button>Refresh</button>",
       encodeURIComponent, decodeURIComponent, Error, JSON, Math, String,
       setTimeout(fn) { fn(); return 1; },
@@ -1576,6 +2344,7 @@ describe("desktop file browser editor integration", () => {
         };
       },
       confirm: () => true,
+      HerdrAppHelpers: require("./shared/core.js"),
       appRefreshIconButton: () => "<button>Refresh</button>",
       encodeURIComponent, decodeURIComponent, Error, JSON, Math, String,
       setTimeout(fn) { fn(); return 1; },
@@ -1625,6 +2394,7 @@ describe("desktop file browser editor integration", () => {
         };
       },
       confirm: () => true,
+      HerdrAppHelpers: require("./shared/core.js"),
       appRefreshIconButton: () => "<button>Refresh</button>",
       encodeURIComponent, decodeURIComponent, Error, JSON, Math, String,
       setTimeout(fn) { fn(); return 1; },
@@ -1674,6 +2444,7 @@ describe("desktop file browser editor integration", () => {
         };
       },
       confirm: () => true,
+      HerdrAppHelpers: require("./shared/core.js"),
       appRefreshIconButton: () => "<button>Refresh</button>",
       encodeURIComponent, decodeURIComponent, Error, JSON, Math, String,
       setTimeout(fn) { fn(); return 1; },
@@ -1753,6 +2524,7 @@ describe("desktop file browser editor integration", () => {
         };
       },
       confirm: () => true,
+      HerdrAppHelpers: require("./shared/core.js"),
       appRefreshIconButton: () => "<button>Refresh</button>",
       encodeURIComponent, decodeURIComponent, Error, JSON, Math, String,
       setTimeout(fn) { fn(); return 1; },
@@ -1822,6 +2594,7 @@ describe("desktop file browser editor integration", () => {
         };
       },
       confirm: () => { confirmCalls++; return false; },
+      HerdrAppHelpers: require("./shared/core.js"),
       appRefreshIconButton: () => "<button>Refresh</button>",
       encodeURIComponent, decodeURIComponent, Error, JSON, Math, String,
       setTimeout(fn) { fn(); return 1; },
@@ -1897,6 +2670,7 @@ describe("desktop file browser editor integration", () => {
         };
       },
       confirm: () => true,
+      HerdrAppHelpers: require("./shared/core.js"),
       appRefreshIconButton: () => "<button>Refresh</button>",
       encodeURIComponent, decodeURIComponent, Error, JSON, Math, String,
       setTimeout(fn) { fn(); return 1; },
@@ -1971,6 +2745,7 @@ describe("desktop file browser editor integration", () => {
         };
       },
       confirm: () => { confirmCalls++; return true; },
+      HerdrAppHelpers: require("./shared/core.js"),
       appRefreshIconButton: () => "<button>Refresh</button>",
       encodeURIComponent, decodeURIComponent, Error, JSON, Math, String,
       setTimeout(fn) { fn(); return 1; },

@@ -173,9 +173,21 @@ Opening a content match calls the file browser with path, line, and query highli
 
 Content search uses backend-owned repository traversal and matching. Results render in the unified header search and in the file explorer content-result renderer when a dedicated content panel is needed. Routes:
 
+- `GET /api/file-browser/file?render=lines`: same file response plus
+  `lines_gutter_html` / `lines_code_html` - the numbered read-only fallback
+  preview markup, escaped and joined once in Rust so the browser injects it
+  directly. Client-side fallback building is capped at 256 KB; larger
+  readonly files without prebuilt markup show a size hint.
 - `GET /api/file-browser/content-search`: bounded breadth-first scan from the current file tree root, grouped by file.
 - `GET /api/file-browser/content-search/file`: lazy full match load for one file when the group is expanded.
-- `POST /api/file-browser/content-search/snippet`: hash-guarded line-range save for an edited match snippet.
+
+Both search routes return pre-merged line chunks per file: adjacent or
+overlapping match context windows are merged server-side and every row
+carries `highlight_html` (escaped text with `<mark class="herdr-content-search-hit">`
+around the hit) plus the `match_id` needed for open-on-double-click and
+context-expand wiring. Chunk merging and highlighting therefore run once per
+backend response in Rust instead of on every browser render; the browser keeps
+a client-side merge fallback for older backends that do not send chunks.
 
 Browser-local configurable values:
 
@@ -203,7 +215,7 @@ Performance limits:
 - result page size, context lines, and matches per file are clamped server-side,
 - invalid regex queries return HTTP 400 before traversal.
 
-Desktop and mobile pass `match_case` and `regex` to the backend routes. Backend matching is implemented once in Rust, so the browser does not scan file content or run repository-wide regexes. Desktop and mobile use `src/assets/shared/file_content_search.js` for grouped rendering, highlight markup, per-file disclosure arrows, merged line chunks, and Git-diff-style context arrows. File results are grouped once per file. New file groups honor `fileContentSearchDefaultExpanded`; when enabled they expand unless `fileContentSearchAutoCollapseFiles` collapses a large result set. Expanded files show matching lines by default, surrounding context lines when available, and up/down arrows that request more context. When expanded context overlaps adjacent matches, the renderer merges the rows into one continuous chunk. Shared visual rules live in `src/assets/shared/content_search.css` and shared colors live in `src/assets/shared/colors.css`, so desktop/mobile do not duplicate the match highlight palette. The frontend does not scan repository content. It only sends queries, renders grouped results, and mounts editor instances for highlighted full-file opens.
+Desktop and mobile pass `match_case` and `regex` to the backend routes. Backend matching is implemented once in Rust, so the browser does not scan file content or run repository-wide regexes. Desktop and mobile use `src/assets/shared/file_content_search.js` for grouped rendering; merged line chunks and highlight markup arrive prebuilt from the backend (with a client-side merge fallback for older backends), and the module still renders per-file disclosure arrows and Git-diff-style context arrows. File results are grouped once per file. New file groups honor `fileContentSearchDefaultExpanded`; when enabled they expand unless `fileContentSearchAutoCollapseFiles` collapses a large result set. Expanded files show matching lines by default, surrounding context lines when available, and up/down arrows that request more context. When expanded context overlaps adjacent matches, the renderer merges the rows into one continuous chunk. Shared visual rules live in `src/assets/shared/content_search.css` and shared colors live in `src/assets/shared/colors.css`, so desktop/mobile do not duplicate the match highlight palette. The frontend does not scan repository content. It only sends queries, renders grouped results, and mounts editor instances for highlighted full-file opens.
 
 ### Theme tokens
 
@@ -242,6 +254,8 @@ This avoids two competing actions over one path field and keeps Git drawer state
 
 The editor stack is CodeMirror. The WebUI preloads `/assets/vendor/codemirror.js` before `/assets/shared/editor.js` so file open can create a CodeMirror DOM immediately.
 
+Desktop file views keep a per-workspace editor instance cache (`file_browser.js`): `render()` rewrites the panel HTML, so `mountEditors()` reattaches the cached editor wrapper (and its API handle) when the file's editor signature (content/draft, lock state, preview mode, search highlight, editor options) is unchanged, instead of recreating the CodeMirror instance on every tab switch or tree refresh. Editors are only rebuilt when the signature changes and are released on close, delete, rename remap, or workspace forget; other workspaces' cached editors survive a switch so switching back does not rebuild them.
+
 Supported behavior:
 
 - editable file views with CodeMirror style (lock toggle switches to read-only),
@@ -264,7 +278,7 @@ Desktop file browser toolbar exposes `Preview` and `Source` toggle buttons for m
 
 ## Settings
 
-Browser-local settings are stored in `localStorage` under `herdr-web-options`. Runtime server settings are stored in `~/.config/herdr-webui/webui-settings.json`. Main browser defaults are defined in `src/assets/desktop/app_js/core.js`; fresh runtime server settings default to `backend_mode: builtin` with both backend types enabled.
+Browser-local settings are stored in `localStorage` under `herdr-web-options` and read through the shared `HerdrOptions` module (`src/assets/shared/options.js`, loaded by `app_boot.js` before all consumers): it parses the payload once, hands out shallow copies per `read()` so callers cannot corrupt the cache, invalidates on every `write()`/`update()` and on cross-tab `storage` events, and tolerates a missing or corrupt payload. Modules that boot without the shared bundle (older served bundles, vm harnesses) fall back to a direct parse, so behavior is unchanged. Runtime server settings are stored in `~/.config/herdr-webui/webui-settings.json`. Main browser defaults are defined in `src/assets/desktop/app_js/core.js`; fresh runtime server settings default to `backend_mode: builtin` with both backend types enabled.
 
 | Setting | Default | Notes |
 | --- | --- | --- |
@@ -339,7 +353,7 @@ Main user-facing functionality is documented in [Features](features.md). Technic
 | Git UI | Git CLI commands, path/ref validation, diff/log/status parsing, cleanup scans. | Drawer rendering, shortcuts, staged/unstaged file interactions, diff controls. |
 | File explorer tree | Safe path cleaning, directory listing, backend file/folder search, pagination, Git status propagation. | Tree rendering, selected file state, scroll preservation, open-at-path behavior. |
 | Unified search | Backend file/folder/content results, pagination, content-match caps. | Section ordering, keyboard/touch selection, visible result rendering, matched-line editor opening. |
-| File content search | Traversal, text matching, caps, lazy file detail loads, snippet save validation. | Grouped result rendering, expand/collapse state, editor mounting. |
+| File content search | Traversal, text matching, caps, lazy file detail loads. | Grouped result rendering, expand/collapse state, editor mounting. |
 | Settings/help | Runtime server settings and safe defaults. | Browser-local options, settings grouping/search, in-app Help content. |
 
 This split keeps expensive or repository-sensitive work in Rust and keeps browser code focused on UI state and rendering.
@@ -357,7 +371,7 @@ This split keeps expensive or repository-sensitive work in Rust and keeps browse
 
 - Shared modules avoid duplicate browser computation. `file_tree.js`, `file_icons.js`, `workspace_search.js`, `file_content_search.js`, `editor.js`, and terminal helpers are reused by desktop/mobile.
 - File content search groups are collapsed by default when result counts exceed the configured threshold. Full per-file matches are lazy-loaded only when needed.
-- CodeMirror is preloaded once and reused for preview, edit, Git hunk editing, and snippet editing. A numbered HTML fallback exists only for load failure.
+- CodeMirror is preloaded once and reused for preview, edit, and Git hunk editing. A numbered HTML fallback exists only for load failure.
 - Desktop terminal output is coalesced once per animation frame before terminal renderer writes. Attach frames have suppression logic so large initial frames do not reveal partial output.
 - Large paste input bypasses terminal renderer synchronous `paste()` and uses bounded WebSocket chunks with backpressure.
 - Browser terminals use `src/assets/shared/terminal_adapter.js` as the renderer boundary over the checked-in wterm bundle. The adapter exposes `write`, `resize`, `focus`, `destroy`, `cellSize`, `rowHeight`, `scrollLines`, `scrollToBottom`, `atBottom`, link toggling, theme variables, font variables, and normal/alternate-screen detection to desktop, mobile, and temporary terminal controllers.

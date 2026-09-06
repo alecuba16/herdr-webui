@@ -5,11 +5,18 @@
   // latest diagnostics. Modeled on Zed's per-workspace language runtime.
 
   const DIAGNOSTICS_POLL_MS = 2000;
+  // Fallback cadence once the push socket is live: catches anything a lagged
+  // receiver missed (diagnostics are full snapshots, so a slow drain here is
+  // enough; the fast 2s poll only runs when the socket is unavailable).
+  const DIAGNOSTICS_PUSH_SLOW_POLL_MS = 30000;
   const DID_CHANGE_DEBOUNCE_MS = 600;
   const MAX_DIAGNOSTICS = 200;
 
   const workspaces = new Map();
   let diagnosticsTimer = null;
+  let diagnosticsPushSocket = null;
+  let diagnosticsPushAttempts = 0;
+  let diagnosticsPushLive = false;
 
   function esc(value) {
     return String(value == null ? "" : value)
@@ -319,30 +326,119 @@
     });
   }
 
+  function anyDocumentsOpen() {
+    for (const ws of workspaces.values()) {
+      if (ws.documents.size) return true;
+    }
+    return false;
+  }
+
+  async function drainDiagnosticsQueue() {
+    try {
+      const body = await api("/api/lsp/notifications");
+      applyNotifications(body.notifications || []);
+    } catch (_) {
+      // Server unreachable; the caller decides whether to retry.
+    }
+  }
+
+  // ── Diagnostics transport (IDE-review C1) ────────────────────────────
+  // Preferred: the backend pushes lsp.diagnostics over /ws/events. The old
+  // 2s HTTP poll stays as a fallback for older backends and socket outages.
+
+  function startDiagnosticsPush() {
+    if (diagnosticsPushSocket || !globalThis.WebSocket) return;
+    let url;
+    try {
+      const proto = location.protocol === "https:" ? "wss:" : "ws:";
+      url = `${proto}//${location.host}/ws/events`;
+    } catch (_) {
+      return;
+    }
+    let ws;
+    try {
+      ws = new globalThis.WebSocket(url);
+    } catch (_) {
+      return;
+    }
+    diagnosticsPushSocket = ws;
+    ws.onmessage = (event) => {
+      let msg = null;
+      try {
+        msg = JSON.parse(event.data);
+      } catch (_) {
+        return;
+      }
+      const evt = msg && msg.event;
+      const kind = evt && (evt.event || evt.type);
+      if (kind !== "lsp.diagnostics") return;
+      diagnosticsPushLive = true;
+      diagnosticsPushAttempts = 0;
+      const data = (evt && evt.data) || null;
+      const notification = data && (data.notification || data);
+      if (notification && (notification.method === "textDocument/publishDiagnostics" || notification.method === "textDocument/publishDiagnosticsThin")) {
+        applyNotifications([notification]);
+        // Fresh push: reset the slow-drain clock so the poll interval does
+        // not fire a redundant HTTP catch-up right after a live event.
+        markDiagnosticsSlowDrained();
+      }
+    };
+    ws.onclose = () => {
+      if (diagnosticsPushSocket === ws) diagnosticsPushSocket = null;
+      diagnosticsPushLive = false;
+      // Reconnect with capped backoff while documents are open; the HTTP
+      // poll takes over immediately when the socket drops.
+      if (anyDocumentsOpen()) {
+        diagnosticsPushAttempts = Math.min(diagnosticsPushAttempts + 1, 5);
+        setTimeout(() => {
+          if (anyDocumentsOpen() && !diagnosticsPushSocket) startDiagnosticsPush();
+        }, Math.min(1000 * Math.pow(2, diagnosticsPushAttempts), 15000));
+      }
+    };
+    ws.onerror = () => {
+      try { ws.close(); } catch (_) {}
+    };
+  }
+
   function startDiagnosticsPolling() {
     if (diagnosticsTimer != null) return;
+    startDiagnosticsPush();
     diagnosticsTimer = setInterval(async () => {
-      let anyDocuments = false;
-      for (const ws of workspaces.values()) {
-        if (ws.documents.size) anyDocuments = true;
-      }
-      if (!anyDocuments) {
+      if (!anyDocumentsOpen()) {
         clearInterval(diagnosticsTimer);
         diagnosticsTimer = null;
         return;
       }
-      try {
-        const body = await api("/api/lsp/notifications");
-        applyNotifications(body.notifications || []);
-      } catch (_) {
-        // Server unreachable; keep polling while documents stay open.
+      // Push live: only a slow safety drain in case a receiver lagged a
+      // burst (broadcast drops old events when the UI is busy).
+      if (diagnosticsPushLive && !diagnosticsPushNeedsFastPoll()) {
+        if (!diagnosticsSlowDue()) return;
+        markDiagnosticsSlowDrained();
+        await drainDiagnosticsQueue();
+        return;
       }
+      await drainDiagnosticsQueue();
     }, DIAGNOSTICS_POLL_MS);
+  }
+
+  let diagnosticsLastSlowDrain = 0;
+  function diagnosticsPushNeedsFastPoll() {
+    // While the push socket exists we trust it; if it never connected this
+    // session (or dropped), the fast poll keeps diagnostics fresh.
+    return !diagnosticsPushSocket;
+  }
+
+  function diagnosticsSlowDue() {
+    return Date.now() - diagnosticsLastSlowDrain >= DIAGNOSTICS_PUSH_SLOW_POLL_MS;
+  }
+
+  function markDiagnosticsSlowDrained() {
+    diagnosticsLastSlowDrain = Date.now();
   }
 
   function applyNotifications(notifications) {
     for (const message of notifications) {
-      if (!message || message.method !== "textDocument/publishDiagnostics") continue;
+      if (!message || (message.method !== "textDocument/publishDiagnostics" && message.method !== "textDocument/publishDiagnosticsThin")) continue;
       const params = message.params || {};
       const uri = params.uri || "";
       if (!uri) continue;

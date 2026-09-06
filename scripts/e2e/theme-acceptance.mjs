@@ -156,6 +156,7 @@ s = await snapshot();
 await cdp.evalExpr(`(() => { localStorage.setItem('herdr-web-theme','auto'); })()`);
 
 // Summary
+cdp.close();
 const failed = results.filter((r) => !r.ok);
 console.log(`\n${results.length - failed.length}/${results.length} theme checks passed`);
 if (failed.length) {
