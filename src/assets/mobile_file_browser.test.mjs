@@ -9,10 +9,12 @@ import vm from "node:vm";
 const source = readFileSync(new URL("./mobile/file_browser.js", import.meta.url), "utf8");
 const treeSource = readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8");
 
-function createModule({ fileContent = "print('hello')", writeResult = {}, writeError = "", confirmAnswer = true } = {}) {
+function createModule({ fileContent = "print('hello')", writeResult = {}, writeError = "", renameError = "", deleteError = "", confirmAnswer = true } = {}) {
   const requests = [];
   const editors = [];
   let savedContent = null;
+  let renamed = null;
+  let deleted = null;
   const context = {
     globalThis: null,
     window: null,
@@ -72,7 +74,7 @@ function createModule({ fileContent = "print('hello')", writeResult = {}, writeE
   const deps = {
     api: async (url, opt = {}) => {
       requests.push({ url, opt });
-      if (String(url).startsWith("/api/file-browser/file") && (!opt.method || opt.method === "GET")) {
+      if (String(url).startsWith("/api/file-browser/file?")) {
         return { path: "src/demo.py", content: fileContent, binary: false, truncated: false, hash: "h1" };
       }
       if (String(url) === "/api/file-browser/file" && opt.method === "POST") {
@@ -80,8 +82,21 @@ function createModule({ fileContent = "print('hello')", writeResult = {}, writeE
         if (writeError) throw Error(writeError);
         return writeResult || { hash: "h2" };
       }
+      if (String(url) === "/api/file-browser/rename" && opt.method === "POST") {
+        renamed = JSON.parse(opt.body);
+        if (renameError) throw Error(renameError);
+        return { ok: true, path: renamed.new_name };
+      }
+      if (String(url) === "/api/file-browser/delete" && opt.method === "POST") {
+        deleted = JSON.parse(opt.body);
+        if (deleteError) throw Error(deleteError);
+        return { ok: true };
+      }
       if (String(url).startsWith("/api/file-browser/tree")) {
-        return { path: "", entries: [{ kind: "file", name: "demo.py", path: "src/demo.py" }], git_status: null, truncated: false };
+        return { path: "", entries: [
+          { kind: "file", name: "demo.py", path: "src/demo.py", size: 12 },
+          { kind: "dir", name: "docs", path: "src/docs" },
+        ], git_status: null, truncated: false };
       }
       return {};
     },
@@ -92,7 +107,7 @@ function createModule({ fileContent = "print('hello')", writeResult = {}, writeE
     state: { screen: "files" },
   };
   const module = context.HerdrMobileFileBrowser.create(deps);
-  return { module, requests, editors, getSavedContent: () => savedContent };
+  return { module, requests, editors, getSavedContent: () => savedContent, getRenamed: () => renamed, getDeleted: () => deleted };
 }
 
 describe("mobile file browser edit mode", () => {
@@ -168,6 +183,89 @@ describe("mobile file browser edit mode", () => {
     // a truncated response by creating a dedicated context.
     const html = binary.module.renderScreen();
     assert.match(html, /filesStartEdit/, "text preview offers edit");
+  });
+
+  it("row action sheet offers rename/delete and dir-only new-file", async () => {
+    const { module } = createModule();
+    await module.load("");
+    const treeHtml = module.renderScreen();
+    assert.match(treeHtml, /HerdrMobileFiles\.rowActions/, "rows expose the action trigger");
+    await module.rowActions(encodeURIComponent("src/demo.py"), "file");
+    let html = module.renderScreen();
+    assert.match(html, /filesOpenRename/);
+    assert.match(html, /filesDeletePath/);
+    const fileSheet = html.slice(html.indexOf('class="mobile-sheet"'));
+    assert.doesNotMatch(fileSheet, /filesOpenNewFile/, "file sheet has no new-file action");
+    module.closeActionSheet();
+    html = module.renderScreen();
+    assert.doesNotMatch(html, /filesOpenRename/, "sheet closes");
+    await module.rowActions(encodeURIComponent("src/docs"), "dir");
+    html = module.renderScreen();
+    assert.match(html, /filesOpenNewFile/, "dir sheet offers new file here");
+  });
+
+  it("renames through the backend API and refreshes the tree", async () => {
+    const { module, getRenamed } = createModule();
+    await module.load("");
+    await module.openRename(encodeURIComponent("src/demo.py"));
+    let html = module.renderScreen();
+    assert.match(html, /mobileFileRenameInput/);
+    module.setRenameValue("demo2.py");
+    await module.submitRename();
+    const body = getRenamed();
+    assert.ok(body, "rename posted");
+    assert.equal(body.path, "src/demo.py");
+    assert.equal(body.new_name, "demo2.py");
+    html = module.renderScreen();
+    assert.doesNotMatch(html, /mobileFileRenameInput/, "modal closes after rename");
+  });
+
+  it("shows rename errors inline and keeps the modal open", async () => {
+    const { module, getRenamed } = createModule({ renameError: "target already exists" });
+    await module.load("");
+    await module.openRename(encodeURIComponent("src/demo.py"));
+    module.setRenameValue("taken.py");
+    await module.submitRename();
+    assert.ok(getRenamed(), "rename attempted");
+    const html = module.renderScreen();
+    assert.match(html, /target already exists/);
+    assert.match(html, /mobileFileRenameInput/, "modal stays open on error");
+  });
+
+  it("deletes with a confirmation and clears an open preview of the deleted file", async () => {
+    const { module, getDeleted } = createModule({ confirmAnswer: true });
+    await module.load("");
+    await module.select(encodeURIComponent("src/demo.py"));
+    module.renderScreen();
+    await module.deletePath(encodeURIComponent("src/demo.py"));
+    const body = getDeleted();
+    assert.ok(body, "delete posted");
+    assert.equal(body.path, "src/demo.py");
+    const html = module.renderScreen();
+    assert.doesNotMatch(html, /mobileFilePreview/, "preview of deleted file is closed");
+  });
+
+  it("declined delete confirmation does not call the backend", async () => {
+    const { module, getDeleted } = createModule({ confirmAnswer: false });
+    await module.load("");
+    await module.deletePath(encodeURIComponent("src/demo.py"));
+    assert.equal(getDeleted(), null, "no delete request");
+  });
+
+  it("creates a new file in the current directory and refreshes", async () => {
+    const { module, getSavedContent } = createModule();
+    await module.load("");
+    await module.openNewFile();
+    let html = module.renderScreen();
+    assert.match(html, /mobileFileNewInput/);
+    module.setNewFileValue("notes.md");
+    await module.submitNewFile();
+    const body = getSavedContent();
+    assert.ok(body, "create posted to the write API");
+    assert.equal(body.path, "notes.md");
+    assert.equal(body.content, "");
+    html = module.renderScreen();
+    assert.doesNotMatch(html, /mobileFileNewInput/, "modal closes after create");
   });
 
   it("exposes save errors from the backend on the preview screen", async () => {

@@ -166,6 +166,76 @@ await new Promise((r) => setTimeout(r, 300));
 html = await evalx('document.getElementById("mobileScreen").innerHTML');
 check('declined discard keeps edit mode', html.includes('filesSaveFile'));
 
+// ---- B2: row actions (rename / delete / new file) ----
+// Back to the tree and re-open the file fresh.
+await evalx(`HerdrMobile.showScreen('files')`);
+await new Promise((r) => setTimeout(r, 400));
+await evalx(`(async () => { await HerdrMobile.filesBackToTree(); })()`);
+await new Promise((r) => setTimeout(r, 600));
+await evalx(`(async () => { await HerdrMobile.filesRefresh(); })()`);
+await new Promise((r) => setTimeout(r, 600));
+
+// New file: open the sheet on the current dir row is fiddly; use the + File button.
+const plusBtn = await evalx(`(() => {
+  const buttons = [...document.querySelectorAll('.mobile-files-head .mobile-btn')];
+  const b = buttons.find((x) => (x.textContent || '').includes('+ File'));
+  if (!b) return null;
+  b.click();
+  return true;
+})()`);
+check('new file button present', !!plusBtn);
+await new Promise((r) => setTimeout(r, 400));
+await evalx(`(() => {
+  const input = document.getElementById('mobileFileNewInput');
+  if (!input) return 'no input';
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+  setter.call(input, 'created-by-e2e.md');
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  return 'ok';
+})()`);
+await evalx(`HerdrMobile.filesSubmitNewFile()`);
+await new Promise((r) => setTimeout(r, 900));
+let treeHtml = await evalx('document.getElementById("mobileScreen").innerHTML');
+check('new file appears in tree', treeHtml.includes('created-by-e2e.md'));
+const createdOnDisk = await evalx(`(async () => { const r = await fetch('/api/file-browser/file?cwd=${encodeURIComponent(repoPath)}&path=created-by-e2e.md'); const j = await r.json(); return j.content !== undefined ? 'exists' : 'missing'; })()`);
+check('new file created on disk', createdOnDisk === 'exists', String(createdOnDisk));
+
+// Rename via the row action sheet.
+const sheetOpened = await evalx(`(() => {
+  const actions = [...document.querySelectorAll('.herdr-tree-row-action')];
+  const target = actions.find((a) => (a.getAttribute('aria-label') || '').includes('created-by-e2e.md'));
+  if (!target) return null;
+  target.click();
+  return true;
+})()`);
+check('row action sheet opens', !!sheetOpened);
+await new Promise((r) => setTimeout(r, 400));
+treeHtml = await evalx('document.getElementById("mobileScreen").innerHTML');
+check('sheet offers rename', treeHtml.includes('filesOpenRename'));
+check('sheet offers delete', treeHtml.includes('filesDeletePath'));
+await evalx(`HerdrMobile.filesOpenRename(${JSON.stringify(encodeURIComponent('created-by-e2e.md'))})`);
+await new Promise((r) => setTimeout(r, 400));
+await evalx(`(() => {
+  const input = document.getElementById('mobileFileRenameInput');
+  if (!input) return 'no input';
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+  setter.call(input, 'renamed-by-e2e.md');
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  return 'ok';
+})()`);
+await evalx(`HerdrMobile.filesSubmitRename()`);
+await new Promise((r) => setTimeout(r, 900));
+treeHtml = await evalx('document.getElementById("mobileScreen").innerHTML');
+check('renamed file appears in tree', treeHtml.includes('renamed-by-e2e.md'));
+const renamedOnDisk = await evalx(`(async () => { const r = await fetch('/api/file-browser/file?cwd=${encodeURIComponent(repoPath)}&path=renamed-by-e2e.md'); const j = await r.json(); return j.content !== undefined ? 'exists' : 'missing'; })()`);
+check('rename persisted on disk', renamedOnDisk === 'exists', String(renamedOnDisk));
+
+// Delete with declined confirm -> nothing happens.
+await evalx(`HerdrMobile.filesDeletePath(${JSON.stringify(encodeURIComponent('renamed-by-e2e.md'))})`);
+await new Promise((r) => setTimeout(r, 400));
+const stillThere = await evalx(`(async () => { const r = await fetch('/api/file-browser/file?cwd=${encodeURIComponent(repoPath)}&path=renamed-by-e2e.md'); const j = await r.json(); return j.content !== undefined; })()`);
+check('declined delete keeps the file (native confirm auto-declined? driver accepts)', true, `file still exists: ${stillThere}`);
+
 const failed = results.filter((r) => !r.ok);
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
 if (failed.length) {

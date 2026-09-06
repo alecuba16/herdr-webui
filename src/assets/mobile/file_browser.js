@@ -7,7 +7,7 @@
     function createContentSearchState() {
       return { active: false, query: "", timer: null, files: [], expanded: {}, snippets: {}, loading: false, error: "", offset: 0, done: true, totalFiles: 0, totalMatches: 0, contextLines: 2, maxMatchesPerFile: 5, autoCollapseFiles: 0, defaultExpanded: true };
     }
-    const local = { path: "", entries: [], selected: "", file: null, error: "", loading: false, filter: "", filterVisible: false, filterTimer: null, filterOffset: 0, filterDone: true, filterKind: "file", scrollTop: 0, cwdOverride: "", gitStatus: null, editing: false, draft: "", dirty: false, saving: false, saveError: "", contentSearch: createContentSearchState() };
+    const local = { path: "", entries: [], selected: "", file: null, error: "", loading: false, filter: "", filterVisible: false, filterTimer: null, filterOffset: 0, filterDone: true, filterKind: "file", scrollTop: 0, cwdOverride: "", gitStatus: null, editing: false, draft: "", dirty: false, saving: false, saveError: "", actionSheet: null, rename: null, newFile: null, mutating: false, contentSearch: createContentSearchState() };
 
     function cwd() {
       return local.cwdOverride || deps.currentWorkspaceCwd() || "";
@@ -224,6 +224,166 @@
       deps.render();
     }
 
+    // ---- Row actions: rename / delete / new file (IDE-review B2) ----
+
+    function openActionSheet(encodedPath, kind) {
+      if (local.editing && !confirmDiscardDraft()) return;
+      const path = decodeURIComponent(encodedPath);
+      local.actionSheet = { path, kind: kind === "dir" ? "dir" : "file" };
+      deps.render();
+    }
+
+    function closeActionSheet() {
+      if (!local.actionSheet) return;
+      local.actionSheet = null;
+      deps.render();
+    }
+
+    function openRename(encodedPath) {
+      const path = decodeURIComponent(encodedPath);
+      const name = Tree.basename(path);
+      local.actionSheet = null;
+      local.rename = { path, name, value: name, error: "" };
+      deps.render();
+    }
+
+    function setRenameValue(value) {
+      if (!local.rename) return;
+      local.rename.value = String(value || "");
+      syncSheetInputState();
+    }
+
+    function cancelRename() {
+      if (!local.rename) return;
+      local.rename = null;
+      deps.render();
+    }
+
+    async function submitRename() {
+      const rename = local.rename;
+      if (!rename || local.mutating) return;
+      const nextName = rename.value.trim();
+      if (!nextName || nextName === rename.name) { cancelRename(); return; }
+      local.mutating = true;
+      rename.error = "";
+      deps.render();
+      try {
+        await deps.api("/api/file-browser/rename", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ cwd: cwd(), path: rename.path, new_name: nextName }),
+        });
+        local.rename = null;
+        await load(local.path || "");
+      } catch (error) {
+        rename.error = error.message || String(error);
+      }
+      local.mutating = false;
+      deps.render();
+    }
+
+    async function deletePath(encodedPath) {
+      const path = decodeURIComponent(encodedPath);
+      local.actionSheet = null;
+      if (!deps.confirm(`Delete ${path}? This cannot be undone.`)) return;
+      local.mutating = true;
+      deps.render();
+      try {
+        await deps.api("/api/file-browser/delete", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ cwd: cwd(), path }),
+        });
+        if (local.file && (local.file.path === path || local.file.path.startsWith(`${path}/`))) {
+          local.file = null;
+          local.editing = false;
+          local.draft = "";
+          local.dirty = false;
+        }
+        if (local.selected === path || local.selected.startsWith(`${path}/`)) local.selected = "";
+        await load(local.path || "");
+      } catch (error) {
+        local.error = error.message || String(error);
+      }
+      local.mutating = false;
+      deps.render();
+    }
+
+    function openNewFile() {
+      local.actionSheet = null;
+      local.newFile = { value: "", error: "" };
+      deps.render();
+    }
+
+    function setNewFileValue(value) {
+      if (!local.newFile) return;
+      local.newFile.value = String(value || "");
+      syncSheetInputState();
+    }
+
+    function cancelNewFile() {
+      if (!local.newFile) return;
+      local.newFile = null;
+      deps.render();
+    }
+
+    async function submitNewFile() {
+      const draft = local.newFile;
+      if (!draft || local.mutating) return;
+      const name = draft.value.trim();
+      if (!name) return;
+      local.mutating = true;
+      draft.error = "";
+      deps.render();
+      try {
+        await deps.api("/api/file-browser/file", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ cwd: cwd(), path: joinPath(local.path || "", name), content: "" }),
+        });
+        local.newFile = null;
+        await load(local.path || "");
+      } catch (error) {
+        draft.error = error.message || String(error);
+      }
+      local.mutating = false;
+      deps.render();
+    }
+
+    function joinPath(parent, name) {
+      const clean = String(name || "").replace(/^\/+/, "");
+      return parent ? `${parent.replace(/\/+$/, "")}/${clean}` : clean;
+    }
+
+    function syncSheetInputState() {
+      // Keep the submit buttons' disabled state in sync without re-rendering
+      // (a re-render would drop focus and the mobile keyboard).
+      const renameOk = document.getElementById("mobileFileRenameSubmit");
+      if (renameOk) renameOk.disabled = !local.rename || local.mutating;
+      const newFileOk = document.getElementById("mobileFileNewSubmit");
+      if (newFileOk) newFileOk.disabled = !local.newFile || !local.newFile.value.trim() || local.mutating;
+    }
+
+    function renderActionSheet() {
+      const sheet = local.actionSheet;
+      if (!sheet) return "";
+      const isDir = sheet.kind === "dir";
+      const name = Tree.basename(sheet.path) || sheet.path;
+      return `<div class="mobile-sheet-backdrop" onclick="HerdrMobile.filesCloseActionSheet()"></div><div class="mobile-sheet" role="dialog" aria-modal="true" aria-label="Actions for ${deps.escapeHtml(name)}"><div class="mobile-sheet-handle"></div><p class="mobile-sheet-title">${deps.escapeHtml(name)}</p><button class="mobile-sheet-action" onclick="HerdrMobile.filesOpenRename(${JSON.stringify(encodeURIComponent(sheet.path))})">Rename</button><button class="mobile-sheet-action danger" onclick="HerdrMobile.filesDeletePath(${JSON.stringify(encodeURIComponent(sheet.path))})">Delete</button>${isDir ? `<button class="mobile-sheet-action" onclick="HerdrMobile.filesOpenNewFile()">New file here</button>` : ""}<button class="mobile-sheet-action" onclick="HerdrMobile.filesCloseActionSheet()">Cancel</button></div>`;
+    }
+
+    function renderRenameModal() {
+      const rename = local.rename;
+      if (!rename) return "";
+      return `<div class="mobile-sheet-backdrop" onclick="HerdrMobile.filesCancelRename()"></div><div class="mobile-sheet" role="dialog" aria-modal="true" aria-label="Rename ${deps.escapeHtml(rename.name)}"><div class="mobile-sheet-handle"></div><p class="mobile-sheet-title">Rename ${deps.escapeHtml(rename.name)}</p><input id="mobileFileRenameInput" class="mobile-sheet-input" type="text" value="${deps.escapeHtml(rename.value)}" oninput="HerdrMobile.filesSetRenameValue(this.value)" onkeydown="if (event.key === 'Enter') { event.preventDefault(); HerdrMobile.filesSubmitRename(); } if (event.key === 'Escape') { event.preventDefault(); HerdrMobile.filesCancelRename(); }" autocomplete="off" spellcheck="false" />${rename.error ? `<div class="mobile-error">${deps.escapeHtml(rename.error)}</div>` : ""}<div class="mobile-sheet-actions"><button class="mobile-btn" onclick="HerdrMobile.filesCancelRename()">Cancel</button><button class="mobile-btn primary" id="mobileFileRenameSubmit" ${local.mutating ? "disabled" : ""} onclick="HerdrMobile.filesSubmitRename()">${local.mutating ? "Renaming…" : "Rename"}</button></div></div>`;
+    }
+
+    function renderNewFileModal() {
+      const draft = local.newFile;
+      if (!draft) return "";
+      return `<div class="mobile-sheet-backdrop" onclick="HerdrMobile.filesCancelNewFile()"></div><div class="mobile-sheet" role="dialog" aria-modal="true" aria-label="New file"><div class="mobile-sheet-handle"></div><p class="mobile-sheet-title">New file in ${deps.escapeHtml(local.path || Tree.basename(cwd()) || "workspace")}</p><input id="mobileFileNewInput" class="mobile-sheet-input" type="text" placeholder="file name (e.g. notes.md)" value="${deps.escapeHtml(draft.value)}" oninput="HerdrMobile.filesSetNewFileValue(this.value)" onkeydown="if (event.key === 'Enter') { event.preventDefault(); HerdrMobile.filesSubmitNewFile(); } if (event.key === 'Escape') { event.preventDefault(); HerdrMobile.filesCancelNewFile(); }" autocomplete="off" spellcheck="false" />${draft.error ? `<div class="mobile-error">${deps.escapeHtml(draft.error)}</div>` : ""}<div class="mobile-sheet-actions"><button class="mobile-btn" onclick="HerdrMobile.filesCancelNewFile()">Cancel</button><button class="mobile-btn primary" id="mobileFileNewSubmit" ${local.mutating || !draft.value.trim() ? "disabled" : ""} onclick="HerdrMobile.filesSubmitNewFile()">${local.mutating ? "Creating…" : "Create"}</button></div></div>`;
+    }
+
     function syncContentSearchOptions() {
       const opts = contentSearchOptions();
       local.contentSearch.minChars = opts.minChars;
@@ -330,9 +490,9 @@
       if (!local.entries.length && !local.loading && !local.error) load(local.path || "");
       if (local.file) return renderPreview();
       const currentRow = Tree.renderCurrentDirectoryRow({ callback: "HerdrMobileFiles", canGoUp: canGoUp(), path: currentDirectoryPath(), label: currentDirectoryLabel(), title: currentDirectoryTitle() });
-      const tree = currentRow + Tree.renderEntries(treeEntries(), { selectedPath: local.selected, callback: "HerdrMobileFiles", showMeta: true });
+      const tree = currentRow + Tree.renderEntries(treeEntries(), { selectedPath: local.selected, callback: "HerdrMobileFiles", showMeta: true, rowActionMethod: "rowActions", rowActionLabel: "⋯" });
       const body = `<div class="mobile-files-list-head"><div class="mobile-help mobile-file-result-count">Use header search (⌕) to find workspaces, files, folders, or file contents.</div></div>${local.loading ? '<div class="mobile-loading">Loading</div>' : tree}`;
-      return `<section class="mobile-section mobile-files" tabindex="0"><div class="mobile-files-head"><div><h2>Files</h2><p class="mobile-help">${deps.escapeHtml(local.path || cwd())}</p></div><div class="mobile-actions"><button class="mobile-btn" onclick="HerdrMobile.filesRefresh()">Refresh</button></div></div>${local.error ? `<div class="mobile-error">${deps.escapeHtml(local.error)}</div>` : ""}${body}</section>`;
+      return `<section class="mobile-section mobile-files" tabindex="0"><div class="mobile-files-head"><div><h2>Files</h2><p class="mobile-help">${deps.escapeHtml(local.path || cwd())}</p></div><div class="mobile-actions"><button class="mobile-btn" onclick="HerdrMobile.filesRefresh()">Refresh</button><button class="mobile-btn" onclick="HerdrMobile.filesOpenNewFile()">+ File</button></div></div>${local.error ? `<div class="mobile-error">${deps.escapeHtml(local.error)}</div>` : ""}${body}${renderActionSheet()}${renderRenameModal()}${renderNewFileModal()}</section>`;
     }
 
     function renderPreservingFocus() {
@@ -539,7 +699,7 @@
           }
         }
       }, 0);
-      return `<section class="mobile-section mobile-files"><h2>Files</h2><div class="mobile-actions"><button class="mobile-btn" onclick="HerdrMobile.filesBackToTree()">Back</button><button class="mobile-btn" onclick="HerdrMobile.filesRefreshFile()">Refresh</button>${editActions}</div><p class="mobile-help">${deps.escapeHtml(file.path || "")}${editing && local.dirty ? " — unsaved changes" : ""}</p>${local.error ? `<div class="mobile-error">${deps.escapeHtml(local.error)}</div>` : ""}${local.saveError ? `<div class="mobile-error">${deps.escapeHtml(local.saveError)}</div>` : ""}${body}</section>`;
+      return `<section class="mobile-section mobile-files"><h2>Files</h2><div class="mobile-actions"><button class="mobile-btn" onclick="HerdrMobile.filesBackToTree()">Back</button><button class="mobile-btn" onclick="HerdrMobile.filesRefreshFile()">Refresh</button>${editActions}<button class="mobile-btn" onclick="HerdrMobile.filesOpenActionSheet(${JSON.stringify(encodeURIComponent(file.path))}, 'file')">⋯</button></div><p class="mobile-help">${deps.escapeHtml(file.path || "")}${editing && local.dirty ? " — unsaved changes" : ""}</p>${local.error ? `<div class="mobile-error">${deps.escapeHtml(local.error)}</div>` : ""}${local.saveError ? `<div class="mobile-error">${deps.escapeHtml(local.saveError)}</div>` : ""}${body}${renderActionSheet()}${renderRenameModal()}${renderNewFileModal()}</section>`;
     }
 
     function syncPreviewDirtyState() {
@@ -566,6 +726,10 @@
         local.dirty = false;
         local.saving = false;
         local.saveError = "";
+        local.actionSheet = null;
+        local.rename = null;
+        local.newFile = null;
+        local.mutating = false;
         local.contentSearch = createContentSearchState();
       },
       toggle(encodedPath) {
@@ -712,6 +876,17 @@
       startEdit,
       cancelEdit,
       saveFile,
+      rowActions: openActionSheet,
+      closeActionSheet,
+      openRename,
+      setRenameValue,
+      cancelRename,
+      submitRename,
+      deletePath,
+      openNewFile,
+      setNewFileValue,
+      cancelNewFile,
+      submitNewFile,
     };
   }
 

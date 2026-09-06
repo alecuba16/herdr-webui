@@ -1422,6 +1422,18 @@
     filesStartEdit: mobileFileBrowser.startEdit,
     filesCancelEdit: mobileFileBrowser.cancelEdit,
     filesSaveFile: mobileFileBrowser.saveFile,
+    filesRowActions: mobileFileBrowser.rowActions,
+    filesOpenActionSheet: mobileFileBrowser.rowActions,
+    filesCloseActionSheet: mobileFileBrowser.closeActionSheet,
+    filesOpenRename: mobileFileBrowser.openRename,
+    filesSetRenameValue: mobileFileBrowser.setRenameValue,
+    filesCancelRename: mobileFileBrowser.cancelRename,
+    filesSubmitRename: mobileFileBrowser.submitRename,
+    filesDeletePath: mobileFileBrowser.deletePath,
+    filesOpenNewFile: mobileFileBrowser.openNewFile,
+    filesSetNewFileValue: mobileFileBrowser.setNewFileValue,
+    filesCancelNewFile: mobileFileBrowser.cancelNewFile,
+    filesSubmitNewFile: mobileFileBrowser.submitNewFile,
     filesFilter: mobileFileBrowser.filter,
     filesClearFilter: mobileFileBrowser.clearFilter,
     filesSearchKeydown: mobileFileBrowser.searchKeydown,
@@ -1480,6 +1492,7 @@
     toggle: mobileFileBrowser.toggle,
     select: mobileFileBrowser.select,
     up: mobileFileBrowser.up,
+    rowActions: mobileFileBrowser.rowActions,
   };
 
   renderShell();

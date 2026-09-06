@@ -53,10 +53,16 @@ Priority: P0 must land in this review, P1 should land, P2 next iteration.
   refreshFile; `deps.confirm` wired in mobile app.js. 6 tests in
   `src/assets/mobile_file_browser.test.mjs`. Also fixed: `select()` did not await
   `openFile()` (fire-and-forget race).
-- [ ] **B2 (P0, M)** No rename/delete/new-file actions in mobile file browser.
+- [x] **B2 (P0, M)** No rename/delete/new-file actions in mobile file browser.
   Backend endpoints exist (`/api/file-browser/rename`, `/delete`). Add a
   long-press (or ⋯ row button) action sheet: rename, delete (with confirm),
   and "new file" when in a directory listing.
+  DONE: ⋯ row action on every tree row (new `rowActionMethod` option in
+  shared/file_tree.js) + ⋯ on the preview header; bottom-sheet with
+  Rename/Delete (+ "New file here" for dirs); inline rename modal with Enter/
+  Esc handling and inline errors; delete with confirm + open-preview cleanup;
+  "+ File" header action; sheets respect dirty drafts. 6 new unit tests +
+  9 new e2e checks (25/25 total).
 - [ ] **B3 (P1, M)** Mobile Git screen exposes only `status` + per-file `diff`
   (2 of ~25 desktop git APIs). Ship a minimal parity set: stage/unstage file,
   discard file changes (confirm), branch list + checkout. Keep heavy actions

@@ -18,6 +18,19 @@
 - Fixed a latent race where tapping a file in the mobile tree did not await
   the file fetch, letting renders interleave with the load.
 
+### Mobile file management (rename, delete, new file)
+
+- Every mobile tree row now carries a ⋯ action trigger (the shared file tree
+  gained a generic `rowActionMethod` render option); tapping it opens a
+  bottom sheet with Rename and Delete, plus "New file here" for folders, and
+  the preview header gets the same ⋯ for the open file.
+- Rename opens an inline sheet modal (mobile keyboards + native `prompt()` do
+  not mix) with Enter to submit, Esc to cancel, and backend errors shown
+  inline; a "+ File" header action creates empty files in the current listing.
+- Delete asks for confirmation, closes an open preview of the deleted file,
+  and clears stale selection state; all mutations refresh the listing and
+  respect unsaved edit drafts.
+
 ## 0.4.6 Release Notes
 
 ### Theme system accessibility and UX rework

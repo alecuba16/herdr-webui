@@ -488,6 +488,99 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
   font-size: 12px;
   overflow-wrap: anywhere;
 }
+
+/* ---- Mobile file action sheet (rename/delete/new-file, IDE review B2) ---- */
+.herdr-tree-row-action {
+  flex: none;
+  margin-left: auto;
+  min-width: 34px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+.herdr-tree-row-action:active,
+.herdr-tree-row-action:focus-visible {
+  color: var(--accent, inherit);
+  border-color: var(--accent, currentColor);
+  outline: none;
+}
+.mobile-sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  background: rgba(0, 0, 0, 0.45);
+}
+.mobile-sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 91;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 14px calc(14px + env(safe-area-inset-bottom, 0px));
+  background: var(--bg, #1e1e2e);
+  border-top: 1px solid var(--border);
+  border-radius: 14px 14px 0 0;
+  box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.35);
+  max-height: 70vh;
+  overflow-y: auto;
+}
+.mobile-sheet-handle {
+  width: 40px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--border);
+  margin: 0 auto 2px;
+}
+.mobile-sheet-title {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.mobile-sheet-action {
+  display: block;
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-soft, rgba(255, 255, 255, 0.04));
+  color: inherit;
+  font-size: 15px;
+  text-align: left;
+  cursor: pointer;
+}
+.mobile-sheet-action.danger {
+  color: #f38ba8;
+  border-color: #f38ba8;
+}
+.mobile-sheet-action:active {
+  filter: brightness(1.15);
+}
+.mobile-sheet-input {
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-soft, rgba(255, 255, 255, 0.04));
+  color: inherit;
+  font-size: 15px;
+}
+.mobile-sheet-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
 .herdr-file-tree {
   display: flex;
   flex-direction: column;

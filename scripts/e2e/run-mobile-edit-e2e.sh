@@ -92,16 +92,15 @@ CHROME_PID=$!
 wait_for "headless Chrome CDP" "http://127.0.0.1:$CDP/json/version" "" || exit 1
 
 echo "==> running mobile edit acceptance checks"
+set +e
 E2E_BASE_URL="https://127.0.0.1:$PORT/" CDP_PORT="$CDP" E2E_REPO="$REPO" \
   node "$ROOT/scripts/e2e/mobile-edit-acceptance.mjs"
 STATUS=$?
+set -e
 
-# Headless Chrome sometimes ignores SIGTERM; close it via CDP first so the
-# cleanup trap does not have to fight it.
-curl -sf "http://127.0.0.1:$CDP/json/version" >/dev/null 2>&1 && \
-  curl -sf "http://127.0.0.1:$CDP/json/list" 2>/dev/null | true
+# Headless Chrome sometimes ignores SIGTERM; take it down before the cleanup trap.
 kill -TERM "$CHROME_PID" 2>/dev/null || true
 sleep 0.5
 kill -9 "$CHROME_PID" 2>/dev/null || true
 
-exit $STATUS
+exit "$STATUS"
