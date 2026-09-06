@@ -1011,6 +1011,11 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
 
         run_git(&root, &["init", "--bare", "origin.git"]);
+        // Pin the bare repo's HEAD to main: clones derive their initial
+        // branch from it, and git builds whose default is master (Homebrew
+        // git on CI runners, no init.defaultBranch configured) would
+        // otherwise check out master and break the main refspecs below.
+        run_git(&origin, &["symbolic-ref", "HEAD", "refs/heads/main"]);
         run_git(&root, &["init", "-b", "main", "work"]);
         run_git(&clone, &["config", "user.email", "t@t"]);
         run_git(&clone, &["config", "user.name", "T"]);
@@ -1086,6 +1091,9 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
 
         run_git(&root, &["init", "--bare", "origin.git"]);
+        // Pin the bare repo's HEAD to main (see the pull-update test above:
+        // clones derive their initial branch from it).
+        run_git(&origin, &["symbolic-ref", "HEAD", "refs/heads/main"]);
         run_git(&root, &["init", "-b", "main", "work"]);
         std::fs::write(clone.join("a.txt"), "base\n").unwrap();
         run_git(&clone, &["config", "user.email", "t@t"]);
