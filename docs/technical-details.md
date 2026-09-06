@@ -272,7 +272,7 @@ Desktop file browser toolbar exposes `Preview` and `Source` toggle buttons for m
 
 ## Settings
 
-Browser-local settings are stored in `localStorage` under `herdr-web-options`. Runtime server settings are stored in `~/.config/herdr-webui/webui-settings.json`. Main browser defaults are defined in `src/assets/desktop/app_js/core.js`; fresh runtime server settings default to `backend_mode: builtin` with both backend types enabled.
+Browser-local settings are stored in `localStorage` under `herdr-web-options` and read through the shared `HerdrOptions` module (`src/assets/shared/options.js`, loaded by `app_boot.js` before all consumers): it parses the payload once, hands out shallow copies per `read()` so callers cannot corrupt the cache, invalidates on every `write()`/`update()` and on cross-tab `storage` events, and tolerates a missing or corrupt payload. Modules that boot without the shared bundle (older served bundles, vm harnesses) fall back to a direct parse, so behavior is unchanged. Runtime server settings are stored in `~/.config/herdr-webui/webui-settings.json`. Main browser defaults are defined in `src/assets/desktop/app_js/core.js`; fresh runtime server settings default to `backend_mode: builtin` with both backend types enabled.
 
 | Setting | Default | Notes |
 | --- | --- | --- |
