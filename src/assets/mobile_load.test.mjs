@@ -662,6 +662,31 @@ describe("mobile bundle load", () => {
     );
   });
 
+  it("shows Editor settings group with desktop parity options (B4)", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    ctx.HerdrMobile.showScreen("settings");
+    const settingsHtml = ctx.document.getElementById("mobileScreen").innerHTML;
+    ok(settingsHtml.includes("Editor"));
+    ok(settingsHtml.includes("Editor word wrap"));
+    ok(settingsHtml.includes("Editor tab size"));
+    ok(settingsHtml.includes("LSP diagnostics"));
+    ok(settingsHtml.includes("HerdrMobile.setEditorWordWrap"));
+    ok(settingsHtml.includes("HerdrMobile.setEditorTabSize"));
+    ok(settingsHtml.includes("HerdrMobile.setLspEnabled"));
+    equal(typeof ctx.HerdrMobile.setEditorEnabled, "function");
+    equal(typeof ctx.HerdrMobile.setEditorWordWrap, "function");
+    equal(typeof ctx.HerdrMobile.setEditorTabSize, "function");
+    equal(typeof ctx.HerdrMobile.setLspEnabled, "function");
+    doesNotThrow(() => ctx.HerdrMobile.setEditorWordWrap(true));
+    doesNotThrow(() => ctx.HerdrMobile.setEditorTabSize("4"));
+    doesNotThrow(() => ctx.HerdrMobile.setLspEnabled(true));
+    const stored = ctx.localStorage.getItem("herdr-web-options");
+    ok(stored && stored.includes('"editorWordWrap":true'), "word wrap persisted");
+    ok(stored && stored.includes('"editorTabSize":4'), "tab size persisted");
+    ok(stored && stored.includes('"lspEnabled":true'), "lsp persisted");
+  });
+
   it("requests mobile browser notification permission before enabling notifications", async () => {
     const ctx = context();
     let requested = false;

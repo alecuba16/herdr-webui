@@ -1623,3 +1623,30 @@ body.light .mobile-nav-status.working {
   margin: 10px 0;
   padding: 12px;
 }
+
+/* LSP diagnostics under the mobile editor (IDE-review B4, desktop parity) */
+.herdr-lsp-diagnostics {
+  border-top: 1px solid var(--border);
+  max-height: 132px;
+  overflow: auto;
+  padding: 4px 0;
+  margin-top: 8px;
+}
+.herdr-lsp-diagnostic {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+  padding: 3px 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.herdr-lsp-diagnostic strong {
+  font-variant-numeric: tabular-nums;
+}
+.herdr-lsp-diagnostic.error {
+  color: var(--error, #f38ba8);
+}
+.herdr-lsp-diagnostic.warning {
+  color: var(--warning, #f9e2af);
+}

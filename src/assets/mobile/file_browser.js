@@ -27,11 +27,119 @@
       } catch (_) { return true; }
     }
 
+    // Desktop parity (B4): the same editor options the desktop file browser
+    // applies, so word wrap / tab size / folding behave identically on mobile.
+    function editorOptions() {
+      try {
+        const parsed = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
+        return {
+          editorEnabled: parsed.editorEnabled !== false,
+          wordWrap: parsed.editorEnabled !== false && parsed.editorWordWrap !== false,
+          tabSize: Math.max(1, Math.min(8, Number(parsed.editorTabSize) || 2)),
+          bracketMatching: parsed.editorEnabled !== false && parsed.editorBracketMatching !== false,
+          folding: parsed.editorEnabled !== false && parsed.editorFolding !== false,
+          activeLine: parsed.editorEnabled !== false && parsed.editorActiveLine !== false,
+          whitespace: parsed.editorEnabled === true && parsed.editorWhitespace === true,
+        };
+      } catch (_) {
+        return { editorEnabled: true, wordWrap: true, tabSize: 2, bracketMatching: true, folding: true, activeLine: true, whitespace: false };
+      }
+    }
+
     function parentFoldersEnabled() {
       try {
         const parsed = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
         return parsed.fileBrowserAllowParent === true;
       } catch (_) { return false; }
+    }
+
+    // ---- Language server integration (IDE-review B4) ----
+    // Desktop parity: opt-in LSP diagnostics rendered under the mobile editor.
+    // Default off; enabled from Settings like on desktop (same lspEnabled key).
+
+    function lspEnabled() {
+      const Lsp = globalThis.HerdrLsp;
+      if (!Lsp) return false;
+      try {
+        const parsed = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
+        return parsed.lspEnabled === true;
+      } catch (_) {
+        return false;
+      }
+    }
+
+    function lspWorkspace() {
+      const Lsp = globalThis.HerdrLsp;
+      if (!Lsp) return null;
+      const root = cwd();
+      if (!root) return null;
+      return Lsp.workspaceFor(root);
+    }
+
+    function lspDidOpen(file) {
+      if (!lspEnabled() || !file || file.binary || file.truncated) return;
+      const Lsp = globalThis.HerdrLsp;
+      const ws = lspWorkspace();
+      if (!Lsp || !ws) return;
+      Lsp.didOpen(ws, file.path, local.editing ? local.draft : file.content || "").catch(() => {});
+      setTimeout(() => lspRenderDiagnostics(file.path), 0);
+    }
+
+    function lspDidChange(path, value) {
+      if (!lspEnabled()) return;
+      const Lsp = globalThis.HerdrLsp;
+      const ws = lspWorkspace();
+      if (!Lsp || !ws) return;
+      Lsp.didChange(ws, path, value);
+    }
+
+    function lspDidClose(path) {
+      if (!lspEnabled()) return;
+      const Lsp = globalThis.HerdrLsp;
+      const ws = lspWorkspace();
+      if (!Lsp || !ws) return;
+      Lsp.didClose(ws, path).catch(() => {});
+    }
+
+    function lspDiagnosticsFor(path) {
+      if (!lspEnabled()) return [];
+      const Lsp = globalThis.HerdrLsp;
+      const ws = lspWorkspace();
+      if (!Lsp || !ws) return [];
+      return Lsp.diagnosticsFor(ws, path) || [];
+    }
+
+    function lspRenderDiagnostics(path) {
+      if (typeof document.querySelectorAll !== "function") return;
+      const mount = document.getElementById("mobileFilePreview");
+      if (!mount) return;
+      const diagnostics = lspDiagnosticsFor(path);
+      lspRenderDiagnosticsInto(mount, diagnostics);
+    }
+
+    // Rendered as a plain list under the editor: tapping an item is a no-op on
+    // mobile (no editor view handle reachable), the message is the value.
+    function lspRenderDiagnosticsInto(mount, diagnostics) {
+      let list = mount.querySelector(".herdr-lsp-diagnostics");
+      if (!diagnostics.length) {
+        if (list) list.remove();
+        return;
+      }
+      if (!list) {
+        list = document.createElement("div");
+        list.className = "herdr-lsp-diagnostics";
+        mount.appendChild(list);
+      }
+      list.innerHTML = diagnostics
+        .slice(0, 50)
+        .map((diagnostic) => {
+          const severity = Number(diagnostic.severity) === 1 ? "error" : Number(diagnostic.severity) === 2 ? "warning" : "info";
+          const line = diagnostic.range && diagnostic.range.start ? (Number(diagnostic.range.start.line) || 0) + 1 : 0;
+          const where = line ? `:${line}` : "";
+          const message = String(diagnostic.message || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+          return `<div class="herdr-lsp-diagnostic ${severity}">${severity === "error" ? "●" : severity === "warning" ? "▲" : "ℹ"} ${where ? `<strong>${where}</strong> ` : ""}${message}</div>`;
+        })
+        .join("");
     }
 
     function pathSearchOptions() {
@@ -148,6 +256,7 @@
 
     async function openFile(path, searchHighlight) {
       const root = cwd();
+      if (local.file && local.file.path && local.file.path !== path) lspDidClose(local.file.path);
       local.selected = path;
       local.file = null;
       local.editing = false;
@@ -692,11 +801,13 @@
       setTimeout(() => {
         const parent = document.getElementById("mobileFilePreview");
         if (parent && local.file) {
+          const configured = editorOptions();
           if (local.editing) {
-            Editor.create({ parent, path: local.file.path, content: local.draft || local.file.content || "", readonly: false, hideHeader: true, lineNumbers: lineNumbersEnabled(), markdownPreview: false, onChange(value) { local.draft = value; local.dirty = value !== (local.file.content || ""); syncPreviewDirtyState(); } });
+            Editor.create({ parent, path: local.file.path, content: local.draft || local.file.content || "", readonly: false, hideHeader: true, lineNumbers: lineNumbersEnabled(), wordWrap: configured.wordWrap, tabSize: configured.tabSize, bracketMatching: configured.bracketMatching, folding: configured.folding, activeLine: configured.activeLine, whitespace: configured.whitespace, markdownPreview: false, onChange(value) { local.draft = value; local.dirty = value !== (local.file.content || ""); syncPreviewDirtyState(); lspDidChange(local.file.path, value); } });
           } else {
-            Editor.create({ parent, path: local.file.path, content: local.file.content || "", readonly: true, hideHeader: true, lineNumbers: lineNumbersEnabled(), markdownPreview: !local.file.searchHighlight, searchHighlight: local.file.searchHighlight || null });
+            Editor.create({ parent, path: local.file.path, content: local.file.content || "", readonly: true, hideHeader: true, lineNumbers: lineNumbersEnabled(), wordWrap: configured.wordWrap, tabSize: configured.tabSize, bracketMatching: configured.bracketMatching, folding: configured.folding, activeLine: configured.activeLine, whitespace: configured.whitespace, markdownPreview: !local.file.searchHighlight, searchHighlight: local.file.searchHighlight || null });
           }
+          lspDidOpen(local.file);
         }
       }, 0);
       return `<section class="mobile-section mobile-files"><h2>Files</h2><div class="mobile-actions"><button class="mobile-btn" onclick="HerdrMobile.filesBackToTree()">Back</button><button class="mobile-btn" onclick="HerdrMobile.filesRefreshFile()">Refresh</button>${editActions}<button class="mobile-btn" onclick="HerdrMobile.filesOpenActionSheet(${JSON.stringify(encodeURIComponent(file.path))}, 'file')">⋯</button></div><p class="mobile-help">${deps.escapeHtml(file.path || "")}${editing && local.dirty ? " — unsaved changes" : ""}</p>${local.error ? `<div class="mobile-error">${deps.escapeHtml(local.error)}</div>` : ""}${local.saveError ? `<div class="mobile-error">${deps.escapeHtml(local.saveError)}</div>` : ""}${body}${renderActionSheet()}${renderRenameModal()}${renderNewFileModal()}</section>`;
@@ -712,6 +823,7 @@
       load,
       renderScreen,
       reset() {
+        if (local.file && local.file.path) lspDidClose(local.file.path);
         local.path = "";
         local.entries = [];
         local.selected = "";
@@ -861,6 +973,7 @@
       },
       backToTree() {
         if (!confirmDiscardDraft()) return;
+        if (local.file && local.file.path) lspDidClose(local.file.path);
         local.file = null;
         local.editing = false;
         local.draft = "";

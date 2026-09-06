@@ -79,11 +79,24 @@ Priority: P0 must land in this review, P1 should land, P2 next iteration.
   in mobile_load) + 9 new e2e checks against a real git repo (34/34 total:
   status renders, Stage/Discard buttons, staged-on-disk via API, Unstage flip,
   branch list, real checkout to feature/e2e and back, discard reverts the file).
-- [ ] **B4 (P1, M)** `shared/lsp.js` is loaded on mobile but never used, and
+- [x] **B4 (P1, M)** `shared/lsp.js` is loaded on mobile but never used, and
   `editorOptions()` (word wrap, tab size, folding, bracket matching) is
   desktop-only. Either wire LSP diagnostics into the mobile editor (with a
   settings toggle default-off) or lazy-load lsp.js on desktop only; expose
   word-wrap toggle on mobile settings.
+  DONE: chose full wiring — LSP is now used on mobile. `editorOptions()` in
+  mobile file_browser mirrors desktop (word wrap, tab size, bracket matching,
+  folding, active line, whitespace) and is passed to BOTH editor mounts
+  (readonly + editing), matching desktop `mountEditors` exactly. LSP
+  integration: `lspEnabled()` (same `lspEnabled` option key, default off),
+  didOpen on mount, didChange on edit, didClose on back/switch/reset, and a
+  diagnostics list rendered under the preview (message + line, severity
+  colors, 50-item cap). New mobile Settings "Editor" group: enhancements,
+  word wrap, tab size, LSP diagnostics (persisted via the same
+  herdr-web-options store; setters exported on HerdrMobile). 5 new unit tests
+  (17 total) + settings render/persist test in mobile_load (37) + 8 new e2e
+  checks (41/41: CM mounts, wrap on→off via Settings changes live white-space,
+  tab size 4 lands in cm-content, LSP toggle persists).
 - [ ] **B5 (P2, M)** Mobile search screen has no file/folder path search scope
   toggle parity check: verify `HerdrWorkspaceSearch.settings()` section order
   and enabled scopes behave identically on mobile, including the "Content"

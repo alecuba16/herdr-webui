@@ -297,6 +297,52 @@ await new Promise((r) => setTimeout(r, 1500));
 const afterDiscard = await evalx(`(async () => { const r = await fetch('/api/git-ui/status?cwd=${encodeURIComponent(repoPath)}'); const j = await r.json(); const clean = !(j.unstaged || []).includes('edit-target.txt') && !(j.staged || []).includes('edit-target.txt'); return String(clean); })()`);
 check('discard reverted the unstaged change', afterDiscard === 'true', `clean=${afterDiscard}`);
 
+// ---- B4: editor options parity + Editor settings group ----
+await evalx(`(async () => { await HerdrMobile.showScreen('files'); })()`);
+await new Promise((r) => setTimeout(r, 600));
+await evalx(`(async () => { await HerdrMobileFiles.select(${JSON.stringify(encodeURIComponent("edit-target.txt"))}); })()`);
+await new Promise((r) => setTimeout(r, 800));
+const wrapBefore = await evalx(`(function () { const el = document.querySelector('#mobileFilePreview .cm-scroller'); if (!el) return 'no-scroller'; const lines = document.querySelectorAll('#mobileFilePreview .cm-line'); const content = document.querySelector('#mobileFilePreview .cm-content'); if (!content) return 'no-content'; return String(getComputedStyle(content).whiteSpace).slice(0, 4); })()`);
+check('readonly CodeMirror mounts on mobile', wrapBefore !== 'no-scroller' && wrapBefore !== 'no-content', `scroller=${wrapBefore}`);
+
+// Default word wrap on (cm-content white-space is pre-wrap when line wrapping extension is active).
+const wrapDefault = await evalx(`(function () { const content = document.querySelector('#mobileFilePreview .cm-content'); return content ? getComputedStyle(content).whiteSpace : 'missing'; })()`);
+check('word wrap defaults on (wrapping white-space)', wrapDefault === 'pre-wrap' || wrapDefault === 'break-spaces', `whiteSpace=${wrapDefault}`);
+
+// Turn word wrap off from Settings and verify the editor remounts without wrapping.
+await evalx(`(async () => { await HerdrMobile.showScreen('settings'); })()`);
+await new Promise((r) => setTimeout(r, 400));
+const editorGroup = await evalx(`(function () { const groups = Array.from(document.querySelectorAll('.mobile-settings-disclosure summary')); const g = groups.find((n) => n.textContent === 'Editor'); return g ? 'found' : String(groups.map((n) => n.textContent).join(',')); })()`);
+check('Editor settings group renders on mobile', editorGroup === 'found', `groups=${editorGroup}`);
+await evalx(`HerdrMobile.setEditorWordWrap(false)`);
+await new Promise((r) => setTimeout(r, 600));
+const storedOptions = await evalx(`localStorage.getItem('herdr-web-options')`);
+check('word wrap persisted off', !!(storedOptions && JSON.parse(storedOptions).editorWordWrap === false), String(storedOptions).slice(0, 120));
+await evalx(`(async () => { await HerdrMobile.showScreen('files'); })()`);
+await new Promise((r) => setTimeout(r, 600));
+await evalx(`(async () => { await HerdrMobileFiles.select(${JSON.stringify(encodeURIComponent("edit-target.txt"))}); })()`);
+await new Promise((r) => setTimeout(r, 900));
+const wrapAfter = await evalx(`(function () { const content = document.querySelector('#mobileFilePreview .cm-content'); return content ? getComputedStyle(content).whiteSpace : 'missing'; })()`);
+check('word wrap off disables line wrapping (pre)', wrapAfter === 'pre' || wrapAfter === 'pre-wrap-no', wrapAfter === 'pre' ? '' : `whiteSpace=${wrapAfter}`);
+
+// Tab size from settings flows into the editor.
+await evalx(`HerdrMobile.setEditorTabSize('4')`);
+await new Promise((r) => setTimeout(r, 400));
+await evalx(`(async () => { await HerdrMobile.showScreen('files'); })()`);
+await new Promise((r) => setTimeout(r, 600));
+await evalx(`(async () => { await HerdrMobileFiles.select(${JSON.stringify(encodeURIComponent("edit-target.txt"))}); })()`);
+await new Promise((r) => setTimeout(r, 900));
+const tabDom = await evalx(`(function () { const content = document.querySelector('#mobileFilePreview .cm-content'); return content ? getComputedStyle(content).tabSize : 'missing'; })()`);
+check('tab size 4 applied to editor', tabDom === '4', `tabSize=${tabDom}`);
+await evalx(`HerdrMobile.setEditorWordWrap(true)`);
+await evalx(`HerdrMobile.setEditorTabSize('2')`);
+
+// LSP toggle persists (server need not be installed; the option drives the integration).
+await evalx(`HerdrMobile.setLspEnabled(true)`);
+const lspOpt = await evalx(`(function () { const o = JSON.parse(localStorage.getItem('herdr-web-options') || '{}'); return String(o.lspEnabled); })()`);
+check('LSP diagnostics option persisted on', lspOpt === 'true', `lspEnabled=${lspOpt}`);
+await evalx(`HerdrMobile.setLspEnabled(false)`);
+
 const failed = results.filter((r) => !r.ok);
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
 if (failed.length) {

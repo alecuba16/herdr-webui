@@ -1,6 +1,10 @@
 # Release notes
 
 ## 0.4.7 Release Notes
+- Mobile: the editor now applies the same options as desktop (word wrap, tab
+  size, bracket matching, folding, active line, whitespace) with a new Editor
+  section in Settings, and LSP diagnostics render under the preview when the
+  existing LSP option is enabled.
 - Mobile: the Git screen now covers the core desktop flow — stage, unstage,
   discard (with confirmation), branch list and checkout. Heavy actions
   (rebase, stash, conflicts) remain desktop-only and are labeled as such.

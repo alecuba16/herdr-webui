@@ -9,12 +9,14 @@ import vm from "node:vm";
 const source = readFileSync(new URL("./mobile/file_browser.js", import.meta.url), "utf8");
 const treeSource = readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8");
 
-function createModule({ fileContent = "print('hello')", writeResult = {}, writeError = "", renameError = "", deleteError = "", confirmAnswer = true } = {}) {
+function createModule({ fileContent = "print('hello')", writeResult = {}, writeError = "", renameError = "", deleteError = "", confirmAnswer = true, optionsJson = null, lsp = null } = {}) {
   const requests = [];
   const editors = [];
   let savedContent = null;
   let renamed = null;
   let deleted = null;
+  const lspCalls = [];
+  const diagnosticLists = [];
   const context = {
     globalThis: null,
     window: null,
@@ -25,14 +27,32 @@ function createModule({ fileContent = "print('hello')", writeResult = {}, writeE
         // Return a stub element for editor mounts and the mobile save button so
         // the preview render path executes fully under test.
         if (id === "mobileFilePreview" || id === "mobileFileSaveButton") {
-          return { textContent: "", innerHTML: "" };
+          const preview = {
+            textContent: "",
+            innerHTML: "",
+            children: [],
+            appendChild(node) { this.children.push(node); diagnosticLists.push(node); },
+            querySelector() { return null; },
+          };
+          return preview;
         }
         return null;
+      },
+      createElement() {
+        return {
+          className: "",
+          innerHTML: "",
+          remove() {},
+          addEventListener() {},
+        };
       },
       querySelectorAll() { return []; },
       addEventListener() {},
     },
-    localStorage: { getItem() { return null; }, setItem() {} },
+    localStorage: {
+      getItem(key) { return key === "herdr-web-options" ? optionsJson : null; },
+      setItem() {},
+    },
     encodeURIComponent,
     decodeURIComponent,
     Error,
@@ -62,6 +82,15 @@ function createModule({ fileContent = "print('hello')", writeResult = {}, writeE
     renderEntries: () => "",
     renderCurrentDirectoryRow: () => "",
   };
+  if (lsp) {
+    context.HerdrLsp = {
+      workspaceFor: (cwdValue) => ({ cwd: cwdValue }),
+      didOpen: async (ws, path, content) => { lspCalls.push({ method: "didOpen", path, content }); },
+      didChange: (ws, path, content) => { lspCalls.push({ method: "didChange", path, content }); },
+      didClose: async (ws, path) => { lspCalls.push({ method: "didClose", path }); },
+      diagnosticsFor: (ws, path) => lsp.diagnostics || [],
+    };
+  }
   context.HerdrEditor = {
     create(opts) {
       editors.push(opts);
@@ -107,7 +136,7 @@ function createModule({ fileContent = "print('hello')", writeResult = {}, writeE
     state: { screen: "files" },
   };
   const module = context.HerdrMobileFileBrowser.create(deps);
-  return { module, requests, editors, getSavedContent: () => savedContent, getRenamed: () => renamed, getDeleted: () => deleted };
+  return { module, requests, editors, lspCalls, diagnosticLists, getSavedContent: () => savedContent, getRenamed: () => renamed, getDeleted: () => deleted };
 }
 
 describe("mobile file browser edit mode", () => {
@@ -266,6 +295,82 @@ describe("mobile file browser edit mode", () => {
     assert.equal(body.content, "");
     html = module.renderScreen();
     assert.doesNotMatch(html, /mobileFileNewInput/, "modal closes after create");
+  });
+
+  it("passes desktop editor options to the mobile editor mounts (B4)", async () => {
+    const { module, editors } = createModule({
+      optionsJson: JSON.stringify({ editorEnabled: true, editorWordWrap: false, editorTabSize: 4, editorBracketMatching: false, editorFolding: true, editorActiveLine: false, editorWhitespace: true }),
+    });
+    await module.load("");
+    await module.select(encodeURIComponent("src/demo.py"));
+    module.renderScreen();
+    assert.equal(editors.length, 1);
+    assert.equal(editors[0].wordWrap, false);
+    assert.equal(editors[0].tabSize, 4);
+    assert.equal(editors[0].bracketMatching, false);
+    assert.equal(editors[0].folding, true);
+    assert.equal(editors[0].activeLine, false);
+    assert.equal(editors[0].whitespace, true);
+  });
+
+  it("defaults editor options to desktop parity when unset (B4)", async () => {
+    const { module, editors } = createModule();
+    await module.load("");
+    await module.select(encodeURIComponent("src/demo.py"));
+    module.renderScreen();
+    assert.equal(editors.length, 1);
+    assert.equal(editors[0].wordWrap, true);
+    assert.equal(editors[0].tabSize, 2);
+    assert.equal(editors[0].bracketMatching, true);
+    assert.equal(editors[0].folding, true);
+    assert.equal(editors[0].activeLine, true);
+    assert.equal(editors[0].whitespace, false);
+  });
+
+  it("does not talk to LSP when the option is off (default)", async () => {
+    const { module, lspCalls } = createModule({ lsp: { diagnostics: [] } });
+    await module.load("");
+    await module.select(encodeURIComponent("src/demo.py"));
+    module.renderScreen();
+    module.startEdit();
+    module.renderScreen();
+    assert.equal(lspCalls.length, 0);
+  });
+
+  it("opens, changes, and closes LSP documents when enabled (B4)", async () => {
+    const { module, editors, lspCalls } = createModule({
+      optionsJson: JSON.stringify({ lspEnabled: true }),
+      lsp: { diagnostics: [{ severity: 1, message: "Undefined variable", range: { start: { line: 0 } } }] },
+    });
+    await module.load("");
+    await module.select(encodeURIComponent("src/demo.py"));
+    module.renderScreen();
+    assert.ok(lspCalls.some((call) => call.method === "didOpen" && call.path === "src/demo.py"), "didOpen fired on mount");
+    module.startEdit();
+    module.renderScreen();
+    const editor = editors.at(-1);
+    editor.onChange("print('oops')");
+    assert.ok(lspCalls.some((call) => call.method === "didChange" && call.path === "src/demo.py" && call.content === "print('oops')"), "didChange fired on edit");
+    module.backToTree();
+    assert.ok(lspCalls.some((call) => call.method === "didClose" && call.path === "src/demo.py"), "didClose fired on back");
+  });
+
+  it("renders LSP diagnostics under the preview editor when enabled (B4)", async () => {
+    const { module, diagnosticLists } = createModule({
+      optionsJson: JSON.stringify({ lspEnabled: true }),
+      lsp: { diagnostics: [{ severity: 1, message: "Undefined variable", range: { start: { line: 2 } } }, { severity: 2, message: "Unused import", range: { start: { line: 4 } } }] },
+    });
+    await module.load("");
+    await module.select(encodeURIComponent("src/demo.py"));
+    module.renderScreen();
+    await Promise.resolve();
+    const list = diagnosticLists.at(-1);
+    assert.ok(list, "diagnostics list mounted under the preview");
+    assert.match(list.innerHTML, /Undefined variable/);
+    assert.match(list.innerHTML, /Unused import/);
+    assert.match(list.innerHTML, /:3</);
+    assert.match(list.innerHTML, /error/);
+    assert.match(list.innerHTML, /warning/);
   });
 
   it("exposes save errors from the backend on the preview screen", async () => {
