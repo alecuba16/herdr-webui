@@ -642,6 +642,43 @@ describe("HerdrEditor line number helpers", () => {
   });
 
 
+  it("renders a floating find toggle on headerless mounts (A1)", async () => {
+    const source = readFileSync(new URL("./shared/editor.js", import.meta.url), "utf8");
+    const boot = () => {
+      const parent = { innerHTML: "", querySelector() { return null; } };
+      const context = { window: {}, document: { createElement() { return {}; }, body: { appendChild(script) { script.onerror(); } } }, Promise, localStorage: { getItem() { return null; }, setItem() {} } };
+      vm.runInNewContext(source, context);
+      return { parent, create: (opts) => context.window.HerdrEditor.create(Object.assign({ parent, path: "demo.txt", content: "a\nb", readonly: true }, opts)) };
+    };
+
+    // Headerless readonly preview: the floating toggle must exist and open the toolbar.
+    let env = boot();
+    env.create({ hideHeader: true });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.match(env.parent.innerHTML, /herdr-editor-find-toggle herdr-editor-find-float/);
+    assert.equal((env.parent.innerHTML.match(/herdr-editor-find-toggle/g) || []).length, 1, "no duplicate toggles");
+
+    // Headerless edit mode (mobile editor) also gets one.
+    env = boot();
+    env.create({ hideHeader: true, readonly: false });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal((env.parent.innerHTML.match(/herdr-editor-find-float/g) || []).length, 1);
+
+    // Headered mounts keep the header toggle only (no float).
+    env = boot();
+    env.create({});
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.match(env.parent.innerHTML, /class="herdr-editor-head"/);
+    assert.doesNotMatch(env.parent.innerHTML, /herdr-editor-find-float/);
+
+    // hideFind suppresses every find affordance.
+    env = boot();
+    env.create({ hideHeader: true, hideFind: true });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.doesNotMatch(env.parent.innerHTML, /herdr-editor-find-toggle/);
+    assert.doesNotMatch(env.parent.innerHTML, /herdr-editor-find"/);
+  });
+
   it("memoizes find scans and invalidates on text or query change (D3)", () => {
     const source = readFileSync(new URL("./shared/editor.js", import.meta.url), "utf8");
     let text = "needle one needle two needle three";

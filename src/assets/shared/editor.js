@@ -118,6 +118,15 @@
     return `<div class="herdr-editor-head"><strong>${esc(title)}</strong><span>${esc(languageFor(opts.path))}</span><button type="button" class="herdr-editor-find-toggle" title="Find / replace (Ctrl+F)" aria-label="Find / replace" onclick="HerdrEditor.openFind(this.closest('.herdr-editor'))">⌕</button></div>`;
   }
 
+  // IDE-review A1: headerless mounts (mobile preview/edit) previously had no
+  // visible Find entry — the toolbar existed but only Ctrl/Cmd+F could open
+  // it, which mobile keyboards cannot reach. Render a compact floating
+  // toggle whenever the header is hidden and find is not disabled.
+  function findToggleHtml(opts) {
+    if (!opts.hideHeader || opts.hideFind) return "";
+    return `<button type="button" class="herdr-editor-find-toggle herdr-editor-find-float" title="Find / replace" aria-label="Find / replace" onclick="HerdrEditor.openFind(this.closest('.herdr-editor'))">⌕</button>`;
+  }
+
   function wireFindToolbar(parent, api, opts) {
     const toolbar = parent && parent.querySelector && parent.querySelector(".herdr-editor-find");
     if (!toolbar || !api) return;
@@ -342,7 +351,7 @@
   function codeMirrorShellHtml(opts) {
     const title = opts.path || (opts.readonly === false ? "Editor" : "Preview");
     const head = editorHeaderHtml(opts, title);
-    return `<div class="herdr-editor cm">${head}${findToolbarHtml(opts)}<div class="herdr-editor-mount"><div class="herdr-editor-loading">Loading editor…</div></div></div>`;
+    return `<div class="herdr-editor cm">${head}${findToggleHtml(opts)}${findToolbarHtml(opts)}<div class="herdr-editor-mount"><div class="herdr-editor-loading">Loading editor…</div></div></div>`;
   }
 
   function isMarkdownPath(path) {
@@ -352,7 +361,7 @@
 
   function markdownPreviewHtml(opts) {
     const head = editorHeaderHtml(opts, opts.path || "Preview");
-    return `<div class="herdr-editor readonly herdr-markdown-preview">${head}${findToolbarHtml(opts)}<div class="herdr-markdown-preview-mount"></div></div>`;
+    return `<div class="herdr-editor readonly herdr-markdown-preview">${head}${findToggleHtml(opts)}${findToolbarHtml(opts)}<div class="herdr-markdown-preview-mount"></div></div>`;
   }
 
   function markdownPreviewEnabled(opts) {
@@ -389,10 +398,10 @@
     const lines = numberedPreviewHtml(content, opts);
     if (lines === null) {
       const sizeHint = typeof opts.size === "number" ? ` (${formatBytes(opts.size)})` : "";
-      return `<div class="herdr-editor readonly">${head}${findToolbarHtml(opts)}<div class="herdr-editor-too-large"><div class="file-browser-empty">File too large for the fallback preview${sizeHint}. Use the editor view.</div></div>`;
+      return `<div class="herdr-editor readonly">${head}${findToggleHtml(opts)}${findToolbarHtml(opts)}<div class="herdr-editor-too-large"><div class="file-browser-empty">File too large for the fallback preview${sizeHint}. Use the editor view.</div></div>`;
     }
     const code = lines || `<pre class="herdr-editor-code"><code>${highlight(content, opts.path)}</code></pre>`;
-    return `<div class="herdr-editor readonly${lineNumbers ? " with-line-numbers" : ""}">${head}${findToolbarHtml(opts)}${code}</div>`;
+    return `<div class="herdr-editor readonly${lineNumbers ? " with-line-numbers" : ""}">${head}${findToggleHtml(opts)}${findToolbarHtml(opts)}${code}</div>`;
   }
 
   function formatBytes(value) {
@@ -423,7 +432,7 @@
 
   function editHtml(opts) {
     const head = editorHeaderHtml(opts, opts.path || "Editor");
-    return `<div class="herdr-editor">${head}${findToolbarHtml(opts)}<textarea spellcheck="false">${esc(opts.content || "")}</textarea></div>`;
+    return `<div class="herdr-editor">${head}${findToggleHtml(opts)}${findToolbarHtml(opts)}<textarea spellcheck="false">${esc(opts.content || "")}</textarea></div>`;
   }
 
   function ensureCodeMirror() {

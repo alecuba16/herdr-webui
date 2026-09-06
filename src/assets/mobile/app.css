@@ -689,6 +689,7 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
   overflow: hidden;
+  position: relative;
 }
 .mobile-git {
   display: grid;
@@ -812,6 +813,31 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
 .herdr-editor-head span {
   color: var(--muted);
   font-size: 12px;
+}
+.herdr-editor-find-toggle {
+  align-items: center;
+  background: var(--panel);
+  border: 1px solid var(--border2);
+  border-radius: 9px;
+  color: var(--muted);
+  display: inline-flex;
+  flex: 0 0 auto;
+  font: inherit;
+  height: 30px;
+  justify-content: center;
+  width: 30px;
+}
+.herdr-editor-find-toggle:active,
+.herdr-editor-find-toggle:focus-visible {
+  border-color: var(--accent);
+  color: var(--accent);
+  outline: 0;
+}
+.herdr-editor-find-float {
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  z-index: 4;
 }
 .herdr-editor-find[hidden] {
   display: none;

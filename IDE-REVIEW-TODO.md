@@ -13,12 +13,30 @@ Priority: P0 must land in this review, P1 should land, P2 next iteration.
 
 ## A. File editor / IDE functionality gaps (desktop)
 
-- [ ] **A1 (P0, D)** Toggle `⌕`/Find button is missing on mobile file preview, and
+- [x] **A1 (P0, D)** Toggle `⌕`/Find button is missing on mobile file preview, and
   desktop `toggleFind` depends on `parent._herdrEditorApi.toggleFind` which only
   exists after `wireFindToolbar`; on markdown preview mounts the toolbar exists
   but `api.selectRange` is a no-op, so "0/0 matches" states can get stuck. Make
   the find toolbar always functional (fall back to window.find or scroll-based
   highlight for readonly previews) and expose a Find affordance on mobile.
+  DONE (mobile affordance; markdown claim already mitigated): headerless
+  mounts (mobile preview AND mobile edit) render a compact floating `⌕`
+  toggle (`herdr-editor-find-float`, absolute top-right) that calls
+  `HerdrEditor.openFind` — previously the toolbar existed but only
+  Ctrl/Cmd+F could reach it, impossible on touch keyboards. Added to all
+  shells (CodeMirror shell, edit textarea fallback, readonly preview,
+  markdown preview, too-large gate view); `hideFind` still suppresses
+  everything; headered mounts are unchanged (toggle stays in the header, no
+  duplicates). Mobile CSS gains `.herdr-editor-find-toggle` base styles plus
+  the float position. The markdown "stuck 0/0" claim was already mitigated
+  by the existing `previewSource` flow: content-search opens with
+  `markdownPreview: false` (Source view with real highlight), and Preview
+  mode keeps the working toolbar against the raw content string. Unit test
+  (app_core.test.mjs): float present on headerless preview+edit, exactly one
+  toggle, absent on headered mounts, fully suppressed with hideFind.
+  Real-browser e2e (mobile-edit-acceptance.mjs, 52/52): toggle renders on
+  the live preview, click opens the toolbar, typing finds and counts 1/1.
+  418 JS + 377 Rust pass, fmt clean, clippy 0.
 - [ ] **A2 (P0, D)** No unsaved-changes guard when closing a tab via the tab `✕`:
   desktop uses `confirm()` for the lock-discard path but the tab close path only
   checks `dirty` in some flows. Verify: dirty tab close asks to save/discard,

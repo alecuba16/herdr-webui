@@ -1,6 +1,10 @@
 # Release notes
 
 ## 0.4.7 Release Notes
+- Mobile file preview and edit: a compact floating Find (⌕) button now
+  appears on headerless editors, so the find toolbar is reachable without a
+  keyboard shortcut. Verified in a real browser (toggle opens the toolbar,
+  search counts matches).
 - Content search: the summary line now reports how many files were
   searched ("X matches in Y files, searched N files") and flags when the
   walk stopped at the 20 000-file visit cap, so truncated searches are no

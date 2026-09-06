@@ -79,6 +79,24 @@ const preview = await evalx('document.getElementById("mobileScreen").innerHTML')
 check('preview shows file', preview.includes('edit-target.txt'), preview.slice(0, 80));
 check('Edit button present', preview.includes('filesStartEdit'));
 
+// A1: headerless mobile preview must expose a visible find toggle.
+check('find toggle rendered on headerless preview (A1)', preview.includes('herdr-editor-find-float'), preview.includes('herdr-editor-find') ? 'toolbar present but no float toggle' : 'no find affordance');
+const findOpened = await evalx(`(() => {
+  const btn = document.querySelector('.herdr-editor-find-float');
+  if (!btn) return false;
+  btn.click();
+  const toolbar = document.querySelector('.herdr-editor-find');
+  return !!toolbar && toolbar.hidden === false;
+})()`);
+check('find toolbar opens from the mobile toggle (A1)', !!findOpened);
+await evalx(`(() => {
+  const query = document.querySelector('.herdr-editor-find-query');
+  if (query) { query.value = 'original'; query.dispatchEvent(new Event('input', { bubbles: true })); }
+  return true;
+})()`);
+const findStatus = await evalx(`(() => { const s = document.querySelector('.herdr-editor-find-status'); return s ? s.textContent : ''; })()`);
+check('mobile find counts matches (A1)', /^1\/1$/.test(findStatus), `status="${findStatus}"`);
+
 // Enter edit mode.
 await evalx('HerdrMobile.filesStartEdit()');
 await new Promise((r) => setTimeout(r, 800));
