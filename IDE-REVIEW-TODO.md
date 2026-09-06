@@ -269,9 +269,19 @@ Priority: P0 must land in this review, P1 should land, P2 next iteration.
   `api.getValue()` so drafts are not lost to the stale `opts.content`
   snapshot. Regression tests cover openFind against the fallback api and
   the dirty-tab close guard. Still green in the current suite.
-- [ ] **D2 (P1, D/M)** `hashId` is implemented twice (desktop file_browser +
+- [x] **D2 (P1, D/M)** `hashId` is implemented twice (desktop file_browser +
   shared file_content_search) with slightly different shapes; unify in
   `shared/core.js` and use it for editor mounts on both layouts.
+  DONE: single `hashId()` helper exported from `shared/core.js`
+  (`HerdrAppHelpers.hashId`); desktop `file_browser.js` consumes it for
+  editor-mount ids (mobile file_browser has no hashId copy). The
+  `file_content_search.js` copy lost its only internal caller in D6
+  (snippet mount removal) and had no external users, so its local copy and
+  the `HerdrContentSearch.hashId` export were removed outright. Verified
+  parity with the legacy implementation over empty/ascii/unicode/space-hash/
+  long inputs before deleting it. Added a `hashId` unit test in
+  app_core.test.mjs; all 18 vm contexts that execute desktop file_browser.js
+  now load the real shared/core.js. 414 JS + 377 Rust pass.
 - [ ] **D3 (P1, D)** `escapeRegex` + `findRanges` cap at 10 000 matches but
   still scan the whole text with a live regex on every keystroke in the find
   input; debounce matches (120 ms) and cap scan to the visible document size
