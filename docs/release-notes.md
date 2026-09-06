@@ -1,5 +1,19 @@
 # Release notes
 
+## 0.4.6 Release Notes
+
+### Theme system accessibility and UX rework
+
+- Reworked the light theme for WCAG AA: body text (`#363a4f` on `#eff1f5`), muted text, accent (`#1957d2`, 4.7:1 on light surfaces), and borders all clear 4.5:1 / 3:1 on the worst-case surface. The previous palette had light syntax colors at 1.98-2.97:1, light git status colors at 2.78-3.19:1, and a light accent at 4.34:1.
+- All 14 CodeMirror syntax colors were re-tuned for light mode (keyword, string, number, comment, etc., all >= 4.5:1 on the `#ccd0da` editor surface) and the dark set validated too; caret colors follow the 0.4.5 scheme with bright and dim variants per theme.
+- Agent status chips and the mobile nav status were hardcoded to dark-only values (light idle 2.75:1, working 2.15:1, nav chips 1.12-2.05:1); they are now theme-aware with a dedicated light set (idle `#13661b`, working `#6f4a04`, blocked `#a81c1c`, done `#2150ae`).
+- Git UI colors moved off hardcoded literals onto theme variables: ahead/behind pills, the git panel close/danger colors, diff add/delete markers (`--git-diff-add` / `--git-diff-del`), git log lane refs (`--git-log-main/origin/current` with light overrides), search hits, and agent sort chips. Light values for each were chosen to clear AA on the panel background.
+- The theme toggle now cycles auto -> dark -> light -> auto with `aria-pressed`, `aria-label`, and a descriptive `title` kept in sync with the actual effective theme; `document.documentElement.dataset.herdrTheme` records the resolved theme for tests and embeds.
+- Auto mode now re-resolves live when the OS theme changes on desktop and mobile (a real `prefers-color-scheme` change listener each, previously desktop polled nothing after startup and mobile had none). A regression caught by the new browser suite where the effective theme lagged one click behind the toggle (`effectiveTheme` read stale localStorage instead of the in-memory mode) was fixed before release.
+- The embedded terminal now follows theme switches live (new `applyTheme()` on the temp terminal, dark cursor moved to a contrasted `#89b4fa`), and the markdown preview re-renders mermaid diagrams on theme change; mermaid previously read a nonexistent `herdr-web-options.theme` key and now reads `herdr-web-theme`.
+- Added three reference color profiles to the theme customizer, each validated at WCAG AA in both dark and light: Dracula, Monokai, and Apple. Catppuccin light values were corrected to accessible ones.
+- New `theme_contrast` frontend test suite (9 tests) pins AA ratios for both themes, desktop/mobile palette parity, status colors, syntax colors, and all profiles; a new real-browser acceptance run (`just theme-e2e`, 15 checks) drives the toggle, auto-switch, settings select, persistence, and measured contrast in headless Chrome. 370 frontend tests and 367 Rust tests pass.
+
 ## 0.4.5 Release Notes
 
 ### Editor caret visibility in dark theme

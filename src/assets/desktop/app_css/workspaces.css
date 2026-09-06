@@ -288,20 +288,32 @@ body.light .chip.label {
   padding: 5px 9px;
 }
 .agent-sort-chip.green {
-  background: #22c55e26;
+  background: color-mix(in srgb, #22c55e, transparent 85%);
   color: #22c55e;
 }
 .agent-sort-chip.yellow {
-  background: #f59e0b26;
+  background: color-mix(in srgb, #f59e0b, transparent 85%);
   color: #f59e0b;
 }
 .agent-sort-chip.red {
-  background: #ef444426;
+  background: color-mix(in srgb, #ef4444, transparent 85%);
   color: #ef4444;
 }
 .agent-sort-chip.blue {
-  background: #3b82f626;
+  background: color-mix(in srgb, #3b82f6, transparent 85%);
   color: #3b82f6;
+}
+body.light .agent-sort-chip.green {
+  color: #13661b;
+}
+body.light .agent-sort-chip.yellow {
+  color: #6f4a04;
+}
+body.light .agent-sort-chip.red {
+  color: #a81c1c;
+}
+body.light .agent-sort-chip.blue {
+  color: #2150ae;
 }
 .agent-sort-chip.gray {
   background: color-mix(in srgb, var(--muted), transparent 78%);

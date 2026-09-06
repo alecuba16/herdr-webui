@@ -75,9 +75,19 @@ describe("HerdrMarkdownPreview", () => {
     const mod = loadModule();
     const html = '<pre><code class="language-mermaid">graph TD\nA--&gt;B</code></pre>';
     const out = mod.transformMermaidFences(html);
-    match(out, /<div class="herdr-mermaid">/);
+    match(out, /<div class="herdr-mermaid" data-herdr-source="graph TD/);
     match(out, /graph TD/);
     match(out, /A-->B/);
+  });
+
+  it("keeps the mermaid source in an attribute for theme re-renders", () => {
+    const mod = loadModule();
+    const html = '<pre><code class="language-mermaid">graph TD\nA--&gt;B</code></pre>';
+    const out = mod.transformMermaidFences(html);
+    const attr = /data-herdr-source="([^"]*)"/.exec(out);
+    ok(attr);
+    const decoded = attr[1].replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+    equal(decoded, "graph TD\nA-->B");
   });
 
   it("sanitize config forbids inline event handlers and scripts", () => {

@@ -61,35 +61,35 @@ body {
 }
 body.light {
   --bg: #eff1f5;
-  --fg: #4c4f69;
+  --fg: #363a4f;
   --panel: #e6e9ef;
   --panel2: #ccd0da;
-  --editor-bg: #dce0e8;
+  --editor-bg: #ccd0da;
   --border: #bcc0cc;
-  --border2: #9ca0b0;
-  --muted: #6c6f85;
-  --accent: #1e66f5;
-  --editor-caret: #1e2a50;
-  --editor-caret-dim: #6c6f85;
-  --git-modified-color: #8a6d00;
-  --git-added-color: #2a8c2f;
-  --git-deleted-color: #cc2b3e;
-  --git-changed-color: #3a6ee8;
-  --git-conflict-color: #c45c00;
-  --editor-syntax-keyword: #8839ef;
-  --editor-syntax-constant: #d20f39;
-  --editor-syntax-number: #fe640b;
-  --editor-syntax-string: #40a02b;
-  --editor-syntax-regexp: #e64553;
-  --editor-syntax-comment: #6c6f85;
-  --editor-syntax-variable: #4c4f69;
-  --editor-syntax-function: #1e66f5;
-  --editor-syntax-type: #df8e1d;
-  --editor-syntax-property: #04a5e5;
-  --editor-syntax-tag: #ea76cb;
-  --editor-syntax-operator: #4c4f69;
-  --editor-syntax-meta: #7287fd;
-  --editor-syntax-invalid: #d20f39;
+  --border2: #7a8296;
+  --muted: #525769;
+  --accent: #1957d2;
+  --editor-caret: #25253d;
+  --editor-caret-dim: #525769;
+  --git-modified-color: #7a4d00;
+  --git-added-color: #0f6210;
+  --git-deleted-color: #a61b1b;
+  --git-changed-color: #2150ae;
+  --git-conflict-color: #8a4708;
+  --editor-syntax-keyword: #6d28d9;
+  --editor-syntax-constant: #a51d3d;
+  --editor-syntax-number: #9a3412;
+  --editor-syntax-string: #116329;
+  --editor-syntax-regexp: #9f1239;
+  --editor-syntax-comment: #525769;
+  --editor-syntax-variable: #363a4f;
+  --editor-syntax-function: #1a49c4;
+  --editor-syntax-type: #7c4207;
+  --editor-syntax-property: #0a5a86;
+  --editor-syntax-tag: #86198f;
+  --editor-syntax-operator: #363a4f;
+  --editor-syntax-meta: #3730a3;
+  --editor-syntax-invalid: #a51d3d;
 }
 #app {
   display: grid;
@@ -555,29 +555,36 @@ body.light {
 .agent-status {
   background: transparent !important;
 }
-.agent-status.idle {
-  color: #40a02b;
+body:not(.light) .agent-status.idle {
+  color: #a6e3a1;
 }
-.agent-status.working {
-  color: #df8e1d;
+body:not(.light) .agent-status.working {
+  color: #f9e2af;
 }
-.agent-status.ignored {
-  color: var(--muted);
+body:not(.light) .agent-status.blocked {
+  color: #f38ba8;
 }
-.agent-status.blocked {
-  color: #d20f39;
+body:not(.light) .agent-status.done {
+  color: #89b4fa;
 }
-.agent-dismissed {
-  opacity: 0.72;
+body.light .agent-status.idle {
+  color: #13661b;
 }
-.agent-action {
-  margin-left: auto;
+body.light .agent-status.working {
+  color: #6f4a04;
 }
+body.light .agent-status.blocked {
+  color: #a81c1c;
+}
+body.light .agent-status.done {
+  color: #2150ae;
+}
+.agent-status.ignored,
 .agent-status.unknown {
   color: var(--muted);
 }
-.agent-status.done {
-  color: #1e66f5;
+.agent-dismissed {
+  opacity: 0.72;
 }
 .agent-name {
   color: var(--muted);

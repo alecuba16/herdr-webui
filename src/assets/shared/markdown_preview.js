@@ -89,10 +89,9 @@
 
   function mermaidTheme() {
     try {
-      const stored = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
-      const theme = stored.theme || "system";
+      const theme = String(localStorage.getItem("herdr-web-theme") || "auto").trim();
       const prefersDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
-      const dark = theme === "dark" || (theme === "system" && prefersDark);
+      const dark = theme === "dark" || (theme === "auto" && prefersDark);
       return dark ? "dark" : "default";
     } catch (_) {
       return "default";
@@ -100,9 +99,13 @@
   }
 
   function initMermaid(mermaid) {
-    if (mermaidInitialized) return;
+    const options = { startOnLoad: false, theme: mermaidTheme(), securityLevel: "strict" };
     try {
-      mermaid.initialize({ startOnLoad: false, theme: mermaidTheme(), securityLevel: "strict" });
+      if (mermaidInitialized) {
+        if (mermaid.initialize) mermaid.initialize(options);
+        return;
+      }
+      mermaid.initialize(options);
       mermaidInitialized = true;
     } catch (_) {}
   }
@@ -129,13 +132,37 @@
     });
   }
 
+  function refreshTheme() {
+    if (!mermaidInitialized) return Promise.resolve();
+    return ensureMermaid().then((mermaid) => {
+      initMermaid(mermaid);
+      document.querySelectorAll(".herdr-mermaid[data-herdr-rendered]").forEach((node) => {
+        const original = node.dataset.herdrSource || "";
+        if (!original) return;
+        const wrap = document.createElement("div");
+        wrap.className = "herdr-mermaid";
+        wrap.textContent = original;
+        node.replaceWith(wrap);
+      });
+      return renderMermaid(document);
+    });
+  }
+
   function transformMermaidFences(html) {
     // marked emits ```mermaid blocks as <pre><code class="language-mermaid">...</code></pre>.
     // Convert them to <div class="herdr-mermaid"> so mermaid.run can render them.
     return html.replace(
       /<pre><code class="language-mermaid">([\s\S]*?)<\/code><\/pre>/g,
-      (_match, code) => `<div class="herdr-mermaid">${decodeHtmlEntities(code)}</div>`,
+      (_match, code) => `<div class="herdr-mermaid" data-herdr-source="${encodeHtmlAttribute(decodeHtmlEntities(code))}">${decodeHtmlEntities(code)}</div>`,
     );
+  }
+
+  function encodeHtmlAttribute(value) {
+    return String(value || "")
+      .replace(/&/g, "&amp;")
+      .replace(/"/g, "&quot;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
   }
 
   function decodeHtmlEntities(value) {
@@ -147,7 +174,7 @@
     return {
       // Allow mermaid divs to survive sanitization so mermaid.run can target them.
       ADD_TAGS: ["div"],
-      ADD_ATTR: ["class", "data-herdr-rendered"],
+      ADD_ATTR: ["class", "data-herdr-rendered", "data-herdr-source"],
       FORBID_TAGS: ["style", "script", "iframe", "object", "embed", "form"],
       FORBID_ATTR: ["onerror", "onload", "onclick", "onmouseover", "onfocus", "onblur"],
     };
@@ -187,5 +214,6 @@
     renderMermaid,
     transformMermaidFences,
     sanitizeConfig,
+    refreshTheme,
   };
 })();

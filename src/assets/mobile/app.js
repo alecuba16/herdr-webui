@@ -1249,8 +1249,20 @@
       mode === "light" ||
       (mode === "auto" &&
         window.matchMedia &&
-        window.matchMedia("(prefers-color-scheme: light)").matches);
+        !window.matchMedia("(prefers-color-scheme: dark)").matches);
     document.body.classList.toggle("light", light);
+    document.documentElement.dataset.herdrTheme = light ? "light" : "dark";
+  }
+  if (window.matchMedia) {
+    try {
+      const media = window.matchMedia("(prefers-color-scheme: dark)");
+      const onSystemThemeChange = () => {
+        if ((localStorage.getItem("herdr-web-theme") || "auto") === "auto")
+          applyTheme();
+      };
+      if (media.addEventListener) media.addEventListener("change", onSystemThemeChange);
+      else if (media.addListener) media.addListener(onSystemThemeChange);
+    } catch (error) {}
   }
 
   mobileAttention = globalThis.HerdrMobileAttention.create({
