@@ -68,6 +68,7 @@
     loadCss("/assets/shared/content-search.css");
     await loadScriptsSequentially([
       "/assets/shared/core.js",
+      "/assets/shared/options.js",
       "/assets/shared/actions.js",
       "/assets/shared/file-icons.js",
       "/assets/shared/file-tree.js",

@@ -111,14 +111,15 @@
 
     function readOptions() {
       try {
-        return JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
+        return globalThis.HerdrOptions ? globalThis.HerdrOptions.read() : {};
       } catch (_) {
         return {};
       }
     }
 
     function writeOptions(options) {
-      localStorage.setItem("herdr-web-options", JSON.stringify(options || {}));
+      if (globalThis.HerdrOptions) globalThis.HerdrOptions.write(options || {});
+      else localStorage.setItem("herdr-web-options", JSON.stringify(options || {}));
     }
 
     function browserNotificationsEnabled() {

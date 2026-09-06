@@ -131,6 +131,7 @@ vm.createContext(ctx);
 // Boot exactly the bundle set the server serves for content search.
 const SHARED_BUNDLES = [
   "/assets/shared/core.js",
+  "/assets/shared/options.js",
   "/assets/shared/file-icons.js",
   "/assets/shared/file-tree.js",
   "/assets/shared/line-context.js",

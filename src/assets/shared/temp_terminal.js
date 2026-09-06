@@ -17,8 +17,7 @@
 (function () {
   function tempTerminalLabelMaxChars() {
     try {
-      var storage = globalThis.localStorage;
-      var parsed = JSON.parse((storage && storage.getItem("herdr-web-options")) || "{}");
+      var parsed = globalThis.HerdrOptions ? globalThis.HerdrOptions.read() : {};
       return Math.max(4, Math.min(80, Number(parsed.tempTerminalLabelMaxChars) || 20));
     } catch (e) {
       return 20;
@@ -763,8 +762,7 @@
 
       function tempTerminalCore() {
         try {
-          var storage = globalThis.localStorage;
-          var parsed = JSON.parse((storage && storage.getItem("herdr-web-options")) || "{}");
+          var parsed = globalThis.HerdrOptions ? globalThis.HerdrOptions.read() : {};
           return parsed.terminalCore === "ghostty" ? "ghostty" : "wterm";
         } catch (e) {
           return "wterm";
@@ -773,8 +771,7 @@
 
       function terminalMouseReportingEnabled() {
         try {
-          var storage = globalThis.localStorage;
-          var parsed = JSON.parse((storage && storage.getItem("herdr-web-options")) || "{}");
+          var parsed = globalThis.HerdrOptions ? globalThis.HerdrOptions.read() : {};
           return parsed.terminalMouseReporting === true;
         } catch (e) {
           return false;

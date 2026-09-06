@@ -1,6 +1,14 @@
 # Release notes
 
 ## 0.4.7 Release Notes
+- Options reads now go through a shared cached module (`HerdrOptions`) instead
+  of every consumer doing its own `JSON.parse(localStorage.getItem(...))` on
+  each access. The payload is parsed once, callers get shallow copies, and the
+  cache invalidates on writes and cross-tab `storage` events. Measured on a
+  representative desktop file-browser session (10 tree refreshes + 5 file
+  opens): 65 parses to 1; mobile file-browser session (10 loads + 5
+  previews): 22 to 1. Modules served without the shared bundle keep the
+  direct-parse fallback, so older bundles behave exactly as before.
 - Content search: the backend now builds the merged line chunks and per-row
   highlight markup (HTML-escaped, with `<mark>` around the hit) for both the
   workspace route and the single-file route, so the browser renders results

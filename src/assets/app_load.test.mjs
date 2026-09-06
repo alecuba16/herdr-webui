@@ -109,6 +109,7 @@ function context() {
 }
 
 function loadWorkspaceSearch(ctx) {
+  vm.runInContext(readFileSync(new URL("./shared/options.js", import.meta.url), "utf8"), ctx);
   vm.runInContext(readFileSync(new URL("./shared/core.js", import.meta.url), "utf8"), ctx);
   vm.runInContext(
     readFileSync(new URL("./shared/workspace_search.js", import.meta.url), "utf8"),
@@ -147,6 +148,8 @@ describe("app bundle load", () => {
       .map((path) => readFileSync(new URL(path, import.meta.url), "utf8"))
       .join("");
     source =
+      readFileSync(new URL("./shared/options.js", import.meta.url), "utf8") +
+      "\n" +
       readFileSync(new URL("./shared/core.js", import.meta.url), "utf8") +
       "\n" +
       readFileSync(new URL("./shared/actions.js", import.meta.url), "utf8") +

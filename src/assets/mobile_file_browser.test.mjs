@@ -8,6 +8,7 @@ import vm from "node:vm";
 
 const source = readFileSync(new URL("./mobile/file_browser.js", import.meta.url), "utf8");
 const treeSource = readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8");
+const optionsSource = readFileSync(new URL("./shared/options.js", import.meta.url), "utf8");
 
 function createModule({ fileContent = "print('hello')", writeResult = {}, writeError = "", renameError = "", deleteError = "", confirmAnswer = true, optionsJson = null, lsp = null } = {}) {
   const requests = [];
@@ -98,6 +99,7 @@ function createModule({ fileContent = "print('hello')", writeResult = {}, writeE
       return { getValue() { return opts.content || ""; }, setValue() {}, destroy() {} };
     },
   };
+  vm.runInNewContext(optionsSource, context);
   vm.runInNewContext(treeSource, context);
   vm.runInNewContext(source, context);
   const deps = {

@@ -21,7 +21,7 @@ function createSearchPaletteState() {
 
 function openSearchPalette() {
   try {
-    if (JSON.parse(localStorage.getItem("herdr-web-options") || "{}").headerSearchEnabled === false) return false;
+    if ((window.HerdrOptions ? window.HerdrOptions.read() : {}).headerSearchEnabled === false) return false;
   } catch (_) {}
   const modal = el("searchPalette"),
     input = el("searchPaletteInput");

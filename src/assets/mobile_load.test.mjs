@@ -368,6 +368,8 @@ function context(pathname = "/", options = {}) {
 
 describe("mobile bundle load", () => {
   const source =
+    readFileSync(new URL("./shared/options.js", import.meta.url), "utf8") +
+    "\n" +
     readFileSync(new URL("./shared/core.js", import.meta.url), "utf8") +
     "\n" +
     readFileSync(new URL("./shared/actions.js", import.meta.url), "utf8") +

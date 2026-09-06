@@ -1328,7 +1328,7 @@ function normalizeSidebarWorkspacePercent(value) {
 }
 function loadOptions() {
   try {
-    const stored = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
+    const stored = window.HerdrOptions ? window.HerdrOptions.read() : {};
     if (stored.overflow === true && stored.terminalOverflowOptIn !== true)
       stored.overflow = false;
     return stored;
@@ -1465,7 +1465,8 @@ localStorage.removeItem("herdr-web-shiftenter-migrated");
 let workingDismissals = loadWorkingDismissals();
 function saveOptions() {
   options = normalizeOptions(options);
-  localStorage.setItem("herdr-web-options", JSON.stringify(options));
+  if (window.HerdrOptions) window.HerdrOptions.write(options);
+  else localStorage.setItem("herdr-web-options", JSON.stringify(options));
 }
 function loadWorkingDismissals() {
   try {

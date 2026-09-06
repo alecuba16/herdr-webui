@@ -14,20 +14,10 @@
     return encodeURIComponent(String(value == null ? "" : value)).replace(/'/g, "%27");
   }
 
-  let cachedOptionsRaw = null;
-  let cachedOptions = null;
-
   function storedOptions() {
     try {
-      const raw = localStorage.getItem("herdr-web-options") || "{}";
-      if (raw === cachedOptionsRaw && cachedOptions) return cachedOptions;
-      const parsed = JSON.parse(raw);
-      cachedOptionsRaw = raw;
-      cachedOptions = parsed && typeof parsed === "object" ? parsed : {};
-      return cachedOptions;
+      return globalThis.HerdrOptions ? globalThis.HerdrOptions.read() : {};
     } catch (_) {
-      cachedOptionsRaw = null;
-      cachedOptions = {};
       return {};
     }
   }

@@ -43,9 +43,9 @@
 
     function options() {
       try {
-        const parsed = JSON.parse(
-          localStorage.getItem("herdr-web-options") || "{}",
-        );
+        const parsed = globalThis.HerdrOptions
+          ? globalThis.HerdrOptions.read()
+          : {};
         return {
           sound: parsed.sound !== false,
           browserNotifications: parsed.browserNotifications === true,

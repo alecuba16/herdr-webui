@@ -34,13 +34,16 @@
     try { localStorage.setItem(FIND_OPTIONS_KEY, JSON.stringify(options || {})); } catch (_) {}
   }
 
-  function editorFindShortcutEnabled() {
-    try {
-      const options = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
-      return !options || options.editorFindShortcutEnabled !== false;
-    } catch (_) {
-      return true;
+  function editorFindOptions() {
+    if (globalThis.HerdrOptions) {
+      try { return globalThis.HerdrOptions.read(); } catch (_) { return null; }
     }
+    try { return JSON.parse(localStorage.getItem("herdr-web-options") || "{}"); } catch (_) { return null; }
+  }
+
+  function editorFindShortcutEnabled() {
+    const options = editorFindOptions();
+    return !options || options.editorFindShortcutEnabled !== false;
   }
 
   function escapeRegex(value) {

@@ -155,20 +155,37 @@ Priority: P0 must land in this review, P1 should land, P2 next iteration.
   highlight offsets are byte-correct in Rust, so multibyte lines highlight
   the exact hit (the legacy JS sliced byte offsets over UTF-16 indices).
   Measured: 10-file page (30 matches each) 7.4ms → 1.0ms per render (~7x).
-  6 Rust tests (merge overlap/adjacent/gap, escaping, multibyte, fallback,
-  response shape) + 7 JS renderer tests (backend chunks verbatim, no
+  7 Rust tests (merge overlap/adjacent/gap, escaping, multibyte,
+  stale-offset fallback, response shape via content_search_file) + 7 JS
+  renderer tests (backend chunks verbatim, no
   double-escape, openMatch/expand wiring from backend ids, cache reuse,
   fallback merge, line>0 filter). New no-browser e2e
   `scripts/e2e/run-content-search-e2e.sh` (21 checks: real backend sends
   pre-merged chunks for overlapping matches, escaping, served renderer
   consumes them, single-file route too).
-- [ ] **C3 (P1, B/P)** 22 call sites parse `herdr-web-options` from
-  localStorage on every access (some inside render loops: `gitStatusEnabled()`
-  is called per tree render, `contentSearchOptions()` per search). Add a shared
-  cached options module (`shared/options.js`) with a storage-event
-  invalidation, migrate all call sites, and have the backend serve normalized
-  defaults once (`/api/settings` already exists for server settings; browser
-  settings stay local but parsed once).
+- [x] **C3 (P1, B/P)** DONE: added `shared/options.js` (`HerdrOptions`:
+  parse-once cache, shallow-copy `read()`, `write()`/`update()`, `storage`-event
+  invalidation, corrupt/missing localStorage tolerated). Served by the backend
+  (`/assets/shared/options.js`) and loaded by `app_boot.js` before all
+  consumers. Migrated all 26 baseline read sites (desktop file_browser 7,
+  mobile file_browser 8, git_ui, desktop search, directory_picker, app_js core
+  loadOptions, mobile app 3, mobile settings, mobile terminal, shared editor,
+  shared temp_terminal 3, workspace_search which previously had its own
+  private raw-string cache) and all 3 writers (git_ui setGitUiOption, core
+  saveOptions, mobile settings writeOptions) so the in-page cache can never go
+  stale. Readers keep a direct-parse fallback when the module is absent
+  (older bundles, partial vm harnesses). Measured with a vm-harness
+  parse-counting script (3 stable runs): desktop file-browser session
+  (10 tree refreshes + 5 file opens) 65 -> 1 parses; mobile session
+  (10 loads + 5 previews) 22 -> 1. Tests: 9 new unit tests in
+  `src/assets/options.test.mjs` (parse-once, shallow-copy isolation,
+  write/update persistence, storage-event invalidation, unrelated-key ignore,
+  no-localStorage fallback, corrupt JSON); vm-harness bundles in
+  app_load/mobile_load/mobile_file_browser/app_boot tests boot options.js
+  first. Full suites: 410 JS pass, 377 Rust pass; git, content-search,
+  main (18), mobile-edit (49), LSP e2e all pass. Bonus: fixed the
+  theme-acceptance CDP harness never closing its WebSocket (node hung after
+  passing all checks; committed separately).
 - [ ] **C4 (P1, D/P)** `mountEditors()` re-creates CodeMirror instances on
   every `render()` because `renderPreviewShell()` rewrites `innerHTML` for the
   whole panel. Keep a per-path editor instance cache keyed by

@@ -305,7 +305,7 @@
 
   function gitUiOptions() {
     try {
-      return JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
+      return window.HerdrOptions ? window.HerdrOptions.read() : {};
     } catch (_) {
       return {};
     }
@@ -347,9 +347,7 @@
   }
 
   function setGitUiOption(key, value) {
-    const options = gitUiOptions();
-    options[key] = value;
-    try { localStorage.setItem("herdr-web-options", JSON.stringify(options)); } catch (_) {}
+    try { window.HerdrOptions.update(function (options) { options[key] = value; }); } catch (_) {}
   }
 
   function diffLineCount(files) {

@@ -18,21 +18,21 @@
 
   function gitStatusEnabled() {
     try {
-      const parsed = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
+      const parsed = window.HerdrOptions ? window.HerdrOptions.read() : {};
       return parsed.fileBrowserGitStatus !== false;
     } catch (_) { return true; }
   }
 
   function lineNumbersEnabled() {
     try {
-      const parsed = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
+      const parsed = window.HerdrOptions ? window.HerdrOptions.read() : {};
       return parsed.fileBrowserLineNumbers !== false;
     } catch (_) { return true; }
   }
 
   function editorOptions() {
     try {
-      const parsed = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
+      const parsed = window.HerdrOptions ? window.HerdrOptions.read() : {};
       return {
         editorEnabled: parsed.editorEnabled !== false,
         wordWrap: parsed.editorEnabled !== false && parsed.editorWordWrap !== false,
@@ -49,21 +49,21 @@
 
   function parentFoldersEnabled() {
     try {
-      const parsed = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
+      const parsed = window.HerdrOptions ? window.HerdrOptions.read() : {};
       return parsed.fileBrowserAllowParent === true;
     } catch (_) { return false; }
   }
 
   function pathSearchOptions() {
     try {
-      const parsed = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
+      const parsed = window.HerdrOptions ? window.HerdrOptions.read() : {};
       return { pageSize: Math.max(10, Math.min(500, Number(parsed.fileBrowserSearchPageSize) || 100)) };
     } catch (_) { return { pageSize: 100 }; }
   }
 
   function contentSearchOptions() {
     try {
-      const parsed = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
+      const parsed = window.HerdrOptions ? window.HerdrOptions.read() : {};
       const contextRaw = Number(parsed.fileContentSearchContextLines);
       const autoCollapseRaw = Number(parsed.fileContentSearchAutoCollapseFiles);
       return {
@@ -869,7 +869,7 @@
   function lspEnabled() {
     if (!window.HerdrLsp) return false;
     try {
-      const parsed = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
+      const parsed = window.HerdrOptions ? window.HerdrOptions.read() : {};
       return parsed.lspEnabled === true;
     } catch (_) {
       return false;

@@ -389,7 +389,7 @@
 
   function headerSearchDisabled() {
     try {
-      return JSON.parse(localStorage.getItem("herdr-web-options") || "{}").headerSearchEnabled === false;
+      return (globalThis.HerdrOptions ? globalThis.HerdrOptions.read() : {}).headerSearchEnabled === false;
     } catch (_) {
       return false;
     }
@@ -397,7 +397,7 @@
 
   function applyTreeIndent() {
     try {
-      const parsed = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
+      const parsed = globalThis.HerdrOptions ? globalThis.HerdrOptions.read() : {};
       const value = Math.max(0, Math.min(40, Number(parsed.treeIndentPx) || 14));
       document.body.style.setProperty("--herdr-tree-indent", `${value}px`);
     } catch (_) {}
@@ -1409,7 +1409,7 @@
     modalId: "tempTerminalModal",
     fontFamilyFn: () => {
       try {
-        const parsed = JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
+        const parsed = globalThis.HerdrOptions ? globalThis.HerdrOptions.read() : {};
         return globalThis.HerdrAppHelpers.resolveTerminalFontFamily(parsed.terminalFontFamily);
       } catch (_) {
         return globalThis.HerdrAppHelpers.resolveTerminalFontFamily("");
