@@ -83,6 +83,18 @@
 - Mobile: the Git screen now covers the core desktop flow — stage, unstage,
   discard (with confirmation), branch list and checkout. Heavy actions
   (rebase, stash, conflicts) remain desktop-only and are labeled as such.
+- GitHub-style Git flow: the desktop Git header now puts branch info and
+  actions in one place. A right-justified branch chip shows the current
+  branch with live sync state (↓N/↑N counts when diverged from upstream,
+  ✓ when in sync); clicking the branch name opens a filterable branch list
+  (local then remote) where every entry shows the tip author and relative
+  time, with the exact time and commit subject on hover. The action row
+  keeps Commit, ↓ Update (fetch + fast-forward, never merge), Rebase and
+  Reset, and the Pull button became a split button whose dropdown offers
+  Fetch, Fetch from…, Pull, Pull (Rebase), Push, Push to… and Force Push.
+  Rebase with fetch now also refreshes the default base branch, and a new
+  /api/git-ui/fetch endpoint backs the standalone fetch actions. Branch
+  payloads from the backend now include tip author/date/subject.
 
 ### Mobile file editing (IDE review)
 

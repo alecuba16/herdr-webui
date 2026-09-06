@@ -13,6 +13,7 @@ import { request as httpsRequest } from "node:https";
 
 const ORIGIN = process.env.E2E_ORIGIN;
 const REPO = process.env.E2E_REPO;
+const CLEAN = process.env.E2E_CLEAN_REPO;
 
 if (!ORIGIN || !REPO) {
   console.error("E2E_ORIGIN and E2E_REPO must be set (use scripts/e2e/run-git-e2e.sh)");
@@ -112,11 +113,21 @@ function context() {
       documentElement: element(),
       hidden: false,
       visibilityState: "visible",
+      __panelHtml: "",
       createElement: () => element(),
       execCommand: () => true,
       querySelector: () => element(),
       querySelectorAll: () => [],
-      getElementById: () => element(),
+      getElementById(id) {
+        const el = element();
+        if (id === "gitUiPanel") {
+          Object.defineProperty(el, "innerHTML", {
+            get() { return ctx.document.__panelHtml; },
+            set(value) { ctx.document.__panelHtml = String(value); },
+          });
+        }
+        return el;
+      },
       addEventListener() {},
     },
     localStorage: {
@@ -187,7 +198,87 @@ assert(/herdr-tree-row dir/.test(html), "changes tree renders a dir row for scra
 assert(!/title="scratchdir\/"/.test(html), "no phantom file row for scratchdir/");
 assert(/fileMenu\(event,'scratchdir'[^)]*,'dir'\)/.test(html), "dir row wires the dir context menu kind");
 
+// 6. Header rework: the branch chip renders with the current branch and a
+// caret for the pull/fetch dropdown.
+const chipRes = await httpsJson(`${ORIGIN}/api/git-ui/status?cwd=${encodeURIComponent(REPO)}`);
+const chipStatus = await chipRes.json();
+const panelHtml = () => ctx.document.__panelHtml || "";
+let headerHtml = panelHtml();
+assert(/git-ui-branch-chip/.test(headerHtml), "branch chip rendered in header");
+assert(new RegExp(`git-ui-branch-chip-name">${chipStatus.branch}</span>`).test(headerHtml), `chip shows the real branch name (${chipStatus.branch})`);
+
+// 7. The dropdown menu exposes every git-flow action.
+ui.toggleHeaderMenu({ stopPropagation() {}, currentTarget: { getBoundingClientRect: () => ({ left: 12, bottom: 40 }) }, clientX: 12, clientY: 40 });
+headerHtml = panelHtml();
+for (const method of ["fetchOrigin", "openFetchFromModal", "openPullModal", "pullWithRebase", "openPushModal", "openPushToModal", "openForcePushModal"]) {
+  assert(new RegExp(`HerdrGitUi\\.${method}\\(\\)`).test(headerHtml), `header menu wires ${method}`);
+}
+ui.toggleHeaderMenu({ stopPropagation() {}, currentTarget: { getBoundingClientRect: () => ({ left: 12, bottom: 40 }) }, clientX: 12, clientY: 40 });
+
+// 8. Fetch from the menu reaches the real backend (fetch origin).
+await ui.fetchOrigin();
+await new Promise((resolve) => setTimeout(resolve, 400));
+const fetchCall = calls.filter((c) => c.path === "/api/git-ui/fetch").pop();
+assert(fetchCall, "fetch POST reached the real backend");
+assert(JSON.parse(fetchCall.init.body).cwd === REPO, "fetch posted the repo cwd");
+
+// 9. The branches endpoint returns author/date/subject for each branch.
+const branchesRes = await httpsJson(`${ORIGIN}/api/git-ui/branches?cwd=${encodeURIComponent(REPO)}`);
+const branches = await branchesRes.json();
+assert(branches.local.length >= 1, "branches endpoint lists local branches");
+const main = branches.local.find((b) => b.name === "main");
+assert(main && main.author === "e2e" && main.subject === "init", "branch payload carries author/subject from real git");
+assert(main && /\d{4}-\d{2}-\d{2}T/.test(String(main.date)), "branch payload carries an ISO date");
+
+// 10. The branch list popover renders local and remote sections from the
+// real payload, with author · relative time and hover details.
+await ui.openBranchList({ stopPropagation() {}, currentTarget: null, clientX: 0, clientY: 0 });
+await new Promise((resolve) => setTimeout(resolve, 400));
+const listHtml = panelHtml();
+assert(/git-ui-branch-list/.test(listHtml), "branch list popover opened");
+assert(/Local branches/.test(listHtml), "branch list shows the local section");
+assert(/e2e · /.test(listHtml), "branch rows show author · relative time");
+assert(/title="[^"]*init[^"]*"/.test(listHtml), "branch row hover title carries the commit subject");
+const switchCall = calls.filter((c) => c.path === "/api/git-ui/switch").pop();
+assert(!switchCall, "no switch fired yet");
+
+// 11. Filtering narrows rows. Switching runs on the clean clone (git refuses
+// checkout over the dirty fixture tree).
+ui.branchListFilter("no-such-branch");
+const filteredHtml = panelHtml();
+assert(!/git-ui-branch-row"/.test(filteredHtml), "filter hides all rows on no match");
+ui.branchListFilter("ma");
+ui.closeBranchList();
+await ui.open({ cwd: CLEAN, title: "clean-repo" }, { forceOpen: true });
+await new Promise((resolve) => setTimeout(resolve, 300));
+await ui.openBranchList({ stopPropagation() {}, currentTarget: null, clientX: 0, clientY: 0 });
+await new Promise((resolve) => setTimeout(resolve, 400));
+const cleanListHtml = panelHtml();
+
+assert(/feature-lane/.test(cleanListHtml), "clean repo branch list shows feature-lane");
+assert(/Remote branches/.test(cleanListHtml), "clone lists feature-lane under remote branches");
+// feature-lane exists only on the remote in the clone: switch from the
+// remote row; the UI strips origin/ and asks git to create the local branch.
+await ui.switchFromBranchList(encodeURIComponent("origin/feature-lane"), true);
+await new Promise((resolve) => setTimeout(resolve, 400));
+const switchPost = calls.filter((c) => c.path === "/api/git-ui/switch").pop();
+assert(switchPost, "switch POST reached the real backend after branch-list click");
+assert(JSON.parse(switchPost.init.body).branch === "feature-lane", "switch posted the bare branch name feature-lane");
+const laneStatusRes = await httpsJson(`${ORIGIN}/api/git-ui/status?cwd=${encodeURIComponent(CLEAN)}`);
+const laneStatus = await laneStatusRes.json();
+assert(laneStatus.branch === "feature-lane", "clean repo now sits on feature-lane after the switch");
+// And back to main: proves the list can switch both ways on a clean tree.
+await ui.switchFromBranchList(encodeURIComponent("main"), false);
+await new Promise((resolve) => setTimeout(resolve, 400));
+const backStatusRes = await httpsJson(`${ORIGIN}/api/git-ui/status?cwd=${encodeURIComponent(CLEAN)}`);
+const backStatus = await backStatusRes.json();
+assert(backStatus.branch === "main", "clean repo switched back to main via the branch list");
+
 // 4. Context-menu discard must reach the real backend and mutate real git.
+// The active view is still the clean clone from the switch checks: reopen
+// the dirty fixture repo first.
+await ui.open({ cwd: REPO, title: "accept-repo" }, { forceOpen: true });
+await new Promise((resolve) => setTimeout(resolve, 300));
 ui.fileMenu({ preventDefault() {}, stopPropagation() {}, clientX: 5, clientY: 5 }, "scratchdir/", "?", "dir");
 await ui.menuAction("discard");
 await new Promise((resolve) => setTimeout(resolve, 400));
@@ -200,5 +291,6 @@ assert(body.paths[0] === "scratchdir" && body.confirmed === true, "discard poste
 const afterRes = await httpsJson(`${ORIGIN}/api/git-ui/status?cwd=${encodeURIComponent(REPO)}`);
 const after = await afterRes.json();
 assert(!after.untracked.some((p) => p.startsWith("scratchdir")), "scratchdir is gone from real repo status");
+
 
 console.log("GIT E2E ACCEPTANCE PASSED");
