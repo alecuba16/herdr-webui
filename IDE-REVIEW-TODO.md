@@ -325,10 +325,25 @@ Priority: P0 must land in this review, P1 should land, P2 next iteration.
   rebuilt server; a stale server on port 8897 was serving old assets and
   had to be killed first). 417 JS + 377 Rust pass, content-search e2e
   PASSED.
-- [ ] **D5 (P2, M)** Mobile `renderPreservingFocus` re-renders the entire
+- [x] **D5 (P2, M)** Mobile `renderPreservingFocus` re-renders the entire
   screen HTML per keystroke in the filter input (type-to-filter); keep the
   input node, patch only the results container (same pattern as desktop
   `renderPreservingScroll`).
+  DONE (verified obsolete — no change needed): git archaeology shows the
+  per-keystroke filter input (`id="mobileFileFilter"`) was removed in
+  `e66fd94` ("Unify header search across workspace and files"). Today:
+  (1) the unified header search types into `#mobileSearchInput`, which is
+  part of the static shell — `scheduleMobileSearch` → `renderMobileSearch`
+  patches ONLY `#mobileSearchResults.innerHTML` per keystroke, exactly the
+  "keep the input, patch the results container" pattern the TODO asked
+  for; (2) files-screen type-to-filter has no input node at all
+  (`typeToFilter` writes into `local.filter`), debounces 350/500 ms before
+  hitting the backend, and `renderPreservingFocus` runs on tree loads /
+  debounce fire (≈2 renders per search, not per keystroke) restoring
+  section focus; (3) the cited desktop `renderPreservingScroll` itself
+  re-renders the full panel and restores scroll/focus/selection, so "patch
+  only the results container" was never its pattern either. No code
+  change; suites stay green (417 JS + 377 Rust).
 - [x] **D6 (P1, D/M)** Content-search snippet editing was unreachable dead
   code since `216e13c` ("Refine unified search result UX"): the shared
   renderer stopped emitting the Edit button and the
