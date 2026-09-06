@@ -178,6 +178,33 @@ const unlockParsed = (() => { try { return JSON.parse(unlockRound || '{}'); } ca
 check('unlock click restores editing', unlockParsed.editable === 'true', JSON.stringify(unlockParsed));
 check('lock button inactive when unlocked', unlockParsed.active === false);
 
+// 3b. Editor instance reuse across renders (IDE-review C4): a re-render with
+// unchanged file state must reattach the SAME CodeMirror DOM node instead of
+// recreating the editor (legacy code recreated CodeMirror on every render).
+// Mark the live editor view, trigger plain re-renders (focusFile on the
+// already-open file, plus a tree refresh), and verify node identity and the
+// editor API survive.
+const reuseRound = await cdp.evalExpr(`(async () => {
+  const mount = document.querySelector('.file-browser-pane .herdr-editor-mount');
+  const view = mount && mount.querySelector('.cm-editor');
+  if (!view) return 'no-editor';
+  view.setAttribute('data-herdr-c4-mark', 'live');
+  // Any pending editor boot must settle before the re-render.
+  await new Promise(r => setTimeout(r, 600));
+  const path = document.querySelector('.file-browser-pane').getAttribute('data-path');
+  window.HerdrFileBrowser.focusFile(encodeURIComponent(path));
+  await new Promise(r => setTimeout(r, 600));
+  const after = document.querySelector('.file-browser-pane .cm-editor');
+  const api = document.querySelector('.file-browser-pane-body');
+  return JSON.stringify({
+    sameNode: !!after && after.getAttribute('data-herdr-c4-mark') === 'live',
+    apiAttached: !!(api && api._herdrEditorApi),
+  });
+})()`, true);
+const reuseParsed = (() => { try { return JSON.parse(reuseRound || '{}'); } catch { return { raw: reuseRound }; } })();
+check('re-render reattaches the same editor node (C4)', reuseParsed.sameNode === true, JSON.stringify(reuseParsed));
+check('editor api survives re-render (C4)', reuseParsed.apiAttached === true, JSON.stringify(reuseParsed));
+
 // 4. Type an edit -> dirty dot appears on the tab
 const typed = await cdp.evalExpr(`(async () => {
   const cm = document.querySelector('.file-browser-pane .cm-content');

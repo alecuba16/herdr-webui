@@ -1207,6 +1207,103 @@ describe("desktop file browser editor integration", () => {
     assert.equal(rebuiltLabel.querySelector(".file-browser-tab-dirty"), null, "stale change after lock does not resurrect the dot");
   });
 
+  it("reuses the editor instance across renders and recreates it on state changes (C4)", async () => {
+    const document = createFakeDocument();
+    const creates = [];
+    const destroys = [];
+    const context = {
+      window: {
+        addEventListener() {},
+        HerdrEditor: {
+          create(opts) {
+            creates.push({ path: opts.path, content: opts.content, readonly: opts.readonly, onChange: opts.onChange });
+            // Build a real child node so the file browser can find and
+            // cache the .herdr-editor wrapper across renders.
+            const wrapper = new FakeElement(document, "div");
+            wrapper.className = "herdr-editor";
+            const mount = new FakeElement(document, "div");
+            mount.className = "herdr-editor-mount";
+            wrapper.appendChild(mount);
+            opts.parent.appendChild(wrapper);
+            opts.parent._wrapper = wrapper;
+            const api = {
+              toggleFind() {},
+              destroy() { destroys.push(opts.path); },
+            };
+            opts.parent._herdrEditorApi = api;
+            return api;
+          },
+          isMarkdownPath() { return false; },
+        },
+        HerdrGitUi: { hide() {} },
+        HerdrWorkspacePath(workspace) { return workspace.cwd; },
+      },
+      document,
+      localStorage: { getItem() { return JSON.stringify({ fileBrowserLineNumbers: true, fileBrowserGitStatus: false }); } },
+      navigator: { clipboard: { writeText: async () => {} } },
+      fetch: async (url) => {
+        const text = String(url);
+        return {
+          ok: true,
+          async json() {
+            if (text.startsWith("/api/file-browser/file")) {
+              const path = decodeURIComponent((text.match(/path=([^&]+)/) || [null, ""])[1]);
+              return { path, content: `content of ${path}`, binary: false, truncated: false };
+            }
+            return { root: "/repo", home: "/home", path: "", entries: [{ kind: "file", name: "a.py", path: "src/a.py" }], git_status: null };
+          },
+        };
+      },
+      confirm: () => true,
+      appRefreshIconButton: () => "<button>Refresh</button>",
+      encodeURIComponent, decodeURIComponent, Error, JSON, Math, String,
+      setTimeout(fn) { fn(); return 1; },
+      clearTimeout() {},
+    };
+    context.window.window = context.window;
+    context.window.document = document;
+    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
+    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
+
+    const FB = context.window.HerdrFileBrowser;
+    await FB.open({ cwd: "/repo" });
+    FB.select(encodeURIComponent("src/a.py"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(creates.length, 1, "editor created once on first open");
+    const firstMount = creates[0];
+
+    // Re-render with unchanged state: the editor DOM must be reattached,
+    // not recreated.
+    FB.refresh && await Promise.resolve();
+    FB.focusFile(encodeURIComponent("src/a.py"));
+    assert.equal(creates.length, 1, "unchanged render reuses the cached editor instance");
+    const paneAfter = document.getElementById("fileBrowserEditor-" + creates[0].path.split("/").join(""));
+    assert.ok(paneAfter, "pane container exists after re-render");
+
+    // Files open editable by default, so locking (read-only) recreates
+    // the editor and the new instance must be readonly.
+    FB.toggleLock(encodeURIComponent("src/a.py"));
+    assert.equal(creates.length, 2, "editability change recreates the editor");
+    assert.equal(creates[1].readonly, true, "new editor is readonly after lock");
+
+    // Closing the file destroys the cached editor and drops it.
+    const destroyedBeforeClose = destroys.length;
+    FB.closeFile(encodeURIComponent("src/a.py"));
+    assert.equal(creates.length, 2, "closing does not create editors");
+    assert.equal(destroys.length, destroyedBeforeClose + 1, "closing destroys the cached editor");
+    assert.ok(destroys.includes("src/a.py"), "destroy received the closed path");
+
+    // Reopening the same file creates a fresh editor (cache was dropped).
+    FB.select(encodeURIComponent("src/a.py"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(creates.length, 3, "reopen after close creates a fresh editor");
+
+    // forgetWorkspace drops every cached editor for that workspace.
+    const beforeForget = destroys.length;
+    FB.forgetWorkspace({ cwd: "/repo" });
+    assert.equal(destroys.length, beforeForget + 1, "forgetWorkspace destroys the workspace editors");
+  });
+
   it("keeps editing draft per workspace, then forgets closed workspace state", async () => {
     const document = createFakeDocument();
     const editorCalls = [];

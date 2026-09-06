@@ -2,6 +2,12 @@
   const Tree = window.HerdrFileTree;
   const DEFAULT_CONTENT_SEARCH_MIN_CHARS = 3;
   const stateCache = {};
+  // Per-workspace editor instance cache (IDE-review C4): CodeMirror views are
+  // expensive to create, and render() rewrites panel.innerHTML on every pass,
+  // so mountEditors() reattaches the cached editor DOM node when the file's
+  // editor signature (content, editability, preview mode, search highlight,
+  // editor options) is unchanged instead of recreating the instance.
+  const editorCache = new Map();
   let activeKey = "";
   let state = createState();
 
@@ -307,6 +313,9 @@
     const key = workspaceKey(workspace);
     const cached = stateCache[key];
     stopTransientWork(cached);
+    for (const cacheKey of Array.from(editorCache.keys())) {
+      if (cacheKey.startsWith(`${key}|`)) forgetEditor(cacheKey.slice(key.length + 1));
+    }
     delete stateCache[key];
     if (activeKey !== key) return;
     state.open = false;
@@ -831,12 +840,61 @@
     });
   }
 
+  function editorCacheKey(path) {
+    return `${activeKey}|${path}`;
+  }
+
+  function editorSignature(file, configured) {
+    return JSON.stringify({
+      content: file.editing ? file.draft : file.content || "",
+      editing: !!file.editing,
+      previewSource: !!file.previewSource,
+      searchHighlight: file.searchHighlight || null,
+      lineNumbers: lineNumbersEnabled(),
+      options: configured,
+    });
+  }
+
+  function forgetEditor(path) {
+    const key = editorCacheKey(path);
+    const entry = editorCache.get(key);
+    if (!entry) return;
+    editorCache.delete(key);
+    if (entry.api && entry.api.destroy) {
+      try { entry.api.destroy(); } catch (_) {}
+    }
+  }
+
+  // Drop cache entries for paths the current workspace no longer has open so
+  // closed/renamed/deleted files release their editor instances' memory.
+  // Other workspaces' entries are preserved for when the user switches back.
+  function pruneEditorCache(openPaths) {
+    const prefix = `${activeKey}|`;
+    const keep = new Set(openPaths.map((path) => `${prefix}${path}`));
+    for (const key of Array.from(editorCache.keys())) {
+      if (key.startsWith(prefix) && !keep.has(key)) forgetEditor(key.slice(prefix.length));
+    }
+  }
+
   function mountEditors() {
     const configured = editorOptions();
     const files = state.split ? state.files : [currentFile()].filter(Boolean);
+    pruneEditorCache(files.map((file) => file.path));
     for (const file of files) {
       const parent = document.getElementById(`fileBrowserEditor-${hashId(file.path)}`);
       if (!parent || file.binary || file.truncated) continue;
+      const signature = editorSignature(file, configured);
+      const cacheKey = editorCacheKey(file.path);
+      const cached = editorCache.get(cacheKey);
+      if (cached && cached.signature === signature && cached.mount) {
+        // Same content, editability, and options: reattach the existing
+        // editor DOM (and its listeners) instead of recreating the instance.
+        // Note: no destroy here; the cache entry is reused, not dropped.
+        try { parent.appendChild(cached.mount); } catch (_) { editorCache.delete(cacheKey); continue; }
+        parent._herdrEditorApi = cached.api;
+        continue;
+      }
+      forgetEditor(file.path);
       window.HerdrEditor.create({
         parent,
         path: file.path,
@@ -860,6 +918,12 @@
           lspDidChange(file.path, value);
         },
       });
+      // Cache the editor's own wrapper node (not the pane container) so the
+      // next render can reattach it. When create() produced no wrapper (plain
+      // fallback markup), there is no stable node to reattach; skip caching
+      // instead of accidentally reattaching the container itself.
+      const wrapper = parent.querySelector(".herdr-editor");
+      if (wrapper) editorCache.set(editorCacheKey(file.path), { api: parent._herdrEditorApi, mount: wrapper, signature });
       lspDidOpen(file);
     }
   }
@@ -1128,6 +1192,17 @@
   }
 
   function mutateTreeForRename(from, to, nextName) {
+    // Remap editor cache entries to the renamed path so the cached instance
+    // is reused (not recreated) for the renamed file.
+    for (const cacheKey of Array.from(editorCache.keys())) {
+      if (!cacheKey.startsWith(`${activeKey}|`)) continue;
+      const cachedPath = cacheKey.slice(activeKey.length + 1);
+      const nextPath = Tree.replacePathPrefix(cachedPath, from, to);
+      if (nextPath === cachedPath) continue;
+      const entry = editorCache.get(cacheKey);
+      editorCache.delete(cacheKey);
+      editorCache.set(editorCacheKey(nextPath), entry);
+    }
     state.entries = Tree.renamePathInEntries(state.entries, from, to, nextName);
     state.children = Tree.remapPathMap(state.children, from, to, (entries) => Tree.renamePathInEntries(entries, from, to, nextName));
     state.expanded = Tree.remapPathMap(state.expanded, from, to);
@@ -1137,6 +1212,10 @@
   }
 
   function mutateTreeForDelete(path) {
+    for (const cacheKey of Array.from(editorCache.keys())) {
+      const cachedPath = cacheKey.slice(activeKey.length + 1);
+      if (cachedPath === path || cachedPath.startsWith(`${path}/`)) forgetEditor(cachedPath);
+    }
     state.entries = Tree.removePathFromEntries(state.entries, path);
     state.children = Tree.prunePathMap(state.children, path, (entries) => Tree.removePathFromEntries(entries, path));
     state.expanded = Tree.prunePathMap(state.expanded, path);
@@ -1354,6 +1433,7 @@
       const file = state.files.find((file) => file.path === path);
       if (file && file.dirty && !confirm(`Close ${path} with unsaved changes?`)) return;
       lspDidClose(path);
+      forgetEditor(path);
       state.files = state.files.filter((file) => file.path !== path);
       if (state.selected === path) state.selected = (state.files[state.files.length - 1] || {}).path || "";
       if (state.files.length < 2) state.split = false;

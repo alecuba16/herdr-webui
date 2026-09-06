@@ -250,6 +250,8 @@ This avoids two competing actions over one path field and keeps Git drawer state
 
 The editor stack is CodeMirror. The WebUI preloads `/assets/vendor/codemirror.js` before `/assets/shared/editor.js` so file open can create a CodeMirror DOM immediately.
 
+Desktop file views keep a per-workspace editor instance cache (`file_browser.js`): `render()` rewrites the panel HTML, so `mountEditors()` reattaches the cached editor wrapper (and its API handle) when the file's editor signature (content/draft, lock state, preview mode, search highlight, editor options) is unchanged, instead of recreating the CodeMirror instance on every tab switch or tree refresh. Editors are only rebuilt when the signature changes and are released on close, delete, rename remap, or workspace forget; other workspaces' cached editors survive a switch so switching back does not rebuild them.
+
 Supported behavior:
 
 - editable file views with CodeMirror style (lock toggle switches to read-only),

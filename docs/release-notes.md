@@ -18,6 +18,16 @@
   mixed byte offsets with UTF-16 indices and could misplace the mark on
   multibyte lines). Older backends without chunks still work: the renderer
   keeps its client-side merge fallback.
+- Desktop file editor: CodeMirror instances are now cached per open file and
+  reattached on re-renders instead of being rebuilt every time the panel HTML
+  is rewritten (tab switches, tree refreshes, and any toolbar re-render used
+  to recreate every open editor). Editors are only recreated when something
+  that must change them changes (content on disk, lock/unlock, preview mode,
+  search highlight, editor options) and are released on close, delete, or
+  workspace switch. Measured in a representative session (two files open,
+  10 tab focus switches): 44 editor creations down to 2, and the live editor
+  DOM node now survives re-renders (verified in the browser via node
+  identity).
 - LSP diagnostics now arrive as pushed events over the /ws/events websocket
   instead of a 2-second HTTP poll. The HTTP endpoint remains for
   compatibility and as an automatic fallback when the socket is

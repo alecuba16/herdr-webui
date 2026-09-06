@@ -186,12 +186,32 @@ Priority: P0 must land in this review, P1 should land, P2 next iteration.
   main (18), mobile-edit (49), LSP e2e all pass. Bonus: fixed the
   theme-acceptance CDP harness never closing its WebSocket (node hung after
   passing all checks; committed separately).
-- [ ] **C4 (P1, D/P)** `mountEditors()` re-creates CodeMirror instances on
+- [x] **C4 (P1, D/P)** `mountEditors()` re-creates CodeMirror instances on
   every `render()` because `renderPreviewShell()` rewrites `innerHTML` for the
   whole panel. Keep a per-path editor instance cache keyed by
   `fileBrowserEditor-<hash>`; on render, reattach existing DOM nodes instead of
   rebuilding, and only create/destroy editors on tab add/remove/editability
   change. This is the biggest desktop typing-latency win for large files.
+  DONE: module-level `editorCache` Map in desktop `file_browser.js` keyed
+  `${activeKey}|${path}` storing `{api, mount, signature}` where signature
+  covers content/draft, editing, previewSource, searchHighlight, lineNumbers,
+  and editor options. `mountEditors()` prunes closed paths, reattaches the
+  cached `.herdr-editor` wrapper via `parent.appendChild(cached.mount)` when
+  the signature matches (sets `parent._herdrEditorApi`), else forgets and
+  recreates. Invalidations: `closeFile` forgets, `forgetWorkspace` wipes the
+  workspace prefix, `mutateTreeForRename` remaps via `Tree.replacePathPrefix`
+  (exact-prefix match so `src` never matches `srcfoo.py`), `mutateTreeForDelete`
+  drops the subtree; editing/lock/preview/searchHighlight flips change the
+  signature and recreate; save (content=draft) reuses. `pruneEditorCache`
+  only touches the current workspace's keys so switching workspaces back and
+  forth keeps the other workspace's editors. Measured (vm-harness counting
+  `HerdrEditor.create` calls, session = 2 files open + 10 focus-switch
+  renders, 3 stable runs): 44 -> 2 creations. Real-browser e2e (acceptance.mjs
+  2 new checks): the same `.cm-editor` DOM node survives re-renders with its
+  API attached (mark attribute + re-render + identity assert). 411 JS +
+  377 Rust pass, fmt clean, 20/20 acceptance e2e. Out of scope:
+  `mountContentSearchEditors` (snippet editing) is unreachable dead code —
+  see D6.
 - [ ] **C5 (P2, B/P)** The desktop preview fallback path (`previewHtml` with
   line numbers + regex highlight) is heavy JS for big files; when CodeMirror is
   available it is unused. Gate the numbered-preview path to files < 256 KB and
@@ -225,6 +245,19 @@ Priority: P0 must land in this review, P1 should land, P2 next iteration.
   screen HTML per keystroke in the filter input (type-to-filter); keep the
   input node, patch only the results container (same pattern as desktop
   `renderPreservingScroll`).
+- [ ] **D6 (P1, D/M)** Content-search snippet editing is unreachable dead
+  code since `216e13c` ("Refine unified search result UX"): the shared
+  renderer (`shared/file_content_search.js`) no longer emits the Edit button
+  or the `contentSearchSnippet-${hashId}` container, yet both layouts keep
+  `editSnippet`/`cancelSnippet`/`saveSnippet` handlers, desktop keeps
+  `mountContentSearchEditors()`, and the backend still serves
+  `POST /api/file-browser/content-search/snippet`. No test or e2e exercises
+  it, so `state.contentSearch.snippets[key].editing` can never be true.
+  Decide: restore the in-place snippet-edit UI (renderer emits the Edit
+  action + container again) or remove the dead path end to end (JS handlers,
+  mount fn, mobile handlers, Rust endpoint + `replace_line_range` helper).
+  Note: C4's editor cache intentionally does not cover
+  `mountContentSearchEditors()` because that code is unreachable today.
 
 ## E. Verification gates (per item and at the end)
 
