@@ -1,6 +1,10 @@
 # Release notes
 
 ## 0.4.7 Release Notes
+- Editors now support Ctrl/Cmd+G goto-line with a clamping prompt, and
+  CodeMirror mounts show a live "Ln x, Col y" cursor readout. The
+  editorFindShortcutEnabled option actually works now: a legacy
+  unconditional Ctrl/Cmd+F binding that ignored it was removed.
 - Oversized text files (>1 MB) now offer a "Load first 256 KB" preview on
   desktop and mobile instead of a dead-end placeholder. The read is
   performed and clamped in Rust (16 KB..1 MB budgets accepted); partial

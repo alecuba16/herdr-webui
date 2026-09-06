@@ -839,6 +839,24 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
   top: 8px;
   z-index: 4;
 }
+
+/* IDE-review A5: cursor position readout on headerless editor mounts. */
+.herdr-editor-position {
+  background: color-mix(in srgb, var(--panel2) 88%, transparent);
+  border: 1px solid var(--border2);
+  border-radius: 7px;
+  bottom: 8px;
+  color: var(--muted);
+  font: 11px var(--mono-font);
+  padding: 2px 7px;
+  pointer-events: none;
+  position: absolute;
+  right: 8px;
+  z-index: 4;
+}
+.herdr-editor-position[hidden] {
+  display: none;
+}
 .herdr-editor-find[hidden] {
   display: none;
 }

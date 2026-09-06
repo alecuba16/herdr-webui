@@ -773,8 +773,9 @@ describe("HerdrEditor line number helpers", () => {
 
   it("captures Cmd/Ctrl+F inside file editors to show Herdr find", () => {
     const localStorage = new Map();
-    let parentKeydown = null;
+    const parentKeydowns = [];
     let queryKeydown = null;
+    const parentKeydown = (event) => { for (const handler of parentKeydowns.slice().reverse()) handler(event); };
     const query = {
       value: "",
       focused: false,
@@ -799,13 +800,13 @@ describe("HerdrEditor line number helpers", () => {
         if (selector === ".herdr-editor-find") return toolbar;
         return null;
       },
-      addEventListener(type, handler) { if (type === "keydown") parentKeydown = handler; },
+      addEventListener(type, handler) { if (type === "keydown") parentKeydowns.push(handler); },
       removeEventListener() {},
     };
     const context = {
       window: {
         HerdrCodeMirror: {
-          create() { return { getValue() { return "abc"; }, setValue() {}, destroy() {} }; },
+          create() { return { getValue() { return "abc"; }, setValue() {}, selectRange() {}, destroy() {} }; },
         },
       },
       localStorage: {
@@ -841,6 +842,11 @@ describe("HerdrEditor line number helpers", () => {
     parentKeydown({ key: "f", ctrlKey: true, metaKey: false, altKey: false, preventDefault() { prevented = true; }, stopPropagation() {}, stopImmediatePropagation() {} });
     assert.equal(prevented, false);
     assert.equal(toolbar.hidden, true);
+    // Ctrl+G still works with the find shortcut disabled (different feature).
+    context.prompt = () => null;
+    parentKeydown({ key: "g", ctrlKey: true, metaKey: false, altKey: false, preventDefault() { prevented = true; }, stopPropagation() {}, stopImmediatePropagation() {} });
+    assert.equal(prevented, true);
+    prevented = false;
   });
 
   it("enables replace controls only for editable fallback editors", async () => {
@@ -1015,6 +1021,112 @@ describe("HerdrEditor line number helpers", () => {
     assert.doesNotMatch(parent.innerHTML, /herdr-editor-loading/);
   });
 });
+
+
+describe("HerdrEditor goto-line and position readout (A5)", () => {
+  function makeLine(number) { return { number, from: (number - 1) * 4, to: number * 4 - 1 }; }
+  function makeView() {
+    return {
+      state: {
+        doc: {
+          lines: 3,
+          lineAt(pos) { return makeLine(Math.floor(pos / 4) + 1); },
+          line(no) { return makeLine(Math.min(Math.max(1, no), 3)); },
+        },
+        selection: { main: { head: 4 } },
+      },
+    };
+  }
+  // Doc model: 3 lines of 3 chars + separators => line N starts at (N-1)*4.
+  function makeContext() {
+    const readout = { hidden: true, textContent: "" };
+    const calls = { selected: [] };
+    const cm = {
+      create() {
+        return {
+          getValue() { return "aaa\nbbb\nccc"; },
+          setValue() {},
+          selectRange(from, to) { calls.selected.push({ from, to }); },
+          destroy() {},
+          view: makeView(),
+        };
+      },
+    };
+    const context = {
+      window: { HerdrCodeMirror: cm },
+      document: { createElement() { return {}; }, body: { appendChild() {} } },
+      localStorage: { getItem: () => null, setItem: () => {} },
+      Promise,
+    };
+    const source = readFileSync(new URL("./shared/editor.js", import.meta.url), "utf8");
+    vm.runInNewContext(source, context);
+    return { context, readout, calls };
+  }
+
+  it("gotoLine clamps, jumps, and rejects bad input", () => {
+    const { context, calls } = makeContext();
+    const parent = { querySelector: () => null, addEventListener() {}, removeEventListener() {} };
+    const editor = context.window.HerdrEditor.create({ parent, path: "demo.js", content: "aaa\nbbb\nccc", readonly: true });
+    assert.equal(context.window.HerdrEditor.gotoLine(parent, editor, 2), true);
+    assert.deepEqual(calls.selected, [{ from: 4, to: 4 }]);
+    assert.equal(context.window.HerdrEditor.gotoLine(parent, editor, 99), true); // clamps to line 3
+    assert.deepEqual(calls.selected.slice(-1), [{ from: 8, to: 8 }]);
+    assert.equal(context.window.HerdrEditor.gotoLine(parent, editor, 0), true); // clamps to line 1
+    assert.deepEqual(calls.selected.slice(-1), [{ from: 0, to: 0 }]);
+    assert.equal(context.window.HerdrEditor.gotoLine(parent, editor, "abc"), false); // NaN
+    assert.equal(context.window.HerdrEditor.gotoLine(parent, editor, null), false); // no prompt -> cancelled
+  });
+
+  it("cursorPosition reads line and col from the CodeMirror view", () => {
+    const { context } = makeContext();
+    const api = context.window.HerdrEditor;
+    const view = makeView(); // head 4 -> line 2, col 1 (line.from = 4)
+    const position = api.cursorPosition({ _view: view });
+    assert.equal(position.line, 2);
+    assert.equal(position.col, 1);
+    assert.equal(api.cursorPosition({ _view: null }), null);
+    assert.equal(api.cursorPosition(null), null);
+  });
+
+  it("Ctrl+G inside an editor triggers goto-line via prompt", () => {
+    const { context, calls } = makeContext();
+    const parent = { querySelector: () => null, addEventListener() {}, removeEventListener() {} };
+    context.window.HerdrEditor.create({ parent, path: "demo.js", content: "aaa\nbbb\nccc", readonly: true });
+    const handler = parent.__herdrEditorGotoHandler;
+    assert.ok(handler, "goto handler bound");
+    context.prompt = (message) => { context.lastPrompt = message; return "2"; };
+    let prevented = false;
+    handler({ key: "g", ctrlKey: true, metaKey: false, altKey: false, shiftKey: false, preventDefault() { prevented = true; }, stopPropagation() {} });
+    assert.equal(prevented, true);
+    assert.match(context.lastPrompt, /Go to line \(1-3\)/);
+    assert.deepEqual(calls.selected, [{ from: 4, to: 4 }]);
+  });
+
+  it("position readout updates from the view without DOM churn", () => {
+    const { context, readout } = makeContext();
+    const parentHandlers = {};
+    const nodes = {};
+    const parent = {
+      _herdrEditorApi: null,
+      get innerHTML() { return ""; },
+      set innerHTML(html) {
+        nodes[".herdr-editor-find"] = { hidden: true, querySelector: () => null, addEventListener() {} };
+        nodes[".herdr-editor-position"] = readout;
+      },
+      querySelector(selector) { return nodes[selector] || null; },
+      addEventListener(type, handler) {
+        if (type !== "keydown") return;
+        parentHandlers.__all = (parentHandlers.__all || []).concat(handler);
+        parentHandlers.keydown = (event) => { for (const h of parentHandlers.__all.slice().reverse()) h(event); };
+      },
+      removeEventListener() {},
+    };
+    context.window.HerdrEditor.create({ parent, path: "demo.js", content: "aaa\nbbb\nccc", readonly: true });
+    assert.equal(readout.hidden, false, "readout visible once a view exists");
+    assert.equal(readout.textContent, "Ln 2, Col 1");
+  });
+});
+
 
 describe("desktop file browser editor integration", () => {
   class FakeElement {

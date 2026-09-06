@@ -90,10 +90,33 @@ Priority: P0 must land in this review, P1 should land, P2 next iteration.
   source view, reload restores the placeholder. Real-browser e2e
   (2 MB fixture): placeholder+button render, click loads a read-only
   editor, 23/23 checks. 420 JS + 379 Rust pass, fmt clean, clippy 0.
-- [ ] **A5 (P1, D)** No goto-line / goto-symbol affordance in the editor. Add
+- [x] **A5 (P1, D)** No goto-line / goto-symbol affordance in the editor. Add
   `Ctrl+G` goto-line (CodeMirror `gotoLine` extension is already available via
   `@codemirror/search` or a minimal keymap prompt), plus a "line:col" status
   readout in the editor header.
+  DONE (shared editor: Ctrl+G goto-line + live position readout): every
+  CodeMirror-backed editor (desktop file browser, mobile, readonly preview,
+  partial A4 view) now binds Ctrl/Cmd+G to a goto-line prompt ("Go to line
+  (1-N)") that clamps to the document, jumps via the existing selectRange
+  (scrollIntoView center), and focuses the editor. Headerless mounts (which
+  cover ALL desktop file-browser panes, since they hide the header) get a
+  floating "Ln x, Col y" readout (bottom-right, desktop + mobile CSS,
+  write-on-change so no DOM churn while idle, rAF loop that stops when the
+  view is recreated). Fallback textarea/preview shells report no position
+  (no cursor object) and skip the readout entirely. The TODO's premise about
+  `@codemirror/search` gotoLine was wrong for this bundle (no such export);
+  the prompt path uses the same shell prompt() as the desktop rename flow.
+  Also fixed while testing: wireFindToolbar still carried a legacy
+  UNCONDITIONAL Ctrl/Cmd+F binding (32b0a6a) that ran before the
+  option-aware handler (ff3b8ff) and ignored editorFindShortcutEnabled —
+  the option was silently ineffective in real browsers; the legacy binding
+  is removed (found because the widened vm test ran both handlers).
+  Tests: 4 new vm tests (clamping + bad input + no-prompt cancel, cursor
+  line/col math, Ctrl+G handler binding + prompt flow, readout visibility
+  and text; cross-realm assert quirks handled). Real-browser e2e 26/26:
+  readout shows Ln 1, Col 1 on open, gotoLine(2) updates it, real Ctrl+G
+  keydown with stubbed prompt clamps an out-of-range answer to the last
+  line. 424 JS + 379 Rust pass, fmt clean, clippy 0.
 - [ ] **A6 (P2, D)** Diff awareness: an externally-changed file (hash mismatch
   on save is handled, but no reload prompt on tab focus). On `visibilitychange`
   or tab refocus, re-hash open files cheaply and offer "File changed on disk —

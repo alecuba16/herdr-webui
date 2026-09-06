@@ -150,6 +150,40 @@ const editableDefault = await cdp.evalExpr(`(() => {
 })()`);
 check('file opens editable by default', editableDefault === 'true', `contenteditable="${editableDefault}"`);
 
+// 2c. A5: position readout + Ctrl+G goto-line in the editor
+const gotoRound = await cdp.evalExpr(`(async () => {
+  // The editor mount for the open file, its HerdrEditor api, and the readout.
+  const pane = document.querySelector('.file-browser-pane');
+  if (!pane) return JSON.stringify({ err: 'no-pane' });
+  const apiHost = pane.querySelector('[id^="fileBrowserEditor-"]');
+  const api = apiHost && apiHost._herdrEditorApi ? apiHost._herdrEditorApi : null;
+  const readout = pane.querySelector('.herdr-editor-position');
+  const before = readout ? readout.textContent : null;
+  // Programmatic goto-line to line 2 (bypasses prompt; same code path as Ctrl+G).
+  let jumped = false;
+  if (api && window.HerdrEditor) jumped = window.HerdrEditor.gotoLine(apiHost, api, 2);
+  await new Promise(r => setTimeout(r, 400));
+  const after = readout ? readout.textContent : null;
+  // Now exercise the real Ctrl+G key path with a stubbed prompt (headless
+  // Chrome has no native prompt implementation over CDP eval).
+  let promptAnswer = null;
+  window.prompt = (msg) => { window.__gotoPrompt = msg; return promptAnswer; };
+  promptAnswer = '3';
+  const target = pane.querySelector('.cm-content') || apiHost;
+  const ev = new KeyboardEvent('keydown', { key: 'g', ctrlKey: true, bubbles: true, cancelable: true });
+  (target || pane).dispatchEvent(ev);
+  await new Promise(r => setTimeout(r, 300));
+  const finalPos = readout ? readout.textContent : null;
+  return JSON.stringify({ hasApi: !!api, before, jumped, after, promptMsg: window.__gotoPrompt || null, finalPos });
+})()`, true);
+const gotoParsed = (() => { try { return JSON.parse(gotoRound || '{}'); } catch { return { raw: gotoRound }; } })();
+check('editor exposes a live position readout (A5)', gotoParsed.before === 'Ln 1, Col 1', JSON.stringify(gotoParsed));
+check('gotoLine(2) moves the cursor and updates the readout (A5)', gotoParsed.jumped === true && gotoParsed.after === 'Ln 2, Col 1', JSON.stringify(gotoParsed));
+// The doc has 2 lines at this point ("# acceptance edit" + print('hello'));
+// an out-of-range answer (3) must clamp to the last line, proving the
+// prompt path runs and clamps exactly like the programmatic one.
+check('Ctrl+G prompts and clamps to the document (A5)', gotoParsed.promptMsg === 'Go to line (1-2)' && gotoParsed.finalPos === 'Ln 2, Col 1', JSON.stringify(gotoParsed));
+
 // 3. Lock flips to read-only and back
 const lockRound = await cdp.evalExpr(`(async () => {
   const btn = document.querySelector('.file-browser-lock-toggle');
