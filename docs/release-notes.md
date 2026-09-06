@@ -1,5 +1,14 @@
 # Release notes
 
+## 0.4.5 Release Notes
+
+### Editor caret visibility in dark theme
+
+- Fixed the code/file editor caret (cursor) being practically invisible in dark theme. CodeMirror injects its theme with a generated class prefix (`.ͼN .cm-cursor`, specificity 0,2,0) and defaults the caret to 1.2px solid black; our previous override (`.cm-cursor`, specificity 0,1,0) lost the CSS cascade, so the caret stayed black on the `#1e1e2e` editor background (contrast 1.3:1).
+- Caret rules are now scoped with `.cm-editor` in both desktop and mobile CSS so they win the cascade, and the caret is 2px wide with `margin-left: -1px` so it stays centered on the character cell.
+- New theme variables drive caret colors: `--editor-caret` (bright, used while the editor is focused and for the content `caret-color`) and `--editor-caret-dim` (dimmed but still contrasted while unfocused). Dark uses `#f2f5ff` / `#a6adc8` (15.06:1 / 7.37:1 against the editor background), light uses `#1e2a50` / `#6c6f85` (10.56:1 / 3.73:1).
+- Verified end to end in headless Chrome over CDP: caret visible through the blink cycle, 2px, theme-colored, focused and dim variants, both themes; 360 frontend tests and 325 Rust tests pass.
+
 ## 0.4.4 Release Notes
 
 ### Settings modal fixes

@@ -379,7 +379,9 @@ describe("mobile bundle load", () => {
     match(mobileCss, /\.cm-activeLineGutter/);
     match(mobileCss, /\.cm-matchingBracket/);
     match(mobileCss, /\.cm-nonmatchingBracket/);
-    match(mobileCss, /\.cm-cursor \{[\s\S]*?border-left-color: var\(--accent\)/);
+    match(mobileCss, /\.cm-editor \.cm-cursor,[\s\S]*?border-left: 2px solid var\(--editor-caret\)/);
+    match(mobileCss, /--editor-caret:/);
+    match(mobileCss, /--editor-caret-dim:/);
     match(mobileCss, /\.cm-selectionBackground/);
     match(mobileCss, /--accent-1:/);
     match(mobileCss, /--accent-2:/);
