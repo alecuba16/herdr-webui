@@ -1251,7 +1251,7 @@
     const loading = modal.loading ? `<div class="git-ui-muted">Loading branches...</div>` : "";
     const common = `${loading}${branchSelect}`;
     if (modal.type === "pull") {
-      return renderGitOpModalShell("Pull changes", `${common}${renderGitOpModeSelect("Pull option", [["regular", "Regular pull"], ["rebase", "Pull with rebase"], ["ff-only", "Fast-forward only"], ["no-ff", "No fast-forward"], ["force", "Force pull"]])}${error}`, "Pull", "primary", "runPullFromModal");
+      return renderGitOpModalShell("Pull changes", `${common}${renderGitOpModeSelect("Pull option", [["update", "Update (fetch + fast-forward)"], ["regular", "Regular pull"], ["rebase", "Pull with rebase"], ["ff-only", "Fast-forward only"], ["no-ff", "No fast-forward"], ["force", "Force pull"]], "update")}${error}`, "Pull", "primary", "runPullFromModal");
     }
     if (modal.type === "push" || modal.type === "force-push") {
       const force = modal.type === "force-push";
@@ -1264,7 +1264,7 @@
       return renderGitOpModalShell(force ? "Push failed" : "Push changes", body, force ? "Retry push" : "Push", force ? "danger" : "primary", "runPushFromModal");
     }
     if (modal.type === "rebase") {
-      const body = `${common}<label class="git-ui-branch-field"><span>Rebase commits after</span><input id="gitUiRebaseUpstream" value="HEAD" placeholder="HEAD"></label><label class="git-ui-check-row"><input id="gitUiRebasePullFirst" type="checkbox" checked><span>Fetch selected branch before rebasing</span></label>${error}`;
+      const body = `${common}<label class="git-ui-branch-field"><span>Rebase commits after</span><input id="gitUiRebaseUpstream" value="HEAD" placeholder="HEAD"></label><label class="git-ui-check-row"><input id="gitUiRebasePullFirst" type="checkbox" checked><span>Fetch selected branch (and main/master) before rebasing onto origin</span></label>${error}`;
       return renderGitOpModalShell("Rebase branch", body, "Rebase", "primary", "runRebaseFromModal");
     }
     return "";
@@ -1546,7 +1546,7 @@
     const commitDisabled = canCommit ? "" : " disabled";
     const branchLabel = `${view.titleKind || "Branch"}: ${s.branch || view.title || "No branch"}`;
     const error = view.error && !cleanupOnly ? `<div class="git-ui-error">${esc(view.error)}</div>` : "";
-    const actions = cleanupOnly ? "" : `<div class="git-ui-toolbar"><div class="git-ui-toolbar-title">Worktree actions</div><div class="git-ui-actions"><button class="git-ui-btn primary" title="${esc(commitHint)}" onclick="HerdrGitUi.openCommitModal()"${commitDisabled}>Commit</button><button class="git-ui-btn" onclick="HerdrGitUi.openPullModal()">↓ Pull</button><button class="git-ui-btn" onclick="HerdrGitUi.openPushModal()">↑ Push</button><button class="git-ui-btn" onclick="HerdrGitUi.rebase()">Rebase</button><button class="git-ui-btn danger" onclick="HerdrGitUi.reset()">Reset</button></div></div>`;
+    const actions = cleanupOnly ? "" : `<div class="git-ui-toolbar"><div class="git-ui-toolbar-title">Worktree actions</div><div class="git-ui-actions"><button class="git-ui-btn primary" title="${esc(commitHint)}" onclick="HerdrGitUi.openCommitModal()"${commitDisabled}>Commit</button><button class="git-ui-btn" title="Fetch and fast-forward from the upstream (never creates a merge commit)" onclick="HerdrGitUi.updateFromUpstream()">↓ Update</button><button class="git-ui-btn" onclick="HerdrGitUi.openPullModal()">↓ Pull</button><button class="git-ui-btn" onclick="HerdrGitUi.openPushModal()">↑ Push</button><button class="git-ui-btn" onclick="HerdrGitUi.rebase()">Rebase</button><button class="git-ui-btn danger" onclick="HerdrGitUi.reset()">Reset</button></div></div>`;
     const filterInput = sideFileCount(view)
       ? `<label class="git-ui-file-filter"><span class="git-ui-file-filter-icon" aria-hidden="true"></span><input value="${esc(view.fileFilter || "")}" id="gitUiFileFilter" name="git-ui-file-filter" autocomplete="off" placeholder="Filter files" oninput="HerdrGitUi.filterFiles(this.value)"></label>`
       : "";
@@ -3474,6 +3474,11 @@
       render();
     },
     openPullModal() { this.openGitOpModal("pull"); },
+    async updateFromUpstream() {
+      const view = active();
+      if (!view || view.mutating) return;
+      await postJson("/api/git-ui/pull", { cwd: view.cwd, mode: "update" }, "Updating from upstream");
+    },
     openPushModal() { this.openGitOpModal("push"); },
     closeGitOpModal() { state.gitOpModal = null; render(); },
     async runPullFromModal() {

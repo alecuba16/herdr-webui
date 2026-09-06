@@ -81,7 +81,17 @@ function context(fetchImpl) {
       execCommand: () => true,
       querySelector: () => element(),
       querySelectorAll: () => [],
-      getElementById: () => element(),
+      __panelHtml: "",
+      getElementById(id) {
+        const el = element();
+        if (id === "gitUiPanel") {
+          Object.defineProperty(el, "innerHTML", {
+            get() { return ctx.document.__panelHtml; },
+            set(value) { ctx.document.__panelHtml = String(value); },
+          });
+        }
+        return el;
+      },
       addEventListener() {},
     },
     localStorage: {
@@ -165,6 +175,12 @@ async function openedWithStatus(status) {
 function lastPostCall(calls, path) {
   const posts = calls.filter((call) => call.path === path);
   return posts[posts.length - 1] || null;
+}
+
+// The vm document stub captures the git panel's rendered HTML so tests can
+// assert on toolbar buttons and modal markup.
+function ctxHtml(booted) {
+  return (booted.ctx.document.__panelHtml || "");
 }
 
 test("folder context menu stages, unstages, and discards files under a directory", async () => {
@@ -344,4 +360,37 @@ test("folder mutations are hidden and refused outside the changes view", async (
   await ui.menuAction("stage");
   const staged = booted.calls.slice(before).filter((call) => call.path === "/api/git-ui/stage");
   assert.equal(staged.length, 0, "no stage POST may fire outside changes mode");
+});
+
+test("Update button fetch+ff from upstream and Pull modal default to update mode (GitHub flow)", async () => {
+  const booted = await openedWithStatus(emptyStatus());
+  const { ui, calls } = booted;
+
+  // The worktree toolbar exposes the dedicated Update button.
+  const html = String(ctxHtml(booted));
+  assert.match(html, /onclick="HerdrGitUi.updateFromUpstream\(\)">↓ Update<\/button>/);
+  assert.match(html, /title="Fetch and fast-forward from the upstream \(never creates a merge commit\)"/);
+
+  // Update posts mode=update with no branch (ff-only @{u}).
+  const before = calls.length;
+  await ui.updateFromUpstream();
+  const updateCall = lastPostCall(calls.slice(before), "/api/git-ui/pull") || lastPostCall(calls.slice(before).map(c => c), "/api/git-ui/pull");
+  const updatePosts = calls.slice(before).filter((call) => call.path === "/api/git-ui/pull");
+  assert.equal(updatePosts.length, 1, "exactly one pull POST fired");
+  assert.equal(JSON.parse(updatePosts[0].init.body).mode, "update");
+  assert.equal(JSON.parse(updatePosts[0].init.body).branch, undefined);
+
+  // Pull modal offers Update as the default mode and Rebase fetches main/master.
+  await ui.openPullModal();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const pullHtml = String(ctxHtml(booted));
+  assert.match(pullHtml, /<option value="update" selected>Update \(fetch \+ fast-forward\)<\/option>/);
+
+  await ui.closeGitOpModal();
+  await ui.rebase();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const rebaseHtml = String(ctxHtml(booted));
+  assert.match(rebaseHtml, /id="gitUiRebasePullFirst" type="checkbox" checked/);
+  assert.match(rebaseHtml, /Fetch selected branch \(and main\/master\) before rebasing onto origin/);
+  await ui.closeGitOpModal();
 });

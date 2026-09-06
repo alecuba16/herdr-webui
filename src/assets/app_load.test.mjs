@@ -892,7 +892,7 @@ describe("app bundle load", () => {
     match(gitUiSource, /const filterInput = sideFileCount\(view\)/);
     match(gitUiSource, /const fileList = cleanupOnly \? "" : `\$\{filterInput\}\$\{fileSections\}`;/);
     match(gitUiSource, /status\.conflicted, status\.staged, status\.unstaged, status\.untracked/);
-    match(gitUiSource, /Fetch selected branch before rebasing/);
+    match(gitUiSource, /Fetch selected branch \(and main\/master\) before rebasing onto origin/);
     match(gitUiSource, /pull_first: pullFirst/);
     ok(!gitUiSource.includes('/api/git-ui/pull", { cwd: view.cwd, mode: "ff-only", branch }'));
   });

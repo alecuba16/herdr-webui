@@ -350,6 +350,26 @@ fn fetched_rebase_ref(ref_name: &str) -> String {
     }
 }
 
+/// Fetches the repo's default base branch (main or master, whichever
+/// exists as a remote-tracking ref) unless it was already fetched as the
+/// selected branch. Repos with neither are left untouched.
+fn fetch_default_base(cwd: &str) -> Result<(), (StatusCode, String)> {
+    for base in ["main", "master"] {
+        if git_ui_text(cwd, &["rev-parse", "--verify", &format!("origin/{base}")]).is_err() {
+            continue; // no such remote-tracking ref; try the next candidate
+        }
+        return git_ui_text(cwd, &["fetch", "origin", base])
+            .map(|_| ())
+            .map_err(|err| {
+                (
+                    StatusCode::BAD_GATEWAY,
+                    format!("fetch {base} failed:\n{err}"),
+                )
+            });
+    }
+    Ok(())
+}
+
 fn git_ui_rebase_blocking(
     cwd: String,
     upstream: String,
@@ -363,6 +383,10 @@ fn git_ui_rebase_blocking(
             Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
         },
     };
+    // GitHub-flow rebase: when fetching, always refresh main/master too so
+    // the default base is never stale, and rebase onto the remote-tracking
+    // ref of the selected branch. Without fetching, keep the caller's ref
+    // exactly as given (local branch name or explicit origin/ ref).
     let rebase_onto = if pull_first {
         let fetch_branch = fetch_branch_name(&onto).to_string();
         git_ui_text(&cwd, &["fetch", "origin", &fetch_branch]).map_err(|err| {
@@ -371,6 +395,11 @@ fn git_ui_rebase_blocking(
                 format!("fetch selected branch failed:\n{err}"),
             )
         })?;
+        // GitHub-flow rebase: keep the default base fresh too. When the
+        // caller rebases onto something other than main/master, fetch the
+        // repo's default branch as well so the next "rebase onto main" is
+        // not based on a stale ref.
+        fetch_default_base(&cwd)?;
         fetched_rebase_ref(&onto)
     } else {
         onto.clone()
@@ -526,6 +555,26 @@ fn git_ui_pull_blocking(
     mode: String,
     branch: Option<String>,
 ) -> Result<Response, (StatusCode, String)> {
+    if mode == "update" {
+        // GitHub-flow update: fetch everything, then fast-forward the
+        // current branch only. Never creates a merge commit.
+        git_ui_text_strings(&cwd, &["fetch".to_string(), "origin".to_string()]).map_err(|err| {
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("fetch origin failed:\n{err}"),
+            )
+        })?;
+        let mut args = vec!["merge".to_string(), "--ff-only".to_string()];
+        if let Some(branch) = branch.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+            args.push(format!("origin/{branch}"));
+        } else {
+            args.push("@{u}".to_string());
+        }
+        return match git_ui_text_strings(&cwd, &args) {
+            Ok(text) => Ok(Json(json!({ "ok": true, "message": text })).into_response()),
+            Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
+        };
+    }
     let mut args = vec!["pull".to_string()];
     match mode.as_str() {
         "regular" => {}
@@ -894,6 +943,7 @@ mod tests {
 
     #[test]
     fn rebase_pull_first_fetches_branch_and_rebases_onto_remote_tracking_ref() {
+        // (kept: unit expectations for fetch/ref naming helpers)
         assert_eq!(fetch_branch_name("master"), "master");
         assert_eq!(fetched_rebase_ref("master"), "origin/master");
         assert_eq!(fetch_branch_name("origin/master"), "master");
@@ -904,5 +954,147 @@ mod tests {
             fetched_rebase_ref("refs/remotes/origin/master"),
             "refs/remotes/origin/master"
         );
+    }
+
+    #[tokio::test]
+    async fn pull_update_mode_fetches_and_fast_forwards_without_merge_commit() {
+        // GitHub-flow update: after the remote advances, mode=update must
+        // fast-forward the local branch and leave a linear history (no merge
+        // commit). With no divergence it is a pure ff.
+        let root =
+            std::env::temp_dir().join(format!("herdr-webui-pull-update-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let origin = root.join("origin.git");
+        let clone = root.join("work");
+        std::fs::create_dir_all(&root).unwrap();
+
+        run_git(&root, &["init", "--bare", "origin.git"]);
+        run_git(&root, &["init", "-b", "main", "work"]);
+        run_git(&clone, &["config", "user.email", "t@t"]);
+        run_git(&clone, &["config", "user.name", "T"]);
+        std::fs::write(clone.join("a.txt"), "base\n").unwrap();
+        run_git(&clone, &["add", "-A"]);
+        run_git(&clone, &["commit", "-m", "base"]);
+        run_git(
+            &clone,
+            &["remote", "add", "origin", origin.to_str().unwrap()],
+        );
+        run_git(&clone, &["push", "-u", "origin", "main"]);
+
+        // Remote advances behind the clone's back.
+        let other = root.join("other");
+        run_git(&root, &["clone", origin.to_str().unwrap(), "other"]);
+        run_git(&other, &["config", "user.email", "t@t"]);
+        run_git(&other, &["config", "user.name", "T"]);
+        std::fs::write(other.join("b.txt"), "advance\n").unwrap();
+        run_git(&other, &["add", "-A"]);
+        run_git(&other, &["commit", "-m", "advance main"]);
+        run_git(&other, &["push", "origin", "main"]);
+
+        let response = git_ui_pull_blocking(
+            clone.to_string_lossy().to_string(),
+            "update".to_string(),
+            None,
+        )
+        .expect("update pull should succeed");
+        let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(payload["ok"], serde_json::json!(true));
+
+        // Local main now equals remote main, linear history.
+        let count = git_text(&clone, &["rev-list", "--count", "origin/main..main"]);
+        assert_eq!(count.trim(), "0");
+        let parents = git_text(&clone, &["rev-list", "--merges", "-1", "main"]);
+        assert_eq!(parents.trim(), "", "update must not create merge commits");
+
+        // True divergence: local commits AND remote advances from the same
+        // base. Update must refuse (ff-only) instead of merging or rewriting.
+        std::fs::write(clone.join("c.txt"), "local\n").unwrap();
+        run_git(&clone, &["add", "-A"]);
+        run_git(&clone, &["commit", "-m", "local work"]);
+        std::fs::write(other.join("d.txt"), "remote\n").unwrap();
+        run_git(&other, &["add", "-A"]);
+        run_git(&other, &["commit", "-m", "remote work"]);
+        run_git(&other, &["push", "origin", "main"]);
+        let result = git_ui_pull_blocking(
+            clone.to_string_lossy().to_string(),
+            "update".to_string(),
+            None,
+        );
+        assert!(result.is_err(), "diverged update must fail, not merge");
+        // Nothing merged behind the error.
+        let merges = git_text(&clone, &["rev-list", "--merges", "-1", "main"]);
+        assert_eq!(merges.trim(), "", "no merge commit may appear");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn rebase_pull_first_fetches_main_alongside_selected_branch() {
+        // Real repo with a local "origin": main advances on the remote after
+        // the feature branch is created. Rebase with pull_first=true must
+        // rebase onto the FETCHED origin/main, not the stale local main.
+        let root =
+            std::env::temp_dir().join(format!("herdr-webui-rebase-gh-flow-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let origin = root.join("origin.git");
+        let clone = root.join("work");
+        std::fs::create_dir_all(&root).unwrap();
+
+        run_git(&root, &["init", "--bare", "origin.git"]);
+        run_git(&root, &["init", "-b", "main", "work"]);
+        std::fs::write(clone.join("a.txt"), "base\n").unwrap();
+        run_git(&clone, &["config", "user.email", "t@t"]);
+        run_git(&clone, &["config", "user.name", "T"]);
+        run_git(&clone, &["add", "-A"]);
+        run_git(&clone, &["commit", "-m", "base"]);
+        run_git(
+            &clone,
+            &["remote", "add", "origin", origin.to_str().unwrap()],
+        );
+        run_git(&clone, &["push", "-u", "origin", "main"]);
+
+        // Feature branch with its own commit.
+        run_git(&clone, &["checkout", "-b", "feature"]);
+        std::fs::write(clone.join("f.txt"), "feature\n").unwrap();
+        run_git(&clone, &["add", "-A"]);
+        run_git(&clone, &["commit", "-m", "feature"]);
+
+        // Remote main advances behind the clone's back.
+        let other = root.join("other");
+        run_git(&root, &["clone", origin.to_str().unwrap(), "other"]);
+        run_git(&other, &["config", "user.email", "t@t"]);
+        run_git(&other, &["config", "user.name", "T"]);
+        std::fs::write(other.join("b.txt"), "advance\n").unwrap();
+        run_git(&other, &["add", "-A"]);
+        run_git(&other, &["commit", "-m", "advance main"]);
+        run_git(&other, &["push", "origin", "main"]);
+
+        // Rebase feature onto main with fetch: backend fetches origin/main
+        // (the default base), then rebases onto origin/main.
+        let response = git_ui_rebase_blocking(
+            clone.to_string_lossy().to_string(),
+            "main".to_string(),
+            None,
+            true,
+        )
+        .expect("rebase should succeed");
+        let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(payload["onto"], serde_json::json!("origin/main"));
+
+        // The feature commit now sits on top of the advanced remote main.
+        let log = git_text(&clone, &["log", "--oneline", "origin/main..HEAD"]);
+        assert_eq!(log.lines().count(), 1, "only the feature commit on top");
+        assert!(log.contains("feature"), "log: {log}");
+        // And origin/main contains the advanced commit.
+        let main_log = git_text(&clone, &["log", "--oneline", "-1", "origin/main"]);
+        assert!(main_log.contains("advance main"), "log: {main_log}");
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
