@@ -18,6 +18,12 @@
   mixed byte offsets with UTF-16 indices and could misplace the mark on
   multibyte lines). Older backends without chunks still work: the renderer
   keeps its client-side merge fallback.
+- Removed the content-search "edit snippet" dead path (unreachable since the
+  search results were redesigned around merged chunks): both layouts kept
+  edit/cancel/save handlers and the backend kept a hash-guarded
+  line-range-save endpoint that no UI could ever trigger. Content matches
+  open in the full editor (editable, hash-guarded save) instead. Also fixed
+  the last clippy warnings (derived `Default`, `io::Error::other`).
 - Desktop file editor: CodeMirror instances are now cached per open file and
   reattached on re-renders instead of being rebuilt every time the panel HTML
   is rewritten (tab switches, tree refreshes, and any toolbar re-render used

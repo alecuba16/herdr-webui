@@ -109,7 +109,6 @@
       query: "",
       files: [],
       expanded: {},
-      snippets: {},
       loading: false,
       error: "",
       done: true,
@@ -124,7 +123,6 @@
     state.query = query || "";
     state.files = [];
     state.expanded = {};
-    state.snippets = {};
     state.error = "";
     state.done = true;
     state.offset = 0;
@@ -196,7 +194,6 @@
     return contentSearch.render(state, Object.assign({
       callback: opts.callback || "HerdrWorkspaceSearchContent",
       hideInput: true,
-      disableSnippetEditing: true,
       idPrefix: opts.idPrefix || "workspaceSearchContent",
     }, opts || {}));
   }

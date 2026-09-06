@@ -12,7 +12,7 @@
   let state = createState();
 
   function createContentSearchState() {
-    return { active: false, query: "", timer: null, files: [], expanded: {}, snippets: {}, loading: false, error: "", offset: 0, done: true, totalFiles: 0, totalMatches: 0, contextLines: 2, maxMatchesPerFile: 5, autoCollapseFiles: 0, defaultExpanded: true };
+    return { active: false, query: "", timer: null, files: [], expanded: {}, loading: false, error: "", offset: 0, done: true, totalFiles: 0, totalMatches: 0, contextLines: 2, maxMatchesPerFile: 5, autoCollapseFiles: 0, defaultExpanded: true };
   }
 
   function createState(initial) {
@@ -140,7 +140,6 @@
   function clearContentSearchResults(content = state.contentSearch) {
     content.files = [];
     content.expanded = {};
-    content.snippets = {};
     content.error = "";
     content.offset = 0;
     content.done = true;
@@ -563,7 +562,6 @@
     const sideBody = `${currentRow}${Tree.renderEntries(entries, { selectedPath: state.selected, callback: "HerdrFileBrowser", showMeta: true, dirClickMethod: "none", dirDoubleClickMethod: "enter", contextMethod: "menu", shiftSelectMode: true })}`;
     panel.innerHTML = `<aside class="file-browser-side ${activeFile ? "previewing" : ""} ${state.contentSearch.active ? "content-searching" : ""}" tabindex="0"><div class="file-browser-head"><div class="file-browser-title-row"><div class="file-browser-title">Files</div><div class="file-browser-actions">${appRefreshIconButton({ className: "file-browser-refresh", title: "Refresh", label: "Refresh files", spinning: !!state.refreshing, onclick: "HerdrFileBrowser.refresh()" })}</div></div><div class="file-browser-subtitle">${esc(state.path || state.cwd || "No workspace")}</div><div class="file-browser-result-count">Open a file, then use its ⌕ button or Cmd/Ctrl-F to search inside it.</div></div>${renderAccessError()}${sideBody}</aside><main class="file-browser-main"><div class="file-browser-toolbar">${renderToolbar(activeFile)}</div><div class="file-browser-preview ${state.split || state.contentSearch.active ? "split" : ""}" id="fileBrowserPreview">${renderPreviewShell()}</div></main>${renderContextMenu()}`;
     mountEditors();
-    mountContentSearchEditors();
   }
 
   function renderAccessError() {
@@ -733,7 +731,7 @@
     const content = state.contentSearch;
     const contentSearch = window.HerdrContentSearch;
     const body = contentSearch
-      ? contentSearch.render({ query: content.query, files: content.files, expanded: content.expanded, snippets: content.snippets, loading: content.loading, error: content.error, done: content.done, total_files: content.totalFiles, total_matches: content.totalMatches }, { callback: "HerdrFileBrowserContent", inputId: "fileContentSearchInput", hideInput: true })
+      ? contentSearch.render({ query: content.query, files: content.files, expanded: content.expanded, loading: content.loading, error: content.error, done: content.done, total_files: content.totalFiles, total_matches: content.totalMatches }, { callback: "HerdrFileBrowserContent", inputId: "fileContentSearchInput", hideInput: true })
       : `<div class="file-browser-empty">Content search renderer unavailable.</div>`;
 
     return `<section class="file-browser-pane active file-browser-content-pane"><div class="file-browser-pane-body file-browser-content-pane-body"><div class="file-browser-content-actions"><span>Content search: ${esc(content.query || "No query")}</span><button class="git-ui-btn" onclick="event.stopPropagation();HerdrFileBrowser.closeContentSearch()">Close search</button></div>${body}</div></section>`;
@@ -1073,39 +1071,6 @@
     if (!parent || !parent._herdrEditorApi || !parent._herdrEditorApi.toggleFind) return;
     state.selected = path;
     parent._herdrEditorApi.toggleFind(true);
-  }
-
-  function mountContentSearchEditors() {
-    const configured = editorOptions();
-    if (!state.contentSearch.active) return;
-    for (const file of state.contentSearch.files || []) {
-      for (const match of file.matches || []) {
-        const key = window.HerdrContentSearch.snippetKey(file.path, match);
-        const snippet = state.contentSearch.snippets[key];
-        if (!snippet || !snippet.editing) continue;
-        const editorId = `contentSearchSnippet-${window.HerdrContentSearch.hashId(key)}`;
-        const parent = document.getElementById(editorId);
-        if (!parent) continue;
-        window.HerdrEditor.create({
-          parent,
-          path: file.path,
-          content: snippet.draft == null ? match.content || "" : snippet.draft,
-          readonly: false,
-          hideHeader: true,
-          lineNumbers: lineNumbersEnabled(),
-          wordWrap: configured.wordWrap,
-          tabSize: configured.tabSize,
-          bracketMatching: configured.bracketMatching,
-          folding: configured.folding,
-          activeLine: configured.activeLine,
-          whitespace: configured.whitespace,
-          onChange(value) {
-            snippet.draft = value;
-            snippet.dirty = value !== (match.content || "");
-          },
-        });
-      }
-    }
   }
 
   function openFindForPath(path) {
@@ -1535,7 +1500,6 @@
       content.query = "";
       content.files = [];
       content.expanded = {};
-      content.snippets = {};
       content.error = "";
       content.offset = 0;
       content.done = true;
@@ -1568,52 +1532,6 @@
     collapseAll() {
       state.contentSearch.expanded = {};
       renderPreservingScroll();
-    },
-    editSnippet(encodedPath, encodedMatchId) {
-      const path = decodeURIComponent(encodedPath);
-      const matchId = decodeURIComponent(encodedMatchId);
-      const file = contentFile(path);
-      const match = window.HerdrContentSearch.findMatch(file, matchId);
-      if (!file || !match) return;
-      const key = window.HerdrContentSearch.snippetKey(path, match);
-      state.contentSearch.snippets[key] = { editing: true, draft: match.content || "", dirty: false, saving: false, error: "" };
-      render();
-    },
-    cancelSnippet(encodedPath, encodedMatchId) {
-      const path = decodeURIComponent(encodedPath);
-      const matchId = decodeURIComponent(encodedMatchId);
-      const file = contentFile(path);
-      const match = window.HerdrContentSearch.findMatch(file, matchId);
-      if (!match) return;
-      delete state.contentSearch.snippets[window.HerdrContentSearch.snippetKey(path, match)];
-      render();
-    },
-    async saveSnippet(encodedPath, encodedMatchId) {
-      const path = decodeURIComponent(encodedPath);
-      const matchId = decodeURIComponent(encodedMatchId);
-      const file = contentFile(path);
-      const match = window.HerdrContentSearch.findMatch(file, matchId);
-      if (!file || !match) return;
-      const key = window.HerdrContentSearch.snippetKey(path, match);
-      const snippet = state.contentSearch.snippets[key];
-      if (!snippet || snippet.saving) return;
-      snippet.saving = true;
-      snippet.error = "";
-      render();
-      try {
-        const result = await api("/api/file-browser/content-search/snippet", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ cwd: state.cwd, path, expected_hash: file.hash || "", start_line: match.start_line, end_line: match.end_line, content: snippet.draft || "" }),
-        });
-        file.hash = result.hash || file.hash;
-        delete state.contentSearch.snippets[key];
-        await loadContentSearchFile(path);
-      } catch (error) {
-        snippet.error = error.message || String(error);
-      }
-      if (snippet) snippet.saving = false;
-      render();
     },
     async expandSnippet(encodedPath, _encodedMatchId, _direction) {
       const path = decodeURIComponent(encodedPath);

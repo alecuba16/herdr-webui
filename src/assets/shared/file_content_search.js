@@ -12,10 +12,6 @@
     return encodeURIComponent(String(value == null ? "" : value)).replace(/'/g, "%27");
   }
 
-  function snippetKey(path, match) {
-    return `${path}:${match && match.id ? match.id : `${match.start_line || 0}:${match.line || 0}`}`;
-  }
-
   function highlightLine(line, match, query) {
     const text = String(line || "");
     const start = Number(match && match.match_start);
@@ -166,5 +162,5 @@
     return (file && file.matches || []).find((match) => String(match.id) === String(matchId)) || null;
   }
 
-  window.HerdrContentSearch = { render, snippetKey, hashId, findMatch };
+  window.HerdrContentSearch = { render, hashId, findMatch };
 })();

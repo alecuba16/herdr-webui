@@ -49,10 +49,6 @@ pub(crate) fn routes() -> Router<WebState> {
             get(file_browser_content_search_file),
         )
         .route(
-            "/api/file-browser/content-search/snippet",
-            axum::routing::post(file_browser_save_content_snippet),
-        )
-        .route(
             "/api/file-browser/rename",
             axum::routing::post(file_browser_rename),
         )
@@ -99,16 +95,6 @@ struct FileContentSearchQuery {
     max_matches_per_file: Option<usize>,
     match_case: Option<bool>,
     regex: Option<bool>,
-}
-
-#[derive(Deserialize)]
-struct FileContentSnippetSaveRequest {
-    cwd: String,
-    path: String,
-    expected_hash: String,
-    start_line: usize,
-    end_line: usize,
-    content: String,
 }
 
 #[derive(Deserialize)]
@@ -1021,30 +1007,6 @@ fn collect_content_search(
     Ok(build)
 }
 
-fn replace_line_range(
-    content: &str,
-    start_line: usize,
-    end_line: usize,
-    replacement: &str,
-) -> Result<String, String> {
-    if start_line == 0 || end_line < start_line {
-        return Err("invalid line range".to_string());
-    }
-    let mut lines = content.split('\n').map(str::to_string).collect::<Vec<_>>();
-    if lines.is_empty() {
-        lines.push(String::new());
-    }
-    if start_line > lines.len() || end_line > lines.len() {
-        return Err("line range outside file".to_string());
-    }
-    let replacement_lines = replacement
-        .split('\n')
-        .map(str::to_string)
-        .collect::<Vec<_>>();
-    lines.splice((start_line - 1)..end_line, replacement_lines);
-    Ok(lines.join("\n"))
-}
-
 fn file_hash(path: &Path) -> Result<String, String> {
     if !path.exists() {
         return Ok(String::new());
@@ -1594,59 +1556,6 @@ async fn file_browser_content_search_file(
         "file": result,
     }))
     .into_response()
-}
-
-async fn file_browser_save_content_snippet(
-    State(state): State<WebState>,
-    headers: HeaderMap,
-    ConnectInfo(remote): ConnectInfo<SocketAddr>,
-    Json(body): Json<FileContentSnippetSaveRequest>,
-) -> Response {
-    if let Err(response) = file_browser_auth(&state, &headers, remote) {
-        return response;
-    }
-    let root = match resolve_root(&body.cwd) {
-        Ok(root) => root,
-        Err(err) => return file_browser_json_error(StatusCode::BAD_REQUEST, err),
-    };
-    let rel = match clean_relative_path(Some(&body.path)) {
-        Ok(rel) if !rel.is_empty() => rel,
-        Ok(_) => return file_browser_json_error(StatusCode::BAD_REQUEST, "path is required"),
-        Err(err) => return file_browser_json_error(StatusCode::BAD_REQUEST, err),
-    };
-    let file = match resolve_child(&root, &rel) {
-        Ok(file) => file,
-        Err(err) => return file_browser_json_error(StatusCode::BAD_REQUEST, err),
-    };
-    if !file.is_file() {
-        return file_browser_json_error(StatusCode::BAD_REQUEST, "path is not a file");
-    }
-    let current_hash = match file_hash(&file) {
-        Ok(hash) => hash,
-        Err(err) => return file_browser_json_error(StatusCode::BAD_GATEWAY, err),
-    };
-    if current_hash != body.expected_hash {
-        return file_browser_json_error(
-            StatusCode::CONFLICT,
-            "file changed on disk; reload before saving",
-        );
-    }
-    let current = match fs::read_to_string(&file) {
-        Ok(content) => content,
-        Err(err) => return file_browser_json_error(StatusCode::BAD_GATEWAY, err.to_string()),
-    };
-    let next = match replace_line_range(&current, body.start_line, body.end_line, &body.content) {
-        Ok(next) => next,
-        Err(err) => return file_browser_json_error(StatusCode::BAD_REQUEST, err),
-    };
-    if let Err(err) = fs::write(&file, next.as_bytes()) {
-        return file_browser_json_error(StatusCode::BAD_GATEWAY, err.to_string());
-    }
-    let hash = match file_hash(&file) {
-        Ok(hash) => hash,
-        Err(err) => return file_browser_json_error(StatusCode::BAD_GATEWAY, err),
-    };
-    Json(json!({ "ok": true, "path": rel, "hash": hash })).into_response()
 }
 
 async fn file_browser_rename(
@@ -2358,14 +2267,6 @@ mod tests {
             content_search_matches_per_file(Some(MAX_CONTENT_MATCHES_PER_FILE + 10)),
             MAX_CONTENT_MATCHES_PER_FILE
         );
-    }
-
-    #[test]
-    fn replace_line_range_replaces_inclusive_range() {
-        let next = replace_line_range("a\nb\nc\nd", 2, 3, "B\nC").unwrap();
-        assert_eq!(next, "a\nB\nC\nd");
-        assert!(replace_line_range("a", 0, 1, "x").is_err());
-        assert!(replace_line_range("a", 2, 2, "x").is_err());
     }
 
     #[test]

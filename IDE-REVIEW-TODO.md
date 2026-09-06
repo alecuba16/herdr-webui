@@ -245,19 +245,25 @@ Priority: P0 must land in this review, P1 should land, P2 next iteration.
   screen HTML per keystroke in the filter input (type-to-filter); keep the
   input node, patch only the results container (same pattern as desktop
   `renderPreservingScroll`).
-- [ ] **D6 (P1, D/M)** Content-search snippet editing is unreachable dead
+- [x] **D6 (P1, D/M)** Content-search snippet editing was unreachable dead
   code since `216e13c` ("Refine unified search result UX"): the shared
-  renderer (`shared/file_content_search.js`) no longer emits the Edit button
-  or the `contentSearchSnippet-${hashId}` container, yet both layouts keep
-  `editSnippet`/`cancelSnippet`/`saveSnippet` handlers, desktop keeps
-  `mountContentSearchEditors()`, and the backend still serves
-  `POST /api/file-browser/content-search/snippet`. No test or e2e exercises
-  it, so `state.contentSearch.snippets[key].editing` can never be true.
-  Decide: restore the in-place snippet-edit UI (renderer emits the Edit
-  action + container again) or remove the dead path end to end (JS handlers,
-  mount fn, mobile handlers, Rust endpoint + `replace_line_range` helper).
-  Note: C4's editor cache intentionally does not cover
-  `mountContentSearchEditors()` because that code is unreachable today.
+  renderer stopped emitting the Edit button and the
+  `contentSearchSnippet-${hashId}` container, so
+  `state.contentSearch.snippets[key].editing` could never become true, yet
+  both layouts kept `editSnippet`/`cancelSnippet`/`saveSnippet` handlers,
+  desktop kept `mountContentSearchEditors()`, and the backend still served
+  `POST /api/file-browser/content-search/snippet` (an unused file-write
+  endpoint). No test or e2e exercised any of it. Removed end to end:
+  desktop + mobile handlers and mount fn, `snippets` state fields in both
+  layouts and workspace_search/search fallbacks, `snippetKey` export in the
+  shared renderer, the Rust route + `file_browser_save_content_snippet` +
+  `FileContentSnippetSaveRequest` + `replace_line_range` + its test, and the
+  technical-details endpoint row. Content matches still open in the full
+  editor (editable, hash-guarded save), which replaced this flow in
+  `216e13c`. Bonus: clippy now reports 0 warnings (derived `Default` for
+  `LogLevel`, `io::Error::other` in `main.rs`). Gates: 411 JS, 376 Rust,
+  fmt clean, acceptance 20/20, mobile-edit 49/49, LSP 20/20, git + content
+  search + theme e2e all pass.
 
 ## E. Verification gates (per item and at the end)
 

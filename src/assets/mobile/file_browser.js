@@ -5,7 +5,7 @@
     const DEFAULT_CONTENT_SEARCH_MIN_CHARS = 3;
     const state = deps.state;
     function createContentSearchState() {
-      return { active: false, query: "", timer: null, files: [], expanded: {}, snippets: {}, loading: false, error: "", offset: 0, done: true, totalFiles: 0, totalMatches: 0, contextLines: 2, maxMatchesPerFile: 5, autoCollapseFiles: 0, defaultExpanded: true };
+      return { active: false, query: "", timer: null, files: [], expanded: {}, loading: false, error: "", offset: 0, done: true, totalFiles: 0, totalMatches: 0, contextLines: 2, maxMatchesPerFile: 5, autoCollapseFiles: 0, defaultExpanded: true };
     }
     const local = { path: "", entries: [], selected: "", file: null, error: "", loading: false, filter: "", filterVisible: false, filterTimer: null, filterOffset: 0, filterDone: true, filterKind: "file", scrollTop: 0, cwdOverride: "", gitStatus: null, editing: false, draft: "", dirty: false, saving: false, saveError: "", actionSheet: null, rename: null, newFile: null, mutating: false, contentSearch: createContentSearchState() };
 
@@ -195,7 +195,6 @@
     function clearContentSearchResults() {
       local.contentSearch.files = [];
       local.contentSearch.expanded = {};
-      local.contentSearch.snippets = {};
       local.contentSearch.error = "";
       local.contentSearch.done = true;
       local.contentSearch.offset = 0;
@@ -621,20 +620,6 @@
       }, 0);
     }
 
-    function mountContentSearchEditors() {
-      if (!local.contentSearch.active || !globalThis.HerdrContentSearch) return;
-      for (const file of local.contentSearch.files || []) {
-        for (const match of file.matches || []) {
-          const key = globalThis.HerdrContentSearch.snippetKey(file.path, match);
-          const snippet = local.contentSearch.snippets[key];
-          if (!snippet || !snippet.editing) continue;
-          const parent = document.getElementById(`mobileContentSearchSnippet-${globalThis.HerdrContentSearch.hashId(key)}`);
-          if (!parent) continue;
-          Editor.create({ parent, path: file.path, content: snippet.draft == null ? match.content || "" : snippet.draft, readonly: false, hideHeader: true, lineNumbers: lineNumbersEnabled(), onChange(value) { snippet.draft = value; snippet.dirty = value !== (match.content || ""); } });
-        }
-      }
-    }
-
     globalThis.HerdrMobileFilesContent = {
       setQuery(value) {
         local.filter = String(value || "");
@@ -654,7 +639,6 @@
         local.contentSearch.query = "";
         local.contentSearch.files = [];
         local.contentSearch.expanded = {};
-        local.contentSearch.snippets = {};
         local.contentSearch.error = "";
         local.contentSearch.done = true;
         local.contentSearch.offset = 0;
@@ -690,45 +674,6 @@
       collapseAll() {
         for (const file of local.contentSearch.files || []) local.contentSearch.expanded[file.path] = false;
         deps.render();
-      },
-      editSnippet(encodedPath, encodedMatchId) {
-        const path = decodeURIComponent(encodedPath);
-        const file = contentFile(path);
-        const match = globalThis.HerdrContentSearch && globalThis.HerdrContentSearch.findMatch(file, decodeURIComponent(encodedMatchId));
-        if (!match || !globalThis.HerdrContentSearch) return;
-        const key = globalThis.HerdrContentSearch.snippetKey(path, match);
-        local.contentSearch.snippets[key] = { editing: true, draft: match.content || "", dirty: false };
-        deps.render();
-      },
-      cancelSnippet(encodedPath, encodedMatchId) {
-        const path = decodeURIComponent(encodedPath);
-        const file = contentFile(path);
-        const match = globalThis.HerdrContentSearch && globalThis.HerdrContentSearch.findMatch(file, decodeURIComponent(encodedMatchId));
-        if (!match || !globalThis.HerdrContentSearch) return;
-        delete local.contentSearch.snippets[globalThis.HerdrContentSearch.snippetKey(path, match)];
-        deps.render();
-      },
-      async saveSnippet(encodedPath, encodedMatchId) {
-        const path = decodeURIComponent(encodedPath);
-        const file = contentFile(path);
-        const match = globalThis.HerdrContentSearch && globalThis.HerdrContentSearch.findMatch(file, decodeURIComponent(encodedMatchId));
-        if (!match || !globalThis.HerdrContentSearch) return;
-        const key = globalThis.HerdrContentSearch.snippetKey(path, match);
-        const snippet = local.contentSearch.snippets[key];
-        if (!snippet) return;
-        try {
-          await deps.api("/api/file-browser/content-search/snippet", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ cwd: cwd(), path, expected_hash: file.hash || "", start_line: match.start_line, end_line: match.end_line, content: snippet.draft == null ? "" : snippet.draft }),
-          });
-          delete local.contentSearch.snippets[key];
-          await loadContentSearchFile(path);
-          deps.render();
-        } catch (error) {
-          snippet.error = error.message || String(error);
-          deps.render();
-        }
       },
       async expandSnippet(encodedPath, _index, direction) {
         const path = decodeURIComponent(encodedPath);

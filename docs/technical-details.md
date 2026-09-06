@@ -175,7 +175,6 @@ Content search uses backend-owned repository traversal and matching. Results ren
 
 - `GET /api/file-browser/content-search`: bounded breadth-first scan from the current file tree root, grouped by file.
 - `GET /api/file-browser/content-search/file`: lazy full match load for one file when the group is expanded.
-- `POST /api/file-browser/content-search/snippet`: hash-guarded line-range save for an edited match snippet.
 
 Both search routes return pre-merged line chunks per file: adjacent or
 overlapping match context windows are merged server-side and every row
@@ -349,7 +348,7 @@ Main user-facing functionality is documented in [Features](features.md). Technic
 | Git UI | Git CLI commands, path/ref validation, diff/log/status parsing, cleanup scans. | Drawer rendering, shortcuts, staged/unstaged file interactions, diff controls. |
 | File explorer tree | Safe path cleaning, directory listing, backend file/folder search, pagination, Git status propagation. | Tree rendering, selected file state, scroll preservation, open-at-path behavior. |
 | Unified search | Backend file/folder/content results, pagination, content-match caps. | Section ordering, keyboard/touch selection, visible result rendering, matched-line editor opening. |
-| File content search | Traversal, text matching, caps, lazy file detail loads, snippet save validation. | Grouped result rendering, expand/collapse state, editor mounting. |
+| File content search | Traversal, text matching, caps, lazy file detail loads. | Grouped result rendering, expand/collapse state, editor mounting. |
 | Settings/help | Runtime server settings and safe defaults. | Browser-local options, settings grouping/search, in-app Help content. |
 
 This split keeps expensive or repository-sensitive work in Rust and keeps browser code focused on UI state and rendering.
@@ -367,7 +366,7 @@ This split keeps expensive or repository-sensitive work in Rust and keeps browse
 
 - Shared modules avoid duplicate browser computation. `file_tree.js`, `file_icons.js`, `workspace_search.js`, `file_content_search.js`, `editor.js`, and terminal helpers are reused by desktop/mobile.
 - File content search groups are collapsed by default when result counts exceed the configured threshold. Full per-file matches are lazy-loaded only when needed.
-- CodeMirror is preloaded once and reused for preview, edit, Git hunk editing, and snippet editing. A numbered HTML fallback exists only for load failure.
+- CodeMirror is preloaded once and reused for preview, edit, and Git hunk editing. A numbered HTML fallback exists only for load failure.
 - Desktop terminal output is coalesced once per animation frame before terminal renderer writes. Attach frames have suppression logic so large initial frames do not reveal partial output.
 - Large paste input bypasses terminal renderer synchronous `paste()` and uses bounded WebSocket chunks with backpressure.
 - Browser terminals use `src/assets/shared/terminal_adapter.js` as the renderer boundary over the checked-in wterm bundle. The adapter exposes `write`, `resize`, `focus`, `destroy`, `cellSize`, `rowHeight`, `scrollLines`, `scrollToBottom`, `atBottom`, link toggling, theme variables, font variables, and normal/alternate-screen detection to desktop, mobile, and temporary terminal controllers.

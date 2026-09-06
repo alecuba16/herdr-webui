@@ -194,18 +194,13 @@ struct PersistedServerSettings {
     lsp: Option<lsp::LspSettings>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 enum LogLevel {
+    #[default]
     None,
     Info,
     Debug,
-}
-
-impl Default for LogLevel {
-    fn default() -> Self {
-        LogLevel::None
-    }
 }
 
 impl LogLevel {
@@ -511,10 +506,7 @@ impl WebState {
     async fn update_lsp_settings(&self, lsp_settings: lsp::LspSettings) -> io::Result<()> {
         let next = {
             let Ok(mut guard) = self.server_settings.lock() else {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "server settings unavailable",
-                ));
+                return Err(io::Error::other("server settings unavailable"));
             };
             guard.lsp = lsp_settings.clone();
             guard.clone()
@@ -523,7 +515,7 @@ impl WebState {
             let next_clone = next.clone();
             tokio::task::spawn_blocking(move || save_runtime_server_settings(&next_clone))
                 .await
-                .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?
+                .map_err(|err| io::Error::other(err.to_string()))?
         };
         save?;
         self.lsp.set_settings(lsp_settings);
