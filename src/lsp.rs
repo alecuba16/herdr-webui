@@ -276,7 +276,9 @@ impl LspRegistry {
     }
 
     fn publish_diagnostics(&self, event: &LspDiagnosticsEvent) {
-        let _ = self.diagnostics_tx.send(serde_json::to_value(event).unwrap_or_default());
+        let _ = self
+            .diagnostics_tx
+            .send(serde_json::to_value(event).unwrap_or_default());
     }
 
     /// Test-only hook: publish a diagnostics event from outside the reader

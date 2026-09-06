@@ -170,6 +170,27 @@ struct ContentSearchMatch {
 }
 
 #[derive(Clone, Serialize)]
+struct ContentSearchRow {
+    line: usize,
+    matched: bool,
+    #[serde(rename = "match_id")]
+    match_id: Option<String>,
+    // Pre-escaped highlight markup built by the backend so the browser
+    // renders chunks without rebuilding per-row HTML on every render.
+    #[serde(rename = "highlight_html")]
+    highlight_html: String,
+}
+
+#[derive(Clone, Serialize)]
+struct ContentSearchChunk {
+    start: usize,
+    end: usize,
+    rows: Vec<ContentSearchRow>,
+    #[serde(rename = "match_ids")]
+    match_ids: Vec<String>,
+}
+
+#[derive(Clone, Serialize)]
 struct ContentSearchFile {
     path: String,
     name: String,
@@ -177,7 +198,182 @@ struct ContentSearchFile {
     hash: String,
     match_count: usize,
     matches: Vec<ContentSearchMatch>,
+    // Pre-merged line chunks with per-row highlight markup, ready to render.
+    chunks: Vec<ContentSearchChunk>,
     truncated: bool,
+}
+
+fn escape_html(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&#39;"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
+// Byte offsets from ContentMatcher::find are exact for the matched line, so
+// the highlighted span is built here (in Rust) instead of being recomputed in
+// the browser. Non-ASCII lines highlight correctly because slicing happens on
+// char boundaries, not UTF-16 code units.
+fn highlight_line_html(line: &str, match_start: usize, match_end: usize, query: &str) -> String {
+    let text = line;
+    if match_end > match_start
+        && match_start <= text.len()
+        && match_end <= text.len()
+        && text.is_char_boundary(match_start)
+        && text.is_char_boundary(match_end)
+    {
+        return format!(
+            "{}<mark class=\"herdr-content-search-hit\">{}</mark>{}",
+            escape_html(&text[..match_start]),
+            escape_html(&text[match_start..match_end]),
+            escape_html(&text[match_end..])
+        );
+    }
+    // Fallback mirrors the legacy browser behavior: first case-insensitive
+    // occurrence of the raw query text.
+    let needle = query.to_lowercase();
+    if needle.is_empty() {
+        return escape_html(text);
+    }
+    let haystack = text.to_lowercase();
+    if let Some(index) = haystack.find(&needle) {
+        if text.is_char_boundary(index) && text.is_char_boundary(index + needle.len()) {
+            return format!(
+                "{}<mark class=\"herdr-content-search-hit\">{}</mark>{}",
+                escape_html(&text[..index]),
+                escape_html(&text[index..index + needle.len()]),
+                escape_html(&text[index + needle.len()..])
+            );
+        }
+    }
+    escape_html(text)
+}
+
+struct ContentSearchChunkRow {
+    line: usize,
+    matched: bool,
+    match_id: Option<String>,
+    text: String,
+    match_start: usize,
+    match_end: usize,
+}
+
+// Merge the per-match context windows into continuous chunks exactly like the
+// legacy browser renderer did: matches sorted by line, adjacent or overlapping
+// windows merge into one chunk, and a matched row wins over a muted row on
+// the same line. Runs once per backend response instead of on every render.
+fn build_content_search_chunks(
+    matches: &[ContentSearchMatch],
+    query: &str,
+) -> Vec<ContentSearchChunk> {
+    let mut sorted: Vec<&ContentSearchMatch> = matches.iter().collect();
+    sorted.sort_by_key(|matched| matched.line);
+    let mut chunks: Vec<ContentSearchChunk> = Vec::new();
+    let mut open_rows: Vec<ContentSearchChunkRow> = Vec::new();
+    let mut open_ids: Vec<String> = Vec::new();
+    let mut open_end: Option<usize> = None;
+    for matched in sorted {
+        let text_line = matched.line;
+        let before = &matched.before;
+        let after = &matched.after;
+        let first_before_line = text_line.saturating_sub(before.len());
+        let mut rows: Vec<ContentSearchChunkRow> =
+            Vec::with_capacity(before.len() + 1 + after.len());
+        for (index, line) in before.iter().enumerate() {
+            rows.push(ContentSearchChunkRow {
+                line: first_before_line + index,
+                matched: false,
+                match_id: None,
+                text: line.clone(),
+                match_start: 0,
+                match_end: 0,
+            });
+        }
+        rows.push(ContentSearchChunkRow {
+            line: text_line,
+            matched: true,
+            match_id: Some(matched.id.clone()),
+            text: matched.text.clone(),
+            match_start: matched.match_start,
+            match_end: matched.match_end,
+        });
+        for (index, line) in after.iter().enumerate() {
+            rows.push(ContentSearchChunkRow {
+                line: text_line + index + 1,
+                matched: false,
+                match_id: None,
+                text: line.clone(),
+                match_start: 0,
+                match_end: 0,
+            });
+        }
+        let start = rows.first().map(|row| row.line).unwrap_or(text_line);
+        let end = rows.last().map(|row| row.line).unwrap_or(text_line);
+        let merge = matches!(open_end, Some(previous) if start <= previous + 1);
+        if !merge {
+            if !open_rows.is_empty() {
+                chunks.push(finish_content_search_chunk(&open_rows, &open_ids, query));
+            }
+            open_rows = rows;
+            open_ids = vec![matched.id.clone()];
+            open_end = Some(end);
+            continue;
+        }
+        open_ids.push(matched.id.clone());
+        for row in rows {
+            let existing = open_rows
+                .iter_mut()
+                .find(|candidate| candidate.line == row.line);
+            match existing {
+                Some(candidate) => {
+                    if row.matched && !candidate.matched {
+                        *candidate = row;
+                    }
+                }
+                None => open_rows.push(row),
+            }
+        }
+        open_rows.sort_by_key(|row| row.line);
+        open_end = Some(open_end.map_or(end, |previous| previous.max(end)).max(end));
+    }
+    if !open_rows.is_empty() {
+        chunks.push(finish_content_search_chunk(&open_rows, &open_ids, query));
+    }
+    chunks
+}
+
+fn finish_content_search_chunk(
+    rows: &[ContentSearchChunkRow],
+    match_ids: &[String],
+    query: &str,
+) -> ContentSearchChunk {
+    ContentSearchChunk {
+        start: rows.first().map(|row| row.line).unwrap_or(1),
+        end: rows.last().map(|row| row.line).unwrap_or(1),
+        rows: rows
+            .iter()
+            .filter(|row| row.line > 0)
+            .map(|row| ContentSearchRow {
+                line: row.line,
+                matched: row.matched,
+                match_id: row.match_id.clone(),
+                highlight_html: if row.matched {
+                    highlight_line_html(&row.text, row.match_start, row.match_end, query)
+                } else {
+                    escape_html(&row.text)
+                },
+            })
+            .collect(),
+        match_ids: match_ids.to_vec(),
+    }
 }
 
 struct ContentSearchBuild {
@@ -737,6 +933,7 @@ fn content_search_file(
         return Ok(None);
     }
     let hash = file_hash(file)?;
+    let chunks = build_content_search_chunks(&matches, query);
     Ok(Some(ContentSearchFile {
         path: rel.clone(),
         name: basename_string(&rel),
@@ -744,6 +941,7 @@ fn content_search_file(
         hash,
         match_count,
         matches,
+        chunks,
         truncated: match_count > max_matches,
     }))
 }
@@ -1882,6 +2080,166 @@ mod tests {
         assert!(!paths.iter().any(|p| p.starts_with("locked/")));
 
         restore_readable_dir(&root.join("locked"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn sample_matches() -> Vec<ContentSearchMatch> {
+        let m = |id: &str, line: usize, before: Vec<&str>, text: &str, after: Vec<&str>| {
+            ContentSearchMatch {
+                id: id.to_string(),
+                line,
+                column: 1,
+                match_start: 0,
+                match_end: 6,
+                start_line: line.saturating_sub(before.len()),
+                end_line: line + after.len(),
+                content: String::new(),
+                before: before.into_iter().map(str::to_string).collect(),
+                text: text.to_string(),
+                after: after.into_iter().map(str::to_string).collect(),
+            }
+        };
+        vec![
+            m("a", 2, vec!["ctx1"], "needle", vec!["ctx2"]),
+            m("b", 4, vec!["ctx3"], "needle", vec!["ctx4"]),
+            m("c", 10, vec!["far"], "needle", vec!["away"]),
+        ]
+    }
+
+    #[test]
+    fn content_chunks_merge_overlapping_and_adjacent_matches() {
+        let chunks = build_content_search_chunks(&sample_matches(), "needle");
+        // Match 1 covers lines 1-3, match 2 covers lines 3-5 (overlap on line 3):
+        // they merge. Match 3 covers 9-11 and stays separate.
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].start, 1);
+        assert_eq!(chunks[0].end, 5);
+        assert_eq!(chunks[0].rows.len(), 5);
+        assert_eq!(chunks[0].rows[0].line, 1);
+        assert_eq!(chunks[0].rows[1].line, 2);
+        assert!(chunks[0].rows[1].matched);
+        assert_eq!(chunks[0].rows[2].line, 3);
+        // Line 3 appears as context in match 2 and as "after" in match 1;
+        // rows dedupe by line, and matched rows always win.
+        assert_eq!(chunks[0].rows[3].line, 4);
+        assert!(chunks[0].rows[3].matched);
+        assert_eq!(chunks[0].match_ids, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(chunks[1].start, 9);
+        assert_eq!(chunks[1].end, 11);
+        assert_eq!(chunks[1].match_ids, vec!["c".to_string()]);
+    }
+
+    #[test]
+    fn content_chunks_adjacent_windows_merge_like_legacy_renderer() {
+        // Legacy rule: a chunk merges when its start <= previous end + 1.
+        // Window A covers 1-3 and window B covers 4-6 (start 4 == end 3 + 1):
+        // they must merge into one 1-6 chunk.
+        let mut matches = sample_matches();
+        matches[1].line = 4;
+        matches[1].before = vec!["ctx3".to_string()];
+        matches[1].after = vec!["ctx4".to_string()];
+        matches[1].id = "b".to_string();
+        let chunks = build_content_search_chunks(&matches, "needle");
+        assert_eq!(chunks.len(), 2, "a and b merge; c stays alone");
+        assert_eq!(chunks[0].start, 1);
+        assert_eq!(chunks[0].end, 5);
+        assert_eq!(chunks[0].rows.len(), 5);
+    }
+
+    #[test]
+    fn content_chunks_gap_of_two_lines_stays_separate() {
+        // Window A ends at line 3, window B covers 5-7 (one blank line at 4):
+        // start 5 > end 3 + 1, so they stay separate chunks, like the legacy
+        // browser merge rule.
+        let mut matches = sample_matches();
+        matches[1].line = 6;
+        matches[1].before = vec!["ctx".to_string()];
+        matches[1].after = vec!["ctx".to_string()];
+        matches[1].id = "b".to_string();
+        let chunks = build_content_search_chunks(&matches, "needle");
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(chunks[0].start, 1);
+        assert_eq!(chunks[0].end, 3);
+        assert_eq!(chunks[1].start, 5);
+        assert_eq!(chunks[1].end, 7);
+    }
+
+    #[test]
+    fn content_chunk_rows_escape_html_and_highlight_match() {
+        let chunks = build_content_search_chunks(&sample_matches(), "needle");
+        let matched = &chunks[0].rows[1];
+        assert!(matched.matched);
+        assert_eq!(matched.match_id.as_deref(), Some("a"));
+        assert_eq!(
+            matched.highlight_html,
+            "<mark class=\"herdr-content-search-hit\">needle</mark>"
+        );
+        let muted = &chunks[0].rows[0];
+        assert!(!muted.matched);
+        assert_eq!(muted.highlight_html, "ctx1");
+    }
+
+    #[test]
+    fn content_chunk_highlight_escapes_markup_and_multibyte() {
+        let mut matches = sample_matches();
+        // A line with HTML chars and a multibyte grapheme before the match:
+        // byte offsets must highlight the exact span (the legacy JS renderer
+        // sliced with byte offsets over UTF-16 code units and misrendered).
+        matches[0].text = "<b>héllo needle</b>".to_string();
+        matches[0].match_start = "<b>héllo ".len();
+        matches[0].match_end = matches[0].match_start + "needle".len();
+        let chunks = build_content_search_chunks(&matches, "needle");
+        assert_eq!(
+            chunks[0].rows[1].highlight_html,
+            "&lt;b&gt;h\u{e9}llo <mark class=\"herdr-content-search-hit\">needle</mark>&lt;/b&gt;"
+        );
+    }
+
+    #[test]
+    fn content_chunk_highlight_falls_back_to_query_search() {
+        // Offsets outside the line (stale client data) fall back to the first
+        // case-insensitive occurrence, like the legacy renderer.
+        let mut matches = sample_matches();
+        matches[0].text = "Has NEEDLE inside".to_string();
+        matches[0].match_start = 100;
+        matches[0].match_end = 200;
+        let chunks = build_content_search_chunks(&matches, "needle");
+        assert_eq!(
+            chunks[0].rows[1].highlight_html,
+            "Has <mark class=\"herdr-content-search-hit\">NEEDLE</mark> inside"
+        );
+    }
+
+    #[test]
+    fn content_search_file_response_includes_chunks() {
+        let root = std::env::temp_dir().join(format!(
+            "herdr-webui-content-chunks-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("app.rs"),
+            "one\nneedle two\nthree\nneedle four\nfive",
+        )
+        .unwrap();
+        let root = root.canonicalize().unwrap();
+        let matcher = ContentMatcher::new("needle", false, false).unwrap();
+        let result = content_search_file(&root, &root.join("app.rs"), "needle", &matcher, 1, 50)
+            .unwrap()
+            .expect("matches expected");
+        // context=1: windows are lines 1-3 and 3-5, overlapping on line 3.
+        assert_eq!(result.chunks.len(), 1);
+        assert_eq!(result.chunks[0].start, 1);
+        assert_eq!(result.chunks[0].end, 5);
+        assert_eq!(result.chunks[0].rows.len(), 5);
+        assert!(result.chunks[0].rows[1].matched);
+        assert!(result.chunks[0].rows[3].matched);
+        assert_eq!(
+            result.chunks[0].rows[1].highlight_html,
+            "<mark class=\"herdr-content-search-hit\">needle</mark> two"
+        );
+        assert_eq!(result.chunks[0].rows[2].highlight_html, "three");
         let _ = fs::remove_dir_all(root);
     }
 

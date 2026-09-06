@@ -1,6 +1,15 @@
 # Release notes
 
 ## 0.4.7 Release Notes
+- Content search: the backend now builds the merged line chunks and per-row
+  highlight markup (HTML-escaped, with `<mark>` around the hit) for both the
+  workspace route and the single-file route, so the browser renders results
+  without re-merging or re-highlighting on every render. Measured on a
+  10-file results page (30 matches each): ~7.4 ms → ~1.0 ms per render
+  (~7x). Non-ASCII lines now highlight the exact hit (the legacy JS slicing
+  mixed byte offsets with UTF-16 indices and could misplace the mark on
+  multibyte lines). Older backends without chunks still work: the renderer
+  keeps its client-side merge fallback.
 - LSP diagnostics now arrive as pushed events over the /ws/events websocket
   instead of a 2-second HTTP poll. The HTTP endpoint remains for
   compatibility and as an automatic fallback when the socket is

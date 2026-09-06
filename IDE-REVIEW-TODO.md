@@ -143,13 +143,25 @@ Priority: P0 must land in this review, P1 should land, P2 next iteration.
   20/20 checks. 2 Rust tests (broadcast reach, lagged receiver) + 1 WS
   forwarding test via a real axum server + 2 JS transport tests (push
   applied + poll fallback on drop).
-- [ ] **C2 (P0, B/P)** Content-search snippet merging/highlight chunking is
-  done per render in JS (`lineChunks` + `mergeChunk` + per-row HTML string
-  building on every `render()` call). The backend already computes matches,
-  context and truncation: move chunk merging and per-line HTML generation to
-  the backend response (return pre-merged chunks + `highlight_html` per row)
-  and cache it per (query, offset, context) in the state so re-renders do not
-  rebuild strings. Keep JS escaping as the last step only.
+- [x] **C2 (P0, B/P)** DONE: the backend now builds merged chunks and
+  per-row highlight HTML for both `/api/file-browser/content-search` and
+  `.../content-search/file`. `ContentSearchFile.chunks` carries
+  `{start, end, match_ids, rows:[{line, matched, match_id, highlight_html}]}`
+  where `highlight_html` is escaped server-side with
+  `<mark class="herdr-content-search-hit">` around the hit. The shared
+  renderer consumes them verbatim and caches the normalized shape on the
+  file object (re-renders rebuild nothing); older backends without chunks
+  keep the old client-side `lineChunks`/`mergeChunk` fallback. Bonus fix:
+  highlight offsets are byte-correct in Rust, so multibyte lines highlight
+  the exact hit (the legacy JS sliced byte offsets over UTF-16 indices).
+  Measured: 10-file page (30 matches each) 7.4ms → 1.0ms per render (~7x).
+  6 Rust tests (merge overlap/adjacent/gap, escaping, multibyte, fallback,
+  response shape) + 7 JS renderer tests (backend chunks verbatim, no
+  double-escape, openMatch/expand wiring from backend ids, cache reuse,
+  fallback merge, line>0 filter). New no-browser e2e
+  `scripts/e2e/run-content-search-e2e.sh` (21 checks: real backend sends
+  pre-merged chunks for overlapping matches, escaping, served renderer
+  consumes them, single-file route too).
 - [ ] **C3 (P1, B/P)** 22 call sites parse `herdr-web-options` from
   localStorage on every access (some inside render loops: `gitStatusEnabled()`
   is called per tree render, `contentSearchOptions()` per search). Add a shared

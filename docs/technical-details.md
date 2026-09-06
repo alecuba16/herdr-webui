@@ -177,6 +177,14 @@ Content search uses backend-owned repository traversal and matching. Results ren
 - `GET /api/file-browser/content-search/file`: lazy full match load for one file when the group is expanded.
 - `POST /api/file-browser/content-search/snippet`: hash-guarded line-range save for an edited match snippet.
 
+Both search routes return pre-merged line chunks per file: adjacent or
+overlapping match context windows are merged server-side and every row
+carries `highlight_html` (escaped text with `<mark class="herdr-content-search-hit">`
+around the hit) plus the `match_id` needed for open-on-double-click and
+context-expand wiring. Chunk merging and highlighting therefore run once per
+backend response in Rust instead of on every browser render; the browser keeps
+a client-side merge fallback for older backends that do not send chunks.
+
 Browser-local configurable values:
 
 - `searchWorkspacesEnabled`: enables/disables workspace/worktree/panel results,
@@ -203,7 +211,7 @@ Performance limits:
 - result page size, context lines, and matches per file are clamped server-side,
 - invalid regex queries return HTTP 400 before traversal.
 
-Desktop and mobile pass `match_case` and `regex` to the backend routes. Backend matching is implemented once in Rust, so the browser does not scan file content or run repository-wide regexes. Desktop and mobile use `src/assets/shared/file_content_search.js` for grouped rendering, highlight markup, per-file disclosure arrows, merged line chunks, and Git-diff-style context arrows. File results are grouped once per file. New file groups honor `fileContentSearchDefaultExpanded`; when enabled they expand unless `fileContentSearchAutoCollapseFiles` collapses a large result set. Expanded files show matching lines by default, surrounding context lines when available, and up/down arrows that request more context. When expanded context overlaps adjacent matches, the renderer merges the rows into one continuous chunk. Shared visual rules live in `src/assets/shared/content_search.css` and shared colors live in `src/assets/shared/colors.css`, so desktop/mobile do not duplicate the match highlight palette. The frontend does not scan repository content. It only sends queries, renders grouped results, and mounts editor instances for highlighted full-file opens.
+Desktop and mobile pass `match_case` and `regex` to the backend routes. Backend matching is implemented once in Rust, so the browser does not scan file content or run repository-wide regexes. Desktop and mobile use `src/assets/shared/file_content_search.js` for grouped rendering; merged line chunks and highlight markup arrive prebuilt from the backend (with a client-side merge fallback for older backends), and the module still renders per-file disclosure arrows and Git-diff-style context arrows. File results are grouped once per file. New file groups honor `fileContentSearchDefaultExpanded`; when enabled they expand unless `fileContentSearchAutoCollapseFiles` collapses a large result set. Expanded files show matching lines by default, surrounding context lines when available, and up/down arrows that request more context. When expanded context overlaps adjacent matches, the renderer merges the rows into one continuous chunk. Shared visual rules live in `src/assets/shared/content_search.css` and shared colors live in `src/assets/shared/colors.css`, so desktop/mobile do not duplicate the match highlight palette. The frontend does not scan repository content. It only sends queries, renders grouped results, and mounts editor instances for highlighted full-file opens.
 
 ### Theme tokens
 

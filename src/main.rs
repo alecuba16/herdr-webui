@@ -9678,7 +9678,7 @@ mod tests {
     /// Fake API socket that responds to ping, accepts events.subscribe,
     /// and streams a "ready" event followed by one test event.
     #[cfg(unix)]
-        #[cfg(unix)]
+    #[cfg(unix)]
     #[tokio::test]
     async fn events_socket_forwards_lsp_diagnostics_push() {
         use futures_util::StreamExt;
@@ -9736,15 +9736,20 @@ mod tests {
 
         let mut got_push = false;
         for _ in 0..30 {
-            let msg = match tokio::time::timeout(std::time::Duration::from_secs(15), ws_stream.next()).await {
-                Ok(Some(Ok(m))) => m,
-                _ => break,
-            };
+            let msg =
+                match tokio::time::timeout(std::time::Duration::from_secs(15), ws_stream.next())
+                    .await
+                {
+                    Ok(Some(Ok(m))) => m,
+                    _ => break,
+                };
             let text = msg.to_text().expect("expected text message");
             let value: serde_json::Value = serde_json::from_str(text).expect("invalid json");
             if value["type"].as_str() == Some("event") {
                 let event = &value["event"];
-                if event["type"].as_str() == Some("lsp.diagnostics") || event["event"].as_str() == Some("lsp.diagnostics") {
+                if event["type"].as_str() == Some("lsp.diagnostics")
+                    || event["event"].as_str() == Some("lsp.diagnostics")
+                {
                     let data = &event["data"];
                     assert_eq!(data["language"], "rust");
                     assert_eq!(data["root"], "/tmp/repo");
@@ -9757,11 +9762,14 @@ mod tests {
                 }
             }
         }
-        assert!(got_push, "lsp.diagnostics push must reach the events socket");
+        assert!(
+            got_push,
+            "lsp.diagnostics push must reach the events socket"
+        );
         server_handle.abort();
     }
 
-fn fake_api_socket_events_streaming() -> (PathBuf, thread::JoinHandle<()>) {
+    fn fake_api_socket_events_streaming() -> (PathBuf, thread::JoinHandle<()>) {
         use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
 
         let path = std::env::temp_dir().join(format!(
