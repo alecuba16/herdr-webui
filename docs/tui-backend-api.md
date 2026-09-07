@@ -46,6 +46,7 @@ Useful flags:
 - `--api-socket PATH --terminal-socket PATH`: connect to explicit socket paths
 - `--refresh-ms MS`: set snapshot refresh interval, minimum 50ms
 - `--theme dark|light|system`: choose TUI colors. `system` is default and follows the terminal background when detection is available.
+- `--webui-api HOST:PORT`: pin the WebUI HTTP API base used by the Files and Git screens. Accepts `HOST:PORT` or `http://HOST:PORT`.
 - `--summary`: print backend/session counts and exit
 - `--once`: print a text snapshot, selected pane, selected agent, and pane output, then exit
 
@@ -58,7 +59,20 @@ Interactive controls:
 - keys in attach mode send input through the live terminal writer
 - `Ctrl-G` detaches back to navigation
 - `r` refreshes, `?` shows help, `q` quits from navigation
-- `Ctrl-B` opens the command/help menu from any mode
+- `Ctrl-B` arms the WebUI prefix key (footer shows `Ctrl+B>`); the next key runs the matching WebUI default shortcut. `Ctrl-B` again toggles the prefix off. `Esc` cancels the prefix.
+
+Prefix shortcuts (after `Ctrl+B`):
+
+- `f`: Files screen. `j/k` moves, `Enter` enters a directory or opens the preview, `l` expands/enters, `h`/`u` go to the parent, `/` starts filtering, `r` refreshes.
+- `g`: Git screen (Changes tab by default). `Tab` cycles Changes/Log/Branches/Stash/History tabs.
+- `1`: Git Changes. `2`: Git Commit modal (same as `c`). `3`: Git Log. `4`: Git Stash. `b`: Git Branches. `h`: Git History for the file selected in Changes (`Enter` loads the selected commit's diff for that file, `o` back to Changes). `2`/`c` open the commit modal, `e` edits the currently selected file (the Files preview on the Files screen, the file highlighted in Git Changes otherwise), `G` toggles stage-all.
+- `m`: toggles blame on the Changes diff (webui `blame: KeyM`). With blame on, each diff line is prefixed with the author of its `new_line` (or `old_line`) from `/api/git-ui/blame?ref_name=working` (`--contents` blame, so uncommitted lines show the synthetic `External file (--contents)` author). The map is cached per file and re-fetched when the diff target changes. `0` shows the shortcut help overlay (webui `help: Digit0`).
+- `y` stages, `u` unstages, `d` discards, `z` stashes the selected file. `p` opens the Git screen (alias of `g`), `P` pushes. `h` shows the selected file's history, `o` returns to Changes, `G` toggles stage-all (unstages everything when something is staged, otherwise stages all).
+- `t`: back to the Terminal screen. `?`: help overlay. `/`: filter in the Files screen.
+
+Inside the Git screen: `s` stages, `d` discards, `f` fetches, `p` pulls, `P` pushes, `c`/`a` open commit/amend modals, `r` refreshes, `Enter` loads the diff (Changes), switches the selected branch (Branches), applies a stash entry (Stash), or loads the selected commit's file diff in the History view, and `D` deletes the selected branch (Branches) or drops the selected stash (Stash) after a typed `y` confirmation. Selection is always in the file list, so the webui `focusFile`/`i` (focus file list) shortcut is implicit and needs no key. Inside the Files screen: `Enter` enters a directory, expands one, or opens the preview, `e` starts editing the open preview (typing inserts at the cursor; `Left`/`Right`/`Home`/`End` move it; Ctrl-S saves with the 409 conflict guard, Ctrl-R reloads from disk discarding edits, Esc stops editing; prefix `e` on the Git screen edits the file highlighted in Changes), `R` renames the selected file with a prefilled prompt, and `x` deletes it after a typed `y` confirmation. Unsaved edits survive screen switches; opening a different file while dirty is refused until saved or reloaded.
+
+The Files and Git screens call the WebUI HTTP API over loopback (`/api/files/*`, `/api/git/*`). The TUI discovers the API base from `HERDR_WEBUI_TUI_API`, then the WebUI settings bind address (`webui-settings.json`), then `127.0.0.1:8787`. `--webui-api` pins it explicitly. These screens require the WebUI server to be running; API errors show in the status/error line instead of failing the TUI.
 
 Terminal output is loaded from `pane.read` for snapshot views and from raw terminal attach frames when entering attach mode. The TUI applies common terminal rewrites such as carriage return, line clear, cursor movement, OSC title skipping, and ANSI handling so Jcode toolbars and status lines stay visible instead of showing stale cleared output. Live attach rendering preserves SGR foreground/background colors plus bold, dim, italic, and underline for Ratatui spans.
 
@@ -157,6 +171,8 @@ The future TUI may copy these features/functionality as a guide while keeping or
 - pane recent read
 - worktree list/open/create from `cwd`, branch, base, and path
 - backend version/capability display from `ping`
+- WebUI file explorer: tree browse, filter, preview, read, rename, delete
+- WebUI git management: status, diff, log, branches, stashes, stage/unstage/discard, commit, pull/push/fetch, switch, branch delete, stash apply/drop
 
 ## Protocol version note
 
@@ -177,6 +193,8 @@ Parity checked against the Herdr native TUI implementation in the `jcode-support
 | Panes/layout | Split horizontal/vertical, focus by direction, cycle, resize mode, zoom, rename, close, last pane | Single selected pane display, no split/layout mutation yet |
 | Scrollback/copy/search | Host scrollback, scroll metrics, scrollbar, copy mode, edit scrollback, text search/matches | Recent pane text plus live terminal text, no scroll/copy/search UI yet |
 | Mouse/touch | Mouse pane focus, scroll, selection, dialogs, mobile layout | Keyboard-only prototype |
+| File explorer | Not in native Herdr TUI | Files screen over the WebUI HTTP API: lazy tree, filter, preview, rename, delete |
+| Git management | Not in native Herdr TUI | Git screen over the WebUI HTTP API: Changes/Log/Branches/Stash tabs, stage/unstage/discard/commit/pull/push/fetch/switch/stash |
 | Worktrees | New/open/remove worktree dialogs with validation | Backend client supports list/open/create wrappers, no interactive TUI dialogs yet |
 | Settings/config/keybinds | Config reload, settings overlay, custom commands, prefix mode, configurable keybinds | Fixed keymap and help overlay |
 | Notifications/integrations | Notification targets, release notes, integrations/settings panels | Not implemented |
@@ -196,12 +214,13 @@ Still pending:
 
 ## Tests
 
-`src/backend_client.rs`, `src/tui.rs`, and `src/bin/herdr-webui-tui.rs` include unit tests for:
+`src/backend_client.rs`, `src/tui.rs`, `src/tui_web_api.rs`, `src/tui_keys.rs`, `src/tui_panels.rs`, and `src/bin/herdr-webui-tui.rs` include unit tests for:
 
 - built-in socket discovery path convention
 - JSON API request/result unwrapping for TUI clients
 - terminal handshake, attach, output read, input send, and detach over the bincode socket
 - TUI snapshot parsing, render smoke, keyboard-to-terminal byte mapping, text snapshots, raw terminal output parsing, ANSI color/style spans, terminal row rewrite behavior, and CLI parsing
+- WebUI HTTP API URL parsing/discovery, prefix-key state machine, shortcut mapping, file explorer behavior, git panel state and actions, and render smoke tests for all screens
 
 Run:
 

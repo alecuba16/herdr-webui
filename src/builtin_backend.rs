@@ -1374,6 +1374,35 @@ enum TerminalSubscriberMessage {
     Exited,
 }
 
+/// Open a pty, retrying transient failures. Under parallel test load (and
+/// busy CI runners) `openpty` can fail with ENXIO ("Device not configured")
+/// when the kernel briefly runs out of available ptys; a short backoff retry
+/// makes pane creation robust there. Permanent errors surface after the
+/// retries are exhausted. The attempt closure is injected so tests can drive
+/// the failure path hermetically.
+fn openpty_with_retry<T, E>(
+    rows: u16,
+    cols: u16,
+    attempt_open: &dyn Fn(u16, u16) -> Result<T, E>,
+) -> io::Result<T>
+where
+    E: std::fmt::Display,
+{
+    let mut last_err = String::new();
+    for attempt in 0..3 {
+        match attempt_open(rows, cols) {
+            Ok(pair) => return Ok(pair),
+            Err(err) => {
+                last_err = err.to_string();
+                if attempt < 2 {
+                    std::thread::sleep(Duration::from_millis(100 * (attempt + 1)));
+                }
+            }
+        }
+    }
+    Err(io::Error::other(last_err))
+}
+
 impl TerminalRuntime {
     fn spawn(
         id: String,
@@ -1386,14 +1415,19 @@ impl TerminalRuntime {
         jcode_detection_variant: JcodeDetectionVariant,
     ) -> io::Result<Arc<Self>> {
         let pty_system = native_pty_system();
-        let pair = pty_system
-            .openpty(PtySize {
+        // Under parallel test load (and busy CI runners) openpty can fail
+        // transiently with ENXIO ("Device not configured") when the kernel
+        // briefly runs out of available ptys. A short retry makes pane
+        // creation robust there; permanent errors still surface after the
+        // retries are exhausted.
+        let pair = openpty_with_retry(rows, cols, &|rows, cols| {
+            pty_system.openpty(PtySize {
                 rows,
                 cols,
                 pixel_width: 0,
                 pixel_height: 0,
             })
-            .map_err(|err| io::Error::other(err.to_string()))?;
+        })?;
         let program = argv.first().cloned().unwrap_or_else(default_shell);
         let use_login_shell = argv.len() <= 1 && is_shell_program(&program);
         let shell_for_env = if use_login_shell {
@@ -4388,6 +4422,44 @@ fn now_ms() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn openpty_retry_recovers_from_transient_failures() {
+        // Two transient ENXIO-style failures, then success: the helper
+        // retries with backoff and returns the pty.
+        let attempts = std::sync::atomic::AtomicU8::new(0);
+        let result = openpty_with_retry(24, 80, &|rows, cols| {
+            let n = attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if n < 2 {
+                Err(io::Error::other("Device not configured"))
+            } else {
+                Ok((rows, cols))
+            }
+        });
+        assert_eq!(result.unwrap(), (24, 80));
+        assert_eq!(
+            attempts.load(std::sync::atomic::Ordering::SeqCst),
+            3,
+            "two failures then one success"
+        );
+    }
+
+    #[test]
+    fn openpty_retry_surfaces_persistent_failure() {
+        // Every attempt fails: the last error surfaces after the retries.
+        let attempts = std::sync::atomic::AtomicU8::new(0);
+        let result = openpty_with_retry::<u8, io::Error>(24, 80, &|_rows, _cols| {
+            attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err(io::Error::other("Device not configured"))
+        });
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("Device not configured"));
+        assert_eq!(
+            attempts.load(std::sync::atomic::Ordering::SeqCst),
+            3,
+            "three attempts before giving up"
+        );
+    }
 
     #[test]
     fn detects_herdr_agent_aliases_from_argv() {

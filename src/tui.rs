@@ -6,17 +6,40 @@ use serde_json::Value;
 
 use crate::backend_client::{BackendClient, BackendClientError, TerminalOutput};
 use crate::terminal_text::{self, StripCarriageReturn};
+pub use crate::tui_keys::{PrefixState, Shortcut};
 pub use crate::tui_model::{
     snapshot_summary, SidebarFocus, TuiAgent, TuiMode, TuiPane, TuiSnapshot, TuiTab, TuiWorkspace,
 };
 use crate::tui_model::{value_str, value_u64};
+use crate::tui_panels::{FileExplorer, GitPanel, GitView};
 pub use crate::tui_render::render;
 use crate::tui_terminal::{terminal_output_styled_lines_lossy, TuiTextSpan};
 use crate::tui_theme::Palette;
 pub use crate::tui_theme::TuiTheme;
+use crate::tui_web_api::WebApiClient;
 
 const TAIL_LINES: usize = 240;
 const TERMINAL_RAW_BUFFER_BYTES: usize = 512 * 1024;
+
+/// Which main screen the TUI shows. Mirrors the WebUI workspace shell modes
+/// (terminal, Git, Files) so the same workspace can be inspected from both
+/// clients.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TuiScreen {
+    Terminal,
+    Files,
+    Git,
+}
+
+impl TuiScreen {
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Terminal => "Terminal",
+            Self::Files => "Files",
+            Self::Git => "Git",
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct TuiOptions {
@@ -25,6 +48,7 @@ pub struct TuiOptions {
     pub terminal_socket: Option<PathBuf>,
     pub refresh_interval: Duration,
     pub theme: TuiTheme,
+    pub web_api: WebApiClient,
 }
 
 impl Default for TuiOptions {
@@ -35,6 +59,7 @@ impl Default for TuiOptions {
             terminal_socket: None,
             refresh_interval: Duration::from_millis(1000),
             theme: TuiTheme::from_env(),
+            web_api: WebApiClient::new("127.0.0.1", 8787),
         }
     }
 }
@@ -42,11 +67,18 @@ impl Default for TuiOptions {
 #[derive(Debug)]
 pub struct TuiApp {
     pub client: BackendClient,
+    pub web_api: WebApiClient,
     pub snapshot: TuiSnapshot,
     pub selected_workspace: usize,
     pub selected_agent: usize,
     pub sidebar_focus: SidebarFocus,
     pub mode: TuiMode,
+    pub screen: TuiScreen,
+    pub prefix: PrefixState,
+    pub file_explorer: FileExplorer,
+    pub git_panel: GitPanel,
+    pub commit_input: Option<CommitInput>,
+    pub prompt_input: Option<PromptInput>,
     pub pane_tail: Vec<String>,
     pub(crate) pane_tail_styles: Vec<Vec<TuiTextSpan>>,
     terminal_raw_output: String,
@@ -61,6 +93,54 @@ pub struct TuiApp {
     dirty: bool,
 }
 
+/// Commit message input state. Opened with the commit shortcut; typed text
+/// becomes the commit title until Enter commits it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitInput {
+    pub text: String,
+    pub amend: bool,
+}
+
+/// A modal text prompt. Used for file rename and for typing `y` to confirm
+/// destructive actions (file delete, branch delete, stash drop).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptInput {
+    pub kind: PromptKind,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptKind {
+    RenameFile,
+    ConfirmDeleteFile,
+    ConfirmDeleteBranch,
+    ConfirmDropStash,
+}
+
+impl PromptKind {
+    /// Destructive prompts only submit when the typed text is exactly `y`.
+    pub fn needs_confirm(self) -> bool {
+        !matches!(self, Self::RenameFile)
+    }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::RenameFile => "Rename file",
+            Self::ConfirmDeleteFile => "Delete file",
+            Self::ConfirmDeleteBranch => "Delete branch",
+            Self::ConfirmDropStash => "Drop stash",
+        }
+    }
+
+    /// Hint shown under the input line.
+    pub fn hint(self) -> &'static str {
+        match self {
+            Self::RenameFile => "type the new name, Enter renames",
+            _ => "type y then Enter to confirm, Esc cancels",
+        }
+    }
+}
+
 impl TuiApp {
     pub fn new(client: BackendClient, refresh_interval: Duration) -> Self {
         Self::new_with_theme(client, refresh_interval, TuiTheme::Dark)
@@ -71,13 +151,35 @@ impl TuiApp {
         refresh_interval: Duration,
         theme: TuiTheme,
     ) -> Self {
+        Self::new_with_options(
+            client,
+            refresh_interval,
+            theme,
+            WebApiClient::new("127.0.0.1", 8787),
+        )
+    }
+
+    pub fn new_with_options(
+        client: BackendClient,
+        refresh_interval: Duration,
+        theme: TuiTheme,
+        web_api: WebApiClient,
+    ) -> Self {
+        let cwd = "";
         Self {
             client,
+            web_api,
             snapshot: TuiSnapshot::default(),
             selected_workspace: 0,
             selected_agent: 0,
             sidebar_focus: SidebarFocus::Workspaces,
             mode: TuiMode::Navigate,
+            screen: TuiScreen::Terminal,
+            prefix: PrefixState::new(),
+            file_explorer: FileExplorer::new(cwd),
+            git_panel: GitPanel::new(cwd),
+            commit_input: None,
+            prompt_input: None,
             pane_tail: Vec::new(),
             pane_tail_styles: Vec::new(),
             terminal_raw_output: String::new(),
@@ -133,19 +235,825 @@ impl TuiApp {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> bool {
+        // The Ctrl+B prefix wins everywhere, including attach mode, exactly
+        // like the WebUI shortcut overlay wins over terminal input.
+        if let Some(shortcut) = self.prefix.feed(key) {
+            self.run_shortcut(shortcut);
+            self.mark_dirty();
+            return false;
+        }
+        if self.prefix.is_armed() {
+            self.mark_dirty();
+            return false;
+        }
+        if self.commit_input.is_some() {
+            self.handle_commit_key(key);
+            self.mark_dirty();
+            return false;
+        }
+        if self.prompt_input.is_some() {
+            self.handle_prompt_key(key);
+            self.mark_dirty();
+            return false;
+        }
         match self.mode {
             TuiMode::Help => match key.code {
                 KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => {
                     self.mode = TuiMode::Navigate
                 }
-                _ if is_menu_key(key) => self.mode = TuiMode::Navigate,
                 _ => {}
             },
             TuiMode::Navigate => self.handle_navigation_key(key),
-            TuiMode::Attach => self.handle_attach_key(key),
+            TuiMode::Attach => {
+                if self.screen == TuiScreen::Terminal {
+                    self.handle_attach_key(key);
+                } else {
+                    self.handle_panel_key(key);
+                }
+            }
         }
         self.mark_dirty();
         false
+    }
+
+    fn handle_prompt_key(&mut self, key: KeyEvent) {
+        let Some(prompt) = self.prompt_input.as_mut() else {
+            return;
+        };
+        match key.code {
+            KeyCode::Esc => self.prompt_input = None,
+            KeyCode::Enter => {
+                let kind = prompt.kind;
+                let text = prompt.text.trim().to_string();
+                self.prompt_input = None;
+                if kind.needs_confirm() && text != "y" {
+                    self.status = "cancelled".to_string();
+                    return;
+                }
+                self.run_prompt_action(kind, &text);
+            }
+            KeyCode::Backspace => {
+                prompt.text.pop();
+            }
+            KeyCode::Char(ch) => {
+                if key.modifiers.contains(KeyModifiers::CONTROL) && ch.eq_ignore_ascii_case(&'u') {
+                    prompt.text.clear();
+                } else {
+                    prompt.text.push(ch);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn run_prompt_action(&mut self, kind: PromptKind, text: &str) {
+        match kind {
+            PromptKind::RenameFile => {
+                let Some(entry) = self.file_explorer.selected_entry() else {
+                    self.error = Some("no file selected".to_string());
+                    return;
+                };
+                let path = entry.path.clone();
+                match self
+                    .web_api
+                    .file_rename(&self.file_explorer.cwd, &path, text)
+                {
+                    Ok(_) => {
+                        self.status = format!("renamed to {text}");
+                        if let Err(err) = self.file_explorer.refresh(&self.web_api) {
+                            self.error = Some(err.to_string());
+                        }
+                    }
+                    Err(err) => self.error = Some(err.to_string()),
+                }
+            }
+            PromptKind::ConfirmDeleteFile => {
+                let Some(entry) = self.file_explorer.selected_entry() else {
+                    self.error = Some("no file selected".to_string());
+                    return;
+                };
+                let path = entry.path.clone();
+                match self.web_api.file_delete(&self.file_explorer.cwd, &path) {
+                    Ok(_) => {
+                        self.status = format!("deleted {path}");
+                        if let Err(err) = self.file_explorer.refresh(&self.web_api) {
+                            self.error = Some(err.to_string());
+                        }
+                    }
+                    Err(err) => self.error = Some(err.to_string()),
+                }
+            }
+            PromptKind::ConfirmDeleteBranch => {
+                let Some(branch) = self
+                    .git_panel
+                    .branches
+                    .get(self.git_panel.branch_selected)
+                    .filter(|entry| !entry.current)
+                    .map(|entry| entry.name.clone())
+                else {
+                    self.error = Some("no branch selected".to_string());
+                    return;
+                };
+                match self.git_panel.delete_branch(&self.web_api, &branch, false) {
+                    Ok(_) => self.status = format!("deleted branch {branch}"),
+                    Err(err) => self.error = Some(err.to_string()),
+                }
+            }
+            PromptKind::ConfirmDropStash => match self.git_panel.stash_drop(&self.web_api) {
+                Ok(_) => self.status = "stash dropped".to_string(),
+                Err(err) => self.error = Some(err.to_string()),
+            },
+        }
+    }
+
+    fn handle_commit_key(&mut self, key: KeyEvent) {
+        let Some(commit) = self.commit_input.as_mut() else {
+            return;
+        };
+        match key.code {
+            KeyCode::Enter => {
+                let text = commit.text.trim().to_string();
+                let amend = commit.amend;
+                self.commit_input = None;
+                if text.is_empty() {
+                    self.error = Some("commit message is empty".to_string());
+                    return;
+                }
+                match self.git_panel.commit(&self.web_api, &text, amend) {
+                    Ok(()) => self.status = format!("committed: {text}"),
+                    Err(err) => self.error = Some(err.to_string()),
+                }
+            }
+            KeyCode::Esc => self.commit_input = None,
+            KeyCode::Backspace => {
+                commit.text.pop();
+            }
+            KeyCode::Char(ch) => {
+                if key.modifiers.contains(KeyModifiers::CONTROL) && ch.eq_ignore_ascii_case(&'u') {
+                    commit.text.clear();
+                } else {
+                    commit.text.push(ch);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn run_shortcut(&mut self, shortcut: Shortcut) {
+        match shortcut {
+            Shortcut::Help => self.mode = TuiMode::Help,
+            Shortcut::Files => self.open_files_screen(),
+            Shortcut::Git => self.open_git_screen(),
+            Shortcut::Terminal => self.screen = TuiScreen::Terminal,
+            Shortcut::Search => {
+                if self.screen == TuiScreen::Files {
+                    self.file_explorer.start_filter();
+                    self.status = "file filter".to_string();
+                }
+            }
+            Shortcut::Refresh => self.refresh_active_screen(),
+            Shortcut::NextWorkspace => self.move_selection(1),
+            Shortcut::PrevWorkspace => self.move_selection(-1),
+            Shortcut::NextAgent => {
+                self.sidebar_focus = SidebarFocus::Agents;
+                self.move_selection(1);
+            }
+            Shortcut::PrevAgent => {
+                self.sidebar_focus = SidebarFocus::Agents;
+                self.move_selection(-1);
+            }
+            Shortcut::NewTab => self.create_tab(),
+            Shortcut::CloseTab => self.close_selected_tab(),
+            Shortcut::Quit => self.status = "quit".to_string(),
+            Shortcut::GitChanges => {
+                self.open_git_screen();
+                self.git_panel.view = GitView::Changes;
+                self.refresh_active_screen();
+            }
+            Shortcut::GitCommit => {
+                self.open_git_screen();
+                self.commit_input = Some(CommitInput {
+                    text: String::new(),
+                    amend: false,
+                });
+                self.status = "commit: type message, Enter commits".to_string();
+            }
+            Shortcut::EditFile => {
+                // Webui parity: prefix then e edits the current file. On the
+                // Files screen that is the open preview; on Git it is the
+                // file selected in the Changes list.
+                if self.screen == TuiScreen::Files {
+                    match self.file_explorer.start_edit() {
+                        Ok(()) => self.status = "editing: Ctrl-S saves, Esc stops".to_string(),
+                        Err(err) => self.error = Some(err.to_string()),
+                    }
+                } else {
+                    self.open_git_screen();
+                    self.git_panel.view = GitView::Changes;
+                    let file = self
+                        .git_panel
+                        .selected_file()
+                        .map(|entry| entry.path.clone());
+                    let Some(file) = file else {
+                        self.error = Some("no file selected in git changes".to_string());
+                        return;
+                    };
+                    // A dirty buffer is not silently replaced: the webui
+                    // keeps dirty editor tabs, so ask the user to save or
+                    // reload first.
+                    if self.file_explorer.preview.dirty
+                        && self.file_explorer.preview.path.as_deref() != Some(file.as_str())
+                    {
+                        self.status =
+                            "unsaved edits: save or reload before editing another file".to_string();
+                        return;
+                    }
+                    match self.web_api.file_read(&self.git_panel.cwd, &file) {
+                        Ok(data) => {
+                            let content = data.get("content").and_then(Value::as_str).unwrap_or("");
+                            let binary =
+                                data.get("binary").and_then(Value::as_bool).unwrap_or(false);
+                            let truncated = data
+                                .get("truncated")
+                                .and_then(Value::as_bool)
+                                .unwrap_or(false);
+                            // Rebuild the explorer for the git cwd so the
+                            // tree, cwd, and preview all describe the same
+                            // directory; reusing the old explorer would
+                            // leave stale entries resolved against the new
+                            // cwd.
+                            let mut explorer =
+                                crate::tui_panels::FileExplorer::new(&self.git_panel.cwd);
+                            // Best effort: a failed tree refresh leaves an
+                            // empty tree but keeps cwd and preview aligned.
+                            if let Err(err) = explorer.refresh(&self.web_api) {
+                                self.error = Some(err.to_string());
+                            }
+                            explorer.preview = crate::tui_panels::FilePreview {
+                                path: Some(file),
+                                content: content.to_string(),
+                                truncated,
+                                binary,
+                                hash: data
+                                    .get("hash")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or_default()
+                                    .to_string(),
+                                dirty: false,
+                            };
+                            // start_edit re-checks binary/truncated and
+                            // reports "binary file cannot be edited" /
+                            // "truncated file cannot be edited safely".
+                            match explorer.start_edit() {
+                                Ok(()) => {
+                                    self.status = "editing: Ctrl-S saves, Esc stops".to_string()
+                                }
+                                Err(err) => self.error = Some(err.to_string()),
+                            }
+                            self.screen = TuiScreen::Files;
+                            self.file_explorer = explorer;
+                        }
+                        Err(err) => self.error = Some(err.to_string()),
+                    }
+                }
+            }
+            Shortcut::GitLog => {
+                self.open_git_screen();
+                self.git_panel.view = GitView::Log;
+                self.refresh_active_screen();
+            }
+            Shortcut::GitStash => {
+                self.open_git_screen();
+                self.git_panel.view = GitView::Stash;
+                self.refresh_active_screen();
+            }
+            Shortcut::GitFileHistory => {
+                // Webui `history: KeyH`: list commits touching the file
+                // selected in Changes.
+                self.open_git_screen();
+                if self.git_panel.view != GitView::Changes {
+                    self.git_panel.view = GitView::Changes;
+                    self.refresh_active_screen();
+                }
+                if self.git_panel.selected_file().is_none() {
+                    self.error = Some("no file selected in git changes".to_string());
+                    return;
+                }
+                self.git_panel.view = GitView::History;
+                self.refresh_active_screen();
+                let file = self.git_panel.history_file.clone().unwrap_or_default();
+                self.status = format!("history: {file}");
+            }
+            Shortcut::GitChangesBack => {
+                // Webui `compare: KeyO`: return to the current changes view.
+                self.open_git_screen();
+                self.git_panel.view = GitView::Changes;
+                self.refresh_active_screen();
+            }
+            Shortcut::GitBlame => {
+                // Webui `blame: KeyM`: toggle author annotations on the
+                // diff lines of the selected file.
+                self.open_git_screen();
+                if self.git_panel.view != GitView::Changes {
+                    self.git_panel.view = GitView::Changes;
+                    self.refresh_active_screen();
+                }
+                match self.git_panel.toggle_blame(&self.web_api) {
+                    Ok(()) => {
+                        self.status = if self.git_panel.show_blame {
+                            "blame on".to_string()
+                        } else {
+                            "blame off".to_string()
+                        };
+                    }
+                    Err(err) => self.error = Some(err.to_string()),
+                }
+            }
+            Shortcut::GitBranch => {
+                self.open_git_screen();
+                self.git_panel.view = GitView::Branches;
+                self.refresh_active_screen();
+            }
+            Shortcut::GitSwitchBranch => {
+                self.open_git_screen();
+                self.git_panel.view = GitView::Branches;
+                self.refresh_active_screen();
+                let selected = self.git_panel.branch_selected;
+                let Some(branch) = self
+                    .git_panel
+                    .branches
+                    .get(selected)
+                    .filter(|entry| !entry.current)
+                    .map(|entry| entry.name.clone())
+                else {
+                    return;
+                };
+                match self.git_panel.switch_branch(&self.web_api, &branch) {
+                    Ok(()) => self.status = format!("switched to {branch}"),
+                    Err(err) => self.error = Some(err.to_string()),
+                }
+            }
+            Shortcut::GitStageAll => self.run_git_action(|panel, api| panel.toggle_stage_all(api)),
+            Shortcut::GitStageFile => self.run_git_action(|panel, api| panel.stage_selected(api)),
+            Shortcut::GitUnstageFile => {
+                self.run_git_action(|panel, api| panel.unstage_selected(api))
+            }
+            Shortcut::GitDiscardFile => {
+                // Discarding the file under edit while its buffer is
+                // dirty would silently fork it from disk.
+                let selected_path = self
+                    .git_panel
+                    .selected_file()
+                    .map(|entry| entry.path.clone());
+                if self.file_explorer.preview.dirty
+                    && selected_path.is_some_and(|path| {
+                        self.file_explorer.preview.path.as_deref() == Some(path.as_str())
+                    })
+                {
+                    self.error = Some(
+                        "unsaved edits: save or reload before discarding this file".to_string(),
+                    );
+                } else {
+                    self.run_git_action(|panel, api| panel.discard_selected(api));
+                }
+            }
+            Shortcut::GitStashFile => self.run_git_action(|panel, api| panel.stash_changes(api)),
+            Shortcut::GitPush => self.run_git_action(|panel, api| panel.push(api)),
+        }
+    }
+
+    fn run_git_action(
+        &mut self,
+        action: impl FnOnce(&mut GitPanel, &WebApiClient) -> Result<(), crate::tui_web_api::WebApiError>,
+    ) {
+        self.open_git_screen();
+        self.git_panel.view = GitView::Changes;
+        if let Err(err) = action(&mut self.git_panel, &self.web_api) {
+            self.error = Some(err.to_string());
+        }
+    }
+
+    fn create_tab(&mut self) {
+        let Some(workspace) = self
+            .selected_workspace()
+            .map(|workspace| workspace.id.clone())
+        else {
+            self.error = Some("no workspace selected".to_string());
+            return;
+        };
+        match self.client.create_tab(Some(&workspace), None) {
+            Ok(_) => {
+                self.status = "tab created".to_string();
+                if let Err(err) = self.refresh() {
+                    self.error = Some(err.to_string());
+                }
+            }
+            Err(err) => self.error = Some(err.to_string()),
+        }
+    }
+
+    fn close_selected_tab(&mut self) {
+        let Some(workspace) = self.selected_workspace() else {
+            self.error = Some("no workspace selected".to_string());
+            return;
+        };
+        let tab_id = workspace.active_tab_id.clone().or_else(|| {
+            self.snapshot
+                .workspace_tabs(&workspace.id)
+                .first()
+                .map(|tab| tab.id.clone())
+        });
+        let Some(tab_id) = tab_id else {
+            self.error = Some("no tab to close".to_string());
+            return;
+        };
+        match self
+            .client
+            .request("tab.close", serde_json::json!({ "tab_id": tab_id }))
+        {
+            Ok(_) => {
+                self.status = "tab closed".to_string();
+                if let Err(err) = self.refresh() {
+                    self.error = Some(err.to_string());
+                }
+            }
+            Err(err) => self.error = Some(err.to_string()),
+        }
+    }
+
+    fn open_files_screen(&mut self) {
+        if self.screen == TuiScreen::Files {
+            return;
+        }
+        self.screen = TuiScreen::Files;
+        // A dirty preview survives the screen switch like a webui
+        // dirty editor tab: skip the rebuild so the buffer and its
+        // explorer stay together until saved or reloaded.
+        if self.file_explorer.preview.dirty && self.file_explorer.preview.path.is_some() {
+            return;
+        }
+        let Some(cwd) = self.active_cwd() else {
+            return;
+        };
+        self.file_explorer = FileExplorer::new(&cwd);
+        if let Err(err) = self.file_explorer.refresh(&self.web_api) {
+            self.error = Some(err.to_string());
+        }
+    }
+
+    fn open_git_screen(&mut self) {
+        if self.screen == TuiScreen::Git {
+            return;
+        }
+        self.screen = TuiScreen::Git;
+        let Some(cwd) = self.active_cwd() else {
+            return;
+        };
+        self.git_panel.set_cwd(&cwd);
+        if let Err(err) = self.git_panel.refresh_view(&self.web_api) {
+            self.error = Some(err.to_string());
+        }
+    }
+
+    fn refresh_active_screen(&mut self) {
+        match self.screen {
+            TuiScreen::Terminal => {
+                if let Err(err) = self.refresh() {
+                    self.error = Some(err.to_string());
+                }
+            }
+            TuiScreen::Files => {
+                if let Err(err) = self.file_explorer.refresh(&self.web_api) {
+                    self.error = Some(err.to_string());
+                }
+            }
+            TuiScreen::Git => {
+                if let Err(err) = self.git_panel.refresh_view(&self.web_api) {
+                    self.error = Some(err.to_string());
+                }
+            }
+        }
+    }
+
+    /// The cwd used for files/git panels: selected workspace cwd, falling back
+    /// to the selected agent cwd.
+    pub fn active_cwd(&self) -> Option<String> {
+        let workspace_cwd = self
+            .selected_workspace()
+            .map(|workspace| workspace.cwd.clone())
+            .filter(|cwd| !cwd.is_empty());
+        workspace_cwd.or_else(|| {
+            self.selected_agent()
+                .map(|agent| agent.cwd.clone())
+                .filter(|cwd| !cwd.is_empty())
+        })
+    }
+
+    /// Handle in-panel keys (files/git screens) while in attach mode.
+    fn handle_panel_key(&mut self, key: KeyEvent) {
+        match self.screen {
+            TuiScreen::Files => self.handle_files_key(key),
+            TuiScreen::Git => self.handle_git_key(key),
+            TuiScreen::Terminal => {}
+        }
+    }
+
+    fn handle_files_key(&mut self, key: KeyEvent) {
+        // While editing, all keys type into the buffer; Esc exits edit mode.
+        if self.file_explorer.edit_active {
+            match self.file_explorer.edit_key(key, &self.web_api) {
+                Ok(()) => {
+                    if !self.file_explorer.edit_active {
+                        self.status = if self.file_explorer.preview.dirty {
+                            "edit mode left with unsaved changes".to_string()
+                        } else {
+                            "edit mode closed".to_string()
+                        };
+                    } else if key
+                        .modifiers
+                        .contains(crossterm::event::KeyModifiers::CONTROL)
+                        && key.code == KeyCode::Char('s')
+                    {
+                        self.status = "saved".to_string();
+                    }
+                }
+                Err(err) => self.error = Some(err.to_string()),
+            }
+            return;
+        }
+        if self.file_explorer.filter_active {
+            match key.code {
+                KeyCode::Enter => self.file_explorer.commit_filter(),
+                KeyCode::Esc => {
+                    self.file_explorer.filter_active = false;
+                    self.file_explorer.filter.clear();
+                }
+                KeyCode::Backspace => self.file_explorer.pop_filter_char(),
+                KeyCode::Char(ch) => self.file_explorer.push_filter_char(ch),
+                _ => {}
+            }
+            if self.file_explorer.filter_active {
+                return;
+            }
+            if let Err(err) = self.file_explorer.refresh(&self.web_api) {
+                self.error = Some(err.to_string());
+            }
+            return;
+        }
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => self.file_explorer.move_selection(1),
+            KeyCode::Char('k') | KeyCode::Up => self.file_explorer.move_selection(-1),
+            KeyCode::Enter => {
+                // Webui click parity: Enter toggles inline expansion for
+                // directories and opens the preview for files. Entering a
+                // directory as the new root stays on `l` (double-click).
+                match self.file_explorer.toggle_expand(&self.web_api) {
+                    Err(err) => self.error = Some(err.to_string()),
+                    // Not a directory: open the preview; failures surface.
+                    Ok(false) => {
+                        if let Err(err) = self.file_explorer.open_preview(&self.web_api) {
+                            self.error = Some(err.to_string());
+                        }
+                    }
+                    Ok(true) => {}
+                }
+            }
+            KeyCode::Char('l') | KeyCode::Right => {
+                if self.file_explorer.enter_directory()
+                    || self
+                        .file_explorer
+                        .toggle_expand(&self.web_api)
+                        .unwrap_or(false)
+                {
+                    if let Err(err) = self.file_explorer.refresh(&self.web_api) {
+                        self.error = Some(err.to_string());
+                    }
+                }
+            }
+            // `h`/Left and `u` both go up one directory and refresh;
+            // failures surface in the status bar like every panel error.
+            KeyCode::Char('h') | KeyCode::Left | KeyCode::Char('u') => {
+                if self.file_explorer.go_up() {
+                    if let Err(err) = self.file_explorer.refresh(&self.web_api) {
+                        self.error = Some(err.to_string());
+                    }
+                }
+            }
+            KeyCode::Char('r') => self.refresh_active_screen(),
+            KeyCode::Char('/') => self.file_explorer.start_filter(),
+            KeyCode::Char('e') => match self.file_explorer.start_edit() {
+                Ok(()) => self.status = "editing: Ctrl-S saves, Esc stops".to_string(),
+                Err(err) => self.error = Some(err.to_string()),
+            },
+            KeyCode::Char('R') => {
+                // Rename the selected file: prefill the prompt with the
+                // current name so editing is incremental.
+                let name = self
+                    .file_explorer
+                    .selected_entry()
+                    .map(|entry| entry.name.clone())
+                    .unwrap_or_default();
+                if name.is_empty() {
+                    self.error = Some("no file selected".to_string());
+                } else if self.file_explorer.preview.dirty
+                    && self.file_explorer.preview.path.is_some()
+                {
+                    // Renaming would desync the dirty buffer's path from
+                    // the file on disk; require a save or reload first.
+                    self.error =
+                        Some("unsaved edits: save or reload before renaming files".to_string());
+                } else {
+                    self.prompt_input = Some(PromptInput {
+                        kind: PromptKind::RenameFile,
+                        text: name,
+                    });
+                }
+            }
+            KeyCode::Char('x') => {
+                let name = self
+                    .file_explorer
+                    .selected_entry()
+                    .map(|entry| entry.name.clone())
+                    .unwrap_or_default();
+                if name.is_empty() {
+                    self.error = Some("no file selected".to_string());
+                } else if self.file_explorer.preview.dirty
+                    && self.file_explorer.preview.path.is_some()
+                {
+                    // Deleting would orphan the dirty buffer (a later save
+                    // would recreate the file); the webui also refuses
+                    // editing deleted files.
+                    self.error =
+                        Some("unsaved edits: save or reload before deleting files".to_string());
+                } else {
+                    self.prompt_input = Some(PromptInput {
+                        kind: PromptKind::ConfirmDeleteFile,
+                        text: String::new(),
+                    });
+                }
+            }
+            KeyCode::Esc | KeyCode::Char('q') => self.screen = TuiScreen::Terminal,
+            _ => {}
+        }
+    }
+
+    fn handle_git_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => self.git_panel.move_selection(1),
+            KeyCode::Char('k') | KeyCode::Up => self.git_panel.move_selection(-1),
+            KeyCode::Tab => {
+                self.git_panel.view = match self.git_panel.view {
+                    GitView::Changes => GitView::Log,
+                    GitView::Log => GitView::Branches,
+                    GitView::Branches => GitView::Stash,
+                    GitView::Stash => GitView::History,
+                    GitView::History => GitView::Changes,
+                };
+                self.refresh_active_screen();
+            }
+            KeyCode::Char('s') => {
+                if let Err(err) = self.git_panel.stage_selected(&self.web_api) {
+                    self.error = Some(err.to_string());
+                }
+            }
+            KeyCode::Char('d') => {
+                // Discarding the file under edit would make the dirty
+                // buffer diverge from disk with no reload prompt; the
+                // 409-style guard belongs here too.
+                let selected_path = self
+                    .git_panel
+                    .selected_file()
+                    .map(|entry| entry.path.clone());
+                if self.file_explorer.preview.dirty
+                    && selected_path.is_some_and(|path| {
+                        self.file_explorer.preview.path.as_deref() == Some(path.as_str())
+                    })
+                {
+                    self.error = Some(
+                        "unsaved edits: save or reload before discarding this file".to_string(),
+                    );
+                } else if let Err(err) = self.git_panel.discard_selected(&self.web_api) {
+                    self.error = Some(err.to_string());
+                }
+            }
+            KeyCode::Char('f') => {
+                if let Err(err) = self.git_panel.fetch(&self.web_api) {
+                    self.error = Some(err.to_string());
+                }
+            }
+            KeyCode::Char('p') => {
+                if let Err(err) = self.git_panel.pull(&self.web_api) {
+                    self.error = Some(err.to_string());
+                }
+            }
+            KeyCode::Char('P') => {
+                if let Err(err) = self.git_panel.push(&self.web_api) {
+                    self.error = Some(err.to_string());
+                }
+            }
+            KeyCode::Char('c') => {
+                self.commit_input = Some(CommitInput {
+                    text: String::new(),
+                    amend: false,
+                });
+            }
+            KeyCode::Char('a') => {
+                self.commit_input = Some(CommitInput {
+                    text: String::new(),
+                    amend: true,
+                });
+            }
+            KeyCode::Char('r') => self.refresh_active_screen(),
+            KeyCode::Char('D') => match self.git_panel.view {
+                GitView::Branches => {
+                    let selected = self.git_panel.branches.get(self.git_panel.branch_selected);
+                    match selected {
+                        Some(entry) if entry.current => {
+                            self.error = Some("cannot delete the current branch".to_string());
+                        }
+                        Some(_) => {
+                            self.prompt_input = Some(PromptInput {
+                                kind: PromptKind::ConfirmDeleteBranch,
+                                text: String::new(),
+                            });
+                        }
+                        None => self.error = Some("no branch selected".to_string()),
+                    }
+                }
+                GitView::Stash => {
+                    if self
+                        .git_panel
+                        .stashes
+                        .get(self.git_panel.stash_selected)
+                        .is_some()
+                    {
+                        self.prompt_input = Some(PromptInput {
+                            kind: PromptKind::ConfirmDropStash,
+                            text: String::new(),
+                        });
+                    } else {
+                        self.error = Some("no stash selected".to_string());
+                    }
+                }
+                _ => {}
+            },
+            KeyCode::Enter => match self.git_panel.view {
+                GitView::Changes => {
+                    if let Err(err) = self.git_panel.refresh_diff(&self.web_api) {
+                        self.error = Some(err.to_string());
+                    }
+                }
+                // History rows are commits: Enter loads the selected commit's
+                // diff (webui `showHistoryCommit`) into the History diff
+                // pane; the view itself stays so the file context is kept.
+                GitView::History => {
+                    let hash = self
+                        .git_panel
+                        .commits
+                        .get(self.git_panel.commit_selected)
+                        .map(|commit| commit.hash.clone());
+                    match hash {
+                        Some(hash) => {
+                            let file = self.git_panel.history_file.clone();
+                            match self.git_panel.load_commit_diff(&self.web_api, &hash) {
+                                Ok(()) => {
+                                    self.status = format!(
+                                        "commit {hash}{}",
+                                        file.map(|f| format!(" · {f}")).unwrap_or_default()
+                                    );
+                                }
+                                Err(err) => self.error = Some(err.to_string()),
+                            }
+                        }
+                        None => self.error = Some("no commit selected".to_string()),
+                    }
+                }
+                GitView::Branches => {
+                    if let Err(err) = self.git_panel.switch_selected(&self.web_api) {
+                        self.error = Some(err.to_string());
+                    } else {
+                        self.status = format!(
+                            "switched to {}",
+                            self.git_panel
+                                .branches
+                                .get(self.git_panel.branch_selected)
+                                .map(|entry| entry.name.clone())
+                                .unwrap_or_default()
+                        );
+                    }
+                }
+                GitView::Stash => {
+                    if let Err(err) = self.git_panel.stash_apply(&self.web_api) {
+                        self.error = Some(err.to_string());
+                    } else {
+                        self.status = "stash applied".to_string();
+                    }
+                }
+                GitView::Log => {}
+            },
+            KeyCode::Esc | KeyCode::Char('q') => self.screen = TuiScreen::Terminal,
+            _ => {}
+        }
     }
 
     pub fn mark_dirty(&mut self) {
@@ -165,12 +1073,16 @@ impl TuiApp {
             out.push(format!("error: {error}"));
         }
         out.push(format!(
-            "workspaces={} tabs={} panes={} agents={}",
+            "workspaces={} tabs={} panes={} agents={} screen={}",
             self.snapshot.workspaces.len(),
             self.snapshot.tabs.len(),
             self.snapshot.panes.len(),
-            self.snapshot.agents.len()
+            self.snapshot.agents.len(),
+            self.screen.title(),
         ));
+        if let Some(cwd) = self.active_cwd() {
+            out.push(format!("active cwd {cwd}"));
+        }
         if let Some(workspace) = self.selected_workspace() {
             out.push(format!(
                 "workspace {} · {} · {} · {} panes",
@@ -216,20 +1128,21 @@ impl TuiApp {
     }
 
     fn handle_navigation_key(&mut self, key: KeyEvent) {
+        // The Files and Git screens own their keys in Navigate mode too;
+        // only the Terminal screen keeps the workspace/agent list keys.
+        if self.screen != TuiScreen::Terminal {
+            self.handle_panel_key(key);
+            return;
+        }
         match key.code {
+            // Only the Terminal screen reaches this handler; Files and Git
+            // delegate to their panel handlers above.
             KeyCode::Char('q') | KeyCode::Esc => self.status = "quit".to_string(),
-            _ if is_menu_key(key) => self.mode = TuiMode::Help,
             KeyCode::Char('?') => self.mode = TuiMode::Help,
-            KeyCode::Char('r') => {
-                if let Err(err) = self.refresh() {
-                    self.error = Some(err.to_string());
-                    self.mark_dirty();
-                }
-            }
+            KeyCode::Char('r') => self.refresh_active_screen(),
             KeyCode::Char('j') | KeyCode::Down => self.move_selection(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_selection(-1),
-            KeyCode::Tab => self.toggle_sidebar_focus(),
-            KeyCode::BackTab => self.toggle_sidebar_focus(),
+            KeyCode::Tab | KeyCode::BackTab => self.toggle_sidebar_focus(),
             KeyCode::Char('a') => self.sidebar_focus = SidebarFocus::Agents,
             KeyCode::Char('w') => self.sidebar_focus = SidebarFocus::Workspaces,
             KeyCode::Enter => self.attach_selected(),
@@ -238,11 +1151,8 @@ impl TuiApp {
     }
 
     fn handle_attach_key(&mut self, key: KeyEvent) {
-        if is_menu_key(key) {
-            self.mode = TuiMode::Help;
-            self.status = "menu: Esc/Ctrl-B closes".to_string();
-            return;
-        }
+        // Note: menu keys (Ctrl+B) never reach this handler; the prefix
+        // feed in `handle_key` consumes them first to arm the overlay.
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('g') {
             self.mode = TuiMode::Navigate;
             self.status = "detached".to_string();
