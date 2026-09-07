@@ -9898,13 +9898,24 @@ mod tui_parity_e2e_tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let run = |args: &[&str]| {
-            let ok = Command::new("git")
-                .arg("-C")
-                .arg(&dir)
-                .args(args)
-                .output()
-                .is_ok_and(|out| out.status.success());
-            assert!(ok, "git {args:?} failed in test repo");
+            let mut attempt = 0;
+            loop {
+                let output = Command::new("git").arg("-C").arg(&dir).args(args).output();
+                let detail = match &output {
+                    Ok(out) if out.status.success() => return,
+                    Ok(out) => format!(
+                        "exit={:?} stderr={}",
+                        out.status.code(),
+                        String::from_utf8_lossy(&out.stderr).trim()
+                    ),
+                    Err(err) => err.to_string(),
+                };
+                attempt += 1;
+                if attempt >= 3 {
+                    panic!("git {args:?} failed in test repo: {detail}");
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100 * attempt as u64));
+            }
         };
         run(&["init", "-q"]);
         run(&["config", "user.email", "tui@test.local"]);
@@ -9914,6 +9925,32 @@ mod tui_parity_e2e_tests {
         run(&["commit", "-q", "-m", "init"]);
         std::fs::write(dir.join("readme.md"), "hello\nworld\n").unwrap();
         std::fs::write(dir.join("new_file.rs"), "fn main() {}\n").unwrap();
+        // A bare sibling repo acts as "origin" so fetch/pull/push have a
+        // real remote to talk to in the round-trip test.
+        let bare = std::env::temp_dir().join(format!(
+            "herdr-tui-e2e-bare-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        let bare_str = bare.to_string_lossy().to_string();
+        assert!(
+            Command::new("git")
+                .arg("clone")
+                .arg("-q")
+                .arg("--bare")
+                .arg(&dir)
+                .arg(&bare)
+                .output()
+                .is_ok_and(|out| out.status.success()),
+            "git clone --bare failed in test setup"
+        );
+        run(&["remote", "add", "origin", &bare_str]);
+        run(&["push", "-q", "-u", "origin", "HEAD"]);
+        run(&["config", "pull.rebase", "true"]);
+        std::thread::sleep(std::time::Duration::from_millis(1));
         dir
     }
 
@@ -10341,6 +10378,961 @@ mod tui_parity_e2e_tests {
         assert!(
             save_err.to_string().contains("file changed on disk"),
             "stale hash save must surface the server conflict message, got {save_err}"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn tui_app_prompt_and_git_actions_round_trip() {
+        let repo = temp_git_repo();
+        let state = localhost_no_auth_state(repo.clone());
+        let app = app_router(state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+
+        let port = addr.port();
+        let cwd = repo.to_string_lossy().to_string();
+        let result = tokio::task::spawn_blocking(move || tui_app_prompt_assertions(port, &cwd))
+            .await
+            .unwrap();
+        result.unwrap_or_else(|err| panic!("tui app prompt round trip failed: {err}"));
+        server.abort();
+        let _ = std::fs::remove_dir_all(&repo);
+        // The bare "origin" sibling shares the repo's timestamped name.
+        let bare = std::env::temp_dir().join(
+            repo.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .replace("herdr-tui-e2e-repo-", "herdr-tui-e2e-bare-"),
+        );
+        let _ = std::fs::remove_dir_all(&bare);
+    }
+
+    fn tui_app_prompt_assertions(port: u16, cwd: &str) -> Result<(), String> {
+        use herdr_webui::backend_client::BackendClient;
+        use herdr_webui::tui::{TuiApp, TuiMode, TuiScreen, TuiSnapshot, TuiTheme};
+
+        let client = BackendClient::new("/tmp/unused-api.sock", "/tmp/unused-term.sock");
+        let mut app = TuiApp::new_with_options(
+            client,
+            std::time::Duration::from_secs(1),
+            TuiTheme::Dark,
+            WebApiClient::new("127.0.0.1", port),
+        );
+        // Drive the app through prompt flows without a terminal: prompts are
+        // pure app state, so handle_key is enough.
+        app.snapshot = TuiSnapshot::default();
+        app.screen = TuiScreen::Files;
+        app.mode = TuiMode::Attach;
+        app.file_explorer = herdr_webui::tui_panels::FileExplorer::new(cwd);
+        app.file_explorer
+            .refresh(&app.web_api)
+            .map_err(|e| e.to_string())?;
+        app.git_panel.set_cwd(cwd);
+        app.git_panel
+            .refresh_view(&app.web_api)
+            .map_err(|e| e.to_string())?;
+
+        let press = |app: &mut TuiApp, ch: char| {
+            app.handle_key(crossterm::event::KeyEvent::from(
+                crossterm::event::KeyCode::Char(ch),
+            ));
+        };
+
+        // --- Rename prompt: R opens, type new name, Enter confirms.
+        // Select the file to rename deterministically (dirs sort first).
+        let target_idx = app
+            .file_explorer
+            .entries
+            .iter()
+            .position(|e| e.name == "new_file.rs")
+            .ok_or("new_file.rs missing from tree")?;
+        app.file_explorer.selected = target_idx;
+        press(&mut app, 'R');
+        assert!(app.prompt_input.is_some(), "rename prompt did not open");
+        // Type over the default text: Ctrl+U clears, then type the new name.
+        app.handle_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('u'),
+            crossterm::event::KeyModifiers::CONTROL,
+        ));
+        press(&mut app, 'r');
+        press(&mut app, 'e');
+        press(&mut app, 'n');
+        press(&mut app, 'a');
+        press(&mut app, 'm');
+        press(&mut app, 'e');
+        press(&mut app, 'd');
+        app.handle_key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Enter,
+        ));
+        assert!(app.prompt_input.is_none(), "rename prompt still open");
+        assert_eq!(
+            app.status, "renamed to renamed",
+            "rename status wrong: {}",
+            app.status
+        );
+        assert!(
+            app.file_explorer
+                .entries
+                .iter()
+                .any(|e| e.name == "renamed"),
+            "renamed file missing from tree"
+        );
+
+        // --- Delete confirm: x opens, y confirms. Select the renamed file
+        // explicitly so the delete target is deterministic.
+        let doomed_idx = app
+            .file_explorer
+            .entries
+            .iter()
+            .position(|e| e.name == "renamed")
+            .ok_or("renamed file missing before delete")?;
+        app.file_explorer.selected = doomed_idx;
+        let doomed = app
+            .file_explorer
+            .selected_entry()
+            .map(|e| e.name.clone())
+            .ok_or("no entry selected for delete")?;
+        assert_eq!(doomed, "renamed");
+        press(&mut app, 'x');
+        assert!(app.prompt_input.is_some(), "delete prompt did not open");
+        press(&mut app, 'y');
+        app.handle_key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Enter,
+        ));
+        assert!(app.prompt_input.is_none(), "delete prompt still open");
+        assert!(
+            app.status.starts_with("deleted "),
+            "delete status: {}",
+            app.status
+        );
+        assert!(
+            !app.file_explorer.entries.iter().any(|e| e.name == doomed),
+            "deleted file {doomed} still in tree"
+        );
+        assert!(
+            !app.file_explorer
+                .entries
+                .iter()
+                .any(|e| e.name == "renamed"),
+            "deleted file still in tree"
+        );
+
+        // --- Git branch delete via prompt: Tab to Branches, D opens, y confirms.
+        app.screen = TuiScreen::Git;
+        app.git_panel.view = herdr_webui::tui_panels::GitView::Branches;
+        app.git_panel
+            .refresh_view(&app.web_api)
+            .map_err(|e| e.to_string())?;
+        // Remember the default branch, create a temp branch, return to the
+        // default, then delete the temp branch.
+        let default_branch = app
+            .git_panel
+            .branches
+            .iter()
+            .find(|b| b.current)
+            .map(|b| b.name.clone())
+            .ok_or("no current branch")?;
+        app.web_api
+            .git_switch(cwd, "tui-app-branch", true)
+            .map_err(|e| e.to_string())?;
+        app.web_api
+            .git_switch(cwd, &default_branch, false)
+            .map_err(|e| e.to_string())?;
+        app.git_panel
+            .refresh_view(&app.web_api)
+            .map_err(|e| e.to_string())?;
+        let idx = app
+            .git_panel
+            .branches
+            .iter()
+            .position(|b| b.name == "tui-app-branch")
+            .ok_or("temp branch not listed")?;
+        app.git_panel.branch_selected = idx;
+        press(&mut app, 'D');
+        assert!(app.prompt_input.is_some(), "branch delete prompt not open");
+        press(&mut app, 'y');
+        app.handle_key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Enter,
+        ));
+        assert!(app.prompt_input.is_none(), "branch prompt still open");
+        assert!(
+            app.status.starts_with("deleted branch"),
+            "branch delete status: {}",
+            app.status
+        );
+
+        // --- Stash drop via prompt: create a stash, Tab to Stash, D opens, y confirms.
+        app.web_api.git_stash(cwd).map_err(|e| e.to_string())?;
+        app.git_panel.view = herdr_webui::tui_panels::GitView::Stash;
+        app.git_panel
+            .refresh_view(&app.web_api)
+            .map_err(|e| e.to_string())?;
+        assert!(!app.git_panel.stashes.is_empty(), "stash list empty");
+        press(&mut app, 'D');
+        assert!(app.prompt_input.is_some(), "stash drop prompt not open");
+        press(&mut app, 'y');
+        app.handle_key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Enter,
+        ));
+        assert!(app.prompt_input.is_none(), "stash prompt still open");
+        assert_eq!(app.status, "stash dropped", "stash status: {}", app.status);
+
+        // --- Git fetch/pull/push round-trip against the bare "origin":
+        // the remote exists, so each action succeeds and refresh_view runs.
+        app.git_panel.view = herdr_webui::tui_panels::GitView::Branches;
+        press(&mut app, 'f');
+        assert!(
+            app.error.is_none(),
+            "fetch against origin failed: {:?}",
+            app.error
+        );
+        press(&mut app, 'p');
+        assert!(
+            app.error.is_none(),
+            "pull against origin failed: {:?}",
+            app.error
+        );
+        press(&mut app, 'P');
+        assert!(
+            app.error.is_none(),
+            "push against origin failed: {:?}",
+            app.error
+        );
+        // And the error arms still exist: point the panel at a plain
+        // directory outside the repo that has no remotes at all.
+        let no_remote_dir =
+            std::env::temp_dir().join(format!("herdr-tui-e2e-noremote-{}", std::process::id()));
+        std::fs::create_dir_all(&no_remote_dir).map_err(|e| e.to_string())?;
+        app.git_panel.cwd = no_remote_dir.to_string_lossy().to_string();
+        press(&mut app, 'f');
+        press(&mut app, 'p');
+        press(&mut app, 'P');
+        assert!(
+            app.error.is_some(),
+            "fetch/pull/push without remotes should error"
+        );
+        app.git_panel.cwd = cwd.to_string();
+        app.error = None;
+        let _ = std::fs::remove_dir_all(&no_remote_dir);
+
+        // --- Prefix e from the Git screen (EditFile): reads the file, opens
+        // the Files screen in edit mode with the diff file loaded.
+        // Re-dirty the working tree: the stash flow above consumed the
+        // original unstaged change.
+        std::fs::write(
+            std::path::Path::new(cwd).join("edit_me.rs"),
+            "fn edit() {}\n",
+        )
+        .map_err(|e| e.to_string())?;
+        app.screen = TuiScreen::Git;
+        app.git_panel.view = herdr_webui::tui_panels::GitView::Changes;
+        app.git_panel
+            .refresh_view(&app.web_api)
+            .map_err(|e| e.to_string())?;
+        // The unstaged readme.md change (from the earlier stash apply) or the
+        // new_file entry must be present; select it explicitly.
+        let edit_idx = app
+            .git_panel
+            .files
+            .iter()
+            .position(|f| f.path == "edit_me.rs")
+            .ok_or("edit_me.rs not in git changes")?;
+        app.git_panel.file_selected = edit_idx;
+        let ctrl_b = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('b'),
+            crossterm::event::KeyModifiers::CONTROL,
+        );
+        app.handle_key(ctrl_b);
+        press(&mut app, 'e');
+        assert_eq!(
+            app.screen,
+            TuiScreen::Files,
+            "prefix e from git opens the Files screen"
+        );
+        assert!(app.file_explorer.edit_active, "prefix e starts edit mode");
+
+        // Edit arms: type a char, Ctrl-S saves, Esc stops editing.
+        press(&mut app, 'z');
+        app.handle_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('s'),
+            crossterm::event::KeyModifiers::CONTROL,
+        ));
+        assert_eq!(app.status, "saved", "Ctrl-S saves: {}", app.status);
+        app.handle_key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Esc,
+        ));
+        // Esc with no unsaved edits reports "edit mode closed".
+        assert!(
+            app.status.contains("edit mode"),
+            "Esc after save reports edit close: {}",
+            app.status
+        );
+        assert!(!app.file_explorer.edit_active);
+
+        // --- Prefix e with a dirty preview of a DIFFERENT file is refused.
+        // (Same-file dirty previews are allowed: the edit continues.)
+        app.file_explorer.preview.path = Some("other_file.rs".to_string());
+        app.file_explorer.preview.dirty = true;
+        app.screen = TuiScreen::Git;
+        app.handle_key(ctrl_b);
+        press(&mut app, 'e');
+        assert_eq!(
+            app.status, "unsaved edits: save or reload before editing another file",
+            "dirty preview of another file blocks prefix e"
+        );
+        app.file_explorer.preview.dirty = false;
+        app.file_explorer.preview.path = None;
+        app.error = None;
+
+        // --- Commit the pending edit through the prefix-2 commit modal so a
+        // tracked file (edit_me.rs) exists for the blame test.
+        std::fs::write(
+            std::path::Path::new(cwd).join("edit_me.rs"),
+            "fn edit() { return 7 }\n",
+        )
+        .map_err(|e| e.to_string())?;
+        app.screen = TuiScreen::Git;
+        app.git_panel.view = herdr_webui::tui_panels::GitView::Changes;
+        app.git_panel
+            .refresh_view(&app.web_api)
+            .map_err(|e| e.to_string())?;
+        let edit_idx = app
+            .git_panel
+            .files
+            .iter()
+            .position(|f| f.path == "edit_me.rs")
+            .ok_or("edit_me.rs not in git changes")?;
+        app.git_panel.file_selected = edit_idx;
+        app.git_panel
+            .stage_selected(&app.web_api)
+            .map_err(|e| e.to_string())?;
+        app.handle_key(ctrl_b);
+        press(&mut app, '2');
+        assert!(
+            app.commit_input.is_some(),
+            "prefix 2 opens the commit modal"
+        );
+        press(&mut app, 't');
+        press(&mut app, 'e');
+        press(&mut app, 's');
+        press(&mut app, 't');
+        app.handle_key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Enter,
+        ));
+        assert!(
+            app.commit_input.is_none(),
+            "commit modal closed after Enter"
+        );
+        assert_eq!(
+            app.status, "committed: test",
+            "commit status: {}",
+            app.status
+        );
+
+        // --- Prefix git action arms against the live server: stage-all,
+        // unstage, stage-file, and stash-file all run through the panel
+        // wrappers (which refresh the view after each action).
+        std::fs::write(
+            std::path::Path::new(cwd).join("edit_me.rs"),
+            "fn edit() { return 70 }\n",
+        )
+        .map_err(|e| e.to_string())?;
+        std::fs::write(
+            std::path::Path::new(cwd).join("other.rs"),
+            "fn other() {}\n",
+        )
+        .map_err(|e| e.to_string())?;
+        app.screen = TuiScreen::Git;
+        app.git_panel.view = herdr_webui::tui_panels::GitView::Changes;
+        app.git_panel
+            .refresh_view(&app.web_api)
+            .map_err(|e| e.to_string())?;
+
+        // Prefix G toggles stage-all: tracked changes stage (untracked files
+        // stay untracked, like `git add -u`), then toggle back.
+        app.handle_key(ctrl_b);
+        app.handle_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('G'),
+            crossterm::event::KeyModifiers::SHIFT,
+        ));
+        assert!(
+            app.git_panel
+                .files
+                .iter()
+                .filter(|f| f.path != "other.rs")
+                .all(|f| f.status == herdr_webui::tui_panels::GitFileStatus::Staged),
+            "stage-all stages tracked changes: {:?}",
+            app.git_panel
+                .files
+                .iter()
+                .map(|f| (f.path.clone(), f.status.clone()))
+                .collect::<Vec<_>>()
+        );
+        app.handle_key(ctrl_b);
+        app.handle_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('G'),
+            crossterm::event::KeyModifiers::SHIFT,
+        ));
+        assert!(
+            !app.git_panel
+                .files
+                .iter()
+                .any(|f| f.status == herdr_webui::tui_panels::GitFileStatus::Staged),
+            "stage-all toggles everything back"
+        );
+
+        // Prefix y stages the selected file; prefix u unstages it.
+        let y_idx = app
+            .git_panel
+            .files
+            .iter()
+            .position(|f| f.path == "edit_me.rs")
+            .ok_or("edit_me.rs missing before stage")?;
+        app.git_panel.file_selected = y_idx;
+        app.handle_key(ctrl_b);
+        press(&mut app, 'y');
+        assert!(
+            app.git_panel.files.iter().any(|f| f.path == "edit_me.rs"
+                && f.status == herdr_webui::tui_panels::GitFileStatus::Staged),
+            "prefix y stages the selected file"
+        );
+        app.git_panel.file_selected = y_idx;
+        app.handle_key(ctrl_b);
+        press(&mut app, 'u');
+        assert!(
+            app.git_panel.files.iter().any(|f| f.path == "edit_me.rs"
+                && f.status != herdr_webui::tui_panels::GitFileStatus::Staged),
+            "prefix u unstages the selected file"
+        );
+
+        // Prefix z stashes the changes; the changes list empties.
+        app.handle_key(ctrl_b);
+        press(&mut app, 'z');
+        assert!(
+            app.git_panel.files.is_empty(),
+            "prefix z stashes all changes: {:?}",
+            app.git_panel.files
+        );
+        // Restore the stashed changes for the later sections.
+        app.git_panel.view = herdr_webui::tui_panels::GitView::Stash;
+        app.git_panel
+            .refresh_view(&app.web_api)
+            .map_err(|e| e.to_string())?;
+        app.handle_key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Enter,
+        ));
+        assert_eq!(app.status, "stash applied", "stash restore: {}", app.status);
+        app.git_panel.view = herdr_webui::tui_panels::GitView::Changes;
+        app.git_panel
+            .refresh_view(&app.web_api)
+            .map_err(|e| e.to_string())?;
+
+        // --- Git blame toggle (prefix m) flips blame on and off. edit_me.rs is
+        // committed now; dirty the working copy again so it appears in the
+        // changes list, then blame it (with ref "working" the server blames
+        // --contents, so uncommitted lines attribute to the synthetic
+        // external-file author).
+        std::fs::write(
+            std::path::Path::new(cwd).join("edit_me.rs"),
+            "fn edit() { return 8 }\n",
+        )
+        .map_err(|e| e.to_string())?;
+        app.git_panel
+            .refresh_view(&app.web_api)
+            .map_err(|e| e.to_string())?;
+        let blame_idx = app
+            .git_panel
+            .files
+            .iter()
+            .position(|f| f.path == "edit_me.rs")
+            .ok_or("edit_me.rs not in git changes after commit")?;
+        app.git_panel.file_selected = blame_idx;
+        app.handle_key(ctrl_b);
+        press(&mut app, 'm');
+        assert!(app.git_panel.show_blame, "prefix m enables blame");
+        assert_eq!(app.status, "blame on", "blame status: {}", app.status);
+        assert!(app.error.is_none(), "blame load error: {:?}", app.error);
+        app.handle_key(ctrl_b);
+        press(&mut app, 'm');
+        assert!(!app.git_panel.show_blame, "prefix m toggles blame off");
+        assert_eq!(app.status, "blame off", "blame off status: {}", app.status);
+
+        // --- Prefix m from a non-Changes view resets to Changes first.
+        app.git_panel.view = herdr_webui::tui_panels::GitView::Branches;
+        app.git_panel.diff_title = "edit_me.rs".to_string();
+        app.git_panel
+            .refresh_view(&app.web_api)
+            .map_err(|e| e.to_string())?;
+        // Keep the changes list for blame resolution while showing Branches.
+        app.git_panel.files = vec![herdr_webui::tui_panels::GitFileEntry {
+            path: "edit_me.rs".to_string(),
+            status: herdr_webui::tui_panels::GitFileStatus::Unstaged,
+        }];
+        app.handle_key(ctrl_b);
+        press(&mut app, 'm');
+        assert_eq!(
+            app.git_panel.view,
+            herdr_webui::tui_panels::GitView::Changes,
+            "prefix m resets the view to Changes"
+        );
+        assert!(app.git_panel.show_blame, "blame toggles on from Branches");
+        // Toggle off again for the next sections.
+        app.handle_key(ctrl_b);
+        press(&mut app, 'm');
+        assert!(!app.git_panel.show_blame);
+
+        // --- Prefix e on a binary file is refused. edit_me.bin is untracked
+        // but readable; the server flags it binary, so the edit guard fires.
+        {
+            let bin_path = std::path::Path::new(cwd).join("logo.bin");
+            std::fs::write(&bin_path, [0u8, 159, 146, 150, 0, 7]).map_err(|e| e.to_string())?;
+            app.git_panel
+                .refresh_view(&app.web_api)
+                .map_err(|e| e.to_string())?;
+            let bin_idx = app
+                .git_panel
+                .files
+                .iter()
+                .position(|f| f.path == "logo.bin")
+                .ok_or("logo.bin not in changes")?;
+            app.git_panel.file_selected = bin_idx;
+            app.handle_key(ctrl_b);
+            press(&mut app, 'e');
+            assert!(
+                app.error
+                    .as_deref()
+                    .is_some_and(|e| e.contains("cannot be edited")),
+                "binary file edit must be refused: {:?}",
+                app.error
+            );
+            app.error = None;
+            let _ = std::fs::remove_file(&bin_path);
+        }
+
+        // --- Prefix o returns to the changes view.
+        app.handle_key(ctrl_b);
+        press(&mut app, 'o');
+        assert_eq!(
+            app.git_panel.view,
+            herdr_webui::tui_panels::GitView::Changes
+        );
+
+        // --- Prefix v with a non-current branch switches to it and back.
+        app.git_panel.view = herdr_webui::tui_panels::GitView::Branches;
+        app.git_panel
+            .refresh_view(&app.web_api)
+            .map_err(|e| e.to_string())?;
+        let default_branch = app
+            .git_panel
+            .branches
+            .iter()
+            .find(|b| b.current)
+            .map(|b| b.name.clone())
+            .ok_or("no current branch")?;
+        app.web_api
+            .git_switch(cwd, "tui-switch-tmp", true)
+            .map_err(|e| e.to_string())?;
+        app.web_api
+            .git_switch(cwd, &default_branch, false)
+            .map_err(|e| e.to_string())?;
+        app.git_panel
+            .refresh_view(&app.web_api)
+            .map_err(|e| e.to_string())?;
+        let switch_idx = app
+            .git_panel
+            .branches
+            .iter()
+            .position(|b| b.name == "tui-switch-tmp")
+            .ok_or("switch branch missing")?;
+        app.git_panel.branch_selected = switch_idx;
+        app.handle_key(ctrl_b);
+        press(&mut app, 'v');
+        assert!(
+            app.status.starts_with("switched to tui-switch-tmp"),
+            "prefix v switches: {}",
+            app.status
+        );
+
+        // Switch back to the default branch for the discard test.
+        let back_idx = app
+            .git_panel
+            .branches
+            .iter()
+            .position(|b| b.name == default_branch)
+            .ok_or("default branch missing")?;
+        app.git_panel.branch_selected = back_idx;
+        app.handle_key(ctrl_b);
+        press(&mut app, 'v');
+        assert_eq!(
+            app.status,
+            format!("switched to {default_branch}"),
+            "switch back: {}",
+            app.status
+        );
+
+        // --- Prefix d with a dirty preview on the same file is refused first,
+        // then the plain discard runs.
+        app.git_panel.view = herdr_webui::tui_panels::GitView::Changes;
+        app.git_panel
+            .refresh_view(&app.web_api)
+            .map_err(|e| e.to_string())?;
+        let edit_idx = app
+            .git_panel
+            .files
+            .iter()
+            .position(|f| f.path == "edit_me.rs")
+            .ok_or("edit_me.rs not dirty before discard")?;
+        app.git_panel.file_selected = edit_idx;
+        // Dirty preview of the selected file blocks the discard.
+        app.file_explorer.preview.path = Some("edit_me.rs".to_string());
+        app.file_explorer.preview.dirty = true;
+        app.handle_key(ctrl_b);
+        press(&mut app, 'd');
+        assert!(
+            app.error
+                .as_deref()
+                .is_some_and(|e| e.contains("unsaved edits")),
+            "dirty preview blocks discard: {:?}",
+            app.error
+        );
+        // Without the dirty buffer the discard proceeds against the API.
+        app.file_explorer.preview.dirty = false;
+        app.file_explorer.preview.path = None;
+        app.error = None;
+        app.git_panel.file_selected = edit_idx;
+        app.handle_key(ctrl_b);
+        press(&mut app, 'd');
+        assert!(app.error.is_none(), "discard failed: {:?}", app.error);
+
+        // --- Git Enter success statuses: History commit diff, branch switch,
+        // and stash apply.
+        // History: Enter loads the selected commit's diff. Dirty the file
+        // again so it is selectable in Changes (refresh_history resolves the
+        // history file from the Changes selection).
+        std::fs::write(
+            std::path::Path::new(cwd).join("edit_me.rs"),
+            "fn edit() { return 9 }\n",
+        )
+        .map_err(|e| e.to_string())?;
+        app.screen = TuiScreen::Git;
+        app.git_panel.view = herdr_webui::tui_panels::GitView::Changes;
+        app.git_panel
+            .refresh_view(&app.web_api)
+            .map_err(|e| e.to_string())?;
+        let hist_idx = app
+            .git_panel
+            .files
+            .iter()
+            .position(|f| f.path == "edit_me.rs")
+            .ok_or("edit_me.rs missing for history")?;
+        app.git_panel.file_selected = hist_idx;
+        app.git_panel.history_file = Some("edit_me.rs".to_string());
+
+        // The Log view (prefix l) refreshes the commit list and clamps an
+        // out-of-range selection the same way.
+        app.git_panel.commit_selected = 99;
+        app.handle_key(ctrl_b);
+        press(&mut app, 'l');
+        assert!(
+            app.git_panel.view == herdr_webui::tui_panels::GitView::Log,
+            "prefix l opens the Log view"
+        );
+        assert_eq!(
+            app.git_panel.commit_selected,
+            app.git_panel.commits.len().saturating_sub(1),
+            "log refresh must clamp the selection"
+        );
+        app.git_panel.view = herdr_webui::tui_panels::GitView::History;
+        app.git_panel
+            .refresh_view(&app.web_api)
+            .map_err(|e| e.to_string())?;
+        assert!(
+            !app.git_panel.commits.is_empty(),
+            "history needs commits after the earlier commit"
+        );
+        app.git_panel.commit_selected = 0;
+        app.handle_key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Enter,
+        ));
+        assert!(
+            app.status.starts_with("commit "),
+            "history Enter status: {}",
+            app.status
+        );
+        assert!(app.error.is_none(), "history diff error: {:?}", app.error);
+
+        // An out-of-range selection clamps to the last commit on refresh
+        // (webui list guards behave the same after the list shrinks).
+        app.git_panel.commit_selected = 99;
+        app.git_panel
+            .refresh_view(&app.web_api)
+            .map_err(|e| e.to_string())?;
+        assert_eq!(
+            app.git_panel.commit_selected,
+            app.git_panel.commits.len().saturating_sub(1),
+            "commit selection must clamp on refresh"
+        );
+        // History without a file context: the commit diff title is the bare
+        // hash, no " · file" suffix (webui `compareFilePaths` is empty).
+        app.git_panel.history_file = None;
+        app.git_panel.commit_selected = 0;
+        app.handle_key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Enter,
+        ));
+        assert_eq!(
+            app.git_panel.diff_title, app.git_panel.commits[0].hash,
+            "no-file history diff title is the bare hash"
+        );
+        app.git_panel.history_file = Some("edit_me.rs".to_string());
+
+        // Branches: Enter switches to the selected non-current branch, then
+        // back to the default branch.
+        app.git_panel.view = herdr_webui::tui_panels::GitView::Branches;
+        app.git_panel
+            .refresh_view(&app.web_api)
+            .map_err(|e| e.to_string())?;
+        let default_branch = app
+            .git_panel
+            .branches
+            .iter()
+            .find(|b| b.current)
+            .map(|b| b.name.clone())
+            .ok_or("no current branch")?;
+        let switch_idx = app
+            .git_panel
+            .branches
+            .iter()
+            .position(|b| b.name == "tui-switch-tmp")
+            .ok_or("tui-switch-tmp missing for Enter switch")?;
+        app.git_panel.branch_selected = switch_idx;
+        app.handle_key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Enter,
+        ));
+        assert_eq!(
+            app.status, "switched to tui-switch-tmp",
+            "branch Enter status: {}",
+            app.status
+        );
+        let back_idx = app
+            .git_panel
+            .branches
+            .iter()
+            .position(|b| b.name == default_branch)
+            .ok_or("default branch missing after switch")?;
+        app.git_panel.branch_selected = back_idx;
+        app.handle_key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Enter,
+        ));
+        assert_eq!(
+            app.status,
+            format!("switched to {default_branch}"),
+            "branch Enter back: {}",
+            app.status
+        );
+
+        // Stash: stash the dirty edit, Enter applies it.
+        app.web_api.git_stash(cwd).map_err(|e| e.to_string())?;
+        app.git_panel.view = herdr_webui::tui_panels::GitView::Stash;
+        app.git_panel
+            .refresh_view(&app.web_api)
+            .map_err(|e| e.to_string())?;
+        assert!(!app.git_panel.stashes.is_empty(), "stash list empty");
+        app.handle_key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Enter,
+        ));
+        assert_eq!(app.status, "stash applied", "stash Enter: {}", app.status);
+        assert!(app.error.is_none(), "stash apply error: {:?}", app.error);
+
+        // --- Files navigation: j/k moves, Enter on a directory expands.
+        app.screen = TuiScreen::Files;
+        app.file_explorer
+            .refresh(&app.web_api)
+            .map_err(|e| e.to_string())?;
+        let start = app.file_explorer.selected;
+        press(&mut app, 'j');
+        press(&mut app, 'k');
+        assert_eq!(app.file_explorer.selected, start);
+        let dir_idx = app
+            .file_explorer
+            .entries
+            .iter()
+            .position(|e| e.is_dir)
+            .ok_or("no directory in tree")?;
+        app.file_explorer.selected = dir_idx;
+        let dir_path = app.file_explorer.entries[dir_idx].path.clone();
+        // Enter toggles inline expansion (webui click parity): children merge
+        // into the tree without changing the root.
+        app.handle_key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Enter,
+        ));
+        assert!(
+            app.file_explorer.entries[dir_idx].expanded,
+            "Enter expands the directory inline"
+        );
+        assert!(
+            app.file_explorer.entries.iter().any(|e| e.level > 0),
+            "expanded children appear in the tree"
+        );
+        assert_eq!(
+            app.file_explorer.root_path, "",
+            "inline expansion keeps the root"
+        );
+        // Enter again collapses.
+        app.file_explorer.selected = dir_idx;
+        app.handle_key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Enter,
+        ));
+        assert!(
+            !app.file_explorer.entries[dir_idx].expanded,
+            "Enter collapses the directory"
+        );
+        assert!(
+            !app.file_explorer.entries.iter().any(|e| e.level > 0),
+            "collapsed children are gone"
+        );
+
+        // l enters the directory as the new root (double-click parity); h
+        // goes back up to the repo root.
+        app.file_explorer.selected = dir_idx;
+        press(&mut app, 'l');
+        assert_eq!(
+            app.file_explorer.root_path, dir_path,
+            "l enters the directory"
+        );
+        press(&mut app, 'h');
+        assert!(
+            app.file_explorer.root_path.is_empty(),
+            "h returns to the repo root"
+        );
+        assert!(
+            app.file_explorer
+                .entries
+                .iter()
+                .any(|e| e.name == "readme.md" || e.name == "edit_me.rs"),
+            "parent listing is restored"
+        );
+
+        // --- Prefix e from Git Changes on a file that no longer exists on
+        // disk surfaces the read error instead of opening edit mode.
+        app.screen = TuiScreen::Git;
+        app.git_panel.view = herdr_webui::tui_panels::GitView::Changes;
+        app.git_panel
+            .refresh_view(&app.web_api)
+            .map_err(|e| e.to_string())?;
+        let deleted = std::path::Path::new(cwd).join("vanish.rs");
+        std::fs::write(&deleted, "fn gone() {}\n").map_err(|e| e.to_string())?;
+        {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(cwd)
+                .args(["add", "vanish.rs"])
+                .output()
+                .map_err(|e| e.to_string())?;
+            assert!(out.status.success(), "git add vanish.rs failed");
+        }
+        app.git_panel
+            .refresh_view(&app.web_api)
+            .map_err(|e| e.to_string())?;
+        let vanish_idx = app
+            .git_panel
+            .files
+            .iter()
+            .position(|f| f.path == "vanish.rs")
+            .ok_or("vanish.rs missing from git changes")?;
+        app.git_panel.file_selected = vanish_idx;
+        std::fs::remove_file(&deleted).map_err(|e| e.to_string())?;
+        let ctrl_b = |app: &mut TuiApp| {
+            app.handle_key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('b'),
+                crossterm::event::KeyModifiers::CONTROL,
+            ));
+        };
+        ctrl_b(&mut app);
+        press(&mut app, 'e');
+        assert!(
+            app.error.as_deref().is_some_and(|e| !e.is_empty()),
+            "prefix e on a vanished file must surface an error"
+        );
+        assert_ne!(app.screen, TuiScreen::Files, "failed edit stays on Git");
+
+        // --- Blame reloads when the diff target changes while blame is on.
+        app.error = None;
+        app.git_panel
+            .refresh_view(&app.web_api)
+            .map_err(|e| e.to_string())?;
+        let edit_idx = app
+            .git_panel
+            .files
+            .iter()
+            .position(|f| f.path == "edit_me.rs")
+            .ok_or("edit_me.rs missing from changes")?;
+        app.git_panel.file_selected = edit_idx;
+        // Enter loads the edit_me.rs diff first so blame resolves the shown
+        // file instead of the vanished one still in diff_title.
+        app.handle_key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Enter,
+        ));
+        assert_eq!(
+            app.git_panel.diff_title, "edit_me.rs",
+            "Enter should load the edit_me.rs diff"
+        );
+        ctrl_b(&mut app);
+        press(&mut app, 'm');
+        assert!(
+            app.git_panel.show_blame,
+            "blame should be on; error: {:?}, status: {}",
+            app.error, app.status
+        );
+        assert!(
+            !app.git_panel.blame_authors.is_empty(),
+            "blame authors should be loaded"
+        );
+        let old_path = app.git_panel.blame_path.clone();
+        assert_eq!(old_path.as_deref(), Some("edit_me.rs"));
+        // Enter on a different changes row reloads the diff and, with blame
+        // on, reloads the annotations for the newly shown file (webui blame
+        // follows the shown file).
+        std::fs::write(
+            std::path::Path::new(cwd).join("readme.md"),
+            "hello\nworld\nblame reload\n",
+        )
+        .map_err(|e| e.to_string())?;
+        app.git_panel
+            .refresh_view(&app.web_api)
+            .map_err(|e| e.to_string())?;
+        let readme_idx = app
+            .git_panel
+            .files
+            .iter()
+            .position(|f| f.path == "readme.md")
+            .ok_or("readme.md missing from changes")?;
+        app.git_panel.file_selected = readme_idx;
+        app.handle_key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Enter,
+        ));
+        assert_eq!(
+            app.git_panel.diff_title, "readme.md",
+            "Enter loads the readme.md diff"
+        );
+        assert_eq!(
+            app.git_panel.blame_path.as_deref(),
+            Some("readme.md"),
+            "blame must reload when the diff target changes"
+        );
+        assert!(
+            !app.git_panel.blame_authors.is_empty(),
+            "reloaded blame has authors"
         );
 
         Ok(())

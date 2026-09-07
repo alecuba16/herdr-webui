@@ -519,6 +519,8 @@ fn persisted_bind_address() -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::net::TcpListener;
+
     use super::*;
 
     #[test]
@@ -535,6 +537,9 @@ mod tests {
         assert!(WebApiClient::parse_url("http://localhost").is_err());
         assert!(WebApiClient::parse_url("http://host:notaport").is_err());
         assert!(WebApiClient::parse_url("https://host:8787").is_err());
+        // Bare port with no host is rejected too.
+        assert!(WebApiClient::parse_url(":8787").is_err());
+        assert!(WebApiClient::parse_url("http://:8787").is_err());
     }
 
     #[test]
@@ -624,5 +629,269 @@ mod tests {
             message: String::new(),
         };
         assert_eq!(empty.to_string(), "WebUI API error 401");
+    }
+
+    /// Raw server behaviors for request_json edge cases.
+    fn raw_http_server(responder: fn(std::net::TcpStream)) -> (u16, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = std::thread::spawn(move || {
+            use std::io::Read;
+            if let Ok((stream, _)) = listener.accept() {
+                let mut stream = stream;
+                let mut buf = [0u8; 8192];
+                let mut got = String::new();
+                loop {
+                    let n = stream.read(&mut buf).unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    got.push_str(&String::from_utf8_lossy(&buf[..n]));
+                    if got.contains("\r\n\r\n") {
+                        break;
+                    }
+                }
+                responder(stream);
+            }
+        });
+        (port, handle)
+    }
+
+    fn write_response(stream: &mut std::net::TcpStream, response: &str) {
+        use std::io::Write;
+        let _ = stream.write_all(response.as_bytes());
+    }
+
+    #[test]
+    fn request_json_survives_header_truncation_and_missing_length() {
+        // Connection closed before the header terminator.
+        let (port, _h) = raw_http_server(|mut s| {
+            write_response(&mut s, "HTTP/1.1 200 OK\r\nContent-Type: application/json");
+            // Drop without the blank line: the reader sees EOF mid-headers.
+        });
+        let client = WebApiClient::new("127.0.0.1", port);
+        let err = client.request_json("GET", "/api/ping", None);
+        assert!(err.is_err(), "truncated headers must fail");
+
+        // No content-length and no chunked: body is read to EOF.
+        let (port, _h) = raw_http_server(|mut s| {
+            write_response(
+                &mut s,
+                "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{\"ok\":1}",
+            );
+        });
+        let client = WebApiClient::new("127.0.0.1", port);
+        let value = client
+            .request_json("GET", "/api/ping", None)
+            .expect("read-to-EOF body parses");
+        assert_eq!(value["ok"], 1);
+
+        // Chunked response with trailers exercises the trailer drain loop.
+        let (port, _h) = raw_http_server(|mut s| {
+            write_response(
+                &mut s,
+                "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\n{\"ok\"\r\n6\r\n:true}\r\n0\r\nX-Trailer: v\r\n\r\n",
+            );
+        });
+        let client = WebApiClient::new("127.0.0.1", port);
+        let value = client
+            .request_json("GET", "/api/ping", None)
+            .expect("chunked body with trailer parses");
+        assert_eq!(value["ok"], true);
+    }
+
+    #[test]
+    fn web_api_error_display_covers_json_and_invalid_url() {
+        let err = WebApiError::Json("bad payload".to_string());
+        assert_eq!(err.to_string(), "invalid WebUI API response: bad payload");
+        let err = WebApiClient::parse_url("localhost").unwrap_err();
+        assert!(err.to_string().contains("expected HOST:PORT"));
+
+        // Empty env value falls through to the settings/default path.
+        unsafe {
+            std::env::set_var("HERDR_WEBUI_TUI_API", "   ");
+        }
+        let dir = std::env::temp_dir().join(format!("herdr-tui-empty-env-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("herdr-webui")).unwrap();
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", &dir);
+        }
+        let client = WebApiClient::discover().unwrap();
+        assert_eq!(client.port, 8787, "empty env falls back to default");
+
+        // Malformed persisted binds fall back to the default too.
+        for bad in ["no-colon", ":8787", "host:notaport"] {
+            std::fs::write(
+                dir.join("herdr-webui/webui-settings.json"),
+                serde_json::json!({"bind": bad}).to_string(),
+            )
+            .unwrap();
+            let client = WebApiClient::discover().unwrap();
+            assert_eq!(client.port, 8787, "bad bind {bad} falls back");
+        }
+        unsafe {
+            std::env::remove_var("HERDR_WEBUI_TUI_API");
+            std::env::remove_var("XDG_CONFIG_HOME");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn request_json_parses_chunked_responses() {
+        // Chunked body with a split payload (two chunks) and trailer-less
+        // termination, served by a raw TCP listener on an ephemeral port.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 8192];
+                let mut got = String::new();
+                loop {
+                    let n = stream.read(&mut buf).unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    got.push_str(&String::from_utf8_lossy(&buf[..n]));
+                    if got.contains("\r\n\r\n") {
+                        break;
+                    }
+                }
+                let head = "{\"ok\":";
+                let tail = "true}";
+                let body = format!(
+                    "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n{}\r\n{:x}\r\n{}\r\n0\r\n\r\n",
+                    head.len(),
+                    head,
+                    tail.len(),
+                    tail
+                );
+                let _ = stream.write_all(body.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+
+        let mut client = WebApiClient::new("127.0.0.1", port);
+        client.set_timeout(std::time::Duration::from_secs(5));
+        let value = client
+            .request_json("GET", "/api/ping", None)
+            .expect("chunked response must parse");
+        assert_eq!(value["ok"], true);
+    }
+
+    #[test]
+    fn read_chunked_body_rejects_invalid_size_lines() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 8192];
+                let mut got = String::new();
+                loop {
+                    let n = stream.read(&mut buf).unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    got.push_str(&String::from_utf8_lossy(&buf[..n]));
+                    if got.contains("\r\n\r\n") {
+                        break;
+                    }
+                }
+                let body = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nnot-a-size\r\n";
+                let _ = stream.write_all(body.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+
+        let client = WebApiClient::new("127.0.0.1", port);
+        let err = client
+            .request_json("GET", "/api/ping", None)
+            .expect_err("invalid chunk size must fail");
+        assert!(
+            err.to_string().contains("invalid chunk size"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn request_json_reports_empty_and_json_bodies() {
+        // Empty body parses to Value::Null via the chunked termination only,
+        // so use a content-length 0 response here.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 8192];
+                let mut got = String::new();
+                loop {
+                    let n = stream.read(&mut buf).unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    got.push_str(&String::from_utf8_lossy(&buf[..n]));
+                    if got.contains("\r\n\r\n") {
+                        break;
+                    }
+                }
+                let body = "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n";
+                let _ = stream.write_all(body.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+
+        let client = WebApiClient::new("127.0.0.1", port);
+        let value = client
+            .request_json("GET", "/api/ping", None)
+            .expect("empty body must parse as null");
+        assert!(value.is_null());
+    }
+
+    #[test]
+    fn discover_prefers_env_over_settings_and_default() {
+        // The env var wins when present. Env manipulation is process-global
+        // but nothing else in this test binary reads these variables.
+        unsafe {
+            std::env::set_var("HERDR_WEBUI_TUI_API", "127.0.0.1:1234");
+        }
+        let client = WebApiClient::discover().expect("env discovery");
+        assert_eq!(client.port, 1234);
+        unsafe {
+            std::env::remove_var("HERDR_WEBUI_TUI_API");
+        }
+
+        // With XDG_CONFIG_HOME scoped to an empty temp dir there is no
+        // settings file, so the default bind is used.
+        let dir = std::env::temp_dir().join(format!(
+            "herdr-tui-discover-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(dir.join("herdr-webui")).unwrap();
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", &dir);
+        }
+        let client = WebApiClient::discover().expect("default discovery");
+        assert_eq!(client.host, "127.0.0.1");
+        assert_eq!(client.port, 8787);
+
+        // A settings file with a bind address wins over the default.
+        let settings = serde_json::json!({"bind": "192.168.1.10:9999"});
+        std::fs::write(
+            dir.join("herdr-webui/webui-settings.json"),
+            settings.to_string(),
+        )
+        .unwrap();
+        let client = WebApiClient::discover().expect("settings discovery");
+        assert_eq!(client.host, "192.168.1.10");
+        assert_eq!(client.port, 9999);
+        unsafe {
+            std::env::remove_var("XDG_CONFIG_HOME");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

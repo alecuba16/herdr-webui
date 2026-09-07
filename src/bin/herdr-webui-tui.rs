@@ -83,43 +83,8 @@ fn run_interactive(
                     if key.kind == KeyEventKind::Release {
                         continue;
                     }
-                    let in_terminal_attach =
-                        app.mode == TuiMode::Attach && app.screen == TuiScreen::Terminal;
-                    // The Ctrl+B prefix always wins, including terminal attach
-                    // mode, so shortcuts stay available while typing.
-                    let handled_by_prefix = app.prefix.is_armed() || is_menu_key(key);
-                    if in_terminal_attach && !handled_by_prefix {
-                        if key.modifiers.contains(KeyModifiers::CONTROL)
-                            && key.code == KeyCode::Char('g')
-                        {
-                            live_terminal = None;
-                            app.handle_key(key);
-                        } else if let Some(bytes) = key_to_terminal_bytes(key) {
-                            let size = terminal.size()?;
-                            ensure_live_terminal(
-                                &mut live_terminal,
-                                &app,
-                                size.width,
-                                size.height,
-                            )?;
-                            if let Some(live) = &live_terminal {
-                                live.send_input(bytes);
-                                app.status = "sent input".to_string();
-                                app.mark_dirty();
-                            }
-                        }
-                    } else {
-                        app.handle_key(key);
-                        if app.mode == TuiMode::Attach && app.screen == TuiScreen::Terminal {
-                            let size = terminal.size()?;
-                            ensure_live_terminal(
-                                &mut live_terminal,
-                                &app,
-                                size.width,
-                                size.height,
-                            )?;
-                        }
-                    }
+                    let size = terminal.size()?;
+                    dispatch_key(&mut app, &mut live_terminal, key, size.width, size.height)?;
                     if app.should_quit() {
                         break;
                     }
@@ -243,6 +208,41 @@ impl Drop for LiveTerminal {
     fn drop(&mut self) {
         self.detach();
     }
+}
+
+/// Route one key press in the interactive loop. Extracted from
+/// `run_interactive` so the routing table is unit-testable without a
+/// live terminal: `cols`/`rows` stand in for `terminal.size()`.
+fn dispatch_key(
+    app: &mut TuiApp,
+    live_terminal: &mut Option<LiveTerminal>,
+    key: crossterm::event::KeyEvent,
+    cols: u16,
+    rows: u16,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let in_terminal_attach = app.mode == TuiMode::Attach && app.screen == TuiScreen::Terminal;
+    // The Ctrl+B prefix always wins, including terminal attach
+    // mode, so shortcuts stay available while typing.
+    let handled_by_prefix = app.prefix.is_armed() || is_menu_key(key);
+    if in_terminal_attach && !handled_by_prefix {
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('g') {
+            *live_terminal = None;
+            app.handle_key(key);
+        } else if let Some(bytes) = key_to_terminal_bytes(key) {
+            ensure_live_terminal(live_terminal, app, cols, rows)?;
+            if let Some(live) = live_terminal.as_ref() {
+                live.send_input(bytes);
+                app.status = "sent input".to_string();
+                app.mark_dirty();
+            }
+        }
+    } else {
+        app.handle_key(key);
+        if app.mode == TuiMode::Attach && app.screen == TuiScreen::Terminal {
+            ensure_live_terminal(live_terminal, app, cols, rows)?;
+        }
+    }
+    Ok(())
 }
 
 fn ensure_live_terminal(
@@ -469,6 +469,125 @@ mod tests {
 
         let missing = Cli::parse(["--webui-api".to_string()]).unwrap_err();
         assert!(missing.contains("missing value for --webui-api"));
+    }
+
+    fn key_event(code: KeyCode, ctrl: bool) -> event::KeyEvent {
+        event::KeyEvent::new(
+            code,
+            if ctrl {
+                KeyModifiers::CONTROL
+            } else {
+                KeyModifiers::NONE
+            },
+        )
+    }
+
+    fn app_with_terminal_screen() -> TuiApp {
+        let client = BackendClient::new("/nonexistent-tui-test.sock", "/nonexistent-tui-test.sock");
+        let mut app = TuiApp::new_with_options(
+            client,
+            Duration::from_secs(1),
+            herdr_webui::tui::TuiTheme::Dark,
+            WebApiClient::new("127.0.0.1", 1),
+        );
+        app.snapshot = herdr_webui::tui::TuiSnapshot::from_backend_response(&serde_json::json!({
+            "snapshot": {
+                "workspaces": [{"workspace_id":"ws_1","label":"Repo","cwd":"/repo","focused":true,"agent_status":"idle","pane_count":1,"tab_count":1,"active_tab_id":"tab_1"}],
+                "panes": [{"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":true}]
+            }
+        }));
+        app.mode = TuiMode::Attach;
+        app.screen = TuiScreen::Terminal;
+        app
+    }
+
+    #[test]
+    fn dispatch_key_sends_input_and_detaches() {
+        // Attach on the Terminal screen: plain keys become terminal input.
+        let mut app = app_with_terminal_screen();
+        let mut live = None;
+        dispatch_key(
+            &mut app,
+            &mut live,
+            key_event(KeyCode::Char('x'), false),
+            80,
+            24,
+        )
+        .unwrap();
+        assert_eq!(app.status, "sent input", "plain key routes to the terminal");
+        assert!(live.is_some(), "a live terminal is attached");
+
+        // Ctrl-G detaches and returns to Navigate.
+        dispatch_key(
+            &mut app,
+            &mut live,
+            key_event(KeyCode::Char('g'), true),
+            80,
+            24,
+        )
+        .unwrap();
+        assert!(live.is_none(), "Ctrl-G drops the live terminal");
+        assert_eq!(app.mode, TuiMode::Navigate);
+
+        // The Ctrl+B prefix still wins in attach mode: arming does not
+        // send input.
+        app.mode = TuiMode::Attach;
+        app.screen = TuiScreen::Terminal;
+        dispatch_key(
+            &mut app,
+            &mut live,
+            key_event(KeyCode::Char('b'), true),
+            80,
+            24,
+        )
+        .unwrap();
+        assert!(app.prefix.is_armed(), "Ctrl+B arms the prefix");
+        assert_eq!(app.status, "detached", "arming sends no input");
+
+        // With the prefix armed, the next key is a shortcut, not input.
+        dispatch_key(
+            &mut app,
+            &mut live,
+            key_event(KeyCode::Char('q'), false),
+            80,
+            24,
+        )
+        .unwrap();
+        assert_eq!(app.status, "quit", "prefix q quits");
+    }
+
+    #[test]
+    fn dispatch_key_routes_panel_keys_without_terminal() {
+        // Attach on a non-Terminal screen: keys go to the panel, no live
+        // terminal is created.
+        let mut app = app_with_terminal_screen();
+        app.screen = TuiScreen::Files;
+        app.file_explorer = herdr_webui::tui_panels::FileExplorer::new("/repo");
+        let mut live = None;
+        dispatch_key(
+            &mut app,
+            &mut live,
+            key_event(KeyCode::Char('j'), false),
+            80,
+            24,
+        )
+        .unwrap();
+        assert!(live.is_none(), "panel keys need no live terminal");
+
+        // Navigate mode on the Terminal screen with no selection: keys
+        // go to the navigation handler without attaching a terminal.
+        let mut app = app_with_terminal_screen();
+        app.mode = TuiMode::Navigate;
+        let mut live = None;
+        dispatch_key(
+            &mut app,
+            &mut live,
+            key_event(KeyCode::Char('j'), false),
+            80,
+            24,
+        )
+        .unwrap();
+        assert!(live.is_none());
     }
 
     #[test]

@@ -438,14 +438,6 @@ impl TuiApp {
                 });
                 self.status = "commit: type message, Enter commits".to_string();
             }
-            Shortcut::GitAmend => {
-                self.open_git_screen();
-                self.commit_input = Some(CommitInput {
-                    text: String::new(),
-                    amend: true,
-                });
-                self.status = "amend: type message, Enter amends".to_string();
-            }
             Shortcut::EditFile => {
                 // Webui parity: prefix then e edits the current file. On the
                 // Files screen that is the open preview; on Git it is the
@@ -485,10 +477,6 @@ impl TuiApp {
                                 .get("truncated")
                                 .and_then(Value::as_bool)
                                 .unwrap_or(false);
-                            if binary || truncated {
-                                self.error = Some("file cannot be edited".to_string());
-                                return;
-                            }
                             // Rebuild the explorer for the git cwd so the
                             // tree, cwd, and preview all describe the same
                             // directory; reusing the old explorer would
@@ -513,6 +501,9 @@ impl TuiApp {
                                     .to_string(),
                                 dirty: false,
                             };
+                            // start_edit re-checks binary/truncated and
+                            // reports "binary file cannot be edited" /
+                            // "truncated file cannot be edited safely".
                             match explorer.start_edit() {
                                 Ok(()) => {
                                     self.status = "editing: Ctrl-S saves, Esc stops".to_string()
@@ -627,9 +618,7 @@ impl TuiApp {
                 }
             }
             Shortcut::GitStashFile => self.run_git_action(|panel, api| panel.stash_changes(api)),
-            Shortcut::GitPull => self.run_git_action(|panel, api| panel.pull(api)),
             Shortcut::GitPush => self.run_git_action(|panel, api| panel.push(api)),
-            Shortcut::GitFetch => self.run_git_action(|panel, api| panel.fetch(api)),
         }
     }
 
@@ -693,32 +682,36 @@ impl TuiApp {
     }
 
     fn open_files_screen(&mut self) {
-        if self.screen != TuiScreen::Files {
-            self.screen = TuiScreen::Files;
-            // A dirty preview survives the screen switch like a webui
-            // dirty editor tab: skip the rebuild so the buffer and its
-            // explorer stay together until saved or reloaded.
-            if self.file_explorer.preview.dirty && self.file_explorer.preview.path.is_some() {
-                return;
-            }
-            if let Some(cwd) = self.active_cwd() {
-                self.file_explorer = FileExplorer::new(&cwd);
-                if let Err(err) = self.file_explorer.refresh(&self.web_api) {
-                    self.error = Some(err.to_string());
-                }
-            }
+        if self.screen == TuiScreen::Files {
+            return;
+        }
+        self.screen = TuiScreen::Files;
+        // A dirty preview survives the screen switch like a webui
+        // dirty editor tab: skip the rebuild so the buffer and its
+        // explorer stay together until saved or reloaded.
+        if self.file_explorer.preview.dirty && self.file_explorer.preview.path.is_some() {
+            return;
+        }
+        let Some(cwd) = self.active_cwd() else {
+            return;
+        };
+        self.file_explorer = FileExplorer::new(&cwd);
+        if let Err(err) = self.file_explorer.refresh(&self.web_api) {
+            self.error = Some(err.to_string());
         }
     }
 
     fn open_git_screen(&mut self) {
-        if self.screen != TuiScreen::Git {
-            self.screen = TuiScreen::Git;
-            if let Some(cwd) = self.active_cwd() {
-                self.git_panel.set_cwd(&cwd);
-                if let Err(err) = self.git_panel.refresh_view(&self.web_api) {
-                    self.error = Some(err.to_string());
-                }
-            }
+        if self.screen == TuiScreen::Git {
+            return;
+        }
+        self.screen = TuiScreen::Git;
+        let Some(cwd) = self.active_cwd() else {
+            return;
+        };
+        self.git_panel.set_cwd(&cwd);
+        if let Err(err) = self.git_panel.refresh_view(&self.web_api) {
+            self.error = Some(err.to_string());
         }
     }
 
@@ -811,14 +804,18 @@ impl TuiApp {
             KeyCode::Char('j') | KeyCode::Down => self.file_explorer.move_selection(1),
             KeyCode::Char('k') | KeyCode::Up => self.file_explorer.move_selection(-1),
             KeyCode::Enter => {
-                if self.file_explorer.enter_directory() {
-                    if let Err(err) = self.file_explorer.refresh(&self.web_api) {
-                        self.error = Some(err.to_string());
+                // Webui click parity: Enter toggles inline expansion for
+                // directories and opens the preview for files. Entering a
+                // directory as the new root stays on `l` (double-click).
+                match self.file_explorer.toggle_expand(&self.web_api) {
+                    Err(err) => self.error = Some(err.to_string()),
+                    // Not a directory: open the preview; failures surface.
+                    Ok(false) => {
+                        if let Err(err) = self.file_explorer.open_preview(&self.web_api) {
+                            self.error = Some(err.to_string());
+                        }
                     }
-                } else if let Err(err) = self.file_explorer.toggle_expand(&self.web_api) {
-                    self.error = Some(err.to_string());
-                } else if let Err(err) = self.file_explorer.open_preview(&self.web_api) {
-                    self.error = Some(err.to_string());
+                    Ok(true) => {}
                 }
             }
             KeyCode::Char('l') | KeyCode::Right => {
@@ -833,14 +830,9 @@ impl TuiApp {
                     }
                 }
             }
-            KeyCode::Char('h') | KeyCode::Left => {
-                if self.file_explorer.go_up() {
-                    if let Err(err) = self.file_explorer.refresh(&self.web_api) {
-                        self.error = Some(err.to_string());
-                    }
-                }
-            }
-            KeyCode::Char('u') => {
+            // `h`/Left and `u` both go up one directory and refresh;
+            // failures surface in the status bar like every panel error.
+            KeyCode::Char('h') | KeyCode::Left | KeyCode::Char('u') => {
                 if self.file_explorer.go_up() {
                     if let Err(err) = self.file_explorer.refresh(&self.web_api) {
                         self.error = Some(err.to_string());
@@ -848,6 +840,7 @@ impl TuiApp {
                 }
             }
             KeyCode::Char('r') => self.refresh_active_screen(),
+            KeyCode::Char('/') => self.file_explorer.start_filter(),
             KeyCode::Char('e') => match self.file_explorer.start_edit() {
                 Ok(()) => self.status = "editing: Ctrl-S saves, Esc stops".to_string(),
                 Err(err) => self.error = Some(err.to_string()),
@@ -1142,13 +1135,9 @@ impl TuiApp {
             return;
         }
         match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => {
-                if self.screen == TuiScreen::Terminal {
-                    self.status = "quit".to_string();
-                } else {
-                    self.screen = TuiScreen::Terminal;
-                }
-            }
+            // Only the Terminal screen reaches this handler; Files and Git
+            // delegate to their panel handlers above.
+            KeyCode::Char('q') | KeyCode::Esc => self.status = "quit".to_string(),
             KeyCode::Char('?') => self.mode = TuiMode::Help,
             KeyCode::Char('r') => self.refresh_active_screen(),
             KeyCode::Char('j') | KeyCode::Down => self.move_selection(1),
@@ -1156,17 +1145,14 @@ impl TuiApp {
             KeyCode::Tab | KeyCode::BackTab => self.toggle_sidebar_focus(),
             KeyCode::Char('a') => self.sidebar_focus = SidebarFocus::Agents,
             KeyCode::Char('w') => self.sidebar_focus = SidebarFocus::Workspaces,
-            KeyCode::Enter if self.screen == TuiScreen::Terminal => self.attach_selected(),
+            KeyCode::Enter => self.attach_selected(),
             _ => {}
         }
     }
 
     fn handle_attach_key(&mut self, key: KeyEvent) {
-        if is_menu_key(key) {
-            self.mode = TuiMode::Help;
-            self.status = "menu: Esc/Ctrl-B closes".to_string();
-            return;
-        }
+        // Note: menu keys (Ctrl+B) never reach this handler; the prefix
+        // feed in `handle_key` consumes them first to arm the overlay.
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('g') {
             self.mode = TuiMode::Navigate;
             self.status = "detached".to_string();

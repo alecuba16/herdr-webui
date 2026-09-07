@@ -305,12 +305,7 @@ fn render_file_tree(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette
         )));
     }
     let header_height = lines.len() as u16;
-    let border_style = if app.screen == TuiScreen::Files {
-        Style::default().fg(p.accent)
-    } else {
-        Style::default().fg(p.border)
-    };
-    let block = panel(&title, p).border_style(border_style);
+    let block = panel(&title, p).border_style(Style::default().fg(p.accent));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let list_area = if header_height > 0 {
@@ -674,7 +669,9 @@ fn render_diff_pane(
     p: &Palette,
     empty_hint: &str,
 ) {
-    render_diff_pane_full(frame, diff_area, diff_title, diff_lines, None, None, p, empty_hint)
+    render_diff_pane_full(
+        frame, diff_area, diff_title, diff_lines, None, None, p, empty_hint,
+    )
 }
 
 /// Full diff pane: with blame enabled, each line is prefixed with the
@@ -706,21 +703,17 @@ fn render_diff_pane_full(
         // number, first two words, shown when blame is toggled on for
         // the file the diff shows.
         let author_span = blame.and_then(|authors| {
-                let meta = diff_meta.and_then(|meta| meta.get(index))?.as_ref()?;
-                let line_no = meta.new_line.or(meta.old_line)?;
-                let author = authors.get(&line_no)?;
-                let short = author
-                    .split_whitespace()
-                    .take(2)
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                (!short.is_empty()).then(|| {
-                    Span::styled(
-                        format!("{short:<12} "),
-                        Style::default().fg(p.muted),
-                    )
-                })
-            });
+            let meta = diff_meta.and_then(|meta| meta.get(index))?.as_ref()?;
+            let line_no = meta.new_line.or(meta.old_line)?;
+            let author = authors.get(&line_no)?;
+            let short = author
+                .split_whitespace()
+                .take(2)
+                .collect::<Vec<_>>()
+                .join(" ");
+            (!short.is_empty())
+                .then(|| Span::styled(format!("{short:<12} "), Style::default().fg(p.muted)))
+        });
         let mut spans = Vec::with_capacity(2);
         if let Some(span) = author_span {
             spans.push(span);
@@ -858,10 +851,13 @@ fn render_git_stash(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette
     frame.render_stateful_widget(list, area, &mut state);
 }
 
+/// Render the active prompt modal. Only called while `app.prompt_input`
+/// is `Some` (the `render` entry point gates on it).
 fn render_prompt_input(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
-    let Some(prompt) = &app.prompt_input else {
-        return;
-    };
+    let prompt = app
+        .prompt_input
+        .as_ref()
+        .expect("render_prompt_input requires an active prompt");
     let width = area.width.min(64);
     let height = 6;
     let rect = Rect::new(
@@ -918,10 +914,13 @@ fn render_prompt_input(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
     );
 }
 
+/// Render the commit modal. Only called while `app.commit_input` is
+/// `Some` (the `render` entry point gates on it).
 fn render_commit_input(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
-    let Some(commit) = &app.commit_input else {
-        return;
-    };
+    let commit = app
+        .commit_input
+        .as_ref()
+        .expect("render_commit_input requires an active commit");
     let width = area.width.min(64);
     let height = 7;
     let rect = Rect::new(
