@@ -69,7 +69,7 @@ Prefix shortcuts (after `Ctrl+B`):
 - `y` stages, `u` unstages, `d` discards, `z` stashes the selected file. `p` pulls, `P` pushes.
 - `t`: back to the Terminal screen. `?`: help overlay. `/`: filter in the Files screen.
 
-Inside the Git screen: `s` stages, `d` discards, `f` fetches, `p` pulls, `P` pushes, `c`/`a` open commit/amend modals, `r` refreshes, `Enter` loads the diff (Changes) or applies a stash entry (Stash). Inside the Files screen: `Enter` enters a directory, expands one, or opens the preview.
+Inside the Git screen: `s` stages, `d` discards, `f` fetches, `p` pulls, `P` pushes, `c`/`a` open commit/amend modals, `r` refreshes, `Enter` loads the diff (Changes), switches the selected branch (Branches), or applies a stash entry (Stash), and `D` deletes the selected branch (Branches) or drops the selected stash (Stash) after a typed `y` confirmation. Inside the Files screen: `Enter` enters a directory, expands one, or opens the preview, `R` renames the selected file with a prefilled prompt, and `x` deletes it after a typed `y` confirmation.
 
 The Files and Git screens call the WebUI HTTP API over loopback (`/api/files/*`, `/api/git/*`). The TUI discovers the API base from `HERDR_WEBUI_TUI_API`, then the WebUI settings bind address (`webui-settings.json`), then `127.0.0.1:8787`. `--webui-api` pins it explicitly. These screens require the WebUI server to be running; API errors show in the status/error line instead of failing the TUI.
 
