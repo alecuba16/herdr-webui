@@ -326,9 +326,9 @@ impl WebApiClient {
         ))
     }
 
-    /// Compare two refs (webui history/log "committed file" uses
-    /// `base=hash^&target=hash`). `file` scopes the diff to one path,
-    /// mirroring the webui history compare (`compareFilePaths`).
+    /// Compare two refs (webui history "committed file" uses
+    /// `base=hash^&target=hash&context=0`). `file` scopes the diff to
+    /// one path, mirroring the webui `compareFilePaths`.
     pub fn git_compare(
         &self,
         cwd: &str,
@@ -337,7 +337,7 @@ impl WebApiClient {
         file: Option<&str>,
     ) -> Result<Value, WebApiError> {
         let mut url = format!(
-            "/api/git-ui/compare?cwd={}&base={}&target={}&context=3",
+            "/api/git-ui/compare?cwd={}&base={}&target={}&context=0",
             urlencode(cwd),
             urlencode(base),
             urlencode(target),

@@ -618,21 +618,31 @@ impl GitPanel {
     }
 
     /// Toggle blame annotation (webui `gitShortcuts.blame`, prefix `m`).
-    /// Toggling on fetches blame for the diff target; toggling off keeps
-    /// the cache in case blame is re-enabled for the same file.
+    /// Blame follows the diff being shown (webui `view.file`), not the
+    /// raw selection: in the TUI the selection can move after Enter
+    /// loaded a diff, and webui blame annotates the shown file.
+    /// Toggling off keeps the cache in case blame is re-enabled.
     pub fn toggle_blame(&mut self, api: &WebApiClient) -> Result<(), WebApiError> {
         self.show_blame = !self.show_blame;
         if !self.show_blame {
             return Ok(());
         }
-        let Some(file) = self
-            .files
-            .get(self.file_selected)
-            .map(|entry| entry.path.clone())
-            .or_else(|| self.blame_path.clone())
-        else {
-            self.show_blame = false;
-            return Err(WebApiError::Io("no file selected".to_string()));
+        // The shown file is the diff target if one is loaded, else the
+        // selection (Enter will load that diff next).
+        let shown = self.diff_title.trim();
+        let known = shown
+            != "working tree"
+            && self.files.iter().any(|entry| entry.path == shown);
+        let file = if known {
+            shown.to_string()
+        } else {
+            self.files
+                .get(self.file_selected)
+                .map(|entry| entry.path.clone())
+                .ok_or_else(|| {
+                    self.show_blame = false;
+                    WebApiError::Io("no file selected".to_string())
+                })?
         };
         self.load_blame(api, &file)
     }
@@ -727,8 +737,9 @@ impl GitPanel {
         }
         // The previous diff (working tree or an older commit) does not
         // belong to this view; clear it so the pane shows the Enter hint
-        // until a commit is selected.
+        // until a commit is selected. Meta must stay parallel to lines.
         self.diff_lines.clear();
+        self.diff_meta.clear();
         self.diff_title = String::new();
         Ok(())
     }
@@ -934,11 +945,13 @@ fn parse_blame_authors(text: &str) -> HashMap<usize, String> {
     let mut final_line = 0usize;
     for line in text.lines() {
         // Header shape (webui regex `^[0-9a-f]{40}\s+\d+\s+(\d+)`):
-        // exactly 40 hex chars, then orig and final line numbers.
-        if line.len() > 41
-            && line[..40].chars().all(|ch| ch.is_ascii_hexdigit())
-            && line.as_bytes()[40] == b' '
-        {
+        // exactly 40 hex chars, then orig and final line numbers. The
+        // check is byte-based via as_bytes so multibyte content lines
+        // can never panic a slice at a non-char boundary.
+        let is_header = line.len() > 41
+            && line.as_bytes()[..40].iter().all(u8::is_ascii_hexdigit)
+            && line.as_bytes()[40] == b' ';
+        if is_header {
             let nums = line[41..].split_whitespace().collect::<Vec<_>>();
             if nums.len() >= 2 && nums[0].chars().all(|ch| ch.is_ascii_digit()) {
                 let final_num = nums[1]
@@ -1478,6 +1491,19 @@ mod tests {
         let text = "author Nobody\n\tsome content\n0123456789abcdef0123456789abcdef0123456789 not numbers\n";
         let authors = parse_blame_authors(text);
         assert!(authors.is_empty());
+    }
+
+    #[test]
+    fn blame_parser_survives_multibyte_content_lines() {
+        // Blamed files can contain multibyte characters; the header
+        // check must never slice a content line mid-char (panic).
+        // Tab-prefixed content of 2-byte chars crossing byte 40 is the
+        // crash case this guards.
+        let sha = "0123456789abcdef0123456789abcdef01234567";
+        let content = "\t".to_string() + &"ñ".repeat(25);
+        let text = format!("{sha} 1 1\nauthor Test\n{content}\n");
+        let authors = parse_blame_authors(&text);
+        assert_eq!(authors.get(&1).map(String::as_str), Some("Test"));
     }
 
     #[test]
