@@ -1386,14 +1386,39 @@ impl TerminalRuntime {
         jcode_detection_variant: JcodeDetectionVariant,
     ) -> io::Result<Arc<Self>> {
         let pty_system = native_pty_system();
-        let pair = pty_system
-            .openpty(PtySize {
+        // Under parallel test load (and busy CI runners) openpty can fail
+        // transiently with ENXIO ("Device not configured") when the kernel
+        // briefly runs out of available ptys. A short retry makes pane
+        // creation robust there; permanent errors still surface after the
+        // retries are exhausted.
+        let mut pair = None;
+        let mut last_err = None;
+        for attempt in 0..3 {
+            match pty_system.openpty(PtySize {
                 rows,
                 cols,
                 pixel_width: 0,
                 pixel_height: 0,
-            })
-            .map_err(|err| io::Error::other(err.to_string()))?;
+            }) {
+                Ok(pair_result) => {
+                    pair = Some(pair_result);
+                    break;
+                }
+                Err(err) => {
+                    last_err = Some(err);
+                    if attempt < 2 {
+                        std::thread::sleep(Duration::from_millis(100 * (attempt + 1)));
+                    }
+                }
+            }
+        }
+        let pair = pair.ok_or_else(|| {
+            io::Error::other(
+                last_err
+                    .map(|err| err.to_string())
+                    .unwrap_or_else(|| "openpty failed".to_string()),
+            )
+        })?;
         let program = argv.first().cloned().unwrap_or_else(default_shell);
         let use_login_shell = argv.len() <= 1 && is_shell_program(&program);
         let shell_for_env = if use_login_shell {
