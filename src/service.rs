@@ -12,6 +12,9 @@ pub fn install_macos(config: WebConfig) -> io::Result<()> {
     let service = mac_service_target();
     log_macos_context("install", Some(&plist));
     let install_bin = copy_current_exe_to_install_path()?;
+    if let Some(tui_bin) = copy_sibling_tui_to_install_path(std::env::current_exe()?.parent())? {
+        println!("Installed TUI binary at {}", tui_bin.display());
+    }
     fs::create_dir_all(plist.parent().expect("plist has parent"))?;
     fs::create_dir_all(mac_log_dir()?)?;
     fs::write(&plist, mac_plist_xml(&config, &install_bin)?)?;
@@ -29,6 +32,9 @@ pub fn update_macos() -> io::Result<()> {
     ensure_macos_user_context()?;
     log_macos_context("update", mac_plist_path().ok().as_deref());
     let install_bin = copy_current_exe_to_install_path()?;
+    if let Some(tui_bin) = copy_sibling_tui_to_install_path(std::env::current_exe()?.parent())? {
+        println!("Updated TUI binary at {}", tui_bin.display());
+    }
     restart_macos_service()?;
     println!("Updated binary at {}", install_bin.display());
     Ok(())
@@ -85,6 +91,9 @@ pub fn uninstall_macos() -> io::Result<()> {
 
 pub fn install_linux(config: WebConfig) -> io::Result<()> {
     let install_bin = copy_current_exe_to_install_path()?;
+    if let Some(tui_bin) = copy_sibling_tui_to_install_path(std::env::current_exe()?.parent())? {
+        println!("Installed TUI binary at {}", tui_bin.display());
+    }
     let service = linux_service_path()?;
     fs::create_dir_all(service.parent().expect("service path has parent"))?;
     fs::write(&service, linux_service_unit(&config, &install_bin))?;
@@ -98,6 +107,9 @@ pub fn install_linux(config: WebConfig) -> io::Result<()> {
 
 pub fn update_linux() -> io::Result<()> {
     let install_bin = copy_current_exe_to_install_path()?;
+    if let Some(tui_bin) = copy_sibling_tui_to_install_path(std::env::current_exe()?.parent())? {
+        println!("Updated TUI binary at {}", tui_bin.display());
+    }
     systemctl_user(&["daemon-reload"])?;
     restart_linux_service()?;
     println!("Updated binary at {}", install_bin.display());
@@ -175,22 +187,45 @@ fn install_bin_path() -> io::Result<PathBuf> {
 
 fn copy_current_exe_to_install_path() -> io::Result<PathBuf> {
     let source = std::env::current_exe()?;
-    let target = install_bin_path()?;
+    copy_executable(&source, &install_bin_path()?)
+}
+
+fn tui_install_bin_path() -> io::Result<PathBuf> {
+    Ok(local_bin_dir()?.join("herdr-webui-tui"))
+}
+
+/// Copy the `herdr-webui-tui` binary sitting next to the running main
+/// binary (the release tarball layout) into `~/.local/bin`. Returns `None`
+/// when no sibling TUI exists, so Makefile/standalone installs behave
+/// exactly as before. The TUI stays a separate binary: nothing is embedded
+/// in the main executable.
+fn copy_sibling_tui_to_install_path(source_dir: Option<&Path>) -> io::Result<Option<PathBuf>> {
+    let Some(source_dir) = source_dir else {
+        return Ok(None);
+    };
+    let source = source_dir.join("herdr-webui-tui");
+    if !source.exists() {
+        return Ok(None);
+    }
+    Ok(Some(copy_executable(&source, &tui_install_bin_path()?)?))
+}
+
+fn copy_executable(source: &Path, target: &Path) -> io::Result<PathBuf> {
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent)?;
     }
     let same_file = source.canonicalize().ok() == target.canonicalize().ok();
     if !same_file {
-        fs::copy(&source, &target)?;
+        fs::copy(source, target)?;
     }
-    let mut permissions = fs::metadata(&target)?.permissions();
+    let mut permissions = fs::metadata(target)?.permissions();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         permissions.set_mode(0o755);
     }
-    fs::set_permissions(&target, permissions)?;
-    Ok(target)
+    fs::set_permissions(target, permissions)?;
+    Ok(target.to_path_buf())
 }
 
 fn mac_plist_path() -> io::Result<PathBuf> {
@@ -681,5 +716,96 @@ mod tests {
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[test]
+    fn copy_executable_copies_content_and_sets_mode() {
+        let _guard = env_lock().lock().unwrap();
+        let base =
+            std::env::temp_dir().join(format!("herdr-webui-copy-exe-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        let source = base.join("herdr-webui-tui");
+        fs::write(&source, "tui-bytes\n").unwrap();
+
+        let target_dir = base.join("local").join("bin");
+        let target = copy_executable(&source, &target_dir.join("herdr-webui-tui")).unwrap();
+
+        assert_eq!(fs::read_to_string(&target).unwrap(), "tui-bytes\n");
+        assert!(target_dir.exists(), "target parent is created");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&target).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o755);
+        }
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn copy_sibling_tui_installs_present_binary_and_skips_missing() {
+        let _guard = env_lock().lock().unwrap();
+        let original_home = std::env::var_os("HOME");
+        let home = std::env::temp_dir().join(format!(
+            "herdr-webui-sibling-tui-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&home).unwrap();
+        std::env::set_var("HOME", &home);
+
+        // No sibling next to the exe dir -> None, no ~/.local/bin created.
+        let empty_dir = home.join("dist");
+        fs::create_dir_all(&empty_dir).unwrap();
+        assert_eq!(
+            copy_sibling_tui_to_install_path(Some(&empty_dir)).unwrap(),
+            None
+        );
+        assert!(!home.join(".local").join("bin").exists());
+
+        // Sibling present -> copied to ~/.local/bin/herdr-webui-tui.
+        let release_dir = home.join("release");
+        fs::create_dir_all(&release_dir).unwrap();
+        fs::write(release_dir.join("herdr-webui-tui"), "new-tui\n").unwrap();
+        let installed = copy_sibling_tui_to_install_path(Some(&release_dir))
+            .unwrap()
+            .expect("sibling tui is installed");
+        assert_eq!(
+            installed,
+            home.join(".local").join("bin").join("herdr-webui-tui")
+        );
+        assert_eq!(
+            fs::read_to_string(&installed).unwrap(),
+            "new-tui\n",
+            "installed copy holds the sibling bytes"
+        );
+
+        match original_home {
+            Some(home) => std::env::set_var("HOME", home),
+            None => std::env::remove_var("HOME"),
+        }
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn tui_install_path_targets_local_bin() {
+        let _guard = env_lock().lock().unwrap();
+        let original_home = std::env::var_os("HOME");
+        let home =
+            std::env::temp_dir().join(format!("herdr-webui-tui-path-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&home).unwrap();
+        std::env::set_var("HOME", &home);
+
+        assert_eq!(
+            tui_install_bin_path().unwrap(),
+            home.join(".local").join("bin").join("herdr-webui-tui")
+        );
+
+        match original_home {
+            Some(home) => std::env::set_var("HOME", home),
+            None => std::env::remove_var("HOME"),
+        }
+        let _ = fs::remove_dir_all(&home);
     }
 }
