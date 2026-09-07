@@ -80,7 +80,7 @@ Browser terminal shortcuts:
 
 Terminal UI:
 
-- `herdr-webui-tui` ships as a second binary beside `herdr-webui`. `make install-mac`, `make update-mac`, `make install-linux`, and `make update-linux` install both binaries into `~/.local/bin` by default.
+- `herdr-webui-tui` ships as a second binary beside `herdr-webui`. `make install-mac`, `make update-mac`, `make install-linux`, and `make update-linux` install both binaries into `~/.local/bin` by default. The built-in `herdr-webui install-mac`/`update-mac`/`install-linux`/`update-linux` commands also install the TUI when it sits next to the main binary (the release tarball layout).
 - The TUI uses the reusable `backend_client` layer and the built-in control/terminal sockets. It does not import browser code or built-in backend internals.
 - Summary modes are available for smoke checks: `herdr-webui-tui --summary` prints backend/session counts, and `herdr-webui-tui --once` prints a text snapshot plus selected pane output.
 - Interactive mode supports workspace/agent navigation, selected-pane attach, live terminal output, keyboard input, paste, resize, detach, refresh, and a Ctrl-B help/menu overlay.
