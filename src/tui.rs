@@ -559,6 +559,25 @@ impl TuiApp {
                 self.git_panel.view = GitView::Changes;
                 self.refresh_active_screen();
             }
+            Shortcut::GitBlame => {
+                // Webui `blame: KeyM`: toggle author annotations on the
+                // diff lines of the selected file.
+                self.open_git_screen();
+                if self.git_panel.view != GitView::Changes {
+                    self.git_panel.view = GitView::Changes;
+                    self.refresh_active_screen();
+                }
+                match self.git_panel.toggle_blame(&self.web_api) {
+                    Ok(()) => {
+                        self.status = if self.git_panel.show_blame {
+                            "blame on".to_string()
+                        } else {
+                            "blame off".to_string()
+                        };
+                    }
+                    Err(err) => self.error = Some(err.to_string()),
+                }
+            }
             Shortcut::GitBranch => {
                 self.open_git_screen();
                 self.git_panel.view = GitView::Branches;
@@ -991,11 +1010,30 @@ impl TuiApp {
                         self.error = Some(err.to_string());
                     }
                 }
-                // History rows are commits: Enter loads their diff in
-                // Changes like the webui history view opening a commit.
+                // History rows are commits: Enter loads the selected commit's
+                // diff (webui `showHistoryCommit`) into the History diff
+                // pane; the view itself stays so the file context is kept.
                 GitView::History => {
-                    self.git_panel.view = GitView::Changes;
-                    self.refresh_active_screen();
+                    let hash = self
+                        .git_panel
+                        .commits
+                        .get(self.git_panel.commit_selected)
+                        .map(|commit| commit.hash.clone());
+                    match hash {
+                        Some(hash) => {
+                            let file = self.git_panel.history_file.clone();
+                            match self.git_panel.load_commit_diff(&self.web_api, &hash) {
+                                Ok(()) => {
+                                    self.status = format!(
+                                        "commit {hash}{}",
+                                        file.map(|f| format!(" · {f}")).unwrap_or_default()
+                                    );
+                                }
+                                Err(err) => self.error = Some(err.to_string()),
+                            }
+                        }
+                        None => self.error = Some("no commit selected".to_string()),
+                    }
                 }
                 GitView::Branches => {
                     if let Err(err) = self.git_panel.switch_selected(&self.web_api) {

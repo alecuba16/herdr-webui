@@ -479,8 +479,68 @@ fn render_git_screen(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palett
         GitView::Log => render_git_log(frame, content, app, p),
         GitView::Branches => render_git_branches(frame, content, app, p),
         GitView::Stash => render_git_stash(frame, content, app, p),
-        GitView::History => render_git_log(frame, content, app, p),
+        GitView::History => {
+            let [list_area, diff_area] =
+                Layout::horizontal([Constraint::Percentage(35), Constraint::Percentage(65)])
+                    .areas(content);
+            render_git_history(frame, list_area, diff_area, app, p);
+        }
     }
+}
+
+/// Per-file history (webui history tab): commit list plus a diff pane
+/// showing the selected commit's changes to the file (Enter).
+fn render_git_history(
+    frame: &mut Frame<'_>,
+    list_area: Rect,
+    diff_area: Rect,
+    app: &TuiApp,
+    p: &Palette,
+) {
+    let panel = &app.git_panel;
+    let items = panel
+        .commits
+        .iter()
+        .map(|commit| {
+            ListItem::new(Line::from(vec![
+                Span::styled(
+                    format!("{} ", &commit.hash[..commit.hash.len().min(7)]),
+                    Style::default().fg(p.yellow),
+                ),
+                Span::styled(truncate(&commit.message, 44), Style::default().fg(p.text)),
+                Span::styled(
+                    format!(" · {}", truncate(&commit.author, 12)),
+                    Style::default().fg(p.muted),
+                ),
+            ]))
+        })
+        .collect::<Vec<_>>();
+    let mut state = ListState::default();
+    if !items.is_empty() {
+        state.select(Some(panel.commit_selected));
+    }
+    let file = panel.history_file.as_deref().unwrap_or("");
+    let title = if file.is_empty() {
+        " History ".to_string()
+    } else {
+        format!(" History · {} ", truncate(file, 40))
+    };
+    let list = List::new(items)
+        .block(panel_block(&title, p))
+        .style(Style::default().fg(p.text).bg(p.panel_bg))
+        .highlight_style(Style::default().fg(p.accent).add_modifier(Modifier::BOLD))
+        .highlight_symbol("> ");
+    frame.render_stateful_widget(list, list_area, &mut state);
+
+    let diff_title = format!(" Diff · {} ", truncate(&panel.diff_title, 40));
+    render_diff_pane(
+        frame,
+        diff_area,
+        &diff_title,
+        &panel.diff_lines,
+        p,
+        "Select a commit to load its diff (Enter).",
+    );
 }
 
 fn render_git_tab_bar(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
@@ -576,26 +636,106 @@ fn render_git_changes(
         .highlight_symbol("> ");
     frame.render_stateful_widget(list, list_area, &mut state);
 
-    let diff_title = format!(" Diff · {} ", truncate(&panel.diff_title, 40));
-    let block = panel_block(&diff_title, p);
+    let diff_title = if panel.show_blame {
+        format!(" Diff · {} [blame] ", truncate(&panel.diff_title, 32))
+    } else {
+        format!(" Diff · {} ", truncate(&panel.diff_title, 40))
+    };
+    let blame = if panel.show_blame {
+        panel
+            .blame_path
+            .as_deref()
+            // Annotate only when the blamed file is the diff target,
+            // mirroring the webui per-path blame cache.
+            .filter(|path| panel.diff_title == *path)
+            .map(|_| &panel.blame_authors)
+    } else {
+        None
+    };
+    render_diff_pane_full(
+        frame,
+        diff_area,
+        &diff_title,
+        &panel.diff_lines,
+        Some(&panel.diff_meta),
+        blame,
+        p,
+        "Select a file to load its diff (Enter).",
+    );
+}
+
+/// Shared diff pane used by the Changes and History views. Lines keep
+/// their git prefixes so the `+`/`-`/`@@` coloring applies.
+fn render_diff_pane(
+    frame: &mut Frame<'_>,
+    diff_area: Rect,
+    diff_title: &str,
+    diff_lines: &[String],
+    p: &Palette,
+    empty_hint: &str,
+) {
+    render_diff_pane_full(frame, diff_area, diff_title, diff_lines, None, None, p, empty_hint)
+}
+
+/// Full diff pane: with blame enabled, each line is prefixed with the
+/// author of `new_line || old_line` like the webui blame view. The caller
+/// passes the blame map only when it belongs to the file being shown.
+#[allow(clippy::too_many_arguments)]
+fn render_diff_pane_full(
+    frame: &mut Frame<'_>,
+    diff_area: Rect,
+    diff_title: &str,
+    diff_lines: &[String],
+    diff_meta: Option<&[Option<crate::tui_panels::GitDiffLineMeta>]>,
+    blame: Option<&std::collections::HashMap<usize, String>>,
+    p: &Palette,
+    empty_hint: &str,
+) {
+    let block = panel_block(diff_title, p);
     let inner = block.inner(diff_area);
     frame.render_widget(block, diff_area);
     let mut lines = Vec::new();
-    for line in panel.diff_lines.iter().take(MAX_DIFF_LINES) {
+    for (index, line) in diff_lines.iter().take(MAX_DIFF_LINES).enumerate() {
         let style = match line.chars().next() {
             Some('+') => Style::default().fg(p.green),
             Some('-') => Style::default().fg(p.red),
             Some('@') => Style::default().fg(p.teal),
             _ => Style::default().fg(p.text),
         };
-        lines.push(Line::from(Span::styled(
-            truncate(line, inner.width as usize),
+        // Blame annotation (webui `blameName`): the author for the line
+        // number, first two words, shown when blame is toggled on for
+        // the file the diff shows.
+        let author_span = blame.and_then(|authors| {
+                let meta = diff_meta.and_then(|meta| meta.get(index))?.as_ref()?;
+                let line_no = meta.new_line.or(meta.old_line)?;
+                let author = authors.get(&line_no)?;
+                let short = author
+                    .split_whitespace()
+                    .take(2)
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                (!short.is_empty()).then(|| {
+                    Span::styled(
+                        format!("{short:<12} "),
+                        Style::default().fg(p.muted),
+                    )
+                })
+            });
+        let mut spans = Vec::with_capacity(2);
+        if let Some(span) = author_span {
+            spans.push(span);
+        }
+        let visible_width = inner.width as usize;
+        let text_len = spans.iter().map(|s| s.content.len()).sum::<usize>();
+        spans.push(Span::styled(
+            truncate(line, visible_width.saturating_sub(text_len)),
             style,
-        )));
+        ));
+        lines.push(Line::from(spans));
     }
     if lines.is_empty() {
         lines.push(Line::from(Span::styled(
-            "Select a file to load its diff (Enter).",
+            empty_hint,
             Style::default().fg(p.muted),
         )));
     }

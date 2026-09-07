@@ -1,4 +1,5 @@
 use serde_json::Value;
+use std::collections::HashMap;
 
 use crate::tui_model::value_str;
 use crate::tui_web_api::{WebApiClient, WebApiError};
@@ -495,6 +496,15 @@ pub struct GitPanel {
     pub file_selected: usize,
     pub diff_lines: Vec<String>,
     pub diff_title: String,
+    /// Parallel to `diff_lines`: git line numbers for blame annotation.
+    pub diff_meta: Vec<Option<GitDiffLineMeta>>,
+    /// Webui `gitShortcuts.blame` toggle: annotate diff lines with the
+    /// author of the line (`new_line_number || old_line_number`).
+    pub show_blame: bool,
+    /// Parsed blame authors (final line number → author) for the file
+    /// in `blame_path`, plus the ref the blame was fetched for.
+    pub blame_authors: HashMap<usize, String>,
+    pub blame_path: Option<String>,
     pub commits: Vec<GitCommitEntry>,
     pub commit_selected: usize,
     /// File whose history the History view lists (`prefix h` from
@@ -522,6 +532,10 @@ impl GitPanel {
             file_selected: 0,
             diff_lines: Vec::new(),
             diff_title: String::new(),
+            diff_meta: Vec::new(),
+            show_blame: false,
+            blame_authors: HashMap::new(),
+            blame_path: None,
             commits: Vec::new(),
             commit_selected: 0,
             history_file: None,
@@ -541,6 +555,10 @@ impl GitPanel {
             self.upstream.clear();
             self.files.clear();
             self.diff_lines.clear();
+            self.diff_meta.clear();
+            self.show_blame = false;
+            self.blame_authors.clear();
+            self.blame_path = None;
             self.commits.clear();
             self.history_file = None;
             self.branches.clear();
@@ -569,7 +587,7 @@ impl GitPanel {
         let file = self
             .files
             .get(self.file_selected)
-            .map(|entry| entry.path.as_str());
+            .map(|entry| entry.path.clone());
         // The server scopes diffs as `working`, `staged`, or `all` (HEAD).
         let scope = match self
             .files
@@ -579,11 +597,56 @@ impl GitPanel {
             Some(GitFileStatus::Staged) => "staged",
             _ => "working",
         };
-        let data = api.git_diff(&self.cwd, scope, file)?;
-        self.diff_lines = parse_diff_lines(&data);
+        let data = api.git_diff(&self.cwd, scope, file.as_deref())?;
+        let (lines, meta) = parse_diff_lines_with_meta(&data);
+        self.diff_lines = lines;
+        self.diff_meta = meta;
         self.diff_title = file
-            .map(str::to_string)
+            .clone()
             .unwrap_or_else(|| "working tree".to_string());
+        // A new diff target invalidates the blame cache (webui keeps
+        // blame per file path).
+        if self.blame_path != file {
+            self.blame_authors.clear();
+        }
+        if self.show_blame {
+            if let Some(file) = file.as_deref() {
+                self.load_blame(api, file)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Toggle blame annotation (webui `gitShortcuts.blame`, prefix `m`).
+    /// Toggling on fetches blame for the diff target; toggling off keeps
+    /// the cache in case blame is re-enabled for the same file.
+    pub fn toggle_blame(&mut self, api: &WebApiClient) -> Result<(), WebApiError> {
+        self.show_blame = !self.show_blame;
+        if !self.show_blame {
+            return Ok(());
+        }
+        let Some(file) = self
+            .files
+            .get(self.file_selected)
+            .map(|entry| entry.path.clone())
+            .or_else(|| self.blame_path.clone())
+        else {
+            self.show_blame = false;
+            return Err(WebApiError::Io("no file selected".to_string()));
+        };
+        self.load_blame(api, &file)
+    }
+
+    /// Fetch and parse `--line-porcelain` blame for the file, mirroring
+    /// the webui `parseBlame` (final line number → author).
+    fn load_blame(&mut self, api: &WebApiClient, file: &str) -> Result<(), WebApiError> {
+        if self.blame_path.as_deref() == Some(file) && !self.blame_authors.is_empty() {
+            return Ok(());
+        }
+        let data = api.git_blame(&self.cwd, file, "working")?;
+        let text = data.get("text").and_then(Value::as_str).unwrap_or("");
+        self.blame_authors = parse_blame_authors(text);
+        self.blame_path = Some(file.to_string());
         Ok(())
     }
 
@@ -662,6 +725,31 @@ impl GitPanel {
         if self.commit_selected >= self.commits.len() {
             self.commit_selected = self.commits.len().saturating_sub(1);
         }
+        // The previous diff (working tree or an older commit) does not
+        // belong to this view; clear it so the pane shows the Enter hint
+        // until a commit is selected.
+        self.diff_lines.clear();
+        self.diff_title = String::new();
+        Ok(())
+    }
+
+    /// Load the selected commit's diff into the diff pane (webui history
+    /// `showHistoryCommit`: compare `hash^..hash`, scoped to the history
+    /// file like the webui `compareFilePaths`).
+    pub fn load_commit_diff(&mut self, api: &WebApiClient, hash: &str) -> Result<(), WebApiError> {
+        let base = format!("{hash}^");
+        let data = api.git_compare(&self.cwd, &base, hash, self.history_file.as_deref())?;
+        let (lines, meta) = parse_diff_lines_with_meta(&data);
+        self.diff_lines = lines;
+        self.diff_meta = meta;
+        self.diff_title = format!("{hash}{}", {
+            let file = self.history_file.as_deref().unwrap_or("");
+            if file.is_empty() {
+                String::new()
+            } else {
+                format!(" · {file}")
+            }
+        });
         Ok(())
     }
 
@@ -829,13 +917,58 @@ impl GitPanel {
     }
 }
 
-/// Flatten the `/api/git-ui/diff` response (`files[].chunks[].lines[]`
-/// with `line_type`/`content`) into display lines. Chunk headers keep their
-/// `@@` prefix so the renderer colors them teal.
-fn parse_diff_lines(data: &Value) -> Vec<String> {
+/// Git line numbers for one parsed diff line, used to attach blame
+/// authors (`new_line_number || old_line_number`, mirroring the webui).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GitDiffLineMeta {
+    pub old_line: Option<usize>,
+    pub new_line: Option<usize>,
+}
+
+/// Parse `git blame --line-porcelain` output into final-line → author,
+/// mirroring the webui `parseBlame`: each header line
+/// `<sha> <orig> <final> [<num>]` sets the current line, the following
+/// `author <name>` fills it.
+fn parse_blame_authors(text: &str) -> HashMap<usize, String> {
+    let mut by_line = HashMap::new();
+    let mut final_line = 0usize;
+    for line in text.lines() {
+        // Header shape (webui regex `^[0-9a-f]{40}\s+\d+\s+(\d+)`):
+        // exactly 40 hex chars, then orig and final line numbers.
+        if line.len() > 41
+            && line[..40].chars().all(|ch| ch.is_ascii_hexdigit())
+            && line.as_bytes()[40] == b' '
+        {
+            let nums = line[41..].split_whitespace().collect::<Vec<_>>();
+            if nums.len() >= 2 && nums[0].chars().all(|ch| ch.is_ascii_digit()) {
+                let final_num = nums[1]
+                    .split(|ch: char| !ch.is_ascii_digit())
+                    .next()
+                    .unwrap_or("");
+                if !final_num.is_empty() {
+                    final_line = final_num.parse().unwrap_or(0);
+                    continue;
+                }
+            }
+        }
+        if let Some(name) = line.strip_prefix("author ") {
+            if final_line > 0 {
+                by_line.insert(final_line, name.trim().to_string());
+            }
+        }
+    }
+    by_line
+}
+
+/// Parse the `/api/git-ui/diff` response (`files[].chunks[].lines[]`
+/// with `line_type`/`content`) into display lines plus line-number
+/// metadata parallel to them (`None` for chunk headers). Chunk headers
+/// keep their `@@` prefix so the renderer colors them teal.
+fn parse_diff_lines_with_meta(data: &Value) -> (Vec<String>, Vec<Option<GitDiffLineMeta>>) {
     let mut out = Vec::new();
+    let mut meta = Vec::new();
     let Some(files) = data.get("files").and_then(Value::as_array) else {
-        return out;
+        return (out, meta);
     };
     for git_file in files {
         let Some(chunks) = git_file.get("chunks").and_then(Value::as_array) else {
@@ -844,6 +977,7 @@ fn parse_diff_lines(data: &Value) -> Vec<String> {
         for chunk in chunks {
             if let Some(header) = chunk.get("header").and_then(Value::as_str) {
                 out.push(header.to_string());
+                meta.push(None);
             }
             if let Some(lines) = chunk.get("lines").and_then(Value::as_array) {
                 for line in lines {
@@ -861,11 +995,15 @@ fn parse_diff_lines(data: &Value) -> Vec<String> {
                         _ => ' ',
                     };
                     out.push(format!("{prefix}{content}"));
+                    meta.push(Some(GitDiffLineMeta {
+                        old_line: line.get("old_line_number").and_then(Value::as_u64).map(|v| v as usize),
+                        new_line: line.get("new_line_number").and_then(Value::as_u64).map(|v| v as usize),
+                    }));
                 }
             }
         }
     }
-    out
+    (out, meta)
 }
 
 fn parse_git_files(data: &Value) -> Vec<GitFileEntry> {
@@ -1254,7 +1392,7 @@ mod tests {
                 }
             ]
         });
-        let lines = parse_diff_lines(&data);
+        let lines = parse_diff_lines_with_meta(&data).0;
         assert_eq!(
             lines,
             vec![
@@ -1264,6 +1402,82 @@ mod tests {
                 "-    todo!()".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn git_diff_meta_parse_line_numbers() {
+        let data = json!({
+            "files": [
+                {
+                    "path": "src/main.rs",
+                    "chunks": [
+                        {
+                            "header": "@@ -1,2 +1,3 @@",
+                            "lines": [
+                                {"line_type": "normal", "content": "fn main() {", "old_line_number": 1, "new_line_number": 1},
+                                {"line_type": "add", "content": "    println!(\"hi\");", "new_line_number": 2},
+                                {"line_type": "delete", "content": "    todo!()", "old_line_number": 2},
+                            ]
+                        }
+                    ]
+                }
+            ]
+        });
+        let (lines, meta) = parse_diff_lines_with_meta(&data);
+        assert_eq!(lines.len(), meta.len());
+        assert_eq!(meta[0], None);
+        assert_eq!(
+            meta[1],
+            Some(GitDiffLineMeta {
+                old_line: Some(1),
+                new_line: Some(1)
+            })
+        );
+        assert_eq!(
+            meta[2],
+            Some(GitDiffLineMeta {
+                old_line: None,
+                new_line: Some(2)
+            })
+        );
+        assert_eq!(
+            meta[3],
+            Some(GitDiffLineMeta {
+                old_line: Some(2),
+                new_line: None
+            })
+        );
+    }
+
+    #[test]
+    fn blame_parser_maps_final_lines_to_authors() {
+        // Shape of `git blame --line-porcelain`: header
+        // `<sha> <orig> <final>`, then metadata, `author <name>`, and
+        // the tab-prefixed content line.
+        let sha = "0123456789abcdef0123456789abcdef01234567";
+        let text = format!(
+            "{sha} 3 1 1\n\
+             author Alice Dev\n\
+             author-mail <alice@example.com>\n\
+             \tfirst line\n\
+             {sha} 4 2 2\n\
+             author Bob Other\n\
+             \tsecond line\n\
+             summary tweak\n"
+        );
+        let authors = parse_blame_authors(&text);
+        assert_eq!(authors.get(&1).map(String::as_str), Some("Alice Dev"));
+        assert_eq!(authors.get(&2).map(String::as_str), Some("Bob Other"));
+        assert_eq!(authors.len(), 2);
+    }
+
+    #[test]
+    fn blame_parser_ignores_non_header_lines() {
+        // Author lines without a preceding header, and content lines
+        // that look like hex, must not corrupt the mapping.
+        let text = "author Nobody\n\tsome content\n0123456789abcdef0123456789abcdef0123456789 not numbers\n";
+        let authors = parse_blame_authors(text);
+        assert!(authors.is_empty());
     }
 
     #[test]

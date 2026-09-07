@@ -10047,6 +10047,43 @@ mod tui_parity_e2e_tests {
             panel.diff_lines
         );
 
+        // GitPanel: blame toggle (webui blame: KeyM) fetches the author
+        // map for the diff target from /api/git-ui/blame, keyed by the
+        // new-side line number of the +world line.
+        assert!(!panel.show_blame);
+        panel.toggle_blame(api).unwrap();
+        assert!(panel.show_blame);
+        assert_eq!(panel.blame_path.as_deref(), Some("readme.md"));
+        // readme.md is "hello\nworld\n". With ref "working" the server
+        // blames `--contents <file>`: uncommitted lines attribute to the
+        // synthetic "External file (--contents)" author, committed
+        // lines to the repo author. Line 2 ("world") is the local
+        // edit; line 1 ("hello") comes from the init commit.
+        assert_eq!(
+            panel.blame_authors.get(&2).map(String::as_str),
+            Some("External file (--contents)"),
+            "blame must attribute the uncommitted line 2 to the working-tree author: {:?}",
+            panel.blame_authors
+        );
+        assert_eq!(
+            panel.blame_authors.get(&1).map(String::as_str),
+            Some("TUI Test"),
+            "blame must attribute committed line 1 to the repo author: {:?}",
+            panel.blame_authors
+        );
+        assert!(
+            panel
+                .diff_meta
+                .iter()
+                .any(|meta| meta.as_ref().is_some_and(|m| m.new_line == Some(2))),
+            "diff meta must carry new_line numbers for blame: {:?}",
+            panel.diff_meta
+        );
+        // Toggle off: state flips, cache is kept for the same file.
+        panel.toggle_blame(api).unwrap();
+        assert!(!panel.show_blame);
+        assert_eq!(panel.blame_authors.len(), 2);
+
         // GitPanel: stage the modified file, then status shows it staged.
         panel.stage_selected(api).unwrap();
         assert!(panel.files.iter().any(
@@ -10109,6 +10146,22 @@ mod tui_parity_e2e_tests {
             .history_file
             .as_deref()
             .is_some_and(|f| f == "readme.md"));
+
+        // History Enter loads the selected commit's diff (webui
+        // showHistoryCommit): the root commit shows the full file as
+        // additions, scoped to the history file.
+        let init_hash = panel.commits[0].hash.clone();
+        panel.load_commit_diff(api, &init_hash).unwrap();
+        assert!(
+            panel
+                .diff_lines
+                .iter()
+                .any(|line| line.starts_with('+') && line.contains("hello")),
+            "commit diff missing +hello line: {:?}",
+            panel.diff_lines
+        );
+        assert!(panel.diff_title.contains(&panel.commits[0].hash));
+        assert!(panel.diff_title.contains("readme.md"));
 
         // GitPanel: log shows the init commit.
         panel.view = GitView::Log;
