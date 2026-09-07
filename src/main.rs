@@ -10053,6 +10053,63 @@ mod tui_parity_e2e_tests {
             |entry| entry.path == "readme.md" && matches!(entry.status, GitFileStatus::Staged)
         ));
 
+        // GitPanel: unstageSelected always unstages (webui parity, no
+        // toggle), and stageSelected always stages.
+        panel.unstage_selected(api).unwrap();
+        assert!(panel
+            .files
+            .iter()
+            .any(|entry| entry.path == "readme.md"
+                && matches!(entry.status, GitFileStatus::Unstaged)));
+        panel.stage_selected(api).unwrap();
+        assert!(panel.files.iter().any(
+            |entry| entry.path == "readme.md" && matches!(entry.status, GitFileStatus::Staged)
+        ));
+
+        // GitPanel: toggleStageAll unstages everything when something is
+        // staged, then stages everything when nothing is (webui G).
+        panel.toggle_stage_all(api).unwrap();
+        assert!(
+            !panel
+                .files
+                .iter()
+                .any(|entry| matches!(entry.status, GitFileStatus::Staged)),
+            "toggle with staged entries must unstage them"
+        );
+        panel.toggle_stage_all(api).unwrap();
+        assert!(
+            panel
+                .files
+                .iter()
+                .all(|entry| matches!(entry.status, GitFileStatus::Staged)),
+            "toggle with nothing staged must stage all"
+        );
+        panel.toggle_stage_all(api).unwrap();
+
+        // GitPanel: per-file history lists commits touching readme.md.
+        panel.view = GitView::Changes;
+        panel.refresh_view(api).unwrap();
+        panel.file_selected = panel
+            .files
+            .iter()
+            .position(|entry| entry.path == "readme.md")
+            .unwrap();
+        panel.view = GitView::History;
+        panel.refresh_view(api).unwrap();
+        assert!(
+            !panel.commits.is_empty(),
+            "file history for readme.md must list the init commit"
+        );
+        assert_eq!(panel.commits[0].message, "init");
+        assert!(panel.commits[0]
+            .hash
+            .chars()
+            .all(|ch| ch.is_ascii_hexdigit()));
+        assert!(panel
+            .history_file
+            .as_deref()
+            .is_some_and(|f| f == "readme.md"));
+
         // GitPanel: log shows the init commit.
         panel.view = GitView::Log;
         panel.refresh_view(api).unwrap();
@@ -10138,7 +10195,15 @@ mod tui_parity_e2e_tests {
             panel.files.iter().any(|e| e.path == "readme.md"),
             "stash apply lost the modified file"
         );
-        // Re-stash the applied change: now two entries.
+        // Re-stash with a different tree. A stash whose commit would be
+        // bit-identical to stash@{0} (same tree, message, and second) is
+        // a no-op ref update in git, so no entry would be created; the
+        // extra line guarantees a distinct commit and a second entry.
+        std::fs::write(
+            std::path::Path::new(cwd).join("readme.md"),
+            "hello\nworld\nmore\n",
+        )
+        .unwrap();
         api.git_stash(cwd).unwrap();
         panel.refresh_view(api).unwrap();
         assert_eq!(panel.stashes.len(), 2, "expected two stash entries");

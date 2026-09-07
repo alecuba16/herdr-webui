@@ -89,6 +89,8 @@ pub enum Shortcut {
     GitSwitchBranch,
     GitAmend,
     EditFile,
+    GitFileHistory,
+    GitChangesBack,
 }
 
 impl Shortcut {
@@ -124,6 +126,8 @@ impl Shortcut {
             Self::GitSwitchBranch => "switch branch",
             Self::GitAmend => "amend",
             Self::EditFile => "edit file",
+            Self::GitFileHistory => "file history",
+            Self::GitChangesBack => "back to changes",
         }
     }
 }
@@ -167,6 +171,10 @@ pub fn shortcut_for_key(key: KeyEvent) -> Option<Shortcut> {
         // `e` to EditFile. Amend has no webui prefix shortcut (it is a checkbox
         // in the commit modal); the TUI keeps it on the in-screen `a` key.
         (KeyCode::Char('e') | KeyCode::Char('E'), _) => Some(Shortcut::EditFile),
+        // Webui `history: KeyH` shows commits for the selected file;
+        // `compare: KeyO` returns to the current changes view.
+        (KeyCode::Char('h') | KeyCode::Char('H'), false) => Some(Shortcut::GitFileHistory),
+        (KeyCode::Char('o') | KeyCode::Char('O'), false) => Some(Shortcut::GitChangesBack),
         (KeyCode::Enter, _) => Some(Shortcut::GitCommit),
         _ => None,
     }
@@ -197,7 +205,8 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
         ("Ctrl+B 3/l", "git: log"),
         ("Ctrl+B 4/s", "git: stash"),
         ("Ctrl+B b/v", "git: branches / switch"),
-        ("Ctrl+B G", "git: stage all"),
+        ("Ctrl+B h/o", "git: file history / back to changes"),
+        ("Ctrl+B G", "git: toggle stage all"),
         ("Ctrl+B y/u/d/z", "git: stage/unstage/discard/stash file"),
         ("Ctrl+B p/P", "git: pull/push"),
         (
@@ -290,6 +299,12 @@ mod tests {
         assert_eq!(prefix.feed(key('d')), Some(Shortcut::GitDiscardFile));
         prefix.feed(ctrl('b'));
         assert_eq!(prefix.feed(key('z')), Some(Shortcut::GitStashFile));
+        prefix.feed(ctrl('b'));
+        assert_eq!(prefix.feed(key('h')), Some(Shortcut::GitFileHistory));
+        prefix.feed(ctrl('b'));
+        assert_eq!(prefix.feed(key('o')), Some(Shortcut::GitChangesBack));
+        prefix.feed(ctrl('b'));
+        assert_eq!(prefix.feed(key('e')), Some(Shortcut::EditFile));
         prefix.feed(ctrl('b'));
         assert_eq!(prefix.feed(shift_key('p')), Some(Shortcut::GitPush));
     }

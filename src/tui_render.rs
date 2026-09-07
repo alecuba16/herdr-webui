@@ -479,6 +479,7 @@ fn render_git_screen(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palett
         GitView::Log => render_git_log(frame, content, app, p),
         GitView::Branches => render_git_branches(frame, content, app, p),
         GitView::Stash => render_git_stash(frame, content, app, p),
+        GitView::History => render_git_log(frame, content, app, p),
     }
 }
 
