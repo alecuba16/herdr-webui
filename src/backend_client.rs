@@ -568,7 +568,7 @@ fn short_builtin_socket_dir(hash: &str) -> PathBuf {
 mod tests {
     use super::*;
     use std::fs;
-    use std::sync::{mpsc, Mutex, OnceLock};
+    use std::sync::{mpsc, Mutex};
     use std::thread;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1235,8 +1235,7 @@ mod tests {
     }
 
     fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
+        crate::test_env_lock()
     }
 
     fn unique_name(prefix: &str) -> String {
