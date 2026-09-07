@@ -371,9 +371,17 @@ fn render_file_tree(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette
 }
 
 fn render_file_preview(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
-    let preview = &app.file_explorer.preview;
+    let explorer = &app.file_explorer;
+    let preview = &explorer.preview;
+    let dirty_marker = if preview.dirty { " *" } else { "" };
     let title = match &preview.path {
-        Some(path) => format!(" Preview · {} ", truncate(path, 48)),
+        Some(path) => {
+            if explorer.edit_active {
+                format!(" Editing · {}{dirty_marker} ", truncate(path, 44))
+            } else {
+                format!(" Preview · {} ", truncate(path, 48))
+            }
+        }
         None => " Preview ".to_string(),
     };
     let block = panel(&title, p);
@@ -386,18 +394,43 @@ fn render_file_preview(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
             Style::default().fg(p.muted),
         )));
     } else if let Some(path) = &preview.path {
-        for (index, line) in preview.content.lines().enumerate() {
+        // Cursor position decides the scrolled window while editing.
+        let cursor_line = if explorer.edit_active {
+            preview.content[..explorer.edit_cursor]
+                .matches('\n')
+                .count()
+        } else {
+            0
+        };
+        let visible = inner.height as usize;
+        let start = if explorer.edit_active {
+            cursor_line.saturating_sub(visible.saturating_sub(1))
+        } else {
+            0
+        };
+        for (index, line) in preview.content.lines().enumerate().skip(start) {
             let number = format!("{:>4} ", index + 1);
+            let number_style = if explorer.edit_active && index == cursor_line {
+                Style::default().fg(p.accent).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(p.muted)
+            };
             lines.push(Line::from(vec![
-                Span::styled(number, Style::default().fg(p.muted)),
+                Span::styled(number, number_style),
                 Span::styled(
                     truncate(line, (inner.width as usize).saturating_sub(6)),
                     Style::default().fg(p.text),
                 ),
             ]));
-            if lines.len() >= inner.height as usize {
+            if lines.len() >= visible {
                 break;
             }
+        }
+        if explorer.edit_active {
+            lines.push(Line::from(Span::styled(
+                "Ctrl-S save · Esc stop editing",
+                Style::default().fg(p.accent),
+            )));
         }
         if preview.truncated {
             lines.push(Line::from(Span::styled(

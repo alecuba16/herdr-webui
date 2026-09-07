@@ -544,7 +544,7 @@ mod tests {
 
     #[test]
     fn client_reads_response_from_plain_tcp_server() {
-        use std::io::{BufRead as _, BufReader as _};
+        use std::io::BufRead as _;
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let handle = std::thread::spawn(move || {

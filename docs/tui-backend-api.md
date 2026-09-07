@@ -65,11 +65,11 @@ Prefix shortcuts (after `Ctrl+B`):
 
 - `f`: Files screen. `j/k` moves, `Enter` enters a directory or opens the preview, `l` expands/enters, `h`/`u` go to the parent, `/` starts filtering, `r` refreshes.
 - `g`: Git screen (Changes tab by default). `Tab` cycles Changes/Log/Branches/Stash tabs.
-- `1`/`2`: Git Changes. `3`: Git Log. `4`: Git Stash. `b`: Git Branches. `2`/`c` open the commit modal, `e` the amend modal, `G` stages all changes.
+- `1`/`2`: Git Changes. `3`: Git Log. `4`: Git Stash. `b`: Git Branches. `2`/`c` open the commit modal, `e` edits the currently selected file (the Files preview on the Files screen, the file highlighted in Git Changes otherwise), `G` stages all changes.
 - `y` stages, `u` unstages, `d` discards, `z` stashes the selected file. `p` pulls, `P` pushes.
 - `t`: back to the Terminal screen. `?`: help overlay. `/`: filter in the Files screen.
 
-Inside the Git screen: `s` stages, `d` discards, `f` fetches, `p` pulls, `P` pushes, `c`/`a` open commit/amend modals, `r` refreshes, `Enter` loads the diff (Changes), switches the selected branch (Branches), or applies a stash entry (Stash), and `D` deletes the selected branch (Branches) or drops the selected stash (Stash) after a typed `y` confirmation. Inside the Files screen: `Enter` enters a directory, expands one, or opens the preview, `R` renames the selected file with a prefilled prompt, and `x` deletes it after a typed `y` confirmation.
+Inside the Git screen: `s` stages, `d` discards, `f` fetches, `p` pulls, `P` pushes, `c`/`a` open commit/amend modals, `r` refreshes, `Enter` loads the diff (Changes), switches the selected branch (Branches), or applies a stash entry (Stash), and `D` deletes the selected branch (Branches) or drops the selected stash (Stash) after a typed `y` confirmation. Inside the Files screen: `Enter` enters a directory, expands one, or opens the preview, `e` starts editing the open preview (Ctrl-S saves, Esc stops; prefix `e` on the Git screen edits the file highlighted in Changes), `R` renames the selected file with a prefilled prompt, and `x` deletes it after a typed `y` confirmation.
 
 The Files and Git screens call the WebUI HTTP API over loopback (`/api/files/*`, `/api/git/*`). The TUI discovers the API base from `HERDR_WEBUI_TUI_API`, then the WebUI settings bind address (`webui-settings.json`), then `127.0.0.1:8787`. `--webui-api` pins it explicitly. These screens require the WebUI server to be running; API errors show in the status/error line instead of failing the TUI.
 
