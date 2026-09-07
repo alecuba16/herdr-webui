@@ -216,7 +216,8 @@ ui.toggleHeaderMenu({ stopPropagation() {}, currentTarget: { getBoundingClientRe
 headerHtml = panelHtml();
 const menuChunk = (headerHtml.match(/git-ui-header-menu" style[^>]*>[\s\S]*?<\/div>/) || [""])[0];
 const menuLabels = (menuChunk.match(/<button onclick="[^"]*">[^<]+/g) || []).map((chunk) => chunk.replace(/^<button onclick="[^"]*">/, ""));
-assert.deepEqual(menuLabels, ["Fetch", "Fetch From", "Pull", "Pull (rebase)", "Push", "Push to", "Force push"], "menu offers exactly the seven Zed actions");
+const expectedLabels = ["Fetch", "Fetch From", "Pull", "Pull (rebase)", "Push", "Push to", "Force push"];
+assert(JSON.stringify(menuLabels) === JSON.stringify(expectedLabels), `menu offers exactly the seven Zed actions (${menuLabels.join(", ")})`);
 for (const method of ["fetchOrigin", "openFetchFromModal", "openPullModal", "pullWithRebase", "openPushModal", "openPushToModal", "openForcePushModal"]) {
   assert(new RegExp(`HerdrGitUi\\.${method}\\(\\)`).test(menuChunk), `header menu wires ${method}`);
 }
