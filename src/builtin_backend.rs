@@ -26,11 +26,6 @@ const PROTOCOL_VERSION: u32 = 20;
 const MAX_FRAME_SIZE: usize = 32 * 1024 * 1024;
 const MAX_SCROLLBACK_BYTES: usize = 8 * 1024 * 1024;
 const DETECTION_TAIL_BYTES: usize = 64 * 1024;
-/// OSC 9 payloads older than this are treated as stale and fall back to
-/// screen-scrape detection. 30s is generous: jcode emits on every redraw when
-/// state changes, so a gap this long means the agent stopped emitting (crash,
-/// hang, or non-OSC build) and the side-channel is no longer authoritative.
-const OSC_STALENESS_TIMEOUT: Duration = Duration::from_secs(30);
 /// Optional TTL for `RecentAgentProcessExit` records. `None` matches upstream
 /// herdr: the record never expires on its own in production and is only
 /// cleared when a live agent process is detected again (or the record is
@@ -66,16 +61,18 @@ impl RecentAgentProcessExit {
 /// This is a minimal state machine that tracks the OSC body between
 /// `ESC ]` and `BEL` (0x07) or `ST` (`ESC \`).
 ///
-/// The tracker also records the wall-clock time of the last payload so callers
-/// can treat stale OSC data as advisory and fall back to screen-scraping when
-/// the agent has not emitted fresh status for a while.
+/// Matching upstream herdr's `AgentOscStateTracker`, the latest payload is
+/// retained without a TTL: agents emit on state change only (jcode dedups in
+/// `agent_osc_state`), so a timestamped staleness window would treat every
+/// long turn as "no recent status" and silently degrade to screen-scraping.
+/// Staleness is handled structurally instead: `reset()` clears the payload
+/// when the terminal exits, and `notify_exited` clears it when the agent
+/// process disappears.
 #[derive(Default)]
 struct Osc9Tracker {
     state: Osc9State,
     body: Vec<u8>,
     latest_payload: Option<String>,
-    /// Wall-clock time of the last OSC 9 progress payload, used for staleness.
-    latest_payload_at: Option<Instant>,
     /// Latest OSC 0 terminal title, used for `osc_title` detection rules.
     latest_title: Option<String>,
 }
@@ -142,7 +139,6 @@ impl Osc9Tracker {
                 let sanitized: String = text.chars().filter(|c| !c.is_control()).collect();
                 if !sanitized.is_empty() {
                     self.latest_payload = Some(sanitized);
-                    self.latest_payload_at = Some(Instant::now());
                 }
             } else if command == b"0" || command == b"2" {
                 // OSC 0 and OSC 2 both set the terminal title.
@@ -156,27 +152,12 @@ impl Osc9Tracker {
         self.body.clear();
     }
 
-    /// Returns the latest OSC 9 progress payload regardless of age.
-    /// Production callers should prefer [`latest_progress_fresh`] so stale
-    /// payloads fall back to screen-scrape. This raw accessor is kept for tests
-    /// that need to verify the tracker captured a payload without the time
-    /// filter.
-    #[allow(dead_code)]
+    /// Returns the latest OSC 9 progress payload, or `""` if none has been
+    /// seen. The payload is retained until the terminal exits or the agent
+    /// process disappears (`reset`), matching upstream herdr's
+    /// `AgentOscStateTracker::latest_progress`.
     fn latest_progress(&self) -> &str {
         self.latest_payload.as_deref().unwrap_or("")
-    }
-
-    /// Returns the latest OSC 9 progress payload only if it was received
-    /// within the `max_age` window. Stale payloads return `None` so the caller
-    /// can fall back to screen-scrape detection. A `max_age` of `Duration::MAX`
-    /// effectively disables staleness filtering.
-    fn latest_progress_fresh(&self, max_age: Duration) -> Option<&str> {
-        let at = self.latest_payload_at?;
-        if at.elapsed() <= max_age {
-            self.latest_payload.as_deref()
-        } else {
-            None
-        }
     }
 
     /// Extract a stable agent label from the OSC 9 progress payload when the
@@ -199,7 +180,6 @@ impl Osc9Tracker {
     /// OSC status does not persist after the agent process is gone.
     fn reset(&mut self) {
         self.latest_payload = None;
-        self.latest_payload_at = None;
         self.latest_title = None;
         self.body.clear();
         self.state = Osc9State::Ground;
@@ -1757,12 +1737,12 @@ impl TerminalRuntime {
             .osc9_tracker
             .lock()
             .map(|tracker| {
-                // Treat OSC 9 payloads older than 30s as stale so detection
-                // falls back to screen-scraping if the agent stops emitting.
-                let progress = tracker
-                    .latest_progress_fresh(OSC_STALENESS_TIMEOUT)
-                    .unwrap_or("")
-                    .to_string();
+                // The OSC 9 payload is retained until the terminal exits
+                // (reset) or the agent process disappears (notify_exited
+                // resets the tracker). jcode emits on state change only, so
+                // there is no timestamped freshness window: a long turn must
+                // keep reporting `jcode:working`.
+                let progress = tracker.latest_progress().to_string();
                 (
                     progress,
                     tracker.latest_title().to_string(),
@@ -2123,10 +2103,7 @@ fn pane_agent_presentation(pane: &PaneRecord, data: &BuiltinData) -> PaneAgentPr
         .and_then(|terminal| terminal.osc9_tracker.lock().ok())
         .map(|tracker| {
             (
-                tracker
-                    .latest_progress_fresh(OSC_STALENESS_TIMEOUT)
-                    .unwrap_or("")
-                    .to_string(),
+                tracker.latest_progress().to_string(),
                 tracker.latest_title().to_string(),
             )
         })
@@ -5255,27 +5232,21 @@ mod tests {
     }
 
     #[test]
-    fn osc9_tracker_fresh_payload_within_timeout() {
+    fn osc9_tracker_retains_payload_without_ttl() {
+        // jcode emits on state change only, so a payload must remain
+        // authoritative for the whole pane lifetime (matching upstream
+        // herdr's no-TTL retention). There is no freshness window: a long
+        // turn keeps reporting `jcode:working` and long idle keeps
+        // reporting `jcode:idle`.
         let mut tracker = Osc9Tracker::default();
         tracker.observe(b"\x1b]9;jcode:working\x07");
-        // Immediately after observing, the payload is fresh
-        assert_eq!(
-            tracker.latest_progress_fresh(Duration::from_secs(30)),
-            Some("jcode:working")
-        );
-    }
-
-    #[test]
-    fn osc9_tracker_stale_payload_returns_none() {
-        let mut tracker = Osc9Tracker::default();
-        // Simulate a payload received 60s ago by manually setting the timestamp.
-        tracker.observe(b"\x1b]9;jcode:working\x07");
-        // Override the timestamp to simulate aging.
-        tracker.latest_payload_at = Some(Instant::now() - Duration::from_secs(60));
-        // With a 30s timeout, the stale payload should be filtered out.
-        assert_eq!(tracker.latest_progress_fresh(Duration::from_secs(30)), None);
-        // But latest_progress() still returns the raw payload (no time filter).
         assert_eq!(tracker.latest_progress(), "jcode:working");
+        // A different OSC payload replaces it.
+        tracker.observe(b"\x1b]9;jcode:idle\x07");
+        assert_eq!(tracker.latest_progress(), "jcode:idle");
+        // Only `reset()` (terminal exit / agent gone) clears it.
+        tracker.reset();
+        assert_eq!(tracker.latest_progress(), "");
     }
 
     #[test]
@@ -5292,7 +5263,6 @@ mod tests {
         assert_eq!(tracker.latest_progress(), "");
         assert_eq!(tracker.latest_title(), "");
         assert_eq!(tracker.latest_agent_label(), None);
-        assert_eq!(tracker.latest_progress_fresh(Duration::from_secs(30)), None);
         // Tracker can still capture new payloads after reset.
         tracker.observe(b"\x1b]9;jcode:idle\x07");
         assert_eq!(tracker.latest_progress(), "jcode:idle");
