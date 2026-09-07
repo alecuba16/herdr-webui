@@ -1,6 +1,6 @@
 # Release notes
 
-## 0.4.10 Release Notes
+## 0.4.11 Release Notes
 - Fixed jcode agent status detection in the built-in backend: jcode emits
   `ESC]9;jcode:<state> BEL` only when its state actually changes, but the
   backend treated OSC 9 payloads older than 30s as stale and fell back to
@@ -11,6 +11,8 @@
   `AgentOscStateTracker`. An A/B regression against the previous build
   confirmed the fix: the old binary flipped `idle` to `unknown` after 30s
   while the fixed binary held `idle` throughout.
+
+## 0.4.10 Release Notes
 - Zed-style Git branch selector: the desktop Git header now puts the branch
   chip left (next to Commit, showing just the branch name) and a status
   split button right. The status label reflects the sync state — Pull ↓N
