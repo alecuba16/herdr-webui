@@ -213,10 +213,20 @@ fn parse_entries(data: &Value) -> Vec<FileEntry> {
 }
 
 fn parse_entry(value: &Value) -> FileEntry {
+    // The server compact single-child chains into names like `a/b/`;
+    // strip the trailing slash so the tree shows a clean name and path
+    // joining stays consistent.
+    let name = value_str(value, &["name"]).unwrap_or_default();
+    let is_dir = value_str(value, &["kind"]) == Some("dir");
+    let name = if is_dir {
+        name.strip_suffix('/').unwrap_or(name)
+    } else {
+        name
+    };
     FileEntry {
-        name: value_str(value, &["name"]).unwrap_or_default().to_string(),
+        name: name.to_string(),
         path: value_str(value, &["path"]).unwrap_or_default().to_string(),
-        is_dir: value_str(value, &["kind"]) == Some("dir"),
+        is_dir,
         size: value.get("size").and_then(Value::as_u64),
         level: value.get("level").and_then(Value::as_u64).unwrap_or(0) as usize,
         expanded: false,

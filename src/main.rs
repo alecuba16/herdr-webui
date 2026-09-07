@@ -9873,3 +9873,203 @@ mod tests {
         (path, handle)
     }
 }
+
+#[cfg(test)]
+mod tui_parity_e2e_tests {
+    //! End-to-end tests driving the real axum server with the TUI's
+    //! `WebApiClient`, `FileExplorer`, and `GitPanel` against a real
+    //! temp git repository. These verify the loopback contract the TUI
+    //! depends on: loopback + `localhost_no_auth` auth, and the exact
+    //! request/response shapes the TUI parsers expect.
+    use super::*;
+    use crate::lsp::LspRegistry;
+    use herdr_webui::tui_panels::{FileExplorer, GitFileStatus, GitPanel, GitView};
+    use herdr_webui::tui_web_api::WebApiClient;
+
+    fn temp_git_repo() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "herdr-tui-e2e-repo-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let run = |args: &[&str]| {
+            let ok = Command::new("git")
+                .arg("-C")
+                .arg(&dir)
+                .args(args)
+                .output()
+                .is_ok_and(|out| out.status.success());
+            assert!(ok, "git {args:?} failed in test repo");
+        };
+        run(&["init", "-q"]);
+        run(&["config", "user.email", "tui@test.local"]);
+        run(&["config", "user.name", "TUI Test"]);
+        std::fs::write(dir.join("readme.md"), "hello\n").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "init"]);
+        std::fs::write(dir.join("readme.md"), "hello\nworld\n").unwrap();
+        std::fs::write(dir.join("new_file.rs"), "fn main() {}\n").unwrap();
+        dir
+    }
+
+    fn localhost_no_auth_state(default_folder: PathBuf) -> WebState {
+        let bind = DEFAULT_BIND.parse::<SocketAddr>().unwrap();
+        let (rebind_tx, _) = tokio::sync::watch::channel(bind);
+        WebState {
+            api_socket: Some(PathBuf::from("/tmp/default-api.sock")),
+            client_socket: Some(PathBuf::from("/tmp/default-client.sock")),
+            session_name: None,
+            backend_mode: BackendMode::ExternalHerdr,
+            _builtin_backend: None,
+            builtin_sessions: Arc::new(Mutex::new(HashMap::new())),
+            herdr_bin: "herdr".to_string(),
+            auth: Arc::new(Mutex::new(AuthConfig {
+                user: None,
+                password: None,
+                localhost_no_auth: true,
+                token: "e2e-token".to_string(),
+            })),
+            server_settings: Arc::new(Mutex::new(RuntimeServerSettings {
+                bind,
+                user: None,
+                password: None,
+                localhost_no_auth: true,
+                no_sleep_auto_cooldown_seconds: 60,
+                backend_mode: BackendMode::ExternalHerdr,
+                builtin_shell: None,
+                default_folder: default_folder.to_string_lossy().to_string(),
+                builtin_backend_enabled: true,
+                external_herdr_backend_enabled: true,
+                jcode_detection_variant: JcodeDetectionVariant::default(),
+                log_level: LogLevel::default(),
+                lsp: lsp::LspSettings::default(),
+            })),
+            no_sleep: Arc::new(Mutex::new(NoSleepState::default())),
+            rebind_tx,
+            workspace_orders: Arc::new(Mutex::new(HashMap::new())),
+            lsp: Arc::new(LspRegistry::new(Default::default())),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn tui_web_api_client_round_trips_file_tree_and_git_panels() {
+        let repo = temp_git_repo();
+        let state = localhost_no_auth_state(repo.clone());
+        let app = app_router(state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+
+        let api = WebApiClient::new("127.0.0.1", addr.port());
+        let cwd = repo.to_string_lossy().to_string();
+
+        // The TUI client is blocking; run it on the blocking pool so the
+        // async server keeps making progress while it waits.
+        tokio::task::spawn_blocking(move || tui_round_trip_assertions(&api, &cwd))
+            .await
+            .unwrap();
+        server.abort();
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    fn tui_round_trip_assertions(api: &WebApiClient, cwd: &str) -> Result<(), String> {
+        // FileExplorer: tree listing via the TUI parser.
+        let mut explorer = FileExplorer::new(cwd);
+        explorer.refresh(&api).unwrap();
+        let names: Vec<&str> = explorer.entries.iter().map(|e| e.name.as_str()).collect();
+        assert!(
+            names.contains(&"readme.md"),
+            "tree missing readme.md: {names:?}"
+        );
+        assert!(
+            names.contains(&"new_file.rs"),
+            "tree missing new_file.rs: {names:?}"
+        );
+        assert!(names.contains(&".git"), "tree missing .git: {names:?}");
+
+        // FileExplorer: file preview.
+        explorer.selected = names.iter().position(|n| *n == "readme.md").unwrap();
+        explorer.open_preview(&api).unwrap();
+        let preview = explorer.preview.clone();
+        assert_eq!(preview.path.as_deref(), Some("readme.md"));
+        assert!(preview.content.contains("world"));
+        assert!(!preview.binary);
+
+        // GitPanel: status parses into staged/unstaged/untracked lists.
+        let mut panel = GitPanel::new(cwd);
+        panel.refresh(api).unwrap();
+        assert_eq!(panel.state, "dirty");
+        let has_readme = panel
+            .files
+            .iter()
+            .any(|entry| entry.path == "readme.md" && entry.status == GitFileStatus::Unstaged);
+        assert!(
+            has_readme,
+            "expected unstaged readme.md, got {:?}",
+            panel
+                .files
+                .iter()
+                .map(|f| (&f.path, &f.status))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            panel.files.iter().any(|entry| entry.path == "new_file.rs"),
+            "expected untracked new_file.rs"
+        );
+
+        // GitPanel: diff for the modified file renders add/delete lines.
+        panel.file_selected = panel
+            .files
+            .iter()
+            .position(|entry| entry.path == "readme.md")
+            .unwrap();
+        panel.refresh_diff(&api).unwrap();
+        assert!(
+            panel
+                .diff_lines
+                .iter()
+                .any(|line| line.starts_with('+') && line.contains("world")),
+            "diff missing +world line: {:?}",
+            panel.diff_lines
+        );
+
+        // GitPanel: stage the modified file, then status shows it staged.
+        panel.stage_selected(&api).unwrap();
+        assert!(panel.files.iter().any(
+            |entry| entry.path == "readme.md" && matches!(entry.status, GitFileStatus::Staged)
+        ));
+
+        // GitPanel: log shows the init commit.
+        panel.view = GitView::Log;
+        panel.refresh_view(&api).unwrap();
+        assert_eq!(panel.commits.len(), 1);
+        assert_eq!(panel.commits[0].message, "init");
+
+        // GitPanel: branches list contains the current branch.
+        panel.view = GitView::Branches;
+        panel.refresh_view(&api).unwrap();
+        assert!(
+            panel.branches.iter().any(|b| b.current),
+            "expected a current branch: {:?}",
+            panel
+                .branches
+                .iter()
+                .map(|b| (&b.name, b.current))
+                .collect::<Vec<_>>()
+        );
+
+        Ok(())
+    }
+}
