@@ -541,6 +541,35 @@ mod tests {
     }
 
     #[test]
+    fn client_reads_response_from_plain_tcp_server() {
+        use std::io::{BufRead as _, BufReader as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            if let Ok((stream, _)) = listener.accept() {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut request = String::new();
+                if reader.read_line(&mut request).is_ok() {
+                    let mut stream = stream;
+                    let body = r#"{"ok":true}"#;
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                    let _ = stream.flush();
+                    let _ = stream.shutdown(std::net::Shutdown::Both);
+                }
+            }
+        });
+        let client = WebApiClient::new("127.0.0.1", addr.port());
+        let value = client.get("/api/me").unwrap();
+        assert_eq!(value, serde_json::json!({ "ok": true }));
+        handle.join().unwrap();
+    }
+
+    #[test]
     fn http_error_messages_include_status_and_error_payload() {
         let error = WebApiError::Http {
             status: 400,
