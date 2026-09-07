@@ -318,6 +318,14 @@ impl WebApiClient {
         self.get(&format!("/api/git-ui/branches?cwd={}", urlencode(cwd)))
     }
 
+    pub fn git_file_history(&self, cwd: &str, file: &str) -> Result<Value, WebApiError> {
+        self.get(&format!(
+            "/api/git-ui/file-history?cwd={}&file={}",
+            urlencode(cwd),
+            urlencode(file)
+        ))
+    }
+
     pub fn git_stashes(&self, cwd: &str) -> Result<Value, WebApiError> {
         self.get(&format!("/api/git-ui/stashes?cwd={}", urlencode(cwd)))
     }

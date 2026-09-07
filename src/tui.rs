@@ -536,6 +536,29 @@ impl TuiApp {
                 self.git_panel.view = GitView::Stash;
                 self.refresh_active_screen();
             }
+            Shortcut::GitFileHistory => {
+                // Webui `history: KeyH`: list commits touching the file
+                // selected in Changes.
+                self.open_git_screen();
+                if self.git_panel.view != GitView::Changes {
+                    self.git_panel.view = GitView::Changes;
+                    self.refresh_active_screen();
+                }
+                if self.git_panel.selected_file().is_none() {
+                    self.error = Some("no file selected in git changes".to_string());
+                    return;
+                }
+                self.git_panel.view = GitView::History;
+                self.refresh_active_screen();
+                let file = self.git_panel.history_file.clone().unwrap_or_default();
+                self.status = format!("history: {file}");
+            }
+            Shortcut::GitChangesBack => {
+                // Webui `compare: KeyO`: return to the current changes view.
+                self.open_git_screen();
+                self.git_panel.view = GitView::Changes;
+                self.refresh_active_screen();
+            }
             Shortcut::GitBranch => {
                 self.open_git_screen();
                 self.git_panel.view = GitView::Branches;
@@ -560,9 +583,11 @@ impl TuiApp {
                     Err(err) => self.error = Some(err.to_string()),
                 }
             }
-            Shortcut::GitStageAll => self.run_git_action(|panel, api| panel.stage_all(api)),
+            Shortcut::GitStageAll => self.run_git_action(|panel, api| panel.toggle_stage_all(api)),
             Shortcut::GitStageFile => self.run_git_action(|panel, api| panel.stage_selected(api)),
-            Shortcut::GitUnstageFile => self.run_git_action(|panel, api| panel.stage_selected(api)),
+            Shortcut::GitUnstageFile => {
+                self.run_git_action(|panel, api| panel.unstage_selected(api))
+            }
             Shortcut::GitDiscardFile => {
                 // Discarding the file under edit while its buffer is
                 // dirty would silently fork it from disk.
@@ -869,7 +894,8 @@ impl TuiApp {
                     GitView::Changes => GitView::Log,
                     GitView::Log => GitView::Branches,
                     GitView::Branches => GitView::Stash,
-                    GitView::Stash => GitView::Changes,
+                    GitView::Stash => GitView::History,
+                    GitView::History => GitView::Changes,
                 };
                 self.refresh_active_screen();
             }
@@ -964,6 +990,12 @@ impl TuiApp {
                     if let Err(err) = self.git_panel.refresh_diff(&self.web_api) {
                         self.error = Some(err.to_string());
                     }
+                }
+                // History rows are commits: Enter loads their diff in
+                // Changes like the webui history view opening a commit.
+                GitView::History => {
+                    self.git_panel.view = GitView::Changes;
+                    self.refresh_active_screen();
                 }
                 GitView::Branches => {
                     if let Err(err) = self.git_panel.switch_selected(&self.web_api) {

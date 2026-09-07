@@ -64,9 +64,9 @@ Interactive controls:
 Prefix shortcuts (after `Ctrl+B`):
 
 - `f`: Files screen. `j/k` moves, `Enter` enters a directory or opens the preview, `l` expands/enters, `h`/`u` go to the parent, `/` starts filtering, `r` refreshes.
-- `g`: Git screen (Changes tab by default). `Tab` cycles Changes/Log/Branches/Stash tabs.
-- `1`/`2`: Git Changes. `3`: Git Log. `4`: Git Stash. `b`: Git Branches. `2`/`c` open the commit modal, `e` edits the currently selected file (the Files preview on the Files screen, the file highlighted in Git Changes otherwise), `G` stages all changes.
-- `y` stages, `u` unstages, `d` discards, `z` stashes the selected file. `p` pulls, `P` pushes.
+- `g`: Git screen (Changes tab by default). `Tab` cycles Changes/Log/Branches/Stash/History tabs.
+- `1`/`2`: Git Changes. `3`: Git Log. `4`: Git Stash. `b`: Git Branches. `h`: Git History for the file selected in Changes, `o` back to Changes. `2`/`c` open the commit modal, `e` edits the currently selected file (the Files preview on the Files screen, the file highlighted in Git Changes otherwise), `G` toggles stage-all.
+- `y` stages, `u` unstages, `d` discards, `z` stashes the selected file. `p` pulls, `P` pushes. `h` shows the selected file's history, `o` returns to Changes, `G` toggles stage-all (unstages everything when something is staged, otherwise stages all).
 - `t`: back to the Terminal screen. `?`: help overlay. `/`: filter in the Files screen.
 
 Inside the Git screen: `s` stages, `d` discards, `f` fetches, `p` pulls, `P` pushes, `c`/`a` open commit/amend modals, `r` refreshes, `Enter` loads the diff (Changes), switches the selected branch (Branches), or applies a stash entry (Stash), and `D` deletes the selected branch (Branches) or drops the selected stash (Stash) after a typed `y` confirmation. Inside the Files screen: `Enter` enters a directory, expands one, or opens the preview, `e` starts editing the open preview (typing inserts at the cursor; `Left`/`Right`/`Home`/`End` move it; Ctrl-S saves with the 409 conflict guard, Ctrl-R reloads from disk discarding edits, Esc stops editing; prefix `e` on the Git screen edits the file highlighted in Changes), `R` renames the selected file with a prefilled prompt, and `x` deletes it after a typed `y` confirmation. Unsaved edits survive screen switches; opening a different file while dirty is refused until saved or reloaded.

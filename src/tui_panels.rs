@@ -398,6 +398,9 @@ pub enum GitView {
     Log,
     Branches,
     Stash,
+    /// Per-file history (webui prefix `h`): commits touching the file
+    /// selected in Changes, reusing the commit list rendering.
+    History,
 }
 
 impl GitView {
@@ -407,11 +410,18 @@ impl GitView {
             Self::Log => "Log",
             Self::Branches => "Branches",
             Self::Stash => "Stash",
+            Self::History => "History",
         }
     }
 
-    pub fn all() -> [GitView; 4] {
-        [Self::Changes, Self::Log, Self::Branches, Self::Stash]
+    pub fn all() -> [GitView; 5] {
+        [
+            Self::Changes,
+            Self::Log,
+            Self::Branches,
+            Self::Stash,
+            Self::History,
+        ]
     }
 }
 
@@ -487,6 +497,9 @@ pub struct GitPanel {
     pub diff_title: String,
     pub commits: Vec<GitCommitEntry>,
     pub commit_selected: usize,
+    /// File whose history the History view lists (`prefix h` from
+    /// Changes, webui `gitShortcuts.history`).
+    pub history_file: Option<String>,
     pub branches: Vec<GitBranchEntry>,
     pub branch_selected: usize,
     pub stashes: Vec<GitStashEntry>,
@@ -511,6 +524,7 @@ impl GitPanel {
             diff_title: String::new(),
             commits: Vec::new(),
             commit_selected: 0,
+            history_file: None,
             branches: Vec::new(),
             branch_selected: 0,
             stashes: Vec::new(),
@@ -528,6 +542,7 @@ impl GitPanel {
             self.files.clear();
             self.diff_lines.clear();
             self.commits.clear();
+            self.history_file = None;
             self.branches.clear();
             self.stashes.clear();
             self.status = None;
@@ -621,7 +636,33 @@ impl GitPanel {
             GitView::Log => self.refresh_log(api),
             GitView::Branches => self.refresh_branches(api),
             GitView::Stash => self.refresh_stashes(api),
+            GitView::History => self.refresh_history(api),
         }
+    }
+
+    /// Load the per-file history for the file selected in Changes. The
+    /// History view reuses `commits` + `commit_selected` for rendering.
+    pub fn refresh_history(&mut self, api: &WebApiClient) -> Result<(), WebApiError> {
+        let Some(file) = self
+            .selected_file()
+            .map(|entry| entry.path.clone())
+            .or_else(|| self.history_file.clone())
+        else {
+            self.commits = Vec::new();
+            self.commit_selected = 0;
+            return Ok(());
+        };
+        self.history_file = Some(file.clone());
+        let data = api.git_file_history(&self.cwd, &file)?;
+        self.commits = data
+            .get("commits")
+            .and_then(Value::as_array)
+            .map(|items| items.iter().map(parse_commit).collect())
+            .unwrap_or_default();
+        if self.commit_selected >= self.commits.len() {
+            self.commit_selected = self.commits.len().saturating_sub(1);
+        }
+        Ok(())
     }
 
     pub fn move_selection(&mut self, delta: isize) {
@@ -630,6 +671,9 @@ impl GitPanel {
                 self.file_selected = move_index(self.file_selected, self.files.len(), delta);
             }
             GitView::Log => {
+                self.commit_selected = move_index(self.commit_selected, self.commits.len(), delta);
+            }
+            GitView::History => {
                 self.commit_selected = move_index(self.commit_selected, self.commits.len(), delta);
             }
             GitView::Branches => {
@@ -645,23 +689,31 @@ impl GitPanel {
         self.files.get(self.file_selected)
     }
 
+    /// Stage the selected file. The webui `stageFile` action always stages
+    /// (no toggle), so this does too; unstage is the separate `u` shortcut.
     pub fn stage_selected(&mut self, api: &WebApiClient) -> Result<(), WebApiError> {
         let paths = self
             .selected_file()
             .map(|entry| vec![entry.path.clone()])
             .ok_or_else(|| WebApiError::Io("no file selected".to_string()))?;
-        let was_staged = self
-            .selected_file()
-            .is_some_and(|entry| entry.status == GitFileStatus::Staged);
-        if was_staged {
-            api.git_unstage(&self.cwd, &paths)?;
-        } else {
-            api.git_stage(&self.cwd, &paths)?;
-        }
+        api.git_stage(&self.cwd, &paths)?;
         self.refresh_view(api)
     }
 
-    pub fn stage_all(&mut self, api: &WebApiClient) -> Result<(), WebApiError> {
+    /// Toggle all: if anything is staged, unstage it; otherwise stage
+    /// every unstaged and untracked file. Mirrors the webui
+    /// `toggleStageAll` behind prefix `G`.
+    pub fn toggle_stage_all(&mut self, api: &WebApiClient) -> Result<(), WebApiError> {
+        let staged: Vec<String> = self
+            .files
+            .iter()
+            .filter(|entry| entry.status == GitFileStatus::Staged)
+            .map(|entry| entry.path.clone())
+            .collect();
+        if !staged.is_empty() {
+            api.git_unstage(&self.cwd, &staged)?;
+            return self.refresh_view(api);
+        }
         let paths = self
             .files
             .iter()
@@ -672,6 +724,18 @@ impl GitPanel {
             return Ok(());
         }
         api.git_stage(&self.cwd, &paths)?;
+        self.refresh_view(api)
+    }
+
+    /// Unstage the selected file. The webui `unstageFile` action always
+    /// unstages (no toggle), so this is the explicit counterpart to
+    /// `stage_selected`.
+    pub fn unstage_selected(&mut self, api: &WebApiClient) -> Result<(), WebApiError> {
+        let paths = self
+            .selected_file()
+            .map(|entry| vec![entry.path.clone()])
+            .ok_or_else(|| WebApiError::Io("no file selected".to_string()))?;
+        api.git_unstage(&self.cwd, &paths)?;
         self.refresh_view(api)
     }
 
@@ -1251,7 +1315,7 @@ mod tests {
                 .iter()
                 .map(|view| view.title())
                 .collect::<Vec<_>>(),
-            vec!["Changes", "Log", "Branches", "Stash"]
+            vec!["Changes", "Log", "Branches", "Stash", "History"]
         );
     }
 }

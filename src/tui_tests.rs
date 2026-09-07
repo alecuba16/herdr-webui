@@ -186,6 +186,8 @@ fn git_panel_key_navigation_cycles_views() {
     app.handle_key(KeyEvent::from(KeyCode::Tab));
     assert_eq!(app.git_panel.view, GitView::Stash);
     app.handle_key(KeyEvent::from(KeyCode::Tab));
+    assert_eq!(app.git_panel.view, GitView::History);
+    app.handle_key(KeyEvent::from(KeyCode::Tab));
     assert_eq!(app.git_panel.view, GitView::Changes);
 
     // Esc/q returns to the terminal screen.
@@ -720,4 +722,32 @@ fn dirty_preview_blocks_rename_delete_and_discard_of_edited_file() {
         "discard of a non-edited file must reach the API, got {:?}",
         app.error
     );
+}
+
+#[test]
+fn prefix_h_loads_file_history_and_o_returns_to_changes() {
+    let client = BackendClient::builtin_session(None);
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    app.screen = TuiScreen::Git;
+    app.git_panel.view = GitView::Changes;
+    app.git_panel.files = vec![GitFileEntry {
+        path: "src/app.rs".to_string(),
+        status: GitFileStatus::Unstaged,
+    }];
+    app.git_panel.file_selected = 0;
+    let ctrl_b = KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL);
+
+    // Prefix h switches to the History view and fetches the file's
+    // commits; the file-history call fails against the dead loopback API,
+    // proving the history path is taken.
+    app.handle_key(ctrl_b);
+    app.handle_key(KeyEvent::from(KeyCode::Char('h')));
+    assert_eq!(app.git_panel.view, GitView::History);
+    assert!(app.error.is_some(), "history fetch must hit the API");
+
+    // Prefix o returns to the Changes view (webui compare shortcut).
+    app.error = None;
+    app.handle_key(ctrl_b);
+    app.handle_key(KeyEvent::from(KeyCode::Char('o')));
+    assert_eq!(app.git_panel.view, GitView::Changes);
 }
