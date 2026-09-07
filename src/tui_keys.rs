@@ -91,6 +91,7 @@ pub enum Shortcut {
     EditFile,
     GitFileHistory,
     GitChangesBack,
+    GitBlame,
 }
 
 impl Shortcut {
@@ -128,6 +129,7 @@ impl Shortcut {
             Self::EditFile => "edit file",
             Self::GitFileHistory => "file history",
             Self::GitChangesBack => "back to changes",
+            Self::GitBlame => "toggle blame",
         }
     }
 }
@@ -158,6 +160,8 @@ pub fn shortcut_for_key(key: KeyEvent) -> Option<Shortcut> {
         (KeyCode::Char('2'), false) => Some(Shortcut::GitCommit),
         (KeyCode::Char('3'), false) => Some(Shortcut::GitLog),
         (KeyCode::Char('4'), false) => Some(Shortcut::GitStash),
+        // Webui `help: Digit0` shows the git shortcut help.
+        (KeyCode::Char('0'), false) => Some(Shortcut::Help),
         (KeyCode::Char('b'), false) => Some(Shortcut::GitBranch),
         (KeyCode::Char('c'), false) => Some(Shortcut::GitCommit),
         (KeyCode::Char('l') | KeyCode::Char('L'), false) => Some(Shortcut::GitLog),
@@ -172,9 +176,11 @@ pub fn shortcut_for_key(key: KeyEvent) -> Option<Shortcut> {
         // in the commit modal); the TUI keeps it on the in-screen `a` key.
         (KeyCode::Char('e') | KeyCode::Char('E'), _) => Some(Shortcut::EditFile),
         // Webui `history: KeyH` shows commits for the selected file;
-        // `compare: KeyO` returns to the current changes view.
+        // `compare: KeyO` returns to the current changes view;
+        // `blame: KeyM` toggles blame annotations in the diff.
         (KeyCode::Char('h') | KeyCode::Char('H'), false) => Some(Shortcut::GitFileHistory),
         (KeyCode::Char('o') | KeyCode::Char('O'), false) => Some(Shortcut::GitChangesBack),
+        (KeyCode::Char('m') | KeyCode::Char('M'), false) => Some(Shortcut::GitBlame),
         (KeyCode::Enter, _) => Some(Shortcut::GitCommit),
         _ => None,
     }
@@ -205,7 +211,12 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
         ("Ctrl+B 3/l", "git: log"),
         ("Ctrl+B 4/s", "git: stash"),
         ("Ctrl+B b/v", "git: branches / switch"),
-        ("Ctrl+B h/o", "git: file history / back to changes"),
+        (
+            "Ctrl+B h/o",
+            "git: file history (Enter: commit diff) / back to changes",
+        ),
+        ("Ctrl+B m", "git: toggle blame in the diff"),
+        ("Ctrl+B 0", "git: shortcut help"),
         ("Ctrl+B G", "git: toggle stage all"),
         ("Ctrl+B y/u/d/z", "git: stage/unstage/discard/stash file"),
         ("Ctrl+B p/P", "git: pull/push"),
@@ -303,6 +314,10 @@ mod tests {
         assert_eq!(prefix.feed(key('h')), Some(Shortcut::GitFileHistory));
         prefix.feed(ctrl('b'));
         assert_eq!(prefix.feed(key('o')), Some(Shortcut::GitChangesBack));
+        prefix.feed(ctrl('b'));
+        assert_eq!(prefix.feed(key('m')), Some(Shortcut::GitBlame));
+        prefix.feed(ctrl('b'));
+        assert_eq!(prefix.feed(key('0')), Some(Shortcut::Help));
         prefix.feed(ctrl('b'));
         assert_eq!(prefix.feed(key('e')), Some(Shortcut::EditFile));
         prefix.feed(ctrl('b'));

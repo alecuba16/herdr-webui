@@ -326,6 +326,39 @@ impl WebApiClient {
         ))
     }
 
+    /// Compare two refs (webui history/log "committed file" uses
+    /// `base=hash^&target=hash`). `file` scopes the diff to one path,
+    /// mirroring the webui history compare (`compareFilePaths`).
+    pub fn git_compare(
+        &self,
+        cwd: &str,
+        base: &str,
+        target: &str,
+        file: Option<&str>,
+    ) -> Result<Value, WebApiError> {
+        let mut url = format!(
+            "/api/git-ui/compare?cwd={}&base={}&target={}&context=3",
+            urlencode(cwd),
+            urlencode(base),
+            urlencode(target),
+        );
+        if let Some(file) = file {
+            url.push_str(&format!("&file={}", urlencode(file)));
+        }
+        self.get(&url)
+    }
+
+    /// Blame for one file (webui `blame` toggle). The server returns
+    /// raw `--line-porcelain` text; the panel parses it.
+    pub fn git_blame(&self, cwd: &str, file: &str, ref_name: &str) -> Result<Value, WebApiError> {
+        self.get(&format!(
+            "/api/git-ui/blame?cwd={}&file={}&ref_name={}",
+            urlencode(cwd),
+            urlencode(file),
+            urlencode(ref_name)
+        ))
+    }
+
     pub fn git_stashes(&self, cwd: &str) -> Result<Value, WebApiError> {
         self.get(&format!("/api/git-ui/stashes?cwd={}", urlencode(cwd)))
     }
