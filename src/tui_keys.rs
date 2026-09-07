@@ -88,6 +88,7 @@ pub enum Shortcut {
     GitFetch,
     GitSwitchBranch,
     GitAmend,
+    EditFile,
 }
 
 impl Shortcut {
@@ -122,6 +123,7 @@ impl Shortcut {
             Self::GitFetch => "fetch",
             Self::GitSwitchBranch => "switch branch",
             Self::GitAmend => "amend",
+            Self::EditFile => "edit file",
         }
     }
 }
@@ -161,7 +163,10 @@ pub fn shortcut_for_key(key: KeyEvent) -> Option<Shortcut> {
         (KeyCode::Char('d'), false) => Some(Shortcut::GitDiscardFile),
         (KeyCode::Char('z'), false) => Some(Shortcut::GitStashFile),
         (KeyCode::Char('v'), false) => Some(Shortcut::GitSwitchBranch),
-        (KeyCode::Char('e'), false) => Some(Shortcut::GitAmend),
+        // Webui `edit: KeyE` is the plain `e` key, so muscle memory maps plain
+        // `e` to EditFile. Amend has no webui prefix shortcut (it is a checkbox
+        // in the commit modal); the TUI keeps it on the in-screen `a` key.
+        (KeyCode::Char('e') | KeyCode::Char('E'), _) => Some(Shortcut::EditFile),
         (KeyCode::Enter, _) => Some(Shortcut::GitCommit),
         _ => None,
     }
@@ -195,8 +200,12 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
         ("Ctrl+B G", "git: stage all"),
         ("Ctrl+B y/u/d/z", "git: stage/unstage/discard/stash file"),
         ("Ctrl+B p/P", "git: pull/push"),
-        ("Ctrl+B e", "git: amend last commit"),
+        (
+            "Ctrl+B e",
+            "edit current file (files preview or git changes)",
+        ),
         ("", ""),
+        ("files: e", "edit open preview (Ctrl-S save, Esc stop)"),
         ("files: R/x", "rename / delete selected file"),
         ("git: D", "delete branch (branches) / drop stash (stash)"),
     ]

@@ -9883,6 +9883,7 @@ mod tui_parity_e2e_tests {
     //! request/response shapes the TUI parsers expect.
     use super::*;
     use crate::lsp::LspRegistry;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use herdr_webui::tui_panels::{FileExplorer, GitFileStatus, GitPanel, GitView};
     use herdr_webui::tui_web_api::WebApiClient;
 
@@ -9977,9 +9978,10 @@ mod tui_parity_e2e_tests {
 
         // The TUI client is blocking; run it on the blocking pool so the
         // async server keeps making progress while it waits.
-        tokio::task::spawn_blocking(move || tui_round_trip_assertions(&api, &cwd))
+        let result = tokio::task::spawn_blocking(move || tui_round_trip_assertions(&api, &cwd))
             .await
             .unwrap();
+        result.unwrap_or_else(|err| panic!("tui round trip failed: {err}"));
         server.abort();
         let _ = std::fs::remove_dir_all(&repo);
     }
@@ -9987,7 +9989,7 @@ mod tui_parity_e2e_tests {
     fn tui_round_trip_assertions(api: &WebApiClient, cwd: &str) -> Result<(), String> {
         // FileExplorer: tree listing via the TUI parser.
         let mut explorer = FileExplorer::new(cwd);
-        explorer.refresh(&api).unwrap();
+        explorer.refresh(api).unwrap();
         let names: Vec<&str> = explorer.entries.iter().map(|e| e.name.as_str()).collect();
         assert!(
             names.contains(&"readme.md"),
@@ -10001,7 +10003,7 @@ mod tui_parity_e2e_tests {
 
         // FileExplorer: file preview.
         explorer.selected = names.iter().position(|n| *n == "readme.md").unwrap();
-        explorer.open_preview(&api).unwrap();
+        explorer.open_preview(api).unwrap();
         let preview = explorer.preview.clone();
         assert_eq!(preview.path.as_deref(), Some("readme.md"));
         assert!(preview.content.contains("world"));
@@ -10035,7 +10037,7 @@ mod tui_parity_e2e_tests {
             .iter()
             .position(|entry| entry.path == "readme.md")
             .unwrap();
-        panel.refresh_diff(&api).unwrap();
+        panel.refresh_diff(api).unwrap();
         assert!(
             panel
                 .diff_lines
@@ -10046,20 +10048,20 @@ mod tui_parity_e2e_tests {
         );
 
         // GitPanel: stage the modified file, then status shows it staged.
-        panel.stage_selected(&api).unwrap();
+        panel.stage_selected(api).unwrap();
         assert!(panel.files.iter().any(
             |entry| entry.path == "readme.md" && matches!(entry.status, GitFileStatus::Staged)
         ));
 
         // GitPanel: log shows the init commit.
         panel.view = GitView::Log;
-        panel.refresh_view(&api).unwrap();
+        panel.refresh_view(api).unwrap();
         assert_eq!(panel.commits.len(), 1);
         assert_eq!(panel.commits[0].message, "init");
 
         // GitPanel: branches list contains the current branch.
         panel.view = GitView::Branches;
-        panel.refresh_view(&api).unwrap();
+        panel.refresh_view(api).unwrap();
         assert!(
             panel.branches.iter().any(|b| b.current),
             "expected a current branch: {:?}",
@@ -10072,7 +10074,7 @@ mod tui_parity_e2e_tests {
 
         // WebApiClient: rename a file through the browser API.
         api.file_rename(cwd, "new_file.rs", "renamed.rs").unwrap();
-        explorer.refresh(&api).unwrap();
+        explorer.refresh(api).unwrap();
         let names: Vec<&str> = explorer.entries.iter().map(|e| e.name.as_str()).collect();
         assert!(
             names.contains(&"renamed.rs"),
@@ -10085,7 +10087,7 @@ mod tui_parity_e2e_tests {
 
         // WebApiClient: delete the renamed file.
         api.file_delete(cwd, "renamed.rs").unwrap();
-        explorer.refresh(&api).unwrap();
+        explorer.refresh(api).unwrap();
         let names: Vec<&str> = explorer.entries.iter().map(|e| e.name.as_str()).collect();
         assert!(
             !names.contains(&"renamed.rs"),
@@ -10102,7 +10104,7 @@ mod tui_parity_e2e_tests {
         api.git_switch(cwd, "tui-e2e-tmp", true).unwrap();
         api.git_switch(cwd, &default_branch, false).unwrap();
         panel.view = GitView::Branches;
-        panel.refresh_view(&api).unwrap();
+        panel.refresh_view(api).unwrap();
         assert!(
             panel.branches.iter().any(|b| b.name == "tui-e2e-tmp"),
             "temp branch missing: {:?}",
@@ -10113,8 +10115,8 @@ mod tui_parity_e2e_tests {
             .iter()
             .position(|b| b.name == "tui-e2e-tmp")
             .unwrap();
-        panel.delete_branch(&api, "tui-e2e-tmp", false).unwrap();
-        panel.refresh_view(&api).unwrap();
+        panel.delete_branch(api, "tui-e2e-tmp", false).unwrap();
+        panel.refresh_view(api).unwrap();
         assert!(
             !panel.branches.iter().any(|b| b.name == "tui-e2e-tmp"),
             "deleted branch still listed"
@@ -10124,10 +10126,10 @@ mod tui_parity_e2e_tests {
         // entry), then drop until the list is empty.
         api.git_stash(cwd).unwrap();
         panel.view = GitView::Stash;
-        panel.refresh_view(&api).unwrap();
+        panel.refresh_view(api).unwrap();
         assert_eq!(panel.stashes.len(), 1, "expected one stash entry");
-        panel.stash_apply(&api).unwrap();
-        panel.refresh_view(&api).unwrap();
+        panel.stash_apply(api).unwrap();
+        panel.refresh_view(api).unwrap();
         assert!(
             !panel.stashes.is_empty(),
             "apply is keep-by-default so the entry must remain",
@@ -10138,14 +10140,89 @@ mod tui_parity_e2e_tests {
         );
         // Re-stash the applied change: now two entries.
         api.git_stash(cwd).unwrap();
-        panel.refresh_view(&api).unwrap();
+        panel.refresh_view(api).unwrap();
         assert_eq!(panel.stashes.len(), 2, "expected two stash entries");
-        panel.stash_drop(&api).unwrap();
-        panel.refresh_view(&api).unwrap();
+        panel.stash_drop(api).unwrap();
+        panel.refresh_view(api).unwrap();
         assert_eq!(panel.stashes.len(), 1, "drop must remove exactly one entry");
-        panel.stash_drop(&api).unwrap();
-        panel.refresh_view(&api).unwrap();
+        panel.stash_drop(api).unwrap();
+        panel.refresh_view(api).unwrap();
         assert!(panel.stashes.is_empty(), "stash list not empty after drops");
+
+        // FileExplorer edit round trip: edit the file, save, re-read shows
+        // the new content and the preview hash advanced.
+        let mut editor = FileExplorer::new(cwd);
+        editor.refresh(api).unwrap();
+        let names: Vec<&str> = editor.entries.iter().map(|e| e.name.as_str()).collect();
+        editor.selected = names
+            .iter()
+            .position(|n| *n == "readme.md")
+            .expect("readme.md in tree");
+        editor.open_preview(api).unwrap();
+        let hash_before = editor.preview.hash.clone();
+        editor.start_edit().expect("start edit");
+        assert!(editor.edit_active);
+        // Type a line: newline plus text, then save with Ctrl-S.
+        editor
+            .edit_key(KeyEvent::new(KeyCode::Char('\n'), KeyModifiers::NONE), api)
+            .unwrap();
+        for ch in "edited by tui".chars() {
+            editor
+                .edit_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE), api)
+                .unwrap();
+        }
+        assert!(editor.preview.dirty, "typing must mark the preview dirty");
+        editor
+            .edit_key(
+                KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+                api,
+            )
+            .unwrap();
+        assert!(!editor.preview.dirty, "save must clear dirty");
+        assert!(editor.edit_active, "save keeps edit mode open");
+        // Esc exits edit mode; a clean exit must not be dirty.
+        editor
+            .edit_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), api)
+            .unwrap();
+        assert!(!editor.edit_active);
+        // Re-read the file from the server: content and hash changed.
+        editor.open_preview(api).unwrap();
+        assert_eq!(
+            editor.preview.path.as_deref(),
+            Some("readme.md"),
+            "preview path must survive the edit round trip"
+        );
+        assert!(
+            editor.preview.content.contains("edited by tui"),
+            "re-read content must contain the edit: {:?}",
+            editor.preview.content
+        );
+        assert_ne!(
+            editor.preview.hash, hash_before,
+            "hash must change after a save"
+        );
+
+        // Refusing guards: binary/truncated previews cannot start editing.
+        editor.preview.binary = true;
+        assert!(editor.start_edit().is_err());
+        editor.preview.binary = false;
+        editor.preview.truncated = true;
+        assert!(editor.start_edit().is_err());
+        editor.preview.truncated = false;
+
+        // Stale-hash save is rejected by the server (409).
+        editor.preview.hash = "0000000000000000000000000000000000000000".to_string();
+        editor.preview.content = "conflicting content\n".to_string();
+        editor.preview.dirty = true;
+        let save_err = editor.save_preview(api).unwrap_err();
+        assert!(
+            save_err.to_string().contains("409"),
+            "stale hash save must fail with the server 409, got {save_err}"
+        );
+        assert!(
+            save_err.to_string().contains("file changed on disk"),
+            "stale hash save must surface the server conflict message, got {save_err}"
+        );
 
         Ok(())
     }

@@ -475,7 +475,7 @@ fn git_branches_delete_blocked_for_current_branch_and_confirmed_for_others() {
 }
 
 #[test]
-fn git_stash_view_D_opens_drop_confirmation() {
+fn git_stash_view_d_opens_drop_confirmation() {
     use crate::tui_panels::GitStashEntry;
     let client = BackendClient::builtin_session(None);
     let mut app = TuiApp::new(client, Duration::from_secs(1));
@@ -493,4 +493,86 @@ fn git_stash_view_D_opens_drop_confirmation() {
     // Esc cancels.
     app.handle_key(KeyEvent::from(KeyCode::Esc));
     assert!(app.prompt_input.is_none());
+}
+
+#[test]
+fn files_screen_e_starts_edit_and_esc_stops_with_dirty_kept() {
+    let client = BackendClient::builtin_session(None);
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    app.screen = TuiScreen::Files;
+    app.file_explorer.preview = crate::tui_panels::FilePreview {
+        path: Some("notes.md".to_string()),
+        content: "line one".to_string(),
+        truncated: false,
+        binary: false,
+        hash: "h1".to_string(),
+        dirty: false,
+    };
+
+    // In-screen e enters edit mode on the open preview.
+    app.handle_key(KeyEvent::from(KeyCode::Char('e')));
+    assert!(app.file_explorer.edit_active);
+    assert_eq!(app.file_explorer.edit_cursor, "line one".len());
+
+    // While editing, a typed char goes into the buffer and marks it dirty.
+    app.handle_key(KeyEvent::from(KeyCode::Char('!')));
+    assert_eq!(app.file_explorer.preview.content, "line one!");
+    assert!(app.file_explorer.preview.dirty);
+
+    // Backspace removes the char but the buffer stays dirty.
+    app.handle_key(KeyEvent::from(KeyCode::Backspace));
+    assert_eq!(app.file_explorer.preview.content, "line one");
+
+    // Esc stops editing; the dirty flag survives so the title keeps the *.
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert!(!app.file_explorer.edit_active);
+    assert!(app.file_explorer.preview.dirty);
+
+    // Prefix then e re-enters edit mode from any panel screen.
+    let ctrl_b = KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL);
+    app.handle_key(ctrl_b);
+    app.handle_key(KeyEvent::from(KeyCode::Char('e')));
+    assert!(app.file_explorer.edit_active);
+    assert_eq!(
+        app.file_explorer.edit_cursor,
+        app.file_explorer.preview.content.len()
+    );
+
+    // While editing, j/k no longer move the tree selection: keys type.
+    app.handle_key(KeyEvent::from(KeyCode::Char('j')));
+    assert_eq!(app.file_explorer.preview.content, "line onej");
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+}
+
+#[test]
+fn prefix_e_from_git_edits_file_highlighted_in_changes() {
+    let client = BackendClient::builtin_session(None);
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    app.screen = TuiScreen::Git;
+    app.git_panel.view = GitView::Changes;
+    app.git_panel.files = vec![GitFileEntry {
+        path: "src/app.rs".to_string(),
+        status: GitFileStatus::Unstaged,
+    }];
+    app.git_panel.file_selected = 0;
+
+    // Prefix e switches to the Files screen and loads the selected file
+    // for editing; the file_read call fails against the dead loopback API,
+    // which proves the edit-from-git path is taken.
+    let ctrl_b = KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL);
+    app.handle_key(ctrl_b);
+    app.handle_key(KeyEvent::from(KeyCode::Char('e')));
+    assert!(app.error.is_some(), "edit from git must attempt file_read");
+}
+
+#[test]
+fn prefix_e_amend_moves_to_commit_modal_and_a_stays_amend() {
+    let client = BackendClient::builtin_session(None);
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    app.screen = TuiScreen::Git;
+    // In-screen a opens the amend modal (webui has no prefix amend
+    // shortcut; the checkbox lives in the commit modal).
+    app.handle_key(KeyEvent::from(KeyCode::Char('a')));
+    let modal = app.commit_input.as_ref().expect("amend modal open");
+    assert!(modal.amend);
 }

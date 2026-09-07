@@ -446,6 +446,66 @@ impl TuiApp {
                 });
                 self.status = "amend: type message, Enter amends".to_string();
             }
+            Shortcut::EditFile => {
+                // Webui parity: prefix then e edits the current file. On the
+                // Files screen that is the open preview; on Git it is the
+                // file selected in the Changes list.
+                if self.screen == TuiScreen::Files {
+                    match self.file_explorer.start_edit() {
+                        Ok(()) => self.status = "editing: Ctrl-S saves, Esc stops".to_string(),
+                        Err(err) => self.error = Some(err.to_string()),
+                    }
+                } else {
+                    self.open_git_screen();
+                    self.git_panel.view = GitView::Changes;
+                    let file = self
+                        .git_panel
+                        .selected_file()
+                        .map(|entry| entry.path.clone());
+                    let Some(file) = file else {
+                        self.error = Some("no file selected in git changes".to_string());
+                        return;
+                    };
+                    match self.web_api.file_read(&self.git_panel.cwd, &file) {
+                        Ok(data) => {
+                            let content = data.get("content").and_then(Value::as_str).unwrap_or("");
+                            let binary =
+                                data.get("binary").and_then(Value::as_bool).unwrap_or(false);
+                            let truncated = data
+                                .get("truncated")
+                                .and_then(Value::as_bool)
+                                .unwrap_or(false);
+                            if binary || truncated {
+                                self.error = Some("file cannot be edited".to_string());
+                                return;
+                            }
+                            self.screen = TuiScreen::Files;
+                            self.file_explorer.preview = crate::tui_panels::FilePreview {
+                                path: Some(file),
+                                content: content.to_string(),
+                                truncated,
+                                binary,
+                                hash: data
+                                    .get("hash")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or_default()
+                                    .to_string(),
+                                dirty: false,
+                            };
+                            // Editing from git still writes through the
+                            // explorer cwd: use the git panel cwd.
+                            self.file_explorer.cwd = self.git_panel.cwd.clone();
+                            match self.file_explorer.start_edit() {
+                                Ok(()) => {
+                                    self.status = "editing: Ctrl-S saves, Esc stops".to_string()
+                                }
+                                Err(err) => self.error = Some(err.to_string()),
+                            }
+                        }
+                        Err(err) => self.error = Some(err.to_string()),
+                    }
+                }
+            }
             Shortcut::GitLog => {
                 self.open_git_screen();
                 self.git_panel.view = GitView::Log;
@@ -620,6 +680,28 @@ impl TuiApp {
     }
 
     fn handle_files_key(&mut self, key: KeyEvent) {
+        // While editing, all keys type into the buffer; Esc exits edit mode.
+        if self.file_explorer.edit_active {
+            match self.file_explorer.edit_key(key, &self.web_api) {
+                Ok(()) => {
+                    if !self.file_explorer.edit_active {
+                        self.status = if self.file_explorer.preview.dirty {
+                            "edit mode left with unsaved changes".to_string()
+                        } else {
+                            "edit mode closed".to_string()
+                        };
+                    } else if key
+                        .modifiers
+                        .contains(crossterm::event::KeyModifiers::CONTROL)
+                        && key.code == KeyCode::Char('s')
+                    {
+                        self.status = "saved".to_string();
+                    }
+                }
+                Err(err) => self.error = Some(err.to_string()),
+            }
+            return;
+        }
         if self.file_explorer.filter_active {
             match key.code {
                 KeyCode::Enter => self.file_explorer.commit_filter(),
@@ -680,6 +762,10 @@ impl TuiApp {
                 }
             }
             KeyCode::Char('r') => self.refresh_active_screen(),
+            KeyCode::Char('e') => match self.file_explorer.start_edit() {
+                Ok(()) => self.status = "editing: Ctrl-S saves, Esc stops".to_string(),
+                Err(err) => self.error = Some(err.to_string()),
+            },
             KeyCode::Char('R') => {
                 // Rename the selected file: prefill the prompt with the
                 // current name so editing is incremental.

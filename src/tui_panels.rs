@@ -33,6 +33,13 @@ pub struct FileExplorer {
     pub selected: usize,
     pub scroll: u16,
     pub preview: FilePreview,
+    /// Editing mode: keys type into `preview.content` instead of moving
+    /// the tree selection.
+    pub edit_active: bool,
+    /// Cursor position in chars within `preview.content`.
+    pub edit_cursor: usize,
+    /// First rendered line while editing.
+    pub edit_scroll: usize,
     pub filter: String,
     pub filter_active: bool,
     pub search_mode: bool,
@@ -49,6 +56,9 @@ impl FileExplorer {
             selected: 0,
             scroll: 0,
             preview: FilePreview::default(),
+            edit_active: false,
+            edit_cursor: 0,
+            edit_scroll: 0,
             filter: String::new(),
             filter_active: false,
             search_mode: false,
@@ -179,8 +189,96 @@ impl FileExplorer {
         Ok(())
     }
 
+    /// Open the selected file for editing in the Files screen. Binary or
+    /// truncated previews refuse to edit, mirroring the WebUI editor guard.
+    pub fn can_edit_preview(&self) -> Result<(), WebApiError> {
+        if self.preview.binary {
+            return Err(WebApiError::Io("binary file cannot be edited".to_string()));
+        }
+        if self.preview.truncated {
+            return Err(WebApiError::Io(
+                "truncated file cannot be edited safely".to_string(),
+            ));
+        }
+        if self.preview.path.is_none() {
+            return Err(WebApiError::Io("no file preview open".to_string()));
+        }
+        Ok(())
+    }
+
+    /// Save the edited content back through the file-browser write API.
+    /// The `expected_hash` guard makes the server reject the save when the
+    /// file changed on disk since the preview loaded; on conflict the
+    /// caller should reload.
+    pub fn save_preview(&mut self, api: &WebApiClient) -> Result<(), WebApiError> {
+        let Some(path) = self.preview.path.clone() else {
+            return Err(WebApiError::Io("no file preview open".to_string()));
+        };
+        self.can_edit_preview()?;
+        let expected_hash = (!self.preview.hash.is_empty()).then_some(self.preview.hash.clone());
+        let data = api.file_write(
+            &self.cwd,
+            &path,
+            &self.preview.content,
+            expected_hash.as_deref(),
+        )?;
+        if let Some(hash) = data.get("hash").and_then(Value::as_str) {
+            self.preview.hash = hash.to_string();
+        }
+        self.preview.dirty = false;
+        Ok(())
+    }
+
     pub fn move_selection(&mut self, delta: isize) {
         self.selected = move_index(self.selected, self.entries.len(), delta);
+    }
+
+    /// Enter edit mode on the open preview after the safety checks.
+    pub fn start_edit(&mut self) -> Result<(), WebApiError> {
+        self.can_edit_preview()?;
+        self.edit_cursor = self.preview.content.len();
+        self.edit_scroll = 0;
+        self.edit_active = true;
+        Ok(())
+    }
+
+    /// Handle one key while editing. Returns Err only for save failures;
+    /// Ctrl-S saves, Esc stops editing (dirty state is kept). The cursor is
+    /// a byte offset into `preview.content`; char-boundary-safe helpers keep
+    /// multibyte UTF-8 intact.
+    pub fn edit_key(
+        &mut self,
+        key: crossterm::event::KeyEvent,
+        api: &WebApiClient,
+    ) -> Result<(), WebApiError> {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('s')) {
+            return self.save_preview(api);
+        }
+        match key.code {
+            KeyCode::Esc => {
+                self.edit_active = false;
+            }
+            KeyCode::Backspace => {
+                if let Some((index, _)) = self.preview.content[..self.edit_cursor]
+                    .char_indices()
+                    .next_back()
+                {
+                    self.preview
+                        .content
+                        .replace_range(index..self.edit_cursor, "");
+                    self.edit_cursor = index;
+                    self.preview.dirty = true;
+                }
+            }
+            KeyCode::Char(ch) => {
+                self.preview.content.insert(self.edit_cursor, ch);
+                self.edit_cursor += ch.len_utf8();
+                self.preview.dirty = true;
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     pub fn start_filter(&mut self) {
@@ -737,6 +835,91 @@ fn move_index(current: usize, len: usize, delta: isize) -> usize {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn edit_key(ch: char, ctrl: bool) -> crossterm::event::KeyEvent {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let modifiers = if ctrl {
+            KeyModifiers::CONTROL
+        } else {
+            KeyModifiers::NONE
+        };
+        crossterm::event::KeyEvent::new(KeyCode::Char(ch), modifiers)
+    }
+
+    #[test]
+    fn edit_key_types_and_backspaces_utf8_safe() {
+        let api = WebApiClient::new("127.0.0.1", 1);
+        let mut explorer = FileExplorer::new("/repo");
+        explorer.preview = FilePreview {
+            path: Some("a.txt".to_string()),
+            content: "ab".to_string(),
+            truncated: false,
+            binary: false,
+            hash: "h1".to_string(),
+            dirty: false,
+        };
+        explorer.start_edit().unwrap();
+        assert_eq!(explorer.edit_cursor, 2);
+        // Insert a multibyte char: the cursor advances by its UTF-8 length.
+        explorer.edit_key(edit_key('ñ', false), &api).unwrap();
+        assert!(explorer.preview.dirty);
+        assert_eq!(explorer.preview.content, "abñ");
+        assert_eq!(explorer.edit_cursor, "abñ".len());
+        // Backspace removes one full multibyte char, not one byte.
+        explorer
+            .edit_key(
+                crossterm::event::KeyEvent::new(
+                    crossterm::event::KeyCode::Backspace,
+                    crossterm::event::KeyModifiers::NONE,
+                ),
+                &api,
+            )
+            .unwrap();
+        assert_eq!(explorer.preview.content, "ab");
+        assert_eq!(explorer.edit_cursor, 2);
+        // Newline chars are content too (the TUI types them as chars).
+        explorer.edit_key(edit_key('\n', false), &api).unwrap();
+        assert_eq!(explorer.preview.content, "ab\n");
+        assert_eq!(explorer.edit_cursor, 3);
+    }
+
+    #[test]
+    fn edit_key_esc_stops_and_guards_refuse_unsafe_previews() {
+        let api = WebApiClient::new("127.0.0.1", 1);
+        let mut explorer = FileExplorer::new("/repo");
+        explorer.preview = FilePreview {
+            path: Some("a.txt".to_string()),
+            content: "text".to_string(),
+            truncated: false,
+            binary: false,
+            hash: "h1".to_string(),
+            dirty: false,
+        };
+        explorer.start_edit().unwrap();
+        explorer.edit_key(edit_key('x', false), &api).unwrap();
+        explorer
+            .edit_key(
+                crossterm::event::KeyEvent::new(
+                    crossterm::event::KeyCode::Esc,
+                    crossterm::event::KeyModifiers::NONE,
+                ),
+                &api,
+            )
+            .unwrap();
+        assert!(!explorer.edit_active);
+        assert!(explorer.preview.dirty, "Esc keeps unsaved changes");
+        assert_eq!(explorer.preview.content, "textx");
+
+        // Binary and truncated previews refuse to enter edit mode.
+        explorer.preview.binary = true;
+        assert!(explorer.start_edit().is_err());
+        explorer.preview.binary = false;
+        explorer.preview.truncated = true;
+        assert!(explorer.start_edit().is_err());
+        explorer.preview.truncated = false;
+        explorer.start_edit().unwrap();
+        assert!(explorer.edit_active);
+    }
 
     #[test]
     fn file_entries_parse_tree_payload() {
