@@ -1524,35 +1524,11 @@
     return "";
   }
 
-  function aheadBehindHint(s) {
-    const ahead = Number(s.ahead) || 0;
-    const behind = Number(s.behind) || 0;
-    const upstream = String(s.upstream || "").trim();
-    if (!upstream) return "";
-    const parts = [];
-    if (ahead > 0) parts.push(`ahead ${ahead} (local has commits not on ${upstream})`);
-    if (behind > 0) parts.push(`behind ${behind} (${upstream} has commits not on local)`);
-    if (!parts.length) parts.push(`in sync with ${upstream}`);
-    return parts.join(" · ");
-  }
-
-  function renderAheadBehind(s, esc) {
-    const upstream = String(s.upstream || "").trim();
-    if (!upstream) return "";
-    const ahead = Number(s.ahead) || 0;
-    const behind = Number(s.behind) || 0;
-    const title = aheadBehindHint(s);
-    const badges = [];
-    if (ahead > 0) badges.push(`<span class="git-ui-ahead-behind ahead" title="${esc(title)}">↑${esc(String(ahead))}</span>`);
-    if (behind > 0) badges.push(`<span class="git-ui-ahead-behind behind" title="${esc(title)}">↓${esc(String(behind))}</span>`);
-    if (!badges.length) badges.push(`<span class="git-ui-ahead-behind synced" title="${esc(title)}">✓</span>`);
-    return `<span class="git-ui-ahead-behind-group" title="${esc(title)}">${badges.join("")}</span>`;
-  }
-
-  // ── Worktree actions row (GitHub-flow header rework) ─────────────────
-  // Branch chip lives here, right-justified: name (opens the branch list),
-  // sync arrows with counts when diverged, Fetch when in sync, and a
-  // pull/fetch dropdown triangle.
+  // ── Worktree actions row (Zed-style selector rework) ─────────────────
+  // Branch chip left-justified next to Commit: just the name (opens the
+  // branch list popover). Status split button right-justified: Pull ↓N
+  // when behind, Push ↑N when ahead, plain Fetch when in sync; the ▾
+  // triangle opens the git-flow menu.
   function renderWorktreeActions(ctx) {
     const s = ctx.s || {};
     const esc = ctx.esc;
@@ -1561,31 +1537,44 @@
     const branch = String(s.branch || "");
     const ahead = Number(s.ahead) || 0;
     const behind = Number(s.behind) || 0;
-    const diverged = ahead > 0 || behind > 0;
     const upstream = String(s.upstream || "").trim();
-    const syncBadge = upstream
-      ? diverged
-        ? `${behind > 0 ? `<b class="git-ui-chip-count behind" title="${esc(aheadBehindHint(s))}">↓${behind}</b>` : ""}${ahead > 0 ? `<b class="git-ui-chip-count ahead" title="${esc(aheadBehindHint(s))}">↑${ahead}</b>` : ""}`
-        : `<b class="git-ui-chip-count synced" title="In sync with ${esc(upstream)}">✓</b>`
-      : "";
     const chip = branch
-      ? `<button class="git-ui-branch-chip" title="${esc(titleWithGitShortcut("Switch branch", "branch"))}" onclick="HerdrGitUi.openBranchList(event)"><span class="git-ui-branch-chip-name">${esc(branch)}</span>${syncBadge}<b class="git-ui-chip-caret">▾</b></button>`
+      ? `<button class="git-ui-branch-chip" title="${esc(titleWithGitShortcut("Switch branch", "branch"))}" onclick="HerdrGitUi.openBranchList(event)"><span class="git-ui-branch-chip-name">${esc(branch)}</span><b class="git-ui-chip-caret">▾</b></button>`
       : "";
-    return `<div class="git-ui-toolbar git-ui-worktree-row"><div class="git-ui-actions git-ui-worktree-left"><button class="git-ui-btn primary" title="${esc(commitHint)}" onclick="HerdrGitUi.openCommitModal()"${commitDisabled}>Commit</button><button class="git-ui-btn" title="Fetch and fast-forward from the upstream (never creates a merge commit)" onclick="HerdrGitUi.updateFromUpstream()">↓ Update</button><button class="git-ui-btn git-ui-split" title="Pull, fetch and push options" aria-haspopup="menu" aria-expanded="${state.headerMenu ? "true" : "false"}" onclick="HerdrGitUi.toggleHeaderMenu(event)"><span>↓ Pull</span><b class="git-ui-chip-caret">▾</b></button><button class="git-ui-btn" onclick="HerdrGitUi.rebase()">Rebase</button><button class="git-ui-btn danger" onclick="HerdrGitUi.reset()">Reset</button></div><div class="git-ui-worktree-right">${chip}</div></div>`;
+    // Status label mirrors the sync state: incoming → Pull ↓N, outgoing →
+    // Push ↑N, otherwise plain Fetch with no arrows or counts.
+    let statusMethod = "fetchOrigin";
+    let statusLabel = "Fetch";
+    let statusHint = "git fetch origin";
+    if (upstream && behind > 0) {
+      statusMethod = "pullUpdateFromUpstream";
+      statusLabel = `Pull ↓${behind}`;
+      statusHint = "Fetch and fast-forward from the upstream (never creates a merge commit)";
+    } else if (upstream && ahead > 0) {
+      statusMethod = "pushNow";
+      statusLabel = `Push ↑${ahead}`;
+      statusHint = "Push local commits to the upstream";
+    }
+    const menuOpen = state.headerMenu ? "true" : "false";
+    const statusButton = `<button class="git-ui-btn git-ui-status-label" data-method="${esc(statusMethod)}" title="${esc(statusHint)}" onclick="HerdrGitUi.runStatusAction()">${esc(statusLabel)}</button>`;
+    const statusCaret = `<button class="git-ui-btn git-ui-status-caret" title="Pull, fetch and push options" aria-haspopup="menu" aria-expanded="${menuOpen}" onclick="HerdrGitUi.toggleHeaderMenu(event)"><b class="git-ui-chip-caret">▾</b></button>`;
+    return `<div class="git-ui-toolbar git-ui-worktree-row"><div class="git-ui-actions git-ui-worktree-left"><button class="git-ui-btn primary" title="${esc(commitHint)}" onclick="HerdrGitUi.openCommitModal()"${commitDisabled}>Commit</button>${chip}</div><div class="git-ui-actions git-ui-worktree-right">${statusButton}${statusCaret}</div></div>`;
   }
 
-  // Dropdown next to Pull: Fetch / Fetch from / Pull / Pull (Rebase) /
-  // Push / Push to / Force Push.
+  // Dropdown next to the status button, exactly seven items: Fetch /
+  // Fetch From / Pull / Pull (rebase) / Push / Push to / Force push.
   function renderHeaderMenu() {
     const menu = state.headerMenu;
     if (!menu) return "";
     const item = (label, method, hint) => `<button onclick="HerdrGitUi.${method}()">${esc(label)}${hint ? `<span class="git-ui-menu-hint">${esc(hint)}</span>` : ""}</button>`;
-    return `<div class="git-ui-menu git-ui-header-menu" style="left:${Math.max(0, menu.x)}px;top:${Math.max(0, menu.y)}px" onclick="event.stopPropagation()">${item("Fetch", "fetchOrigin", "git fetch origin")}${item("Fetch from…", "openFetchFromModal", "choose a branch")}${item("Pull", "openPullModal", "opens pull options")}${item("Pull (Rebase)", "pullWithRebase", "git pull --rebase")}${item("Push", "openPushModal", "opens push options")}${item("Push to…", "openPushToModal", "choose a branch")}${item("Force Push", "openForcePushModal", "force-with-lease first")}</div>`;
+    return `<div class="git-ui-menu git-ui-header-menu" style="left:${Math.max(0, menu.x)}px;top:${Math.max(0, menu.y)}px" onclick="event.stopPropagation()">${item("Fetch", "fetchOrigin", "git fetch origin")}${item("Fetch From", "openFetchFromModal", "choose a branch")}${item("Pull", "openPullModal", "opens pull options")}${item("Pull (rebase)", "pullWithRebase", "git pull --rebase")}${item("Push", "openPushModal", "opens push options")}${item("Push to", "openPushToModal", "choose a branch")}${item("Force push", "openForcePushModal", "force-with-lease first")}</div>`;
   }
 
-  // Branch list popover: opens from the branch chip. Local section first,
-  // then remote; filterable. Each row: branch name, author · relative time;
-  // hover shows the exact time and commit subject.
+  // Branch list popover: opens from the branch chip. Local section first
+  // (current branch pinned at the top with a ✓), then remote; filterable
+  // from the bottom. Each row is two lines: branch name, then author +
+  // relative time; hover reveals a trash icon on the right to delete the
+  // branch, and the row title carries the exact time and commit subject.
   function branchRelativeTime(isoDate) {
     const then = Date.parse(String(isoDate || ""));
     if (!then || Number.isNaN(then)) return "";
@@ -1611,10 +1600,21 @@
     const subject = String(branch.subject || "");
     const exact = date ? new Date(date).toLocaleString() : "";
     const hover = [author && `${author}`, exact, subject && `"${subject}"`].filter(Boolean).join(" · ");
-    return `<button class="git-ui-branch-row${isCurrent ? " current" : ""}" title="${esc(hover)}" onclick="HerdrGitUi.switchFromBranchList(\'${arg(name)}\',${branch.remote ? "true" : "false"})">
-      <span class="git-ui-branch-row-name">${esc(name)}${isCurrent ? " <b>●</b>" : ""}${branch.remote ? `<i class="git-ui-branch-row-remote">remote</i>` : ""}</span>
-      <span class="git-ui-branch-row-meta">${esc(author)}${author && branchRelativeTime(date) ? " · " : ""}${esc(branchRelativeTime(date))}</span>
-    </button>`;
+    // Two lines: name line (✓ for the current branch, branch icon
+    // otherwise) and a meta line with author + relative time. The trash
+    // icon only appears on hover; it stops propagation so the row click
+    // (switch) does not fire.
+    const icon = isCurrent ? `<b class="git-ui-branch-row-check" title="Current branch">✓</b>` : `<b class="git-ui-branch-row-icon" aria-hidden="true"></b>`;
+    const meta = [author, branchRelativeTime(date)].filter(Boolean).join(" · ");
+    const trash = isCurrent
+      ? "" // deleting the checked-out branch from the list makes no sense
+      : `<button class="git-ui-branch-row-trash" title="Delete branch" aria-label="Delete branch ${esc(name)}" onclick="event.stopPropagation();HerdrGitUi.deleteFromBranchList(\'${arg(name)}\',${branch.remote ? "true" : "false"})"><span></span></button>`;
+    return `<div class="git-ui-branch-row${isCurrent ? " current" : ""}" title="${esc(hover)}">
+      <button class="git-ui-branch-row-main" onclick="HerdrGitUi.switchFromBranchList(\'${arg(name)}\',${branch.remote ? "true" : "false"})">
+        <span class="git-ui-branch-row-name">${icon}<span class="git-ui-branch-row-name-text">${esc(name)}</span>${branch.remote ? `<i class="git-ui-branch-row-remote">remote</i>` : ""}</span>
+        <span class="git-ui-branch-row-meta">${esc(meta)}</span>
+      </button>${trash}
+    </div>`;
   }
 
   function renderBranchList() {
@@ -1625,11 +1625,16 @@
     const filter = String(list.filter || "").toLowerCase();
     const currentBranch = String(list.currentBranch || "");
     const matches = (branch) => !filter || String(branch.name || "").toLowerCase().includes(filter);
-    const local = (list.local || []).filter(matches);
+    // Current branch stays pinned at the top of the local section.
+    const localAll = (list.local || []).filter(matches);
+    const currentRows = localAll.filter((branch) => !branch.remote && branch.name === currentBranch);
+    const local = currentRows.concat(localAll.filter((branch) => !currentRows.includes(branch)));
     const remote = (list.remote || []).filter(matches);
     const rows = (branches, label) => !branches.length ? "" : `<div class="git-ui-branch-list-section">${label}</div>${branches.map((branch) => branchListRow(branch, currentBranch)).join("")}`;
     const empty = !local.length && !remote.length ? `<div class="git-ui-muted git-ui-branch-list-empty">No branches match</div>` : "";
-    return `<div class="git-ui-branch-list" onclick="event.stopPropagation()"><label class="git-ui-branch-list-filter"><span>Filter</span><input value="${esc(list.filter || "")}" placeholder="Type to filter" oninput="HerdrGitUi.branchListFilter(this.value)"></label>${rows(local, "Local branches")}${rows(remote, "Remote branches")}${empty}</div>`;
+    // Filter input lives at the bottom, below the scrollable rows, so the
+    // list reads top-down like Zed's branch popover.
+    return `<div class="git-ui-branch-list" onclick="event.stopPropagation()"><div class="git-ui-branch-list-scroll">${rows(local, "Local branches")}${rows(remote, "Remote branches")}${empty}</div><label class="git-ui-branch-list-filter"><span>Filter</span><input value="${esc(list.filter || "")}" placeholder="Type to filter" oninput="HerdrGitUi.branchListFilter(this.value)"></label></div>`;
   }
 
   function renderSide() {
@@ -3583,10 +3588,28 @@
       render();
     },
     openPullModal() { this.openGitOpModal("pull"); },
-    async updateFromUpstream() {
+    // Status button actions: Pull (fetch + ff-only) when behind, Push when
+    // ahead, plain Fetch otherwise. Chosen from status state at click time.
+    async pullUpdateFromUpstream() {
       const view = active();
       if (!view || view.mutating) return;
       await postJson("/api/git-ui/pull", { cwd: view.cwd, mode: "update" }, "Updating from upstream");
+    },
+    async pushNow() {
+      const view = active();
+      if (!view || view.mutating) return;
+      await postJson("/api/git-ui/push", { cwd: view.cwd, mode: "regular", push_tags: false }, "Pushing");
+    },
+    async runStatusAction() {
+      const view = active();
+      if (!view || view.mutating) return;
+      const s = view.status || {};
+      const ahead = Number(s.ahead) || 0;
+      const behind = Number(s.behind) || 0;
+      const upstream = String(s.upstream || "").trim();
+      if (upstream && behind > 0) return this.pullUpdateFromUpstream();
+      if (upstream && ahead > 0) return this.pushNow();
+      return this.fetchOrigin();
     },
     openPushModal() { this.openGitOpModal("push"); },
     closeGitOpModal() { state.gitOpModal = null; render(); },
@@ -3715,6 +3738,40 @@
       const currentBranch = ((view.status || {}).branch) || "";
       if (localName === currentBranch) return;
       await postJson("/api/git-ui/switch", { cwd: view.cwd, branch: localName }, `Switching to ${name}`);
+    },
+    // Trash icon in a branch-list row: deletes the branch through the same
+    // endpoint the cleanup view uses. Remote rows and the current branch
+    // are refused (the backend also refuses the checked-out branch).
+    async deleteFromBranchList(encodedName, isRemote) {
+      const name = decodeURIComponent(String(encodedName || ""));
+      const view = active();
+      if (!view || !name) return;
+      if (isRemote) {
+        if (state.branchList) {
+          state.branchList.error = "Deleting remote branches is not supported here";
+          render();
+        }
+        return;
+      }
+      const currentBranch = String(((view.status || {}).branch) || "");
+      if (name === currentBranch) return;
+      if (!window.confirm(`Delete branch "${name}"?`)) return;
+      const filter = String((state.branchList && state.branchList.filter) || "");
+      state.branchList = { loading: true, error: "", local: [], remote: [], filter, currentBranch };
+      render();
+      try {
+        await api("/api/git-ui/branch-delete", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ cwd: view.cwd, branch: name, force: false, confirmed: true }),
+        });
+        const data = await api(`/api/git-ui/branches?cwd=${encodeURIComponent(view.cwd)}`);
+        state.branchList = { loading: false, error: "", local: data.local || [], remote: data.remote || [], filter, currentBranch };
+      } catch (err) {
+        state.branchList = { loading: false, error: err.message || String(err), local: [], remote: [], filter, currentBranch };
+      }
+      render();
+      await refresh();
     },
     toggleHeaderMenu(event) {
       if (event && event.stopPropagation) event.stopPropagation();

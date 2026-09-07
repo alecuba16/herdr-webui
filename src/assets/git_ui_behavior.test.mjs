@@ -362,56 +362,72 @@ test("folder mutations are hidden and refused outside the changes view", async (
   assert.equal(staged.length, 0, "no stage POST may fire outside changes mode");
 });
 
-test("Update button fetch+ff from upstream and Pull modal default to update mode (GitHub flow)", async () => {
-  const booted = await openedWithStatus(emptyStatus());
-  const { ui, calls } = booted;
+test("status button labels Pull/Push/Fetch from sync state and runs the matching action", async () => {
+  // In sync: plain Fetch, no arrows or counts.
+  const synced = await openedWithStatus({ branch: "main", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [], upstream: "origin/main" });
+  let html = String(ctxHtml(synced));
+  assert.match(html, /git-ui-status-label" data-method="fetchOrigin"[^>]*title="git fetch origin"[^>]*>Fetch</);
+  assert.ok(!/Pull ↓|Push ↑/.test(html), "synced status shows no arrows");
+  assert.ok(!html.includes("updateFromUpstream"), "old Update button is gone");
+  assert.ok(!html.includes("git-ui-split"), "old split button is gone");
+  assert.ok(!/HerdrGitUi\.rebase\(\)">Rebase</.test(html), "old Rebase button is gone");
+  assert.ok(!/HerdrGitUi\.reset\(\)">Reset</.test(html), "old Reset button is gone");
 
-  // The worktree toolbar exposes the dedicated Update button.
-  const html = String(ctxHtml(booted));
-  assert.match(html, /onclick="HerdrGitUi.updateFromUpstream\(\)">↓ Update<\/button>/);
-  assert.match(html, /title="Fetch and fast-forward from the upstream \(never creates a merge commit\)"/);
+  const before = synced.calls.length;
+  await synced.ui.runStatusAction();
+  const fetchPosts = synced.calls.slice(before).filter((call) => call.path === "/api/git-ui/fetch");
+  assert.equal(fetchPosts.length, 1, "synced status runs fetch");
+  assert.equal(JSON.parse(fetchPosts[0].init.body).cwd, "/tmp/demo-repo");
 
-  // Update posts mode=update with no branch (ff-only @{u}).
-  const before = calls.length;
-  await ui.updateFromUpstream();
-  const updateCall = lastPostCall(calls.slice(before), "/api/git-ui/pull") || lastPostCall(calls.slice(before).map(c => c), "/api/git-ui/pull");
-  const updatePosts = calls.slice(before).filter((call) => call.path === "/api/git-ui/pull");
-  assert.equal(updatePosts.length, 1, "exactly one pull POST fired");
-  assert.equal(JSON.parse(updatePosts[0].init.body).mode, "update");
-  assert.equal(JSON.parse(updatePosts[0].init.body).branch, undefined);
+  // Behind: Pull ↓N posts mode=update (fetch + ff-only, no branch).
+  const behind = await openedWithStatus({ branch: "main", ahead: 0, behind: 3, staged: [], unstaged: [], untracked: [], conflicted: [], upstream: "origin/main" });
+  html = String(ctxHtml(behind));
+  assert.match(html, /git-ui-status-label" data-method="pullUpdateFromUpstream"[^>]*>Pull ↓3</);
+  const beforePull = behind.calls.length;
+  await behind.ui.pullUpdateFromUpstream();
+  const pullPosts = behind.calls.slice(beforePull).filter((call) => call.path === "/api/git-ui/pull");
+  assert.equal(pullPosts.length, 1, "exactly one pull POST fired");
+  assert.equal(JSON.parse(pullPosts[0].init.body).mode, "update");
+  assert.equal(JSON.parse(pullPosts[0].init.body).branch, undefined);
 
-  // Pull modal offers Update as the default mode and Rebase fetches main/master.
-  await ui.openPullModal();
+  // Ahead: Push ↑N posts a regular push.
+  const ahead = await openedWithStatus({ branch: "main", ahead: 2, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [], upstream: "origin/main" });
+  html = String(ctxHtml(ahead));
+  assert.match(html, /git-ui-status-label" data-method="pushNow"[^>]*>Push ↑2</);
+  const beforePush = ahead.calls.length;
+  await ahead.ui.pushNow();
+  const pushPosts = ahead.calls.slice(beforePush).filter((call) => call.path === "/api/git-ui/push");
+  assert.equal(pushPosts.length, 1, "push POST fired");
+  assert.equal(JSON.parse(pushPosts[0].init.body).mode, "regular");
+
+  // Pull modal still offers Update as the default mode.
+  await ahead.ui.openPullModal();
   await new Promise((resolve) => setTimeout(resolve, 0));
-  const pullHtml = String(ctxHtml(booted));
+  const pullHtml = String(ctxHtml(ahead));
   assert.match(pullHtml, /<option value="update" selected>Update \(fetch \+ fast-forward\)<\/option>/);
-
-  await ui.closeGitOpModal();
-  await ui.rebase();
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  const rebaseHtml = String(ctxHtml(booted));
-  assert.match(rebaseHtml, /id="gitUiRebasePullFirst" type="checkbox" checked/);
-  assert.match(rebaseHtml, /Fetch selected branch \(and main\/master\) before rebasing onto origin/);
-  await ui.closeGitOpModal();
+  await ahead.ui.closeGitOpModal();
 });
 
-test("header menu dropdown offers fetch, pull and push variants", async () => {
+test("header menu dropdown offers exactly the seven git-flow actions", async () => {
   const booted = await openedWithStatus(emptyStatus());
   const { ui, calls } = booted;
 
-  const chipEvent = { stopPropagation() {}, currentTarget: null, clientX: 0, clientY: 0 };
-  await ui.openBranchList(chipEvent); // opens then closes (toggle) — leave closed
+  // Old Update/split toolbar buttons no longer exist.
+  let html = String(ctxHtml(booted));
+  assert.ok(!html.includes("git-ui-header-menu"), "menu closed initially");
+
   const toggleEvent = { stopPropagation() {}, currentTarget: { getBoundingClientRect: () => ({ left: 40, bottom: 60 }) }, clientX: 40, clientY: 60 };
   ui.toggleHeaderMenu(toggleEvent);
-  let html = String(ctxHtml(booted));
+  html = String(ctxHtml(booted));
   assert.match(html, /class="git-ui-menu git-ui-header-menu"/);
-  assert.match(html, /HerdrGitUi\.fetchOrigin\(\)/);
-  assert.match(html, /HerdrGitUi\.openFetchFromModal\(\)/);
-  assert.match(html, /HerdrGitUi\.openPullModal\(\)/);
-  assert.match(html, /HerdrGitUi\.pullWithRebase\(\)/);
-  assert.match(html, /HerdrGitUi\.openPushModal\(\)/);
-  assert.match(html, /HerdrGitUi\.openPushToModal\(\)/);
-  assert.match(html, /HerdrGitUi\.openForcePushModal\(\)/);
+  const items = (html.match(/git-ui-header-menu" style[^>]*>.*?<\/div>/s) || [""])[0]
+    .split(/<button onclick="HerdrGitUi\./).slice(1)
+    .map((chunk) => (chunk.match(/^([a-zA-Z]+)\(\)/) || [])[1]);
+  assert.deepEqual(items, ["fetchOrigin", "openFetchFromModal", "openPullModal", "pullWithRebase", "openPushModal", "openPushToModal", "openForcePushModal"], "exactly seven menu items in Zed order");
+  const labels = (html.match(/git-ui-header-menu" style[^>]*>.*?<\/div>/s) || [""])[0]
+    .match(/<button onclick="[^"]*">[^<]+/g)
+    .map((chunk) => chunk.replace(/^<button onclick="[^"]*">/, ""));
+  assert.deepEqual(labels, ["Fetch", "Fetch From", "Pull", "Pull (rebase)", "Push", "Push to", "Force push"], "menu labels match the Zed wording");
 
   // Fetch from the menu posts to the fetch endpoint.
   const before = calls.length;
@@ -421,7 +437,7 @@ test("header menu dropdown offers fetch, pull and push variants", async () => {
   assert.equal(JSON.parse(fetchPosts[0].init.body).cwd, "/tmp/demo-repo");
   assert.equal(JSON.parse(fetchPosts[0].init.body).branch, undefined);
 
-  // Pull (Rebase) posts mode=rebase.
+  // Pull (rebase) posts mode=rebase.
   ui.toggleHeaderMenu(toggleEvent); // reopen
   const beforeRebase = calls.length;
   await ui.pullWithRebase();
@@ -432,7 +448,7 @@ test("header menu dropdown offers fetch, pull and push variants", async () => {
   assert.ok(!menuHtml.includes("git-ui-header-menu"), "menu closes after action");
 });
 
-test("branch chip shows sync arrows when diverged and opens the branch list", async () => {
+test("branch chip shows the branch and the status button shows sync arrows when diverged", async () => {
   const booted = await bootGitUi({
     "/api/git-ui/status": { branch: "feature-x", ahead: 2, behind: 3, staged: [], unstaged: [], untracked: [], conflicted: [], upstream: "origin/feature-x" },
     "/api/git-ui/diff": { files: [] },
@@ -445,8 +461,9 @@ test("branch chip shows sync arrows when diverged and opens the branch list", as
 
   let html = String(ctxHtml(booted));
   assert.match(html, /git-ui-branch-chip/);
-  assert.match(html, /<b class="git-ui-chip-count behind"[^>]*>↓3<\/b>/);
-  assert.match(html, /<b class="git-ui-chip-count ahead"[^>]*>↑2<\/b>/);
+  assert.match(html, /<span class="git-ui-branch-chip-name">feature-x<\/span>/);
+  // Incoming wins: Pull ↓3 on the status button (behind takes priority).
+  assert.match(html, /data-method="pullUpdateFromUpstream"[^>]*>Pull ↓3</);
 
   const chipEvent = { stopPropagation() {}, currentTarget: null, clientX: 0, clientY: 0 };
   await ui.openBranchList(chipEvent);
@@ -455,16 +472,28 @@ test("branch chip shows sync arrows when diverged and opens the branch list", as
   assert.match(html, /git-ui-branch-list"/);
   assert.match(html, /Local branches/);
   assert.match(html, /Remote branches/);
-  assert.match(html, /Switching to feature-x|Ada · /);
-  // Rows carry author + relative time and a hover title with details.
+  // Two-line rows: name line and author · relative time meta line; hover
+  // title carries the commit subject and details.
   assert.match(html, /title="[^"]*Ada[^"]*"/);
+  assert.match(html, /git-ui-branch-row-meta">[^<]*Ada[^<]*<\/span>/);
+  // Current branch pinned first with a ✓ check; other rows show the branch icon.
+  assert.match(html, /✓<\/b><span class="git-ui-branch-row-name-text">feature-x<\/span>/, "current branch row carries the ✓ check");
+  const localSection = html.indexOf("Local branches");
+  const firstRowAfterSection = html.slice(localSection).indexOf("git-ui-branch-row");
+  const firstRow = html.slice(localSection + firstRowAfterSection, localSection + firstRowAfterSection + 400);
+  assert.ok(localSection === -1 || firstRow.includes("feature-x"), "current branch row is pinned at the top of the local section");
+  assert.match(html, /git-ui-branch-row-icon/);
+  // Trash icon is wired for non-current rows.
+  assert.match(html, /deleteFromBranchList/);
+  // Filter lives below the scrollable rows.
+  assert.ok(html.indexOf("git-ui-branch-list-scroll") < html.indexOf("git-ui-branch-list-filter"), "filter sits at the bottom");
 
   // Filter narrows the visible rows: in the vm the DOM stub cannot swap
   // nodes, so assert the renderer honors the filter by re-rendering.
   ui.branchListFilter("main");
   html = String(ctxHtml(booted));
   assert.ok(html.includes("main"), "matching branch stays visible");
-  const renderedNames = (html.match(/git-ui-branch-row-name">[^<]*/g) || []).join(" ");
+  const renderedNames = (html.match(/git-ui-branch-row-name">.*?<\/span>/g) || []).join(" ");
   assert.ok(!renderedNames.includes("feature-x"), "filtered rows hide non-matching branch");
 
   // Switching to another local branch posts to /switch with the bare name.
@@ -477,7 +506,7 @@ test("branch chip shows sync arrows when diverged and opens the branch list", as
   assert.ok(!String(ctxHtml(booted)).includes("git-ui-branch-list"), "list closes after switch");
 });
 
-test("branch chip shows a synced check when in sync with upstream", async () => {
+test("status button shows plain Fetch and the chip no check when in sync with upstream", async () => {
   const booted = await bootGitUi({
     "/api/git-ui/status": { branch: "main", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [], upstream: "origin/main" },
     "/api/git-ui/diff": { files: [] },
@@ -486,5 +515,53 @@ test("branch chip shows a synced check when in sync with upstream", async () => 
   });
   await booted.ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
   const html = String(ctxHtml(booted));
-  assert.match(html, /<b class="git-ui-chip-count synced" title="In sync with origin\/main">✓<\/b>/);
+  assert.match(html, /git-ui-status-label" data-method="fetchOrigin"[^>]*title="git fetch origin"[^>]*>Fetch</);
+  assert.ok(!/chip-count/.test(html), "sync badges moved off the chip");
+});
+
+test("branch list trash deletes a local branch and refreshes the list", async () => {
+  const branches = { local: [{ name: "main", author: "Ada", date: "2026-01-02T03:04:05Z", subject: "initial" }, { name: "wip", author: "Bob", date: "2026-01-03T03:04:05Z", subject: "wip" }], remote: [] };
+  const booted = await bootGitUi({
+    "/api/git-ui/status": { branch: "main", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [], upstream: "origin/main" },
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+    "/api/git-ui/branches": () => ({ local: branches.local, remote: branches.remote }),
+    // Deleting really drops the branch, so the list reload loses the row.
+    "/api/git-ui/branch-delete": () => {
+      branches.local = branches.local.filter((branch) => branch.name !== "wip");
+      return { ok: true, message: "" };
+    },
+  });
+  const { ui, calls } = booted;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+
+  // Current branch rows show no trash icon.
+  await ui.openBranchList({ stopPropagation() {}, currentTarget: null, clientX: 0, clientY: 0 });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  let html = String(ctxHtml(booted));
+  assert.match(html, /aria-label="Delete branch wip"/);
+  const mainRow = (html.match(/git-ui-branch-row current[\s\S]*?<\/div>/) || [""])[0];
+  assert.ok(!mainRow.includes("branch-row-trash"), "current branch row has no trash icon");
+
+  // Deleting refuses the current branch and remote rows without posting.
+  const before = calls.length;
+  await ui.deleteFromBranchList(encodeURIComponent("main"), false);
+  await ui.deleteFromBranchList(encodeURIComponent("origin/main"), true);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(calls.slice(before).filter((call) => call.path === "/api/git-ui/branch-delete").length, 0, "no delete POST for current or remote branch");
+
+  // Deleting a local branch posts to the endpoint, then reloads the list.
+  const deleteIndex = calls.length;
+  await ui.deleteFromBranchList(encodeURIComponent("wip"), false);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const deletePosts = calls.slice(deleteIndex).filter((call) => call.path === "/api/git-ui/branch-delete");
+  assert.equal(deletePosts.length, 1, "one branch-delete POST fired");
+  const body = JSON.parse(deletePosts[0].init.body);
+  assert.equal(body.branch, "wip");
+  assert.equal(body.confirmed, true);
+  // The handler reloads the branches endpoint; wip is gone from the list.
+  html = String(ctxHtml(booted));
+  assert.match(html, /git-ui-branch-list"/);
+  assert.ok(!/aria-label="Delete branch wip"/.test(html), "deleted branch is gone from the list");
 });

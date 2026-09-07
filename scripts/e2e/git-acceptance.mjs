@@ -198,20 +198,27 @@ assert(/herdr-tree-row dir/.test(html), "changes tree renders a dir row for scra
 assert(!/title="scratchdir\/"/.test(html), "no phantom file row for scratchdir/");
 assert(/fileMenu\(event,'scratchdir'[^)]*,'dir'\)/.test(html), "dir row wires the dir context menu kind");
 
-// 6. Header rework: the branch chip renders with the current branch and a
-// caret for the pull/fetch dropdown.
+// 6. Header rework: the branch chip renders left-justified with the current
+// branch, and the right side carries the status split button (Fetch, or
+// Pull ↓N / Push ↑N when diverged).
 const chipRes = await httpsJson(`${ORIGIN}/api/git-ui/status?cwd=${encodeURIComponent(REPO)}`);
 const chipStatus = await chipRes.json();
 const panelHtml = () => ctx.document.__panelHtml || "";
 let headerHtml = panelHtml();
 assert(/git-ui-branch-chip/.test(headerHtml), "branch chip rendered in header");
 assert(new RegExp(`git-ui-branch-chip-name">${chipStatus.branch}</span>`).test(headerHtml), `chip shows the real branch name (${chipStatus.branch})`);
+assert(new RegExp(`git-ui-branch-chip-name">${chipStatus.branch}</span><b class="git-ui-chip-caret">`).test(headerHtml), "chip label sits left of the caret with no sync badges");
+assert(/git-ui-status-label/.test(headerHtml), "status split button rendered on the right");
+assert(/git-ui-status-caret/.test(headerHtml), "status dropdown caret rendered");
 
-// 7. The dropdown menu exposes every git-flow action.
+// 7. The dropdown menu exposes exactly the seven git-flow actions.
 ui.toggleHeaderMenu({ stopPropagation() {}, currentTarget: { getBoundingClientRect: () => ({ left: 12, bottom: 40 }) }, clientX: 12, clientY: 40 });
 headerHtml = panelHtml();
+const menuChunk = (headerHtml.match(/git-ui-header-menu" style[^>]*>[\s\S]*?<\/div>/) || [""])[0];
+const menuLabels = (menuChunk.match(/<button onclick="[^"]*">[^<]+/g) || []).map((chunk) => chunk.replace(/^<button onclick="[^"]*">/, ""));
+assert.deepEqual(menuLabels, ["Fetch", "Fetch From", "Pull", "Pull (rebase)", "Push", "Push to", "Force push"], "menu offers exactly the seven Zed actions");
 for (const method of ["fetchOrigin", "openFetchFromModal", "openPullModal", "pullWithRebase", "openPushModal", "openPushToModal", "openForcePushModal"]) {
-  assert(new RegExp(`HerdrGitUi\\.${method}\\(\\)`).test(headerHtml), `header menu wires ${method}`);
+  assert(new RegExp(`HerdrGitUi\\.${method}\\(\\)`).test(menuChunk), `header menu wires ${method}`);
 }
 ui.toggleHeaderMenu({ stopPropagation() {}, currentTarget: { getBoundingClientRect: () => ({ left: 12, bottom: 40 }) }, clientX: 12, clientY: 40 });
 
