@@ -523,6 +523,16 @@ mod tests {
 
     use super::*;
 
+    /// Env manipulation is process-global and lib tests run in parallel;
+    /// every test that reads or mutates `HERDR_WEBUI_TUI_API` or
+    /// `XDG_CONFIG_HOME` must hold the shared lib-wide lock so discovery
+    /// cannot race other modules' env-mutating tests either.
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        crate::test_env_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+    }
+
     #[test]
     fn parses_webui_api_urls() {
         let client = WebApiClient::parse_url("127.0.0.1:8787").unwrap();
@@ -551,6 +561,7 @@ mod tests {
 
     #[test]
     fn persisted_bind_address_reads_settings_when_present() {
+        let _guard = lock_env();
         let dir = std::env::temp_dir().join(format!("herdr-tui-api-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         // scoped env manipulation is process-global; run in a subprocess would be
@@ -569,6 +580,7 @@ mod tests {
 
     #[test]
     fn discover_defaults_to_loopback_when_unset() {
+        let _guard = lock_env();
         // In CI/tests the env var and settings file may point elsewhere; only
         // assert a valid client is produced.
         if std::env::var("HERDR_WEBUI_TUI_API").is_ok() {
@@ -702,6 +714,7 @@ mod tests {
 
     #[test]
     fn web_api_error_display_covers_json_and_invalid_url() {
+        let _guard = lock_env();
         let err = WebApiError::Json("bad payload".to_string());
         assert_eq!(err.to_string(), "invalid WebUI API response: bad payload");
         let err = WebApiClient::parse_url("localhost").unwrap_err();
@@ -850,6 +863,7 @@ mod tests {
 
     #[test]
     fn discover_prefers_env_over_settings_and_default() {
+        let _guard = lock_env();
         // The env var wins when present. Env manipulation is process-global
         // but nothing else in this test binary reads these variables.
         unsafe {
