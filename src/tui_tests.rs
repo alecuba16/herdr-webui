@@ -366,3 +366,131 @@ fn terminal_output_ingest_preserves_color_spans_for_rendering() {
     assert_eq!(app.pane_tail_styles[0][1].text, "green");
     assert_eq!(app.pane_tail_styles[0][1].style.fg, Some(Color::Indexed(2)));
 }
+
+#[test]
+fn files_screen_rename_opens_prompt_prefilled_with_name() {
+    let client = BackendClient::builtin_session(None);
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    app.screen = TuiScreen::Files;
+    app.file_explorer.entries = vec![FileEntry {
+        name: "old.rs".to_string(),
+        path: "old.rs".to_string(),
+        is_dir: false,
+        size: None,
+        level: 0,
+        expanded: false,
+    }];
+    app.handle_key(KeyEvent::from(KeyCode::Char('R')));
+    let prompt = app.prompt_input.as_ref().expect("rename prompt open");
+    assert_eq!(prompt.kind, PromptKind::RenameFile);
+    assert_eq!(prompt.text, "old.rs");
+
+    // Edit the prefilled name and submit; the prompt closes (the rename
+    // call fails against the default loopback API, but the modal flow is
+    // what matters here).
+    app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+    app.handle_key(KeyEvent::from(KeyCode::Char('n')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('e')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('w')));
+    assert_eq!(app.prompt_input.as_ref().unwrap().text, "new");
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.prompt_input.is_none());
+}
+
+#[test]
+fn files_screen_delete_requires_typed_y_confirmation() {
+    let client = BackendClient::builtin_session(None);
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    app.screen = TuiScreen::Files;
+    app.file_explorer.entries = vec![FileEntry {
+        name: "doomed.txt".to_string(),
+        path: "doomed.txt".to_string(),
+        is_dir: false,
+        size: None,
+        level: 0,
+        expanded: false,
+    }];
+    app.handle_key(KeyEvent::from(KeyCode::Char('x')));
+    assert_eq!(
+        app.prompt_input.as_ref().map(|prompt| prompt.kind),
+        Some(PromptKind::ConfirmDeleteFile)
+    );
+    // Typing 'n' then Enter cancels without deleting.
+    app.handle_key(KeyEvent::from(KeyCode::Char('n')));
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.prompt_input.is_none());
+    assert_eq!(app.status, "cancelled");
+    assert!(app.error.is_none());
+
+    // Reopen, type 'y', Enter: the delete call runs (fails against the
+    // dead loopback API, proving the action path is taken).
+    app.handle_key(KeyEvent::from(KeyCode::Char('x')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('y')));
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.prompt_input.is_none());
+    assert!(app.error.is_some());
+}
+
+#[test]
+fn git_branches_delete_blocked_for_current_branch_and_confirmed_for_others() {
+    use crate::tui_panels::GitBranchEntry;
+    let client = BackendClient::builtin_session(None);
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    app.screen = TuiScreen::Git;
+    app.git_panel.view = GitView::Branches;
+    app.git_panel.branches = vec![
+        GitBranchEntry {
+            name: "main".to_string(),
+            current: true,
+            remote: false,
+            pushed: true,
+        },
+        GitBranchEntry {
+            name: "feature".to_string(),
+            current: false,
+            remote: false,
+            pushed: false,
+        },
+    ];
+    app.git_panel.branch_selected = 0;
+    app.handle_key(KeyEvent::from(KeyCode::Char('D')));
+    assert!(app.prompt_input.is_none());
+    assert_eq!(
+        app.error.as_deref(),
+        Some("cannot delete the current branch")
+    );
+    app.error = None;
+
+    app.git_panel.branch_selected = 1;
+    app.handle_key(KeyEvent::from(KeyCode::Char('D')));
+    assert_eq!(
+        app.prompt_input.as_ref().map(|prompt| prompt.kind),
+        Some(PromptKind::ConfirmDeleteBranch)
+    );
+    app.handle_key(KeyEvent::from(KeyCode::Char('y')));
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.prompt_input.is_none());
+    // The delete fires against the unreachable API; an error proves the path.
+    assert!(app.error.is_some());
+}
+
+#[test]
+fn git_stash_view_D_opens_drop_confirmation() {
+    use crate::tui_panels::GitStashEntry;
+    let client = BackendClient::builtin_session(None);
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    app.screen = TuiScreen::Git;
+    app.git_panel.view = GitView::Stash;
+    app.git_panel.stashes = vec![GitStashEntry {
+        name: "stash@{0}".to_string(),
+        message: "wip".to_string(),
+    }];
+    app.handle_key(KeyEvent::from(KeyCode::Char('D')));
+    assert_eq!(
+        app.prompt_input.as_ref().map(|prompt| prompt.kind),
+        Some(PromptKind::ConfirmDropStash)
+    );
+    // Esc cancels.
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert!(app.prompt_input.is_none());
+}

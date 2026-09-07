@@ -399,9 +399,11 @@ impl WebApiClient {
     }
 
     pub fn git_stash_drop(&self, cwd: &str, stash: &str) -> Result<Value, WebApiError> {
+        // The server rejects drops without an explicit confirmation flag;
+        // the TUI collects its own `y` confirmation before calling.
         self.post(
             "/api/git-ui/stash-drop",
-            &json!({ "cwd": cwd, "stash": stash }),
+            &json!({ "cwd": cwd, "stash": stash, "confirmed": true }),
         )
     }
 }

@@ -78,6 +78,7 @@ pub struct TuiApp {
     pub file_explorer: FileExplorer,
     pub git_panel: GitPanel,
     pub commit_input: Option<CommitInput>,
+    pub prompt_input: Option<PromptInput>,
     pub pane_tail: Vec<String>,
     pub(crate) pane_tail_styles: Vec<Vec<TuiTextSpan>>,
     terminal_raw_output: String,
@@ -98,6 +99,46 @@ pub struct TuiApp {
 pub struct CommitInput {
     pub text: String,
     pub amend: bool,
+}
+
+/// A modal text prompt. Used for file rename and for typing `y` to confirm
+/// destructive actions (file delete, branch delete, stash drop).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptInput {
+    pub kind: PromptKind,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptKind {
+    RenameFile,
+    ConfirmDeleteFile,
+    ConfirmDeleteBranch,
+    ConfirmDropStash,
+}
+
+impl PromptKind {
+    /// Destructive prompts only submit when the typed text is exactly `y`.
+    pub fn needs_confirm(self) -> bool {
+        !matches!(self, Self::RenameFile)
+    }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::RenameFile => "Rename file",
+            Self::ConfirmDeleteFile => "Delete file",
+            Self::ConfirmDeleteBranch => "Delete branch",
+            Self::ConfirmDropStash => "Drop stash",
+        }
+    }
+
+    /// Hint shown under the input line.
+    pub fn hint(self) -> &'static str {
+        match self {
+            Self::RenameFile => "type the new name, Enter renames",
+            _ => "type y then Enter to confirm, Esc cancels",
+        }
+    }
 }
 
 impl TuiApp {
@@ -138,6 +179,7 @@ impl TuiApp {
             file_explorer: FileExplorer::new(cwd),
             git_panel: GitPanel::new(cwd),
             commit_input: None,
+            prompt_input: None,
             pane_tail: Vec::new(),
             pane_tail_styles: Vec::new(),
             terminal_raw_output: String::new(),
@@ -209,6 +251,11 @@ impl TuiApp {
             self.mark_dirty();
             return false;
         }
+        if self.prompt_input.is_some() {
+            self.handle_prompt_key(key);
+            self.mark_dirty();
+            return false;
+        }
         match self.mode {
             TuiMode::Help => match key.code {
                 KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => {
@@ -227,6 +274,96 @@ impl TuiApp {
         }
         self.mark_dirty();
         false
+    }
+
+    fn handle_prompt_key(&mut self, key: KeyEvent) {
+        let Some(prompt) = self.prompt_input.as_mut() else {
+            return;
+        };
+        match key.code {
+            KeyCode::Esc => self.prompt_input = None,
+            KeyCode::Enter => {
+                let kind = prompt.kind;
+                let text = prompt.text.trim().to_string();
+                self.prompt_input = None;
+                if kind.needs_confirm() && text != "y" {
+                    self.status = "cancelled".to_string();
+                    return;
+                }
+                self.run_prompt_action(kind, &text);
+            }
+            KeyCode::Backspace => {
+                prompt.text.pop();
+            }
+            KeyCode::Char(ch) => {
+                if key.modifiers.contains(KeyModifiers::CONTROL) && ch.eq_ignore_ascii_case(&'u') {
+                    prompt.text.clear();
+                } else {
+                    prompt.text.push(ch);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn run_prompt_action(&mut self, kind: PromptKind, text: &str) {
+        match kind {
+            PromptKind::RenameFile => {
+                let Some(entry) = self.file_explorer.selected_entry() else {
+                    self.error = Some("no file selected".to_string());
+                    return;
+                };
+                let path = entry.path.clone();
+                match self
+                    .web_api
+                    .file_rename(&self.file_explorer.cwd, &path, text)
+                {
+                    Ok(_) => {
+                        self.status = format!("renamed to {text}");
+                        if let Err(err) = self.file_explorer.refresh(&self.web_api) {
+                            self.error = Some(err.to_string());
+                        }
+                    }
+                    Err(err) => self.error = Some(err.to_string()),
+                }
+            }
+            PromptKind::ConfirmDeleteFile => {
+                let Some(entry) = self.file_explorer.selected_entry() else {
+                    self.error = Some("no file selected".to_string());
+                    return;
+                };
+                let path = entry.path.clone();
+                match self.web_api.file_delete(&self.file_explorer.cwd, &path) {
+                    Ok(_) => {
+                        self.status = format!("deleted {path}");
+                        if let Err(err) = self.file_explorer.refresh(&self.web_api) {
+                            self.error = Some(err.to_string());
+                        }
+                    }
+                    Err(err) => self.error = Some(err.to_string()),
+                }
+            }
+            PromptKind::ConfirmDeleteBranch => {
+                let Some(branch) = self
+                    .git_panel
+                    .branches
+                    .get(self.git_panel.branch_selected)
+                    .filter(|entry| !entry.current)
+                    .map(|entry| entry.name.clone())
+                else {
+                    self.error = Some("no branch selected".to_string());
+                    return;
+                };
+                match self.git_panel.delete_branch(&self.web_api, &branch, false) {
+                    Ok(_) => self.status = format!("deleted branch {branch}"),
+                    Err(err) => self.error = Some(err.to_string()),
+                }
+            }
+            PromptKind::ConfirmDropStash => match self.git_panel.stash_drop(&self.web_api) {
+                Ok(_) => self.status = "stash dropped".to_string(),
+                Err(err) => self.error = Some(err.to_string()),
+            },
+        }
     }
 
     fn handle_commit_key(&mut self, key: KeyEvent) {
@@ -543,6 +680,38 @@ impl TuiApp {
                 }
             }
             KeyCode::Char('r') => self.refresh_active_screen(),
+            KeyCode::Char('R') => {
+                // Rename the selected file: prefill the prompt with the
+                // current name so editing is incremental.
+                let name = self
+                    .file_explorer
+                    .selected_entry()
+                    .map(|entry| entry.name.clone())
+                    .unwrap_or_default();
+                if name.is_empty() {
+                    self.error = Some("no file selected".to_string());
+                } else {
+                    self.prompt_input = Some(PromptInput {
+                        kind: PromptKind::RenameFile,
+                        text: name,
+                    });
+                }
+            }
+            KeyCode::Char('x') => {
+                let name = self
+                    .file_explorer
+                    .selected_entry()
+                    .map(|entry| entry.name.clone())
+                    .unwrap_or_default();
+                if name.is_empty() {
+                    self.error = Some("no file selected".to_string());
+                } else {
+                    self.prompt_input = Some(PromptInput {
+                        kind: PromptKind::ConfirmDeleteFile,
+                        text: String::new(),
+                    });
+                }
+            }
             KeyCode::Esc | KeyCode::Char('q') => self.screen = TuiScreen::Terminal,
             _ => {}
         }
@@ -599,6 +768,39 @@ impl TuiApp {
                 });
             }
             KeyCode::Char('r') => self.refresh_active_screen(),
+            KeyCode::Char('D') => match self.git_panel.view {
+                GitView::Branches => {
+                    let selected = self.git_panel.branches.get(self.git_panel.branch_selected);
+                    match selected {
+                        Some(entry) if entry.current => {
+                            self.error = Some("cannot delete the current branch".to_string());
+                        }
+                        Some(_) => {
+                            self.prompt_input = Some(PromptInput {
+                                kind: PromptKind::ConfirmDeleteBranch,
+                                text: String::new(),
+                            });
+                        }
+                        None => self.error = Some("no branch selected".to_string()),
+                    }
+                }
+                GitView::Stash => {
+                    if self
+                        .git_panel
+                        .stashes
+                        .get(self.git_panel.stash_selected)
+                        .is_some()
+                    {
+                        self.prompt_input = Some(PromptInput {
+                            kind: PromptKind::ConfirmDropStash,
+                            text: String::new(),
+                        });
+                    } else {
+                        self.error = Some("no stash selected".to_string());
+                    }
+                }
+                _ => {}
+            },
             KeyCode::Enter => match self.git_panel.view {
                 GitView::Changes => {
                     if let Err(err) = self.git_panel.refresh_diff(&self.web_api) {
@@ -705,6 +907,12 @@ impl TuiApp {
     }
 
     fn handle_navigation_key(&mut self, key: KeyEvent) {
+        // The Files and Git screens own their keys in Navigate mode too;
+        // only the Terminal screen keeps the workspace/agent list keys.
+        if self.screen != TuiScreen::Terminal {
+            self.handle_panel_key(key);
+            return;
+        }
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => {
                 if self.screen == TuiScreen::Terminal {

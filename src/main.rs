@@ -10070,6 +10070,83 @@ mod tui_parity_e2e_tests {
                 .collect::<Vec<_>>()
         );
 
+        // WebApiClient: rename a file through the browser API.
+        api.file_rename(cwd, "new_file.rs", "renamed.rs").unwrap();
+        explorer.refresh(&api).unwrap();
+        let names: Vec<&str> = explorer.entries.iter().map(|e| e.name.as_str()).collect();
+        assert!(
+            names.contains(&"renamed.rs"),
+            "rename missing from tree: {names:?}"
+        );
+        assert!(
+            !names.contains(&"new_file.rs"),
+            "old name still in tree: {names:?}"
+        );
+
+        // WebApiClient: delete the renamed file.
+        api.file_delete(cwd, "renamed.rs").unwrap();
+        explorer.refresh(&api).unwrap();
+        let names: Vec<&str> = explorer.entries.iter().map(|e| e.name.as_str()).collect();
+        assert!(
+            !names.contains(&"renamed.rs"),
+            "deleted file still in tree: {names:?}"
+        );
+
+        // WebApiClient: create and delete a branch (stays on main).
+        let default_branch = panel
+            .branches
+            .iter()
+            .find(|b| b.current)
+            .map(|b| b.name.clone())
+            .unwrap_or_else(|| "master".to_string());
+        api.git_switch(cwd, "tui-e2e-tmp", true).unwrap();
+        api.git_switch(cwd, &default_branch, false).unwrap();
+        panel.view = GitView::Branches;
+        panel.refresh_view(&api).unwrap();
+        assert!(
+            panel.branches.iter().any(|b| b.name == "tui-e2e-tmp"),
+            "temp branch missing: {:?}",
+            panel.branches.iter().map(|b| &b.name).collect::<Vec<_>>()
+        );
+        panel.branch_selected = panel
+            .branches
+            .iter()
+            .position(|b| b.name == "tui-e2e-tmp")
+            .unwrap();
+        panel.delete_branch(&api, "tui-e2e-tmp", false).unwrap();
+        panel.refresh_view(&api).unwrap();
+        assert!(
+            !panel.branches.iter().any(|b| b.name == "tui-e2e-tmp"),
+            "deleted branch still listed"
+        );
+
+        // WebApiClient: stash the unstaged change, list, apply (keeps the
+        // entry), then drop until the list is empty.
+        api.git_stash(cwd).unwrap();
+        panel.view = GitView::Stash;
+        panel.refresh_view(&api).unwrap();
+        assert_eq!(panel.stashes.len(), 1, "expected one stash entry");
+        panel.stash_apply(&api).unwrap();
+        panel.refresh_view(&api).unwrap();
+        assert!(
+            !panel.stashes.is_empty(),
+            "apply is keep-by-default so the entry must remain",
+        );
+        assert!(
+            panel.files.iter().any(|e| e.path == "readme.md"),
+            "stash apply lost the modified file"
+        );
+        // Re-stash the applied change: now two entries.
+        api.git_stash(cwd).unwrap();
+        panel.refresh_view(&api).unwrap();
+        assert_eq!(panel.stashes.len(), 2, "expected two stash entries");
+        panel.stash_drop(&api).unwrap();
+        panel.refresh_view(&api).unwrap();
+        assert_eq!(panel.stashes.len(), 1, "drop must remove exactly one entry");
+        panel.stash_drop(&api).unwrap();
+        panel.refresh_view(&api).unwrap();
+        assert!(panel.stashes.is_empty(), "stash list not empty after drops");
+
         Ok(())
     }
 }

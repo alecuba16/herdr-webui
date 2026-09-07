@@ -196,6 +196,9 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
         ("Ctrl+B y/u/d/z", "git: stage/unstage/discard/stash file"),
         ("Ctrl+B p/P", "git: pull/push"),
         ("Ctrl+B e", "git: amend last commit"),
+        ("", ""),
+        ("files: R/x", "rename / delete selected file"),
+        ("git: D", "delete branch (branches) / drop stash (stash)"),
     ]
 }
 

@@ -572,6 +572,19 @@ impl GitPanel {
         self.switch_branch(api, &branch)
     }
 
+    /// Delete the given branch. The server enforces its own confirmation
+    /// flag; we always pass `confirmed: true` because the TUI collects the
+    /// user's `y` confirmation first.
+    pub fn delete_branch(
+        &mut self,
+        api: &WebApiClient,
+        branch: &str,
+        force: bool,
+    ) -> Result<(), WebApiError> {
+        api.git_branch_delete(&self.cwd, branch, force)?;
+        self.refresh_view(api)
+    }
+
     pub fn stash_apply(&mut self, api: &WebApiClient) -> Result<(), WebApiError> {
         let stash = self
             .stashes

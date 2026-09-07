@@ -37,6 +37,9 @@ pub fn render(frame: &mut Frame<'_>, app: &TuiApp) {
     if app.commit_input.is_some() {
         render_commit_input(frame, area, app, p);
     }
+    if app.prompt_input.is_some() {
+        render_prompt_input(frame, area, app, p);
+    }
 }
 
 fn render_sidebar(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
@@ -679,6 +682,66 @@ fn render_git_stash(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette
         .highlight_style(Style::default().fg(p.accent).add_modifier(Modifier::BOLD))
         .highlight_symbol("> ");
     frame.render_stateful_widget(list, area, &mut state);
+}
+
+fn render_prompt_input(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
+    let Some(prompt) = &app.prompt_input else {
+        return;
+    };
+    let width = area.width.min(64);
+    let height = 6;
+    let rect = Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+    // Show the subject of the action (file/branch/stash) above the input.
+    let subject = match prompt.kind {
+        crate::tui::PromptKind::RenameFile => app
+            .file_explorer
+            .selected_entry()
+            .map(|entry| entry.path.clone())
+            .unwrap_or_default(),
+        crate::tui::PromptKind::ConfirmDeleteFile => app
+            .file_explorer
+            .selected_entry()
+            .map(|entry| entry.path.clone())
+            .unwrap_or_default(),
+        crate::tui::PromptKind::ConfirmDeleteBranch => app
+            .git_panel
+            .branches
+            .get(app.git_panel.branch_selected)
+            .map(|entry| entry.name.clone())
+            .unwrap_or_default(),
+        crate::tui::PromptKind::ConfirmDropStash => app
+            .git_panel
+            .stashes
+            .get(app.git_panel.stash_selected)
+            .map(|entry| entry.name.clone())
+            .unwrap_or_default(),
+    };
+    let title = format!(" {} ", prompt.kind.title());
+    let lines = vec![
+        Line::from(Span::styled(
+            truncate(&subject, (width.saturating_sub(4)) as usize),
+            Style::default().fg(p.muted),
+        )),
+        Line::from(Span::styled(
+            format!("{}█", prompt.text),
+            Style::default().fg(p.text),
+        )),
+        Line::from(Span::styled(
+            prompt.kind.hint(),
+            Style::default().fg(p.muted),
+        )),
+    ];
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(panel(&title, p))
+            .style(Style::default().fg(p.text).bg(p.panel_bg)),
+        rect,
+    );
 }
 
 fn render_commit_input(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
