@@ -396,7 +396,7 @@ fn render_file_preview(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
     } else if let Some(path) = &preview.path {
         // Cursor position decides the scrolled window while editing.
         let cursor_line = if explorer.edit_active {
-            preview.content[..explorer.edit_cursor]
+            preview.content[..explorer.edit_cursor.min(preview.content.len())]
                 .matches('\n')
                 .count()
         } else {
