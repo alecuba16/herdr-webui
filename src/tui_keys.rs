@@ -213,7 +213,7 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
         ("Ctrl+B 0", "git: shortcut help"),
         ("Ctrl+B G", "git: toggle stage all"),
         ("Ctrl+B y/u/d/z", "git: stage/unstage/discard/stash file"),
-        ("Ctrl+B P", "git: push (pull: p in Branches view)"),
+        ("Ctrl+B P", "git: push"),
         (
             "Ctrl+B e",
             "edit current file (files preview or git changes)",
@@ -224,6 +224,10 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
             "edit open preview (Ctrl-S save, Ctrl-R reload, Esc stop)",
         ),
         ("files: R/x", "rename / delete selected file"),
+        (
+            "git: f/p/P",
+            "fetch / pull / push (s stage, d discard, r refresh)",
+        ),
         ("git: D", "delete branch (branches) / drop stash (stash)"),
     ]
 }
