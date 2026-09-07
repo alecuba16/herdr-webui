@@ -12,8 +12,9 @@ use crossterm::terminal::{
 use herdr_webui::backend_client::{BackendClient, TerminalEvent, TerminalOutput};
 use herdr_webui::tui::{
     build_client, is_menu_key, key_to_terminal_bytes, render, snapshot_summary, TuiApp, TuiMode,
-    TuiOptions,
+    TuiOptions, TuiScreen,
 };
+use herdr_webui::tui_web_api::WebApiClient;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
@@ -44,7 +45,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    run_interactive(client, options.refresh_interval, options.theme)?;
+    run_interactive(
+        client,
+        options.refresh_interval,
+        options.theme,
+        options.web_api,
+    )?;
     Ok(())
 }
 
@@ -60,10 +66,11 @@ fn run_interactive(
     client: BackendClient,
     refresh_interval: Duration,
     theme: herdr_webui::tui::TuiTheme,
+    web_api: WebApiClient,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut terminal_guard = TerminalGuard::enter()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
-    let mut app = TuiApp::new_with_theme(client, refresh_interval, theme);
+    let mut app = TuiApp::new_with_options(client, refresh_interval, theme, web_api);
     app.refresh()?;
     let mut live_terminal: Option<LiveTerminal> = None;
     let mut last_draw = Instant::now();
@@ -76,10 +83,13 @@ fn run_interactive(
                     if key.kind == KeyEventKind::Release {
                         continue;
                     }
-                    if app.mode == TuiMode::Attach {
-                        if is_menu_key(key) {
-                            app.handle_key(key);
-                        } else if key.modifiers.contains(KeyModifiers::CONTROL)
+                    let in_terminal_attach =
+                        app.mode == TuiMode::Attach && app.screen == TuiScreen::Terminal;
+                    // The Ctrl+B prefix always wins, including terminal attach
+                    // mode, so shortcuts stay available while typing.
+                    let handled_by_prefix = app.prefix.is_armed() || is_menu_key(key);
+                    if in_terminal_attach && !handled_by_prefix {
+                        if key.modifiers.contains(KeyModifiers::CONTROL)
                             && key.code == KeyCode::Char('g')
                         {
                             live_terminal = None;
@@ -100,7 +110,7 @@ fn run_interactive(
                         }
                     } else {
                         app.handle_key(key);
-                        if app.mode == TuiMode::Attach {
+                        if app.mode == TuiMode::Attach && app.screen == TuiScreen::Terminal {
                             let size = terminal.size()?;
                             ensure_live_terminal(
                                 &mut live_terminal,
@@ -316,6 +326,7 @@ struct Cli {
 impl Cli {
     fn parse(args: impl IntoIterator<Item = String>) -> Result<Self, String> {
         let mut options = TuiOptions::default();
+        let mut web_api: Option<WebApiClient> = None;
         let mut summary = false;
         let mut once = false;
         let mut args = args.into_iter();
@@ -324,6 +335,13 @@ impl Cli {
                 "--help" | "-h" => return Err(help_text()),
                 "--summary" => summary = true,
                 "--once" => once = true,
+                "--webui-api" => {
+                    let value = next_value(&mut args, "--webui-api")?;
+                    web_api = Some(
+                        WebApiClient::parse_url(&value)
+                            .map_err(|err| format!("invalid --webui-api value: {err}"))?,
+                    );
+                }
                 "--session" => options.session = Some(next_value(&mut args, "--session")?),
                 "--api-socket" => {
                     options.api_socket =
@@ -350,6 +368,13 @@ impl Cli {
         if options.api_socket.is_some() != options.terminal_socket.is_some() {
             return Err("--api-socket and --terminal-socket must be provided together".to_string());
         }
+        let web_api = match web_api {
+            Some(client) => client,
+            None => {
+                WebApiClient::discover().unwrap_or_else(|_| WebApiClient::new("127.0.0.1", 8787))
+            }
+        };
+        options.web_api = web_api;
         Ok(Self {
             options,
             summary,
@@ -365,7 +390,7 @@ fn next_value(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<Str
 }
 
 fn help_text() -> String {
-    "Usage: herdr-webui-tui [--session NAME] [--api-socket PATH --terminal-socket PATH] [--summary|--once] [--refresh-ms MS] [--theme dark|light|system]\n\nRuns a terminal UI against the built-in backend sockets.\n  --summary       print backend/session summary and exit\n  --once          print a text snapshot and exit\n  --session NAME  use built-in socket namespace, default: default\n  --theme MODE    color theme: system (terminal), dark, or light; default: HERDR_WEBUI_TUI_THEME/JCODE_THEME/system"
+    "Usage: herdr-webui-tui [--session NAME] [--api-socket PATH --terminal-socket PATH] [--webui-api HOST:PORT] [--summary|--once] [--refresh-ms MS] [--theme dark|light|system]\n\nRuns a terminal UI against the built-in backend sockets.\n  --summary         print backend/session summary and exit\n  --once            print a text snapshot and exit\n  --session NAME    use built-in socket namespace, default: default\n  --webui-api URL   WebUI JSON API endpoint for files/git, default: HERDR_WEBUI_TUI_API or settings bind\n  --theme MODE      color theme: system (terminal), dark, or light; default: HERDR_WEBUI_TUI_THEME/JCODE_THEME/system\n\nKeyboard: Ctrl+B is the prefix key, then a shortcut (f files, g git, t terminal, / filter, ? help, q quit)."
         .to_string()
 }
 
@@ -424,6 +449,26 @@ mod tests {
         let err =
             Cli::parse(["--api-socket".to_string(), "/tmp/herdr.sock".to_string()]).unwrap_err();
         assert!(err.contains("must be provided together"));
+    }
+
+    #[test]
+    fn parses_webui_api_flag_and_defaults() {
+        let cli = Cli::parse(["--webui-api".to_string(), "127.0.0.1:9000".to_string()]).unwrap();
+        assert_eq!(cli.options.web_api.base_url(), "http://127.0.0.1:9000");
+
+        let cli = Cli::parse([
+            "--webui-api".to_string(),
+            "http://localhost:8787/".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(cli.options.web_api.base_url(), "http://localhost:8787");
+
+        let invalid =
+            Cli::parse(["--webui-api".to_string(), "https://host:8787".to_string()]).unwrap_err();
+        assert!(invalid.contains("https is not supported"));
+
+        let missing = Cli::parse(["--webui-api".to_string()]).unwrap_err();
+        assert!(missing.contains("missing value for --webui-api"));
     }
 
     #[test]

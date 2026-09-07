@@ -5,6 +5,8 @@ use ratatui::style::Color;
 use ratatui::Terminal;
 use serde_json::json;
 
+use crate::tui_panels::{FileEntry, GitCommitEntry, GitFileEntry, GitFileStatus, GitView};
+
 #[test]
 fn parses_snapshot_for_tui_lists() {
     let snapshot = TuiSnapshot::from_backend_response(&json!({
@@ -40,20 +42,155 @@ fn maps_keys_to_terminal_bytes() {
 }
 
 #[test]
-fn ctrl_b_toggles_menu_and_is_detectable_before_terminal_input() {
+fn ctrl_b_arms_prefix_and_shortcut_dispatch_instead_of_menu() {
     let key = KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL);
     assert!(is_menu_key(key));
 
     let client = BackendClient::builtin_session(None);
     let mut app = TuiApp::new(client, Duration::from_secs(1));
+    // First Ctrl+B arms the prefix instead of opening the old menu.
     app.handle_key(key);
+    assert!(app.prefix.is_armed());
+    // Second Ctrl+B cancels the prefix.
+    app.handle_key(key);
+    assert!(!app.prefix.is_armed());
+    // Prefix then ? opens help.
+    app.handle_key(key);
+    app.handle_key(KeyEvent::from(KeyCode::Char('?')));
     assert_eq!(app.mode, TuiMode::Help);
-    app.handle_key(key);
+    // Esc closes help.
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
     assert_eq!(app.mode, TuiMode::Navigate);
+}
 
+#[test]
+fn prefix_shortcuts_switch_screens() {
+    let ctrl_b = KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL);
+    let client = BackendClient::builtin_session(None);
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+
+    app.handle_key(ctrl_b);
+    app.handle_key(KeyEvent::from(KeyCode::Char('f')));
+    assert_eq!(app.screen, TuiScreen::Files);
+
+    app.handle_key(ctrl_b);
+    app.handle_key(KeyEvent::from(KeyCode::Char('g')));
+    assert_eq!(app.screen, TuiScreen::Git);
+
+    app.handle_key(ctrl_b);
+    app.handle_key(KeyEvent::from(KeyCode::Char('t')));
+    assert_eq!(app.screen, TuiScreen::Terminal);
+}
+
+#[test]
+fn files_screen_navigation_and_preview_flow() {
+    let client = BackendClient::builtin_session(None);
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    app.snapshot = TuiSnapshot::from_backend_response(&json!({
+        "snapshot": {
+            "workspaces": [{"workspace_id":"ws_1","label":"Repo","cwd":"/repo","focused":true,"agent_status":"idle","pane_count":1,"tab_count":1,"active_tab_id":"tab_1"}],
+            "tabs": [], "panes": [], "agents": []
+        }
+    }));
+    app.screen = TuiScreen::Files;
+    app.file_explorer.entries = vec![
+        FileEntry {
+            name: "src".to_string(),
+            path: "src".to_string(),
+            is_dir: true,
+            size: None,
+            level: 0,
+            expanded: false,
+        },
+        FileEntry {
+            name: "main.rs".to_string(),
+            path: "main.rs".to_string(),
+            is_dir: false,
+            size: Some(120),
+            level: 0,
+            expanded: false,
+        },
+    ];
+    app.file_explorer.move_selection(1);
+    assert_eq!(app.file_explorer.selected, 1);
+    assert_eq!(app.active_cwd().as_deref(), Some("/repo"));
+
+    // Render smoke: files screen renders without a live WebUI backend.
+    let backend = TestBackend::new(100, 28);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+    let rendered = format!("{:?}", terminal.backend().buffer());
+    assert!(rendered.contains("Files"));
+}
+
+#[test]
+fn git_screen_renders_views_and_commit_input() {
+    let client = BackendClient::builtin_session(None);
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    app.screen = TuiScreen::Git;
+    app.git_panel.branch = "main".to_string();
+    app.git_panel.upstream = "origin/main".to_string();
+    app.git_panel.ahead = 2;
+    app.git_panel.behind = 1;
+    app.git_panel.state = "dirty".to_string();
+    app.git_panel.files = vec![GitFileEntry {
+        path: "src/app.rs".to_string(),
+        status: GitFileStatus::Unstaged,
+    }];
+    app.git_panel.diff_lines = vec![
+        "diff --git a/src/app.rs b/src/app.rs".to_string(),
+        "+new line".to_string(),
+        "-old line".to_string(),
+    ];
+    app.git_panel.commits = vec![GitCommitEntry {
+        hash: "abc123def".to_string(),
+        message: "fix bug".to_string(),
+        author: "Ada".to_string(),
+        date: "2 hours ago".to_string(),
+        labels: vec!["main".to_string()],
+    }];
+    app.commit_input = Some(CommitInput {
+        text: String::new(),
+        amend: false,
+    });
+
+    let backend = TestBackend::new(120, 30);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+    let rendered = format!("{:?}", terminal.backend().buffer());
+    assert!(rendered.contains("Changes"));
+    assert!(rendered.contains("src/app.rs"));
+    assert!(rendered.contains("Commit message"));
+
+    // Typing builds the commit title; Ctrl-U clears it.
+    app.handle_key(KeyEvent::from(KeyCode::Char('h')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('i')));
+    assert_eq!(app.commit_input.as_ref().unwrap().text, "hi");
+    let ctrl_u = KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL);
+    app.handle_key(ctrl_u);
+    assert_eq!(app.commit_input.as_ref().unwrap().text, "");
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert!(app.commit_input.is_none());
+}
+
+#[test]
+fn git_panel_key_navigation_cycles_views() {
+    let client = BackendClient::builtin_session(None);
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    app.screen = TuiScreen::Git;
     app.mode = TuiMode::Attach;
-    app.handle_key(key);
-    assert_eq!(app.mode, TuiMode::Help);
+    app.handle_key(KeyEvent::from(KeyCode::Tab));
+    assert_eq!(app.git_panel.view, GitView::Log);
+    app.handle_key(KeyEvent::from(KeyCode::Tab));
+    assert_eq!(app.git_panel.view, GitView::Branches);
+    app.handle_key(KeyEvent::from(KeyCode::Tab));
+    assert_eq!(app.git_panel.view, GitView::Stash);
+    app.handle_key(KeyEvent::from(KeyCode::Tab));
+    assert_eq!(app.git_panel.view, GitView::Changes);
+
+    // Esc/q returns to the terminal screen.
+    app.handle_key(KeyEvent::from(KeyCode::Char('q')));
+    assert_eq!(app.screen, TuiScreen::Terminal);
 }
 
 #[test]
