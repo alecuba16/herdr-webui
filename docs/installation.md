@@ -199,6 +199,11 @@ Release binaries can install themselves too:
 ./herdr-webui install-linux
 ```
 
+Both the Makefile targets and the release-binary commands install the two
+binaries into `~/.local/bin`: `herdr-webui` and `herdr-webui-tui` (when the
+TUI sits next to `herdr-webui`, as in the release tarball). Nothing is
+embedded in the main binary.
+
 For macOS service troubleshooting:
 
 ```sh
@@ -211,6 +216,13 @@ Update installed binary and restart service:
 ```sh
 make update-mac
 make update-linux
+```
+
+The release-binary equivalents refresh both binaries:
+
+```sh
+./herdr-webui update-mac
+./herdr-webui update-linux
 ```
 
 The install and update targets build with `cargo build --release --bins` and install both `herdr-webui` and `herdr-webui-tui` into `~/.local/bin` unless `LOCAL_BIN_DIR` is overridden.

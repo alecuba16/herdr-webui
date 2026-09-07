@@ -1,5 +1,14 @@
 # Release notes
 
+## 0.4.8 Release Notes
+- `herdr-webui install-mac`, `update-mac`, `install-linux`, and
+  `update-linux` now also install the `herdr-webui-tui` binary into
+  `~/.local/bin` when it sits next to the running `herdr-webui` binary
+  (the release tarball layout), so the built-in install/update commands
+  keep both binaries in sync. The TUI remains a separate binary: nothing
+  is embedded in the main executable, and installs from a bare main
+  binary (no sibling TUI) behave exactly as before.
+
 ## 0.4.7 Release Notes
 - Open desktop files now detect external changes: on window refocus the
   browser cheaply re-hashes clean tabs via a new hash_only endpoint and
