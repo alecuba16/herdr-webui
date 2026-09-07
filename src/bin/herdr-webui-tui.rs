@@ -50,8 +50,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         options.refresh_interval,
         options.theme,
         options.web_api,
-    )?;
-    Ok(())
+    )
 }
 
 fn print_summary(client: &BackendClient) -> Result<(), Box<dyn std::error::Error>> {
@@ -228,19 +227,22 @@ fn dispatch_key(
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('g') {
             *live_terminal = None;
             app.handle_key(key);
-        } else if let Some(bytes) = key_to_terminal_bytes(key) {
-            ensure_live_terminal(live_terminal, app, cols, rows)?;
-            if let Some(live) = live_terminal.as_ref() {
-                live.send_input(bytes);
-                app.status = "sent input".to_string();
-                app.mark_dirty();
-            }
+            return Ok(());
         }
-    } else {
-        app.handle_key(key);
-        if app.mode == TuiMode::Attach && app.screen == TuiScreen::Terminal {
-            ensure_live_terminal(live_terminal, app, cols, rows)?;
+        let Some(bytes) = key_to_terminal_bytes(key) else {
+            return Ok(());
+        };
+        ensure_live_terminal(live_terminal, app, cols, rows)?;
+        if let Some(live) = live_terminal.as_ref() {
+            live.send_input(bytes);
+            app.status = "sent input".to_string();
+            app.mark_dirty();
         }
+        return Ok(());
+    }
+    app.handle_key(key);
+    if app.mode == TuiMode::Attach && app.screen == TuiScreen::Terminal {
+        ensure_live_terminal(live_terminal, app, cols, rows)?;
     }
     Ok(())
 }
@@ -554,6 +556,17 @@ mod tests {
         )
         .unwrap();
         assert_eq!(app.status, "quit", "prefix q quits");
+    }
+
+    #[test]
+    fn dispatch_key_ignores_unmapped_key_in_attach_mode() {
+        // A key with no terminal-byte mapping (e.g. F1) in attach mode
+        // must be a no-op: no live terminal is spun up.
+        let mut app = app_with_terminal_screen();
+        let mut live = None;
+        dispatch_key(&mut app, &mut live, key_event(KeyCode::F(1), false), 80, 24).unwrap();
+        assert!(live.is_none(), "unmapped key attaches no live terminal");
+        assert_ne!(app.status, "sent input", "no input was sent");
     }
 
     #[test]
