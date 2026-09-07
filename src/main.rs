@@ -10162,9 +10162,10 @@ mod tui_parity_e2e_tests {
         let hash_before = editor.preview.hash.clone();
         editor.start_edit().expect("start edit");
         assert!(editor.edit_active);
-        // Type a line: newline plus text, then save with Ctrl-S.
+        // Type a line: Enter inserts a line break (real terminals send
+        // KeyCode::Enter, not Char('\n')), then text, then save with Ctrl-S.
         editor
-            .edit_key(KeyEvent::new(KeyCode::Char('\n'), KeyModifiers::NONE), api)
+            .edit_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), api)
             .unwrap();
         for ch in "edited by tui".chars() {
             editor

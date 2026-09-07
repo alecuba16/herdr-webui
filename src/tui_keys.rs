@@ -205,7 +205,10 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
             "edit current file (files preview or git changes)",
         ),
         ("", ""),
-        ("files: e", "edit open preview (Ctrl-S save, Esc stop)"),
+        (
+            "files: e",
+            "edit open preview (Ctrl-S save, Ctrl-R reload, Esc stop)",
+        ),
         ("files: R/x", "rename / delete selected file"),
         ("git: D", "delete branch (branches) / drop stash (stash)"),
     ]

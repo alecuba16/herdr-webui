@@ -466,6 +466,16 @@ impl TuiApp {
                         self.error = Some("no file selected in git changes".to_string());
                         return;
                     };
+                    // A dirty buffer is not silently replaced: the webui
+                    // keeps dirty editor tabs, so ask the user to save or
+                    // reload first.
+                    if self.file_explorer.preview.dirty
+                        && self.file_explorer.preview.path.as_deref() != Some(file.as_str())
+                    {
+                        self.status =
+                            "unsaved edits: save or reload before editing another file".to_string();
+                        return;
+                    }
                     match self.web_api.file_read(&self.git_panel.cwd, &file) {
                         Ok(data) => {
                             let content = data.get("content").and_then(Value::as_str).unwrap_or("");
@@ -479,8 +489,19 @@ impl TuiApp {
                                 self.error = Some("file cannot be edited".to_string());
                                 return;
                             }
-                            self.screen = TuiScreen::Files;
-                            self.file_explorer.preview = crate::tui_panels::FilePreview {
+                            // Rebuild the explorer for the git cwd so the
+                            // tree, cwd, and preview all describe the same
+                            // directory; reusing the old explorer would
+                            // leave stale entries resolved against the new
+                            // cwd.
+                            let mut explorer =
+                                crate::tui_panels::FileExplorer::new(&self.git_panel.cwd);
+                            // Best effort: a failed tree refresh leaves an
+                            // empty tree but keeps cwd and preview aligned.
+                            if let Err(err) = explorer.refresh(&self.web_api) {
+                                self.error = Some(err.to_string());
+                            }
+                            explorer.preview = crate::tui_panels::FilePreview {
                                 path: Some(file),
                                 content: content.to_string(),
                                 truncated,
@@ -492,15 +513,14 @@ impl TuiApp {
                                     .to_string(),
                                 dirty: false,
                             };
-                            // Editing from git still writes through the
-                            // explorer cwd: use the git panel cwd.
-                            self.file_explorer.cwd = self.git_panel.cwd.clone();
-                            match self.file_explorer.start_edit() {
+                            match explorer.start_edit() {
                                 Ok(()) => {
                                     self.status = "editing: Ctrl-S saves, Esc stops".to_string()
                                 }
                                 Err(err) => self.error = Some(err.to_string()),
                             }
+                            self.screen = TuiScreen::Files;
+                            self.file_explorer = explorer;
                         }
                         Err(err) => self.error = Some(err.to_string()),
                     }
@@ -544,7 +564,23 @@ impl TuiApp {
             Shortcut::GitStageFile => self.run_git_action(|panel, api| panel.stage_selected(api)),
             Shortcut::GitUnstageFile => self.run_git_action(|panel, api| panel.stage_selected(api)),
             Shortcut::GitDiscardFile => {
-                self.run_git_action(|panel, api| panel.discard_selected(api))
+                // Discarding the file under edit while its buffer is
+                // dirty would silently fork it from disk.
+                let selected_path = self
+                    .git_panel
+                    .selected_file()
+                    .map(|entry| entry.path.clone());
+                if self.file_explorer.preview.dirty
+                    && selected_path.is_some_and(|path| {
+                        self.file_explorer.preview.path.as_deref() == Some(path.as_str())
+                    })
+                {
+                    self.error = Some(
+                        "unsaved edits: save or reload before discarding this file".to_string(),
+                    );
+                } else {
+                    self.run_git_action(|panel, api| panel.discard_selected(api));
+                }
             }
             Shortcut::GitStashFile => self.run_git_action(|panel, api| panel.stash_changes(api)),
             Shortcut::GitPull => self.run_git_action(|panel, api| panel.pull(api)),
@@ -615,6 +651,12 @@ impl TuiApp {
     fn open_files_screen(&mut self) {
         if self.screen != TuiScreen::Files {
             self.screen = TuiScreen::Files;
+            // A dirty preview survives the screen switch like a webui
+            // dirty editor tab: skip the rebuild so the buffer and its
+            // explorer stay together until saved or reloaded.
+            if self.file_explorer.preview.dirty && self.file_explorer.preview.path.is_some() {
+                return;
+            }
             if let Some(cwd) = self.active_cwd() {
                 self.file_explorer = FileExplorer::new(&cwd);
                 if let Err(err) = self.file_explorer.refresh(&self.web_api) {
@@ -776,6 +818,13 @@ impl TuiApp {
                     .unwrap_or_default();
                 if name.is_empty() {
                     self.error = Some("no file selected".to_string());
+                } else if self.file_explorer.preview.dirty
+                    && self.file_explorer.preview.path.is_some()
+                {
+                    // Renaming would desync the dirty buffer's path from
+                    // the file on disk; require a save or reload first.
+                    self.error =
+                        Some("unsaved edits: save or reload before renaming files".to_string());
                 } else {
                     self.prompt_input = Some(PromptInput {
                         kind: PromptKind::RenameFile,
@@ -791,6 +840,14 @@ impl TuiApp {
                     .unwrap_or_default();
                 if name.is_empty() {
                     self.error = Some("no file selected".to_string());
+                } else if self.file_explorer.preview.dirty
+                    && self.file_explorer.preview.path.is_some()
+                {
+                    // Deleting would orphan the dirty buffer (a later save
+                    // would recreate the file); the webui also refuses
+                    // editing deleted files.
+                    self.error =
+                        Some("unsaved edits: save or reload before deleting files".to_string());
                 } else {
                     self.prompt_input = Some(PromptInput {
                         kind: PromptKind::ConfirmDeleteFile,
@@ -822,7 +879,22 @@ impl TuiApp {
                 }
             }
             KeyCode::Char('d') => {
-                if let Err(err) = self.git_panel.discard_selected(&self.web_api) {
+                // Discarding the file under edit would make the dirty
+                // buffer diverge from disk with no reload prompt; the
+                // 409-style guard belongs here too.
+                let selected_path = self
+                    .git_panel
+                    .selected_file()
+                    .map(|entry| entry.path.clone());
+                if self.file_explorer.preview.dirty
+                    && selected_path.is_some_and(|path| {
+                        self.file_explorer.preview.path.as_deref() == Some(path.as_str())
+                    })
+                {
+                    self.error = Some(
+                        "unsaved edits: save or reload before discarding this file".to_string(),
+                    );
+                } else if let Err(err) = self.git_panel.discard_selected(&self.web_api) {
                     self.error = Some(err.to_string());
                 }
             }

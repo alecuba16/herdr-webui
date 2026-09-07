@@ -36,10 +36,8 @@ pub struct FileExplorer {
     /// Editing mode: keys type into `preview.content` instead of moving
     /// the tree selection.
     pub edit_active: bool,
-    /// Cursor position in chars within `preview.content`.
+    /// Byte offset of the edit cursor into `preview.content`.
     pub edit_cursor: usize,
-    /// First rendered line while editing.
-    pub edit_scroll: usize,
     pub filter: String,
     pub filter_active: bool,
     pub search_mode: bool,
@@ -58,7 +56,6 @@ impl FileExplorer {
             preview: FilePreview::default(),
             edit_active: false,
             edit_cursor: 0,
-            edit_scroll: 0,
             filter: String::new(),
             filter_active: false,
             search_mode: false,
@@ -160,14 +157,28 @@ impl FileExplorer {
     }
 
     pub fn open_preview(&mut self, api: &WebApiClient) -> Result<(), WebApiError> {
-        let Some(entry) = self.entries.get(self.selected) else {
+        let Some(entry) = self.entries.get(self.selected).cloned() else {
             return Ok(());
         };
         if entry.is_dir {
             return self.toggle_expand(api).map(|_| ());
         }
-        let path = entry.path.clone();
-        let data = api.file_read(&self.cwd, &path)?;
+        // Opening another file would throw away unsaved edits; the webui
+        // keeps dirty editor tabs open, so the TUI refuses until the
+        // buffer is saved or reloaded (Ctrl-S / Ctrl-R in edit mode).
+        if self.preview.dirty && self.preview.path.as_deref() != Some(entry.path.as_str()) {
+            return Err(WebApiError::Io(
+                "unsaved edits: save or reload before opening another file".to_string(),
+            ));
+        }
+        self.open_preview_path(api, &entry.path)
+    }
+
+    /// Load `path` into the preview, replacing whatever is shown. Callers
+    /// are responsible for dirty-buffer checks; Ctrl-R reload uses this to
+    /// intentionally discard local edits.
+    fn open_preview_path(&mut self, api: &WebApiClient, path: &str) -> Result<(), WebApiError> {
+        let data = api.file_read(&self.cwd, path)?;
         let content = data.get("content").and_then(Value::as_str).unwrap_or("");
         let binary = data.get("binary").and_then(Value::as_bool).unwrap_or(false);
         let truncated = data
@@ -175,7 +186,7 @@ impl FileExplorer {
             .and_then(Value::as_bool)
             .unwrap_or(false);
         self.preview = FilePreview {
-            path: Some(path),
+            path: Some(path.to_string()),
             content: content.to_string(),
             truncated,
             binary,
@@ -237,7 +248,6 @@ impl FileExplorer {
     pub fn start_edit(&mut self) -> Result<(), WebApiError> {
         self.can_edit_preview()?;
         self.edit_cursor = self.preview.content.len();
-        self.edit_scroll = 0;
         self.edit_active = true;
         Ok(())
     }
@@ -245,16 +255,38 @@ impl FileExplorer {
     /// Handle one key while editing. Returns Err only for save failures;
     /// Ctrl-S saves, Esc stops editing (dirty state is kept). The cursor is
     /// a byte offset into `preview.content`; char-boundary-safe helpers keep
-    /// multibyte UTF-8 intact.
+    /// multibyte UTF-8 intact. Enter inserts a line break (crossterm
+    /// reports it as `KeyCode::Enter`, not `Char('\n')`), and control- or
+    /// alt-modified chars are ignored so Ctrl combos never reach the file.
     pub fn edit_key(
         &mut self,
         key: crossterm::event::KeyEvent,
         api: &WebApiClient,
     ) -> Result<(), WebApiError> {
         use crossterm::event::{KeyCode, KeyModifiers};
+        // Defensive clamp: any path that swapped the preview keeps the
+        // invariant, but a stale cursor must never panic the editor.
+        self.edit_cursor = self.edit_cursor.min(self.preview.content.len());
         if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('s')) {
             return self.save_preview(api);
         }
+        // Ctrl-R reloads the file from the server, discarding the dirty
+        // buffer: the explicit "reload" answer to the 409 conflict message.
+        if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('r')) {
+            let path = match self.preview.path.clone() {
+                Some(path) => path,
+                None => return Ok(()),
+            };
+            self.open_preview_path(api, &path)?;
+            // The file may have become truncated or binary on disk; the
+            // edit guards decide whether editing can continue at all.
+            self.can_edit_preview()?;
+            self.edit_cursor = self.preview.content.len();
+            return Ok(());
+        }
+        let ctrl_or_alt = key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
         match key.code {
             KeyCode::Esc => {
                 self.edit_active = false;
@@ -271,7 +303,36 @@ impl FileExplorer {
                     self.preview.dirty = true;
                 }
             }
-            KeyCode::Char(ch) => {
+            KeyCode::Enter => {
+                self.preview.content.insert(self.edit_cursor, '\n');
+                self.edit_cursor += 1;
+                self.preview.dirty = true;
+            }
+            KeyCode::Left => {
+                self.edit_cursor = self.preview.content[..self.edit_cursor]
+                    .char_indices()
+                    .next_back()
+                    .map(|(index, _)| index)
+                    .unwrap_or(0);
+            }
+            KeyCode::Home => {
+                self.edit_cursor = self.preview.content[..self.edit_cursor]
+                    .rfind('\n')
+                    .map(|index| index + 1)
+                    .unwrap_or(0);
+            }
+            KeyCode::Right => {
+                if let Some(ch) = self.preview.content[self.edit_cursor..].chars().next() {
+                    self.edit_cursor += ch.len_utf8();
+                }
+            }
+            KeyCode::End => {
+                self.edit_cursor = self.preview.content[self.edit_cursor..]
+                    .find('\n')
+                    .map(|index| self.edit_cursor + index)
+                    .unwrap_or(self.preview.content.len());
+            }
+            KeyCode::Char(ch) if !ctrl_or_alt => {
                 self.preview.content.insert(self.edit_cursor, ch);
                 self.edit_cursor += ch.len_utf8();
                 self.preview.dirty = true;
@@ -846,18 +907,33 @@ mod tests {
         crossterm::event::KeyEvent::new(KeyCode::Char(ch), modifiers)
     }
 
-    #[test]
-    fn edit_key_types_and_backspaces_utf8_safe() {
-        let api = WebApiClient::new("127.0.0.1", 1);
-        let mut explorer = FileExplorer::new("/repo");
-        explorer.preview = FilePreview {
+    fn key(code: crossterm::event::KeyCode) -> crossterm::event::KeyEvent {
+        crossterm::event::KeyEvent::new(code, crossterm::event::KeyModifiers::NONE)
+    }
+
+    fn ctrl_key(ch: char) -> crossterm::event::KeyEvent {
+        crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char(ch),
+            crossterm::event::KeyModifiers::CONTROL,
+        )
+    }
+
+    fn preview(content: &str) -> FilePreview {
+        FilePreview {
             path: Some("a.txt".to_string()),
-            content: "ab".to_string(),
+            content: content.to_string(),
             truncated: false,
             binary: false,
             hash: "h1".to_string(),
             dirty: false,
-        };
+        }
+    }
+
+    #[test]
+    fn edit_key_types_and_backspaces_utf8_safe() {
+        let api = WebApiClient::new("127.0.0.1", 1);
+        let mut explorer = FileExplorer::new("/repo");
+        explorer.preview = preview("ab");
         explorer.start_edit().unwrap();
         assert_eq!(explorer.edit_cursor, 2);
         // Insert a multibyte char: the cursor advances by its UTF-8 length.
@@ -867,44 +943,80 @@ mod tests {
         assert_eq!(explorer.edit_cursor, "abñ".len());
         // Backspace removes one full multibyte char, not one byte.
         explorer
-            .edit_key(
-                crossterm::event::KeyEvent::new(
-                    crossterm::event::KeyCode::Backspace,
-                    crossterm::event::KeyModifiers::NONE,
-                ),
-                &api,
-            )
+            .edit_key(key(crossterm::event::KeyCode::Backspace), &api)
             .unwrap();
         assert_eq!(explorer.preview.content, "ab");
         assert_eq!(explorer.edit_cursor, 2);
-        // Newline chars are content too (the TUI types them as chars).
-        explorer.edit_key(edit_key('\n', false), &api).unwrap();
+        // Enter (a real crossterm KeyCode::Enter) inserts a line break.
+        explorer
+            .edit_key(key(crossterm::event::KeyCode::Enter), &api)
+            .unwrap();
         assert_eq!(explorer.preview.content, "ab\n");
         assert_eq!(explorer.edit_cursor, 3);
+        // Control chars never reach the buffer: Ctrl-U is ignored here.
+        explorer.edit_key(ctrl_key('u'), &api).unwrap();
+        assert_eq!(explorer.preview.content, "ab\n");
+        // Alt-modified chars are ignored too.
+        let alt = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('j'),
+            crossterm::event::KeyModifiers::ALT,
+        );
+        explorer.edit_key(alt, &api).unwrap();
+        assert_eq!(explorer.preview.content, "ab\n");
+    }
+
+    #[test]
+    fn edit_key_moves_cursor_with_left_right_home_end() {
+        let api = WebApiClient::new("127.0.0.1", 1);
+        let mut explorer = FileExplorer::new("/repo");
+        explorer.preview = preview("l1 x\nl2 y\nl3 z");
+        explorer.start_edit().unwrap();
+        assert_eq!(explorer.edit_cursor, "l1 x\nl2 y\nl3 z".len());
+        // Home: jump to the start of the current (last) line.
+        explorer
+            .edit_key(key(crossterm::event::KeyCode::Home), &api)
+            .unwrap();
+        assert_eq!(explorer.edit_cursor, "l1 x\nl2 y\n".len());
+        // Left: step back one char onto the previous line's newline.
+        explorer
+            .edit_key(key(crossterm::event::KeyCode::Left), &api)
+            .unwrap();
+        assert_eq!(explorer.edit_cursor, "l1 x\nl2 y".len());
+        // Left again: within line 2.
+        explorer
+            .edit_key(key(crossterm::event::KeyCode::Left), &api)
+            .unwrap();
+        assert_eq!(explorer.edit_cursor, "l1 x\nl2 ".len());
+        // Right restores one char.
+        explorer
+            .edit_key(key(crossterm::event::KeyCode::Right), &api)
+            .unwrap();
+        assert_eq!(explorer.edit_cursor, "l1 x\nl2 y".len());
+        // End: jump to the end of the current line (before its newline).
+        explorer
+            .edit_key(key(crossterm::event::KeyCode::End), &api)
+            .unwrap();
+        assert_eq!(explorer.edit_cursor, "l1 x\nl2 y".len());
+        // Typing inserts at the cursor, not only at the end.
+        explorer.edit_key(edit_key('!', false), &api).unwrap();
+        assert_eq!(explorer.preview.content, "l1 x\nl2 y!\nl3 z");
+        // A stale cursor beyond the content length clamps to the end and
+        // never panics.
+        explorer.edit_cursor = 9999;
+        explorer.edit_key(edit_key('?', false), &api).unwrap();
+        assert_eq!(explorer.preview.content, "l1 x\nl2 y!\nl3 z?");
+        assert_eq!(explorer.edit_cursor, "l1 x\nl2 y!\nl3 z?".len());
     }
 
     #[test]
     fn edit_key_esc_stops_and_guards_refuse_unsafe_previews() {
         let api = WebApiClient::new("127.0.0.1", 1);
         let mut explorer = FileExplorer::new("/repo");
-        explorer.preview = FilePreview {
-            path: Some("a.txt".to_string()),
-            content: "text".to_string(),
-            truncated: false,
-            binary: false,
-            hash: "h1".to_string(),
-            dirty: false,
-        };
+        explorer.preview = preview("text");
         explorer.start_edit().unwrap();
         explorer.edit_key(edit_key('x', false), &api).unwrap();
         explorer
-            .edit_key(
-                crossterm::event::KeyEvent::new(
-                    crossterm::event::KeyCode::Esc,
-                    crossterm::event::KeyModifiers::NONE,
-                ),
-                &api,
-            )
+            .edit_key(key(crossterm::event::KeyCode::Esc), &api)
             .unwrap();
         assert!(!explorer.edit_active);
         assert!(explorer.preview.dirty, "Esc keeps unsaved changes");

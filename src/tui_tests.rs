@@ -576,3 +576,148 @@ fn prefix_e_amend_moves_to_commit_modal_and_a_stays_amend() {
     let modal = app.commit_input.as_ref().expect("amend modal open");
     assert!(modal.amend);
 }
+
+#[test]
+fn files_screen_dirty_preview_survives_switch_and_blocks_replacement() {
+    let client = BackendClient::builtin_session(None);
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    app.screen = TuiScreen::Files;
+    app.file_explorer.preview = crate::tui_panels::FilePreview {
+        path: Some("notes.md".to_string()),
+        content: "line one".to_string(),
+        truncated: false,
+        binary: false,
+        hash: "h1".to_string(),
+        dirty: false,
+    };
+    app.file_explorer.entries = vec![
+        FileEntry {
+            name: "notes.md".to_string(),
+            path: "notes.md".to_string(),
+            is_dir: false,
+            size: None,
+            level: 0,
+            expanded: false,
+        },
+        FileEntry {
+            name: "other.txt".to_string(),
+            path: "other.txt".to_string(),
+            is_dir: false,
+            size: None,
+            level: 0,
+            expanded: false,
+        },
+    ];
+    app.handle_key(KeyEvent::from(KeyCode::Char('e')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('!')));
+    assert!(app.file_explorer.preview.dirty);
+
+    // Prefix t leaves for the terminal, then prefix f returns to Files
+    // without rebuilding the explorer: the dirty buffer survives both
+    // switches, like a webui dirty editor tab.
+    let ctrl_b = KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL);
+    app.handle_key(ctrl_b);
+    app.handle_key(KeyEvent::from(KeyCode::Char('t')));
+    assert_eq!(app.screen, TuiScreen::Terminal);
+    app.handle_key(ctrl_b);
+    app.handle_key(KeyEvent::from(KeyCode::Char('f')));
+    assert_eq!(app.screen, TuiScreen::Files);
+    assert_eq!(app.file_explorer.preview.content, "line one!");
+    assert!(app.file_explorer.preview.dirty);
+
+    // Leave edit mode (Esc keeps dirty) so tree navigation works again.
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert!(!app.file_explorer.edit_active);
+
+    // Opening a different file while dirty is refused with a visible
+    // message; the dirty preview is not replaced.
+    app.file_explorer.move_selection(1);
+    assert_eq!(app.file_explorer.selected, 1);
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app
+        .error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("unsaved edits"));
+    assert_eq!(
+        app.file_explorer.preview.path.as_deref(),
+        Some("notes.md"),
+        "preview must not be replaced while dirty"
+    );
+}
+
+#[test]
+fn dirty_preview_blocks_rename_delete_and_discard_of_edited_file() {
+    let client = BackendClient::builtin_session(None);
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    app.screen = TuiScreen::Files;
+    app.file_explorer.preview = crate::tui_panels::FilePreview {
+        path: Some("notes.md".to_string()),
+        content: "line one".to_string(),
+        truncated: false,
+        binary: false,
+        hash: "h1".to_string(),
+        dirty: false,
+    };
+    app.file_explorer.entries = vec![FileEntry {
+        name: "notes.md".to_string(),
+        path: "notes.md".to_string(),
+        is_dir: false,
+        size: None,
+        level: 0,
+        expanded: false,
+    }];
+    app.handle_key(KeyEvent::from(KeyCode::Char('e')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('!')));
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert!(app.file_explorer.preview.dirty);
+
+    // Rename and delete of the dirty file are refused, not prompted.
+    app.handle_key(KeyEvent::from(KeyCode::Char('R')));
+    assert!(app.prompt_input.is_none());
+    assert!(app
+        .error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("unsaved edits"));
+    app.error = None;
+    app.handle_key(KeyEvent::from(KeyCode::Char('x')));
+    assert!(app.prompt_input.is_none());
+    assert!(app
+        .error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("unsaved edits"));
+
+    // Git discard (in-screen d) of the same file is refused too.
+    app.screen = TuiScreen::Git;
+    app.git_panel.view = GitView::Changes;
+    app.git_panel.files = vec![GitFileEntry {
+        path: "notes.md".to_string(),
+        status: GitFileStatus::Unstaged,
+    }];
+    app.git_panel.file_selected = 0;
+    app.handle_key(KeyEvent::from(KeyCode::Char('d')));
+    assert!(app
+        .error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("unsaved edits"));
+
+    // Discarding a different file still works (fails on the dead API,
+    // proving the action ran instead of the guard).
+    app.git_panel.files = vec![GitFileEntry {
+        path: "other.txt".to_string(),
+        status: GitFileStatus::Unstaged,
+    }];
+    app.error = None;
+    app.handle_key(KeyEvent::from(KeyCode::Char('d')));
+    assert!(
+        app.error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("webui connection failed"),
+        "discard of a non-edited file must reach the API, got {:?}",
+        app.error
+    );
+}
