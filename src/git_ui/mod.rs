@@ -817,6 +817,7 @@ mod tests {
             backend_mode: BackendMode::ExternalHerdr,
             _builtin_backend: None,
             builtin_sessions: Arc::new(Mutex::new(HashMap::new())),
+            builtin_start_lock: Arc::new(Mutex::new(())),
             herdr_bin: "herdr".to_string(),
             auth: Arc::new(Mutex::new(AuthConfig {
                 user: None,

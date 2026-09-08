@@ -2906,14 +2906,20 @@ async function loadVersions() {
       state.herdrVersion = install.version || null;
     }
     // The server is authoritative for the default backend. On first load
-    // (serverBackendConfirmed false) adopt the server's current backend so a
-    // stale localStorage value cannot lock the browser into a disabled or
-    // incompatible backend; afterwards keep the user's explicit choice.
+    // (serverBackendConfirmed false) adopt the server's configured default
+    // backend so a stale localStorage value cannot lock the browser into a
+    // disabled or incompatible backend; afterwards keep the user's explicit
+    // choice. `default_backend` is the server's true configured default
+    // (backend_mode + enabled flags), independent of what THIS request
+    // echoed in `current_backend` (the browser's own x-herdr-backend header).
     // Additionally, never target external herdr when no compatible install
     // was detected — the attach would be guaranteed to fail.
-    if (!state.serverBackendConfirmed && v.current_backend) {
-      state.sessionBackend = v.current_backend;
-      localStorage.setItem("herdr-session-backend", state.sessionBackend);
+    if (!state.serverBackendConfirmed) {
+      const serverDefault = v.default_backend || v.current_backend;
+      if (serverDefault) {
+        state.sessionBackend = serverDefault;
+        localStorage.setItem("herdr-session-backend", state.sessionBackend);
+      }
     }
     if (currentSessionBackend() === "external-herdr" && !state.herdrCompatible) {
       state.sessionBackend = "builtin";

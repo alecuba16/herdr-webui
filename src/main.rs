@@ -554,6 +554,11 @@ pub(crate) struct WebState {
     backend_mode: BackendMode,
     _builtin_backend: Option<Arc<builtin_backend::BuiltinBackendHandle>>,
     builtin_sessions: BuiltinSessionRegistry,
+    /// Serializes built-in session cold starts. Several handlers can
+    /// auto-start the same session concurrently on a fresh browser load;
+    /// without a lock two starts would race on binding the session socket
+    /// and the loser would fail with AddrInUse.
+    builtin_start_lock: Arc<Mutex<()>>,
     herdr_bin: String,
     auth: Arc<Mutex<AuthConfig>>,
     server_settings: Arc<Mutex<RuntimeServerSettings>>,
@@ -1058,6 +1063,7 @@ async fn main() -> io::Result<()> {
         config.api_socket.as_deref(),
     );
     let builtin_sessions: BuiltinSessionRegistry = Arc::new(Mutex::new(HashMap::new()));
+    let builtin_start_lock: Arc<Mutex<()>> = Arc::new(Mutex::new(()));
     let (api_socket, client_socket) = if backend_mode.is_builtin() {
         let (_api_socket, _client_socket) = builtin_socket_paths(config.session.as_deref());
         let handle = Arc::new(builtin_backend::BuiltinBackendHandle::start(
@@ -1093,6 +1099,7 @@ async fn main() -> io::Result<()> {
         backend_mode,
         _builtin_backend: None,
         builtin_sessions,
+        builtin_start_lock,
         herdr_bin: std::env::var("HERDR_WEB_HERDR_BIN").unwrap_or_else(|_| "herdr".to_string()),
         auth,
         server_settings,
@@ -1705,6 +1712,52 @@ fn api_for_headers(state: &WebState, headers: &HeaderMap) -> ApiClient {
     api_for_target_session(state, backend, session.as_deref())
 }
 
+/// Ensure the built-in session backend is running before proxying a request
+/// to it. The built-in backend is embedded in the WebUI process, so starting
+/// it on demand is safe and cheap; without this, a browser that pins the
+/// built-in backend before any `/api/session/launch` call would get a 502
+/// for every workspace/list request and the Git UI would fall back to the
+/// default folder ("No Git repository").
+///
+/// Must run on a blocking thread: it connects to the session socket and can
+/// spawn the built-in backend threads.
+fn ensure_backend_for_request(
+    state: &WebState,
+    backend: SessionBackendTarget,
+    session: Option<&str>,
+) {
+    if backend != SessionBackendTarget::Builtin {
+        return;
+    }
+    if !backend_target_enabled(state, backend) {
+        return;
+    }
+    if let Err(err) = ensure_builtin_session(state, session) {
+        log_event(
+            &state.log_level(),
+            &format!("failed to auto-start built-in session: {err}"),
+        );
+    }
+}
+
+/// Resolve the API client for a request header set, auto-starting the
+/// built-in session backend when the request targets it. Only call for
+/// authenticated requests (session launch/close manage the built-in
+/// session lifecycle themselves and must not auto-start on close).
+async fn api_for_headers_ensured(state: &WebState, headers: &HeaderMap) -> ApiClient {
+    let backend = backend_target_for_headers(state, headers);
+    let session = session_from_headers(state, headers);
+    if backend == SessionBackendTarget::Builtin {
+        let state_clone = state.clone();
+        let session_clone = session.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            ensure_backend_for_request(&state_clone, backend, session_clone.as_deref())
+        })
+        .await;
+    }
+    api_for_target_session(state, backend, session.as_deref())
+}
+
 #[cfg(test)]
 fn client_socket_for_headers(state: &WebState, headers: &HeaderMap) -> PathBuf {
     let backend = backend_target_for_headers(state, headers);
@@ -1712,7 +1765,10 @@ fn client_socket_for_headers(state: &WebState, headers: &HeaderMap) -> PathBuf {
     client_socket_for_target_session(state, backend, session.as_deref())
 }
 
-fn api_for_query_session(
+/// Resolve the API client for a query-string session/backend without
+/// starting anything. `api_for_query_session_ensured` builds on this after
+/// auto-starting the built-in backend when needed.
+fn api_for_query_session_routed(
     state: &WebState,
     headers: &HeaderMap,
     session: Option<&str>,
@@ -1721,6 +1777,29 @@ fn api_for_query_session(
     let backend = backend_target_for_query(state, headers, backend);
     let session = request_session_name(state, session);
     api_for_target_session(state, backend, session.as_deref())
+}
+
+/// WebSocket twin of `api_for_headers_ensured`: resolve the API client for a
+/// query-string session/backend, auto-starting the built-in backend when the
+/// connection targets it so the terminal/events sockets do not 502 on a
+/// fresh browser that pinned the built-in backend.
+async fn api_for_query_session_ensured(
+    state: &WebState,
+    headers: &HeaderMap,
+    session: Option<&str>,
+    backend: Option<&str>,
+) -> ApiClient {
+    let target = backend_target_for_query(state, headers, backend);
+    let session = request_session_name(state, session);
+    if target == SessionBackendTarget::Builtin {
+        let state_clone = state.clone();
+        let session_clone = session.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            ensure_backend_for_request(&state_clone, target, session_clone.as_deref())
+        })
+        .await;
+    }
+    api_for_target_session(state, target, session.as_deref())
 }
 
 fn client_socket_for_query_session(
@@ -2409,11 +2488,13 @@ async fn versions(
     let herdr_install = tokio::task::spawn_blocking(move || detect_herdr_install(&herdr_bin))
         .await
         .unwrap_or_default();
+    let default_backend = default_backend_target(&state);
     Json(json!({
         "webui": HERDR_WEBUI_VERSION,
         "backend": backend.version,
         "backend_mode": state.backend_mode.as_str(),
         "current_backend": current_backend.as_str(),
+        "default_backend": default_backend.as_str(),
         "session": session_display_name(session.as_deref()),
         "protocol_version": PROTOCOL_VERSION,
         "min_protocol_version": MIN_SUPPORTED_PROTOCOL_VERSION,
@@ -2473,6 +2554,22 @@ fn action_backend(
 
 fn ensure_builtin_session(state: &WebState, session: Option<&str>) -> Result<(), String> {
     let session_name = canonical_session_name(session);
+    if state
+        .builtin_sessions
+        .lock()
+        .map(|sessions| sessions.contains_key(&session_name))
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
+    // Serialize cold starts across threads: with auto-start on workspace
+    // requests, a fresh browser fires several requests at once and two
+    // concurrent starts would race on the session socket bind. Must run on
+    // a blocking thread (callers already use spawn_blocking).
+    let _start_guard = state
+        .builtin_start_lock
+        .lock()
+        .map_err(|_| "built-in session start lock unavailable".to_string())?;
     if state
         .builtin_sessions
         .lock()
@@ -2809,7 +2906,7 @@ async fn workspaces(
     if let Err(response) = require_auth(&state, &headers, remote) {
         return response;
     }
-    let api = api_for_headers(&state, &headers);
+    let api = api_for_headers_ensured(&state, &headers).await;
     // request_value() does blocking socket I/O; offload to a blocking thread
     // so it does not stall the async runtime (and active WebSocket loops).
     match tokio::task::spawn_blocking(move || {
@@ -3179,7 +3276,7 @@ async fn worktrees(
         return response;
     }
     let cwd = query.cwd.as_deref().map(expand_user_path_string);
-    let api = api_for_headers(&state, &headers);
+    let api = api_for_headers_ensured(&state, &headers).await;
     match api.request_value(
         json!({ "id": "web:worktree:list", "method": "worktree.list", "params": { "workspace_id": query.workspace_id, "cwd": cwd } }),
     ) {
@@ -3424,7 +3521,7 @@ async fn create_worktree(
     }
     let cwd = body.cwd.as_deref().map(expand_user_path_string);
     let path = body.path.as_deref().map(expand_user_path_string);
-    let api = api_for_headers(&state, &headers);
+    let api = api_for_headers_ensured(&state, &headers).await;
 
     // Phase 1: git operations (pull, branch check, worktree checkout, and
     // backend API version detection) are blocking subprocesses or socket I/O
@@ -3617,7 +3714,7 @@ async fn open_worktree(
         .await;
     });
     let response = proxy_request_async(
-        api_for_headers(&state, &headers),
+        api_for_headers_ensured(&state, &headers).await,
         json!({
             "id": "web:worktree:open",
             "method": "worktree.open",
@@ -3670,7 +3767,7 @@ async fn open_recent_workspace(
         .await;
     });
     let response = proxy_request_async(
-        api_for_headers(&state, &headers),
+        api_for_headers_ensured(&state, &headers).await,
         json!({
             "id": "web:recent-workspace:open",
             "method": "worktree.open",
@@ -3746,7 +3843,7 @@ async fn agents(
         return response;
     }
     proxy_request_async(
-        api_for_headers(&state, &headers),
+        api_for_headers_ensured(&state, &headers).await,
         json!({ "id": "web:agent:list", "method": "agent.list", "params": {} }),
     )
     .await
@@ -3876,7 +3973,7 @@ async fn tabs(
         return response;
     }
     proxy_request_async(
-        api_for_headers(&state, &headers),
+        api_for_headers_ensured(&state, &headers).await,
         json!({ "id": "web:tab:list", "method": "tab.list", "params": { "workspace_id": query.workspace_id } }),
     )
     .await
@@ -3892,7 +3989,7 @@ async fn panes(
         return response;
     }
     proxy_request_async(
-        api_for_headers(&state, &headers),
+        api_for_headers_ensured(&state, &headers).await,
         json!({ "id": "web:pane:list", "method": "pane.list", "params": { "workspace_id": query.workspace_id } }),
     )
     .await
@@ -3913,7 +4010,7 @@ async fn pane_layout(
         return response;
     }
     proxy_request_async(
-        api_for_headers(&state, &headers),
+        api_for_headers_ensured(&state, &headers).await,
         json!({ "id": "web:pane:layout", "method": "pane.layout", "params": { "pane_id": query.pane_id } }),
     )
     .await
@@ -3931,7 +4028,7 @@ async fn session_snapshot(
         return response;
     }
     proxy_request_async(
-        api_for_headers(&state, &headers),
+        api_for_headers_ensured(&state, &headers).await,
         json!({ "id": "web:session:snapshot", "method": "session.snapshot", "params": {} }),
     )
     .await
@@ -3974,7 +4071,7 @@ async fn create_workspace(
         Err(response) => return *response,
     };
     proxy_request_async(
-        api_for_headers(&state, &headers),
+        api_for_headers_ensured(&state, &headers).await,
         json!({ "id": "web:workspace:create", "method": "workspace.create", "params": { "cwd": cwd, "focus": false, "label": body.label, "env": {} } }),
     )
     .await
@@ -3996,7 +4093,7 @@ async fn rename_workspace(
         return response;
     }
     proxy_request_async(
-        api_for_headers(&state, &headers),
+        api_for_headers_ensured(&state, &headers).await,
         json!({ "id": "web:workspace:rename", "method": "workspace.rename", "params": { "workspace_id": workspace_id, "label": body.label } }),
     )
     .await
@@ -4012,7 +4109,7 @@ async fn close_workspace(
         return response;
     }
     proxy_request_async(
-        api_for_headers(&state, &headers),
+        api_for_headers_ensured(&state, &headers).await,
         json!({ "id": "web:workspace:close", "method": "workspace.close", "params": { "workspace_id": workspace_id } }),
     )
     .await
@@ -4032,7 +4129,7 @@ async fn remove_worktree(
         workspace_id,
         body.as_ref().and_then(|body| body.force).unwrap_or(false),
     );
-    proxy_request_async(api_for_headers(&state, &headers), request).await
+    proxy_request_async(api_for_headers_ensured(&state, &headers).await, request).await
 }
 
 #[derive(Deserialize)]
@@ -4051,7 +4148,7 @@ async fn create_tab(
         return response;
     }
     proxy_request_async(
-        api_for_headers(&state, &headers),
+        api_for_headers_ensured(&state, &headers).await,
         json!({ "id": "web:tab:create", "method": "tab.create", "params": { "workspace_id": body.workspace_id, "focus": false, "label": body.label, "env": {} } }),
     )
     .await
@@ -4073,7 +4170,7 @@ async fn rename_tab(
         return response;
     }
     proxy_request_async(
-        api_for_headers(&state, &headers),
+        api_for_headers_ensured(&state, &headers).await,
         json!({ "id": "web:tab:rename", "method": "tab.rename", "params": { "tab_id": tab_id, "label": body.label } }),
     )
     .await
@@ -4089,7 +4186,7 @@ async fn close_tab(
         return response;
     }
     proxy_request_async(
-        api_for_headers(&state, &headers),
+        api_for_headers_ensured(&state, &headers).await,
         json!({ "id": "web:tab:close", "method": "tab.close", "params": { "tab_id": tab_id } }),
     )
     .await
@@ -4105,7 +4202,7 @@ async fn close_pane(
         return response;
     }
     proxy_request_async(
-        api_for_headers(&state, &headers),
+        api_for_headers_ensured(&state, &headers).await,
         json!({ "id": "web:pane:close", "method": "pane.close", "params": { "pane_id": pane_id } }),
     )
     .await
@@ -4125,12 +4222,13 @@ async fn events_ws(
         &state.log_level(),
         &format!("websocket: events connection from {remote}"),
     );
-    let api = api_for_query_session(
+    let api = api_for_query_session_ensured(
         &state,
         &headers,
         query.session.as_deref(),
         query.backend.as_deref(),
-    );
+    )
+    .await;
     ws.on_upgrade(move |socket| events_socket(state, api, socket))
 }
 
@@ -4328,12 +4426,13 @@ async fn terminal_ws(
         query.session.as_deref(),
         query.backend.as_deref(),
     );
-    let api = api_for_query_session(
+    let api = api_for_query_session_ensured(
         &state,
         &headers,
         query.session.as_deref(),
         query.backend.as_deref(),
-    );
+    )
+    .await;
     ws.on_upgrade(move |socket| terminal_socket(client_socket_path, api, query, socket))
 }
 
@@ -4645,6 +4744,7 @@ mod tests {
             backend_mode: BackendMode::ExternalHerdr,
             _builtin_backend: None,
             builtin_sessions: Arc::new(Mutex::new(HashMap::new())),
+            builtin_start_lock: Arc::new(Mutex::new(())),
             herdr_bin: "herdr".to_string(),
             auth: Arc::new(Mutex::new(AuthConfig {
                 user: Some("user".to_string()),
@@ -5156,7 +5256,7 @@ mod tests {
 
         let (query_api, query_client) = builtin_socket_paths(Some("query"));
         assert_eq!(
-            api_for_query_session(&state, &headers, Some("query"), None).socket_path,
+            api_for_query_session_routed(&state, &headers, Some("query"), None).socket_path,
             query_api
         );
         assert_eq!(
@@ -10112,6 +10212,151 @@ mod tests {
         let _ = fs::remove_file(socket);
     }
 
+    // ── builtin auto-start on workspace requests ──
+    // A browser pinning the built-in backend before any /api/session/launch
+    // used to get a 502 on every workspace list (the built-in session was
+    // never started), which made the Git UI fall back to the default folder.
+    // The workspaces handler must auto-start the built-in session instead.
+
+    #[cfg(unix)]
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn workspaces_auto_starts_builtin_session() {
+        let _guard = lock_env();
+        let config_home = std::env::temp_dir().join(format!(
+            "herdr-webui-builtin-auto-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
+
+        let session_name = "test-builtin-auto";
+        // Hold a state clone so the shared builtin_sessions registry (and
+        // with it the started backend handle) outlives the oneshot request:
+        // oneshot consumes the router and would otherwise drop the handle
+        // and tear the session down before we can verify it.
+        let state = test_state();
+        let app = test_app_with_state(state.clone());
+
+        // No session launch: the request itself must start the backend.
+        let response = app
+            .oneshot(
+                authed_request(Method::GET, "/api/workspaces")
+                    .header("x-herdr-backend", "builtin")
+                    .header("x-herdr-session", session_name)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert!(body["result"]["workspaces"].is_array());
+
+        // The built-in session must now be running and reachable: the
+        // response came from it (no 502), and the api socket accepts
+        // connections even for a fresh registry view.
+        let (api_socket, _) = builtin_socket_paths(Some(session_name));
+        assert!(connect_local_stream(&api_socket).is_ok());
+
+        let _ = fs::remove_dir_all(&config_home);
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    // A fresh browser fires several workspace requests at once; concurrent
+    // auto-starts of the same built-in session must not race on the socket
+    // bind. Every caller must succeed (or find the session already running).
+    #[cfg(unix)]
+    #[test]
+    fn concurrent_ensure_builtin_session_starts_session_once() {
+        let _guard = lock_env();
+        let config_home = std::env::temp_dir().join(format!(
+            "herdr-webui-builtin-race-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
+
+        let session_name = "test-builtin-race";
+        let state = test_state();
+        let barrier = Arc::new(std::sync::Barrier::new(8));
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let state = state.clone();
+            let barrier = Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                ensure_builtin_session(&state, Some(session_name))
+            }));
+        }
+        for handle in handles {
+            assert!(handle.join().unwrap().is_ok());
+        }
+
+        let (api_socket, _) = builtin_socket_paths(Some(session_name));
+        assert!(connect_local_stream(&api_socket).is_ok());
+
+        let _ = fs::remove_dir_all(&config_home);
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    // versions must expose the server's true configured default backend so
+    // fresh browsers adopt it; current_backend only echoes the request
+    // header and cannot drive that choice.
+    #[cfg(unix)]
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn versions_reports_default_backend_independent_of_request_header() {
+        let _guard = lock_env();
+        let config_home = std::env::temp_dir().join(format!(
+            "herdr-webui-versions-default-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
+
+        let (socket, handle) = fake_api_socket_for_method(
+            "ping",
+            json!({ "id": "web:ping", "result": { "version": "0.9.0", "protocol": 22 } }),
+        );
+        // Bind the fake ping listener at the built-in default session path:
+        // the request targets the built-in backend, so that is the socket
+        // versions actually pings.
+        let (api_socket, _) = builtin_socket_paths(None);
+        fs::create_dir_all(api_socket.parent().unwrap()).unwrap();
+        let _ = fs::remove_file(&api_socket);
+        fs::rename(&socket, &api_socket).unwrap();
+
+        let mut state = test_state();
+        // Server configured external-herdr while the browser pins builtin.
+        state.backend_mode = BackendMode::ExternalHerdr;
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::GET, "/api/versions")
+                    .header("x-herdr-backend", "builtin")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["current_backend"], "builtin");
+        assert_eq!(body["default_backend"], "external-herdr");
+        handle.join().unwrap();
+        let _ = fs::remove_file(&api_socket);
+        let _ = fs::remove_dir_all(&config_home);
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
     // ── events WebSocket upgrade test ──
     // The events_ws handler requires a proper WebSocket upgrade request.
     // Testing the full event loop requires a real WebSocket client and
@@ -10872,6 +11117,7 @@ mod tui_parity_e2e_tests {
             backend_mode: BackendMode::ExternalHerdr,
             _builtin_backend: None,
             builtin_sessions: Arc::new(Mutex::new(HashMap::new())),
+            builtin_start_lock: Arc::new(Mutex::new(())),
             herdr_bin: "herdr".to_string(),
             auth: Arc::new(Mutex::new(AuthConfig {
                 user: None,
