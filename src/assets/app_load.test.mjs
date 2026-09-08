@@ -1921,6 +1921,49 @@ describe("app bundle load", () => {
     );
   });
 
+  it("adopts the server's default_backend on first load, not the echoed current_backend", async () => {
+    // Regression: current_backend echoes the browser's own
+    // x-herdr-backend header, so adopting it is a no-op and a stale
+    // localStorage value could pin the browser to a backend the server
+    // does not default to. default_backend is the server's true
+    // configured default and must win on first load.
+    const ctx = context();
+    ctx.localStorage.setItem("herdr-session-backend", "builtin");
+    ctx.fetch = async (url) => {
+      equal(url, "/api/versions");
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          webui: "1.2.3",
+          backend: "0.9.0",
+          backend_mode: "external-herdr",
+          current_backend: "builtin",
+          default_backend: "external-herdr",
+          session: "default",
+          compatibility: { status: "compatible" },
+          herdr_install: { available: true, compatible: true, version: "0.9.0" },
+        }),
+      };
+    };
+    vm.runInContext(source, ctx);
+
+    await ctx.loadVersions();
+
+    equal(vm.runInContext("state.sessionBackend", ctx), "external-herdr");
+    equal(
+      ctx.localStorage.getItem("herdr-session-backend"),
+      "external-herdr",
+    );
+
+    // After the first load the user's explicit choice wins: a later
+    // versions response must not re-pin the backend.
+    ctx.goSession("default", "builtin");
+    await ctx.loadVersions();
+
+    equal(vm.runInContext("state.sessionBackend", ctx), "builtin");
+  });
+
   it("filters OSC color query replies before terminal input reaches the backend", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
