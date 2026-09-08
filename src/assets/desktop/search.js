@@ -482,7 +482,7 @@ function renderRecentSection(recent) {
   if (!recent.length) return "";
   const rows = recent.map((result) => renderSearchRowResult(result)).join("");
   const clear = `<button class="git-ui-btn" onclick="HerdrSearchPalette.clearRecent(event)" title="Clear recent workspaces">Clear</button>`;
-  return `<section class="search-section"><div class="search-section-head"><button class="search-section-toggle" onclick="HerdrSearchPalette.toggleSection('recent')" aria-expanded="${expanded ? "true" : "false"}"><strong><span class="herdr-tree-icon herdr-tree-icon-${expanded ? "chevron-down" : "chevron-right"}" aria-hidden="true"></span>Recent workspaces</strong><span>${recent.length}</span></button>${clear}</div>${expanded ? rows : ""}</section>`;
+  return `<section class="search-section"><div class="search-section-head"><button class="search-section-toggle search-section-head-toggle" onclick="HerdrSearchPalette.toggleSection('recent')" aria-expanded="${expanded ? "true" : "false"}"><strong><span class="herdr-tree-icon herdr-tree-icon-${expanded ? "chevron-down" : "chevron-right"}" aria-hidden="true"></span>Recent workspaces</strong><span>${recent.length}</span></button>${clear}</div>${expanded ? rows : ""}</section>`;
 }
 
 function renderActionSection(actions) {

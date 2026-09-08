@@ -232,6 +232,11 @@ describe("app bundle load", () => {
     ok(section.includes("Recent workspaces"), "section renders its title");
     ok(section.includes("Clear"), "section renders the clear button");
     ok(section.includes("Beta"), "section renders recent rows");
+    ok(section.includes('class="search-section-toggle search-section-head-toggle"'), "recent toggle uses the shared toggle styling inside the head row");
+    ok(section.includes('aria-expanded="true"'), "recent toggle exposes expanded state");
+    const collapsed = vm.runInContext("searchPaletteState.sectionsExpanded.recent = false; renderRecentSection([{ type: 'recent', icon: 'wt', title: 'Beta', subtitle: 'worktree · /repo/beta', path: '/repo/beta' }])", ctx);
+    ok(collapsed.includes('aria-expanded="false"'), "collapsed recent toggle reports not expanded");
+    ok(!collapsed.includes('onclick="HerdrSearchPalette.openRecent'), "collapsed section hides rows");
 
     const empty = vm.runInContext("renderRecentSection([])", ctx);
     equal(empty, "", "empty recents render no section");
