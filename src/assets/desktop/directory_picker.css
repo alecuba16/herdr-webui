@@ -74,3 +74,8 @@
 .directory-picker-error span {
   min-width: 0;
 }
+.directory-picker-more {
+  display: flex;
+  justify-content: center;
+  padding: 8px 0;
+}
