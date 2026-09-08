@@ -1586,7 +1586,10 @@
     if (!list) return "";
     if (list.loading) return `<div class="git-ui-branch-list git-ui-worktree-list" onclick="event.stopPropagation()"><div class="git-ui-loading"><span></span><strong>Loading worktrees</strong></div></div>`;
     if (list.error) return `<div class="git-ui-branch-list git-ui-worktree-list" onclick="event.stopPropagation()"><div class="git-ui-error">${esc(list.error)}</div></div>`;
-    const rows = (list.worktrees || []).map((wt) => `<button class="git-ui-worktree-option" onclick="HerdrGitUi.selectWorktree('${arg(wt.path)}')"><strong>${esc(wt.label || pathBasename(wt.path))}</strong><small>${esc(wt.branch || "detached")} · ${esc(wt.path)}</small></button>`).join("");
+    const rows = (list.worktrees || []).map((wt) => {
+      const current = samePath(wt.path, list.currentPath);
+      return `<button class="git-ui-worktree-option${current ? " current" : ""}" onclick="HerdrGitUi.selectWorktree('${arg(wt.path)}')"><strong>${current ? `<b class="git-ui-worktree-check" title="Current worktree">✓</b>` : ""}${esc(wt.label || pathBasename(wt.path))}</strong><small>${esc(wt.branch || "detached")} · ${esc(wt.path)}</small></button>`;
+    }).join("");
     return `<div class="git-ui-branch-list git-ui-worktree-list" onclick="event.stopPropagation()">${rows || `<div class="git-ui-muted git-ui-branch-list-empty">No worktrees detected</div>`}<button class="git-ui-worktree-create" onclick="HerdrGitUi.createWorktreeFromSelector()">＋ Create worktree</button></div>`;
   }
 
@@ -3752,12 +3755,12 @@
       if (!view) return;
       if (event && event.stopPropagation) event.stopPropagation();
       if (state.worktreeList) { state.worktreeList = null; render(); return; }
-      state.worktreeList = { loading: true, error: "", worktrees: [] };
+      state.worktreeList = { loading: true, error: "", worktrees: [], currentPath: view.cwd };
       render();
       try {
         const data = await api(`/api/worktrees?cwd=${encodeURIComponent(view.workspaceCwd || view.cwd)}`);
         const result = data.result || data;
-        state.worktreeList = { loading: false, error: "", worktrees: result.worktrees || [] };
+        state.worktreeList = { loading: false, error: "", worktrees: result.worktrees || [], currentPath: view.cwd };
       } catch (err) {
         state.worktreeList = { loading: false, error: err.message || String(err), worktrees: [] };
       }

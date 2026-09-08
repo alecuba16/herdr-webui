@@ -300,10 +300,12 @@
   min-width: 0;
 }
 .git-ui-branch-row-check {
-  color: var(--accent);
+  color: #3fb950;
   flex: none;
   font-size: 12px;
 }
+.git-ui-worktree-option.current { background: var(--panel2); }
+.git-ui-worktree-check { color: #3fb950; margin-right: 5px; }
 .git-ui-branch-row-icon {
   background: currentColor;
   display: inline-block;
