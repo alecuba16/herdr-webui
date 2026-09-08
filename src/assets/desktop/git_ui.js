@@ -1681,6 +1681,15 @@
     return `<div class="git-ui-branch-list" onclick="event.stopPropagation()"><div class="git-ui-branch-list-scroll">${rows(local, "Local branches")}${rows(remote, "Remote branches")}${loadingRemote}${loadMore}${empty}</div><label class="git-ui-branch-list-filter"><span>Filter</span><input value="${esc(list.filter || "")}" placeholder="Type to filter" oninput="HerdrGitUi.branchListFilter(this.value)"></label></div>`;
   }
 
+  function refocusBranchFilter(value) {
+    requestAnimationFrame(() => {
+      const input = document.querySelector(".git-ui-branch-list-filter input");
+      if (!input) return;
+      input.focus();
+      try { input.setSelectionRange(String(value || "").length, String(value || "").length); } catch (_) {}
+    });
+  }
+
   function renderSide() {
     const view = active() || {};
     const s = view.status || {};
@@ -3796,6 +3805,7 @@
         const requestId = Date.now();
         state.branchList.remoteRequestId = requestId;
         render();
+        refocusBranchFilter(state.branchList.filter);
         api(`/api/git-ui/branches?cwd=${encodeURIComponent((active() || {}).cwd || "")}`).then((data) => {
           if (!state.branchList || state.branchList.remoteRequestId !== requestId) return;
           const existing = new Map((state.branchList.remote || []).map((branch) => [branch.name, branch]));
@@ -3805,6 +3815,7 @@
           if (state.branchList && state.branchList.remoteRequestId === requestId) {
             state.branchList.remoteLoading = false;
             render();
+            refocusBranchFilter(state.branchList.filter);
           }
         });
         return;
