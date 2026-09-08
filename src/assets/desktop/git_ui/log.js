@@ -24,12 +24,8 @@
     const logScope = normalizeLogScope(options.logScope || (options.logAll ? "all" : "base-current"));
     const esc = options.esc;
     const upstreamRef = upstreamRefFromStatus(options.status || {});
-    const selectedRow = selected.length === 1 ? rows.find((row) => String(row.hash || "") === String(selected[0])) : null;
-    const selectedId = selectedRow && selectedRow.hash ? `<button class="git-ui-log-ref git-ui-log-scope-value" title="Copy commit id" onclick="HerdrGitUi.copyScopeValue(event,'${options.arg(selectedRow.hash)}','Commit id')">${esc(selectedRow.hash)}</button>` : "";
-    const selectedTags = selectedRow ? (selectedRow.labels || []).filter((label) => String(label).startsWith("tag:")).map((label) => `<button class="git-ui-log-ref git-ui-log-scope-value" title="Copy tag" onclick="HerdrGitUi.copyScopeValue(event,'${options.arg(label)}','Tag')">${esc(label)}</button>`).join("") : "";
-    const fileScope = options.filePath ? `<span class="git-ui-log-file-scope" title="File history filter">${esc(options.filePath)}</span><button class="git-ui-btn" onclick="HerdrGitUi.clearLogFileHistory()">Clear file</button>` : "";
-    const scope = `<div class="git-ui-log-scope-head"><span class="git-ui-toolbar-title">History scope</span><button class="git-ui-btn active" title="Toggle history scope: All, ${esc(baseBranch)} + branch, ${esc(baseBranch)}" onclick="HerdrGitUi.cycleLogScope()">${esc(logScopeLabel(logScope, baseBranch))}</button>${selectedTags}${selectedId}${fileScope}</div>`;
-    const header = `<div class="git-ui-log-table-head"><span>Graph</span><span>Description</span><span>Date</span><span>Author</span></div>${renderFilterRow(filters, esc)}`;
+    const scopeButton = `<span class="git-ui-log-scope-control"><span>History scope</span><button class="git-ui-btn active" title="Toggle history scope: All, ${esc(baseBranch)} + branch, ${esc(baseBranch)}" onclick="HerdrGitUi.cycleLogScope()">${esc(logScopeLabel(logScope, baseBranch))}</button></span>`;
+    const header = `<div class="git-ui-log-table-head"><span>Graph</span><span>Description</span><span>Date</span><span>Author${scopeButton}</span></div>${renderFilterRow(filters, esc)}`;
     const renderOptions = Object.assign({}, options, { upstreamRef });
     const body = rows.length
       ? rows.map((row) => renderRow(row, selected, filters, renderOptions, baseBranch)).join("")
@@ -140,7 +136,8 @@
     const click = hash ? ` onclick="HerdrGitUi.selectLogCommit(event,'${arg(hash)}')" oncontextmenu="HerdrGitUi.openLogContextMenu(event,'${arg(hash)}');return false"` : "";
     const hover = renderHover(row, color, esc, baseBranch);
     const tooltip = hoverText(row);
-    return `<div class="git-ui-log-row${selectedClass}${graphOnly}${currentClass}${upstreamTip}${hidden}" data-log-hash="${esc(hash)}" data-log-filter-description="${esc(filterText.description)}" data-log-filter-date="${esc(filterText.date)}" data-log-filter-author="${esc(filterText.author)}" style="--lane:${color}" title="${esc(tooltip)}"${click}>${renderGraph(row.graph, !!hash, upstreamTip, isCurrent)}<span class="git-ui-log-desc">${renderLabels(row.labels || [], row.current, esc, baseBranch)}<span class="git-ui-log-title">${esc(title)}</span></span><span class="git-ui-log-date">${esc(row.date || "")}</span><span class="git-ui-log-author">${esc(row.author || "")}</span>${hover}</div>`;
+    const copyHash = hash ? `<button class="git-ui-log-copy-hash" title="Copy commit id" onclick="HerdrGitUi.copyScopeValue(event,'${arg(hash)}','Commit id')">⧉</button>` : "";
+    return `<div class="git-ui-log-row${selectedClass}${graphOnly}${currentClass}${upstreamTip}${hidden}" data-log-hash="${esc(hash)}" data-log-filter-description="${esc(filterText.description)}" data-log-filter-date="${esc(filterText.date)}" data-log-filter-author="${esc(filterText.author)}" style="--lane:${color}" title="${esc(tooltip)}"${click}>${renderGraph(row.graph, !!hash, upstreamTip, isCurrent)}<span class="git-ui-log-desc">${renderLabels(row.labels || [], row.current, esc, baseBranch)}<span class="git-ui-log-title">${esc(title)}</span></span>${copyHash}<span class="git-ui-log-date">${esc(row.date || "")}</span><span class="git-ui-log-author">${esc(row.author || "")}</span>${hover}</div>`;
   }
 
   function renderHover(row, color, esc, baseBranch) {
@@ -196,7 +193,8 @@
   function renderLabel(label, current, esc, baseBranch) {
     const normalized = normalizeLabel(label);
     const kind = labelKind(normalized, current, baseBranch);
-    return `<span class="git-ui-log-ref ${kind}" title="${esc(normalized)}">${esc(normalized)}</span>`;
+    const copy = `<button class="git-ui-log-copy-label" title="Copy ${kind}" onclick="HerdrGitUi.copyScopeValue(event,'${encodeURIComponent(normalized)}','${kind}')">⧉</button>`;
+    return `<span class="git-ui-log-ref ${kind}" title="${esc(normalized)}">${esc(normalized)}${copy}</span>`;
   }
 
   function normalizeLabel(label) {

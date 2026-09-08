@@ -154,6 +154,18 @@
   top: var(--git-log-scope-sticky-height, 58px);
   z-index: 5;
 }
+.git-ui-log-scope-control {
+  align-items: center;
+  display: inline-flex;
+  float: right;
+  gap: 6px;
+  margin-left: 8px;
+  text-transform: none;
+}
+.git-ui-log-scope-control .git-ui-btn {
+  font-size: 11px;
+  padding: 2px 7px;
+}
 .git-ui-log-row {
   cursor: pointer;
   gap: 10px;
@@ -282,11 +294,28 @@
   border-radius: 999px;
   color: var(--muted);
   cursor: pointer;
+  display: none;
   flex: 0 0 auto;
   font: inherit;
   font-size: 10px;
   font-weight: 800;
   padding: 2px 7px;
+}
+.git-ui-log-copy-label {
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  display: none;
+  font: inherit;
+  font-size: 10px;
+  margin-left: 3px;
+  padding: 0;
+}
+.git-ui-log-ref:hover .git-ui-log-copy-label,
+.git-ui-log-ref:focus-within .git-ui-log-copy-label,
+.git-ui-log-row:hover .git-ui-log-copy-hash {
+  display: inline-block;
 }
 .git-ui-log-copy-hash:hover,
 .git-ui-log-copy-hash:focus-visible {
