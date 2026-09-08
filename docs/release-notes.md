@@ -1,5 +1,10 @@
 # Release notes
 
+## 0.4.16 Release Notes
+- Search palette section headers (e.g. Recent workspaces) now use the
+  panel2 background color so the collapsible header buttons read as a
+  distinct button row instead of plain text over the palette.
+
 ## 0.4.15 Release Notes
 - Directory picker search now loads results incrementally: scrolling near the
   bottom of the list fetches the next page of matches and appends it (a Load
