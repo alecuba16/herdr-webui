@@ -6,6 +6,7 @@
     visible: false,
     renderVersion: 0,
     contextMenu: null,
+    logContextMenu: null,
     branchModal: null,
     worktreeList: null,
     gitOpModal: null,
@@ -43,9 +44,10 @@
     help: "Digit0",
   };
 
-  document.addEventListener("click", () => {
-    let hadMenu = !!(state.contextMenu || state.headerMenu || state.branchList || state.worktreeList);
+  document.addEventListener("click", (event) => {
+    let hadMenu = !!(state.contextMenu || state.logContextMenu || state.headerMenu || state.branchList || state.worktreeList);
     state.contextMenu = null;
+    state.logContextMenu = null;
     state.headerMenu = null;
     if ((state.branchList || state.worktreeList) && !eventInsideBranchList(event)) {
       state.branchList = null;
@@ -90,8 +92,9 @@
     }
     if (event.key !== "Escape") return;
     event.preventDefault();
-    if (state.contextMenu || state.headerMenu) {
+    if (state.contextMenu || state.logContextMenu || state.headerMenu) {
       state.contextMenu = null;
+      state.logContextMenu = null;
       state.headerMenu = null;
       render();
       return;
@@ -1122,6 +1125,17 @@
     if (["M", "?"].includes(menu.kind)) actions.push(`<button onclick="HerdrGitUi.menuAction('stage')">Stage file</button>`);
     if (menu.kind === "S") actions.push(`<button onclick="HerdrGitUi.menuAction('unstage')">Unstage file</button>`);
     return `<div class="git-ui-menu" style="left:${Math.max(0, menu.x)}px;top:${Math.max(0, menu.y)}px" onclick="event.stopPropagation()">${actions.join("")}</div>`;
+  }
+
+  function renderLogContextMenu() {
+    const menu = state.logContextMenu;
+    if (!menu) return "";
+    const view = active();
+    const selected = (view && view.selectedLogCommits) || [];
+    const hasSelection = selected.length > 0;
+    const mutable = currentMode() === "changes";
+    const item = (label, handler, disabled) => `<button${disabled ? " disabled" : ""} onclick="HerdrGitUi.${handler}">${label}</button>`;
+    return `<div class="git-ui-menu git-ui-log-context-menu" style="left:${Math.max(0, menu.x)}px;top:${Math.max(0, menu.y)}px" onclick="event.stopPropagation()">${item("Compare", "compareSelectedLog()", !hasSelection)}${item("Tag", "openSelectedTagModal()", !hasSelection)}${item("Worktree", "createWorktreeFromSelectedBranch()", !view || !view.selectedLogBranch)}${item("Reset", "openSelectedResetModal()", !hasSelection || !mutable)}${item("Rebase", "rebaseAfterSelected()", !hasSelection)}${item("Clear selection", "clearLogSelection()", !hasSelection)}</div>`;
   }
   function normalizeRemoteUrl(raw) {
     let value = String(raw || "").trim();
@@ -2745,7 +2759,7 @@
     const version = ++state.renderVersion;
     const panel = ensurePanel();
     panel.classList.toggle("mutating", !!activeView.mutating);
-    panel.innerHTML = renderSide() + renderMain() + renderContextMenu() + renderHeaderMenu() + renderBranchList() + renderCommitModal() + renderCompareSelectedModal() + renderResetSelectedModal() + renderTagSelectedModal() + renderBranchModal() + renderGitOpModal() + renderCleanupConfirm() + renderGitToast();
+    panel.innerHTML = renderSide() + renderMain() + renderContextMenu() + renderLogContextMenu() + renderHeaderMenu() + renderBranchList() + renderCommitModal() + renderCompareSelectedModal() + renderResetSelectedModal() + renderTagSelectedModal() + renderBranchModal() + renderGitOpModal() + renderCleanupConfirm() + renderGitToast();
     const side = panel.querySelector(".git-ui-side");
     if (side) side.scrollTop = state.sideScrollTop || 0;
     const nextContent = panel.querySelector(".git-ui-content");
@@ -4117,11 +4131,31 @@
       else view.selectedCommitPreview = null;
       render();
     },
+    openLogContextMenu(event, hash) {
+      if (event) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+      const view = active();
+      hash = decodeURIComponent(hash || "");
+      if (!view || !hash) return false;
+      view.selectedLogCommits = [hash];
+      view.selectedCommitPreview = null;
+      state.contextMenu = null;
+      state.headerMenu = null;
+      state.logContextMenu = {
+        x: Number(event && event.clientX) || 0,
+        y: Number(event && event.clientY) || 0,
+      };
+      render();
+      return false;
+    },
     clearLogSelection() {
       const view = active();
       if (!view) return;
       view.selectedLogCommits = [];
       view.selectedCommitPreview = null;
+      state.logContextMenu = null;
       render();
     },
     compareSelectedLog() {

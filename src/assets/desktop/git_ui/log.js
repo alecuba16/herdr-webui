@@ -137,7 +137,7 @@
     const title = row.title || row.message || "";
     const filterText = filterFields(row);
     const hidden = matchesFilters(filterText, filters) ? "" : " hidden";
-    const click = hash ? ` onclick="HerdrGitUi.selectLogCommit(event,'${arg(hash)}')"` : "";
+    const click = hash ? ` onclick="HerdrGitUi.selectLogCommit(event,'${arg(hash)}')" oncontextmenu="HerdrGitUi.openLogContextMenu(event,'${arg(hash)}');return false"` : "";
     const hover = renderHover(row, color, esc, baseBranch);
     const tooltip = hoverText(row);
     return `<div class="git-ui-log-row${selectedClass}${graphOnly}${currentClass}${upstreamTip}${hidden}" data-log-hash="${esc(hash)}" data-log-filter-description="${esc(filterText.description)}" data-log-filter-date="${esc(filterText.date)}" data-log-filter-author="${esc(filterText.author)}" style="--lane:${color}" title="${esc(tooltip)}"${click}>${renderGraph(row.graph, !!hash, upstreamTip, isCurrent)}<span class="git-ui-log-desc">${renderLabels(row.labels || [], row.current, esc, baseBranch)}<span class="git-ui-log-title">${esc(title)}</span></span><span class="git-ui-log-date">${esc(row.date || "")}</span><span class="git-ui-log-author">${esc(row.author || "")}</span>${hover}</div>`;
