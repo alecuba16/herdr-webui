@@ -24,8 +24,8 @@
     const logScope = normalizeLogScope(options.logScope || (options.logAll ? "all" : "base-current"));
     const esc = options.esc;
     const upstreamRef = upstreamRefFromStatus(options.status || {});
-    const scopeButton = `<span class="git-ui-log-scope-control"><span>History scope</span><button class="git-ui-btn active" title="Toggle history scope: All, ${esc(baseBranch)} + branch, ${esc(baseBranch)}" onclick="HerdrGitUi.cycleLogScope()">${esc(logScopeLabel(logScope, baseBranch))}</button></span>`;
-    const header = `<div class="git-ui-log-table-head"><span>Graph</span><span>Description</span><span>Date</span><span>Author${scopeButton}</span></div>${renderFilterRow(filters, esc)}`;
+    const scopeButton = `<span class="git-ui-log-scope-control"><span>Scope:</span><button class="git-ui-btn active" title="Toggle history scope: Master + Branch, All, Branch" onclick="HerdrGitUi.cycleLogScope()">${esc(logScopeLabel(logScope, baseBranch))}</button></span>`;
+    const header = `<div class="git-ui-log-table-head"><span>Graph</span><span>Description</span><span>Date</span><span>Author</span></div>${renderFilterRow(filters, esc, scopeButton)}`;
     const renderOptions = Object.assign({}, options, { upstreamRef });
     const body = rows.length
       ? rows.map((row) => renderRow(row, selected, filters, renderOptions, baseBranch)).join("")
@@ -59,9 +59,9 @@
     return `<div class="git-ui-log-load-more"><span>Showing ${esc(String(count))}${limit ? ` of ${esc(String(limit))} requested` : ""} commits</span><button class="git-ui-btn" onclick="HerdrGitUi.loadMoreLog()" ${hasMore ? disabled : "disabled"}>${hasMore ? label : "No more changes"}</button></div>`;
   }
 
-  function renderFilterRow(filters, esc) {
+  function renderFilterRow(filters, esc, scopeButton) {
     const input = (field, label) => `<label class="git-ui-log-filter" title="Filter ${label}"><span class="sr-only">Filter ${label}</span><input name="git-log-filter-${field}" autocomplete="off" aria-label="Filter ${label}" value="${esc(filters[field] || "")}" placeholder="Filter" oninput="HerdrGitUi.setLogFilter('${field}',this.value)"></label>`;
-    return `<div class="git-ui-log-filter-row"><span class="git-ui-log-filter-spacer" aria-hidden="true"></span>${input("description", "Description")}${input("date", "Date")}${input("author", "Author")}</div>`;
+    return `<div class="git-ui-log-filter-row"><span class="git-ui-log-filter-spacer">${scopeButton || ""}</span>${input("description", "Description")}${input("date", "Date")}${input("author", "Author")}</div>`;
   }
 
   function normalizeLogScope(scope) {
@@ -70,8 +70,8 @@
 
   function logScopeLabel(scope, baseBranch) {
     const base = baseBranch || "master";
-    if (scope === "base-current") return `${base} + branch`;
-    if (scope === "base") return base;
+    if (scope === "base-current") return "Master + Branch";
+    if (scope === "base") return "Branch";
     return "All";
   }
 
