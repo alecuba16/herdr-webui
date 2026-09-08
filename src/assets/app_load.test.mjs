@@ -186,6 +186,59 @@ describe("app bundle load", () => {
     match(source, /function showTerminalShellMode\([^)]*\) \{[\s\S]*?rememberWorkspaceShellMode\("terminal", state\.ws, \{ minimized: false \}\);[\s\S]*?syncShellModeButtons\(\);[\s\S]*?if \(typeof render === "function"\) render\(\);[\s\S]*?requestAnimationFrame\(\(\) => \{[\s\S]*?syncShellModeButtons\(\);/);
   });
 
+  it("exposes server-persisted recent workspaces in the actions palette", async () => {
+    const ctx = context();
+    let recentPayload = [{ path: "/repo/alpha", label: "Alpha", branch: "main", kind: "worktree", opened_at: 1 }];
+    ctx.fetch = async (url) => {
+      if (String(url).includes("/api/recent-workspaces/clear")) {
+        recentPayload = [];
+        return { status: 200, json: async () => ({ ok: true, cleared: 1 }) };
+      }
+      if (String(url).includes("/api/recent-workspaces")) {
+        return { status: 200, json: async () => ({ recent: recentPayload }) };
+      }
+      return { status: 200, json: async () => ({}) };
+    };
+    vm.runInContext(source, ctx);
+
+    const registry = ctx.window.HerdrActionRegistry;
+    ok(registry && typeof registry.loadRecent === "function", "registry must expose loadRecent");
+    ok(typeof registry.invalidateRecent === "function", "registry must expose invalidateRecent");
+
+    const recent = await registry.loadRecent();
+    equal(recent.length, 1);
+    equal(recent[0].path, "/repo/alpha");
+
+    const cached = await registry.loadRecent();
+    equal(cached, recent, "recent rows are cached between loads");
+
+    registry.invalidateRecent();
+    const refreshed = await registry.loadRecent();
+    equal(refreshed.length, 1, "invalidated cache refetches from the server");
+
+    vm.runInContext("searchPaletteState.recent = [];", ctx);
+    vm.runInContext('searchPaletteState.sectionsExpanded = { actions: true, recent: true, workspaces: true, files: true, content: true };', ctx);
+    const candidates = vm.runInContext("recentWorkspaceCandidates([{ path: '/repo/beta', label: 'Beta', kind: 'workspace' }])", ctx);
+    equal(candidates.length, 1);
+    equal(candidates[0].type, "recent");
+    equal(candidates[0].title, "Beta");
+    ok(candidates[0].subtitle.includes("workspace"));
+    ok(candidates[0].subtitle.includes("/repo/beta"));
+
+    const filtered = vm.runInContext("recentWorkspaceCandidates([{ path: '/repo/beta', label: 'Beta', kind: 'workspace' }])", ctx);
+    equal(filtered.length, 1);
+    const needle = vm.runInContext("recentWorkspaceCandidates([{ path: '/repo/beta', label: 'Beta' }, { path: '/repo/gamma', label: 'Gamma' }])", ctx);
+    equal(needle.length, 2);
+
+    const section = vm.runInContext("renderRecentSection([{ type: 'recent', icon: 'wt', title: 'Beta', subtitle: 'worktree · main · /repo/beta', path: '/repo/beta' }])", ctx);
+    ok(section.includes("Recent workspaces"), "section renders its title");
+    ok(section.includes("Clear"), "section renders the clear button");
+    ok(section.includes("Beta"), "section renders recent rows");
+
+    const empty = vm.runInContext("renderRecentSection([])", ctx);
+    equal(empty, "", "empty recents render no section");
+  });
+
   it("returns desktop UX actions from a single command-palette candidate path", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
@@ -368,7 +421,7 @@ describe("app bundle load", () => {
   it("keeps file history header scoped to selected files", () => {
     match(gitUiSource, /function renderFileToolbar\(activeTab\) \{\n\s+const view = active\(\) \|\| \{\};/);
     match(gitUiSource, /const history = view\.file \? `<button class="git-ui-btn \$\{activeTab === "history" \? "active" : ""\}" title="\$\{esc\(titleWithGitShortcut\("File history", "history"\)\)\}" onclick="HerdrGitUi\.tab\('history'\)">History<\/button>` : "";/);
-    equal([...gitLogSource.matchAll(/git-ui-log-scope-head/g)].length, 1);
+    equal([...gitLogSource.matchAll(/git-ui-log-filter-spacer/g)].length, 1, "scope control renders once inside the filter row");
   });
 
   it("hides only large file diffs by default", () => {
@@ -823,7 +876,7 @@ describe("app bundle load", () => {
     match(gitLogCss, /\.git-ui-log-head \{[\s\S]*?position: sticky;[\s\S]*?z-index: 7;/);
   });
 
-  it("uses a single selected-log reset modal and clear rebase wording", () => {
+  it("uses a log row context menu with reset and clear rebase wording", () => {
     match(gitActionsSource, /openSelectedResetModal\(\)/);
     match(gitActionsSource, /title="Rebase current changes over the selected commit"/);
     match(gitActionsSource, />Rebase…<\/button>/);
@@ -839,7 +892,8 @@ describe("app bundle load", () => {
     match(gitUiSource, /view\.compareTarget = "\.";\s*\n\s*view\.mode = "current-compare";/);
     match(gitUiSource, /Soft reset/);
     match(gitUiSource, /Hard reset/);
-    match(gitUiSource, /selectedLogToolbar\(selected, \{ allowRewrite: currentMode\(\) === "changes", selectedBranch \}\)/);
+    match(gitUiSource, /function renderLogContextMenu/);
+    match(gitUiSource, /state\.logContextMenu = \{[\s\S]*?x: Number\(event && event\.clientX\) \|\| 0,/);
     match(gitUiSource, /function commitPreviewSection/);
     match(gitUiSource, /Committed files/);
     match(gitUiSource, /loadSelectedCommitPreview\(view, view\.selectedLogCommits\[0\]\)/);
@@ -2997,7 +3051,7 @@ describe("app bundle load", () => {
     match(gitSettingsSource, /gitUiDefaultBranch: "master"/);
     match(gitUiSource, /function gitLogDefaultBranch\(\)/);
     match(gitUiSource, /base=\$\{encodeURIComponent\(baseBranch\)\}/);
-    match(gitLogSource, /Toggle history scope: All/);
+    match(gitLogSource, /title="Toggle history scope: Master \+ Branch, All, Branch" onclick="HerdrGitUi\.cycleLogScope\(\)"/);
     match(gitSettingsSource, /Unified \(GitHub-style\)/);
     match(gitSettingsSource, /gitUiDiffLayout: "side-by-side"/);
     match(gitUiSource, /function diffLayoutMode\(\)/);
@@ -3122,7 +3176,7 @@ describe("app bundle load", () => {
     match(gitUiSource, /path = info\.file \|\| path;/);
     match(gitUiSource, /window\.HerdrGitLog\.render/);
     match(gitLogSource, /onclick="HerdrGitUi\.cycleLogScope\(\)"/);
-    match(gitLogSource, /Toggle history scope: All/);
+    match(gitLogSource, /title="Toggle history scope: Master \+ Branch, All, Branch" onclick="HerdrGitUi\.cycleLogScope\(\)"/);
     match(gitLogSource, /function logScopeLabel/);
     ok(!gitLogSource.includes("HerdrGitUi.setLogAll(false)"));
     ok(!gitLogSource.includes("All branches</button>"));
@@ -3133,7 +3187,7 @@ describe("app bundle load", () => {
     match(gitLogSource, /class="git-ui-log-ref \$\{kind\}"/);
     match(gitLogSource, /title="\$\{esc\(normalized\)\}"/);
     match(gitLogSource, /class="git-ui-log-copy-hash"/);
-    match(gitLogSource, /HerdrGitUi\.copyCommitId\('\$\{arg\(hash\)\}'\)/);
+    match(gitLogSource, /HerdrGitUi\.copyScopeValue\(event,'\$\{encodeURIComponent\(row\.hash \|\| ""\)\}','Commit id'\)/);
     match(gitUiSource, /async function copyCommitId\(hash\)/);
     match(gitUiSource, /Commit id copied/);
     match(gitUiSource, /async copyCommitId\(hash\)/);
@@ -3144,8 +3198,8 @@ describe("app bundle load", () => {
     ok(!gitLogSource.includes("const footer = renderLoadMore(data,"));
     match(gitLogSource, /renderLoadMore\(options\.data \|\| \{\}, rows, options, esc\)/);
     match(gitLogSource, /Load more changes/);
-    match(gitLogSource, /git-ui-log-file-scope/);
-    match(gitLogSource, /clearLogFileHistory\(\)/);
+    match(gitLogSource, /git-ui-log-file-scope|git-ui-log-filter-row/);
+    match(gitUiSource, /clearLogFileHistory\(\) \{/);
     match(gitLogSource, /HerdrGitUi.loadMoreLog\(\)/);
     match(gitLogSource, /data\.has_more/);
     match(gitLogSource, /function renderFilterRow/);

@@ -706,6 +706,13 @@ async function createWorkspaceFromSmartModal() {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ label, cwd }),
     });
+    try {
+      await api("/api/recent-workspaces", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ path: cwd, label }),
+      });
+    } catch (_) {}
     closeWorktreeOpenModal();
     go(r.result.workspace.workspace_id);
   } catch (ex) {

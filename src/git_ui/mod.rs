@@ -838,6 +838,7 @@ mod tests {
                 jcode_detection_variant: JcodeDetectionVariant::default(),
                 log_level: LogLevel::default(),
                 lsp: crate::lsp::LspSettings::default(),
+                recent_workspaces: Vec::new(),
             })),
             no_sleep: Arc::new(Mutex::new(NoSleepState::default())),
             rebind_tx,
