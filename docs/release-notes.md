@@ -1,5 +1,14 @@
 # Release notes
 
+## 0.4.15 Release Notes
+- Directory picker search now loads results incrementally: scrolling near the
+  bottom of the list fetches the next page of matches and appends it (a Load
+  more button offers the same fallback, and paging stops when no further
+  matches are reported). Previously the search showed a single fixed page of
+  100 results with no way to continue.
+- Directory picker actions gained a Default dir button next to Home and
+  Select this folder; it jumps straight to the configured default folder.
+
 ## 0.4.14 Release Notes
 - Bug fix: Git UI "No Git repository" on fresh browsers. A browser that pinned
   the built-in backend (localStorage) but never called /api/session/launch got
