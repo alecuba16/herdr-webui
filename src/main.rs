@@ -6589,6 +6589,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn record_and_persist_recent_fail_gracefully_when_lock_poisoned() {
+        let state = test_state();
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = state.server_settings.lock().unwrap();
+            struct PanicOnDrop;
+            impl Drop for PanicOnDrop {
+                fn drop(&mut self) {
+                    panic!("poisoning settings lock");
+                }
+            }
+            drop(PanicOnDrop);
+        }));
+
+        let recorded = record_recent_workspace(&state, "/repo/x", None, None, None).await;
+        assert!(recorded.is_err(), "recording must fail when the lock is poisoned");
+
+        let persisted = persist_server_settings(&state).await;
+        assert!(persisted.is_err(), "persisting must fail when the lock is poisoned");
+    }
+
+    #[tokio::test]
     async fn static_asset_routes_serve_embedded_content() {
         let app = test_app();
         let js = app
