@@ -1252,11 +1252,15 @@
     await navigator.clipboard.writeText(text);
     const id = Date.now();
     state.scopeCopyToast = { id, x: Number(event && event.clientX) || 16, y: Number(event && event.clientY) || 16, message: `${kind} copied` };
-    render();
+    const panel = ensurePanel();
+    const existing = panel.querySelector(".git-ui-scope-copy-toast");
+    if (existing) existing.remove();
+    panel.insertAdjacentHTML("beforeend", renderScopeCopyToast());
     setTimeout(() => {
       if (state.scopeCopyToast && state.scopeCopyToast.id === id) {
         state.scopeCopyToast = null;
-        if (state.visible) render();
+        const current = panel.querySelector(".git-ui-scope-copy-toast");
+        if (current) current.remove();
       }
     }, 1800);
   }
