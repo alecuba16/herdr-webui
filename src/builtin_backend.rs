@@ -16,8 +16,7 @@ use serde_json::{json, Value};
 use crate::builtin_detection::{jcode::detect_jcode_status_with_variant, JcodeDetectionVariant};
 use crate::builtin_events::{BuiltinEventHub, PaneEventContext};
 use crate::protocol::{
-    read_message, write_message, ClientInputEvent, ClientMessage, RenderEncoding, ServerMessage,
-    TerminalFrame,
+    read_message, write_message, ClientMessage, RenderEncoding, ServerMessage, TerminalFrame,
 };
 use crate::terminal_text::{self, TerminalTextOptions};
 
@@ -376,16 +375,24 @@ fn handle_client_connection(
     backend: Arc<BuiltinBackendInner>,
 ) -> Result<(), String> {
     let hello = read_message::<_, ClientMessage>(&mut stream, MAX_FRAME_SIZE)?;
-    let (cols, rows, requested_encoding) = match hello {
-        ClientMessage::Hello {
+    let (cols, rows) = match hello {
+        ClientMessage::TerminalHello {
             version,
             cols,
             rows,
-            requested_encoding,
             ..
         } => {
-            let error = (version > PROTOCOL_VERSION).then(|| {
-                format!("client version {version} is newer than server version {PROTOCOL_VERSION}")
+            // herdr 0.9.0 requires an exact protocol version match.
+            let error = (version != PROTOCOL_VERSION).then(|| {
+                if version > PROTOCOL_VERSION {
+                    format!(
+                        "client version {version} is newer than server version {PROTOCOL_VERSION}"
+                    )
+                } else {
+                    format!(
+                        "client version {version} is older than server version {PROTOCOL_VERSION}; please upgrade your herdr client"
+                    )
+                }
             });
             write_message(
                 &mut stream,
@@ -395,14 +402,13 @@ fn handle_client_connection(
                     error,
                 },
             )?;
-            if version > PROTOCOL_VERSION {
+            if version != PROTOCOL_VERSION {
                 return Ok(());
             }
-            (cols.max(1), rows.max(1), requested_encoding)
+            (cols.max(1), rows.max(1))
         }
-        _ => return Err("expected Hello as first terminal client message".to_string()),
+        _ => return Err("expected TerminalHello as first terminal client message".to_string()),
     };
-    let _ = requested_encoding;
 
     let mut attached: Option<Arc<TerminalRuntime>> = None;
     let mut writer_started = false;
@@ -476,17 +482,6 @@ fn handle_client_connection(
                     terminal.write_input(&data).map_err(|err| err.to_string())?;
                 }
             }
-            ClientMessage::InputEvents { events } => {
-                if let Some(terminal) = &attached {
-                    for event in events {
-                        if let ClientInputEvent::Paste { text } = event {
-                            terminal
-                                .write_input(text.as_bytes())
-                                .map_err(|err| err.to_string())?;
-                        }
-                    }
-                }
-            }
             ClientMessage::Resize { cols, rows, .. } => {
                 if let Ok(mut size) = terminal_size.lock() {
                     *size = (cols.max(1), rows.max(1));
@@ -501,14 +496,24 @@ fn handle_client_connection(
             }
             ClientMessage::Detach => break,
             ClientMessage::ClipboardImage { .. } => {}
-            ClientMessage::Hello { .. } => {}
-            // Protocol 20+ messages from graphics streaming and terminal
-            // control modes are not used by the built-in backend.
+            ClientMessage::TerminalHello { .. } => {}
+            // Protocol 22 messages from graphics streaming, client-owned
+            // shells, and terminal control modes are not used by the built-in
+            // backend.
             ClientMessage::ObserveTerminal { .. }
             | ClientMessage::ControlTerminal { .. }
             | ClientMessage::GraphicsTransmissionResult { .. }
-            | ClientMessage::InputPixels { .. }
-            | ClientMessage::GraphicsTransmissionStarted { .. } => {}
+            | ClientMessage::GraphicsTransmissionStarted { .. }
+            | ClientMessage::ClientShellHello { .. }
+            | ClientMessage::ClientShellResize { .. }
+            | ClientMessage::ClientShellPaneInput { .. }
+            | ClientMessage::ClientShellPopupInput { .. }
+            | ClientMessage::ClientShellEndpointRequest { .. }
+            | ClientMessage::AttachMouse { .. }
+            | ClientMessage::ClientShellHostTheme { .. }
+            | ClientMessage::ClientShellFocus { .. }
+            | ClientMessage::ClientShellMouseCapture { .. }
+            | ClientMessage::EndpointControl { .. } => {}
         }
     }
     Ok(())

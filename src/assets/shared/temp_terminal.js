@@ -63,6 +63,7 @@
     var wsUrl = opts.wsUrl;
     var api = opts.api;
     var modalId = opts.modalId;
+    var onHerdrError = opts.onHerdrError || null;
     var fontFamilyFn = opts.fontFamilyFn || function () { return "monospace"; };
     var themeFn = opts.themeFn || function () { return {}; };
     var defaultFolderFn = opts.defaultFolderFn || function () { return ""; };
@@ -601,6 +602,11 @@
             };
             ws.onmessage = function (event) {
               if (termWs !== ws) return;
+              if (typeof event.data === "string" && onHerdrError && onHerdrError(event.data)) {
+                // Backend attach failed; the host app offered recovery.
+                ws.close();
+                return;
+              }
               enqueueFrame(typeof event.data === "string" ? event.data : new Uint8Array(event.data));
             };
             ws.onclose = function () {

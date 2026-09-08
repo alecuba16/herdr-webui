@@ -13,7 +13,10 @@
   const state = {
     session: "default",
     backendMode: "",
-    sessionBackend: localStorage.getItem("herdr-session-backend") || "",
+    // Built-in sessions are the default; /api/server-settings confirms the
+    // server's configured backend mode on first load.
+    sessionBackend: localStorage.getItem("herdr-session-backend") || "builtin",
+    serverBackendConfirmed: false,
     workspaces: [],
     tabs: [],
     allTabs: [],
@@ -144,6 +147,32 @@
       const settings = await api("/api/server-settings");
       state.backendMode = settings.backend_mode || state.backendMode;
       state.defaultFolder = settings.default_folder || state.defaultFolder || "";
+      // Built-in is the default backend. On first load adopt the server's
+      // configured mode so stale localStorage cannot lock the browser into an
+      // unexpected backend; afterwards keep the user's explicit choice.
+      if (!state.serverBackendConfirmed && state.backendMode) {
+        state.sessionBackend =
+          state.backendMode === "external" || state.backendMode === "external-herdr"
+            ? "external-herdr"
+            : state.backendMode === "builtin"
+              ? "builtin"
+              : state.sessionBackend;
+        localStorage.setItem("herdr-session-backend", state.sessionBackend);
+      }
+      state.serverBackendConfirmed = true;
+    } catch (_) {}
+    // External herdr sessions are only offered when a compatible herdr
+    // install is detected. If it is missing or incompatible, fall back to
+    // built-in instead of targeting a guaranteed-failed attach.
+    try {
+      const r = await api("/api/sessions");
+      state.herdrAvailable = !!r.herdr_available;
+      state.herdrCompatible = !!r.herdr_compatible;
+      state.herdrVersion = r.herdr_version || null;
+      if (currentSessionBackend() === "external-herdr" && !state.herdrCompatible) {
+        state.sessionBackend = "builtin";
+        localStorage.setItem("herdr-session-backend", "builtin");
+      }
     } catch (_) {}
   }
 
@@ -165,6 +194,55 @@
       ? (path.includes("?") ? "&" : "?") + params.join("&")
       : "";
     return `${proto}//${location.host}${path}${suffix}`;
+  }
+
+  // Graceful degradation: the external herdr backend could not be attached
+  // (protocol mismatch, unreachable...). Close the broken session and offer
+  // a built-in session instead of leaving the terminal blocked.
+  let herdrErrorOfferPending = false;
+  function handleHerdrErrorFrame(raw) {
+    let msg;
+    try {
+      msg = JSON.parse(raw);
+    } catch (_) {
+      return false;
+    }
+    if (!msg || msg.type !== "herdr_error") return false;
+    if (herdrErrorOfferPending) return true;
+    herdrErrorOfferPending = true;
+    (async () => {
+      try {
+        if (currentSessionBackend() === "external-herdr") {
+          try {
+            await api("/api/session/close", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ session: state.session || "default", backend: "external-herdr" }),
+            });
+          } catch (_) {}
+        }
+        const detail = msg.message ? ` (${msg.message})` : "";
+        const wantsBuiltin = confirm(
+          `The external herdr backend could not be attached${detail}. ` +
+            "It has been disconnected. Start a built-in session instead?",
+        );
+        if (wantsBuiltin) {
+          try {
+            await api("/api/session/launch", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ session: state.session || "default", backend: "builtin" }),
+            });
+          } catch (_) {}
+          state.sessionBackend = "builtin";
+          localStorage.setItem("herdr-session-backend", "builtin");
+          refresh();
+        }
+      } finally {
+        herdrErrorOfferPending = false;
+      }
+    })();
+    return true;
   }
 
   function currentSessionBackend() {
@@ -1400,13 +1478,14 @@
     state,
     window,
   });
-  mobileTerminal = globalThis.HerdrMobileTerminal.create({ el, state, wsUrl });
+  mobileTerminal = globalThis.HerdrMobileTerminal.create({ el, state, wsUrl, onHerdrError: handleHerdrErrorFrame });
   mobileTempTerminal = globalThis.HerdrTempTerminal.create({
     el,
     state,
     wsUrl,
     api,
     modalId: "tempTerminalModal",
+    onHerdrError: handleHerdrErrorFrame,
     fontFamilyFn: () => {
       try {
         const parsed = globalThis.HerdrOptions ? globalThis.HerdrOptions.read() : {};

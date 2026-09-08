@@ -1,5 +1,5 @@
 (function () {
-  function createMobileTerminal({ el, state, wsUrl }) {
+  function createMobileTerminal({ el, state, wsUrl, onHerdrError }) {
     let term = null,
       termWs = null,
       openedTerminalElement = null,
@@ -102,6 +102,16 @@
       ws.onopen = () => { if (termWs === ws) terminalAttachPending = true; };
       ws.onmessage = (event) => {
         if (termWs !== ws) return;
+        if (
+          typeof event.data === "string" &&
+          onHerdrError &&
+          onHerdrError(event.data)
+        ) {
+          // Backend attach failed (e.g. protocol mismatch): the host app
+          // offered recovery, drop this socket for a clean reconnect.
+          ws.close();
+          return;
+        }
         enqueueTerminalFrame(typeof event.data === "string" ? event.data : new Uint8Array(event.data));
       };
       ws.onclose = () => {

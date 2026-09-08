@@ -1890,7 +1890,12 @@ describe("app bundle load", () => {
       "webui 1.2.3 · backend built-in",
     );
 
-    ctx.fetch = async (url) => {
+    // A fresh browser load adopts the server's current backend (here an
+    // external herdr backend) instead of keeping a stale local choice.
+    // The external backend is only adopted when a compatible herdr install
+    // is detected.
+    const freshCtx = context();
+    freshCtx.fetch = async (url) => {
       equal(url, "/api/versions");
       return {
         ok: true,
@@ -1899,16 +1904,19 @@ describe("app bundle load", () => {
           webui: "1.2.3",
           backend: "0.7.3",
           backend_mode: "external",
+          current_backend: "external-herdr",
           session: "default",
           compatibility: { status: "compatible" },
+          herdr_install: { available: true, compatible: true, version: "0.9.0" },
         }),
       };
     };
+    vm.runInContext(source, freshCtx);
 
-    await ctx.loadVersions();
+    await freshCtx.loadVersions();
 
     equal(
-      ctx.document.getElementById("versions").textContent,
+      freshCtx.document.getElementById("versions").textContent,
       "webui 1.2.3 · backend 0.7.3",
     );
   });
@@ -1993,6 +2001,9 @@ describe("app bundle load", () => {
           status: 200,
           json: async () => ({
             current_backend: "builtin",
+            herdr_available: true,
+            herdr_compatible: true,
+            herdr_version: "0.9.0",
             sessions: [
               { name: "default", backend: "builtin", backend_label: "built-in", running: true },
               { name: "work", backend: "external-herdr", backend_label: "Herdr", running: true },
@@ -2035,6 +2046,72 @@ describe("app bundle load", () => {
       session: "work",
       backend: "external-herdr",
     });
+  });
+
+  it("hides the external Herdr offer when no compatible herdr install is detected", async () => {
+    const ctx = context();
+    ctx.fetch = async (url) => {
+      if (url === "/api/sessions") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            current_backend: "builtin",
+            herdr_available: true,
+            herdr_compatible: false,
+            herdr_version: "0.8.0",
+            sessions: [
+              { name: "default", backend: "builtin", backend_label: "built-in", running: true },
+            ],
+          }),
+        };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    };
+    vm.runInContext(source, ctx);
+
+    await ctx.showSessionManager();
+
+    // The New Herdr button is disabled with a version hint.
+    const button = ctx.document.getElementById("newHerdrSessionTarget");
+    equal(button.disabled, true);
+    match(button.title, /not compatible/);
+
+    // Targeting an external session keeps the browser on built-in.
+    ctx.goSession("work", "external-herdr");
+    equal(vm.runInContext("state.sessionBackend", ctx), "builtin");
+  });
+
+  it("offers external Herdr when a compatible herdr install is detected", async () => {
+    const ctx = context();
+    ctx.fetch = async (url) => {
+      if (url === "/api/sessions") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            current_backend: "builtin",
+            herdr_available: true,
+            herdr_compatible: true,
+            herdr_version: "0.9.0",
+            sessions: [
+              { name: "work", backend: "external-herdr", backend_label: "Herdr", running: true },
+            ],
+          }),
+        };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    };
+    vm.runInContext(source, ctx);
+
+    await ctx.showSessionManager();
+
+    const button = ctx.document.getElementById("newHerdrSessionTarget");
+    equal(button.disabled, false);
+    match(button.title, /0\.9\.0/);
+
+    ctx.goSession("work", "external-herdr");
+    equal(vm.runInContext("state.sessionBackend", ctx), "external-herdr");
   });
 
   it("defines grouped settings sections", () => {
@@ -3488,5 +3565,111 @@ describe("app bundle load", () => {
     match(codeMirrorSource, /opts\.activeLine !== false/);
     match(codeMirrorSource, /EditorState\.tabSize\.of/);
     match(codeMirrorSource, /indentUnit\.of/);
+  });
+
+  it("offers a built-in session when the herdr handshake fails", async () => {
+    const ctx = context();
+    const calls = [];
+    ctx.history = {
+      pushState(_state, _title, path) {
+        ctx.location.pathname = path;
+      },
+      replaceState() {},
+    };
+    ctx.fetch = async (url, opt = {}) => {
+      calls.push({ url, opt });
+      if (url === "/api/session/close") return { ok: true, status: 200, json: async () => ({ ok: true }) };
+      if (url === "/api/session/launch") return { ok: true, status: 200, json: async () => ({ ok: true }) };
+      if (url === "/api/versions") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            backend_mode: "builtin",
+            current_backend: "builtin",
+            session: "default",
+            compatibility: { status: "compatible" },
+          }),
+        };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    };
+    vm.runInContext(source, ctx);
+
+    equal(await ctx.handleHerdrErrorFrame("not json"), false);
+    equal(await ctx.handleHerdrErrorFrame(JSON.stringify({ type: "other" })), false);
+
+    // Simulate a browser that targeted the external herdr backend when the
+    // handshake failed.
+    vm.runInContext("state.sessionBackend = 'external-herdr'", ctx);
+
+    // First error: close the broken external session, then accept the
+    // built-in offer through the question modal.
+    const first = ctx.handleHerdrErrorFrame(
+      JSON.stringify({
+        type: "herdr_error",
+        kind: "handshake_rejected",
+        message: "herdr rejected terminal connection: client version 22 is newer than server version 21",
+        suggest_builtin: true,
+      }),
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    ctx.closeQuestion(true);
+    equal(await first, true);
+    // The broken external session is closed before the offer is shown.
+    const closeCall = calls.find((call) => call.url === "/api/session/close");
+    ok(closeCall, "session/close called");
+    deepEqual(JSON.parse(closeCall.opt.body), { session: "default", backend: "external-herdr" });
+
+    // A second error frame while an offer is pending is swallowed: the pending
+    // handler is still showing its question, so accept that question and
+    // confirm the new frame is consumed without another close call.
+    const closesBefore = calls.filter((call) => call.url === "/api/session/close").length;
+    const second = ctx.handleHerdrErrorFrame(JSON.stringify({ type: "herdr_error" }));
+    await new Promise((resolve) => setImmediate(resolve));
+    ctx.closeQuestion(true);
+    equal(await second, true);
+    equal(
+      calls.filter((call) => call.url === "/api/session/close").length,
+      closesBefore,
+    );
+
+    // Third error: accept again and verify a built-in session launches.
+    const third = ctx.handleHerdrErrorFrame(
+      JSON.stringify({ type: "herdr_error", message: "failed to read herdr handshake" }),
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    ctx.closeQuestion(true);
+    await third;
+    const launchCall = calls.find((call) => call.url === "/api/session/launch");
+    ok(launchCall, "session/launch called");
+    deepEqual(JSON.parse(launchCall.opt.body), { session: "default", backend: "builtin" });
+    equal(vm.runInContext("state.sessionBackend", ctx), "builtin");
+  });
+
+  it("defaults new browsers to the server's built-in backend", async () => {
+    const ctx = context();
+    ctx.fetch = async (url) => {
+      equal(url, "/api/versions");
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          webui: "1.2.3",
+          backend: "builtin-0.1.0",
+          backend_mode: "builtin",
+          current_backend: "builtin",
+          session: "default",
+          compatibility: { status: "compatible" },
+        }),
+      };
+    };
+    vm.runInContext(source, ctx);
+
+    await ctx.loadVersions();
+
+    equal(vm.runInContext("state.sessionBackend", ctx), "builtin");
+    equal(vm.runInContext("state.serverBackendConfirmed", ctx), true);
+    equal(ctx.localStorage.getItem("herdr-session-backend"), "builtin");
   });
 });

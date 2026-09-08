@@ -185,6 +185,12 @@ async function connectTerminal() {
   };
   ws.onmessage = (e) => {
     if (termWs !== ws || connectedTerminalId !== target) return;
+    if (typeof e.data === "string" && handleHerdrErrorFrame(e.data)) {
+      // Backend attach failed (e.g. protocol mismatch). The handler offered
+      // recovery; drop this socket so a clean reconnect happens later.
+      ws.close();
+      return;
+    }
     // Don't hide loading overlay here for attach frames; the write callback
     // in flushTerminalFrames will reveal the terminal once parsing completes.
     // For normal frames, hide it immediately.

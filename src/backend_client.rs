@@ -8,8 +8,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::protocol::{
-    read_message, write_message, ClientKeybindings, ClientLaunchMode, ClientMessage,
-    RenderEncoding, ServerMessage, TerminalFrame,
+    read_message, write_message, ClientMessage, RenderEncoding, ServerMessage, TerminalFrame,
 };
 
 /// Client-side API intended for a future first-party TUI or smoke CLI.
@@ -235,15 +234,13 @@ impl BackendClient {
         let rows = rows.max(1);
         write_protocol(
             &mut stream,
-            &ClientMessage::Hello {
+            &ClientMessage::TerminalHello {
                 version: BUILTIN_TUI_PROTOCOL_VERSION,
                 cols,
                 rows,
                 cell_width_px: 0,
                 cell_height_px: 0,
-                requested_encoding: RenderEncoding::TerminalAnsi,
-                keybindings: ClientKeybindings::Server,
-                launch_mode: ClientLaunchMode::TerminalAttach,
+                pixel_mouse: false,
             },
         )?;
         match read_protocol::<ServerMessage>(&mut stream)? {
@@ -370,10 +367,8 @@ impl TerminalClient {
     pub fn paste_text(&mut self, text: &str) -> Result<(), BackendClientError> {
         write_protocol(
             &mut self.stream,
-            &ClientMessage::InputEvents {
-                events: vec![crate::protocol::ClientInputEvent::Paste {
-                    text: text.to_string(),
-                }],
+            &ClientMessage::Input {
+                data: format!("\x1b[200~{}\x1b[201~", text).into_bytes(),
             },
         )
     }
@@ -388,6 +383,7 @@ impl TerminalClient {
                 rows: self.rows,
                 cell_width_px: 0,
                 cell_height_px: 0,
+                pixel_mouse: false,
             },
         )
     }
@@ -414,10 +410,8 @@ impl TerminalWriter {
     pub fn paste_text(&mut self, text: &str) -> Result<(), BackendClientError> {
         write_protocol(
             &mut self.stream,
-            &ClientMessage::InputEvents {
-                events: vec![crate::protocol::ClientInputEvent::Paste {
-                    text: text.to_string(),
-                }],
+            &ClientMessage::Input {
+                data: format!("\x1b[200~{}\x1b[201~", text).into_bytes(),
             },
         )
     }
@@ -432,6 +426,7 @@ impl TerminalWriter {
                 rows: self.rows,
                 cell_width_px: 0,
                 cell_height_px: 0,
+                pixel_mouse: false,
             },
         )
     }
@@ -921,8 +916,8 @@ mod tests {
                 match read_message::<_, ClientMessage>(&mut stream, MAX_TUI_TERMINAL_FRAME_SIZE)
                     .unwrap()
                 {
-                    ClientMessage::Hello { .. } => {}
-                    other => panic!("expected hello, got {other:?}"),
+                    ClientMessage::TerminalHello { .. } => {}
+                    other => panic!("expected terminal hello, got {other:?}"),
                 }
                 write_message(&mut stream, &response).unwrap();
             }
@@ -958,7 +953,7 @@ mod tests {
             match read_message::<_, ClientMessage>(&mut stream, MAX_TUI_TERMINAL_FRAME_SIZE)
                 .unwrap()
             {
-                ClientMessage::Hello { cols, rows, .. } => assert_eq!((cols, rows), (1, 1)),
+                ClientMessage::TerminalHello { cols, rows, .. } => assert_eq!((cols, rows), (1, 1)),
                 other => panic!("expected hello, got {other:?}"),
             }
             write_message(
@@ -1003,7 +998,6 @@ mod tests {
                     reason: Some("done".to_string()),
                 },
                 ServerMessage::ReloadSoundConfig,
-                ServerMessage::PrefixInputSource { active: true },
             ];
             for event in events {
                 write_message(&mut stream, &event).unwrap();
@@ -1048,7 +1042,6 @@ mod tests {
             }
         );
         assert_eq!(terminal.read_event().unwrap(), TerminalEvent::Ignored);
-        assert_eq!(terminal.read_event().unwrap(), TerminalEvent::Ignored);
 
         handle.join().unwrap();
         let _ = fs::remove_file(socket);
@@ -1064,7 +1057,7 @@ mod tests {
             match read_message::<_, ClientMessage>(&mut stream, MAX_TUI_TERMINAL_FRAME_SIZE)
                 .unwrap()
             {
-                ClientMessage::Hello { cols, rows, .. } => {
+                ClientMessage::TerminalHello { cols, rows, .. } => {
                     assert_eq!(cols, 80);
                     assert_eq!(rows, 24);
                 }
@@ -1109,13 +1102,10 @@ mod tests {
             match read_message::<_, ClientMessage>(&mut stream, MAX_TUI_TERMINAL_FRAME_SIZE)
                 .unwrap()
             {
-                ClientMessage::InputEvents { events } => match &events[..] {
-                    [crate::protocol::ClientInputEvent::Paste { text }] => {
-                        assert_eq!(text, "terminal paste")
-                    }
-                    other => panic!("expected paste event, got {other:?}"),
-                },
-                other => panic!("expected input events, got {other:?}"),
+                ClientMessage::Input { data } => {
+                    assert_eq!(data, b"\x1b[200~terminal paste\x1b[201~")
+                }
+                other => panic!("expected bracketed paste input, got {other:?}"),
             }
             match read_message::<_, ClientMessage>(&mut stream, MAX_TUI_TERMINAL_FRAME_SIZE)
                 .unwrap()
@@ -1128,13 +1118,10 @@ mod tests {
             match read_message::<_, ClientMessage>(&mut stream, MAX_TUI_TERMINAL_FRAME_SIZE)
                 .unwrap()
             {
-                ClientMessage::InputEvents { events } => match &events[..] {
-                    [crate::protocol::ClientInputEvent::Paste { text }] => {
-                        assert_eq!(text, "writer paste")
-                    }
-                    other => panic!("expected writer paste event, got {other:?}"),
-                },
-                other => panic!("expected writer input events, got {other:?}"),
+                ClientMessage::Input { data } => {
+                    assert_eq!(data, b"\x1b[200~writer paste\x1b[201~")
+                }
+                other => panic!("expected writer bracketed paste, got {other:?}"),
             }
             match read_message::<_, ClientMessage>(&mut stream, MAX_TUI_TERMINAL_FRAME_SIZE)
                 .unwrap()
@@ -1183,8 +1170,8 @@ mod tests {
             match read_message::<_, ClientMessage>(&mut stream, MAX_TUI_TERMINAL_FRAME_SIZE)
                 .unwrap()
             {
-                ClientMessage::Hello { .. } => {}
-                other => panic!("expected hello, got {other:?}"),
+                ClientMessage::TerminalHello { .. } => {}
+                other => panic!("expected terminal hello, got {other:?}"),
             }
             write_message(
                 &mut stream,
