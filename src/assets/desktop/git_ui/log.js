@@ -31,7 +31,7 @@
       ? rows.map((row) => renderRow(row, selected, filters, renderOptions, baseBranch)).join("")
       : `<div class="git-ui-empty-row">No commits found.</div>`;
     const footer = renderLoadMore(options.data || {}, rows, options, esc);
-    return `${scope}<div class="git-ui-log git-ui-log-table">${header}${body}${footer}</div>`;
+    return `<div class="git-ui-log git-ui-log-table">${header}${body}${footer}</div>`;
   }
 
   function upstreamRefFromStatus(status) {
