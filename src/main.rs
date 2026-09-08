@@ -1331,7 +1331,10 @@ fn app_router(state: WebState) -> Router {
             "/api/recent-workspaces",
             get(recent_workspaces).post(open_recent_workspace),
         )
-        .route("/api/recent-workspaces/clear", post(clear_recent_workspaces))
+        .route(
+            "/api/recent-workspaces/clear",
+            post(clear_recent_workspaces),
+        )
         .route("/api/worktrees", get(worktrees).post(create_worktree))
         .route("/api/worktrees/open", post(open_worktree))
         .route("/api/worktrees/remove-path", post(remove_worktree_path))
@@ -3482,11 +3485,7 @@ async fn open_worktree(
     }
     let cwd = body.cwd.as_deref().map(expand_user_path_string);
     let path = body.path.as_deref().map(expand_user_path_string);
-    let recorded_path = path
-        .as_deref()
-        .or(cwd.as_deref())
-        .unwrap_or("")
-        .to_string();
+    let recorded_path = path.as_deref().or(cwd.as_deref()).unwrap_or("").to_string();
     let recorded_label = body.label.clone();
     let recorded_branch = body.branch.clone();
     let record_state = state.clone();
@@ -4550,7 +4549,7 @@ mod tests {
                 jcode_detection_variant: JcodeDetectionVariant::default(),
                 log_level: LogLevel::default(),
                 lsp: lsp::LspSettings::default(),
-        recent_workspaces: Vec::new(),
+                recent_workspaces: Vec::new(),
             })),
             no_sleep: Arc::new(Mutex::new(NoSleepState::default())),
             rebind_tx,
@@ -4644,7 +4643,10 @@ mod tests {
         let config = WebConfig::parse(&[]).unwrap();
 
         assert_eq!(config.bind, DEFAULT_BIND.parse::<SocketAddr>().unwrap());
-        assert!(!config.bind_explicit, "no --bind leaves bind_explicit false");
+        assert!(
+            !config.bind_explicit,
+            "no --bind leaves bind_explicit false"
+        );
         assert_eq!(config.session, None);
         assert_eq!(config.api_socket, None);
         assert_eq!(config.client_socket, None);
@@ -5335,8 +5337,7 @@ mod tests {
         fs::write(&path, r#"{"bind":"127.0.0.1:8787"}"#).unwrap();
 
         let config = WebConfig::parse(&["--bind", "127.0.0.1:8788"].map(String::from)).unwrap();
-        let mut server_settings =
-            load_runtime_server_settings(config.bind).unwrap();
+        let mut server_settings = load_runtime_server_settings(config.bind).unwrap();
         apply_cli_overrides(&mut server_settings, &config);
 
         assert!(config.bind_explicit);
@@ -5373,7 +5374,7 @@ mod tests {
             jcode_detection_variant: JcodeDetectionVariant::default(),
             log_level: LogLevel::default(),
             lsp: lsp::LspSettings::default(),
-        recent_workspaces: Vec::new(),
+            recent_workspaces: Vec::new(),
         })
         .unwrap();
 
@@ -5399,7 +5400,7 @@ mod tests {
             jcode_detection_variant: JcodeDetectionVariant::default(),
             log_level: LogLevel::default(),
             lsp: lsp::LspSettings::default(),
-        recent_workspaces: Vec::new(),
+            recent_workspaces: Vec::new(),
         }) {
             Ok(_) => panic!("expected public auth config to fail"),
             Err(err) => err,
@@ -6294,7 +6295,13 @@ mod tests {
     #[tokio::test]
     async fn push_recent_workspace_dedupes_orders_and_truncates() {
         let mut recent = Vec::new();
-        push_recent_workspace(&mut recent, "  /repo/a  ", Some(" A ".to_string()), None, Some("workspace".to_string()));
+        push_recent_workspace(
+            &mut recent,
+            "  /repo/a  ",
+            Some(" A ".to_string()),
+            None,
+            Some("workspace".to_string()),
+        );
         assert_eq!(recent.len(), 1);
         assert_eq!(recent[0].path, "/repo/a");
         assert_eq!(recent[0].label.as_deref(), Some("A"));
@@ -6310,7 +6317,10 @@ mod tests {
             push_recent_workspace(&mut recent, &format!("/repo/{index}"), None, None, None);
         }
         assert_eq!(recent.len(), MAX_RECENT_WORKSPACES);
-        assert_eq!(recent[0].path, format!("/repo/{}", MAX_RECENT_WORKSPACES + 4));
+        assert_eq!(
+            recent[0].path,
+            format!("/repo/{}", MAX_RECENT_WORKSPACES + 4)
+        );
         assert!(recent.iter().all(|item| item.opened_at.is_some()));
     }
 
@@ -6360,7 +6370,13 @@ mod tests {
             let state = test_state();
             {
                 let mut guard = state.server_settings.lock().unwrap();
-                push_recent_workspace(&mut guard.recent_workspaces, "/repo/x", Some("X".to_string()), Some("main".to_string()), Some("worktree".to_string()));
+                push_recent_workspace(
+                    &mut guard.recent_workspaces,
+                    "/repo/x",
+                    Some("X".to_string()),
+                    Some("main".to_string()),
+                    Some("worktree".to_string()),
+                );
             }
             let app_with_recent = test_app_with_state(state);
 
@@ -6398,7 +6414,13 @@ mod tests {
     #[tokio::test]
     async fn runtime_settings_persist_recent_workspaces_round_trip() {
         let mut settings = default_runtime_server_settings("127.0.0.1:8787".parse().unwrap());
-        push_recent_workspace(&mut settings.recent_workspaces, "/repo/round", Some("Round".to_string()), None, Some("workspace".to_string()));
+        push_recent_workspace(
+            &mut settings.recent_workspaces,
+            "/repo/round",
+            Some("Round".to_string()),
+            None,
+            Some("workspace".to_string()),
+        );
         let serialized = serde_json::to_string(&PersistedServerSettings {
             bind: Some(settings.bind.to_string()),
             user: settings.user.clone(),
@@ -6482,7 +6504,8 @@ mod tests {
                 authed_request(Method::POST, "/api/recent-workspaces")
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(
-                        json!({ "path": "/repo/recent", "label": " Recent ", "branch": "main" }).to_string(),
+                        json!({ "path": "/repo/recent", "label": " Recent ", "branch": "main" })
+                            .to_string(),
                     ))
                     .unwrap(),
             )
@@ -6504,7 +6527,10 @@ mod tests {
         assert_eq!(recent[0].kind.as_deref(), Some("workspace"));
 
         let body = response_json(response).await;
-        assert_eq!(body["result"]["workspace"]["workspace_id"], json!("ws-recent"));
+        assert_eq!(
+            body["result"]["workspace"]["workspace_id"],
+            json!("ws-recent")
+        );
     }
 
     #[cfg(unix)]
@@ -6535,7 +6561,12 @@ mod tests {
             .unwrap();
         // The GET arm returns an empty list when the lock is unavailable.
         assert_eq!(listed.status(), StatusCode::OK);
-        assert_eq!(response_json(listed).await["recent"].as_array().map(Vec::len), Some(0));
+        assert_eq!(
+            response_json(listed).await["recent"]
+                .as_array()
+                .map(Vec::len),
+            Some(0)
+        );
 
         let cleared = app
             .oneshot(
@@ -6580,9 +6611,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(cleared.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        assert!(response_json(cleared).await["error"]
-            .as_str()
-            .is_some());
+        assert!(response_json(cleared).await["error"].as_str().is_some());
 
         std::env::remove_var("XDG_CONFIG_HOME");
         let _ = fs::remove_file(sentinel);
@@ -6603,10 +6632,16 @@ mod tests {
         }));
 
         let recorded = record_recent_workspace(&state, "/repo/x", None, None, None).await;
-        assert!(recorded.is_err(), "recording must fail when the lock is poisoned");
+        assert!(
+            recorded.is_err(),
+            "recording must fail when the lock is poisoned"
+        );
 
         let persisted = persist_server_settings(&state).await;
-        assert!(persisted.is_err(), "persisting must fail when the lock is poisoned");
+        assert!(
+            persisted.is_err(),
+            "persisting must fail when the lock is poisoned"
+        );
     }
 
     #[tokio::test]
@@ -10582,7 +10617,7 @@ mod tui_parity_e2e_tests {
                 jcode_detection_variant: JcodeDetectionVariant::default(),
                 log_level: LogLevel::default(),
                 lsp: lsp::LspSettings::default(),
-        recent_workspaces: Vec::new(),
+                recent_workspaces: Vec::new(),
             })),
             no_sleep: Arc::new(Mutex::new(NoSleepState::default())),
             rebind_tx,
