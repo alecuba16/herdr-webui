@@ -368,6 +368,11 @@
     return String(gitUiOptions().gitUiDefaultBranch || "master").trim() || "master";
   }
 
+  function gitRemoteBranchPreload() {
+    const value = Number(gitUiOptions().gitUiRemoteBranchPreload);
+    return Number.isFinite(value) ? Math.max(1, Math.min(100, value)) : 10;
+  }
+
   function normalizeLogScope(scope) {
     return ["all", "base-current", "base"].includes(scope) ? scope : "all";
   }
@@ -1654,7 +1659,14 @@
     const currentRows = localAll.filter((branch) => !branch.remote && branch.name === currentBranch);
     const local = currentRows.concat(localAll.filter((branch) => !currentRows.includes(branch)));
     const remoteAll = (list.remote || []).filter(matches);
-    const remote = list.remoteLoaded ? remoteAll : remoteAll.slice(0, 2);
+    const preferred = (branch) => {
+      const name = String(branch.name || "").replace(/^origin\//, "");
+      if (name === "main" || name === "master" || name === currentBranch) return 0;
+      if (name.startsWith(`${currentBranch}/`) || currentBranch.startsWith(`${name}/`)) return 1;
+      return 2;
+    };
+    const remoteOrdered = remoteAll.slice().sort((left, right) => preferred(left) - preferred(right));
+    const remote = list.remoteLoaded ? remoteAll : remoteOrdered.slice(0, gitRemoteBranchPreload());
     const rows = (branches, label) => !branches.length ? "" : `<div class="git-ui-branch-list-section">${label}</div>${branches.map((branch) => branchListRow(branch, currentBranch)).join("")}`;
     const empty = !local.length && !remote.length ? `<div class="git-ui-muted git-ui-branch-list-empty">No branches match</div>` : "";
     // Filter input lives at the bottom, below the scrollable rows, so the

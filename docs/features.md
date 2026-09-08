@@ -145,6 +145,7 @@ File browser:
 Git UI:
 
 - The Git header has a two-level selector, `worktree / branch`. The worktree selector lists the main worktree and linked worktrees detected for the current repository, and offers a shortcut to create a worktree. Selecting a worktree moves Git operations to that checkout without changing the current workspace. The branch selector switches branches within the selected folder.
+- Settings → Git UI includes `Git remote branches to preload`, defaulting to 10. The initial remote list is capped to this value for faster rendering; filtering or loading more reveals the complete remote list.
 - If Git is operating in a folder different from the current workspace/worktree, the active path is highlighted with a yellow background. Hover it to see the full path, and use the return button beside it to move Git back to the current workspace folder. This changes only the Git panel folder.
 
 - Desktop has an embedded Git drawer backed by Rust API routes and the system `git` CLI; no Node/React/Vite runtime is needed. Mobile has read-only grouped Git status.
