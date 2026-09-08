@@ -1,5 +1,25 @@
 # Release notes
 
+## 0.4.14 Release Notes
+- Bug fix: Git UI "No Git repository" on fresh browsers. A browser that pinned
+  the built-in backend (localStorage) but never called /api/session/launch got
+  a 502 on every workspace list because the built-in session was never
+  started; the Git UI then fell back to the default folder. Authenticated
+  requests that target the built-in backend now auto-start it.
+- Auto-start covers the workspace/worktree/agent/tab/pane proxy handlers and
+  the events/terminal WebSocket upgrades. Session lifecycle routes
+  (launch/close), /api/versions, and the no-sleep probe are unchanged.
+- /api/versions now reports default_backend: the server's true configured
+  default backend, independent of the request's x-herdr-backend header
+  (current_backend still echoes the request target).
+- First-load backend adoption is fixed: a fresh browser now adopts the
+  server's default_backend instead of its own echoed header value, so a
+  stale localStorage pin can no longer lock the browser into a backend the
+  server does not default to. Explicit user choices still win afterwards.
+- Built-in session cold starts are serialized (builtin_start_lock), so the
+  burst of requests from a freshly loaded browser cannot race on the session
+  socket bind (previously the losing request could fail with AddrInUse).
+
 ## 0.4.13 Release Notes
 - herdr 0.9.0 / protocol 22 upgrade: the built-in terminal backend now speaks
   herdr protocol 22 (agent status, scroll regions, sixel/OSC 8 awareness),
