@@ -1,8 +1,0 @@
-/Users/alejandro.blanco/Documents/projects/worktrees/herdr-webui/git-branch-switcher/target-llvm/llvm-cov-target/debug/deps/bincode_derive-f53e21f441412197.d: /Users/alejandro.blanco/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bincode_derive-2.0.1/src/lib.rs /Users/alejandro.blanco/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bincode_derive-2.0.1/src/attribute.rs /Users/alejandro.blanco/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bincode_derive-2.0.1/src/derive_enum.rs /Users/alejandro.blanco/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bincode_derive-2.0.1/src/derive_struct.rs
-
-/Users/alejandro.blanco/Documents/projects/worktrees/herdr-webui/git-branch-switcher/target-llvm/llvm-cov-target/debug/deps/libbincode_derive-f53e21f441412197.dylib: /Users/alejandro.blanco/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bincode_derive-2.0.1/src/lib.rs /Users/alejandro.blanco/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bincode_derive-2.0.1/src/attribute.rs /Users/alejandro.blanco/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bincode_derive-2.0.1/src/derive_enum.rs /Users/alejandro.blanco/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bincode_derive-2.0.1/src/derive_struct.rs
-
-/Users/alejandro.blanco/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bincode_derive-2.0.1/src/lib.rs:
-/Users/alejandro.blanco/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bincode_derive-2.0.1/src/attribute.rs:
-/Users/alejandro.blanco/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bincode_derive-2.0.1/src/derive_enum.rs:
-/Users/alejandro.blanco/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bincode_derive-2.0.1/src/derive_struct.rs:
