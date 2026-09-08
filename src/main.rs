@@ -97,6 +97,8 @@ struct BackendInfo {
 #[derive(Clone, Debug)]
 struct WebConfig {
     bind: SocketAddr,
+    /// True when --bind was passed explicitly and must override persisted settings.
+    bind_explicit: bool,
     session: Option<String>,
     api_socket: Option<PathBuf>,
     client_socket: Option<PathBuf>,
@@ -338,6 +340,7 @@ fn start_no_sleep_guard() -> io::Result<NoSleepGuard> {
 impl WebConfig {
     fn parse(args: &[String]) -> io::Result<Self> {
         let mut bind = DEFAULT_BIND.parse::<SocketAddr>().expect("valid bind");
+        let mut bind_explicit = false;
         let mut session = None;
         let mut api_socket = None;
         let mut client_socket = None;
@@ -357,6 +360,7 @@ impl WebConfig {
                             format!("invalid --bind: {err}"),
                         )
                     })?;
+                    bind_explicit = true;
                     index += 2;
                 }
                 "--session" => {
@@ -418,6 +422,7 @@ impl WebConfig {
         }
         Ok(Self {
             bind,
+            bind_explicit,
             session,
             api_socket,
             client_socket,
@@ -980,6 +985,12 @@ async fn main() -> io::Result<()> {
     }
     let config = WebConfig::parse(&args)?;
     let mut server_settings = load_runtime_server_settings(config.bind)?;
+    // An explicit --bind must win over the persisted bind from webui-settings.json;
+    // otherwise a preview instance could silently squat the saved port instead of
+    // the one the operator asked for.
+    if config.bind_explicit {
+        server_settings.bind = config.bind;
+    }
     if let Some(backend_mode) = config.backend_mode {
         server_settings.backend_mode = backend_mode;
     }
@@ -4628,6 +4639,7 @@ mod tests {
         let config = WebConfig::parse(&[]).unwrap();
 
         assert_eq!(config.bind, DEFAULT_BIND.parse::<SocketAddr>().unwrap());
+        assert!(!config.bind_explicit, "no --bind leaves bind_explicit false");
         assert_eq!(config.session, None);
         assert_eq!(config.api_socket, None);
         assert_eq!(config.client_socket, None);
@@ -4743,6 +4755,7 @@ mod tests {
         let config = WebConfig::parse(&args).unwrap();
 
         assert_eq!(config.bind, "0.0.0.0:9999".parse::<SocketAddr>().unwrap());
+        assert!(config.bind_explicit, "explicit --bind sets bind_explicit");
         assert_eq!(config.session.as_deref(), Some("work"));
         assert_eq!(
             config.api_socket.as_deref(),
@@ -5295,6 +5308,49 @@ mod tests {
         assert!(raw.contains(r#""backend_mode": "builtin""#));
         assert!(raw.contains("builtin_shell"));
         assert!(raw.contains("default_folder"));
+
+        let _ = fs::remove_dir_all(config_home);
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    #[test]
+    fn explicit_cli_bind_overrides_persisted_bind() {
+        let _guard = lock_env();
+        let config_home = std::env::temp_dir().join(format!(
+            "herdr-webui-explicit-bind-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
+        let path = server_settings_path();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // A saved bind pointing at 8787 must not hijack an explicit --bind 8788.
+        fs::write(&path, r#"{"bind":"127.0.0.1:8787"}"#).unwrap();
+
+        let config = WebConfig::parse(&["--bind", "127.0.0.1:8788"].map(String::from)).unwrap();
+        let mut server_settings =
+            load_runtime_server_settings(config.bind).unwrap();
+        if config.bind_explicit {
+            server_settings.bind = config.bind;
+        }
+
+        assert!(config.bind_explicit);
+        assert_eq!(server_settings.bind, "127.0.0.1:8788".parse().unwrap());
+
+        // Without an explicit flag the persisted bind keeps winning.
+        let implicit = WebConfig::parse(&[]).unwrap();
+        let mut implicit_settings = load_runtime_server_settings(implicit.bind).unwrap();
+        if implicit.bind_explicit {
+            implicit_settings.bind = implicit.bind;
+        }
+        assert!(!implicit.bind_explicit);
+        assert_eq!(
+            implicit_settings.bind,
+            "127.0.0.1:8787".parse().unwrap(),
+            "persisted bind stays authoritative when --bind is absent"
+        );
 
         let _ = fs::remove_dir_all(config_home);
         std::env::remove_var("XDG_CONFIG_HOME");
@@ -7839,6 +7895,7 @@ mod tests {
     // ── close_session builtin backend path ──
 
     #[cfg(unix)]
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn close_session_builtin_backend_uses_builtin_socket_namespace() {
         use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
@@ -8322,6 +8379,7 @@ mod tests {
 
     // ── server_settings handler POST with successful save (spawn_blocking path) ──
 
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn update_server_settings_saves_and_returns_updated_settings() {
         let _guard = lock_env();
@@ -8401,6 +8459,7 @@ mod tests {
 
     // ── launch_session with builtin backend ──
 
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn launch_session_builtin_backend_starts_session() {
         let _guard = lock_env();
@@ -9591,6 +9650,7 @@ mod tests {
     // so bind_local_listener fails.
 
     #[cfg(unix)]
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn launch_session_builtin_returns_error_on_socket_bind_failure() {
         let _guard = lock_env();
@@ -9656,6 +9716,7 @@ mod tests {
     // (parent dir is a regular file, not a directory).
 
     #[cfg(unix)]
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn update_server_settings_returns_error_on_save_failure() {
         let _guard = lock_env();
@@ -9753,6 +9814,7 @@ mod tests {
         (status, response_json(response).await)
     }
 
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn lsp_config_api_reports_and_updates_settings() {
         let _guard = lock_env();

@@ -121,7 +121,6 @@ describe("app bundle load", () => {
   let source;
   let gitUiSource;
   let gitLogSource;
-  let gitActionsSource;
   let gitSettingsSource;
   let gitUiLogCss;
   let fileBrowserSource;
@@ -161,7 +160,6 @@ describe("app bundle load", () => {
       desktopAppSource;
     gitUiSource = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
     gitLogSource = readFileSync(new URL("./desktop/git_ui/log.js", import.meta.url), "utf8");
-    gitActionsSource = readFileSync(new URL("./desktop/git_ui/actions.js", import.meta.url), "utf8");
     gitSettingsSource = readFileSync(new URL("./desktop/git_ui/settings.js", import.meta.url), "utf8");
     gitUiLogCss = readFileSync(new URL("./desktop/git_ui/log.css", import.meta.url), "utf8");
     fileBrowserSource = readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8");
@@ -877,11 +875,11 @@ describe("app bundle load", () => {
   });
 
   it("uses a log row context menu with reset and clear rebase wording", () => {
-    match(gitActionsSource, /openSelectedResetModal\(\)/);
-    match(gitActionsSource, /title="Rebase current changes over the selected commit"/);
-    match(gitActionsSource, />Rebase…<\/button>/);
-    match(gitActionsSource, /options\.allowRewrite/);
-    ok(!gitActionsSource.includes("Reset soft</button><button"));
+    match(gitUiSource, /openSelectedResetModal\(\)/);
+    match(gitUiSource, /Rebase commits after/);
+    match(gitUiSource, /rebaseAfterSelected\(\) \{/);
+    match(gitUiSource, /!hasSelection \|\| !mutable/);
+    ok(!gitUiSource.includes("Reset soft</button><button"));
     match(gitUiSource, /renderResetSelectedModal/);
     match(gitUiSource, /renderCompareSelectedModal/);
     match(gitUiSource, /Compare selected commit/);
@@ -957,8 +955,7 @@ describe("app bundle load", () => {
     match(gitUiSource, /No stashes stored\. Refresh to rescan\./);
     match(gitUiSource, /view\.tab === "stash" && !canOpenStashView\(view\)/);
     match(gitUiSource, /tab === "stash" && !canOpenStashView\(view\)/);
-    match(gitActionsSource, />Tag<\/button>/);
-    match(gitActionsSource, /openSelectedTagModal\(\)/);
+    match(gitUiSource, /item\("Tag", "openSelectedTagModal\(\)", !hasSelection\)/);
     match(gitUiSource, /renderTagSelectedModal/);
     match(gitUiSource, /gitTagName/);
     match(gitUiSource, /\/api\/git-ui\/tag/);
@@ -3143,8 +3140,8 @@ describe("app bundle load", () => {
     match(featuresDoc, /scope row, table header, and filter row are sticky/);
     match(featuresDoc, /File browser `Show history` opens this log scoped to the selected file/);
     match(featuresDoc, /Selecting one commit loads a `Committed files` side preview/);
-    match(technicalDoc, /src\/assets\/desktop\/git_ui\/actions\.js/);
-    match(technicalDoc, /selected-commit action strip/);
+    match(technicalDoc, /renderLogContextMenu/);
+    match(technicalDoc, /row-level right-click context menu/);
     match(technicalDoc, /optional `file` path/);
     match(technicalDoc, /commit\^` versus `commit`/);
     match(gitUiSource, /function gitBranchModalDefaultCwd\(cwd\)/);
@@ -3239,10 +3236,8 @@ describe("app bundle load", () => {
     match(gitLogCss, /\.git-ui-log-copy-hash/);
     match(gitLogCss, /\.git-ui-log-hover-card \.git-ui-log-ref \{[\s\S]*?max-width: none;[\s\S]*?overflow-wrap: anywhere;[\s\S]*?white-space: normal;/);
     match(gitLogSource, /function selectedBranchForHash/);
-    match(gitActionsSource, />Worktree…<\/button>/);
-    match(gitActionsSource, /Selected commit has no branch label/);
-    match(gitActionsSource, /title="Create a worktree from \$\{esc\(options\.selectedBranch\)\}"/);
-    match(gitUiSource, /createWorktreeFromSelectedBranch\(\)/);
+    match(gitUiSource, /item\("Worktree", "createWorktreeFromSelectedBranch\(\)", !view \|\| !view\.selectedLogBranch\)/);
+    match(gitUiSource, /createWorktreeFromSelectedBranch\(\) \{/);
     match(source, /function openWorktreeCreateFromGitBranch\(cwd, branch\)/);
     match(source, /id="worktreeFetchRemotes"/);
     match(source, /Fetch remote branches…/);

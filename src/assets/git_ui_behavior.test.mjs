@@ -122,7 +122,6 @@ const SHARED_SOURCES = [
   "./shared/workspace_search.js",
   "./desktop/git_ui/settings.js",
   "./desktop/git_ui/syntax.js",
-  "./desktop/git_ui/actions.js",
   "./desktop/git_ui/log.js",
 ]
   .map((path) => readFileSync(new URL(path, import.meta.url), "utf8"))

@@ -459,7 +459,6 @@
   }
 
   const Syntax = window.HerdrGitSyntax;
-  const Actions = window.HerdrGitActions;
   const FileTree = window.HerdrFileTree;
 
   function highlight(code, path) {

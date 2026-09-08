@@ -49,7 +49,6 @@ const DESKTOP_GIT_UI_CSS: &str = concat!(
     include_str!("assets/desktop/git_ui/layout.css"),
     include_str!("assets/desktop/git_ui/diff.css"),
     include_str!("assets/desktop/git_ui/log.css"),
-    include_str!("assets/desktop/git_ui/log_actions.css"),
     include_str!("assets/desktop/git_ui/syntax.css"),
 );
 const DESKTOP_SEARCH_CSS: &str = include_str!("assets/desktop/search.css");
@@ -59,7 +58,6 @@ const DESKTOP_SHORTCUTS_CSS: &str = include_str!("assets/desktop/shortcuts.css")
 const DESKTOP_GIT_UI_JS: &str = concat!(
     include_str!("assets/desktop/git_ui/settings.js"),
     include_str!("assets/desktop/git_ui/syntax.js"),
-    include_str!("assets/desktop/git_ui/actions.js"),
     include_str!("assets/desktop/git_ui/log.js"),
     include_str!("assets/desktop/git_ui.js"),
 );

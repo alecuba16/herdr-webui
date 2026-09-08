@@ -1414,8 +1414,10 @@ mod tests {
     async fn registry_settings_roundtrip() {
         let registry = LspRegistry::new(LspSettings::default());
         assert!(!registry.settings().enabled);
-        let mut settings = LspSettings::default();
-        settings.enabled = true;
+        let settings = LspSettings {
+            enabled: true,
+            ..Default::default()
+        };
         registry.set_settings(settings.clone());
         assert!(registry.settings().enabled);
     }

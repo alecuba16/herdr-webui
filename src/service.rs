@@ -563,6 +563,7 @@ mod tests {
     fn test_config(tls: crate::TlsConfig) -> WebConfig {
         WebConfig {
             bind: "127.0.0.1:8787".parse().unwrap(),
+            bind_explicit: false,
             session: Some("work".to_string()),
             api_socket: None,
             client_socket: None,
@@ -575,6 +576,7 @@ mod tests {
     fn linux_service_unit_contains_binary_and_flags() {
         let config = WebConfig {
             bind: "127.0.0.1:8787".parse().unwrap(),
+            bind_explicit: false,
             session: Some("work".to_string()),
             api_socket: None,
             client_socket: None,
@@ -597,6 +599,7 @@ mod tests {
     fn linux_service_unit_quotes_shell_sensitive_args() {
         let config = WebConfig {
             bind: "127.0.0.1:8787".parse().unwrap(),
+            bind_explicit: false,
             session: Some("work session's path".to_string()),
             api_socket: None,
             client_socket: None,
@@ -617,6 +620,7 @@ mod tests {
     fn mac_plist_contains_binary_and_flags() {
         let config = WebConfig {
             bind: "127.0.0.1:8787".parse().unwrap(),
+            bind_explicit: false,
             session: Some("work".to_string()),
             api_socket: None,
             client_socket: None,
