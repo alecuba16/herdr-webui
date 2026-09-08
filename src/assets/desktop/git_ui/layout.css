@@ -22,6 +22,7 @@
 .git-ui-side-bottom .git-ui-btn {
   width: 100%;
 }
+.git-ui-path-title { color: var(--muted); font-size: 11px; overflow: hidden; padding: 0 10px 6px; text-overflow: ellipsis; white-space: nowrap; }
 .git-ui-toolbar-title {
   color: var(--muted);
   font-size: 11px;

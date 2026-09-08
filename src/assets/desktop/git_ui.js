@@ -1711,7 +1711,8 @@
   function renderDiffLayoutSideToggle(view) {
     const layout = diffLayoutMode();
     const label = view && view.file ? "File view" : "Diff view";
-    return `<div class="git-ui-side-bottom"><div class="git-ui-toolbar-title" title="${esc(view && view.cwd || "")}">${esc(label)} · ${esc(compactPath(view && view.cwd || ""))}</div><div class="git-ui-view-toggle-group git-ui-diff-layout-toggle" role="group" aria-label="Diff layout"><button class="git-ui-view-toggle ${layout === "side-by-side" ? "active" : ""}" title="Show side-by-side diff" onclick="HerdrGitUi.setDiffLayout('side-by-side')">Side</button><button class="git-ui-view-toggle ${layout === "unified" ? "active" : ""}" title="Show unified diff" onclick="HerdrGitUi.setDiffLayout('unified')">Unified</button></div></div>`;
+    const cwd = String((view && view.cwd) || "");
+    return `<div class="git-ui-side-bottom"><div class="git-ui-path-title" title="${esc(cwd)}">${esc(compactPath(cwd))}</div><div class="git-ui-toolbar-title">${esc(label)}</div><div class="git-ui-view-toggle-group git-ui-diff-layout-toggle" role="group" aria-label="Diff layout"><button class="git-ui-view-toggle ${layout === "side-by-side" ? "active" : ""}" title="Show side-by-side diff" onclick="HerdrGitUi.setDiffLayout('side-by-side')">Side</button><button class="git-ui-view-toggle ${layout === "unified" ? "active" : ""}" title="Show unified diff" onclick="HerdrGitUi.setDiffLayout('unified')">Unified</button></div></div>`;
   }
 
   function filterFiles(files, filter) {
