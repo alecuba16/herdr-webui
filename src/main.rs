@@ -53,8 +53,8 @@ use assets::{
     vendor_dompurify_js, vendor_ghostty_wasm, vendor_marked_js, vendor_mermaid_js,
     vendor_wterm_css, vendor_wterm_js,
 };
-use compat::{backend_compatibility, BackendCompatibility};
 use compat::SimpleVersion;
+use compat::{backend_compatibility, BackendCompatibility};
 use protocol::*;
 
 const DEFAULT_BIND: &str = "127.0.0.1:8787";
@@ -125,9 +125,9 @@ fn detect_herdr_install(herdr_bin: &str) -> HerdrInstall {
     }
     let text = String::from_utf8_lossy(&output.stdout);
     // Accept both "herdr 0.9.0" and a bare "0.9.0".
-    let version = text
-        .split_whitespace()
-        .find_map(|token| SimpleVersion::parse(token).map(|_| token.trim_start_matches('v').to_string()));
+    let version = text.split_whitespace().find_map(|token| {
+        SimpleVersion::parse(token).map(|_| token.trim_start_matches('v').to_string())
+    });
     let Some(version) = version else {
         return HerdrInstall::default();
     };
@@ -4510,9 +4510,13 @@ fn terminal_text_messages(text: &str) -> Vec<ClientMessage> {
                 .and_then(|value| u8::try_from(value).ok())
                 .unwrap_or(0);
             vec![ClientMessage::Input {
-                data: (if modifiers & 1 != 0 { "\x1b[13;2u" } else { "\r" })
-                    .as_bytes()
-                    .to_vec(),
+                data: (if modifiers & 1 != 0 {
+                    "\x1b[13;2u"
+                } else {
+                    "\r"
+                })
+                .as_bytes()
+                .to_vec(),
             }]
         }
         Some("paste") => value
@@ -5830,10 +5834,7 @@ mod tests {
             BackendCompatibility::Compatible
         );
         assert_eq!(
-            backend_compatibility_for_supported_range(
-                Some("0.9.0"),
-                Some(PROTOCOL_VERSION),
-            ),
+            backend_compatibility_for_supported_range(Some("0.9.0"), Some(PROTOCOL_VERSION),),
             BackendCompatibility::Compatible
         );
         assert_eq!(
@@ -5872,13 +5873,18 @@ mod tests {
         // (socket missing, attach send failing) do not, since the backend
         // may just be restarting.
         assert!(TerminalAttachError::ReadHandshake.suggests_builtin());
-        assert!(TerminalAttachError::Rejected("client version 22 is newer than server version 21".into())
-            .suggests_builtin());
+        assert!(TerminalAttachError::Rejected(
+            "client version 22 is newer than server version 21".into()
+        )
+        .suggests_builtin());
         assert!(!TerminalAttachError::Connect.suggests_builtin());
         assert!(!TerminalAttachError::SendHandshake.suggests_builtin());
         assert!(!TerminalAttachError::Attach.suggests_builtin());
 
-        assert_eq!(TerminalAttachError::ReadHandshake.error_kind(), "handshake_failed");
+        assert_eq!(
+            TerminalAttachError::ReadHandshake.error_kind(),
+            "handshake_failed"
+        );
         assert_eq!(
             TerminalAttachError::Rejected("mismatch".into()).error_kind(),
             "handshake_rejected"

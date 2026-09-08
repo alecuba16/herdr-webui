@@ -255,9 +255,7 @@ pub(crate) enum ClientMessage {
     },
 
     /// Raw input bytes read from the client's stdin.
-    Input {
-        data: Vec<u8>,
-    },
+    Input { data: Vec<u8> },
 
     /// Image bytes read from the client's local clipboard for remote paste bridging.
     ClipboardImage {
@@ -281,10 +279,7 @@ pub(crate) enum ClientMessage {
     Detach,
 
     /// Switch this connection into direct terminal attach mode.
-    AttachTerminal {
-        terminal_id: String,
-        takeover: bool,
-    },
+    AttachTerminal { terminal_id: String, takeover: bool },
 
     /// Scroll input handled by a direct terminal attach client.
     AttachScroll {
@@ -297,15 +292,10 @@ pub(crate) enum ClientMessage {
     },
 
     /// Switch this connection into read-only terminal observe mode.
-    ObserveTerminal {
-        target: String,
-    },
+    ObserveTerminal { target: String },
 
     /// Switch this connection into writable terminal control mode.
-    ControlTerminal {
-        target: String,
-        takeover: bool,
-    },
+    ControlTerminal { target: String, takeover: bool },
 
     /// Result of the one armed Herdr-owned direct Kitty transmission.
     GraphicsTransmissionResult {
@@ -315,10 +305,7 @@ pub(crate) enum ClientMessage {
     },
 
     /// The direct command was written and flushed; terminal response timing starts now.
-    GraphicsTransmissionStarted {
-        transfer_id: u64,
-        image_id: u32,
-    },
+    GraphicsTransmissionStarted { transfer_id: u64, image_id: u32 },
 
     /// Handshake for the client-owned shell around one pane surface. The
     /// WebUI is a direct terminal client, not a client-owned shell, so this
@@ -355,10 +342,7 @@ pub(crate) enum ClientMessage {
     },
 
     /// Invoke one endpoint operation through this client shell's selected connection.
-    ClientShellEndpointRequest {
-        boot_id: String,
-        request: String,
-    },
+    ClientShellEndpointRequest { boot_id: String, request: String },
 
     /// Deliver one structured mouse event to a directly attached terminal.
     AttachMouse {
@@ -370,26 +354,17 @@ pub(crate) enum ClientMessage {
     },
 
     /// Publish one host terminal color or appearance update observed by a client-owned shell.
-    ClientShellHostTheme {
-        update: ClientHostThemeUpdate,
-    },
+    ClientShellHostTheme { update: ClientHostThemeUpdate },
 
     /// Publish whether the outer terminal containing a client shell has focus.
-    ClientShellFocus {
-        focused: bool,
-    },
+    ClientShellFocus { focused: bool },
 
     /// Update this client's shell mouse-capture preference after config reload.
-    ClientShellMouseCapture {
-        enabled: bool,
-    },
+    ClientShellMouseCapture { enabled: bool },
 
     /// Extensible named control message for the stable client-owned endpoint
     /// protocol. Append-only; the two-string payload is fixed.
-    EndpointControl {
-        kind: String,
-        data: String,
-    },
+    EndpointControl { kind: String, data: String },
 }
 
 /// Pane-domain input after the client has classified and consumed shell actions.
@@ -876,14 +851,10 @@ pub(crate) enum ServerMessage {
     Terminal(TerminalFrame),
 
     /// Client-local Kitty graphics bytes to write directly to the host terminal.
-    Graphics {
-        bytes: Vec<u8>,
-    },
+    Graphics { bytes: Vec<u8> },
 
     /// Server is shutting down. Clients should exit gracefully.
-    ServerShutdown {
-        reason: Option<String>,
-    },
+    ServerShutdown { reason: Option<String> },
 
     /// A notification event (sound/toast) to be rendered locally by the client.
     Notify {
@@ -893,14 +864,10 @@ pub(crate) enum ServerMessage {
     },
 
     /// OSC 52 clipboard data forwarded from a PTY through the server.
-    Clipboard {
-        data: String,
-    },
+    Clipboard { data: String },
 
     /// Set the foreground client's outer terminal window title.
-    WindowTitle {
-        title: Option<String>,
-    },
+    WindowTitle { title: Option<String> },
 
     /// Client-local runtime config changed on disk; refresh it without reconnecting.
     ReloadSoundConfig,
@@ -913,9 +880,7 @@ pub(crate) enum ServerMessage {
     },
 
     /// Ring the foreground client's outer terminal for pane-originated BEL characters.
-    TerminalBell {
-        count: u16,
-    },
+    TerminalBell { count: u16 },
 
     /// One validated Herdr-owned Kitty regular-file RGBA transmission.
     GraphicsFile {
@@ -930,10 +895,7 @@ pub(crate) enum ServerMessage {
     },
 
     /// Suppress a direct command that expired before terminal delivery.
-    GraphicsTransmissionRetired {
-        transfer_id: u64,
-        image_id: u32,
-    },
+    GraphicsTransmissionRetired { transfer_id: u64, image_id: u32 },
 
     /// Initial metadata for a client-owned shell.
     ClientShellSnapshot(Box<ClientShellSnapshot>),
@@ -945,9 +907,7 @@ pub(crate) enum ServerMessage {
     SemanticNotification(SemanticNotification),
 
     /// Immediate endpoint error that the client-rendered shell must show.
-    ClientShellError {
-        message: String,
-    },
+    ClientShellError { message: String },
 
     /// Exact Kitty keyboard flags requested by a directly attached terminal.
     DirectTerminalKeyboardProtocol {
@@ -956,9 +916,7 @@ pub(crate) enum ServerMessage {
     },
 
     /// Whether the focused pane or popup needs the shell host to report every key.
-    ClientShellKeyboardReportAll {
-        enabled: bool,
-    },
+    ClientShellKeyboardReportAll { enabled: bool },
 
     /// One ordered chunk of the final response to an endpoint operation.
     ClientShellEndpointResponseChunk {
@@ -972,8 +930,5 @@ pub(crate) enum ServerMessage {
     PaneSurfacePatch(PaneSurfacePatch),
 
     /// Extensible named control message for the stable client-owned endpoint protocol.
-    EndpointControl {
-        kind: String,
-        data: String,
-    },
+    EndpointControl { kind: String, data: String },
 }

@@ -16,8 +16,7 @@ use serde_json::{json, Value};
 use crate::builtin_detection::{jcode::detect_jcode_status_with_variant, JcodeDetectionVariant};
 use crate::builtin_events::{BuiltinEventHub, PaneEventContext};
 use crate::protocol::{
-    read_message, write_message, ClientMessage, RenderEncoding, ServerMessage,
-    TerminalFrame,
+    read_message, write_message, ClientMessage, RenderEncoding, ServerMessage, TerminalFrame,
 };
 use crate::terminal_text::{self, TerminalTextOptions};
 
