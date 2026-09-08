@@ -14,3 +14,4 @@ __pycache__/
 /result-*
 zigbin/
 .e2e-*.log
+target-llvm
