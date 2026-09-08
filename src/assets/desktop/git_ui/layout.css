@@ -154,6 +154,8 @@
 .git-ui-worktree-create { border-top: 1px solid var(--border); color: var(--accent); margin-top: 6px; }
 .git-ui-folder-different { background: #d99a00; border-radius: 4px; color: #17120a; cursor: help; font-size: 11px; max-width: 180px; overflow: hidden; padding: 3px 6px; text-overflow: ellipsis; white-space: nowrap; }
 .git-ui-return-cwd { color: var(--accent); padding: 3px 7px; }
+.git-ui-commit-below-files { border-top: 1px solid var(--border); padding: 10px; }
+.git-ui-commit-below-files .git-ui-btn { width: 100%; }
 
 /* Right-justified status split button: label + ▾ triangle joined. */
 .git-ui-status-label {
