@@ -41,6 +41,50 @@ if (!title || title === 'Privacy error' || String(title).includes('Privacy')) {
 }
 check('app loads (title present)', !!title, `title="${title}"`);
 
+// Fresh browsers must land on the built-in backend: the server's default
+// backend_mode is builtin and the frontend adopts the server's current
+// backend instead of any stale localStorage choice.
+{
+  const backend = await cdp.evalExpr(`(async () => {
+    await new Promise((r) => setTimeout(r, 500));
+    return {
+      stored: localStorage.getItem('herdr-session-backend'),
+      footer: (document.getElementById('footerSessionButton') || {}).textContent || '',
+      versions: await fetch('/api/versions').then((r) => r.json()),
+    };
+  })()`, true);
+  check(
+    'fresh browser defaults to built-in session backend',
+    backend.versions
+      && backend.versions.backend_mode === 'builtin'
+      && backend.versions.current_backend === 'builtin'
+      && backend.stored === 'builtin'
+      && /built-in/.test(backend.footer),
+    `backend_mode=${backend.versions && backend.versions.backend_mode} current=${backend.versions && backend.versions.current_backend} stored=${backend.stored} footer="${backend.footer}"`,
+  );
+  // External herdr sessions are only offered when a compatible herdr install
+  // is detected: /api/versions reports herdr_install, and the sessions list
+  // from /api/sessions only includes external entries when compatible.
+  if (backend.versions) {
+    const install = backend.versions.herdr_install || {};
+    const sessions = await cdp.evalExpr(`(async () => {
+      const r = await fetch('/api/sessions').then((r) => r.json());
+      return r;
+    })()`, true);
+    const hasExternal = (sessions.sessions || []).some((s) => s.backend === 'external-herdr');
+    check(
+      'herdr install detection reported',
+      install.available === true && install.compatible === true && !!install.version,
+      `available=${install.available} compatible=${install.compatible} version=${install.version || '?'}`,
+    );
+    check(
+      'external sessions gated on compatible herdr install',
+      sessions.herdr_compatible === true && hasExternal,
+      `herdr_compatible=${sessions.herdr_compatible} external_sessions=${hasExternal}`,
+    );
+  }
+}
+
 // Wait for app shell
 await new Promise((r) => setTimeout(r, 2000));
 

@@ -161,6 +161,19 @@
       }
       state.serverBackendConfirmed = true;
     } catch (_) {}
+    // External herdr sessions are only offered when a compatible herdr
+    // install is detected. If it is missing or incompatible, fall back to
+    // built-in instead of targeting a guaranteed-failed attach.
+    try {
+      const r = await api("/api/sessions");
+      state.herdrAvailable = !!r.herdr_available;
+      state.herdrCompatible = !!r.herdr_compatible;
+      state.herdrVersion = r.herdr_version || null;
+      if (currentSessionBackend() === "external-herdr" && !state.herdrCompatible) {
+        state.sessionBackend = "builtin";
+        localStorage.setItem("herdr-session-backend", "builtin");
+      }
+    } catch (_) {}
   }
 
   function apiErrorMessage(body, statusText) {

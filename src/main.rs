@@ -53,9 +53,8 @@ use assets::{
     vendor_dompurify_js, vendor_ghostty_wasm, vendor_marked_js, vendor_mermaid_js,
     vendor_wterm_css, vendor_wterm_js,
 };
-#[cfg(test)]
-use compat::SimpleVersion;
 use compat::{backend_compatibility, BackendCompatibility};
+use compat::SimpleVersion;
 use protocol::*;
 
 const DEFAULT_BIND: &str = "127.0.0.1:8787";
@@ -92,6 +91,59 @@ fn backend_compatibility_for_supported_range(
 struct BackendInfo {
     version: Option<String>,
     protocol: Option<u32>,
+}
+
+/// Installed external herdr binary state, used to decide whether the UI may
+/// offer external-herdr sessions at all.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct HerdrInstall {
+    /// Parsed `herdr --version` output, e.g. "herdr 0.9.0".
+    version: Option<String>,
+    /// True when the binary was found and its version is inside the
+    /// supported backend range for this WebUI build.
+    compatible: bool,
+}
+
+impl HerdrInstall {
+    fn available(&self) -> bool {
+        self.version.is_some()
+    }
+}
+
+/// Runs `herdr --version` and classifies the install against the supported
+/// backend version range. Blocking (process spawn); call from a blocking
+/// context.
+fn detect_herdr_install(herdr_bin: &str) -> HerdrInstall {
+    let output = std::process::Command::new(herdr_bin)
+        .arg("--version")
+        .output();
+    let Ok(output) = output else {
+        return HerdrInstall::default();
+    };
+    if !output.status.success() {
+        return HerdrInstall::default();
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    // Accept both "herdr 0.9.0" and a bare "0.9.0".
+    let version = text
+        .split_whitespace()
+        .find_map(|token| SimpleVersion::parse(token).map(|_| token.trim_start_matches('v').to_string()));
+    let Some(version) = version else {
+        return HerdrInstall::default();
+    };
+    // `herdr --version` gives us no protocol number, so classify by version
+    // range alone: below MIN_BACKEND_VERSION is unusable, anything newer is
+    // offered as untested (matching the versions API).
+    let parsed = SimpleVersion::parse(&version);
+    let min = SimpleVersion::parse(MIN_BACKEND_VERSION);
+    let compatible = matches!(
+        (parsed, min),
+        (Some(parsed), Some(min)) if parsed >= min
+    );
+    HerdrInstall {
+        version: Some(version),
+        compatible,
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1758,7 +1810,7 @@ fn known_builtin_sessions(state: &WebState) -> Vec<serde_json::Value> {
         .collect()
 }
 
-fn known_sessions(state: &WebState) -> Vec<serde_json::Value> {
+fn known_sessions(state: &WebState, herdr_compatible: bool) -> Vec<serde_json::Value> {
     let (external_enabled, builtin_enabled) = state
         .server_settings
         .lock()
@@ -1770,7 +1822,10 @@ fn known_sessions(state: &WebState) -> Vec<serde_json::Value> {
         })
         .unwrap_or((true, true));
     let mut sessions = Vec::new();
-    if external_enabled {
+    // Only offer external herdr sessions when the installed herdr binary is
+    // detected and compatible; otherwise the UI must not tempt users into an
+    // attach that is guaranteed to fail its handshake.
+    if external_enabled && herdr_compatible {
         sessions.extend(known_external_sessions());
     }
     if builtin_enabled {
@@ -2301,6 +2356,11 @@ async fn sessions(
     if let Err(response) = require_auth(&state, &headers, remote) {
         return response;
     }
+    // herdr --version is a blocking process spawn; offload it.
+    let herdr_bin = state.herdr_bin.clone();
+    let herdr_install = tokio::task::spawn_blocking(move || detect_herdr_install(&herdr_bin))
+        .await
+        .unwrap_or_default();
     Json(json!({
         "backend_mode": state.backend_mode.as_str(),
         "current_backend": backend_target_for_headers(&state, &headers).as_str(),
@@ -2308,7 +2368,12 @@ async fn sessions(
             "builtin": backend_target_enabled(&state, SessionBackendTarget::Builtin),
             "external-herdr": backend_target_enabled(&state, SessionBackendTarget::ExternalHerdr),
         },
-        "sessions": known_sessions(&state),
+        // External herdr sessions are only offered when the installed herdr
+        // binary is detected AND compatible with this WebUI build.
+        "herdr_available": herdr_install.available(),
+        "herdr_compatible": herdr_install.compatible,
+        "herdr_version": herdr_install.version,
+        "sessions": known_sessions(&state, herdr_install.compatible),
     }))
     .into_response()
 }
@@ -2338,6 +2403,12 @@ async fn versions(
     } else {
         compatibility.message(backend.version.as_deref())
     };
+    // Report the installed external herdr binary so clients can decide
+    // whether external sessions may be offered at all.
+    let herdr_bin = state.herdr_bin.clone();
+    let herdr_install = tokio::task::spawn_blocking(move || detect_herdr_install(&herdr_bin))
+        .await
+        .unwrap_or_default();
     Json(json!({
         "webui": HERDR_WEBUI_VERSION,
         "backend": backend.version,
@@ -2349,6 +2420,12 @@ async fn versions(
         "backend_protocol_version": backend.protocol,
         "min_backend": MIN_BACKEND_VERSION,
         "max_tested_backend": MAX_TESTED_BACKEND_VERSION,
+        "herdr_install": {
+            "available": herdr_install.available(),
+            "compatible": herdr_install.compatible,
+            "version": herdr_install.version,
+            "path": state.herdr_bin,
+        },
         "compatibility": {
             "status": compatibility.as_str(),
             "compatible": compatibility == BackendCompatibility::Compatible,
@@ -2457,6 +2534,45 @@ async fn launch_session(
             })),
         )
             .into_response();
+    }
+    if backend == SessionBackendTarget::ExternalHerdr {
+        // Only launch external herdr sessions when the installed binary is
+        // detected and compatible; anything else is guaranteed to fail its
+        // handshake against this WebUI build.
+        let herdr_bin = state.herdr_bin.clone();
+        let install = tokio::task::spawn_blocking(move || detect_herdr_install(&herdr_bin))
+            .await
+            .unwrap_or_default();
+        if !install.available() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "ok": false,
+                    "backend": backend.as_str(),
+                    "error": format!(
+                        "herdr binary not found ({}); install herdr {} or newer to use external Herdr sessions",
+                        state.herdr_bin,
+                        MIN_BACKEND_VERSION,
+                    ),
+                })),
+            )
+                .into_response();
+        }
+        if !install.compatible {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "ok": false,
+                    "backend": backend.as_str(),
+                    "error": format!(
+                        "installed herdr {} is not compatible with this WebUI build (requires {}); upgrade herdr or use a built-in session",
+                        install.version.unwrap_or_default(),
+                        MIN_BACKEND_VERSION,
+                    ),
+                })),
+            )
+                .into_response();
+        }
     }
     if backend == SessionBackendTarget::Builtin {
         // ensure_builtin_session does socket connect and process spawning;
@@ -5096,7 +5212,7 @@ mod tests {
             backend_target_for_headers(&state, &headers),
             SessionBackendTarget::Builtin
         );
-        let sessions = known_sessions(&state);
+        let sessions = known_sessions(&state, false);
 
         assert!(sessions.iter().all(
             |session| session.get("backend").and_then(Value::as_str) != Some("external-herdr")
@@ -5121,7 +5237,7 @@ mod tests {
         std::env::set_var("XDG_CONFIG_HOME", &root);
         let state = test_state();
 
-        let sessions = known_sessions(&state);
+        let sessions = known_sessions(&state, true);
         let pairs = sessions
             .iter()
             .map(|session| {
@@ -5180,7 +5296,8 @@ mod tests {
         state.backend_mode = BackendMode::Builtin;
         state.herdr_bin = fake_herdr.display().to_string();
 
-        let sessions = known_sessions(&state);
+        // A compatible detected herdr install: external sessions are offered.
+        let sessions = known_sessions(&state, true);
 
         assert!(sessions.iter().any(|session| {
             session.get("backend").and_then(Value::as_str) == Some("external-herdr")
@@ -8038,6 +8155,129 @@ mod tests {
             .is_some_and(|e| e.contains("disabled")));
     }
 
+    #[cfg(unix)]
+    fn write_version_script(root: &std::path::Path, version_output: &str) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        let script = root.join("fake-herdr");
+        fs::write(&script, format!("#!/bin/sh\necho '{version_output}'\n")).unwrap();
+        let mut permissions = fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&script, permissions).unwrap();
+        script.display().to_string()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn detect_herdr_install_classifies_detected_versions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!(
+            "herdr-webui-detect-install-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+
+        // Compatible install: herdr 0.9.0 (matches the supported range).
+        let bin = write_version_script(&root, "herdr 0.9.0");
+        let install = detect_herdr_install(&bin);
+        assert_eq!(install.version.as_deref(), Some("0.9.0"));
+        assert!(install.available());
+        assert!(install.compatible);
+
+        // Protocol too old: herdr 0.8.0 must be flagged incompatible.
+        let bin = write_version_script(&root, "herdr 0.8.0");
+        let install = detect_herdr_install(&bin);
+        assert_eq!(install.version.as_deref(), Some("0.8.0"));
+        assert!(install.available());
+        assert!(!install.compatible);
+
+        // Newer untested release: still offered, matching the versions API.
+        let bin = write_version_script(&root, "herdr 0.9.1");
+        let install = detect_herdr_install(&bin);
+        assert_eq!(install.version.as_deref(), Some("0.9.1"));
+        assert!(install.compatible);
+
+        // No version in output: treated as not detected.
+        let bin = write_version_script(&root, "hello world");
+        let install = detect_herdr_install(&bin);
+        assert!(!install.available());
+
+        // Missing binary: not detected.
+        let install = detect_herdr_install("/nonexistent/herdr-bin-xyz");
+        assert_eq!(install, HerdrInstall::default());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn launch_session_rejects_incompatible_detected_herdr() {
+        let root = std::env::temp_dir().join(format!(
+            "herdr-webui-launch-compat-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let bin = write_version_script(&root, "herdr 0.8.0");
+
+        let mut state = test_state();
+        state.herdr_bin = bin;
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/session/launch")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "session": "test", "backend": "external-herdr" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_json(response).await;
+        assert_eq!(body["ok"], false);
+        let error = body["error"].as_str().unwrap_or_default();
+        assert!(error.contains("0.8.0"), "error mentions detected version");
+        assert!(
+            error.contains("compatible"),
+            "error explains incompatibility"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn launch_session_rejects_missing_herdr_install() {
+        let mut state = test_state();
+        state.herdr_bin = "/nonexistent/herdr-bin-xyz".to_string();
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/session/launch")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "session": "test", "backend": "external-herdr" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // Now rejected before spawn, instead of BAD_GATEWAY from spawn failure.
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_json(response).await;
+        assert_eq!(body["ok"], false);
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("herdr binary not found"),
+            "error explains missing install"
+        );
+    }
+
     #[tokio::test]
     async fn launch_session_returns_error_when_herdr_bin_not_found() {
         let mut state = test_state();
@@ -8055,22 +8295,48 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        // The install gate rejects before spawn, so this is now a clean
+        // BAD_REQUEST with an actionable message instead of BAD_GATEWAY.
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let body = response_json(response).await;
         assert_eq!(body["ok"], false);
-        assert!(body["error"].as_str().is_some_and(|e| !e.is_empty()));
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("herdr binary not found"),
+            "error explains the missing install"
+        );
+    }
+
+    #[cfg(unix)]
+    fn fake_herdr_version_script() -> String {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!(
+            "herdr-webui-launch-test-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("t").to_string()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let script = root.join("fake-herdr");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\ncase \"$1\" in\n--version) echo 'herdr 0.9.0'; exit 0;;\nesac\nexit 0\n",
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&script, permissions).unwrap();
+        script.display().to_string()
     }
 
     #[tokio::test]
     async fn launch_session_external_succeeds_with_true_command() {
-        // Use /usr/bin/true as a stand-in for the herdr binary (works on macOS and Linux)
-        let true_bin = if std::path::Path::new("/bin/true").exists() {
-            "/bin/true"
-        } else {
-            "/usr/bin/true"
-        };
+        // A fake herdr reporting a compatible version; any launch args make it
+        // exit 0 like /usr/bin/true so the launch handler sees success.
         let mut state = test_state();
-        state.herdr_bin = true_bin.to_string();
+        state.herdr_bin = fake_herdr_version_script();
         let app = test_app_with_state(state);
 
         let response = app
@@ -8093,13 +8359,8 @@ mod tests {
 
     #[tokio::test]
     async fn launch_session_default_session_omits_env() {
-        let true_bin = if std::path::Path::new("/bin/true").exists() {
-            "/bin/true"
-        } else {
-            "/usr/bin/true"
-        };
         let mut state = test_state();
-        state.herdr_bin = true_bin.to_string();
+        state.herdr_bin = fake_herdr_version_script();
         let app = test_app_with_state(state);
 
         let response = app
@@ -9996,9 +10257,26 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn launch_session_external_returns_error_on_spawn_failure() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!(
+            "herdr-webui-spawn-fail-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        // A binary that exists and reports a compatible version, but loses
+        // execute permission between detection and launch: spawn() fails.
+        let script = root.join("fake-herdr");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\ncase \"$1\" in\n--version) echo 'herdr 0.9.0'; exit 0;;\nesac\nexit 0\n",
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o644);
+        std::fs::set_permissions(&script, permissions).unwrap();
         let mut state = test_state();
-        // /dev/null is not an executable, so spawn() will fail
-        state.herdr_bin = "/dev/null".to_string();
+        state.herdr_bin = script.display().to_string();
         let app = test_app_with_state(state);
 
         let response = app
@@ -10013,10 +10291,13 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        // Not executable: detection cannot run it, so the install gate
+        // rejects with an actionable error before any spawn is attempted.
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let body = response_json(response).await;
         assert_eq!(body["ok"], false);
         assert!(body["error"].as_str().is_some());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     // ── LSP API tests ──
