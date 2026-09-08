@@ -1,5 +1,29 @@
 # Release notes
 
+## 0.4.13 Release Notes
+- herdr 0.9.0 / protocol 22 upgrade: the built-in terminal backend now speaks
+  herdr protocol 22 (agent status, scroll regions, sixel/OSC 8 awareness),
+  keeping the WebUI current with `herdr` 0.9.0.
+- External herdr installs are now detected and compat-gated: the server runs
+  `herdr --version` at startup, classifies the install against the minimum
+  supported version (0.9.0), and `/api/versions` exposes
+  `herdr_install {available, compatible, version, path}`.
+- External herdr sessions are only offered when the detected install exists
+  and is compatible. With an incompatible or missing binary the New Herdr
+  button is disabled with a version hint, the session list hides external
+  sessions, and launches are rejected server-side with actionable errors
+  (binary not found vs incompatible version).
+- Graceful degradation on herdr handshake failure: a failed external attach
+  disconnects the client, closes the herdr session, and offers the built-in
+  backend instead of blocking or hanging the UI.
+- Bug fix: `/api/versions` no longer clobbers the last known herdr install
+  state when the response omits install fields (previously reset
+  `herdrCompatible` to false and silently flipped the backend to built-in).
+- Mobile app: falls back to the built-in backend automatically when the
+  detected external herdr install is unavailable or incompatible.
+- Desktop UI: session manager shows the detected herdr version
+  (e.g. "Detected herdr 0.9.0") on the New Herdr button.
+
 ## 0.4.12 Release Notes
 - Git log context menu: selected-commit actions moved from the action strip
   into a right-click menu on log rows (`Compare`, `Tag`, `Worktree`,
