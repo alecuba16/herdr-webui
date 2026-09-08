@@ -44,18 +44,18 @@
   };
 
   document.addEventListener("click", () => {
-    const hadMenu = !!(state.contextMenu || state.headerMenu);
+    let hadMenu = !!(state.contextMenu || state.headerMenu || state.branchList || state.worktreeList);
     state.contextMenu = null;
     state.headerMenu = null;
-    if (state.branchList && !eventInsideBranchList(event)) {
+    if ((state.branchList || state.worktreeList) && !eventInsideBranchList(event)) {
       state.branchList = null;
-      state.branchList.filter = "";
+      state.worktreeList = null;
       hadMenu = true;
     }
     if (hadMenu && state.visible) render();
   });
   function eventInsideBranchList(event) {
-    const target = event && event.target;
+    let target = event && event.target;
     while (target && target.classList) {
       if (target.classList.contains("git-ui-branch-list") || target.classList.contains("git-ui-branch-chip")) return true;
       target = target.parentNode;
@@ -98,6 +98,11 @@
     }
     if (state.branchList) {
       state.branchList = null;
+      render();
+      return;
+    }
+    if (state.worktreeList) {
+      state.worktreeList = null;
       render();
       return;
     }
@@ -1694,14 +1699,15 @@
       : "";
     const refreshButton = appRefreshIconButton({ className: "git-ui-refresh-icon", title: titleWithGitShortcut("Refresh", "refresh"), label: titleWithGitShortcut("Refresh Git state", "refresh"), spinning: !!view.refreshAnimating, onclick: "HerdrGitUi.refreshWithSpin()" });
     const busy = view.mutating ? `<span class="git-ui-busy"><span class="git-ui-busy-spinner"></span>${esc(view.mutatingLabel || "Working...")}</span>` : "";
+    const statusIcon = `<span class="git-ui-status-icon git-ui-status-${esc(String(s.state || "closed").replace(/[^a-z0-9_-]/gi, "-"))}" title="${esc(s.state || "closed")}" aria-label="${esc(s.state || "closed")}"></span>`;
     const location = cleanupOnly ? "" : renderGitLocationSelector({ s, esc, cwd: view.cwd, workspaceCwd: view.workspaceCwd, worktreeName: view.title });
-    return `<aside class="git-ui-side" onscroll="HerdrGitUi.sideScroll(this)"><div class="git-ui-head"><div class="git-ui-head-main"><div class="git-ui-title-row"><div class="git-ui-title">Git</div><div class="git-ui-title-actions">${busy}${returnToCurrentChanges}${returnToWorkspace}${refreshButton}</div></div><div class="git-ui-subtitle">${location}<span class="git-ui-subtitle-state">${esc(s.state || "closed")} · ${esc(compactPath(s.repo_path))}</span></div></div></div>${error}<div class="git-ui-toolbar git-ui-view-toolbar">${renderGitViewTabs(tabs, view.tab)}</div>${actions}${fileList}${sideBottom}</aside>`;
+    return `<aside class="git-ui-side" onscroll="HerdrGitUi.sideScroll(this)"><div class="git-ui-head"><div class="git-ui-head-main"><div class="git-ui-title-row"><div class="git-ui-title">Git ${statusIcon}</div><div class="git-ui-title-actions">${busy}${returnToCurrentChanges}${returnToWorkspace}${refreshButton}</div></div><div class="git-ui-subtitle">${location}</div></div></div>${error}<div class="git-ui-toolbar git-ui-view-toolbar">${renderGitViewTabs(tabs, view.tab)}</div>${actions}${fileList}${sideBottom}</aside>`;
   }
 
   function renderDiffLayoutSideToggle(view) {
     const layout = diffLayoutMode();
     const label = view && view.file ? "File view" : "Diff view";
-    return `<div class="git-ui-side-bottom"><div class="git-ui-toolbar-title">${label}</div><div class="git-ui-view-toggle-group git-ui-diff-layout-toggle" role="group" aria-label="Diff layout"><button class="git-ui-view-toggle ${layout === "side-by-side" ? "active" : ""}" title="Show side-by-side diff" onclick="HerdrGitUi.setDiffLayout('side-by-side')">Side</button><button class="git-ui-view-toggle ${layout === "unified" ? "active" : ""}" title="Show unified diff" onclick="HerdrGitUi.setDiffLayout('unified')">Unified</button></div></div>`;
+    return `<div class="git-ui-side-bottom"><div class="git-ui-toolbar-title" title="${esc(view && view.cwd || "")}">${esc(label)} · ${esc(compactPath(view && view.cwd || ""))}</div><div class="git-ui-view-toggle-group git-ui-diff-layout-toggle" role="group" aria-label="Diff layout"><button class="git-ui-view-toggle ${layout === "side-by-side" ? "active" : ""}" title="Show side-by-side diff" onclick="HerdrGitUi.setDiffLayout('side-by-side')">Side</button><button class="git-ui-view-toggle ${layout === "unified" ? "active" : ""}" title="Show unified diff" onclick="HerdrGitUi.setDiffLayout('unified')">Unified</button></div></div>`;
   }
 
   function filterFiles(files, filter) {
