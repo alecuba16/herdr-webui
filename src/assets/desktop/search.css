@@ -99,6 +99,7 @@
   padding: 8px 10px;
 }
 .search-section-toggle {
+  background: var(--panel2);
   border: 0;
   cursor: pointer;
   font: inherit;
