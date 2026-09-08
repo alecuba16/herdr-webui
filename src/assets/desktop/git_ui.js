@@ -1659,10 +1659,11 @@
     const empty = !local.length && !remote.length ? `<div class="git-ui-muted git-ui-branch-list-empty">No branches match</div>` : "";
     // Filter input lives at the bottom, below the scrollable rows, so the
     // list reads top-down like Zed's branch popover.
-    const loadMore = !list.remoteLoaded && remoteAll.length > remote.length
+    const loadingRemote = list.remoteLoading ? `<div class="git-ui-branch-loading">Loading remote branches…</div>` : "";
+    const loadMore = !list.remoteLoading && !list.remoteLoaded && remoteAll.length > remote.length
       ? `<button class="git-ui-branch-load-more" onclick="HerdrGitUi.loadMoreBranches()">Load more branches (${remoteAll.length - remote.length} more)</button>`
       : "";
-    return `<div class="git-ui-branch-list" onclick="event.stopPropagation()"><div class="git-ui-branch-list-scroll">${rows(local, "Local branches")}${rows(remote, "Remote branches")}${loadMore}${empty}</div><label class="git-ui-branch-list-filter"><span>Filter</span><input value="${esc(list.filter || "")}" placeholder="Type to filter" oninput="HerdrGitUi.branchListFilter(this.value)"></label></div>`;
+    return `<div class="git-ui-branch-list" onclick="event.stopPropagation()"><div class="git-ui-branch-list-scroll">${rows(local, "Local branches")}${rows(remote, "Remote branches")}${loadingRemote}${loadMore}${empty}</div><label class="git-ui-branch-list-filter"><span>Filter</span><input value="${esc(list.filter || "")}" placeholder="Type to filter" oninput="HerdrGitUi.branchListFilter(this.value)"></label></div>`;
   }
 
   function renderSide() {
@@ -3774,10 +3775,26 @@
     branchListFilter(value) {
       if (!state.branchList) return;
       state.branchList.filter = String(value || "");
-      // Filtering is intentionally non-blocking. A filter request makes the
-      // already-fetched remote branch data visible immediately instead of
-      // replacing the list with a loading state.
-      if (state.branchList.filter.trim()) state.branchList.remoteLoaded = true;
+      if (state.branchList.filter.trim()) {
+        state.branchList.remoteLoaded = true;
+        state.branchList.remoteLoading = true;
+        const requestId = Date.now();
+        state.branchList.remoteRequestId = requestId;
+        render();
+        api(`/api/git-ui/branches?cwd=${encodeURIComponent((active() || {}).cwd || "")}`).then((data) => {
+          if (!state.branchList || state.branchList.remoteRequestId !== requestId) return;
+          const existing = new Map((state.branchList.remote || []).map((branch) => [branch.name, branch]));
+          (data.remote || []).forEach((branch) => existing.set(branch.name, branch));
+          state.branchList.remote = [...existing.values()];
+        }).catch(() => {}).finally(() => {
+          if (state.branchList && state.branchList.remoteRequestId === requestId) {
+            state.branchList.remoteLoading = false;
+            render();
+          }
+        });
+        return;
+      }
+      state.branchList.remoteLoading = false;
       // Re-render only the list, not the whole panel: the filter input
       // would lose focus otherwise.
       const panel = document.getElementById("gitUiPanel");
