@@ -314,8 +314,14 @@
 }
 .git-ui-log-ref:hover .git-ui-log-copy-label,
 .git-ui-log-ref:focus-within .git-ui-log-copy-label,
-.git-ui-log-row:hover .git-ui-log-copy-hash {
+.git-ui-log-hover-card:hover .git-ui-log-copy-hash,
+.git-ui-log-hover-card:focus-within .git-ui-log-copy-hash {
   display: inline-block;
+}
+.git-ui-log-hover-hash {
+  align-items: center;
+  display: flex;
+  gap: 4px;
 }
 .git-ui-log-copy-hash:hover,
 .git-ui-log-copy-hash:focus-visible {
