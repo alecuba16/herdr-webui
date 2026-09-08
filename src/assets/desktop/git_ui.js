@@ -15,6 +15,7 @@
     resetSelectedModal: null,
     tagSelectedModal: null,
     gitToast: null,
+    scopeCopyToast: null,
     cleanupConfirm: null,
     sideScrollTop: 0,
     shortcutPrefixUntil: 0,
@@ -1233,6 +1234,31 @@
         if (state.visible) render();
       }
     }, 3500);
+  }
+
+  function renderScopeCopyToast() {
+    const toast = state.scopeCopyToast;
+    if (!toast) return "";
+    return `<div class="git-ui-scope-copy-toast" role="status" style="left:${Math.max(8, toast.x)}px;top:${Math.max(8, toast.y)}px">${esc(toast.message)}</div>`;
+  }
+
+  async function copyScopeValue(event, value, kind) {
+    if (event) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+    const text = decodeURIComponent(String(value || ""));
+    if (!text) return;
+    await navigator.clipboard.writeText(text);
+    const id = Date.now();
+    state.scopeCopyToast = { id, x: Number(event && event.clientX) || 16, y: Number(event && event.clientY) || 16, message: `${kind} copied` };
+    render();
+    setTimeout(() => {
+      if (state.scopeCopyToast && state.scopeCopyToast.id === id) {
+        state.scopeCopyToast = null;
+        if (state.visible) render();
+      }
+    }, 1800);
   }
 
   function renderCommitModal() {
@@ -2759,7 +2785,7 @@
     const version = ++state.renderVersion;
     const panel = ensurePanel();
     panel.classList.toggle("mutating", !!activeView.mutating);
-    panel.innerHTML = renderSide() + renderMain() + renderContextMenu() + renderLogContextMenu() + renderHeaderMenu() + renderBranchList() + renderCommitModal() + renderCompareSelectedModal() + renderResetSelectedModal() + renderTagSelectedModal() + renderBranchModal() + renderGitOpModal() + renderCleanupConfirm() + renderGitToast();
+    panel.innerHTML = renderSide() + renderMain() + renderContextMenu() + renderLogContextMenu() + renderHeaderMenu() + renderBranchList() + renderCommitModal() + renderCompareSelectedModal() + renderResetSelectedModal() + renderTagSelectedModal() + renderBranchModal() + renderGitOpModal() + renderCleanupConfirm() + renderGitToast() + renderScopeCopyToast();
     const side = panel.querySelector(".git-ui-side");
     if (side) side.scrollTop = state.sideScrollTop || 0;
     const nextContent = panel.querySelector(".git-ui-content");
@@ -3158,6 +3184,15 @@
     async copyCommitId(hash) {
       try {
         await copyCommitId(decodeURIComponent(hash || ""));
+      } catch (err) {
+        const view = active();
+        if (view) view.error = err.message || String(err);
+        render();
+      }
+    },
+    async copyScopeValue(event, value, kind) {
+      try {
+        await copyScopeValue(event, value, kind);
       } catch (err) {
         const view = active();
         if (view) view.error = err.message || String(err);

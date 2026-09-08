@@ -25,8 +25,8 @@
     const esc = options.esc;
     const upstreamRef = upstreamRefFromStatus(options.status || {});
     const selectedRow = selected.length === 1 ? rows.find((row) => String(row.hash || "") === String(selected[0])) : null;
-    const selectedId = selectedRow && selectedRow.hash ? `<span class="git-ui-log-selected-id">${esc(selectedRow.hash)}</span><button class="git-ui-btn" title="Copy commit id" onclick="HerdrGitUi.copyCommitId('${options.arg(selectedRow.hash)}')">Copy id</button>` : "";
-    const selectedTags = selectedRow ? (selectedRow.labels || []).filter((label) => String(label).startsWith("tag:")).map((label) => `<button class="git-ui-log-scope-tag" title="Copy tag ${esc(label)}" onclick="navigator.clipboard.writeText('${options.arg(label)}')">${esc(label)}</button>`).join("") : "";
+    const selectedId = selectedRow && selectedRow.hash ? `<button class="git-ui-log-ref git-ui-log-scope-value" title="Copy commit id" onclick="HerdrGitUi.copyScopeValue(event,'${options.arg(selectedRow.hash)}','Commit id')">${esc(selectedRow.hash)}</button>` : "";
+    const selectedTags = selectedRow ? (selectedRow.labels || []).filter((label) => String(label).startsWith("tag:")).map((label) => `<button class="git-ui-log-ref git-ui-log-scope-value" title="Copy tag" onclick="HerdrGitUi.copyScopeValue(event,'${options.arg(label)}','Tag')">${esc(label)}</button>`).join("") : "";
     const fileScope = options.filePath ? `<span class="git-ui-log-file-scope" title="File history filter">${esc(options.filePath)}</span><button class="git-ui-btn" onclick="HerdrGitUi.clearLogFileHistory()">Clear file</button>` : "";
     const scope = `<div class="git-ui-log-scope-head"><span class="git-ui-toolbar-title">History scope</span><button class="git-ui-btn active" title="Toggle history scope: All, ${esc(baseBranch)} + branch, ${esc(baseBranch)}" onclick="HerdrGitUi.cycleLogScope()">${esc(logScopeLabel(logScope, baseBranch))}</button>${selectedTags}${selectedId}${fileScope}</div>`;
     const header = `<div class="git-ui-log-table-head"><span>Graph</span><span>Description</span><span>Date</span><span>Author</span></div>${renderFilterRow(filters, esc)}`;
