@@ -24,8 +24,11 @@
     const logScope = normalizeLogScope(options.logScope || (options.logAll ? "all" : "base-current"));
     const esc = options.esc;
     const upstreamRef = upstreamRefFromStatus(options.status || {});
+    const selectedRow = selected.length === 1 ? rows.find((row) => String(row.hash || "") === String(selected[0])) : null;
+    const selectedId = selectedRow && selectedRow.hash ? `<span class="git-ui-log-selected-id">${esc(selectedRow.hash)}</span><button class="git-ui-btn" title="Copy commit id" onclick="HerdrGitUi.copyCommitId('${options.arg(selectedRow.hash)}')">Copy id</button>` : "";
+    const selectedTags = selectedRow ? (selectedRow.labels || []).filter((label) => String(label).startsWith("tag:")).map((label) => `<button class="git-ui-log-scope-tag" title="Copy tag ${esc(label)}" onclick="navigator.clipboard.writeText('${options.arg(label)}')">${esc(label)}</button>`).join("") : "";
     const fileScope = options.filePath ? `<span class="git-ui-log-file-scope" title="File history filter">${esc(options.filePath)}</span><button class="git-ui-btn" onclick="HerdrGitUi.clearLogFileHistory()">Clear file</button>` : "";
-    const scope = `<div class="git-ui-log-scope-head"><span class="git-ui-toolbar-title">History scope</span><button class="git-ui-btn active" title="Toggle history scope: All, ${esc(baseBranch)} + branch, ${esc(baseBranch)}" onclick="HerdrGitUi.cycleLogScope()">${esc(logScopeLabel(logScope, baseBranch))}</button>${fileScope}${options.actionsHtml || ""}</div>`;
+    const scope = `<div class="git-ui-log-scope-head"><span class="git-ui-toolbar-title">History scope</span><button class="git-ui-btn active" title="Toggle history scope: All, ${esc(baseBranch)} + branch, ${esc(baseBranch)}" onclick="HerdrGitUi.cycleLogScope()">${esc(logScopeLabel(logScope, baseBranch))}</button>${selectedTags}${selectedId}${fileScope}</div>`;
     const header = `<div class="git-ui-log-table-head"><span>Graph</span><span>Description</span><span>Date</span><span>Author</span></div>${renderFilterRow(filters, esc)}`;
     const renderOptions = Object.assign({}, options, { upstreamRef });
     const body = rows.length
@@ -137,8 +140,7 @@
     const click = hash ? ` onclick="HerdrGitUi.selectLogCommit(event,'${arg(hash)}')"` : "";
     const hover = renderHover(row, color, esc, baseBranch);
     const tooltip = hoverText(row);
-    const copy = hash ? `<button type="button" class="git-ui-log-copy-hash" title="Copy full commit id ${esc(hash)}" aria-label="Copy full commit id ${esc(hash)}" onclick="event.preventDefault();event.stopPropagation();HerdrGitUi.copyCommitId('${arg(hash)}')">Copy id</button>` : "";
-    return `<div class="git-ui-log-row${selectedClass}${graphOnly}${currentClass}${upstreamTip}${hidden}" data-log-hash="${esc(hash)}" data-log-filter-description="${esc(filterText.description)}" data-log-filter-date="${esc(filterText.date)}" data-log-filter-author="${esc(filterText.author)}" style="--lane:${color}" title="${esc(tooltip)}"${click}>${renderGraph(row.graph, !!hash, upstreamTip, isCurrent)}<span class="git-ui-log-desc">${renderLabels(row.labels || [], row.current, esc, baseBranch)}<span class="git-ui-log-title">${esc(title)}</span>${copy}</span><span class="git-ui-log-date">${esc(row.date || "")}</span><span class="git-ui-log-author">${esc(row.author || "")}</span>${hover}</div>`;
+    return `<div class="git-ui-log-row${selectedClass}${graphOnly}${currentClass}${upstreamTip}${hidden}" data-log-hash="${esc(hash)}" data-log-filter-description="${esc(filterText.description)}" data-log-filter-date="${esc(filterText.date)}" data-log-filter-author="${esc(filterText.author)}" style="--lane:${color}" title="${esc(tooltip)}"${click}>${renderGraph(row.graph, !!hash, upstreamTip, isCurrent)}<span class="git-ui-log-desc">${renderLabels(row.labels || [], row.current, esc, baseBranch)}<span class="git-ui-log-title">${esc(title)}</span></span><span class="git-ui-log-date">${esc(row.date || "")}</span><span class="git-ui-log-author">${esc(row.author || "")}</span>${hover}</div>`;
   }
 
   function renderHover(row, color, esc, baseBranch) {

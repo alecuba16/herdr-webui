@@ -2398,7 +2398,6 @@
       ? window.HerdrGitLog.selectedBranchForHash(data, selected[0], baseBranch)
       : "";
     view.selectedLogBranch = selectedBranch;
-    const compare = Actions.selectedLogToolbar(selected, { allowRewrite: currentMode() === "changes", selectedBranch });
     replaceContent(version, window.HerdrGitLog.render({
       data,
       selected,
@@ -2408,7 +2407,7 @@
       logLoadingMore: !!view.logLoadingMore,
       baseBranch,
       filePath: view.logFilePath || "",
-      actionsHtml: compare,
+      actionsHtml: "",
       filters: view.logFilters || {},
       esc,
       arg,
