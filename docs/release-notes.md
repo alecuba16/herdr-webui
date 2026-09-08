@@ -1,5 +1,29 @@
 # Release notes
 
+## 0.4.12 Release Notes
+- Git log context menu: selected-commit actions moved from the action strip
+  into a right-click menu on log rows (`Compare`, `Tag`, `Worktree`,
+  `Reset`, `Rebase`, `Clear selection`). The old action strip module and
+  its stylesheet were removed.
+- Hover-card copy: the log hover card now survives clicks and offers
+  one-click copy for the commit hash, the commit message, and each ref
+  label, confirmed by a cursor-anchored toast.
+- History scope control relocated to the log filter row with labels
+  `Scope: Master + Branch / All / Branch`.
+- Worktree/branch two-level selector in the Git header, plus a
+  `Git remote branches to preload` setting (default 10) that caps the
+  initial remote branch list until the user filters or loads more.
+- Recent workspaces: the search palette gained a server-persisted
+  `Recent workspaces` section (max 20 entries, deduped, timestamped,
+  10s client cache) with a `Clear` button. Opening a workspace or
+  worktree records it automatically.
+- CLI bind precedence fix: an explicit `--bind HOST:PORT` now wins over
+  the bind saved in `webui-settings.json`; without the flag the saved
+  bind stays authoritative. This prevents preview instances from
+  silently squatting the saved port.
+- Test/quality: 100% line coverage of all branch-added Rust code
+  (llvm-cov verified), clippy at zero warnings, dead code removed.
+
 ## 0.4.11 Release Notes
 - Fixed jcode agent status detection in the built-in backend: jcode emits
   `ESC]9;jcode:<state> BEL` only when its state actually changes, but the
