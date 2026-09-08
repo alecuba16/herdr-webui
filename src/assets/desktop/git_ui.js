@@ -1539,11 +1539,6 @@
     const ahead = Number(s.ahead) || 0;
     const behind = Number(s.behind) || 0;
     const upstream = String(s.upstream || "").trim();
-    const worktreeName = String(ctx.worktreeName || pathBasename(ctx.cwd || "") || "worktree");
-    const worktreeChip = `<button class="git-ui-branch-chip git-ui-worktree-chip" title="Choose worktree" onclick="HerdrGitUi.openWorktreeList(event)"><span class="git-ui-branch-chip-name">${esc(worktreeName)}</span><b class="git-ui-chip-caret">▾</b></button><span class="git-ui-selector-separator">/</span>`;
-    const chip = branch
-      ? `<button class="git-ui-branch-chip" title="${esc(titleWithGitShortcut("Switch branch", "branch"))}" onclick="HerdrGitUi.openBranchList(event)"><span class="git-ui-branch-chip-name">${esc(branch)}</span><b class="git-ui-chip-caret">▾</b></button>`
-      : "";
     // Status label mirrors the sync state: incoming → Pull ↓N, outgoing →
     // Push ↑N, otherwise plain Fetch with no arrows or counts.
     let statusMethod = "fetchOrigin";
@@ -1561,9 +1556,19 @@
     const menuOpen = state.headerMenu ? "true" : "false";
     const statusButton = `<button class="git-ui-btn git-ui-status-label" data-method="${esc(statusMethod)}" title="${esc(statusHint)}" onclick="HerdrGitUi.runStatusAction()">${esc(statusLabel)}</button>`;
     const statusCaret = `<button class="git-ui-btn git-ui-status-caret" title="Pull, fetch and push options" aria-haspopup="menu" aria-expanded="${menuOpen}" onclick="HerdrGitUi.toggleHeaderMenu(event)"><b class="git-ui-chip-caret">▾</b></button>`;
+    return `<div class="git-ui-toolbar git-ui-worktree-row"><div class="git-ui-actions git-ui-worktree-left"><button class="git-ui-btn primary" title="${esc(commitHint)}" onclick="HerdrGitUi.openCommitModal()"${commitDisabled}>Commit</button></div><div class="git-ui-actions git-ui-worktree-right">${statusButton}${statusCaret}</div></div>${renderWorktreeList()}`;
+  }
+
+  function renderGitLocationSelector(ctx) {
+    const s = ctx.s || {};
+    const esc = ctx.esc;
+    const worktreeName = String(ctx.worktreeName || pathBasename(ctx.cwd || "") || "worktree");
+    const branch = String(s.branch || "");
+    const worktreeChip = `<button class="git-ui-branch-chip git-ui-worktree-chip" title="Choose worktree" onclick="HerdrGitUi.openWorktreeList(event)"><span class="git-ui-branch-chip-name">${esc(worktreeName)}</span><b class="git-ui-chip-caret">▾</b></button>`;
+    const branchChip = branch ? `<button class="git-ui-branch-chip" title="${esc(titleWithGitShortcut("Switch branch", "branch"))}" onclick="HerdrGitUi.openBranchList(event)"><span class="git-ui-branch-chip-name">${esc(branch)}</span><b class="git-ui-chip-caret">▾</b></button>` : "";
     const folderDiffers = ctx.workspaceCwd && !samePath(ctx.cwd, ctx.workspaceCwd);
     const pathNotice = folderDiffers ? `<span class="git-ui-folder-different" title="Git is operating in a different folder than the current workspace: ${esc(ctx.cwd)}">${esc(compactPath(ctx.cwd))}</span><button class="git-ui-btn git-ui-return-cwd" title="Return Git to the current workspace folder" onclick="HerdrGitUi.returnToWorkspaceCwd()">↩</button>` : "";
-    return `<div class="git-ui-toolbar git-ui-worktree-row"><div class="git-ui-actions git-ui-worktree-left">${worktreeChip}${chip}${pathNotice}</div><div class="git-ui-actions git-ui-worktree-right">${statusButton}${statusCaret}</div></div>${renderWorktreeList()}`;
+    return `${worktreeChip}<span class="git-ui-selector-separator">/</span>${branchChip}${pathNotice}`;
   }
 
   function renderWorktreeList() {
@@ -1680,10 +1685,7 @@
       ? `<label class="git-ui-file-filter"><span class="git-ui-file-filter-icon" aria-hidden="true"></span><input value="${esc(view.fileFilter || "")}" id="gitUiFileFilter" name="git-ui-file-filter" autocomplete="off" placeholder="Filter files" oninput="HerdrGitUi.filterFiles(this.value)"></label>`
       : "";
     const fileList = cleanupOnly ? "" : `${filterInput}${fileSections}`;
-    const commitBelowFiles = !cleanupOnly && canCommit && currentMode() === "changes"
-      ? `<div class="git-ui-commit-below-files"><button class="git-ui-btn primary" title="${esc(commitHint)}" onclick="HerdrGitUi.openCommitModal()">Commit</button></div>`
-      : "";
-    const sideBottom = cleanupOnly ? "" : `${commitBelowFiles}${renderDiffLayoutSideToggle(view)}`;
+    const sideBottom = cleanupOnly ? "" : renderDiffLayoutSideToggle(view);
     const returnToWorkspace = !cleanupOnly && !gitCwdMatchesWorkspace(view)
       ? `<button class="git-ui-refresh-icon git-ui-return-cwd-icon" title="Return Git to current workspace folder" aria-label="Return Git to current workspace folder" onclick="HerdrGitUi.returnToWorkspaceCwd()"><span></span></button>`
       : "";
@@ -1692,7 +1694,8 @@
       : "";
     const refreshButton = appRefreshIconButton({ className: "git-ui-refresh-icon", title: titleWithGitShortcut("Refresh", "refresh"), label: titleWithGitShortcut("Refresh Git state", "refresh"), spinning: !!view.refreshAnimating, onclick: "HerdrGitUi.refreshWithSpin()" });
     const busy = view.mutating ? `<span class="git-ui-busy"><span class="git-ui-busy-spinner"></span>${esc(view.mutatingLabel || "Working...")}</span>` : "";
-    return `<aside class="git-ui-side" onscroll="HerdrGitUi.sideScroll(this)"><div class="git-ui-head"><div class="git-ui-head-main"><div class="git-ui-title-row"><div class="git-ui-title">Git</div><div class="git-ui-title-actions">${busy}${returnToCurrentChanges}${returnToWorkspace}${refreshButton}</div></div><div class="git-ui-subtitle">${esc(s.state || "closed")} · ${esc(compactPath(s.repo_path))}</div></div></div>${error}<div class="git-ui-toolbar git-ui-view-toolbar">${renderGitViewTabs(tabs, view.tab)}</div>${actions}${fileList}${sideBottom}</aside>`;
+    const location = cleanupOnly ? "" : renderGitLocationSelector({ s, esc, cwd: view.cwd, workspaceCwd: view.workspaceCwd, worktreeName: view.title });
+    return `<aside class="git-ui-side" onscroll="HerdrGitUi.sideScroll(this)"><div class="git-ui-head"><div class="git-ui-head-main"><div class="git-ui-title-row"><div class="git-ui-title">Git</div><div class="git-ui-title-actions">${busy}${returnToCurrentChanges}${returnToWorkspace}${refreshButton}</div></div><div class="git-ui-subtitle">${location}<span class="git-ui-subtitle-state">${esc(s.state || "closed")} · ${esc(compactPath(s.repo_path))}</span></div></div></div>${error}<div class="git-ui-toolbar git-ui-view-toolbar">${renderGitViewTabs(tabs, view.tab)}</div>${actions}${fileList}${sideBottom}</aside>`;
   }
 
   function renderDiffLayoutSideToggle(view) {
