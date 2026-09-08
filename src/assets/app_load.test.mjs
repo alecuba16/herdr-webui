@@ -101,6 +101,9 @@ function context() {
     addEventListener() {},
     prompt: () => null,
     confirm: () => true,
+    alert: () => {},
+    showBlocking: () => {},
+    hideBlocking: () => {},
   };
   ctx.terminal = getElement("terminal");
   ctx.window = ctx;
@@ -227,6 +230,78 @@ describe("app bundle load", () => {
     equal(filtered.length, 1);
     const needle = vm.runInContext("recentWorkspaceCandidates([{ path: '/repo/beta', label: 'Beta' }, { path: '/repo/gamma', label: 'Gamma' }])", ctx);
     equal(needle.length, 2);
+
+    // Filter path: a query matching only one row drops the other.
+    vm.runInContext('searchPaletteState.query = "gamma";', ctx);
+    const gammaOnly = vm.runInContext("recentWorkspaceCandidates([{ path: '/repo/beta', label: 'Beta' }, { path: '/repo/gamma', label: 'Gamma' }])", ctx);
+    equal(gammaOnly.length, 1);
+    equal(gammaOnly[0].title, "Gamma");
+    // Empty query resets filtering; the cap of 8 keeps large lists bounded.
+    vm.runInContext('searchPaletteState.query = "";', ctx);
+    const capped = vm.runInContext(`recentWorkspaceCandidates(${JSON.stringify(
+      Array.from({ length: 12 }, (_, index) => ({ path: `/repo/r${index}`, label: `R${index}`, kind: "workspace" })),
+    )})`, ctx);
+    equal(capped.length, 8, "recent candidates are capped at 8");
+    // Missing label falls back to the last path segment.
+    const fallbackTitle = vm.runInContext("recentWorkspaceCandidates([{ path: '/repo/fallback/nested' }])", ctx);
+    equal(fallbackTitle[0].title, "nested", "label falls back to last path segment");
+
+    // Clear button behavior: POSTs clear, empties state, invalidates cache, rerenders.
+    let clearCalls = 0;
+    const originalFetch = ctx.fetch;
+    ctx.fetch = async (url, init) => {
+      if (String(url).includes("/api/recent-workspaces/clear")) {
+        clearCalls += 1;
+        ok(init && init.method === "POST", "clear uses POST");
+        recentPayload = [];
+        return { status: 200, json: async () => ({ ok: true, cleared: 1 }) };
+      }
+      return originalFetch(url, init);
+    };
+    vm.runInContext('searchPaletteState.recent = recentWorkspaceCandidates([{ path: "/repo/alpha", label: "Alpha", kind: "worktree" }]);', ctx);
+    let stopPropagationCalls = 0;
+    await vm.runInContext("HerdrSearchPalette.clearRecent({ stopPropagation() { globalThis.__stopped = (globalThis.__stopped || 0) + 1; } })", ctx);
+    equal(ctx.__stopped, 1, "clearRecent stops event propagation");
+    equal(clearCalls, 1, "clearRecent posts to the clear endpoint once");
+    equal(vm.runInContext("searchPaletteState.recent.length", ctx), 0, "clearRecent empties palette recents");
+    const clearedCache = await registry.loadRecent();
+    equal(clearedCache.length, 0, "clearRecent invalidates the loadRecent cache");
+
+    // Toggle section recent flips expansion state and rerenders.
+    vm.runInContext('searchPaletteState.recent = recentWorkspaceCandidates([{ path: "/repo/alpha", label: "Alpha", kind: "worktree" }]); searchPaletteState.sectionsExpanded.recent = true;', ctx);
+    vm.runInContext("HerdrSearchPalette.toggleSection('recent')", ctx);
+    equal(vm.runInContext("searchPaletteState.sectionsExpanded.recent", ctx), false, "toggleSection recent collapses an expanded section");
+    vm.runInContext("HerdrSearchPalette.toggleSection('recent')", ctx);
+    equal(vm.runInContext("searchPaletteState.sectionsExpanded.recent", ctx), true, "toggleSection recent re-expands a collapsed section");
+    vm.runInContext("HerdrSearchPalette.toggleSection('nope')", ctx);
+
+    // openRecentWorkspace posts to the API, invalidates cache, and navigates.
+    let openCalls = 0;
+    ctx.fetch = async (url, init) => {
+      if (String(url) === "/api/recent-workspaces" && init && init.method === "POST") {
+        openCalls += 1;
+        const body = JSON.parse(init.body);
+        equal(body.path, "/repo/alpha", "open sends the workspace path");
+        equal(body.label, "Alpha", "open sends the label");
+        return { status: 200, ok: true, json: async () => ({ result: { workspace: { workspace_id: "ws-1" } } }) };
+      }
+      if (String(url).includes("/api/recent-workspaces/clear")) {
+        return { status: 200, json: async () => ({ ok: true, cleared: 0 }) };
+      }
+      if (String(url).includes("/api/recent-workspaces")) {
+        return { status: 200, json: async () => ({ recent: recentPayload }) };
+      }
+      return { status: 200, json: async () => ({}) };
+    };
+    ctx.__navigated = [];
+    vm.runInContext("globalThis.go = (id) => { globalThis.__navigated.push(id); };", ctx);
+    await vm.runInContext('openRecentWorkspace("/repo/alpha", "Alpha")', ctx);
+    equal(openCalls, 1, "openRecentWorkspace posts once");
+    deepEqual(ctx.__navigated, ["ws-1"], "openRecentWorkspace navigates to the opened workspace");
+    // Empty path exits early without calling the API.
+    openCalls = 0;
+    await vm.runInContext('openRecentWorkspace("", "Empty")', ctx);
+    equal(openCalls, 0, "openRecentWorkspace ignores an empty path");
 
     const section = vm.runInContext("renderRecentSection([{ type: 'recent', icon: 'wt', title: 'Beta', subtitle: 'worktree · main · /repo/beta', path: '/repo/beta' }])", ctx);
     ok(section.includes("Recent workspaces"), "section renders its title");

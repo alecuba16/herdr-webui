@@ -1,0 +1,9 @@
+/Users/alejandro.blanco/Documents/projects/worktrees/herdr-webui/git-branch-switcher/target-llvm/llvm-cov-target/debug/deps/terminal_trx-4b9856fbf874e603.d: /Users/alejandro.blanco/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/terminal-trx-0.2.6/src/lib.rs /Users/alejandro.blanco/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/terminal-trx-0.2.6/src/unix.rs /Users/alejandro.blanco/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/terminal-trx-0.2.6/src/unix/attr.rs
+
+/Users/alejandro.blanco/Documents/projects/worktrees/herdr-webui/git-branch-switcher/target-llvm/llvm-cov-target/debug/deps/libterminal_trx-4b9856fbf874e603.rlib: /Users/alejandro.blanco/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/terminal-trx-0.2.6/src/lib.rs /Users/alejandro.blanco/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/terminal-trx-0.2.6/src/unix.rs /Users/alejandro.blanco/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/terminal-trx-0.2.6/src/unix/attr.rs
+
+/Users/alejandro.blanco/Documents/projects/worktrees/herdr-webui/git-branch-switcher/target-llvm/llvm-cov-target/debug/deps/libterminal_trx-4b9856fbf874e603.rmeta: /Users/alejandro.blanco/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/terminal-trx-0.2.6/src/lib.rs /Users/alejandro.blanco/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/terminal-trx-0.2.6/src/unix.rs /Users/alejandro.blanco/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/terminal-trx-0.2.6/src/unix/attr.rs
+
+/Users/alejandro.blanco/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/terminal-trx-0.2.6/src/lib.rs:
+/Users/alejandro.blanco/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/terminal-trx-0.2.6/src/unix.rs:
+/Users/alejandro.blanco/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/terminal-trx-0.2.6/src/unix/attr.rs:

@@ -1,0 +1,7 @@
+cargo:rerun-if-env-changed=HERDR_WEBUI_VERSION
+cargo:rerun-if-env-changed=GITHUB_REF_TYPE
+cargo:rerun-if-env-changed=GITHUB_REF_NAME
+cargo:rerun-if-env-changed=GITHUB_SHA
+cargo:rerun-if-changed=.git/HEAD
+cargo:rerun-if-changed=.git/index
+cargo:rustc-env=HERDR_WEBUI_VERSION=snapshot-c2c0bc861ba3

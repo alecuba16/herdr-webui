@@ -1,0 +1,1 @@
+{"rustc":17467972547956852243,"features":"","declared_features":"","target":0,"profile":0,"path":0,"deps":[[17701692925015729942,"build_script_build",false,12456152475342720346]],"local":[{"RerunIfChanged":{"output":"debug/build/fs-err-94de3ccb022125d9/output","paths":["build.rs"]}}],"rustflags":[],"config":0,"compile_kind":0}

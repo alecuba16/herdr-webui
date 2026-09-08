@@ -6407,6 +6407,85 @@ mod tests {
         assert_eq!(recent[0].label.as_deref(), Some("Round"));
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn open_worktree_handler_records_recent_workspace() {
+        let (socket, handle) = fake_api_socket_for_method(
+            "worktree.open",
+            json!({ "id": "web:worktree:open", "result": { "ok": true } }),
+        );
+        let mut state = test_state();
+        state.api_socket = Some(socket.clone());
+        let app = test_app_with_state(state.clone());
+
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/worktrees/open")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "workspace_id": "ws1", "cwd": "/repo", "path": "/repo/wt", "branch": "feature", "label": "  Feature  " }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
+
+        let recent = state
+            .server_settings
+            .lock()
+            .map(|settings| settings.recent_workspaces.clone())
+            .unwrap_or_default();
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].path, "/repo/wt");
+        assert_eq!(recent[0].label.as_deref(), Some("Feature"));
+        assert_eq!(recent[0].branch.as_deref(), Some("feature"));
+        assert_eq!(recent[0].kind.as_deref(), Some("worktree"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn open_recent_workspace_records_and_proxies_open() {
+        let (socket, handle) = fake_api_socket_for_method(
+            "worktree.open",
+            json!({ "id": "web:recent-workspace:open", "result": { "ok": true, "workspace": { "workspace_id": "ws-recent" } } }),
+        );
+        let mut state = test_state();
+        state.api_socket = Some(socket.clone());
+        let app = test_app_with_state(state.clone());
+
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/recent-workspaces")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "path": "/repo/recent", "label": " Recent ", "branch": "main" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
+
+        let recent = state
+            .server_settings
+            .lock()
+            .map(|settings| settings.recent_workspaces.clone())
+            .unwrap_or_default();
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].path, "/repo/recent");
+        assert_eq!(recent[0].label.as_deref(), Some("Recent"));
+        assert_eq!(recent[0].branch.as_deref(), Some("main"));
+        assert_eq!(recent[0].kind.as_deref(), Some("workspace"));
+
+        let body = response_json(response).await;
+        assert_eq!(body["result"]["workspace"]["workspace_id"], json!("ws-recent"));
+    }
+
     #[tokio::test]
     async fn static_asset_routes_serve_embedded_content() {
         let app = test_app();
