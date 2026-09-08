@@ -7,6 +7,7 @@
     renderVersion: 0,
     contextMenu: null,
     branchModal: null,
+    worktreeList: null,
     gitOpModal: null,
     commitModal: null,
     compareSelectedModal: null,
@@ -1538,6 +1539,8 @@
     const ahead = Number(s.ahead) || 0;
     const behind = Number(s.behind) || 0;
     const upstream = String(s.upstream || "").trim();
+    const worktreeName = String(ctx.worktreeName || pathBasename(ctx.cwd || "") || "worktree");
+    const worktreeChip = `<button class="git-ui-branch-chip git-ui-worktree-chip" title="Choose worktree" onclick="HerdrGitUi.openWorktreeList(event)"><span class="git-ui-branch-chip-name">${esc(worktreeName)}</span><b class="git-ui-chip-caret">▾</b></button><span class="git-ui-selector-separator">/</span>`;
     const chip = branch
       ? `<button class="git-ui-branch-chip" title="${esc(titleWithGitShortcut("Switch branch", "branch"))}" onclick="HerdrGitUi.openBranchList(event)"><span class="git-ui-branch-chip-name">${esc(branch)}</span><b class="git-ui-chip-caret">▾</b></button>`
       : "";
@@ -1558,7 +1561,18 @@
     const menuOpen = state.headerMenu ? "true" : "false";
     const statusButton = `<button class="git-ui-btn git-ui-status-label" data-method="${esc(statusMethod)}" title="${esc(statusHint)}" onclick="HerdrGitUi.runStatusAction()">${esc(statusLabel)}</button>`;
     const statusCaret = `<button class="git-ui-btn git-ui-status-caret" title="Pull, fetch and push options" aria-haspopup="menu" aria-expanded="${menuOpen}" onclick="HerdrGitUi.toggleHeaderMenu(event)"><b class="git-ui-chip-caret">▾</b></button>`;
-    return `<div class="git-ui-toolbar git-ui-worktree-row"><div class="git-ui-actions git-ui-worktree-left"><button class="git-ui-btn primary" title="${esc(commitHint)}" onclick="HerdrGitUi.openCommitModal()"${commitDisabled}>Commit</button>${chip}</div><div class="git-ui-actions git-ui-worktree-right">${statusButton}${statusCaret}</div></div>`;
+    const folderDiffers = ctx.workspaceCwd && !samePath(ctx.cwd, ctx.workspaceCwd);
+    const pathNotice = folderDiffers ? `<span class="git-ui-folder-different" title="Git is operating in a different folder than the current workspace: ${esc(ctx.cwd)}">${esc(compactPath(ctx.cwd))}</span><button class="git-ui-btn git-ui-return-cwd" title="Return Git to the current workspace folder" onclick="HerdrGitUi.returnToWorkspaceCwd()">↩</button>` : "";
+    return `<div class="git-ui-toolbar git-ui-worktree-row"><div class="git-ui-actions git-ui-worktree-left"><button class="git-ui-btn primary" title="${esc(commitHint)}" onclick="HerdrGitUi.openCommitModal()"${commitDisabled}>Commit</button>${worktreeChip}${chip}${pathNotice}</div><div class="git-ui-actions git-ui-worktree-right">${statusButton}${statusCaret}</div></div>${renderWorktreeList()}`;
+  }
+
+  function renderWorktreeList() {
+    const list = state.worktreeList;
+    if (!list) return "";
+    if (list.loading) return `<div class="git-ui-branch-list git-ui-worktree-list" onclick="event.stopPropagation()"><div class="git-ui-loading"><span></span><strong>Loading worktrees</strong></div></div>`;
+    if (list.error) return `<div class="git-ui-branch-list git-ui-worktree-list" onclick="event.stopPropagation()"><div class="git-ui-error">${esc(list.error)}</div></div>`;
+    const rows = (list.worktrees || []).map((wt) => `<button class="git-ui-worktree-option" onclick="HerdrGitUi.selectWorktree('${arg(wt.path)}')"><strong>${esc(wt.label || pathBasename(wt.path))}</strong><small>${esc(wt.branch || "detached")} · ${esc(wt.path)}</small></button>`).join("");
+    return `<div class="git-ui-branch-list git-ui-worktree-list" onclick="event.stopPropagation()">${rows || `<div class="git-ui-muted git-ui-branch-list-empty">No worktrees detected</div>`}<button class="git-ui-worktree-create" onclick="HerdrGitUi.createWorktreeFromSelector()">＋ Create worktree</button></div>`;
   }
 
   // Dropdown next to the status button, exactly seven items: Fetch /
@@ -1661,7 +1675,7 @@
     const commitDisabled = canCommit ? "" : " disabled";
     const branchLabel = `${view.titleKind || "Branch"}: ${s.branch || view.title || "No branch"}`;
     const error = view.error && !cleanupOnly ? `<div class="git-ui-error">${esc(view.error)}</div>` : "";
-    const actions = cleanupOnly ? "" : renderWorktreeActions({ s, esc, commitHint, commitDisabled });
+    const actions = cleanupOnly ? "" : renderWorktreeActions({ s, esc, commitHint, commitDisabled, cwd: view.cwd, workspaceCwd: view.workspaceCwd, worktreeName: view.title });
     const filterInput = sideFileCount(view)
       ? `<label class="git-ui-file-filter"><span class="git-ui-file-filter-icon" aria-hidden="true"></span><input value="${esc(view.fileFilter || "")}" id="gitUiFileFilter" name="git-ui-file-filter" autocomplete="off" placeholder="Filter files" oninput="HerdrGitUi.filterFiles(this.value)"></label>`
       : "";
@@ -3702,6 +3716,38 @@
         state.branchList = { loading: false, error: err.message || String(err), local: [], remote: [], filter: state.branchList.filter || "", currentBranch };
       }
       render();
+    },
+    async openWorktreeList(event) {
+      const view = active();
+      if (!view) return;
+      if (event && event.stopPropagation) event.stopPropagation();
+      if (state.worktreeList) { state.worktreeList = null; render(); return; }
+      state.worktreeList = { loading: true, error: "", worktrees: [] };
+      render();
+      try {
+        const data = await api(`/api/worktrees?cwd=${encodeURIComponent(view.workspaceCwd || view.cwd)}`);
+        const result = data.result || data;
+        state.worktreeList = { loading: false, error: "", worktrees: result.worktrees || [] };
+      } catch (err) {
+        state.worktreeList = { loading: false, error: err.message || String(err), worktrees: [] };
+      }
+      render();
+    },
+    selectWorktree(encodedPath) {
+      const view = active();
+      const path = decodeURIComponent(encodedPath || "");
+      if (!view || !path) return;
+      state.worktreeList = null;
+      resetGitViewForCwd(view, path);
+      render();
+      refresh();
+    },
+    createWorktreeFromSelector() {
+      const view = active();
+      state.worktreeList = null;
+      render();
+      if (view && typeof openWorktreeCreateFromGitBranch === "function") openWorktreeCreateFromGitBranch(view.cwd, ((view.status || {}).branch || ""));
+      else if (typeof openWorktreeOpenModal === "function") openWorktreeOpenModal(view && view.cwd, true);
     },
     closeBranchList() {
       if (!state.branchList) return;

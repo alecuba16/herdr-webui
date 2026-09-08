@@ -144,11 +144,14 @@ File browser:
 
 Git UI:
 
+- The Git header has a two-level selector, `worktree / branch`. The worktree selector lists the main worktree and linked worktrees detected for the current repository, and offers a shortcut to create a worktree. Selecting a worktree moves Git operations to that checkout without changing the current workspace. The branch selector switches branches within the selected folder.
+- If Git is operating in a folder different from the current workspace/worktree, the active path is highlighted with a yellow background. Hover it to see the full path, and use the return button beside it to move Git back to the current workspace folder. This changes only the Git panel folder.
+
 - Desktop has an embedded Git drawer backed by Rust API routes and the system `git` CLI; no Node/React/Vite runtime is needed. Mobile has read-only grouped Git status.
 - The drawer blanks hidden DOM to reduce browser work and owns keyboard input while visible so terminal keystrokes do not leak through.
 - Core views cover status, commit, commit & push, pull, push/force-push, log, stash, cleanup, file history, conflicts, blame, hunk editing, side-by-side diffs, branch switching, and worktree actions.
 - The Git directory picker has a single meaning: selecting a folder makes that folder the Git drawer cwd and refreshes the Git views. Branch checkout is separate and only runs when pressing `Switch branch` in the branch modal.
-- If the Git drawer cwd differs from the currently selected workspace/worktree folder, a `↩` button appears beside Refresh. It returns the Git drawer to the current workspace/worktree folder, clears stale file/diff state, and refreshes.
+- If the Git drawer cwd differs from the currently selected workspace/worktree folder, a yellow path badge and `↩` button appear beside the worktree/branch selector. It returns the Git drawer to the current workspace/worktree folder, clears stale file/diff state, and refreshes.
 - File lists are collapsible trees with optional filename-only mode, line counts, filtering, yellow match highlighting, and stable scroll while filtering/expanding. The file filter sits below the Git action toolbar so the exclusive view selector and actions stay visually grouped. Right-click and section actions support stage/unstage/discard/stash with confirmations.
 - Changes, log, stash, and cleanup use a segmented exclusive toggle like the workspace shell-mode controls because only one Git view is shown at a time.
 - Cleanup scans `Exploration default directory` or a chosen root for Git repositories, does not follow symlinked directories, caps traversal, and reports truncation. Results render as a nested repo list (`repo -> branches/worktrees -> items`) with checkbox multi-select, one confirmation modal, and the shared broom cleanup icon.
