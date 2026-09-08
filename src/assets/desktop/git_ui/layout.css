@@ -358,6 +358,8 @@
 .git-ui-branch-list-empty {
   padding: 8px;
 }
+.git-ui-branch-load-more { background: transparent; border: 1px solid var(--border2); border-radius: 7px; color: var(--accent); cursor: pointer; margin: 6px 0; padding: 6px 8px; width: 100%; }
+.git-ui-branch-load-more:hover { background: var(--panel2); }
 .git-ui-busy {
   align-items: center;
   background: color-mix(in srgb, var(--accent) 14%, transparent);

@@ -1653,12 +1653,16 @@
     const localAll = (list.local || []).filter(matches);
     const currentRows = localAll.filter((branch) => !branch.remote && branch.name === currentBranch);
     const local = currentRows.concat(localAll.filter((branch) => !currentRows.includes(branch)));
-    const remote = (list.remote || []).filter(matches);
+    const remoteAll = (list.remote || []).filter(matches);
+    const remote = list.remoteLoaded ? remoteAll : remoteAll.slice(0, 2);
     const rows = (branches, label) => !branches.length ? "" : `<div class="git-ui-branch-list-section">${label}</div>${branches.map((branch) => branchListRow(branch, currentBranch)).join("")}`;
     const empty = !local.length && !remote.length ? `<div class="git-ui-muted git-ui-branch-list-empty">No branches match</div>` : "";
     // Filter input lives at the bottom, below the scrollable rows, so the
     // list reads top-down like Zed's branch popover.
-    return `<div class="git-ui-branch-list" onclick="event.stopPropagation()"><div class="git-ui-branch-list-scroll">${rows(local, "Local branches")}${rows(remote, "Remote branches")}${empty}</div><label class="git-ui-branch-list-filter"><span>Filter</span><input value="${esc(list.filter || "")}" placeholder="Type to filter" oninput="HerdrGitUi.branchListFilter(this.value)"></label></div>`;
+    const loadMore = !list.remoteLoaded && remoteAll.length > remote.length
+      ? `<button class="git-ui-branch-load-more" onclick="HerdrGitUi.loadMoreBranches()">Load more branches (${remoteAll.length - remote.length} more)</button>`
+      : "";
+    return `<div class="git-ui-branch-list" onclick="event.stopPropagation()"><div class="git-ui-branch-list-scroll">${rows(local, "Local branches")}${rows(remote, "Remote branches")}${loadMore}${empty}</div><label class="git-ui-branch-list-filter"><span>Filter</span><input value="${esc(list.filter || "")}" placeholder="Type to filter" oninput="HerdrGitUi.branchListFilter(this.value)"></label></div>`;
   }
 
   function renderSide() {
@@ -3717,15 +3721,15 @@
         return;
       }
       const currentBranch = ((view.status || {}).branch) || "";
-      state.branchList = { loading: true, error: "", local: [], remote: [], filter: "", currentBranch };
+      state.branchList = { loading: true, error: "", local: [], remote: [], filter: "", currentBranch, remoteLoaded: false };
       render();
       try {
         const data = await api(`/api/git-ui/branches?cwd=${encodeURIComponent(view.cwd)}`);
         if (!state.branchList) return; // closed while loading
-        state.branchList = { loading: false, error: "", local: data.local || [], remote: data.remote || [], filter: state.branchList.filter || "", currentBranch };
+        state.branchList = { loading: false, error: "", local: data.local || [], remote: data.remote || [], filter: state.branchList.filter || "", currentBranch, remoteLoaded: false };
       } catch (err) {
         if (!state.branchList) return;
-        state.branchList = { loading: false, error: err.message || String(err), local: [], remote: [], filter: state.branchList.filter || "", currentBranch };
+        state.branchList = { loading: false, error: err.message || String(err), local: [], remote: [], filter: state.branchList.filter || "", currentBranch, remoteLoaded: false };
       }
       render();
     },
@@ -3769,6 +3773,10 @@
     branchListFilter(value) {
       if (!state.branchList) return;
       state.branchList.filter = String(value || "");
+      // Filtering is intentionally non-blocking. A filter request makes the
+      // already-fetched remote branch data visible immediately instead of
+      // replacing the list with a loading state.
+      if (state.branchList.filter.trim()) state.branchList.remoteLoaded = true;
       // Re-render only the list, not the whole panel: the filter input
       // would lose focus otherwise.
       const panel = document.getElementById("gitUiPanel");
@@ -3784,6 +3792,11 @@
         input.focus();
         try { input.setSelectionRange(String(value || "").length, String(value || "").length); } catch (_) {}
       }
+    },
+    loadMoreBranches() {
+      if (!state.branchList) return;
+      state.branchList.remoteLoaded = true;
+      render();
     },
     async switchFromBranchList(encodedName, isRemote) {
       const name = decodeURIComponent(String(encodedName || ""));
