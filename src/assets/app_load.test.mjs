@@ -101,6 +101,9 @@ function context() {
     addEventListener() {},
     prompt: () => null,
     confirm: () => true,
+    alert: () => {},
+    showBlocking: () => {},
+    hideBlocking: () => {},
   };
   ctx.terminal = getElement("terminal");
   ctx.window = ctx;
@@ -121,7 +124,6 @@ describe("app bundle load", () => {
   let source;
   let gitUiSource;
   let gitLogSource;
-  let gitActionsSource;
   let gitSettingsSource;
   let gitUiLogCss;
   let fileBrowserSource;
@@ -161,7 +163,6 @@ describe("app bundle load", () => {
       desktopAppSource;
     gitUiSource = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
     gitLogSource = readFileSync(new URL("./desktop/git_ui/log.js", import.meta.url), "utf8");
-    gitActionsSource = readFileSync(new URL("./desktop/git_ui/actions.js", import.meta.url), "utf8");
     gitSettingsSource = readFileSync(new URL("./desktop/git_ui/settings.js", import.meta.url), "utf8");
     gitUiLogCss = readFileSync(new URL("./desktop/git_ui/log.css", import.meta.url), "utf8");
     fileBrowserSource = readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8");
@@ -184,6 +185,136 @@ describe("app bundle load", () => {
     match(source, /runSearchAction\(result\.action\)/);
     match(source, /window\.syncShellModeButtons = syncShellModeButtons;/);
     match(source, /function showTerminalShellMode\([^)]*\) \{[\s\S]*?rememberWorkspaceShellMode\("terminal", state\.ws, \{ minimized: false \}\);[\s\S]*?syncShellModeButtons\(\);[\s\S]*?if \(typeof render === "function"\) render\(\);[\s\S]*?requestAnimationFrame\(\(\) => \{[\s\S]*?syncShellModeButtons\(\);/);
+  });
+
+  it("exposes server-persisted recent workspaces in the actions palette", async () => {
+    const ctx = context();
+    let recentPayload = [{ path: "/repo/alpha", label: "Alpha", branch: "main", kind: "worktree", opened_at: 1 }];
+    ctx.fetch = async (url) => {
+      if (String(url).includes("/api/recent-workspaces/clear")) {
+        recentPayload = [];
+        return { status: 200, json: async () => ({ ok: true, cleared: 1 }) };
+      }
+      if (String(url).includes("/api/recent-workspaces")) {
+        return { status: 200, json: async () => ({ recent: recentPayload }) };
+      }
+      return { status: 200, json: async () => ({}) };
+    };
+    vm.runInContext(source, ctx);
+
+    const registry = ctx.window.HerdrActionRegistry;
+    ok(registry && typeof registry.loadRecent === "function", "registry must expose loadRecent");
+    ok(typeof registry.invalidateRecent === "function", "registry must expose invalidateRecent");
+
+    const recent = await registry.loadRecent();
+    equal(recent.length, 1);
+    equal(recent[0].path, "/repo/alpha");
+
+    const cached = await registry.loadRecent();
+    equal(cached, recent, "recent rows are cached between loads");
+
+    registry.invalidateRecent();
+    const refreshed = await registry.loadRecent();
+    equal(refreshed.length, 1, "invalidated cache refetches from the server");
+
+    vm.runInContext("searchPaletteState.recent = [];", ctx);
+    vm.runInContext('searchPaletteState.sectionsExpanded = { actions: true, recent: true, workspaces: true, files: true, content: true };', ctx);
+    const candidates = vm.runInContext("recentWorkspaceCandidates([{ path: '/repo/beta', label: 'Beta', kind: 'workspace' }])", ctx);
+    equal(candidates.length, 1);
+    equal(candidates[0].type, "recent");
+    equal(candidates[0].title, "Beta");
+    ok(candidates[0].subtitle.includes("workspace"));
+    ok(candidates[0].subtitle.includes("/repo/beta"));
+
+    const filtered = vm.runInContext("recentWorkspaceCandidates([{ path: '/repo/beta', label: 'Beta', kind: 'workspace' }])", ctx);
+    equal(filtered.length, 1);
+    const needle = vm.runInContext("recentWorkspaceCandidates([{ path: '/repo/beta', label: 'Beta' }, { path: '/repo/gamma', label: 'Gamma' }])", ctx);
+    equal(needle.length, 2);
+
+    // Filter path: a query matching only one row drops the other.
+    vm.runInContext('searchPaletteState.query = "gamma";', ctx);
+    const gammaOnly = vm.runInContext("recentWorkspaceCandidates([{ path: '/repo/beta', label: 'Beta' }, { path: '/repo/gamma', label: 'Gamma' }])", ctx);
+    equal(gammaOnly.length, 1);
+    equal(gammaOnly[0].title, "Gamma");
+    // Empty query resets filtering; the cap of 8 keeps large lists bounded.
+    vm.runInContext('searchPaletteState.query = "";', ctx);
+    const capped = vm.runInContext(`recentWorkspaceCandidates(${JSON.stringify(
+      Array.from({ length: 12 }, (_, index) => ({ path: `/repo/r${index}`, label: `R${index}`, kind: "workspace" })),
+    )})`, ctx);
+    equal(capped.length, 8, "recent candidates are capped at 8");
+    // Missing label falls back to the last path segment.
+    const fallbackTitle = vm.runInContext("recentWorkspaceCandidates([{ path: '/repo/fallback/nested' }])", ctx);
+    equal(fallbackTitle[0].title, "nested", "label falls back to last path segment");
+
+    // Clear button behavior: POSTs clear, empties state, invalidates cache, rerenders.
+    let clearCalls = 0;
+    const originalFetch = ctx.fetch;
+    ctx.fetch = async (url, init) => {
+      if (String(url).includes("/api/recent-workspaces/clear")) {
+        clearCalls += 1;
+        ok(init && init.method === "POST", "clear uses POST");
+        recentPayload = [];
+        return { status: 200, json: async () => ({ ok: true, cleared: 1 }) };
+      }
+      return originalFetch(url, init);
+    };
+    vm.runInContext('searchPaletteState.recent = recentWorkspaceCandidates([{ path: "/repo/alpha", label: "Alpha", kind: "worktree" }]);', ctx);
+    let stopPropagationCalls = 0;
+    await vm.runInContext("HerdrSearchPalette.clearRecent({ stopPropagation() { globalThis.__stopped = (globalThis.__stopped || 0) + 1; } })", ctx);
+    equal(ctx.__stopped, 1, "clearRecent stops event propagation");
+    equal(clearCalls, 1, "clearRecent posts to the clear endpoint once");
+    equal(vm.runInContext("searchPaletteState.recent.length", ctx), 0, "clearRecent empties palette recents");
+    const clearedCache = await registry.loadRecent();
+    equal(clearedCache.length, 0, "clearRecent invalidates the loadRecent cache");
+
+    // Toggle section recent flips expansion state and rerenders.
+    vm.runInContext('searchPaletteState.recent = recentWorkspaceCandidates([{ path: "/repo/alpha", label: "Alpha", kind: "worktree" }]); searchPaletteState.sectionsExpanded.recent = true;', ctx);
+    vm.runInContext("HerdrSearchPalette.toggleSection('recent')", ctx);
+    equal(vm.runInContext("searchPaletteState.sectionsExpanded.recent", ctx), false, "toggleSection recent collapses an expanded section");
+    vm.runInContext("HerdrSearchPalette.toggleSection('recent')", ctx);
+    equal(vm.runInContext("searchPaletteState.sectionsExpanded.recent", ctx), true, "toggleSection recent re-expands a collapsed section");
+    vm.runInContext("HerdrSearchPalette.toggleSection('nope')", ctx);
+
+    // openRecentWorkspace posts to the API, invalidates cache, and navigates.
+    let openCalls = 0;
+    ctx.fetch = async (url, init) => {
+      if (String(url) === "/api/recent-workspaces" && init && init.method === "POST") {
+        openCalls += 1;
+        const body = JSON.parse(init.body);
+        equal(body.path, "/repo/alpha", "open sends the workspace path");
+        equal(body.label, "Alpha", "open sends the label");
+        return { status: 200, ok: true, json: async () => ({ result: { workspace: { workspace_id: "ws-1" } } }) };
+      }
+      if (String(url).includes("/api/recent-workspaces/clear")) {
+        return { status: 200, json: async () => ({ ok: true, cleared: 0 }) };
+      }
+      if (String(url).includes("/api/recent-workspaces")) {
+        return { status: 200, json: async () => ({ recent: recentPayload }) };
+      }
+      return { status: 200, json: async () => ({}) };
+    };
+    ctx.__navigated = [];
+    vm.runInContext("globalThis.go = (id) => { globalThis.__navigated.push(id); };", ctx);
+    await vm.runInContext('openRecentWorkspace("/repo/alpha", "Alpha")', ctx);
+    equal(openCalls, 1, "openRecentWorkspace posts once");
+    deepEqual(ctx.__navigated, ["ws-1"], "openRecentWorkspace navigates to the opened workspace");
+    // Empty path exits early without calling the API.
+    openCalls = 0;
+    await vm.runInContext('openRecentWorkspace("", "Empty")', ctx);
+    equal(openCalls, 0, "openRecentWorkspace ignores an empty path");
+
+    const section = vm.runInContext("renderRecentSection([{ type: 'recent', icon: 'wt', title: 'Beta', subtitle: 'worktree · main · /repo/beta', path: '/repo/beta' }])", ctx);
+    ok(section.includes("Recent workspaces"), "section renders its title");
+    ok(section.includes("Clear"), "section renders the clear button");
+    ok(section.includes("Beta"), "section renders recent rows");
+    ok(section.includes('class="search-section-toggle search-section-head-toggle"'), "recent toggle uses the shared toggle styling inside the head row");
+    ok(section.includes('aria-expanded="true"'), "recent toggle exposes expanded state");
+    const collapsed = vm.runInContext("searchPaletteState.sectionsExpanded.recent = false; renderRecentSection([{ type: 'recent', icon: 'wt', title: 'Beta', subtitle: 'worktree · /repo/beta', path: '/repo/beta' }])", ctx);
+    ok(collapsed.includes('aria-expanded="false"'), "collapsed recent toggle reports not expanded");
+    ok(!collapsed.includes('onclick="HerdrSearchPalette.openRecent'), "collapsed section hides rows");
+
+    const empty = vm.runInContext("renderRecentSection([])", ctx);
+    equal(empty, "", "empty recents render no section");
   });
 
   it("returns desktop UX actions from a single command-palette candidate path", () => {
@@ -368,7 +499,7 @@ describe("app bundle load", () => {
   it("keeps file history header scoped to selected files", () => {
     match(gitUiSource, /function renderFileToolbar\(activeTab\) \{\n\s+const view = active\(\) \|\| \{\};/);
     match(gitUiSource, /const history = view\.file \? `<button class="git-ui-btn \$\{activeTab === "history" \? "active" : ""\}" title="\$\{esc\(titleWithGitShortcut\("File history", "history"\)\)\}" onclick="HerdrGitUi\.tab\('history'\)">History<\/button>` : "";/);
-    equal([...gitLogSource.matchAll(/git-ui-log-scope-head/g)].length, 1);
+    equal([...gitLogSource.matchAll(/git-ui-log-filter-spacer/g)].length, 1, "scope control renders once inside the filter row");
   });
 
   it("hides only large file diffs by default", () => {
@@ -823,12 +954,12 @@ describe("app bundle load", () => {
     match(gitLogCss, /\.git-ui-log-head \{[\s\S]*?position: sticky;[\s\S]*?z-index: 7;/);
   });
 
-  it("uses a single selected-log reset modal and clear rebase wording", () => {
-    match(gitActionsSource, /openSelectedResetModal\(\)/);
-    match(gitActionsSource, /title="Rebase current changes over the selected commit"/);
-    match(gitActionsSource, />Rebase…<\/button>/);
-    match(gitActionsSource, /options\.allowRewrite/);
-    ok(!gitActionsSource.includes("Reset soft</button><button"));
+  it("uses a log row context menu with reset and clear rebase wording", () => {
+    match(gitUiSource, /openSelectedResetModal\(\)/);
+    match(gitUiSource, /Rebase commits after/);
+    match(gitUiSource, /rebaseAfterSelected\(\) \{/);
+    match(gitUiSource, /!hasSelection \|\| !mutable/);
+    ok(!gitUiSource.includes("Reset soft</button><button"));
     match(gitUiSource, /renderResetSelectedModal/);
     match(gitUiSource, /renderCompareSelectedModal/);
     match(gitUiSource, /Compare selected commit/);
@@ -839,7 +970,8 @@ describe("app bundle load", () => {
     match(gitUiSource, /view\.compareTarget = "\.";\s*\n\s*view\.mode = "current-compare";/);
     match(gitUiSource, /Soft reset/);
     match(gitUiSource, /Hard reset/);
-    match(gitUiSource, /selectedLogToolbar\(selected, \{ allowRewrite: currentMode\(\) === "changes", selectedBranch \}\)/);
+    match(gitUiSource, /function renderLogContextMenu/);
+    match(gitUiSource, /state\.logContextMenu = \{[\s\S]*?x: Number\(event && event\.clientX\) \|\| 0,/);
     match(gitUiSource, /function commitPreviewSection/);
     match(gitUiSource, /Committed files/);
     match(gitUiSource, /loadSelectedCommitPreview\(view, view\.selectedLogCommits\[0\]\)/);
@@ -903,8 +1035,7 @@ describe("app bundle load", () => {
     match(gitUiSource, /No stashes stored\. Refresh to rescan\./);
     match(gitUiSource, /view\.tab === "stash" && !canOpenStashView\(view\)/);
     match(gitUiSource, /tab === "stash" && !canOpenStashView\(view\)/);
-    match(gitActionsSource, />Tag<\/button>/);
-    match(gitActionsSource, /openSelectedTagModal\(\)/);
+    match(gitUiSource, /item\("Tag", "openSelectedTagModal\(\)", !hasSelection\)/);
     match(gitUiSource, /renderTagSelectedModal/);
     match(gitUiSource, /gitTagName/);
     match(gitUiSource, /\/api\/git-ui\/tag/);
@@ -2997,7 +3128,7 @@ describe("app bundle load", () => {
     match(gitSettingsSource, /gitUiDefaultBranch: "master"/);
     match(gitUiSource, /function gitLogDefaultBranch\(\)/);
     match(gitUiSource, /base=\$\{encodeURIComponent\(baseBranch\)\}/);
-    match(gitLogSource, /Toggle history scope: All/);
+    match(gitLogSource, /title="Toggle history scope: Master \+ Branch, All, Branch" onclick="HerdrGitUi\.cycleLogScope\(\)"/);
     match(gitSettingsSource, /Unified \(GitHub-style\)/);
     match(gitSettingsSource, /gitUiDiffLayout: "side-by-side"/);
     match(gitUiSource, /function diffLayoutMode\(\)/);
@@ -3089,8 +3220,8 @@ describe("app bundle load", () => {
     match(featuresDoc, /scope row, table header, and filter row are sticky/);
     match(featuresDoc, /File browser `Show history` opens this log scoped to the selected file/);
     match(featuresDoc, /Selecting one commit loads a `Committed files` side preview/);
-    match(technicalDoc, /src\/assets\/desktop\/git_ui\/actions\.js/);
-    match(technicalDoc, /selected-commit action strip/);
+    match(technicalDoc, /renderLogContextMenu/);
+    match(technicalDoc, /row-level right-click context menu/);
     match(technicalDoc, /optional `file` path/);
     match(technicalDoc, /commit\^` versus `commit`/);
     match(gitUiSource, /function gitBranchModalDefaultCwd\(cwd\)/);
@@ -3122,7 +3253,7 @@ describe("app bundle load", () => {
     match(gitUiSource, /path = info\.file \|\| path;/);
     match(gitUiSource, /window\.HerdrGitLog\.render/);
     match(gitLogSource, /onclick="HerdrGitUi\.cycleLogScope\(\)"/);
-    match(gitLogSource, /Toggle history scope: All/);
+    match(gitLogSource, /title="Toggle history scope: Master \+ Branch, All, Branch" onclick="HerdrGitUi\.cycleLogScope\(\)"/);
     match(gitLogSource, /function logScopeLabel/);
     ok(!gitLogSource.includes("HerdrGitUi.setLogAll(false)"));
     ok(!gitLogSource.includes("All branches</button>"));
@@ -3133,7 +3264,7 @@ describe("app bundle load", () => {
     match(gitLogSource, /class="git-ui-log-ref \$\{kind\}"/);
     match(gitLogSource, /title="\$\{esc\(normalized\)\}"/);
     match(gitLogSource, /class="git-ui-log-copy-hash"/);
-    match(gitLogSource, /HerdrGitUi\.copyCommitId\('\$\{arg\(hash\)\}'\)/);
+    match(gitLogSource, /HerdrGitUi\.copyScopeValue\(event,'\$\{encodeURIComponent\(row\.hash \|\| ""\)\}','Commit id'\)/);
     match(gitUiSource, /async function copyCommitId\(hash\)/);
     match(gitUiSource, /Commit id copied/);
     match(gitUiSource, /async copyCommitId\(hash\)/);
@@ -3144,8 +3275,8 @@ describe("app bundle load", () => {
     ok(!gitLogSource.includes("const footer = renderLoadMore(data,"));
     match(gitLogSource, /renderLoadMore\(options\.data \|\| \{\}, rows, options, esc\)/);
     match(gitLogSource, /Load more changes/);
-    match(gitLogSource, /git-ui-log-file-scope/);
-    match(gitLogSource, /clearLogFileHistory\(\)/);
+    match(gitLogSource, /git-ui-log-file-scope|git-ui-log-filter-row/);
+    match(gitUiSource, /clearLogFileHistory\(\) \{/);
     match(gitLogSource, /HerdrGitUi.loadMoreLog\(\)/);
     match(gitLogSource, /data\.has_more/);
     match(gitLogSource, /function renderFilterRow/);
@@ -3185,10 +3316,8 @@ describe("app bundle load", () => {
     match(gitLogCss, /\.git-ui-log-copy-hash/);
     match(gitLogCss, /\.git-ui-log-hover-card \.git-ui-log-ref \{[\s\S]*?max-width: none;[\s\S]*?overflow-wrap: anywhere;[\s\S]*?white-space: normal;/);
     match(gitLogSource, /function selectedBranchForHash/);
-    match(gitActionsSource, />Worktree…<\/button>/);
-    match(gitActionsSource, /Selected commit has no branch label/);
-    match(gitActionsSource, /title="Create a worktree from \$\{esc\(options\.selectedBranch\)\}"/);
-    match(gitUiSource, /createWorktreeFromSelectedBranch\(\)/);
+    match(gitUiSource, /item\("Worktree", "createWorktreeFromSelectedBranch\(\)", !view \|\| !view\.selectedLogBranch\)/);
+    match(gitUiSource, /createWorktreeFromSelectedBranch\(\) \{/);
     match(source, /function openWorktreeCreateFromGitBranch\(cwd, branch\)/);
     match(source, /id="worktreeFetchRemotes"/);
     match(source, /Fetch remote branches…/);

@@ -22,6 +22,7 @@
 .git-ui-side-bottom .git-ui-btn {
   width: 100%;
 }
+.git-ui-path-title { color: var(--muted); font-size: 11px; overflow: hidden; padding: 0 10px 6px; text-overflow: ellipsis; white-space: nowrap; }
 .git-ui-toolbar-title {
   color: var(--muted);
   font-size: 11px;
@@ -96,6 +97,13 @@
   color: var(--muted);
   font-size: 12px;
 }
+.git-ui-status-icon { background: currentColor; border-radius: 50%; display: inline-block; height: 9px; margin-left: 6px; vertical-align: middle; width: 9px; }
+.git-ui-status-clean { color: #3fb950; }
+.git-ui-status-dirty { color: #d29922; }
+.git-ui-status-conflicted { color: #f85149; }
+.git-ui-status-icon:not(.git-ui-status-clean):not(.git-ui-status-dirty):not(.git-ui-status-conflicted) { color: var(--muted); }
+.git-ui-subtitle { align-items: center; display: flex; flex-wrap: wrap; gap: 6px; }
+.git-ui-subtitle-state { color: var(--muted); }
 
 /* ── Worktree actions row with branch chip (Zed-style selector) ────── */
 .git-ui-worktree-row {
@@ -146,6 +154,16 @@
   text-overflow: ellipsis;
 }
 .git-ui-chip-caret { font-size: 10px; }
+.git-ui-selector-separator { color: var(--muted); font-weight: 800; }
+.git-ui-worktree-list { left: 10px; right: auto; min-width: 280px; top: 52px; }
+.git-ui-worktree-option, .git-ui-worktree-create { background: transparent; border: 0; color: var(--fg); cursor: pointer; display: flex; flex-direction: column; gap: 2px; padding: 7px 9px; text-align: left; width: 100%; }
+.git-ui-worktree-option:hover, .git-ui-worktree-create:hover { background: var(--panel2); border-radius: 7px; }
+.git-ui-worktree-option small { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.git-ui-worktree-create { border-top: 1px solid var(--border); color: var(--accent); margin-top: 6px; }
+.git-ui-folder-different { background: #d99a00; border-radius: 4px; color: #17120a; cursor: help; font-size: 11px; max-width: 180px; overflow: hidden; padding: 3px 6px; text-overflow: ellipsis; white-space: nowrap; }
+.git-ui-return-cwd { color: var(--accent); padding: 3px 7px; }
+.git-ui-commit-below-files { border-top: 1px solid var(--border); padding: 10px; }
+.git-ui-commit-below-files .git-ui-btn { width: 100%; }
 
 /* Right-justified status split button: label + ▾ triangle joined. */
 .git-ui-status-label {
@@ -282,10 +300,12 @@
   min-width: 0;
 }
 .git-ui-branch-row-check {
-  color: var(--accent);
+  color: #3fb950;
   flex: none;
   font-size: 12px;
 }
+.git-ui-worktree-option.current { background: var(--panel2); }
+.git-ui-worktree-check { color: #3fb950; margin-right: 5px; }
 .git-ui-branch-row-icon {
   background: currentColor;
   display: inline-block;
@@ -341,6 +361,9 @@
 .git-ui-branch-list-empty {
   padding: 8px;
 }
+.git-ui-branch-load-more { background: transparent; border: 1px solid var(--border2); border-radius: 7px; color: var(--accent); cursor: pointer; margin: 6px 0; padding: 6px 8px; width: 100%; }
+.git-ui-branch-load-more:hover { background: var(--panel2); }
+.git-ui-branch-loading { color: var(--muted); font-size: 11px; padding: 8px; }
 .git-ui-busy {
   align-items: center;
   background: color-mix(in srgb, var(--accent) 14%, transparent);

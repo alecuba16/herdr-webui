@@ -105,6 +105,25 @@
     },
   ];
 
+  let recentCache = { at: 0, rows: [] };
+
+  async function loadRecent() {
+    const now = Date.now();
+    if (recentCache.rows.length && now - recentCache.at < 10000) return recentCache.rows;
+    try {
+      const res = await fetch("/api/recent-workspaces");
+      const data = await res.json();
+      recentCache = { at: now, rows: Array.isArray(data.recent) ? data.recent : [] };
+    } catch (_) {
+      recentCache = { at: now, rows: [] };
+    }
+    return recentCache.rows;
+  }
+
+  function invalidateRecent() {
+    recentCache = { at: 0, rows: [] };
+  }
+
   function actionToRow(action) {
     return {
       ...action,
@@ -145,5 +164,7 @@
     action,
     candidates,
     renderButtons,
+    loadRecent,
+    invalidateRecent,
   };
 })(typeof globalThis !== "undefined" ? globalThis : window);

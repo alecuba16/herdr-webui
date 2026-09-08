@@ -97,6 +97,8 @@ struct BackendInfo {
 #[derive(Clone, Debug)]
 struct WebConfig {
     bind: SocketAddr,
+    /// True when --bind was passed explicitly and must override persisted settings.
+    bind_explicit: bool,
     session: Option<String>,
     api_socket: Option<PathBuf>,
     client_socket: Option<PathBuf>,
@@ -168,6 +170,15 @@ struct TlsConfig {
     key_path: Option<PathBuf>,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+struct RecentWorkspace {
+    path: String,
+    label: Option<String>,
+    branch: Option<String>,
+    kind: Option<String>,
+    opened_at: Option<u64>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum TlsMode {
     Off,
@@ -192,6 +203,8 @@ struct PersistedServerSettings {
     log_level: Option<LogLevel>,
     #[serde(default)]
     lsp: Option<lsp::LspSettings>,
+    #[serde(default)]
+    recent_workspaces: Option<Vec<RecentWorkspace>>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -242,6 +255,7 @@ struct RuntimeServerSettings {
     jcode_detection_variant: JcodeDetectionVariant,
     log_level: LogLevel,
     lsp: lsp::LspSettings,
+    recent_workspaces: Vec<RecentWorkspace>,
 }
 
 struct NoSleepGuard {
@@ -326,6 +340,7 @@ fn start_no_sleep_guard() -> io::Result<NoSleepGuard> {
 impl WebConfig {
     fn parse(args: &[String]) -> io::Result<Self> {
         let mut bind = DEFAULT_BIND.parse::<SocketAddr>().expect("valid bind");
+        let mut bind_explicit = false;
         let mut session = None;
         let mut api_socket = None;
         let mut client_socket = None;
@@ -345,6 +360,7 @@ impl WebConfig {
                             format!("invalid --bind: {err}"),
                         )
                     })?;
+                    bind_explicit = true;
                     index += 2;
                 }
                 "--session" => {
@@ -406,6 +422,7 @@ impl WebConfig {
         }
         Ok(Self {
             bind,
+            bind_explicit,
             session,
             api_socket,
             client_socket,
@@ -676,6 +693,7 @@ fn default_runtime_server_settings(bind: SocketAddr) -> RuntimeServerSettings {
         jcode_detection_variant: JcodeDetectionVariant::default(),
         log_level: LogLevel::default(),
         lsp: lsp::LspSettings::default(),
+        recent_workspaces: Vec::new(),
     }
 }
 
@@ -784,6 +802,16 @@ fn server_settings_path() -> PathBuf {
         .unwrap_or_else(|_| std::env::temp_dir().join("herdr-webui/webui-settings.json"))
 }
 
+/// Apply CLI flags that must win over persisted settings.
+/// An explicit `--bind` beats the persisted bind from webui-settings.json;
+/// otherwise a preview instance could silently squat the saved port instead of
+/// the one the operator asked for.
+fn apply_cli_overrides(settings: &mut RuntimeServerSettings, config: &WebConfig) {
+    if config.bind_explicit {
+        settings.bind = config.bind;
+    }
+}
+
 fn load_runtime_server_settings(default_bind: SocketAddr) -> io::Result<RuntimeServerSettings> {
     let mut settings = default_runtime_server_settings(default_bind);
     let path = server_settings_path();
@@ -863,6 +891,9 @@ fn load_runtime_server_settings(default_bind: SocketAddr) -> io::Result<RuntimeS
     if let Some(lsp) = persisted.lsp {
         settings.lsp = lsp;
     }
+    if let Some(recent) = persisted.recent_workspaces {
+        settings.recent_workspaces = recent;
+    }
     validate_runtime_server_settings(&settings)?;
     if missing_keys {
         save_runtime_server_settings(&settings)?;
@@ -890,6 +921,7 @@ fn save_runtime_server_settings(settings: &RuntimeServerSettings) -> io::Result<
         jcode_detection_variant: Some(settings.jcode_detection_variant.as_str().to_string()),
         log_level: Some(settings.log_level.clone()),
         lsp: Some(settings.lsp.clone()),
+        recent_workspaces: Some(settings.recent_workspaces.clone()),
     })?;
     fs::write(&path, content)?;
     #[cfg(unix)]
@@ -963,6 +995,7 @@ async fn main() -> io::Result<()> {
     }
     let config = WebConfig::parse(&args)?;
     let mut server_settings = load_runtime_server_settings(config.bind)?;
+    apply_cli_overrides(&mut server_settings, &config);
     if let Some(backend_mode) = config.backend_mode {
         server_settings.backend_mode = backend_mode;
     }
@@ -1293,6 +1326,14 @@ fn app_router(state: WebState) -> Router {
         .route(
             "/api/workspace-order",
             get(workspace_order).post(set_workspace_order),
+        )
+        .route(
+            "/api/recent-workspaces",
+            get(recent_workspaces).post(open_recent_workspace),
+        )
+        .route(
+            "/api/recent-workspaces/clear",
+            post(clear_recent_workspaces),
         )
         .route("/api/worktrees", get(worktrees).post(create_worktree))
         .route("/api/worktrees/open", post(open_worktree))
@@ -2199,6 +2240,10 @@ async fn update_server_settings(
             .log_level
             .or_else(|| current.as_ref().map(|settings| settings.log_level.clone()))
             .unwrap_or_default(),
+        recent_workspaces: current
+            .as_ref()
+            .map(|settings| settings.recent_workspaces.clone())
+            .unwrap_or_default(),
     };
     let bind_changed = current
         .as_ref()
@@ -2745,6 +2790,119 @@ fn enrich_workspace_cwds(workspaces: &mut serde_json::Value, panes: &serde_json:
 
 fn workspace_order_key(state: &WebState, headers: &HeaderMap) -> String {
     session_display_name(session_from_headers(state, headers).as_deref()).to_string()
+}
+
+const MAX_RECENT_WORKSPACES: usize = 20;
+
+fn unix_now_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_secs())
+        .unwrap_or(0)
+}
+
+fn push_recent_workspace(
+    recent: &mut Vec<RecentWorkspace>,
+    path: &str,
+    label: Option<String>,
+    branch: Option<String>,
+    kind: Option<String>,
+) {
+    let path = path.trim().to_string();
+    if path.is_empty() {
+        return;
+    }
+    let trim = |value: Option<String>| {
+        value
+            .map(|raw| raw.trim().to_string())
+            .filter(|trimmed| !trimmed.is_empty())
+    };
+    recent.retain(|item| item.path != path);
+    recent.insert(
+        0,
+        RecentWorkspace {
+            path,
+            label: trim(label),
+            branch: trim(branch),
+            kind: trim(kind),
+            opened_at: Some(unix_now_seconds()),
+        },
+    );
+    recent.truncate(MAX_RECENT_WORKSPACES);
+}
+
+async fn persist_server_settings(state: &WebState) -> io::Result<()> {
+    let snapshot = {
+        let Ok(guard) = state.server_settings.lock() else {
+            return Err(io::Error::other("server settings unavailable"));
+        };
+        guard.clone()
+    };
+    tokio::task::spawn_blocking(move || save_runtime_server_settings(&snapshot))
+        .await
+        .map_err(|err| io::Error::other(err.to_string()))?
+}
+
+async fn record_recent_workspace(
+    state: &WebState,
+    path: &str,
+    label: Option<String>,
+    branch: Option<String>,
+    kind: Option<String>,
+) -> io::Result<()> {
+    {
+        let Ok(mut guard) = state.server_settings.lock() else {
+            return Err(io::Error::other("server settings unavailable"));
+        };
+        push_recent_workspace(&mut guard.recent_workspaces, path, label, branch, kind);
+    }
+    persist_server_settings(state).await
+}
+
+async fn recent_workspaces(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+) -> Response {
+    if let Err(response) = require_auth(&state, &headers, remote) {
+        return response;
+    }
+    let recent = state
+        .server_settings
+        .lock()
+        .map(|settings| settings.recent_workspaces.clone())
+        .unwrap_or_default();
+    Json(json!({ "recent": recent })).into_response()
+}
+
+async fn clear_recent_workspaces(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+) -> Response {
+    if let Err(response) = require_auth(&state, &headers, remote) {
+        return response;
+    }
+    let cleared = {
+        let Ok(mut guard) = state.server_settings.lock() else {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({ "error": "server settings unavailable" })),
+            )
+                .into_response();
+        };
+        let count = guard.recent_workspaces.len();
+        guard.recent_workspaces.clear();
+        count
+    };
+    match persist_server_settings(&state).await {
+        Ok(()) => Json(json!({ "ok": true, "cleared": cleared })).into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": err.to_string() })),
+        )
+            .into_response(),
+    }
 }
 
 fn open_created_worktree_request(
@@ -3327,7 +3485,22 @@ async fn open_worktree(
     }
     let cwd = body.cwd.as_deref().map(expand_user_path_string);
     let path = body.path.as_deref().map(expand_user_path_string);
-    proxy_request_async(
+    let recorded_path = path.as_deref().or(cwd.as_deref()).unwrap_or("").to_string();
+    let recorded_label = body.label.clone();
+    let recorded_branch = body.branch.clone();
+    let record_state = state.clone();
+    let record_kind = "worktree".to_string();
+    let record = tokio::spawn(async move {
+        let _ = record_recent_workspace(
+            &record_state,
+            &recorded_path,
+            recorded_label,
+            recorded_branch,
+            Some(record_kind),
+        )
+        .await;
+    });
+    let response = proxy_request_async(
         api_for_headers(&state, &headers),
         json!({
             "id": "web:worktree:open",
@@ -3342,7 +3515,62 @@ async fn open_worktree(
             },
         }),
     )
-    .await
+    .await;
+    let _ = record.await;
+    response
+}
+
+#[derive(Deserialize)]
+struct OpenRecentWorkspaceRequest {
+    path: Option<String>,
+    label: Option<String>,
+    branch: Option<String>,
+}
+
+async fn open_recent_workspace(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    Json(body): Json<OpenRecentWorkspaceRequest>,
+) -> Response {
+    if let Err(response) = require_auth(&state, &headers, remote) {
+        return response;
+    }
+    let path = body.path.as_deref().map(expand_user_path_string);
+    let cwd = body.path.as_deref().map(expand_user_path_string);
+    let recorded_path = path.clone().unwrap_or_default();
+    let recorded_label = body.label.clone();
+    let recorded_branch = body.branch.clone();
+    let record_state = state.clone();
+    let record_kind = "workspace".to_string();
+    let record = tokio::spawn(async move {
+        let _ = record_recent_workspace(
+            &record_state,
+            &recorded_path,
+            recorded_label,
+            recorded_branch,
+            Some(record_kind),
+        )
+        .await;
+    });
+    let response = proxy_request_async(
+        api_for_headers(&state, &headers),
+        json!({
+            "id": "web:recent-workspace:open",
+            "method": "worktree.open",
+            "params": {
+                "workspace_id": null,
+                "cwd": cwd,
+                "path": path,
+                "branch": null,
+                "label": body.label,
+                "focus": true,
+            },
+        }),
+    )
+    .await;
+    let _ = record.await;
+    response
 }
 
 async fn remove_worktree_path(
@@ -4321,6 +4549,7 @@ mod tests {
                 jcode_detection_variant: JcodeDetectionVariant::default(),
                 log_level: LogLevel::default(),
                 lsp: lsp::LspSettings::default(),
+                recent_workspaces: Vec::new(),
             })),
             no_sleep: Arc::new(Mutex::new(NoSleepState::default())),
             rebind_tx,
@@ -4414,6 +4643,10 @@ mod tests {
         let config = WebConfig::parse(&[]).unwrap();
 
         assert_eq!(config.bind, DEFAULT_BIND.parse::<SocketAddr>().unwrap());
+        assert!(
+            !config.bind_explicit,
+            "no --bind leaves bind_explicit false"
+        );
         assert_eq!(config.session, None);
         assert_eq!(config.api_socket, None);
         assert_eq!(config.client_socket, None);
@@ -4529,6 +4762,7 @@ mod tests {
         let config = WebConfig::parse(&args).unwrap();
 
         assert_eq!(config.bind, "0.0.0.0:9999".parse::<SocketAddr>().unwrap());
+        assert!(config.bind_explicit, "explicit --bind sets bind_explicit");
         assert_eq!(config.session.as_deref(), Some("work"));
         assert_eq!(
             config.api_socket.as_deref(),
@@ -5087,6 +5321,44 @@ mod tests {
     }
 
     #[test]
+    fn explicit_cli_bind_overrides_persisted_bind() {
+        let _guard = lock_env();
+        let config_home = std::env::temp_dir().join(format!(
+            "herdr-webui-explicit-bind-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
+        let path = server_settings_path();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // A saved bind pointing at 8787 must not hijack an explicit --bind 8788.
+        fs::write(&path, r#"{"bind":"127.0.0.1:8787"}"#).unwrap();
+
+        let config = WebConfig::parse(&["--bind", "127.0.0.1:8788"].map(String::from)).unwrap();
+        let mut server_settings = load_runtime_server_settings(config.bind).unwrap();
+        apply_cli_overrides(&mut server_settings, &config);
+
+        assert!(config.bind_explicit);
+        assert_eq!(server_settings.bind, "127.0.0.1:8788".parse().unwrap());
+
+        // Without an explicit flag the persisted bind keeps winning.
+        let implicit = WebConfig::parse(&[]).unwrap();
+        let mut implicit_settings = load_runtime_server_settings(implicit.bind).unwrap();
+        apply_cli_overrides(&mut implicit_settings, &implicit);
+        assert!(!implicit.bind_explicit);
+        assert_eq!(
+            implicit_settings.bind,
+            "127.0.0.1:8787".parse().unwrap(),
+            "persisted bind stays authoritative when --bind is absent"
+        );
+
+        let _ = fs::remove_dir_all(config_home);
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    #[test]
     fn loads_auth_from_runtime_settings() {
         let auth = AuthConfig::from_settings(&RuntimeServerSettings {
             bind: "0.0.0.0:8787".parse().unwrap(),
@@ -5102,6 +5374,7 @@ mod tests {
             jcode_detection_variant: JcodeDetectionVariant::default(),
             log_level: LogLevel::default(),
             lsp: lsp::LspSettings::default(),
+            recent_workspaces: Vec::new(),
         })
         .unwrap();
 
@@ -5127,6 +5400,7 @@ mod tests {
             jcode_detection_variant: JcodeDetectionVariant::default(),
             log_level: LogLevel::default(),
             lsp: lsp::LspSettings::default(),
+            recent_workspaces: Vec::new(),
         }) {
             Ok(_) => panic!("expected public auth config to fail"),
             Err(err) => err,
@@ -6016,6 +6290,358 @@ mod tests {
 
         assert_eq!(response_json(work).await["order"], json!(["w2", "w1"]));
         assert_eq!(response_json(default).await["order"], json!([]));
+    }
+
+    #[tokio::test]
+    async fn push_recent_workspace_dedupes_orders_and_truncates() {
+        let mut recent = Vec::new();
+        push_recent_workspace(
+            &mut recent,
+            "  /repo/a  ",
+            Some(" A ".to_string()),
+            None,
+            Some("workspace".to_string()),
+        );
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].path, "/repo/a");
+        assert_eq!(recent[0].label.as_deref(), Some("A"));
+
+        push_recent_workspace(&mut recent, "/repo/a", None, None, None);
+        assert_eq!(recent.len(), 1, "same path replaces the existing entry");
+        assert_eq!(recent[0].label, None, "replacement clears the label");
+
+        push_recent_workspace(&mut recent, "   ", None, None, None);
+        assert_eq!(recent.len(), 1, "empty and whitespace paths are ignored");
+
+        for index in 0..(MAX_RECENT_WORKSPACES + 5) {
+            push_recent_workspace(&mut recent, &format!("/repo/{index}"), None, None, None);
+        }
+        assert_eq!(recent.len(), MAX_RECENT_WORKSPACES);
+        assert_eq!(
+            recent[0].path,
+            format!("/repo/{}", MAX_RECENT_WORKSPACES + 4)
+        );
+        assert!(recent.iter().all(|item| item.opened_at.is_some()));
+    }
+
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn recent_workspaces_api_requires_auth_and_clears() {
+        let _env = lock_env();
+        let app = test_app();
+
+        let unauthorized = app
+            .clone()
+            .oneshot(
+                request(Method::GET, "/api/recent-workspaces")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+        let open_unauthorized = app
+            .clone()
+            .oneshot(
+                request(Method::POST, "/api/recent-workspaces")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "path": "/repo/x", "label": "X" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(open_unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+        let clear_unauthorized = app
+            .clone()
+            .oneshot(
+                request(Method::POST, "/api/recent-workspaces/clear")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(clear_unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+        {
+            let state = test_state();
+            {
+                let mut guard = state.server_settings.lock().unwrap();
+                push_recent_workspace(
+                    &mut guard.recent_workspaces,
+                    "/repo/x",
+                    Some("X".to_string()),
+                    Some("main".to_string()),
+                    Some("worktree".to_string()),
+                );
+            }
+            let app_with_recent = test_app_with_state(state);
+
+            let listed = app_with_recent
+                .clone()
+                .oneshot(
+                    request(Method::GET, "/api/recent-workspaces")
+                        .header(header::COOKIE, "herdr_web_session=token-123")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(listed.status(), StatusCode::OK);
+            let json = response_json(listed).await;
+            assert_eq!(json["recent"][0]["path"], "/repo/x");
+            assert_eq!(json["recent"][0]["label"], "X");
+            assert_eq!(json["recent"][0]["branch"], "main");
+            assert_eq!(json["recent"][0]["kind"], "worktree");
+
+            let cleared = app_with_recent
+                .oneshot(
+                    request(Method::POST, "/api/recent-workspaces/clear")
+                        .header(header::COOKIE, "herdr_web_session=token-123")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(cleared.status(), StatusCode::OK);
+            assert_eq!(response_json(cleared).await["cleared"], json!(1));
+        }
+    }
+
+    #[tokio::test]
+    async fn runtime_settings_persist_recent_workspaces_round_trip() {
+        let mut settings = default_runtime_server_settings("127.0.0.1:8787".parse().unwrap());
+        push_recent_workspace(
+            &mut settings.recent_workspaces,
+            "/repo/round",
+            Some("Round".to_string()),
+            None,
+            Some("workspace".to_string()),
+        );
+        let serialized = serde_json::to_string(&PersistedServerSettings {
+            bind: Some(settings.bind.to_string()),
+            user: settings.user.clone(),
+            password: settings.password.clone(),
+            localhost_no_auth: Some(settings.localhost_no_auth),
+            no_sleep_auto_cooldown_seconds: Some(settings.no_sleep_auto_cooldown_seconds),
+            backend_mode: Some(settings.backend_mode),
+            builtin_shell: settings.builtin_shell.clone(),
+            default_folder: Some(settings.default_folder.clone()),
+            builtin_backend_enabled: Some(settings.builtin_backend_enabled),
+            external_herdr_backend_enabled: Some(settings.external_herdr_backend_enabled),
+            jcode_detection_variant: Some(settings.jcode_detection_variant.as_str().to_string()),
+            log_level: Some(settings.log_level.clone()),
+            lsp: Some(settings.lsp.clone()),
+            recent_workspaces: Some(settings.recent_workspaces.clone()),
+        })
+        .unwrap();
+        assert!(serialized.contains("\"recent_workspaces\""));
+        let parsed: PersistedServerSettings = serde_json::from_str(&serialized).unwrap();
+        let recent = parsed.recent_workspaces.unwrap();
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].path, "/repo/round");
+        assert_eq!(recent[0].label.as_deref(), Some("Round"));
+    }
+
+    #[cfg(unix)]
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn open_worktree_handler_records_recent_workspace() {
+        let _env = lock_env();
+        let (socket, handle) = fake_api_socket_for_method(
+            "worktree.open",
+            json!({ "id": "web:worktree:open", "result": { "ok": true } }),
+        );
+        let mut state = test_state();
+        state.api_socket = Some(socket.clone());
+        let app = test_app_with_state(state.clone());
+
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/worktrees/open")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "workspace_id": "ws1", "cwd": "/repo", "path": "/repo/wt", "branch": "feature", "label": "  Feature  " }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
+
+        let recent = state
+            .server_settings
+            .lock()
+            .map(|settings| settings.recent_workspaces.clone())
+            .unwrap_or_default();
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].path, "/repo/wt");
+        assert_eq!(recent[0].label.as_deref(), Some("Feature"));
+        assert_eq!(recent[0].branch.as_deref(), Some("feature"));
+        assert_eq!(recent[0].kind.as_deref(), Some("worktree"));
+    }
+
+    #[cfg(unix)]
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn open_recent_workspace_records_and_proxies_open() {
+        let _env = lock_env();
+        let (socket, handle) = fake_api_socket_for_method(
+            "worktree.open",
+            json!({ "id": "web:recent-workspace:open", "result": { "ok": true, "workspace": { "workspace_id": "ws-recent" } } }),
+        );
+        let mut state = test_state();
+        state.api_socket = Some(socket.clone());
+        let app = test_app_with_state(state.clone());
+
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/recent-workspaces")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "path": "/repo/recent", "label": " Recent ", "branch": "main" })
+                            .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
+
+        let recent = state
+            .server_settings
+            .lock()
+            .map(|settings| settings.recent_workspaces.clone())
+            .unwrap_or_default();
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].path, "/repo/recent");
+        assert_eq!(recent[0].label.as_deref(), Some("Recent"));
+        assert_eq!(recent[0].branch.as_deref(), Some("main"));
+        assert_eq!(recent[0].kind.as_deref(), Some("workspace"));
+
+        let body = response_json(response).await;
+        assert_eq!(
+            body["result"]["workspace"]["workspace_id"],
+            json!("ws-recent")
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn recent_workspaces_returns_service_unavailable_when_lock_poisoned() {
+        let state = test_state();
+        // Poison the settings lock so handlers take their degraded arms.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = state.server_settings.lock().unwrap();
+            struct PanicOnDrop;
+            impl Drop for PanicOnDrop {
+                fn drop(&mut self) {
+                    panic!("poisoning settings lock");
+                }
+            }
+            drop(PanicOnDrop);
+        }));
+        let app = test_app_with_state(state);
+
+        let listed = app
+            .clone()
+            .oneshot(
+                authed_request(Method::GET, "/api/recent-workspaces")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // The GET arm returns an empty list when the lock is unavailable.
+        assert_eq!(listed.status(), StatusCode::OK);
+        assert_eq!(
+            response_json(listed).await["recent"]
+                .as_array()
+                .map(Vec::len),
+            Some(0)
+        );
+
+        let cleared = app
+            .oneshot(
+                authed_request(Method::POST, "/api/recent-workspaces/clear")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(cleared.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn clear_recent_workspaces_reports_persist_failure() {
+        let _guard = lock_env();
+        let state = test_state();
+        // Point XDG_CONFIG_HOME at a plain file so saving settings cannot create
+        // the config directory, making persist_server_settings fail.
+        let sentinel = std::env::temp_dir().join(format!(
+            "herdr-webui-clear-persist-file-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::write(&sentinel, "not-a-directory").unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", &sentinel);
+
+        {
+            let mut guard = state.server_settings.lock().unwrap();
+            push_recent_workspace(&mut guard.recent_workspaces, "/repo/x", None, None, None);
+        }
+        let app = test_app_with_state(state);
+
+        let cleared = app
+            .oneshot(
+                authed_request(Method::POST, "/api/recent-workspaces/clear")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(cleared.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(response_json(cleared).await["error"].as_str().is_some());
+
+        std::env::remove_var("XDG_CONFIG_HOME");
+        let _ = fs::remove_file(sentinel);
+    }
+
+    #[tokio::test]
+    async fn record_and_persist_recent_fail_gracefully_when_lock_poisoned() {
+        let state = test_state();
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = state.server_settings.lock().unwrap();
+            struct PanicOnDrop;
+            impl Drop for PanicOnDrop {
+                fn drop(&mut self) {
+                    panic!("poisoning settings lock");
+                }
+            }
+            drop(PanicOnDrop);
+        }));
+
+        let recorded = record_recent_workspace(&state, "/repo/x", None, None, None).await;
+        assert!(
+            recorded.is_err(),
+            "recording must fail when the lock is poisoned"
+        );
+
+        let persisted = persist_server_settings(&state).await;
+        assert!(
+            persisted.is_err(),
+            "persisting must fail when the lock is poisoned"
+        );
     }
 
     #[tokio::test]
@@ -7506,6 +8132,7 @@ mod tests {
     // ── close_session builtin backend path ──
 
     #[cfg(unix)]
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn close_session_builtin_backend_uses_builtin_socket_namespace() {
         use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
@@ -7989,6 +8616,7 @@ mod tests {
 
     // ── server_settings handler POST with successful save (spawn_blocking path) ──
 
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn update_server_settings_saves_and_returns_updated_settings() {
         let _guard = lock_env();
@@ -8068,6 +8696,7 @@ mod tests {
 
     // ── launch_session with builtin backend ──
 
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn launch_session_builtin_backend_starts_session() {
         let _guard = lock_env();
@@ -9258,6 +9887,7 @@ mod tests {
     // so bind_local_listener fails.
 
     #[cfg(unix)]
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn launch_session_builtin_returns_error_on_socket_bind_failure() {
         let _guard = lock_env();
@@ -9323,6 +9953,7 @@ mod tests {
     // (parent dir is a regular file, not a directory).
 
     #[cfg(unix)]
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn update_server_settings_returns_error_on_save_failure() {
         let _guard = lock_env();
@@ -9420,6 +10051,7 @@ mod tests {
         (status, response_json(response).await)
     }
 
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn lsp_config_api_reports_and_updates_settings() {
         let _guard = lock_env();
@@ -9985,6 +10617,7 @@ mod tui_parity_e2e_tests {
                 jcode_detection_variant: JcodeDetectionVariant::default(),
                 log_level: LogLevel::default(),
                 lsp: lsp::LspSettings::default(),
+                recent_workspaces: Vec::new(),
             })),
             no_sleep: Arc::new(Mutex::new(NoSleepState::default())),
             rebind_tx,

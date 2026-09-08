@@ -110,6 +110,19 @@
   display: inline-flex;
   gap: 6px;
 }
+.search-section-head-toggle {
+  align-items: center;
+  color: var(--fg);
+  display: flex;
+  font-size: 12px;
+  gap: 6px;
+  justify-content: space-between;
+  padding: 0;
+}
+.search-section-head-toggle span {
+  color: var(--muted);
+  font-size: 11px;
+}
 .search-section-head span {
   color: var(--muted);
   font-size: 11px;

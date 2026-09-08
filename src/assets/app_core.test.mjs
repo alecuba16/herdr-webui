@@ -202,9 +202,9 @@ describe("Git log rendering", () => {
 
     assert.match(html, new RegExp(`title="${longLabel}"`));
     assert.match(html, /class="git-ui-log-hover-card"/);
-    assert.ok(html.includes(`HerdrGitUi.copyCommitId('${hash}')`));
-    assert.match(html, /Copy id/);
-    assert.match(html, new RegExp(`aria-label="Copy full commit id ${hash}"`));
+    assert.ok(html.includes(`HerdrGitUi.copyScopeValue(event,'${encodeURIComponent(hash)}','Commit id')`));
+    assert.match(html, /Copy commit id/);
+    assert.ok(html.includes(`<strong>${hash}</strong>`), "hover card still shows the full hash");
   });
 
   it("uses the backend-provided lane instead of recomputing it from the graph (C6)", () => {

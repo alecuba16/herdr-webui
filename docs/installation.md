@@ -246,6 +246,8 @@ Server access settings are stored in `~/.config/herdr-webui/webui-settings.json`
 
 Non-localhost binds require both username and password. WebUI rejects `0.0.0.0` or any other non-loopback bind until both credentials are configured.
 
+An explicit `--bind HOST:PORT` on the command line wins over the bind saved in `webui-settings.json`; without the flag, the saved bind stays authoritative. This keeps preview instances on their own port from being silently redirected to the saved port.
+
 ## Sessions
 
 By default, fresh WebUI settings target the built-in backend default session. External Herdr sessions remain available from the session manager or by starting WebUI with `--backend-mode external-herdr`.

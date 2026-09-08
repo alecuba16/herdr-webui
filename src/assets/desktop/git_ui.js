@@ -6,13 +6,16 @@
     visible: false,
     renderVersion: 0,
     contextMenu: null,
+    logContextMenu: null,
     branchModal: null,
+    worktreeList: null,
     gitOpModal: null,
     commitModal: null,
     compareSelectedModal: null,
     resetSelectedModal: null,
     tagSelectedModal: null,
     gitToast: null,
+    scopeCopyToast: null,
     cleanupConfirm: null,
     sideScrollTop: 0,
     shortcutPrefixUntil: 0,
@@ -42,19 +45,20 @@
     help: "Digit0",
   };
 
-  document.addEventListener("click", () => {
-    const hadMenu = !!(state.contextMenu || state.headerMenu);
+  document.addEventListener("click", (event) => {
+    let hadMenu = !!(state.contextMenu || state.logContextMenu || state.headerMenu || state.branchList || state.worktreeList);
     state.contextMenu = null;
+    state.logContextMenu = null;
     state.headerMenu = null;
-    if (state.branchList && !eventInsideBranchList(event)) {
+    if ((state.branchList || state.worktreeList) && !eventInsideBranchList(event)) {
       state.branchList = null;
-      state.branchList.filter = "";
+      state.worktreeList = null;
       hadMenu = true;
     }
     if (hadMenu && state.visible) render();
   });
   function eventInsideBranchList(event) {
-    const target = event && event.target;
+    let target = event && event.target;
     while (target && target.classList) {
       if (target.classList.contains("git-ui-branch-list") || target.classList.contains("git-ui-branch-chip")) return true;
       target = target.parentNode;
@@ -89,14 +93,20 @@
     }
     if (event.key !== "Escape") return;
     event.preventDefault();
-    if (state.contextMenu || state.headerMenu) {
+    if (state.contextMenu || state.logContextMenu || state.headerMenu) {
       state.contextMenu = null;
+      state.logContextMenu = null;
       state.headerMenu = null;
       render();
       return;
     }
     if (state.branchList) {
       state.branchList = null;
+      render();
+      return;
+    }
+    if (state.worktreeList) {
+      state.worktreeList = null;
       render();
       return;
     }
@@ -362,6 +372,11 @@
     return String(gitUiOptions().gitUiDefaultBranch || "master").trim() || "master";
   }
 
+  function gitRemoteBranchPreload() {
+    const value = Number(gitUiOptions().gitUiRemoteBranchPreload);
+    return Number.isFinite(value) ? Math.max(1, Math.min(100, value)) : 10;
+  }
+
   function normalizeLogScope(scope) {
     return ["all", "base-current", "base"].includes(scope) ? scope : "all";
   }
@@ -444,7 +459,6 @@
   }
 
   const Syntax = window.HerdrGitSyntax;
-  const Actions = window.HerdrGitActions;
   const FileTree = window.HerdrFileTree;
 
   function highlight(code, path) {
@@ -1112,6 +1126,17 @@
     if (menu.kind === "S") actions.push(`<button onclick="HerdrGitUi.menuAction('unstage')">Unstage file</button>`);
     return `<div class="git-ui-menu" style="left:${Math.max(0, menu.x)}px;top:${Math.max(0, menu.y)}px" onclick="event.stopPropagation()">${actions.join("")}</div>`;
   }
+
+  function renderLogContextMenu() {
+    const menu = state.logContextMenu;
+    if (!menu) return "";
+    const view = active();
+    const selected = (view && view.selectedLogCommits) || [];
+    const hasSelection = selected.length > 0;
+    const mutable = currentMode() === "changes";
+    const item = (label, handler, disabled) => `<button${disabled ? " disabled" : ""} onclick="HerdrGitUi.${handler}">${label}</button>`;
+    return `<div class="git-ui-menu git-ui-log-context-menu" style="left:${Math.max(0, menu.x)}px;top:${Math.max(0, menu.y)}px" onclick="event.stopPropagation()">${item("Compare", "compareSelectedLog()", !hasSelection)}${item("Tag", "openSelectedTagModal()", !hasSelection)}${item("Worktree", "createWorktreeFromSelectedBranch()", !view || !view.selectedLogBranch)}${item("Reset", "openSelectedResetModal()", !hasSelection || !mutable)}${item("Rebase", "rebaseAfterSelected()", !hasSelection)}${item("Clear selection", "clearLogSelection()", !hasSelection)}</div>`;
+  }
   function normalizeRemoteUrl(raw) {
     let value = String(raw || "").trim();
     if (!value) return "";
@@ -1208,6 +1233,35 @@
         if (state.visible) render();
       }
     }, 3500);
+  }
+
+  function renderScopeCopyToast() {
+    const toast = state.scopeCopyToast;
+    if (!toast) return "";
+    return `<div class="git-ui-scope-copy-toast" role="status" style="left:${Math.max(8, toast.x)}px;top:${Math.max(8, toast.y)}px">${esc(toast.message)}</div>`;
+  }
+
+  async function copyScopeValue(event, value, kind) {
+    if (event) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+    const text = decodeURIComponent(String(value || ""));
+    if (!text) return;
+    await navigator.clipboard.writeText(text);
+    const id = Date.now();
+    state.scopeCopyToast = { id, x: Number(event && event.clientX) || 16, y: Number(event && event.clientY) || 16, message: `${kind} copied` };
+    const panel = ensurePanel();
+    const existing = panel.querySelector(".git-ui-scope-copy-toast");
+    if (existing) existing.remove();
+    panel.insertAdjacentHTML("beforeend", renderScopeCopyToast());
+    setTimeout(() => {
+      if (state.scopeCopyToast && state.scopeCopyToast.id === id) {
+        state.scopeCopyToast = null;
+        const current = panel.querySelector(".git-ui-scope-copy-toast");
+        if (current) current.remove();
+      }
+    }, 1800);
   }
 
   function renderCommitModal() {
@@ -1538,9 +1592,6 @@
     const ahead = Number(s.ahead) || 0;
     const behind = Number(s.behind) || 0;
     const upstream = String(s.upstream || "").trim();
-    const chip = branch
-      ? `<button class="git-ui-branch-chip" title="${esc(titleWithGitShortcut("Switch branch", "branch"))}" onclick="HerdrGitUi.openBranchList(event)"><span class="git-ui-branch-chip-name">${esc(branch)}</span><b class="git-ui-chip-caret">▾</b></button>`
-      : "";
     // Status label mirrors the sync state: incoming → Pull ↓N, outgoing →
     // Push ↑N, otherwise plain Fetch with no arrows or counts.
     let statusMethod = "fetchOrigin";
@@ -1558,7 +1609,31 @@
     const menuOpen = state.headerMenu ? "true" : "false";
     const statusButton = `<button class="git-ui-btn git-ui-status-label" data-method="${esc(statusMethod)}" title="${esc(statusHint)}" onclick="HerdrGitUi.runStatusAction()">${esc(statusLabel)}</button>`;
     const statusCaret = `<button class="git-ui-btn git-ui-status-caret" title="Pull, fetch and push options" aria-haspopup="menu" aria-expanded="${menuOpen}" onclick="HerdrGitUi.toggleHeaderMenu(event)"><b class="git-ui-chip-caret">▾</b></button>`;
-    return `<div class="git-ui-toolbar git-ui-worktree-row"><div class="git-ui-actions git-ui-worktree-left"><button class="git-ui-btn primary" title="${esc(commitHint)}" onclick="HerdrGitUi.openCommitModal()"${commitDisabled}>Commit</button>${chip}</div><div class="git-ui-actions git-ui-worktree-right">${statusButton}${statusCaret}</div></div>`;
+    return `<div class="git-ui-toolbar git-ui-worktree-row"><div class="git-ui-actions git-ui-worktree-left"><button class="git-ui-btn primary" title="${esc(commitHint)}" onclick="HerdrGitUi.openCommitModal()"${commitDisabled}>Commit</button></div><div class="git-ui-actions git-ui-worktree-right">${statusButton}${statusCaret}</div></div>${renderWorktreeList()}`;
+  }
+
+  function renderGitLocationSelector(ctx) {
+    const s = ctx.s || {};
+    const esc = ctx.esc;
+    const worktreeName = String(ctx.worktreeName || pathBasename(ctx.cwd || "") || "worktree");
+    const branch = String(s.branch || "");
+    const worktreeChip = `<button class="git-ui-branch-chip git-ui-worktree-chip" title="Choose worktree" onclick="HerdrGitUi.openWorktreeList(event)"><span class="git-ui-branch-chip-name">${esc(worktreeName)}</span><b class="git-ui-chip-caret">▾</b></button>`;
+    const branchChip = branch ? `<button class="git-ui-branch-chip" title="${esc(titleWithGitShortcut("Switch branch", "branch"))}" onclick="HerdrGitUi.openBranchList(event)"><span class="git-ui-branch-chip-name">${esc(branch)}</span><b class="git-ui-chip-caret">▾</b></button>` : "";
+    const folderDiffers = ctx.workspaceCwd && !samePath(ctx.cwd, ctx.workspaceCwd);
+    const pathNotice = folderDiffers ? `<span class="git-ui-folder-different" title="Git is operating in a different folder than the current workspace: ${esc(ctx.cwd)}">${esc(compactPath(ctx.cwd))}</span><button class="git-ui-btn git-ui-return-cwd" title="Return Git to the current workspace folder" onclick="HerdrGitUi.returnToWorkspaceCwd()">↩</button>` : "";
+    return `${worktreeChip}<span class="git-ui-selector-separator">/</span>${branchChip}${pathNotice}`;
+  }
+
+  function renderWorktreeList() {
+    const list = state.worktreeList;
+    if (!list) return "";
+    if (list.loading) return `<div class="git-ui-branch-list git-ui-worktree-list" onclick="event.stopPropagation()"><div class="git-ui-loading"><span></span><strong>Loading worktrees</strong></div></div>`;
+    if (list.error) return `<div class="git-ui-branch-list git-ui-worktree-list" onclick="event.stopPropagation()"><div class="git-ui-error">${esc(list.error)}</div></div>`;
+    const rows = (list.worktrees || []).map((wt) => {
+      const current = samePath(wt.path, list.currentPath);
+      return `<button class="git-ui-worktree-option${current ? " current" : ""}" onclick="HerdrGitUi.selectWorktree('${arg(wt.path)}')"><strong>${current ? `<b class="git-ui-worktree-check" title="Current worktree">✓</b>` : ""}${esc(wt.label || pathBasename(wt.path))}</strong><small>${esc(wt.branch || "detached")} · ${esc(wt.path)}</small></button>`;
+    }).join("");
+    return `<div class="git-ui-branch-list git-ui-worktree-list" onclick="event.stopPropagation()">${rows || `<div class="git-ui-muted git-ui-branch-list-empty">No worktrees detected</div>`}<button class="git-ui-worktree-create" onclick="HerdrGitUi.createWorktreeFromSelector()">＋ Create worktree</button></div>`;
   }
 
   // Dropdown next to the status button, exactly seven items: Fetch /
@@ -1629,12 +1704,33 @@
     const localAll = (list.local || []).filter(matches);
     const currentRows = localAll.filter((branch) => !branch.remote && branch.name === currentBranch);
     const local = currentRows.concat(localAll.filter((branch) => !currentRows.includes(branch)));
-    const remote = (list.remote || []).filter(matches);
+    const remoteAll = (list.remote || []).filter(matches);
+    const preferred = (branch) => {
+      const name = String(branch.name || "").replace(/^origin\//, "");
+      if (name === "main" || name === "master" || name === currentBranch) return 0;
+      if (name.startsWith(`${currentBranch}/`) || currentBranch.startsWith(`${name}/`)) return 1;
+      return 2;
+    };
+    const remoteOrdered = remoteAll.slice().sort((left, right) => preferred(left) - preferred(right));
+    const remote = list.remoteLoaded ? remoteAll : remoteOrdered.slice(0, gitRemoteBranchPreload());
     const rows = (branches, label) => !branches.length ? "" : `<div class="git-ui-branch-list-section">${label}</div>${branches.map((branch) => branchListRow(branch, currentBranch)).join("")}`;
     const empty = !local.length && !remote.length ? `<div class="git-ui-muted git-ui-branch-list-empty">No branches match</div>` : "";
     // Filter input lives at the bottom, below the scrollable rows, so the
     // list reads top-down like Zed's branch popover.
-    return `<div class="git-ui-branch-list" onclick="event.stopPropagation()"><div class="git-ui-branch-list-scroll">${rows(local, "Local branches")}${rows(remote, "Remote branches")}${empty}</div><label class="git-ui-branch-list-filter"><span>Filter</span><input value="${esc(list.filter || "")}" placeholder="Type to filter" oninput="HerdrGitUi.branchListFilter(this.value)"></label></div>`;
+    const loadingRemote = list.remoteLoading ? `<div class="git-ui-branch-loading">Loading remote branches…</div>` : "";
+    const loadMore = !list.remoteLoading && !list.remoteLoaded && remoteAll.length > remote.length
+      ? `<button class="git-ui-branch-load-more" onclick="HerdrGitUi.loadMoreBranches()">Load more branches (${remoteAll.length - remote.length} more)</button>`
+      : "";
+    return `<div class="git-ui-branch-list" onclick="event.stopPropagation()"><div class="git-ui-branch-list-scroll">${rows(local, "Local branches")}${rows(remote, "Remote branches")}${loadingRemote}${loadMore}${empty}</div><label class="git-ui-branch-list-filter"><span>Filter</span><input value="${esc(list.filter || "")}" placeholder="Type to filter" oninput="HerdrGitUi.branchListFilter(this.value)"></label></div>`;
+  }
+
+  function refocusBranchFilter(value) {
+    requestAnimationFrame(() => {
+      const input = document.querySelector(".git-ui-branch-list-filter input");
+      if (!input) return;
+      input.focus();
+      try { input.setSelectionRange(String(value || "").length, String(value || "").length); } catch (_) {}
+    });
   }
 
   function renderSide() {
@@ -1661,7 +1757,7 @@
     const commitDisabled = canCommit ? "" : " disabled";
     const branchLabel = `${view.titleKind || "Branch"}: ${s.branch || view.title || "No branch"}`;
     const error = view.error && !cleanupOnly ? `<div class="git-ui-error">${esc(view.error)}</div>` : "";
-    const actions = cleanupOnly ? "" : renderWorktreeActions({ s, esc, commitHint, commitDisabled });
+    const actions = cleanupOnly ? "" : renderWorktreeActions({ s, esc, commitHint, commitDisabled, cwd: view.cwd, workspaceCwd: view.workspaceCwd, worktreeName: view.title });
     const filterInput = sideFileCount(view)
       ? `<label class="git-ui-file-filter"><span class="git-ui-file-filter-icon" aria-hidden="true"></span><input value="${esc(view.fileFilter || "")}" id="gitUiFileFilter" name="git-ui-file-filter" autocomplete="off" placeholder="Filter files" oninput="HerdrGitUi.filterFiles(this.value)"></label>`
       : "";
@@ -1675,13 +1771,16 @@
       : "";
     const refreshButton = appRefreshIconButton({ className: "git-ui-refresh-icon", title: titleWithGitShortcut("Refresh", "refresh"), label: titleWithGitShortcut("Refresh Git state", "refresh"), spinning: !!view.refreshAnimating, onclick: "HerdrGitUi.refreshWithSpin()" });
     const busy = view.mutating ? `<span class="git-ui-busy"><span class="git-ui-busy-spinner"></span>${esc(view.mutatingLabel || "Working...")}</span>` : "";
-    return `<aside class="git-ui-side" onscroll="HerdrGitUi.sideScroll(this)"><div class="git-ui-head"><div class="git-ui-head-main"><div class="git-ui-title-row"><div class="git-ui-title">Git</div><div class="git-ui-title-actions">${busy}${returnToCurrentChanges}${returnToWorkspace}${refreshButton}</div></div><div class="git-ui-subtitle">${esc(s.state || "closed")} · ${esc(compactPath(s.repo_path))}</div></div></div>${error}<div class="git-ui-toolbar git-ui-view-toolbar">${renderGitViewTabs(tabs, view.tab)}</div>${actions}${fileList}${sideBottom}</aside>`;
+    const statusIcon = `<span class="git-ui-status-icon git-ui-status-${esc(String(s.state || "closed").replace(/[^a-z0-9_-]/gi, "-"))}" title="${esc(s.state || "closed")}" aria-label="${esc(s.state || "closed")}"></span>`;
+    const location = cleanupOnly ? "" : renderGitLocationSelector({ s, esc, cwd: view.cwd, workspaceCwd: view.workspaceCwd, worktreeName: view.title });
+    return `<aside class="git-ui-side" onscroll="HerdrGitUi.sideScroll(this)"><div class="git-ui-head"><div class="git-ui-head-main"><div class="git-ui-title-row"><div class="git-ui-title">Git ${statusIcon}</div><div class="git-ui-title-actions">${busy}${returnToCurrentChanges}${returnToWorkspace}${refreshButton}</div></div><div class="git-ui-subtitle">${location}</div></div></div>${error}<div class="git-ui-toolbar git-ui-view-toolbar">${renderGitViewTabs(tabs, view.tab)}</div>${actions}${fileList}${sideBottom}</aside>`;
   }
 
   function renderDiffLayoutSideToggle(view) {
     const layout = diffLayoutMode();
     const label = view && view.file ? "File view" : "Diff view";
-    return `<div class="git-ui-side-bottom"><div class="git-ui-toolbar-title">${label}</div><div class="git-ui-view-toggle-group git-ui-diff-layout-toggle" role="group" aria-label="Diff layout"><button class="git-ui-view-toggle ${layout === "side-by-side" ? "active" : ""}" title="Show side-by-side diff" onclick="HerdrGitUi.setDiffLayout('side-by-side')">Side</button><button class="git-ui-view-toggle ${layout === "unified" ? "active" : ""}" title="Show unified diff" onclick="HerdrGitUi.setDiffLayout('unified')">Unified</button></div></div>`;
+    const cwd = String((view && view.cwd) || "");
+    return `<div class="git-ui-side-bottom"><div class="git-ui-path-title" title="${esc(cwd)}">${esc(compactPath(cwd))}</div><div class="git-ui-toolbar-title">${esc(label)}</div><div class="git-ui-view-toggle-group git-ui-diff-layout-toggle" role="group" aria-label="Diff layout"><button class="git-ui-view-toggle ${layout === "side-by-side" ? "active" : ""}" title="Show side-by-side diff" onclick="HerdrGitUi.setDiffLayout('side-by-side')">Side</button><button class="git-ui-view-toggle ${layout === "unified" ? "active" : ""}" title="Show unified diff" onclick="HerdrGitUi.setDiffLayout('unified')">Unified</button></div></div>`;
   }
 
   function filterFiles(files, filter) {
@@ -2342,7 +2441,6 @@
       ? window.HerdrGitLog.selectedBranchForHash(data, selected[0], baseBranch)
       : "";
     view.selectedLogBranch = selectedBranch;
-    const compare = Actions.selectedLogToolbar(selected, { allowRewrite: currentMode() === "changes", selectedBranch });
     replaceContent(version, window.HerdrGitLog.render({
       data,
       selected,
@@ -2352,7 +2450,7 @@
       logLoadingMore: !!view.logLoadingMore,
       baseBranch,
       filePath: view.logFilePath || "",
-      actionsHtml: compare,
+      actionsHtml: "",
       filters: view.logFilters || {},
       esc,
       arg,
@@ -2690,7 +2788,7 @@
     const version = ++state.renderVersion;
     const panel = ensurePanel();
     panel.classList.toggle("mutating", !!activeView.mutating);
-    panel.innerHTML = renderSide() + renderMain() + renderContextMenu() + renderHeaderMenu() + renderBranchList() + renderCommitModal() + renderCompareSelectedModal() + renderResetSelectedModal() + renderTagSelectedModal() + renderBranchModal() + renderGitOpModal() + renderCleanupConfirm() + renderGitToast();
+    panel.innerHTML = renderSide() + renderMain() + renderContextMenu() + renderLogContextMenu() + renderHeaderMenu() + renderBranchList() + renderCommitModal() + renderCompareSelectedModal() + renderResetSelectedModal() + renderTagSelectedModal() + renderBranchModal() + renderGitOpModal() + renderCleanupConfirm() + renderGitToast() + renderScopeCopyToast();
     const side = panel.querySelector(".git-ui-side");
     if (side) side.scrollTop = state.sideScrollTop || 0;
     const nextContent = panel.querySelector(".git-ui-content");
@@ -3089,6 +3187,15 @@
     async copyCommitId(hash) {
       try {
         await copyCommitId(decodeURIComponent(hash || ""));
+      } catch (err) {
+        const view = active();
+        if (view) view.error = err.message || String(err);
+        render();
+      }
+    },
+    async copyScopeValue(event, value, kind) {
+      try {
+        await copyScopeValue(event, value, kind);
       } catch (err) {
         const view = active();
         if (view) view.error = err.message || String(err);
@@ -3691,17 +3798,50 @@
         return;
       }
       const currentBranch = ((view.status || {}).branch) || "";
-      state.branchList = { loading: true, error: "", local: [], remote: [], filter: "", currentBranch };
+      state.branchList = { loading: true, error: "", local: [], remote: [], filter: "", currentBranch, remoteLoaded: false };
       render();
       try {
         const data = await api(`/api/git-ui/branches?cwd=${encodeURIComponent(view.cwd)}`);
         if (!state.branchList) return; // closed while loading
-        state.branchList = { loading: false, error: "", local: data.local || [], remote: data.remote || [], filter: state.branchList.filter || "", currentBranch };
+        state.branchList = { loading: false, error: "", local: data.local || [], remote: data.remote || [], filter: state.branchList.filter || "", currentBranch, remoteLoaded: false };
       } catch (err) {
         if (!state.branchList) return;
-        state.branchList = { loading: false, error: err.message || String(err), local: [], remote: [], filter: state.branchList.filter || "", currentBranch };
+        state.branchList = { loading: false, error: err.message || String(err), local: [], remote: [], filter: state.branchList.filter || "", currentBranch, remoteLoaded: false };
       }
       render();
+    },
+    async openWorktreeList(event) {
+      const view = active();
+      if (!view) return;
+      if (event && event.stopPropagation) event.stopPropagation();
+      if (state.worktreeList) { state.worktreeList = null; render(); return; }
+      state.worktreeList = { loading: true, error: "", worktrees: [], currentPath: view.cwd };
+      render();
+      try {
+        const data = await api(`/api/worktrees?cwd=${encodeURIComponent(view.workspaceCwd || view.cwd)}`);
+        const result = data.result || data;
+        state.worktreeList = { loading: false, error: "", worktrees: result.worktrees || [], currentPath: view.cwd };
+      } catch (err) {
+        state.worktreeList = { loading: false, error: err.message || String(err), worktrees: [] };
+      }
+      render();
+    },
+    selectWorktree(encodedPath) {
+      const view = active();
+      const path = decodeURIComponent(encodedPath || "");
+      if (!view || !path || samePath(path, view.cwd)) return;
+      if (!window.confirm(`Switch Git to worktree folder "${path}"?`)) return;
+      state.worktreeList = null;
+      resetGitViewForCwd(view, path);
+      render();
+      refresh();
+    },
+    createWorktreeFromSelector() {
+      const view = active();
+      state.worktreeList = null;
+      render();
+      if (view && typeof openWorktreeCreateFromGitBranch === "function") openWorktreeCreateFromGitBranch(view.cwd, ((view.status || {}).branch || ""));
+      else if (typeof openWorktreeOpenModal === "function") openWorktreeOpenModal(view && view.cwd, true);
     },
     closeBranchList() {
       if (!state.branchList) return;
@@ -3711,6 +3851,28 @@
     branchListFilter(value) {
       if (!state.branchList) return;
       state.branchList.filter = String(value || "");
+      if (state.branchList.filter.trim()) {
+        state.branchList.remoteLoaded = true;
+        state.branchList.remoteLoading = true;
+        const requestId = Date.now();
+        state.branchList.remoteRequestId = requestId;
+        render();
+        refocusBranchFilter(state.branchList.filter);
+        api(`/api/git-ui/branches?cwd=${encodeURIComponent((active() || {}).cwd || "")}`).then((data) => {
+          if (!state.branchList || state.branchList.remoteRequestId !== requestId) return;
+          const existing = new Map((state.branchList.remote || []).map((branch) => [branch.name, branch]));
+          (data.remote || []).forEach((branch) => existing.set(branch.name, branch));
+          state.branchList.remote = [...existing.values()];
+        }).catch(() => {}).finally(() => {
+          if (state.branchList && state.branchList.remoteRequestId === requestId) {
+            state.branchList.remoteLoading = false;
+            render();
+            refocusBranchFilter(state.branchList.filter);
+          }
+        });
+        return;
+      }
+      state.branchList.remoteLoading = false;
       // Re-render only the list, not the whole panel: the filter input
       // would lose focus otherwise.
       const panel = document.getElementById("gitUiPanel");
@@ -3727,6 +3889,11 @@
         try { input.setSelectionRange(String(value || "").length, String(value || "").length); } catch (_) {}
       }
     },
+    loadMoreBranches() {
+      if (!state.branchList) return;
+      state.branchList.remoteLoaded = true;
+      render();
+    },
     async switchFromBranchList(encodedName, isRemote) {
       const name = decodeURIComponent(String(encodedName || ""));
       const view = active();
@@ -3737,6 +3904,7 @@
       if (!localName) return;
       const currentBranch = ((view.status || {}).branch) || "";
       if (localName === currentBranch) return;
+      if (!window.confirm(`Switch Git to branch "${name}"?`)) return;
       await postJson("/api/git-ui/switch", { cwd: view.cwd, branch: localName }, `Switching to ${name}`);
     },
     // Trash icon in a branch-list row: deletes the branch through the same
@@ -4001,11 +4169,31 @@
       else view.selectedCommitPreview = null;
       render();
     },
+    openLogContextMenu(event, hash) {
+      if (event) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+      const view = active();
+      hash = decodeURIComponent(hash || "");
+      if (!view || !hash) return false;
+      view.selectedLogCommits = [hash];
+      view.selectedCommitPreview = null;
+      state.contextMenu = null;
+      state.headerMenu = null;
+      state.logContextMenu = {
+        x: Number(event && event.clientX) || 0,
+        y: Number(event && event.clientY) || 0,
+      };
+      render();
+      return false;
+    },
     clearLogSelection() {
       const view = active();
       if (!view) return;
       view.selectedLogCommits = [];
       view.selectedCommitPreview = null;
+      state.logContextMenu = null;
       render();
     },
     compareSelectedLog() {

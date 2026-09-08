@@ -144,11 +144,15 @@ File browser:
 
 Git UI:
 
+- The Git header has a two-level selector, `worktree / branch`. The worktree selector lists the main worktree and linked worktrees detected for the current repository, and offers a shortcut to create a worktree. Selecting a worktree moves Git operations to that checkout without changing the current workspace. The branch selector switches branches within the selected folder.
+- Settings → Git UI includes `Git remote branches to preload`, defaulting to 10. The initial remote list is capped to this value for faster rendering; filtering or loading more reveals the complete remote list.
+- If Git is operating in a folder different from the current workspace/worktree, the active path is highlighted with a yellow background. Hover it to see the full path, and use the return button beside it to move Git back to the current workspace folder. This changes only the Git panel folder.
+
 - Desktop has an embedded Git drawer backed by Rust API routes and the system `git` CLI; no Node/React/Vite runtime is needed. Mobile has read-only grouped Git status.
 - The drawer blanks hidden DOM to reduce browser work and owns keyboard input while visible so terminal keystrokes do not leak through.
 - Core views cover status, commit, commit & push, pull, push/force-push, log, stash, cleanup, file history, conflicts, blame, hunk editing, side-by-side diffs, branch switching, and worktree actions.
 - The Git directory picker has a single meaning: selecting a folder makes that folder the Git drawer cwd and refreshes the Git views. Branch checkout is separate and only runs when pressing `Switch branch` in the branch modal.
-- If the Git drawer cwd differs from the currently selected workspace/worktree folder, a `↩` button appears beside Refresh. It returns the Git drawer to the current workspace/worktree folder, clears stale file/diff state, and refreshes.
+- If the Git drawer cwd differs from the currently selected workspace/worktree folder, a yellow path badge and `↩` button appear beside the worktree/branch selector. It returns the Git drawer to the current workspace/worktree folder, clears stale file/diff state, and refreshes.
 - File lists are collapsible trees with optional filename-only mode, line counts, filtering, yellow match highlighting, and stable scroll while filtering/expanding. The file filter sits below the Git action toolbar so the exclusive view selector and actions stay visually grouped. Right-click and section actions support stage/unstage/discard/stash with confirmations.
 - Changes, log, stash, and cleanup use a segmented exclusive toggle like the workspace shell-mode controls because only one Git view is shown at a time.
 - Cleanup scans `Exploration default directory` or a chosen root for Git repositories, does not follow symlinked directories, caps traversal, and reports truncation. Results render as a nested repo list (`repo -> branches/worktrees -> items`) with checkbox multi-select, one confirmation modal, and the shared broom cleanup icon.
@@ -161,9 +165,9 @@ Git UI:
 - Status and conflict endpoints collect non-fatal Git warnings instead of silently dropping errors, returning a `warnings` array so the UI can surface partial failures.
 - Git log returns structured commit data (`hash`, `author`, relative date, exact commit date, refs, title, graph lane) alongside graph lines, with null-byte separators handled server-side so desktop graph rendering stays clean.
 - The desktop Git log uses a Zed-inspired four-column layout: graph, description, date, and author. Ref labels render as chips in the description column, the configured default branch (`master` by default) is colored blue, the current branch/HEAD is colored red, and other branches use lane colors from the graph.
-- Log rows show a hover card with branch/tag labels, full commit hash/title, exact commit date/time, and author. Description, date, and author filters narrow the rendered rows locally without re-fetching; the graph column is not filterable so lane context stays stable.
-- The scope row, table header, and filter row are sticky while scrolling.
-- Selected commits show one compact action strip: `Compare`, `Tag`, `Worktree…`, `Reset`, `Rebase…`, and `Clear`. `Worktree…` opens the normal worktree creation modal prefilled from the selected branch and asks for confirmation before creating/opening it.
+- Log rows show a hover card with branch/tag labels, full commit hash/title, exact commit date/time, and author. The card stays open while the cursor moves onto it, and offers one-click copy buttons for the commit hash, commit message, and each ref label, confirmed by a cursor-anchored toast. Description, date, and author filters narrow the rendered rows locally without re-fetching; the graph column is not filterable so lane context stays stable.
+- The scope row, table header, and filter row are sticky while scrolling. The filter row carries the history scope control (`Scope: Master + Branch / All / Branch`) on the left.
+- Selected-commit actions live in a right-click context menu on log rows: `Compare`, `Tag`, `Worktree…`, `Reset`, `Rebase…`, and `Clear selection`. `Worktree…` opens the normal worktree creation modal prefilled from the selected branch and asks for confirmation before creating/opening it.
 - The log starts with a bounded history page and shows a bottom `Load more changes` button when more commits are available. Each click increases the requested commit limit, keeps selected commits/filter state, and fetches another page from `/api/git-ui/log`. File browser `Show history` opens this log scoped to the selected file using Git path filtering.
 - Pull, push, force-push, and rebase actions use modal flows with branch selectors. Rebase can pull the selected branch first, and commit view can commit then push with a force-push retry modal on rejection. The Git refresh action is a theme-aware spinning icon beside the Git title. File view includes an inline Unified/Side-by-side toggle, and unified diffs use the same intra-line word highlighting as side-by-side diffs.
 - Conflicts expose `Use HEAD`, `Use parent`, `Use remote`, and `Mark resolved` per file in both the Conflicts view and conflicted file headers in unified or side-by-side Changes diffs. The hunk editor also detects conflict marker blocks and shows per-block `Use HEAD`, `Use parent`, and `Use remote` controls when editing conflicted file content, plus rebase continue, skip, and abort controls when resolving a rebase.
@@ -246,6 +250,7 @@ Search palette:
 - Open search from the top-right `⌕` button or with the keyboard prefix then `/`.
 - Search is local and in-memory over currently loaded workspaces, repos, worktrees, labels, panels, and agents.
 - Results include workspace (`ws`), worktree (`wt`), panel (`pn`), and agent (`ag`) entries.
+- The `Recent workspaces` section lists the 8 most recently opened workspaces and worktrees, server-persisted in `webui-settings.json` (max 20 entries, pruned of duplicates). `Clear` empties the list server-side. Opening a workspace or worktree records it automatically, with a 10s client cache to keep palette opens fast.
 - Use `Enter` to open the selected result, arrow keys to move selection, and `Esc` to close.
 - Search result navigation always targets a concrete panel when one is available.
 

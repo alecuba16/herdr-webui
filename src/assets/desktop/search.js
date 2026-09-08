@@ -8,6 +8,8 @@ function createSearchPaletteState() {
     requestSeq: 0,
     timer: null,
     pathKind: "file",
+    recent: [],
+    recentLoaded: false,
     pathEntries: [],
     pathGitStatus: null,
     pathOffset: 0,
@@ -32,6 +34,7 @@ function openSearchPalette() {
   input.value = "";
   modal.style.display = "grid";
   renderSearchPalette();
+  loadRecentWorkspaces();
   setTimeout(() => input.focus(), 0);
   return true;
 }
@@ -388,9 +391,40 @@ function activeWorkspaceLabel() {
   return workspace ? workspaceDisplayTitle(workspace) : "No workspace selected";
 }
 
+async function loadRecentWorkspaces() {
+  if (!window.HerdrActionRegistry || !window.HerdrActionRegistry.loadRecent) return;
+  const recent = await window.HerdrActionRegistry.loadRecent();
+  if (recent !== searchPaletteState.recent) {
+    searchPaletteState.recent = recent;
+    searchPaletteState.recentLoaded = true;
+    if (el("searchPalette") && el("searchPalette").style.display !== "none") renderSearchPalette();
+  }
+}
+
+function recentWorkspaceCandidates(recent) {
+  const needle = String(searchPaletteState.query || "").trim().toLowerCase();
+  return (recent || [])
+    .map((item) => {
+      const title = item.label || (item.path || "").split("/").filter(Boolean).pop() || item.path || "";
+      const subtitle = [item.kind === "worktree" ? "worktree" : "workspace", item.branch, item.path].filter(Boolean).join(" · ");
+      return {
+        type: "recent",
+        icon: item.kind === "worktree" ? "wt" : "ws",
+        title,
+        subtitle,
+        path: item.path,
+        searchText: `${title} ${subtitle}`.toLowerCase(),
+      };
+    })
+    .filter((item) => !needle || item.searchText.includes(needle))
+    .slice(0, 8);
+}
+
 function buildSearchSelectionRows(actions, targets, order, opts) {
   const rows = [];
   if (searchPaletteState.sectionsExpanded.actions !== false) rows.push(...actions);
+  const recent = recentWorkspaceCandidates(searchPaletteState.recent);
+  if (searchPaletteState.sectionsExpanded.recent !== false) rows.push(...recent);
   if (!order || !order.length) order = ["workspaces", "files", "content"];
   for (const section of order) {
     if (section === "workspaces" && opts.searchWorkspacesEnabled !== false && searchPaletteState.sectionsExpanded.workspaces !== false) rows.push(...targets);
@@ -439,7 +473,16 @@ function renderSearchPalette() {
     files: pathSearchAvailable(opts) ? renderWorkspacePathSection(opts) : "",
     content: opts.searchContentEnabled === false ? "" : renderWorkspaceContentSection(),
   };
-  container.innerHTML = sections.actions + order.map((key) => sections[key] || "").join("");
+  const recent = recentWorkspaceCandidates(searchPaletteState.recent);
+  container.innerHTML = sections.actions + renderRecentSection(recent) + order.map((key) => sections[key] || "").join("");
+}
+
+function renderRecentSection(recent) {
+  const expanded = searchPaletteState.sectionsExpanded.recent !== false;
+  if (!recent.length) return "";
+  const rows = recent.map((result) => renderSearchRowResult(result)).join("");
+  const clear = `<button class="git-ui-btn" onclick="HerdrSearchPalette.clearRecent(event)" title="Clear recent workspaces">Clear</button>`;
+  return `<section class="search-section"><div class="search-section-head"><button class="search-section-toggle search-section-head-toggle" onclick="HerdrSearchPalette.toggleSection('recent')" aria-expanded="${expanded ? "true" : "false"}"><strong><span class="herdr-tree-icon herdr-tree-icon-${expanded ? "chevron-down" : "chevron-right"}" aria-hidden="true"></span>Recent workspaces</strong><span>${recent.length}</span></button>${clear}</div>${expanded ? rows : ""}</section>`;
 }
 
 function renderActionSection(actions) {
@@ -532,8 +575,32 @@ function chooseSearchResult(index = searchPaletteState.selectedIndex) {
     runSearchAction(result.action);
     return;
   }
+  if (result.type === "recent") {
+    openRecentWorkspace(result.path, result.label);
+    return;
+  }
   closeSearchPalette();
   go(result.ws, result.tab, result.pane);
+}
+
+async function openRecentWorkspace(path, label) {
+  closeSearchPalette();
+  if (!path) return;
+  showBlocking("Opening workspace...");
+  try {
+    const r = await api("/api/recent-workspaces", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path, label }),
+    });
+    if (window.HerdrActionRegistry && window.HerdrActionRegistry.invalidateRecent) window.HerdrActionRegistry.invalidateRecent();
+    const result = (r && r.result) || {};
+    go(result.workspace && result.workspace.workspace_id);
+  } catch (error) {
+    alert(error.message || String(error));
+  } finally {
+    hideBlocking();
+  }
 }
 
 function runSearchAction(action) {
@@ -617,8 +684,17 @@ async function openWorkspaceSearchContent(file, match) {
 }
 
 const HerdrSearchPalette = {
+  async clearRecent(event) {
+    if (event) event.stopPropagation();
+    try {
+      await api("/api/recent-workspaces/clear", { method: "POST" });
+    } catch (_) {}
+    searchPaletteState.recent = [];
+    if (window.HerdrActionRegistry && window.HerdrActionRegistry.invalidateRecent) window.HerdrActionRegistry.invalidateRecent();
+    renderSearchPalette();
+  },
   toggleSection(section) {
-    if (!["actions", "workspaces", "files", "content"].includes(section)) return;
+    if (!["actions", "recent", "workspaces", "files", "content"].includes(section)) return;
     searchPaletteState.sectionsExpanded[section] = searchPaletteState.sectionsExpanded[section] === false;
     renderSearchPalette();
   },
