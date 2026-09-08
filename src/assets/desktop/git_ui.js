@@ -3778,7 +3778,8 @@
     selectWorktree(encodedPath) {
       const view = active();
       const path = decodeURIComponent(encodedPath || "");
-      if (!view || !path) return;
+      if (!view || !path || samePath(path, view.cwd)) return;
+      if (!window.confirm(`Switch Git to worktree folder "${path}"?`)) return;
       state.worktreeList = null;
       resetGitViewForCwd(view, path);
       render();
@@ -3852,6 +3853,7 @@
       if (!localName) return;
       const currentBranch = ((view.status || {}).branch) || "";
       if (localName === currentBranch) return;
+      if (!window.confirm(`Switch Git to branch "${name}"?`)) return;
       await postJson("/api/git-ui/switch", { cwd: view.cwd, branch: localName }, `Switching to ${name}`);
     },
     // Trash icon in a branch-list row: deletes the branch through the same
