@@ -64,10 +64,10 @@ const HERDR_WEBUI_VERSION: &str = env!("HERDR_WEBUI_VERSION");
 const INSTALL_LABEL: &str = "herdr-web";
 const MAX_FRAME_SIZE: usize = 2 * 1024 * 1024;
 const MAX_GRAPHICS_FRAME_SIZE: usize = 32 * 1024 * 1024;
-const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 16;
-const PROTOCOL_VERSION: u32 = 20;
-const MIN_BACKEND_VERSION: &str = "0.7.3";
-const MAX_TESTED_BACKEND_VERSION: &str = "0.8.0";
+const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 22;
+const PROTOCOL_VERSION: u32 = 22;
+const MIN_BACKEND_VERSION: &str = "0.9.0";
+const MAX_TESTED_BACKEND_VERSION: &str = "0.9.0";
 const DEFAULT_FOLDER_READ_TIMEOUT: Duration = Duration::from_millis(1500);
 
 type LocalStream = interprocess::local_socket::Stream;
@@ -4232,16 +4232,17 @@ async fn terminal_socket(
     let rows = query.rows.unwrap_or(30).max(1);
     let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
     let (in_tx, in_rx) = std::sync::mpsc::channel::<ClientMessage>();
+    let (error_tx, error_rx) = tokio::sync::oneshot::channel::<TerminalAttachError>();
 
     std::thread::spawn(move || {
-        let mut stream =
-            match connect_terminal_attach_with_protocol_fallback(&path, &terminal_id, cols, rows) {
-                Ok(stream) => stream,
-                Err(error) => {
-                    let _ = out_tx.send(error.user_message().into_bytes());
-                    return;
-                }
-            };
+        let mut stream = match connect_terminal_attach(&path, &terminal_id, cols, rows) {
+            Ok(stream) => stream,
+            Err(error) => {
+                let _ = out_tx.send(error.user_message().into_bytes());
+                let _ = error_tx.send(error);
+                return;
+            }
+        };
 
         let Ok(mut writer) = stream.try_clone() else {
             let _ = out_tx.send(b"failed to clone herdr terminal socket\r\n".to_vec());
@@ -4274,8 +4275,26 @@ async fn terminal_socket(
         }
     });
 
+    let mut error_rx = error_rx;
     loop {
         tokio::select! {
+            error = &mut error_rx => {
+                // Graceful degradation: surface the handshake failure as a
+                // structured frame before closing, so the browser can offer
+                // a built-in session instead of blocking on a dead terminal.
+                if let Ok(error) = error {
+                    let payload = json!({
+                        "type": "herdr_error",
+                        "kind": error.error_kind(),
+                        "message": error.user_message().trim_end(),
+                        "suggest_builtin": error.suggests_builtin(),
+                    });
+                    if let Ok(text) = serde_json::to_string(&payload) {
+                        let _ = socket.send(Message::Text(text.into())).await;
+                    }
+                }
+                break;
+            }
             message = out_rx.recv() => {
                 let Some(bytes) = message else { break; };
                 if socket.send(Message::Binary(bytes.into())).await.is_err() { break; }
@@ -4332,6 +4351,7 @@ fn terminal_text_messages(text: &str) -> Vec<ClientMessage> {
                 rows: rows.max(1),
                 cell_width_px: 0,
                 cell_height_px: 0,
+                pixel_mouse: false,
             }]
         }
         Some("scroll") => {
@@ -4373,25 +4393,20 @@ fn terminal_text_messages(text: &str) -> Vec<ClientMessage> {
                 .and_then(|value| value.as_u64())
                 .and_then(|value| u8::try_from(value).ok())
                 .unwrap_or(0);
-            vec![ClientMessage::InputEvents {
-                events: vec![ClientInputEvent::Key {
-                    code: ClientKeyCode::Enter,
-                    modifiers,
-                    kind: ClientKeyKind::Press,
-                    repeat_count: 1,
-                    generated_text: None,
-                    source: ClientKeySource::Synthesized,
-                }],
+            vec![ClientMessage::Input {
+                data: (if modifiers & 1 != 0 { "\x1b[13;2u" } else { "\r" })
+                    .as_bytes()
+                    .to_vec(),
             }]
         }
         Some("paste") => value
             .get("text")
             .and_then(|value| value.as_str())
             .map(|text| {
-                vec![ClientMessage::InputEvents {
-                    events: vec![ClientInputEvent::Paste {
-                        text: text.to_string(),
-                    }],
+                // herdr 0.9.0 removed `InputEvents`; paste is delivered as
+                // raw bracketed-paste input bytes.
+                vec![ClientMessage::Input {
+                    data: format!("\x1b[200~{}\x1b[201~", text).into_bytes(),
                 }]
             })
             .unwrap_or_default(),
@@ -4426,55 +4441,45 @@ impl TerminalAttachError {
             Self::Attach => "failed to attach herdr terminal\r\n".to_string(),
         }
     }
-}
 
-fn connect_terminal_attach_with_protocol_fallback(
-    path: &Path,
-    terminal_id: &str,
-    cols: u16,
-    rows: u16,
-) -> Result<LocalStream, TerminalAttachError> {
-    // Try protocols in descending order so a newer WebUI can attach to older
-    // compatible backends. The backend rejects mismatched versions with a
-    // Welcome error containing "newer than server version" when the client
-    // protocol is higher than the server protocol.
-    for protocol_version in (MIN_SUPPORTED_PROTOCOL_VERSION..=PROTOCOL_VERSION).rev() {
-        match connect_terminal_attach(path, terminal_id, protocol_version, cols, rows) {
-            Ok(stream) => return Ok(stream),
-            Err(TerminalAttachError::Rejected(error))
-                if should_retry_legacy_protocol(protocol_version, &error) =>
-            {
-                continue;
-            }
-            result => return result,
+    /// Machine-readable kind forwarded to the browser so it can offer a
+    /// built-in session when the external herdr backend cannot be attached.
+    fn error_kind(&self) -> &'static str {
+        match self {
+            Self::Connect => "connect_failed",
+            Self::SendHandshake => "handshake_failed",
+            Self::ReadHandshake => "handshake_failed",
+            Self::Rejected(_) => "handshake_rejected",
+            Self::Attach => "attach_failed",
         }
     }
-    connect_terminal_attach(
-        path,
-        terminal_id,
-        MIN_SUPPORTED_PROTOCOL_VERSION,
-        cols,
-        rows,
-    )
+
+    /// True when the failure means the external herdr backend is unusable
+    /// for terminal attach (protocol/handshake problems) and the UI should
+    /// offer a built-in session instead of retrying silently.
+    fn suggests_builtin(&self) -> bool {
+        matches!(self, Self::ReadHandshake | Self::Rejected(_))
+    }
 }
 
+/// herdr 0.9.0 requires an exact client protocol version match at handshake
+/// time, so no multi-version fallback is possible: the client sends
+/// `TerminalHello{version: PROTOCOL_VERSION}` and the backend either accepts
+/// it or rejects the connection with a `Welcome{error}`.
 fn connect_terminal_attach(
     path: &Path,
     terminal_id: &str,
-    protocol_version: u32,
     cols: u16,
     rows: u16,
 ) -> Result<LocalStream, TerminalAttachError> {
     let mut stream = connect_local_stream(path).map_err(|_| TerminalAttachError::Connect)?;
-    let hello = ClientMessage::Hello {
-        version: protocol_version,
+    let hello = ClientMessage::TerminalHello {
+        version: PROTOCOL_VERSION,
         cols,
         rows,
         cell_width_px: 0,
         cell_height_px: 0,
-        requested_encoding: RenderEncoding::TerminalAnsi,
-        keybindings: ClientKeybindings::Server,
-        launch_mode: ClientLaunchMode::TerminalAttach,
+        pixel_mouse: false,
     };
     write_message(&mut stream, &hello).map_err(|_| TerminalAttachError::SendHandshake)?;
 
@@ -4497,14 +4502,6 @@ fn connect_terminal_attach(
     )
     .map_err(|_| TerminalAttachError::Attach)?;
     Ok(stream)
-}
-
-/// Returns true when the rejected `protocol_version` is newer than the server
-/// and there is at least one older protocol version left to try.
-fn should_retry_legacy_protocol(protocol_version: u32, error: &str) -> bool {
-    protocol_version > MIN_SUPPORTED_PROTOCOL_VERSION
-        && error.contains("client version")
-        && error.contains("newer than server version")
 }
 
 #[cfg(test)]
@@ -5698,35 +5695,32 @@ mod tests {
 
     #[test]
     fn classifies_backend_compatibility() {
+        // herdr 0.9.0 requires an exact protocol match: every supported
+        // release maps 1:1 to its own protocol version.
         assert_eq!(
-            backend_compatibility_for_supported_range(Some("0.7.2"), Some(PROTOCOL_VERSION)),
-            BackendCompatibility::TooOld
+            backend_compatibility_for_supported_range(Some("0.8.0"), Some(20)),
+            BackendCompatibility::ProtocolMismatch
+        );
+        assert_eq!(
+            backend_compatibility_for_supported_range(Some("0.8.0"), Some(PROTOCOL_VERSION - 1)),
+            BackendCompatibility::ProtocolMismatch
         );
         assert_eq!(
             backend_compatibility_for_supported_range(
-                Some("0.7.3"),
+                Some("0.9.0"),
                 Some(MIN_SUPPORTED_PROTOCOL_VERSION),
             ),
             BackendCompatibility::Compatible
         );
         assert_eq!(
-            backend_compatibility_for_supported_range(Some("0.7.3"), Some(PROTOCOL_VERSION)),
+            backend_compatibility_for_supported_range(
+                Some("0.9.0"),
+                Some(PROTOCOL_VERSION),
+            ),
             BackendCompatibility::Compatible
         );
         assert_eq!(
-            backend_compatibility_for_supported_range(Some("0.7.4"), Some(PROTOCOL_VERSION)),
-            BackendCompatibility::Compatible
-        );
-        assert_eq!(
-            backend_compatibility_for_supported_range(Some("0.7.5"), Some(PROTOCOL_VERSION)),
-            BackendCompatibility::Compatible
-        );
-        assert_eq!(
-            backend_compatibility_for_supported_range(Some("0.8.0"), Some(PROTOCOL_VERSION)),
-            BackendCompatibility::Compatible
-        );
-        assert_eq!(
-            backend_compatibility_for_supported_range(Some("0.8.1"), Some(PROTOCOL_VERSION)),
+            backend_compatibility_for_supported_range(Some("0.9.1"), Some(PROTOCOL_VERSION)),
             BackendCompatibility::UntestedNewer
         );
         assert_eq!(
@@ -5738,51 +5732,58 @@ mod tests {
             BackendCompatibility::Unknown
         );
         assert_eq!(
-            backend_compatibility_for_supported_range(Some("0.7.3"), None),
+            backend_compatibility_for_supported_range(Some("0.9.0"), None),
             BackendCompatibility::Unknown
         );
         assert_eq!(
-            backend_compatibility_for_supported_range(Some("0.7.3"), Some(PROTOCOL_VERSION + 1)),
+            backend_compatibility_for_supported_range(Some("0.9.0"), Some(PROTOCOL_VERSION + 1)),
             BackendCompatibility::ProtocolMismatch
         );
     }
 
     #[test]
-    fn terminal_protocol_fallback_retries_only_newer_client_mismatch() {
-        assert!(should_retry_legacy_protocol(
-            PROTOCOL_VERSION,
-            "client version 18 is newer than server version 17; please upgrade the herdr server",
-        ));
-        assert!(should_retry_legacy_protocol(
-            PROTOCOL_VERSION - 1,
-            "client version 17 is newer than server version 16; please upgrade the herdr server",
-        ));
-        assert!(!should_retry_legacy_protocol(
-            MIN_SUPPORTED_PROTOCOL_VERSION,
-            "client version 16 is newer than server version 15; please upgrade the herdr server",
-        ));
-        assert!(!should_retry_legacy_protocol(
-            PROTOCOL_VERSION,
-            "client version 18 is older than the minimum supported version 19",
-        ));
-        assert!(!should_retry_legacy_protocol(
-            PROTOCOL_VERSION,
-            "invalid local keybindings",
-        ));
+    fn terminal_handshake_requires_exact_protocol_version() {
+        // herdr 0.9.0 rejects every client version except its own. The
+        // handshake must send exactly PROTOCOL_VERSION or the backend closes
+        // the connection after the Welcome rejection.
+        assert_eq!(PROTOCOL_VERSION, 22);
     }
 
     #[test]
-    fn terminal_text_messages_maps_paste_to_semantic_input_event() {
+    fn terminal_attach_errors_classify_for_graceful_degradation() {
+        // Handshake failures offer a built-in session; transport failures
+        // (socket missing, attach send failing) do not, since the backend
+        // may just be restarting.
+        assert!(TerminalAttachError::ReadHandshake.suggests_builtin());
+        assert!(TerminalAttachError::Rejected("client version 22 is newer than server version 21".into())
+            .suggests_builtin());
+        assert!(!TerminalAttachError::Connect.suggests_builtin());
+        assert!(!TerminalAttachError::SendHandshake.suggests_builtin());
+        assert!(!TerminalAttachError::Attach.suggests_builtin());
+
+        assert_eq!(TerminalAttachError::ReadHandshake.error_kind(), "handshake_failed");
+        assert_eq!(
+            TerminalAttachError::Rejected("mismatch".into()).error_kind(),
+            "handshake_rejected"
+        );
+        assert_eq!(TerminalAttachError::Connect.error_kind(), "connect_failed");
+        // User-facing messages keep the legacy terminal text for direct
+        // display when the UI cannot parse the structured frame.
+        assert!(TerminalAttachError::Rejected("boom".into())
+            .user_message()
+            .starts_with("herdr rejected terminal connection: boom"));
+    }
+
+    #[test]
+    fn terminal_text_messages_maps_paste_to_bracketed_input() {
         let messages = terminal_text_messages(
             r#"{"type":"paste","text":"fn main() {\n    println!(\"hi\");\n}\n"}"#,
         );
 
         assert_eq!(
             messages,
-            vec![ClientMessage::InputEvents {
-                events: vec![ClientInputEvent::Paste {
-                    text: "fn main() {\n    println!(\"hi\");\n}\n".to_string(),
-                }],
+            vec![ClientMessage::Input {
+                data: b"\x1b[200~fn main() {\n    println!(\"hi\");\n}\n\x1b[201~".to_vec(),
             }]
         );
     }
@@ -5986,18 +5987,6 @@ mod tests {
     }
 
     #[test]
-    fn round_trips_prefix_input_source_server_message() {
-        for active in [true, false] {
-            let msg = ServerMessage::PrefixInputSource { active };
-            let mut bytes = Vec::new();
-            write_message(&mut bytes, &msg).unwrap();
-            let decoded: ServerMessage =
-                read_message(&mut Cursor::new(bytes), MAX_FRAME_SIZE).unwrap();
-            assert_eq!(decoded, msg);
-        }
-    }
-
-    #[test]
     fn rejects_oversized_framed_protocol_message() {
         let bytes = 4u32.to_le_bytes();
         let err = read_message::<_, ClientMessage>(&mut Cursor::new(bytes), 3).unwrap_err();
@@ -6082,7 +6071,7 @@ mod tests {
     async fn versions_api_reports_backend_compatibility_from_fake_socket() {
         let (socket, handle) = fake_api_socket(json!({
             "id": "web:ping",
-            "result": { "version": "0.7.5", "protocol": PROTOCOL_VERSION }
+            "result": { "version": "0.9.0", "protocol": PROTOCOL_VERSION }
         }));
         let mut state = test_state();
         state.api_socket = Some(socket.clone());
@@ -6099,7 +6088,7 @@ mod tests {
             .unwrap();
         let body = response_json(response).await;
 
-        assert_eq!(body["backend"], "0.7.5");
+        assert_eq!(body["backend"], "0.9.0");
         assert_eq!(body["min_backend"], MIN_BACKEND_VERSION);
         assert_eq!(body["max_tested_backend"], MAX_TESTED_BACKEND_VERSION);
         assert_eq!(body["protocol_version"], PROTOCOL_VERSION);

@@ -1,6 +1,29 @@
+//! Wire protocol mirror for herdr 0.9.0 (client protocol 22).
+//!
+//! This module mirrors the subset of herdr's `src/protocol/wire.rs` that the
+//! WebUI client and the embedded built-in backend speak over the local client
+//! socket. Framing is `[u32LE length][bincode payload]` using
+//! `bincode::config::standard()`, exactly like herdr.
+//!
+//! herdr 0.9.0 requires an exact protocol version match: the handshake sends
+//! `TerminalHello{version: PROTOCOL_VERSION}` and any other version is
+//! rejected with a `Welcome{error}` before the connection closes. The old
+//! multi-version fallback loop never functioned because herdr closes
+//! mismatched handshakes instead of staying open for a retry.
+
 use std::io::{Read, Write};
 
 use serde::{Deserialize, Serialize};
+
+/// Client protocol version spoken by herdr 0.9.0.
+///
+/// herdr validates this exact value at handshake time; there is no
+/// cross-version compatibility window.
+pub(crate) const PROTOCOL_VERSION: u32 = 22;
+/// Minimum herdr backend version this WebUI supports.
+pub(crate) const MIN_BACKEND_VERSION: &str = "0.9.0";
+/// Maximum herdr backend version this WebUI has been tested against.
+pub(crate) const MAX_TESTED_BACKEND_VERSION: &str = "0.9.0";
 
 pub(crate) fn write_message<W: Write, M: Serialize>(writer: &mut W, msg: &M) -> Result<(), String> {
     let payload = bincode::serde::encode_to_vec(msg, bincode::config::standard())
@@ -10,7 +33,8 @@ pub(crate) fn write_message<W: Write, M: Serialize>(writer: &mut W, msg: &M) -> 
         .write_all(&len.to_le_bytes())
         .map_err(|err| err.to_string())?;
     writer.write_all(&payload).map_err(|err| err.to_string())?;
-    writer.flush().map_err(|err| err.to_string())
+    writer.flush().map_err(|err| err.to_string())?;
+    Ok(())
 }
 
 pub(crate) fn read_message<R: Read, M: for<'de> Deserialize<'de>>(
@@ -37,168 +61,18 @@ pub(crate) fn read_message<R: Read, M: for<'de> Deserialize<'de>>(
     Ok(msg)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+// ---------------------------------------------------------------------------
+// Client → Server messages
+// ---------------------------------------------------------------------------
+
+/// Render payload encoding negotiated during client handshake.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum RenderEncoding {
     SemanticFrame,
     TerminalAnsi,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum ClientKeybindings {
-    Server,
-    Local { keys_toml: String },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum ClientLaunchMode {
-    App,
-    /// Full app client eligible for audited local direct graphics.
-    /// A web client does not use local graphics, so this variant only needs
-    /// to deserialize correctly. Added in protocol 20+.
-    AppDirectGraphics,
-    TerminalAttach,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum ClientMessage {
-    Hello {
-        version: u32,
-        cols: u16,
-        rows: u16,
-        cell_width_px: u32,
-        cell_height_px: u32,
-        requested_encoding: RenderEncoding,
-        keybindings: ClientKeybindings,
-        launch_mode: ClientLaunchMode,
-    },
-    Input {
-        data: Vec<u8>,
-    },
-    ClipboardImage {
-        extension: String,
-        data: Vec<u8>,
-    },
-    Resize {
-        cols: u16,
-        rows: u16,
-        cell_width_px: u32,
-        cell_height_px: u32,
-    },
-    Detach,
-    AttachTerminal {
-        terminal_id: String,
-        takeover: bool,
-    },
-    AttachScroll {
-        source: AttachScrollSource,
-        direction: AttachScrollDirection,
-        lines: u16,
-        column: Option<u16>,
-        row: Option<u16>,
-        modifiers: u8,
-    },
-    InputEvents {
-        events: Vec<ClientInputEvent>,
-    },
-    /// Switch this connection into read-only terminal observe mode.
-    /// Added in protocol 20+.
-    ObserveTerminal {
-        target: String,
-    },
-    /// Switch this connection into writable terminal control mode.
-    /// Added in protocol 20+.
-    ControlTerminal {
-        target: String,
-        takeover: bool,
-    },
-    /// Result of a Herdr-owned direct Kitty transmission.
-    /// Added in protocol 20+ (graphics streaming).
-    GraphicsTransmissionResult {
-        transfer_id: u64,
-        image_id: u32,
-        success: bool,
-    },
-    /// One confirmed SGR 1016 mouse report with read-time host geometry.
-    /// Added in protocol 20+ (graphics streaming).
-    InputPixels {
-        data: Vec<u8>,
-        cols: u16,
-        rows: u16,
-        width_px: u32,
-        height_px: u32,
-    },
-    /// The direct command was written and flushed.
-    /// Added in protocol 20+ (graphics streaming).
-    GraphicsTransmissionStarted {
-        transfer_id: u64,
-        image_id: u32,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum AttachScrollDirection {
-    Up,
-    Down,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum AttachScrollSource {
-    Wheel,
-    PageKey { input: Vec<u8> },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum ClientInputEvent {
-    Key {
-        code: ClientKeyCode,
-        modifiers: u8,
-        kind: ClientKeyKind,
-        /// Key repeat count from the host terminal. Added in protocol 19.
-        repeat_count: u16,
-        /// Text generated by this key event, if any. Added in protocol 19.
-        generated_text: Option<String>,
-        /// Input source metadata. Added in protocol 19.
-        source: ClientKeySource,
-    },
-    /// Committed text (replaces the old `Text { codepoint }` variant from
-    /// protocol 18). Added in protocol 19.
-    TextCommit(String),
-    Mouse {
-        kind: ClientMouseKind,
-        column: u16,
-        row: u16,
-        modifiers: u8,
-    },
-    Paste {
-        text: String,
-    },
-    FocusGained,
-    FocusLost,
-}
-
-/// Source of a key event. A web client always synthesizes keys, so the other
-/// variants only need to deserialize. Added in protocol 19.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum ClientKeySource {
-    Synthesized,
-    Vt { bytes: Vec<u8> },
-    WindowsConsole { record: WindowsKeyRecord },
-}
-
-/// Wire-compatible mirror of herdr's `input::WindowsKeyRecord` for
-/// deserializing `ClientKeySource::WindowsConsole`. A web client never
-/// produces this but must accept it from Windows backends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct WindowsKeyRecord {
-    pub(crate) key_down: bool,
-    pub(crate) repeat_count: u16,
-    pub(crate) virtual_key_code: u16,
-    pub(crate) virtual_scan_code: u16,
-    pub(crate) unicode: u16,
-    pub(crate) control_key_state: u32,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum ClientKeyKind {
     Press,
     Repeat,
@@ -227,14 +101,14 @@ pub(crate) enum ClientKeyCode {
     Null,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum ClientMouseButton {
     Left,
     Right,
     Middle,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum ClientMouseKind {
     Down(ClientMouseButton),
     Up(ClientMouseButton),
@@ -247,34 +121,360 @@ pub(crate) enum ClientMouseKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum ClientInputEvent {
+    Key {
+        code: ClientKeyCode,
+        modifiers: u8,
+        kind: ClientKeyKind,
+        /// Key repeat count from the host terminal.
+        repeat_count: u16,
+        /// Text generated by this key event, if any.
+        generated_text: Option<String>,
+        /// Input source metadata.
+        source: ClientKeySource,
+    },
+    TextCommit(String),
+    Mouse {
+        kind: ClientMouseKind,
+        column: u16,
+        row: u16,
+        modifiers: u8,
+    },
+    Paste {
+        text: String,
+    },
+    FocusGained,
+    FocusLost,
+}
+
+/// Source of a key event. A web client always synthesizes keys, so the other
+/// variants only need to deserialize.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum ClientKeySource {
+    Synthesized,
+    Vt { bytes: Vec<u8> },
+    WindowsConsole { record: WindowsKeyRecord },
+}
+
+/// Wire-compatible mirror of herdr's `input::WindowsKeyRecord` for
+/// deserializing `ClientKeySource::WindowsConsole`. A web client never
+/// produces this but must accept it from Windows backends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct WindowsKeyRecord {
+    pub(crate) key_down: bool,
+    pub(crate) repeat_count: u16,
+    pub(crate) virtual_key_code: u16,
+    pub(crate) virtual_scan_code: u16,
+    pub(crate) unicode: u16,
+    pub(crate) control_key_state: u32,
+}
+
+/// Size of a pane surface requested by a client-owned shell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ClientSurfaceSize {
+    pub(crate) cols: u16,
+    pub(crate) rows: u16,
+}
+
+/// Terminal target of a clipboard image read by the client.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum ClientClipboardImageTarget {
+    DirectTerminal,
+    Pane(String),
+    Popup(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum ClientHostDefaultColorKind {
+    Foreground,
+    Background,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum ClientHostAppearance {
+    Dark,
+    Light,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum ClientHostThemeUpdate {
+    DefaultColor {
+        kind: ClientHostDefaultColorKind,
+        color: ClientHostColor,
+    },
+    PaletteColors(Vec<(u8, ClientHostColor)>),
+    Appearance(ClientHostAppearance),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ClientHostColor {
+    pub(crate) r: u8,
+    pub(crate) g: u8,
+    pub(crate) b: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum AttachScrollDirection {
+    Up,
+    Down,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum AttachScrollSource {
+    Wheel,
+    PageKey {
+        /// Original key bytes to forward when the child application owns page keys.
+        input: Vec<u8>,
+    },
+}
+
+/// Messages sent from the client to the server over the client protocol
+/// socket. Variant order mirrors herdr 0.9.0's `ClientMessage` exactly;
+/// bincode encodes the variant index, so any drift breaks the handshake.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum ClientMessage {
+    /// Direct terminal handshake. herdr 0.9.0 renamed `Hello` to
+    /// `TerminalHello` and dropped `requested_encoding`, `keybindings`, and
+    /// `launch_mode`: direct terminal clients always get `TerminalAnsi`
+    /// encoding and attach mode is implied by `AttachTerminal`.
+    TerminalHello {
+        /// Protocol version the client speaks. Must equal 22.
+        version: u32,
+        /// Terminal width in columns.
+        cols: u16,
+        /// Terminal height in rows.
+        rows: u16,
+        /// Width of a terminal cell in physical pixels, or 0 when
+        /// client-side Kitty graphics are disabled.
+        cell_width_px: u32,
+        /// Height of a terminal cell in physical pixels, or 0 when
+        /// unavailable.
+        cell_height_px: u32,
+        /// Whether the client can report exact SGR pixel mouse geometry.
+        pixel_mouse: bool,
+    },
+
+    /// Raw input bytes read from the client's stdin.
+    Input {
+        data: Vec<u8>,
+    },
+
+    /// Image bytes read from the client's local clipboard for remote paste bridging.
+    ClipboardImage {
+        target: ClientClipboardImageTarget,
+        extension: String,
+        data: Vec<u8>,
+    },
+
+    /// Terminal resize notification from the client.
+    Resize {
+        cols: u16,
+        rows: u16,
+        cell_width_px: u32,
+        cell_height_px: u32,
+        /// Whether this resize carries coherent exact geometry for SGR pixel
+        /// mouse input.
+        pixel_mouse: bool,
+    },
+
+    /// Graceful disconnect request.
+    Detach,
+
+    /// Switch this connection into direct terminal attach mode.
+    AttachTerminal {
+        terminal_id: String,
+        takeover: bool,
+    },
+
+    /// Scroll input handled by a direct terminal attach client.
+    AttachScroll {
+        source: AttachScrollSource,
+        direction: AttachScrollDirection,
+        lines: u16,
+        column: Option<u16>,
+        row: Option<u16>,
+        modifiers: u8,
+    },
+
+    /// Switch this connection into read-only terminal observe mode.
+    ObserveTerminal {
+        target: String,
+    },
+
+    /// Switch this connection into writable terminal control mode.
+    ControlTerminal {
+        target: String,
+        takeover: bool,
+    },
+
+    /// Result of the one armed Herdr-owned direct Kitty transmission.
+    GraphicsTransmissionResult {
+        transfer_id: u64,
+        image_id: u32,
+        success: bool,
+    },
+
+    /// The direct command was written and flushed; terminal response timing starts now.
+    GraphicsTransmissionStarted {
+        transfer_id: u64,
+        image_id: u32,
+    },
+
+    /// Handshake for the client-owned shell around one pane surface. The
+    /// WebUI is a direct terminal client, not a client-owned shell, so this
+    /// variant only needs to deserialize.
+    ClientShellHello {
+        version: u32,
+        cell_width_px: u32,
+        cell_height_px: u32,
+        surface_size: ClientSurfaceSize,
+        pixel_mouse: bool,
+        direct_graphics: bool,
+        endpoint_keybindings: bool,
+        mouse_capture: bool,
+    },
+
+    /// Resize the pane viewport of a client-owned shell.
+    ClientShellResize {
+        cell_width_px: u32,
+        cell_height_px: u32,
+        surface_size: ClientSurfaceSize,
+        pixel_mouse: bool,
+    },
+
+    /// Deliver client-classified semantic input directly to a stable pane target.
+    ClientShellPaneInput {
+        pane_id: String,
+        events: Vec<ClientPaneInputEvent>,
+    },
+
+    /// Deliver client-classified semantic input to the active popup terminal.
+    ClientShellPopupInput {
+        terminal_id: String,
+        events: Vec<ClientPaneInputEvent>,
+    },
+
+    /// Invoke one endpoint operation through this client shell's selected connection.
+    ClientShellEndpointRequest {
+        boot_id: String,
+        request: String,
+    },
+
+    /// Deliver one structured mouse event to a directly attached terminal.
+    AttachMouse {
+        kind: ClientMouseKind,
+        position: ClientMousePosition,
+        geometry: Option<ClientMouseGeometry>,
+        modifiers: u8,
+        lines: u16,
+    },
+
+    /// Publish one host terminal color or appearance update observed by a client-owned shell.
+    ClientShellHostTheme {
+        update: ClientHostThemeUpdate,
+    },
+
+    /// Publish whether the outer terminal containing a client shell has focus.
+    ClientShellFocus {
+        focused: bool,
+    },
+
+    /// Update this client's shell mouse-capture preference after config reload.
+    ClientShellMouseCapture {
+        enabled: bool,
+    },
+
+    /// Extensible named control message for the stable client-owned endpoint
+    /// protocol. Append-only; the two-string payload is fixed.
+    EndpointControl {
+        kind: String,
+        data: String,
+    },
+}
+
+/// Pane-domain input after the client has classified and consumed shell actions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum ClientPaneInputEvent {
+    Key {
+        code: ClientKeyCode,
+        modifiers: u8,
+        kind: ClientKeyKind,
+        repeat_count: u16,
+        shifted_codepoint: Option<u32>,
+        generated_text: Option<String>,
+        tracks_release: bool,
+        physical_key_id: Option<u32>,
+        windows_record: Option<WindowsKeyRecord>,
+    },
+    TextCommit(String),
+    Mouse {
+        kind: ClientMouseKind,
+        position: ClientMousePosition,
+        geometry: Option<ClientMouseGeometry>,
+        modifiers: u8,
+        lines: u16,
+    },
+    Paste(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum ClientMousePosition {
+    Cell {
+        column: u16,
+        row: u16,
+    },
+    Pixels {
+        x: u32,
+        y: u32,
+        column: u16,
+        row: u16,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ClientMouseGeometry {
+    pub(crate) cols: u16,
+    pub(crate) rows: u16,
+    pub(crate) width_px: u32,
+    pub(crate) height_px: u32,
+}
+
+// ---------------------------------------------------------------------------
+// Server → Client messages
+// ---------------------------------------------------------------------------
+
+/// A single cell in a rendered frame, serialized independently from ratatui's
+/// `Cell` type to keep the wire protocol stable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct CellData {
-    symbol: String,
-    fg: u32,
-    bg: u32,
-    modifier: u16,
-    skip: bool,
-    hyperlink: Option<u32>,
+    pub(crate) symbol: String,
+    pub(crate) fg: u32,
+    pub(crate) bg: u32,
+    pub(crate) modifier: u16,
+    pub(crate) skip: bool,
+    pub(crate) hyperlink: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct CursorState {
-    x: u16,
-    y: u16,
-    visible: bool,
+    pub(crate) x: u16,
+    pub(crate) y: u16,
+    pub(crate) visible: bool,
     #[serde(default)]
-    shape: u8,
+    pub(crate) shape: u8,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct FrameData {
-    cells: Vec<CellData>,
-    width: u16,
-    height: u16,
-    cursor: Option<CursorState>,
-    hyperlinks: Vec<String>,
-    graphics: Vec<u8>,
+    pub(crate) cells: Vec<CellData>,
+    pub(crate) width: u16,
+    pub(crate) height: u16,
+    pub(crate) cursor: Option<CursorState>,
+    pub(crate) hyperlinks: Vec<String>,
+    pub(crate) graphics: Vec<u8>,
 }
 
+/// Terminal ANSI bytes encoded by the server for network-efficient clients.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct TerminalFrame {
     pub(crate) seq: u64,
@@ -284,6 +484,7 @@ pub(crate) struct TerminalFrame {
     pub(crate) bytes: Vec<u8>,
 }
 
+/// Notification kind forwarded from server to client.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum NotifyKind {
     Sound,
@@ -291,64 +492,432 @@ pub(crate) enum NotifyKind {
     SystemToast,
 }
 
+/// A client-rendered notification category.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum SemanticNotificationKind {
+    NeedsAttention,
+    Finished,
+    UpdateInstalled,
+    Custom,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum SemanticNotificationSound {
+    Done,
+    Request,
+}
+
+/// Toast placement requested for herdr-originated toasts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum ToastHerdrPosition {
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct SemanticNotification {
+    pub(crate) kind: SemanticNotificationKind,
+    pub(crate) title: String,
+    pub(crate) body: Option<String>,
+    pub(crate) sound: Option<SemanticNotificationSound>,
+    pub(crate) agent: Option<String>,
+    pub(crate) workspace_id: Option<String>,
+    pub(crate) tab_id: Option<String>,
+    pub(crate) pane_id: Option<String>,
+    pub(crate) position: Option<ToastHerdrPosition>,
+}
+
+/// Agent status reported by the endpoint projection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AgentStatus {
+    Idle,
+    Working,
+    Blocked,
+    Done,
+    Unknown,
+}
+
+impl AgentStatus {
+    pub(crate) fn from_str(value: &str) -> Self {
+        match value {
+            "idle" => Self::Idle,
+            "working" => Self::Working,
+            "blocked" => Self::Blocked,
+            "done" => Self::Done,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+/// Initial resource projection used by the stable client-owned shell.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ClientShellSnapshot {
+    pub(crate) boot_id: String,
+    pub(crate) revision: u64,
+    pub(crate) config_diagnostic: Option<String>,
+    pub(crate) product_announcement: Option<ClientShellProductAnnouncement>,
+    pub(crate) update_available: Option<String>,
+    pub(crate) update_install_command: String,
+    pub(crate) server_keybindings_toml: Option<String>,
+    pub(crate) latest_release_notes_available: bool,
+    pub(crate) integration_updates_available: bool,
+    pub(crate) worktree_directory: String,
+    pub(crate) release_notes: Option<ClientShellReleaseNotes>,
+    pub(crate) focused_workspace_id: Option<String>,
+    pub(crate) focused_tab_id: Option<String>,
+    pub(crate) focused_pane_id: Option<String>,
+    pub(crate) tab_bar_right: Vec<ClientShellTabStatusSegment>,
+    pub(crate) tab_bar_right_separator: String,
+    pub(crate) agent_view_label: Option<String>,
+    pub(crate) agent_order: Vec<String>,
+    pub(crate) workspaces: Vec<ClientShellWorkspace>,
+    pub(crate) tabs: Vec<ClientShellTab>,
+    pub(crate) panes: Vec<ClientShellPane>,
+    pub(crate) agents: Vec<ClientShellAgent>,
+    pub(crate) commands: Vec<ClientShellCommand>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ClientShellProductAnnouncement {
+    pub(crate) version: String,
+    pub(crate) id: String,
+    pub(crate) title: String,
+    pub(crate) body: String,
+    pub(crate) preview: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ClientShellReleaseNotes {
+    pub(crate) version: String,
+    pub(crate) body: String,
+    pub(crate) preview: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum ClientShellCommandAction {
+    Shell,
+    Pane,
+    Popup,
+    PluginAction,
+    /// A future endpoint action kind that this client cannot execute.
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ClientShellCommand {
+    pub(crate) command_id: String,
+    pub(crate) binding_label: String,
+    pub(crate) binding_labels: Vec<String>,
+    pub(crate) action: ClientShellCommandAction,
+    pub(crate) description: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ClientShellTabStatusSegment {
+    pub(crate) text: String,
+    pub(crate) accent: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ClientShellWorkspace {
+    pub(crate) workspace_id: String,
+    pub(crate) active_tab_id: String,
+    pub(crate) new_workspace_cwd: String,
+    pub(crate) number: usize,
+    pub(crate) label: String,
+    pub(crate) custom_label: bool,
+    pub(crate) branch: Option<String>,
+    pub(crate) git_ahead_behind: Option<(usize, usize)>,
+    pub(crate) tokens: Vec<(String, String)>,
+    pub(crate) worktree: Option<ClientShellWorktree>,
+    pub(crate) focused: bool,
+    pub(crate) agent_status: AgentStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ClientShellWorktree {
+    pub(crate) key: String,
+    pub(crate) label: String,
+    pub(crate) is_linked_worktree: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ClientShellTab {
+    pub(crate) tab_id: String,
+    pub(crate) workspace_id: String,
+    pub(crate) number: usize,
+    pub(crate) label: String,
+    pub(crate) custom_label: bool,
+    pub(crate) zoomed: bool,
+    pub(crate) focused: bool,
+    pub(crate) agent_status: AgentStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ClientShellPane {
+    pub(crate) pane_id: String,
+    pub(crate) workspace_id: String,
+    pub(crate) tab_id: String,
+    pub(crate) label: Option<String>,
+    pub(crate) cwd: Option<String>,
+    pub(crate) foreground_cwd: Option<String>,
+    pub(crate) focused: bool,
+    pub(crate) right_click_passthrough: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ClientShellAgent {
+    pub(crate) pane_id: String,
+    pub(crate) workspace_id: String,
+    pub(crate) tab_id: String,
+    pub(crate) name: Option<String>,
+    pub(crate) display_agent: Option<String>,
+    pub(crate) agent: Option<String>,
+    pub(crate) title: Option<String>,
+    pub(crate) terminal_title: Option<String>,
+    pub(crate) terminal_title_stripped: Option<String>,
+    pub(crate) agent_status: AgentStatus,
+    pub(crate) state_change_seq: u64,
+    pub(crate) state_labels: Vec<(String, String)>,
+    pub(crate) tokens: Vec<(String, String)>,
+    pub(crate) focused: bool,
+}
+
+/// Origin-relative geometry for one pane in a rendered pane surface.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct PaneSurfacePane {
+    pub(crate) pane_id: String,
+    pub(crate) content_revision: u64,
+    pub(crate) rect: SurfaceRect,
+    pub(crate) inner_rect: SurfaceRect,
+    pub(crate) scrollbar_rect: Option<SurfaceRect>,
+    pub(crate) scroll: Option<PaneSurfaceScrollMetrics>,
+    pub(crate) focused: bool,
+    pub(crate) mouse_reporting: bool,
+    pub(crate) sgr_pixel_mouse: bool,
+    pub(crate) alternate_screen_active: bool,
+    pub(crate) pixel_width: u32,
+    pub(crate) pixel_height: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct PaneSurfaceScrollMetrics {
+    pub(crate) offset_from_bottom: u64,
+    pub(crate) max_offset_from_bottom: u64,
+    pub(crate) viewport_rows: u64,
+}
+
+/// One draggable BSP split handle relative to a pane surface.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct PaneSurfaceSplit {
+    pub(crate) direction: PaneSurfaceSplitDirection,
+    pub(crate) pos: u16,
+    pub(crate) area: SurfaceRect,
+    pub(crate) hit_rect: SurfaceRect,
+    pub(crate) path: Vec<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum PaneSurfaceSplitDirection {
+    Horizontal,
+    Vertical,
+}
+
+/// Wire-safe rectangle relative to a pane surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct SurfaceRect {
+    pub(crate) x: u16,
+    pub(crate) y: u16,
+    pub(crate) width: u16,
+    pub(crate) height: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub(crate) enum SurfaceGraphicsTarget {
+    Pane { pane_id: String },
+    Popup { terminal_id: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub(crate) enum SurfaceGraphicsSource {
+    Terminal {
+        target: SurfaceGraphicsTarget,
+        image_id: u32,
+    },
+    PaneLayer {
+        pane_id: String,
+        layer_id: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub(crate) enum SurfaceGraphicsFormat {
+    Rgb,
+    Rgba,
+    Png,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub(crate) struct SurfaceGraphicsAssetKey {
+    pub(crate) source: SurfaceGraphicsSource,
+    pub(crate) image_width: u32,
+    pub(crate) image_height: u32,
+    pub(crate) format: SurfaceGraphicsFormat,
+    pub(crate) data_len: u64,
+    pub(crate) data_fingerprint: u64,
+}
+
+/// Image bytes newly needed by this connection's complete desired scene.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct SurfaceGraphicsAsset {
+    pub(crate) key: SurfaceGraphicsAssetKey,
+    pub(crate) data: Vec<u8>,
+}
+
+/// One already-clipped desired placement relative to its target surface.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct SurfaceGraphicsPlacement {
+    pub(crate) asset: SurfaceGraphicsAssetKey,
+    pub(crate) logical_placement_id: u32,
+    pub(crate) x: u16,
+    pub(crate) y: u16,
+    pub(crate) cols: u32,
+    pub(crate) rows: u32,
+    pub(crate) source_x: u32,
+    pub(crate) source_y: u32,
+    pub(crate) source_width: u32,
+    pub(crate) source_height: u32,
+    pub(crate) x_offset: u32,
+    pub(crate) y_offset: u32,
+    pub(crate) z: i32,
+    pub(crate) scrollback_offset: u32,
+}
+
+/// Complete desired placements plus only the image bytes not already sent for
+/// the current live scene on this connection.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct SurfaceGraphicsScene {
+    pub(crate) assets: Vec<SurfaceGraphicsAsset>,
+    pub(crate) placements: Vec<SurfaceGraphicsPlacement>,
+    pub(crate) retained_assets: Vec<SurfaceGraphicsAssetKey>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum ClientShellPopupSize {
+    Cells(u16),
+    Percent(u8),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ClientShellPopupSurface {
+    pub(crate) terminal_id: String,
+    pub(crate) title: String,
+    pub(crate) width: Option<ClientShellPopupSize>,
+    pub(crate) height: Option<ClientShellPopupSize>,
+    pub(crate) frame: FrameData,
+    pub(crate) mouse_reporting: bool,
+    pub(crate) sgr_pixel_mouse: bool,
+    pub(crate) pixel_width: u32,
+    pub(crate) pixel_height: u32,
+}
+
+/// One server-rendered active-tab surface without sidebar, tab bar, or overlays.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct PaneSurfaceFrame {
+    pub(crate) boot_id: String,
+    pub(crate) projection_revision: u64,
+    pub(crate) surface_revision: u64,
+    pub(crate) frame: FrameData,
+    pub(crate) panes: Vec<PaneSurfacePane>,
+    pub(crate) splits: Vec<PaneSurfaceSplit>,
+    pub(crate) popup: Option<Box<ClientShellPopupSurface>>,
+    pub(crate) graphics: SurfaceGraphicsScene,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct PaneSurfacePatchRow {
+    pub(crate) x: u16,
+    pub(crate) y: u16,
+    pub(crate) cells: Vec<CellData>,
+}
+
+/// Incremental terminal-cell update against one committed complete pane surface.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct PaneSurfacePatch {
+    pub(crate) boot_id: String,
+    pub(crate) projection_revision: u64,
+    pub(crate) base_surface_revision: u64,
+    pub(crate) surface_revision: u64,
+    pub(crate) rows: Vec<PaneSurfacePatchRow>,
+    pub(crate) panes: Vec<PaneSurfacePane>,
+    pub(crate) cursor: Option<CursorState>,
+}
+
+/// Messages sent from the server to the client over the client protocol
+/// socket. Variant order mirrors herdr 0.9.0's `ServerMessage` exactly; the
+/// WebUI acts on `Welcome`, `Terminal`, `Graphics`, `ServerShutdown`,
+/// `Notify`, `Clipboard`, `WindowTitle`, and `TerminalBell`, and the rest
+/// exist so the proxy can decode and skip them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum ServerMessage {
+    /// Handshake response: server acknowledges (or rejects) the client.
     Welcome {
         version: u32,
         encoding: RenderEncoding,
         error: Option<String>,
     },
-    Frame(FrameData),
+
+    /// Terminal bytes to write directly for a terminal-ANSI client.
     Terminal(TerminalFrame),
+
+    /// Client-local Kitty graphics bytes to write directly to the host terminal.
     Graphics {
         bytes: Vec<u8>,
     },
+
+    /// Server is shutting down. Clients should exit gracefully.
     ServerShutdown {
         reason: Option<String>,
     },
+
+    /// A notification event (sound/toast) to be rendered locally by the client.
     Notify {
         kind: NotifyKind,
         message: String,
         body: Option<String>,
     },
+
+    /// OSC 52 clipboard data forwarded from a PTY through the server.
     Clipboard {
         data: String,
     },
+
+    /// Set the foreground client's outer terminal window title.
     WindowTitle {
         title: Option<String>,
     },
+
+    /// Client-local runtime config changed on disk; refresh it without reconnecting.
     ReloadSoundConfig,
+
+    /// Whether the client should currently capture host mouse input.
     MouseCapture {
         enabled: bool,
         /// True only while the focused pane requests DEC SGR pixel mode 1016.
-        /// Added in protocol 20+ (graphics streaming). A web client does not
-        /// act on it, so we only need to deserialize it.
-        #[serde(default)]
         sgr_pixels: bool,
     },
-    /// Whether the focused terminal requests Kitty report-all keyboard input.
-    /// The backend sends this so the client can adjust its input handling;
-    /// a web client does not act on it, so we only need to deserialize it.
-    /// Added in protocol 18.
-    KittyKeyboardReportAll {
-        enabled: bool,
-    },
-    /// Forwarded macOS prefix-mode ASCII input-source switch request. The
-    /// backend sends this to the foreground client so it can swap the host
-    /// keyboard layout; a web client has no host keyboard to switch, so we
-    /// only need to deserialize it without acting on it. Added in protocol 16.
-    PrefixInputSource {
-        active: bool,
-    },
-    /// Ring the foreground client's outer terminal for pane-originated BEL
-    /// characters. A web client can play a sound or visual bell. Added in
-    /// protocol 20.
+
+    /// Ring the foreground client's outer terminal for pane-originated BEL characters.
     TerminalBell {
         count: u16,
     },
+
     /// One validated Herdr-owned Kitty regular-file RGBA transmission.
-    /// A web client does not process local graphics files, so this only
-    /// needs to deserialize. Added in protocol 20+ (graphics streaming).
     GraphicsFile {
         path: String,
         expected_len: u64,
@@ -356,11 +925,55 @@ pub(crate) enum ServerMessage {
         transfer_id: u64,
         leading: Vec<u8>,
         control: String,
+        /// ClientShell upload identity. `None` targets a direct terminal client.
+        surface_asset: Option<SurfaceGraphicsAssetKey>,
     },
+
     /// Suppress a direct command that expired before terminal delivery.
-    /// Added in protocol 20+ (graphics streaming).
     GraphicsTransmissionRetired {
         transfer_id: u64,
         image_id: u32,
+    },
+
+    /// Initial metadata for a client-owned shell.
+    ClientShellSnapshot(Box<ClientShellSnapshot>),
+
+    /// Active-tab pane content rendered at a client-requested origin-relative size.
+    PaneSurface(PaneSurfaceFrame),
+
+    /// Ephemeral semantic notification delivered over the private control lane.
+    SemanticNotification(SemanticNotification),
+
+    /// Immediate endpoint error that the client-rendered shell must show.
+    ClientShellError {
+        message: String,
+    },
+
+    /// Exact Kitty keyboard flags requested by a directly attached terminal.
+    DirectTerminalKeyboardProtocol {
+        flags: u16,
+        modify_other_keys_level: u8,
+    },
+
+    /// Whether the focused pane or popup needs the shell host to report every key.
+    ClientShellKeyboardReportAll {
+        enabled: bool,
+    },
+
+    /// One ordered chunk of the final response to an endpoint operation.
+    ClientShellEndpointResponseChunk {
+        boot_id: String,
+        request_id: String,
+        final_chunk: bool,
+        data: Vec<u8>,
+    },
+
+    /// Incremental terminal-cell update for a previously committed pane surface.
+    PaneSurfacePatch(PaneSurfacePatch),
+
+    /// Extensible named control message for the stable client-owned endpoint protocol.
+    EndpointControl {
+        kind: String,
+        data: String,
     },
 }

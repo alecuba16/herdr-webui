@@ -671,6 +671,7 @@ if (globalThis.HerdrTempTerminal) {
     wsUrl,
     api,
     modalId: "tempTerminalModal",
+    onHerdrError: typeof handleHerdrErrorFrame === "function" ? handleHerdrErrorFrame : null,
     fontFamilyFn: terminalFontFamily,
     themeFn: terminalTheme,
     defaultFolderFn: defaultFolderPath,

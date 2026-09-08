@@ -38,6 +38,10 @@ let state = {
   supportsSessionSnapshot: false,
   backendMode: "builtin",
   sessionBackend: localStorage.getItem("herdr-session-backend") || "builtin",
+  // True until the first /api/versions response confirms which backend the
+  // server defaults to. Browsers used to hardcode a backend here and race
+  // loadVersions(); now the server's default (built-in) is authoritative.
+  serverBackendConfirmed: false,
   defaultFolder: "",
   workspaceShell: {},
 };
@@ -2551,7 +2555,11 @@ async function loadSessions() {
   try {
     const r = await api("/api/sessions");
     state.sessions = r.sessions || [];
-    state.sessionBackend = r.current_backend || currentSessionBackend();
+    // Do not clobber an explicit user backend choice: the server echoes the
+    // backend used for THIS request, so re-assigning it here can flip the
+    // browser to a different backend mid-session (e.g. when the session
+    // manager reopens after a failed refresh). Only adopt it when unset.
+    if (!state.sessionBackend) state.sessionBackend = r.current_backend || currentSessionBackend();
   } catch (e) {
     state.sessions = [{ name: state.session || "default", backend: currentSessionBackend(), running: false }];
   }
@@ -2620,6 +2628,50 @@ async function launchBackend(session = state.session, backend = currentSessionBa
   } finally {
     hideBlocking();
   }
+}
+// Graceful degradation: the backend handshake failed (protocol mismatch,
+// unreachable backend...). Disconnect, close the broken herdr session, and
+// offer a built-in session instead of leaving the terminal blocked.
+let herdrErrorOfferPending = false;
+async function handleHerdrErrorFrame(raw) {
+  let msg;
+  try {
+    msg = JSON.parse(raw);
+  } catch (_) {
+    return false;
+  }
+  if (!msg || msg.type !== "herdr_error") return false;
+  if (herdrErrorOfferPending) return true;
+  herdrErrorOfferPending = true;
+  try {
+    if (currentSessionBackend() === "external-herdr") {
+      // Detach from the unusable herdr session so stale sockets do not linger.
+      try {
+        await api("/api/session/close", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ session: state.session || "default", backend: "external-herdr" }),
+        });
+      } catch (_) {}
+    }
+    const detail = msg.message ? ` (${msg.message})` : "";
+    const wantsBuiltin = await askQuestion({
+      title: "herdr backend not reachable",
+      message:
+        `The external herdr backend could not be attached${detail}. ` +
+        "It has been disconnected. Start a built-in session instead?",
+      confirmText: "Use built-in session",
+    });
+    if (wantsBuiltin) {
+      goSession(state.session || "default", "builtin");
+      await launchBackend(state.session || "default", "builtin");
+    } else {
+      showSessionManager("herdr backend not reachable", detail ? detail.trim() : undefined);
+    }
+  } finally {
+    herdrErrorOfferPending = false;
+  }
+  return true;
 }
 async function closeCurrentSession() {
   if (!confirm(`Close current ${sessionBackendLabel(currentSessionBackend())} session?`)) return;
@@ -2805,13 +2857,16 @@ async function loadVersions() {
   try {
     const v = await api("/api/versions");
     state.backendMode = v.backend_mode || "builtin";
-    state.sessionBackend =
-      v.current_backend ||
-      (state.backendMode === "external" || state.backendMode === "external-herdr"
-        ? "external-herdr"
-        : state.backendMode === "builtin"
-          ? "builtin"
-          : state.sessionBackend || "builtin");
+    // The server is authoritative for the default backend. On first load
+    // (serverBackendConfirmed false) adopt the server's current backend so a
+    // stale localStorage value cannot lock the browser into a disabled or
+    // incompatible backend; afterwards keep the user's explicit choice.
+    if (!state.serverBackendConfirmed && v.current_backend) {
+      state.sessionBackend = v.current_backend;
+      localStorage.setItem("herdr-session-backend", state.sessionBackend);
+    }
+    state.serverBackendConfirmed = true;
+    if (!state.sessionBackend) state.sessionBackend = currentSessionBackend();
     const session = v.session || state.session || "default";
     const compat = v.compatibility || {},
       status =
