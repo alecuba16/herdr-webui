@@ -1,6 +1,7 @@
 (function () {
   const Tree = window.HerdrFileTree;
-  const state = { input: null, root: "~", path: "", entries: [], error: "", permissionRequired: false, filter: "", filterTimer: null, gitStatus: null };
+  const SEARCH_PAGE_SIZE = 100;
+  const state = { input: null, root: "~", path: "", entries: [], error: "", permissionRequired: false, filter: "", filterTimer: null, filterOffset: 0, filterDone: true, filterLoading: false, gitStatus: null };
 
   function esc(value) { return Tree.esc(value); }
 
@@ -107,6 +108,9 @@
   async function load(path) {
     state.path = path || "";
     state.filter = "";
+    state.filterOffset = 0;
+    state.filterDone = true;
+    state.filterLoading = false;
     clearTimeout(state.filterTimer);
     state.error = "";
     state.permissionRequired = false;
@@ -123,16 +127,33 @@
     render();
   }
 
-  async function search() {
-    if (!state.filter.trim()) { load(state.path); return; }
+  async function search(append = false) {
+    const term = state.filter.trim();
+    if (!term) { load(state.path); return; }
+    const offset = append ? state.filterOffset : 0;
+    if (append && state.filterLoading) return;
+    state.filterLoading = true;
+    // Re-render before the fetch so the loading hint shows while paging in
+    // more results; skip when appending so the scroll position survives.
+    if (!append) render();
     try {
-      const data = await api(`/api/file-browser/tree?cwd=${encodeURIComponent(state.root)}&path=${encodeURIComponent(state.path)}&q=${encodeURIComponent(state.filter.trim())}&limit=100${gitStatusEnabled() ? "&include_git_status=true" : ""}`);
-      state.entries = data.entries || [];
+      const data = await api(`/api/file-browser/tree?cwd=${encodeURIComponent(state.root)}&path=${encodeURIComponent(state.path)}&q=${encodeURIComponent(term)}&offset=${offset}&limit=${SEARCH_PAGE_SIZE}${gitStatusEnabled() ? "&include_git_status=true" : ""}`);
+      const entries = data.entries || [];
+      state.entries = append ? state.entries.concat(entries) : entries;
       state.gitStatus = data.git_status || null;
+      state.filterOffset = offset + entries.length;
+      // The server walks the tree with a visit cap, so `truncated` can be
+      // true even when a page comes back short. Keep paging available as
+      // long as the server reports more matches.
+      state.filterDone = !data.truncated || entries.length === 0;
+      state.error = "";
+      state.permissionRequired = false;
     } catch (error) {
       setError(error);
-      state.entries = [];
+      if (!append) state.entries = [];
+      state.filterDone = true;
     }
+    state.filterLoading = false;
     render();
   }
 
@@ -175,6 +196,12 @@
     if (callback) callback();
   }
 
+  function goToDefaultFolder() {
+    const target = splitPath(configuredDefaultFolder());
+    state.root = target.root;
+    load(target.path || "");
+  }
+
   function render() {
     let modal = document.getElementById("directoryPickerModal");
     if (!modal) {
@@ -188,6 +215,9 @@
     const selStart = refocus ? active.selectionStart : null;
     const selEnd = refocus ? active.selectionEnd : null;
     const filtering = !!state.filter.trim();
+    const appending = filtering && state.filterLoading && state.filterOffset > 0;
+    const tree = modal.querySelector(".directory-picker-tree");
+    const previousScroll = appending && tree ? tree.scrollTop : null;
     const canGoUp = state.path || state.root !== "/";
     const entries = Tree.applyGitStatus(filtering
       ? Tree.searchTreeEntries(state.entries)
@@ -202,7 +232,10 @@
       title: currentPath,
       canGoUp,
     });
-    modal.innerHTML = `<div class="directory-picker"><div class="directory-picker-head"><strong>Choose folder</strong><button class="git-ui-btn" onclick="HerdrDirectoryPicker.close()">Close</button></div><div class="directory-picker-path">${esc(currentPath)}</div><div class="directory-picker-actions"><button class="git-ui-btn" onclick="HerdrDirectoryPicker.home()">Home</button><button class="git-ui-btn primary" onclick="HerdrDirectoryPicker.selectCurrent()">Select this folder</button></div>${renderAccessError()}<div class="directory-picker-search"><input id="directoryPickerSearchInput" type="text" placeholder="Type to search..." value="${esc(state.filter)}" oninput="HerdrDirectoryPicker.filter(this.value)"></div><div class="directory-picker-tree">${currentRow}${Tree.renderEntries(entries, { callback: "HerdrDirectoryPicker", selectedPath: state.path })}</div></div>`;
+    const moreRow = filtering && !state.filterDone
+      ? `<div class="directory-picker-more"><button class="git-ui-btn" ${state.filterLoading ? "disabled" : ""} onclick="HerdrDirectoryPicker.loadMore()">${state.filterLoading ? "Loading…" : "Load more"}</button></div>`
+      : "";
+    modal.innerHTML = `<div class="directory-picker"><div class="directory-picker-head"><strong>Choose folder</strong><button class="git-ui-btn" onclick="HerdrDirectoryPicker.close()">Close</button></div><div class="directory-picker-path">${esc(currentPath)}</div><div class="directory-picker-actions"><button class="git-ui-btn" onclick="HerdrDirectoryPicker.home()">Home</button><button class="git-ui-btn" onclick="HerdrDirectoryPicker.defaultFolder()">Default dir</button><button class="git-ui-btn primary" onclick="HerdrDirectoryPicker.selectCurrent()">Select this folder</button></div>${renderAccessError()}<div class="directory-picker-search"><input id="directoryPickerSearchInput" type="text" placeholder="Type to search..." value="${esc(state.filter)}" oninput="HerdrDirectoryPicker.filter(this.value)"></div><div class="directory-picker-tree" onscroll="HerdrDirectoryPicker.treeScroll(this)">${currentRow}${Tree.renderEntries(entries, { callback: "HerdrDirectoryPicker", selectedPath: state.path })}${moreRow}</div></div>`;
     if (refocus) {
       const input = document.getElementById("directoryPickerSearchInput");
       if (input) {
@@ -211,6 +244,10 @@
         const end = selEnd == null ? start : Math.min(selEnd, input.value.length);
         input.setSelectionRange(start, end);
       }
+    }
+    if (previousScroll != null) {
+      const nextTree = modal.querySelector(".directory-picker-tree");
+      if (nextTree) nextTree.scrollTop = previousScroll;
     }
   }
 
@@ -258,11 +295,20 @@
       load(parentPath(state.path));
     },
     home() { state.root = "~"; load(""); },
+    defaultFolder: goToDefaultFolder,
     root() { state.root = "/"; load(""); },
     filter(value) {
       state.filter = String(value || "");
       clearTimeout(state.filterTimer);
       state.filterTimer = setTimeout(() => search(), 200);
+    },
+    loadMore() { search(true); },
+    treeScroll(node) {
+      // Infinite scroll: when the user nears the bottom of the result
+      // list, fetch the next page of matches and append it.
+      if (!state.filter.trim() || state.filterLoading || state.filterDone) return;
+      if (node.scrollTop + node.clientHeight < node.scrollHeight - 80) return;
+      search(true);
     },
   };
 })();
