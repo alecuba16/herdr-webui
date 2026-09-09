@@ -6581,6 +6581,54 @@ mod tests {
         fs::remove_dir_all(&checkout).ok();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn builtin_worktree_open_resolves_symlinked_path_to_existing_workspace() {
+        let root = std::env::temp_dir().join(format!(
+            "herdr-webui-wt-symlink-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let checkout = root.join("checkout");
+        fs::create_dir_all(&checkout).unwrap();
+        let link = root.join("link-to-checkout");
+        std::os::unix::fs::symlink(&checkout, &link).unwrap();
+        let state = BuiltinState::new(
+            std::env::temp_dir(),
+            Some(default_shell()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+
+        let first = state
+            .handle_request_inner(
+                "worktree.open",
+                json!({ "path": checkout.to_string_lossy() }),
+            )
+            .unwrap();
+        let first_id = first["workspace"]["workspace_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // Opening through the symlink must focus the same workspace instead
+        // of creating a duplicate (canonicalized path matching).
+        let second = state
+            .handle_request_inner("worktree.open", json!({ "path": link.to_string_lossy() }))
+            .unwrap();
+        assert_eq!(second["already_open"], true);
+        assert_eq!(
+            second["workspace"]["workspace_id"].as_str().unwrap(),
+            first_id
+        );
+
+        let workspaces = state.handle_request("seed", "workspace.list", json!({}));
+        let workspaces = workspaces["result"]["workspaces"].as_array().unwrap();
+        assert_eq!(workspaces.len(), 1);
+        fs::remove_dir_all(&root).ok();
+    }
+
     #[test]
     fn builtin_state_starts_without_auto_workspace() {
         let state = BuiltinState::new(
