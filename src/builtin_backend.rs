@@ -1267,7 +1267,59 @@ impl BuiltinState {
             .or_else(|| optional_string(&params, "cwd"))
             .ok_or_else(|| "path or cwd is required".to_string())?;
         let label = optional_string(&params, "label");
-        let workspace = self.create_workspace(Some(PathBuf::from(&path)), label, true)?;
+        let canonical_path =
+            std::fs::canonicalize(Path::new(&path)).unwrap_or_else(|_| PathBuf::from(&path));
+        // Herdr parity: opening a checkout that is already open as a
+        // workspace focuses that workspace instead of creating a duplicate.
+        let existing_workspace = {
+            let mut data = self
+                .data
+                .lock()
+                .map_err(|_| "state unavailable".to_string())?;
+            let existing = data
+                .workspaces
+                .values()
+                .find(|workspace| {
+                    std::fs::canonicalize(&workspace.cwd).unwrap_or_else(|_| workspace.cwd.clone())
+                        == canonical_path
+                })
+                .map(|workspace| workspace.workspace_id.clone());
+            match existing {
+                Some(workspace_id) => {
+                    // Herdr parity: a supplied label renames the existing
+                    // workspace even when it is already open.
+                    if let Some(label) = &label {
+                        if let Some(workspace) = data.workspaces.get_mut(&workspace_id) {
+                            workspace.label = label.clone();
+                        }
+                    }
+                    let workspace = data
+                        .workspaces
+                        .get(&workspace_id)
+                        .map(|workspace| workspace_json(workspace, &data))
+                        .unwrap_or_else(|| json!({}));
+                    data.focused_workspace_id = Some(workspace_id.clone());
+                    data.focused_tab_id = data
+                        .workspaces
+                        .get(&workspace_id)
+                        .and_then(|workspace| workspace.tab_ids.first().cloned());
+                    data.focused_pane_id = data
+                        .focused_tab_id
+                        .as_ref()
+                        .and_then(|tab_id| data.tabs.get(tab_id))
+                        .and_then(|tab| tab.pane_ids.first().cloned());
+                    Some(workspace)
+                }
+                None => None,
+            }
+        };
+        let (workspace, already_open) = match existing_workspace {
+            Some(workspace) => (workspace, true),
+            None => (
+                self.create_workspace(Some(PathBuf::from(&path)), label, true)?,
+                false,
+            ),
+        };
         let workspace_id = workspace["workspace_id"]
             .as_str()
             .unwrap_or_default()
@@ -1288,7 +1340,7 @@ impl BuiltinState {
             "tab": tab,
             "root_pane": pane,
             "worktree": { "path": path, "branch": optional_string(&params, "branch"), "is_bare": false, "is_detached": false, "is_prunable": false, "is_linked_worktree": true, "open_workspace_id": workspace_id, "label": workspace_id },
-            "already_open": false,
+            "already_open": already_open,
         }))
     }
 
@@ -6437,6 +6489,96 @@ mod tests {
             .unwrap_err();
 
         assert!(err.contains("does not implement worktree.remove"));
+    }
+
+    #[test]
+    fn builtin_worktree_open_focuses_existing_workspace_instead_of_duplicating() {
+        let state = BuiltinState::new(
+            std::env::temp_dir(),
+            Some(default_shell()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+
+        let first = state
+            .handle_request_inner(
+                "worktree.open",
+                json!({ "path": std::env::temp_dir().to_string_lossy() }),
+            )
+            .unwrap();
+        let first_id = first["workspace"]["workspace_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(first["already_open"], false);
+
+        // Opening the same checkout again must focus the existing workspace
+        // instead of creating a duplicate one (Herdr parity).
+        let second = state
+            .handle_request_inner(
+                "worktree.open",
+                json!({ "path": std::env::temp_dir().to_string_lossy() }),
+            )
+            .unwrap();
+        assert_eq!(second["already_open"], true);
+        assert_eq!(
+            second["workspace"]["workspace_id"].as_str().unwrap(),
+            first_id
+        );
+        assert_eq!(
+            state.data.lock().unwrap().focused_workspace_id.as_deref(),
+            Some(first_id.as_str())
+        );
+
+        let workspaces = state.handle_request("seed", "workspace.list", json!({}));
+        let workspaces = workspaces["result"]["workspaces"].as_array().unwrap();
+        assert_eq!(workspaces.len(), 1, "no duplicate workspace is created");
+
+        // A supplied label renames the already-open workspace (Herdr parity).
+        let third = state
+            .handle_request_inner(
+                "worktree.open",
+                json!({
+                    "path": std::env::temp_dir().to_string_lossy(),
+                    "label": "custom-label"
+                }),
+            )
+            .unwrap();
+        assert_eq!(third["already_open"], true);
+        assert_eq!(third["workspace"]["label"], "custom-label");
+    }
+
+    #[test]
+    fn builtin_worktree_open_creates_workspace_for_new_checkout() {
+        let dir = std::env::temp_dir();
+        let checkout = dir.join(format!(
+            "herdr-webui-wt-open-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        fs::create_dir_all(&checkout).unwrap();
+        let state = BuiltinState::new(
+            dir.clone(),
+            Some(default_shell()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+
+        let result = state
+            .handle_request_inner(
+                "worktree.open",
+                json!({ "path": checkout.to_string_lossy() }),
+            )
+            .unwrap();
+
+        assert_eq!(result["already_open"], false);
+        assert_eq!(
+            result["workspace"]["cwd"].as_str().unwrap(),
+            checkout.to_string_lossy()
+        );
+        assert!(result["tab"]["tab_id"].as_str().is_some());
+        assert!(result["root_pane"]["pane_id"].as_str().is_some());
+        fs::remove_dir_all(&checkout).ok();
     }
 
     #[test]
