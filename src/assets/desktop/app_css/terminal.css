@@ -277,7 +277,7 @@ input {
   position: absolute;
   inset: 52px 0 0 0;
   z-index: 20;
-  background: var(--bg);
+  background: #000a;
   padding: 32px;
 }
 .session-manager h1 {

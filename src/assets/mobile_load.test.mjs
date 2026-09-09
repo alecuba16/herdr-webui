@@ -518,6 +518,33 @@ describe("mobile bundle load", () => {
     match(source, /state\.backendMode === "builtin"/);
   });
 
+  it("shows a backend badge with distinct herdr and built-in colors in the mobile header", async () => {
+    const mobileCss = readFileSync(new URL("./mobile/app.css", import.meta.url), "utf8");
+    match(source, /id="mobileBackendBadge"/);
+    match(source, /function syncBackendBadge\(\)/);
+    match(source, /badge\.className = `mobile-backend-badge \$\{sessionBackendClass\(backend\)\}`/);
+    match(mobileCss, /\.mobile-context \.mobile-backend-badge\.backend-builtin \{[\s\S]*?color: var\(--backend-builtin\)/);
+    match(mobileCss, /\.mobile-context \.mobile-backend-badge\.backend-herdr \{[\s\S]*?color: var\(--backend-herdr\)/);
+    // Herdr keeps a distinct mauve hue; built-in stays in the accent family.
+    match(mobileCss, /--backend-builtin: var\(--accent\)/);
+    match(mobileCss, /--backend-herdr: #cba6f7/);
+    match(mobileCss, /--backend-herdr: #8839ef/);
+
+    // The badge switches label and class when the backend changes. The fallback
+    // to built-in on refresh is covered elsewhere; here we exercise the badge
+    // itself without the sessions-gating (the mock /api/sessions reports no
+    // herdr install, so refresh alone would always land on built-in).
+    for (const [storedBackend, label, cls] of [["builtin", "built-in", "backend-builtin"], ["external-herdr", "Herdr", "backend-herdr"]]) {
+      const ctx = context("/session/default/workspace/w1");
+      ctx.localStorage.setItem("herdr-session-backend", storedBackend);
+      vm.runInContext(source, ctx);
+      ctx.HerdrMobile.showScreen("home");
+      const badge = ctx.document.getElementById("mobileBackendBadge");
+      equal(badge.textContent, label);
+      ok(badge.className.includes(cls));
+    }
+  });
+
 
   it("coalesces mobile event socket refreshes and pauses reconnect while hidden", async () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");

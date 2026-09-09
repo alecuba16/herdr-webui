@@ -28,6 +28,8 @@ body {
   --border2: #45475a;
   --muted: #a6adc8;
   --accent: #89b4fa;
+  --backend-builtin: var(--accent);
+  --backend-herdr: #cba6f7;
   --editor-caret: #f2f5ff;
   --editor-caret-dim: #a6adc8;
   --git-modified-color: #e9d07a;
@@ -69,6 +71,8 @@ body.light {
   --border2: #7a8296;
   --muted: #525769;
   --accent: #1957d2;
+  --backend-builtin: var(--accent);
+  --backend-herdr: #8839ef;
   --editor-caret: #25253d;
   --editor-caret-dim: #525769;
   --git-modified-color: #7a4d00;

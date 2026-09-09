@@ -2497,8 +2497,11 @@ function setupSessionChrome() {
     b.id = "footerSessionButton";
     b.className = "footer-session-button";
     b.title = "Session manager";
-    b.textContent = state.session || "default";
-    b.onclick = () => showSessionManager(state.backendOnline ? "Session manager" : "Herdr session offline");
+    b.textContent = footerSessionButtonLabel();
+    b.onclick = () =>
+      showSessionManager(
+        state.backendOnline ? "Session manager" : `${sessionBackendLabel(currentSessionBackend())} session offline`,
+      );
     const brandText = brand && brand.querySelector(".brand-text");
     if (brandText) brandText.appendChild(b);
     else footer.appendChild(b);
@@ -2508,6 +2511,7 @@ function setupSessionChrome() {
     if (button && brandText && button.parentNode !== brandText)
       brandText.appendChild(button);
   }
+  updateFooterSessionButton();
   if (versionsEl && versionsEl.parentNode !== footer) {
     versionsEl.remove();
     versionsEl.classList.add("side-footer", "footer-meta");
@@ -2537,8 +2541,14 @@ function setupSessionChrome() {
     m.className = "session-manager";
     m.id = "sessionManager";
     m.innerHTML =
-      '<div class="session-card"><div class="session-hero"><div><h1 id="sessionManagerTitle">Sessions</h1><p id="sessionManagerText">Choose a built-in or Herdr backend session to open.</p></div><div class="session-current"><span class="dot unknown"></span><span id="sessionCurrentLabel">default · built-in</span></div></div><div class="session-actions"><div class="session-list" id="sessionList"></div><div class="session-line session-new"><span><strong>Create or target session</strong><small>Choose where to create/open it. Built-in starts inside WebUI. Herdr starts external daemon.</small></span><span class="session-controls"><button class="session-button primary" id="newBuiltinSessionTarget">New built-in</button><button class="session-button" id="newHerdrSessionTarget">New Herdr</button></span></div></div></div>';
+      '<div class="session-card"><div class="session-hero"><div><h1 id="sessionManagerTitle">Sessions</h1><p id="sessionManagerText">Choose a built-in or Herdr backend session to open.</p></div><div class="session-current"><span class="dot unknown"></span><span id="sessionCurrentLabel">default · built-in</span></div><button class="mini settings-close" id="sessionManagerClose" title="Close" aria-label="Close session manager">✕</button></div><div class="session-actions"><div class="session-list" id="sessionList"></div><div class="session-line session-new"><span><strong>Create or target session</strong><small>Choose where to create/open it. Built-in starts inside WebUI. Herdr starts external daemon.</small></span><span class="session-controls"><button class="session-button primary" id="newBuiltinSessionTarget">New built-in</button><button class="session-button" id="newHerdrSessionTarget">New Herdr</button></span></div></div></div>';
     document.querySelector(".main").prepend(m);
+    // Backdrop click closes: only clicks on the manager itself (outside the
+    // card) dismiss it.
+    m.addEventListener("click", (e) => {
+      if (e.target === m) hideSessionManager();
+    });
+    el("sessionManagerClose").onclick = hideSessionManager;
     el("newBuiltinSessionTarget").onclick = () => newSessionTarget("builtin");
     el("newHerdrSessionTarget").onclick = () => newSessionTarget("external-herdr");
   }
@@ -2546,6 +2556,20 @@ function setupSessionChrome() {
 }
 function sessionBackendLabel(backend) {
   return backend === "external-herdr" ? "Herdr" : "built-in";
+}
+function sessionBackendClass(backend) {
+  return backend === "external-herdr" ? "backend-herdr" : "backend-builtin";
+}
+function footerSessionButtonLabel() {
+  const backend = currentSessionBackend();
+  return `${state.session || "default"} · ${sessionBackendLabel(backend)}`;
+}
+function updateFooterSessionButton() {
+  const button = el("footerSessionButton");
+  if (!button) return;
+  button.textContent = footerSessionButtonLabel();
+  button.classList.remove("backend-builtin", "backend-herdr");
+  button.classList.add(sessionBackendClass(currentSessionBackend()));
 }
 function currentSessionBackend() {
   return state.sessionBackend || state.backendMode || "builtin";
@@ -2596,7 +2620,7 @@ function renderSessionRows() {
       const backend = s.backend || "external-herdr";
       const active = s.name === state.session && backend === currentSessionBackend();
       const status = `<span class="status-pill ${s.running ? "running" : "offline"}">${s.running ? "running" : "offline"}</span>`;
-      const backendPill = `<span class="status-pill">${escapeHtml(s.backend_label || sessionBackendLabel(backend))}</span>`;
+      const backendPill = `<span class="status-pill ${sessionBackendClass(backend)}">${escapeHtml(s.backend_label || sessionBackendLabel(backend))}</span>`;
       const controls = active
         ? `<span class="session-controls">${backendPill}<button class="session-button primary" onclick="event.stopPropagation();launchBackend('${escapeAttr(s.name)}','${escapeAttr(backend)}')">Launch</button><button class="session-button" onclick="event.stopPropagation();refresh()">Retry</button><button class="session-button" onclick="event.stopPropagation();resetSession()">Reset workspaces</button><button class="session-button danger" onclick="event.stopPropagation();closeCurrentSession()">Close</button></span>`
         : `<span class="session-controls">${backendPill}${status}</span>`;
@@ -2605,27 +2629,37 @@ function renderSessionRows() {
         : s.running
           ? `click to switch to this ${sessionBackendLabel(backend)} session`
           : `click to target this offline ${sessionBackendLabel(backend)} session`;
-      return `<div class="session-line ${active ? "active" : ""}" onclick="goSession('${escapeAttr(s.name)}','${escapeAttr(backend)}')"><span><strong>${escapeHtml(s.name)}</strong><small>${escapeHtml(hint)}</small></span>${controls}</div>`;
+      return `<div class="session-line ${sessionBackendClass(backend)} ${active ? "active" : ""}" onclick="goSession('${escapeAttr(s.name)}','${escapeAttr(backend)}')"><span><strong>${escapeHtml(s.name)}</strong><small>${escapeHtml(hint)}</small></span>${controls}</div>`;
     })
     .join("");
 }
-async function showSessionManager(title, text) {
+// Tracks whether the session manager was auto-opened by a failed refresh
+// (as opposed to opened by the user). Background refreshes only auto-hide
+// an auto-opened manager; a user-opened one stays visible.
+let sessionManagerAutoOpened = false;
+async function showSessionManager(title, text, { auto = false } = {}) {
   await loadSessions();
   const titleEl = el("sessionManagerTitle"),
     textEl = el("sessionManagerText"),
     manager = el("sessionManager"),
     list = el("sessionList"),
-    current = el("sessionCurrentLabel");
+    current = el("sessionCurrentLabel"),
+    currentDot = manager && manager.querySelector(".session-current .dot");
   if (titleEl) titleEl.textContent = title || "Session manager";
   if (textEl)
     textEl.textContent =
       text || `Current target: ${state.session || "default"} · ${sessionBackendLabel(currentSessionBackend())}`;
   if (current)
     current.textContent = `${state.session || "default"} · ${sessionBackendLabel(currentSessionBackend())}`;
+  if (currentDot) {
+    currentDot.className = `dot ${sessionBackendClass(currentSessionBackend())}`;
+  }
   if (list) list.innerHTML = renderSessionRows();
-  // Gate the external-Herdr offer on a detected, compatible herdr install.
+  // Hide (not disable) the external-Herdr offer when no compatible herdr
+  // install exists so the manager stays clean; built-in remains the default.
   const herdrButton = el("newHerdrSessionTarget");
   if (herdrButton) {
+    herdrButton.hidden = !state.herdrCompatible;
     if (state.herdrCompatible) {
       herdrButton.disabled = false;
       herdrButton.title = state.herdrVersion
@@ -2639,10 +2673,12 @@ async function showSessionManager(title, text) {
       herdrButton.title = "No compatible herdr install detected; install herdr to use external Herdr sessions";
     }
   }
+  sessionManagerAutoOpened = !!auto;
   if (manager) manager.style.display = "block";
 }
 function hideSessionManager() {
   const manager = el("sessionManager");
+  sessionManagerAutoOpened = false;
   if (manager) manager.style.display = "none";
 }
 async function launchBackend(session = state.session, backend = currentSessionBackend()) {
@@ -2944,12 +2980,10 @@ async function loadVersions() {
       if (state.herdrAvailable && !state.herdrCompatible)
         versionsEl.title += ` · herdr ${state.herdrVersion || "?"} is not compatible with this WebUI build`;
     }
-    const button = el("footerSessionButton");
-    if (button) button.textContent = `${state.session || session} · ${sessionBackendLabel(currentSessionBackend())}`;
+    updateFooterSessionButton();
   } catch (e) {
     if (versionsEl) versionsEl.textContent = "webui - · backend offline";
-    const button = el("footerSessionButton");
-    if (button) button.textContent = `${state.session || "default"} · ${sessionBackendLabel(currentSessionBackend())}`;
+    updateFooterSessionButton();
   }
 }
 function sessionPrefix() {
@@ -3294,9 +3328,10 @@ async function refresh() {
     await refreshOnline(seq);
     if (seq !== refreshSeq) return;
     state.backendOnline = true;
-    hideSessionManager();
-    const button = el("footerSessionButton");
-    if (button) button.textContent = state.session || "default";
+    // Only auto-hide the session manager when it was auto-opened by a
+    // previous failed refresh; a user-opened manager must stay visible.
+    if (sessionManagerAutoOpened) hideSessionManager();
+    updateFooterSessionButton();
   } catch (e) {
     state.backendOnline = false;
     state.workspaces = [];
@@ -3304,12 +3339,12 @@ async function refresh() {
     state.panes = [];
     state.agents = [];
     render();
-    showSessionManager(
-      "Herdr session offline",
+    await showSessionManager(
+      `${sessionBackendLabel(currentSessionBackend())} session offline`,
       `No backend reachable for session ${state.session || "default"}: ${e.message || e}`,
+      { auto: true },
     );
-    const button = el("footerSessionButton");
-    if (button) button.textContent = (state.session || "default") + " offline";
+    updateFooterSessionButton();
   }
 }
 function scheduleRefresh(delay = 500) {

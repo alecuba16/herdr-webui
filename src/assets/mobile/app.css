@@ -36,6 +36,8 @@ body {
   --git-conflict-color: #fab387;
   --accent-fg: #11111b;
   --accent-1: var(--accent);
+  --backend-builtin: var(--accent);
+  --backend-herdr: #cba6f7;
   --accent-soft: color-mix(in srgb, var(--accent), transparent 84%);
   --accent-2: var(--accent-soft);
   --accent-border: color-mix(in srgb, var(--accent), transparent 45%);
@@ -82,6 +84,8 @@ body.light {
   --git-conflict-color: #8a4708;
   --accent-fg: #eff1f5;
   --accent-1: var(--accent);
+  --backend-builtin: var(--accent);
+  --backend-herdr: #8839ef;
   --accent-soft: color-mix(in srgb, var(--accent), transparent 84%);
   --accent-2: var(--accent-soft);
   --accent-border: color-mix(in srgb, var(--accent), transparent 45%);
@@ -141,6 +145,30 @@ body.light {
   color: var(--muted);
   font-size: 12px;
   margin-top: 2px;
+}
+.mobile-context .mobile-backend-badge {
+  align-self: flex-start;
+  border: 1px solid var(--border2);
+  border-radius: 999px;
+  color: var(--muted);
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+  margin-top: 4px;
+  overflow: visible;
+  padding: 3px 7px;
+  text-overflow: clip;
+  white-space: nowrap;
+  width: auto;
+}
+.mobile-context .mobile-backend-badge.backend-builtin {
+  border-color: var(--backend-builtin);
+  color: var(--backend-builtin);
+}
+.mobile-context .mobile-backend-badge.backend-herdr {
+  border-color: var(--backend-herdr);
+  color: var(--backend-herdr);
 }
 .mobile-btn {
   min-width: 44px;
