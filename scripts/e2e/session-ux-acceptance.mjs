@@ -173,11 +173,19 @@ if (manager.herdrHidden === false) {
 }
 
 // ---------- Mobile layout ----------
+// The mobile bundle loads its script chain after navigation; poll for the
+// badge instead of fixed sleeps (fixed waits raced the bundle load and
+// produced a false FAIL).
 await cdp.evalExpr('localStorage.setItem("herdr-web-layout", "mobile")');
 await cdp.send('Page.navigate', { url: URL });
-await new Promise((r) => setTimeout(r, 2500));
+await new Promise((r) => setTimeout(r, 1500));
 const mobile = await cdp.evalExpr(`(async () => {
-  await new Promise((r) => setTimeout(r, 800));
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline) {
+    const badge = document.getElementById('mobileBackendBadge');
+    if (badge && document.documentElement.dataset.herdrLayout === 'mobile') break;
+    await new Promise((r) => setTimeout(r, 250));
+  }
   const badge = document.getElementById('mobileBackendBadge');
   const styles = badge ? getComputedStyle(badge) : null;
   return {
@@ -186,7 +194,6 @@ const mobile = await cdp.evalExpr(`(async () => {
     badgeText: badge ? badge.textContent : '',
     badgeClass: badge ? badge.className : '',
     badgeColor: styles ? styles.color : '',
-    borderColor: styles ? styles.borderColor : '',
   };
 })()`, true);
 check(
@@ -197,6 +204,37 @@ check(
     && /backend-builtin/.test(mobile.badgeClass || '')
     && !!mobile.badgeColor,
   `layout=${mobile.layout} text="${mobile.badgeText}" class="${mobile.badgeClass}" color=${mobile.badgeColor}`,
+);
+// The hidden attribute must actually hide the New Herdr offer: a CSS
+// display rule on .session-button previously defeated it (real-browser
+// regression caught by this suite).
+const hiddenCheck = await cdp.evalExpr(`(async () => {
+  localStorage.setItem('herdr-web-layout', 'desktop');
+  location.reload();
+  return true;
+})()`, true);
+await new Promise((r) => setTimeout(r, 2000));
+const hidden = await cdp.evalExpr(`(async () => {
+  await new Promise((r) => setTimeout(r, 500));
+  const install = await fetch('/api/versions').then((r) => r.json());
+  const compatible = install.herdr_install && install.herdr_install.compatible;
+  const herdrBtn = document.getElementById('newHerdrSessionTarget');
+  if (!herdrBtn) return { present: false };
+  document.getElementById('footerSessionButton').click();
+  await new Promise((r) => setTimeout(r, 900));
+  return {
+    present: true,
+    compatible,
+    hiddenAttr: herdrBtn.hidden,
+    computedHidden: getComputedStyle(herdrBtn).display === 'none',
+  };
+})()`, true);
+check(
+  'New Herdr offer hidden state matches herdr compatibility in the real DOM',
+  hidden.present === true
+    && hidden.hiddenAttr === !hidden.compatible
+    && (hidden.compatible || hidden.computedHidden === true),
+  `compatible=${hidden.compatible} hiddenAttr=${hidden.hiddenAttr} computedHidden=${hidden.computedHidden}`,
 );
 await cdp.evalExpr('localStorage.removeItem("herdr-web-layout")');
 

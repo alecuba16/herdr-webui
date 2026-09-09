@@ -28,7 +28,19 @@ What it does:
      really on disk**
    - locking a dirty file asks "Discard unsaved changes..." and discards
    - Cmd+S on a locked file makes no disk write
-6. Tears everything down (pass `--keep` to leave the stack up for debugging).
+6. Runs `session-ux-acceptance.mjs` over CDP against the same server:
+   - fresh browser lands on the built-in backend (`default · built-in` footer,
+     accent-family color, `backend-builtin` class)
+   - session manager opens via the footer button, shows the backend-aware
+     current label, and carries the ✕ close button
+   - session rows and status pills carry backend color classes
+   - ✕ button and backdrop click both close the manager
+   - picking an external herdr row (when a compatible install exists) flips
+     the footer to `· Herdr` with the mauve `backend-herdr` color
+   - the New Herdr offer's hidden state matches the detected install in the
+     real DOM (the `hidden` attribute must actually hide the button)
+   - the mobile layout renders the backend badge with matching colors
+7. Tears everything down (pass `--keep` to leave the stack up for debugging).
 
 ## Environment knobs
 
