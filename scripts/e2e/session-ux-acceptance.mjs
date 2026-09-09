@@ -7,6 +7,7 @@
 //   - external Herdr offer state matches the installed herdr (0.9.0 here)
 //   - switching to an external herdr session flips label + colors
 //   - mobile layout renders the backend badge with matching colors
+//   - light (latte) theme renders the backend colors with its own palette
 import { connectToPage } from './cdp-driver.mjs';
 
 const URL = process.env.E2E_BASE_URL || 'https://127.0.0.1:8899/';
@@ -238,9 +239,99 @@ check(
 );
 await cdp.evalExpr('localStorage.removeItem("herdr-web-layout")');
 
+// ---------- Light theme (latte) ----------
+// The --backend-* palette has separate dark (mocha) and light (latte) values;
+// verify the light variants actually render in the real browser.
+await cdp.send('Page.navigate', { url: URL });
+await new Promise((r) => setTimeout(r, 1500));
+await cdp.evalExpr('localStorage.setItem("herdr-web-theme", "light")');
+await cdp.send('Page.navigate', { url: URL });
+await new Promise((r) => setTimeout(r, 2500));
+const lightBuiltin = await cdp.evalExpr(`(async () => {
+  const deadline = Date.now() + 10000;
+  while (Date.now() < deadline) {
+    if (document.getElementById('footerSessionButton')) break;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  const button = document.getElementById('footerSessionButton');
+  const styles = button ? getComputedStyle(button) : null;
+  return {
+    light: document.body.classList.contains('light'),
+    footerText: button ? button.textContent : '',
+    footerColor: styles ? styles.color : '',
+  };
+})()`, true);
+check(
+  'light theme: body.light active and builtin footer keeps latte accent rgb(25, 87, 210)',
+  lightBuiltin.light === true
+    && /built-in/.test(lightBuiltin.footerText || '')
+    && lightBuiltin.footerColor === 'rgb(25, 87, 210)',
+  `light=${lightBuiltin.light} footer="${lightBuiltin.footerText}" color=${lightBuiltin.footerColor}`,
+);
+const lightHerdr = await cdp.evalExpr(`(async () => {
+  document.getElementById('footerSessionButton').click();
+  await new Promise((r) => setTimeout(r, 900));
+  const rows = [...document.querySelectorAll('#sessionList .session-line')];
+  const row = rows.find((r) => /backend-herdr/.test(r.className));
+  if (!row) return { found: false };
+  row.click();
+  await new Promise((r) => setTimeout(r, 2500));
+  const button = document.getElementById('footerSessionButton');
+  const styles = button ? getComputedStyle(button) : null;
+  return { found: true, text: button.textContent, color: styles ? styles.color : '' };
+})()`, true);
+check(
+  'light theme: herdr footer switches to latte mauve rgb(136, 57, 239)',
+  lightHerdr.found === true
+    && /Herdr/.test(lightHerdr.text || '')
+    && lightHerdr.color === 'rgb(136, 57, 239)',
+  `found=${lightHerdr.found} text="${lightHerdr.text}" color=${lightHerdr.color}`,
+);
+const lightMobile = await cdp.evalExpr(`(async () => {
+  document.getElementById('footerSessionButton').click();
+  await new Promise((r) => setTimeout(r, 800));
+  const rows = [...document.querySelectorAll('#sessionList .session-line')];
+  const row = rows.find((r) => /backend-builtin/.test(r.className));
+  if (row) row.click();
+  await new Promise((r) => setTimeout(r, 1500));
+  localStorage.setItem('herdr-web-layout', 'mobile');
+  location.reload();
+  return true;
+})()`, true);
+await new Promise((r) => setTimeout(r, 2500));
+const lightMobileBadge = await cdp.evalExpr(`(async () => {
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline) {
+    const badge = document.getElementById('mobileBackendBadge');
+    if (badge && document.documentElement.dataset.herdrLayout === 'mobile') break;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  const badge = document.getElementById('mobileBackendBadge');
+  const styles = badge ? getComputedStyle(badge) : null;
+  return {
+    light: document.body.classList.contains('light'),
+    text: badge ? badge.textContent : '',
+    color: styles ? styles.color : '',
+  };
+})()`, true);
+check(
+  'light theme: mobile badge renders builtin in latte accent rgb(25, 87, 210)',
+  lightMobileBadge.light === true
+    && /built-in/.test(lightMobileBadge.text || '')
+    && lightMobileBadge.color === 'rgb(25, 87, 210)',
+  `light=${lightMobileBadge.light} text="${lightMobileBadge.text}" color=${lightMobileBadge.color}`,
+);
+// Restore theme/layout/backend so the run leaves a clean state.
+await cdp.evalExpr(`(async () => {
+  localStorage.setItem('herdr-web-theme', 'auto');
+  localStorage.removeItem('herdr-web-layout');
+  return true;
+})()`, true);
+
 // ---------- Summary ----------
 const failed = results.filter((r) => !r.ok);
 console.log(`\n${results.length - failed.length}/${results.length} session UX acceptance checks passed`);
+await cdp.close();
 if (failed.length) {
   process.exit(1);
 }
