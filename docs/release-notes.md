@@ -1,5 +1,18 @@
 # Release notes
 
+## 0.4.17 Release Notes
+- Built-in `worktree.open` now implements Herdr's already-open semantics:
+  opening a checkout that is already open as a workspace focuses that
+  workspace and returns `already_open: true` instead of creating a duplicate
+  workspace with a second shell. Checkouts are matched by canonicalized
+  filesystem path, so symlinks and relative paths resolve to the same
+  workspace. External Herdr backends already behaved this way. A supplied
+  `label` renames the already-open workspace, matching external Herdr.
+- Docs note: opening a worktree always provisions a workspace with one panel
+  and a live shell. This is a contract shared with external Herdr, which
+  cannot represent a panel-less workspace either (its worktree.open handler
+  expects the new workspace to own an active tab and root pane).
+
 ## 0.4.16 Release Notes
 - Search palette section headers (e.g. Recent workspaces) now use the
   panel2 background color so the collapsible header buttons read as a

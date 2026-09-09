@@ -115,6 +115,8 @@ Panels:
 Worktrees:
 
 - Built-in backend mode owns `worktree.list`, `worktree.open`, and `worktree.create` with local Git commands. Built-in `worktree.remove` is intentionally blocked until destructive safety validation lands.
+- Opening a worktree always provisions a workspace with one panel and a live shell; neither Herdr nor the built-in backend can represent a panel-less workspace, so the panel is part of the open contract, not an extra.
+- Built-in `worktree.open` now matches Herdr's already-open semantics: when the checkout is already open as a workspace, the request focuses that workspace and returns `already_open: true` instead of creating a duplicate workspace. Worktree paths are compared by their canonicalized filesystem path. A supplied `label` renames the already-open workspace, matching external Herdr.
 - With external Herdr `0.7.1` and newer, WebUI uses Herdr's native `worktree.create` support for existing local branches and deferred Git work.
 - With external Herdr `0.7.0`, WebUI keeps a legacy fallback for creating a checkout from an existing branch when a checkout path is supplied.
 - Desktop worktree creation uses `Worktree default directory` to generate checkout paths from repo name and branch. Relative defaults resolve from the repo root, for example `../worktrees`.
