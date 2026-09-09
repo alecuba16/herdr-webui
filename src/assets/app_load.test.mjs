@@ -2272,6 +2272,9 @@ describe("app bundle load", () => {
     match(workspacesCss, /\.session-line\.backend-herdr\.active \{[\s\S]*?background: color-mix\(in srgb, var\(--backend-herdr\), transparent 88%\)/);
     match(workspacesCss, /\.session-current \.dot\.backend-herdr \{[\s\S]*?background: var\(--backend-herdr\)/);
     match(terminalCss, /\.session-manager \{[\s\S]*?background: #000a/);
+    // The hidden attribute must beat .session-button's display rule, or the
+    // hidden New Herdr offer still renders (real-browser regression).
+    match(workspacesCss, /\.session-button\[hidden\] \{[\s\S]*?display: none/);
   });
 
   it("renders backend color classes on session rows", async () => {

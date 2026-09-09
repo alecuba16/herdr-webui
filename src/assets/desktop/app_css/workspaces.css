@@ -432,6 +432,11 @@ body.light .agent-sort-chip.blue {
     color 0.15s;
   white-space: nowrap;
 }
+/* The hidden attribute must win over .session-button's display rule, or a
+   hidden New Herdr offer still renders. */
+.session-button[hidden] {
+  display: none;
+}
 .session-button:hover,
 .session-button:focus {
   background: var(--control-hover);

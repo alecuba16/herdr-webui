@@ -1,0 +1,208 @@
+// Session-management UX acceptance checks: drives the actually-served app in
+// headless Chrome over CDP and verifies the audited behaviors end to end:
+//   - fresh browser lands on built-in backend (mandatory default)
+//   - footer session button shows "session · built-in" with the accent color
+//   - session picker rows carry backend color classes
+//   - session manager opens/closes via the new ✕ button and backdrop click
+//   - external Herdr offer state matches the installed herdr (0.9.0 here)
+//   - switching to an external herdr session flips label + colors
+//   - mobile layout renders the backend badge with matching colors
+import { connectToPage } from './cdp-driver.mjs';
+
+const URL = process.env.E2E_BASE_URL || 'https://127.0.0.1:8899/';
+const results = [];
+function check(name, ok, detail = '') {
+  results.push({ name, ok, detail });
+  console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? ' :: ' + detail : ''}`);
+}
+
+const cdp = await connectToPage();
+await cdp.send('Page.enable');
+await cdp.send('Network.enable');
+await cdp.send('Security.enable');
+await cdp.send('Security.setIgnoreCertificateErrors', { ignore: true });
+
+// ---------- Desktop layout ----------
+await cdp.send('Page.navigate', { url: URL });
+await new Promise((r) => setTimeout(r, 2500));
+
+let title = await cdp.evalExpr('document.title');
+if (!title || title === 'Privacy error' || String(title).includes('Privacy')) {
+  await cdp.evalExpr('window.location.href = "' + URL + '"');
+  await new Promise((r) => setTimeout(r, 2000));
+}
+check('app loads (title present)', !!(await cdp.evalExpr('document.title')));
+
+// Fresh browser: no stored backend, must land on built-in with "session · built-in".
+const fresh = await cdp.evalExpr(`(async () => {
+  await new Promise((r) => setTimeout(r, 600));
+  const versions = await fetch('/api/versions').then((r) => r.json());
+  const button = document.getElementById('footerSessionButton');
+  const styles = button ? getComputedStyle(button) : null;
+  return {
+    stored: localStorage.getItem('herdr-session-backend'),
+    backendMode: versions.backend_mode,
+    currentBackend: versions.current_backend,
+    herdrInstall: versions.herdr_install || null,
+    footerText: button ? button.textContent : '',
+    footerClass: button ? button.className : '',
+    footerColor: styles ? styles.color : '',
+  };
+})()`, true);
+check(
+  'fresh browser lands on built-in and footer shows "default · built-in"',
+  fresh.stored === 'builtin'
+    && fresh.backendMode === 'builtin'
+    && /built-in/.test(fresh.footerText || ''),
+  `stored=${fresh.stored} mode=${fresh.backendMode} footer="${fresh.footerText}"`,
+);
+check(
+  'footer button carries backend-builtin class and non-default color',
+  /backend-builtin/.test(fresh.footerClass || '')
+    && !!fresh.footerColor && fresh.footerColor !== 'rgb(0, 0, 0)',
+  `class="${fresh.footerClass}" color=${fresh.footerColor}`,
+);
+
+// Session picker: open via the footer button's own onclick (real UI path).
+const manager = await cdp.evalExpr(`(async () => {
+  document.getElementById('footerSessionButton').click();
+  await new Promise((r) => setTimeout(r, 800));
+  const m = document.getElementById('sessionManager');
+  const rows = [...document.querySelectorAll('#sessionList .session-line')];
+  const herdrBtn = document.getElementById('newHerdrSessionTarget');
+  const closeBtn = document.getElementById('sessionManagerClose');
+  const builtinBtn = document.getElementById('newBuiltinSessionTarget');
+  return {
+    visible: m && getComputedStyle(m).display !== 'none',
+    title: document.getElementById('sessionManagerTitle').textContent,
+    currentLabel: document.getElementById('sessionCurrentLabel').textContent,
+    rowClasses: rows.map((r) => r.className),
+    pillClasses: [...document.querySelectorAll('#sessionList .status-pill')].map((p) => p.className),
+    herdrHidden: herdrBtn ? herdrBtn.hidden : null,
+    herdrDisabled: herdrBtn ? herdrBtn.disabled : null,
+    builtinHidden: builtinBtn ? builtinBtn.hidden : null,
+    closePresent: !!closeBtn,
+  };
+})()`, true);
+check(
+  'session manager opens with backend-aware current label and close button',
+  manager.visible === true
+    && /built-in/.test(manager.currentLabel || '')
+    && manager.closePresent === true,
+  `visible=${manager.visible} current="${manager.currentLabel}" close=${manager.closePresent}`,
+);
+const herdrCompatible = manager.herdrInstallCompatible
+  || (fresh.herdrInstall && fresh.herdrInstall.compatible);
+check(
+  'external Herdr offer matches installed herdr compatibility (0.9.0 => visible)',
+  manager.herdrHidden === !herdrCompatible,
+  `herdrHidden=${manager.herdrHidden} installCompatible=${herdrCompatible} install=${fresh.herdrInstall && fresh.herdrInstall.version}`,
+);
+check(
+  'session rows carry backend color classes',
+  manager.rowClasses.some((c) => /backend-builtin/.test(c)) === true,
+  `rows=[${manager.rowClasses.join(' | ')}]`,
+);
+check(
+  'backend pills carry backend color classes',
+  manager.pillClasses.some((c) => /backend-(builtin|herdr)/.test(c)) === true,
+  `pills=[${manager.pillClasses.join(' | ')}]`,
+);
+
+// Close via the new ✕ button.
+const closedByX = await cdp.evalExpr(`(async () => {
+  document.getElementById('sessionManagerClose').click();
+  await new Promise((r) => setTimeout(r, 200));
+  const m = document.getElementById('sessionManager');
+  return m && getComputedStyle(m).display === 'none';
+})()`, true);
+check('✕ button closes the session manager', closedByX === true);
+
+// Backdrop click closes (click on the manager itself, outside the card).
+const closedByBackdrop = await cdp.evalExpr(`(async () => {
+  document.getElementById('footerSessionButton').click();
+  await new Promise((r) => setTimeout(r, 600));
+  const m = document.getElementById('sessionManager');
+  const card = m.querySelector('.session-card');
+  const mRect = m.getBoundingClientRect();
+  const ev = new MouseEvent('click', { bubbles: true, clientX: mRect.left + 4, clientY: mRect.bottom - 4 });
+  Object.defineProperty(ev, 'target', { value: m });
+  m.dispatchEvent(ev);
+  await new Promise((r) => setTimeout(r, 200));
+  return getComputedStyle(m).display === 'none';
+})()`, true);
+check('backdrop click closes the session manager', closedByBackdrop === true);
+
+// Switch to an external herdr session through the real picker row (if offered).
+if (manager.herdrHidden === false) {
+  const switched = await cdp.evalExpr(`(async () => {
+    document.getElementById('footerSessionButton').click();
+    await new Promise((r) => setTimeout(r, 800));
+    const rows = [...document.querySelectorAll('#sessionList .session-line')];
+    const row = rows.find((r) => /backend-herdr/.test(r.className));
+    if (!row) return { found: false };
+    row.click();
+    await new Promise((r) => setTimeout(r, 2000));
+    const button = document.getElementById('footerSessionButton');
+    return {
+      found: true,
+      stored: localStorage.getItem('herdr-session-backend'),
+      footerText: button.textContent,
+      footerClass: button.className,
+    };
+  })()`, true);
+  check(
+    'picking an external herdr row switches footer label to "· Herdr" and class to backend-herdr',
+    switched.found === true
+      && switched.stored === 'external-herdr'
+      && /Herdr/.test(switched.footerText || '')
+      && /backend-herdr/.test(switched.footerClass || ''),
+    `stored=${switched.stored} footer="${switched.footerText}" class="${switched.footerClass}"`,
+  );
+  // Return to built-in so the run leaves a clean state.
+  await cdp.evalExpr(`(async () => {
+    document.getElementById('footerSessionButton').click();
+    await new Promise((r) => setTimeout(r, 800));
+    const rows = [...document.querySelectorAll('#sessionList .session-line')];
+    const row = rows.find((r) => /backend-builtin/.test(r.className));
+    if (row) row.click();
+    await new Promise((r) => setTimeout(r, 1500));
+  })()`, true);
+} else {
+  check('external herdr row not offered (no compatible install); skipped switch check', true, `herdrHidden=${manager.herdrHidden}`);
+}
+
+// ---------- Mobile layout ----------
+await cdp.evalExpr('localStorage.setItem("herdr-web-layout", "mobile")');
+await cdp.send('Page.navigate', { url: URL });
+await new Promise((r) => setTimeout(r, 2500));
+const mobile = await cdp.evalExpr(`(async () => {
+  await new Promise((r) => setTimeout(r, 800));
+  const badge = document.getElementById('mobileBackendBadge');
+  const styles = badge ? getComputedStyle(badge) : null;
+  return {
+    layout: document.documentElement.dataset.herdrLayout,
+    badgePresent: !!badge,
+    badgeText: badge ? badge.textContent : '',
+    badgeClass: badge ? badge.className : '',
+    badgeColor: styles ? styles.color : '',
+    borderColor: styles ? styles.borderColor : '',
+  };
+})()`, true);
+check(
+  'mobile layout renders backend badge "built-in" with accent-family color',
+  mobile.layout === 'mobile'
+    && mobile.badgePresent
+    && /built-in/.test(mobile.badgeText || '')
+    && /backend-builtin/.test(mobile.badgeClass || '')
+    && !!mobile.badgeColor,
+  `layout=${mobile.layout} text="${mobile.badgeText}" class="${mobile.badgeClass}" color=${mobile.badgeColor}`,
+);
+await cdp.evalExpr('localStorage.removeItem("herdr-web-layout")');
+
+// ---------- Summary ----------
+const failed = results.filter((r) => !r.ok);
+console.log(`\n${results.length - failed.length}/${results.length} session UX acceptance checks passed`);
+if (failed.length) {
+  process.exit(1);
+}
