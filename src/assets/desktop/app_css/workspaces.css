@@ -331,7 +331,7 @@ body.light .agent-sort-chip.blue {
 }
 .session-manager {
   padding: 0;
-  background: linear-gradient(135deg, var(--bg), var(--panel));
+  background: #000a;
 }
 .session-card {
   margin: 32px auto;
@@ -395,6 +395,9 @@ body.light .agent-sort-chip.blue {
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent), transparent 88%);
 }
+.session-line.backend-herdr:not(.active) {
+  border-color: color-mix(in srgb, var(--backend-herdr), transparent 55%);
+}
 .session-line > span:first-child {
   min-width: 0;
 }
@@ -429,6 +432,11 @@ body.light .agent-sort-chip.blue {
     color 0.15s;
   white-space: nowrap;
 }
+/* The hidden attribute must win over .session-button's display rule, or a
+   hidden New Herdr offer still renders. */
+.session-button[hidden] {
+  display: none;
+}
 .session-button:hover,
 .session-button:focus {
   background: var(--control-hover);
@@ -456,6 +464,31 @@ body.light .agent-sort-chip.blue {
 }
 .status-pill.offline {
   color: var(--muted);
+}
+.status-pill.backend-builtin {
+  border-color: var(--backend-builtin);
+  color: var(--backend-builtin);
+}
+.status-pill.backend-herdr {
+  border-color: var(--backend-herdr);
+  color: var(--backend-herdr);
+}
+.session-line.backend-herdr:hover {
+  border-color: var(--backend-herdr);
+}
+.session-line.backend-herdr.active {
+  border-color: var(--backend-herdr);
+  background: color-mix(in srgb, var(--backend-herdr), transparent 88%);
+}
+.session-current .dot.backend-builtin {
+  background: var(--backend-builtin);
+}
+.session-current .dot.backend-herdr {
+  background: var(--backend-herdr);
+}
+.session-hero .settings-close {
+  margin-left: 12px;
+  flex: none;
 }
 .session-new {
   margin-top: 14px;

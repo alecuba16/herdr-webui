@@ -88,6 +88,12 @@
 .footer-session-button:focus {
   color: var(--accent-1);
 }
+.footer-session-button.backend-builtin {
+  color: var(--backend-builtin);
+}
+.footer-session-button.backend-herdr {
+  color: var(--backend-herdr);
+}
 .side-footer {
   color: var(--muted);
   font-size: 8.5px;

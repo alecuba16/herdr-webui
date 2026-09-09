@@ -110,3 +110,7 @@ wait_for "headless Chrome CDP" "http://127.0.0.1:$CDP/json/version" "" || exit 1
 echo "==> running acceptance checks"
 ACCEPT_REPO="$REPO" E2E_BASE_URL="https://127.0.0.1:$PORT/" CDP_PORT="$CDP" \
   node "$ROOT/scripts/e2e/acceptance.mjs"
+
+echo "==> running session UX acceptance checks"
+E2E_BASE_URL="https://127.0.0.1:$PORT/" CDP_PORT="$CDP" \
+  node "$ROOT/scripts/e2e/session-ux-acceptance.mjs"

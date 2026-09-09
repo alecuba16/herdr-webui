@@ -1,5 +1,27 @@
 # Release notes
 
+## 0.4.18 Release Notes
+- Session backends now have distinct colors in the footer session button, the
+  session picker rows/status pills/current dot, and the mobile header badge:
+  built-in keeps the accent family and external Herdr uses mauve, in both dark
+  and light themes. The footer button label also shows the active backend
+  (e.g. `default · built-in`) and no longer gets clobbered by background
+  refreshes.
+- The session manager gained a ✕ close button and closes on backdrop click.
+  It only auto-hides itself when it was auto-opened; a manager opened
+  deliberately stays open across background refreshes.
+- The New Herdr session offer is now hidden (not disabled) when no compatible
+  herdr install is detected, with silent built-in fallback. A CSS rule now
+  enforces the hidden attribute so the offer cannot render while hidden.
+- Hardcoded `Herdr session offline` titles are gone: offline notices name the
+  backend actually in use.
+- The session UX e2e acceptance suite is wired into `run-e2e.sh`. It drives
+  the real served app in headless Chrome over CDP: backend-default checks,
+  color rendering in dark and light themes, picker close/backdrop behavior,
+  offer-hidden state for incompatible installs (fake herdr 0.8.0 probe), and
+  the mobile badge. It also catches CSS/hidden regressions the synthetic tests
+  cannot see.
+
 ## 0.4.17 Release Notes
 - Built-in `worktree.open` now implements Herdr's already-open semantics:
   opening a checkout that is already open as a workspace focuses that

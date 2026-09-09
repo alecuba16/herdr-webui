@@ -2115,8 +2115,9 @@ describe("app bundle load", () => {
 
     await ctx.showSessionManager();
 
-    // The New Herdr button is disabled with a version hint.
+    // The New Herdr button is hidden (not merely disabled) with a version hint.
     const button = ctx.document.getElementById("newHerdrSessionTarget");
+    equal(button.hidden, true);
     equal(button.disabled, true);
     match(button.title, /not compatible/);
 
@@ -2151,10 +2152,161 @@ describe("app bundle load", () => {
 
     const button = ctx.document.getElementById("newHerdrSessionTarget");
     equal(button.disabled, false);
+    equal(button.hidden, false);
     match(button.title, /0\.9\.0/);
 
     ctx.goSession("work", "external-herdr");
     equal(vm.runInContext("state.sessionBackend", ctx), "external-herdr");
+  });
+
+  it("switches footer session button label and backend color class across backends", async () => {
+    const ctx = context();
+    ctx.fetch = async (url) => {
+      if (url === "/api/sessions") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            current_backend: "builtin",
+            herdr_available: true,
+            herdr_compatible: true,
+            herdr_version: "0.9.0",
+            sessions: [
+              { name: "default", backend: "builtin", backend_label: "built-in", running: true },
+            ],
+          }),
+        };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    };
+    vm.runInContext(source, ctx);
+    ctx.setupSessionChrome();
+
+    ctx.updateFooterSessionButton();
+    const button = ctx.document.getElementById("footerSessionButton");
+    equal(button.textContent, "default · built-in");
+
+    vm.runInContext('state.sessionBackend = "external-herdr"', ctx);
+    ctx.updateFooterSessionButton();
+    equal(button.textContent, "default · Herdr");
+
+    vm.runInContext('state.sessionBackend = "builtin"', ctx);
+    ctx.updateFooterSessionButton();
+    equal(button.textContent, "default · built-in");
+  });
+
+  it("gives the session manager a close button and backdrop-click close", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    ctx.setupSessionChrome();
+
+    match(source, /id="sessionManagerClose"/);
+    match(source, /el\("sessionManagerClose"\)\.onclick = hideSessionManager/);
+    // Backdrop close: a click on the manager (outside the card) hides it.
+    match(source, /if \(e\.target === m\) hideSessionManager\(\)/);
+  });
+
+  it("does not clobber the footer session label on background refresh", async () => {
+    const ctx = context();
+    ctx.fetch = async () => ({ ok: true, status: 200, json: async () => ({ result: { workspaces: [] } }) });
+    vm.runInContext(source, ctx);
+    ctx.setupSessionChrome();
+
+    vm.runInContext(`
+      state.session = "work";
+      state.sessionBackend = "external-herdr";
+      state.herdrCompatible = true;
+    `, ctx);
+    ctx.location.pathname = "/session/work";
+    ctx.updateFooterSessionButton();
+    const button = ctx.document.getElementById("footerSessionButton");
+    equal(button.textContent, "work · Herdr");
+
+    await ctx.refresh();
+    equal(button.textContent, "work · Herdr");
+  });
+
+  it("only auto-hides an auto-opened session manager on background refresh", async () => {
+    const ctx = context();
+    let fail = true;
+    ctx.fetch = async () => {
+      if (fail) throw Error("offline");
+      return { ok: true, status: 200, json: async () => ({ result: { workspaces: [] } }) };
+    };
+    vm.runInContext(source, ctx);
+    ctx.setupSessionChrome();
+    const manager = ctx.document.getElementById("sessionManager");
+
+    // Failed refresh auto-opens the manager with a backend-aware title.
+    await ctx.refresh();
+    equal(manager.style.display, "block");
+    equal(ctx.document.getElementById("sessionManagerTitle").textContent, "built-in session offline");
+    ok(!source.includes('"Herdr session offline"'));
+
+    // A user-opened manager survives a later successful refresh.
+    fail = false;
+    await ctx.showSessionManager("Session manager");
+    await ctx.refresh();
+    equal(manager.style.display, "block");
+
+    // An auto-opened manager is hidden again by a successful refresh.
+    await ctx.showSessionManager("Session manager", undefined, { auto: true });
+    await ctx.refresh();
+    equal(manager.style.display, "none");
+  });
+
+  it("uses backend-aware colors for session rows and the footer button", () => {
+    const chromeCss = readFileSync(new URL("./desktop/app_css/chrome.css", import.meta.url), "utf8");
+    const workspacesCss = desktopWorkspacesCss;
+    const terminalCss = readFileSync(new URL("./desktop/app_css/terminal.css", import.meta.url), "utf8");
+    const baseCss = readFileSync(new URL("./desktop/app_css/base.css", import.meta.url), "utf8");
+
+    // Herdr keeps a distinct mauve hue; built-in stays in the accent family.
+    match(baseCss, /--backend-builtin: var\(--accent\)/);
+    match(baseCss, /--backend-herdr: #cba6f7/);
+    match(baseCss, /--backend-herdr: #8839ef/);
+    match(chromeCss, /\.footer-session-button\.backend-builtin \{[\s\S]*?color: var\(--backend-builtin\)/);
+    match(chromeCss, /\.footer-session-button\.backend-herdr \{[\s\S]*?color: var\(--backend-herdr\)/);
+    match(workspacesCss, /\.status-pill\.backend-builtin \{[\s\S]*?color: var\(--backend-builtin\)/);
+    match(workspacesCss, /\.status-pill\.backend-herdr \{[\s\S]*?color: var\(--backend-herdr\)/);
+    match(workspacesCss, /\.session-line\.backend-herdr\.active \{[\s\S]*?background: color-mix\(in srgb, var\(--backend-herdr\), transparent 88%\)/);
+    match(workspacesCss, /\.session-current \.dot\.backend-herdr \{[\s\S]*?background: var\(--backend-herdr\)/);
+    match(terminalCss, /\.session-manager \{[\s\S]*?background: #000a/);
+    // The hidden attribute must beat .session-button's display rule, or the
+    // hidden New Herdr offer still renders (real-browser regression).
+    match(workspacesCss, /\.session-button\[hidden\] \{[\s\S]*?display: none/);
+  });
+
+  it("renders backend color classes on session rows", async () => {
+    const ctx = context();
+    ctx.fetch = async (url) => {
+      if (url === "/api/sessions") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            current_backend: "builtin",
+            herdr_available: true,
+            herdr_compatible: true,
+            herdr_version: "0.9.0",
+            sessions: [
+              { name: "default", backend: "builtin", backend_label: "built-in", running: true },
+              { name: "work", backend: "external-herdr", backend_label: "Herdr", running: true },
+            ],
+          }),
+        };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    };
+    vm.runInContext(source, ctx);
+
+    await ctx.showSessionManager();
+    const html = ctx.document.getElementById("sessionList").innerHTML;
+
+    match(html, /class="session-line backend-builtin/);
+    match(html, /class="session-line backend-herdr/);
+    match(html, /status-pill backend-builtin/);
+    match(html, /status-pill backend-herdr/);
   });
 
   it("defines grouped settings sections", () => {

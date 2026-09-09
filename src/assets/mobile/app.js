@@ -254,6 +254,12 @@
     if (state.backendMode === "builtin") return "builtin";
     return "";
   }
+  function sessionBackendLabel(backend) {
+    return backend === "external-herdr" ? "Herdr" : "built-in";
+  }
+  function sessionBackendClass(backend) {
+    return backend === "external-herdr" ? "backend-herdr" : "backend-builtin";
+  }
 
   function currentWorkspace() {
     return state.workspaces.find((w) => w.workspace_id === state.ws) || null;
@@ -376,12 +382,22 @@
     return parts.filter(Boolean).join(" · ");
   }
 
+  // Backend badge: Herdr sessions get a distinct mauve hue; built-in keeps
+  // the accent family. Rendered next to the header meta line.
+  function syncBackendBadge() {
+    const badge = el("mobileBackendBadge");
+    if (!badge) return;
+    const backend = currentSessionBackend() || "builtin";
+    badge.className = `mobile-backend-badge ${sessionBackendClass(backend)}`;
+    badge.textContent = sessionBackendLabel(backend);
+  }
+
   function renderShell() {
     document.body.innerHTML = `
       <div id="mobileApp" class="mobile-app">
         <header class="mobile-header">
           <button class="mobile-btn" id="mobileBack" title="Home">←</button>
-          <div class="mobile-context"><strong id="mobileTitle">Herdr</strong><span id="mobileMeta">Loading</span></div>
+          <div class="mobile-context"><strong id="mobileTitle">Herdr</strong><span id="mobileMeta">Loading</span><span id="mobileBackendBadge" class="mobile-backend-badge backend-builtin">built-in</span></div>
           <button class="mobile-btn" id="mobileSearch" title="Search">⌕</button>
           <button class="mobile-btn" id="mobileSettings" title="Settings">⚙</button>
           <button class="mobile-btn temp-terminal-toggle" id="mobileTempTerminal" title="Temporary terminal" aria-label="Temporary terminal"><span class="temp-terminal-icon" aria-hidden="true"><span class="temp-terminal-icon-glyph"></span><span class="temp-terminal-icon-label">T</span></span></button>
@@ -430,6 +446,7 @@
     const workspace = currentWorkspace();
     el("mobileTitle").textContent = workspaceTitle(workspace);
     el("mobileMeta").textContent = contextMeta(workspace);
+    syncBackendBadge();
     const searchButton = el("mobileSearch");
     if (searchButton) {
       const disabled = headerSearchDisabled();
