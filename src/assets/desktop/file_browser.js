@@ -425,7 +425,13 @@
       target.selected = path;
       if (target.files.some((file) => file.path === path)) {
         const existing = target.files.find((file) => file.path === path);
-        if (existing) existing.searchHighlight = searchHighlight || null;
+        if (existing) {
+          existing.searchHighlight = searchHighlight || null;
+          // Content-search matches must remain usable when the markdown file
+          // is already open in rendered preview mode. Force its source view
+          // so the editor can show the highlighted line and scroll position.
+          if (searchHighlight) existing.previewSource = true;
+        }
         renderIfActive(target, true);
         return;
       }
@@ -707,8 +713,8 @@
     return `<button type="button" class="file-browser-lock-toggle ${locked ? "active" : ""}" title="${esc(title)}" aria-label="${esc(title)}" aria-pressed="${locked ? "true" : "false"}" onclick="HerdrFileBrowser.toggleLock('${arg(file.path)}')"><span></span></button>`;
   }
 
-  // Markdown files get an eye toggle (mirrors the lock toggle pill) that
-  // switches between the rendered preview and the CodeMirror source view.
+  // Markdown files get an eye toggle (styled like the editor find button)
+  // that switches between the rendered preview and the CodeMirror source view.
   // Only offered while the file is locked (read-only): the rendered preview
   // needs a non-editable mount, and editing markdown keeps the source view.
   function markdownToggleHtml(file) {

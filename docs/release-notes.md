@@ -7,8 +7,9 @@
   and only the raw source view remained. Non-markdown files keep the
   edit-by-default behavior with the lock toggle.
 - The desktop file browser toolbar shows a new eye toggle for markdown files
-  (styled like the lock toggle) that flips between the rendered preview and
-  the CodeMirror source view; the eye is highlighted while the preview is on.
+  (styled like the editor find button) that flips between the rendered preview
+  and the CodeMirror source view; the eye is highlighted while the preview is
+  on.
 - The file tree context menu adds a `Preview` entry for markdown files, and
   the tab context menu adds `Preview`/`Show markdown source` so the view can
   be switched from the right-click menu as well. Editing a markdown file

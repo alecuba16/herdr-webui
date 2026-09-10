@@ -1445,6 +1445,10 @@ describe("desktop file browser editor integration", () => {
           },
           isMarkdownPath(path) { return /\.md$/.test(String(path)); },
         },
+        HerdrContentSearch: {
+          render() { return ""; },
+          findMatch() { return { line: 2, match_start: 0, match_end: 5 }; },
+        },
         HerdrGitUi: { hide() {} },
         HerdrWorkspacePath(workspace) { return workspace.cwd; },
       },
@@ -1454,7 +1458,9 @@ describe("desktop file browser editor integration", () => {
       fetch: async (url) => ({
         ok: true,
         async json() {
-          if (String(url).startsWith("/api/file-browser/file")) return { path: "README.md", content: "# Title", binary: false, truncated: false };
+          const text = String(url);
+          if (text.startsWith("/api/file-browser/file")) return { path: "README.md", content: "# Title", binary: false, truncated: false };
+          if (text.startsWith("/api/file-browser/content-search?")) return { files: [{ path: "README.md" }], total_files: 1, total_matches: 1, visited: 1, truncated: false };
           return { path: "", entries: [], git_status: null };
         },
       }),
@@ -1499,6 +1505,15 @@ describe("desktop file browser editor integration", () => {
     context.window.HerdrFileBrowser.toggleMarkdownView(encodeURIComponent("README.md"));
     assert.equal(editorCalls.at(-1).markdownPreview, true);
     assert.match(document.getElementById("fileBrowserPanel").innerHTML, /file-browser-preview-toggle active/);
+
+    // A content-search match must also leave preview mode when this markdown
+    // file is already open, otherwise the highlighted source line is hidden.
+    context.window.HerdrFileBrowserContent.setQuery("Title");
+    context.window.HerdrFileBrowserContent.run();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    context.window.HerdrFileBrowserContent.openMatch(encodeURIComponent("README.md"), encodeURIComponent("README.md:2:1:Title"));
+    assert.equal(editorCalls.at(-1).markdownPreview, false);
+    assert.match(document.getElementById("fileBrowserPanel").innerHTML, /Show rendered markdown preview/);
 
     // Unlocking to edit mounts the plain editor and hides the eye toggle.
     context.window.HerdrFileBrowser.toggleLock(encodeURIComponent("README.md"));
