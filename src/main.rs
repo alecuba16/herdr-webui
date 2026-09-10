@@ -4518,22 +4518,29 @@ async fn terminal_socket(
     let terminal_id = query.terminal_id.clone();
     let cols = query.cols.unwrap_or(100).max(1);
     let rows = query.rows.unwrap_or(30).max(1);
-    let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<TerminalEvent>();
     let (in_tx, in_rx) = std::sync::mpsc::channel::<ClientMessage>();
-    let (error_tx, error_rx) = tokio::sync::oneshot::channel::<TerminalAttachError>();
 
     std::thread::spawn(move || {
         let mut stream = match connect_terminal_attach(&path, &terminal_id, cols, rows) {
             Ok(stream) => stream,
             Err(error) => {
-                let _ = out_tx.send(error.user_message().into_bytes());
-                let _ = error_tx.send(error);
+                // Order matters: the raw text first, then the structured
+                // error, through ONE channel so the select loop can never
+                // observe the channel close before the error frame. (With a
+                // separate error channel, a closed out_rx could win the
+                // select race and the browser would never see the JSON
+                // frame offering a built-in session.)
+                let _ = out_tx.send(TerminalEvent::Bytes(error.user_message().into_bytes()));
+                let _ = out_tx.send(TerminalEvent::Error(error));
                 return;
             }
         };
 
         let Ok(mut writer) = stream.try_clone() else {
-            let _ = out_tx.send(b"failed to clone herdr terminal socket\r\n".to_vec());
+            let _ = out_tx.send(TerminalEvent::Bytes(
+                b"failed to clone herdr terminal socket\r\n".to_vec(),
+            ));
             return;
         };
         std::thread::spawn(move || {
@@ -4547,12 +4554,12 @@ async fn terminal_socket(
         loop {
             match read_message::<_, ServerMessage>(&mut stream, MAX_GRAPHICS_FRAME_SIZE) {
                 Ok(ServerMessage::Terminal(frame)) => {
-                    if out_tx.send(frame.bytes).is_err() {
+                    if out_tx.send(TerminalEvent::Bytes(frame.bytes)).is_err() {
                         break;
                     }
                 }
                 Ok(ServerMessage::Graphics { bytes }) => {
-                    if out_tx.send(bytes).is_err() {
+                    if out_tx.send(TerminalEvent::Bytes(bytes)).is_err() {
                         break;
                     }
                 }
@@ -4563,30 +4570,34 @@ async fn terminal_socket(
         }
     });
 
-    let mut error_rx = error_rx;
     loop {
         tokio::select! {
-            error = &mut error_rx => {
-                // Graceful degradation: surface the handshake failure as a
-                // structured frame before closing, so the browser can offer
-                // a built-in session instead of blocking on a dead terminal.
-                if let Ok(error) = error {
-                    let payload = json!({
-                        "type": "herdr_error",
-                        "backend": backend.as_str(),
-                        "kind": error.error_kind(),
-                        "message": error.user_message().trim_end(),
-                        "suggest_builtin": error.suggests_builtin(),
-                    });
-                    if let Ok(text) = serde_json::to_string(&payload) {
-                        let _ = socket.send(Message::Text(text.into())).await;
-                    }
-                }
-                break;
-            }
             message = out_rx.recv() => {
-                let Some(bytes) = message else { break; };
-                if socket.send(Message::Binary(bytes.into())).await.is_err() { break; }
+                match message {
+                    // Graceful degradation: surface the handshake failure as
+                    // a structured frame before closing, so the browser can
+                    // offer a built-in session instead of blocking on a dead
+                    // terminal. Delivered through the same channel as the raw
+                    // bytes and after them, so ordering is guaranteed: the
+                    // channel close can never race ahead of the error frame.
+                    Some(TerminalEvent::Error(error)) => {
+                        let payload = json!({
+                            "type": "herdr_error",
+                            "backend": backend.as_str(),
+                            "kind": error.error_kind(),
+                            "message": error.user_message().trim_end(),
+                            "suggest_builtin": error.suggests_builtin(),
+                        });
+                        if let Ok(text) = serde_json::to_string(&payload) {
+                            let _ = socket.send(Message::Text(text.into())).await;
+                        }
+                        break;
+                    }
+                    Some(TerminalEvent::Bytes(bytes)) => {
+                        if socket.send(Message::Binary(bytes.into())).await.is_err() { break; }
+                    }
+                    None => break,
+                }
             }
             message = socket.recv() => {
                 match message {
@@ -4715,7 +4726,15 @@ fn terminal_text_messages(text: &str) -> Vec<ClientMessage> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Events from the terminal reader thread to the WS select loop, through one
+/// ordered channel. Ordering is load-bearing: the raw failure text must be
+/// delivered before the structured error so the browser always receives the
+/// `herdr_error` JSON frame (a closed channel can never race ahead of it).
+enum TerminalEvent {
+    Bytes(Vec<u8>),
+    Error(TerminalAttachError),
+}
+
 enum TerminalAttachError {
     Connect,
     SendHandshake,
@@ -10766,8 +10785,8 @@ mod tests {
                     _ => break,
                 };
             // The attach failure is surfaced twice: the raw error text as a
-            // binary frame and the structured herdr_error JSON. Skip the
-            // binary frame; its ordering with the JSON frame is racy.
+            // binary frame, then the structured herdr_error JSON. Both travel
+            // one ordered channel, so the JSON always follows the raw text.
             let Ok(text) = msg.to_text() else { continue };
             let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
                 continue;
