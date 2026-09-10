@@ -4357,6 +4357,7 @@ async fn events_socket(state: WebState, api: ApiClient, mut socket: WebSocket) {
             match subscribe_api.subscribe(request.clone()) {
                 Ok(mut stream) => {
                     let _ = tx.send(json!({ "type": "ready" }));
+                    let subscribed_at = std::time::Instant::now();
                     loop {
                         match stream.next_value() {
                             Ok(Some(value)) => {
@@ -4373,6 +4374,13 @@ async fn events_socket(state: WebState, api: ApiClient, mut socket: WebSocket) {
                                 break;
                             }
                         }
+                    }
+                    // A stream that stayed healthy for a while proves the
+                    // backend was up; a quick subsequent failure is a flap,
+                    // not an outage, so reconnect fast instead of waiting
+                    // out a 30s backoff grown during the outage.
+                    if subscribed_at.elapsed() >= std::time::Duration::from_secs(10) {
+                        backoff_secs = 1;
                     }
                 }
                 Err(_) => {
