@@ -21,7 +21,13 @@ use crate::protocol::{
 use crate::terminal_text::{self, TerminalTextOptions};
 
 const BUILTIN_VERSION: &str = "builtin-0.1.0";
-const PROTOCOL_VERSION: u32 = 20;
+// Must match the WebUI terminal attach client (`PROTOCOL_VERSION` in main.rs,
+// 22 for herdr 0.9.0): the builtin backend emulates a herdr terminal server
+// and requires an exact version match at handshake time. A mismatch made
+// every builtin terminal attach fail with a `herdr_error` frame, so the
+// browser offered the (also broken) built-in fallback and its question
+// modal blocked the whole UI.
+const PROTOCOL_VERSION: u32 = 22;
 const MAX_FRAME_SIZE: usize = 32 * 1024 * 1024;
 const MAX_SCROLLBACK_BYTES: usize = 8 * 1024 * 1024;
 const DETECTION_TAIL_BYTES: usize = 64 * 1024;
@@ -6645,6 +6651,94 @@ mod tests {
         assert_eq!(snapshot["tabs"].as_array().unwrap().len(), 0);
         assert_eq!(snapshot["panes"].as_array().unwrap().len(), 0);
         assert!(snapshot["focused_workspace_id"].is_null());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn client_socket_accepts_webui_attach_protocol_version() {
+        // Regression guard: the WebUI terminal attach client sends
+        // `TerminalHello{version: PROTOCOL_VERSION}` (22 for herdr 0.9.0) and
+        // the builtin backend requires an exact match. When the constants
+        // drifted (client 22, builtin 20) every builtin terminal attach
+        // failed with a herdr_error frame and the browser's fallback question
+        // modal blocked the UI. Exercise the real client socket handshake.
+        let base = format!(
+            "/tmp/herdr-webui-client-hello-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        );
+        let api_socket = PathBuf::from(format!("{base}-api.sock"));
+        let client_socket = PathBuf::from(format!("{base}-client.sock"));
+        let _handle = BuiltinBackendHandle::start(BuiltinBackendConfig {
+            api_socket: api_socket.clone(),
+            client_socket,
+            cwd: std::env::temp_dir(),
+            shell: Some(default_shell()),
+            jcode_detection_variant: JcodeDetectionVariant::Vanilla,
+        })
+        .unwrap();
+        // Seed a workspace + tab; the root pane owns the terminal id. The api
+        // socket serves one request per connection, so open two.
+        let request = |line: &str| -> Value {
+            let mut api = connect_local_stream(&api_socket).unwrap();
+            api.write_all(line.as_bytes()).unwrap();
+            api.write_all(b"\n").unwrap();
+            api.flush().unwrap();
+            let mut reader = BufReader::new(api);
+            let mut out = String::new();
+            reader.read_line(&mut out).unwrap();
+            serde_json::from_str(&out).unwrap()
+        };
+        let workspace =
+            request(r#"{"id":"seed","method":"workspace.create","params":{"label":"handshake"}}"#);
+        let workspace_id = workspace["result"]["workspace"]["workspace_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let tab = request(&format!(
+            r#"{{"id":"tab","method":"tab.create","params":{{"workspace_id":"{workspace_id}"}}}}"#
+        ));
+        let terminal_id = tab["result"]["root_pane"]["terminal_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // The exact handshake the WebUI attach path performs.
+        let mut client =
+            connect_local_stream(&PathBuf::from(format!("{base}-client.sock"))).unwrap();
+        write_message(
+            &mut client,
+            &ClientMessage::TerminalHello {
+                version: 22,
+                cols: 80,
+                rows: 24,
+                cell_width_px: 0,
+                cell_height_px: 0,
+                pixel_mouse: false,
+            },
+        )
+        .unwrap();
+        match read_message::<_, ServerMessage>(&mut client, MAX_FRAME_SIZE).unwrap() {
+            ServerMessage::Welcome { error: None, .. } => {}
+            ServerMessage::Welcome {
+                error: Some(err), ..
+            } => {
+                panic!("builtin backend rejected the WebUI attach version: {err}")
+            }
+            other => panic!("expected Welcome, got {other:?}"),
+        }
+        write_message(
+            &mut client,
+            &ClientMessage::AttachTerminal {
+                terminal_id,
+                takeover: true,
+            },
+        )
+        .unwrap();
+        match read_message::<_, ServerMessage>(&mut client, MAX_FRAME_SIZE).unwrap() {
+            ServerMessage::Terminal(_) => {}
+            other => panic!("expected Terminal frame after attach, got {other:?}"),
+        }
     }
 
     #[cfg(unix)]
