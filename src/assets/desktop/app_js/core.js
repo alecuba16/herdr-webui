@@ -851,6 +851,7 @@ function recordShortcut(scope, action, button) {
     saveOptions();
     applyOptions();
     renderShortcutEditor();
+    flashShortcutRow(scope, action);
   };
   window.addEventListener("keydown", capture, { once: true, capture: true });
 }
@@ -860,6 +861,18 @@ function resetShortcut(scope, action) {
   saveOptions();
   applyOptions();
   renderShortcutEditor();
+  flashShortcutRow(scope, action);
+}
+// The shortcut editor rebuilds its own DOM on every save, so the generic
+// saveOptions() badge lands on the clicked button and is immediately wiped.
+// Flash the rebuilt row instead, keyed by its data attributes.
+function flashShortcutRow(scope, action) {
+  if (!settingsFeedback) return;
+  const button = document.querySelector(
+    `[data-shortcut-record="${scope}:${action}"]`,
+  );
+  const row = button && button.closest ? button.closest(".shortcut-row") : null;
+  if (row) settingsFeedback.flashAppliedRow(row);
 }
 function themeCustomizerHtml() {
   const rows = (mode) =>
@@ -1476,10 +1489,31 @@ function normalizeOptions(value) {
 let options = normalizeOptions(loadOptions());
 localStorage.removeItem("herdr-web-shiftenter-migrated");
 let workingDismissals = loadWorkingDismissals();
+// Green "Applied" confirmation badge for settings rows. Every local option
+// save goes through saveOptions(), so flashing there covers every binding
+// (checkboxes, selects, number inputs, module settings) without touching
+// each handler. Rows that persist through a dedicated Apply button (theme
+// colors) or that re-render their editor (shortcut editor) flash from their
+// own handlers instead.
+const settingsFeedback = window.HerdrSettingsFeedback
+  ? window.HerdrSettingsFeedback.create({ document, setTimeout, clearTimeout })
+  : null;
+function flashSettingsApplied(control, label) {
+  if (!settingsFeedback) return;
+  settingsFeedback.flashApplied(control, label);
+}
 function saveOptions() {
   options = normalizeOptions(options);
   if (window.HerdrOptions) window.HerdrOptions.write(options);
   else localStorage.setItem("herdr-web-options", JSON.stringify(options));
+  // The control that triggered this save is the focused element for change
+  // events; fall back to the row owning the last settings interaction so
+  // saves from buttons (theme profiles) still get their badge.
+  const control =
+    document.activeElement && document.activeElement.closest
+      ? document.activeElement
+      : null;
+  if (control) flashSettingsApplied(control);
 }
 function loadWorkingDismissals() {
   try {
@@ -2955,7 +2989,11 @@ async function api(url, opt) {
 }
 async function loadServerSettings() {
   const err = el("serverSettingsError");
-  if (err) err.textContent = "";
+  if (err) {
+    err.textContent = "";
+    err.classList.remove("saved");
+  }
+  const loadButton = el("serverSettingsLoad");
   try {
     const settings = await api("/api/server-settings");
     el("optServerBind").value = settings.bind || "127.0.0.1:8787";
@@ -2988,6 +3026,7 @@ async function loadServerSettings() {
     el("optNoSleepAutoCooldown").value = String(
       settings.no_sleep_auto_cooldown_seconds ?? 60,
     );
+    flashSettingsApplied(loadButton, "Loaded");
   } catch (ex) {
     if (err) err.textContent = ex.message || String(ex);
   }
@@ -3006,7 +3045,10 @@ async function applyServerSettings() {
     builtinShell = el("optBuiltinShell").value.trim(),
     defaultFolder = el("optDefaultFolder").value.trim(),
     noSleepAutoCooldown = Number(el("optNoSleepAutoCooldown").value || 60);
-  if (err) err.textContent = "";
+  if (err) {
+    err.textContent = "";
+    err.classList.remove("saved");
+  }
   const validationError = serverSettingsValidationError(
     bind,
     username,
@@ -3045,9 +3087,11 @@ async function applyServerSettings() {
     }
     syncSessionBackendFromServer();
     el("optDefaultFolder").value = state.defaultFolder || "";
-    if (err)
+    if (err) {
       err.textContent =
         "Saved. If Bind changed, listener is restarting. If Backend mode changed, restart WebUI, then reload this page.";
+      err.classList.add("saved");
+    }
     el("optServerPassword").value = "";
   } catch (ex) {
     if (err) err.textContent = ex.message || String(ex);

@@ -7,6 +7,36 @@
   }) {
     const normalizeOrder = globalThis.HerdrAppHelpers.normalizeOrder;
     let settingsFilter = "";
+    // Row id -> { label } for badges to emit on the next render. Setters run
+    // before HerdrMobile.refresh() re-renders the whole settings screen, so a
+    // badge appended to the live DOM would be wiped; instead render() bakes
+    // the badge into the row keyed by data-settings-id, and a timer clears it
+    // with one extra re-render.
+    const pendingAppliedFlash = new Map();
+    let appliedFlashTimer = null;
+    let pendingSearchOrderFlash = null;
+    const APPLIED_FLASH_MS = 2500;
+
+    function queueAppliedFlash(settingsId, label) {
+      if (!settingsId) return;
+      pendingAppliedFlash.set(String(settingsId), { label: label || "Applied" });
+      if (appliedFlashTimer) clearTimeout(appliedFlashTimer);
+      appliedFlashTimer = setTimeout(clearAppliedFlash, APPLIED_FLASH_MS);
+    }
+
+    function clearAppliedFlash() {
+      pendingAppliedFlash.clear();
+      appliedFlashTimer = null;
+      pendingSearchOrderFlash = null;
+      if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
+    }
+
+    function appliedFlashHtml(settingsId) {
+      if (!pendingAppliedFlash.size) return "";
+      const pending = pendingAppliedFlash.get(String(settingsId));
+      if (!pending) return "";
+      return `<span class="settings-applied" aria-live="polite" data-state="settings-applied-ok">✓ ${escapeHtml(pending.label)}</span>`;
+    }
 
     function render() {
       const layout = localStorage.getItem("herdr-web-layout") || "auto";
@@ -69,40 +99,40 @@
     }
 
     function appearanceSection(theme) {
-      return `<div class="mobile-settings-group"><h3>Appearance</h3><label><span>Theme</span><select onchange="HerdrMobile.setThemeMode(this.value)"><option value="auto" ${theme === "auto" ? "selected" : ""}>Auto</option><option value="dark" ${theme === "dark" ? "selected" : ""}>Dark</option><option value="light" ${theme === "light" ? "selected" : ""}>Light</option></select></label></div>`;
+      return `<div class="mobile-settings-group"><h3>Appearance</h3><label data-settings-id="theme">${appliedFlashHtml("theme")}<span>Theme</span><select onchange="HerdrMobile.setThemeMode(this.value)"><option value="auto" ${theme === "auto" ? "selected" : ""}>Auto</option><option value="dark" ${theme === "dark" ? "selected" : ""}>Dark</option><option value="light" ${theme === "light" ? "selected" : ""}>Light</option></select></label></div>`;
     }
 
     function layoutSection(layout) {
-      return `<div class="mobile-settings-group"><h3>Layout</h3><label><span>Layout mode</span><select onchange="HerdrMobile.setLayoutPreference(this.value)"><option value="auto" ${layout === "auto" ? "selected" : ""}>Auto</option><option value="mobile" ${layout === "mobile" ? "selected" : ""}>Mobile</option><option value="desktop" ${layout === "desktop" ? "selected" : ""}>Desktop</option></select><small>Auto uses viewport width, not user agent.</small></label></div>`;
+      return `<div class="mobile-settings-group"><h3>Layout</h3><label data-settings-id="layout">${appliedFlashHtml("layout")}<span>Layout mode</span><select onchange="HerdrMobile.setLayoutPreference(this.value)"><option value="auto" ${layout === "auto" ? "selected" : ""}>Auto</option><option value="mobile" ${layout === "mobile" ? "selected" : ""}>Mobile</option><option value="desktop" ${layout === "desktop" ? "selected" : ""}>Desktop</option></select><small>Auto uses viewport width, not user agent.</small></label></div>`;
     }
 
     function filesSection(depth, lineNumbers, headerSearch, searchOrder, pathSearchPageSize, minChars, contentPageSize, contextLines, autoCollapse, defaultExpanded, matchesPerFile, matchCase, regex) {
-      return `<div class="mobile-settings-group"><h3>Files and search</h3><label><span>Browser depth</span><input type="number" min="0" max="8" step="1" value="${depth}" onchange="HerdrMobile.setFileBrowserDepth(this.value)"></label><small>0 shows current folder only. 3 expands three folder levels.</small><label><input type="checkbox" ${lineNumbers ? "checked" : ""} onchange="HerdrMobile.setFileBrowserLineNumbers(this.checked)"><span>Line numbers</span><small>Show line numbers when previewing text files.</small></label><label><input type="checkbox" ${headerSearch ? "checked" : ""} onchange="HerdrMobile.setHeaderSearchEnabled(this.checked)"><span>Header search button</span><small>Show the search action and allow the palette to open.</small></label><div><span>Search section order</span>${renderSearchSectionOrder(searchOrder)}</div><small>Use arrows to move sections. Use Shown/Hidden to include or remove a section.</small><label><span>File/folder page size</span><input type="number" min="10" max="500" step="10" value="${pathSearchPageSize}" onchange="HerdrMobile.setFileBrowserSearchPageSize(this.value)"></label><label><span>Content minimum characters</span><input type="number" min="1" max="20" step="1" value="${minChars}" onchange="HerdrMobile.setFileContentSearchMinChars(this.value)"></label><label><span>Content page size</span><input type="number" min="10" max="500" step="10" value="${contentPageSize}" onchange="HerdrMobile.setFileContentSearchPageSize(this.value)"></label><label><span>Content context lines</span><input type="number" min="0" max="20" step="1" value="${contextLines}" onchange="HerdrMobile.setFileContentSearchContextLines(this.value)"></label><label><span>Content auto-collapse files</span><input type="number" min="0" max="200" step="1" value="${autoCollapse}" onchange="HerdrMobile.setFileContentSearchAutoCollapseFiles(this.value)"></label><label><input type="checkbox" ${defaultExpanded ? "checked" : ""} onchange="HerdrMobile.setFileContentSearchDefaultExpanded(this.checked)"><span>Content results expanded by default</span><small>Expand each file group when content results load.</small></label><label><span>Content matches per file</span><input type="number" min="1" max="50" step="1" value="${matchesPerFile}" onchange="HerdrMobile.setFileContentSearchMatchesPerFile(this.value)"></label><label><input type="checkbox" ${matchCase ? "checked" : ""} onchange="HerdrMobile.setFileContentSearchMatchCase(this.checked)"><span>Content search match case</span></label><label><input type="checkbox" ${regex ? "checked" : ""} onchange="HerdrMobile.setFileContentSearchRegex(this.checked)"><span>Content search regex</span></label></div>`;
+      return `<div class="mobile-settings-group"><h3>Files and search</h3><label data-settings-id="fileBrowserDepth">${appliedFlashHtml("fileBrowserDepth")}<span>Browser depth</span><input type="number" min="0" max="8" step="1" value="${depth}" onchange="HerdrMobile.setFileBrowserDepth(this.value)"></label><small>0 shows current folder only. 3 expands three folder levels.</small><label data-settings-id="fileBrowserLineNumbers">${appliedFlashHtml("fileBrowserLineNumbers")}<input type="checkbox" ${lineNumbers ? "checked" : ""} onchange="HerdrMobile.setFileBrowserLineNumbers(this.checked)"><span>Line numbers</span><small>Show line numbers when previewing text files.</small></label><label data-settings-id="headerSearchEnabled">${appliedFlashHtml("headerSearchEnabled")}<input type="checkbox" ${headerSearch ? "checked" : ""} onchange="HerdrMobile.setHeaderSearchEnabled(this.checked)"><span>Header search button</span><small>Show the search action and allow the palette to open.</small></label><div><span>Search section order</span>${renderSearchSectionOrder(searchOrder, pendingSearchOrderFlash)}</div><small>Use arrows to move sections. Use Shown/Hidden to include or remove a section.</small><label data-settings-id="fileBrowserSearchPageSize">${appliedFlashHtml("fileBrowserSearchPageSize")}<span>File/folder page size</span><input type="number" min="10" max="500" step="10" value="${pathSearchPageSize}" onchange="HerdrMobile.setFileBrowserSearchPageSize(this.value)"></label><label data-settings-id="fileContentSearchMinChars">${appliedFlashHtml("fileContentSearchMinChars")}<span>Content minimum characters</span><input type="number" min="1" max="20" step="1" value="${minChars}" onchange="HerdrMobile.setFileContentSearchMinChars(this.value)"></label><label data-settings-id="fileContentSearchPageSize">${appliedFlashHtml("fileContentSearchPageSize")}<span>Content page size</span><input type="number" min="10" max="500" step="10" value="${contentPageSize}" onchange="HerdrMobile.setFileContentSearchPageSize(this.value)"></label><label data-settings-id="fileContentSearchContextLines">${appliedFlashHtml("fileContentSearchContextLines")}<span>Content context lines</span><input type="number" min="0" max="20" step="1" value="${contextLines}" onchange="HerdrMobile.setFileContentSearchContextLines(this.value)"></label><label data-settings-id="fileContentSearchAutoCollapseFiles">${appliedFlashHtml("fileContentSearchAutoCollapseFiles")}<span>Content auto-collapse files</span><input type="number" min="0" max="200" step="1" value="${autoCollapse}" onchange="HerdrMobile.setFileContentSearchAutoCollapseFiles(this.value)"></label><label data-settings-id="fileContentSearchDefaultExpanded">${appliedFlashHtml("fileContentSearchDefaultExpanded")}<input type="checkbox" ${defaultExpanded ? "checked" : ""} onchange="HerdrMobile.setFileContentSearchDefaultExpanded(this.checked)"><span>Content results expanded by default</span><small>Expand each file group when content results load.</small></label><label data-settings-id="fileContentSearchMatchesPerFile">${appliedFlashHtml("fileContentSearchMatchesPerFile")}<span>Content matches per file</span><input type="number" min="1" max="50" step="1" value="${matchesPerFile}" onchange="HerdrMobile.setFileContentSearchMatchesPerFile(this.value)"></label><label data-settings-id="fileContentSearchMatchCase">${appliedFlashHtml("fileContentSearchMatchCase")}<input type="checkbox" ${matchCase ? "checked" : ""} onchange="HerdrMobile.setFileContentSearchMatchCase(this.checked)"><span>Content search match case</span></label><label data-settings-id="fileContentSearchRegex">${appliedFlashHtml("fileContentSearchRegex")}<input type="checkbox" ${regex ? "checked" : ""} onchange="HerdrMobile.setFileContentSearchRegex(this.checked)"><span>Content search regex</span></label></div>`;
     }
 
     function editorSection(enhanced, wordWrap, tabSize, lsp) {
-      return `<div class="mobile-settings-group"><h3>Editor</h3><label><input type="checkbox" ${enhanced ? "checked" : ""} onchange="HerdrMobile.setEditorEnabled(this.checked)"><span>Code editor enhancements</span><small>Enable CodeMirror editing enhancements. Files remain editable when this is disabled.</small></label><label><input type="checkbox" ${wordWrap ? "checked" : ""} onchange="HerdrMobile.setEditorWordWrap(this.checked)"><span>Editor word wrap</span></label><label><span>Editor tab size</span><input type="number" min="1" max="8" step="1" value="${tabSize}" onchange="HerdrMobile.setEditorTabSize(this.value)"></label><label><input type="checkbox" ${lsp ? "checked" : ""} onchange="HerdrMobile.setLspEnabled(this.checked)"><span>LSP diagnostics</span><small>Show language server diagnostics under the editor. Off by default.</small></label></div>`;
+      return `<div class="mobile-settings-group"><h3>Editor</h3><label data-settings-id="editorEnabled">${appliedFlashHtml("editorEnabled")}<input type="checkbox" ${enhanced ? "checked" : ""} onchange="HerdrMobile.setEditorEnabled(this.checked)"><span>Code editor enhancements</span><small>Enable CodeMirror editing enhancements. Files remain editable when this is disabled.</small></label><label data-settings-id="editorWordWrap">${appliedFlashHtml("editorWordWrap")}<input type="checkbox" ${wordWrap ? "checked" : ""} onchange="HerdrMobile.setEditorWordWrap(this.checked)"><span>Editor word wrap</span></label><label data-settings-id="editorTabSize">${appliedFlashHtml("editorTabSize")}<span>Editor tab size</span><input type="number" min="1" max="8" step="1" value="${tabSize}" onchange="HerdrMobile.setEditorTabSize(this.value)"></label><label data-settings-id="lspEnabled">${appliedFlashHtml("lspEnabled")}<input type="checkbox" ${lsp ? "checked" : ""} onchange="HerdrMobile.setLspEnabled(this.checked)"><span>LSP diagnostics</span><small>Show language server diagnostics under the editor. Off by default.</small></label></div>`;
     }
 
-    function renderSearchSectionOrder(value) {
+    function renderSearchSectionOrder(value, flashKey) {
       const labels = { workspaces: "Workspaces", files: "Files", content: "Content" };
       const order = normalizeSearchSectionOrder(value);
       return `<div class="mobile-actions mobile-search-order">${order.map((key, index) => {
         const enabled = searchSectionEnabled(key);
-        return `<span class="mobile-btn mobile-search-order-row"><strong>${escapeHtml(labels[key] || key)}</strong><button class="mobile-btn" ${index === 0 ? "disabled" : ""} onclick="HerdrMobile.moveSearchSection('${key}',-1)">↑</button><button class="mobile-btn ${enabled ? "active" : ""}" onclick="HerdrMobile.toggleSearchSection('${key}')">${enabled ? "Shown" : "Hidden"}</button><button class="mobile-btn" ${index === order.length - 1 ? "disabled" : ""} onclick="HerdrMobile.moveSearchSection('${key}',1)">↓</button></span>`;
+        return `<span class="mobile-btn mobile-search-order-row">${flashKey === key ? `<span class="settings-applied" aria-live="polite" data-state="settings-applied-ok">✓ Applied</span>` : ""}<strong>${escapeHtml(labels[key] || key)}</strong><button class="mobile-btn" ${index === 0 ? "disabled" : ""} onclick="HerdrMobile.moveSearchSection('${key}',-1)">↑</button><button class="mobile-btn ${enabled ? "active" : ""}" onclick="HerdrMobile.toggleSearchSection('${key}')">${enabled ? "Shown" : "Hidden"}</button><button class="mobile-btn" ${index === order.length - 1 ? "disabled" : ""} onclick="HerdrMobile.moveSearchSection('${key}',1)">↓</button></span>`;
       }).join("")}</div>`;
     }
 
     function workspacesSection(worktreeDirectory, explorationDirectory) {
-      return `<div class="mobile-settings-group"><h3>Workspaces</h3><label><span>Worktree default directory</span><input placeholder="../worktrees" value="${escapeHtml(worktreeDirectory)}" onchange="HerdrMobile.setWorktreeDefaultDirectory(this.value)"></label><small>Base for generated worktree checkout paths.</small><label><span>Exploration default directory</span><input placeholder="~/Documents/code" value="${escapeHtml(explorationDirectory)}" onchange="HerdrMobile.setExplorationDefaultDirectory(this.value)"></label><small>Prefills worktree discovery paths.</small></div>`;
+      return `<div class="mobile-settings-group"><h3>Workspaces</h3><label data-settings-id="worktreeDefaultDirectory">${appliedFlashHtml("worktreeDefaultDirectory")}<span>Worktree default directory</span><input placeholder="../worktrees" value="${escapeHtml(worktreeDirectory)}" onchange="HerdrMobile.setWorktreeDefaultDirectory(this.value)"></label><small>Base for generated worktree checkout paths.</small><label data-settings-id="explorationDefaultDirectory">${appliedFlashHtml("explorationDefaultDirectory")}<span>Exploration default directory</span><input placeholder="~/Documents/code" value="${escapeHtml(explorationDirectory)}" onchange="HerdrMobile.setExplorationDefaultDirectory(this.value)"></label><small>Prefills worktree discovery paths.</small></div>`;
     }
 
     function alertsSection(notifications, volume) {
-      return `<div class="mobile-settings-group"><h3>Alerts</h3><label><input type="checkbox" ${notifications ? "checked" : ""} onchange="HerdrMobile.setBrowserNotifications(this.checked)"><span>Browser notifications</span><small>Show system notifications when an agent is blocked or done.</small></label><label><span>Notification volume (${volume}%)</span><input type="range" min="0" max="100" step="1" value="${volume}" onchange="HerdrMobile.setNotificationVolume(this.value)"></label><small>Controls the local attention tone volume.</small></div>`;
+      return `<div class="mobile-settings-group"><h3>Alerts</h3><label data-settings-id="browserNotifications">${appliedFlashHtml("browserNotifications")}<input type="checkbox" ${notifications ? "checked" : ""} onchange="HerdrMobile.setBrowserNotifications(this.checked)"><span>Browser notifications</span><small>Show system notifications when an agent is blocked or done.</small></label><label data-settings-id="notificationVolume">${appliedFlashHtml("notificationVolume")}<span>Notification volume (${volume}%)</span><input type="range" min="0" max="100" step="1" value="${volume}" onchange="HerdrMobile.setNotificationVolume(this.value)"></label><small>Controls the local attention tone volume.</small></div>`;
     }
 
     function terminalSection(font, core, links, mouseReporting) {
-      return `<div class="mobile-settings-group"><h3>Terminal</h3><label><span>Terminal renderer</span><select onchange="HerdrMobile.setTerminalCore(this.value)"><option value="wterm" ${core === "wterm" ? "selected" : ""}>wterm VT core</option><option value="ghostty" ${core === "ghostty" ? "selected" : ""}>Ghostty VT core</option></select></label><label><span>Terminal font</span><input placeholder="JetBrainsMono Nerd Font, monospace" value="${escapeHtml(font)}" onchange="HerdrMobile.setTerminalFontFamily(this.value)"></label><label><input type="checkbox" ${links ? "checked" : ""} onchange="HerdrMobile.setTerminalLinks(this.checked)"><span>Terminal links</span><small>Detect http/https URLs and open them when tapped.</small></label><label><input type="checkbox" ${mouseReporting ? "checked" : ""} onchange="HerdrMobile.setTerminalMouseReporting(this.checked)"><span>Terminal mouse reporting</span><small>Forward mouse input to terminal apps. Disabled by default; scrolling still works.</small></label><small>Add a Nerd Font family name so icon glyphs render. Leave blank for the default stack.</small></div>`;
+      return `<div class="mobile-settings-group"><h3>Terminal</h3><label data-settings-id="terminalCore">${appliedFlashHtml("terminalCore")}<span>Terminal renderer</span><select onchange="HerdrMobile.setTerminalCore(this.value)"><option value="wterm" ${core === "wterm" ? "selected" : ""}>wterm VT core</option><option value="ghostty" ${core === "ghostty" ? "selected" : ""}>Ghostty VT core</option></select></label><label data-settings-id="terminalFontFamily">${appliedFlashHtml("terminalFontFamily")}<span>Terminal font</span><input placeholder="JetBrainsMono Nerd Font, monospace" value="${escapeHtml(font)}" onchange="HerdrMobile.setTerminalFontFamily(this.value)"></label><label data-settings-id="terminalLinks">${appliedFlashHtml("terminalLinks")}<input type="checkbox" ${links ? "checked" : ""} onchange="HerdrMobile.setTerminalLinks(this.checked)"><span>Terminal links</span><small>Detect http/https URLs and open them when tapped.</small></label><label data-settings-id="terminalMouseReporting">${appliedFlashHtml("terminalMouseReporting")}<input type="checkbox" ${mouseReporting ? "checked" : ""} onchange="HerdrMobile.setTerminalMouseReporting(this.checked)"><span>Terminal mouse reporting</span><small>Forward mouse input to terminal apps. Disabled by default; scrolling still works.</small></label><small>Add a Nerd Font family name so icon glyphs render. Leave blank for the default stack.</small></div>`;
     }
 
     function dataSection() {
@@ -129,6 +159,8 @@
     function setThemeMode(value) {
       localStorage.setItem("herdr-web-theme", value);
       applyTheme();
+      queueAppliedFlash("theme");
+      if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
     }
 
     function setSettingsFilter(value) {
@@ -149,6 +181,8 @@
 
     function setLayoutPreference(value) {
       localStorage.setItem("herdr-web-layout", value);
+      queueAppliedFlash("layout");
+      if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
     }
 
     function setEditorEnabled(value) { setBooleanOption("editorEnabled", value); }
@@ -158,6 +192,7 @@
       const parsed = readOptions();
       parsed.editorTabSize = Math.max(1, Math.min(8, Number(value) || 2));
       writeOptions(parsed);
+      queueAppliedFlash("editorTabSize");
       if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
     }
 
@@ -279,6 +314,7 @@
       const parsed = readOptions();
       parsed.worktreeDefaultDirectory = String(value || "").trim();
       writeOptions(parsed);
+      queueAppliedFlash("worktreeDefaultDirectory");
       if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
     }
 
@@ -286,6 +322,7 @@
       const parsed = readOptions();
       parsed.explorationDefaultDirectory = String(value || "").trim();
       writeOptions(parsed);
+      queueAppliedFlash("explorationDefaultDirectory");
       if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
     }
 
@@ -293,6 +330,7 @@
       const parsed = readOptions();
       parsed.notificationVolume = Math.max(0, Math.min(100, Number(value) || 0)) / 100;
       writeOptions(parsed);
+      queueAppliedFlash("notificationVolume");
       if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
     }
 
@@ -300,6 +338,7 @@
       const parsed = readOptions();
       parsed.fileBrowserDepth = Math.max(0, Math.min(8, Number(value) || 0));
       writeOptions(parsed);
+      queueAppliedFlash("fileBrowserDepth");
       if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
     }
 
@@ -307,6 +346,7 @@
       const parsed = readOptions();
       parsed.fileBrowserLineNumbers = !!value;
       writeOptions(parsed);
+      queueAppliedFlash("fileBrowserLineNumbers");
       if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
     }
 
@@ -314,6 +354,7 @@
       const parsed = readOptions();
       parsed.headerSearchEnabled = !!value;
       writeOptions(parsed);
+      queueAppliedFlash("headerSearchEnabled");
       if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
     }
 
@@ -321,6 +362,7 @@
       const parsed = readOptions();
       parsed[key] = !!value;
       writeOptions(parsed);
+      queueAppliedFlash(key);
       if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
     }
 
@@ -328,6 +370,7 @@
       const parsed = readOptions();
       parsed.searchSectionOrder = normalizeSearchSectionOrder(value).join(",");
       writeOptions(parsed);
+      queueAppliedFlash("searchSectionOrder");
       if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
     }
 
@@ -337,6 +380,8 @@
       if (!optionKey) return;
       parsed[optionKey] = parsed[optionKey] === false;
       writeOptions(parsed);
+      pendingSearchOrderFlash = String(key);
+      queueAppliedFlash("searchSectionOrder");
       if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
     }
 
@@ -349,6 +394,8 @@
       [order[index], order[nextIndex]] = [order[nextIndex], order[index]];
       parsed.searchSectionOrder = order.join(",");
       writeOptions(parsed);
+      pendingSearchOrderFlash = String(key);
+      queueAppliedFlash("searchSectionOrder");
       if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
     }
 
@@ -356,6 +403,7 @@
       const parsed = readOptions();
       parsed.fileBrowserSearchPageSize = Math.max(10, Math.min(500, Number(value) || 100));
       writeOptions(parsed);
+      queueAppliedFlash("fileBrowserSearchPageSize");
       if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
     }
 
@@ -363,6 +411,7 @@
       const parsed = readOptions();
       parsed.fileContentSearchMinChars = Math.max(1, Math.min(20, Number(value) || 3));
       writeOptions(parsed);
+      queueAppliedFlash("fileContentSearchMinChars");
       if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
     }
 
@@ -370,6 +419,7 @@
       const parsed = readOptions();
       parsed.fileContentSearchPageSize = Math.max(10, Math.min(500, Number(value) || 50));
       writeOptions(parsed);
+      queueAppliedFlash("fileContentSearchPageSize");
       if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
     }
 
@@ -378,6 +428,7 @@
       const parsedValue = Number(value);
       parsed.fileContentSearchContextLines = Math.max(0, Math.min(20, Number.isFinite(parsedValue) ? parsedValue : 2));
       writeOptions(parsed);
+      queueAppliedFlash("fileContentSearchContextLines");
       if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
     }
 
@@ -386,6 +437,7 @@
       const parsedValue = Number(value);
       parsed.fileContentSearchAutoCollapseFiles = Math.max(0, Math.min(200, Number.isFinite(parsedValue) ? parsedValue : 0));
       writeOptions(parsed);
+      queueAppliedFlash("fileContentSearchAutoCollapseFiles");
       if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
     }
 
@@ -393,6 +445,7 @@
       const parsed = readOptions();
       parsed.fileContentSearchDefaultExpanded = !!value;
       writeOptions(parsed);
+      queueAppliedFlash("fileContentSearchDefaultExpanded");
       if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
     }
 
@@ -400,6 +453,7 @@
       const parsed = readOptions();
       parsed.fileContentSearchMatchesPerFile = Math.max(1, Math.min(50, Number(value) || 5));
       writeOptions(parsed);
+      queueAppliedFlash("fileContentSearchMatchesPerFile");
       if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
     }
 
@@ -407,6 +461,7 @@
       const parsed = readOptions();
       parsed.fileContentSearchMatchCase = !!value;
       writeOptions(parsed);
+      queueAppliedFlash("fileContentSearchMatchCase");
       if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
     }
 
@@ -414,6 +469,7 @@
       const parsed = readOptions();
       parsed.fileContentSearchRegex = !!value;
       writeOptions(parsed);
+      queueAppliedFlash("fileContentSearchRegex");
       if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
     }
 
@@ -422,15 +478,18 @@
         const parsed = readOptions();
         parsed.terminalFontFamily = String(value || "").trim();
         writeOptions(parsed);
+        queueAppliedFlash("terminalFontFamily");
       } catch (_) {}
       if (globalThis.HerdrMobile && globalThis.HerdrMobile.applyTerminalFontFamily)
         globalThis.HerdrMobile.applyTerminalFontFamily();
+      if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
     }
 
     function setTerminalCore(value) {
       const parsed = readOptions();
       parsed.terminalCore = value === "ghostty" ? "ghostty" : "wterm";
       writeOptions(parsed);
+      queueAppliedFlash("terminalCore");
       if (globalThis.HerdrMobile && globalThis.HerdrMobile.reloadTerminal)
         globalThis.HerdrMobile.reloadTerminal();
       if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
@@ -440,6 +499,7 @@
       const parsed = readOptions();
       parsed.terminalLinks = !!value;
       writeOptions(parsed);
+      queueAppliedFlash("terminalLinks");
       if (globalThis.HerdrMobile && globalThis.HerdrMobile.applyTerminalLinks)
         globalThis.HerdrMobile.applyTerminalLinks();
       if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
@@ -449,6 +509,7 @@
       const parsed = readOptions();
       parsed.terminalMouseReporting = !!value;
       writeOptions(parsed);
+      queueAppliedFlash("terminalMouseReporting");
       if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
     }
 
@@ -464,6 +525,7 @@
       }
       parsed.browserNotifications = enabled;
       writeOptions(parsed);
+      queueAppliedFlash("browserNotifications", enabled ? "Applied" : "Denied");
       if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
     }
 

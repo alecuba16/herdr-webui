@@ -720,6 +720,73 @@ describe("mobile bundle load", () => {
     );
   });
 
+  it("shows an applied badge that survives the settings re-render and later clears", async () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    ctx.HerdrMobile.showScreen("settings");
+    let html = ctx.document.getElementById("mobileScreen").innerHTML;
+    ok(!html.includes("settings-applied"), "no badge before any change");
+    ok(html.includes('data-settings-id="fileBrowserLineNumbers"'));
+
+    ctx.HerdrMobile.setFileBrowserLineNumbers(false);
+    // refresh() chains several awaits (workspaces, tabs/panes/agents in
+    // Promise.all) before the final render; settle until the badge lands.
+    for (let i = 0; i < 40 && !ctx.document.getElementById("mobileScreen").innerHTML.includes("settings-applied"); i++)
+      await ctx.settle(4);
+    html = ctx.document.getElementById("mobileScreen").innerHTML;
+    ok(
+      html.includes("settings-applied"),
+      "applied badge emitted on the changed row after re-render",
+    );
+    const badgeAt = html.indexOf("settings-applied");
+    const rowAt = html.indexOf('data-settings-id="fileBrowserLineNumbers"');
+    ok(
+      badgeAt > rowAt && badgeAt - rowAt < 400,
+      "badge sits inside the line-numbers row",
+    );
+    ok(
+      JSON.parse(ctx.localStorage.getItem("herdr-web-options"))
+        .fileBrowserLineNumbers === false,
+      "value persisted",
+    );
+
+    // The badge timer clears itself with one more refresh.
+    await ctx.flushTimers();
+    for (let i = 0; i < 40 && ctx.document.getElementById("mobileScreen").innerHTML.includes("settings-applied"); i++)
+      await ctx.settle(4);
+    html = ctx.document.getElementById("mobileScreen").innerHTML;
+    ok(!html.includes("settings-applied"), "badge cleared after the timeout");
+  });
+
+  it("flashes the moved search order row instead of every row", async () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    ctx.HerdrMobile.showScreen("settings");
+    ctx.HerdrMobile.moveSearchSection("content", -1);
+    for (let i = 0; i < 40 && !ctx.document.getElementById("mobileScreen").innerHTML.includes("settings-applied"); i++)
+      await ctx.settle(4);
+    const html = ctx.document.getElementById("mobileScreen").innerHTML;
+    const badges = html.split('class="settings-applied"').length - 1;
+    equal(badges, 1, "exactly one badge for the moved section");
+    const badgeAt = html.indexOf("settings-applied");
+    const contentAt = html.indexOf(">Content<");
+    ok(
+      badgeAt >= 0 &&
+        contentAt >= 0 &&
+        html
+          .slice(badgeAt, contentAt)
+          .includes("mobile-search-order-row") === false &&
+        contentAt - badgeAt < 300,
+      "badge sits on the content row",
+    );
+    const savedOrder = JSON.parse(
+      ctx.localStorage.getItem("herdr-web-options"),
+    ).searchSectionOrder;
+    equal(savedOrder, "workspaces,content,files", "order persisted");
+  });
+
   it("mobile search scope parity uses the shared helper, section order, chips, and load more (B5)", async () => {
     const ctx = context();
     // Custom order and disabled folders must behave identically to desktop.

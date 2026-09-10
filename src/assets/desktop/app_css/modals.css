@@ -422,3 +422,41 @@
   font-size: 11px;
   margin-top: 2px;
 }
+
+/* Applied / error confirmation badges injected next to settings controls. */
+.settings-applied,
+.settings-error-flash {
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  margin-left: auto;
+  padding: 3px 8px;
+  border-radius: 999px;
+  pointer-events: none;
+  white-space: nowrap;
+}
+.settings-applied {
+  color: var(--git-added-color);
+  border: 1px solid var(--git-added-color);
+}
+.settings-applied::before {
+  content: "✓";
+  font-weight: 800;
+}
+.settings-error-flash {
+  color: #f38ba8;
+  border: 1px solid #f38ba8;
+}
+/* Server settings save confirmation reuses the shared error slot, turned green. */
+.worktree-error.saved {
+  color: var(--git-added-color);
+  font-weight: 600;
+}
+.worktree-error.saved::before {
+  content: "✓ ";
+  font-weight: 800;
+}
