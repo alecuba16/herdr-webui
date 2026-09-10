@@ -6,6 +6,8 @@
 //   - session manager opens/closes via the new ✕ button and backdrop click
 //   - external Herdr offer state matches the installed herdr (0.9.0 here)
 //   - switching to an external herdr session flips label + colors
+//   - closing a stale session (socket gone) returns ok + already_stopped and
+//     the UI keeps the clean close message (no offline auto-open overwrite)
 //   - mobile layout renders the backend badge with matching colors
 //   - light (latte) theme renders the backend colors with its own palette
 import { connectToPage } from './cdp-driver.mjs';
@@ -172,6 +174,78 @@ if (manager.herdrHidden === false) {
 } else {
   check('external herdr row not offered (no compatible install); skipped switch check', true, `herdrHidden=${manager.herdrHidden}`);
 }
+
+// ---------- Stale session close ----------
+// A session whose backend died without removing its row (crash, kill -9 ->
+// socket file gone) must close cleanly instead of returning a 502 ENOENT
+// error, and the UI must show the clean already-stopped message. The runner
+// creates the stale session directory as a fixture (run-e2e.sh); the server
+// discovers it as a known external session row with no live socket.
+const staleApi = await cdp.evalExpr(`(async () => {
+  // API check first: closing the stale row through the server API must
+  // report ok + already_stopped, not a 502 ENOENT error.
+  const res = await fetch('/api/session/close', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ session: 'stale-probe', backend: 'external-herdr' }),
+  });
+  const body = await res.json().catch(() => null);
+  return { status: res.status, body };
+})()`, true);
+check(
+  'closing a stale (socket gone) external session returns ok already_stopped',
+  staleApi.status === 200
+    && !!(staleApi.body && staleApi.body.ok)
+    && staleApi.body.already_stopped === true,
+  `status=${staleApi.status} body=${JSON.stringify(staleApi.body)}`,
+);
+
+// UI check: target the stale row through the real picker, press its Close
+// button (the real closeCurrentSession path), and the manager must show the
+// clean already-stopped message. The follow-up refresh must not overwrite
+// it with the offline manager (the app retargets the server's default
+// backend after closing).
+const staleUi = await cdp.evalExpr(`(async () => {
+  document.getElementById('footerSessionButton').click();
+  await new Promise((r) => setTimeout(r, 900));
+  const rows = [...document.querySelectorAll('#sessionList .session-line')];
+  const row = rows.find((r) => /stale-probe/.test(r.textContent));
+  if (!row) return { found: false };
+  row.click();
+  await new Promise((r) => setTimeout(r, 1500));
+  const buttons = [...document.querySelectorAll('#sessionList .session-button.danger')];
+  const closeBtn = buttons.find((b) => /Close/.test(b.textContent));
+  if (!closeBtn) return { found: true, closeBtn: false };
+  window.confirm = () => true;
+  closeBtn.click();
+  await new Promise((r) => setTimeout(r, 1200));
+  const m = document.getElementById('sessionManager');
+  return {
+    found: true,
+    closeBtn: true,
+    visible: m && getComputedStyle(m).display !== 'none',
+    title: document.getElementById('sessionManagerTitle').textContent,
+    text: document.getElementById('sessionManagerText').textContent,
+    stored: localStorage.getItem('herdr-session-backend'),
+  };
+})()`, true);
+check(
+  'closing a stale session via the UI shows the clean already-stopped message',
+  staleUi.found === true
+    && staleUi.closeBtn === true
+    && staleUi.visible === true
+    && staleUi.title === 'Session closed'
+    && /not running/.test(staleUi.text || ''),
+  `found=${staleUi.found} title="${staleUi.title}" text="${staleUi.text}" stored=${staleUi.stored}`,
+);
+// Return to the built-in session so later checks run on the default backend.
+await cdp.evalExpr(`(async () => {
+  const rows = [...document.querySelectorAll('#sessionList .session-line')];
+  const row = rows.find((r) => /backend-builtin/.test(r.className) && !/stale-probe/.test(r.textContent));
+  if (row) row.click();
+  await new Promise((r) => setTimeout(r, 1200));
+  return true;
+})()`, true);
 
 // ---------- Mobile layout ----------
 // The mobile bundle loads its script chain after navigation; poll for the
