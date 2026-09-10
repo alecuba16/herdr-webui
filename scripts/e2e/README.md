@@ -39,6 +39,10 @@ What it does:
      the footer to `· Herdr` with the mauve `backend-herdr` color
    - the New Herdr offer's hidden state matches the detected install in the
      real DOM (the `hidden` attribute must actually hide the button)
+   - closing a stale session (backend died without removing its socket, so
+     the row has no live backend) returns `ok + already_stopped` instead of
+     a 502 ENOENT error, and the UI shows the clean already-stopped message
+     without the offline auto-open manager overwriting it
    - the mobile layout renders the backend badge with matching colors
 7. Tears everything down (pass `--keep` to leave the stack up for debugging).
 

@@ -70,6 +70,11 @@ git -C "$REPO" init -q
 git -C "$REPO" add -A
 git -C "$REPO" -c user.name=e2e -c user.email=e2e@local commit -qm init
 
+# Stale external-session fixture: a known session row whose socket file is
+# gone (backend crashed / kill -9). The session-ux acceptance checks verify
+# that closing it succeeds instead of returning a 502 ENOENT error.
+mkdir -p "$WORK/xdg/herdr/sessions/stale-probe"
+
 wait_for() {
   # wait_for <desc> <url> [-k]
   local desc="$1" url="$2" kflag="$3"

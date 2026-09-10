@@ -2637,7 +2637,22 @@ function renderSessionRows() {
 // (as opposed to opened by the user). Background refreshes only auto-hide
 // an auto-opened manager; a user-opened one stays visible.
 let sessionManagerAutoOpened = false;
+// True when the session manager is showing a user-triggered message (the
+// user opened it, or a flow like close/launch just set its text). Auto-opened
+// offline managers must not overwrite those.
+function managerShownForUser() {
+  const manager = el("sessionManager");
+  // Inline "block" means the app showed it (CSS keeps it hidden otherwise);
+  // the initial inline value is "" while the manager is closed.
+  if (!manager) return false;
+  if (manager.style.display !== "block") return false;
+  return !sessionManagerAutoOpened;
+}
 async function showSessionManager(title, text, { auto = false } = {}) {
+  // An auto-opened manager must never overwrite a message the user is
+  // reading (e.g. the "Session closed" confirmation right after closing a
+  // session while the closed backend's refresh is still failing).
+  if (auto && managerShownForUser()) return;
   await loadSessions();
   const titleEl = el("sessionManagerTitle"),
     textEl = el("sessionManagerText"),
@@ -2752,15 +2767,32 @@ async function closeCurrentSession() {
   if (!confirm(`Close current ${sessionBackendLabel(currentSessionBackend())} session?`)) return;
   showBlocking("Closing session...");
   try {
-    await api("/api/session/close", {
+    const result = await api("/api/session/close", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ session: state.session || "default", backend: currentSessionBackend() }),
     });
-    showSessionManager(
-      "Session closed",
-      "Session stopped. You can launch it again.",
-    );
+    // A stale row (backend died without a live socket) closes cleanly too:
+    // the server reports already_stopped so the UI can dismiss it.
+    if (result && result.already_stopped) {
+      showSessionManager(
+        "Session closed",
+        "That session was not running; its stale entry was cleared. You can launch it again.",
+      );
+    } else {
+      showSessionManager(
+        "Session closed",
+        "Session stopped. You can launch it again.",
+      );
+    }
+    // The browser no longer has a live backend to talk to: the just-closed
+    // session is gone (a stale socket would only return ENOENT errors on the
+    // next refresh). Retarget the server's configured default backend so the
+    // delayed refresh() below lands on a working session (the server
+    // auto-starts the built-in backend on demand) instead of re-opening the
+    // offline manager and overwriting the clean close message above.
+    state.sessionBackend = state.serverDefaultBackend || "builtin";
+    localStorage.setItem("herdr-session-backend", state.sessionBackend);
     setTimeout(refresh, 800);
   } catch (e) {
     showSessionManager("Close failed", e.message || String(e));
@@ -2957,6 +2989,9 @@ async function loadVersions() {
         localStorage.setItem("herdr-session-backend", state.sessionBackend);
       }
     }
+    // Remember the server's configured default backend so a closed session
+    // can retarget to it (see closeCurrentSession).
+    state.serverDefaultBackend = v.default_backend || v.current_backend || null;
     if (currentSessionBackend() === "external-herdr" && !state.herdrCompatible) {
       state.sessionBackend = "builtin";
       localStorage.setItem("herdr-session-backend", "builtin");

@@ -2795,13 +2795,21 @@ async fn proxy_server_stop(api: ApiClient) -> Response {
     match tokio::task::spawn_blocking(move || api.request_value(request)).await {
         Ok(Ok(value)) => Json(value).into_response(),
         Ok(Err(err)) => {
+            // The backend may have died without removing its socket file
+            // (crash, kill -9). Removing a stale session row must still
+            // count as success: there is nothing left to stop. LocalStream
+            // connect surfaces a missing socket path as ENOENT ("No such
+            // file or directory").
+            let is_missing_socket = err.contains("No such file or directory");
             let is_connection_drop = err.contains("empty response")
                 || err.contains("UnexpectedEof")
                 || err.contains("ConnectionReset")
                 || err.contains("Connection reset")
                 || err.contains("broken pipe")
                 || err.contains("Broken pipe");
-            if is_connection_drop {
+            if is_missing_socket {
+                Json(json!({ "ok": true, "already_stopped": true })).into_response()
+            } else if is_connection_drop {
                 Json(json!({ "ok": true })).into_response()
             } else {
                 (StatusCode::BAD_GATEWAY, Json(json!({ "error": err }))).into_response()
@@ -7571,8 +7579,9 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn close_session_returns_bad_gateway_on_real_error() {
-        // Point to a socket path that doesn't exist, so the connection itself fails.
+    async fn close_session_returns_ok_and_already_stopped_on_missing_socket() {
+        // A stale session row: the backend died and its socket file is gone.
+        // Close must succeed so the UI can dismiss the row, not 502.
         let mut state = test_state();
         state.api_socket = Some(PathBuf::from("/tmp/nonexistent-herdr-test-socket.sock"));
         let app = test_app_with_state(state);
@@ -7590,7 +7599,127 @@ mod tests {
             .await
             .unwrap();
 
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["ok"], true);
+        assert_eq!(body["already_stopped"], true);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn close_session_builtin_with_missing_socket_reports_already_stopped() {
+        // Same stale-row class for the built-in backend: the session
+        // directory reports a session that no longer has a live socket
+        // (crashed child). Closing it must be ok + already_stopped, and the
+        // registry entry must be dropped.
+        let _guard = lock_env();
+        let config_home = std::env::temp_dir().join(format!(
+            "herdr-webui-builtin-stale-close-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
+        let session_name = "gone-builtin";
+        // Registry entries hold live handles; a real (throwaway) handle keeps
+        // the map shape honest. Its sockets live in /tmp and are never the ones
+        // close_session contacts (that path comes from XDG_CONFIG_HOME), so the
+        // proxy sees ENOENT, the stale-row case under test.
+        let stale_handle = Arc::new(
+            builtin_backend::BuiltinBackendHandle::start(builtin_backend::BuiltinBackendConfig {
+                api_socket: std::env::temp_dir().join(format!(
+                    "herdr-webui-stale-close-api-{}.sock",
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_nanos(),
+                )),
+                client_socket: std::env::temp_dir().join(format!(
+                    "herdr-webui-stale-close-client-{}.sock",
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_nanos(),
+                )),
+                cwd: std::env::temp_dir(),
+                shell: None,
+                jcode_detection_variant: JcodeDetectionVariant::Vanilla,
+            })
+            .unwrap(),
+        );
+        let mut state = test_state();
+        state.builtin_sessions = Arc::new(Mutex::new(HashMap::new()));
+        state
+            .builtin_sessions
+            .lock()
+            .unwrap()
+            .insert(session_name.to_string(), stale_handle);
+        let sessions_registry = state.builtin_sessions.clone();
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                request(Method::POST, "/api/session/close")
+                    .header(header::COOKIE, "herdr_web_session=token-123")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "session": session_name, "backend": "builtin" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["ok"], true);
+        assert_eq!(body["already_stopped"], true);
+        // close_session must also drop the registry entry so the stale
+        // session cannot linger in the built-in registry.
+        assert!(
+            !sessions_registry.lock().unwrap().contains_key(session_name),
+            "registry entry must be removed after closing a stale built-in session"
+        );
+        let _ = fs::remove_dir_all(config_home);
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn close_session_returns_bad_gateway_on_real_error() {
+        // A socket file that exists but refuses connections (not a stale
+        // ENOENT row) is a real failure and must surface as 502.
+        let path = std::env::temp_dir().join(format!(
+            "herdr-webui-test-refused-{}.sock",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        // A regular file is not a socket: connect fails with
+        // "Connection refused"/"Socket type not supported", not ENOENT.
+        fs::write(&path, b"").unwrap();
+
+        let mut state = test_state();
+        state.api_socket = Some(path.clone());
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                request(Method::POST, "/api/session/close")
+                    .header(header::COOKIE, "herdr_web_session=token-123")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "session": "default", "backend": "external-herdr" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
         assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let _ = fs::remove_file(path);
     }
 
     // ────────────────────────────────────────────────────────────────────

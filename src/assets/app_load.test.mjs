@@ -2091,6 +2091,87 @@ describe("app bundle load", () => {
     });
   });
 
+  it("treats closing a stale (not running) session as success with already_stopped", async () => {
+    const ctx = context();
+    const calls = [];
+    ctx.fetch = async (url, opt = {}) => {
+      calls.push({ url, opt });
+      if (url === "/api/session/close") {
+        // The backend died without removing its row: the server reports
+        // ok + already_stopped instead of a 502 ENOENT error.
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ ok: true, already_stopped: true }),
+        };
+      }
+      if (url === "/api/versions") {
+        // The server's configured default backend, used to retarget after
+        // closing the current session.
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            webui: "test",
+            current_backend: "builtin",
+            default_backend: "builtin",
+            herdr_install: { available: false, compatible: false },
+          }),
+        };
+      }
+      if (url === "/api/sessions") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            current_backend: "builtin",
+            herdr_available: false,
+            herdr_compatible: false,
+            sessions: [
+              { name: "default", backend: "builtin", backend_label: "built-in", running: false },
+            ],
+          }),
+        };
+      }
+      // refresh() runs synchronously via the harness setTimeout after the
+      // close; give it the canonical empty-workspaces shape so it completes
+      // instead of auto-opening the manager over our assertion state.
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ result: { workspaces: [] } }),
+      };
+    };
+    vm.runInContext(source, ctx);
+
+    await ctx.closeCurrentSession();
+    // closeCurrentSession fires showSessionManager without awaiting it;
+    // flush pending microtasks before asserting on the manager text.
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const closeCall = calls.find((call) => call.url === "/api/session/close");
+    ok(closeCall, "closeCurrentSession must call /api/session/close");
+    deepEqual(JSON.parse(closeCall.opt.body), {
+      session: "default",
+      backend: "builtin",
+    });
+    equal(
+      ctx.document.getElementById("sessionManagerTitle").textContent,
+      "Session closed",
+    );
+    match(
+      ctx.document.getElementById("sessionManagerText").textContent,
+      /not running/,
+    );
+    // Closing must retarget the server's default backend so the next
+    // refresh cannot hit the just-closed session's dead socket and
+    // re-open the offline manager over the clean close message.
+    equal(
+      ctx.localStorage.getItem("herdr-session-backend"),
+      "builtin",
+    );
+  });
+
   it("hides the external Herdr offer when no compatible herdr install is detected", async () => {
     const ctx = context();
     ctx.fetch = async (url) => {
@@ -2249,7 +2330,16 @@ describe("app bundle load", () => {
     await ctx.refresh();
     equal(manager.style.display, "block");
 
+    // A user-opened manager is not overwritten by a later auto-open: the
+    // failed-refresh path must keep the message the user is reading.
+    fail = true;
+    await ctx.refresh();
+    equal(manager.style.display, "block");
+    equal(ctx.document.getElementById("sessionManagerTitle").textContent, "Session manager");
+    fail = false;
+
     // An auto-opened manager is hidden again by a successful refresh.
+    await ctx.hideSessionManager();
     await ctx.showSessionManager("Session manager", undefined, { auto: true });
     await ctx.refresh();
     equal(manager.style.display, "none");
