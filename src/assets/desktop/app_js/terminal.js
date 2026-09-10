@@ -16,13 +16,16 @@ function connectEvents() {
     else if (msg.type === "server_settings_changed") {
       // Settings changed on the server (possibly another tab). Adopt the new
       // enabled_backends immediately so a disabled backend stops being
-      // targeted/offered without requiring a page reload.
+      // targeted/offered without requiring a page reload. The frame also
+      // carries the server's default backend so retargeting is accurate
+      // without waiting for the next /api/versions poll.
       const enabled = msg.enabled_backends;
       if (enabled) {
         state.backendsEnabled = {
           builtin: enabled.builtin !== false,
           "external-herdr": enabled["external-herdr"] !== false,
         };
+        if (msg.default_backend) state.serverDefaultBackend = msg.default_backend;
         syncSessionBackendFromServer();
       }
       scheduleRefresh();

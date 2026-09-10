@@ -2455,13 +2455,16 @@ async fn update_server_settings(
     }
     // Tell every connected events socket so long-lived tabs adopt the new
     // enabled_backends immediately (a disabled backend stops being
-    // targeted/offered without a reload).
+    // targeted/offered without a reload). Include the server's configured
+    // default backend so tabs can retarget accurately without waiting for
+    // the next /api/versions poll (loadVersions only runs at boot).
     let _ = state.settings_tx.send(json!({
         "type": "server_settings_changed",
         "enabled_backends": {
             "builtin": next.builtin_backend_enabled,
             "external-herdr": next.external_herdr_backend_enabled,
         },
+        "default_backend": default_backend_target(&state).as_str(),
     }));
     Json(settings_public_json(&next)).into_response()
 }
@@ -2482,6 +2485,9 @@ async fn sessions(
     Json(json!({
         "backend_mode": state.backend_mode.as_str(),
         "current_backend": backend_target_for_headers(&state, &headers).as_str(),
+        // The server's configured default backend (used by tabs to retarget
+        // when their pinned backend gets disabled in settings).
+        "default_backend": default_backend_target(&state).as_str(),
         "enabled_backends": {
             "builtin": backend_target_enabled(&state, SessionBackendTarget::Builtin),
             "external-herdr": backend_target_enabled(&state, SessionBackendTarget::ExternalHerdr),
@@ -5877,6 +5883,8 @@ mod tests {
         let body = response_json(response).await;
         assert_eq!(body["enabled_backends"]["builtin"], false);
         assert_eq!(body["enabled_backends"]["external-herdr"], true);
+        // Default backend flips to the remaining enabled one.
+        assert_eq!(body["default_backend"], "external-herdr");
     }
 
     #[tokio::test]
@@ -11456,6 +11464,9 @@ mod tests {
             if value["type"].as_str() == Some("server_settings_changed") {
                 assert_eq!(value["enabled_backends"]["builtin"], true);
                 assert_eq!(value["enabled_backends"]["external-herdr"], false);
+                // The frame carries the server's default backend so tabs
+                // retarget accurately without a /api/versions poll.
+                assert_eq!(value["default_backend"], "builtin");
                 got_settings_change = true;
                 break;
             }

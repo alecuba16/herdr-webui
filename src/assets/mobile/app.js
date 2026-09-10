@@ -21,6 +21,9 @@
     // long-lived tab may outlive a settings change that disabled a backend;
     // null means "unknown yet" (older servers) and never gates anything.
     backendsEnabled: { builtin: null, "external-herdr": null },
+    // The server's configured default backend (settings-change broadcast);
+    // used to retarget when the pinned backend gets disabled.
+    serverDefaultBackend: null,
     workspaces: [],
     tabs: [],
     allTabs: [],
@@ -151,6 +154,14 @@
       const settings = await api("/api/server-settings");
       state.backendMode = settings.backend_mode || state.backendMode;
       state.defaultFolder = settings.default_folder || state.defaultFolder || "";
+      // The server's default backend derives from its configured mode and
+      // the enablement flags; record it before syncing so a disabled pin
+      // retargets accurately.
+      if (settings.backend_mode)
+        state.serverDefaultBackend =
+          settings.backend_mode === "external" || settings.backend_mode === "external-herdr"
+            ? "external-herdr"
+            : "builtin";
       // The server's enabled_backends is authoritative: a tab pinned before
       // a backend was disabled mid-session must retarget instead of
       // silently rerouting. Older servers omit the field; unknown never gates.
@@ -183,6 +194,7 @@
       state.herdrAvailable = !!r.herdr_available;
       state.herdrCompatible = !!r.herdr_compatible;
       state.herdrVersion = r.herdr_version || null;
+      if (r.default_backend) state.serverDefaultBackend = r.default_backend;
       if (r.enabled_backends) {
         state.backendsEnabled = {
           builtin: r.enabled_backends.builtin !== false,
@@ -243,15 +255,20 @@
           } catch (_) {}
         }
         const detail = msg.message ? ` (${msg.message})` : "";
-        // The server reroutes disabled backends to the remaining enabled one,
-        // so the frame may be about the backend actually serving this
+        // The server reroutes disabled backends to the remaining enabled
+        // one, so the frame may be about the backend actually serving this
         // browser, not the stale external pin. Say which backend failed.
         const failedBackend = msg.backend || currentSessionBackend();
         const failedLabel = sessionBackendLabel(failedBackend);
-        const wantsBuiltin = confirm(
-          `The ${failedLabel} backend could not be attached${detail}. ` +
-            "It has been disconnected. Start a built-in session instead?",
-        );
+        // Only offer built-in when the settings allow it; otherwise fall
+        // through to the manager so the user picks an enabled target
+        // instead of silently rerouting to a disabled backend.
+        const wantsBuiltin =
+          backendEnabled("builtin") &&
+          confirm(
+            `The ${failedLabel} backend could not be attached${detail}. ` +
+              "It has been disconnected. Start a built-in session instead?",
+          );
         if (wantsBuiltin) {
           try {
             await api("/api/session/launch", {
@@ -287,15 +304,22 @@
     return enabled !== false;
   }
   // Re-validate the pinned backend against the server's enabled backends:
-  // a tab that pinned external-herdr before it was disabled must retarget
-  // instead of silently rerouting every request.
+  // a tab that pinned a backend before it was disabled mid-session must
+  // retarget instead of silently rerouting every request. Prefer the
+  // server's default backend (from /api/versions or the settings-change
+  // broadcast) when still enabled, then built-in, then whichever remains
+  // enabled (the server enforces at least one enabled backend).
   function syncSessionBackendFromServer() {
     if (!state.sessionBackend) return;
-    if (!backendEnabled(state.sessionBackend)) {
-      state.sessionBackend = backendEnabled("builtin") ? "builtin" : state.sessionBackend;
-      if (!backendEnabled(state.sessionBackend)) return;
-      localStorage.setItem("herdr-session-backend", state.sessionBackend);
-    }
+    if (backendEnabled(state.sessionBackend)) return;
+    const fallback =
+      state.serverDefaultBackend && backendEnabled(state.serverDefaultBackend)
+        ? state.serverDefaultBackend
+        : backendEnabled("builtin")
+          ? "builtin"
+          : "external-herdr";
+    state.sessionBackend = fallback;
+    localStorage.setItem("herdr-session-backend", fallback);
   }
   function sessionBackendLabel(backend) {
     return backend === "external-herdr" ? "Herdr" : "built-in";
@@ -311,6 +335,7 @@
       builtin: enabled.builtin !== false,
       "external-herdr": enabled["external-herdr"] !== false,
     };
+    if (msg.default_backend) state.serverDefaultBackend = msg.default_backend;
     syncSessionBackendFromServer();
     refresh();
   }

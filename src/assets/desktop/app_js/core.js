@@ -2646,6 +2646,7 @@ async function loadSessions() {
         builtin: r.enabled_backends.builtin !== false,
         "external-herdr": r.enabled_backends["external-herdr"] !== false,
       };
+      if (r.default_backend) state.serverDefaultBackend = r.default_backend;
       syncSessionBackendFromServer();
     }
     // Do not clobber an explicit user backend choice: the server echoes the
@@ -2808,19 +2809,22 @@ async function handleHerdrErrorFrame(raw) {
     // the stale external pin. Say which backend failed (server-verified).
     const failedBackend = msg.backend || currentSessionBackend();
     const failedLabel = sessionBackendLabel(failedBackend);
-    const wantsBuiltin = await askQuestion({
-      title: `${failedLabel} backend not reachable`,
-      message:
-        `The ${failedLabel} backend could not be attached${detail}. ` +
-        (backendEnabled("builtin")
-          ? "It has been disconnected. Start a built-in session instead?"
-          : "It has been disconnected. Reopen the session manager to pick a target."),
-      confirmText: "Use built-in session",
-    });
+    const builtinUsable = backendEnabled("builtin");
+    const wantsBuiltin = builtinUsable
+      ? await askQuestion({
+          title: `${failedLabel} backend not reachable`,
+          message:
+            `The ${failedLabel} backend could not be attached${detail}. ` +
+            "It has been disconnected. Start a built-in session instead?",
+          confirmText: "Use built-in session",
+        })
+      : false;
     if (wantsBuiltin) {
       goSession(state.session || "default", "builtin");
       await launchBackend(state.session || "default", "builtin");
     } else {
+      // When built-in is disabled (or the user declined), reopen the manager
+      // so the user picks an enabled target instead of silently rerouting.
       showSessionManager(`${failedLabel} backend not reachable`, detail ? detail.trim() : undefined);
     }
   } finally {
