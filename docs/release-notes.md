@@ -1,5 +1,30 @@
 # Release notes
 
+## 0.4.21 Release Notes
+- The browser now respects the server's enabled-backends settings end to end.
+  `/api/versions`, `/api/sessions`, and `/api/server-settings` report
+  `enabled_backends` and the server's configured `default_backend`; launching
+  or explicitly targeting a disabled backend returns a clear
+  `400 backend type is disabled in settings` instead of silently rerouting.
+- Disabling a backend mid-session is now safe for tabs already targeting it:
+  every settings save broadcasts `server_settings_changed` over the events
+  socket, open tabs retarget live (footer, localStorage, session manager
+  offers) without a page reload, and both desktop and mobile UIs stop offering
+  the disabled backend.
+- The events WebSocket no longer closes when its backend subscription fails
+  (e.g. external `herdr` daemon down): it stays open for server-level frames
+  (settings broadcasts, LSP diagnostics) and retries `events.subscribe` with a
+  1s-to-30s backoff, reconnecting fast after a stable stream. Tabs also cycle
+  their events socket after retargeting so the reconnect targets an enabled
+  backend.
+- Terminal attach failures now always deliver the structured `herdr_error`
+  JSON frame (with the server-resolved backend) before the socket closes,
+  through one ordered event channel, fixing a race where the raw error text
+  arrived but the offer frame did not.
+- The session UX e2e suite covers the full mid-session disable scenario in a
+  real browser: pin external-herdr, disable it via the settings API, verify
+  live retargeting, hidden offers, rejected launch, and settings restore.
+
 ## 0.4.20 Release Notes
 - Tests can no longer overwrite the operator's real
   `~/.config/herdr-webui/webui-settings.json`. A build-time guard
