@@ -247,6 +247,127 @@ await cdp.evalExpr(`(async () => {
   return true;
 })()`, true);
 
+// ---------- Mid-session backend disable ----------
+// The core enabled_backends scenario: a tab pinned to external-herdr when
+// the operator disables that backend in settings must retarget live (footer,
+// localStorage) and stop offering it, without a page reload. The settings
+// save broadcasts server_settings_changed over the events socket; the open
+// tab adopts it via scheduleRefresh.
+const disabled = await cdp.evalExpr(`(async () => {
+  // Pin external-herdr through the real picker row.
+  document.getElementById('footerSessionButton').click();
+  await new Promise((r) => setTimeout(r, 800));
+  const rows = [...document.querySelectorAll('#sessionList .session-line')];
+  const herdrRow = rows.find((r) => /backend-herdr/.test(r.className));
+  if (!herdrRow) return { pinned: false };
+  herdrRow.click();
+  await new Promise((r) => setTimeout(r, 2000));
+  const storedPin = localStorage.getItem('herdr-session-backend');
+  if (storedPin !== 'external-herdr') return { pinned: false, storedPin };
+  // Disable external-herdr via the settings API (loopback no-auth server).
+  // Preserve every other field (read current settings first) so the save
+  // does not trigger a listener rebind and works under any E2E_PORT.
+  const current = await (await fetch('/api/server-settings')).json().catch(() => null);
+  if (!current) return { pinned: true, savedOk: false, reason: 'settings GET failed' };
+  const res = await fetch('/api/server-settings', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      bind: current.bind,
+      username: current.username || null,
+      password: null,
+      localhost_no_auth: !!current.localhost_no_auth,
+      backend_mode: current.backend_mode,
+      builtin_shell: current.builtin_shell || null,
+      default_folder: current.default_folder || null,
+      no_sleep_auto_cooldown_seconds: current.no_sleep_auto_cooldown_seconds,
+      builtin_backend_enabled: current.builtin_backend_enabled !== false,
+      external_herdr_backend_enabled: false,
+    }),
+  });
+  const saved = await res.json().catch(() => null);
+  // Give the events socket + scheduleRefresh time to apply the broadcast.
+  await new Promise((r) => setTimeout(r, 2500));
+  const button = document.getElementById('footerSessionButton');
+  return {
+    pinned: true,
+    savedOk: res.status === 200 && !!(saved && saved.enabled_backends
+      && saved.enabled_backends['external-herdr'] === false),
+    stored: localStorage.getItem('herdr-session-backend'),
+    footerText: button ? button.textContent : '',
+    footerClass: button ? button.className : '',
+  };
+})()`, true);
+check(
+  'disabling external-herdr mid-session retargets the pinned tab to built-in',
+  disabled.pinned === false || (
+    disabled.savedOk === true
+    && disabled.stored === 'builtin'
+    && /built-in/.test(disabled.footerText || '')
+    && /backend-builtin/.test(disabled.footerClass || '')
+  ),
+  disabled.pinned === false
+    ? `no external herdr row offered (install=${manager.herdrInstall && manager.herdrInstall.version}); skipped`
+    : `pinned=${disabled.pinned} savedOk=${disabled.savedOk} stored=${disabled.stored} footer="${disabled.footerText}" class="${disabled.footerClass}"`,
+);
+if (disabled.pinned === true) {
+// The session manager must hide (not merely disable) the Herdr offer while
+// the backend is disabled in settings.
+const disabledOffer = await cdp.evalExpr(`(async () => {
+  document.getElementById('footerSessionButton').click();
+  await new Promise((r) => setTimeout(r, 900));
+  const btn = document.getElementById('newHerdrSessionTarget');
+  return { hidden: btn ? btn.hidden : null, disabled: btn ? btn.disabled : null };
+})()`, true);
+check(
+  'session manager hides the Herdr offer while the backend is disabled',
+  disabledOffer.hidden === true,
+  `hidden=${disabledOffer.hidden} disabled=${disabledOffer.disabled}`,
+);
+// Launching the disabled backend through the API must fail with a clear
+// error instead of silently rerouting.
+const disabledLaunch = await cdp.evalExpr(`(async () => {
+  const res = await fetch('/api/session/launch', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-herdr-backend': 'external-herdr' },
+    body: JSON.stringify({ session: 'default', backend: 'external-herdr' }),
+  });
+  const body = await res.json().catch(() => null);
+  return { status: res.status, error: body && body.error };
+})()`, true);
+check(
+  'launching the disabled backend returns a clear settings error',
+  disabledLaunch.status === 400
+    && /disabled/.test(String(disabledLaunch.error || '')),
+  `status=${disabledLaunch.status} error="${disabledLaunch.error}"`,
+);
+// Restore: re-enable external-herdr so the run leaves a clean state and the
+// remaining checks (light theme) can switch backends. Same preserve-fields
+// approach: read current settings and flip only the flag.
+await cdp.evalExpr(`(async () => {
+  const current = await (await fetch('/api/server-settings')).json().catch(() => null);
+  if (!current) return -1;
+  const res = await fetch('/api/server-settings', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      bind: current.bind,
+      username: current.username || null,
+      password: null,
+      localhost_no_auth: !!current.localhost_no_auth,
+      backend_mode: current.backend_mode,
+      builtin_shell: current.builtin_shell || null,
+      default_folder: current.default_folder || null,
+      no_sleep_auto_cooldown_seconds: current.no_sleep_auto_cooldown_seconds,
+      builtin_backend_enabled: current.builtin_backend_enabled !== false,
+      external_herdr_backend_enabled: true,
+    }),
+  });
+  await new Promise((r) => setTimeout(r, 2000));
+  return res.status;
+})()`, true);
+} // end mid-session disable scenario (requires a compatible herdr install)
+
 // ---------- Mobile layout ----------
 // The mobile bundle loads its script chain after navigation; poll for the
 // badge instead of fixed sleeps (fixed waits raced the bundle load and

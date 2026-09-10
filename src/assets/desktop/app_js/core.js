@@ -2604,6 +2604,18 @@ function syncSessionBackendFromServer() {
   state.sessionBackend = fallback;
   localStorage.setItem("herdr-session-backend", fallback);
   updateFooterSessionButton();
+  // The events socket is bound to the disabled backend through its URL
+  // query (?backend=...). Cycle it so the reconnect targets the fallback
+  // backend; otherwise the tab keeps polling the dead backend's events
+  // (attach/subscribe failures on every reconnect) until a manual reload.
+  if (eventWs) {
+    eventWs.onclose = null;
+    try {
+      eventWs.close();
+    } catch (e) {}
+    eventWs = null;
+    setTimeout(connectEvents, 100);
+  }
 }
 async function newSessionTarget(backend) {
   if (backend === "external-herdr" && !backendEnabled("external-herdr")) {

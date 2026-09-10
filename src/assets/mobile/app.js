@@ -320,6 +320,17 @@
           : "external-herdr";
     state.sessionBackend = fallback;
     localStorage.setItem("herdr-session-backend", fallback);
+    // The events socket is bound to the disabled backend through its URL
+    // query (?backend=...). Cycle it so the reconnect targets the fallback
+    // backend instead of polling the dead one until a manual reload.
+    if (eventWs) {
+      eventWs.onclose = null;
+      try {
+        eventWs.close();
+      } catch (e) {}
+      eventWs = null;
+      scheduleEventReconnect();
+    }
   }
   function sessionBackendLabel(backend) {
     return backend === "external-herdr" ? "Herdr" : "built-in";

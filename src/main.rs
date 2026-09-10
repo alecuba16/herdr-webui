@@ -4344,25 +4344,49 @@ async fn events_socket(state: WebState, api: ApiClient, mut socket: WebSocket) {
             "method": "events.subscribe",
             "params": { "subscriptions": subscriptions }
         });
-        let Ok(mut stream) = subscribe_api.subscribe(request) else {
-            let _ = tx
-                .send(json!({ "type": "error", "message": "failed to subscribe to Herdr events" }));
-            return;
-        };
-        let _ = tx.send(json!({ "type": "ready" }));
+        // The backend subscription can fail while the socket itself is fine
+        // (external herdr daemon died, backend restarting). The events socket
+        // also carries server-level frames (server_settings_changed, lsp
+        // diagnostics) that must NOT die with the backend: keep retrying the
+        // subscription with a backoff instead of dropping `tx`, which would
+        // close the whole WebSocket and make tabs miss one-shot settings
+        // broadcasts during the reconnect gap (they would stay pinned to a
+        // backend disabled in settings until the next manual refresh).
+        let mut backoff_secs = 1u64;
         loop {
-            match stream.next_value() {
-                Ok(Some(value)) => {
-                    if tx.send(json!({ "type": "event", "event": value })).is_err() {
-                        break;
+            match subscribe_api.subscribe(request.clone()) {
+                Ok(mut stream) => {
+                    let _ = tx.send(json!({ "type": "ready" }));
+                    loop {
+                        match stream.next_value() {
+                            Ok(Some(value)) => {
+                                if tx.send(json!({ "type": "event", "event": value })).is_err() {
+                                    return;
+                                }
+                            }
+                            Ok(None) => break,
+                            Err(err) => {
+                                let _ = tx.send(json!({
+                                    "type": "error",
+                                    "message": err.to_string()
+                                }));
+                                break;
+                            }
+                        }
                     }
                 }
-                Ok(None) => break,
-                Err(err) => {
-                    let _ = tx.send(json!({ "type": "error", "message": err.to_string() }));
-                    break;
+                Err(_) => {
+                    let _ = tx.send(
+                        json!({ "type": "error", "message": "failed to subscribe to Herdr events" }),
+                    );
                 }
             }
+            // The WebSocket consumer went away; stop retrying.
+            if tx.is_closed() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_secs(backoff_secs));
+            backoff_secs = (backoff_secs * 2).min(30);
         }
     });
 
@@ -11497,6 +11521,139 @@ mod tests {
 
         server_handle.abort();
         let _ = fs::remove_file(socket);
+        let _ = fs::remove_dir_all(&config_home);
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    /// A tab pinned to external-herdr has its events socket bound to that
+    /// backend (`?backend=external-herdr`). When the external daemon is not
+    /// running, the backend subscription fails — but the socket ALSO carries
+    /// server-level frames (`server_settings_changed`). It must stay open and
+    /// keep retrying the subscription, otherwise the one-shot settings
+    /// broadcast lands in a reconnect gap and a tab stays pinned to a backend
+    /// disabled in settings (this exact regression was caught by the
+    /// session-ux e2e suite).
+    #[cfg(unix)]
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn events_socket_survives_backend_subscription_failure() {
+        use futures_util::StreamExt;
+        use tokio_tungstenite::connect_async;
+
+        let _guard = lock_env();
+        let config_home = std::env::temp_dir().join(format!(
+            "herdr-webui-events-dead-backend-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
+
+        let mut state = test_state();
+        // Point external-herdr at a socket path with NO listener: the
+        // events.subscribe request fails, like a dead external daemon.
+        state.api_socket = Some(std::env::temp_dir().join(format!(
+                "herdr-webui-dead-external-{}.sock",
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            )));
+        let state = Arc::new(state);
+        let app = test_app_with_state((*state).clone());
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server_state = state.clone();
+        let server_handle = tokio::spawn(async move {
+            let _ = server_state;
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+
+        // Bind the events socket to the dead external backend, as a pinned
+        // browser tab does.
+        let url = format!("ws://{addr}/ws/events?backend=external-herdr");
+        let ws_request = tokio_tungstenite::tungstenite::http::Request::builder()
+            .uri(&url)
+            .header("cookie", "herdr_web_session=token-123")
+            .header("host", addr.to_string())
+            .header("connection", "Upgrade")
+            .header("upgrade", "websocket")
+            .header("sec-websocket-version", "13")
+            .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+            .body(())
+            .unwrap();
+        let (mut ws_stream, _response) = connect_async(ws_request)
+            .await
+            .expect("Failed to connect to WebSocket");
+
+        // The subscription failure surfaces as an error frame, but the
+        // socket must stay open (no close frame).
+        let mut saw_error = false;
+        let mut saw_settings_change = false;
+        for _ in 0..10 {
+            let msg =
+                match tokio::time::timeout(std::time::Duration::from_secs(10), ws_stream.next())
+                    .await
+                {
+                    Ok(Some(Ok(m))) => m,
+                    Ok(None) => break, // socket closed by server = the bug
+                    Ok(Some(Err(_))) | Err(_) => break,
+                };
+            let text = msg.to_text().expect("expected text message");
+            let value: serde_json::Value = serde_json::from_str(text).expect("invalid json");
+            match value["type"].as_str() {
+                Some("error") => {
+                    saw_error = true;
+                    // Settings broadcast must still arrive while the socket
+                    // retries the subscription.
+                    let save = test_app_with_state((*state).clone())
+                        .oneshot(
+                            request(Method::POST, "/api/server-settings")
+                                .header(header::COOKIE, "herdr_web_session=token-123")
+                                .header(header::CONTENT_TYPE, "application/json")
+                                .body(Body::from(
+                                    json!({
+                                        "bind": "127.0.0.1:8787",
+                                        "username": "user",
+                                        "password": "pass",
+                                        "localhost_no_auth": true,
+                                        "backend_mode": "builtin",
+                                        "builtin_backend_enabled": true,
+                                        "external_herdr_backend_enabled": false,
+                                    })
+                                    .to_string(),
+                                ))
+                                .unwrap(),
+                        )
+                        .await
+                        .unwrap();
+                    assert_eq!(save.status(), StatusCode::OK);
+                }
+                Some("server_settings_changed") => {
+                    assert_eq!(value["enabled_backends"]["external-herdr"], false);
+                    saw_settings_change = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        assert!(
+            saw_error,
+            "subscription failure must surface as an error frame"
+        );
+        assert!(
+            saw_settings_change,
+            "server_settings_changed must reach a tab whose backend subscription failed"
+        );
+
+        server_handle.abort();
         let _ = fs::remove_dir_all(&config_home);
         std::env::remove_var("XDG_CONFIG_HOME");
     }
