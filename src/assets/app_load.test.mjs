@@ -3372,6 +3372,126 @@ describe("app bundle load", () => {
     equal(ctx.serverSettingsValidationError("127.0.0.1:8787", "", "", false), "");
   });
 
+  it("flashes a settings applied badge on saveOptions", async () => {
+    const ctx = context();
+    // The feedback module is a separate shared bundle file; load it like
+    // app_boot does so saveOptions() can reach it.
+    vm.runInContext(
+      readFileSync(new URL("./shared/settings_feedback.js", import.meta.url), "utf8"),
+      ctx,
+    );
+    vm.runInContext(source, ctx);
+
+    const control = ctx.document.getElementById("optFit");
+    control.classList = {
+      _set: new Set(),
+      add(...names) {
+        for (const name of names) this._set.add(name);
+      },
+      remove(...names) {
+        for (const name of names) this._set.delete(name);
+      },
+      contains(name) {
+        return this._set.has(name);
+      },
+      toggle() {},
+    };
+    control.children = [];
+    control.appendChild = (child) => {
+      child.parentNode = control;
+      control.children.push(child);
+      return child;
+    };
+    control.querySelector = (selector) =>
+      selector.includes("settings-applied") && control.children.length
+        ? control.children[control.children.length - 1]
+        : null;
+    control.closest = (selector) =>
+      selector === ".option" ? control : null;
+    ctx.document.activeElement = control;
+
+    await ctx.saveOptions();
+    ok(
+      control.children.some(
+        (child) => String(child.className) === "settings-applied",
+      ),
+      "green applied badge appended to the changed row",
+    );
+  });
+
+  it("marks server settings saved state green on success and red on failure", async () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    const err = ctx.document.getElementById("serverSettingsError");
+    const errClasses = new Set();
+    err.classList = {
+      add(name) {
+        errClasses.add(name);
+      },
+      remove(name) {
+        errClasses.delete(name);
+      },
+      contains(name) {
+        return errClasses.has(name);
+      },
+      toggle() {},
+    };
+    ctx.document.getElementById("optServerBind").value = "127.0.0.1:8787";
+    ctx.document.getElementById("optBackendMode").value = "builtin";
+
+    ctx.fetch = async () => ({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      json: async () => ({ bind: "127.0.0.1:8787", enabled_backends: {} }),
+    });
+    await ctx.applyServerSettings();
+    ok(errClasses.has("saved"), "success turns the status line green");
+    match(err.textContent, /Saved\./);
+
+    ctx.fetch = async () => {
+      throw Error("network down");
+    };
+    await ctx.applyServerSettings();
+    ok(!errClasses.has("saved"), "failure drops the saved state");
+    equal(err.textContent, "network down");
+  });
+
+  it("keeps server settings validation errors red without saved state", async () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    const err = ctx.document.getElementById("serverSettingsError");
+    const errClasses = new Set();
+    err.classList = {
+      add(name) {
+        errClasses.add(name);
+      },
+      remove(name) {
+        errClasses.delete(name);
+      },
+      contains(name) {
+        return errClasses.has(name);
+      },
+      toggle() {},
+    };
+    ctx.document.getElementById("optServerBind").value = "0.0.0.0:8787";
+    ctx.document.getElementById("optServerUser").value = "";
+    ctx.document.getElementById("optServerPassword").value = "";
+    ctx.document.getElementById("optServerPassword").dataset.hasPassword = "false";
+
+    let posted = false;
+    ctx.fetch = async () => {
+      posted = true;
+      return { ok: true, json: async () => ({}) };
+    };
+    await ctx.applyServerSettings();
+    ok(!posted, "invalid input never reaches the server");
+    ok(!errClasses.has("saved"));
+    match(err.textContent, /Username and password are required/);
+  });
+
   it("renders extracted worktree and shortcut modals", () => {
     const ctx = context();
     vm.runInContext(source, ctx);

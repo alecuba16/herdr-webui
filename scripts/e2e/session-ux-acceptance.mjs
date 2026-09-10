@@ -10,6 +10,8 @@
 //     the UI keeps the clean close message (no offline auto-open overwrite)
 //   - mobile layout renders the backend badge with matching colors
 //   - light (latte) theme renders the backend colors with its own palette
+//   - settings changes flash a green ✓ Applied badge on the changed row that
+//     clears itself, and server settings show a green saved vs red error state
 import { connectToPage } from './cdp-driver.mjs';
 
 const URL = process.env.E2E_BASE_URL || 'https://127.0.0.1:8899/';
@@ -520,6 +522,118 @@ check(
 await cdp.evalExpr(`(async () => {
   localStorage.setItem('herdr-web-theme', 'auto');
   localStorage.removeItem('herdr-web-layout');
+  return true;
+})()`, true);
+
+// ---------- Settings applied feedback ----------
+// Desktop settings: a real click on a checkbox triggers saveOptions() and must
+// flash a green ✓ Applied badge next to the changed row, then clear itself.
+await cdp.evalExpr(`(async () => {
+  localStorage.removeItem('herdr-web-options');
+  location.reload();
+  return true;
+})()`, true);
+await new Promise((r) => setTimeout(r, 2500));
+const appliedBadge = await cdp.evalExpr(`(async () => {
+  document.getElementById('settingsToggle').click();
+  await new Promise((r) => setTimeout(r, 500));
+  const box = document.getElementById('optShowTabActivity');
+  const before = box.checked;
+  box.click();
+  await new Promise((r) => setTimeout(r, 300));
+  const row = box.closest('.option');
+  const badge = row ? row.querySelector('.settings-applied') : null;
+  const styles = badge ? getComputedStyle(badge) : null;
+  return {
+    changed: box.checked !== before,
+    badgeText: badge ? badge.textContent : '',
+    badgeState: badge ? badge.dataset.state : '',
+    badgeColor: styles ? styles.color : '',
+    saved: JSON.parse(localStorage.getItem('herdr-web-options') || '{}').showTabActivity,
+  };
+})()`, true);
+check(
+  'settings checkbox change flashes green ✓ Applied badge',
+  appliedBadge.changed === true
+    && /Applied/.test(appliedBadge.badgeText || '')
+    && appliedBadge.badgeState === 'settings-applied-ok'
+    && /a6e3a1|40, 224, 122|46, 213, 117/.test(appliedBadge.badgeColor || ''),
+  `text="${appliedBadge.badgeText}" state=${appliedBadge.badgeState} color=${appliedBadge.badgeColor} saved=${appliedBadge.saved}`,
+);
+check(
+  'applied badge reflects the persisted option value',
+  appliedBadge.saved === true,
+  `showTabActivity=${appliedBadge.saved}`,
+);
+const badgeCleared = await cdp.evalExpr(`(async () => {
+  await new Promise((r) => setTimeout(r, 3000));
+  const box = document.getElementById('optShowTabActivity');
+  if (box) box.click(); // restore default
+  await new Promise((r) => setTimeout(r, 300));
+  const badge = document.querySelector('#settingsModal .settings-applied');
+  return badge === null || badge === undefined || badge.isConnected === false;
+})()`, true);
+check(
+  'applied badge clears itself after the timeout',
+  badgeCleared === true,
+  '',
+);
+
+// Server settings: Apply succeeds on loopback no-auth and turns the status line
+// green; a validation error (public bind without credentials) stays red.
+const serverSaved = await cdp.evalExpr(`(async () => {
+  const apply = document.getElementById('serverSettingsApply');
+  apply.click();
+  await new Promise((r) => setTimeout(r, 1500));
+  const err = document.getElementById('serverSettingsError');
+  const styles = err ? getComputedStyle(err) : null;
+  return {
+    text: err ? err.textContent : '',
+    savedClass: err ? err.classList.contains('saved') : false,
+    color: styles ? styles.color : '',
+  };
+})()`, true);
+check(
+  'server settings Apply shows green saved state',
+  /Saved/.test(serverSaved.text || '')
+    && serverSaved.savedClass === true
+    && /a6e3a1|40, 224, 122|46, 213, 117/.test(serverSaved.color || ''),
+  `text="${serverSaved.text}" saved=${serverSaved.savedClass} color=${serverSaved.color}`,
+);
+const serverError = await cdp.evalExpr(`(async () => {
+  const bind = document.getElementById('optServerBind');
+  const user = document.getElementById('optServerUser');
+  const pass = document.getElementById('optServerPassword');
+  bind.value = '0.0.0.0:8787';
+  user.value = '';
+  pass.value = '';
+  const stored = JSON.parse(localStorage.getItem('herdr-web-options') || '{}');
+  document.getElementById('serverSettingsApply').click();
+  await new Promise((r) => setTimeout(r, 700));
+  const err = document.getElementById('serverSettingsError');
+  const styles = err ? getComputedStyle(err) : null;
+  // Restore the loopback bind for subsequent checks.
+  bind.value = '127.0.0.1:8787';
+  document.getElementById('serverSettingsApply').click();
+  await new Promise((r) => setTimeout(r, 1200));
+  return {
+    text: err ? err.textContent : '',
+    savedClass: err ? err.classList.contains('saved') : false,
+    color: styles ? styles.color : '',
+  };
+})()`, true);
+check(
+  'server settings validation error stays red without saved state',
+  /required/.test(serverError.text || '')
+    && serverError.savedClass === false
+    && /243, 139, 168|f38ba8/.test(serverError.color || ''),
+  `text="${serverError.text}" saved=${serverError.savedClass} color=${serverError.color}`,
+);
+
+// Close the settings modal and restore a clean state.
+await cdp.evalExpr(`(async () => {
+  document.getElementById('settingsClose').click();
+  localStorage.removeItem('herdr-web-options');
   return true;
 })()`, true);
 

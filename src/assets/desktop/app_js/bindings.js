@@ -105,6 +105,10 @@ el("shortcutsModal").addEventListener("click", (e) => {
 el("optTheme").onchange = () => {
   themeMode = normalizeThemeMode(el("optTheme").value);
   applyTheme();
+  // Theme mode persists via applyTheme() -> localStorage, not saveOptions,
+  // so it needs its own confirmation badge.
+  if (typeof flashSettingsApplied === "function")
+    flashSettingsApplied(el("optTheme"));
 };
 el("themeColorsApply").onclick = applyThemeColorsFromSettings;
 el("themeColorsReset").onclick = () => applyThemeColorProfile("default");
