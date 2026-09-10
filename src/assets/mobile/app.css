@@ -148,9 +148,13 @@ body.light {
 }
 .mobile-context .mobile-backend-badge {
   align-self: flex-start;
+  -webkit-appearance: none;
+  appearance: none;
+  background: none;
   border: 1px solid var(--border2);
   border-radius: 999px;
   color: var(--muted);
+  cursor: pointer;
   display: inline-block;
   font-size: 10px;
   font-weight: 800;
@@ -161,6 +165,14 @@ body.light {
   text-overflow: clip;
   white-space: nowrap;
   width: auto;
+}
+.mobile-session-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.mobile-session-actions .mobile-btn {
+  flex: 1 1 auto;
 }
 .mobile-context .mobile-backend-badge.backend-builtin {
   border-color: var(--backend-builtin);
