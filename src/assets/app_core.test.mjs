@@ -1431,6 +1431,172 @@ describe("desktop file browser editor integration", () => {
     assert.match(document.getElementById("fileBrowserPanel").innerHTML, /file-browser-open-tab active/);
   });
 
+  it("opens markdown files in rendered preview by default and flips via the eye toggle", async () => {
+    const document = createFakeDocument();
+    const editorCalls = [];
+    const context = {
+      window: {
+        addEventListener() {},
+        HerdrEditor: {
+          create(opts) {
+            editorCalls.push({ path: opts.path, content: opts.content, readonly: opts.readonly, markdownPreview: opts.markdownPreview });
+            opts.parent.innerHTML = `<div class="cm-content cm-lineWrapping" contenteditable="${opts.readonly === false ? "true" : "false"}" data-language="markdown"></div>`;
+            return { getValue() { return opts.content; }, setValue() {}, destroy() {} };
+          },
+          isMarkdownPath(path) { return /\.md$/.test(String(path)); },
+        },
+        HerdrGitUi: { hide() {} },
+        HerdrWorkspacePath(workspace) { return workspace.cwd; },
+      },
+      document,
+      localStorage: { getItem() { return JSON.stringify({ fileBrowserLineNumbers: true, fileBrowserGitStatus: false }); } },
+      navigator: { clipboard: { writeText: async () => {} } },
+      fetch: async (url) => ({
+        ok: true,
+        async json() {
+          if (String(url).startsWith("/api/file-browser/file")) return { path: "README.md", content: "# Title", binary: false, truncated: false };
+          return { path: "", entries: [], git_status: null };
+        },
+      }),
+      confirm: () => true,
+      HerdrAppHelpers: require("./shared/core.js"),
+      appRefreshIconButton: () => "<button>Refresh</button>",
+      encodeURIComponent,
+      decodeURIComponent,
+      Error,
+      JSON,
+      Math,
+      String,
+      setTimeout,
+      clearTimeout,
+    };
+    context.window.window = context.window;
+    context.window.document = document;
+    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
+    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
+
+    await context.window.HerdrFileBrowser.open({ cwd: "/repo" });
+    context.window.HerdrFileBrowser.select(encodeURIComponent("README.md"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // Markdown opens read-only with the rendered preview, not the editor.
+    assert.equal(editorCalls.at(-1).path, "README.md");
+    assert.equal(editorCalls.at(-1).readonly, true);
+    assert.equal(editorCalls.at(-1).markdownPreview, true);
+
+    // The toolbar ships the eye toggle in its active (preview) state.
+    const toolbarHtml = document.getElementById("fileBrowserPanel").innerHTML;
+    assert.match(toolbarHtml, /file-browser-preview-toggle active/);
+    assert.match(toolbarHtml, /Show markdown source/);
+
+    // Eye toggle flips to the source view...
+    context.window.HerdrFileBrowser.toggleMarkdownView(encodeURIComponent("README.md"));
+    assert.equal(editorCalls.at(-1).markdownPreview, false);
+    assert.match(document.getElementById("fileBrowserPanel").innerHTML, /file-browser-preview-toggle(?! active)/);
+    assert.match(document.getElementById("fileBrowserPanel").innerHTML, /Show rendered markdown preview/);
+
+    // ...and back to the rendered preview.
+    context.window.HerdrFileBrowser.toggleMarkdownView(encodeURIComponent("README.md"));
+    assert.equal(editorCalls.at(-1).markdownPreview, true);
+    assert.match(document.getElementById("fileBrowserPanel").innerHTML, /file-browser-preview-toggle active/);
+
+    // Unlocking to edit mounts the plain editor and hides the eye toggle.
+    context.window.HerdrFileBrowser.toggleLock(encodeURIComponent("README.md"));
+    assert.equal(editorCalls.at(-1).readonly, false);
+    assert.equal(editorCalls.at(-1).markdownPreview, false);
+    assert.doesNotMatch(document.getElementById("fileBrowserPanel").innerHTML, /file-browser-preview-toggle/);
+  });
+
+  it("offers Preview in the tree context menu for markdown and dispatches it", async () => {
+    const document = createFakeDocument();
+    const editorCalls = [];
+    const loadedPaths = [];
+    const context = {
+      window: {
+        addEventListener() {},
+        HerdrEditor: {
+          create(opts) {
+            editorCalls.push({ path: opts.path, readonly: opts.readonly, markdownPreview: opts.markdownPreview });
+            opts.parent.innerHTML = "<div class='cm-content'></div>";
+            return { getValue() { return opts.content; }, setValue() {}, destroy() {} };
+          },
+          isMarkdownPath(path) { return /\.md$/.test(String(path)); },
+        },
+        HerdrGitUi: { hide() {} },
+        HerdrWorkspacePath(workspace) { return workspace.cwd; },
+      },
+      document,
+      localStorage: { getItem() { return JSON.stringify({ fileBrowserLineNumbers: true, fileBrowserGitStatus: false }); } },
+      navigator: { clipboard: { writeText: async () => {} } },
+      fetch: async (url) => ({
+        ok: true,
+        async json() {
+          const text = String(url);
+          if (text.startsWith("/api/file-browser/file")) {
+            const path = decodeURIComponent((text.match(/path=([^&]+)/) || [null, ""])[1]);
+            loadedPaths.push(path);
+            return { path, content: `# ${path}`, binary: false, truncated: false };
+          }
+          return { path: "", entries: [{ kind: "file", name: "README.md", path: "docs/README.md" }], git_status: null };
+        },
+      }),
+      confirm: () => true,
+      HerdrAppHelpers: require("./shared/core.js"),
+      appRefreshIconButton: () => "<button>Refresh</button>",
+      encodeURIComponent,
+      decodeURIComponent,
+      Error,
+      JSON,
+      Math,
+      String,
+      setTimeout(fn) { fn(); return 1; },
+      clearTimeout() {},
+    };
+    context.window.window = context.window;
+    context.window.document = document;
+    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
+    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
+
+    await context.window.HerdrFileBrowser.open({ cwd: "/repo" });
+
+    // Tree menu on a closed markdown file offers Preview.
+    context.window.HerdrFileBrowser.menu({ preventDefault() {}, stopPropagation() {}, clientX: 10, clientY: 20 }, encodeURIComponent("docs/README.md"), "file");
+    const treeHtml = document.getElementById("fileBrowserPanel").innerHTML;
+    assert.match(treeHtml, /data-file-menu-action="preview"/);
+
+    const click = async (action) => {
+      const button = { dataset: { fileMenuAction: action } };
+      button.closest = (selector) => selector === ".file-browser-menu [data-file-menu-action]" ? button : null;
+      const textNodeTarget = { parentElement: button };
+      await document.listeners["click:capture"].at(-1)({
+        target: textNodeTarget,
+        preventDefault() {},
+        stopPropagation() {},
+        stopImmediatePropagation() {},
+      });
+    };
+
+    await click("preview");
+    assert.ok(loadedPaths.includes("docs/README.md"), "preview action loads the file");
+    assert.equal(editorCalls.at(-1).path, "docs/README.md");
+    assert.equal(editorCalls.at(-1).readonly, true);
+    assert.equal(editorCalls.at(-1).markdownPreview, true);
+
+    // Tab menu on the open file flips to the source view.
+    context.window.HerdrFileBrowser.tabMenu({ preventDefault() {}, stopPropagation() {}, clientX: 10, clientY: 20 }, encodeURIComponent("docs/README.md"));
+    assert.match(document.getElementById("fileBrowserPanel").innerHTML, /data-file-menu-action="source"/);
+    await click("source");
+    assert.equal(editorCalls.at(-1).markdownPreview, false);
+    assert.match(document.getElementById("fileBrowserPanel").innerHTML, /file-browser-preview-toggle(?! active)/);
+
+    // Tab menu now offers going back to the preview.
+    context.window.HerdrFileBrowser.tabMenu({ preventDefault() {}, stopPropagation() {}, clientX: 10, clientY: 20 }, encodeURIComponent("docs/README.md"));
+    assert.match(document.getElementById("fileBrowserPanel").innerHTML, /data-file-menu-action="preview"/);
+    await click("preview");
+    assert.equal(editorCalls.at(-1).markdownPreview, true);
+    assert.match(document.getElementById("fileBrowserPanel").innerHTML, /file-browser-preview-toggle active/);
+  });
+
   it("syncs the dirty dot live from editor changes and never resurrects it after locking", async () => {
     const document = createFakeDocument();
     const editorCalls = [];

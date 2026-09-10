@@ -277,7 +277,7 @@ Markdown files (`.md`, `.markdown`) open in a rendered preview by default instea
 
 Mermaid fenced blocks render as SVG diagrams. The checked-in Mermaid IIFE is approximately 3.45 MB raw and 950 kB gzip. It is lazy-loaded only when a rendered preview contains a `<div class="herdr-mermaid">` element, so most markdown files never pay the Mermaid download cost. Mermaid is initialized with `securityLevel: "strict"` and a theme picked from the current light/dark app mode.
 
-Desktop file browser toolbar exposes `Preview` and `Source` toggle buttons for markdown files. `Preview` shows the rendered view; `Source` switches to the CodeMirror source view with find support (editable when unlocked). Content-search matches still open in source view so the line highlight and scroll work. Editing a markdown file keeps the CodeMirror editable view unchanged.
+The desktop file browser toolbar shows an eye toggle for markdown files (styled like the lock toggle; the active eye means the rendered preview is on, the inactive eye-off means source view). It flips between the rendered preview and the CodeMirror source view with find support (editable when unlocked). The tree context menu adds a `Preview` entry for markdown files (opens the file read-only in preview mode), and the tab context menu adds `Preview`/`Show markdown source` while the file is not being edited. Content-search matches still open in source view so the line highlight and scroll work. Editing a markdown file keeps the CodeMirror editable view unchanged.
 
 ## Settings
 

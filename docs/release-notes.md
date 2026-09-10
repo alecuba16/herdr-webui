@@ -1,5 +1,20 @@
 # Release notes
 
+## 0.4.24 Release Notes
+- Markdown files (`.md`, `.markdown`) open in the file browser as a rendered
+  preview again. The rendered preview became unreachable when files started
+  opening editable by default (the preview mount requires a read-only file),
+  and only the raw source view remained. Non-markdown files keep the
+  edit-by-default behavior with the lock toggle.
+- The desktop file browser toolbar shows a new eye toggle for markdown files
+  (styled like the lock toggle) that flips between the rendered preview and
+  the CodeMirror source view; the eye is highlighted while the preview is on.
+- The file tree context menu adds a `Preview` entry for markdown files, and
+  the tab context menu adds `Preview`/`Show markdown source` so the view can
+  be switched from the right-click menu as well. Editing a markdown file
+  still keeps the plain CodeMirror editable view, and content-search matches
+  still open in source view so line highlighting works.
+
 ## 0.4.21 Release Notes
 - The browser now respects the server's enabled-backends settings end to end.
   `/api/versions`, `/api/sessions`, and `/api/server-settings` report
