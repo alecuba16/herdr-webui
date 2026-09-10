@@ -19,6 +19,7 @@ const SHARED_FILE_TREE_JS: &str = include_str!("assets/shared/file_tree.js");
 const SHARED_FILE_CONTENT_SEARCH_JS: &str = include_str!("assets/shared/file_content_search.js");
 const SHARED_LINE_CONTEXT_JS: &str = include_str!("assets/shared/line_context.js");
 const SHARED_WORKSPACE_SEARCH_JS: &str = include_str!("assets/shared/workspace_search.js");
+const SHARED_SETTINGS_FEEDBACK_JS: &str = include_str!("assets/shared/settings_feedback.js");
 const SHARED_EDITOR_JS: &str = include_str!("assets/shared/editor.js");
 const SHARED_LSP_JS: &str = include_str!("assets/shared/lsp.js");
 const SHARED_MARKDOWN_PREVIEW_JS: &str = include_str!("assets/shared/markdown_preview.js");
@@ -203,6 +204,13 @@ pub(crate) async fn shared_line_context_js() -> Response {
 pub(crate) async fn shared_workspace_search_js() -> Response {
     static_text(
         SHARED_WORKSPACE_SEARCH_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(crate) async fn shared_settings_feedback_js() -> Response {
+    static_text(
+        SHARED_SETTINGS_FEEDBACK_JS,
         "application/javascript; charset=utf-8",
     )
 }

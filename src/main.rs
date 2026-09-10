@@ -48,10 +48,10 @@ use assets::{
     shared_content_search_css, shared_core_js, shared_editor_js, shared_file_content_search_js,
     shared_file_icons_css, shared_file_icons_js, shared_file_tree_css, shared_file_tree_js,
     shared_line_context_js, shared_lsp_js, shared_markdown_preview_css, shared_markdown_preview_js,
-    shared_options_js, shared_temp_terminal_js, shared_terminal_adapter_js, shared_terminal_fit_js,
-    shared_terminal_scroll_js, shared_workspace_search_js, vendor_codemirror_js,
-    vendor_dompurify_js, vendor_ghostty_wasm, vendor_marked_js, vendor_mermaid_js,
-    vendor_wterm_css, vendor_wterm_js,
+    shared_options_js, shared_settings_feedback_js, shared_temp_terminal_js,
+    shared_terminal_adapter_js, shared_terminal_fit_js, shared_terminal_scroll_js,
+    shared_workspace_search_js, vendor_codemirror_js, vendor_dompurify_js, vendor_ghostty_wasm,
+    vendor_marked_js, vendor_mermaid_js, vendor_wterm_css, vendor_wterm_js,
 };
 use compat::SimpleVersion;
 use compat::{backend_compatibility, BackendCompatibility};
@@ -1486,6 +1486,10 @@ fn app_router(state: WebState) -> Router {
         .route(
             "/assets/shared/workspace-search.js",
             get(shared_workspace_search_js),
+        )
+        .route(
+            "/assets/shared/settings-feedback.js",
+            get(shared_settings_feedback_js),
         )
         .route("/assets/vendor/codemirror.js", get(vendor_codemirror_js))
         .route("/assets/vendor/marked.js", get(vendor_marked_js))
@@ -7159,6 +7163,15 @@ mod tests {
             )
             .await
             .unwrap();
+        let settings_feedback_js = app
+            .clone()
+            .oneshot(
+                request(Method::GET, "/assets/shared/settings-feedback.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         let file_icons_js = app
             .clone()
             .oneshot(
@@ -7346,6 +7359,7 @@ mod tests {
         assert_eq!(app_js.status(), StatusCode::OK);
         assert_eq!(app_boot_js.status(), StatusCode::OK);
         assert_eq!(app_core_js.status(), StatusCode::OK);
+        assert_eq!(settings_feedback_js.status(), StatusCode::OK);
         assert_eq!(file_icons_js.status(), StatusCode::OK);
         assert_eq!(file_icons_css.status(), StatusCode::OK);
         assert_eq!(shared_colors_css.status(), StatusCode::OK);
