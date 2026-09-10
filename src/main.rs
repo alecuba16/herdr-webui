@@ -958,8 +958,31 @@ fn load_runtime_server_settings(default_bind: SocketAddr) -> io::Result<RuntimeS
     Ok(settings)
 }
 
+/// Tests must never persist settings to the operator's real config file:
+/// a stray save clobbers `~/.config/herdr-webui/webui-settings.json` and
+/// locks the operator out of their own server (username/password fixtures
+/// replace real credentials). Every test that reaches a persisting route
+/// must set `XDG_CONFIG_HOME` to a temp dir; `lock_env()` serializes those
+/// env mutations. This guard turns an unisolated test into a loud failure
+/// instead of a silent config overwrite.
+#[cfg(test)]
+fn assert_test_settings_isolation() {
+    if std::env::var_os("XDG_CONFIG_HOME").is_none() {
+        panic!(
+            "test would write the real settings path; set XDG_CONFIG_HOME \
+             to a temp dir (see lock_env-isolated tests) before persisting"
+        );
+    }
+}
+
+#[cfg(not(test))]
+fn assert_test_settings_isolation() {}
+
 fn save_runtime_server_settings(settings: &RuntimeServerSettings) -> io::Result<()> {
     validate_runtime_server_settings(settings)?;
+    // Runs after validation: rejection tests assert on the validation error
+    // itself and never write, so they must not trip the guard.
+    assert_test_settings_isolation();
     let path = server_settings_path();
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -6548,6 +6571,16 @@ mod tests {
     #[tokio::test]
     async fn recent_workspaces_api_requires_auth_and_clears() {
         let _env = lock_env();
+        // The authed clear persists server settings; keep that write inside
+        // a temp config dir so the real operator config is never touched.
+        let config_home = std::env::temp_dir().join(format!(
+            "herdr-webui-recent-clear-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
         let app = test_app();
 
         let unauthorized = app
@@ -6629,6 +6662,9 @@ mod tests {
             assert_eq!(cleared.status(), StatusCode::OK);
             assert_eq!(response_json(cleared).await["cleared"], json!(1));
         }
+
+        let _ = fs::remove_dir_all(config_home);
+        std::env::remove_var("XDG_CONFIG_HOME");
     }
 
     #[tokio::test]
@@ -6671,6 +6707,17 @@ mod tests {
     #[tokio::test]
     async fn open_worktree_handler_records_recent_workspace() {
         let _env = lock_env();
+        // The authed open records a recent workspace, which persists server
+        // settings; keep that write inside a temp config dir so the real
+        // operator config is never touched.
+        let config_home = std::env::temp_dir().join(format!(
+            "herdr-webui-worktree-record-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
         let (socket, handle) = fake_api_socket_for_method(
             "worktree.open",
             json!({ "id": "web:worktree:open", "result": { "ok": true } }),
@@ -6704,6 +6751,9 @@ mod tests {
         assert_eq!(recent[0].label.as_deref(), Some("Feature"));
         assert_eq!(recent[0].branch.as_deref(), Some("feature"));
         assert_eq!(recent[0].kind.as_deref(), Some("worktree"));
+
+        let _ = fs::remove_dir_all(config_home);
+        std::env::remove_var("XDG_CONFIG_HOME");
     }
 
     #[cfg(unix)]
@@ -6711,6 +6761,16 @@ mod tests {
     #[tokio::test]
     async fn open_recent_workspace_records_and_proxies_open() {
         let _env = lock_env();
+        // The authed record persists server settings; keep that write inside
+        // a temp config dir so the real operator config is never touched.
+        let config_home = std::env::temp_dir().join(format!(
+            "herdr-webui-recent-open-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
         let (socket, handle) = fake_api_socket_for_method(
             "worktree.open",
             json!({ "id": "web:recent-workspace:open", "result": { "ok": true, "workspace": { "workspace_id": "ws-recent" } } }),
@@ -6751,6 +6811,9 @@ mod tests {
             body["result"]["workspace"]["workspace_id"],
             json!("ws-recent")
         );
+
+        let _ = fs::remove_dir_all(config_home);
+        std::env::remove_var("XDG_CONFIG_HOME");
     }
 
     #[cfg(unix)]
@@ -8168,6 +8231,18 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn open_worktree_handler_proxies_open() {
+        let _env = lock_env();
+        // The authed open records a recent workspace, which persists server
+        // settings; keep that write inside a temp config dir so the real
+        // operator config is never touched.
+        let config_home = std::env::temp_dir().join(format!(
+            "herdr-webui-worktree-proxy-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
         let (socket, handle) = fake_api_socket_for_method(
             "worktree.open",
             json!({ "id": "web:worktree:open", "result": { "ok": true } }),
@@ -8190,6 +8265,9 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         handle.join().unwrap();
         let _ = fs::remove_file(socket);
+
+        let _ = fs::remove_dir_all(config_home);
+        std::env::remove_var("XDG_CONFIG_HOME");
     }
 
     // ── workspaces handler (two sequential requests + enrich) ──
@@ -10038,6 +10116,18 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn open_worktree_proxies_successfully() {
+        let _env = lock_env();
+        // The authed open records a recent workspace, which persists server
+        // settings; keep that write inside a temp config dir so the real
+        // operator config is never touched.
+        let config_home = std::env::temp_dir().join(format!(
+            "herdr-webui-worktree-success-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
         let (socket, handle) = fake_api_socket_for_method(
             "worktree.open",
             json!({ "id": "web:worktree:open", "result": { "ok": true, "workspace_id": "ws-wt" } }),
@@ -10060,6 +10150,9 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         handle.join().unwrap();
         let _ = fs::remove_file(socket);
+
+        let _ = fs::remove_dir_all(config_home);
+        std::env::remove_var("XDG_CONFIG_HOME");
     }
 
     // ── pane_layout success path ──
