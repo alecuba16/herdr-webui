@@ -17,6 +17,10 @@
     // server's configured backend mode on first load.
     sessionBackend: localStorage.getItem("herdr-session-backend") || "builtin",
     serverBackendConfirmed: false,
+    // Backend enablement from the server's enabled_backends (settings). A
+    // long-lived tab may outlive a settings change that disabled a backend;
+    // null means "unknown yet" (older servers) and never gates anything.
+    backendsEnabled: { builtin: null, "external-herdr": null },
     workspaces: [],
     tabs: [],
     allTabs: [],
@@ -147,6 +151,16 @@
       const settings = await api("/api/server-settings");
       state.backendMode = settings.backend_mode || state.backendMode;
       state.defaultFolder = settings.default_folder || state.defaultFolder || "";
+      // The server's enabled_backends is authoritative: a tab pinned before
+      // a backend was disabled mid-session must retarget instead of
+      // silently rerouting. Older servers omit the field; unknown never gates.
+      if (settings.enabled_backends) {
+        state.backendsEnabled = {
+          builtin: settings.enabled_backends.builtin !== false,
+          "external-herdr": settings.enabled_backends["external-herdr"] !== false,
+        };
+        syncSessionBackendFromServer();
+      }
       // Built-in is the default backend. On first load adopt the server's
       // configured mode so stale localStorage cannot lock the browser into an
       // unexpected backend; afterwards keep the user's explicit choice.
@@ -169,6 +183,13 @@
       state.herdrAvailable = !!r.herdr_available;
       state.herdrCompatible = !!r.herdr_compatible;
       state.herdrVersion = r.herdr_version || null;
+      if (r.enabled_backends) {
+        state.backendsEnabled = {
+          builtin: r.enabled_backends.builtin !== false,
+          "external-herdr": r.enabled_backends["external-herdr"] !== false,
+        };
+        syncSessionBackendFromServer();
+      }
       if (currentSessionBackend() === "external-herdr" && !state.herdrCompatible) {
         state.sessionBackend = "builtin";
         localStorage.setItem("herdr-session-backend", "builtin");
@@ -222,8 +243,13 @@
           } catch (_) {}
         }
         const detail = msg.message ? ` (${msg.message})` : "";
+        // The server reroutes disabled backends to the remaining enabled one,
+        // so the frame may be about the backend actually serving this
+        // browser, not the stale external pin. Say which backend failed.
+        const failedBackend = msg.backend || currentSessionBackend();
+        const failedLabel = sessionBackendLabel(failedBackend);
         const wantsBuiltin = confirm(
-          `The external herdr backend could not be attached${detail}. ` +
+          `The ${failedLabel} backend could not be attached${detail}. ` +
             "It has been disconnected. Start a built-in session instead?",
         );
         if (wantsBuiltin) {
@@ -254,11 +280,39 @@
     if (state.backendMode === "builtin") return "builtin";
     return "";
   }
+  // True when the server settings allow the given backend. Unknown (null,
+  // from an older server that omits enabled_backends) never disables anything.
+  function backendEnabled(backend) {
+    const enabled = state.backendsEnabled && state.backendsEnabled[backend];
+    return enabled !== false;
+  }
+  // Re-validate the pinned backend against the server's enabled backends:
+  // a tab that pinned external-herdr before it was disabled must retarget
+  // instead of silently rerouting every request.
+  function syncSessionBackendFromServer() {
+    if (!state.sessionBackend) return;
+    if (!backendEnabled(state.sessionBackend)) {
+      state.sessionBackend = backendEnabled("builtin") ? "builtin" : state.sessionBackend;
+      if (!backendEnabled(state.sessionBackend)) return;
+      localStorage.setItem("herdr-session-backend", state.sessionBackend);
+    }
+  }
   function sessionBackendLabel(backend) {
     return backend === "external-herdr" ? "Herdr" : "built-in";
   }
   function sessionBackendClass(backend) {
     return backend === "external-herdr" ? "backend-herdr" : "backend-builtin";
+  }
+
+  function handleServerSettingsChanged(msg) {
+    const enabled = msg.enabled_backends;
+    if (!enabled) return;
+    state.backendsEnabled = {
+      builtin: enabled.builtin !== false,
+      "external-herdr": enabled["external-herdr"] !== false,
+    };
+    syncSessionBackendFromServer();
+    refresh();
   }
 
   function currentWorkspace() {
@@ -1454,6 +1508,9 @@
     ws.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data);
+        if (msg && msg.type === "server_settings_changed") {
+          handleServerSettingsChanged(msg);
+        }
         const evt = msg && msg.event;
         const kind = evt && (evt.event || evt.type);
         const data = (evt && evt.data) || {};

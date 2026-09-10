@@ -564,6 +564,10 @@ pub(crate) struct WebState {
     server_settings: Arc<Mutex<RuntimeServerSettings>>,
     no_sleep: Arc<Mutex<NoSleepState>>,
     rebind_tx: tokio::sync::watch::Sender<SocketAddr>,
+    /// Broadcasts the public settings JSON to every connected events socket
+    /// after a settings change, so open tabs re-sync backend enablement
+    /// without a page reload.
+    settings_tx: tokio::sync::broadcast::Sender<serde_json::Value>,
     workspace_orders: Arc<Mutex<HashMap<String, Vec<String>>>>,
     lsp: Arc<lsp::LspRegistry>,
 }
@@ -1115,6 +1119,7 @@ async fn main() -> io::Result<()> {
         server_settings.lock().unwrap().lsp.clone(),
     ));
     let (rebind_tx, rebind_rx) = tokio::sync::watch::channel(server_settings.lock().unwrap().bind);
+    let (settings_tx, _) = tokio::sync::broadcast::channel(16);
     let state = WebState {
         api_socket,
         client_socket,
@@ -1128,6 +1133,7 @@ async fn main() -> io::Result<()> {
         server_settings,
         no_sleep: Arc::new(Mutex::new(NoSleepState::default())),
         rebind_tx,
+        settings_tx,
         workspace_orders: Arc::new(Mutex::new(HashMap::new())),
         lsp: lsp_registry,
     };
@@ -2447,6 +2453,16 @@ async fn update_server_settings(
     if bind_changed {
         let _ = state.rebind_tx.send(next.bind);
     }
+    // Tell every connected events socket so long-lived tabs adopt the new
+    // enabled_backends immediately (a disabled backend stops being
+    // targeted/offered without a reload).
+    let _ = state.settings_tx.send(json!({
+        "type": "server_settings_changed",
+        "enabled_backends": {
+            "builtin": next.builtin_backend_enabled,
+            "external-herdr": next.external_herdr_backend_enabled,
+        },
+    }));
     Json(settings_public_json(&next)).into_response()
 }
 
@@ -2518,6 +2534,12 @@ async fn versions(
         "backend_mode": state.backend_mode.as_str(),
         "current_backend": current_backend.as_str(),
         "default_backend": default_backend.as_str(),
+        // Enabled flags so browsers can stop targeting/offering a backend
+        // that was disabled in settings mid-session.
+        "enabled_backends": {
+            "builtin": backend_target_enabled(&state, SessionBackendTarget::Builtin),
+            "external-herdr": backend_target_enabled(&state, SessionBackendTarget::ExternalHerdr),
+        },
         "session": session_display_name(session.as_deref()),
         "protocol_version": PROTOCOL_VERSION,
         "min_protocol_version": MIN_SUPPORTED_PROTOCOL_VERSION,
@@ -4265,6 +4287,9 @@ async fn events_ws(
 
 async fn events_socket(state: WebState, api: ApiClient, mut socket: WebSocket) {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
+    // Settings changes must reach open tabs immediately: a backend disabled
+    // mid-session stops being targeted/offered without a page reload.
+    let mut settings_rx = state.settings_tx.subscribe();
     let subscribe_api = api.clone();
     // backend_info() does a blocking ping over a Unix socket; run it on a
     // blocking thread so it does not stall the async runtime while waiting
@@ -4376,6 +4401,10 @@ async fn events_socket(state: WebState, api: ApiClient, mut socket: WebSocket) {
                 });
                 if socket.send(Message::Text(value.to_string().into())).await.is_err() { break; }
             }
+            settings = settings_rx.recv() => {
+                let Ok(settings) = settings else { break; };
+                if socket.send(Message::Text(settings.to_string().into())).await.is_err() { break; }
+            }
             _ = interval.tick(), if !use_builtin_event_hub => {
                 // request_value() does blocking socket I/O; offload it so the
                 // async runtime and other WebSocket loops are not stalled while
@@ -4457,6 +4486,10 @@ async fn terminal_ws(
         query.session.as_deref(),
         query.backend.as_deref(),
     );
+    // The resolved backend for the herdr_error frame: the server reroutes
+    // disabled/absent pins to the remaining enabled backend, so the browser
+    // must know which backend actually failed instead of blaming its stale pin.
+    let attach_backend = backend_target_for_query(&state, &headers, query.backend.as_deref());
     let api = api_for_query_session_ensured(
         &state,
         &headers,
@@ -4464,12 +4497,15 @@ async fn terminal_ws(
         query.backend.as_deref(),
     )
     .await;
-    ws.on_upgrade(move |socket| terminal_socket(client_socket_path, api, query, socket))
+    ws.on_upgrade(move |socket| {
+        terminal_socket(client_socket_path, api, attach_backend, query, socket)
+    })
 }
 
 async fn terminal_socket(
     path: PathBuf,
     api: ApiClient,
+    backend: SessionBackendTarget,
     query: TerminalQuery,
     mut socket: WebSocket,
 ) {
@@ -4531,6 +4567,7 @@ async fn terminal_socket(
                 if let Ok(error) = error {
                     let payload = json!({
                         "type": "herdr_error",
+                        "backend": backend.as_str(),
                         "kind": error.error_kind(),
                         "message": error.user_message().trim_end(),
                         "suggest_builtin": error.suggests_builtin(),
@@ -4768,6 +4805,7 @@ mod tests {
     fn test_state() -> WebState {
         let bind = DEFAULT_BIND.parse::<SocketAddr>().unwrap();
         let (rebind_tx, _) = tokio::sync::watch::channel(bind);
+        let (settings_tx, _) = tokio::sync::broadcast::channel(16);
         WebState {
             api_socket: Some(PathBuf::from("/tmp/default-api.sock")),
             client_socket: Some(PathBuf::from("/tmp/default-client.sock")),
@@ -4801,6 +4839,7 @@ mod tests {
             })),
             no_sleep: Arc::new(Mutex::new(NoSleepState::default())),
             rebind_tx,
+            settings_tx,
             workspace_orders: Arc::new(Mutex::new(HashMap::new())),
             lsp: Arc::new(lsp::LspRegistry::new(Default::default())),
         }
@@ -5773,6 +5812,71 @@ mod tests {
 
         let _ = fs::remove_dir_all(config_home);
         std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn versions_api_reports_enabled_backends_from_settings() {
+        let _guard = lock_env();
+        let config_home = std::env::temp_dir().join(format!(
+            "herdr-webui-versions-enabled-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
+
+        let mut state = test_state();
+        // Server has external-herdr disabled in settings: browsers must see
+        // enabled_backends so they stop targeting/offering it.
+        state
+            .server_settings
+            .lock()
+            .unwrap()
+            .external_herdr_backend_enabled = false;
+        state.backend_mode = BackendMode::Builtin;
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::GET, "/api/versions")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["enabled_backends"]["builtin"], true);
+        assert_eq!(body["enabled_backends"]["external-herdr"], false);
+
+        let _ = fs::remove_dir_all(&config_home);
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    #[tokio::test]
+    async fn sessions_api_reports_enabled_backends_from_settings() {
+        let state = test_state();
+        state
+            .server_settings
+            .lock()
+            .unwrap()
+            .builtin_backend_enabled = false;
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::GET, "/api/sessions")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["enabled_backends"]["builtin"], false);
+        assert_eq!(body["enabled_backends"]["external-herdr"], true);
     }
 
     #[tokio::test]
@@ -10579,6 +10683,107 @@ mod tests {
         std::env::remove_var("XDG_CONFIG_HOME");
     }
 
+    /// The herdr_error frame must name the backend the server actually
+    /// resolved for the attach, not the browser's stale pin: when a tab
+    /// pins external-herdr after the setting was disabled, the server
+    /// reroutes to builtin and the frame says builtin.
+    #[cfg(unix)]
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn terminal_ws_herdr_error_reports_resolved_backend() {
+        use futures_util::StreamExt;
+        use tokio_tungstenite::connect_async;
+
+        let _guard = lock_env();
+        let config_home = std::env::temp_dir().join(format!(
+            "herdr-webui-terminal-backend-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
+
+        let mut state = test_state();
+        // External-herdr is disabled: a browser pinning it gets rerouted to
+        // the built-in backend. Block the built-in session start (directory
+        // at the api socket path makes bind fail, per the launch_session
+        // error-path test) so the attach fails with connect_failed.
+        state
+            .server_settings
+            .lock()
+            .unwrap()
+            .external_herdr_backend_enabled = false;
+        state.backend_mode = BackendMode::Builtin;
+        let (api_socket, client_socket) = builtin_socket_paths(None);
+        fs::create_dir_all(api_socket.parent().unwrap()).unwrap();
+        fs::create_dir_all(client_socket.parent().unwrap()).unwrap();
+        let _ = fs::remove_file(&api_socket);
+        fs::create_dir(&api_socket).unwrap();
+        let app = test_app_with_state(state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server_handle = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+
+        let url = format!("ws://{addr}/ws/terminal?terminal_id=t1&backend=external-herdr");
+        let request = tokio_tungstenite::tungstenite::http::Request::builder()
+            .uri(&url)
+            .header("cookie", "herdr_web_session=token-123")
+            .header("host", addr.to_string())
+            .header("connection", "Upgrade")
+            .header("upgrade", "websocket")
+            .header("sec-websocket-version", "13")
+            .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+            .body(())
+            .unwrap();
+        let (mut ws_stream, _response) = connect_async(request)
+            .await
+            .expect("Failed to connect to WebSocket");
+
+        let mut got_error_frame = false;
+        for _ in 0..30 {
+            let msg =
+                match tokio::time::timeout(std::time::Duration::from_secs(15), ws_stream.next())
+                    .await
+                {
+                    Ok(Some(Ok(m))) => m,
+                    _ => break,
+                };
+            // The attach failure is surfaced twice: the raw error text as a
+            // binary frame and the structured herdr_error JSON. Skip the
+            // binary frame; its ordering with the JSON frame is racy.
+            let Ok(text) = msg.to_text() else { continue };
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+                continue;
+            };
+            if value["type"].as_str() == Some("herdr_error") {
+                // The resolved backend is builtin: the disabled external pin
+                // must not leak into the frame.
+                assert_eq!(value["backend"], "builtin");
+                assert_eq!(value["kind"], "connect_failed");
+                got_error_frame = true;
+                break;
+            }
+        }
+        assert!(
+            got_error_frame,
+            "herdr_error frame with resolved backend must reach the terminal socket"
+        );
+
+        server_handle.abort();
+        let _ = fs::remove_dir(&api_socket);
+        let _ = fs::remove_dir_all(&config_home);
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
     // ── events WebSocket upgrade test ──
     // The events_ws handler requires a proper WebSocket upgrade request.
     // Testing the full event loop requires a real WebSocket client and
@@ -11152,6 +11357,120 @@ mod tests {
         server_handle.abort();
     }
 
+    /// Saving server settings must broadcast `server_settings_changed` with
+    /// the new `enabled_backends` to every connected events socket, so open
+    /// tabs stop targeting/offering a backend disabled mid-session without
+    /// a page reload.
+    #[cfg(unix)]
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn events_socket_broadcasts_server_settings_changed() {
+        use futures_util::StreamExt;
+        use tokio_tungstenite::connect_async;
+
+        let _guard = lock_env();
+        let config_home = std::env::temp_dir().join(format!(
+            "herdr-webui-settings-broadcast-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
+
+        let (socket, _handle) = fake_api_socket_events_streaming();
+        let mut state = test_state();
+        state.api_socket = Some(socket.clone());
+        let state = Arc::new(state);
+        let app = test_app_with_state((*state).clone());
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server_state = state.clone();
+        let server_handle = tokio::spawn(async move {
+            let _ = server_state;
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+
+        let url = format!("ws://{addr}/ws/events");
+        let ws_request = tokio_tungstenite::tungstenite::http::Request::builder()
+            .uri(&url)
+            .header("cookie", "herdr_web_session=token-123")
+            .header("host", addr.to_string())
+            .header("connection", "Upgrade")
+            .header("upgrade", "websocket")
+            .header("sec-websocket-version", "13")
+            .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+            .body(())
+            .unwrap();
+        let (mut ws_stream, _response) = connect_async(ws_request)
+            .await
+            .expect("Failed to connect to WebSocket");
+
+        // Wait for the events loop to subscribe before flipping settings.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+        // Disable the external-herdr backend through the settings API. The app
+        // router clones the Arc-based WebState, so this POST shares the same
+        // settings_tx the events socket subscribed to.
+        let save = test_app_with_state((*state).clone())
+            .oneshot(
+                request(Method::POST, "/api/server-settings")
+                    .header(header::COOKIE, "herdr_web_session=token-123")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "bind": "127.0.0.1:8787",
+                            "username": "user",
+                            "password": "pass",
+                            "localhost_no_auth": true,
+                            "backend_mode": "builtin",
+                            "builtin_backend_enabled": true,
+                            "external_herdr_backend_enabled": false,
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(save.status(), StatusCode::OK);
+
+        // The events socket must receive the broadcast frame.
+        let mut got_settings_change = false;
+        for _ in 0..30 {
+            let msg =
+                match tokio::time::timeout(std::time::Duration::from_secs(15), ws_stream.next())
+                    .await
+                {
+                    Ok(Some(Ok(m))) => m,
+                    _ => break,
+                };
+            let text = msg.to_text().expect("expected text message");
+            let value: serde_json::Value = serde_json::from_str(text).expect("invalid json");
+            if value["type"].as_str() == Some("server_settings_changed") {
+                assert_eq!(value["enabled_backends"]["builtin"], true);
+                assert_eq!(value["enabled_backends"]["external-herdr"], false);
+                got_settings_change = true;
+                break;
+            }
+        }
+        assert!(
+            got_settings_change,
+            "server_settings_changed frame must reach the events socket"
+        );
+
+        server_handle.abort();
+        let _ = fs::remove_file(socket);
+        let _ = fs::remove_dir_all(&config_home);
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
     fn fake_api_socket_events_streaming() -> (PathBuf, thread::JoinHandle<()>) {
         use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
 
@@ -11332,6 +11651,7 @@ mod tui_parity_e2e_tests {
     fn localhost_no_auth_state(default_folder: PathBuf) -> WebState {
         let bind = DEFAULT_BIND.parse::<SocketAddr>().unwrap();
         let (rebind_tx, _) = tokio::sync::watch::channel(bind);
+        let (settings_tx, _) = tokio::sync::broadcast::channel(16);
         WebState {
             api_socket: Some(PathBuf::from("/tmp/default-api.sock")),
             client_socket: Some(PathBuf::from("/tmp/default-client.sock")),
@@ -11365,6 +11685,7 @@ mod tui_parity_e2e_tests {
             })),
             no_sleep: Arc::new(Mutex::new(NoSleepState::default())),
             rebind_tx,
+            settings_tx,
             workspace_orders: Arc::new(Mutex::new(HashMap::new())),
             lsp: Arc::new(LspRegistry::new(Default::default())),
         }

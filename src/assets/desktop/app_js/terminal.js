@@ -13,6 +13,20 @@ function connectEvents() {
       return;
     }
     if (msg.type === "snapshot") applySnapshot(msg);
+    else if (msg.type === "server_settings_changed") {
+      // Settings changed on the server (possibly another tab). Adopt the new
+      // enabled_backends immediately so a disabled backend stops being
+      // targeted/offered without requiring a page reload.
+      const enabled = msg.enabled_backends;
+      if (enabled) {
+        state.backendsEnabled = {
+          builtin: enabled.builtin !== false,
+          "external-herdr": enabled["external-herdr"] !== false,
+        };
+        syncSessionBackendFromServer();
+      }
+      scheduleRefresh();
+    }
     else if (msg.type === "event") {
       const evt = msg.event || {},
         kind = evt.event || evt.type,
