@@ -425,14 +425,25 @@
       target.selected = path;
       if (target.files.some((file) => file.path === path)) {
         const existing = target.files.find((file) => file.path === path);
-        if (existing) existing.searchHighlight = searchHighlight || null;
+        if (existing) {
+          existing.searchHighlight = searchHighlight || null;
+          // Content-search matches must remain usable when the markdown file
+          // is already open in rendered preview mode. Force its source view
+          // so the editor can show the highlighted line and scroll position.
+          if (searchHighlight) existing.previewSource = true;
+        }
         renderIfActive(target, true);
         return;
       }
       renderIfActive(target, true);
       const file = await api(`/api/file-browser/file?cwd=${encodeURIComponent(target.cwd)}&path=${encodeURIComponent(path)}&render=lines`);
       const linesHtml = file.lines_gutter_html != null && file.lines_code_html != null ? { gutter: file.lines_gutter_html, code: file.lines_code_html } : null;
-      const nextFile = Object.assign(file, { draft: file.content || "", editing: true, dirty: false, saving: false, error: "", searchHighlight: searchHighlight || null, previewSource: !!searchHighlight, linesHtml });
+      // Markdown opens read-only so the rendered preview engages; every other
+      // file keeps the edit-by-default behavior. Search highlights force the
+      // source view so the matches stay visible.
+      const isMarkdown = markdownPath(path);
+      const editing = !isMarkdown;
+      const nextFile = Object.assign(file, { draft: file.content || "", editing, dirty: false, saving: false, error: "", searchHighlight: searchHighlight || null, previewSource: !!searchHighlight, linesHtml });
       if (mode === "split") {
         target.files.push(nextFile);
         target.split = true;
@@ -681,10 +692,13 @@
     renderIfActive(target, true);
   }
 
+  function markdownPath(path) {
+    return !!(window.HerdrEditor && window.HerdrEditor.isMarkdownPath && window.HerdrEditor.isMarkdownPath(path));
+  }
+
   function renderToolbar(file) {
     if (!file) return `<strong>Select a file</strong>`;
-    const isMarkdown = !!(window.HerdrEditor && window.HerdrEditor.isMarkdownPath && window.HerdrEditor.isMarkdownPath(file.path));
-    const preview = isMarkdown && !file.editing ? `<button class="git-ui-btn ${file.previewSource ? "" : "active"}" onclick="HerdrFileBrowser.togglePreview('${arg(file.path)}')">Preview</button><button class="git-ui-btn ${file.previewSource ? "active" : ""}" onclick="HerdrFileBrowser.toggleSource('${arg(file.path)}')">Source</button>` : "";
+    const preview = markdownToggleHtml(file);
     const tabs = renderOpenFileTabs();
     const split = state.files.length > 1 ? `<button class="git-ui-btn ${state.split ? "active" : ""}" onclick="HerdrFileBrowser.toggleSplit()">Split</button>` : "";
     const canEdit = !file.binary && !file.truncated;
@@ -697,6 +711,17 @@
     const locked = !file.editing;
     const title = locked ? "Unlock to edit" : "Lock (read-only)";
     return `<button type="button" class="file-browser-lock-toggle ${locked ? "active" : ""}" title="${esc(title)}" aria-label="${esc(title)}" aria-pressed="${locked ? "true" : "false"}" onclick="HerdrFileBrowser.toggleLock('${arg(file.path)}')"><span></span></button>`;
+  }
+
+  // Markdown files get an eye toggle (styled like the editor find button)
+  // that switches between the rendered preview and the CodeMirror source view.
+  // Only offered while the file is locked (read-only): the rendered preview
+  // needs a non-editable mount, and editing markdown keeps the source view.
+  function markdownToggleHtml(file) {
+    if (!markdownPath(file.path) || file.editing || file.binary || file.truncated) return "";
+    const previewing = !file.previewSource;
+    const title = previewing ? "Show markdown source" : "Show rendered markdown preview";
+    return `<button type="button" class="file-browser-preview-toggle ${previewing ? "active" : ""}" title="${esc(title)}" aria-label="${esc(title)}" aria-pressed="${previewing ? "true" : "false"}" onclick="HerdrFileBrowser.toggleMarkdownView('${arg(file.path)}')"><span></span></button>`;
   }
 
   function singleTab(file) {
@@ -752,6 +777,8 @@
       focus: "/assets/icons/chevron-right.svg",
       find: "/assets/icons/search.svg",
       edit: "/assets/icons/pencil.svg",
+      preview: "/assets/icons/eye.svg",
+      source: "/assets/icons/eye-off.svg",
       cancelEdit: "/assets/icons/lock.svg",
       save: "/assets/icons/save.svg",
       history: "/assets/icons/clock.svg",
@@ -791,7 +818,7 @@
     const title = `<span class="file-browser-menu-label" title="${arg(menu.path)}">${esc(name)}</span><span class="file-browser-menu-sep"></span>`;
     const primary = menu.kind === "dir"
       ? menuIcon("enter", "Enter folder")
-      : `${menuIcon("open", "Open")}${menuIcon("split", "Open in split")}`;
+      : `${menuIcon("open", "Open")}${menu.kind === "file" && markdownPath(menu.path) ? menuIcon("preview", "Preview") : ""}${menuIcon("split", "Open in split")}`;
     const history = menu.kind === "file" ? menuIcon("history", "Show history") : "";
     const permalink = menu.kind === "file" ? menuIcon("copyPermalink", "Copy permalink") : "";
     return `<div class="file-browser-menu" role="menu" style="${menuPos(menu)}" onclick="event.stopPropagation()">${title}<div class="file-browser-menu-section">${primary}${history}${permalink}</div><span class="file-browser-menu-sep"></span><div class="file-browser-menu-section">${menuIcon("rename", "Rename")}${menuIcon("copyPath", "Copy path")}</div><span class="file-browser-menu-sep"></span><div class="file-browser-menu-section">${menuIcon("delete", "Delete", ' class="danger"')}</div></div>`;
@@ -809,12 +836,17 @@
     const split = hasMultiple ? menuIcon("split", "Open in split") : "";
     const find = canEdit ? menuIcon("find", "Find in file", ' title="Cmd/Ctrl-F"') : "";
     const lock = canEdit ? menuIcon(editing ? "cancelEdit" : "edit", editing ? "Lock (read-only)" : "Unlock to edit") : "";
+    const markdownView = canEdit && markdownPath(file.path)
+      ? (file.previewSource || file.editing
+        ? menuIcon("preview", "Preview markdown")
+        : menuIcon("source", "Show markdown source"))
+      : "";
     const save = canEdit && editing && file.dirty ? menuIcon("save", "Save", ' title="Cmd/Ctrl-S"') : "";
     const history = menuIcon("history", "Show history");
     const reload = menuIcon("reload", "Reload");
     const copyPath = menuIcon("copyPathTab", "Copy path");
     const close = menuIcon("close", "Close file", ' class="danger"');
-    const fileSection = `${focus}${split}${find}${lock}${save}`;
+    const fileSection = `${focus}${split}${find}${markdownView}${lock}${save}`;
     const viewSection = `${history}${reload}${copyPath}`;
     return `<div class="file-browser-menu" role="menu" style="${menuPos(menu)}" onclick="event.stopPropagation()">${label}<div class="file-browser-menu-section">${fileSection}</div>${fileSection ? `<span class="file-browser-menu-sep"></span>` : ""}<div class="file-browser-menu-section">${viewSection}</div><span class="file-browser-menu-sep"></span><div class="file-browser-menu-section">${close}</div></div>`;
   }
@@ -919,7 +951,7 @@
         folding: configured.folding,
         activeLine: configured.activeLine,
         whitespace: configured.whitespace,
-        markdownPreview: !file.previewSource && !partialPreview,
+        markdownPreview: !file.editing && !file.previewSource && !partialPreview,
         searchHighlight: file.searchHighlight || null,
         linesHtml: file.editing && !partialPreview ? null : file.linesHtml || null,
         size: file.size,
@@ -1164,9 +1196,12 @@
   async function reloadFile(path) {
     const index = state.files.findIndex((file) => file.path === path);
     if (index < 0) return loadFile(path);
-    const keepEditing = !!state.files[index].editing;
+    const previous = state.files[index];
+    const keepEditing = !!previous.editing;
+    const keepPreviewSource = !!previous.previewSource;
     const next = await api(`/api/file-browser/file?cwd=${encodeURIComponent(state.cwd)}&path=${encodeURIComponent(path)}&render=lines`);
-    state.files[index] = Object.assign(next, { draft: next.content || "", editing: keepEditing, dirty: false, saving: false, error: "" });
+    const linesHtml = next.lines_gutter_html != null && next.lines_code_html != null ? { gutter: next.lines_gutter_html, code: next.lines_code_html } : null;
+    state.files[index] = Object.assign(next, { draft: next.content || "", editing: keepEditing, dirty: false, saving: false, error: "", searchHighlight: previous.searchHighlight || null, previewSource: keepPreviewSource, linesHtml });
     state.selected = path;
     render();
   }
@@ -1316,6 +1351,24 @@
       if (action === "copyPathTab") await navigator.clipboard.writeText(absoluteFilePath(menu.path));
       if (action === "focus") { state.selected = menu.path; render(); return; }
       if (action === "find") { toggleFind(menu.path); return; }
+      if (action === "preview" || action === "source") {
+        const file = state.files.find((f) => f.path === menu.path);
+        if (file) {
+          if (file.editing) {
+            if (file.dirty && !confirm(`Discard unsaved changes to ${menu.path}?`)) return;
+            file.editing = false;
+            file.draft = file.content || "";
+            file.dirty = false;
+          }
+          file.previewSource = action === "source";
+          state.selected = menu.path;
+          render();
+          return;
+        }
+        // Not open yet: loadFile opens markdown read-only in preview mode.
+        await loadFile(menu.path, "append");
+        return;
+      }
       if (action === "edit") { const file = state.files.find((f) => f.path === menu.path); if (file) { file.editing = true; file.draft = file.content || ""; file.dirty = false; } state.selected = menu.path; render(); return; }
       if (action === "save") { state.selected = menu.path; render(); saveFile(menu.path); return; }
       if (action === "cancelEdit") { const file = state.files.find((f) => f.path === menu.path); if (file) { if (file.dirty && !confirm(`Discard unsaved changes to ${menu.path}?`)) return; file.editing = false; file.draft = file.content || ""; file.dirty = false; } state.selected = menu.path; render(); return; }
@@ -1548,6 +1601,12 @@
       const file = state.files.find((file) => file.path === decodeURIComponent(encodedPath));
       if (!file) return;
       file.previewSource = true;
+      render();
+    },
+    toggleMarkdownView(encodedPath) {
+      const file = state.files.find((file) => file.path === decodeURIComponent(encodedPath));
+      if (!file) return;
+      file.previewSource = !file.previewSource;
       render();
     },
     showHistory(encodedPath) {

@@ -111,6 +111,8 @@ const ICON_COPY: &str = include_str!("assets/icons/copy.svg");
 const ICON_X: &str = include_str!("assets/icons/x.svg");
 const ICON_LINK: &str = include_str!("assets/icons/link.svg");
 const ICON_PENCIL: &str = include_str!("assets/icons/pencil.svg");
+const ICON_EYE: &str = include_str!("assets/icons/eye.svg");
+const ICON_EYE_OFF: &str = include_str!("assets/icons/eye-off.svg");
 
 pub(crate) fn app_html() -> Response {
     Html(APP_HTML).into_response()
@@ -511,6 +513,14 @@ pub(crate) async fn icon_pencil_svg() -> Response {
     static_svg(ICON_PENCIL)
 }
 
+pub(crate) async fn icon_eye_svg() -> Response {
+    static_svg(ICON_EYE)
+}
+
+pub(crate) async fn icon_eye_off_svg() -> Response {
+    static_svg(ICON_EYE_OFF)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -592,6 +602,8 @@ mod tests {
         assert_eq!(content_type(&icon_search_svg().await), svg);
         assert_eq!(content_type(&icon_lock_svg().await), svg);
         assert_eq!(content_type(&icon_lock_open_svg().await), svg);
+        assert_eq!(content_type(&icon_eye_svg().await), svg);
+        assert_eq!(content_type(&icon_eye_off_svg().await), svg);
     }
 
     #[test]

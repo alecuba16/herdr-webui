@@ -38,20 +38,21 @@ use assets::{
     desktop_file_browser_css, desktop_file_browser_js, desktop_git_ui_css, desktop_git_ui_js,
     desktop_js, desktop_search_css, desktop_search_js, desktop_shortcuts_css,
     favicon_attention_svg, favicon_error_svg, favicon_svg, icon_chevron_down_svg,
-    icon_chevron_right_svg, icon_clock_svg, icon_columns_svg, icon_copy_svg, icon_file_svg,
-    icon_folder_svg, icon_folder_up_svg, icon_git_svg, icon_help_svg, icon_link_svg,
-    icon_lock_open_svg, icon_lock_svg, icon_pencil_svg, icon_refresh_svg, icon_save_svg,
-    icon_search_svg, icon_settings_svg, icon_terminal_svg, icon_theme_auto_svg, icon_trash_svg,
-    icon_x_svg, jetbrains_mono_nerd_font, login_css, login_html, login_js, mobile_attention_js,
-    mobile_core_js, mobile_css, mobile_file_browser_js, mobile_js, mobile_settings_js,
-    mobile_terminal_js, mobile_worktrees_js, shared_actions_js, shared_colors_css,
-    shared_content_search_css, shared_core_js, shared_editor_js, shared_file_content_search_js,
-    shared_file_icons_css, shared_file_icons_js, shared_file_tree_css, shared_file_tree_js,
-    shared_line_context_js, shared_lsp_js, shared_markdown_preview_css, shared_markdown_preview_js,
-    shared_options_js, shared_settings_feedback_js, shared_temp_terminal_js,
-    shared_terminal_adapter_js, shared_terminal_fit_js, shared_terminal_scroll_js,
-    shared_workspace_search_js, vendor_codemirror_js, vendor_dompurify_js, vendor_ghostty_wasm,
-    vendor_marked_js, vendor_mermaid_js, vendor_wterm_css, vendor_wterm_js,
+    icon_chevron_right_svg, icon_clock_svg, icon_columns_svg, icon_copy_svg, icon_eye_off_svg,
+    icon_eye_svg, icon_file_svg, icon_folder_svg, icon_folder_up_svg, icon_git_svg, icon_help_svg,
+    icon_link_svg, icon_lock_open_svg, icon_lock_svg, icon_pencil_svg, icon_refresh_svg,
+    icon_save_svg, icon_search_svg, icon_settings_svg, icon_terminal_svg, icon_theme_auto_svg,
+    icon_trash_svg, icon_x_svg, jetbrains_mono_nerd_font, login_css, login_html, login_js,
+    mobile_attention_js, mobile_core_js, mobile_css, mobile_file_browser_js, mobile_js,
+    mobile_settings_js, mobile_terminal_js, mobile_worktrees_js, shared_actions_js,
+    shared_colors_css, shared_content_search_css, shared_core_js, shared_editor_js,
+    shared_file_content_search_js, shared_file_icons_css, shared_file_icons_js,
+    shared_file_tree_css, shared_file_tree_js, shared_line_context_js, shared_lsp_js,
+    shared_markdown_preview_css, shared_markdown_preview_js, shared_options_js,
+    shared_settings_feedback_js, shared_temp_terminal_js, shared_terminal_adapter_js,
+    shared_terminal_fit_js, shared_terminal_scroll_js, shared_workspace_search_js,
+    vendor_codemirror_js, vendor_dompurify_js, vendor_ghostty_wasm, vendor_marked_js,
+    vendor_mermaid_js, vendor_wterm_css, vendor_wterm_js,
 };
 use compat::SimpleVersion;
 use compat::{backend_compatibility, BackendCompatibility};
@@ -1577,6 +1578,8 @@ fn app_router(state: WebState) -> Router {
         .route("/assets/icons/x.svg", get(icon_x_svg))
         .route("/assets/icons/link.svg", get(icon_link_svg))
         .route("/assets/icons/pencil.svg", get(icon_pencil_svg))
+        .route("/assets/icons/eye.svg", get(icon_eye_svg))
+        .route("/assets/icons/eye-off.svg", get(icon_eye_off_svg))
         .route("/favicon.svg", get(favicon_svg))
         .route("/favicon-attention.svg", get(favicon_attention_svg))
         .route("/favicon-error.svg", get(favicon_error_svg))
