@@ -26,11 +26,18 @@ export async function connectToPage() {
   });
   let id = 0;
   const pending = new Map();
+  // Optional listener for CDP event notifications (Network.requestWillBeSent
+  // etc.). Tests use it to capture outgoing request headers.
+  let eventListener = null;
   ws.onmessage = (m) => {
     const msg = JSON.parse(m.data);
     if (msg.id && pending.has(msg.id)) {
       pending.get(msg.id)(msg);
       pending.delete(msg.id);
+    } else if (msg.method && eventListener) {
+      try {
+        eventListener(msg);
+      } catch (_) {}
     }
     // The app's desktop UI uses native confirm()/prompt() for destructive
     // actions (dirty tab close, discard, delete). In headless Chrome those
@@ -61,5 +68,12 @@ export async function connectToPage() {
       throw new Error('page eval failed: ' + JSON.stringify(r.exceptionDetails).slice(0, 800));
     return r.result?.value;
   };
-  return { send, evalExpr, close: () => ws.close() };
+  return {
+    send,
+    evalExpr,
+    onEvent(listener) {
+      eventListener = listener;
+    },
+    close: () => ws.close(),
+  };
 }

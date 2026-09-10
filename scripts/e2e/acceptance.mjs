@@ -110,6 +110,23 @@ const closedPrior = await cdp.evalExpr(`(async () => {
 })()`, true);
 if (closedPrior > 0) console.log(`closed ${closedPrior} stale workspace(s) via real sidebar buttons`);
 
+// Capture outgoing request headers while the workspace is created: the
+// Actions UI must stamp the selected session backend (x-herdr-backend) on
+// every create call so the server routes it to that backend.
+const createRequests = [];
+cdp.onEvent((msg) => {
+  if (msg.method === 'Network.requestWillBeSent' && msg.params) {
+    const url = msg.params.request && msg.params.request.url;
+    if (url && /\/api\/workspaces(\?|$)/.test(url) && msg.params.request.method === 'POST') {
+      createRequests.push({
+        url,
+        backend: (msg.params.request.headers || {})['x-herdr-backend'] || null,
+        session: (msg.params.request.headers || {})['x-herdr-session'] || null,
+      });
+    }
+  }
+});
+
 // 1) Open workspace: if the dashboard is shown use its button; else a workspace already exists.
 const openResult = await cdp.evalExpr(`(async () => {
   const dash = !!document.querySelector('.project-dashboard-card');
@@ -144,6 +161,16 @@ if (openResult === 'grid') {
     return JSON.stringify({ modal: modal ? getComputedStyle(modal).display : 'absent', err: err ? err.textContent : '' });
   })()`, true);
   check('workspace created from folder', wsResult && wsResult.includes('"modal":"none"'), String(wsResult).slice(0, 160));
+  // The create request must carry the browser's selected session backend.
+  {
+    const stored = await cdp.evalExpr(`localStorage.getItem('herdr-session-backend')`);
+    const createReq = createRequests[createRequests.length - 1];
+    check(
+      'workspace create request targeted the selected session backend',
+      !!createReq && createReq.backend === (stored || 'builtin'),
+      `x-herdr-backend=${createReq && createReq.backend} selected=${stored || 'builtin'} url=${createReq && createReq.url}`,
+    );
+  }
 } else if (openResult === 'workspace-already-open') {
   check('workspace already open (prior run)', true);
 } else {
