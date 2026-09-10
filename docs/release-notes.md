@@ -1,5 +1,23 @@
 # Release notes
 
+## 0.4.20 Release Notes
+- Tests can no longer overwrite the operator's real
+  `~/.config/herdr-webui/webui-settings.json`. A build-time guard
+  (`assert_test_settings_isolation`) panics in `cfg(test)` builds whenever a
+  save would reach the real settings path without `XDG_CONFIG_HOME` pointed at
+  a temp dir, turning a silent config clobber into a loud test failure. The
+  guard runs after settings validation, so rejection-path tests keep asserting
+  their validation errors.
+- The five tests that POST to persisting routes (recent workspaces, open
+  worktree handlers, server settings saves) now run with per-test temp
+  `XDG_CONFIG_HOME` dirs, serialized via the existing `lock_env()` pattern.
+
+## 0.4.19 Release Notes
+- Closing a stale external session (backend gone, socket missing) now
+  succeeds instead of returning a 502: the close handler treats a missing
+  backend as already-stopped, clears the stale entry, and the UI shows the
+  clean already-stopped message. Covered by the session UX e2e suite.
+
 ## 0.4.18 Release Notes
 - Session backends now have distinct colors in the footer session button, the
   session picker rows/status pills/current dot, and the mobile header badge:
