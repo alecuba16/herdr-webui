@@ -810,6 +810,7 @@ mod tests {
     fn test_state() -> WebState {
         let bind = "127.0.0.1:8787".parse::<SocketAddr>().unwrap();
         let (rebind_tx, _) = tokio::sync::watch::channel(bind);
+        let (settings_tx, _) = tokio::sync::broadcast::channel(16);
         WebState {
             api_socket: None,
             client_socket: None,
@@ -843,6 +844,7 @@ mod tests {
             })),
             no_sleep: Arc::new(Mutex::new(NoSleepState::default())),
             rebind_tx,
+            settings_tx,
             workspace_orders: Arc::new(Mutex::new(HashMap::new())),
             lsp: Arc::new(crate::lsp::LspRegistry::new(Default::default())),
         }
