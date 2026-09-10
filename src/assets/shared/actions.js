@@ -39,7 +39,7 @@
       title: "Manage sessions",
       subtitle: "Switch or launch built-in and Herdr backend sessions",
       text: "session backend manage launch switch",
-      surfaces: ["desktop"],
+      surfaces: ["desktop", "mobile"],
     },
     {
       id: "actions-menu",

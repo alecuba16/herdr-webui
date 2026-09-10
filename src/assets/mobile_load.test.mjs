@@ -268,6 +268,29 @@ function context(pathname = "/", options = {}) {
             ? fallback
             : value;
       };
+      if (url === "/api/sessions")
+        return {
+          ok: true,
+          status: 200,
+          json: async () =>
+            optionValue("sessionsResponse", {
+              sessions: [
+                { name: "default", backend: "builtin", backend_label: "built-in", running: true },
+                { name: "revolut", backend: "builtin", backend_label: "built-in", running: false },
+              ],
+              herdr_available: true,
+              herdr_compatible: true,
+              herdr_version: "0.9.0",
+              default_backend: "builtin",
+              enabled_backends: { builtin: true, "external-herdr": true },
+            }),
+        };
+      if (url === "/api/session/launch" || url === "/api/session/close")
+        return {
+          ok: true,
+          status: 200,
+          json: async () => optionValue("sessionMutation", { ok: true, pid: 4242 }),
+        };
       const result = url.includes("workspaces")
         ? {
             workspaces: optionValue("workspaces", [
@@ -534,16 +557,82 @@ describe("mobile bundle load", () => {
     // to built-in on refresh is covered elsewhere; here we exercise the badge
     // itself without the sessions-gating (the mock /api/sessions reports no
     // herdr install, so refresh alone would always land on built-in).
+    // The badge also names the active session and opens the sessions screen.
+    match(source, /<button type="button" id="mobileBackendBadge"/);
+    match(source, /badge\.onclick = \(\) => showScreen\("sessions"\)/);
     for (const [storedBackend, label, cls] of [["builtin", "built-in", "backend-builtin"], ["external-herdr", "Herdr", "backend-herdr"]]) {
       const ctx = context("/session/default/workspace/w1");
       ctx.localStorage.setItem("herdr-session-backend", storedBackend);
       vm.runInContext(source, ctx);
       ctx.HerdrMobile.showScreen("home");
       const badge = ctx.document.getElementById("mobileBackendBadge");
-      equal(badge.textContent, label);
+      equal(badge.textContent, `${label} · default`);
       ok(badge.className.includes(cls));
+      ok(typeof badge.onclick === "function");
     }
   });
+
+  it("renders a sessions screen listing known sessions and the active target", async () => {
+    const ctx = context("/session/default");
+    vm.runInContext(source, ctx);
+    ctx.HerdrMobile.showScreen("sessions");
+    await ctx.settle();
+    await ctx.flushTimers();
+    const screen = ctx.document.getElementById("mobileScreen");
+    ok(screen.innerHTML.includes("Sessions"));
+    ok(screen.innerHTML.includes("Current target: default · built-in"));
+    ok(screen.innerHTML.includes("revolut"));
+    ok(screen.innerHTML.includes("New built-in"));
+    // herdr is compatible in the mock, so the Herdr offer is visible.
+    ok(screen.innerHTML.includes("New Herdr"));
+  });
+
+  it("creates a new built-in session from the sessions screen and switches to it", async () => {
+    const ctx = context("/session/default");
+    vm.runInContext(source, ctx);
+    ctx.HerdrMobile.updateSessionField("sessionNameInput", "revolut");
+    await ctx.HerdrMobile.newSession("builtin");
+    const launch = ctx.requests.find((r) => r.url === "/api/session/launch");
+    ok(launch, "session launch request missing");
+    equal(launch.opt.body, JSON.stringify({ session: "revolut", backend: "builtin" }));
+    // The browser target switched: header stamping and route follow.
+    const workspacesRequest = ctx.requests.find((r) => r.url === "/api/workspaces");
+    ok(workspacesRequest, "refresh after switch missing");
+    equal(workspacesRequest.opt.headers["x-herdr-backend"], "builtin");
+    ok(ctx.history.calls.some((c) => c.path === "/session/revolut"));
+  });
+
+  it("switches the browser target when tapping another session row", async () => {
+    const ctx = context("/session/default");
+    vm.runInContext(source, ctx);
+    ctx.HerdrMobile.selectSession("revolut", "builtin");
+    ok(ctx.history.calls.some((c) => c.path === "/session/revolut"));
+    equal(ctx.localStorage.getItem("herdr-session-backend"), "builtin");
+  });
+
+  it("closes the current session from the sessions screen and retargets the default", async () => {
+    const ctx = context("/session/revolut");
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.closeSession();
+    const close = ctx.requests.find((r) => r.url === "/api/session/close");
+    ok(close, "session close request missing");
+    equal(close.opt.body, JSON.stringify({ session: "revolut", backend: "builtin" }));
+    equal(ctx.localStorage.getItem("herdr-session-backend"), "builtin");
+  });
+
+  it("rejects a new session without a name and surfaces the error inline", async () => {
+    const ctx = context("/session/default");
+    vm.runInContext(source, ctx);
+    ctx.HerdrMobile.showScreen("sessions");
+    await ctx.settle();
+    await ctx.flushTimers();
+    ctx.HerdrMobile.updateSessionField("sessionNameInput", "  ");
+    await ctx.HerdrMobile.newSession("builtin");
+    const screen = ctx.document.getElementById("mobileScreen");
+    ok(screen.innerHTML.includes("Session name is required."));
+    ok(!ctx.requests.some((r) => r.url === "/api/session/launch"));
+  });
+
 
 
   it("coalesces mobile event socket refreshes and pauses reconnect while hidden", async () => {

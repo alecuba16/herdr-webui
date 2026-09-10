@@ -83,5 +83,6 @@
     pathBasename,
     samePath,
     selectionPath,
+    sessionPrefix,
   };
 })();

@@ -2671,6 +2671,10 @@ async function newSessionTarget(backend) {
   const launched = await launchBackend(name, backend);
   if (launched === false) return;
   goSession(name, backend);
+  // The new session is live and the browser switched to it: close the
+  // manager so the user lands in the fresh session instead of a modal that
+  // still lists the previous target.
+  hideSessionManager();
 }
 async function loadSessions() {
   try {
@@ -2867,7 +2871,10 @@ async function handleHerdrErrorFrame(raw) {
       : false;
     if (wantsBuiltin) {
       goSession(state.session || "default", "builtin");
-      await launchBackend(state.session || "default", "builtin");
+      const launched = await launchBackend(state.session || "default", "builtin");
+      // The user accepted the built-in fallback: land them in the session
+      // instead of leaving the degraded-state manager open.
+      if (launched !== false) hideSessionManager();
     } else {
       // When built-in is disabled (or the user declined), reopen the manager
       // so the user picks an enabled target instead of silently rerouting.
@@ -3284,11 +3291,16 @@ function go(ws, tab, pane) {
   setTerminalLoading(true);
   refresh();
 }
-function goSession(name, backend = currentSessionBackend()) {
+function goSession(name, backend = currentSessionBackend(), { closeManager = true } = {}) {
   // Do not switch the browser to external herdr when no compatible install
   // was detected or the backend is disabled in settings; keep built-in.
   if (backend === "external-herdr" && (!state.herdrCompatible || !backendEnabled("external-herdr")))
     backend = "builtin";
+  // Row clicks and new-session flows finish by switching the browser to the
+  // target; close the manager so the switch is visible. Flows that report a
+  // result message (close session, herdr_error fallback) pass closeManager
+  // false and keep the manager open with their message.
+  if (closeManager) hideSessionManager();
   state.session = name || "default";
   state.sessionBackend = backend || "builtin";
   localStorage.setItem("herdr-session-backend", state.sessionBackend);

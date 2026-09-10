@@ -8232,6 +8232,159 @@ mod tests {
         let _ = fs::remove_file(socket);
     }
 
+    // The Actions UI stamps the selected session backend on every create
+    // call (x-herdr-backend). Creating a workspace while the browser
+    // targets the built-in backend must proxy workspace.create to the
+    // built-in session socket (auto-started), never to the external
+    // default API socket. The fake external socket below fails the test
+    // if it receives the create request.
+    #[cfg(unix)]
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn create_workspace_with_builtin_header_routes_to_builtin_backend() {
+        let _guard = lock_env();
+        let config_home = std::env::temp_dir().join(format!(
+            "herdr-webui-create-builtin-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
+
+        // A fake external-herdr API socket that must stay untouched: if the
+        // create request were misrouted there, the spawned handler would
+        // accept it, reply with an id, and the drop guard below would panic
+        // on join because the request never arrived (or the response would
+        // carry the external marker label).
+        let (external_socket, external_handle) = fake_api_socket_for_method(
+            "workspace.create",
+            json!({ "id": "web:workspace:create", "result": { "id": "external-ws" } }),
+        );
+        let session_name = "create-builtin";
+        let mut state = test_state();
+        state.api_socket = Some(external_socket.clone());
+        // Hold a state clone so the shared builtin session registry (and
+        // with it the started backend handle) outlives the oneshot request.
+        let app = test_app_with_state(state.clone());
+
+        let cwd = std::env::temp_dir();
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/workspaces")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header("x-herdr-backend", "builtin")
+                    .header("x-herdr-session", session_name)
+                    .body(Body::from(
+                        json!({ "cwd": cwd.to_string_lossy(), "label": "routing-test" })
+                            .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        // The built-in backend answers workspace.create with a workspace
+        // result (id starts with ws_ / has workspace fields), and definitely
+        // not the external fake marker.
+        let result = body["result"].clone();
+        assert!(
+            result.get("id").and_then(Value::as_str) != Some("external-ws"),
+            "create leaked to the external backend socket: {result}"
+        );
+        // The built-in backend answers workspace.create with a workspace
+        // result: a workspace object (or workspace_id field) is present.
+        let created_id = result
+            .get("workspace")
+            .and_then(|workspace| workspace.get("workspace_id"))
+            .or_else(|| result.get("workspace_id"))
+            .or_else(|| result.get("id"));
+        assert!(
+            created_id.is_some(),
+            "built-in backend did not return a workspace result: {result}"
+        );
+        // The built-in session must be running for the answered session.
+        let (builtin_api, _) = builtin_socket_paths(Some(session_name));
+        assert!(connect_local_stream(&builtin_api).is_ok());
+
+        let _ = fs::remove_dir_all(&config_home);
+        let _ = fs::remove_file(&external_socket);
+        drop(external_handle);
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    // Mirrors the above for worktree creation: the Actions UI worktree
+    // create flow also routes through the selected session backend.
+    #[cfg(unix)]
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn create_worktree_with_builtin_header_routes_to_builtin_backend() {
+        let _guard = lock_env();
+        let config_home = std::env::temp_dir().join(format!(
+            "herdr-wt-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
+
+        // The worktree create handler performs git checks locally, then
+        // proxies the create to the backend. A request without branch/path
+        // is rejected early by the built-in backend, but the key assertion
+        // is which socket the proxy talks to: seed the external fake socket
+        // with a marker reply; if the request lands there, the response
+        // leaks the marker.
+        let (external_socket, external_handle) = fake_api_socket_for_method(
+            "worktree.create",
+            json!({ "id": "web:worktree:create", "result": { "id": "external-wt" } }),
+        );
+        let session_name = "wt1";
+        let mut state = test_state();
+        state.api_socket = Some(external_socket.clone());
+        // Hold a state clone so the started built-in backend outlives the
+        // oneshot request (the router is consumed and dropped after it).
+        let app = test_app_with_state(state.clone());
+
+        let cwd = std::env::temp_dir().join("herdr-webui-wt-src");
+        let _ = fs::create_dir_all(&cwd);
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/worktrees")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header("x-herdr-backend", "builtin")
+                    .header("x-herdr-session", session_name)
+                    .body(Body::from(
+                        json!({ "cwd": cwd.to_string_lossy(), "path": "", "branch": "" })
+                            .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = response_json(response).await;
+        // Either the built-in backend rejected the empty worktree (fine)
+        // or it answered; in both cases the external fake marker must be
+        // absent from the response.
+        let body_text = body.to_string();
+        assert!(
+            !body_text.contains("external-wt"),
+            "worktree create leaked to the external backend socket: {body_text}"
+        );
+        let (builtin_api, _) = builtin_socket_paths(Some(session_name));
+        assert!(
+            connect_local_stream(&builtin_api).is_ok(),
+            "built-in session socket missing after worktree create; body: {body_text}; socket: {}",
+            builtin_api.display()
+        );
+
+        let _ = fs::remove_dir_all(&config_home);
+        let _ = fs::remove_file(&external_socket);
+        drop(external_handle);
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn rename_workspace_handler_proxies_rename() {

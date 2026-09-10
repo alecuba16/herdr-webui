@@ -2345,6 +2345,104 @@ describe("app bundle load", () => {
     equal(manager.style.display, "none");
   });
 
+  it("closes the session manager after creating a new built-in session", async () => {
+    const ctx = context();
+    ctx.prompt = () => "revolut";
+    ctx.fetch = async (url) => {
+      if (url === "/api/sessions")
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            sessions: [{ name: "default", backend: "builtin", running: true }],
+            herdr_available: true,
+            herdr_compatible: true,
+            herdr_version: "0.9.0",
+            default_backend: "builtin",
+            enabled_backends: { builtin: true, "external-herdr": true },
+          }),
+        };
+      if (url === "/api/session/launch")
+        return { ok: true, status: 200, json: async () => ({ ok: true, pid: 4242 }) };
+      return { ok: true, status: 200, json: async () => ({ result: { workspaces: [] } }) };
+    };
+    vm.runInContext(source, ctx);
+    ctx.setupSessionChrome();
+    const manager = ctx.document.getElementById("sessionManager");
+
+    await ctx.showSessionManager();
+    equal(manager.style.display, "block");
+
+    // In a real browser goSession pushes /session/revolut before its
+    // parseRoute() re-reads the URL; the harness pushState is a no-op, so
+    // mirror the post-switch URL before the flow runs.
+    ctx.location.pathname = "/session/revolut";
+    await ctx.newSessionTarget("builtin");
+    // The new session is live and the browser switched to it: the manager
+    // must close so the user lands in the session, not the modal.
+    equal(manager.style.display, "none");
+    equal(vm.runInContext("state.session", ctx), "revolut");
+    equal(vm.runInContext("state.sessionBackend", ctx), "builtin");
+  });
+
+  it("closes the session manager when switching targets via a session row", async () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    ctx.setupSessionChrome();
+    const manager = ctx.document.getElementById("sessionManager");
+
+    await ctx.showSessionManager();
+    equal(manager.style.display, "block");
+
+    ctx.location.pathname = "/session/work";
+    ctx.goSession("work", "builtin");
+    equal(manager.style.display, "none");
+    equal(vm.runInContext("state.session", ctx), "work");
+    equal(vm.runInContext("state.sessionBackend", ctx), "builtin");
+  });
+
+  it("closes the session manager after the herdr_error built-in fallback launches", async () => {
+    const ctx = context();
+    let launchCalls = 0;
+    // Mirror the post-switch URL the browser would have after pushState.
+    ctx.history = {
+      pushState(_state, _title, path) {
+        ctx.location.pathname = path;
+      },
+      replaceState() {},
+    };
+    ctx.fetch = async (url) => {
+      if (url === "/api/session/launch") {
+        launchCalls += 1;
+        return { ok: true, status: 200, json: async () => ({ ok: true, pid: 11 }) };
+      }
+      if (url === "/api/session/close")
+        return { ok: true, status: 200, json: async () => ({ ok: true }) };
+      return { ok: true, status: 200, json: async () => ({ result: { workspaces: [] } }) };
+    };
+    vm.runInContext(source, ctx);
+    ctx.setupSessionChrome();
+    const manager = ctx.document.getElementById("sessionManager");
+
+    vm.runInContext('state.sessionBackend = "external-herdr"', ctx);
+    await ctx.showSessionManager();
+    equal(manager.style.display, "block");
+
+    // Accept the built-in fallback offer through the question modal (the
+    // established pattern: kick the frame, settle, answer, await).
+    const handled = ctx.handleHerdrErrorFrame(
+      JSON.stringify({ type: "herdr_error", message: "protocol mismatch" }),
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    ctx.closeQuestion(true);
+    equal(await handled, true);
+    equal(launchCalls, 1);
+    equal(vm.runInContext("state.sessionBackend", ctx), "builtin");
+    // The user accepted the built-in fallback: the manager closes instead
+    // of staying open over the recovered session.
+    equal(manager.style.display, "none");
+  });
+
   it("uses backend-aware colors for session rows and the footer button", () => {
     const chromeCss = readFileSync(new URL("./desktop/app_css/chrome.css", import.meta.url), "utf8");
     const workspacesCss = desktopWorkspacesCss;
