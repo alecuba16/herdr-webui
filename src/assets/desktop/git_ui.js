@@ -188,8 +188,10 @@
     if (path && path !== "/") return path;
     if (typeof window.defaultFolderPath === "function") {
       const fallback = String(window.defaultFolderPath() || "").trim();
-      if (fallback) return fallback;
+      if (fallback && fallback !== "/") return fallback;
     }
+    const exploration = explorationDefaultDirectory();
+    if (exploration && exploration !== "/") return exploration;
     return "~";
   }
 

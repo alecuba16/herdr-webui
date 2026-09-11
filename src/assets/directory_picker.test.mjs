@@ -82,10 +82,17 @@ const debugPickerSource = pickerSource.replace(
   "window.__pickerDebug = { state, render };\n  window.HerdrDirectoryPicker = {",
 );
 
-function loadPicker({ fetchImpl, defaultFolder } = {}) {
+function loadPicker({ fetchImpl, defaultFolder, explorationDefault } = {}) {
   const harness = context({ fetchImpl });
   const { ctx } = harness;
   if (defaultFolder != null) ctx.defaultFolderPath = () => defaultFolder;
+  if (explorationDefault != null) {
+    ctx.HerdrOptions = {
+      read() {
+        return { explorationDefaultDirectory: explorationDefault };
+      },
+    };
+  }
   vm.runInContext(treeSource, ctx);
   vm.runInContext(debugPickerSource, ctx);
   return harness;
@@ -199,6 +206,43 @@ test("directory picker Default dir button loads the configured default folder", 
   match(modal.innerHTML, /Home<\/button><button class="git-ui-btn" onclick="HerdrDirectoryPicker\.defaultFolder\(\)">Default dir<\/button>/);
   // The tree scrolls are wired for incremental search results.
   match(modal.innerHTML, /onscroll="HerdrDirectoryPicker\.treeScroll\(this\)"/);
+});
+
+test("directory picker falls back to exploration default directory without the app bundle", async () => {
+  const calls = [];
+  const { ctx } = loadPicker({
+    explorationDefault: "/home/tester/src",
+    fetchImpl: async (url) => {
+      calls.push(String(url));
+      const pathMatch = /path=([^&]*)/.exec(String(url));
+      const path = pathMatch ? decodeURIComponent(pathMatch[1].replace(/\+/g, " ")) : "";
+      return { ok: true, status: 200, json: async () => ({ path, entries: [], truncated: false }) };
+    },
+  });
+  await vm.runInContext("HerdrDirectoryPicker.openInput('someInput')", ctx);
+  vm.runInContext("HerdrDirectoryPicker.defaultFolder()", ctx);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  equal(vm.runInContext("__pickerDebug.state.root", ctx), "/");
+  equal(vm.runInContext("__pickerDebug.state.path", ctx), "home/tester/src");
+});
+
+test("directory picker rejects filesystem root as a configured default", async () => {
+  const calls = [];
+  const { ctx } = loadPicker({
+    defaultFolder: "/",
+    fetchImpl: async (url) => {
+      calls.push(String(url));
+      const pathMatch = /path=([^&]*)/.exec(String(url));
+      const path = pathMatch ? decodeURIComponent(pathMatch[1].replace(/\+/g, " ")) : "";
+      return { ok: true, status: 200, json: async () => ({ path, entries: [], truncated: false }) };
+    },
+  });
+  await vm.runInContext("HerdrDirectoryPicker.openInput('someInput')", ctx);
+  vm.runInContext("HerdrDirectoryPicker.defaultFolder()", ctx);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  equal(vm.runInContext("__pickerDebug.state.root", ctx), "~");
+  equal(vm.runInContext("__pickerDebug.state.path", ctx), "");
+  match(calls[calls.length - 1], /cwd=~/);
 });
 
 test("directory picker search paging resets when the filter changes", async () => {

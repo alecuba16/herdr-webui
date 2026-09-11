@@ -316,7 +316,8 @@ function workspacePath(workspace) {
   return (pane && (pane.foreground_cwd || pane.cwd)) || "";
 }
 function defaultFolderPath() {
-  return state.defaultFolder || "";
+  const exploration = usefulDirectoryDefault(options.explorationDefaultDirectory);
+  return exploration || state.defaultFolder || "";
 }
 function defaultFolderWorkspace() {
   const cwd = defaultFolderPath();
@@ -326,6 +327,7 @@ function defaultFolderWorkspace() {
 function selectedOrDefaultWorkspace(id = state.ws) {
   return state.workspaces.find((w) => w.workspace_id === id) || defaultFolderWorkspace();
 }
+window.defaultFolderPath = defaultFolderPath;
 window.HerdrWorkspacePath = workspacePath;
 function appRefreshIconButton({ className = "", title = "Refresh", label = "Refresh", spinning = false, onclick = "" } = {}) {
   const classes = ["app-refresh-icon", className, spinning ? "spinning" : ""]
