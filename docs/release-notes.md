@@ -1,5 +1,22 @@
 # Release notes
 
+## 0.4.27 Release Notes
+- Recent workspaces are now individually removable: each entry in the recent
+  list shows a hover-revealed trash button at the row's right edge (matching
+  the git branch-row pattern), backed by a new
+  `POST /api/recent-workspaces/remove` endpoint that drops one entry and
+  invalidates the recents cache.
+- The browser terminal now fills the shell horizontally and vertically:
+  `fitTerminalSurface()` stretches the terminal to the full shell inner height
+  instead of clamping to the content height, so short sessions no longer leave
+  empty space at the bottom. The dead `scrollbar-gutter: stable both-edges`
+  was removed from `.terminal-shell` (the shell is `overflow: hidden`; the
+  gutter only wasted horizontal space).
+- The terminal refits when panels switch: a `ResizeObserver` on
+  `#terminalShell` renegotiates the grid whenever the shell resizes without a
+  window resize (sidebar toggle, Git drawer open/close, file browser,
+  dashboard, zoom), keeping cols/rows in sync with the visible shell.
+
 ## 0.4.24 Release Notes
 - Markdown files (`.md`, `.markdown`) open in the file browser as a rendered
   preview again. The rendered preview became unreachable when files started
