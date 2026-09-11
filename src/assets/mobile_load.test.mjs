@@ -1179,6 +1179,55 @@ describe("mobile bundle load", () => {
     );
   });
 
+  it("shows a rollback chip when a mobile setting drifted from its baseline", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
+    vm.runInContext(source, ctx);
+
+    ctx.HerdrMobile.showScreen("settings");
+    let html = ctx.document.getElementById("mobileScreen").innerHTML;
+    ok(
+      !html.includes('data-rollback-id="worktreeDefaultDirectory"'),
+      "no rollback chip before any change",
+    );
+
+    ctx.HerdrMobile.setWorktreeDefaultDirectory("/tmp/changed");
+    ctx.HerdrMobile.showScreen("settings");
+    html = ctx.document.getElementById("mobileScreen").innerHTML;
+    ok(
+      html.includes('data-rollback-id="worktreeDefaultDirectory"'),
+      "rollback chip appears after a change",
+    );
+
+    ctx.HerdrMobile.rollbackSetting("worktreeDefaultDirectory");
+    ctx.HerdrMobile.showScreen("settings");
+    html = ctx.document.getElementById("mobileScreen").innerHTML;
+    ok(
+      !html.includes('data-rollback-id="worktreeDefaultDirectory"'),
+      "chip cleared after rollback",
+    );
+    const saved = JSON.parse(ctx.localStorage.getItem("herdr-web-options"));
+    equal(saved.worktreeDefaultDirectory, "", "rolled back to the baseline");
+
+    // Re-entering Settings re-captures the open-time baseline: a new change
+    // drifts from the fresh snapshot, and rolling back restores it.
+    ctx.HerdrMobile.showScreen("home");
+    ctx.HerdrMobile.showScreen("settings");
+    ctx.HerdrMobile.setWorktreeDefaultDirectory("/tmp/second");
+    ctx.HerdrMobile.showScreen("settings");
+    html = ctx.document.getElementById("mobileScreen").innerHTML;
+    ok(
+      html.includes('data-rollback-id="worktreeDefaultDirectory"'),
+      "chip appears after re-entry change",
+    );
+    ctx.HerdrMobile.rollbackSetting("worktreeDefaultDirectory");
+    const savedSecond = JSON.parse(ctx.localStorage.getItem("herdr-web-options"));
+    equal(
+      savedSecond.worktreeDefaultDirectory,
+      "",
+      "re-entry rollback restores the fresh open-time baseline",
+    );
+  });
+
   it("shows highest-priority agent status in More tab label", async () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
     vm.runInContext(source, ctx);

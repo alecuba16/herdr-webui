@@ -1504,6 +1504,139 @@ function flashSettingsApplied(control, label) {
   if (!settingsFeedback) return;
   settingsFeedback.flashApplied(control, label);
 }
+// Explicit confirm/rollback chrome for local settings rows. Text-like
+// inputs only save after Enter or the yellow pencil; selects and
+// checkboxes save immediately but expose a rollback arrow. The registry
+// maps control ids to their save/read functions so the shared module
+// stays layout- and option-pipeline-agnostic.
+const settingsConfirmCommitters = new Map();
+function registerSettingsCommit(id, save, read) {
+  settingsConfirmCommitters.set(id, { save, read });
+}
+// Public hook so tests (and any embedding UI) can trigger the same commit
+// path the pencil button and Enter key use.
+window.HerdrSettingsCommit = {
+  commit(id) {
+    const committer = settingsConfirmCommitters.get(id);
+    if (committer) committer.save();
+  },
+  has(id) {
+    return settingsConfirmCommitters.has(id);
+  },
+};
+function settingsConfirmSave(control) {
+  const committer = settingsConfirmCommitters.get(control && control.id);
+  if (committer) committer.save();
+  else saveOptions();
+}
+function settingsConfirmRead(control) {
+  const committer = settingsConfirmCommitters.get(control && control.id);
+  if (committer) return committer.read();
+  return controlValueForConfirm(control);
+}
+function controlValueForConfirm(control) {
+  if (!control) return "";
+  if (control.type === "checkbox") return control.checked === true;
+  return String(control.value == null ? "" : control.value).trim();
+}
+const settingsConfirm = window.HerdrSettingsConfirm
+  ? window.HerdrSettingsConfirm.create({
+      document,
+      save: settingsConfirmSave,
+      read: settingsConfirmRead,
+      onRollback: (control) => {
+        // Rollback restores the saved option; route it through the same
+        // committers so dependent UI (terminal font, renders) syncs.
+        const committer = settingsConfirmCommitters.get(control && control.id);
+        if (committer) committer.save();
+        else saveOptions();
+      },
+    })
+  : null;
+// Attach confirm/rollback chrome to every local settings row. Ids without a
+// dedicated committer keep the generic pipeline: commit runs saveOptions()
+// after the row's own change handler already applied the control value.
+const SETTINGS_CONFIRM_IDS = [
+  "optTheme",
+  "optOverflow",
+  "optFit",
+  "optShiftEnterNewline",
+  "optSound",
+  "optBrowserNotifications",
+  "optPanelCloseMode",
+  "optGlobalShortcutsEnabled",
+  "optGlobalShortcutPrefix",
+  "optSearchShortcut",
+  "optTerminalCore",
+  "optTerminalFontFamily",
+  "optTerminalLinks",
+  "optTerminalMouseReporting",
+  "optTempTerminalLabelMaxChars",
+  "optCloseShortcut",
+  "optAgentSortMode",
+  "optSidebarWorkspacePercent",
+  "optParentCloseMode",
+  "optStuckWorkingEnabled",
+  "optWorkingDismissMinutes",
+  "optShowTabActivity",
+  "optWorkspaceSort",
+  "optSoundScope",
+  "optNotificationVolume",
+  "optGenerateWorktreeNames",
+  "optWorktreeDefaultDirectory",
+  "optExplorationDefaultDirectory",
+  "optScrollLines",
+  "optWorktreeAutoDiscover",
+  "optTreeIndentPx",
+  "optFileBrowserAllowParent",
+  "optFileBrowserGitStatus",
+  "optFileBrowserLineNumbers",
+  "optEditorFindShortcutEnabled",
+  "optEditorEnabled",
+  "optEditorWordWrap",
+  "optEditorTabSize",
+  "optEditorBracketMatching",
+  "optEditorFolding",
+  "optEditorActiveLine",
+  "optEditorWhitespace",
+  "optHeaderSearchEnabled",
+  "optFileBrowserSearchPageSize",
+  "optFileContentSearchMinChars",
+  "optFileContentSearchPageSize",
+  "optFileContentSearchContextLines",
+  "optFileContentSearchAutoCollapseFiles",
+  "optFileContentSearchDefaultExpanded",
+  "optFileContentSearchMatchesPerFile",
+  "optFileContentSearchMatchCase",
+  "optFileContentSearchRegex",
+  "optLspEnabled",
+];
+const settingsConfirmSkip = new Set([
+  // Shortcut capture rows are readonly inputs driven by Record buttons; the
+  // value only changes through those buttons, so pending chrome never shows.
+  "optGlobalShortcutPrefix",
+  "optSearchShortcut",
+]);
+function watchSettingsConfirmRows() {
+  if (!settingsConfirm) return;
+  for (const id of SETTINGS_CONFIRM_IDS) {
+    if (settingsConfirmSkip.has(id)) continue;
+    const control = document.getElementById(id);
+    if (!control) continue;
+    const row =
+      control.closest && control.closest(".option")
+        ? control.closest(".option")
+        : control;
+    if (!row) continue;
+    if (row.dataset.confirmWatched === "1") continue;
+    row.dataset.confirmWatched = "1";
+    settingsConfirm.watch(row, control);
+  }
+  // Rows watched during an earlier modal visit keep stale open-time
+  // baselines; re-read them so rollback always targets the value saved
+  // when Settings was (re)opened.
+  settingsConfirm.refreshAll();
+}
 function saveOptions() {
   options = normalizeOptions(options);
   if (window.HerdrOptions) window.HerdrOptions.write(options);
@@ -1950,6 +2083,7 @@ function setupSettingsSearch() {
 function prepareSettingsModalOpen() {
   applyOptions();
   loadServerSettings();
+  watchSettingsConfirmRows();
   const input = el("settingsSearch");
   if (!input) return;
   input.value = "";

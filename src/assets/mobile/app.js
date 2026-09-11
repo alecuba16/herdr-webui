@@ -551,8 +551,11 @@
       return;
     }
     const wasTerminal = state.screen === "terminal";
+    const wasSettings = state.screen === "settings";
     state.screen = screen;
     if (wasTerminal && screen !== "terminal") mobileTerminal.destroy(false);
+    if (!wasSettings && screen === "settings" && mobileSettings.resetSettingBaselines)
+      mobileSettings.resetSettingBaselines();
     if (screen === "sessions" && !state.sessionBusy) refreshSessions();
     render();
     if (screen === "terminal") mobileTerminal.connect();
@@ -1986,6 +1989,8 @@
     setWorktreeCreateExpanded: mobileWorktrees.setCreateExpanded,
     updateWorktreeField: mobileWorktrees.updateField,
     setThemeMode: mobileSettings.setThemeMode,
+    rollbackSetting: mobileSettings.rollbackSetting,
+    resetSettingBaselines: mobileSettings.resetSettingBaselines,
     setBrowserNotifications: mobileSettings.setBrowserNotifications,
     setEditorEnabled: mobileSettings.setEditorEnabled,
     setEditorWordWrap: mobileSettings.setEditorWordWrap,

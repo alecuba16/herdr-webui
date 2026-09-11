@@ -17,6 +17,9 @@ Settings:
 
 - The Settings modal includes a `Search settings` field in the header.
 - Settings search filters grouped settings sections and individual option rows locally in the browser.
+- Text-like settings (terminal font, directories, numeric fields) only save after pressing Enter in the field or clicking the yellow pencil button. While the on-screen value differs from the saved one, the row shows the pencil (hover: "Enter or press to confirm") together with a rollback arrow that restores the saved value.
+- Selects, checkboxes, tick menus, and range sliders apply immediately on change and show the rollback arrow while the saved value differs from the value saved when Settings was opened. Clicking the arrow restores that baseline.
+- Mobile Settings bakes the same rollback affordance into each row as a `↺` chip whenever the saved value drifted from its baseline, and tapping it restores the baseline value.
 - `Worktree default directory` is stored in browser `localStorage` as `worktreeDefaultDirectory`. It is used only as the base for generated worktree checkout paths. Relative values resolve from the source repo root, for example `../worktrees`.
 - `Exploration default directory` is stored in browser `localStorage` as `explorationDefaultDirectory`. It prefills desktop new/open workspace paths, desktop worktree discovery paths, desktop Git cleanup scan roots, Git directory picker roots, and mobile worktree discovery paths. It also drives the desktop directory picker's `Default dir` button and the Files drawer/file explorer when no workspace is selected, taking precedence over the server `default_folder` setting.
 - The notification volume setting is stored in browser `localStorage` as `notificationVolume`, a decimal gain from `0` to `1`. Desktop and mobile expose it as a 0-100 slider and default it to `0.24`.
