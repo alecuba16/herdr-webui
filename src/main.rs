@@ -3201,12 +3201,18 @@ async fn remove_recent_workspace(
     if let Err(response) = require_auth(&state, &headers, remote) {
         return response;
     }
-    let path = body
-        .path
-        .as_deref()
-        .map(expand_user_path_string)
-        .map(|value| value.trim().to_string())
-        .unwrap_or_default();
+    // Validate the raw path BEFORE expanding: an empty or whitespace-only
+    // path must 400 instead of expanding "~"/"" into the home directory and
+    // silently removing the home workspace entry.
+    let raw_path = body.path.as_deref().unwrap_or_default();
+    if raw_path.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "path is required" })),
+        )
+            .into_response();
+    }
+    let path = expand_user_path_string(raw_path).trim().to_string();
     if path.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -6953,6 +6959,22 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(missing_path.status(), StatusCode::BAD_REQUEST);
+
+            // Empty and whitespace-only paths must 400 too, not expand to the
+            // home directory and silently remove the home workspace entry.
+            for empty_body in [json!({ "path": "" }), json!({ "path": "   " })] {
+                let empty_path = app
+                    .clone()
+                    .oneshot(
+                        authed_request(Method::POST, "/api/recent-workspaces/remove")
+                            .header(header::CONTENT_TYPE, "application/json")
+                            .body(Body::from(empty_body.to_string()))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(empty_path.status(), StatusCode::BAD_REQUEST);
+            }
 
             let removed = app
                 .clone()
