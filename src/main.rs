@@ -1424,6 +1424,10 @@ fn app_router(state: WebState) -> Router {
             "/api/recent-workspaces/clear",
             post(clear_recent_workspaces),
         )
+        .route(
+            "/api/recent-workspaces/remove",
+            post(remove_recent_workspace),
+        )
         .route("/api/worktrees", get(worktrees).post(create_worktree))
         .route("/api/worktrees/open", post(open_worktree))
         .route("/api/worktrees/remove-path", post(remove_worktree_path))
@@ -3188,6 +3192,50 @@ async fn clear_recent_workspaces(
     }
 }
 
+async fn remove_recent_workspace(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    Json(body): Json<RemoveRecentWorkspaceRequest>,
+) -> Response {
+    if let Err(response) = require_auth(&state, &headers, remote) {
+        return response;
+    }
+    let path = body
+        .path
+        .as_deref()
+        .map(expand_user_path_string)
+        .map(|value| value.trim().to_string())
+        .unwrap_or_default();
+    if path.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "path is required" })),
+        )
+            .into_response();
+    }
+    let removed = {
+        let Ok(mut guard) = state.server_settings.lock() else {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({ "error": "server settings unavailable" })),
+            )
+                .into_response();
+        };
+        let count = guard.recent_workspaces.len();
+        guard.recent_workspaces.retain(|item| item.path != path);
+        count - guard.recent_workspaces.len()
+    };
+    match persist_server_settings(&state).await {
+        Ok(()) => Json(json!({ "ok": true, "removed": removed, "path": path })).into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": err.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
 fn open_created_worktree_request(
     cwd: &str,
     path: &str,
@@ -3808,6 +3856,11 @@ struct OpenRecentWorkspaceRequest {
     path: Option<String>,
     label: Option<String>,
     branch: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct RemoveRecentWorkspaceRequest {
+    path: Option<String>,
 }
 
 async fn open_recent_workspace(
@@ -6835,6 +6888,113 @@ mod tests {
                 .unwrap();
             assert_eq!(cleared.status(), StatusCode::OK);
             assert_eq!(response_json(cleared).await["cleared"], json!(1));
+        }
+
+        let _ = fs::remove_dir_all(config_home);
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn remove_recent_workspace_removes_single_entry_and_validates() {
+        let _env = lock_env();
+        // The authed remove persists server settings; keep that write inside
+        // a temp config dir so the real operator config is never touched.
+        let config_home = std::env::temp_dir().join(format!(
+            "herdr-webui-recent-remove-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
+
+        {
+            let state = test_state();
+            {
+                let mut guard = state.server_settings.lock().unwrap();
+                push_recent_workspace(
+                    &mut guard.recent_workspaces,
+                    "/repo/keep",
+                    Some("Keep".to_string()),
+                    None,
+                    Some("workspace".to_string()),
+                );
+                push_recent_workspace(
+                    &mut guard.recent_workspaces,
+                    "/repo/gone",
+                    Some("Gone".to_string()),
+                    None,
+                    Some("worktree".to_string()),
+                );
+            }
+            let app = test_app_with_state(state);
+
+            let unauthorized = app
+                .clone()
+                .oneshot(
+                    request(Method::POST, "/api/recent-workspaces/remove")
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(json!({ "path": "/repo/gone" }).to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+            let missing_path = app
+                .clone()
+                .oneshot(
+                    authed_request(Method::POST, "/api/recent-workspaces/remove")
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(json!({}).to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(missing_path.status(), StatusCode::BAD_REQUEST);
+
+            let removed = app
+                .clone()
+                .oneshot(
+                    authed_request(Method::POST, "/api/recent-workspaces/remove")
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(json!({ "path": "/repo/gone" }).to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(removed.status(), StatusCode::OK);
+            let json = response_json(removed).await;
+            assert_eq!(json["ok"], json!(true));
+            assert_eq!(json["removed"], json!(1));
+            assert_eq!(json["path"], "/repo/gone");
+
+            let listed = app
+                .clone()
+                .oneshot(
+                    authed_request(Method::GET, "/api/recent-workspaces")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let recent = response_json(listed).await["recent"].clone();
+            assert_eq!(recent.as_array().map(Vec::len), Some(1));
+            assert_eq!(recent[0]["path"], "/repo/keep");
+
+            // Removing an unknown path reports zero removals and keeps state.
+            let noop = app
+                .oneshot(
+                    authed_request(Method::POST, "/api/recent-workspaces/remove")
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(json!({ "path": "/repo/unknown" }).to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(noop.status(), StatusCode::OK);
+            assert_eq!(response_json(noop).await["removed"], json!(0));
         }
 
         let _ = fs::remove_dir_all(config_home);

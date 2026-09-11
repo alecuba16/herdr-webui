@@ -309,12 +309,67 @@ describe("app bundle load", () => {
     ok(section.includes("Beta"), "section renders recent rows");
     ok(section.includes('class="search-section-toggle search-section-head-toggle"'), "recent toggle uses the shared toggle styling inside the head row");
     ok(section.includes('aria-expanded="true"'), "recent toggle exposes expanded state");
+    ok(section.includes('class="search-result-remove"'), "recent rows render a remove button");
+    ok(section.includes('HerdrSearchPalette.removeRecent(event, &#39;/repo/beta&#39;)') || section.includes("HerdrSearchPalette.removeRecent(event, '/repo/beta')"), "remove button targets the row path");
+    ok(section.includes('app-icon-trash'), "remove button shows the trash icon");
     const collapsed = vm.runInContext("searchPaletteState.sectionsExpanded.recent = false; renderRecentSection([{ type: 'recent', icon: 'wt', title: 'Beta', subtitle: 'worktree · /repo/beta', path: '/repo/beta' }])", ctx);
     ok(collapsed.includes('aria-expanded="false"'), "collapsed recent toggle reports not expanded");
     ok(!collapsed.includes('onclick="HerdrSearchPalette.openRecent'), "collapsed section hides rows");
 
     const empty = vm.runInContext("renderRecentSection([])", ctx);
     equal(empty, "", "empty recents render no section");
+
+    // removeRecent: POSTs the path, drops the row, invalidates the cache,
+    // rerenders, and never triggers the row's own open action.
+    let removeCalls = 0;
+    const originalRemoveFetch = ctx.fetch;
+    ctx.fetch = async (url, init) => {
+      if (String(url).includes("/api/recent-workspaces/remove")) {
+        removeCalls += 1;
+        ok(init && init.method === "POST", "remove uses POST");
+        equal(init.headers["content-type"], "application/json", "remove posts JSON");
+        const body = JSON.parse(init.body);
+        equal(body.path, "/repo/beta", "remove sends the row path");
+        recentPayload = [];
+        return { status: 200, ok: true, json: async () => ({ ok: true, removed: 1, path: "/repo/beta" }) };
+      }
+      if (String(url).includes("/api/recent-workspaces/clear")) {
+        return { status: 200, json: async () => ({ ok: true, cleared: 0 }) };
+      }
+      if (String(url).includes("/api/recent-workspaces")) {
+        return { status: 200, ok: true, json: async () => ({ recent: recentPayload }) };
+      }
+      return originalRemoveFetch(url, init);
+    };
+    vm.runInContext('searchPaletteState.recent = recentWorkspaceCandidates([{ path: "/repo/beta", label: "Beta", kind: "workspace" }, { path: "/repo/delta", label: "Delta", kind: "workspace" }]);', ctx);
+    let removeStopped = 0;
+    await vm.runInContext("HerdrSearchPalette.removeRecent({ preventDefault() {}, stopPropagation() { globalThis.__removeStopped = (globalThis.__removeStopped || 0) + 1; } }, '/repo/beta')", ctx);
+    equal(removeCalls, 1, "removeRecent posts to the remove endpoint once");
+    equal(ctx.__removeStopped, 1, "removeRecent stops event propagation so the row does not open");
+    equal(vm.runInContext("searchPaletteState.recent.length", ctx), 1, "removeRecent drops only the removed row");
+    equal(vm.runInContext("searchPaletteState.recent[0].path", ctx), "/repo/delta", "removeRecent keeps other rows");
+    const removedCache = await registry.loadRecent();
+    equal(removedCache.length, 0, "removeRecent invalidates the loadRecent cache");
+    // API failure leaves state untouched and surfaces the error.
+    let failCalls = 0;
+    ctx.fetch = async (url, init) => {
+      if (String(url).includes("/api/recent-workspaces/remove")) {
+        failCalls += 1;
+        return { status: 500, json: async () => ({ error: "boom" }) };
+      }
+      return { status: 200, ok: true, json: async () => ({ recent: recentPayload }) };
+    };
+    let alerted = "";
+    ctx.alert = (message) => { alerted = String(message); };
+    vm.runInContext('searchPaletteState.recent = recentWorkspaceCandidates([{ path: "/repo/beta", label: "Beta", kind: "workspace" }]);', ctx);
+    await vm.runInContext("HerdrSearchPalette.removeRecent(null, '/repo/beta')", ctx);
+    equal(failCalls, 1, "failed remove calls the API");
+    equal(alerted, "boom", "failed remove surfaces the server error");
+    equal(vm.runInContext("searchPaletteState.recent.length", ctx), 1, "failed remove keeps the row");
+    // Empty path is a no-op.
+    removeCalls = 0;
+    await vm.runInContext("HerdrSearchPalette.removeRecent(null, '')", ctx);
+    equal(removeCalls, 0, "removeRecent ignores an empty path");
   });
 
   it("returns desktop UX actions from a single command-palette candidate path", () => {
@@ -581,6 +636,35 @@ describe("app bundle load", () => {
     match(desktopTerminalSource, /function sendBackendTail\(\) \{[\s\S]*?for \(let i = 0; i < 120; i \+= 1\)[\s\S]*?sendBackendScroll\(200\)/);
     match(desktopTerminalSource, /function scrollTerminalToBottom\(focus = true\) \{[\s\S]*?sendBackendTail\(\);[\s\S]*?setTerminalFollowPaused\(false\);[\s\S]*?term\.scrollToBottom\(\);/);
     match(desktopTerminalSource, /ws\.onopen = \(\) => \{[\s\S]*?scrollTerminalToBottom\(false\);/);
+  });
+
+  it("fills terminal shell vertically regardless of content height", () => {
+    // Non-overflow mode must stretch the surface to the full shell inner
+    // height instead of clamping to the content height, so short terminal
+    // output never leaves empty space at the bottom of the shell.
+    match(
+      desktopTerminalSource,
+      /const visibleHeight = shellHeight > 0 \? shellHeight : height;/,
+    );
+    ok(
+      !desktopTerminalSource.includes("Math.min(height, shellHeight)"),
+      "fitTerminalSurface must not clamp surface height to content height",
+    );
+    // The shell itself must not reserve scrollbar gutters (it never scrolls).
+    const terminalCss = readFileSync(new URL("./desktop/app_css/terminal.css", import.meta.url), "utf8");
+    ok(!terminalCss.includes("scrollbar-gutter"), "terminal shell must not reserve a dead scrollbar gutter");
+  });
+
+  it("refits terminal on shell resize via ResizeObserver", () => {
+    // The shell changes size without a window resize (sidebar toggle, Git
+    // drawer, Files browser, project dashboard); a ResizeObserver keeps the
+    // terminal grid renegotiated against the real shell box.
+    match(desktopTerminalSource, /new ResizeObserver\(refitAfterShellResize\)\.observe\(shell\);/);
+    match(desktopTerminalSource, /function observeTerminalShell\(\) \{[\s\S]*?typeof ResizeObserver !== "function"/);
+    match(
+      desktopTerminalSource,
+      /if \(applyBrowserTerminalSize\(\)\) connectTerminal\(\);\n\s+else fitTerminalSurface\(\);/,
+    );
   });
 
   it("keeps Git UI keyboard input away from the terminal", () => {

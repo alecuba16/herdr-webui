@@ -480,7 +480,7 @@ function renderSearchPalette() {
 function renderRecentSection(recent) {
   const expanded = searchPaletteState.sectionsExpanded.recent !== false;
   if (!recent.length) return "";
-  const rows = recent.map((result) => renderSearchRowResult(result)).join("");
+  const rows = recent.map((result) => renderRecentRowResult(result)).join("");
   const clear = `<button class="git-ui-btn" onclick="HerdrSearchPalette.clearRecent(event)" title="Clear recent workspaces">Clear</button>`;
   return `<section class="search-section"><div class="search-section-head"><button class="search-section-toggle search-section-head-toggle" onclick="HerdrSearchPalette.toggleSection('recent')" aria-expanded="${expanded ? "true" : "false"}"><strong><span class="herdr-tree-icon herdr-tree-icon-${expanded ? "chevron-down" : "chevron-right"}" aria-hidden="true"></span>Recent workspaces</strong><span>${recent.length}</span></button>${clear}</div>${expanded ? rows : ""}</section>`;
 }
@@ -516,8 +516,14 @@ function renderSearchRowResult(result) {
   return renderTargetResult(result, index);
 }
 
-function renderTargetResult(result, index) {
-  return `<div class="search-result ${index === searchPaletteState.selectedIndex ? "active" : ""}" onclick="chooseSearchResult(${index})"><span class="search-result-icon">${escapeHtml(result.icon)}</span><div><div class="search-result-title">${escapeHtml(result.title)}</div><div class="search-result-subtitle">${escapeHtml(result.subtitle || result.kind)}</div></div></div>`;
+function renderRecentRowResult(result, index) {
+  if (!result.path) return renderTargetResult(result, index);
+  const remove = `<button class="search-result-remove" type="button" title="Remove this recent workspace" aria-label="Remove ${escapeAttr(result.title)} from recent workspaces" onclick="HerdrSearchPalette.removeRecent(event, '${escapeAttr(result.path)}')"><span class="app-icon app-icon-trash" aria-hidden="true"></span></button>`;
+  return renderTargetResult(result, index, remove);
+}
+
+function renderTargetResult(result, index, trailingHtml = "") {
+  return `<div class="search-result ${index === searchPaletteState.selectedIndex ? "active" : ""}" onclick="chooseSearchResult(${index})"><span class="search-result-icon">${escapeHtml(result.icon)}</span><div class="search-result-body"><div class="search-result-title">${escapeHtml(result.title)}</div><div class="search-result-subtitle">${escapeHtml(result.subtitle || result.kind)}</div></div>${trailingHtml}</div>`;
 }
 
 function renderWorkspacePathSection(opts = searchSettings()) {
@@ -690,6 +696,28 @@ const HerdrSearchPalette = {
       await api("/api/recent-workspaces/clear", { method: "POST" });
     } catch (_) {}
     searchPaletteState.recent = [];
+    if (window.HerdrActionRegistry && window.HerdrActionRegistry.invalidateRecent) window.HerdrActionRegistry.invalidateRecent();
+    renderSearchPalette();
+  },
+  async removeRecent(event, path) {
+    if (event) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+    if (!path) return;
+    try {
+      await api("/api/recent-workspaces/remove", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ path }),
+      });
+    } catch (error) {
+      alert(error.message || String(error));
+      return;
+    }
+    searchPaletteState.recent = (searchPaletteState.recent || []).filter(
+      (item) => (item && item.path) !== path,
+    );
     if (window.HerdrActionRegistry && window.HerdrActionRegistry.invalidateRecent) window.HerdrActionRegistry.invalidateRecent();
     renderSearchPalette();
   },

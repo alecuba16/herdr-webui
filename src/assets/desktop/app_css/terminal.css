@@ -8,7 +8,6 @@
   padding: 8px;
   overflow: hidden;
   background: var(--bg);
-  scrollbar-gutter: stable both-edges;
 }
 .terminal {
   display: block;
