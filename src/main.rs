@@ -49,10 +49,10 @@ use assets::{
     shared_file_content_search_js, shared_file_icons_css, shared_file_icons_js,
     shared_file_tree_css, shared_file_tree_js, shared_line_context_js, shared_lsp_js,
     shared_markdown_preview_css, shared_markdown_preview_js, shared_options_js,
-    shared_settings_feedback_js, shared_settings_confirm_js, shared_temp_terminal_js, shared_terminal_adapter_js,
-    shared_terminal_fit_js, shared_terminal_scroll_js, shared_workspace_search_js,
-    vendor_codemirror_js, vendor_dompurify_js, vendor_ghostty_wasm, vendor_marked_js,
-    vendor_mermaid_js, vendor_wterm_css, vendor_wterm_js,
+    shared_settings_confirm_js, shared_settings_feedback_js, shared_temp_terminal_js,
+    shared_terminal_adapter_js, shared_terminal_fit_js, shared_terminal_scroll_js,
+    shared_workspace_search_js, vendor_codemirror_js, vendor_dompurify_js, vendor_ghostty_wasm,
+    vendor_marked_js, vendor_mermaid_js, vendor_wterm_css, vendor_wterm_js,
 };
 use compat::SimpleVersion;
 use compat::{backend_compatibility, BackendCompatibility};
