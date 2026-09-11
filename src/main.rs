@@ -3878,6 +3878,17 @@ async fn open_recent_workspace(
     if let Err(response) = require_auth(&state, &headers, remote) {
         return response;
     }
+    // Validate the raw path BEFORE expanding: an empty or whitespace-only
+    // path must 400 instead of expanding "~"/"" into the home directory,
+    // opening it as a workspace, and recording it in recents.
+    let raw_path = body.path.as_deref().unwrap_or_default();
+    if raw_path.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "path is required" })),
+        )
+            .into_response();
+    }
     let path = body.path.as_deref().map(expand_user_path_string);
     let cwd = body.path.as_deref().map(expand_user_path_string);
     let recorded_path = path.clone().unwrap_or_default();
@@ -7136,6 +7147,7 @@ mod tests {
         let app = test_app_with_state(state.clone());
 
         let response = app
+            .clone()
             .oneshot(
                 authed_request(Method::POST, "/api/recent-workspaces")
                     .header(header::CONTENT_TYPE, "application/json")
@@ -7167,6 +7179,37 @@ mod tests {
             body["result"]["workspace"]["workspace_id"],
             json!("ws-recent")
         );
+
+        // Empty and whitespace-only paths must 400 before expansion: the old
+        // behavior expanded "" to the home directory, opened it as a
+        // workspace, and recorded it in recents.
+        for empty in ["", "   "] {
+            let response = app
+                .clone()
+                .oneshot(
+                    authed_request(Method::POST, "/api/recent-workspaces")
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(json!({ "path": empty }).to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::BAD_REQUEST,
+                "expected 400 for open with empty path"
+            );
+            let body = response_json(response).await;
+            assert_eq!(body["error"], json!("path is required"));
+        }
+        // No extra recents entry leaked from the rejected requests.
+        let recent = state
+            .server_settings
+            .lock()
+            .map(|settings| settings.recent_workspaces.clone())
+            .unwrap_or_default();
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].path, "/repo/recent");
 
         let _ = fs::remove_dir_all(config_home);
         std::env::remove_var("XDG_CONFIG_HOME");
