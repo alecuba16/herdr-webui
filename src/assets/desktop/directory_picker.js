@@ -23,8 +23,13 @@
   function configuredDefaultFolder() {
     if (typeof window.defaultFolderPath === "function") {
       const value = String(window.defaultFolderPath() || "").trim();
-      if (value) return value;
+      if (value && value !== "/") return value;
     }
+    try {
+      const parsed = window.HerdrOptions ? window.HerdrOptions.read() : {};
+      const exploration = String(parsed.explorationDefaultDirectory || "").trim();
+      if (exploration && exploration !== "/") return exploration;
+    } catch (_) { /* fall through */ }
     return "~";
   }
 

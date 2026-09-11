@@ -1839,6 +1839,8 @@ describe("app bundle load", () => {
     match(source, /state\.defaultFolder = settings\.default_folder/);
     match(source, /selectedOrDefaultWorkspace/);
     match(source, /defaultFolderFn: defaultFolderPath/);
+    match(source, /window\.defaultFolderPath = defaultFolderPath;/);
+    match(source, /const exploration = usefulDirectoryDefault\(options\.explorationDefaultDirectory\);/);
     ok(!source.includes('body: JSON.stringify({ label: "default", cwd: null })'));
   });
 
@@ -3665,7 +3667,7 @@ describe("app bundle load", () => {
     equal(ctx.document.getElementById("workspaceCreateLabel").value, "project");
   });
 
-  it("uses settings default folder for workspace and worktree open defaults", () => {
+  it("prefers exploration default directory over server default folder for workspace and worktree open defaults", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
     vm.runInContext('state.defaultFolder = "/tmp/default"', ctx);
@@ -3678,13 +3680,18 @@ describe("app bundle load", () => {
     ctx.document.getElementById("optExplorationDefaultDirectory").value = "/tmp/code";
     ctx.document.getElementById("optExplorationDefaultDirectory").oninput();
     ctx.openWorkspaceCreateModal();
-    equal(ctx.document.getElementById("workspaceCreatePath").value, "/tmp/default");
+    equal(ctx.document.getElementById("workspaceCreatePath").value, "/tmp/code");
 
     ctx.openWorktreeOpenModal();
 
-    equal(ctx.document.getElementById("worktreeDiscoverPath").value, "/tmp/default");
+    equal(ctx.document.getElementById("worktreeDiscoverPath").value, "/tmp/code");
     ctx.openWorktreeOpenModal("/");
-    equal(ctx.document.getElementById("worktreeDiscoverPath").value, "/tmp/default");
+    equal(ctx.document.getElementById("worktreeDiscoverPath").value, "/tmp/code");
+
+    // Without a configured exploration directory the server default folder wins.
+    vm.runInContext('options.explorationDefaultDirectory = ""', ctx);
+    ctx.openWorkspaceCreateModal();
+    equal(ctx.document.getElementById("workspaceCreatePath").value, "/tmp/default");
 
     vm.runInContext('state.openWorktreeSource = { repo_name: "repo", repo_root: "/src/repo" }', ctx);
     ctx.document.getElementById("worktreeNewBranch").value = "feature/x";
