@@ -139,7 +139,6 @@ el("optShiftEnterNewline").onchange = () => {
   saveOptions();
   applyOptions();
 };
-el("optCloseShortcut").oninput = saveCloseShortcutOption;
 el("optCloseShortcut").onchange = saveCloseShortcutOption;
 el("optGlobalShortcutsEnabled").onchange = () => {
   options.globalShortcutsEnabled = el("optGlobalShortcutsEnabled").checked;
@@ -165,12 +164,15 @@ el("optGlobalShortcutPrefixCapture").onclick = () => {
   };
   window.addEventListener("keydown", capture, { once: true, capture: true });
 };
-el("optTerminalFontFamily").oninput = () => {
+// Text-like settings only save on Enter or the yellow pencil confirm
+// button (settings_confirm chrome). oninput just repaints pending state.
+function commitTerminalFontFamily() {
   options.terminalFontFamily = el("optTerminalFontFamily").value;
   saveOptions();
   applyTerminalFont();
   fitTerminalShell();
-};
+}
+registerSettingsCommit("optTerminalFontFamily", commitTerminalFontFamily, () => options.terminalFontFamily || "");
 const optTerminalCore = el("optTerminalCore");
 if (optTerminalCore)
   optTerminalCore.onchange = () => {
@@ -188,10 +190,11 @@ el("optTerminalMouseReporting").onchange = () => {
   options.terminalMouseReporting = el("optTerminalMouseReporting").checked;
   saveOptions();
 };
-el("optTempTerminalLabelMaxChars").oninput = () => {
+function commitTempTerminalLabelMaxChars() {
   options.tempTerminalLabelMaxChars = Math.max(4, Math.min(80, Number(el("optTempTerminalLabelMaxChars").value) || 20));
   saveOptions();
-};
+}
+registerSettingsCommit("optTempTerminalLabelMaxChars", commitTempTerminalLabelMaxChars, () => options.tempTerminalLabelMaxChars);
 el("optAgentSortMode").onchange = () => {
   options.agentSortMode = el("optAgentSortMode").value;
   if (options.agentSortMode === "attention_inverted")
@@ -201,10 +204,9 @@ el("optAgentSortMode").onchange = () => {
   render();
 };
 const optSidebarWorkspacePercent = el("optSidebarWorkspacePercent");
-if (optSidebarWorkspacePercent)
-  optSidebarWorkspacePercent.oninput = () => {
-    setSidebarWorkspacePercent(optSidebarWorkspacePercent.value);
-  };
+registerSettingsCommit("optSidebarWorkspacePercent", () => {
+  setSidebarWorkspacePercent(el("optSidebarWorkspacePercent").value);
+}, () => options.sidebarWorkspacePercent);
 const sidebarSplitHandle = el("sidebarSplitHandle");
 if (sidebarSplitHandle) {
   let pendingSidebarWorkspacePercent = null;
@@ -255,7 +257,7 @@ el("optStuckWorkingEnabled").onchange = () => {
   applyOptions();
   render();
 };
-el("optWorkingDismissMinutes").oninput = () => {
+function commitWorkingDismissMinutes() {
   options.workingDismissMinutes = Math.max(
     1,
     Math.min(1440, Number(el("optWorkingDismissMinutes").value) || 30),
@@ -263,7 +265,8 @@ el("optWorkingDismissMinutes").oninput = () => {
   saveOptions();
   applyOptions();
   render();
-};
+}
+registerSettingsCommit("optWorkingDismissMinutes", commitWorkingDismissMinutes, () => options.workingDismissMinutes);
 el("optShowTabActivity").onchange = () => {
   options.showTabActivity = el("optShowTabActivity").checked;
   saveOptions();
@@ -298,19 +301,22 @@ if (optNotificationVolume)
     applyOptions();
   };
 el("optScrollLines").oninput = () => {
-  options.scrollLines = Math.max(
-    1,
-    Math.min(20, Number(el("optScrollLines").value) || 3),
-  );
+  options.scrollLines = Math.max(1, Math.min(20, Number(el("optScrollLines").value) || 3));
   saveOptions();
   applyOptions();
 };
-el("optTreeIndentPx").oninput = () => {
+registerSettingsCommit("optScrollLines", () => {
+  options.scrollLines = Math.max(1, Math.min(20, Number(el("optScrollLines").value) || 3));
+  saveOptions();
+  applyOptions();
+}, () => options.scrollLines);
+function commitTreeIndentPx() {
   options.treeIndentPx = Math.max(0, Math.min(40, Number(el("optTreeIndentPx").value) || 0));
   saveOptions();
   applyOptions();
   render();
-};
+}
+registerSettingsCommit("optTreeIndentPx", commitTreeIndentPx, () => options.treeIndentPx);
 el("optFileBrowserAllowParent").onchange = () => {
   options.fileBrowserAllowParent = el("optFileBrowserAllowParent").checked;
   saveOptions();
@@ -335,45 +341,51 @@ for (const [id, key] of [["optEditorEnabled", "editorEnabled"], ["optEditorWordW
     if (typeof render === "function") render();
   };
 }
-el("optEditorTabSize").onchange = () => {
+registerSettingsCommit("optEditorTabSize", () => {
   options.editorTabSize = Math.max(1, Math.min(8, Number(el("optEditorTabSize").value) || 2));
   saveOptions();
   if (typeof render === "function") render();
-};
+}, () => options.editorTabSize);
 el("optHeaderSearchEnabled").onchange = () => {
   options.headerSearchEnabled = el("optHeaderSearchEnabled").checked;
   saveOptions();
   applyOptions();
 };
-el("optFileBrowserSearchPageSize").oninput = () => {
+function commitFileBrowserSearchPageSize() {
   options.fileBrowserSearchPageSize = Math.max(10, Math.min(500, Number(el("optFileBrowserSearchPageSize").value) || 100));
   saveOptions();
-};
-el("optFileContentSearchMinChars").oninput = () => {
+}
+registerSettingsCommit("optFileBrowserSearchPageSize", commitFileBrowserSearchPageSize, () => options.fileBrowserSearchPageSize);
+function commitFileContentSearchMinChars() {
   options.fileContentSearchMinChars = Math.max(1, Math.min(20, Number(el("optFileContentSearchMinChars").value) || 3));
   saveOptions();
-};
-el("optFileContentSearchPageSize").oninput = () => {
+}
+registerSettingsCommit("optFileContentSearchMinChars", commitFileContentSearchMinChars, () => options.fileContentSearchMinChars);
+function commitFileContentSearchPageSize() {
   options.fileContentSearchPageSize = Math.max(10, Math.min(500, Number(el("optFileContentSearchPageSize").value) || 50));
   saveOptions();
-};
-el("optFileContentSearchContextLines").oninput = () => {
+}
+registerSettingsCommit("optFileContentSearchPageSize", commitFileContentSearchPageSize, () => options.fileContentSearchPageSize);
+function commitFileContentSearchContextLines() {
   const value = Number(el("optFileContentSearchContextLines").value);
   options.fileContentSearchContextLines = Math.max(0, Math.min(20, Number.isFinite(value) ? value : 2));
   saveOptions();
-};
-el("optFileContentSearchAutoCollapseFiles").oninput = () => {
+}
+registerSettingsCommit("optFileContentSearchContextLines", commitFileContentSearchContextLines, () => options.fileContentSearchContextLines);
+function commitFileContentSearchAutoCollapseFiles() {
   options.fileContentSearchAutoCollapseFiles = Math.max(0, Math.min(200, Number(el("optFileContentSearchAutoCollapseFiles").value) || 0));
   saveOptions();
-};
+}
+registerSettingsCommit("optFileContentSearchAutoCollapseFiles", commitFileContentSearchAutoCollapseFiles, () => options.fileContentSearchAutoCollapseFiles);
 el("optFileContentSearchDefaultExpanded").onchange = () => {
   options.fileContentSearchDefaultExpanded = el("optFileContentSearchDefaultExpanded").checked;
   saveOptions();
 };
-el("optFileContentSearchMatchesPerFile").oninput = () => {
+function commitFileContentSearchMatchesPerFile() {
   options.fileContentSearchMatchesPerFile = Math.max(1, Math.min(50, Number(el("optFileContentSearchMatchesPerFile").value) || 5));
   saveOptions();
-};
+}
+registerSettingsCommit("optFileContentSearchMatchesPerFile", commitFileContentSearchMatchesPerFile, () => options.fileContentSearchMatchesPerFile);
 el("optFileContentSearchMatchCase").onchange = () => {
   options.fileContentSearchMatchCase = el("optFileContentSearchMatchCase").checked;
   saveOptions();
@@ -382,7 +394,7 @@ el("optFileContentSearchRegex").onchange = () => {
   options.fileContentSearchRegex = el("optFileContentSearchRegex").checked;
   saveOptions();
 };
-el("optWorktreeAutoDiscover").oninput = () => {
+function commitWorktreeAutoDiscover() {
   options.worktreeAutoDiscoverSeconds = Math.max(
     0,
     Math.min(30, Number(el("optWorktreeAutoDiscover").value) || 0),
@@ -390,21 +402,24 @@ el("optWorktreeAutoDiscover").oninput = () => {
   saveOptions();
   applyOptions();
   scheduleWorktreeAutodiscover();
-};
+}
+registerSettingsCommit("optWorktreeAutoDiscover", commitWorktreeAutoDiscover, () => options.worktreeAutoDiscoverSeconds);
 el("optGenerateWorktreeNames").onchange = () => {
   options.generateWorktreeNames = el("optGenerateWorktreeNames").checked;
   saveOptions();
   applyOptions();
 };
-el("optWorktreeDefaultDirectory").oninput = () => {
+function commitWorktreeDefaultDirectory() {
   options.worktreeDefaultDirectory = el("optWorktreeDefaultDirectory").value.trim();
   saveOptions();
   syncWorktreeCheckoutPath();
-};
-el("optExplorationDefaultDirectory").oninput = () => {
+}
+registerSettingsCommit("optWorktreeDefaultDirectory", commitWorktreeDefaultDirectory, () => (options.worktreeDefaultDirectory || ""));
+function commitExplorationDefaultDirectory() {
   options.explorationDefaultDirectory = el("optExplorationDefaultDirectory").value.trim();
   saveOptions();
-};
+}
+registerSettingsCommit("optExplorationDefaultDirectory", commitExplorationDefaultDirectory, () => (options.explorationDefaultDirectory || ""));
 el("optSound").onchange = () => {
   options.sound = el("optSound").checked;
   saveOptions();

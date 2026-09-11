@@ -1760,3 +1760,24 @@ body.light .mobile-nav-status.working {
   content: "✓";
   font-weight: 800;
 }
+/* Settings confirm pencil + rollback chrome, mirroring desktop. */
+.settings-confirm-pencil,
+.settings-rollback {
+  align-self: center;
+  background: none;
+  border: none;
+  color: var(--muted, #9ca3af);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  justify-self: end;
+  padding: 2px 6px;
+}
+.settings-confirm-pencil {
+  color: #f9e2af;
+}
+.settings-pending > input,
+.settings-pending > select {
+  outline: 1px dashed #f9e2af;
+  outline-offset: 1px;
+}

@@ -3676,9 +3676,9 @@ describe("app bundle load", () => {
     equal(ctx.document.getElementById("workspaceCreatePath").value, "/tmp/default");
 
     ctx.document.getElementById("optWorktreeDefaultDirectory").value = "/tmp/worktrees";
-    ctx.document.getElementById("optWorktreeDefaultDirectory").oninput();
+    ctx.HerdrSettingsCommit.commit("optWorktreeDefaultDirectory");
     ctx.document.getElementById("optExplorationDefaultDirectory").value = "/tmp/code";
-    ctx.document.getElementById("optExplorationDefaultDirectory").oninput();
+    ctx.HerdrSettingsCommit.commit("optExplorationDefaultDirectory");
     ctx.openWorkspaceCreateModal();
     equal(ctx.document.getElementById("workspaceCreatePath").value, "/tmp/code");
 
@@ -4062,8 +4062,36 @@ describe("app bundle load", () => {
     match(fileBrowserSource, /function editorOptions\(\)/);
     match(source, /title: "Editor",\n\s+desc: "Editing behavior, readability, and performance controls\./);
     match(source, /optEditorEnabled.*optEditorWordWrap.*optEditorTabSize/);
-    match(source, /el\("optEditorTabSize"\)\.onchange/);
+    match(source, /registerSettingsCommit\("optEditorTabSize"/);
     ok(!source.includes('el("optEditorTabSize").oninput'));
+    ok(!source.includes('el("optEditorTabSize").onchange'), "tab size saves only on Enter or pencil");
+  });
+
+  it("wires settings confirm chrome across local option rows", () => {
+    // Shared module is loaded before the desktop bundle and drives the
+    // pencil/rollback affordances.
+    match(source, /window\.HerdrSettingsConfirm\s*\?\s*\n?\s*window\.HerdrSettingsConfirm\.create/);
+    // Text-like rows commit through registered committers instead of
+    // saving on every keystroke.
+    match(source, /registerSettingsCommit\("optTerminalFontFamily"/);
+    match(source, /registerSettingsCommit\("optWorktreeDefaultDirectory"/);
+    match(source, /registerSettingsCommit\("optExplorationDefaultDirectory"/);
+    ok(!source.includes('el("optExplorationDefaultDirectory").oninput'));
+    ok(!source.includes('el("optWorktreeDefaultDirectory").oninput'));
+    // Rows are watched when the settings modal opens, and Enter commits.
+    match(source, /watchSettingsConfirmRows\(\);\s*\n\s*const input = el\("settingsSearch"\)/);
+    match(source, /window\.HerdrSettingsCommit = \{/);
+    // Reopening Settings must re-read baselines so rollback targets the
+    // value saved at the latest open, not the first-ever visit.
+    match(source, /settingsConfirm\.refreshAll\(\)/);
+    // Immediate-commit selects keep their change handlers and gain the
+    // rollback arrow through the module.
+    match(source, /el\("optTerminalCore"\)/);
+    ok(
+      source.includes('el("optTerminalCore").onchange') ||
+        source.includes("optTerminalCore.onchange"),
+      "terminal core select still saves immediately",
+    );
   });
 
   it("configures CodeMirror extensions without forcing expensive features", () => {

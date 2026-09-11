@@ -131,3 +131,37 @@ Chrome, emulates `prefers-color-scheme` flips, and drives the real UI:
 | `CDP_PORT`  | `9222`  | Chrome remote debugging port         |
 
 Run it locally; it is also kept as a pre-merge manual gate (not in CI).
+
+## Settings confirm/rollback acceptance
+
+`scripts/e2e/settings-confirm-acceptance.mjs` (desktop) and
+`scripts/e2e/settings-confirm-mobile-acceptance.mjs` (mobile) cover the
+settings confirm/rollback UX in a real browser over CDP. They expect an
+isolated server and headless Chrome already up (same stack as
+`run-e2e.sh` steps 1-4, or point `E2E_BASE_URL` at your own server and
+`CDP_PORT` at the debugging port).
+
+Desktop script verifies on the served app:
+
+- editing a text-like setting (exploration dir) without confirming does
+  NOT touch the saved options, and the row shows the pending outline,
+  yellow pencil ("Enter or press to confirm"), and rollback arrow
+- Enter commits: value saved, chrome hidden, row outline cleared
+- the pencil click commits the same way
+- the rollback arrow restores the open-time baseline without saving it
+  (a subsequent Enter still saves the restored text)
+- selects (agent sorting) save immediately and show only the rollback
+  arrow; rolling back restores the baseline and persists the restore
+- the notification-volume range saves immediately and its rollback
+  restores the open-time baseline
+- reopening Settings re-reads baselines: freshly saved values show no
+  chrome, and rollback targets the latest open-time baseline, not a
+  stale first-visit one
+
+Mobile script forces the mobile layout via device metrics emulation and
+verifies:
+
+- no rollback chip before any change
+- a change shows the ↺ chip and persists immediately
+- tapping the chip restores the baseline value and clears the chip
+- re-entering Settings re-captures the open-time baseline

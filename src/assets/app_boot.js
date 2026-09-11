@@ -76,6 +76,7 @@
       "/assets/shared/file-content-search.js",
       "/assets/shared/workspace-search.js",
       "/assets/shared/settings-feedback.js",
+      "/assets/shared/settings-confirm.js",
       "/assets/vendor/codemirror.js",
       "/assets/vendor/wterm.js",
       "/assets/shared/markdown-preview.js",
