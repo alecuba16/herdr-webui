@@ -1,5 +1,13 @@
 # Release notes
 
+## 0.4.28 Release Notes
+- `POST /api/recent-workspaces/remove` now rejects an empty or whitespace-only
+  path with a 400 `path is required` response instead of expanding the empty
+  path to the home directory, where it could match and silently remove the
+  home workspace entry. The raw path is validated before any user-path
+  expansion runs, and the unit suite covers both empty and whitespace-only
+  request bodies.
+
 ## 0.4.27 Release Notes
 - Recent workspaces are now individually removable: each entry in the recent
   list shows a hover-revealed trash button at the row's right edge (matching
