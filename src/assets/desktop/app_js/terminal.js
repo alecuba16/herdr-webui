@@ -788,14 +788,24 @@ function fitTerminalSurface() {
     // applyBrowserTerminalSize and the shell ResizeObserver) keeps the actual
     // rows in sync with the space, so the surface and the grid always match.
     const visibleHeight = shellHeight > 0 ? shellHeight : height;
+    // Align the surface to whole terminal rows. When the shell height is not
+    // an exact multiple of the row height, a full-shell surface leaves a
+    // sub-row gap at the bottom. wterm's follow-scroll snaps scrollTop to
+    // whole rows while the app's scrollToBottom targets the exact bottom, so
+    // the two fight on every frame (visible "shaking"). Keeping at most one
+    // row of reserved gap at the bottom makes both land on the same value.
+    const alignedHeight =
+      rows > 0 && rowHeight > 0
+        ? Math.min(visibleHeight, Math.floor(visibleHeight / rowHeight) * rowHeight)
+        : visibleHeight;
     terminal.style.width = "100%";
-    terminal.style.height = visibleHeight > 0 ? visibleHeight + "px" : "";
-    terminal.style.maxHeight = shellHeight > 0 ? shellHeight + "px" : "";
+    terminal.style.height = alignedHeight > 0 ? alignedHeight + "px" : "";
+    terminal.style.maxHeight = alignedHeight > 0 ? alignedHeight + "px" : "";
     terminal.style.minWidth = "0";
     terminal.style.minHeight = "0";
     // Don't force overflow:hidden - wterm needs overflow:auto on .terminal for internal scrollback
     // terminal.style.overflow = "hidden";  // REMOVED: breaks wterm scrollTop
-    HerdrTerminalFit.fitTerminalToContainer(terminal, { height: visibleHeight });
+    HerdrTerminalFit.fitTerminalToContainer(terminal, { height: alignedHeight });
   }
 }
 function cssPixels(value) {
