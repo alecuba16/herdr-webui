@@ -1,5 +1,15 @@
 # Release notes
 
+## 0.4.29 Release Notes
+- Opening a recent workspace with an empty or whitespace-only path
+  (`POST /api/recent-workspaces`) now returns 400 `path is required`
+  instead of expanding the empty path to the home directory, opening the
+  home directory as a workspace, and recording it in the recent list. This
+  closes the same exposure fixed for the remove endpoint in 0.4.28: the raw
+  path is validated before any user-path expansion runs, and the unit suite
+  covers empty and whitespace-only bodies while asserting no recents entry
+  leaks from rejected requests.
+
 ## 0.4.28 Release Notes
 - `POST /api/recent-workspaces/remove` now rejects an empty or whitespace-only
   path with a 400 `path is required` response instead of expanding the empty
