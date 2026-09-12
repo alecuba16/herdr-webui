@@ -263,6 +263,16 @@ describe("mobile parity feature guards", () => {
     assert.ok(eventsIndex > -1 && eventsIndex < appIndex, "events.js loads before app.js");
   });
 
+  it("mobile screen renderers live in their own module loaded before app.js", () => {
+    const screensSource = readFileSync(new URL("./mobile/screens.js", import.meta.url), "utf8");
+    assert.match(screensSource, /globalThis\.HerdrMobileScreensModule = \{ create: createMobileScreens \}/);
+    assert.match(screensSource, /getWorkingDismissals\(\)/);
+    assert.match(screensSource, /HerdrMobile\.dismissWorkingAgent/);
+    const screensIndex = bootSource.indexOf("/assets/mobile/screens.js");
+    const appIndex = bootSource.indexOf("/assets/mobile/app.js");
+    assert.ok(screensIndex > -1 && screensIndex < appIndex, "screens.js loads before app.js");
+  });
+
   it("worktrees module exposes recent workspace actions", () => {
     assert.match(worktreesSource, /loadRecent/);
     assert.match(worktreesSource, /openRecent/);
@@ -289,10 +299,12 @@ describe("mobile parity feature guards", () => {
   });
 
   it("agent rows expose dismiss and undo working actions", () => {
-    assert.match(appSource, /dismissWorkingAgent/);
-    assert.match(appSource, /restoreWorkingAgent/);
-    assert.match(appSource, /HerdrMobile\.dismissWorkingAgent/);
-    assert.match(appSource, /HerdrMobile\.restoreWorkingAgent/);
+    const screensSource = readFileSync(new URL("./mobile/screens.js", import.meta.url), "utf8");
+    assert.match(screensSource, /dismissWorkingAgent/);
+    assert.match(screensSource, /restoreWorkingAgent/);
+    assert.match(screensSource, /HerdrMobile\.dismissWorkingAgent/);
+    assert.match(screensSource, /HerdrMobile\.restoreWorkingAgent/);
+    assert.match(appSource, /dismissWorkingAgent: \(\.\.\.args\) => mobileScreens\.dismissWorkingAgent/);
   });
 
   it("no nested interactive elements inside mobile-row buttons", () => {
@@ -319,6 +331,7 @@ describe("mobile parity feature guards", () => {
   it("terminal output clears dismissed working overrides", () => {
     const terminalSource = readFileSync(new URL("./mobile/terminal.js", import.meta.url), "utf8");
     assert.match(terminalSource, /onTerminalOutput/);
-    assert.match(appSource, /onTerminalOutput: clearDismissedWorkingForTerminal/);
+    assert.match(appSource, /onTerminalOutput: \(\.\.\.args\) => mobileScreens\.clearDismissedWorkingForTerminal/);
+    assert.match(readFileSync(new URL("./mobile/screens.js", import.meta.url), "utf8"), /clearForTerminal\(terminalId\)/);
   });
 });
