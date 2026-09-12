@@ -509,6 +509,17 @@ warnings, cargo fmt, cargo test) and committed separately:
   token generation, constant-time credential comparison, cookie-session
   checks, localhost bypass, and the login cookie response; main.rs
   handlers delegate. 7 new unit tests. No behavior change.
+- **Rust slice 2** (`c5c1cab`): `src/server_settings.rs` owns the
+  settings data model (`PersistedServerSettings`, `RuntimeServerSettings`,
+  `LogLevel`, `BackendMode`, `RecentWorkspace`), validation, defaults,
+  load/save with 0600 permissions, CLI bind override, and the public
+  settings JSON; `AuthConfig::from_settings` lives there too. main.rs
+  kept every handler and call-site signature (imports only), so the
+  diff stays reviewable: -359 lines from main.rs, 7 new module tests.
+  main.rs is now 13,452 lines. Validated: fmt + clippy -D warnings
+  clean, 30/30 settings tests, 534/534 full Rust suite, 521/521
+  frontend, and the desktop e2e (58 PASS incl. the settings Apply
+  flow) against the real server.
 
 Validation after Phase D: 519/519 frontend tests, 527 Rust tests,
 clippy clean, fmt clean.
