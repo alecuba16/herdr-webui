@@ -22,6 +22,7 @@
 - `src/assets/icons/`: SVG icons served as static assets and referenced from CSS/markup.
 - `src/assets/mobile/`: mobile UI bundle chunks and mobile-only CSS.
 - `src/assets/shared/`: browser helpers shared by desktop and mobile bundles.
+- `src/assets/shared/http.js`: shared HTTP client (`HerdrHttp`). Layouts register a session/backend context provider; every bundle's `api()` delegates here so headers and 401 handling cannot drift. `src/assets/http_client.test.mjs` guards the invariant.
 - `src/assets/shared/colors.css`: shared cross-layout theme extension tokens for search highlights, focus rings, and editor-style panels.
 - `src/assets/shared/content_search.css`: shared content-search visual rules for match highlighting and Git-style context arrows.
 - `src/assets/shared/file_tree.js`: shared file-tree renderer, search helpers, parent-path helpers, Git status application, and go-up entry helpers.
@@ -74,9 +75,10 @@ The Rust binary embeds frontend assets with `include_str!`, so release artifacts
 
 ## Desktop And Mobile Parity
 
-- Both layouts support workspace selection, agent list/attention status, panel selection/creation/closing, linked worktree listing/creation/opening, terminal attach, bounded terminal paste, terminal scrollback follow/Tail behavior, terminal links, Files browsing with backend search/filter, Git status viewing with file filtering, read-only Git file diffs, Settings, theme choice, browser notifications, local attention tone volume, file tree indentation, and layout preference.
-- Desktop is the full power-user layout. It includes the embedded Git drawer with mutations, diffs, log, stash, cleanup, blame, file history, hunk actions, conflict actions, shortcuts, and the editable file browser with split panes.
-- Mobile is intentionally narrower. It keeps navigation, agents, worktrees, terminal, Files preview with go-up navigation, Git status, and read-only Git file diffs usable on small screens, but does not yet expose desktop Git mutations/log/stash/cleanup/blame/history or file editing/split panes.
+- Both layouts support workspace selection, agent list/attention status, panel selection/creation/closing, linked worktree listing/creation/opening, terminal attach, bounded terminal paste, terminal scrollback follow/Tail behavior, terminal links, Files browsing with backend search/filter, file preview with editing and hash-guarded save, file rename/delete/new-file, Git status viewing with file filtering, per-file Git stage/unstage/discard, branch list and switch, read-only Git file diffs, Settings, theme choice, browser notifications, local attention tone volume, file tree indentation, and layout preference.
+- Both layouts route every HTTP request through the shared `HerdrHttp` client (`src/assets/shared/http.js`), which attaches `x-herdr-session`/`x-herdr-backend` headers from the layout's pinned session and handles 401 uniformly. Do not add private `api()` wrappers; the guard test in `src/assets/http_client.test.mjs` fails the build for new ones.
+- Desktop is the full power-user layout. It includes the embedded Git drawer with mutations (commit/push/pull/rebase, log graph, stash, cleanup, blame, file history, hunk actions, conflict actions), shortcuts, Git directory picker, split panes, editor find/replace, markdown preview toggle, recent workspaces, no-sleep control, notification scope, agent sorting, stuck-working dismiss, panel activity labels, and server settings editing.
+- Mobile is intentionally narrower. It keeps navigation, agents, worktrees, terminal, Files with editing/rename/delete/new-file, per-file Git stage/unstage/discard and branch switch with read-only diffs, and Settings usable on small screens, but does not yet expose desktop Git commit/log/stash/cleanup/blame/history, file split panes, editor find/replace, recent workspaces, no-sleep, or server settings editing.
 - When adding a desktop feature, decide explicitly whether mobile needs full parity, read-only parity, or documentation as desktop-only. Keep this section updated so mobile gaps are intentional.
 
 ## Mobile Layout Notes
