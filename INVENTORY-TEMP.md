@@ -670,6 +670,27 @@ Real-workflow validation run after the fixes, all green:
   frontend, 534/534 Rust, fmt + clippy clean, git e2e PASSED,
   desktop e2e 58 PASS.
 
+- **Mobile screens split** (`3c632c1`): `src/assets/mobile/screens.js`
+  (199 lines) — factory `createMobileScreens` owning the 15 screen
+  renderers/nav helpers (`renderHome, renderTaskHub, renderAttentionAgents,
+  renderMore, renderWorkspaces, renderAgents, renderAgentsRows,
+  mobileNavLabel, mobileNavActive, dismissWorkingAgent, restoreWorkingAgent,
+  clearDismissedWorkingForTerminal`) and registering
+  `globalThis.HerdrMobileScreensModule`. Entangled state made explicit
+  deps: `getWorkingDismissals` getter (workingDismissals is created later
+  in app.js than mobileScreens), plus renderContext, session info accessors,
+  refresh callbacks. app.js (2150 → 1230 lines) wires the module after
+  sessions, delegates `HerdrMobile.dismissWorkingAgent`/`restoreWorkingAgent`
+  through `(...args)` forwarders, and passes
+  `onTerminalOutput: (...args) => mobileScreens.clearDismissedWorkingForTerminal(...)`
+  to the terminal factory. Registered as `MOBILE_SCREENS_JS` asset with its
+  own route and route test (status/content-type/body > 1000); app_boot.js
+  mobile list now `events.js, screens.js, app.js`; mobile_load bundle
+  concatenation includes screens.js; mobile_parity gained a boot-order
+  guard plus retargeted dismiss/undo and terminal-output guards.
+  Validated: 526/526 frontend, 534/534 Rust, fmt + clippy clean, mobile
+  e2e 52 PASS, desktop e2e 58 PASS.
+
 Remaining from §6: Phase 1 slices beyond auth (settings/recent-workspaces,
 git_ui split continues), Phase 2b monolith closures decomposition
 (remaining git_ui.js render/log slices, remaining mobile app.js screens),
