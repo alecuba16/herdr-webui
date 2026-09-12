@@ -558,7 +558,7 @@ describe("app bundle load", () => {
   it("adds configured shortcut labels to Git tooltips", () => {
     match(gitShortcutsSource, /function titleWithGitShortcut\(title, action\)/);
     match(gitUiSource, /titleWithGitShortcut\("Refresh", "refresh"\)/);
-    match(gitUiSource, /titleWithGitShortcut\("Switch branch", "branch"\)/);
+    match(readFileSync(new URL("./desktop/git_ui/branch_list.js", import.meta.url), "utf8"), /titleWithGitShortcut\("Switch branch", "branch"\)/);
     match(gitUiSource, /titleWithGitShortcut\("File history", "history"\)/);
     match(gitUiSource, /titleWithGitShortcut\("Blame", "blame"\)/);
   });

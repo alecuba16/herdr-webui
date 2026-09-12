@@ -130,6 +130,7 @@ const SHARED_SOURCES = [
   "./desktop/git_ui/conflicts.js",
   "./desktop/git_ui/side_tree.js",
   "./desktop/git_ui/modals.js",
+  "./desktop/git_ui/branch_list.js",
 ]
   .map((path) => readFileSync(new URL(path, import.meta.url), "utf8"))
   .join("\n;\n");
@@ -873,4 +874,19 @@ test("modals render commit and git-op flows from module state", async () => {
   // is Current upstream, so main carries the (current) label without selected.
   assert.match(html, /<option value="main"[^>]*>main \(current\)<\/option>/);
   assert.match(html, /<option value="" selected>Current upstream<\/option>/);
+});
+
+test("branch list module is registered and wired before git_ui.js consumes it", () => {
+  const branchListSource = readFileSync(new URL("./desktop/git_ui/branch_list.js", import.meta.url), "utf8");
+  assert.match(branchListSource, /globalThis\.HerdrGitUiBranchListModule = \{ create: createGitUiBranchList \}/);
+  assert.match(branchListSource, /function branchListRow\(branch, currentBranch\)/);
+  assert.match(branchListSource, /Local branches/);
+  assert.match(branchListSource, /Load more branches/);
+  const gitUiSource = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
+  assert.match(gitUiSource, /globalThis\.HerdrGitUiBranchListModule\.create\(\{/);
+  assert.match(gitUiSource, /const renderBranchList = branchList\.renderBranchList;/);
+  const assetsSource = readFileSync(new URL("../assets.rs", import.meta.url), "utf8");
+  const branchListIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui/branch_list.js")');
+  const gitUiIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui.js")');
+  assert.ok(branchListIndex > -1 && branchListIndex < gitUiIndex, "branch_list.js concatenates before git_ui.js");
 });

@@ -70,6 +70,7 @@ const DESKTOP_GIT_UI_JS: &str = concat!(
     include_str!("assets/desktop/git_ui/conflicts.js"),
     include_str!("assets/desktop/git_ui/side_tree.js"),
     include_str!("assets/desktop/git_ui/modals.js"),
+    include_str!("assets/desktop/git_ui/branch_list.js"),
     include_str!("assets/desktop/git_ui.js"),
 );
 const DESKTOP_SEARCH_JS: &str = include_str!("assets/desktop/search.js");
