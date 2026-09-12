@@ -1048,21 +1048,22 @@ describe("app bundle load", () => {
 
   it("offers conflict buttons for HEAD, parent, and remote sides", () => {
     match(gitUiSource, /renderConflictOperationActions/);
-    match(gitUiSource, /renderConflictResolutionButtons/);
-    match(gitUiSource, /renderDiffConflictResolutionButtons/);
-    match(gitUiSource, /renderEditableHunkConflictControls/);
-    match(gitUiSource, /function conflictBlocksInText\(text\)/);
-    match(gitUiSource, /function resolveConflictBlockText\(text, blockIndex, mode\)/);
+    const gitConflictsSource = readFileSync(new URL("./desktop/git_ui/conflicts.js", import.meta.url), "utf8");
+    match(gitConflictsSource, /renderConflictResolutionButtons/);
+    match(gitConflictsSource, /renderDiffConflictResolutionButtons/);
+    match(gitConflictsSource, /renderEditableHunkConflictControls/);
+    match(gitConflictsSource, /function conflictBlocksInText\(text\)/);
+    match(gitConflictsSource, /function resolveConflictBlockText\(text, blockIndex, mode\)/);
     match(gitUiSource, /resolveEditorConflictBlock\(hunkIndex, blockIndex, mode\)/);
-    match(gitUiSource, /Resolve individual conflict marker blocks in the editable hunk/);
-    match(gitUiSource, /Parent\/base side is unavailable for this conflict block/);
-    match(gitUiSource, /line\.startsWith\("<<<<<<<"\)/);
-    match(gitUiSource, /line\.startsWith\("\|\|\|\|\|\|\|"\)/);
-    match(gitUiSource, /line\.startsWith\(">>>>>>>"\)/);
-    match(gitUiSource, /currentMode\(\) !== "changes" \|\| !isConflictPath\(file\.path\)/);
+    match(gitConflictsSource, /Resolve individual conflict marker blocks in the editable hunk/);
+    match(gitConflictsSource, /Parent\/base side is unavailable for this conflict block/);
+    match(gitConflictsSource, /line\.startsWith\("<<<<<<<"\)/);
+    match(gitConflictsSource, /line\.startsWith\("\|\|\|\|\|\|\|"\)/);
+    match(gitConflictsSource, /line\.startsWith\(">>>>>>>"\)/);
+    match(gitConflictsSource, /currentMode\(\) !== "changes" \|\| !isConflictPath\(file\.path\)/);
     match(gitUiSource, /const conflictActions = renderDiffConflictResolutionButtons\(file\)/);
     match(gitUiSource, /\$\{conflictActions\}\$\{restore\}/);
-    match(gitUiSource, /git-ui-conflict-diff-actions/);
+    match(gitConflictsSource, /git-ui-conflict-diff-actions/);
     const gitDiffRenderSource = readFileSync(new URL("./desktop/git_ui/diff_render.js", import.meta.url), "utf8");
     match(gitDiffRenderSource, /renderUnifiedLine\(row, path, index, rows, rowIndex, contextArrows, !!file\.preview_large_diff\)/);
     match(gitDiffRenderSource, /function renderUnifiedLine\(row, path, hunkIndex, rows, rowIndex, contextArrows, previewLargeDiff\)/);
@@ -1072,14 +1073,14 @@ describe("app bundle load", () => {
     match(gitUiSource, /Merge<\/span>\$\{action\("Continue", "merge-continue"\)\}\$\{action\("Abort", "merge-abort", true\)\}/);
     match(gitUiSource, /Cherry-pick<\/span>\$\{action\("Continue", "cherry-pick-continue"\)\}\$\{action\("Abort", "cherry-pick-abort", true\)\}/);
     match(gitUiSource, /operationActions = renderConflictOperationActions\(\)/);
-    match(gitUiSource, /Use HEAD/);
-    match(gitUiSource, /Use parent/);
-    match(gitUiSource, /Use remote/);
-    match(gitUiSource, /HerdrGitUi\.resolve\('\$\{arg\(file\)\}','base'\)/);
-    match(gitUiSource, /title="Use parent\/base version"/);
-    match(gitUiSource, /title="Use remote\/incoming side"/);
-    match(gitUiSource, /Mark resolved \(stage\)/);
-    match(gitUiSource, /Stage this manually edited file as resolved/);
+    match(gitConflictsSource, /Use HEAD/);
+    match(gitConflictsSource, /Use parent/);
+    match(gitConflictsSource, /Use remote/);
+    match(gitConflictsSource, /HerdrGitUi\.resolve\('\$\{arg\(file\)\}','base'\)/);
+    match(gitConflictsSource, /title="Use parent\/base version"/);
+    match(gitConflictsSource, /title="Use remote\/incoming side"/);
+    match(gitConflictsSource, /Mark resolved \(stage\)/);
+    match(gitConflictsSource, /Stage this manually edited file as resolved/);
     match(gitUiSource, /After editing a conflicted file manually/);
     ok(!gitUiSource.includes(">Use branch</button>"));
     const gitLayoutCss = readFileSync(new URL("./desktop/git_ui/layout.css", import.meta.url), "utf8");
@@ -4182,8 +4183,9 @@ describe("app bundle load", () => {
   it("uses the same editor mount tooling for previous and current hunk text", () => {
     const gitDiffCss = readFileSync(new URL("./desktop/git_ui/diff.css", import.meta.url), "utf8");
 
-    match(gitUiSource, /git-ui-hunk-old-mount" data-hunk-index="\$\{hunk\.index\}" data-editor-side="old" data-readonly="true"/);
-    match(gitUiSource, /git-ui-hunk-current-mount" data-hunk-index="\$\{hunk\.index\}" data-editor-side="current" data-readonly="\$\{hunk\.newStart \? "false" : "true"\}"/);
+    const gitConflictsMountSource = readFileSync(new URL("./desktop/git_ui/conflicts.js", import.meta.url), "utf8");
+    match(gitConflictsMountSource, /git-ui-hunk-old-mount" data-hunk-index="\$\{hunk\.index\}" data-editor-side="old" data-readonly="true"/);
+    match(gitConflictsMountSource, /git-ui-hunk-current-mount" data-hunk-index="\$\{hunk\.index\}" data-editor-side="current" data-readonly="\$\{hunk\.newStart \? "false" : "true"\}"/);
     match(gitUiSource, /const sourceClass = side === "old" \? "git-ui-hunk-old-hidden" : "git-ui-hunk-current-hidden";/);
     ok(!gitUiSource.includes("<pre class=\"git-ui-editor-preview del\""));
     match(gitDiffCss, /\.git-ui-hunk-old-mount \.cm-content/);

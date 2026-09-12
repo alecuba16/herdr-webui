@@ -127,6 +127,7 @@ const SHARED_SOURCES = [
   "./desktop/git_ui/stash.js",
   "./desktop/git_ui/cleanup.js",
   "./desktop/git_ui/diff_render.js",
+  "./desktop/git_ui/conflicts.js",
 ]
   .map((path) => readFileSync(new URL(path, import.meta.url), "utf8"))
   .join("\n;\n");
@@ -608,4 +609,152 @@ test("diff render module is registered and wired before git_ui.js consumes it", 
   const diffIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui/diff_render.js")');
   const gitUiIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui.js")');
   assert.ok(diffIndex > -1 && diffIndex < gitUiIndex, "diff_render.js concatenates before git_ui.js");
+});
+
+test("conflicts module is registered and wired before git_ui.js consumes it", () => {
+  const conflictsSource = readFileSync(new URL("./desktop/git_ui/conflicts.js", import.meta.url), "utf8");
+  assert.match(conflictsSource, /globalThis\.HerdrGitUiConflictsModule = \{ create: createGitUiConflicts \}/);
+  assert.match(conflictsSource, /function conflictBlocksInText\(text\)/);
+  assert.match(conflictsSource, /HerdrGitUi\.resolveEditorConflictBlock\(/);
+  const gitUiSource = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
+  assert.match(gitUiSource, /globalThis\.HerdrGitUiConflictsModule\.create\(\{/);
+  assert.match(gitUiSource, /const renderSideEditor = conflicts\.renderSideEditor;/);
+  const assetsSource = readFileSync(new URL("../assets.rs", import.meta.url), "utf8");
+  const conflictsIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui/conflicts.js")');
+  const gitUiIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui.js")');
+  assert.ok(conflictsIndex > -1 && conflictsIndex < gitUiIndex, "conflicts.js concatenates before git_ui.js");
+});
+
+test("conflict block parsing resolves ours, base, and theirs per block", () => {
+  const conflictsSource = readFileSync(new URL("./desktop/git_ui/conflicts.js", import.meta.url), "utf8");
+  const ctx = context(async () => ({ ok: true, status: 200, json: async () => ({}) }));
+  vm.runInContext(conflictsSource, ctx);
+  const create = ctx.globalThis.HerdrGitUiConflictsModule.create;
+  const deps = {
+    active: () => ({ status: { conflicted: ["src/app.js"] } }),
+    esc: (s) => String(s),
+    arg: (s) => String(s),
+    currentMode: () => "changes",
+    diffLayoutMode: () => "side-by-side",
+  };
+  const mod = create(deps);
+  const text = [
+    "shared top",
+    "<<<<<<< HEAD",
+    "ours line",
+    "||||||| base",
+    "base line",
+    "=======",
+    "theirs line",
+    ">>>>>>> remote",
+    "shared bottom",
+  ].join("\n");
+  const blocks = mod.conflictBlocksInText(text);
+  assert.equal(blocks.length, 1);
+  assert.equal(JSON.stringify(blocks[0].ours), JSON.stringify(["ours line"]));
+  assert.equal(JSON.stringify(blocks[0].base), JSON.stringify(["base line"]));
+  assert.equal(JSON.stringify(blocks[0].theirs), JSON.stringify(["theirs line"]));
+  assert.equal(mod.resolveConflictBlockText(text, 0, "ours").includes("theirs line"), false);
+  assert.equal(mod.resolveConflictBlockText(text, 0, "base").includes("base line"), true);
+  assert.equal(mod.resolveConflictBlockText(text, 0, "theirs").includes("ours line"), false);
+  // A block without the ||||||| base section resolves base to null (button disabled).
+  const twoWay = ["<<<<<<< HEAD", "ours", "=======", "theirs", ">>>>>>> e"].join("\n");
+  const twoWayBlocks = mod.conflictBlocksInText(twoWay);
+  assert.equal(twoWayBlocks.length, 1);
+  assert.equal(twoWayBlocks[0].base, null);
+  assert.equal(mod.resolveConflictBlockText(twoWay, 0, "base"), twoWay);
+});
+
+test("conflict resolution buttons render per mode and conflicted path", () => {
+  const conflictsSource = readFileSync(new URL("./desktop/git_ui/conflicts.js", import.meta.url), "utf8");
+  const ctx = context(async () => ({ ok: true, status: 200, json: async () => ({}) }));
+  vm.runInContext(conflictsSource, ctx);
+  const create = ctx.globalThis.HerdrGitUiConflictsModule.create;
+  let mode = "changes";
+  const mod = create({
+    active: () => ({ status: { conflicted: ["src/app.js"] } }),
+    esc: (s) => String(s),
+    arg: (s) => String(s),
+    currentMode: () => mode,
+    diffLayoutMode: () => "side-by-side",
+  });
+  const conflicted = { path: "src/app.js" };
+  const clean = { path: "README.md" };
+  assert.match(mod.renderDiffConflictResolutionButtons(conflicted), /git-ui-conflict-diff-actions/);
+  assert.match(mod.renderDiffConflictResolutionButtons(conflicted), />Mark resolved</);
+  assert.equal(mod.renderDiffConflictResolutionButtons(clean), "");
+  mode = "current-compare";
+  assert.equal(mod.renderDiffConflictResolutionButtons(conflicted), "");
+  const full = mod.renderConflictResolutionButtons("src/app.js");
+  assert.match(full, /HerdrGitUi\.resolve\('src\/app\.js','ours'\)/);
+  assert.match(full, /HerdrGitUi\.resolve\('src\/app\.js','base'\)/);
+  assert.match(full, /HerdrGitUi\.resolve\('src\/app\.js','theirs'\)/);
+  assert.match(full, /HerdrGitUi\.resolve\('src\/app\.js','mark'\)/);
+});
+
+test("side editor renders editable hunks with conflict block controls", () => {
+  const conflictsSource = readFileSync(new URL("./desktop/git_ui/conflicts.js", import.meta.url), "utf8");
+  const ctx = context(async () => ({ ok: true, status: 200, json: async () => ({}) }));
+  vm.runInContext(conflictsSource, ctx);
+  const create = ctx.globalThis.HerdrGitUiConflictsModule.create;
+  let layout = "side-by-side";
+  const mod = create({
+    active: () => null,
+    esc: (s) => String(s),
+    arg: (s) => String(s),
+    currentMode: () => "changes",
+    diffLayoutMode: () => layout,
+  });
+  const conflictedHunk = {
+    index: 0,
+    header: "@@ -1,3 +1,5 @@",
+    oldText: "base",
+    text: ["ours", "<<<<<<< HEAD", "keep", "=======", "new", ">>>>>>> r"].join("\n"),
+    newStart: 1,
+    newEnd: 5,
+  };
+  const sideHtml = mod.renderSideEditor({ sideEditor: { hunks: [conflictedHunk] } });
+  assert.match(sideHtml, /git-ui-hunk-editor-list/);
+  assert.match(sideHtml, /Previous hunk stays read-only/);
+  assert.match(sideHtml, /Conflict block 1/);
+  assert.match(sideHtml, /HerdrGitUi\.resolveEditorConflictBlock\(0,0,'ours'\)/);
+  assert.match(sideHtml, /disabled>Use parent</);
+  layout = "unified";
+  const unifiedHtml = mod.renderSideEditor({ sideEditor: { hunks: [conflictedHunk] } });
+  assert.match(unifiedHtml, /Edit the hunk text below/);
+  assert.match(unifiedHtml, /git-ui-hunk-editor-unified/);
+  const loading = mod.renderSideEditor({ sideEditor: { loading: true } });
+  assert.match(loading, /Loading file editor/);
+});
+
+test("buildEditableHunks splits chunk lines into old and current hunk text", () => {
+  const conflictsSource = readFileSync(new URL("./desktop/git_ui/conflicts.js", import.meta.url), "utf8");
+  const ctx = context(async () => ({ ok: true, status: 200, json: async () => ({}) }));
+  vm.runInContext(conflictsSource, ctx);
+  const create = ctx.globalThis.HerdrGitUiConflictsModule.create;
+  const mod = create({
+    active: () => null,
+    esc: (s) => String(s),
+    arg: (s) => String(s),
+    currentMode: () => "changes",
+    diffLayoutMode: () => "side-by-side",
+  });
+  const file = {
+    chunks: [{
+      header: "@@ -1,3 +1,3 @@",
+      lines: [
+        { line_type: "context", content: "shared", new_line_number: 1 },
+        { line_type: "delete", content: "old", old_line_number: 2 },
+        { line_type: "add", content: "new", new_line_number: 2 },
+      ],
+    }],
+  };
+  const hunks = mod.buildEditableHunks(file);
+  assert.equal(hunks.length, 1);
+  assert.equal(hunks[0].oldText, "shared\nold");
+  assert.equal(hunks[0].text, "shared\nnew");
+  assert.equal(JSON.stringify(hunks[0].oldLineTypes), JSON.stringify(["context", "del"]));
+  assert.equal(JSON.stringify(hunks[0].newLineTypes), JSON.stringify(["context", "add"]));
+  assert.equal(hunks[0].newStart, 1);
+  assert.equal(hunks[0].newEnd, 2);
 });
