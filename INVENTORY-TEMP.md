@@ -749,6 +749,27 @@ Real-workflow validation run after the fixes, all green:
   delegation guard. Validated: 529/529 frontend, 534/534 Rust, fmt +
   clippy clean, mobile e2e 52 PASS, desktop e2e 58 PASS.
 
+- **Mobile workspace actions split** (`56a0beb`):
+  `src/assets/mobile/actions.js` (149 lines) — factory
+  `createMobileActions` owning `selectWorkspace, selectAgent,
+  selectTab, createPanel, closeCurrentPanel, currentScreen,
+  currentSelection, runMobileAction`, registering
+  `globalThis.HerdrMobileActionsModule`. Deps: `api`,
+  `confirmFn` (window.confirm indirection keeps e2e stubbing working),
+  `refresh/render/showScreen/selectionPath/currentWorkspaceCwd/tabTitle`,
+  plus getters for `mobileFileBrowser, mobileTerminal, mobileSearch,
+  mobileWorktrees, mobileTempTerminal` (late-bound; the module is
+  created before search/file-browser/worktrees instances).
+  app.js (1126 → 1056 lines) keeps thin wrappers — async wrappers for
+  createPanel/closeCurrentPanel preserve the await semantics — so the
+  HerdrMobile onclick surface and the search/git dep objects are
+  untouched. Registered as `MOBILE_ACTIONS_JS` asset with route +
+  route test; app_boot mobile list
+  `screens.js, panels.js, workmeta.js, theme.js, actions.js, app.js`;
+  mobile_load concat includes actions.js; mobile_parity gained a
+  boot-order + delegation guard. Validated: 530/530 frontend, 534/534
+  Rust, fmt + clippy clean, mobile e2e 52 PASS, desktop e2e 58 PASS.
+
 Remaining from §6: Phase 1 slices beyond auth (settings/recent-workspaces,
 git_ui split continues), Phase 2b monolith closures decomposition
 (remaining git_ui.js render/log slices, remaining mobile app.js screens),
