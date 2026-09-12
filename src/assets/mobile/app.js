@@ -89,7 +89,8 @@
     mobileScreens,
     mobilePanels,
     mobileWorkmeta,
-    mobileTheme;
+    mobileTheme,
+    mobileActions;
 
   function el(id) {
     return document.getElementById(id);
@@ -652,123 +653,36 @@
   }
 
   function selectWorkspace(id) {
-    state.ws = id;
-    state.tab = null;
-    state.pane = null;
-    state.screen = "terminal";
-    state.gitStatus = null;
-    state.gitError = "";
-    state.gitFile = "";
-    state.gitDiff = null;
-    state.gitDiffError = "";
-    mobileFileBrowser.reset();
-    history.pushState(null, "", selectionPath(id));
-    mobileTerminal.destroy(true);
-    refresh();
+    mobileActions.selectWorkspace(id);
   }
 
   function selectAgent(ws, tab, pane) {
-    state.ws = ws;
-    state.tab = tab;
-    state.pane = pane;
-    state.screen = "terminal";
-    history.pushState(null, "", selectionPath(ws, tab, pane));
-    mobileTerminal.destroy(true);
-    refresh();
+    mobileActions.selectAgent(ws, tab, pane);
   }
 
   function selectTab(tab) {
-    state.tab = tab;
-    const pane =
-      state.panes.find((item) => item.tab_id === tab) || state.panes[0];
-    state.pane = pane && pane.pane_id;
-    state.terminalId = pane && pane.terminal_id;
-    state.screen = "terminal";
-    history.pushState(null, "", selectionPath(state.ws, state.tab, state.pane));
-    mobileTerminal.destroy(true);
-    render();
-    mobileTerminal.connect();
+    mobileActions.selectTab(tab);
   }
 
   async function createPanel() {
-    if (!state.ws) return;
-    try {
-      const response = await api("/api/tabs", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ workspace_id: state.ws }),
-      });
-      const tab = ((response.result || {}).tab || {}).tab_id;
-      if (tab) {
-        state.tab = tab;
-        state.pane = null;
-        state.screen = "terminal";
-        history.pushState(null, "", selectionPath(state.ws, tab));
-        mobileTerminal.destroy(true);
-      }
-      refresh();
-    } catch (error) {
-      state.error = error.message || String(error);
-      render();
-    }
+    await mobileActions.createPanel();
   }
 
   async function closeCurrentPanel() {
-    if (!state.tab) return;
-    const tab = state.tabs.find((item) => item.tab_id === state.tab) || { tab_id: state.tab, workspace_id: state.ws };
-    const label = tabTitle(tab);
-    if (!confirm(`Close panel "${label}"?`)) return;
-    try {
-      const workspaceTabs = state.tabs.filter((item) => item.workspace_id === state.ws);
-      if (workspaceTabs.length > 1) {
-        await api(`/api/tabs/${encodeURIComponent(state.tab)}/close`, { method: "POST" });
-      } else if (state.ws) {
-        await api(`/api/workspaces/${encodeURIComponent(state.ws)}/close`, { method: "POST" });
-      }
-      state.tab = null;
-      state.pane = null;
-      mobileTerminal.destroy(true);
-      await refresh();
-    } catch (error) {
-      state.error = error.message || String(error);
-      render();
-    }
+    await mobileActions.closeCurrentPanel();
   }
 
   function currentScreen() {
-    return state.screen;
+    return mobileActions.currentScreen();
   }
 
   function currentSelection() {
-    return { ws: state.ws, tab: state.tab, pane: state.pane };
+    return mobileActions.currentSelection();
   }
 
 
   function runMobileAction(action) {
-    if (action === "search") {
-      mobileSearch.open();
-      return;
-    }
-    if (action === "open-workspace" || action === "discover-worktrees") {
-      showScreen("worktrees");
-      if (action === "discover-worktrees") mobileWorktrees.load();
-      else mobileWorktrees.loadRecent();
-      return;
-    }
-    if (action === "create-worktree") {
-      state.worktreeCreateExpanded = true;
-      showScreen("worktrees");
-      return;
-    }
-    if (action === "temp-terminal") {
-      if (mobileTempTerminal) mobileTempTerminal.open(currentWorkspaceCwd());
-      return;
-    }
-    if (action === "sessions") {
-      showScreen("sessions");
-      return;
-    }
-    if (["terminal", "files", "git", "settings"].includes(action)) showScreen(action);
+    mobileActions.runMobileAction(action);
   }
 
   function applyTheme() {
@@ -806,6 +720,22 @@
     browserFavicon,
     getBrowserFaviconError: () => browserFaviconError,
     applyThemeToBody: null,
+  });
+  mobileActions = globalThis.HerdrMobileActionsModule.create({
+    state,
+    api,
+    confirmFn: (...args) => confirm(...args),
+    refresh,
+    render,
+    showScreen,
+    selectionPath,
+    currentWorkspaceCwd,
+    tabTitle,
+    getMobileFileBrowser: () => mobileFileBrowser,
+    getMobileTerminal: () => mobileTerminal,
+    getMobileSearch: () => mobileSearch,
+    getMobileWorktrees: () => mobileWorktrees,
+    getMobileTempTerminal: () => mobileTempTerminal,
   });
   const workingDismissals = globalThis.HerdrAttention && globalThis.HerdrAttention.createDismissals
     ? globalThis.HerdrAttention.createDismissals({

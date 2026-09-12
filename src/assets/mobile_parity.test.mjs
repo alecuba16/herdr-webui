@@ -311,6 +311,19 @@ describe("mobile parity feature guards", () => {
     assert.ok(themeIndex > -1 && themeIndex < appIndex, "theme.js loads before app.js");
   });
 
+  it("mobile workspace actions live in their own module loaded before app.js", () => {
+    const actionsSource = readFileSync(new URL("./mobile/actions.js", import.meta.url), "utf8");
+    assert.match(actionsSource, /globalThis\.HerdrMobileActionsModule = \{ create: createMobileActions \}/);
+    assert.match(actionsSource, /confirmFn\(`Close panel "\$\{label\}"\?`\)/);
+    assert.match(actionsSource, /state\.gitStatus = null/);
+    assert.match(actionsSource, /getMobileTerminal\(\)\.connect\(\)/);
+    assert.match(appSource, /mobileActions\.selectWorkspace\(id\)/);
+    assert.match(appSource, /await mobileActions\.createPanel\(\)/);
+    const actionsIndex = bootSource.indexOf("/assets/mobile/actions.js");
+    const appIndex = bootSource.indexOf("/assets/mobile/app.js");
+    assert.ok(actionsIndex > -1 && actionsIndex < appIndex, "actions.js loads before app.js");
+  });
+
   it("worktrees module exposes recent workspace actions", () => {
     assert.match(worktreesSource, /loadRecent/);
     assert.match(worktreesSource, /openRecent/);
