@@ -485,3 +485,36 @@ later review can flip any of them cheaply:
 3. **TUI**: out of scope for parity work in this initiative. It already has
    its own documented gap list (docs/features.md "Remaining TUI gaps") and
    clean layering; browser desktop/mobile parity is the objective.
+
+## 10. Execution record (2026-09-12)
+
+Phases landed on main, each validated (node --test, cargo clippy -D
+warnings, cargo fmt, cargo test) and committed separately:
+
+- **Phase A** (`d7d821a`): `shared/http.js` (`HerdrHttp`) is the single
+  HTTP client for every bundle; desktop lazy modules no longer ship
+  private `api()` wrappers without session headers (Git drawer session
+  bug fixed). `http_client.test.mjs` guards the invariant. Also cleared
+  pre-existing clippy `-D warnings` failures so CI runs green.
+- **Phase B** (`b7fcabf`): docs parity sections realigned with actual
+  mobile capability (Files editing/rename/delete/new-file, per-file Git
+  stage/unstage/discard, branch switch, read-only diffs). Shared HTTP
+  client documented.
+- **Phase C** (`76e80d0`): mobile parity for recent workspaces (Worktrees
+  screen, open/remove/clear), no-sleep (Settings → Energy), notification
+  scope, agent sorting, stuck-working dismiss with Undo; logic shared via
+  `shared/attention.js` (`HerdrAttention`), dismissals share the desktop
+  storage key. 20 new tests in `mobile_parity.test.mjs`.
+- **Phase D** (`c58fa15`): first Rust split slice: `src/auth.rs` owns
+  token generation, constant-time credential comparison, cookie-session
+  checks, localhost bypass, and the login cookie response; main.rs
+  handlers delegate. 7 new unit tests. No behavior change.
+
+Validation after Phase D: 519/519 frontend tests, 527 Rust tests,
+clippy clean, fmt clean.
+
+Remaining from §6: Phase 1 slices beyond auth (settings/recent-workspaces,
+git_ui split continues), Phase 2b monolith closures decomposition
+(desktop core.js/git_ui.js, mobile app.js), full mobile Git parity
+(roadmap), and the eventual distillation of this file into
+docs/code-quality-audit.md.
