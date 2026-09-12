@@ -125,6 +125,7 @@ const SHARED_SOURCES = [
   "./desktop/git_ui/log.js",
   "./desktop/git_ui/shortcuts.js",
   "./desktop/git_ui/stash.js",
+  "./desktop/git_ui/cleanup.js",
 ]
   .map((path) => readFileSync(new URL(path, import.meta.url), "utf8"))
   .join("\n;\n");
@@ -578,4 +579,18 @@ test("stash renderer module is registered and wired before git_ui.js consumes it
   const stashIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui/stash.js")');
   const gitUiIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui.js")');
   assert.ok(stashIndex > -1 && stashIndex < gitUiIndex, "stash.js concatenates before git_ui.js");
+});
+
+test("cleanup renderer module is registered and wired before git_ui.js consumes it", () => {
+  const cleanupSource = readFileSync(new URL("./desktop/git_ui/cleanup.js", import.meta.url), "utf8");
+  assert.match(cleanupSource, /globalThis\.HerdrGitUiCleanupModule = \{ create: createGitUiCleanup \}/);
+  assert.match(cleanupSource, /git-ui-cleanup-bulk/);
+  assert.match(cleanupSource, /use --force/);
+  const gitUiSource = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
+  assert.match(gitUiSource, /globalThis\.HerdrGitUiCleanupModule\.create\(\{/);
+  assert.match(gitUiSource, /const renderCleanup = cleanup\.renderCleanup;/);
+  const assetsSource = readFileSync(new URL("../assets.rs", import.meta.url), "utf8");
+  const cleanupIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui/cleanup.js")');
+  const gitUiIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui.js")');
+  assert.ok(cleanupIndex > -1 && cleanupIndex < gitUiIndex, "cleanup.js concatenates before git_ui.js");
 });

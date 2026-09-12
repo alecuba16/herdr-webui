@@ -981,15 +981,16 @@ describe("app bundle load", () => {
     match(gitUiSource, /scanCleanup/);
     match(gitUiSource, /selectAllCleanup/);
     match(gitUiSource, /Delete selected/);
-    match(gitUiSource, /function cleanupVisibleBranches\(repo\)/);
-    match(gitUiSource, /function cleanupBranchSelectable\(branch\)/);
-    match(gitUiSource, /current · will checkout main\/master first/);
-    match(gitUiSource, /pushed before/);
-    match(gitUiSource, /not pushed/);
-    match(gitUiSource, /push status unknown/);
-    match(gitUiSource, /cleanupVisibleBranches\(repo\)\.map\(\(branch\) => renderCleanupBranch/);
-    match(gitUiSource, /for \(const branch of cleanupVisibleBranches\(repo\)\)/);
-    match(gitUiSource, /No removable local branches/);
+    const gitCleanupSource = readFileSync(new URL("./desktop/git_ui/cleanup.js", import.meta.url), "utf8");
+    match(gitCleanupSource, /function cleanupVisibleBranches\(repo\)/);
+    match(gitCleanupSource, /function cleanupBranchSelectable\(branch\)/);
+    match(gitCleanupSource, /current · will checkout main\/master first/);
+    match(gitCleanupSource, /pushed before/);
+    match(gitCleanupSource, /not pushed/);
+    match(gitCleanupSource, /push status unknown/);
+    match(gitCleanupSource, /cleanupVisibleBranches\(repo\)\.map\(\(branch\) => renderCleanupBranch/);
+    match(gitCleanupSource, /for \(const branch of cleanupVisibleBranches\(repo\)\)/);
+    match(gitCleanupSource, /No removable local branches/);
     const cleanupRs = readFileSync(new URL("../git_ui/cleanup.rs", import.meta.url), "utf8");
     const branchRs = readFileSync(new URL("../git_ui/branch.rs", import.meta.url), "utf8");
     match(cleanupRs, /\.filter\(\|worktree\| !worktree\.primary\)/);
@@ -3953,7 +3954,7 @@ describe("app bundle load", () => {
     match(gitUiSource, /function gitBranchModalDefaultCwd\(cwd\)/);
     match(gitUiSource, /if \(path && path !== "\/"\) return path;/);
     match(gitUiSource, /typeof window\.defaultFolderPath === "function"/);
-    match(gitUiSource, /id="gitUiCleanupRoot"[^`]*data-directory-picker-after-select="HerdrGitUi\.scanCleanup"/);
+    match(readFileSync(new URL("./desktop/git_ui/cleanup.js", import.meta.url), "utf8"), /id="gitUiCleanupRoot"[^`]*data-directory-picker-after-select="HerdrGitUi\.scanCleanup"/);
     match(gitUiSource, /class="mini directory-picker-trigger" onclick="HerdrDirectoryPicker\.openInput\('gitUiBranchCwd'\)"/);
   });
 
