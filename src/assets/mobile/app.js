@@ -557,7 +557,9 @@
     if (wasTerminal && screen !== "terminal") mobileTerminal.destroy(false);
     if (!wasSettings && screen === "settings" && mobileSettings.resetSettingBaselines)
       mobileSettings.resetSettingBaselines();
+    if (screen === "settings" && mobileSettings.loadNoSleep) mobileSettings.loadNoSleep();
     if (screen === "sessions" && !state.sessionBusy) refreshSessions();
+    if (screen === "worktrees" && mobileWorktrees.loadRecent) mobileWorktrees.loadRecent();
     render();
     if (screen === "terminal") mobileTerminal.connect();
   }
@@ -864,6 +866,7 @@
   function renderAgentsRows() {
     if (!state.agents.length)
       return '<div class="mobile-loading">No agents</div>';
+    if (workingDismissals) workingDismissals.cleanup(state.agents);
     const byId = workspacesById();
     const byTab = tabsById();
     const counts = tabCountsByWorkspace();
@@ -883,6 +886,14 @@
           agent.terminal_id ||
           "agent";
         const status = mobileAttention.statusClass(agent.agent_status);
+        const dismissed = workingDismissals && workingDismissals.isWorkingDismissed(agent);
+        const displayStatus = dismissed ? "ignored" : status;
+        const dismissAction =
+          status === "working" && workingDismissals
+            ? dismissed
+              ? `<button class="mobile-btn mini" title="Show this working agent again" onclick="event.stopPropagation();HerdrMobile.restoreWorkingAgent(${jsArg(agent.workspace_id)},${jsArg(agent.tab_id)},${jsArg(agent.pane_id)},${jsArg(agent.terminal_id || "")})">Undo</button>`
+              : `<button class="mobile-btn mini" title="Locally ignore this stuck working state" onclick="event.stopPropagation();HerdrMobile.dismissWorkingAgent(${jsArg(agent.workspace_id)},${jsArg(agent.tab_id)},${jsArg(agent.pane_id)},${jsArg(agent.terminal_id || "")})">Dismiss</button>`
+            : "";
         const workspace = byId[agent.workspace_id];
         const repo =
           workspace && workspace.worktree
@@ -900,7 +911,7 @@
           counts,
         );
         const title = [repo, worktree, panel].filter(Boolean).join(" › ");
-        return `<button class="mobile-row${active}" onclick="HerdrMobile.selectAgent(${jsArg(agent.workspace_id)},${jsArg(agent.tab_id)},${jsArg(agent.pane_id)})"><strong>${escapeHtml(title || name)}</strong><span><span class="mobile-chip">${escapeHtml(status)}</span> ${escapeHtml(name)}</span></button>`;
+        return `<button class="mobile-row${active}${dismissed ? " agent-dismissed" : ""}" onclick="HerdrMobile.selectAgent(${jsArg(agent.workspace_id)},${jsArg(agent.tab_id)},${jsArg(agent.pane_id)})"><strong>${escapeHtml(title || name)}</strong><span><span class="mobile-chip">${escapeHtml(displayStatus)}</span> ${escapeHtml(name)}${dismissAction}</span></button>`;
       })
       .join("");
   }
@@ -917,6 +928,39 @@
   function mobileNavActive(screen) {
     if (screen === "more") return state.screen === "more" || MORE_SCREENS.includes(state.screen);
     return screen === state.screen;
+  }
+
+  function dismissWorkingAgent(workspaceId, tabId, paneId, terminalId) {
+    if (!workingDismissals) return;
+    const agent = state.agents.find(
+      (item) =>
+        item.workspace_id === workspaceId &&
+        item.tab_id === tabId &&
+        item.pane_id === paneId &&
+        (!terminalId || item.terminal_id === terminalId),
+    );
+    if (!agent) return;
+    workingDismissals.dismiss(agent);
+    render();
+  }
+
+  function restoreWorkingAgent(workspaceId, tabId, paneId, terminalId) {
+    if (!workingDismissals) return;
+    const agent = state.agents.find(
+      (item) =>
+        item.workspace_id === workspaceId &&
+        item.tab_id === tabId &&
+        item.pane_id === paneId &&
+        (!terminalId || item.terminal_id === terminalId),
+    );
+    if (!agent) return;
+    workingDismissals.restore(agent);
+    render();
+  }
+
+  function clearDismissedWorkingForTerminal(terminalId) {
+    if (!workingDismissals || !terminalId) return;
+    workingDismissals.clearForTerminal(terminalId);
   }
 
   function renderPanels() {
@@ -1710,6 +1754,7 @@
     if (action === "open-workspace" || action === "discover-worktrees") {
       showScreen("worktrees");
       if (action === "discover-worktrees") mobileWorktrees.load();
+      else mobileWorktrees.loadRecent();
       return;
     }
     if (action === "create-worktree") {
@@ -1797,7 +1842,20 @@
     state,
     window,
   });
-  mobileTerminal = globalThis.HerdrMobileTerminal.create({ el, state, wsUrl, onHerdrError: handleHerdrErrorFrame });
+  const workingDismissals = globalThis.HerdrAttention && globalThis.HerdrAttention.createDismissals
+    ? globalThis.HerdrAttention.createDismissals({
+        getOptions: () => {
+          try {
+            return globalThis.HerdrOptions ? globalThis.HerdrOptions.read() : {};
+          } catch (_) {
+            return {};
+          }
+        },
+        localStorage,
+        onRender: null,
+      })
+    : null;
+  mobileTerminal = globalThis.HerdrMobileTerminal.create({ el, state, wsUrl, onHerdrError: handleHerdrErrorFrame, onTerminalOutput: clearDismissedWorkingForTerminal });
   mobileTempTerminal = globalThis.HerdrTempTerminal.create({
     el,
     state,
@@ -1829,6 +1887,7 @@
   });
   window.addEventListener("resize", () => mobileTempTerminal.handleResize());
   mobileSettings = globalThis.HerdrMobileSettings.create({
+    api,
     applyTheme,
     escapeHtml,
     localStorage,
@@ -1836,6 +1895,7 @@
   });
   mobileWorktrees = globalThis.HerdrMobileWorktrees.create({
     api,
+    defaultFolderFn: () => state.defaultFolder || "",
     destroyTerminal: mobileTerminal.destroy,
     escapeHtml,
     jsArg,
@@ -1941,6 +2001,8 @@
     selectTab,
     createPanel,
     closeCurrentPanel,
+    dismissWorkingAgent,
+    restoreWorkingAgent,
     loadGitStatus,
     selectGitFile,
     backGitFiles,
@@ -1987,12 +2049,22 @@
     loadWorktrees: mobileWorktrees.load,
     openWorktree: mobileWorktrees.open,
     createWorktree: mobileWorktrees.create,
+    loadRecentWorkspaces: mobileWorktrees.loadRecent,
+    openRecentWorkspace: mobileWorktrees.openRecent,
+    removeRecentWorkspace: mobileWorktrees.removeRecent,
+    clearRecentWorkspaces: mobileWorktrees.clearRecent,
     setWorktreeCreateExpanded: mobileWorktrees.setCreateExpanded,
     updateWorktreeField: mobileWorktrees.updateField,
     setThemeMode: mobileSettings.setThemeMode,
     rollbackSetting: mobileSettings.rollbackSetting,
     resetSettingBaselines: mobileSettings.resetSettingBaselines,
     setBrowserNotifications: mobileSettings.setBrowserNotifications,
+    setSoundScope: mobileSettings.setSoundScope,
+    setAgentSortMode: mobileSettings.setAgentSortMode,
+    setStuckWorkingEnabled: mobileSettings.setStuckWorkingEnabled,
+    setWorkingDismissMinutes: mobileSettings.setWorkingDismissMinutes,
+    setNoSleepMode: mobileSettings.setNoSleepMode,
+    loadNoSleepState: mobileSettings.loadNoSleep,
     setEditorEnabled: mobileSettings.setEditorEnabled,
     setEditorWordWrap: mobileSettings.setEditorWordWrap,
     setEditorTabSize: mobileSettings.setEditorTabSize,

@@ -397,6 +397,8 @@ describe("mobile bundle load", () => {
     "\n" +
     readFileSync(new URL("./shared/http.js", import.meta.url), "utf8") +
     "\n" +
+    readFileSync(new URL("./shared/attention.js", import.meta.url), "utf8") +
+    "\n" +
     readFileSync(new URL("./shared/actions.js", import.meta.url), "utf8") +
     "\n" +
     readFileSync(new URL("./shared/file_icons.js", import.meta.url), "utf8") +

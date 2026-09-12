@@ -45,8 +45,8 @@ use assets::{
     icon_trash_svg, icon_x_svg, jetbrains_mono_nerd_font, login_css, login_html, login_js,
     mobile_attention_js, mobile_core_js, mobile_css, mobile_file_browser_js, mobile_js,
     mobile_settings_js, mobile_terminal_js, mobile_worktrees_js, shared_actions_js,
-    shared_colors_css, shared_content_search_css, shared_core_js, shared_editor_js,
-    shared_file_content_search_js, shared_file_icons_css, shared_file_icons_js,
+    shared_attention_js, shared_colors_css, shared_content_search_css, shared_core_js,
+    shared_editor_js, shared_file_content_search_js, shared_file_icons_css, shared_file_icons_js,
     shared_file_tree_css, shared_file_tree_js, shared_http_js, shared_line_context_js,
     shared_lsp_js, shared_markdown_preview_css, shared_markdown_preview_js, shared_options_js,
     shared_settings_confirm_js, shared_settings_feedback_js, shared_temp_terminal_js,
@@ -1470,6 +1470,7 @@ fn app_router(state: WebState) -> Router {
         .route("/assets/app-boot.js", get(app_boot_js))
         .route("/assets/shared/core.js", get(shared_core_js))
         .route("/assets/shared/http.js", get(shared_http_js))
+        .route("/assets/shared/attention.js", get(shared_attention_js))
         .route("/assets/shared/options.js", get(shared_options_js))
         .route("/assets/shared/actions.js", get(shared_actions_js))
         .route("/assets/shared/file-icons.js", get(shared_file_icons_js))

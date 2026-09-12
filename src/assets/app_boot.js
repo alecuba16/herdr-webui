@@ -69,6 +69,7 @@
     await loadScriptsSequentially([
       "/assets/shared/core.js",
       "/assets/shared/http.js",
+      "/assets/shared/attention.js",
       "/assets/shared/options.js",
       "/assets/shared/actions.js",
       "/assets/shared/file-icons.js",

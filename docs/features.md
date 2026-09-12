@@ -255,7 +255,7 @@ Search palette:
 - Open search from the top-right `⌕` button or with the keyboard prefix then `/`.
 - Search is local and in-memory over currently loaded workspaces, repos, worktrees, labels, panels, and agents.
 - Results include workspace (`ws`), worktree (`wt`), panel (`pn`), and agent (`ag`) entries.
-- The `Recent workspaces` section lists the 8 most recently opened workspaces and worktrees, server-persisted in `webui-settings.json` (max 20 entries, pruned of duplicates). Entries whose folder no longer exists on disk are filtered out of the list and dropped from the saved list on load, and entries already open in this session are hidden. `Clear` empties the list server-side. Opening a recent entry reopens the workspace or worktree at its recorded path, with a 10s client cache to keep palette opens fast.
+- The `Recent workspaces` section lists the 8 most recently opened workspaces and worktrees, server-persisted in `webui-settings.json` (max 20 entries, pruned of duplicates). Entries whose folder no longer exists on disk are filtered out of the list and dropped from the saved list on load, and entries already open in this session are hidden. `Clear` empties the list server-side. Opening a recent entry reopens the workspace or worktree at its recorded path, with a 10s client cache to keep palette opens fast. Mobile surfaces the same list in the Worktrees screen with per-entry open/remove and a clear button; desktop manages entries in the search palette.
 - Use `Enter` to open the selected result, arrow keys to move selection, and `Esc` to close.
 - Search result navigation always targets a concrete panel when one is available.
 

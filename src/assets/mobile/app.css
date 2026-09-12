@@ -1248,6 +1248,21 @@ body.light .mobile-nav-status.working {
   color: var(--muted);
   margin-top: 4px;
 }
+.mobile-recent-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.mobile-btn.mini {
+  min-width: 34px;
+  min-height: 34px;
+  padding: 2px 8px;
+  font-size: 12px;
+  border-radius: 10px;
+}
+.mobile-row.agent-dismissed {
+  opacity: 0.55;
+}
 @media (min-width: 600px) and (max-width: 900px) {
   .mobile-app {
     grid-template-columns: 300px minmax(0, 1fr);

@@ -20,6 +20,7 @@ const MOBILE_STYLES = ["/assets/mobile/app.css", ...SHARED_STYLES];
 const SHARED_SCRIPTS = [
   "/assets/shared/core.js",
   "/assets/shared/http.js",
+  "/assets/shared/attention.js",
   "/assets/shared/options.js",
   "/assets/shared/actions.js",
   "/assets/shared/file-icons.js",
