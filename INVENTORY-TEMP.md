@@ -562,8 +562,30 @@ Real-workflow validation run after the fixes, all green:
   form is what the desktop pattern uses; test comment corrected.
 - Frontend suite now 521/521 (two new guards).
 
+- **Phase 2b slice: mobile search split** (`7d99592`):
+  `src/assets/mobile/search.js` (425 lines) owns the whole mobile
+  unified-search feature: `createMobileSearch(deps)` factory following
+  the `globalThis.HerdrMobileX.create` module pattern, the three public
+  API objects (`HerdrMobileSearch`, `HerdrMobileSearchTree`,
+  `HerdrMobileSearchContent`), and registers
+  `globalThis.HerdrMobileSearchModule`. app.js instantiates it after
+  the file browser and delegates open(); app.js is 2,150→1,733 lines.
+  Extraction restored a dropped behavior guard the tests caught:
+  `open()` keeps the `headerSearchDisabled()` early return (via the
+  `searchDisabledFn` dep) plus the `!sheet || !input` check.
+  Registered like every asset: `MOBILE_SEARCH_JS` in assets.rs,
+  route in main.rs, boot list entry before app.js, concatenation in
+  mobile_load.test.mjs. Guards: mobile_parity boot-order test for
+  search.js, app_load assertions moved to the module source, main.rs
+  asset-route test now requests `/assets/mobile/search.js` (status,
+  content-type, body). Validated: 522/522 frontend, 534/534 Rust
+  (one earlier 3-failure run was port-race flakiness from e2e
+  servers running concurrently; clean re-run green), fmt + clippy
+  clean, release build ok, desktop e2e 58 PASS, mobile-edit 52/52,
+  theme 15/15, lsp PASSED.
+
 Remaining from §6: Phase 1 slices beyond auth (settings/recent-workspaces,
 git_ui split continues), Phase 2b monolith closures decomposition
-(desktop core.js/git_ui.js, mobile app.js), full mobile Git parity
-(roadmap), and the eventual distillation of this file into
-docs/code-quality-audit.md.
+(desktop core.js/git_ui.js, mobile app.js screens/sessions/git_status/
+events slices), full mobile Git parity (roadmap), and the eventual
+distillation of this file into docs/code-quality-audit.md.
