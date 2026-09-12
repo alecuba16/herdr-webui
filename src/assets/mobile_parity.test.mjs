@@ -324,6 +324,20 @@ describe("mobile parity feature guards", () => {
     assert.ok(actionsIndex > -1 && actionsIndex < appIndex, "actions.js loads before app.js");
   });
 
+  it("mobile session/backend helpers live in their own module loaded before app.js", () => {
+    const backendSource = readFileSync(new URL("./mobile/backend.js", import.meta.url), "utf8");
+    assert.match(backendSource, /globalThis\.HerdrMobileBackendModule = \{ create: createMobileBackend \}/);
+    assert.match(backendSource, /herdrErrorOfferPending/);
+    assert.match(backendSource, /confirmFn\(/);
+    assert.match(backendSource, /getMobileEvents && getMobileEvents\(\)/);
+    assert.match(backendSource, /closeEventWs\(\)/);
+    assert.match(appSource, /mobileBackend\.handleHerdrErrorFrame\(raw\)/);
+    assert.match(appSource, /mobileBackend\.syncSessionBackendFromServer\(\)/);
+    const backendIndex = bootSource.indexOf("/assets/mobile/backend.js");
+    const appIndex = bootSource.indexOf("/assets/mobile/app.js");
+    assert.ok(backendIndex > -1 && backendIndex < appIndex, "backend.js loads before app.js");
+  });
+
   it("worktrees module exposes recent workspace actions", () => {
     assert.match(worktreesSource, /loadRecent/);
     assert.match(worktreesSource, /openRecent/);

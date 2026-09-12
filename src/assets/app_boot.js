@@ -103,6 +103,7 @@
         "/assets/mobile/workmeta.js",
         "/assets/mobile/theme.js",
         "/assets/mobile/actions.js",
+        "/assets/mobile/backend.js",
         "/assets/mobile/app.js",
       ] : [
         "/assets/desktop/search.js",

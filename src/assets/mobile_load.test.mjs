@@ -447,6 +447,8 @@ describe("mobile bundle load", () => {
     "\n" +
     readFileSync(new URL("./mobile/actions.js", import.meta.url), "utf8") +
     "\n" +
+    readFileSync(new URL("./mobile/backend.js", import.meta.url), "utf8") +
+    "\n" +
     readFileSync(new URL("./mobile/app.js", import.meta.url), "utf8");
 
 
@@ -791,13 +793,14 @@ describe("mobile bundle load", () => {
 
   it("routes mobile HTTP and WebSocket requests to the selected backend", () => {
     const mobileSource = readFileSync(new URL("./mobile/app.js", import.meta.url), "utf8");
+    const backendSource = readFileSync(new URL("./mobile/backend.js", import.meta.url), "utf8");
     // HTTP headers now live in the shared client; mobile pins the context
     // provider so every request carries the selected backend/session.
     match(mobileSource, /HerdrHttp\.configure\(\(\) => \(\{[\s\S]*?backend: currentSessionBackend\(\)/);
     match(mobileSource, /if \(globalThis\.HerdrHttp\) return globalThis\.HerdrHttp\.request\(url, opt\)/);
     match(mobileSource, /params\.push\("backend=" \+ encodeURIComponent\(currentSessionBackend\(\)\)\)/);
     match(mobileSource, /params\.join\("&"\)/);
-    match(mobileSource, /state\.backendMode = settings\.backend_mode/);
+    match(backendSource, /state\.backendMode = settings\.backend_mode/);
   });
 
   it("renders settings and worktrees screens without browser automation", () => {

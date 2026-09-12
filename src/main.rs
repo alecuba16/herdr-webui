@@ -58,18 +58,19 @@ use assets::{
     icon_link_svg, icon_lock_open_svg, icon_lock_svg, icon_pencil_svg, icon_refresh_svg,
     icon_save_svg, icon_search_svg, icon_settings_svg, icon_terminal_svg, icon_theme_auto_svg,
     icon_trash_svg, icon_x_svg, jetbrains_mono_nerd_font, login_css, login_html, login_js,
-    mobile_actions_js, mobile_attention_js, mobile_core_js, mobile_css, mobile_events_js,
-    mobile_file_browser_js, mobile_git_js, mobile_js, mobile_panels_js, mobile_screens_js,
-    mobile_search_js, mobile_sessions_js, mobile_settings_js, mobile_terminal_js, mobile_theme_js,
-    mobile_workmeta_js, mobile_worktrees_js, shared_actions_js, shared_attention_js,
-    shared_colors_css, shared_content_search_css, shared_core_js, shared_editor_js,
-    shared_file_content_search_js, shared_file_icons_css, shared_file_icons_js,
-    shared_file_tree_css, shared_file_tree_js, shared_http_js, shared_line_context_js,
-    shared_lsp_js, shared_markdown_preview_css, shared_markdown_preview_js, shared_options_js,
-    shared_settings_confirm_js, shared_settings_feedback_js, shared_temp_terminal_js,
-    shared_terminal_adapter_js, shared_terminal_fit_js, shared_terminal_scroll_js,
-    shared_workspace_search_js, vendor_codemirror_js, vendor_dompurify_js, vendor_ghostty_wasm,
-    vendor_marked_js, vendor_mermaid_js, vendor_wterm_css, vendor_wterm_js,
+    mobile_actions_js, mobile_attention_js, mobile_backend_js, mobile_core_js, mobile_css,
+    mobile_events_js, mobile_file_browser_js, mobile_git_js, mobile_js, mobile_panels_js,
+    mobile_screens_js, mobile_search_js, mobile_sessions_js, mobile_settings_js,
+    mobile_terminal_js, mobile_theme_js, mobile_workmeta_js, mobile_worktrees_js,
+    shared_actions_js, shared_attention_js, shared_colors_css, shared_content_search_css,
+    shared_core_js, shared_editor_js, shared_file_content_search_js, shared_file_icons_css,
+    shared_file_icons_js, shared_file_tree_css, shared_file_tree_js, shared_http_js,
+    shared_line_context_js, shared_lsp_js, shared_markdown_preview_css, shared_markdown_preview_js,
+    shared_options_js, shared_settings_confirm_js, shared_settings_feedback_js,
+    shared_temp_terminal_js, shared_terminal_adapter_js, shared_terminal_fit_js,
+    shared_terminal_scroll_js, shared_workspace_search_js, vendor_codemirror_js,
+    vendor_dompurify_js, vendor_ghostty_wasm, vendor_marked_js, vendor_mermaid_js,
+    vendor_wterm_css, vendor_wterm_js,
 };
 use compat::SimpleVersion;
 use compat::{backend_compatibility, BackendCompatibility};
@@ -1217,6 +1218,7 @@ fn app_router(state: WebState) -> Router {
         .route("/assets/mobile/workmeta.js", get(mobile_workmeta_js))
         .route("/assets/mobile/theme.js", get(mobile_theme_js))
         .route("/assets/mobile/actions.js", get(mobile_actions_js))
+        .route("/assets/mobile/backend.js", get(mobile_backend_js))
         .route("/assets/mobile/terminal.js", get(mobile_terminal_js))
         .route("/assets/mobile/worktrees.js", get(mobile_worktrees_js))
         .route(
@@ -7452,6 +7454,15 @@ mod tests {
             )
             .await
             .unwrap();
+        let mobile_backend_js = app
+            .clone()
+            .oneshot(
+                request(Method::GET, "/assets/mobile/backend.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         let mobile_css = app
             .clone()
             .oneshot(
@@ -7520,6 +7531,7 @@ mod tests {
         assert_eq!(mobile_workmeta_js.status(), StatusCode::OK);
         assert_eq!(mobile_theme_js.status(), StatusCode::OK);
         assert_eq!(mobile_actions_js.status(), StatusCode::OK);
+        assert_eq!(mobile_backend_js.status(), StatusCode::OK);
         assert_eq!(mobile_js.status(), StatusCode::OK);
         assert_eq!(mobile_css.status(), StatusCode::OK);
         assert_eq!(icon.status(), StatusCode::OK);
@@ -7643,6 +7655,10 @@ mod tests {
             .unwrap()
             .contains("javascript"));
         assert!(mobile_actions_js.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .contains("javascript"));
+        assert!(mobile_backend_js.headers()[header::CONTENT_TYPE]
             .to_str()
             .unwrap()
             .contains("javascript"));
@@ -7836,6 +7852,13 @@ mod tests {
         );
         assert!(
             to_bytes(mobile_actions_js.into_body(), 1024 * 1024)
+                .await
+                .unwrap()
+                .len()
+                > 1000
+        );
+        assert!(
+            to_bytes(mobile_backend_js.into_body(), 1024 * 1024)
                 .await
                 .unwrap()
                 .len()
