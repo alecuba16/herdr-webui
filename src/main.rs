@@ -3154,11 +3154,39 @@ async fn recent_workspaces(
     if let Err(response) = require_auth(&state, &headers, remote) {
         return response;
     }
-    let recent = state
-        .server_settings
-        .lock()
-        .map(|settings| settings.recent_workspaces.clone())
-        .unwrap_or_default();
+    // Drop entries whose folder no longer exists so the palette only offers
+    // reopenable targets, and persist the pruning so stale paths stay gone.
+    // The lock-poisoned arm keeps returning an empty list.
+    let snapshot = match state.server_settings.lock() {
+        Ok(guard) => guard.recent_workspaces.clone(),
+        Err(_) => return Json(json!({ "recent": [] })).into_response(),
+    };
+    // Existence checks touch the filesystem, so they run outside the lock.
+    let missing: Vec<String> = snapshot
+        .iter()
+        .filter(|item| !Path::new(&expand_user_path_string(&item.path)).is_dir())
+        .map(|item| item.path.clone())
+        .collect();
+    let recent = if missing.is_empty() {
+        snapshot
+    } else {
+        let Ok(mut guard) = state.server_settings.lock() else {
+            return Json(json!({ "recent": [] })).into_response();
+        };
+        guard
+            .recent_workspaces
+            .retain(|item| !missing.contains(&item.path));
+        guard.recent_workspaces.clone()
+    };
+    if !missing.is_empty() {
+        if let Err(err) = persist_server_settings(&state).await {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": err.to_string() })),
+            )
+                .into_response();
+        }
+    }
     Json(json!({ "recent": recent })).into_response()
 }
 
@@ -3889,8 +3917,14 @@ async fn open_recent_workspace(
         )
             .into_response();
     }
-    let path = body.path.as_deref().map(expand_user_path_string);
-    let cwd = body.path.as_deref().map(expand_user_path_string);
+    // A recent entry whose folder vanished cannot be reopened: reject the
+    // request before proxying so the backend never opens a workspace rooted
+    // at a missing path (mirrors the create-workspace check).
+    let cwd = match existing_workspace_cwd(Some(raw_path)) {
+        Ok(cwd) => cwd,
+        Err(response) => return *response,
+    };
+    let path = cwd.clone();
     let recorded_path = path.clone().unwrap_or_default();
     let recorded_label = body.label.clone();
     let recorded_branch = body.branch.clone();
@@ -6825,6 +6859,17 @@ mod tests {
                 .as_nanos()
         ));
         std::env::set_var("XDG_CONFIG_HOME", &config_home);
+        // GET prunes entries whose folder is gone, so the seeded entry needs a
+        // real directory on disk.
+        let recent_dir = std::env::temp_dir().join(format!(
+            "herdr-webui-recent-clear-dir-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&recent_dir).unwrap();
+        let recent_path = recent_dir.to_str().unwrap().to_string();
         let app = test_app();
 
         let unauthorized = app
@@ -6869,7 +6914,7 @@ mod tests {
                 let mut guard = state.server_settings.lock().unwrap();
                 push_recent_workspace(
                     &mut guard.recent_workspaces,
-                    "/repo/x",
+                    &recent_path,
                     Some("X".to_string()),
                     Some("main".to_string()),
                     Some("worktree".to_string()),
@@ -6889,7 +6934,7 @@ mod tests {
                 .unwrap();
             assert_eq!(listed.status(), StatusCode::OK);
             let json = response_json(listed).await;
-            assert_eq!(json["recent"][0]["path"], "/repo/x");
+            assert_eq!(json["recent"][0]["path"], recent_path.as_str());
             assert_eq!(json["recent"][0]["label"], "X");
             assert_eq!(json["recent"][0]["branch"], "main");
             assert_eq!(json["recent"][0]["kind"], "worktree");
@@ -6908,10 +6953,129 @@ mod tests {
         }
 
         let _ = fs::remove_dir_all(config_home);
+        let _ = fs::remove_dir_all(&recent_dir);
         std::env::remove_var("XDG_CONFIG_HOME");
     }
 
     #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn recent_workspaces_prunes_missing_paths_and_persists() {
+        let _env = lock_env();
+        let config_home = std::env::temp_dir().join(format!(
+            "herdr-webui-recent-prune-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
+        let kept_dir = std::env::temp_dir().join(format!(
+            "herdr-webui-recent-prune-kept-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&kept_dir).unwrap();
+        let kept_path = kept_dir.to_str().unwrap().to_string();
+
+        {
+            let state = test_state();
+            {
+                let mut guard = state.server_settings.lock().unwrap();
+                push_recent_workspace(
+                    &mut guard.recent_workspaces,
+                    &kept_path,
+                    Some("Kept".to_string()),
+                    None,
+                    Some("workspace".to_string()),
+                );
+                push_recent_workspace(
+                    &mut guard.recent_workspaces,
+                    "/repo/gone-recent",
+                    None,
+                    None,
+                    None,
+                );
+            }
+            let app = test_app_with_state(state.clone());
+
+            let listed = app
+                .oneshot(
+                    authed_request(Method::GET, "/api/recent-workspaces")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(listed.status(), StatusCode::OK);
+            let recent = response_json(listed).await["recent"].clone();
+            assert_eq!(recent.as_array().map(Vec::len), Some(1));
+            assert_eq!(recent[0]["path"], kept_path.as_str());
+
+            // The prune also updates in-memory state and persists it.
+            let stored = state
+                .server_settings
+                .lock()
+                .map(|settings| settings.recent_workspaces.clone())
+                .unwrap_or_default();
+            assert_eq!(stored.len(), 1);
+            assert_eq!(stored[0].path, kept_path);
+            let persisted =
+                fs::read_to_string(config_home.join("herdr-webui/webui-settings.json")).unwrap();
+            assert!(persisted.contains(&kept_path));
+            assert!(!persisted.contains("/repo/gone-recent"));
+        }
+
+        let _ = fs::remove_dir_all(config_home);
+        let _ = fs::remove_dir_all(&kept_dir);
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn recent_workspaces_reports_persist_failure_when_prune_cannot_save() {
+        let _env = lock_env();
+        let state = test_state();
+        // Point XDG_CONFIG_HOME at a plain file so saving settings cannot create
+        // the config directory, making the prune persist fail.
+        let sentinel = std::env::temp_dir().join(format!(
+            "herdr-webui-prune-persist-file-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::write(&sentinel, "not-a-directory").unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", &sentinel);
+
+        {
+            let mut guard = state.server_settings.lock().unwrap();
+            push_recent_workspace(
+                &mut guard.recent_workspaces,
+                "/repo/gone-recent",
+                None,
+                None,
+                None,
+            );
+        }
+        let app = test_app_with_state(state);
+
+        let listed = app
+            .oneshot(
+                authed_request(Method::GET, "/api/recent-workspaces")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(listed.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(response_json(listed).await["error"].as_str().is_some());
+
+        std::env::remove_var("XDG_CONFIG_HOME");
+        let _ = fs::remove_file(sentinel);
+    }
+
     #[tokio::test]
     async fn remove_recent_workspace_removes_single_entry_and_validates() {
         let _env = lock_env();
@@ -6925,6 +7089,26 @@ mod tests {
                 .as_nanos()
         ));
         std::env::set_var("XDG_CONFIG_HOME", &config_home);
+        // GET prunes entries whose folder is gone, so the seeded entries need
+        // real directories on disk.
+        let keep_dir = std::env::temp_dir().join(format!(
+            "herdr-webui-recent-remove-keep-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&keep_dir).unwrap();
+        let keep_path = keep_dir.to_str().unwrap().to_string();
+        let gone_dir = std::env::temp_dir().join(format!(
+            "herdr-webui-recent-remove-gone-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&gone_dir).unwrap();
+        let gone_path = gone_dir.to_str().unwrap().to_string();
 
         {
             let state = test_state();
@@ -6932,14 +7116,14 @@ mod tests {
                 let mut guard = state.server_settings.lock().unwrap();
                 push_recent_workspace(
                     &mut guard.recent_workspaces,
-                    "/repo/keep",
+                    &keep_path,
                     Some("Keep".to_string()),
                     None,
                     Some("workspace".to_string()),
                 );
                 push_recent_workspace(
                     &mut guard.recent_workspaces,
-                    "/repo/gone",
+                    &gone_path,
                     Some("Gone".to_string()),
                     None,
                     Some("worktree".to_string()),
@@ -6952,7 +7136,7 @@ mod tests {
                 .oneshot(
                     request(Method::POST, "/api/recent-workspaces/remove")
                         .header(header::CONTENT_TYPE, "application/json")
-                        .body(Body::from(json!({ "path": "/repo/gone" }).to_string()))
+                        .body(Body::from(json!({ "path": gone_path }).to_string()))
                         .unwrap(),
                 )
                 .await
@@ -6992,7 +7176,7 @@ mod tests {
                 .oneshot(
                     authed_request(Method::POST, "/api/recent-workspaces/remove")
                         .header(header::CONTENT_TYPE, "application/json")
-                        .body(Body::from(json!({ "path": "/repo/gone" }).to_string()))
+                        .body(Body::from(json!({ "path": gone_path }).to_string()))
                         .unwrap(),
                 )
                 .await
@@ -7001,7 +7185,7 @@ mod tests {
             let json = response_json(removed).await;
             assert_eq!(json["ok"], json!(true));
             assert_eq!(json["removed"], json!(1));
-            assert_eq!(json["path"], "/repo/gone");
+            assert_eq!(json["path"], gone_path.as_str());
 
             let listed = app
                 .clone()
@@ -7014,7 +7198,7 @@ mod tests {
                 .unwrap();
             let recent = response_json(listed).await["recent"].clone();
             assert_eq!(recent.as_array().map(Vec::len), Some(1));
-            assert_eq!(recent[0]["path"], "/repo/keep");
+            assert_eq!(recent[0]["path"], keep_path.as_str());
 
             // Removing an unknown path reports zero removals and keeps state.
             let noop = app
@@ -7031,6 +7215,8 @@ mod tests {
         }
 
         let _ = fs::remove_dir_all(config_home);
+        let _ = fs::remove_dir_all(keep_dir);
+        let _ = fs::remove_dir_all(gone_dir);
         std::env::remove_var("XDG_CONFIG_HOME");
     }
 
@@ -7138,6 +7324,17 @@ mod tests {
                 .as_nanos()
         ));
         std::env::set_var("XDG_CONFIG_HOME", &config_home);
+        // The open handler validates that the folder exists, so the recent
+        // entry needs a real directory on disk.
+        let recent_dir = std::env::temp_dir().join(format!(
+            "herdr-webui-recent-open-dir-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&recent_dir).unwrap();
+        let recent_path = recent_dir.to_str().unwrap().to_string();
         let (socket, handle) = fake_api_socket_for_method(
             "worktree.open",
             json!({ "id": "web:recent-workspace:open", "result": { "ok": true, "workspace": { "workspace_id": "ws-recent" } } }),
@@ -7152,7 +7349,7 @@ mod tests {
                 authed_request(Method::POST, "/api/recent-workspaces")
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(
-                        json!({ "path": "/repo/recent", "label": " Recent ", "branch": "main" })
+                        json!({ "path": recent_path, "label": " Recent ", "branch": "main" })
                             .to_string(),
                     ))
                     .unwrap(),
@@ -7169,7 +7366,7 @@ mod tests {
             .map(|settings| settings.recent_workspaces.clone())
             .unwrap_or_default();
         assert_eq!(recent.len(), 1);
-        assert_eq!(recent[0].path, "/repo/recent");
+        assert_eq!(recent[0].path, recent_path);
         assert_eq!(recent[0].label.as_deref(), Some("Recent"));
         assert_eq!(recent[0].branch.as_deref(), Some("main"));
         assert_eq!(recent[0].kind.as_deref(), Some("workspace"));
@@ -7209,10 +7406,36 @@ mod tests {
             .map(|settings| settings.recent_workspaces.clone())
             .unwrap_or_default();
         assert_eq!(recent.len(), 1);
-        assert_eq!(recent[0].path, "/repo/recent");
+        assert_eq!(recent[0].path, recent_path);
 
         let _ = fs::remove_dir_all(config_home);
+        let _ = fs::remove_dir_all(&recent_dir);
         std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn open_recent_workspace_rejects_missing_folder() {
+        let _env = lock_env();
+        let state = test_state();
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/recent-workspaces")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "path": "/repo/definitely-gone", "label": "Gone" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            response_json(response).await["error"],
+            json!("workspace folder must exist")
+        );
     }
 
     #[cfg(unix)]
