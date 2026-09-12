@@ -1040,6 +1040,37 @@ Real-workflow validation run after the fixes, all green:
   clippy clean, git e2e 38 ok (GIT E2E ACCEPTANCE PASSED), desktop e2e
   58 PASS.
 
+- **Desktop git_ui diff_search split** (`b5af745`):
+  `src/assets/desktop/git_ui/diff_search.js` (73 lines) — factory
+  `createGitUiDiffSearch` owning 6 functions (`highlight,
+  highlightDiffText, diffSearchQuery, canSearchDiff, countTextMatches,
+  diffSearchMatchCount`); `highlight` stays module-internal (only
+  `highlightDiffText` calls it) and is re-bound in git_ui.js as a thin
+  `Syntax.highlight` wrapper, registering
+  `globalThis.HerdrGitUiDiffSearchModule`. Deps: `active, Syntax,
+  diffLayoutMode, unifiedRows, sideBySideRows` — `Syntax` is injected
+  as a lazy getter `() => Syntax` and the diffRender row builders as
+  `(...args)` wrappers because diffRender is created *after* the
+  diff_search module (highlightDiffText is a dep of diffRender, so the
+  diff_search module must be created before it; the wrappers defer the
+  later-bound consts past creation time, avoiding TDZ). git_ui.js
+  (2815 → 2765 lines) creates the module right after the primitives
+  bindings and binds the 5 public functions to same-named consts.
+  Registered in the DESKTOP_GIT_UI_JS concat after primitives.js.
+  Coverage: git_ui_behavior.test.mjs gained the registration +
+  concat-order guard plus a standalone behavioral test loading the
+  module in a fresh vm with a stub Syntax and row builders — asserts
+  query plucking from the active view, countTextMatches casing/empty
+  rules, highlightDiffText wrapping each hit in
+  `<mark class="git-ui-search-match">` with passthrough when the query
+  is empty, canSearchDiff blocking rules (side editor, history/log/
+  stash/cleanup/conflicts tabs, null view), and diffSearchMatchCount
+  over unified rows across files/chunks. app_load assertions on
+  `function highlightDiffText(code, path)` and the search-match mark
+  retargeted to the module source. Validated: 551/551 frontend
+  (549 + 2 new), 534/534 Rust, fmt + clippy clean, git e2e 38 ok (GIT
+  E2E ACCEPTANCE PASSED), desktop e2e 58 PASS.
+
 Remaining from §6: Phase 1 slices beyond auth (settings/recent-workspaces,
 git_ui split continues), Phase 2b monolith closures decomposition
 (remaining git_ui.js render/log slices, remaining mobile app.js screens),
