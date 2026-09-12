@@ -1071,6 +1071,46 @@ Real-workflow validation run after the fixes, all green:
   (549 + 2 new), 534/534 Rust, fmt + clippy clean, git e2e 38 ok (GIT
   E2E ACCEPTANCE PASSED), desktop e2e 58 PASS.
 
+- **Desktop git_ui workspace_nav split** (`3690087`):
+  `src/assets/desktop/git_ui/workspace_nav.js` (183 lines) — factory
+  `createGitUiWorkspaceNav` owning 15 functions (`workspaceCwd,
+  workspaceTitle, workspaceKey, normalizePathForCompare, samePath,
+  gitCwdMatchesWorkspace, resetGitViewForCwd, clonePlain,
+  currentNavigationLabel, captureNavigationSnapshot,
+  pushNavigationSnapshot, restoreNavigationSnapshot,
+  renderNavigationTrail, workspaceStatus, compactPath`), registering
+  `globalThis.HerdrGitUiWorkspaceNavModule`. Deps: `state, currentMode,
+  normalizeLogScope, preserveContentScroll, loadDiff,
+  loadSelectedCommitPreview, render, esc, GIT_LOG_PAGE_SIZE` — the four
+  later-defined functions (loadDiff/preserveContentScroll/render/
+  loadSelectedCommitPreview) are hoisted function declarations, so they
+  pass directly into the create call with no TDZ wrappers needed;
+  vm globals (document/window/JSON) used in place. Created right after
+  diffSearch so the earlier consumers (cleanup, modals, branch_list
+  receive `compactPath`/`samePath` as deps) still resolve the consts
+  bound before their creates. git_ui.js (2765 → 2607 lines) binds all
+  15 to same-named consts. Registered in the DESKTOP_GIT_UI_JS concat
+  after diff_search.js. Coverage: git_ui_behavior.test.mjs gained the
+  registration + concat-order guard plus two behavioral tests loading
+  the module standalone in a fresh vm: workspace cwd/key/title helpers
+  (worktree/cwd/path fallbacks), samePath slash normalization,
+  gitCwdMatchesWorkspace, resetGitViewForCwd state clearing, clonePlain
+  circular fallback, per-tab navigation labels (History/Log/Stash/
+  Cleanup/current-compared variants), pushNavigationSnapshot
+  signature-dedup + 12-cap, renderNavigationTrail crumbs with the
+  `HerdrGitUi.goBack()` button, workspaceStatus nogit/closed/open with
+  error-view nogit, compactPath 3-segment collapse; and
+  restoreNavigationSnapshot awaiting loadDiff on the changes tab,
+  preview+render on the single-commit log tab, logScope normalization
+  of bogus scopes, and null no-ops. app_load assertions on the
+  snapshot/trail family (`captureNavigationSnapshot`, stack-cap line,
+  breadcrumb ellipsis/crumbs markup, `goBack` onclick, stash-state
+  reset lines in `resetGitViewForCwd`, `gitCwdMatchesWorkspace`, the
+  `Stash · ${...}` label) retargeted to the module source (11 lines,
+  with four merged snapshot assertions consolidated). Validated:
+  554/554 frontend (551 + 3 new), 534/534 Rust, fmt + clippy clean,
+  git e2e 38 ok (GIT E2E ACCEPTANCE PASSED), desktop e2e 58 PASS.
+
 Remaining from §6: Phase 1 slices beyond auth (settings/recent-workspaces,
 git_ui split continues), Phase 2b monolith closures decomposition
 (remaining git_ui.js render/log slices, remaining mobile app.js screens),
