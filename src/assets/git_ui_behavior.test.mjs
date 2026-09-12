@@ -136,6 +136,7 @@ const SHARED_SOURCES = [
   "./desktop/git_ui/branch_list.js",
   "./desktop/git_ui/toasts.js",
   "./desktop/git_ui/diff_view.js",
+  "./desktop/git_ui/log_render.js",
 ]
   .map((path) => readFileSync(new URL(path, import.meta.url), "utf8"))
   .join("\n;\n");
@@ -1264,6 +1265,82 @@ test("diff view renders toolbar, large-diff guards, and file labels", () => {
   const side = mod.renderSide();
   assert.match(side, /TABS\[changes\|log\|stash\|cleanup:changes\]/);
   assert.match(side, /SECTION\[Staged:a\.js:S\]/);
+});
+
+test("log_render module is registered and wired before git_ui.js consumes it", () => {
+  const logRenderSource = readFileSync(new URL("./desktop/git_ui/log_render.js", import.meta.url), "utf8");
+  assert.match(logRenderSource, /globalThis\.HerdrGitUiLogRenderModule = \{ create: createGitUiLogRender \}/);
+  assert.match(logRenderSource, /window\.HerdrGitLog && window\.HerdrGitLog\.selectedBranchForHash/);
+  assert.match(logRenderSource, /window\.HerdrGitLog\.scrollToCommit\(hash\)/);
+  assert.match(logRenderSource, /updateGitLogStickyOffsets/);
+  const gitUiSource = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
+  assert.match(gitUiSource, /globalThis\.HerdrGitUiLogRenderModule\.create\(\{/);
+  assert.match(gitUiSource, /const renderMain = logRender\.renderMain;/);
+  assert.match(gitUiSource, /const renderLog = logRender\.renderLog;/);
+  const assetsSource = readFileSync(new URL("../assets.rs", import.meta.url), "utf8");
+  const logRenderIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui/log_render.js")');
+  const gitUiIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui.js")');
+  assert.ok(logRenderIndex > -1 && logRenderIndex < gitUiIndex, "log_render.js concatenates before git_ui.js");
+});
+
+test("log render loads the log, tracks the selected branch, and routes tabs in renderMain", async () => {
+  const logRenderSource = readFileSync(new URL("./desktop/git_ui/log_render.js", import.meta.url), "utf8");
+  const stickyContent = {
+    style: { setProperty() {} },
+    getBoundingClientRect: () => ({ height: 10 }),
+    querySelector: () => null,
+  };
+  const ctx = vm.createContext({ window: {}, globalThis: null, console, Math, JSON, Object, Array, String, Number, Set, Map, encodeURIComponent, requestAnimationFrame: (fn) => fn(), Error, document: { querySelector: () => stickyContent } });
+  ctx.globalThis = ctx;
+  vm.runInContext(logRenderSource, ctx);
+  const calls = [];
+  const state = { renderVersion: 0 };
+  const view = { tab: "log", cwd: "/repo", logLimit: 80, logScope: "all", logAll: true, selectedLogCommits: ["abc"], pendingLogScrollHash: "abc", status: { branch: "main", conflicted: ["merge.txt"] } };
+  ctx.window.HerdrGitLog = {
+    render: (opts) => `LOG(${opts.data.commits.length}, sel=${opts.selected.join(",")}, limit=${opts.logLimit})`,
+    selectedBranchForHash: (data, hash, base) => `branch-for:${hash}:${base}`,
+    scrollToCommit: (hash) => { calls.push(`scroll:${hash}`); },
+  };
+  const mod = ctx.globalThis.HerdrGitUiLogRenderModule.create({
+    active: () => view,
+    api: async (url) => {
+      calls.push(`api:${url}`);
+      if (String(url).startsWith("/api/git-ui/log")) return { commits: [{ hash: "abc" }], lines: [] };
+      if (String(url).startsWith("/api/git-ui/history")) return { html: "<div>HISTORY</div>" };
+      return {};
+    },
+    esc: (v) => v,
+    arg: (v) => encodeURIComponent(String(v)),
+    gitLogDefaultBranch: () => "master",
+    normalizeLogScope: (scope) => ["all", "base-current", "base"].includes(scope) ? scope : "all",
+    GIT_LOG_PAGE_SIZE: 80,
+    GIT_LOG_MAX_LIMIT: 2000,
+    isNoGitRepositoryView: () => false,
+    renderFileToolbar: (tab) => `TOOLBAR[${tab}]`,
+    renderCleanup: () => "CLEANUP",
+    renderStashDiff: () => "STASHDIFF",
+    renderConflictResolutionButtons: () => "CONFLICT-BUTTONS",
+    renderDiff: () => "DIFF",
+    replaceContent: (version, html) => { calls.push(`content:${html.slice(0, 40)}`); },
+    render: () => { calls.push("render"); },
+  });
+  // renderLog: fetches, records selectedBranchForHash, scrolls to the pending hash.
+  await mod.renderLog(1);
+  assert.ok(calls.some((c) => c.startsWith("api:/api/git-ui/log")), "log GET reached the stubbed backend");
+  assert.equal(view.selectedLogBranch, "branch-for:abc:master");
+  assert.ok(calls.includes("scroll:abc"), "pending scroll hash consumed");
+  assert.equal(view.pendingLogScrollHash, "");
+  assert.ok(calls.some((c) => c.startsWith("content:LOG(")), "log content replaced");
+  // renderMain routes per tab inside the main shell.
+  view.tab = "changes";
+  assert.match(mod.renderMain(), />DIFF</);
+  view.tab = "stash";
+  assert.match(mod.renderMain(), />STASHDIFF</);
+  view.tab = "cleanup";
+  assert.match(mod.renderMain(), />CLEANUP</);
+  view.tab = "conflicts";
+  assert.match(mod.renderMain(), /TOOLBAR\[conflicts\]/);
+  assert.match(mod.renderMain(), /CONFLICT-BUTTONS/);
 });
 
 test("primitives module is registered and wired before git_ui.js consumes it", () => {

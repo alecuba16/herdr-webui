@@ -1076,11 +1076,11 @@ describe("app bundle load", () => {
     match(gitDiffRenderSource, /renderUnifiedLine\(row, path, index, rows, rowIndex, contextArrows, !!file\.preview_large_diff\)/);
     match(gitDiffRenderSource, /function renderUnifiedLine\(row, path, hunkIndex, rows, rowIndex, contextArrows, previewLargeDiff\)/);
     match(gitDiffRenderSource, /const blockButton = !previewLargeDiff && currentMode\(\) === "changes"/);
-    match(gitUiSource, /aria-label="Conflict operation actions"/);
-    match(gitUiSource, /Rebase<\/span>\$\{action\("Continue", "rebase-continue"\)\}\$\{action\("Skip", "rebase-skip"\)\}\$\{action\("Abort", "rebase-abort", true\)\}/);
-    match(gitUiSource, /Merge<\/span>\$\{action\("Continue", "merge-continue"\)\}\$\{action\("Abort", "merge-abort", true\)\}/);
-    match(gitUiSource, /Cherry-pick<\/span>\$\{action\("Continue", "cherry-pick-continue"\)\}\$\{action\("Abort", "cherry-pick-abort", true\)\}/);
-    match(gitUiSource, /operationActions = renderConflictOperationActions\(\)/);
+    match(readFileSync(new URL("./desktop/git_ui/log_render.js", import.meta.url), "utf8"), /aria-label="Conflict operation actions"/);
+    match(readFileSync(new URL("./desktop/git_ui/log_render.js", import.meta.url), "utf8"), /Rebase<\/span>\$\{action\("Continue", "rebase-continue"\)\}\$\{action\("Skip", "rebase-skip"\)\}\$\{action\("Abort", "rebase-abort", true\)\}/);
+    match(readFileSync(new URL("./desktop/git_ui/log_render.js", import.meta.url), "utf8"), /Merge<\/span>\$\{action\("Continue", "merge-continue"\)\}\$\{action\("Abort", "merge-abort", true\)\}/);
+    match(readFileSync(new URL("./desktop/git_ui/log_render.js", import.meta.url), "utf8"), /Cherry-pick<\/span>\$\{action\("Continue", "cherry-pick-continue"\)\}\$\{action\("Abort", "cherry-pick-abort", true\)\}/);
+    match(readFileSync(new URL("./desktop/git_ui/log_render.js", import.meta.url), "utf8"), /operationActions = renderConflictOperationActions\(\)/);
     match(gitConflictsSource, /Use HEAD/);
     match(gitConflictsSource, /Use parent/);
     match(gitConflictsSource, /Use remote/);
@@ -1089,7 +1089,7 @@ describe("app bundle load", () => {
     match(gitConflictsSource, /title="Use remote\/incoming side"/);
     match(gitConflictsSource, /Mark resolved \(stage\)/);
     match(gitConflictsSource, /Stage this manually edited file as resolved/);
-    match(gitUiSource, /After editing a conflicted file manually/);
+    match(readFileSync(new URL("./desktop/git_ui/log_render.js", import.meta.url), "utf8"), /After editing a conflicted file manually/);
     ok(!gitUiSource.includes(">Use branch</button>"));
     const gitLayoutCss = readFileSync(new URL("./desktop/git_ui/layout.css", import.meta.url), "utf8");
     const gitDiffCss = readFileSync(new URL("./desktop/git_ui/diff.css", import.meta.url), "utf8");
@@ -1150,7 +1150,7 @@ describe("app bundle load", () => {
     match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /title="Back to file view" onclick="HerdrGitUi\.backToFileView\(\)"/);
     match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /title="Back to file history" onclick="HerdrGitUi\.backToFileHistory\(\)"/);
     match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /title="Back" onclick="HerdrGitUi\.backFromFileView\(\)"/);
-    match(gitUiSource, /committed file<\/button>/);
+    match(readFileSync(new URL("./desktop/git_ui/log_render.js", import.meta.url), "utf8"), /committed file<\/button>/);
     match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /view\.temporaryHistoryCompare = !!view\.file;/);
     match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /view\.historyCommitHash = hash;/);
     match(gitUiSource, /view\.fileBackTarget = \{ type: "log", hash \};/);
@@ -1288,7 +1288,7 @@ describe("app bundle load", () => {
     match(gitUiSource, /if \(view\.tab !== "stash"\) await loadDiff\(\)/);
 
     // renderLoading: uses renderStashDiff for stash tab
-    match(gitUiSource, /view\.tab === "stash"\) body = renderStashDiff\(\)/);
+    match(readFileSync(new URL("./desktop/git_ui/log_render.js", import.meta.url), "utf8"), /view\.tab === "stash"\) body = renderStashDiff\(\)/);
 
     // renderSide: stash uses stashListHtml + stashFileSection
     match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /stashListHtml\(view\) \+ stashFileSection\(view, filter\)/);
@@ -3866,7 +3866,7 @@ describe("app bundle load", () => {
     match(gitSettingsSource, /id="optGitUiDefaultBranch"/);
     match(gitSettingsSource, /gitUiDefaultBranch: "master"/);
     match(readFileSync(new URL("./desktop/git_ui/primitives.js", import.meta.url), "utf8"), /function gitLogDefaultBranch\(\)/);
-    match(gitUiSource, /base=\$\{encodeURIComponent\(baseBranch\)\}/);
+    match(readFileSync(new URL("./desktop/git_ui/log_render.js", import.meta.url), "utf8"), /base=\$\{encodeURIComponent\(baseBranch\)\}/);
     match(gitLogSource, /title="Toggle history scope: Master \+ Branch, All, Branch" onclick="HerdrGitUi\.cycleLogScope\(\)"/);
     match(gitSettingsSource, /Unified \(GitHub-style\)/);
     match(gitSettingsSource, /gitUiDiffLayout: "side-by-side"/);
@@ -3991,7 +3991,7 @@ describe("app bundle load", () => {
     match(gitUiSource, /\/api\/git-ui\/path-info\?cwd=\$\{encodeURIComponent\(cwd\)\}&path=\$\{encodeURIComponent\(path\)\}/);
     match(gitUiSource, /cwd = info\.repo_root \|\| cwd;/);
     match(gitUiSource, /path = info\.file \|\| path;/);
-    match(gitUiSource, /window\.HerdrGitLog\.render/);
+    match(readFileSync(new URL("./desktop/git_ui/log_render.js", import.meta.url), "utf8"), /window\.HerdrGitLog\.render/);
     match(gitLogSource, /onclick="HerdrGitUi\.cycleLogScope\(\)"/);
     match(gitLogSource, /title="Toggle history scope: Master \+ Branch, All, Branch" onclick="HerdrGitUi\.cycleLogScope\(\)"/);
     match(gitLogSource, /function logScopeLabel/);
@@ -4036,8 +4036,8 @@ describe("app bundle load", () => {
     match(gitLogSource, /if \(label === "HEAD" \|\| label.startsWith\("HEAD -> "\)\) return "current";/);
     match(gitLogSource, /return "main";/);
     match(gitUiSource, /logFilters: \{ description: "", date: "", author: "" \}/);
-    match(gitUiSource, /max=\$\{logLimit\}/);
-    match(gitUiSource, /scope=\$\{encodeURIComponent\(view\.logScope\)\}/);
+    match(readFileSync(new URL("./desktop/git_ui/log_render.js", import.meta.url), "utf8"), /max=\$\{logLimit\}/);
+    match(readFileSync(new URL("./desktop/git_ui/log_render.js", import.meta.url), "utf8"), /scope=\$\{encodeURIComponent\(view\.logScope\)\}/);
     match(gitUiSource, /cycleLogScope\(\) \{/);
     match(gitUiSource, /const order = \["all", "base-current", "base"\]/);
     match(gitUiSource, /async loadMoreLog\(\)/);
@@ -4071,8 +4071,8 @@ describe("app bundle load", () => {
     match(gitLogCss, /\.git-ui-log-scope-head \{[\s\S]*?position: sticky;[\s\S]*?top: 0;/);
     match(gitLogCss, /\.git-ui-log-table-head \{[\s\S]*?position: sticky;[\s\S]*?top: var\(--git-log-scope-sticky-height, 58px\);/);
     match(gitLogCss, /\.git-ui-log-filter-row \{[\s\S]*?position: sticky;[\s\S]*?--git-log-table-head-sticky-height/);
-    match(gitUiSource, /function updateGitLogStickyOffsets\(\)/);
-    match(gitUiSource, /--git-log-scope-sticky-height/);
+    match(readFileSync(new URL("./desktop/git_ui/log_render.js", import.meta.url), "utf8"), /function updateGitLogStickyOffsets\(\)/);
+    match(readFileSync(new URL("./desktop/git_ui/log_render.js", import.meta.url), "utf8"), /--git-log-scope-sticky-height/);
     match(gitLogCss, /border-style: dashed;/);
   });
 
