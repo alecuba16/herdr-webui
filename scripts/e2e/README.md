@@ -165,3 +165,25 @@ verifies:
 - a change shows the ↺ chip and persists immediately
 - tapping the chip restores the baseline value and clears the chip
 - re-entering Settings re-captures the open-time baseline
+
+## Terminal fill + panel refit acceptance
+
+`just terminal-fit-e2e` (or `scripts/e2e/run-terminal-fit-e2e.sh`) drives
+the served desktop app in headless Chrome over CDP against a fixture git
+repo. This is also the only browser-level check that opens the real Git
+drawer (`openWorkspaceGitUi`) and asserts `HerdrGitUi.isVisible()`, so it
+guards the git_ui.js module decomposition against DOM-liveness breakage.
+
+It verifies:
+
+- the terminal fills the shell horizontally and vertically (8px shell
+  padding accounted) and cols/rows match the measured cell size
+- opening the Git drawer and returning to the terminal refits it
+- opening the Files browser and back refits it
+- a sidebar toggle (shell width change without window resize) refits,
+  and restoring the sidebar restores the original width and fit
+
+| Variable    | Default | Meaning                              |
+| ----------- | ------- | ------------------------------------ |
+| `E2E_PORT`  | `8899`  | HTTPS port of the isolated server    |
+| `CDP_PORT`  | `9222`  | Chrome remote debugging port         |
