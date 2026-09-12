@@ -395,6 +395,10 @@ describe("mobile bundle load", () => {
     "\n" +
     readFileSync(new URL("./shared/core.js", import.meta.url), "utf8") +
     "\n" +
+    readFileSync(new URL("./shared/http.js", import.meta.url), "utf8") +
+    "\n" +
+    readFileSync(new URL("./shared/attention.js", import.meta.url), "utf8") +
+    "\n" +
     readFileSync(new URL("./shared/actions.js", import.meta.url), "utf8") +
     "\n" +
     readFileSync(new URL("./shared/file_icons.js", import.meta.url), "utf8") +
@@ -424,6 +428,26 @@ describe("mobile bundle load", () => {
     readFileSync(new URL("./mobile/file_browser.js", import.meta.url), "utf8") +
     "\n" +
     readFileSync(new URL("./mobile/settings.js", import.meta.url), "utf8") +
+    "\n" +
+    readFileSync(new URL("./mobile/search.js", import.meta.url), "utf8") +
+    "\n" +
+    readFileSync(new URL("./mobile/git.js", import.meta.url), "utf8") +
+    "\n" +
+    readFileSync(new URL("./mobile/sessions.js", import.meta.url), "utf8") +
+    "\n" +
+    readFileSync(new URL("./mobile/events.js", import.meta.url), "utf8") +
+    "\n" +
+    readFileSync(new URL("./mobile/screens.js", import.meta.url), "utf8") +
+    "\n" +
+    readFileSync(new URL("./mobile/panels.js", import.meta.url), "utf8") +
+    "\n" +
+    readFileSync(new URL("./mobile/workmeta.js", import.meta.url), "utf8") +
+    "\n" +
+    readFileSync(new URL("./mobile/theme.js", import.meta.url), "utf8") +
+    "\n" +
+    readFileSync(new URL("./mobile/actions.js", import.meta.url), "utf8") +
+    "\n" +
+    readFileSync(new URL("./mobile/backend.js", import.meta.url), "utf8") +
     "\n" +
     readFileSync(new URL("./mobile/app.js", import.meta.url), "utf8");
 
@@ -471,8 +495,10 @@ describe("mobile bundle load", () => {
     match(mobileSource, /themeFn:/);
     // Mobile must pass currentWorkspaceCwd() to open() so the terminal starts in the right folder.
     match(mobileSource, /mobileTempTerminal\.open\(currentWorkspaceCwd\(\)\)/);
-    // Mobile must wire handlePaneExited for server-side pane exit events.
-    match(mobileSource, /mobileTempTerminal\.handlePaneExited/);
+    // Mobile must wire handlePaneExited for server-side pane exit events
+    // (now in the events module, reached via the getTempTerminal dep).
+    const mobileEventsSource = readFileSync(new URL("./mobile/events.js", import.meta.url), "utf8");
+    match(mobileEventsSource, /handlePaneExited/);
   });
 
   it("loads mobile shell without browser automation", () => {
@@ -767,10 +793,14 @@ describe("mobile bundle load", () => {
 
   it("routes mobile HTTP and WebSocket requests to the selected backend", () => {
     const mobileSource = readFileSync(new URL("./mobile/app.js", import.meta.url), "utf8");
-    match(mobileSource, /"x-herdr-backend": currentSessionBackend\(\)/);
+    const backendSource = readFileSync(new URL("./mobile/backend.js", import.meta.url), "utf8");
+    // HTTP headers now live in the shared client; mobile pins the context
+    // provider so every request carries the selected backend/session.
+    match(mobileSource, /HerdrHttp\.configure\(\(\) => \(\{[\s\S]*?backend: currentSessionBackend\(\)/);
+    match(mobileSource, /if \(globalThis\.HerdrHttp\) return globalThis\.HerdrHttp\.request\(url, opt\)/);
     match(mobileSource, /params\.push\("backend=" \+ encodeURIComponent\(currentSessionBackend\(\)\)\)/);
     match(mobileSource, /params\.join\("&"\)/);
-    match(mobileSource, /state\.backendMode = settings\.backend_mode/);
+    match(backendSource, /state\.backendMode = settings\.backend_mode/);
   });
 
   it("renders settings and worktrees screens without browser automation", () => {

@@ -30,6 +30,16 @@ content-search-e2e:
 theme-e2e:
     scripts/e2e/run-theme-e2e.sh
 
+# Real-browser acceptance run for terminal fill + panel-switch refit
+# (includes opening the Git drawer in the live DOM). See scripts/e2e/README.md.
+terminal-fit-e2e:
+    scripts/e2e/run-terminal-fit-e2e.sh
+
+# Real-browser acceptance run for the Git drawer CONTENT (changes tree,
+# diff view, log graph, branch list) in the live DOM. See scripts/e2e/README.md.
+git-drawer-e2e:
+    scripts/e2e/run-git-drawer-e2e.sh
+
 check: lint test
 
 build:

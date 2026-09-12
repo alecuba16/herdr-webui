@@ -165,3 +165,54 @@ verifies:
 - a change shows the ↺ chip and persists immediately
 - tapping the chip restores the baseline value and clears the chip
 - re-entering Settings re-captures the open-time baseline
+
+## Terminal fill + panel refit acceptance
+
+`just terminal-fit-e2e` (or `scripts/e2e/run-terminal-fit-e2e.sh`) drives
+the served desktop app in headless Chrome over CDP against a fixture git
+repo. This is also the only browser-level check that opens the real Git
+drawer (`openWorkspaceGitUi`) and asserts `HerdrGitUi.isVisible()`, so it
+guards the git_ui.js module decomposition against DOM-liveness breakage.
+
+It verifies:
+
+- the terminal fills the shell horizontally and vertically (8px shell
+  padding accounted) and cols/rows match the measured cell size
+- opening the Git drawer and returning to the terminal refits it
+- opening the Files browser and back refits it
+- a sidebar toggle (shell width change without window resize) refits,
+  and restoring the sidebar restores the original width and fit
+
+| Variable    | Default | Meaning                              |
+| ----------- | ------- | ------------------------------------ |
+| `E2E_PORT`  | `8899`  | HTTPS port of the isolated server    |
+| `CDP_PORT`  | `9222`  | Chrome remote debugging port         |
+
+## Git drawer content acceptance
+
+`just git-drawer-e2e` (or `scripts/e2e/run-git-drawer-e2e.sh`) drives the
+served desktop app in headless Chrome over CDP against a fixture git repo
+with a dirty worktree, a feature branch, and a multi-commit log. The
+no-browser git e2e proves the served bundle and the real backend, but not
+that the drawer's rendered HTML survives attach in a real DOM with real
+event wiring; this run closes that gap for the git_ui.js module
+decomposition.
+
+It verifies in the live DOM:
+
+- the drawer opens through the app path (`openWorkspaceGitUi`) and shows
+  the real branch chip name
+- the changes tree renders the untracked `scratchdir/` dir row and the
+  modified `README.md` row with real +N/-N counts from backend diff stats
+- clicking the file row loads the real diff view: diff rows for the edited
+  lines (including the fixture's marker line) and the layout toggle
+- the log tab renders the commit graph table (column head, at least three
+  commit rows, both fixture commit subjects)
+- the branch list popover lists local branches (including `feature/drawer`)
+  with author · relative-time rows
+- returning to the terminal hides the panel and restores the shell
+
+| Variable    | Default | Meaning                              |
+| ----------- | ------- | ------------------------------------ |
+| `E2E_PORT`  | `8899`  | HTTPS port of the isolated server    |
+| `CDP_PORT`  | `9222`  | Chrome remote debugging port         |

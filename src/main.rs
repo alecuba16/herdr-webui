@@ -9,7 +9,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, Path as AxumPath, Query, State};
-use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+#[cfg(test)]
+use axum::http::{header, HeaderValue};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -19,9 +21,21 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
+use crate::auth::{AuthConfig, LoginRequest};
+#[cfg(test)]
 use crate::builtin_detection::JcodeDetectionVariant;
+use server_settings::{
+    apply_cli_overrides, load_runtime_server_settings, log_event, save_runtime_server_settings,
+    server_settings_path, settings_public_json, BackendMode, LogLevel, RecentWorkspace,
+    RuntimeServerSettings,
+};
+#[cfg(test)]
+use server_settings::{
+    default_runtime_server_settings, validate_runtime_server_settings, PersistedServerSettings,
+};
 
 mod assets;
+mod auth;
 mod builtin_backend;
 mod builtin_detection;
 mod builtin_events;
@@ -30,6 +44,7 @@ mod file_browser;
 mod git_ui;
 mod lsp;
 mod protocol;
+mod server_settings;
 mod service;
 mod terminal_text;
 
@@ -43,23 +58,25 @@ use assets::{
     icon_link_svg, icon_lock_open_svg, icon_lock_svg, icon_pencil_svg, icon_refresh_svg,
     icon_save_svg, icon_search_svg, icon_settings_svg, icon_terminal_svg, icon_theme_auto_svg,
     icon_trash_svg, icon_x_svg, jetbrains_mono_nerd_font, login_css, login_html, login_js,
-    mobile_attention_js, mobile_core_js, mobile_css, mobile_file_browser_js, mobile_js,
-    mobile_settings_js, mobile_terminal_js, mobile_worktrees_js, shared_actions_js,
-    shared_colors_css, shared_content_search_css, shared_core_js, shared_editor_js,
-    shared_file_content_search_js, shared_file_icons_css, shared_file_icons_js,
-    shared_file_tree_css, shared_file_tree_js, shared_line_context_js, shared_lsp_js,
-    shared_markdown_preview_css, shared_markdown_preview_js, shared_options_js,
-    shared_settings_confirm_js, shared_settings_feedback_js, shared_temp_terminal_js,
-    shared_terminal_adapter_js, shared_terminal_fit_js, shared_terminal_scroll_js,
-    shared_workspace_search_js, vendor_codemirror_js, vendor_dompurify_js, vendor_ghostty_wasm,
-    vendor_marked_js, vendor_mermaid_js, vendor_wterm_css, vendor_wterm_js,
+    mobile_actions_js, mobile_attention_js, mobile_backend_js, mobile_core_js, mobile_css,
+    mobile_events_js, mobile_file_browser_js, mobile_git_js, mobile_js, mobile_panels_js,
+    mobile_screens_js, mobile_search_js, mobile_sessions_js, mobile_settings_js,
+    mobile_terminal_js, mobile_theme_js, mobile_workmeta_js, mobile_worktrees_js,
+    shared_actions_js, shared_attention_js, shared_colors_css, shared_content_search_css,
+    shared_core_js, shared_editor_js, shared_file_content_search_js, shared_file_icons_css,
+    shared_file_icons_js, shared_file_tree_css, shared_file_tree_js, shared_http_js,
+    shared_line_context_js, shared_lsp_js, shared_markdown_preview_css, shared_markdown_preview_js,
+    shared_options_js, shared_settings_confirm_js, shared_settings_feedback_js,
+    shared_temp_terminal_js, shared_terminal_adapter_js, shared_terminal_fit_js,
+    shared_terminal_scroll_js, shared_workspace_search_js, vendor_codemirror_js,
+    vendor_dompurify_js, vendor_ghostty_wasm, vendor_marked_js, vendor_mermaid_js,
+    vendor_wterm_css, vendor_wterm_js,
 };
 use compat::SimpleVersion;
 use compat::{backend_compatibility, BackendCompatibility};
 use protocol::*;
 
 const DEFAULT_BIND: &str = "127.0.0.1:8787";
-const COOKIE_NAME: &str = "herdr_web_session";
 const HERDR_WEBUI_VERSION: &str = env!("HERDR_WEBUI_VERSION");
 const INSTALL_LABEL: &str = "herdr-web";
 const MAX_FRAME_SIZE: usize = 2 * 1024 * 1024;
@@ -159,40 +176,6 @@ struct WebConfig {
     tls: TlsConfig,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "kebab-case")]
-enum BackendMode {
-    ExternalHerdr,
-    Builtin,
-    Auto,
-}
-
-impl BackendMode {
-    fn parse(value: &str) -> io::Result<Self> {
-        match value {
-            "external-herdr" | "external" | "herdr" => Ok(Self::ExternalHerdr),
-            "builtin" | "built-in" => Ok(Self::Builtin),
-            "auto" => Ok(Self::Auto),
-            other => Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("invalid --backend-mode: {other}; use external-herdr, builtin, or auto"),
-            )),
-        }
-    }
-
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::ExternalHerdr => "external-herdr",
-            Self::Builtin => "builtin",
-            Self::Auto => "auto",
-        }
-    }
-
-    fn is_builtin(self) -> bool {
-        matches!(self, Self::Builtin)
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SessionBackendTarget {
     ExternalHerdr,
@@ -223,92 +206,12 @@ struct TlsConfig {
     key_path: Option<PathBuf>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
-struct RecentWorkspace {
-    path: String,
-    label: Option<String>,
-    branch: Option<String>,
-    kind: Option<String>,
-    opened_at: Option<u64>,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum TlsMode {
     Off,
     Auto,
     SelfSigned,
     Files,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-struct PersistedServerSettings {
-    bind: Option<String>,
-    user: Option<String>,
-    password: Option<String>,
-    localhost_no_auth: Option<bool>,
-    no_sleep_auto_cooldown_seconds: Option<u64>,
-    backend_mode: Option<BackendMode>,
-    builtin_shell: Option<String>,
-    default_folder: Option<String>,
-    builtin_backend_enabled: Option<bool>,
-    external_herdr_backend_enabled: Option<bool>,
-    jcode_detection_variant: Option<String>,
-    log_level: Option<LogLevel>,
-    #[serde(default)]
-    lsp: Option<lsp::LspSettings>,
-    #[serde(default)]
-    recent_workspaces: Option<Vec<RecentWorkspace>>,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-enum LogLevel {
-    #[default]
-    None,
-    Info,
-    Debug,
-}
-
-impl LogLevel {
-    fn as_str(&self) -> &'static str {
-        match self {
-            LogLevel::None => "none",
-            LogLevel::Info => "info",
-            LogLevel::Debug => "debug",
-        }
-    }
-
-    fn enabled(&self) -> bool {
-        !matches!(self, LogLevel::None)
-    }
-}
-
-fn log_event(level: &LogLevel, message: &str) {
-    if level.enabled() {
-        let secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        eprintln!("[{secs}] {message}");
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-struct RuntimeServerSettings {
-    bind: SocketAddr,
-    user: Option<String>,
-    password: Option<String>,
-    localhost_no_auth: bool,
-    no_sleep_auto_cooldown_seconds: u64,
-    backend_mode: BackendMode,
-    builtin_shell: Option<String>,
-    default_folder: String,
-    builtin_backend_enabled: bool,
-    external_herdr_backend_enabled: bool,
-    jcode_detection_variant: JcodeDetectionVariant,
-    log_level: LogLevel,
-    lsp: lsp::LspSettings,
-    recent_workspaces: Vec<RecentWorkspace>,
 }
 
 struct NoSleepGuard {
@@ -676,89 +579,6 @@ impl EventStream {
     }
 }
 
-struct AuthConfig {
-    user: Option<String>,
-    password: Option<String>,
-    localhost_no_auth: bool,
-    token: String,
-}
-
-impl AuthConfig {
-    fn from_settings(settings: &RuntimeServerSettings) -> io::Result<Self> {
-        validate_runtime_server_settings(settings)?;
-        let seed = format!(
-            "{}:{}:{}",
-            settings.user.as_deref().unwrap_or(""),
-            settings.password.as_deref().unwrap_or(""),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|value| value.as_nanos())
-                .unwrap_or(0)
-        );
-        let token = Sha256::digest(seed.as_bytes())
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect();
-        Ok(Self {
-            user: settings.user.clone(),
-            password: settings.password.clone(),
-            localhost_no_auth: settings.localhost_no_auth,
-            token,
-        })
-    }
-}
-
-fn validate_runtime_server_settings(settings: &RuntimeServerSettings) -> io::Result<()> {
-    let local_bind = settings.bind.ip().is_loopback();
-    if !local_bind && (settings.user.is_none() || settings.password.is_none()) {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "username and password are required before binding to 0.0.0.0 or any non-local address",
-        ));
-    }
-    if local_bind
-        && !settings.localhost_no_auth
-        && (settings.user.is_none() || settings.password.is_none())
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "set username/password or allow localhost auth bypass",
-        ));
-    }
-    if settings.no_sleep_auto_cooldown_seconds > 3600 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "no-sleep auto cooldown must be 3600 seconds or less",
-        ));
-    }
-    if !settings.builtin_backend_enabled && !settings.external_herdr_backend_enabled {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "at least one backend type must be enabled",
-        ));
-    }
-    Ok(())
-}
-
-fn default_runtime_server_settings(bind: SocketAddr) -> RuntimeServerSettings {
-    RuntimeServerSettings {
-        bind,
-        user: None,
-        password: None,
-        localhost_no_auth: true,
-        no_sleep_auto_cooldown_seconds: 60,
-        backend_mode: BackendMode::Builtin,
-        builtin_shell: None,
-        default_folder: default_working_folder(None),
-        builtin_backend_enabled: true,
-        external_herdr_backend_enabled: true,
-        jcode_detection_variant: JcodeDetectionVariant::default(),
-        log_level: LogLevel::default(),
-        lsp: lsp::LspSettings::default(),
-        recent_workspaces: Vec::new(),
-    }
-}
-
 fn readable_directory(path: &Path) -> io::Result<PathBuf> {
     let metadata = fs::metadata(path)?;
     if !metadata.is_dir() {
@@ -853,168 +673,6 @@ fn request_default_folder_permission(default_folder: &Path) -> io::Result<PathBu
         io::ErrorKind::PermissionDenied,
         format!("cannot read {}", default_folder.display()),
     ))
-}
-
-fn server_settings_path() -> PathBuf {
-    if let Ok(dir) = std::env::var("XDG_CONFIG_HOME") {
-        return PathBuf::from(dir).join("herdr-webui/webui-settings.json");
-    }
-    std::env::var("HOME")
-        .map(|home| PathBuf::from(home).join(".config/herdr-webui/webui-settings.json"))
-        .unwrap_or_else(|_| std::env::temp_dir().join("herdr-webui/webui-settings.json"))
-}
-
-/// Apply CLI flags that must win over persisted settings.
-/// An explicit `--bind` beats the persisted bind from webui-settings.json;
-/// otherwise a preview instance could silently squat the saved port instead of
-/// the one the operator asked for.
-fn apply_cli_overrides(settings: &mut RuntimeServerSettings, config: &WebConfig) {
-    if config.bind_explicit {
-        settings.bind = config.bind;
-    }
-}
-
-fn load_runtime_server_settings(default_bind: SocketAddr) -> io::Result<RuntimeServerSettings> {
-    let mut settings = default_runtime_server_settings(default_bind);
-    let path = server_settings_path();
-    let Ok(raw) = fs::read_to_string(path) else {
-        save_runtime_server_settings(&settings)?;
-        return Ok(settings);
-    };
-    let raw_json: serde_json::Value = serde_json::from_str(&raw).map_err(|err| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("invalid webui-settings.json: {err}"),
-        )
-    })?;
-    let missing_keys = [
-        "bind",
-        "user",
-        "password",
-        "localhost_no_auth",
-        "no_sleep_auto_cooldown_seconds",
-        "backend_mode",
-        "builtin_shell",
-        "default_folder",
-        "builtin_backend_enabled",
-        "external_herdr_backend_enabled",
-        "log_level",
-    ]
-    .iter()
-    .any(|key| raw_json.get(key).is_none());
-    let persisted: PersistedServerSettings = serde_json::from_value(raw_json).map_err(|err| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("invalid webui-settings.json: {err}"),
-        )
-    })?;
-    if let Some(bind) = persisted.bind {
-        settings.bind = bind.parse().map_err(|err| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("invalid saved bind: {err}"),
-            )
-        })?;
-    }
-    if persisted.user.is_some() {
-        settings.user = persisted.user.filter(|value| !value.is_empty());
-    }
-    if persisted.password.is_some() {
-        settings.password = persisted.password.filter(|value| !value.is_empty());
-    }
-    if let Some(localhost_no_auth) = persisted.localhost_no_auth {
-        settings.localhost_no_auth = localhost_no_auth;
-    }
-    if let Some(cooldown) = persisted.no_sleep_auto_cooldown_seconds {
-        settings.no_sleep_auto_cooldown_seconds = cooldown;
-    }
-    if let Some(backend_mode) = persisted.backend_mode {
-        settings.backend_mode = backend_mode;
-    }
-    if persisted.builtin_shell.is_some() {
-        settings.builtin_shell = persisted.builtin_shell.filter(|value| !value.is_empty());
-    }
-    if persisted.default_folder.is_some() {
-        settings.default_folder =
-            default_working_folder_without_prompt(persisted.default_folder.as_deref());
-    }
-    if let Some(enabled) = persisted.builtin_backend_enabled {
-        settings.builtin_backend_enabled = enabled;
-    }
-    if let Some(enabled) = persisted.external_herdr_backend_enabled {
-        settings.external_herdr_backend_enabled = enabled;
-    }
-    if let Some(variant_str) = persisted.jcode_detection_variant {
-        settings.jcode_detection_variant = JcodeDetectionVariant::from_str(&variant_str);
-    }
-    if let Some(log_level) = persisted.log_level {
-        settings.log_level = log_level;
-    }
-    if let Some(lsp) = persisted.lsp {
-        settings.lsp = lsp;
-    }
-    if let Some(recent) = persisted.recent_workspaces {
-        settings.recent_workspaces = recent;
-    }
-    validate_runtime_server_settings(&settings)?;
-    if missing_keys {
-        save_runtime_server_settings(&settings)?;
-    }
-    Ok(settings)
-}
-
-/// Tests must never persist settings to the operator's real config file:
-/// a stray save clobbers `~/.config/herdr-webui/webui-settings.json` and
-/// locks the operator out of their own server (username/password fixtures
-/// replace real credentials). Every test that reaches a persisting route
-/// must set `XDG_CONFIG_HOME` to a temp dir; `lock_env()` serializes those
-/// env mutations. This guard turns an unisolated test into a loud failure
-/// instead of a silent config overwrite.
-#[cfg(test)]
-fn assert_test_settings_isolation() {
-    if std::env::var_os("XDG_CONFIG_HOME").is_none() {
-        panic!(
-            "test would write the real settings path; set XDG_CONFIG_HOME \
-             to a temp dir (see lock_env-isolated tests) before persisting"
-        );
-    }
-}
-
-#[cfg(not(test))]
-fn assert_test_settings_isolation() {}
-
-fn save_runtime_server_settings(settings: &RuntimeServerSettings) -> io::Result<()> {
-    validate_runtime_server_settings(settings)?;
-    // Runs after validation: rejection tests assert on the validation error
-    // itself and never write, so they must not trip the guard.
-    assert_test_settings_isolation();
-    let path = server_settings_path();
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let content = serde_json::to_string_pretty(&PersistedServerSettings {
-        bind: Some(settings.bind.to_string()),
-        user: settings.user.clone(),
-        password: settings.password.clone(),
-        localhost_no_auth: Some(settings.localhost_no_auth),
-        no_sleep_auto_cooldown_seconds: Some(settings.no_sleep_auto_cooldown_seconds),
-        backend_mode: Some(settings.backend_mode),
-        builtin_shell: settings.builtin_shell.clone(),
-        default_folder: Some(settings.default_folder.clone()),
-        builtin_backend_enabled: Some(settings.builtin_backend_enabled),
-        external_herdr_backend_enabled: Some(settings.external_herdr_backend_enabled),
-        jcode_detection_variant: Some(settings.jcode_detection_variant.as_str().to_string()),
-        log_level: Some(settings.log_level.clone()),
-        lsp: Some(settings.lsp.clone()),
-        recent_workspaces: Some(settings.recent_workspaces.clone()),
-    })?;
-    fs::write(&path, content)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
-    }
-    Ok(())
 }
 
 #[tokio::main]
@@ -1469,6 +1127,8 @@ fn app_router(state: WebState) -> Router {
         .route("/assets/desktop/shortcuts.css", get(desktop_shortcuts_css))
         .route("/assets/app-boot.js", get(app_boot_js))
         .route("/assets/shared/core.js", get(shared_core_js))
+        .route("/assets/shared/http.js", get(shared_http_js))
+        .route("/assets/shared/attention.js", get(shared_attention_js))
         .route("/assets/shared/options.js", get(shared_options_js))
         .route("/assets/shared/actions.js", get(shared_actions_js))
         .route("/assets/shared/file-icons.js", get(shared_file_icons_js))
@@ -1549,6 +1209,16 @@ fn app_router(state: WebState) -> Router {
         .route("/assets/mobile/attention.js", get(mobile_attention_js))
         .route("/assets/mobile/core.js", get(mobile_core_js))
         .route("/assets/mobile/settings.js", get(mobile_settings_js))
+        .route("/assets/mobile/search.js", get(mobile_search_js))
+        .route("/assets/mobile/git.js", get(mobile_git_js))
+        .route("/assets/mobile/sessions.js", get(mobile_sessions_js))
+        .route("/assets/mobile/events.js", get(mobile_events_js))
+        .route("/assets/mobile/screens.js", get(mobile_screens_js))
+        .route("/assets/mobile/panels.js", get(mobile_panels_js))
+        .route("/assets/mobile/workmeta.js", get(mobile_workmeta_js))
+        .route("/assets/mobile/theme.js", get(mobile_theme_js))
+        .route("/assets/mobile/actions.js", get(mobile_actions_js))
+        .route("/assets/mobile/backend.js", get(mobile_backend_js))
         .route("/assets/mobile/terminal.js", get(mobile_terminal_js))
         .route("/assets/mobile/worktrees.js", get(mobile_worktrees_js))
         .route(
@@ -1812,6 +1482,7 @@ fn client_socket_for_headers(state: &WebState, headers: &HeaderMap) -> PathBuf {
 /// Resolve the API client for a query-string session/backend without
 /// starting anything. `api_for_query_session_ensured` builds on this after
 /// auto-starting the built-in backend when needed.
+#[allow(dead_code)]
 fn api_for_query_session_routed(
     state: &WebState,
     headers: &HeaderMap,
@@ -1988,31 +1659,7 @@ fn read_json_line<T: for<'de> Deserialize<'de>>(
 }
 
 fn authorized(state: &WebState, headers: &HeaderMap, remote: SocketAddr) -> bool {
-    let Ok(auth) = state.auth.lock() else {
-        return false;
-    };
-    if remote.ip().is_loopback() && auth.localhost_no_auth {
-        return true;
-    }
-    let Some(cookie) = headers
-        .get(header::COOKIE)
-        .and_then(|value| value.to_str().ok())
-    else {
-        return false;
-    };
-    cookie.split(';').any(|part| {
-        let Some(value) = part.trim().strip_prefix(&format!("{COOKIE_NAME}=")) else {
-            return false;
-        };
-        constant_time_eq(value.as_bytes(), auth.token.as_bytes())
-    })
-}
-
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+    crate::auth::authorized(&state.auth, headers, remote)
 }
 
 #[allow(clippy::result_large_err)]
@@ -2021,15 +1668,7 @@ pub(crate) fn require_auth(
     headers: &HeaderMap,
     remote: SocketAddr,
 ) -> Result<(), Response> {
-    authorized(state, headers, remote)
-        .then_some(())
-        .ok_or_else(|| {
-            (
-                StatusCode::UNAUTHORIZED,
-                Json(json!({ "error": "unauthorized" })),
-            )
-                .into_response()
-        })
+    crate::auth::require_auth(&state.auth, headers, remote)
 }
 
 async fn index(
@@ -2066,27 +1705,6 @@ struct UpdateServerSettingsRequest {
     builtin_backend_enabled: Option<bool>,
     external_herdr_backend_enabled: Option<bool>,
     log_level: Option<LogLevel>,
-}
-
-fn settings_public_json(settings: &RuntimeServerSettings) -> serde_json::Value {
-    json!({
-        "bind": settings.bind.to_string(),
-        "username": settings.user.clone().unwrap_or_default(),
-        "has_password": settings.password.is_some(),
-        "localhost_no_auth": settings.localhost_no_auth,
-        "no_sleep_auto_cooldown_seconds": settings.no_sleep_auto_cooldown_seconds,
-        "backend_mode": settings.backend_mode.as_str(),
-        "builtin_shell": settings.builtin_shell.clone(),
-        "default_folder": settings.default_folder.clone(),
-        "builtin_backend_enabled": settings.builtin_backend_enabled,
-        "external_herdr_backend_enabled": settings.external_herdr_backend_enabled,
-        "log_level": settings.log_level.as_str(),
-        "enabled_backends": {
-            "builtin": settings.builtin_backend_enabled,
-            "external-herdr": settings.external_herdr_backend_enabled,
-        },
-        "settings_path": server_settings_path().to_string_lossy(),
-    })
 }
 
 fn no_sleep_public_json(state: &NoSleepState) -> serde_json::Value {
@@ -2889,12 +2507,6 @@ async fn proxy_server_stop(api: ApiClient) -> Response {
     }
 }
 
-#[derive(Deserialize)]
-struct LoginRequest {
-    username: String,
-    password: String,
-}
-
 async fn login(
     State(state): State<WebState>,
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
@@ -2907,22 +2519,15 @@ async fn login(
         )
             .into_response();
     };
-    if remote.ip().is_loopback() && auth.localhost_no_auth {
+    if auth.localhost_bypass(remote) {
         drop(auth);
         log_event(
             &state.log_level(),
             &format!("login: localhost bypass for {remote}"),
         );
-        return login_response(&state);
+        return crate::auth::login_response(&state.auth);
     }
-    let ok = auth
-        .user
-        .as_deref()
-        .zip(auth.password.as_deref())
-        .is_some_and(|(user, password)| {
-            constant_time_eq(body.username.as_bytes(), user.as_bytes())
-                && constant_time_eq(body.password.as_bytes(), password.as_bytes())
-        });
+    let ok = auth.verify_credentials(&body.username, &body.password);
     drop(auth);
     if !ok {
         log_event(
@@ -2939,25 +2544,7 @@ async fn login(
         &state.log_level(),
         &format!("login: success for user '{}' from {remote}", body.username),
     );
-    login_response(&state)
-}
-
-fn login_response(state: &WebState) -> Response {
-    let token = state
-        .auth
-        .lock()
-        .map(|auth| auth.token.clone())
-        .unwrap_or_default();
-    let mut response = Json(json!({ "ok": true })).into_response();
-    response.headers_mut().insert(
-        header::SET_COOKIE,
-        HeaderValue::from_str(&format!(
-            "{COOKIE_NAME}={}; HttpOnly; SameSite=Lax; Path=/",
-            token
-        ))
-        .expect("valid cookie"),
-    );
-    response
+    crate::auth::login_response(&state.auth)
 }
 
 async fn proxy_request_async(api: ApiClient, request: serde_json::Value) -> Response {
@@ -6157,9 +5744,9 @@ mod tests {
 
     #[test]
     fn compares_constant_time_equal_values() {
-        assert!(constant_time_eq(b"same", b"same"));
-        assert!(!constant_time_eq(b"same", b"diff"));
-        assert!(!constant_time_eq(b"same", b"same-but-longer"));
+        assert!(crate::auth::constant_time_eq(b"same", b"same"));
+        assert!(!crate::auth::constant_time_eq(b"same", b"diff"));
+        assert!(!crate::auth::constant_time_eq(b"same", b"same-but-longer"));
     }
 
     #[test]
@@ -7076,6 +6663,9 @@ mod tests {
         let _ = fs::remove_file(sentinel);
     }
 
+    // lock_env() serializes env-mutating tests; holding it across await is
+    // intentional so no other test touches process env while handlers run.
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn remove_recent_workspace_removes_single_entry_and_validates() {
         let _env = lock_env();
@@ -7414,6 +7004,9 @@ mod tests {
     }
 
     #[cfg(unix)]
+    // lock_env() serializes env-mutating tests; held across await on purpose
+    // so no other test touches process env while handlers run.
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn open_recent_workspace_rejects_missing_folder() {
         let _env = lock_env();
@@ -7780,6 +7373,96 @@ mod tests {
             )
             .await
             .unwrap();
+        let mobile_search_js = app
+            .clone()
+            .oneshot(
+                request(Method::GET, "/assets/mobile/search.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mobile_git_js = app
+            .clone()
+            .oneshot(
+                request(Method::GET, "/assets/mobile/git.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mobile_sessions_js = app
+            .clone()
+            .oneshot(
+                request(Method::GET, "/assets/mobile/sessions.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mobile_events_js = app
+            .clone()
+            .oneshot(
+                request(Method::GET, "/assets/mobile/events.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mobile_screens_js = app
+            .clone()
+            .oneshot(
+                request(Method::GET, "/assets/mobile/screens.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mobile_panels_js = app
+            .clone()
+            .oneshot(
+                request(Method::GET, "/assets/mobile/panels.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mobile_workmeta_js = app
+            .clone()
+            .oneshot(
+                request(Method::GET, "/assets/mobile/workmeta.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mobile_theme_js = app
+            .clone()
+            .oneshot(
+                request(Method::GET, "/assets/mobile/theme.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mobile_actions_js = app
+            .clone()
+            .oneshot(
+                request(Method::GET, "/assets/mobile/actions.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mobile_backend_js = app
+            .clone()
+            .oneshot(
+                request(Method::GET, "/assets/mobile/backend.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         let mobile_css = app
             .clone()
             .oneshot(
@@ -7839,6 +7522,16 @@ mod tests {
         assert_eq!(mobile_terminal_js.status(), StatusCode::OK);
         assert_eq!(mobile_worktrees_js.status(), StatusCode::OK);
         assert_eq!(mobile_settings_js.status(), StatusCode::OK);
+        assert_eq!(mobile_search_js.status(), StatusCode::OK);
+        assert_eq!(mobile_git_js.status(), StatusCode::OK);
+        assert_eq!(mobile_sessions_js.status(), StatusCode::OK);
+        assert_eq!(mobile_events_js.status(), StatusCode::OK);
+        assert_eq!(mobile_screens_js.status(), StatusCode::OK);
+        assert_eq!(mobile_panels_js.status(), StatusCode::OK);
+        assert_eq!(mobile_workmeta_js.status(), StatusCode::OK);
+        assert_eq!(mobile_theme_js.status(), StatusCode::OK);
+        assert_eq!(mobile_actions_js.status(), StatusCode::OK);
+        assert_eq!(mobile_backend_js.status(), StatusCode::OK);
         assert_eq!(mobile_js.status(), StatusCode::OK);
         assert_eq!(mobile_css.status(), StatusCode::OK);
         assert_eq!(icon.status(), StatusCode::OK);
@@ -7926,6 +7619,46 @@ mod tests {
             .unwrap()
             .contains("javascript"));
         assert!(mobile_settings_js.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .contains("javascript"));
+        assert!(mobile_search_js.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .contains("javascript"));
+        assert!(mobile_git_js.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .contains("javascript"));
+        assert!(mobile_sessions_js.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .contains("javascript"));
+        assert!(mobile_events_js.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .contains("javascript"));
+        assert!(mobile_screens_js.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .contains("javascript"));
+        assert!(mobile_panels_js.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .contains("javascript"));
+        assert!(mobile_workmeta_js.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .contains("javascript"));
+        assert!(mobile_theme_js.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .contains("javascript"));
+        assert!(mobile_actions_js.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .contains("javascript"));
+        assert!(mobile_backend_js.headers()[header::CONTENT_TYPE]
             .to_str()
             .unwrap()
             .contains("javascript"));
@@ -8060,6 +7793,76 @@ mod tests {
                 .unwrap()
                 .len()
                 > 100
+        );
+        assert!(
+            to_bytes(mobile_search_js.into_body(), 1024 * 1024)
+                .await
+                .unwrap()
+                .len()
+                > 1000
+        );
+        assert!(
+            to_bytes(mobile_git_js.into_body(), 1024 * 1024)
+                .await
+                .unwrap()
+                .len()
+                > 1000
+        );
+        assert!(
+            to_bytes(mobile_sessions_js.into_body(), 1024 * 1024)
+                .await
+                .unwrap()
+                .len()
+                > 1000
+        );
+        assert!(
+            to_bytes(mobile_events_js.into_body(), 1024 * 1024)
+                .await
+                .unwrap()
+                .len()
+                > 500
+        );
+        assert!(
+            to_bytes(mobile_screens_js.into_body(), 1024 * 1024)
+                .await
+                .unwrap()
+                .len()
+                > 1000
+        );
+        assert!(
+            to_bytes(mobile_panels_js.into_body(), 1024 * 1024)
+                .await
+                .unwrap()
+                .len()
+                > 1000
+        );
+        assert!(
+            to_bytes(mobile_workmeta_js.into_body(), 1024 * 1024)
+                .await
+                .unwrap()
+                .len()
+                > 1000
+        );
+        assert!(
+            to_bytes(mobile_theme_js.into_body(), 1024 * 1024)
+                .await
+                .unwrap()
+                .len()
+                > 1000
+        );
+        assert!(
+            to_bytes(mobile_actions_js.into_body(), 1024 * 1024)
+                .await
+                .unwrap()
+                .len()
+                > 1000
+        );
+        assert!(
+            to_bytes(mobile_backend_js.into_body(), 1024 * 1024)
+                .await
+                .unwrap()
+                .len()
+                > 1000
         );
         assert!(
             to_bytes(mobile_js.into_body(), 1024 * 1024)
@@ -8311,6 +8114,9 @@ mod tests {
     }
 
     #[cfg(unix)]
+    // lock_env() serializes env-mutating tests; held across await on purpose
+    // so no other test touches process env while handlers run.
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn close_session_builtin_with_missing_socket_reports_already_stopped() {
         // Same stale-row class for the built-in backend: the session
@@ -9024,6 +8830,9 @@ mod tests {
     }
 
     #[cfg(unix)]
+    // lock_env() serializes env-mutating tests; held across await on purpose
+    // so no other test touches process env while handlers run.
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn open_worktree_handler_proxies_open() {
         let _env = lock_env();
@@ -9277,8 +9086,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn detect_herdr_install_classifies_detected_versions() {
-        use std::os::unix::fs::PermissionsExt;
-
         let root = std::env::temp_dir().join(format!(
             "herdr-webui-detect-install-test-{}",
             std::process::id()
@@ -9423,7 +9230,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!(
             "herdr-webui-launch-test-{}-{}",
             std::process::id(),
-            std::thread::current().name().unwrap_or("t").to_string()
+            std::thread::current().name().unwrap_or("t")
         ));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
@@ -10908,6 +10715,9 @@ mod tests {
 
     // ── open_worktree success path ──
 
+    // lock_env() serializes env-mutating tests; held across await on purpose
+    // so no other test touches process env while handlers run.
+    #[allow(clippy::await_holding_lock)]
     #[cfg(unix)]
     #[tokio::test]
     async fn open_worktree_proxies_successfully() {
