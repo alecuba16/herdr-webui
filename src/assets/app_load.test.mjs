@@ -1028,7 +1028,7 @@ describe("app bundle load", () => {
     match(gitUiSource, /Stage changes before committing/);
     match(gitUiSource, /gitCommitIncludeBody/);
     match(gitUiSource, /gitUiPushTags/);
-    match(gitUiSource, /Open PR/);
+    match(readFileSync(new URL("./desktop/git_ui/toasts.js", import.meta.url), "utf8"), /Open PR/);
     match(gitUiSource, /openForcePushModal/);
     ok(!gitUiSource.includes("HerdrGitUi.tab('commit')"));
     ok(!gitUiSource.includes('onclick="HerdrGitUi.toggleStageAll()'));
@@ -1042,8 +1042,8 @@ describe("app bundle load", () => {
     match(fileBrowserSource, /navigator\.clipboard\.writeText\(url\)/);
     match(gitUiSource, /Copy permalink/);
     match(gitUiSource, /copyGitPermalink/);
-    match(gitUiSource, /\/api\/git-ui\/permalink\?cwd=/);
-    match(gitUiSource, /Permalink copied/);
+    match(readFileSync(new URL("./desktop/git_ui/toasts.js", import.meta.url), "utf8"), /\/api\/git-ui\/permalink\?cwd=/);
+    match(readFileSync(new URL("./desktop/git_ui/toasts.js", import.meta.url), "utf8"), /Permalink copied/);
   });
 
   it("offers conflict buttons for HEAD, parent, and remote sides", () => {
@@ -3997,8 +3997,8 @@ describe("app bundle load", () => {
     match(gitLogSource, /title="\$\{esc\(normalized\)\}"/);
     match(gitLogSource, /class="git-ui-log-copy-hash"/);
     match(gitLogSource, /HerdrGitUi\.copyScopeValue\(event,'\$\{encodeURIComponent\(row\.hash \|\| ""\)\}','Commit id'\)/);
-    match(gitUiSource, /async function copyCommitId\(hash\)/);
-    match(gitUiSource, /Commit id copied/);
+    match(readFileSync(new URL("./desktop/git_ui/toasts.js", import.meta.url), "utf8"), /async function copyCommitId\(hash\)/);
+    match(readFileSync(new URL("./desktop/git_ui/toasts.js", import.meta.url), "utf8"), /Commit id copied/);
     match(gitUiSource, /async copyCommitId\(hash\)/);
     match(gitLogSource, /current: detail\.labels\.some/);
     match(gitLogSource, /const LANE_COLORS = \[/);

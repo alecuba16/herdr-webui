@@ -131,6 +131,7 @@ const SHARED_SOURCES = [
   "./desktop/git_ui/side_tree.js",
   "./desktop/git_ui/modals.js",
   "./desktop/git_ui/branch_list.js",
+  "./desktop/git_ui/toasts.js",
 ]
   .map((path) => readFileSync(new URL(path, import.meta.url), "utf8"))
   .join("\n;\n");
@@ -889,4 +890,44 @@ test("branch list module is registered and wired before git_ui.js consumes it", 
   const branchListIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui/branch_list.js")');
   const gitUiIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui.js")');
   assert.ok(branchListIndex > -1 && branchListIndex < gitUiIndex, "branch_list.js concatenates before git_ui.js");
+});
+
+test("toasts module is registered and wired before git_ui.js consumes it", () => {
+  const toastsSource = readFileSync(new URL("./desktop/git_ui/toasts.js", import.meta.url), "utf8");
+  assert.match(toastsSource, /globalThis\.HerdrGitUiToastsModule = \{ create: createGitUiToasts \}/);
+  assert.match(toastsSource, /`\$\{base\}\/branch\/\$\{branchPath\(branch\)\}`/);
+  assert.match(toastsSource, /pull-requests\/new\?source=\$\{encodeURIComponent\(branch\)\}/);
+  assert.match(toastsSource, /Permalink copied/);
+  const gitUiSource = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
+  assert.match(gitUiSource, /globalThis\.HerdrGitUiToastsModule\.create\(\{/);
+  assert.match(gitUiSource, /const renderGitToast = toasts\.renderGitToast;/);
+  const assetsSource = readFileSync(new URL("../assets.rs", import.meta.url), "utf8");
+  const toastsIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui/toasts.js")');
+  const gitUiIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui.js")');
+  assert.ok(toastsIndex > -1 && toastsIndex < gitUiIndex, "toasts.js concatenates before git_ui.js");
+});
+
+test("permalink copy shows a toast and builds PR urls from the remote", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": { branch: "feature-x", ahead: 2, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [], remote_url: "git@github.com:acme/widget.git" },
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+    "/api/git-ui/permalink": { url: "https://github.com/acme/widget/blob/abc/src/app.js" },
+  });
+  const ui = booted.ui;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  const html0 = ctxHtml(booted);
+  assert.ok(!/git-ui-toast/.test(html0), "no toast before copy");
+  // Drive the context-menu copyPermalink flow, which routes through the
+  // toasts module: clipboard write + Permalink copied toast.
+  ui.fileMenu({ preventDefault() {}, stopPropagation() {}, clientX: 5, clientY: 5 }, "src/app.js", "M");
+  await ui.menuAction("copyPermalink");
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const calls = booted.calls;
+  const permalinkCall = calls.find((call) => call.path === "/api/git-ui/permalink");
+  assert.ok(permalinkCall, "permalink GET reached the stubbed backend");
+  const html1 = ctxHtml(booted);
+  assert.match(html1, /git-ui-toast/);
+  assert.match(html1, /Permalink copied/);
 });
