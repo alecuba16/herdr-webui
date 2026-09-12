@@ -730,7 +730,7 @@ describe("app bundle load", () => {
     match(gitShortcutsSource, /gitShortcutMap\(\)/);
     match(gitUiSource, /window\.addEventListener\("keydown", handleKeydown, true\);/);
     match(gitUiSource, /activateTreeItem\(event\)/);
-    match(gitUiSource, /role="treeitem" tabindex="0" data-git-path=/);
+    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /role="treeitem" tabindex="0" data-git-path=/);
     match(source, /HerdrGitUi\.isVisible\(\)\) return;/);
   });
 
@@ -1112,7 +1112,7 @@ describe("app bundle load", () => {
     match(gitUiSource, /Hard reset/);
     match(gitUiSource, /function renderLogContextMenu/);
     match(gitUiSource, /state\.logContextMenu = \{[\s\S]*?x: Number\(event && event\.clientX\) \|\| 0,/);
-    match(gitUiSource, /function commitPreviewSection/);
+    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /function commitPreviewSection/);
     match(gitUiSource, /Committed files/);
     match(gitUiSource, /loadSelectedCommitPreview\(view, view\.selectedLogCommits\[0\]\)/);
     match(gitUiSource, /base=\$\{encodeURIComponent\(`\$\{hash\}\^`\)\}/);
@@ -1161,18 +1161,18 @@ describe("app bundle load", () => {
     const gitDiffRenderBlameSource = readFileSync(new URL("./desktop/git_ui/diff_render.js", import.meta.url), "utf8");
     match(gitDiffRenderBlameSource, /ref_name=\$\{encodeURIComponent\(ref\)\}/);
     match(gitDiffRenderBlameSource, /blame unavailable/);
-    match(gitUiSource, /function sideFileCount\(view\)/);
+    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /function sideFileCount\(view\)/);
     match(gitUiSource, /const filterInput = sideFileCount\(view\)/);
     match(gitUiSource, /const fileList = cleanupOnly \? "" : `\$\{filterInput\}\$\{fileSections\}`;/);
-    match(gitUiSource, /status\.conflicted, status\.staged, status\.unstaged, status\.untracked/);
+    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /status\.conflicted, status\.staged, status\.unstaged, status\.untracked/);
     match(gitUiSource, /Fetch selected branch \(and main\/master\) before rebasing onto origin/);
     match(gitUiSource, /pull_first: pullFirst/);
     ok(!gitUiSource.includes('/api/git-ui/pull", { cwd: view.cwd, mode: "ff-only", branch }'));
   });
 
   it("gates stash tab by stash count and offers log tagging", () => {
-    match(gitUiSource, /function stashCount\(view\)/);
-    match(gitUiSource, /function canOpenStashView\(view\)/);
+    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /function stashCount\(view\)/);
+    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /function canOpenStashView\(view\)/);
     match(gitUiSource, /No stashes stored\. Refresh to rescan\./);
     match(gitUiSource, /view\.tab === "stash" && !canOpenStashView\(view\)/);
     match(gitUiSource, /tab === "stash" && !canOpenStashView\(view\)/);
@@ -1238,30 +1238,30 @@ describe("app bundle load", () => {
     match(gitStashSource, /view\.selectedStashDiff = \{ name, loading: false, error: err\.message/);
 
     // Stash side panel: stash list and file tree
-    match(gitUiSource, /function stashListHtml\(view\)/);
-    match(gitUiSource, /git-ui-stash-entry/);
-    match(gitUiSource, /HerdrGitUi\.selectStash\('\$\{arg\(name\)\}'\)/);
-    match(gitUiSource, /git-ui-stash-name/);
-    match(gitUiSource, /git-ui-stash-meta/);
-    match(gitUiSource, /No stashes/);
+    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /function stashListHtml\(view\)/);
+    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /git-ui-stash-entry/);
+    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /HerdrGitUi\.selectStash\('\$\{arg\(name\)\}'\)/);
+    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /git-ui-stash-name/);
+    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /git-ui-stash-meta/);
+    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /No stashes/);
 
-    match(gitUiSource, /function stashFileSection\(view, filter\)/);
-    match(gitUiSource, /function stashFileSectionList\(title, files, view\)/);
-    match(gitUiSource, /Loading stash files/);
-    match(gitUiSource, /No files in this stash/);
-    match(gitUiSource, /renderFileTree\(visibleList, "C", view, \{ selectMethod: "selectStashFile", selectedPath: view\.stashFile, selectedKind: "", metaForPath: null, statusForPath: null \}\)/);
+    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /function stashFileSection\(view, filter\)/);
+    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /function stashFileSectionList\(title, files, view\)/);
+    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /Loading stash files/);
+    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /No files in this stash/);
+    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /renderFileTree\(visibleList, "C", view, \{ selectMethod: "selectStashFile", selectedPath: view\.stashFile, selectedKind: "", metaForPath: null, statusForPath: null \}\)/);
 
     // renderFileTree parameterized with overrides
-    match(gitUiSource, /function renderFileTree\(files, kind, view, options\)/);
-    match(gitUiSource, /const selectMethod = overrides\.selectMethod \|\| "selectFile";/);
-    match(gitUiSource, /const selectedPath = overrides\.selectedPath !== undefined \? overrides\.selectedPath : view\.file;/);
-    match(gitUiSource, /const metaForPath = overrides\.metaForPath !== undefined \? overrides\.metaForPath : fileSummary;/);
-    match(gitUiSource, /const statusForPath = overrides\.statusForPath !== undefined \? overrides\.statusForPath : fileTreeStatus;/);
-    match(gitUiSource, /selectMethod,/);
-    match(gitUiSource, /selectedPath,/);
-    match(gitUiSource, /selectedKind,/);
-    match(gitUiSource, /metaForPath,/);
-    match(gitUiSource, /statusForPath,/);
+    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /function renderFileTree\(files, kind, view, options\)/);
+    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /const selectMethod = overrides\.selectMethod \|\| "selectFile";/);
+    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /const selectedPath = overrides\.selectedPath !== undefined \? overrides\.selectedPath : view\.file;/);
+    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /const metaForPath = overrides\.metaForPath !== undefined \? overrides\.metaForPath : fileSummary;/);
+    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /const statusForPath = overrides\.statusForPath !== undefined \? overrides\.statusForPath : fileTreeStatus;/);
+    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /selectMethod,/);
+    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /selectedPath,/);
+    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /selectedKind,/);
+    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /metaForPath,/);
+    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /statusForPath,/);
 
     // Public API: selectStash and selectStashFile
     match(gitUiSource, /selectStash\(name\)/);
@@ -1287,10 +1287,10 @@ describe("app bundle load", () => {
 
     // renderSideFileCount: inline stash count
     match(gitUiSource, /if \(view\.tab === "stash"\) \{/);
-    match(gitUiSource, /const stashes = \(view\.stashData && view\.stashData\.stashes\) \? view\.stashData\.stashes\.length : 0;/);
-    match(gitUiSource, /const preview = view\.selectedStashDiff;/);
-    match(gitUiSource, /const files = \(preview && preview\.diff && preview\.diff\.files\) \? preview\.diff\.files\.length : 0;/);
-    match(gitUiSource, /return stashes \+ files;/);
+    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /const stashes = \(view\.stashData && view\.stashData\.stashes\) \? view\.stashData\.stashes\.length : 0;/);
+    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /const preview = view\.selectedStashDiff;/);
+    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /const files = \(preview && preview\.diff && preview\.diff\.files\) \? preview\.diff\.files\.length : 0;/);
+    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /return stashes \+ files;/);
 
     // collapseAllFiles: uses stash diff files
     match(gitUiSource, /const files = view\.tab === "stash"/);
@@ -1661,12 +1661,12 @@ describe("app bundle load", () => {
     match(fileTreeSource, /raw\.endsWith\("\/"\)/);
     match(fileTreeSource, /Status lines report untracked directories as "dir\/"/);
     match(fileTreeSource, /dirContextKind/);
-    match(gitUiSource, /dirContextKind: "dir",/);
-    match(gitUiSource, /function dirMenuTargetPaths\(menu\)/);
-    match(gitUiSource, /function renderDirContextMenu\(menu\)/);
-    match(gitUiSource, /Stage folder \(\$\{countLabel\}\)/);
-    match(gitUiSource, /Unstage folder \(\$\{countLabel\}\)/);
-    match(gitUiSource, /Discard folder \(\$\{countLabel\}\)/);
+    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /dirContextKind: "dir",/);
+    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /function dirMenuTargetPaths\(menu\)/);
+    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /function renderDirContextMenu\(menu\)/);
+    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /Stage folder \(\$\{countLabel\}\)/);
+    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /Unstage folder \(\$\{countLabel\}\)/);
+    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /Discard folder \(\$\{countLabel\}\)/);
     match(gitUiSource, /if \(menu\.kind === "dir"\) \{/);
     match(gitUiSource, /post\("\/api\/git-ui\/stage", \{ cwd: active\(\)\.cwd, paths: targets \}/);
     match(gitUiSource, /post\("\/api\/git-ui\/unstage", \{ cwd: active\(\)\.cwd, paths: targets \}/);
@@ -1693,10 +1693,10 @@ describe("app bundle load", () => {
     const fileTreeSource = readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8");
     const gitLayoutCss = readFileSync(new URL("./desktop/git_ui/layout.css", import.meta.url), "utf8");
 
-    match(gitUiSource, /FileTree\.renderPathTree\(files, \{/);
-    match(gitUiSource, /statusForPath,/);
-    match(gitUiSource, /function fileSummaryEntries\(path, kind\)/);
-    match(gitUiSource, /function normalizeFileTreeStatus\(status, kind\)/);
+    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /FileTree\.renderPathTree\(files, \{/);
+    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /statusForPath,/);
+    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /function fileSummaryEntries\(path, kind\)/);
+    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /function normalizeFileTreeStatus\(status, kind\)/);
     match(fileTreeSource, /opts\.statusForPath\(dirPath, opts\.kind\)/);
     match(fileTreeSource, /opts\.metaForPath\(dirPath, opts\.kind\)/);
     match(gitLayoutCss, /\.git-ui-list \.herdr-tree-row\.git-ui-file \{[\s\S]*?display: grid;/);

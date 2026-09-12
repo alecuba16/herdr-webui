@@ -128,6 +128,7 @@ const SHARED_SOURCES = [
   "./desktop/git_ui/cleanup.js",
   "./desktop/git_ui/diff_render.js",
   "./desktop/git_ui/conflicts.js",
+  "./desktop/git_ui/side_tree.js",
 ]
   .map((path) => readFileSync(new URL(path, import.meta.url), "utf8"))
   .join("\n;\n");
@@ -757,4 +758,70 @@ test("buildEditableHunks splits chunk lines into old and current hunk text", () 
   assert.equal(JSON.stringify(hunks[0].newLineTypes), JSON.stringify(["context", "add"]));
   assert.equal(hunks[0].newStart, 1);
   assert.equal(hunks[0].newEnd, 2);
+});
+
+test("side tree module is registered and wired before git_ui.js consumes it", () => {
+  const sideTreeSource = readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8");
+  assert.match(sideTreeSource, /globalThis\.HerdrGitUiSideTreeModule = \{ create: createGitUiSideTree \}/);
+  assert.match(sideTreeSource, /function renderFileTree\(files, kind, view, options\)/);
+  assert.match(sideTreeSource, /FileTree\.renderPathTree\(files, \{/);
+  assert.match(sideTreeSource, /git-ui-stash-entry/);
+  const gitUiSource = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
+  assert.match(gitUiSource, /globalThis\.HerdrGitUiSideTreeModule\.create\(\{/);
+  assert.match(gitUiSource, /const section = sideTree\.section;/);
+  const assetsSource = readFileSync(new URL("../assets.rs", import.meta.url), "utf8");
+  const sideTreeIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui/side_tree.js")');
+  const gitUiIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui.js")');
+  assert.ok(sideTreeIndex > -1 && sideTreeIndex < gitUiIndex, "side_tree.js concatenates before git_ui.js");
+});
+
+test("side tree sections render status trees with bulk actions and limits", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": { branch: "main", ahead: 0, behind: 0, staged: ["src/app.js"], unstaged: ["src/lib.js"], untracked: ["scratchdir/"], conflicted: ["src/conf.js"] },
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  await booted.ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  const html = ctxHtml(booted);
+  // Sections render for all four kinds with counts.
+  assert.match(html, /git-ui-section-head[\s\S]*?>Conflicted</);
+  assert.match(html, /Staged</);
+  assert.match(html, /Unstaged</);
+  assert.match(html, /Untracked</);
+  // Staged section carries the unstage-all bulk action; unstaged/untracked carry stage-all.
+  assert.match(html, /HerdrGitUi\.bulkSectionAction\('unstage','Staged'\)/);
+  assert.match(html, /HerdrGitUi\.bulkSectionAction\('stage','Unstaged'\)/);
+  assert.match(html, /HerdrGitUi\.bulkSectionAction\('stage','Untracked'\)/);
+  // Conflicted kind has no bulk action button.
+  const conflictedChunk = (html.split("Conflicted")[1] || "").split("</div>")[0] + (html.split("Conflicted")[1] || "").slice(0, 400);
+  assert.ok(!conflictedChunk.includes("bulkSectionAction('stage','Conflicted')"), "conflicted section has no bulk action");
+  // File rows are rendered by the shared FileTree (renderPathTree), so assert
+  // the shared row markup with the git callback instead of direct onclick.
+  assert.match(html, /herdr-tree-row file git-ui-file/);
+  assert.ok(html.includes("src/app.js"), "staged file appears in the tree");
+});
+
+test("side tree stash tab renders stash list and file sections through the module", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": { branch: "main", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [], stashes: 2 },
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+    "/api/git-ui/stashes": { stashes: [{ name: "stash@{0}", date: "2024-01-01", message: "wip" }, { name: "stash@{1}", date: "2024-01-02", message: "wip2" }] },
+    "/api/git-ui/stash-show": { files: [{ path: "src/app.js" }] },
+  });
+  await booted.ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  const ui = booted.ui;
+  ui.tab("stash");
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const html = ctxHtml(booted);
+  assert.match(html, /git-ui-stash-list/);
+  assert.match(html, /stash \(2\)/);
+  await ui.selectStash(encodeURIComponent("stash@{0}"));
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const stashHtml = ctxHtml(booted);
+  assert.match(stashHtml, /Stash files stash 0/);
+  assert.ok(stashHtml.includes("src/app.js"), "stash file appears in the tree");
+  assert.match(stashHtml, /No files in this stash|herdr-tree-row/);
 });
