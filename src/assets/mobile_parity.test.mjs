@@ -285,6 +285,18 @@ describe("mobile parity feature guards", () => {
     assert.ok(panelsIndex > -1 && panelsIndex < appIndex, "panels.js loads before app.js");
   });
 
+  it("mobile workspace/meta selectors live in their own module loaded before app.js", () => {
+    const workmetaSource = readFileSync(new URL("./mobile/workmeta.js", import.meta.url), "utf8");
+    assert.match(workmetaSource, /globalThis\.HerdrMobileWorkmetaModule = \{ create: createMobileWorkmeta \}/);
+    assert.match(workmetaSource, /state\.worktreeRows\.find/);
+    assert.match(workmetaSource, /samePath\(row\.path, workspace\.worktree\.checkout_path\)/);
+    assert.match(appSource, /return mobileWorkmeta\.contextMeta\(workspace\)/);
+    assert.match(appSource, /return mobileWorkmeta\.worktreeForWorkspace\(workspace\)/);
+    const workmetaIndex = bootSource.indexOf("/assets/mobile/workmeta.js");
+    const appIndex = bootSource.indexOf("/assets/mobile/app.js");
+    assert.ok(workmetaIndex > -1 && workmetaIndex < appIndex, "workmeta.js loads before app.js");
+  });
+
   it("worktrees module exposes recent workspace actions", () => {
     assert.match(worktreesSource, /loadRecent/);
     assert.match(worktreesSource, /openRecent/);
