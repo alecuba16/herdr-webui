@@ -605,8 +605,25 @@ Real-workflow validation run after the fixes, all green:
   e2e 52/52 (stage/unstage/discard/branch-switch through the module),
   git e2e PASSED.
 
+- **Phase 2b slice: mobile sessions split** (`22414a2`):
+  `src/assets/mobile/sessions.js` (205 lines) owns the Sessions
+  screen: `createMobileSessions(deps)` with the session list render,
+  refresh, name input, create (built-in/Herdr), switch, and close;
+  registers `globalThis.HerdrMobileSessionsModule`. The entangled
+  shared state is explicit deps: `loadSessions`, `refresh`,
+  `connectEvents`, `destroyTerminal`, `sessionPrefix`, `pushState`,
+  `syncBackendBadge`, `getEventWs`/`setEventWs` accessors (eventWs is
+  an app.js closure var), plus the backend helpers and `confirmFn`.
+  `switchSession` stays synchronous exactly as the original closure
+  (parity guard asserts non-async). app.js is 1,539→1,393 lines.
+  Registered: MOBILE_SESSIONS_JS, route + route test, boot list +
+  boot test, mobile_load concatenation; 4 functional session tests
+  (create/switch/close/name-required) run against the module through
+  the concatenated bundle. Validated: 524/524 frontend, 534/534
+  Rust, fmt + clippy clean, mobile-edit e2e 52/52.
+
 Remaining from §6: Phase 1 slices beyond auth (settings/recent-workspaces,
 git_ui split continues), Phase 2b monolith closures decomposition
-(desktop core.js/git_ui.js, mobile app.js screens/sessions/events slices),
+(desktop core.js/git_ui.js, mobile app.js screens/events slices),
 full mobile Git parity (roadmap), and the eventual distillation of
 this file into docs/code-quality-audit.md.
