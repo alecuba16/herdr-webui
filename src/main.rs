@@ -9,7 +9,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, Path as AxumPath, Query, State};
-use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+#[cfg(test)]
+use axum::http::{header, HeaderValue};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -19,9 +21,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
+use crate::auth::{AuthConfig, LoginRequest};
 use crate::builtin_detection::JcodeDetectionVariant;
 
 mod assets;
+mod auth;
 mod builtin_backend;
 mod builtin_detection;
 mod builtin_events;
@@ -59,7 +63,6 @@ use compat::{backend_compatibility, BackendCompatibility};
 use protocol::*;
 
 const DEFAULT_BIND: &str = "127.0.0.1:8787";
-const COOKIE_NAME: &str = "herdr_web_session";
 const HERDR_WEBUI_VERSION: &str = env!("HERDR_WEBUI_VERSION");
 const INSTALL_LABEL: &str = "herdr-web";
 const MAX_FRAME_SIZE: usize = 2 * 1024 * 1024;
@@ -676,35 +679,14 @@ impl EventStream {
     }
 }
 
-struct AuthConfig {
-    user: Option<String>,
-    password: Option<String>,
-    localhost_no_auth: bool,
-    token: String,
-}
-
 impl AuthConfig {
     fn from_settings(settings: &RuntimeServerSettings) -> io::Result<Self> {
         validate_runtime_server_settings(settings)?;
-        let seed = format!(
-            "{}:{}:{}",
-            settings.user.as_deref().unwrap_or(""),
-            settings.password.as_deref().unwrap_or(""),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|value| value.as_nanos())
-                .unwrap_or(0)
-        );
-        let token = Sha256::digest(seed.as_bytes())
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect();
-        Ok(Self {
-            user: settings.user.clone(),
-            password: settings.password.clone(),
-            localhost_no_auth: settings.localhost_no_auth,
-            token,
-        })
+        Ok(crate::auth::AuthConfig::from_parts(
+            settings.user.clone(),
+            settings.password.clone(),
+            settings.localhost_no_auth,
+        ))
     }
 }
 
@@ -1991,31 +1973,7 @@ fn read_json_line<T: for<'de> Deserialize<'de>>(
 }
 
 fn authorized(state: &WebState, headers: &HeaderMap, remote: SocketAddr) -> bool {
-    let Ok(auth) = state.auth.lock() else {
-        return false;
-    };
-    if remote.ip().is_loopback() && auth.localhost_no_auth {
-        return true;
-    }
-    let Some(cookie) = headers
-        .get(header::COOKIE)
-        .and_then(|value| value.to_str().ok())
-    else {
-        return false;
-    };
-    cookie.split(';').any(|part| {
-        let Some(value) = part.trim().strip_prefix(&format!("{COOKIE_NAME}=")) else {
-            return false;
-        };
-        constant_time_eq(value.as_bytes(), auth.token.as_bytes())
-    })
-}
-
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+    crate::auth::authorized(&state.auth, headers, remote)
 }
 
 #[allow(clippy::result_large_err)]
@@ -2024,15 +1982,7 @@ pub(crate) fn require_auth(
     headers: &HeaderMap,
     remote: SocketAddr,
 ) -> Result<(), Response> {
-    authorized(state, headers, remote)
-        .then_some(())
-        .ok_or_else(|| {
-            (
-                StatusCode::UNAUTHORIZED,
-                Json(json!({ "error": "unauthorized" })),
-            )
-                .into_response()
-        })
+    crate::auth::require_auth(&state.auth, headers, remote)
 }
 
 async fn index(
@@ -2892,12 +2842,6 @@ async fn proxy_server_stop(api: ApiClient) -> Response {
     }
 }
 
-#[derive(Deserialize)]
-struct LoginRequest {
-    username: String,
-    password: String,
-}
-
 async fn login(
     State(state): State<WebState>,
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
@@ -2910,22 +2854,15 @@ async fn login(
         )
             .into_response();
     };
-    if remote.ip().is_loopback() && auth.localhost_no_auth {
+    if auth.localhost_bypass(remote) {
         drop(auth);
         log_event(
             &state.log_level(),
             &format!("login: localhost bypass for {remote}"),
         );
-        return login_response(&state);
+        return crate::auth::login_response(&state.auth);
     }
-    let ok = auth
-        .user
-        .as_deref()
-        .zip(auth.password.as_deref())
-        .is_some_and(|(user, password)| {
-            constant_time_eq(body.username.as_bytes(), user.as_bytes())
-                && constant_time_eq(body.password.as_bytes(), password.as_bytes())
-        });
+    let ok = auth.verify_credentials(&body.username, &body.password);
     drop(auth);
     if !ok {
         log_event(
@@ -2942,25 +2879,7 @@ async fn login(
         &state.log_level(),
         &format!("login: success for user '{}' from {remote}", body.username),
     );
-    login_response(&state)
-}
-
-fn login_response(state: &WebState) -> Response {
-    let token = state
-        .auth
-        .lock()
-        .map(|auth| auth.token.clone())
-        .unwrap_or_default();
-    let mut response = Json(json!({ "ok": true })).into_response();
-    response.headers_mut().insert(
-        header::SET_COOKIE,
-        HeaderValue::from_str(&format!(
-            "{COOKIE_NAME}={}; HttpOnly; SameSite=Lax; Path=/",
-            token
-        ))
-        .expect("valid cookie"),
-    );
-    response
+    crate::auth::login_response(&state.auth)
 }
 
 async fn proxy_request_async(api: ApiClient, request: serde_json::Value) -> Response {
@@ -6160,9 +6079,9 @@ mod tests {
 
     #[test]
     fn compares_constant_time_equal_values() {
-        assert!(constant_time_eq(b"same", b"same"));
-        assert!(!constant_time_eq(b"same", b"diff"));
-        assert!(!constant_time_eq(b"same", b"same-but-longer"));
+        assert!(crate::auth::constant_time_eq(b"same", b"same"));
+        assert!(!crate::auth::constant_time_eq(b"same", b"diff"));
+        assert!(!crate::auth::constant_time_eq(b"same", b"same-but-longer"));
     }
 
     #[test]
