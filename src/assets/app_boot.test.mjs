@@ -58,6 +58,7 @@ const MOBILE_SCRIPTS = [
   "/assets/mobile/sessions.js",
   "/assets/mobile/events.js",
   "/assets/mobile/screens.js",
+  "/assets/mobile/panels.js",
   "/assets/mobile/app.js",
 ];
 

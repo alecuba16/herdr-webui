@@ -273,6 +273,18 @@ describe("mobile parity feature guards", () => {
     assert.ok(screensIndex > -1 && screensIndex < appIndex, "screens.js loads before app.js");
   });
 
+  it("mobile panel and terminal renderers live in their own module loaded before app.js", () => {
+    const panelsSource = readFileSync(new URL("./mobile/panels.js", import.meta.url), "utf8");
+    assert.match(panelsSource, /globalThis\.HerdrMobilePanelsModule = \{ create: createMobilePanels \}/);
+    assert.match(panelsSource, /getMobileTerminal\(\)\.destroy\(true\)/);
+    assert.match(panelsSource, /renderTerminalTabsWithAdd/);
+    assert.match(appSource, /mobilePanels\.renderPanels\(\)/);
+    assert.match(appSource, /mobilePanels\.renderTerminalScreen\(screen\)/);
+    const panelsIndex = bootSource.indexOf("/assets/mobile/panels.js");
+    const appIndex = bootSource.indexOf("/assets/mobile/app.js");
+    assert.ok(panelsIndex > -1 && panelsIndex < appIndex, "panels.js loads before app.js");
+  });
+
   it("worktrees module exposes recent workspace actions", () => {
     assert.match(worktreesSource, /loadRecent/);
     assert.match(worktreesSource, /openRecent/);
@@ -311,7 +323,8 @@ describe("mobile parity feature guards", () => {
     // Interactive content inside <button> is invalid HTML (WHATWG) and
     // browser handling of activation/click bubbling differs; row actions
     // must be span elements like the desktop agent sidebar uses.
-    const rowMatches = appSource.match(/<button class="mobile-row[^"]*"[^>]*>[\s\S]*?<\/button>/g) || [];
+    const rowSources = [appSource, readFileSync(new URL("./mobile/screens.js", import.meta.url), "utf8"), readFileSync(new URL("./mobile/panels.js", import.meta.url), "utf8")];
+    const rowMatches = rowSources.flatMap((source) => source.match(/<button class="mobile-row[^"]*"[^>]*>[\s\S]*?<\/button>/g) || []);
     assert.ok(rowMatches.length > 0, "mobile rows must exist");
     for (const row of rowMatches) {
       const opens = (row.match(/<button/g) || []).length;
