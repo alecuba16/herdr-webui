@@ -622,8 +622,29 @@ Real-workflow validation run after the fixes, all green:
   the concatenated bundle. Validated: 524/524 frontend, 534/534
   Rust, fmt + clippy clean, mobile-edit e2e 52/52.
 
+- **Phase 2b slice: mobile events split** (`95d92bc`):
+  `src/assets/mobile/events.js` (76 lines) owns the events WebSocket:
+  `createMobileEvents(deps)` with `scheduleEventRefresh` (120 ms
+  debounced refresh), `scheduleEventReconnect` (1500 ms backoff),
+  `connectEvents` (settings-change dispatch, pane-exited dispatch to
+  the temp terminal via a `getTempTerminal` getter), and a new
+  `closeEventWs` that captures the old inline eventWs teardown; the
+  eventWs/timer state moved from app.js closure vars into the module.
+  sessions.js switched its `getEventWs`/`setEventWs` pair to the
+  simpler `closeEventWs` dep, and `syncSessionBackendFromServer` in
+  app.js uses `mobileEvents.closeEventWs()` +
+  `scheduleEventReconnect()` behind an `if (mobileEvents)` guard
+  (function declarations are hoisted before module init, so the null
+  guard preserves the original early-boot path). Registered:
+  MOBILE_EVENTS_JS, route + route test (body > 500), boot list +
+  boot test, mobile_load concatenation; parity guard asserts module
+  pattern + `/ws/events` + boot order. app.js is 1,393→1,353 lines.
+  Validated: 525/525 frontend (one source-level assertion moved from
+  app.js to events.js: handlePaneExited wiring), 534/534 Rust, fmt +
+  clippy clean, mobile-edit e2e 52/52, desktop e2e 58 PASS.
+
 Remaining from §6: Phase 1 slices beyond auth (settings/recent-workspaces,
 git_ui split continues), Phase 2b monolith closures decomposition
-(desktop core.js/git_ui.js, mobile app.js screens/events slices),
-full mobile Git parity (roadmap), and the eventual distillation of
+(desktop core.js/git_ui.js, remaining mobile app.js screens), full
+mobile Git parity (roadmap), and the eventual distillation of
 this file into docs/code-quality-audit.md.
