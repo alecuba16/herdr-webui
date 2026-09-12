@@ -812,6 +812,28 @@ Real-workflow validation run after the fixes, all green:
   532/532 frontend, 534/534 Rust, fmt + clippy clean, git e2e 38 ok
   (GIT E2E ACCEPTANCE PASSED), desktop e2e 58 PASS.
 
+- **Desktop git_ui cleanup split** (`72c4686`):
+  `src/assets/desktop/git_ui/cleanup.js` (188 lines) — factory
+  `createGitUiCleanup` owning the 18 cleanup functions
+  (`renderCleanup, renderCleanupRepo, cleanupVisibleBranches,
+  cleanupDefaultBranch, cleanupBranchSelectable, cleanupPushedLabel,
+  renderCleanupGroupTitle, renderCleanupBranch, renderCleanupWorktree,
+  cleanupItemKey, cleanupSelected, cleanupSelectionState,
+  cleanupSelectableItems, cleanupRepoItems, cleanupSelectedItems,
+  cleanupItemLabel, deleteCleanupItem, cleanupForceRetryLikelyNeeded`),
+  registering `globalThis.HerdrGitUiCleanupModule`. Deps: `active, esc,
+  arg, treeIcon, compactPath, api` (all hoisted function refs).
+  git_ui.js (4092 → 3956 lines) creates the module after stash and binds
+  each function to a same-named const, so all call sites (bulk action
+  HTML, toggle handlers, delete confirm flow) keep identical names.
+  Registered in the DESKTOP_GIT_UI_JS concat before git_ui.js;
+  git_ui_behavior.test.mjs boots the module (14 vm tests) and gained a
+  registration + concat-order guard; app_load cleanup assertions
+  (selection helpers, pushed labels, gitUiCleanupRoot input) retargeted
+  to the module source. Validated: 533/533 frontend, 534/534 Rust, fmt
+  + clippy clean, git e2e 38 ok (GIT E2E ACCEPTANCE PASSED), desktop
+  e2e 58 PASS.
+
 Remaining from §6: Phase 1 slices beyond auth (settings/recent-workspaces,
 git_ui split continues), Phase 2b monolith closures decomposition
 (remaining git_ui.js render/log slices, remaining mobile app.js screens),
