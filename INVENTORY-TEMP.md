@@ -691,6 +691,24 @@ Real-workflow validation run after the fixes, all green:
   Validated: 526/526 frontend, 534/534 Rust, fmt + clippy clean, mobile
   e2e 52 PASS, desktop e2e 58 PASS.
 
+- **Mobile panels/terminal split** (`361398e`): `src/assets/mobile/panels.js`
+  (71 lines) — factory `createMobilePanels` owning the panel/terminal
+  renderers (`renderPanels, renderTerminal, renderTerminalTabsWithAdd,
+  renderTerminalTabs, renderTerminalScreen`), registering
+  `globalThis.HerdrMobilePanelsModule`. `renderTerminalScreen` keeps the
+  `destroy(true)` path via a `getMobileTerminal` getter (mobileTerminal is
+  created before the module but the getter avoids create-time capture).
+  app.js (1230 → 1215 lines) keeps thin sync wrappers delegating to
+  mobilePanels so all existing call sites and HerdrMobile onclick strings
+  are untouched. Registered as `MOBILE_PANELS_JS` asset with route +
+  route test; app_boot mobile list `screens.js, panels.js, app.js`;
+  mobile_load concat includes panels.js; mobile_parity gained a
+  boot-order + delegation guard and the nested-button scan now covers
+  app.js + screens.js + panels.js (the scan caught the moved
+  mobile-row markup, widened rather than weakened). Validated: 527/527
+  frontend, 534/534 Rust, fmt + clippy clean, mobile e2e 52 PASS,
+  desktop e2e 58 PASS.
+
 Remaining from §6: Phase 1 slices beyond auth (settings/recent-workspaces,
 git_ui split continues), Phase 2b monolith closures decomposition
 (remaining git_ui.js render/log slices, remaining mobile app.js screens),
