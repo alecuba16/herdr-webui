@@ -697,7 +697,7 @@
         ? '<span class="mobile-chip">running</span>'
         : '<span class="mobile-chip">offline</span>';
       const controls = active
-        ? `${pill}<button class="mobile-btn" ${busy ? "disabled" : ""} onclick="HerdrMobile.refreshSessions()">Retry</button><button class="mobile-btn danger" ${busy ? "disabled" : ""} onclick="HerdrMobile.closeSession()">Close</button>`
+        ? `${pill}<span class="mobile-btn agent-action" role="button" tabindex="0" ${busy ? "data-disabled=\"1\"" : ""} onclick="event.stopPropagation();HerdrMobile.refreshSessions()">Retry</span><span class="mobile-btn danger agent-action" role="button" tabindex="0" ${busy ? "data-disabled=\"1\"" : ""} onclick="event.stopPropagation();HerdrMobile.closeSession()">Close</span>`
         : `${pill}${status}`;
       return `<button class="mobile-row${active ? " active" : ""}" onclick="HerdrMobile.selectSession(${jsArg(label)},${jsArg(backend)})"><strong>${escapeHtml(label)}${active ? " · current" : ""}</strong><span>${controls}</span></button>`;
     }).join("");
@@ -706,6 +706,7 @@
   }
 
   async function refreshSessions() {
+    if (state.sessionBusy) return;
     state.sessionBusy = true;
     state.sessionBusyLabel = "Loading sessions...";
     render();
@@ -811,6 +812,7 @@
 
   // Close the active session (mobile parity with closeCurrentSession).
   async function closeSession() {
+    if (state.sessionBusy) return;
     if (!confirm(`Close current ${sessionBackendLabel(currentSessionBackend())} session?`)) return;
     state.sessionBusy = true;
     state.sessionBusyLabel = "Closing session...";
@@ -891,8 +893,8 @@
         const dismissAction =
           status === "working" && workingDismissals
             ? dismissed
-              ? `<button class="mobile-btn mini" title="Show this working agent again" onclick="event.stopPropagation();HerdrMobile.restoreWorkingAgent(${jsArg(agent.workspace_id)},${jsArg(agent.tab_id)},${jsArg(agent.pane_id)},${jsArg(agent.terminal_id || "")})">Undo</button>`
-              : `<button class="mobile-btn mini" title="Locally ignore this stuck working state" onclick="event.stopPropagation();HerdrMobile.dismissWorkingAgent(${jsArg(agent.workspace_id)},${jsArg(agent.tab_id)},${jsArg(agent.pane_id)},${jsArg(agent.terminal_id || "")})">Dismiss</button>`
+              ? `<span class="mobile-btn mini agent-action" role="button" tabindex="0" title="Show this working agent again" onclick="event.stopPropagation();HerdrMobile.restoreWorkingAgent(${jsArg(agent.workspace_id)},${jsArg(agent.tab_id)},${jsArg(agent.pane_id)},${jsArg(agent.terminal_id || "")})">Undo</span>`
+              : `<span class="mobile-btn mini agent-action" role="button" tabindex="0" title="Locally ignore this stuck working state" onclick="event.stopPropagation();HerdrMobile.dismissWorkingAgent(${jsArg(agent.workspace_id)},${jsArg(agent.tab_id)},${jsArg(agent.pane_id)},${jsArg(agent.terminal_id || "")})">Dismiss</span>`
             : "";
         const workspace = byId[agent.workspace_id];
         const repo =

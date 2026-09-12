@@ -252,6 +252,26 @@ describe("mobile parity feature guards", () => {
     assert.match(appSource, /HerdrMobile\.restoreWorkingAgent/);
   });
 
+  it("no nested interactive elements inside mobile-row buttons", () => {
+    // A <button> cannot contain another button: the HTML parser closes the
+    // outer button at the inner one, so rows must use span actions.
+    const rowMatches = appSource.match(/<button class="mobile-row[^"]*"[^>]*>[\s\S]*?<\/button>/g) || [];
+    assert.ok(rowMatches.length > 0, "mobile rows must exist");
+    for (const row of rowMatches) {
+      const opens = (row.match(/<button/g) || []).length;
+      assert.equal(opens, 1, `nested button in row: ${row.slice(0, 120)}`);
+    }
+  });
+
+  it("recent workspace rows pass raw paths through jsArg", () => {
+    // encodeURIComponent does not escape quotes, so onclick strings built
+    // with quoted encodeURIComponent payloads break on paths like /tmp/o'brien.
+    assert.ok(!worktreesSource.includes("openRecentWorkspace('${"), "recent open must not use quoted encodeURIComponent");
+    assert.ok(!worktreesSource.includes("removeRecentWorkspace('${"), "recent remove must not use quoted encodeURIComponent");
+    assert.match(worktreesSource, /openRecentWorkspace\(\$\{jsArg\(item\.path\)\}\)/);
+    assert.match(worktreesSource, /removeRecentWorkspace\(\$\{jsArg\(item\.path\)\}\)/);
+  });
+
   it("terminal output clears dismissed working overrides", () => {
     const terminalSource = readFileSync(new URL("./mobile/terminal.js", import.meta.url), "utf8");
     assert.match(terminalSource, /onTerminalOutput/);

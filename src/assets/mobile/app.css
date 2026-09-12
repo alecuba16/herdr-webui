@@ -1263,6 +1263,18 @@ body.light .mobile-nav-status.working {
 .mobile-row.agent-dismissed {
   opacity: 0.55;
 }
+.mobile-btn.mini.agent-action {
+  cursor: pointer;
+  display: inline-block;
+}
+.mobile-btn.agent-action {
+  cursor: pointer;
+  display: inline-block;
+}
+.mobile-btn.agent-action[data-disabled] {
+  opacity: 0.5;
+  pointer-events: none;
+}
 @media (min-width: 600px) and (max-width: 900px) {
   .mobile-app {
     grid-template-columns: 300px minmax(0, 1fr);

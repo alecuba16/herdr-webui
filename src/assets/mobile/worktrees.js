@@ -68,8 +68,7 @@
       const title = item.label || pathBasename(item.path) || item.path;
       const kind = item.kind === "worktree" ? "worktree" : "workspace";
       const meta = [kind, item.branch, item.path].filter(Boolean).join(" · ");
-      const encoded = encodeURIComponent(item.path);
-      return `<div class="mobile-worktree-row"><span><strong>${escapeHtml(title)}</strong><small>${escapeHtml(meta)}</small></span><span class="mobile-recent-actions"><button class="mobile-btn primary" onclick="HerdrMobile.openRecentWorkspace('${encoded}')">Open</button><button class="mobile-btn" title="Remove from recent list" onclick="HerdrMobile.removeRecentWorkspace('${encoded}')">✕</button></span></div>`;
+      return `<div class="mobile-worktree-row"><span><strong>${escapeHtml(title)}</strong><small>${escapeHtml(meta)}</small></span><span class="mobile-recent-actions"><button class="mobile-btn primary" onclick="HerdrMobile.openRecentWorkspace(${jsArg(item.path)})">Open</button><button class="mobile-btn" title="Remove from recent list" onclick="HerdrMobile.removeRecentWorkspace(${jsArg(item.path)})">✕</button></span></div>`;
     }
 
     async function loadRecent() {
@@ -86,8 +85,8 @@
       if (state.screen === "worktrees") render();
     }
 
-    async function openRecent(encodedPath) {
-      const path = decodeURIComponent(String(encodedPath || ""));
+    async function openRecent(pathArg) {
+      const path = String(pathArg || "");
       const item = (recent || []).find((entry) => entry && entry.path === path);
       if (!path || !item) return;
       state.worktreeError = "";
@@ -108,8 +107,8 @@
       }
     }
 
-    async function removeRecent(encodedPath) {
-      const path = decodeURIComponent(String(encodedPath || ""));
+    async function removeRecent(pathArg) {
+      const path = String(pathArg || "");
       if (!path) return;
       try {
         await api("/api/recent-workspaces/remove", {
