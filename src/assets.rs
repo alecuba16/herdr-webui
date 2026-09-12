@@ -88,6 +88,7 @@ const MOBILE_TERMINAL_JS: &str = include_str!("assets/mobile/terminal.js");
 const MOBILE_WORKTREES_JS: &str = include_str!("assets/mobile/worktrees.js");
 const MOBILE_FILE_BROWSER_JS: &str = include_str!("assets/mobile/file_browser.js");
 const MOBILE_SEARCH_JS: &str = include_str!("assets/mobile/search.js");
+const MOBILE_GIT_JS: &str = include_str!("assets/mobile/git.js");
 const MOBILE_CSS: &str = include_str!("assets/mobile/app.css");
 const MOBILE_JS: &str = include_str!("assets/mobile/app.js");
 const JETBRAINS_MONO_NERD_FONT: &[u8] =
@@ -362,6 +363,10 @@ pub(crate) async fn mobile_settings_js() -> Response {
 
 pub(crate) async fn mobile_search_js() -> Response {
     static_text(MOBILE_SEARCH_JS, "application/javascript; charset=utf-8")
+}
+
+pub(crate) async fn mobile_git_js() -> Response {
+    static_text(MOBILE_GIT_JS, "application/javascript; charset=utf-8")
 }
 
 pub(crate) async fn mobile_terminal_js() -> Response {

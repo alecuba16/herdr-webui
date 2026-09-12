@@ -231,6 +231,16 @@ describe("mobile parity feature guards", () => {
     assert.ok(mobileIndex > -1 && mobileIndex < appIndex, "search.js loads before app.js");
   });
 
+  it("mobile git lives in its own module loaded before app.js", () => {
+    const gitSource = readFileSync(new URL("./mobile/git.js", import.meta.url), "utf8");
+    assert.match(gitSource, /globalThis\.HerdrMobileGitModule = \{ create: createMobileGit \}/);
+    assert.match(gitSource, /async function loadGitStatus\(\)/);
+    assert.match(gitSource, /confirmFn\(`Discard all uncommitted changes/);
+    const gitIndex = bootSource.indexOf("/assets/mobile/git.js");
+    const appIndex = bootSource.indexOf("/assets/mobile/app.js");
+    assert.ok(gitIndex > -1 && gitIndex < appIndex, "git.js loads before app.js");
+  });
+
   it("worktrees module exposes recent workspace actions", () => {
     assert.match(worktreesSource, /loadRecent/);
     assert.match(worktreesSource, /openRecent/);

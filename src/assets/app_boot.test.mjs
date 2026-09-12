@@ -54,6 +54,7 @@ const MOBILE_SCRIPTS = [
   "/assets/mobile/file-browser.js",
   "/assets/mobile/settings.js",
   "/assets/mobile/search.js",
+  "/assets/mobile/git.js",
   "/assets/mobile/app.js",
 ];
 
