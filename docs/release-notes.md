@@ -1,5 +1,21 @@
 # Release notes
 
+## 0.4.30 Release Notes
+- The recent workspaces list only offers reopenable entries now.
+  `GET /api/recent-workspaces` filters out entries whose folder no longer
+  exists on disk, persists that pruning to `webui-settings.json` so stale
+  paths stay gone, and returns 500 with an error payload if the persist
+  fails (matching the clear endpoint). Entries already open in the
+  current session are hidden from the palette list (matched by workspace
+  path, worktree checkout path, or an open worktree row at the same
+  path).
+- Opening a recent entry now reopens the workspace or worktree at its
+  recorded path: `POST /api/recent-workspaces` proxies `worktree.open` with
+  `focus: true`, which focuses an existing workspace at that folder or
+  creates one when it is closed. A path whose folder no longer exists is
+  rejected with 400 `workspace folder must exist` before the backend is
+  called, mirroring the create-workspace validation.
+
 ## 0.4.29 Release Notes
 - Opening a recent workspace with an empty or whitespace-only path
   (`POST /api/recent-workspaces`) now returns 400 `path is required`
