@@ -35,6 +35,11 @@ theme-e2e:
 terminal-fit-e2e:
     scripts/e2e/run-terminal-fit-e2e.sh
 
+# Real-browser acceptance run for the Git drawer CONTENT (changes tree,
+# diff view, log graph, branch list) in the live DOM. See scripts/e2e/README.md.
+git-drawer-e2e:
+    scripts/e2e/run-git-drawer-e2e.sh
+
 check: lint test
 
 build:
