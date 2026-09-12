@@ -529,9 +529,16 @@
   }
 
   async function api(url, opt) {
+    // Shared client: sends x-herdr-session/x-herdr-backend (the Git drawer
+    // calls session-scoped routes like /api/worktrees) and handles 401.
+    if (globalThis.HerdrHttp) return globalThis.HerdrHttp.request(url, opt);
     const res = await fetch(url, Object.assign({ credentials: "same-origin" }, opt || {}));
     const body = await res.json();
-    if (!res.ok || body.error) throw Error(body.error || res.statusText);
+    if (!res.ok || body.error) {
+      const error = Error(body.error || res.statusText);
+      error.details = body || {};
+      throw error;
+    }
     return body;
   }
 

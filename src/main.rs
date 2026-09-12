@@ -47,8 +47,8 @@ use assets::{
     mobile_settings_js, mobile_terminal_js, mobile_worktrees_js, shared_actions_js,
     shared_colors_css, shared_content_search_css, shared_core_js, shared_editor_js,
     shared_file_content_search_js, shared_file_icons_css, shared_file_icons_js,
-    shared_file_tree_css, shared_file_tree_js, shared_line_context_js, shared_lsp_js,
-    shared_markdown_preview_css, shared_markdown_preview_js, shared_options_js,
+    shared_file_tree_css, shared_file_tree_js, shared_http_js, shared_line_context_js,
+    shared_lsp_js, shared_markdown_preview_css, shared_markdown_preview_js, shared_options_js,
     shared_settings_confirm_js, shared_settings_feedback_js, shared_temp_terminal_js,
     shared_terminal_adapter_js, shared_terminal_fit_js, shared_terminal_scroll_js,
     shared_workspace_search_js, vendor_codemirror_js, vendor_dompurify_js, vendor_ghostty_wasm,
@@ -1469,6 +1469,7 @@ fn app_router(state: WebState) -> Router {
         .route("/assets/desktop/shortcuts.css", get(desktop_shortcuts_css))
         .route("/assets/app-boot.js", get(app_boot_js))
         .route("/assets/shared/core.js", get(shared_core_js))
+        .route("/assets/shared/http.js", get(shared_http_js))
         .route("/assets/shared/options.js", get(shared_options_js))
         .route("/assets/shared/actions.js", get(shared_actions_js))
         .route("/assets/shared/file-icons.js", get(shared_file_icons_js))
@@ -1812,6 +1813,7 @@ fn client_socket_for_headers(state: &WebState, headers: &HeaderMap) -> PathBuf {
 /// Resolve the API client for a query-string session/backend without
 /// starting anything. `api_for_query_session_ensured` builds on this after
 /// auto-starting the built-in backend when needed.
+#[allow(dead_code)]
 fn api_for_query_session_routed(
     state: &WebState,
     headers: &HeaderMap,
@@ -7076,6 +7078,9 @@ mod tests {
         let _ = fs::remove_file(sentinel);
     }
 
+    // lock_env() serializes env-mutating tests; holding it across await is
+    // intentional so no other test touches process env while handlers run.
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn remove_recent_workspace_removes_single_entry_and_validates() {
         let _env = lock_env();
@@ -7414,6 +7419,9 @@ mod tests {
     }
 
     #[cfg(unix)]
+    // lock_env() serializes env-mutating tests; held across await on purpose
+    // so no other test touches process env while handlers run.
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn open_recent_workspace_rejects_missing_folder() {
         let _env = lock_env();
@@ -8311,6 +8319,9 @@ mod tests {
     }
 
     #[cfg(unix)]
+    // lock_env() serializes env-mutating tests; held across await on purpose
+    // so no other test touches process env while handlers run.
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn close_session_builtin_with_missing_socket_reports_already_stopped() {
         // Same stale-row class for the built-in backend: the session
@@ -9024,6 +9035,9 @@ mod tests {
     }
 
     #[cfg(unix)]
+    // lock_env() serializes env-mutating tests; held across await on purpose
+    // so no other test touches process env while handlers run.
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn open_worktree_handler_proxies_open() {
         let _env = lock_env();
@@ -9277,8 +9291,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn detect_herdr_install_classifies_detected_versions() {
-        use std::os::unix::fs::PermissionsExt;
-
         let root = std::env::temp_dir().join(format!(
             "herdr-webui-detect-install-test-{}",
             std::process::id()
@@ -9423,7 +9435,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!(
             "herdr-webui-launch-test-{}-{}",
             std::process::id(),
-            std::thread::current().name().unwrap_or("t").to_string()
+            std::thread::current().name().unwrap_or("t")
         ));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
@@ -10908,6 +10920,9 @@ mod tests {
 
     // ── open_worktree success path ──
 
+    // lock_env() serializes env-mutating tests; held across await on purpose
+    // so no other test touches process env while handlers run.
+    #[allow(clippy::await_holding_lock)]
     #[cfg(unix)]
     #[tokio::test]
     async fn open_worktree_proxies_successfully() {

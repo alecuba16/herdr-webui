@@ -7,9 +7,7 @@ use interprocess::TryClone as _;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-use crate::protocol::{
-    read_message, write_message, ClientMessage, RenderEncoding, ServerMessage, TerminalFrame,
-};
+use crate::protocol::{read_message, write_message, ClientMessage, ServerMessage, TerminalFrame};
 
 /// Client-side API intended for a future first-party TUI or smoke CLI.
 ///
@@ -562,6 +560,7 @@ fn short_builtin_socket_dir(hash: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::RenderEncoding;
     use std::fs;
     use std::sync::{mpsc, Mutex};
     use std::thread;

@@ -108,7 +108,14 @@ function context() {
   ctx.terminal = getElement("terminal");
   ctx.window = ctx;
   ctx.globalThis = ctx;
-  return vm.createContext(ctx);
+  const contextObject = vm.createContext(ctx);
+  // Mirror production boot order: the shared HTTP client loads before any
+  // bundle module so api()/apiOptions() delegate to HerdrHttp.
+  vm.runInContext(
+    readFileSync(new URL("./shared/http.js", import.meta.url), "utf8"),
+    contextObject,
+  );
+  return contextObject;
 }
 
 function loadWorkspaceSearch(ctx) {

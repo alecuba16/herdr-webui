@@ -59,6 +59,8 @@
   }
 
   async function api(url) {
+    // Shared client keeps session/backend headers and 401 handling uniform.
+    if (globalThis.HerdrHttp) return globalThis.HerdrHttp.request(url);
     const res = await fetch(url, { credentials: "same-origin" });
     const body = await res.json();
     if (!res.ok || body.error) {
@@ -70,6 +72,13 @@
   }
 
   async function postJson(url, payload) {
+    // Shared client keeps session/backend headers and 401 handling uniform.
+    if (globalThis.HerdrHttp)
+      return globalThis.HerdrHttp.request(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload || {}),
+      });
     const res = await fetch(url, { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload || {}) });
     const body = await res.json();
     if (!res.ok || body.error) {

@@ -19,10 +19,15 @@ use serde::{Deserialize, Serialize};
 ///
 /// herdr validates this exact value at handshake time; there is no
 /// cross-version compatibility window.
+// Kept even though the server owns its own copy: this documents the client
+// protocol this module mirrors and is referenced by protocol tests.
+#[allow(dead_code)]
 pub(crate) const PROTOCOL_VERSION: u32 = 22;
 /// Minimum herdr backend version this WebUI supports.
+#[allow(dead_code)]
 pub(crate) const MIN_BACKEND_VERSION: &str = "0.9.0";
 /// Maximum herdr backend version this WebUI has been tested against.
+#[allow(dead_code)]
 pub(crate) const MAX_TESTED_BACKEND_VERSION: &str = "0.9.0";
 
 pub(crate) fn write_message<W: Write, M: Serialize>(writer: &mut W, msg: &M) -> Result<(), String> {
@@ -120,6 +125,9 @@ pub(crate) enum ClientMouseKind {
     ScrollRight,
 }
 
+// Wire mirrors: the browser sends plain bytes, but herdr sends these event
+// shapes, so the types stay for wire documentation and deserialization.
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum ClientInputEvent {
     Key {
@@ -149,6 +157,7 @@ pub(crate) enum ClientInputEvent {
 
 /// Source of a key event. A web client always synthesizes keys, so the other
 /// variants only need to deserialize.
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum ClientKeySource {
     Synthesized,
@@ -517,6 +526,7 @@ pub(crate) enum AgentStatus {
 }
 
 impl AgentStatus {
+    #[allow(dead_code)]
     pub(crate) fn from_str(value: &str) -> Self {
         match value {
             "idle" => Self::Idle,

@@ -134,22 +134,23 @@
     if (syncScreen && (state.pane || state.tab)) state.screen = "terminal";
   }
 
+  // All HTTP from mobile goes through the shared HerdrHttp client so both
+  // layouts send identical session/backend headers and 401 handling.
+  if (globalThis.HerdrHttp) {
+    globalThis.HerdrHttp.configure(() => ({
+      session: state.session,
+      backend: currentSessionBackend(),
+    }));
+  }
+
   function apiOptions(opt) {
-    const next = Object.assign({}, opt || {});
-    next.headers = Object.assign(
-      {},
-      next.headers || {},
-      state.session && state.session !== "default"
-        ? { "x-herdr-session": state.session }
-        : {},
-      currentSessionBackend()
-        ? { "x-herdr-backend": currentSessionBackend() }
-        : {},
-    );
-    return next;
+    return globalThis.HerdrHttp
+      ? globalThis.HerdrHttp.options(opt)
+      : Object.assign({ credentials: "same-origin" }, opt || {});
   }
 
   async function api(url, opt) {
+    if (globalThis.HerdrHttp) return globalThis.HerdrHttp.request(url, opt);
     const response = await fetch(url, apiOptions(opt));
     if (response.status === 401) {
       location.href = "/";
