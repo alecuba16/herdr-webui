@@ -858,6 +858,43 @@ Real-workflow validation run after the fixes, all green:
   Rust, fmt + clippy clean, git e2e 38 ok (GIT E2E ACCEPTANCE PASSED),
   desktop e2e 58 PASS.
 
+- **Desktop git_ui conflicts split** (`96679f7`):
+  `src/assets/desktop/git_ui/conflicts.js` (257 lines) — factory
+  `createGitUiConflicts` owning 16 functions: the side-editor render
+  family (`renderSideEditor, editNoteForLayout, renderEditableHunk,
+  renderEditableHunkUnified, renderEditableHunkConflictControls`),
+  the conflict-block text engine (`conflictBlocksInText,
+  resolveConflictBlockText`), hunk construction (`buildEditableHunks`),
+  the line-class change detectors (`sideEditorOriginalLineClasses,
+  changedLineClasses, changedCurrentLineIndexes,
+  changedCurrentLineIndexesByBounds, lineIndexesToRanges`), and the
+  conflict action buttons (`isConflictPath,
+  renderConflictResolutionButtons,
+  renderDiffConflictResolutionButtons`), registering
+  `globalThis.HerdrGitUiConflictsModule`. Deps: `active, esc, arg,
+  currentMode, diffLayoutMode` (all hoisted function refs).
+  git_ui.js (3745 → 3521 lines) creates the module after diffRender
+  and binds each function to a same-named const; call sites
+  (renderDiff's side-editor dispatch, renderConflicts rows,
+  renderDiffFile conflict actions, editFile/saveSideEditor/
+  resolveEditorConflictBlock handlers, CodeMirror mount wiring) keep
+  identical names. Registered in the DESKTOP_GIT_UI_JS concat before
+  git_ui.js. Coverage grown, not just moved: git_ui_behavior.test.mjs
+  gained the registration + concat-order guard plus four new vm
+  behavioral tests (ours/base/theirs block parsing incl. two-way
+  conflicts with null base, per-mode resolution buttons with
+  disabled-base path, side editor side-by-side vs unified render with
+  block controls, buildEditableHunks chunk splitting); cross-realm
+  array assertions use JSON.stringify comparison (vm vs host realm).
+  app_load conflict assertions (block parser, resolution buttons,
+  marker startsWith, conflict-diff-actions class, Use HEAD/parent/
+  remote wiring, hunk mount data attributes) retargeted to the module
+  source; renderConflictOperationActions/renderConflicts/resolve
+  handler assertions stay on git_ui.js where the code lives.
+  Validated: 539/539 frontend (534 + 5 new), 534/534 Rust, fmt +
+  clippy clean, git e2e 38 ok (GIT E2E ACCEPTANCE PASSED), desktop
+  e2e 58 PASS.
+
 Remaining from §6: Phase 1 slices beyond auth (settings/recent-workspaces,
 git_ui split continues), Phase 2b monolith closures decomposition
 (remaining git_ui.js render/log slices, remaining mobile app.js screens),
