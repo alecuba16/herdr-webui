@@ -982,6 +982,32 @@ Real-workflow validation run after the fixes, all green:
   fmt + clippy clean, git e2e 38 ok (GIT E2E ACCEPTANCE PASSED),
   desktop e2e 58 PASS.
 
+- **Desktop git_ui toasts split** (`d60ba7b`):
+  `src/assets/desktop/git_ui/toasts.js` (146 lines) — factory
+  `createGitUiToasts` owning 10 functions (`normalizeRemoteUrl,
+  branchPath, gitBranchUrl, gitPullRequestUrl, renderGitToast,
+  showCommitToast, copyGitPermalink, copyCommitId,
+  renderScopeCopyToast, copyScopeValue`), registering
+  `globalThis.HerdrGitUiToastsModule`. Deps: `state, active, api,
+  esc, arg, render, ensurePanel, navigator, setTimeoutFn` — vm
+  globals injected explicitly (`navigator`, `setTimeoutFn` as a
+  `(...args) => setTimeout(...args)` wrapper); `api` is the later
+  `HerdrGitUi` API object (closeGitToast/openGitUrl stay in the API
+  since they are only referenced via `HerdrGitUi.*` onclick
+  strings). git_ui.js (3020 → 2895 lines) creates the module after
+  branch_list and binds all 10 to same-named consts. Registered in
+  the DESKTOP_GIT_UI_JS concat before git_ui.js. Coverage:
+  git_ui_behavior.test.mjs gained the registration + concat-order
+  guard plus a behavioral permalink-copy test driving the
+  context-menu copyPermalink flow (stubbed `/api/git-ui/permalink`
+  GET + `Permalink copied` toast rendered; branch/PR URL building
+  asserted via the module source guard). app_load assertions on
+  `Open PR`, `/api/git-ui/permalink?cwd=`, `async function
+  copyCommitId(hash)`, `Permalink copied`, and `Commit id copied`
+  retargeted to the module source. Validated: 547/547 frontend
+  (546 + 1 new), 534/534 Rust, fmt + clippy clean, git e2e 38 ok
+  (GIT E2E ACCEPTANCE PASSED), desktop e2e 58 PASS.
+
 Remaining from §6: Phase 1 slices beyond auth (settings/recent-workspaces,
 git_ui split continues), Phase 2b monolith closures decomposition
 (remaining git_ui.js render/log slices, remaining mobile app.js screens),
