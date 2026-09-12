@@ -126,6 +126,7 @@ const SHARED_SOURCES = [
   "./desktop/git_ui/shortcuts.js",
   "./desktop/git_ui/stash.js",
   "./desktop/git_ui/cleanup.js",
+  "./desktop/git_ui/diff_render.js",
 ]
   .map((path) => readFileSync(new URL(path, import.meta.url), "utf8"))
   .join("\n;\n");
@@ -593,4 +594,18 @@ test("cleanup renderer module is registered and wired before git_ui.js consumes 
   const cleanupIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui/cleanup.js")');
   const gitUiIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui.js")');
   assert.ok(cleanupIndex > -1 && cleanupIndex < gitUiIndex, "cleanup.js concatenates before git_ui.js");
+});
+
+test("diff render module is registered and wired before git_ui.js consumes it", () => {
+  const diffRenderSource = readFileSync(new URL("./desktop/git_ui/diff_render.js", import.meta.url), "utf8");
+  assert.match(diffRenderSource, /globalThis\.HerdrGitUiDiffRenderModule = \{ create: createGitUiDiffRender \}/);
+  assert.match(diffRenderSource, /\/api\/git-ui\/blame\?cwd=/);
+  assert.match(diffRenderSource, /git-ui-word-change/);
+  const gitUiSource = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
+  assert.match(gitUiSource, /globalThis\.HerdrGitUiDiffRenderModule\.create\(\{/);
+  assert.match(gitUiSource, /const renderChunk = diffRender\.renderChunk;/);
+  const assetsSource = readFileSync(new URL("../assets.rs", import.meta.url), "utf8");
+  const diffIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui/diff_render.js")');
+  const gitUiIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui.js")');
+  assert.ok(diffIndex > -1 && diffIndex < gitUiIndex, "diff_render.js concatenates before git_ui.js");
 });

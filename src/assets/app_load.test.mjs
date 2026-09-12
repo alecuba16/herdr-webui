@@ -1063,9 +1063,10 @@ describe("app bundle load", () => {
     match(gitUiSource, /const conflictActions = renderDiffConflictResolutionButtons\(file\)/);
     match(gitUiSource, /\$\{conflictActions\}\$\{restore\}/);
     match(gitUiSource, /git-ui-conflict-diff-actions/);
-    match(gitUiSource, /renderUnifiedLine\(row, path, index, rows, rowIndex, contextArrows, !!file\.preview_large_diff\)/);
-    match(gitUiSource, /function renderUnifiedLine\(row, path, hunkIndex, rows, rowIndex, contextArrows, previewLargeDiff\)/);
-    match(gitUiSource, /const blockButton = !previewLargeDiff && currentMode\(\) === "changes"/);
+    const gitDiffRenderSource = readFileSync(new URL("./desktop/git_ui/diff_render.js", import.meta.url), "utf8");
+    match(gitDiffRenderSource, /renderUnifiedLine\(row, path, index, rows, rowIndex, contextArrows, !!file\.preview_large_diff\)/);
+    match(gitDiffRenderSource, /function renderUnifiedLine\(row, path, hunkIndex, rows, rowIndex, contextArrows, previewLargeDiff\)/);
+    match(gitDiffRenderSource, /const blockButton = !previewLargeDiff && currentMode\(\) === "changes"/);
     match(gitUiSource, /aria-label="Conflict operation actions"/);
     match(gitUiSource, /Rebase<\/span>\$\{action\("Continue", "rebase-continue"\)\}\$\{action\("Skip", "rebase-skip"\)\}\$\{action\("Abort", "rebase-abort", true\)\}/);
     match(gitUiSource, /Merge<\/span>\$\{action\("Continue", "merge-continue"\)\}\$\{action\("Abort", "merge-abort", true\)\}/);
@@ -1155,9 +1156,10 @@ describe("app bundle load", () => {
     match(gitUiSource, /window\.HerdrFileBrowser\.openAt\(\{ workspace_id: state\.activeKey \|\| `git-file-history:\$\{cwd\}`/);
     match(gitUiSource, /view\.historySource = "file-browser";/);
     match(gitUiSource, /const compare = activeTab !== "history" && currentMode\(\) !== "changes"/);
-    match(gitUiSource, /const ref = currentMode\(\) === "changes" \|\| currentMode\(\) === "current-compare" \? "working" : \(view\.compareTarget \|\| "HEAD"\);/);
-    match(gitUiSource, /ref_name=\$\{encodeURIComponent\(ref\)\}/);
-    match(gitUiSource, /blame unavailable/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_render.js", import.meta.url), "utf8"), /const ref = currentMode\(\) === "changes" \|\| currentMode\(\) === "current-compare" \? "working" : \(view\.compareTarget \|\| "HEAD"\);/);
+    const gitDiffRenderBlameSource = readFileSync(new URL("./desktop/git_ui/diff_render.js", import.meta.url), "utf8");
+    match(gitDiffRenderBlameSource, /ref_name=\$\{encodeURIComponent\(ref\)\}/);
+    match(gitDiffRenderBlameSource, /blame unavailable/);
     match(gitUiSource, /function sideFileCount\(view\)/);
     match(gitUiSource, /const filterInput = sideFileCount\(view\)/);
     match(gitUiSource, /const fileList = cleanupOnly \? "" : `\$\{filterInput\}\$\{fileSections\}`;/);
@@ -1678,7 +1680,7 @@ describe("app bundle load", () => {
     match(gitUiSource, /view\.compareTarget = "\.";\s*\n\s*view\.mode = "current-compare";/);
     match(gitUiSource, /const mergeBase = currentMode\(\) === "current-compare" \? "&merge_base=true" : "";/);
     match(gitUiSource, /return currentMode\(\) === "changes" \|\| currentMode\(\) === "current-compare";/);
-    match(gitUiSource, /const ref = currentMode\(\) === "changes" \|\| currentMode\(\) === "current-compare" \? "working" : \(view\.compareTarget \|\| "HEAD"\);/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_render.js", import.meta.url), "utf8"), /const ref = currentMode\(\) === "changes" \|\| currentMode\(\) === "current-compare" \? "working" : \(view\.compareTarget \|\| "HEAD"\);/);
     match(gitUiSource, /if \(currentMode\(\) === "readonly-compare"\) return false;/);
     match(gitUiSource, /const right = mode === "changes" \? "current" : compareRefLabel\(view\.compareTarget\);/);
     match(gitUiSource, /const order = new Map\(\(\(\(view\.logData \|\| \{\}\)\.commits\) \|\| \[\]\)\.map\(\(commit, index\) => \[String\(commit\.hash \|\| ""\), index\]\)\);/);
@@ -1715,11 +1717,12 @@ describe("app bundle load", () => {
     match(gitUiSource, /id="gitUiDiffSearch"/);
     match(gitUiSource, /state\.focusDiffSearch = true/);
     match(gitUiSource, /function highlightDiffText\(code, path\)/);
-    match(gitUiSource, /const rows = unified \? unifiedRows\(chunk\) : sideBySideRows\(chunk\)/);
+    const gitDiffRenderRowsSource = readFileSync(new URL("./desktop/git_ui/diff_render.js", import.meta.url), "utf8");
+    match(gitDiffRenderRowsSource, /const rows = markChangeGroups\(diffLayoutMode\(\) === "unified" \? unifiedRows\(chunk\) : sideBySideRows\(chunk\)\)/);
     match(gitUiSource, /<mark class="git-ui-search-match">/);
-    match(gitUiSource, /renderDiffCode\(oldLine, newLine, path, "old"\)/);
-    match(gitUiSource, /renderDiffCode\(oldLine, newLine, path, "new"\)/);
-    match(gitUiSource, /highlightDiffText\(content\.slice\(changed\.start, changed\.end\), path\)/);
+    match(gitDiffRenderRowsSource, /renderDiffCode\(oldLine, newLine, path, "old"\)/);
+    match(gitDiffRenderRowsSource, /renderDiffCode\(oldLine, newLine, path, "new"\)/);
+    match(gitDiffRenderRowsSource, /highlightDiffText\(content\.slice\(changed\.start, changed\.end\), path\)/);
     match(gitLogCss, /\.git-ui-diff-search \{/);
     match(gitDiffCss, /\.git-ui-search-match \{/);
   });
@@ -3864,13 +3867,14 @@ describe("app bundle load", () => {
     match(gitUiSource, /HerdrGitUi\.setDiffLayout\('side-by-side'\)/);
     match(gitUiSource, /HerdrGitUi\.setDiffLayout\('unified'\)/);
     match(gitUiSource, /setDiffLayout\(layout\)/);
-    match(gitUiSource, /function renderUnifiedLine\(/);
-    match(gitUiSource, /git-ui-unified-row/);
-    match(gitUiSource, /sideBySideRows\(chunk\)/);
-    match(gitUiSource, /renderUnifiedLine\(row, path, index, rows, rowIndex, contextArrows, !!file\.preview_large_diff\)/);
-    match(gitUiSource, /restoreHunk\('\$\{arg\(path\)\}',\$\{hunkIndex\}\)/);
-    match(gitUiSource, /function contextArrowsForChunk\(chunks, index\)/);
-    match(gitUiSource, /const after = next \? hiddenGap\(chunk, next\) : false;/);
+    const gitDiffRenderLayoutSource = readFileSync(new URL("./desktop/git_ui/diff_render.js", import.meta.url), "utf8");
+    match(gitDiffRenderLayoutSource, /function renderUnifiedLine\(/);
+    match(gitDiffRenderLayoutSource, /git-ui-unified-row/);
+    match(gitDiffRenderLayoutSource, /sideBySideRows\(chunk\)/);
+    match(gitDiffRenderLayoutSource, /renderUnifiedLine\(row, path, index, rows, rowIndex, contextArrows, !!file\.preview_large_diff\)/);
+    match(gitDiffRenderLayoutSource, /restoreHunk\('\$\{arg\(path\)\}',\$\{hunkIndex\}\)/);
+    match(gitDiffRenderLayoutSource, /function contextArrowsForChunk\(chunks, index\)/);
+    match(gitDiffRenderLayoutSource, /const after = next \? hiddenGap\(chunk, next\) : false;/);
   });
 
   it("loads shared terminal fit helper before terminal clients", () => {
