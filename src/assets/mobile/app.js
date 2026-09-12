@@ -88,41 +88,19 @@
     mobileSessions,
     mobileScreens,
     mobilePanels,
-    mobileWorkmeta;
+    mobileWorkmeta,
+    mobileTheme;
 
   function el(id) {
     return document.getElementById(id);
   }
 
-  let largestVisualViewportHeight = 0,
-    terminalResizeTimer = null;
-
   function updateMobileViewport() {
-    const viewport = window.visualViewport;
-    const height = Math.max(
-      240,
-      Math.floor(
-        (viewport && viewport.height) ||
-          window.innerHeight ||
-          (document.documentElement && document.documentElement.clientHeight) ||
-          0,
-      ),
-    );
-    largestVisualViewportHeight = Math.max(largestVisualViewportHeight, height);
-    document.body.style.setProperty("--herdr-mobile-viewport-height", `${height}px`);
-    document.body.classList.toggle(
-      "mobile-keyboard-open",
-      state.screen === "terminal" && largestVisualViewportHeight - height > 120,
-    );
+    mobileTheme.updateMobileViewport();
   }
 
   function scheduleTerminalResize() {
-    updateMobileViewport();
-    if (terminalResizeTimer) clearTimeout(terminalResizeTimer);
-    terminalResizeTimer = setTimeout(() => {
-      terminalResizeTimer = null;
-      if (state.screen === "terminal") mobileTerminal.connect();
-    }, 80);
+    mobileTheme.scheduleTerminalResize();
   }
 
   function selectionPath(ws, tab, pane) {
@@ -553,23 +531,11 @@
   }
 
   function applyTreeIndent() {
-    try {
-      const parsed = globalThis.HerdrOptions ? globalThis.HerdrOptions.read() : {};
-      const value = Math.max(0, Math.min(40, Number(parsed.treeIndentPx) || 14));
-      document.body.style.setProperty("--herdr-tree-indent", `${value}px`);
-    } catch (_) {}
+    mobileTheme.applyTreeIndent();
   }
 
   function syncBrowserFavicon() {
-    if (browserFaviconError) {
-      browserFavicon.set("error");
-      return;
-    }
-    const attention = state.agents.some((agent) => {
-      const status = mobileAttention.statusClass(agent.agent_status);
-      return status === "blocked" || status === "done";
-    });
-    browserFavicon.set(document.hidden && attention ? "attention" : "normal");
+    mobileTheme.syncBrowserFavicon();
   }
 
 
@@ -806,14 +772,7 @@
   }
 
   function applyTheme() {
-    const mode = localStorage.getItem("herdr-web-theme") || "auto";
-    const light =
-      mode === "light" ||
-      (mode === "auto" &&
-        window.matchMedia &&
-        !window.matchMedia("(prefers-color-scheme: dark)").matches);
-    document.body.classList.toggle("light", light);
-    document.documentElement.dataset.herdrTheme = light ? "light" : "dark";
+    mobileTheme.applyTheme();
   }
   if (window.matchMedia) {
     try {
@@ -836,6 +795,17 @@
     state,
     samePath,
     pathBasename,
+  });
+  mobileTheme = globalThis.HerdrMobileThemeModule.create({
+    state,
+    documentRef: document,
+    windowRef: window,
+    localStorage,
+    getMobileAttention: () => mobileAttention,
+    getMobileTerminal: () => mobileTerminal,
+    browserFavicon,
+    getBrowserFaviconError: () => browserFaviconError,
+    applyThemeToBody: null,
   });
   const workingDismissals = globalThis.HerdrAttention && globalThis.HerdrAttention.createDismissals
     ? globalThis.HerdrAttention.createDismissals({

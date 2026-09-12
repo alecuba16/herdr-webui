@@ -101,6 +101,7 @@
         "/assets/mobile/screens.js",
         "/assets/mobile/panels.js",
         "/assets/mobile/workmeta.js",
+        "/assets/mobile/theme.js",
         "/assets/mobile/app.js",
       ] : [
         "/assets/desktop/search.js",

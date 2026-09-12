@@ -297,6 +297,20 @@ describe("mobile parity feature guards", () => {
     assert.ok(workmetaIndex > -1 && workmetaIndex < appIndex, "workmeta.js loads before app.js");
   });
 
+  it("mobile theme/viewport helpers live in their own module loaded before app.js", () => {
+    const themeSource = readFileSync(new URL("./mobile/theme.js", import.meta.url), "utf8");
+    assert.match(themeSource, /globalThis\.HerdrMobileThemeModule = \{ create: createMobileTheme \}/);
+    assert.match(themeSource, /mobile-keyboard-open/);
+    assert.match(themeSource, /herdr-tree-indent/);
+    assert.match(themeSource, /herdr-web-theme/);
+    assert.match(themeSource, /getBrowserFaviconError\(\)/);
+    assert.match(appSource, /mobileTheme\.updateMobileViewport\(\)/);
+    assert.match(appSource, /mobileTheme\.applyTheme\(\)/);
+    const themeIndex = bootSource.indexOf("/assets/mobile/theme.js");
+    const appIndex = bootSource.indexOf("/assets/mobile/app.js");
+    assert.ok(themeIndex > -1 && themeIndex < appIndex, "theme.js loads before app.js");
+  });
+
   it("worktrees module exposes recent workspace actions", () => {
     assert.match(worktreesSource, /loadRecent/);
     assert.match(worktreesSource, /openRecent/);
