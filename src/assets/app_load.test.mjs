@@ -130,6 +130,7 @@ function loadWorkspaceSearch(ctx) {
 describe("app bundle load", () => {
   let source;
   let gitUiSource;
+  let gitShortcutsSource;
   let gitLogSource;
   let gitSettingsSource;
   let gitUiLogCss;
@@ -169,6 +170,7 @@ describe("app bundle load", () => {
       "\n" +
       desktopAppSource;
     gitUiSource = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
+    gitShortcutsSource = readFileSync(new URL("./desktop/git_ui/shortcuts.js", import.meta.url), "utf8");
     gitLogSource = readFileSync(new URL("./desktop/git_ui/log.js", import.meta.url), "utf8");
     gitSettingsSource = readFileSync(new URL("./desktop/git_ui/settings.js", import.meta.url), "utf8");
     gitUiLogCss = readFileSync(new URL("./desktop/git_ui/log.css", import.meta.url), "utf8");
@@ -552,7 +554,7 @@ describe("app bundle load", () => {
   });
 
   it("adds configured shortcut labels to Git tooltips", () => {
-    match(gitUiSource, /function titleWithGitShortcut\(title, action\)/);
+    match(gitShortcutsSource, /function titleWithGitShortcut\(title, action\)/);
     match(gitUiSource, /titleWithGitShortcut\("Refresh", "refresh"\)/);
     match(gitUiSource, /titleWithGitShortcut\("Switch branch", "branch"\)/);
     match(gitUiSource, /titleWithGitShortcut\("File history", "history"\)/);
@@ -617,9 +619,9 @@ describe("app bundle load", () => {
   it("defines Git UI changes-list Escape navigation", () => {
     match(gitUiSource, /window\.addEventListener\("keydown", handleKeydown, true\);/);
     match(gitUiSource, /if \(tab === "changes"\) \{\n\s+this\.showChangesList\(\);\n\s+return;\n\s+\}/);
-    match(gitUiSource, /if \(state\.commitModal\) \{\n\s+saveDraftFromDom\(\);\n\s+state\.commitModal = null;/);
-    match(gitUiSource, /Hide Git UI\?/);
-    match(gitUiSource, /function isChangesListView\(view\)/);
+    match(gitShortcutsSource, /if \(state\.commitModal\) \{\n\s+saveDraftFromDom\(\);\n\s+state\.commitModal = null;/);
+    match(gitShortcutsSource, /Hide Git UI\?/);
+    match(gitShortcutsSource, /function isChangesListView\(view\)/);
   });
 
   it("defaults and migrates terminal overflow scrollbars off", () => {
@@ -716,14 +718,15 @@ describe("app bundle load", () => {
   });
 
   it("keeps Git UI keyboard input away from the terminal", () => {
-    match(gitUiSource, /Git drawer owns keyboard while visible/);
-    match(gitUiSource, /event\.stopImmediatePropagation/);
-    match(gitUiSource, /function handleGitShortcut\(event, view\)/);
-    match(gitUiSource, /function isGitShortcutPrefix\(event\)/);
-    match(gitUiSource, /function gitShortcutPrefixLabel\(\)/);
-    match(gitUiSource, /function shortcutFilePath\(event, view\)/);
-    match(gitUiSource, /DEFAULT_GIT_SHORTCUTS/);
-    match(gitUiSource, /gitShortcutMap\(\)/);
+    match(gitShortcutsSource, /Git drawer owns keyboard while visible/);
+    match(gitShortcutsSource, /event\.stopImmediatePropagation/);
+    match(gitShortcutsSource, /function handleGitShortcut\(event, view\)/);
+    match(gitShortcutsSource, /function isGitShortcutPrefix\(event\)/);
+    match(gitShortcutsSource, /function gitShortcutPrefixLabel\(\)/);
+    match(gitShortcutsSource, /function shortcutFilePath\(event, view\)/);
+    match(gitShortcutsSource, /DEFAULT_GIT_SHORTCUTS/);
+    match(gitShortcutsSource, /gitShortcutMap\(\)/);
+    match(gitUiSource, /window\.addEventListener\("keydown", handleKeydown, true\);/);
     match(gitUiSource, /activateTreeItem\(event\)/);
     match(gitUiSource, /role="treeitem" tabindex="0" data-git-path=/);
     match(source, /HerdrGitUi\.isVisible\(\)\) return;/);
@@ -1702,9 +1705,9 @@ describe("app bundle load", () => {
     const gitLogCss = readFileSync(new URL("./desktop/git_ui/log.css", import.meta.url), "utf8");
     const gitDiffCss = readFileSync(new URL("./desktop/git_ui/diff.css", import.meta.url), "utf8");
 
-    match(gitUiSource, /function handleDiffSearchShortcut\(event, view\)/);
-    match(gitUiSource, /editableTarget\(event\.target\)/);
-    match(gitUiSource, /event\.ctrlKey && !event\.metaKey|!event\.ctrlKey && !event\.metaKey/);
+    match(gitShortcutsSource, /function handleDiffSearchShortcut\(event, view\)/);
+    match(gitShortcutsSource, /editableTarget\(event\.target\)/);
+    match(gitShortcutsSource, /event\.ctrlKey && !event\.metaKey|!event\.ctrlKey && !event\.metaKey/);
     match(gitUiSource, /id="gitUiDiffSearch"/);
     match(gitUiSource, /state\.focusDiffSearch = true/);
     match(gitUiSource, /function highlightDiffText\(code, path\)/);
@@ -3917,8 +3920,8 @@ describe("app bundle load", () => {
     match(gitLayoutCss, /\.git-ui-return-cwd-icon span/);
     match(gitLayoutCss, /folder-up\.svg/);
     match(gitLayoutCss, /\.git-ui-current-changes-icon span \{[\s\S]*?git\.svg/);
-    match(gitUiSource, /Folder picker: selected folder becomes the Git panel directory immediately/);
-    match(gitUiSource, /Load more changes fetches older commits/);
+    match(gitShortcutsSource, /Folder picker: selected folder becomes the Git panel directory immediately/);
+    match(gitShortcutsSource, /Load more changes fetches older commits/);
     match(source, /Choosing a folder in the Git directory picker immediately moves the Git panel/);
     match(source, /WebUI no longer opens a workspace automatically on startup/);
     match(source, /In Git UI, open Git directory\/branch dialog/);
