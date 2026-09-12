@@ -584,8 +584,29 @@ Real-workflow validation run after the fixes, all green:
   clean, release build ok, desktop e2e 58 PASS, mobile-edit 52/52,
   theme 15/15, lsp PASSED.
 
+- **Phase 2b slice: mobile git split** (`a804dfb`):
+  `src/assets/mobile/git.js` (270 lines) owns the mobile Git screen:
+  `createMobileGit(deps)` with `state, api, render, escapeHtml, jsArg,
+  pathBasename, currentWorkspaceCwd, confirmFn`, exposing
+  `loadGitStatus`, `selectGitFile`, `backGitFiles`, stage/unstage/
+  discard, branches load/toggle/switch, and `renderGitScreen`;
+  registers `globalThis.HerdrMobileGitModule`. app.js (2,150→1,539
+  after both slices) instantiates it and `HerdrMobile` delegates with
+  `(...args)` wrappers. `confirm` flows through a `confirmFn` dep so
+  e2e's `window.confirm` stub keeps working (matches the settings
+  module pattern). Extraction caught one behavior regression before
+  commit: turning `loadGitStatus`/`toggleGitBranches` into sync
+  wrappers broke `await` ordering in the functional bundle tests
+  (mobile_load 37/38 red); restored exact `async` signatures.
+  Registered: MOBILE_GIT_JS, route + route test in main.rs, boot
+  list + boot test, mobile_load concatenation; parity guard asserts
+  module pattern + async loadGitStatus + boot order. Validated:
+  523/523 frontend, 534/534 Rust, fmt + clippy clean, mobile-edit
+  e2e 52/52 (stage/unstage/discard/branch-switch through the module),
+  git e2e PASSED.
+
 Remaining from §6: Phase 1 slices beyond auth (settings/recent-workspaces,
 git_ui split continues), Phase 2b monolith closures decomposition
-(desktop core.js/git_ui.js, mobile app.js screens/sessions/git_status/
-events slices), full mobile Git parity (roadmap), and the eventual
-distillation of this file into docs/code-quality-audit.md.
+(desktop core.js/git_ui.js, mobile app.js screens/sessions/events slices),
+full mobile Git parity (roadmap), and the eventual distillation of
+this file into docs/code-quality-audit.md.
