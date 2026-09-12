@@ -135,6 +135,7 @@ const SHARED_SOURCES = [
   "./desktop/git_ui/modals.js",
   "./desktop/git_ui/branch_list.js",
   "./desktop/git_ui/toasts.js",
+  "./desktop/git_ui/diff_view.js",
 ]
   .map((path) => readFileSync(new URL(path, import.meta.url), "utf8"))
   .join("\n;\n");
@@ -1140,6 +1141,129 @@ test("restoreNavigationSnapshot reloads diff and clamps log scope", async () => 
   // null view or snapshot is a no-op.
   assert.equal(await mod.restoreNavigationSnapshot(null, { tab: "changes" }), undefined);
   assert.equal(await mod.restoreNavigationSnapshot({}, null), undefined);
+});
+
+test("diff_view module is registered and wired before git_ui.js consumes it", () => {
+  const diffViewSource = readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8");
+  assert.match(diffViewSource, /globalThis\.HerdrGitUiDiffViewModule = \{ create: createGitUiDiffView \}/);
+  assert.match(diffViewSource, /function renderSide\(\) \{/);
+  assert.match(diffViewSource, /skipped_large_change_set/);
+  assert.match(diffViewSource, /hidden-change-diff-reason-/);
+  assert.match(diffViewSource, /HerdrGitUi\.menuAction\('copyPermalink'\)/);
+  assert.match(diffViewSource, /view\.compareBase = `\$\{hash\}\^`/);
+  const gitUiSource = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
+  assert.match(gitUiSource, /globalThis\.HerdrGitUiDiffViewModule\.create\(\{/);
+  assert.match(gitUiSource, /const renderSide = diffView\.renderSide;/);
+  assert.match(gitUiSource, /canEditCurrentFile: \(\.\.\.args\) => canEditCurrentFile\(\.\.\.args\)/);
+  assert.match(gitUiSource, /renderDiffFileBody: \(\.\.\.args\) => renderDiffFileBody\(\.\.\.args\)/);
+  assert.match(gitUiSource, /canMutateDiff: \(\.\.\.args\) => canMutateDiff\(\.\.\.args\)/);
+  const assetsSource = readFileSync(new URL("../assets.rs", import.meta.url), "utf8");
+  const diffViewIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui/diff_view.js")');
+  const gitUiIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui.js")');
+  assert.ok(diffViewIndex > -1 && diffViewIndex < gitUiIndex, "diff_view.js concatenates before git_ui.js");
+});
+
+test("diff view renders toolbar, large-diff guards, and file labels", () => {
+  const diffViewSource = readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8");
+  const ctx = vm.createContext({ window: {}, globalThis: null, console, Math, JSON, Object, Array, String, Number, Set, Map, encodeURIComponent, Error, document: { querySelectorAll: () => [] } });
+  ctx.globalThis = ctx;
+  vm.runInContext(diffViewSource, ctx);
+  const calls = [];
+  const state = { contextMenu: { kind: "M", x: 10, y: 20, path: "a.js" }, logContextMenu: null };
+  const toolbarViewFiles = [];
+  const stableView = { tab: "changes", status: { staged: ["a.js"], unstaged: [], untracked: [] }, diff: { files: toolbarViewFiles }, file: "" };
+  const mod = ctx.globalThis.HerdrGitUiDiffViewModule.create({
+    state,
+    active: () => stableView,
+    currentMode: () => "changes",
+    compareRefLabel: (ref) => `ref:${ref || "none"}`,
+    isNoGitRepositoryView: () => false,
+    diffFile: (path) => ({ path, status: "modified", diff_kind: "M" }),
+    diffFileKey: (file) => `${file.diff_kind}:${file.path}`,
+    diffFileLineCount: (file) => ((file && file.chunks) || []).reduce((sum, c) => sum + (c.lines || []).length, 0),
+    diffLineCount: (files) => files.reduce((t, f) => t + ((f.chunks || []).reduce((s, c) => s + (c.lines || []).length, 0)), 0),
+    largeDiffLineLimit: () => 2000,
+    loadedLargeDiffPreviewLimit: () => 1200,
+    previewDiffFile: (file, limit) => ({ ...file, preview_large_diff: true, chunks: [] }),
+    diffLayoutMode: () => "side-by-side",
+    hashText: (v) => "h" + String(v).length,
+    esc: (v) => String(v == null ? "" : v).replace(/</g, "&lt;"),
+    arg: (v) => encodeURIComponent(String(v == null ? "" : v)).replace(/'/g, "%27"),
+    canSearchDiff: () => false,
+    diffSearchMatchCount: () => 0,
+    LARGE_FILE_DIFF_LINE_LIMIT: 500,
+    renderNavigationTrail: () => "",
+    titleWithGitShortcut: (title) => title,
+    renderDiffConflictResolutionButtons: () => "",
+    renderSideEditor: () => "SIDE-EDITOR",
+    ensureBlame: (path) => { calls.push(`blame:${path}`); },
+    renderChunk: (file, chunk, index) => `<div>chunk${index}</div>`,
+    stashCount: () => 0,
+    canOpenStashView: () => true,
+    section: (label, paths, kind) => `SECTION[${label}:${paths.join(",")}:${kind}]`,
+    commitPreviewSection: () => "",
+    stashListHtml: () => "STASH-LIST",
+    stashFileSection: () => "STASH-FILES",
+    renderGitViewTabs: (tabs, activeTab) => `TABS[${tabs.map((t) => t.id).join("|")}:${activeTab}]`,
+    hasStagedChanges: () => true,
+    filterFiles: (paths) => paths,
+    sideFileCount: () => 2,
+    renderWorktreeActions: () => "ACTIONS",
+    renderGitLocationSelector: () => "LOCATION",
+    renderDirContextMenu: (menu) => `DIRMENU[${menu.path}]`,
+    gitCwdMatchesWorkspace: () => true,
+    compactPath: (p) => p,
+    appRefreshIconButton: (opts) => `<button class="${opts.className}">refresh</button>`,
+  });
+  // allFiles dedupes across status lists.
+  assert.equal(JSON.stringify(mod.allFiles()), JSON.stringify(["a.js"]));
+  // canMutateDiff: stash tab blocks, changes mode allows.
+  assert.equal(mod.canMutateDiff(), true);
+  // context menus render for file and dir kinds.
+  assert.match(mod.renderContextMenu(), /menuAction\('copyPermalink'\)/);
+  state.contextMenu = { kind: "dir", path: "src" };
+  assert.match(mod.renderContextMenu(), /DIRMENU\[src\]/);
+  state.contextMenu = null;
+  assert.equal(mod.renderContextMenu(), "");
+  // file view labels + compare state.
+  assert.equal(mod.fileViewStateLabel({ file: "a.js" }, null), "Current file · a.js");
+  assert.equal(mod.historicalFileCommitLabel({ historyCommitHash: "abcdef123456789" }), "abcdef123456");
+  const view = { temporaryHistoryCompare: true, historyCommitHash: "h1" };
+  mod.clearHistoryCompareState(view, { clearSource: true, clearBackTarget: true });
+  assert.equal(JSON.stringify({ t: view.temporaryHistoryCompare, h: view.historyCommitHash, s: view.historySource, b: view.fileBackTarget }), JSON.stringify({ t: false, h: "", s: "", b: null }));
+  const rv = { file: "a.js" };
+  mod.startHistoryCommitCompare(rv, "abc");
+  assert.equal(JSON.stringify({ base: rv.compareBase, target: rv.compareTarget, mode: rv.mode, paths: rv.compareFilePaths }), JSON.stringify({ base: "abc^", target: "abc", mode: "readonly-compare", paths: ["a.js"] }));
+  // largeChangeFileItems builds kind-tagged status items.
+  const items = mod.largeChangeFileItems({ status: { conflicted: ["u.js"], staged: ["s.js"], unstaged: ["m.js"], untracked: ["q.js"] } });
+  assert.equal(JSON.stringify(items), JSON.stringify([{ path: "u.js", kind: "U" }, { path: "s.js", kind: "S" }, { path: "m.js", kind: "M" }, { path: "q.js", kind: "?" }]));
+  // fileDiffLeftLabel per diff kind.
+  assert.equal(mod.fileDiffLeftLabel({ diff_kind: "S" }), "index");
+  assert.equal(mod.fileDiffLeftLabel({ diff_kind: "?" }), "new file");
+  assert.equal(mod.fileDiffLeftLabel({ diff_kind: "M" }), "previous");
+  // largeChangeHiddenFile folds status summaries in.
+  const hidden = mod.largeChangeHiddenFile({ status: { summaries: { unstaged: { "m.js": { additions: 3 } } } } }, { path: "m.js", kind: "M" });
+  assert.equal(JSON.stringify({ path: hidden.path, additions: hidden.additions, hidden: hidden.hidden_large_change }), JSON.stringify({ path: "m.js", additions: 3, hidden: true }));
+  // renderDiffFile with a large file renders the load-diff placeholder.
+  const file = { path: "big.js", diff_kind: "M", additions: 10, deletions: 2, chunks: [{ lines: new Array(600).fill({ line_type: "context" }) }] };
+  const html = mod.renderDiffFile(file);
+  assert.match(html, /hidden-diff-reason-/);
+  assert.match(html, /HerdrGitUi\.loadLargeDiff\('big\.js'\)/);
+  // renderDiffSearchControl hidden when search is unavailable.
+  assert.equal(mod.renderDiffSearchControl({}), "");
+  // canEditCurrentFile: staged scope and deleted files block editing.
+  assert.equal(mod.canEditCurrentFile({ file: "a.js" }), true);
+  assert.equal(mod.canEditCurrentFile({ file: "a.js", diffScope: "staged" }), false);
+  assert.equal(mod.canEditCurrentFile({ file: "dir/" }), false);
+  // toolbar renders the collapse-all control when files exist on the changes tab.
+  toolbarViewFiles.length = 0;
+  toolbarViewFiles.push({ path: "a.js" });
+  const toolbar = mod.renderFileToolbar("changes");
+  assert.match(toolbar, /Collapse all/);
+  // renderSide composes tabs/actions/filter.
+  const side = mod.renderSide();
+  assert.match(side, /TABS\[changes\|log\|stash\|cleanup:changes\]/);
+  assert.match(side, /SECTION\[Staged:a\.js:S\]/);
 });
 
 test("primitives module is registered and wired before git_ui.js consumes it", () => {

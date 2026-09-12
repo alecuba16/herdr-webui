@@ -557,10 +557,10 @@ describe("app bundle load", () => {
 
   it("adds configured shortcut labels to Git tooltips", () => {
     match(gitShortcutsSource, /function titleWithGitShortcut\(title, action\)/);
-    match(gitUiSource, /titleWithGitShortcut\("Refresh", "refresh"\)/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /titleWithGitShortcut\("Refresh", "refresh"\)/);
     match(readFileSync(new URL("./desktop/git_ui/branch_list.js", import.meta.url), "utf8"), /titleWithGitShortcut\("Switch branch", "branch"\)/);
-    match(gitUiSource, /titleWithGitShortcut\("File history", "history"\)/);
-    match(gitUiSource, /titleWithGitShortcut\("Blame", "blame"\)/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /titleWithGitShortcut\("File history", "history"\)/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /titleWithGitShortcut\("Blame", "blame"\)/);
   });
 
   it("shows project dashboard and hides terminal shell when no workspace exists", () => {
@@ -604,15 +604,15 @@ describe("app bundle load", () => {
   });
 
   it("keeps file history header scoped to selected files", () => {
-    match(gitUiSource, /function renderFileToolbar\(activeTab\) \{\n\s+const view = active\(\) \|\| \{\};/);
-    match(gitUiSource, /const history = view\.file \? `<button class="git-ui-btn \$\{activeTab === "history" \? "active" : ""\}" title="\$\{esc\(titleWithGitShortcut\("File history", "history"\)\)\}" onclick="HerdrGitUi\.tab\('history'\)">History<\/button>` : "";/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /function renderFileToolbar\(activeTab\) \{\n\s+const view = active\(\) \|\| \{\};/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /const history = view\.file \? `<button class="git-ui-btn \$\{activeTab === "history" \? "active" : ""\}" title="\$\{esc\(titleWithGitShortcut\("File history", "history"\)\)\}" onclick="HerdrGitUi\.tab\('history'\)">History<\/button>` : "";/);
     equal([...gitLogSource.matchAll(/git-ui-log-filter-spacer/g)].length, 1, "scope control renders once inside the filter row");
   });
 
   it("hides only large file diffs by default", () => {
     match(gitUiSource, /const LARGE_FILE_DIFF_LINE_LIMIT = 500;/);
-    match(gitUiSource, /Large diffs are not rendered by default\./);
-    match(gitUiSource, /Diff hidden to keep large change sets responsive\./);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /Large diffs are not rendered by default\./);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /Diff hidden to keep large change sets responsive\./);
     match(gitUiSource, /loadLargeDiff\(file, kind\)/);
     ok(!gitUiSource.includes("Select a file from left list to render its changes."));
     ok(!gitUiSource.includes("Large change set hidden"));
@@ -729,7 +729,7 @@ describe("app bundle load", () => {
     match(gitShortcutsSource, /DEFAULT_GIT_SHORTCUTS/);
     match(gitShortcutsSource, /gitShortcutMap\(\)/);
     match(gitUiSource, /window\.addEventListener\("keydown", handleKeydown, true\);/);
-    match(gitUiSource, /activateTreeItem\(event\)/);
+    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /activateTreeItem\(event\)/);
     match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /role="treeitem" tabindex="0" data-git-path=/);
     match(source, /HerdrGitUi\.isVisible\(\)\) return;/);
   });
@@ -973,9 +973,17 @@ describe("app bundle load", () => {
     vm.runInContext(source, ctx);
 
     ok(!gitUiSource.includes("git-ui-cleanup-tab-icon"));
-    match(gitUiSource, /renderGitViewTabs/);
-    match(gitUiSource, /git-ui-view-toggle/);
-    ok(gitUiSource.indexOf("Worktree actions") < gitUiSource.indexOf("git-ui-file-filter"));
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /renderGitViewTabs/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /git-ui-view-toggle/);
+    const branchListIdx = gitUiSource.indexOf("Worktree actions");
+    const fileFilterIdx = gitUiSource.indexOf("git-ui-file-filter");
+    if (branchListIdx > -1 && fileFilterIdx > -1) {
+      ok(branchListIdx < fileFilterIdx);
+    } else {
+      // Both live in separate modules now: branch_list.js must concat before diff_view.js.
+      const assetsConcat = readFileSync(new URL("../assets.rs", import.meta.url), "utf8");
+      ok(assetsConcat.indexOf('assets/desktop/git_ui/branch_list.js') < assetsConcat.indexOf('assets/desktop/git_ui/diff_view.js'));
+    }
     match(readFileSync(new URL("./desktop/git_ui/layout.css", import.meta.url), "utf8"), /git-ui-view-toggle-group/);
     ok(!gitUiSource.includes("broom.svg"));
     match(gitUiSource, /scanCleanup/);
@@ -1002,10 +1010,10 @@ describe("app bundle load", () => {
     match(gitUiSource, /isNotGitRepositoryMessage/);
     match(gitUiSource, /markNoGitRepository\(view\)/);
     match(gitUiSource, /not_git_repository: true/);
-    match(gitUiSource, /cleanupOnly \? "" : renderWorktreeActions/);
-    match(gitUiSource, /const filterInput = sideFileCount\(view\)/);
-    match(gitUiSource, /const fileList = cleanupOnly \? "" : `\$\{filterInput\}\$\{fileSections\}`;/);
-    match(gitUiSource, /disabledReason = "Open a Git repository to use this view"/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /cleanupOnly \? "" : renderWorktreeActions/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /const filterInput = sideFileCount\(view\)/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /const fileList = cleanupOnly \? "" : `\$\{filterInput\}\$\{fileSections\}`;/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /disabledReason = "Open a Git repository to use this view"/);
     const gitLayoutCss = readFileSync(new URL("./desktop/git_ui/layout.css", import.meta.url), "utf8");
     const controlsCss = readFileSync(new URL("./desktop/app_css/controls.css", import.meta.url), "utf8");
     match(controlsCss, /\.git-ui-btn:disabled \{[\s\S]*?background: var\(--panel2\);[\s\S]*?color: var\(--muted\);/);
@@ -1024,12 +1032,12 @@ describe("app bundle load", () => {
     match(source, /setOpenWorktreeOperation\("remove", index, "Removing worktree\.\.\."\)/);
     match(source, /setOpenWorktreeOperation\("create", null, "Creating worktree\.\.\."\)/);
     match(source, /setCreateWorktreeLoading\(true, "Creating worktree\.\.\."\)/);
-    match(gitUiSource, /openCommitModal\(\)/);
-    match(gitUiSource, /Stage changes before committing/);
+    match(readFileSync(new URL("./desktop/git_ui/branch_list.js", import.meta.url), "utf8"), /openCommitModal\(\)/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /Stage changes before committing/);
     match(gitUiSource, /gitCommitIncludeBody/);
     match(gitUiSource, /gitUiPushTags/);
     match(readFileSync(new URL("./desktop/git_ui/toasts.js", import.meta.url), "utf8"), /Open PR/);
-    match(gitUiSource, /openForcePushModal/);
+    match(readFileSync(new URL("./desktop/git_ui/branch_list.js", import.meta.url), "utf8"), /openForcePushModal/);
     ok(!gitUiSource.includes("HerdrGitUi.tab('commit')"));
     ok(!gitUiSource.includes('onclick="HerdrGitUi.toggleStageAll()'));
   });
@@ -1040,8 +1048,8 @@ describe("app bundle load", () => {
     match(fileBrowserSource, /\.file-browser-menu \[data-file-menu-action\]/);
     match(fileBrowserSource, /\/api\/git-ui\/permalink\?cwd=/);
     match(fileBrowserSource, /navigator\.clipboard\.writeText\(url\)/);
-    match(gitUiSource, /Copy permalink/);
-    match(gitUiSource, /copyGitPermalink/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /Copy permalink/);
+    match(readFileSync(new URL("./desktop/git_ui/toasts.js", import.meta.url), "utf8"), /copyGitPermalink/);
     match(readFileSync(new URL("./desktop/git_ui/toasts.js", import.meta.url), "utf8"), /\/api\/git-ui\/permalink\?cwd=/);
     match(readFileSync(new URL("./desktop/git_ui/toasts.js", import.meta.url), "utf8"), /Permalink copied/);
   });
@@ -1061,8 +1069,8 @@ describe("app bundle load", () => {
     match(gitConflictsSource, /line\.startsWith\("\|\|\|\|\|\|\|"\)/);
     match(gitConflictsSource, /line\.startsWith\(">>>>>>>"\)/);
     match(gitConflictsSource, /currentMode\(\) !== "changes" \|\| !isConflictPath\(file\.path\)/);
-    match(gitUiSource, /const conflictActions = renderDiffConflictResolutionButtons\(file\)/);
-    match(gitUiSource, /\$\{conflictActions\}\$\{restore\}/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /const conflictActions = renderDiffConflictResolutionButtons\(file\)/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /\$\{conflictActions\}\$\{restore\}/);
     match(gitConflictsSource, /git-ui-conflict-diff-actions/);
     const gitDiffRenderSource = readFileSync(new URL("./desktop/git_ui/diff_render.js", import.meta.url), "utf8");
     match(gitDiffRenderSource, /renderUnifiedLine\(row, path, index, rows, rowIndex, contextArrows, !!file\.preview_large_diff\)/);
@@ -1095,10 +1103,10 @@ describe("app bundle load", () => {
   });
 
   it("uses a log row context menu with reset and clear rebase wording", () => {
-    match(gitUiSource, /openSelectedResetModal\(\)/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /openSelectedResetModal\(\)/);
     match(gitUiSource, /Rebase commits after/);
     match(gitUiSource, /rebaseAfterSelected\(\) \{/);
-    match(gitUiSource, /!hasSelection \|\| !mutable/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /!hasSelection \|\| !mutable/);
     ok(!gitUiSource.includes("Reset soft</button><button"));
     match(gitUiSource, /renderResetSelectedModal/);
     match(gitUiSource, /renderCompareSelectedModal/);
@@ -1110,16 +1118,16 @@ describe("app bundle load", () => {
     match(gitUiSource, /view\.compareTarget = "\.";\s*\n\s*view\.mode = "current-compare";/);
     match(gitUiSource, /Soft reset/);
     match(gitUiSource, /Hard reset/);
-    match(gitUiSource, /function renderLogContextMenu/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /function renderLogContextMenu/);
     match(gitUiSource, /state\.logContextMenu = \{[\s\S]*?x: Number\(event && event\.clientX\) \|\| 0,/);
     match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /function commitPreviewSection/);
-    match(gitUiSource, /Committed files/);
-    match(gitUiSource, /loadSelectedCommitPreview\(view, view\.selectedLogCommits\[0\]\)/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /Committed files/);
+    match(readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8"), /loadSelectedCommitPreview\(view, view\.selectedLogCommits\[0\]\)/);
     match(gitUiSource, /base=\$\{encodeURIComponent\(`\$\{hash\}\^`\)\}/);
     match(gitUiSource, /openFileHistory\(cwd, path\)/);
     match(gitUiSource, /state\.visible && active\(\) && samePath\(active\(\)\.cwd, cwd\)/);
     match(gitUiSource, /view\.tab = "history";/);
-    match(gitUiSource, /function fileViewStateLabel\(view, activeTab\)/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /function fileViewStateLabel\(view, activeTab\)/);
     match(readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8"), /function captureNavigationSnapshot\(view, label\)/);
     match(readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8"), /function pushNavigationSnapshot\(view, label\)/);
     match(readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8"), /async function restoreNavigationSnapshot\(view, snapshot\)/);
@@ -1134,21 +1142,21 @@ describe("app bundle load", () => {
     match(readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8"), /onclick="HerdrGitUi\.goBack\(\)"/);
     match(gitUiSource, /pushNavigationSnapshot\(view\);\n\s+startHistoryCommitCompare\(view, hash\);/);
     match(gitUiSource, /if \(!\(view\.fileBackTarget && view\.fileBackTarget\.type === "log"\)\) pushNavigationSnapshot\(view\);/);
-    match(gitUiSource, /view\.navigationStack = \[\];/);
+    match(readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8"), /view\.navigationStack = \[\];/);
     match(gitUiSource, /async goBack\(\)/);
     match(gitUiSource, /await restoreNavigationSnapshot\(view, snapshot\);/);
-    match(gitUiSource, /History · \$\{view\.file\}/);
-    match(gitUiSource, /Committed file · \$\{view\.file \|\| "file"\} · \$\{historicalFileCommitLabel\(view\)\}/);
-    match(gitUiSource, /title="Back to file view" onclick="HerdrGitUi\.backToFileView\(\)"/);
-    match(gitUiSource, /title="Back to file history" onclick="HerdrGitUi\.backToFileHistory\(\)"/);
-    match(gitUiSource, /title="Back" onclick="HerdrGitUi\.backFromFileView\(\)"/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /History · \$\{view\.file\}/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /Committed file · \$\{view\.file \|\| "file"\} · \$\{historicalFileCommitLabel\(view\)\}/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /title="Back to file view" onclick="HerdrGitUi\.backToFileView\(\)"/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /title="Back to file history" onclick="HerdrGitUi\.backToFileHistory\(\)"/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /title="Back" onclick="HerdrGitUi\.backFromFileView\(\)"/);
     match(gitUiSource, /committed file<\/button>/);
-    match(gitUiSource, /view\.temporaryHistoryCompare = !!view\.file;/);
-    match(gitUiSource, /view\.historyCommitHash = hash;/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /view\.temporaryHistoryCompare = !!view\.file;/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /view\.historyCommitHash = hash;/);
     match(gitUiSource, /view\.fileBackTarget = \{ type: "log", hash \};/);
-    match(gitUiSource, /const committedSelection = view\.temporaryHistoryCompare \|\| \(view\.fileBackTarget && view\.fileBackTarget\.type === "log"\);/);
-    match(gitUiSource, /section\(`Committed files \$\{historicalFileCommitLabel\(view\)\}`/);
-    match(gitUiSource, /view\.compareFilePaths = \[view\.file\];/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /const committedSelection = view\.temporaryHistoryCompare \|\| \(view\.fileBackTarget && view\.fileBackTarget\.type === "log"\);/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /section\(`Committed files \$\{historicalFileCommitLabel\(view\)\}`/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /view\.compareFilePaths = \[view\.file\];/);
     match(gitUiSource, /async backToFileHistory\(\)/);
     match(gitUiSource, /async backToFileView\(\)/);
     match(gitUiSource, /async backFromFileView\(\)/);
@@ -1156,14 +1164,14 @@ describe("app bundle load", () => {
     match(gitUiSource, /view\.selectedLogCommits = \[backTarget\.hash\];/);
     match(gitUiSource, /window\.HerdrFileBrowser\.openAt\(\{ workspace_id: state\.activeKey \|\| `git-file-history:\$\{cwd\}`/);
     match(gitUiSource, /view\.historySource = "file-browser";/);
-    match(gitUiSource, /const compare = activeTab !== "history" && currentMode\(\) !== "changes"/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /const compare = activeTab !== "history" && currentMode\(\) !== "changes"/);
     match(readFileSync(new URL("./desktop/git_ui/diff_render.js", import.meta.url), "utf8"), /const ref = currentMode\(\) === "changes" \|\| currentMode\(\) === "current-compare" \? "working" : \(view\.compareTarget \|\| "HEAD"\);/);
     const gitDiffRenderBlameSource = readFileSync(new URL("./desktop/git_ui/diff_render.js", import.meta.url), "utf8");
     match(gitDiffRenderBlameSource, /ref_name=\$\{encodeURIComponent\(ref\)\}/);
     match(gitDiffRenderBlameSource, /blame unavailable/);
     match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /function sideFileCount\(view\)/);
-    match(gitUiSource, /const filterInput = sideFileCount\(view\)/);
-    match(gitUiSource, /const fileList = cleanupOnly \? "" : `\$\{filterInput\}\$\{fileSections\}`;/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /const filterInput = sideFileCount\(view\)/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /const fileList = cleanupOnly \? "" : `\$\{filterInput\}\$\{fileSections\}`;/);
     match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /status\.conflicted, status\.staged, status\.unstaged, status\.untracked/);
     match(readFileSync(new URL("./desktop/git_ui/modals.js", import.meta.url), "utf8"), /Fetch selected branch \(and main\/master\) before rebasing onto origin/);
     match(gitUiSource, /pull_first: pullFirst/);
@@ -1173,10 +1181,10 @@ describe("app bundle load", () => {
   it("gates stash tab by stash count and offers log tagging", () => {
     match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /function stashCount\(view\)/);
     match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /function canOpenStashView\(view\)/);
-    match(gitUiSource, /No stashes stored\. Refresh to rescan\./);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /No stashes stored\. Refresh to rescan\./);
     match(gitUiSource, /view\.tab === "stash" && !canOpenStashView\(view\)/);
     match(gitUiSource, /tab === "stash" && !canOpenStashView\(view\)/);
-    match(gitUiSource, /item\("Tag", "openSelectedTagModal\(\)", !hasSelection\)/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /item\("Tag", "openSelectedTagModal\(\)", !hasSelection\)/);
     match(gitUiSource, /renderTagSelectedModal/);
     match(gitUiSource, /gitTagName/);
     match(gitUiSource, /\/api\/git-ui\/tag/);
@@ -1187,8 +1195,8 @@ describe("app bundle load", () => {
 
     // State initialization
     match(readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8"), /view\.selectedStash = "";/);
-    match(gitUiSource, /view\.selectedStashDiff = null;/);
-    match(gitUiSource, /view\.stashFile = "";/);
+    match(readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8"), /view\.selectedStashDiff = null;/);
+    match(readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8"), /view\.stashFile = "";/);
     match(readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8"), /view\.stashData = null;/);
 
     // View cache initialization
@@ -1266,14 +1274,14 @@ describe("app bundle load", () => {
     // Public API: selectStash and selectStashFile
     match(gitUiSource, /selectStash\(name\)/);
     match(gitUiSource, /view\.selectedStash = name;/);
-    match(gitUiSource, /view\.stashFile = "";/);
-    match(gitUiSource, /loadStashDiff\(view, name\)/);
+    match(readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8"), /view\.stashFile = "";/);
+    match(readFileSync(new URL("./desktop/git_ui/stash.js", import.meta.url), "utf8"), /loadStashDiff\(view, name\)/);
     match(gitUiSource, /selectStashFile\(path\)/);
     match(gitUiSource, /view\.stashFile = path;/);
     match(gitUiSource, /node\.scrollIntoView\(\{ block: "start", behavior: "smooth" \}\)/);
 
     // canMutateDiff: stash tab is read-only
-    match(gitUiSource, /if \(view\.tab === "stash"\) return false;/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /if \(view\.tab === "stash"\) return false;/);
 
     // Refresh: clears selectedStashDiff, skips loadDiff for stash
     match(gitUiSource, /if \(view\.tab === "stash"\) view\.selectedStashDiff = null;/);
@@ -1283,10 +1291,10 @@ describe("app bundle load", () => {
     match(gitUiSource, /view\.tab === "stash"\) body = renderStashDiff\(\)/);
 
     // renderSide: stash uses stashListHtml + stashFileSection
-    match(gitUiSource, /stashListHtml\(view\) \+ stashFileSection\(view, filter\)/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /stashListHtml\(view\) \+ stashFileSection\(view, filter\)/);
 
     // renderSideFileCount: inline stash count
-    match(gitUiSource, /if \(view\.tab === "stash"\) \{/);
+    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /if \(view\.tab === "stash"\) \{/);
     match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /const stashes = \(view\.stashData && view\.stashData\.stashes\) \? view\.stashData\.stashes\.length : 0;/);
     match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /const preview = view\.selectedStashDiff;/);
     match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /const files = \(preview && preview\.diff && preview\.diff\.files\) \? preview\.diff\.files\.length : 0;/);
@@ -1295,15 +1303,15 @@ describe("app bundle load", () => {
     // collapseAllFiles: uses stash diff files
     match(gitUiSource, /const files = view\.tab === "stash"/);
     match(gitUiSource, /\? \(\(view\.selectedStashDiff && view\.selectedStashDiff\.diff && view\.selectedStashDiff\.diff\.files\) \|\| \[\]\)/);
-    match(gitUiSource, /: \(\(view\.diff && view\.diff\.files\) \|\| \[\]\)/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /: \(\(view\.diff && view\.diff\.files\) \|\| \[\]\)/);
 
     // expandContext: reloads stash diff instead of loadDiff
     match(gitUiSource, /if \(view\.tab === "stash" && view\.selectedStash\) \{/);
-    match(gitUiSource, /view\.selectedStashDiff = null;/);
-    match(gitUiSource, /loadStashDiff\(view, view\.selectedStash\)/);
+    match(readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8"), /view\.selectedStashDiff = null;/);
+    match(readFileSync(new URL("./desktop/git_ui/stash.js", import.meta.url), "utf8"), /loadStashDiff\(view, view\.selectedStash\)/);
 
     // loadLargeDiff: stash tab marks file as loaded
-    match(gitUiSource, /if \(view\.tab === "stash"\) \{/);
+    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /if \(view\.tab === "stash"\) \{/);
     match(gitUiSource, /view\.loadedLargeDiffFiles = Object\.assign\(\{\}, view\.loadedLargeDiffFiles \|\| \{\}, \{ \[path\]: true \}\)/);
 
     // renderGitUi dispatches to renderStash for stash tab
@@ -1391,8 +1399,8 @@ describe("app bundle load", () => {
   });
 
   it("moves the diff layout toggle to the bottom of the Git side rail", () => {
-    match(gitUiSource, /function renderDiffLayoutSideToggle/);
-    match(gitUiSource, /git-ui-side-bottom/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /function renderDiffLayoutSideToggle/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /git-ui-side-bottom/);
     ok(!gitUiSource.includes('<span class="git-ui-toolbar-title">${view.file ? "File view" : "Diff view"}</span>${changes}${history}${blame}${layoutToggle}'));
     const gitLayoutCss = readFileSync(new URL("./desktop/git_ui/layout.css", import.meta.url), "utf8");
     match(gitLayoutCss, /\.git-ui-side-bottom \{[\s\S]*?margin-top: auto;/);
@@ -1651,8 +1659,8 @@ describe("app bundle load", () => {
     match(readFileSync(new URL("./mobile/file_browser.js", import.meta.url), "utf8"), /HerdrMobileFilesContent/);
     ok(!readFileSync(new URL("./mobile/settings.js", import.meta.url), "utf8").includes("setFileBrowserPathSearch"));
     match(readFileSync(new URL("./mobile/settings.js", import.meta.url), "utf8"), /setFileContentSearchContextLines/);
-    match(gitUiSource, /placeholder="Filter files"/);
-    match(gitUiSource, /filterFiles/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /placeholder="Filter files"/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /filterFiles/);
   });
 
   it("supports folder-level stage, unstage, and discard in the Git changes tree", () => {
@@ -1680,13 +1688,13 @@ describe("app bundle load", () => {
     match(gitUiSource, /if \(!value \|\| value === "\."\) return "working tree";/);
     match(gitUiSource, /view\.compareTarget = "\.";\s*\n\s*view\.mode = "current-compare";/);
     match(gitUiSource, /const mergeBase = currentMode\(\) === "current-compare" \? "&merge_base=true" : "";/);
-    match(gitUiSource, /return currentMode\(\) === "changes" \|\| currentMode\(\) === "current-compare";/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /return currentMode\(\) === "changes" \|\| currentMode\(\) === "current-compare";/);
     match(readFileSync(new URL("./desktop/git_ui/diff_render.js", import.meta.url), "utf8"), /const ref = currentMode\(\) === "changes" \|\| currentMode\(\) === "current-compare" \? "working" : \(view\.compareTarget \|\| "HEAD"\);/);
-    match(gitUiSource, /if \(currentMode\(\) === "readonly-compare"\) return false;/);
-    match(gitUiSource, /const right = mode === "changes" \? "current" : compareRefLabel\(view\.compareTarget\);/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /if \(currentMode\(\) === "readonly-compare"\) return false;/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /const right = mode === "changes" \? "current" : compareRefLabel\(view\.compareTarget\);/);
     match(gitUiSource, /const order = new Map\(\(\(\(view\.logData \|\| \{\}\)\.commits\) \|\| \[\]\)\.map\(\(commit, index\) => \[String\(commit\.hash \|\| ""\), index\]\)\);/);
     match(gitUiSource, /const \[target, base\] = selected\.slice\(\)\.sort\(\(a, b\) => rank\(a\) - rank\(b\)\);/);
-    match(gitUiSource, /Comparing \$\{esc\(compareRefLabel\(view\.compareBase\)\)\} → \$\{esc\(compareRefLabel\(view\.compareTarget\)\)\}/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /Comparing \$\{esc\(compareRefLabel\(view\.compareBase\)\)\} → \$\{esc\(compareRefLabel\(view\.compareTarget\)\)\}/);
   });
 
   it("uses shared file tree rows for Git files with Git metadata", () => {
@@ -1715,7 +1723,7 @@ describe("app bundle load", () => {
     match(gitShortcutsSource, /function handleDiffSearchShortcut\(event, view\)/);
     match(gitShortcutsSource, /editableTarget\(event\.target\)/);
     match(gitShortcutsSource, /event\.ctrlKey && !event\.metaKey|!event\.ctrlKey && !event\.metaKey/);
-    match(gitUiSource, /id="gitUiDiffSearch"/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /id="gitUiDiffSearch"/);
     match(gitUiSource, /state\.focusDiffSearch = true/);
     match(readFileSync(new URL("./desktop/git_ui/diff_search.js", import.meta.url), "utf8"), /function highlightDiffText\(code, path\)/);
     const gitDiffRenderRowsSource = readFileSync(new URL("./desktop/git_ui/diff_render.js", import.meta.url), "utf8");
@@ -3863,10 +3871,10 @@ describe("app bundle load", () => {
     match(gitSettingsSource, /Unified \(GitHub-style\)/);
     match(gitSettingsSource, /gitUiDiffLayout: "side-by-side"/);
     match(readFileSync(new URL("./desktop/git_ui/primitives.js", import.meta.url), "utf8"), /function diffLayoutMode\(\)/);
-    match(gitUiSource, /function renderDiffLayoutSideToggle\(view\)/);
-    match(gitUiSource, /git-ui-diff-layout-toggle/);
-    match(gitUiSource, /HerdrGitUi\.setDiffLayout\('side-by-side'\)/);
-    match(gitUiSource, /HerdrGitUi\.setDiffLayout\('unified'\)/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /function renderDiffLayoutSideToggle\(view\)/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /git-ui-diff-layout-toggle/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /HerdrGitUi\.setDiffLayout\('side-by-side'\)/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /HerdrGitUi\.setDiffLayout\('unified'\)/);
     match(gitUiSource, /setDiffLayout\(layout\)/);
     const gitDiffRenderLayoutSource = readFileSync(new URL("./desktop/git_ui/diff_render.js", import.meta.url), "utf8");
     match(gitDiffRenderLayoutSource, /function renderUnifiedLine\(/);
@@ -3920,11 +3928,11 @@ describe("app bundle load", () => {
     match(readFileSync(new URL("./desktop/git_ui/modals.js", import.meta.url), "utf8"), /Choosing a folder moves the Git panel to that directory immediately/);
     match(gitUiSource, /workspaceCwd: nextWorkspaceCwd/);
     match(readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8"), /function gitCwdMatchesWorkspace\(view\)/);
-    match(gitUiSource, /HerdrGitUi\.returnToWorkspaceCwd\(\)/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /HerdrGitUi\.returnToWorkspaceCwd\(\)/);
     match(gitUiSource, /returnToWorkspaceCwd\(\) \{/);
-    match(gitUiSource, /git-ui-current-changes-icon/);
-    match(gitUiSource, /title="Return to current changes"/);
-    match(gitUiSource, /returnToCurrentChanges\}\$\{returnToWorkspace\}/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /git-ui-current-changes-icon/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /title="Return to current changes"/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /returnToCurrentChanges\}\$\{returnToWorkspace\}/);
     ok(!gitUiSource.includes('${compareButton}<button'));
     match(gitLayoutCss, /\.git-ui-return-cwd-icon span/);
     match(gitLayoutCss, /folder-up\.svg/);
@@ -4016,8 +4024,8 @@ describe("app bundle load", () => {
     match(gitLogSource, /aria-label="Filter \$\{label\}"/);
     match(gitLogSource, /input\("description", "Description"\)/);
     match(gitLogSource, /name="git-log-filter-\$\{field\}"/);
-    match(gitUiSource, /id="gitUiFileFilter"/);
-    match(gitUiSource, /name="git-ui-file-filter"/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /id="gitUiFileFilter"/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /name="git-ui-file-filter"/);
     match(source, /right-click a file tab for context menu actions/);
     match(source, /Committed files side preview/);
     ok(!gitLogSource.includes("Filter description"));
@@ -4048,7 +4056,7 @@ describe("app bundle load", () => {
     match(gitLogCss, /\.git-ui-log-copy-hash/);
     match(gitLogCss, /\.git-ui-log-hover-card \.git-ui-log-ref \{[\s\S]*?max-width: none;[\s\S]*?overflow-wrap: anywhere;[\s\S]*?white-space: normal;/);
     match(gitLogSource, /function selectedBranchForHash/);
-    match(gitUiSource, /item\("Worktree", "createWorktreeFromSelectedBranch\(\)", !view \|\| !view\.selectedLogBranch\)/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /item\("Worktree", "createWorktreeFromSelectedBranch\(\)", !view \|\| !view\.selectedLogBranch\)/);
     match(gitUiSource, /createWorktreeFromSelectedBranch\(\) \{/);
     match(source, /function openWorktreeCreateFromGitBranch\(cwd, branch\)/);
     match(source, /id="worktreeFetchRemotes"/);
