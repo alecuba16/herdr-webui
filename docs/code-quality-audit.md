@@ -193,6 +193,20 @@ retarget (never weaken) existing assertions to the module sources.
 5. Full mobile Git parity (commit/log/stash/conflicts) — product call about
    screen real estate, deliberately roadmap.
 
+### Carried review suggestions (open items from the 2026-09-12 review pass)
+
+- Add `Secure` to the auth `Set-Cookie` when TLS is active (`src/auth.rs`
+  builds the cookie without it). Low exploitability (local-first tool) but
+  cheap.
+- Decompose the 800–1000-line closure factories beyond temp_terminal:
+  `mobile/file_browser.js create` (cyclomatic 159, 980 lines) and
+  `mobile/settings.js createMobileSettings` (65, 743 lines).
+- Unify the server `ApiClient` and library `BackendClient` protocol
+  implementations (carried from the earlier audit).
+- Regressions to watch: `src/assets/http_client.test.mjs` now guards that
+  every bundle `api()` delegates to `globalThis.HerdrHttp.request`, so the
+  session-header bug cannot silently return.
+
 ## Validation
 
 Passing after remediation:
