@@ -770,6 +770,29 @@ Real-workflow validation run after the fixes, all green:
   boot-order + delegation guard. Validated: 530/530 frontend, 534/534
   Rust, fmt + clippy clean, mobile e2e 52 PASS, desktop e2e 58 PASS.
 
+- **Mobile session/backend split** (`fb4a0af`):
+  `src/assets/mobile/backend.js` (217 lines) — factory
+  `createMobileBackend` owning `loadServerSettings, loadSessions,
+  handleHerdrErrorFrame, currentSessionBackend, backendEnabled,
+  syncSessionBackendFromServer, sessionBackendLabel,
+  sessionBackendClass, handleServerSettingsChanged` plus the
+  `herdrErrorOfferPending` reentrancy flag (module-local now).
+  Registers `globalThis.HerdrMobileBackendModule`. Deps: `api`,
+  `confirmFn` (window.confirm indirection), `localStorage`, `refresh`,
+  and a `getMobileEvents` getter — `syncSessionBackendFromServer`'s
+  events-socket cycle now resolves the module lazily, preserving the
+  original `if (mobileEvents)` null-guard for the early-boot path
+  (loadServerSettings runs before mobileEvents is created). app.js
+  (1056 → 916 lines) keeps thin wrappers so wsUrl/HerdrHttp.configure
+  and the sessions-module dep objects are untouched. Registered as
+  `MOBILE_BACKEND_JS` asset with route + route test; app_boot mobile
+  list `screens.js, panels.js, workmeta.js, theme.js, actions.js,
+  backend.js, app.js`; mobile_load concat includes backend.js and its
+  backendMode assertion retargeted to the module source; mobile_parity
+  gained a boot-order + delegation guard. Validated: 531/531
+  frontend, 534/534 Rust, fmt + clippy clean, mobile e2e 52 PASS,
+  desktop e2e 58 PASS.
+
 Remaining from §6: Phase 1 slices beyond auth (settings/recent-workspaces,
 git_ui split continues), Phase 2b monolith closures decomposition
 (remaining git_ui.js render/log slices, remaining mobile app.js screens),
