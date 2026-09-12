@@ -1111,6 +1111,54 @@ Real-workflow validation run after the fixes, all green:
   554/554 frontend (551 + 3 new), 534/534 Rust, fmt + clippy clean,
   git e2e 38 ok (GIT E2E ACCEPTANCE PASSED), desktop e2e 58 PASS.
 
+- **Desktop git_ui diff_view split** (`debc089`):
+  `src/assets/desktop/git_ui/diff_view.js` (322 lines) — factory
+  `createGitUiDiffView` owning 25 functions: compare-state helpers
+  (`canMutateDiff, allFiles, historicalFileCommitLabel,
+  clearHistoryCompareState, resetToChangesMode,
+  startHistoryCommitCompare, fileViewStateLabel,
+  fileToolbarBackButton, canEditCurrentFile`), context menus
+  (`renderContextMenu, renderLogContextMenu`), the side rail and
+  toolbar (`renderSide, renderDiffLayoutSideToggle,
+  renderFileToolbar, renderDiffSearchControl`), and the diff body
+  (`renderDiff, largeChangeDiffShells, largeChangeFileItems,
+  largeChangeHiddenFile, renderDiffFile, renderDiffFileBody,
+  fileDiffLeftLabel, renderLargeChangePlaceholder,
+  renderLargeDiffPlaceholder, scrollToDiffFile`), registering
+  `globalThis.HerdrGitUiDiffViewModule`. Deps: 42 names spanning
+  primitives (esc/arg/limits/hashText/diffFileKey...), diff_search
+  (canSearchDiff/diffSearchMatchCount), workspace_nav
+  (renderNavigationTrail/gitCwdMatchesWorkspace/compactPath),
+  diffRender (renderChunk/ensureBlame), conflicts
+  (renderDiffConflictResolutionButtons/renderSideEditor), side_tree
+  (section/filterFiles/stash panels/view tabs), branch_list
+  (renderWorktreeActions/renderGitLocationSelector), plus
+  `appRefreshIconButton`, `LARGE_FILE_DIFF_LINE_LIMIT`, and the
+  hoisted `compareRefLabel`/`diffFile`. Created after the toasts
+  bindings so every dep is already bound. Three earlier consumers
+  now defer through lazy forwarders: shortcuts'
+  `canEditCurrentFile`, stash's `renderDiffFileBody` +
+  `renderLargeDiffPlaceholder`, diffRender's `canMutateDiff` (all
+  `(...args) => fn(...args)` — zero behavior change, evaluated only
+  at call time). git_ui.js (2607 → 2399 lines) binds all 25 to
+  same-named consts. Coverage: git_ui_behavior.test.mjs gained the
+  registration + concat-order guard (asserting the three lazy
+  forwarders exist) plus a behavioral test with stubbed deps:
+  allFiles dedupe, context menu file/dir kinds, file view labels,
+  clearHistoryCompareState/startHistoryCommitCompare state
+  transitions, largeChangeFileItems kind tagging, fileDiffLeftLabel,
+  largeChangeHiddenFile summary folding, renderDiffFile large-file
+  placeholder wiring (hidden-diff-reason id + loadLargeDiff onclick),
+  canEditCurrentFile blocking rules, collapse-all toolbar control,
+  and renderSide composition. app_load: 74 assertions retargeted to
+  the module source (73 auto-matched by plain-text scan + 1 manual
+  multiline), plus the "Worktree actions before file filter"
+  ordering check retargeted to assets.rs concat order
+  (branch_list.js before diff_view.js) since both tokens now live in
+  separate modules. Validated: 556/556 frontend (554 + 2 new),
+  534/534 Rust, fmt + clippy clean, git e2e 38 ok (GIT E2E
+  ACCEPTANCE PASSED), desktop e2e 58 PASS.
+
 Remaining from §6: Phase 1 slices beyond auth (settings/recent-workspaces,
 git_ui split continues), Phase 2b monolith closures decomposition
 (remaining git_ui.js render/log slices, remaining mobile app.js screens),
