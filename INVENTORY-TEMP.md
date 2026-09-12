@@ -1008,6 +1008,38 @@ Real-workflow validation run after the fixes, all green:
   (546 + 1 new), 534/534 Rust, fmt + clippy clean, git e2e 38 ok
   (GIT E2E ACCEPTANCE PASSED), desktop e2e 58 PASS.
 
+- **Desktop git_ui primitives split** (`9e3a9d1`):
+  `src/assets/desktop/git_ui/primitives.js` (152 lines) — factory
+  `createGitUiPrimitives` (zero deps: only vm globals like
+  `window.HerdrOptions`, `Math`, `Set`, `encodeURIComponent`) owning 21
+  functions (`gitUiOptions, explorationDefaultDirectory,
+  largeDiffLineLimit, largeChangeFileLimit, largeSectionFileLimit,
+  fileListMode, diffLayoutMode, gitLogDefaultBranch,
+  gitRemoteBranchPreload, normalizeLogScope, setGitUiOption,
+  diffLineCount, diffFileLineCount, loadedLargeDiffPreviewLimit,
+  previewDiffFile, diffFileKey, previewChunkLines, changeSetFileCount,
+  hashText, esc, arg`), registering
+  `globalThis.HerdrGitUiPrimitivesModule`. This is the first module
+  created inside the git_ui.js IIFE (right after the state consts)
+  because the five earlier-created modules (shortcuts, stash, cleanup,
+  diffRender, conflicts) receive these functions as deps — hoisting
+  safety now comes from the module being bound before any consumer.
+  git_ui.js (2895 → 2815 lines) binds all 21 to same-named consts.
+  Registered in the DESKTOP_GIT_UI_JS concat before syntax.js and
+  git_ui.js. Coverage: git_ui_behavior.test.mjs gained the registration
+  + concat-order guard plus a standalone behavioral test loading the
+  module alone in a fresh vm — asserts default clamps (2000/25/250/10,
+  tree/side-by-side/master), HerdrOptions-backed clamps (negative → 0,
+  preload caps at 100, flat/unified, trimmed default branch),
+  `normalizeLogScope` valid set, `esc`/`arg` escaping, `diffFileKey`
+  string-vs-object forms, and `previewChunkLines` delete+add grouping
+  with limit semantics (a delete group that exceeds the limit is
+  dropped). app_load `function gitLogDefaultBranch()` and `function
+  diffLayoutMode()` shape assertions retargeted to the module source.
+  Validated: 549/549 frontend (548 + 1 new), 534/534 Rust, fmt +
+  clippy clean, git e2e 38 ok (GIT E2E ACCEPTANCE PASSED), desktop e2e
+  58 PASS.
+
 Remaining from §6: Phase 1 slices beyond auth (settings/recent-workspaces,
 git_ui split continues), Phase 2b monolith closures decomposition
 (remaining git_ui.js render/log slices, remaining mobile app.js screens),
