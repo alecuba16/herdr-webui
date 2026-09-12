@@ -241,6 +241,18 @@ describe("mobile parity feature guards", () => {
     assert.ok(gitIndex > -1 && gitIndex < appIndex, "git.js loads before app.js");
   });
 
+  it("mobile sessions live in their own module loaded before app.js", () => {
+    const sessionsSource = readFileSync(new URL("./mobile/sessions.js", import.meta.url), "utf8");
+    assert.match(sessionsSource, /globalThis\.HerdrMobileSessionsModule = \{ create: createMobileSessions \}/);
+    assert.match(sessionsSource, /confirmFn\(`Close current/);
+    // switchSession stays synchronous, matching the original closure.
+    assert.match(sessionsSource, /function switchSession\(name, backend\) \{/);
+    assert.ok(!/async function switchSession/.test(sessionsSource), "switchSession must stay sync");
+    const sessionsIndex = bootSource.indexOf("/assets/mobile/sessions.js");
+    const appIndex = bootSource.indexOf("/assets/mobile/app.js");
+    assert.ok(sessionsIndex > -1 && sessionsIndex < appIndex, "sessions.js loads before app.js");
+  });
+
   it("worktrees module exposes recent workspace actions", () => {
     assert.match(worktreesSource, /loadRecent/);
     assert.match(worktreesSource, /openRecent/);

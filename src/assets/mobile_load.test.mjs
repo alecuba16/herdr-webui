@@ -433,6 +433,8 @@ describe("mobile bundle load", () => {
     "\n" +
     readFileSync(new URL("./mobile/git.js", import.meta.url), "utf8") +
     "\n" +
+    readFileSync(new URL("./mobile/sessions.js", import.meta.url), "utf8") +
+    "\n" +
     readFileSync(new URL("./mobile/app.js", import.meta.url), "utf8");
 
 
