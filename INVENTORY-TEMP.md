@@ -834,6 +834,30 @@ Real-workflow validation run after the fixes, all green:
   + clippy clean, git e2e 38 ok (GIT E2E ACCEPTANCE PASSED), desktop
   e2e 58 PASS.
 
+- **Desktop git_ui diff_render split** (`a70cc16`):
+  `src/assets/desktop/git_ui/diff_render.js` (278 lines) — factory
+  `createGitUiDiffRender` owning the 18 diff-render functions
+  (`ensureBlame, parseBlame, blameName, renderChunk,
+  contextArrowsForChunk, hiddenGap, hunkEnd, unifiedRows,
+  sideBySideRows, renderLine, renderUnifiedLine,
+  renderUnifiedDiffCode, unifiedChangePair, renderDiffCode,
+  changedMiddle, markChangeGroups, isChangedRow, isFirstChange`),
+  registering `globalThis.HerdrGitUiDiffRenderModule`. Deps:
+  `state, active, api, render, esc, arg, currentMode, canMutateDiff,
+  diffLayoutMode, highlightDiffText` (hoisted function refs;
+  highlightDiffText stays in git_ui.js). git_ui.js (3956 → 3745
+  lines) creates the module after cleanup and binds each function to a
+  same-named const, so all call sites keep identical names.
+  Registered in the DESKTOP_GIT_UI_JS concat before git_ui.js;
+  git_ui_behavior.test.mjs gained a registration + concat-order guard
+  (blame endpoint, git-ui-word-change class); app_load diff-render
+  assertions (renderUnifiedLine signature and call, blockButton guard,
+  unified/side-by-side rows, renderDiffCode sides, blame ref +
+  ref_name + unavailable wording, contextArrowsForChunk, hiddenGap)
+  retargeted to the module source. Validated: 534/534 frontend, 534/534
+  Rust, fmt + clippy clean, git e2e 38 ok (GIT E2E ACCEPTANCE PASSED),
+  desktop e2e 58 PASS.
+
 Remaining from §6: Phase 1 slices beyond auth (settings/recent-workspaces,
 git_ui split continues), Phase 2b monolith closures decomposition
 (remaining git_ui.js render/log slices, remaining mobile app.js screens),
