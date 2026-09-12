@@ -1550,6 +1550,7 @@ describe("app bundle load", () => {
     const workspaceSearchSource = readFileSync(new URL("./shared/workspace_search.js", import.meta.url), "utf8");
     const searchSource = readFileSync(new URL("./desktop/search.js", import.meta.url), "utf8");
     const mobileAppSource = readFileSync(new URL("./mobile/app.js", import.meta.url), "utf8");
+    const mobileSearchSource = readFileSync(new URL("./mobile/search.js", import.meta.url), "utf8");
     const lineContextSource = readFileSync(new URL("./shared/line_context.js", import.meta.url), "utf8");
     const sharedColorsCss = readFileSync(new URL("./shared/colors.css", import.meta.url), "utf8");
     const sharedContentSearchCss = readFileSync(new URL("./shared/content_search.css", import.meta.url), "utf8");
@@ -1580,8 +1581,8 @@ describe("app bundle load", () => {
     match(searchSource, /preserveContext: isFile, mode: isFile \? "append" : undefined/);
     match(searchSource, /kind: "file", preserveContext: true, mode: "append"/);
     match(mobileFileBrowserSource, /const preserveContext = options\.preserveContext === true && options\.kind !== "dir";/);
-    match(mobileAppSource, /preserveContext: resolvedKind === "file"/);
-    match(mobileAppSource, /kind: "file", preserveContext: true, highlight/);
+    match(mobileSearchSource, /preserveContext: resolvedKind === "file"/);
+    match(mobileSearchSource, /kind: "file", preserveContext: true, highlight/);
     match(searchSource, /Alt\+↑|ArrowUp/);
     match(searchSource, /Digit1/);
     match(workspaceSearchSource, /fileContentSearchDefaultExpanded/);

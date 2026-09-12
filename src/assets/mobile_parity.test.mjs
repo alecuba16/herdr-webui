@@ -220,6 +220,17 @@ describe("mobile parity feature guards", () => {
     assert.ok(desktopIndex === -1 || attentionIndex < desktopIndex, "attention.js loads before desktop bundles");
   });
 
+  it("mobile search lives in its own module loaded before app.js", () => {
+    const searchSource = readFileSync(new URL("./mobile/search.js", import.meta.url), "utf8");
+    assert.match(searchSource, /globalThis\.HerdrMobileSearchModule = \{ create: createMobileSearch \}/);
+    assert.match(searchSource, /searchDisabledFn\(\)\) return/);
+    // The module must not be wired inside app.js's render path; app.js only
+    // instantiates it and delegates open().
+    const mobileIndex = bootSource.indexOf("/assets/mobile/search.js");
+    const appIndex = bootSource.indexOf("/assets/mobile/app.js");
+    assert.ok(mobileIndex > -1 && mobileIndex < appIndex, "search.js loads before app.js");
+  });
+
   it("worktrees module exposes recent workspace actions", () => {
     assert.match(worktreesSource, /loadRecent/);
     assert.match(worktreesSource, /openRecent/);

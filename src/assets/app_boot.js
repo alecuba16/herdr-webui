@@ -94,6 +94,7 @@
         "/assets/mobile/worktrees.js",
         "/assets/mobile/file-browser.js",
         "/assets/mobile/settings.js",
+        "/assets/mobile/search.js",
         "/assets/mobile/app.js",
       ] : [
         "/assets/desktop/search.js",

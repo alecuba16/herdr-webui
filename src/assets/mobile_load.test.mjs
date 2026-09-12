@@ -429,6 +429,8 @@ describe("mobile bundle load", () => {
     "\n" +
     readFileSync(new URL("./mobile/settings.js", import.meta.url), "utf8") +
     "\n" +
+    readFileSync(new URL("./mobile/search.js", import.meta.url), "utf8") +
+    "\n" +
     readFileSync(new URL("./mobile/app.js", import.meta.url), "utf8");
 
 
