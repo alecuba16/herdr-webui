@@ -1120,18 +1120,18 @@ describe("app bundle load", () => {
     match(gitUiSource, /state\.visible && active\(\) && samePath\(active\(\)\.cwd, cwd\)/);
     match(gitUiSource, /view\.tab = "history";/);
     match(gitUiSource, /function fileViewStateLabel\(view, activeTab\)/);
-    match(gitUiSource, /function captureNavigationSnapshot\(view, label\)/);
-    match(gitUiSource, /function pushNavigationSnapshot\(view, label\)/);
-    match(gitUiSource, /async function restoreNavigationSnapshot\(view, snapshot\)/);
-    match(gitUiSource, /const labels = stack\.map\(\(item\) => item\.label \|\| "Git"\)\.concat\(currentNavigationLabel\(view\)\);/);
-    match(gitUiSource, /const visible = stack\.length > 2/);
-    match(gitUiSource, /\{ label: "…", ellipsis: true \}/);
-    match(gitUiSource, /class="git-ui-breadcrumb-ellipsis" title="\$\{esc\(title\)\}"/);
-    match(gitUiSource, /<span class="git-ui-breadcrumbs" title="\$\{esc\(title\)\}">/);
+    match(readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8"), /function captureNavigationSnapshot\(view, label\)/);
+    match(readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8"), /function pushNavigationSnapshot\(view, label\)/);
+    match(readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8"), /async function restoreNavigationSnapshot\(view, snapshot\)/);
+    match(readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8"), /const labels = stack\.map\(\(item\) => item\.label \|\| "Git"\)\.concat\(currentNavigationLabel\(view\)\);/);
+    match(readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8"), /const visible = stack\.length > 2/);
+    match(readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8"), /\{ label: "…", ellipsis: true \}/);
+    match(readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8"), /class="git-ui-breadcrumb-ellipsis" title="\$\{esc\(title\)\}"/);
+    match(readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8"), /<span class="git-ui-breadcrumbs" title="\$\{esc\(title\)\}">/);
     match(gitUiLogCss, /\.git-ui-breadcrumb-sep \{[\s\S]*?font-size: 10px;/);
     match(gitUiLogCss, /\.git-ui-breadcrumb-ellipsis \{[\s\S]*?font-size: 11px;/);
-    match(gitUiSource, /function renderNavigationTrail\(view\)/);
-    match(gitUiSource, /onclick="HerdrGitUi\.goBack\(\)"/);
+    match(readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8"), /function renderNavigationTrail\(view\)/);
+    match(readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8"), /onclick="HerdrGitUi\.goBack\(\)"/);
     match(gitUiSource, /pushNavigationSnapshot\(view\);\n\s+startHistoryCommitCompare\(view, hash\);/);
     match(gitUiSource, /if \(!\(view\.fileBackTarget && view\.fileBackTarget\.type === "log"\)\) pushNavigationSnapshot\(view\);/);
     match(gitUiSource, /view\.navigationStack = \[\];/);
@@ -1186,10 +1186,10 @@ describe("app bundle load", () => {
     const gitLayoutCss = readFileSync(new URL("./desktop/git_ui/layout.css", import.meta.url), "utf8");
 
     // State initialization
-    match(gitUiSource, /view\.selectedStash = "";/);
+    match(readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8"), /view\.selectedStash = "";/);
     match(gitUiSource, /view\.selectedStashDiff = null;/);
     match(gitUiSource, /view\.stashFile = "";/);
-    match(gitUiSource, /view\.stashData = null;/);
+    match(readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8"), /view\.stashData = null;/);
 
     // View cache initialization
     match(gitUiSource, /selectedStash: ""/);
@@ -1198,8 +1198,8 @@ describe("app bundle load", () => {
     match(gitUiSource, /stashData: null/);
 
     // Title rendering
-    match(gitUiSource, /view\.tab === "stash" && view\.selectedStash\) return `Stash . \$\{view\.selectedStash\}`/);
-    match(gitUiSource, /view\.tab === "stash"\) return "Stash"/);
+    match(readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8"), /view\.tab === "stash" && view\.selectedStash\) return `Stash · \$\{view\.selectedStash\}`/);
+    match(readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8"), /view\.tab === "stash"\) return "Stash"/);
 
     // renderStash: loads stash list, auto-selects first, fetches diff
     // (lives in the git_ui/stash.js module)
@@ -3919,7 +3919,7 @@ describe("app bundle load", () => {
     ok(!gitUiSource.includes(">Switch to</button>"));
     match(readFileSync(new URL("./desktop/git_ui/modals.js", import.meta.url), "utf8"), /Choosing a folder moves the Git panel to that directory immediately/);
     match(gitUiSource, /workspaceCwd: nextWorkspaceCwd/);
-    match(gitUiSource, /function gitCwdMatchesWorkspace\(view\)/);
+    match(readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8"), /function gitCwdMatchesWorkspace\(view\)/);
     match(gitUiSource, /HerdrGitUi\.returnToWorkspaceCwd\(\)/);
     match(gitUiSource, /returnToWorkspaceCwd\(\) \{/);
     match(gitUiSource, /git-ui-current-changes-icon/);

@@ -123,6 +123,7 @@ const SHARED_SOURCES = [
   "./desktop/git_ui/settings.js",
   "./desktop/git_ui/primitives.js",
   "./desktop/git_ui/diff_search.js",
+  "./desktop/git_ui/workspace_nav.js",
   "./desktop/git_ui/syntax.js",
   "./desktop/git_ui/log.js",
   "./desktop/git_ui/shortcuts.js",
@@ -1001,6 +1002,144 @@ test("diff search counts matches and wraps hits in marks", () => {
     },
   };
   assert.equal(mod.diffSearchMatchCount(view, "todo"), 3);
+});
+
+test("workspace_nav module is registered and wired before git_ui.js consumes it", () => {
+  const navSource = readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8");
+  assert.match(navSource, /globalThis\.HerdrGitUiWorkspaceNavModule = \{ create: createGitUiWorkspaceNav \}/);
+  assert.match(navSource, /function workspaceCwd\(workspace\) \{/);
+  assert.match(navSource, /if \(window\.HerdrWorkspacePath\) return window\.HerdrWorkspacePath\(workspace\)/);
+  assert.match(navSource, /view\.navigationStack = stack\.concat\(snapshot\)\.slice\(-12\)/);
+  assert.match(navSource, /git-ui-breadcrumbs/);
+  assert.match(navSource, /HerdrGitUi\.goBack\(\)/);
+  const gitUiSource = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
+  assert.match(gitUiSource, /globalThis\.HerdrGitUiWorkspaceNavModule\.create\(\{/);
+  assert.match(gitUiSource, /const compactPath = workspaceNav\.compactPath;/);
+  assert.match(gitUiSource, /const samePath = workspaceNav\.samePath;/);
+  const assetsSource = readFileSync(new URL("../assets.rs", import.meta.url), "utf8");
+  const navIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui/workspace_nav.js")');
+  const gitUiIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui.js")');
+  assert.ok(navIndex > -1 && navIndex < gitUiIndex, "workspace_nav.js concatenates before git_ui.js");
+});
+
+test("workspace navigation snapshots, trail, and status helpers behave", () => {
+  const navSource = readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8");
+  const ctx = vm.createContext({ window: {}, globalThis: null, console, Math, JSON, Object, Array, String, Number, Set, Error, document: { querySelector: () => null } });
+  ctx.globalThis = ctx;
+  vm.runInContext(navSource, ctx);
+  const state = { cache: {}, activeKey: "", visible: false, sideScrollTop: 0 };
+  let mode = "changes";
+  const calls = [];
+  const mod = ctx.globalThis.HerdrGitUiWorkspaceNavModule.create({
+    state,
+    currentMode: () => mode,
+    normalizeLogScope: (scope) => ["all", "base-current", "base"].includes(scope) ? scope : "all",
+    preserveContentScroll: () => true,
+    loadDiff: async () => { calls.push("loadDiff"); },
+    loadSelectedCommitPreview: (view, hash) => { calls.push(`preview:${hash}`); },
+    render: () => { calls.push("render"); },
+    esc: (value) => String(value == null ? "" : value).replace(/</g, "&lt;"),
+    GIT_LOG_PAGE_SIZE: 80,
+  });
+  // workspace cwd/key/title helpers.
+  assert.equal(mod.workspaceCwd(null), "");
+  assert.equal(mod.workspaceCwd({ cwd: "/repo/a" }), "/repo/a");
+  assert.equal(mod.workspaceCwd({ worktree: { checkout_path: "/wt/b" } }), "/wt/b");
+  assert.equal(mod.workspaceKey({ workspace_id: "w1" }), "w1");
+  assert.equal(mod.workspaceKey(null), "default");
+  assert.equal(mod.workspaceTitle({ worktree: { branch: "dev" } }), "dev");
+  assert.equal(mod.workspaceTitle(null), "Git");
+  // samePath normalizes trailing slashes.
+  assert.equal(mod.samePath("/repo/a/", "/repo/a"), true);
+  assert.equal(mod.samePath("/", "/"), true);
+  assert.equal(mod.samePath("/repo/a", "/repo/b"), false);
+  assert.equal(mod.gitCwdMatchesWorkspace({ cwd: "/repo/a/", workspaceCwd: "/repo/a" }), true);
+  assert.equal(mod.gitCwdMatchesWorkspace({}), true);
+  // resetGitViewForCwd clears navigation and compare state.
+  const view = { cwd: "/old", file: "x.js", navigationStack: [{}], mode: "log", tab: "log", selectedLogCommits: ["h"], status: {}, diff: {} };
+  mod.resetGitViewForCwd(view, "/new");
+  assert.deepEqual(
+    { cwd: view.cwd, file: view.file, mode: view.mode, tab: view.tab, stack: view.navigationStack.length },
+    { cwd: "/new", file: "", mode: "changes", tab: "changes", stack: 0 }
+  );
+  // clonePlain falls back on circular input.
+  const circular = {};
+  circular.self = circular;
+  assert.deepEqual(mod.clonePlain(circular, "fallback"), "fallback");
+  // navigation labels per tab.
+  assert.equal(mod.currentNavigationLabel({ tab: "log", logFilePath: "a.js" }), "Log · a.js");
+  assert.equal(mod.currentNavigationLabel({ tab: "stash", selectedStash: "s1" }), "Stash · s1");
+  assert.equal(mod.currentNavigationLabel({ tab: "history", file: "a.js" }), "History · a.js");
+  assert.equal(mod.currentNavigationLabel({ tab: "cleanup" }), "Cleanup");
+  assert.equal(mod.currentNavigationLabel({ file: "a.js" }), "Current file · a.js");
+  mode = "compare";
+  assert.equal(mod.currentNavigationLabel({ file: "a.js" }), "Compared file · a.js");
+  // push dedupes identical consecutive signatures and caps the stack at 12.
+  const v = { tab: "changes", mode: "changes", file: "", selectedLogCommits: [] };
+  mod.pushNavigationSnapshot(v, "one");
+  mod.pushNavigationSnapshot(v, "one");
+  assert.equal(v.navigationStack.length, 1, "duplicate signature is not pushed");
+  v.file = "b.js";
+  mod.pushNavigationSnapshot(v);
+  assert.equal(v.navigationStack.length, 2);
+  // trail renders crumbs with a back button.
+  const trail = mod.renderNavigationTrail(v);
+  assert.match(trail, /git-ui-breadcrumbs/);
+  assert.match(trail, /HerdrGitUi\.goBack\(\)/);
+  assert.match(trail, /one/);
+  assert.equal(mod.renderNavigationTrail({}), "");
+  // workspaceStatus: nogit when no workspace cwd, open when active+visible.
+  assert.equal(mod.workspaceStatus("k", { cwd: "/repo/a" }), "closed");
+  state.visible = true;
+  state.activeKey = "k";
+  assert.equal(mod.workspaceStatus("k", { cwd: "/repo/a" }), "open");
+  assert.equal(mod.workspaceStatus("k", {}), "nogit");
+  state.cache["k"] = { error: "boom" };
+  assert.equal(mod.workspaceStatus("k", { cwd: "/repo/a" }), "nogit", "error view is nogit");
+  // compactPath keeps at most 3 segments.
+  assert.equal(mod.compactPath("a/b/c"), "a/b/c");
+  assert.equal(mod.compactPath("a/b/c/d/e"), ".../c/d/e");
+  assert.equal(mod.compactPath(""), "No repo path");
+});
+
+test("restoreNavigationSnapshot reloads diff and clamps log scope", async () => {
+  const navSource = readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8");
+  const ctx = vm.createContext({ window: {}, globalThis: null, console, Math, JSON, Object, Array, String, Number, Set, Error, document: { querySelector: () => null } });
+  ctx.globalThis = ctx;
+  vm.runInContext(navSource, ctx);
+  const state = { cache: {}, activeKey: "", visible: false, sideScrollTop: 0 };
+  const calls = [];
+  const mod = ctx.globalThis.HerdrGitUiWorkspaceNavModule.create({
+    state,
+    currentMode: () => "changes",
+    normalizeLogScope: (scope) => ["all", "base-current", "base"].includes(scope) ? scope : "all",
+    preserveContentScroll: () => false,
+    loadDiff: async () => { calls.push("loadDiff"); },
+    loadSelectedCommitPreview: (view, hash) => { calls.push(`preview:${hash}`); },
+    render: () => { calls.push("render"); },
+    esc: (v) => v,
+    GIT_LOG_PAGE_SIZE: 80,
+  });
+  // changes tab: loadDiff is awaited, render is not called.
+  const view = { tab: "changes" };
+  await mod.restoreNavigationSnapshot(view, { tab: "changes", file: "a.js" });
+  assert.deepEqual(calls, ["loadDiff"]);
+  // log tab with one selected commit and no matching preview: preview loads, then render.
+  calls.length = 0;
+  const logView = { tab: "log", selectedLogCommits: [], selectedCommitPreview: null };
+  await mod.restoreNavigationSnapshot(logView, {
+    tab: "log",
+    selectedLogCommits: ["abc"],
+    selectedCommitPreview: null,
+    logScope: "bogus",
+    logAll: true,
+  });
+  assert.equal(logView.logScope, "all", "bogus scope normalizes to all");
+  assert.equal(logView.logAll, true);
+  assert.deepEqual(calls, ["preview:abc", "render"]);
+  // null view or snapshot is a no-op.
+  assert.equal(await mod.restoreNavigationSnapshot(null, { tab: "changes" }), undefined);
+  assert.equal(await mod.restoreNavigationSnapshot({}, null), undefined);
 });
 
 test("primitives module is registered and wired before git_ui.js consumes it", () => {
