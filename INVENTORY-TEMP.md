@@ -895,6 +895,40 @@ Real-workflow validation run after the fixes, all green:
   clippy clean, git e2e 38 ok (GIT E2E ACCEPTANCE PASSED), desktop
   e2e 58 PASS.
 
+- **Desktop git_ui side_tree split** (`0ef313c`):
+  `src/assets/desktop/git_ui/side_tree.js` (341 lines) — factory
+  `createGitUiSideTree` owning 27 functions: the section renderers
+  (`section, sectionBulkAction, treeIcon`), the shared-tree render
+  family (`renderFileTree, renderFlatFileList, pathBasename,
+  renderTreeNode, renderSideFile, dirMenuTargetPaths,
+  renderDirContextMenu`), view-tab + stash side-panel family
+  (`renderGitViewTabs, hasStagedChanges, stashCount, canOpenStashView,
+  commitPreviewFile, commitPreviewSection, stashListHtml,
+  stashFileSection, stashFileSectionList`), and the file-summary
+  selectors (`fileSummary, fileSummaryEntries, fileSummaryForPath,
+  filesForKind, fileTreeStatus, normalizeFileTreeStatus, filterFiles,
+  sideFileCount`), registering
+  `globalThis.HerdrGitUiSideTreeModule`. Deps: `active, esc, arg,
+  currentMode, diffFile, fileListMode, largeSectionFileLimit,
+  titleWithGitShortcut, FileTree` — creation sits after the
+  `Syntax`/`FileTree` consts and the `titleWithGitShortcut` const so
+  no TDZ issues; the cleanup module's earlier `treeIcon` dep becomes
+  a `(...args) => treeIcon(...args)` wrapper since cleanup is created
+  before sideTree now. git_ui.js (3521 → 3254 lines) binds all 27 to
+  same-named consts. Registered in the DESKTOP_GIT_UI_JS concat
+  before git_ui.js. Coverage grown: git_ui_behavior.test.mjs gained
+  the registration + concat-order guard plus two vm behavioral tests
+  (four status sections with per-kind bulk actions and shared-tree
+  row markup; stash tab list via /api/git-ui/stashes + file section
+  via /api/git-ui/stash-show through selectStash). app_load
+  assertions on the moved family (section/stash/tree/summary
+  functions and their markup strings, renderFileTree override block,
+  dirMenuTargetPaths/renderDirContextMenu, FileTree.renderPathTree
+  wiring) retargeted to the module source; renderSide/renderMain
+  composition assertions stay on git_ui.js. Validated: 542/542
+  frontend (539 + 3 new), 534/534 Rust, fmt + clippy clean, git e2e
+  38 ok (GIT E2E ACCEPTANCE PASSED), desktop e2e 58 PASS.
+
 Remaining from §6: Phase 1 slices beyond auth (settings/recent-workspaces,
 git_ui split continues), Phase 2b monolith closures decomposition
 (remaining git_ui.js render/log slices, remaining mobile app.js screens),
