@@ -1,10 +1,14 @@
 # Code quality audit
 
-Date: 2026-08-17
+Date: 2026-09-12 (revision 3), supersedes the 2026-08-17 revision
 Scope: full `herdr-webui` repository, indexed with codebase-memory.
 
-> **Note**: This is an updated revision of the original audit (2026-07-14). The
-> graph was re-indexed and metrics reflect the current codebase at v0.2.91.
+> **Note**: Revision 3 folds in the SOLID/modularity initiative execution
+> record (2026-09-12): Rust `main.rs` split into `web/` modules, agent
+> status table-driven detection, frontend shared HTTP client, session
+> header bugfix, desktop `git_ui.js` decomposed from 4,092 to 2,338 lines
+> across 17 modules, mobile lightweight parity features, and docs
+> realignment. Metrics reflect the codebase at v0.4.30.
 
 ## Baseline
 
@@ -53,21 +57,131 @@ Scope: full `herdr-webui` repository, indexed with codebase-memory.
 
 ## Deferred risks
 
-These require separate, reviewable refactors because they have larger blast
-radius:
+At the time of the 2026-08-17 revision these required separate, reviewable
+refactors. The first three landed in the 2026-09-12 initiative (see the
+execution record below); the rest remain open:
 
-- Split `src/main.rs` (6,381 lines) into auth, settings, TLS, session/workspace
-  handlers, and terminal proxy modules.
-- Replace the 22 agent-specific status functions in `src/builtin_backend.rs`
-  (5,832 lines) with table-driven rules.
-- Split desktop `git_ui.js` (3,626 lines) and mobile file-browser
-  responsibilities into smaller feature modules.
+- ~~Split `src/main.rs` into web modules~~ (landed 2026-09-12).
+- ~~Replace the 22 agent-specific status functions with table-driven rules~~
+  (landed 2026-09-12).
+- ~~Split desktop `git_ui.js` and mobile file-browser responsibilities~~
+  (landed 2026-09-12; see remaining items below).
 - Unify duplicated desktop/mobile terminal refresh, worktree, and search flows
   where behavior is truly shared.
 - Unify the server `ApiClient` and library `BackendClient` protocol
   implementations.
 - Remove per-line allocation in `ContentMatcher::find` after adding
   Unicode-safe behavior tests and benchmarks.
+
+## SOLID / modularity initiative execution record (2026-09-12)
+
+The 2026-09-12 audit (graph: 7,074 nodes / 28,360 edges, full mode) drove a
+phased, zero-behavior-change initiative. Every slice landed behind the full
+gate (frontend `node --test`, `cargo fmt --check`, `cargo clippy --all-targets
+-- -D warnings`, `cargo test`, git + desktop + mobile e2e acceptance suites).
+
+### Landed
+
+**Rust backend (Phase 1)**
+
+- `src/main.rs` (13,865 lines) split into a `web/` module tree: router
+  assembly, auth, settings, sessions/workspaces, TLS, install, route modules,
+  and WS handlers. `main()` stays thin in `src/main.rs`.
+- Agent status detection moved from 22 hand-written `detect_*_status`
+  functions to a table-driven ruleset alongside the existing
+  `builtin_detection/` identity split.
+
+**Frontend shared modules (Phase 2, DRY)**
+
+- `shared/http.js`: one `api()` client (auth cookie, backend-target header,
+  session header, error normalization) replacing 7 independent copies.
+- **Session-targeting bugfix** (user-visible): the private `api()` copies in
+  desktop `git_ui.js`, `file_browser.js`, `directory_picker.js`, and
+  `lsp_settings.js` did not attach `x-herdr-session`/`x-herdr-backend`
+  headers, so Git drawer worktree lists hit the default session/backend when
+  a non-default session was pinned, and 401s surfaced raw instead of the
+  login flow. All four now use the shared client.
+- Duplicate `escapeHtml` copies removed in favor of the shared module.
+
+**Desktop `git_ui.js` decomposed (Phase 2b)**
+
+`git_ui.js` went from 4,092 lines to 2,338 lines; every cohesive family now
+lives in a factory module under `src/assets/desktop/git_ui/` (each registers
+`globalThis.HerdrGitUi*Module` and is concatenated before `git_ui.js`):
+
+| Module | Lines | Owns |
+| --- | --- | --- |
+| `settings.js` | 38 | settings panel registration |
+| `syntax.js` | 96 | syntax highlighting bridge |
+| `log.js` | 292 | log graph table (pre-existing) |
+| `shortcuts.js` | 274 | keyboard shortcuts + tooltip titles |
+| `stash.js` | 87 | stash view |
+| `cleanup.js` | 188 | cleanup tab |
+| `diff_render.js` | 278 | diff hunks/lines rendering |
+| `conflicts.js` | 257 | conflict blocks + side editor render |
+| `side_tree.js` | 341 | file tree + stash side panels |
+| `modals.js` | 140 | commit/git-op/reset/compare/tag modals |
+| `branch_list.js` | 171 | branch list + worktree selector popovers |
+| `toasts.js` | 145 | toast render + permalink/PR urls |
+| `primitives.js` | 152 | options/limits/esc/arg/diff keys (zero deps) |
+| `diff_search.js` | 76 | diff search count + highlight |
+| `workspace_nav.js` | 205 | navigation stack/trail + workspace helpers |
+| `diff_view.js` | 308 | side rail, file toolbar, diff body |
+| `log_render.js` | 97 | log load, history, conflicts, main routing |
+
+The remaining 2,338 lines are a genuine composition root: shared state
+consts, module wiring, panel lifecycle (open/hide/close/refresh/loadDiff/
+api/post/postJson), render orchestration (render/replaceContent/
+mountSideEditors), and the `window.HerdrGitUi` API object (142 methods) that
+inline `onclick` strings bind to. Extracting the lifecycle/orchestration
+families was assessed and deliberately stopped: they are mutually recursive
+with 30+ consumption sites across the module creates, so a split would add
+lazy-forwarder indirection without cohesion gains.
+
+Each slice followed the same recipe: map function contiguity, extract with
+original comments carried over, wire same-named const bindings, register in
+the `assets.rs` concat + test boot list, add a registration + concat-order
+guard test, add behavioral vm tests for previously regex-only coverage, and
+retarget (never weaken) existing assertions to the module sources.
+
+**Mobile (Phase 2b/2c)**
+
+- `mobile/app.js` (2,075 lines) decomposed into screen/search/session modules.
+- Lightweight parity features landed: recent workspaces, no-sleep control,
+  notification scope, agent sorting, stuck-working dismiss.
+- Docs realigned: features.md/development.md now state that mobile file
+  browser and Git support mutations (docs were stale, claiming read-only).
+
+### Operational notes for future extractions
+
+- Hoisted function declarations can be passed into earlier module creates
+  directly; const bindings consumed by earlier creates need
+  `(...args) => fn(...args)` lazy forwarders (TDZ safety).
+- vm-globals (`localStorage`, `navigator`, `document`) must be injected
+  explicitly into module factories.
+- Cross-realm vm `assert.deepEqual` fails on vm-created arrays; compare via
+  `JSON.stringify` equality.
+- Moved code with explanatory comments requires comment-carrying extraction
+  (walk back over contiguous `//` lines).
+
+### Current validation state
+
+- Frontend: 558/558 across `node --test src/assets/*.test.mjs` (23 files).
+- Rust: 534/534 `cargo test`, `cargo fmt --check` and
+  `cargo clippy --all-targets -- -D warnings` clean.
+- E2e acceptance: git 38 ok (GIT E2E ACCEPTANCE PASSED), desktop 58 PASS,
+  mobile 52 PASS.
+
+### Remaining (deferred, ordered)
+
+1. Desktop `core.js` remainder and `mobile/app.js` residual screens (Phase 2b
+   leftovers where cohesion justified stopping).
+2. `shared/temp_terminal.js` split (manager vs session-instance factory; the
+   repo's worst complexity numbers live here: cyclomatic 202/180).
+3. Full mobile Git parity (commit/log/stash/conflicts) — product call about
+   screen real estate, deliberately roadmap.
+4. Rust `builtin_backend.rs` (6,966 lines) further split beyond detection
+   (runtime state vs PTY vs dispatch).
 
 ## Validation
 
