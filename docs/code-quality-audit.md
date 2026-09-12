@@ -4,11 +4,11 @@ Date: 2026-09-12 (revision 3), supersedes the 2026-08-17 revision
 Scope: full `herdr-webui` repository, indexed with codebase-memory.
 
 > **Note**: Revision 3 folds in the SOLID/modularity initiative execution
-> record (2026-09-12): Rust `main.rs` split into `web/` modules, agent
-> status table-driven detection, frontend shared HTTP client, session
-> header bugfix, desktop `git_ui.js` decomposed from 4,092 to 2,338 lines
-> across 17 modules, mobile lightweight parity features, and docs
-> realignment. Metrics reflect the codebase at v0.4.30.
+> record (2026-09-12): frontend shared HTTP client with the session-header
+> bugfix, desktop `git_ui.js` decomposed from 4,092 to 2,338 lines across
+> 17 modules, mobile app decomposed and lightweight parity features, and
+> docs realignment. The Rust `main.rs` and `builtin_backend.rs` splits
+> remain deferred. Metrics reflect the codebase at v0.4.30.
 
 ## Baseline
 
@@ -58,14 +58,13 @@ Scope: full `herdr-webui` repository, indexed with codebase-memory.
 ## Deferred risks
 
 At the time of the 2026-08-17 revision these required separate, reviewable
-refactors. The first three landed in the 2026-09-12 initiative (see the
-execution record below); the rest remain open:
+refactors. The desktop `git_ui.js` split landed in the 2026-09-12 initiative
+(see the execution record below); the rest remain open:
 
-- ~~Split `src/main.rs` into web modules~~ (landed 2026-09-12).
-- ~~Replace the 22 agent-specific status functions with table-driven rules~~
-  (landed 2026-09-12).
-- ~~Split desktop `git_ui.js` and mobile file-browser responsibilities~~
-  (landed 2026-09-12; see remaining items below).
+- Split `src/main.rs` (13,675 lines) into auth, settings, TLS,
+  session/workspace handlers, and terminal proxy modules.
+- Replace the 30 agent-specific status functions in `src/builtin_backend.rs`
+  with table-driven rules.
 - Unify duplicated desktop/mobile terminal refresh, worktree, and search flows
   where behavior is truly shared.
 - Unify the server `ApiClient` and library `BackendClient` protocol
@@ -82,14 +81,15 @@ gate (frontend `node --test`, `cargo fmt --check`, `cargo clippy --all-targets
 
 ### Landed
 
-**Rust backend (Phase 1)**
+**Rust backend (Phase 1 — deferred, not landed)**
 
-- `src/main.rs` (13,865 lines) split into a `web/` module tree: router
-  assembly, auth, settings, sessions/workspaces, TLS, install, route modules,
-  and WS handlers. `main()` stays thin in `src/main.rs`.
-- Agent status detection moved from 22 hand-written `detect_*_status`
-  functions to a table-driven ruleset alongside the existing
-  `builtin_detection/` identity split.
+- `src/main.rs` (13,675 lines) is still a god-module: CLI parsing, TLS, auth,
+  settings, session registry, all HTTP handlers, terminal WS bridge, and
+  inline tests in one file. The `web/` module split is the largest remaining
+  Phase 1 item.
+- `src/builtin_backend.rs` (6,966 lines) still mixes runtime state, PTY
+  management, socket dispatch, and 30 hand-written `detect_*_status` agent
+  functions. Only the identity half (`builtin_detection/`) was split earlier.
 
 **Frontend shared modules (Phase 2, DRY)**
 
@@ -101,7 +101,9 @@ gate (frontend `node --test`, `cargo fmt --check`, `cargo clippy --all-targets
   headers, so Git drawer worktree lists hit the default session/backend when
   a non-default session was pinned, and 401s surfaced raw instead of the
   login flow. All four now use the shared client.
-- Duplicate `escapeHtml` copies removed in favor of the shared module.
+- The duplicate `escapeHtml` copies in desktop `app_js/terminal.js`,
+  `shared/temp_terminal.js` (attr variant), and `mobile/core.js` remain;
+  `shared/core.js` exports the canonical one. Consolidation is still open.
 
 **Desktop `git_ui.js` decomposed (Phase 2b)**
 
@@ -146,9 +148,13 @@ retarget (never weaken) existing assertions to the module sources.
 
 **Mobile (Phase 2b/2c)**
 
-- `mobile/app.js` (2,075 lines) decomposed into screen/search/session modules.
-- Lightweight parity features landed: recent workspaces, no-sleep control,
-  notification scope, agent sorting, stuck-working dismiss.
+- `mobile/app.js` decomposed from 2,075 lines to 916 lines across
+  `screens.js`, `search.js`, `sessions.js`, `actions.js`, `events.js`,
+  `attention.js`, `backend.js`, `git.js`, `panels.js`, `settings.js`,
+  `workmeta.js`, plus the pre-existing `file_browser.js` (984),
+  `worktrees.js` (321), and `terminal.js` (276).
+- Lightweight parity features landed: recent workspaces and no-sleep control
+  (settings.js/attention.js), agent sorting (settings.js).
 - Docs realigned: features.md/development.md now state that mobile file
   browser and Git support mutations (docs were stale, claiming read-only).
 
@@ -174,14 +180,18 @@ retarget (never weaken) existing assertions to the module sources.
 
 ### Remaining (deferred, ordered)
 
-1. Desktop `core.js` remainder and `mobile/app.js` residual screens (Phase 2b
-   leftovers where cohesion justified stopping).
-2. `shared/temp_terminal.js` split (manager vs session-instance factory; the
+1. Rust `src/main.rs` (13,675 lines) split into a `web/` module tree
+   (router, auth, settings, sessions/workspaces, TLS, install, routes,
+   WS handlers) — the largest deferred item.
+2. Rust `src/builtin_backend.rs` (6,966 lines): runtime state vs PTY vs
+   dispatch split, plus table-driven agent status rules replacing the 30
+   hand-written `detect_*_status` functions.
+3. `shared/temp_terminal.js` split (manager vs session-instance factory; the
    repo's worst complexity numbers live here: cyclomatic 202/180).
-3. Full mobile Git parity (commit/log/stash/conflicts) — product call about
+4. Desktop `core.js` remainder (Phase 2b leftover where cohesion justified
+   stopping).
+5. Full mobile Git parity (commit/log/stash/conflicts) — product call about
    screen real estate, deliberately roadmap.
-4. Rust `builtin_backend.rs` (6,966 lines) further split beyond detection
-   (runtime state vs PTY vs dispatch).
 
 ## Validation
 
