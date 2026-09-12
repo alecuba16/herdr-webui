@@ -709,6 +709,26 @@ Real-workflow validation run after the fixes, all green:
   frontend, 534/534 Rust, fmt + clippy clean, mobile e2e 52 PASS,
   desktop e2e 58 PASS.
 
+- **Mobile workspace/meta selectors split** (`a3d358f`):
+  `src/assets/mobile/workmeta.js` (142 lines) — factory
+  `createMobileWorkmeta` owning the 14 pure state selectors
+  (`currentWorkspace, currentTab, currentPane, workspacesById,
+  tabsById, tabCountsByWorkspace, tabTitle, agentTabLabel,
+  worktreeForWorkspace, workspaceTitle, worktreeDisplayName,
+  parentWorkspaceName, workspaceMeta, contextMeta`), registering
+  `globalThis.HerdrMobileWorkmetaModule`. Deps are only
+  `{ state, samePath, pathBasename }` (core helpers from HerdrMobileCore)
+  — the whole block is pure state logic with no DOM or module refs.
+  app.js (1215 → 1156 lines) keeps thin sync wrappers so the many
+  internal call sites and downstream module deps (screens/panels/search
+  receive tabTitle, workspaceTitle, etc.) are untouched; module created
+  right after mobileAttention, before all consumers. Registered as
+  `MOBILE_WORKMETA_JS` asset with route + route test; app_boot mobile
+  list `screens.js, panels.js, workmeta.js, app.js`; mobile_load concat
+  includes workmeta.js; mobile_parity gained a boot-order + delegation
+  guard. Validated: 528/528 frontend, 534/534 Rust, fmt + clippy
+  clean, mobile e2e 52 PASS, desktop e2e 58 PASS.
+
 Remaining from §6: Phase 1 slices beyond auth (settings/recent-workspaces,
 git_ui split continues), Phase 2b monolith closures decomposition
 (remaining git_ui.js render/log slices, remaining mobile app.js screens),
