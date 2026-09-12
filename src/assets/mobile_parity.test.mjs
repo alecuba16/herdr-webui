@@ -253,8 +253,9 @@ describe("mobile parity feature guards", () => {
   });
 
   it("no nested interactive elements inside mobile-row buttons", () => {
-    // A <button> cannot contain another button: the HTML parser closes the
-    // outer button at the inner one, so rows must use span actions.
+    // Interactive content inside <button> is invalid HTML (WHATWG) and
+    // browser handling of activation/click bubbling differs; row actions
+    // must be span elements like the desktop agent sidebar uses.
     const rowMatches = appSource.match(/<button class="mobile-row[^"]*"[^>]*>[\s\S]*?<\/button>/g) || [];
     assert.ok(rowMatches.length > 0, "mobile rows must exist");
     for (const row of rowMatches) {
