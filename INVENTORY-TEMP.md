@@ -729,6 +729,26 @@ Real-workflow validation run after the fixes, all green:
   guard. Validated: 528/528 frontend, 534/534 Rust, fmt + clippy
   clean, mobile e2e 52 PASS, desktop e2e 58 PASS.
 
+- **Mobile theme/viewport split** (`0a7521b`): `src/assets/mobile/theme.js`
+  (85 lines) — factory `createMobileTheme` owning
+  `updateMobileViewport, scheduleTerminalResize, applyTreeIndent,
+  syncBrowserFavicon, applyTheme` plus the two module-local timers
+  (`largestVisualViewportHeight`, `terminalResizeTimer`) that previously
+  lived as app.js `let` vars; registers
+  `globalThis.HerdrMobileThemeModule`. Deps made explicit:
+  `documentRef`/`windowRef`/`localStorage` refs, `getMobileAttention` and
+  `getMobileTerminal` getters (favicon status scan and the 80ms resize
+  reconnect), `browserFavicon` + `getBrowserFaviconError` (favicon error
+  state stays in app.js), `applyThemeToBody` extension point (null for
+  now). app.js (1156 → 1126 lines) keeps thin sync wrappers; module
+  created right after workmeta, before the matchMedia auto-theme
+  listener and boot sequence. Registered as `MOBILE_THEME_JS` asset
+  with route + route test; app_boot mobile list
+  `screens.js, panels.js, workmeta.js, theme.js, app.js`; mobile_load
+  concat includes theme.js; mobile_parity gained a boot-order +
+  delegation guard. Validated: 529/529 frontend, 534/534 Rust, fmt +
+  clippy clean, mobile e2e 52 PASS, desktop e2e 58 PASS.
+
 Remaining from §6: Phase 1 slices beyond auth (settings/recent-workspaces,
 git_ui split continues), Phase 2b monolith closures decomposition
 (remaining git_ui.js render/log slices, remaining mobile app.js screens),
