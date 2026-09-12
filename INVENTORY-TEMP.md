@@ -929,6 +929,35 @@ Real-workflow validation run after the fixes, all green:
   frontend (539 + 3 new), 534/534 Rust, fmt + clippy clean, git e2e
   38 ok (GIT E2E ACCEPTANCE PASSED), desktop e2e 58 PASS.
 
+- **Desktop git_ui modals split** (`acf0856`):
+  `src/assets/desktop/git_ui/modals.js` (140 lines) — factory
+  `createGitUiModals` owning 12 functions (`renderCommitModal,
+  renderResetSelectedModal, renderCompareSelectedModal,
+  renderTagSelectedModal, renderBranchModal, renderCleanupConfirm,
+  renderGitOpModal, renderGitOpBranchSelect, renderGitOpModeSelect,
+  renderGitOpModalShell, branchOptions, localNameForRemote`),
+  registering `globalThis.HerdrGitUiModalsModule`. Deps: `state,
+  active, esc, draftKey, cleanupItemLabel, compactPath,
+  localStorage` (draftKey is a hoisted git_ui.js function;
+  cleanupItemLabel/compactPath bound consts; localStorage injected
+  explicitly since it is a vm-context global). git_ui.js (3254 →
+  3156 lines) creates the module after sideTree and binds all 12 to
+  same-named consts; the render() panel composition and modal state
+  handlers (open/close/toggle/commitFromModal/switchBranchFromModal/
+  runPullFromModal etc.) stay in git_ui.js. Registered in the
+  DESKTOP_GIT_UI_JS concat before git_ui.js. Coverage grown:
+  git_ui_behavior.test.mjs gained the registration + concat-order
+  guard plus one vm behavioral test (commit modal open + body
+  toggle with textarea visibility; pull modal branch load with
+  Current-upstream default, (current) branch label, and mode
+  select); app_load assertions on moved modal markup (Compare
+  selected commit wording, Previous version hint, Delete selected
+  cleanup confirm, worktree-path options, gitUiBranchCwd picker
+  wiring, rebase pull-first hint) retargeted to the module source.
+  Validated: 544/544 frontend (542 + 2 new), 534/534 Rust, fmt +
+  clippy clean, git e2e 38 ok (GIT E2E ACCEPTANCE PASSED), desktop
+  e2e 58 PASS.
+
 Remaining from §6: Phase 1 slices beyond auth (settings/recent-workspaces,
 git_ui split continues), Phase 2b monolith closures decomposition
 (remaining git_ui.js render/log slices, remaining mobile app.js screens),
