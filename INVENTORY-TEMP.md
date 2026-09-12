@@ -643,8 +643,35 @@ Real-workflow validation run after the fixes, all green:
   app.js to events.js: handlePaneExited wiring), 534/534 Rust, fmt +
   clippy clean, mobile-edit e2e 52/52, desktop e2e 58 PASS.
 
+- **Phase 2b slice: desktop git_ui shortcuts split** (`193c3db`):
+  `src/assets/desktop/git_ui/shortcuts.js` (274 lines) owns the whole
+  Git drawer keyboard layer: `createGitUiShortcuts(deps)` factory
+  registering `globalThis.HerdrGitUiShortcuts` (plus
+  `DEFAULT_GIT_SHORTCUTS`), covering `handleKeydown` (drawer-owned
+  input, Escape cascade over every modal/menu), the Ctrl+B prefix
+  flow, the configurable shortcut map, diff-search shortcut, the
+  keyboard help alert, and `titleWithGitShortcut` for tooltips.
+  git_ui.js (4,351→4,136 lines) instantiates it right after
+  `active()` and keeps `window.addEventListener("keydown", ...)`
+  plus the `titleWithGitShortcut` alias for render call sites. Deps
+  are the git_ui internals (`state, render, active, currentMode,
+  gitUiOptions, explorationDefaultDirectory, canSearchDiff,
+  canEditCurrentFile, saveDraftFromDom, hide`) plus
+  `confirmFn`/`alertFn` and a `getGitUi` getter (window.HerdrGitUi is
+  assigned at the end of git_ui.js, so the module must not capture
+  it at create time). A first attempt kept the block as a concat
+  continuation inside the git_ui IIFE and was discarded: concat
+  order can place code before the IIFE opens, so the factory module
+  is the only sound split. `tempTerminalModalVisible` moved with the
+  handler (only consumer). Registered in the DESKTOP_GIT_UI_JS
+  concat before git_ui.js; git_ui_behavior.test.mjs boots the new
+  module (12/12 through public fetch assertions); app_load
+  assertions retargeted to the module source. Validated: 525/525
+  frontend, 534/534 Rust, fmt + clippy clean, git e2e PASSED,
+  desktop e2e 58 PASS.
+
 Remaining from §6: Phase 1 slices beyond auth (settings/recent-workspaces,
 git_ui split continues), Phase 2b monolith closures decomposition
-(desktop core.js/git_ui.js, remaining mobile app.js screens), full
-mobile Git parity (roadmap), and the eventual distillation of
+(remaining git_ui.js render/log slices, remaining mobile app.js screens),
+full mobile Git parity (roadmap), and the eventual distillation of
 this file into docs/code-quality-audit.md.
