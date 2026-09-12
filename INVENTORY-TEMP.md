@@ -1159,6 +1159,44 @@ Real-workflow validation run after the fixes, all green:
   534/534 Rust, fmt + clippy clean, git e2e 38 ok (GIT E2E
   ACCEPTANCE PASSED), desktop e2e 58 PASS.
 
+- **Desktop git_ui log_render split** (`4bc7504`):
+  `src/assets/desktop/git_ui/log_render.js` (96 lines) — factory
+  `createGitUiLogRender` owning 6 functions (`renderLog,
+  updateGitLogStickyOffsets, renderHistory, renderConflictOperationActions,
+  renderConflicts, renderMain`), registering
+  `globalThis.HerdrGitUiLogRenderModule`. Deps: `active, api, esc, arg,
+  gitLogDefaultBranch, normalizeLogScope, GIT_LOG_PAGE_SIZE,
+  GIT_LOG_MAX_LIMIT, isNoGitRepositoryView, renderFileToolbar,
+  renderCleanup, renderStashDiff, renderConflictResolutionButtons,
+  renderDiff, replaceContent, render` — `renderFileToolbar` was caught
+  only when the behavioral test ran (renderConflicts/renderHistory call
+  it); deps resolved from consts bound earlier (diffView bindings,
+  cleanup/stash/conflicts) plus hoisted render/replaceContent. vm
+  globals used in place: `window.HerdrGitLog` (log graph module),
+  `requestAnimationFrame`, `document`. No early consumers (first
+  call sites are in render() and the API object, both after the
+  module's create). git_ui.js (2399 → 2338 lines) creates the module
+  after the diffView bindings and binds all 6 to same-named consts.
+  Registered in the DESKTOP_GIT_UI_JS concat after diff_view.js.
+  Coverage: git_ui_behavior.test.mjs gained the registration +
+  concat-order guard plus a behavioral test with stubbed deps:
+  renderLog fetches `/api/git-ui/log`, records
+  `selectedBranchForHash` into the view, consumes
+  `pendingLogScrollHash` through requestAnimationFrame, and replaces
+  content via the log module's render; renderMain routes per tab
+  (changes → DIFF, stash → STASHDIFF, cleanup → CLEANUP, conflicts →
+  toolbar + conflict buttons + help text) inside the `<main>` shell.
+  app_load: 15 assertions retargeted to the module source (conflict
+  operation actions Rebase/Merge/Cherry-pick groups, conflict help
+  wording, log GET query params base=/max=/scope=, committed-file
+  buttons, `window.HerdrGitLog.render`, sticky offsets CSS custom
+  properties, updateGitLogStickyOffsets shape). Validated: 558/558
+  frontend (556 + 2 new), 534/534 Rust (fmt + clippy clean; one
+  intermediate background cargo-test run reported 3 failures that
+  vanished on re-run — port contention with a concurrent run, not a
+  code regression), git e2e 38 ok (GIT E2E ACCEPTANCE PASSED),
+  desktop e2e 58 PASS.
+
 Remaining from §6: Phase 1 slices beyond auth (settings/recent-workspaces,
 git_ui split continues), Phase 2b monolith closures decomposition
 (remaining git_ui.js render/log slices, remaining mobile app.js screens),
