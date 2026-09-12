@@ -958,6 +958,30 @@ Real-workflow validation run after the fixes, all green:
   clippy clean, git e2e 38 ok (GIT E2E ACCEPTANCE PASSED), desktop
   e2e 58 PASS.
 
+- **Desktop git_ui branch_list split** (`4446be8`):
+  `src/assets/desktop/git_ui/branch_list.js` (171 lines) — factory
+  `createGitUiBranchList` owning 8 functions (`renderWorktreeActions,
+  renderGitLocationSelector, renderWorktreeList, renderHeaderMenu,
+  branchRelativeTime, branchListRow, renderBranchList,
+  refocusBranchFilter`), with the original explanatory comments
+  carried into the module, registering
+  `globalThis.HerdrGitUiBranchListModule`. Deps: `state, esc, arg,
+  titleWithGitShortcut, samePath, compactPath, pathBasename,
+  gitRemoteBranchPreload`. git_ui.js (3156 → 3020 lines) creates the
+  module after modals and binds all 8 to same-named consts; popover
+  state handlers (openBranchList/branchListFilter/loadMoreBranches/
+  switchFromBranchList/deleteFromBranchList/toggleHeaderMenu/
+  openWorktreeList/selectWorktree) stay in git_ui.js. Registered in
+  the DESKTOP_GIT_UI_JS concat before git_ui.js. Coverage:
+  git_ui_behavior.test.mjs gained the registration + concat-order
+  guard; the popover flows themselves were already behaviorally
+  covered (branch list open/filter/switch/delete and header menu
+  seven-action checks run through the booted UI). app_load assertion
+  on the branch-chip shortcut tooltip retargeted to the module
+  source. Validated: 545/545 frontend (544 + 1 new), 534/534 Rust,
+  fmt + clippy clean, git e2e 38 ok (GIT E2E ACCEPTANCE PASSED),
+  desktop e2e 58 PASS.
+
 Remaining from §6: Phase 1 slices beyond auth (settings/recent-workspaces,
 git_ui split continues), Phase 2b monolith closures decomposition
 (remaining git_ui.js render/log slices, remaining mobile app.js screens),
