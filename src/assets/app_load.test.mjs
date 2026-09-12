@@ -130,6 +130,7 @@ function loadWorkspaceSearch(ctx) {
 describe("app bundle load", () => {
   let source;
   let gitUiSource;
+  let gitStashSource;
   let gitShortcutsSource;
   let gitLogSource;
   let gitSettingsSource;
@@ -170,6 +171,7 @@ describe("app bundle load", () => {
       "\n" +
       desktopAppSource;
     gitUiSource = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
+    gitStashSource = readFileSync(new URL("./desktop/git_ui/stash.js", import.meta.url), "utf8");
     gitShortcutsSource = readFileSync(new URL("./desktop/git_ui/shortcuts.js", import.meta.url), "utf8");
     gitLogSource = readFileSync(new URL("./desktop/git_ui/log.js", import.meta.url), "utf8");
     gitSettingsSource = readFileSync(new URL("./desktop/git_ui/settings.js", import.meta.url), "utf8");
@@ -1196,39 +1198,40 @@ describe("app bundle load", () => {
     match(gitUiSource, /view\.tab === "stash"\) return "Stash"/);
 
     // renderStash: loads stash list, auto-selects first, fetches diff
-    match(gitUiSource, /async function renderStash\(version\)/);
-    match(gitUiSource, /\/api\/git-ui\/stashes\?cwd=/);
-    match(gitUiSource, /view\.stashData = data;/);
-    match(gitUiSource, /if \(!view\.selectedStash && stashes\.length\) view\.selectedStash = String\(stashes\[0\]\.name/);
-    match(gitUiSource, /if \(view\.selectedStash && !stashes\.some\(\(s\) => s\.name === view\.selectedStash\)\)/);
-    match(gitUiSource, /replaceContent\(version, renderStashDiff\(\)\)/);
-    match(gitUiSource, /if \(view\.selectedStash\) loadStashDiff\(view, view\.selectedStash\)/);
+    // (lives in the git_ui/stash.js module)
+    match(gitStashSource, /async function renderStash\(version\)/);
+    match(gitStashSource, /\/api\/git-ui\/stashes\?cwd=/);
+    match(gitStashSource, /view\.stashData = data;/);
+    match(gitStashSource, /if \(!view\.selectedStash && stashes\.length\) view\.selectedStash = String\(stashes\[0\]\.name/);
+    match(gitStashSource, /if \(view\.selectedStash && !stashes\.some\(\(s\) => s\.name === view\.selectedStash\)\)/);
+    match(gitStashSource, /replaceContent\(version, renderStashDiff\(\)\)/);
+    match(gitStashSource, /if \(view\.selectedStash\) loadStashDiff\(view, view\.selectedStash\)/);
 
     // renderStashDiff: renders actions, loading, error, and file list
-    match(gitUiSource, /function renderStashDiff\(\)/);
-    match(gitUiSource, /HerdrGitUi\.stash\(\)">Stash push<\/button>/);
-    match(gitUiSource, /No stashes found\./);
-    match(gitUiSource, /Select a stash to view its changes\./);
-    match(gitUiSource, /Loading stash diff/);
-    match(gitUiSource, /No changes in this stash\./);
-    match(gitUiSource, /HerdrGitUi\.applyStash\('\$\{arg\(name\)\}',false\)">Apply<\/button>/);
-    match(gitUiSource, /HerdrGitUi\.applyStash\('\$\{arg\(name\)\}',true\)">Pop<\/button>/);
-    match(gitUiSource, /HerdrGitUi\.dropStash\('\$\{arg\(name\)\}'\)">Drop<\/button>/);
+    match(gitStashSource, /function renderStashDiff\(\)/);
+    match(gitStashSource, /HerdrGitUi\.stash\(\)">Stash push<\/button>/);
+    match(gitStashSource, /No stashes found\./);
+    match(gitStashSource, /Select a stash to view its changes\./);
+    match(gitStashSource, /Loading stash diff/);
+    match(gitStashSource, /No changes in this stash\./);
+    match(gitStashSource, /HerdrGitUi\.applyStash\('\$\{arg\(name\)\}',false\)">Apply<\/button>/);
+    match(gitStashSource, /HerdrGitUi\.applyStash\('\$\{arg\(name\)\}',true\)">Pop<\/button>/);
+    match(gitStashSource, /HerdrGitUi\.dropStash\('\$\{arg\(name\)\}'\)">Drop<\/button>/);
 
     // renderStashDiffFile: renders individual file diff with stash label
-    match(gitUiSource, /function renderStashDiffFile\(file\)/);
-    match(gitUiSource, /\$\{esc\(stashName\)\} → working tree/);
-    match(gitUiSource, /view\.selectedStash \|\| "stash@\{0\}"/);
+    match(gitStashSource, /function renderStashDiffFile\(file\)/);
+    match(gitStashSource, /\$\{esc\(stashName\)\} → working tree/);
+    match(gitStashSource, /view\.selectedStash \|\| "stash@\{0\}"/);
 
     // loadStashDiff: fetches stash-show API with context parameter
-    match(gitUiSource, /function loadStashDiff\(view, name\)/);
-    match(gitUiSource, /\/api\/git-ui\/stash-show\?cwd=/);
-    match(gitUiSource, /&stash=\$\{encodeURIComponent\(name\)\}/);
-    match(gitUiSource, /&context=\$\{context\}/);
-    match(gitUiSource, /view\.selectedStashDiff = \{ name, loading: true/);
-    match(gitUiSource, /if \(current\.name === name && \(current\.loading \|\| current\.diff\)\) return;/);
-    match(gitUiSource, /view\.selectedStashDiff = \{ name, loading: false, error: "", diff \}/);
-    match(gitUiSource, /view\.selectedStashDiff = \{ name, loading: false, error: err\.message/);
+    match(gitStashSource, /function loadStashDiff\(view, name\)/);
+    match(gitStashSource, /\/api\/git-ui\/stash-show\?cwd=/);
+    match(gitStashSource, /&stash=\$\{encodeURIComponent\(name\)\}/);
+    match(gitStashSource, /&context=\$\{context\}/);
+    match(gitStashSource, /view\.selectedStashDiff = \{ name, loading: true/);
+    match(gitStashSource, /if \(current\.name === name && \(current\.loading \|\| current\.diff\)\) return;/);
+    match(gitStashSource, /view\.selectedStashDiff = \{ name, loading: false, error: "", diff \}/);
+    match(gitStashSource, /view\.selectedStashDiff = \{ name, loading: false, error: err\.message/);
 
     // Stash side panel: stash list and file tree
     match(gitUiSource, /function stashListHtml\(view\)/);

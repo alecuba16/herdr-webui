@@ -124,6 +124,7 @@ const SHARED_SOURCES = [
   "./desktop/git_ui/syntax.js",
   "./desktop/git_ui/log.js",
   "./desktop/git_ui/shortcuts.js",
+  "./desktop/git_ui/stash.js",
 ]
   .map((path) => readFileSync(new URL(path, import.meta.url), "utf8"))
   .join("\n;\n");
@@ -564,4 +565,17 @@ test("branch list trash deletes a local branch and refreshes the list", async ()
   html = String(ctxHtml(booted));
   assert.match(html, /git-ui-branch-list"/);
   assert.ok(!/aria-label="Delete branch wip"/.test(html), "deleted branch is gone from the list");
+});
+
+test("stash renderer module is registered and wired before git_ui.js consumes it", async () => {
+  const stashSource = readFileSync(new URL("./desktop/git_ui/stash.js", import.meta.url), "utf8");
+  assert.match(stashSource, /globalThis\.HerdrGitUiStashModule = \{ create: createGitUiStash \}/);
+  assert.match(stashSource, /\/api\/git-ui\/stashes\?cwd=/);
+  const gitUiSource = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
+  assert.match(gitUiSource, /globalThis\.HerdrGitUiStashModule\.create\(\{/);
+  assert.match(gitUiSource, /const renderStash = stash\.renderStash;/);
+  const assetsSource = readFileSync(new URL("../assets.rs", import.meta.url), "utf8");
+  const stashIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui/stash.js")');
+  const gitUiIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui.js")');
+  assert.ok(stashIndex > -1 && stashIndex < gitUiIndex, "stash.js concatenates before git_ui.js");
 });
