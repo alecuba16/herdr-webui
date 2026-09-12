@@ -3857,12 +3857,12 @@ describe("app bundle load", () => {
     match(gitSettingsSource, /id="optGitUiDiffLayout"/);
     match(gitSettingsSource, /id="optGitUiDefaultBranch"/);
     match(gitSettingsSource, /gitUiDefaultBranch: "master"/);
-    match(gitUiSource, /function gitLogDefaultBranch\(\)/);
+    match(readFileSync(new URL("./desktop/git_ui/primitives.js", import.meta.url), "utf8"), /function gitLogDefaultBranch\(\)/);
     match(gitUiSource, /base=\$\{encodeURIComponent\(baseBranch\)\}/);
     match(gitLogSource, /title="Toggle history scope: Master \+ Branch, All, Branch" onclick="HerdrGitUi\.cycleLogScope\(\)"/);
     match(gitSettingsSource, /Unified \(GitHub-style\)/);
     match(gitSettingsSource, /gitUiDiffLayout: "side-by-side"/);
-    match(gitUiSource, /function diffLayoutMode\(\)/);
+    match(readFileSync(new URL("./desktop/git_ui/primitives.js", import.meta.url), "utf8"), /function diffLayoutMode\(\)/);
     match(gitUiSource, /function renderDiffLayoutSideToggle\(view\)/);
     match(gitUiSource, /git-ui-diff-layout-toggle/);
     match(gitUiSource, /HerdrGitUi\.setDiffLayout\('side-by-side'\)/);

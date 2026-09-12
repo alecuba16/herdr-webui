@@ -121,6 +121,7 @@ const SHARED_SOURCES = [
   "./shared/file_content_search.js",
   "./shared/workspace_search.js",
   "./desktop/git_ui/settings.js",
+  "./desktop/git_ui/primitives.js",
   "./desktop/git_ui/syntax.js",
   "./desktop/git_ui/log.js",
   "./desktop/git_ui/shortcuts.js",
@@ -890,6 +891,76 @@ test("branch list module is registered and wired before git_ui.js consumes it", 
   const branchListIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui/branch_list.js")');
   const gitUiIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui.js")');
   assert.ok(branchListIndex > -1 && branchListIndex < gitUiIndex, "branch_list.js concatenates before git_ui.js");
+});
+
+test("primitives clamp option values, escape html, and build diff keys", () => {
+  const primitivesSource = readFileSync(new URL("./desktop/git_ui/primitives.js", import.meta.url), "utf8");
+  const ctx = vm.createContext({ window: {}, globalThis: null, console, Math, JSON, Object, Array, String, Number, Set, encodeURIComponent, Error });
+  ctx.globalThis = ctx;
+  vm.runInContext(primitivesSource, ctx);
+  const primitives = ctx.globalThis.HerdrGitUiPrimitivesModule.create();
+  // No HerdrOptions: defaults must apply and reads must not throw.
+  assert.deepEqual([
+    primitives.largeDiffLineLimit(),
+    primitives.largeChangeFileLimit(),
+    primitives.largeSectionFileLimit(),
+    primitives.gitRemoteBranchPreload(),
+  ], [2000, 25, 250, 10]);
+  assert.equal(primitives.fileListMode(), "tree");
+  assert.equal(primitives.diffLayoutMode(), "side-by-side");
+  assert.equal(primitives.gitLogDefaultBranch(), "master");
+  assert.equal(primitives.normalizeLogScope("bogus"), "all");
+  assert.equal(primitives.normalizeLogScope("base-current"), "base-current");
+  assert.equal(primitives.normalizeLogScope("base"), "base");
+  // With HerdrOptions: values are clamped and normalized.
+  ctx.window.HerdrOptions = {
+    read: () => ({ gitUiLargeDiffLineLimit: -5, gitUiLargeChangeFileLimit: 999, gitUiRemoteBranchPreload: 500, gitUiFileListMode: "flat", gitUiDiffLayout: "unified", gitUiDefaultBranch: "  develop  " }),
+  };
+  assert.equal(primitives.largeDiffLineLimit(), 0, "negative clamps to 0");
+  assert.equal(primitives.largeChangeFileLimit(), 999, "finite passes through");
+  assert.equal(primitives.gitRemoteBranchPreload(), 100, "preload caps at 100");
+  assert.equal(primitives.fileListMode(), "flat");
+  assert.equal(primitives.diffLayoutMode(), "unified");
+  assert.equal(primitives.gitLogDefaultBranch(), "develop", "default branch trims");
+  // esc/arg escaping.
+  assert.equal(primitives.esc("<a href=\"x\">&amp;"), "&lt;a href=&quot;x&quot;&gt;&amp;amp;");
+  assert.equal(primitives.arg("it's"), "it%27s");
+  // diffFileKey accepts both path and file object forms.
+  assert.equal(primitives.diffFileKey("src/a.js", "staged"), "staged:src/a.js");
+  assert.equal(primitives.diffFileKey({ path: "src/b.js", diff_kind: "unstaged" }), "unstaged:src/b.js");
+  // previewChunkLines keeps delete+add groups together and honors the limit.
+  const lines = [
+    { line_type: "context", text: "a" },
+    { line_type: "delete", text: "b" },
+    { line_type: "delete", text: "c" },
+    { line_type: "add", text: "d" },
+    { line_type: "context", text: "e" },
+  ];
+  const grouped = primitives.previewChunkLines(lines, 5);
+  assert.equal(JSON.stringify(grouped.map((line) => line.text)), JSON.stringify(["a", "b", "c", "d", "e"]));
+  const limited = primitives.previewChunkLines(lines, 2);
+  assert.equal(JSON.stringify(limited.map((line) => line.text)), JSON.stringify(["a"]), "delete group that exceeds the limit is dropped");
+});
+
+test("primitives module is registered and wired before git_ui.js consumes it", () => {
+  const primitivesSource = readFileSync(new URL("./desktop/git_ui/primitives.js", import.meta.url), "utf8");
+  assert.match(primitivesSource, /globalThis\.HerdrGitUiPrimitivesModule = \{ create: createGitUiPrimitives \}/);
+  assert.match(primitivesSource, /function gitUiOptions\(\) \{/);
+  assert.match(primitivesSource, /window\.HerdrOptions \? window\.HerdrOptions\.read\(\) : \{\}/);
+  assert.match(primitivesSource, /function esc\(value\) \{/);
+  assert.match(primitivesSource, /function arg\(value\) \{/);
+  assert.match(primitivesSource, /function hashText\(value\) \{/);
+  assert.match(primitivesSource, /function previewChunkLines\(lines, limit\) \{/);
+  assert.match(primitivesSource, /gitUiFileListMode === "flat" \? "flat" : "tree"/);
+  assert.match(primitivesSource, /gitUiDiffLayout === "unified" \? "unified" : "side-by-side"/);
+  const gitUiSource = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
+  assert.match(gitUiSource, /globalThis\.HerdrGitUiPrimitivesModule\.create\(\)/);
+  assert.match(gitUiSource, /const esc = primitives\.esc;/);
+  assert.match(gitUiSource, /const arg = primitives\.arg;/);
+  const assetsSource = readFileSync(new URL("../assets.rs", import.meta.url), "utf8");
+  const primitivesIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui/primitives.js")');
+  const gitUiIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui.js")');
+  assert.ok(primitivesIndex > -1 && primitivesIndex < gitUiIndex, "primitives.js concatenates before git_ui.js");
 });
 
 test("toasts module is registered and wired before git_ui.js consumes it", () => {
