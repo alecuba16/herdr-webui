@@ -513,6 +513,44 @@ warnings, cargo fmt, cargo test) and committed separately:
 Validation after Phase D: 519/519 frontend tests, 527 Rust tests,
 clippy clean, fmt clean.
 
+Post-landing validation round (same day, commits `2add7cd`,
+`7586b9a`): the unit suites were string-level and missed two real
+mobile DOM defects, both fixed and regression-guarded:
+
+- Agent rows and the pre-existing session rows nested `<button>`
+  inside `<button class="mobile-row">` (invalid HTML per WHATWG).
+  Row actions are now `<span role="button" tabindex="0">` like the
+  desktop agent sidebar; session Retry/Close gained stopPropagation
+  and busy-state guards (spans cannot be natively disabled).
+  Guard test: `mobile_parity.test.mjs` "no nested interactive
+  elements inside mobile-row buttons".
+- Recent-workspace onclick args used quoted `encodeURIComponent`,
+  which does not escape `'` — paths like `/tmp/o'brien` broke the
+  handler. Now `jsArg(item.path)` like every other mobile row.
+  Guard test asserts the jsArg form.
+
+Real-workflow validation run after the fixes, all green:
+
+- `just e2e` (desktop edit flow + session UX + settings, real
+  Chrome): exit 0, all PASS lines, mobile layout badge included.
+- `run-mobile-edit-e2e.sh`: 52/52 checks passed.
+- `run-git-e2e.sh`: git-ui acceptance PASSED.
+- `run-theme-e2e.sh`: 15/15, `run-content-search-e2e.sh`: PASSED,
+  `run-lsp-e2e.sh`: exit 0.
+- Live isolated server probe (auth enabled): anonymous API 401,
+  wrong password 401, login sets `herdr_web_session` HttpOnly
+  cookie, cookie auth 200, `/assets/shared/attention.js` and
+  `shared/http.js` serve their modules, mobile bundles contain the
+  fixed markup, recent-workspaces API round-trips a label with an
+  apostrophe.
+- Full Rust suite re-run twice: 527/527 both times (the single
+  earlier run showed 3 failures that never reproduced — port-race
+  flakiness in bind tests, no Rust code changed in between).
+- Chrome DOMParser probe: nested-button markup parses as written
+  in Chrome (no hoisting), but remains invalid HTML and the span
+  form is what the desktop pattern uses; test comment corrected.
+- Frontend suite now 521/521 (two new guards).
+
 Remaining from §6: Phase 1 slices beyond auth (settings/recent-workspaces,
 git_ui split continues), Phase 2b monolith closures decomposition
 (desktop core.js/git_ui.js, mobile app.js), full mobile Git parity
