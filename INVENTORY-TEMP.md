@@ -793,6 +793,25 @@ Real-workflow validation run after the fixes, all green:
   frontend, 534/534 Rust, fmt + clippy clean, mobile e2e 52 PASS,
   desktop e2e 58 PASS.
 
+- **Desktop git_ui stash split** (`f7a0107`):
+  `src/assets/desktop/git_ui/stash.js` (87 lines) — factory
+  `createGitUiStash` owning `renderStash, renderStashDiff,
+  renderStashDiffFile, loadStashDiff`, registering
+  `globalThis.HerdrGitUiStashModule`. Deps passed as hoisted function
+  refs at create time (git_ui.js function declarations hoist, so
+  render/replaceContent/renderDiffFileBody/renderLargeDiffPlaceholder/
+  diffFileLineCount/diffFileKey are safe to pass even though defined
+  later in the IIFE); `LARGE_FILE_DIFF_LINE_LIMIT` passed as a getter
+  wrapper since consts do not hoist. git_ui.js (4136 → 4092 lines)
+  creates the module right after the shortcuts module and binds
+  `const renderStash = stash.renderStash;` etc., so all internal call
+  sites keep the same names. Registered in the DESKTOP_GIT_UI_JS concat
+  before git_ui.js; git_ui_behavior.test.mjs boots the module (13 vm
+  tests) and gained a registration + concat-order guard;
+  app_load stash assertions retargeted to gitStashSource. Validated:
+  532/532 frontend, 534/534 Rust, fmt + clippy clean, git e2e 38 ok
+  (GIT E2E ACCEPTANCE PASSED), desktop e2e 58 PASS.
+
 Remaining from §6: Phase 1 slices beyond auth (settings/recent-workspaces,
 git_ui split continues), Phase 2b monolith closures decomposition
 (remaining git_ui.js render/log slices, remaining mobile app.js screens),
