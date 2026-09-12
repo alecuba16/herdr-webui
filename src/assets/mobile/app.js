@@ -73,10 +73,7 @@
     defaultFolder: "",
   };
 
-  let eventWs,
-    eventRefreshTimer = null,
-    eventReconnectTimer = null,
-    refreshSeq = 0,
+  let refreshSeq = 0,
     browserFavicon = createFaviconNotifier(document),
     browserFaviconError = false,
     mobileAttention,
@@ -87,6 +84,7 @@
     mobileWorktrees,
     mobileSearch,
     mobileGit,
+    mobileEvents,
     mobileSessions;
 
   function el(id) {
@@ -353,13 +351,9 @@
     // The events socket is bound to the disabled backend through its URL
     // query (?backend=...). Cycle it so the reconnect targets the fallback
     // backend instead of polling the dead one until a manual reload.
-    if (eventWs) {
-      eventWs.onclose = null;
-      try {
-        eventWs.close();
-      } catch (e) {}
-      eventWs = null;
-      scheduleEventReconnect();
+    if (mobileEvents) {
+      mobileEvents.closeEventWs();
+      mobileEvents.scheduleEventReconnect();
     }
   }
   function sessionBackendLabel(backend) {
@@ -1048,48 +1042,6 @@
     if (["terminal", "files", "git", "settings"].includes(action)) showScreen(action);
   }
 
-  function scheduleEventRefresh() {
-    if (eventRefreshTimer || document.hidden) return;
-    eventRefreshTimer = setTimeout(() => {
-      eventRefreshTimer = null;
-      if (document.hidden) return;
-      return refresh();
-    }, 120);
-  }
-
-  function scheduleEventReconnect() {
-    if (eventReconnectTimer || document.hidden) return;
-    eventReconnectTimer = setTimeout(() => {
-      eventReconnectTimer = null;
-      if (document.hidden) return;
-      connectEvents();
-    }, 1500);
-  }
-
-  function connectEvents() {
-    if (eventWs || !globalThis.WebSocket || document.hidden) return;
-    const ws = new WebSocket(wsUrl("/ws/events"));
-    eventWs = ws;
-    ws.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data);
-        if (msg && msg.type === "server_settings_changed") {
-          handleServerSettingsChanged(msg);
-        }
-        const evt = msg && msg.event;
-        const kind = evt && (evt.event || evt.type);
-        const data = (evt && evt.data) || {};
-        if (kind === "pane.exited" && mobileTempTerminal && mobileTempTerminal.handlePaneExited)
-          mobileTempTerminal.handlePaneExited(data.pane_id);
-      } catch (_) {}
-      scheduleEventRefresh();
-    };
-    ws.onclose = () => {
-      if (eventWs === ws) eventWs = null;
-      scheduleEventReconnect();
-    };
-  }
-
   function applyTheme() {
     const mode = localStorage.getItem("herdr-web-theme") || "auto";
     const light =
@@ -1217,6 +1169,15 @@
     confirmFn: (...args) => confirm(...args),
   });
 
+  mobileEvents = globalThis.HerdrMobileEventsModule.create({
+    document,
+    globalThisWebSocket: globalThis.WebSocket,
+    wsUrl,
+    refresh,
+    handleServerSettingsChanged,
+    getTempTerminal: () => mobileTempTerminal,
+  });
+
   mobileSessions = globalThis.HerdrMobileSessionsModule.create({
     state,
     api,
@@ -1227,13 +1188,12 @@
     confirmFn: (...args) => confirm(...args),
     loadSessions,
     refresh,
-    connectEvents,
+    connectEvents: (...args) => mobileEvents.connectEvents(...args),
     destroyTerminal: (...args) => mobileTerminal.destroy(...args),
     sessionPrefix,
     pushState: (...args) => history.pushState(...args),
     syncBackendBadge,
-    getEventWs: () => eventWs,
-    setEventWs: (ws) => { eventWs = ws; },
+    closeEventWs: (...args) => mobileEvents.closeEventWs(...args),
     currentSessionBackend,
     backendEnabled,
     sessionBackendLabel,
@@ -1369,7 +1329,7 @@
   render();
   loadServerSettings().then(render);
   refresh();
-  connectEvents();
+  mobileEvents.connectEvents();
   window.addEventListener("popstate", () => {
     parseRoute(true);
     refresh();
@@ -1380,8 +1340,8 @@
   document.addEventListener("visibilitychange", () => {
     syncBrowserFavicon();
     if (!document.hidden) {
-      scheduleEventRefresh();
-      scheduleEventReconnect();
+      mobileEvents.scheduleEventRefresh();
+      mobileEvents.scheduleEventReconnect();
     }
   });
   document.addEventListener("pointerdown", mobileAttention.unlockAudio, {

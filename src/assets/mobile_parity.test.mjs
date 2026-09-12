@@ -253,6 +253,16 @@ describe("mobile parity feature guards", () => {
     assert.ok(sessionsIndex > -1 && sessionsIndex < appIndex, "sessions.js loads before app.js");
   });
 
+  it("mobile events socket lives in its own module loaded before app.js", () => {
+    const eventsSource = readFileSync(new URL("./mobile/events.js", import.meta.url), "utf8");
+    assert.match(eventsSource, /globalThis\.HerdrMobileEventsModule = \{ create: createMobileEvents \}/);
+    assert.match(eventsSource, /wsUrl\("\/ws\/events"\)/);
+    assert.match(eventsSource, /scheduleEventReconnect\(\)/);
+    const eventsIndex = bootSource.indexOf("/assets/mobile/events.js");
+    const appIndex = bootSource.indexOf("/assets/mobile/app.js");
+    assert.ok(eventsIndex > -1 && eventsIndex < appIndex, "events.js loads before app.js");
+  });
+
   it("worktrees module exposes recent workspace actions", () => {
     assert.match(worktreesSource, /loadRecent/);
     assert.match(worktreesSource, /openRecent/);

@@ -14,8 +14,7 @@
     sessionPrefix,
     pushState,
     syncBackendBadge,
-    getEventWs,
-    setEventWs,
+    closeEventWs,
     currentSessionBackend,
     backendEnabled,
     sessionBackendLabel,
@@ -127,14 +126,7 @@
       state.allTabs = [];
       state.panes = [];
       destroyTerminal(true);
-      const ws = getEventWs();
-      if (ws) {
-        ws.onclose = null;
-        try {
-          ws.close();
-        } catch (e) {}
-        setEventWs(null);
-      }
+      closeEventWs();
       pushState(null, "", sessionPrefix(state.session));
       syncBackendBadge();
       refresh();
@@ -171,14 +163,7 @@
         state.tab = null;
         state.pane = null;
         destroyTerminal(true);
-        const ws = getEventWs();
-        if (ws) {
-          ws.onclose = null;
-          try {
-            ws.close();
-          } catch (e) {}
-          setEventWs(null);
-        }
+        closeEventWs();
         refresh();
         connectEvents();
       } catch (e) {

@@ -435,6 +435,8 @@ describe("mobile bundle load", () => {
     "\n" +
     readFileSync(new URL("./mobile/sessions.js", import.meta.url), "utf8") +
     "\n" +
+    readFileSync(new URL("./mobile/events.js", import.meta.url), "utf8") +
+    "\n" +
     readFileSync(new URL("./mobile/app.js", import.meta.url), "utf8");
 
 
@@ -481,8 +483,10 @@ describe("mobile bundle load", () => {
     match(mobileSource, /themeFn:/);
     // Mobile must pass currentWorkspaceCwd() to open() so the terminal starts in the right folder.
     match(mobileSource, /mobileTempTerminal\.open\(currentWorkspaceCwd\(\)\)/);
-    // Mobile must wire handlePaneExited for server-side pane exit events.
-    match(mobileSource, /mobileTempTerminal\.handlePaneExited/);
+    // Mobile must wire handlePaneExited for server-side pane exit events
+    // (now in the events module, reached via the getTempTerminal dep).
+    const mobileEventsSource = readFileSync(new URL("./mobile/events.js", import.meta.url), "utf8");
+    match(mobileEventsSource, /handlePaneExited/);
   });
 
   it("loads mobile shell without browser automation", () => {
