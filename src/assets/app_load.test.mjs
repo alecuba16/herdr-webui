@@ -980,7 +980,7 @@ describe("app bundle load", () => {
     ok(!gitUiSource.includes("broom.svg"));
     match(gitUiSource, /scanCleanup/);
     match(gitUiSource, /selectAllCleanup/);
-    match(gitUiSource, /Delete selected/);
+    match(readFileSync(new URL("./desktop/git_ui/modals.js", import.meta.url), "utf8"), /Delete selected/);
     const gitCleanupSource = readFileSync(new URL("./desktop/git_ui/cleanup.js", import.meta.url), "utf8");
     match(gitCleanupSource, /function cleanupVisibleBranches\(repo\)/);
     match(gitCleanupSource, /function cleanupBranchSelectable\(branch\)/);
@@ -1102,8 +1102,8 @@ describe("app bundle load", () => {
     ok(!gitUiSource.includes("Reset soft</button><button"));
     match(gitUiSource, /renderResetSelectedModal/);
     match(gitUiSource, /renderCompareSelectedModal/);
-    match(gitUiSource, /Compare selected commit/);
-    match(gitUiSource, /Previous version shows the selected commit diff against its parent/);
+    match(readFileSync(new URL("./desktop/git_ui/modals.js", import.meta.url), "utf8"), /Compare selected commit/);
+    match(readFileSync(new URL("./desktop/git_ui/modals.js", import.meta.url), "utf8"), /Previous version shows the selected commit diff against its parent/);
     match(gitUiSource, /compareSelectedWithPrevious/);
     match(gitUiSource, /await this\.showHistoryCommit\(hash\)/);
     match(gitUiSource, /compareSelectedWithCurrent/);
@@ -1165,7 +1165,7 @@ describe("app bundle load", () => {
     match(gitUiSource, /const filterInput = sideFileCount\(view\)/);
     match(gitUiSource, /const fileList = cleanupOnly \? "" : `\$\{filterInput\}\$\{fileSections\}`;/);
     match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /status\.conflicted, status\.staged, status\.unstaged, status\.untracked/);
-    match(gitUiSource, /Fetch selected branch \(and main\/master\) before rebasing onto origin/);
+    match(readFileSync(new URL("./desktop/git_ui/modals.js", import.meta.url), "utf8"), /Fetch selected branch \(and main\/master\) before rebasing onto origin/);
     match(gitUiSource, /pull_first: pullFirst/);
     ok(!gitUiSource.includes('/api/git-ui/pull", { cwd: view.cwd, mode: "ff-only", branch }'));
   });
@@ -1917,9 +1917,9 @@ describe("app bundle load", () => {
   });
 
   it("wires Git branch options checked out in worktrees to switch Git directory", () => {
-    match(gitUiSource, /data-worktree-path=/);
-    match(gitUiSource, /Checked out at/);
-    match(gitUiSource, /worktree: \$\{esc\(compactPath\(worktreePath\)\)\}/);
+    match(readFileSync(new URL("./desktop/git_ui/modals.js", import.meta.url), "utf8"), /data-worktree-path=/);
+    match(readFileSync(new URL("./desktop/git_ui/modals.js", import.meta.url), "utf8"), /Checked out at/);
+    match(readFileSync(new URL("./desktop/git_ui/modals.js", import.meta.url), "utf8"), /worktree: \$\{esc\(compactPath\(worktreePath\)\)\}/);
     match(gitUiSource, /resetGitViewForCwd\(view, worktreePath\)/);
     match(gitUiSource, /if \(worktreePath && !samePath\(worktreePath, modalCwd\)\)/);
   });
@@ -3913,11 +3913,11 @@ describe("app bundle load", () => {
 
     match(directoryPickerSource, /function afterSelectCallback\(input\)/);
     match(directoryPickerSource, /input\.dataset\.directoryPickerAfterSelect/);
-    match(gitUiSource, /id="gitUiBranchCwd"[^`]*data-directory-picker-after-select="HerdrGitUi\.applyBranchModalCwd"/);
+    match(readFileSync(new URL("./desktop/git_ui/modals.js", import.meta.url), "utf8"), /id="gitUiBranchCwd"[^`]*data-directory-picker-after-select="HerdrGitUi\.applyBranchModalCwd"/);
     ok(!gitUiSource.includes("Load typed path"));
     ok(!gitUiSource.includes(">Use directory</button>"));
     ok(!gitUiSource.includes(">Switch to</button>"));
-    match(gitUiSource, /Choosing a folder moves the Git panel to that directory immediately/);
+    match(readFileSync(new URL("./desktop/git_ui/modals.js", import.meta.url), "utf8"), /Choosing a folder moves the Git panel to that directory immediately/);
     match(gitUiSource, /workspaceCwd: nextWorkspaceCwd/);
     match(gitUiSource, /function gitCwdMatchesWorkspace\(view\)/);
     match(gitUiSource, /HerdrGitUi\.returnToWorkspaceCwd\(\)/);
@@ -3960,7 +3960,7 @@ describe("app bundle load", () => {
     match(gitUiSource, /if \(path && path !== "\/"\) return path;/);
     match(gitUiSource, /typeof window\.defaultFolderPath === "function"/);
     match(readFileSync(new URL("./desktop/git_ui/cleanup.js", import.meta.url), "utf8"), /id="gitUiCleanupRoot"[^`]*data-directory-picker-after-select="HerdrGitUi\.scanCleanup"/);
-    match(gitUiSource, /class="mini directory-picker-trigger" onclick="HerdrDirectoryPicker\.openInput\('gitUiBranchCwd'\)"/);
+    match(readFileSync(new URL("./desktop/git_ui/modals.js", import.meta.url), "utf8"), /class="mini directory-picker-trigger" onclick="HerdrDirectoryPicker\.openInput\('gitUiBranchCwd'\)"/);
   });
 
   it("renders Git log like a four-column graph table with ref chips", () => {

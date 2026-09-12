@@ -129,6 +129,7 @@ const SHARED_SOURCES = [
   "./desktop/git_ui/diff_render.js",
   "./desktop/git_ui/conflicts.js",
   "./desktop/git_ui/side_tree.js",
+  "./desktop/git_ui/modals.js",
 ]
   .map((path) => readFileSync(new URL(path, import.meta.url), "utf8"))
   .join("\n;\n");
@@ -824,4 +825,52 @@ test("side tree stash tab renders stash list and file sections through the modul
   assert.match(stashHtml, /Stash files stash 0/);
   assert.ok(stashHtml.includes("src/app.js"), "stash file appears in the tree");
   assert.match(stashHtml, /No files in this stash|herdr-tree-row/);
+});
+
+test("modals module is registered and wired before git_ui.js consumes it", () => {
+  const modalsSource = readFileSync(new URL("./desktop/git_ui/modals.js", import.meta.url), "utf8");
+  assert.match(modalsSource, /globalThis\.HerdrGitUiModalsModule = \{ create: createGitUiModals \}/);
+  assert.match(modalsSource, /git-ui-modal-backdrop/);
+  assert.match(modalsSource, /Commit & Push/);
+  assert.match(modalsSource, /Retry push/);
+  const gitUiSource = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
+  assert.match(gitUiSource, /globalThis\.HerdrGitUiModalsModule\.create\(\{/);
+  assert.match(gitUiSource, /const renderCommitModal = modals\.renderCommitModal;/);
+  const assetsSource = readFileSync(new URL("../assets.rs", import.meta.url), "utf8");
+  const modalsIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui/modals.js")');
+  const gitUiIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui.js")');
+  assert.ok(modalsIndex > -1 && modalsIndex < gitUiIndex, "modals.js concatenates before git_ui.js");
+});
+
+test("modals render commit and git-op flows from module state", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": { branch: "main", ahead: 0, behind: 0, staged: ["src/app.js"], unstaged: [], untracked: [], conflicted: [] },
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+    "/api/git-ui/branches": { local: [{ name: "main", current: true }, { name: "feature-x" }], remote: [{ name: "origin/feature-x", remote: true }] },
+  });
+  const ui = booted.ui;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  // Commit modal: opens, toggles body textarea, drafts persist.
+  ui.openCommitModal();
+  let html = ctxHtml(booted);
+  assert.match(html, /Commit staged changes/);
+  assert.match(html, /HerdrGitUi\.commitFromModal\(true\)">Commit & Push</);
+  assert.ok(!/gitCommitBody/.test(html), "body textarea hidden before toggle");
+  ui.toggleCommitBody(true);
+  html = ctxHtml(booted);
+  assert.match(html, /id="gitCommitBody"/);
+  // Pull modal: loads branches and renders the pull mode select via the module.
+  await ui.openPullModal();
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  html = ctxHtml(booted);
+  assert.match(html, /Pull changes/);
+  assert.match(html, /id="gitUiOpMode"/);
+  assert.match(html, /Update \(fetch \+ fast-forward\)/);
+  assert.match(html, /HerdrGitUi\.runPullFromModal\(\)/);
+  // Branch select dedupes and marks the current branch; the default for pull
+  // is Current upstream, so main carries the (current) label without selected.
+  assert.match(html, /<option value="main"[^>]*>main \(current\)<\/option>/);
+  assert.match(html, /<option value="" selected>Current upstream<\/option>/);
 });
