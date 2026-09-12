@@ -246,6 +246,47 @@ describe("app bundle load", () => {
     const fallbackTitle = vm.runInContext("recentWorkspaceCandidates([{ path: '/repo/fallback/nested' }])", ctx);
     equal(fallbackTitle[0].title, "nested", "label falls back to last path segment");
 
+    // Recents already open as a workspace are hidden from the palette.
+    vm.runInContext(
+      `state.workspaces = [{ workspace_id: "ws-open", cwd: "/repo/beta" }];`,
+      ctx,
+    );
+    const hideWorkspace = vm.runInContext("recentWorkspaceCandidates([{ path: '/repo/beta', label: 'Beta' }, { path: '/repo/gamma', label: 'Gamma' }])", ctx);
+    equal(hideWorkspace.length, 1, "open workspace entry is hidden");
+    equal(hideWorkspace[0].title, "Gamma");
+
+    // A workspace whose worktree checkout path matches the recent entry hides
+    // it too.
+    vm.runInContext(
+      `state.workspaces = [{ workspace_id: "ws-wt", worktree: { checkout_path: "/repo/beta" } }];`,
+      ctx,
+    );
+    const hideWorktreePath = vm.runInContext("recentWorkspaceCandidates([{ path: '/repo/beta', label: 'Beta' }, { path: '/repo/gamma', label: 'Gamma' }])", ctx);
+    equal(hideWorktreePath.length, 1, "open worktree checkout hides the recent entry");
+    equal(hideWorktreePath[0].title, "Gamma");
+
+    // A worktree row with an open workspace at the same path also hides the
+    // entry even when no workspace row exposes that path.
+    vm.runInContext("state.workspaces = [];", ctx);
+    vm.runInContext(
+      `state.worktrees = [{ open_workspace_id: "ws-1", path: "/repo/beta" }];`,
+      ctx,
+    );
+    const hideOpenRow = vm.runInContext("recentWorkspaceCandidates([{ path: '/repo/beta', label: 'Beta' }, { path: '/repo/gamma', label: 'Gamma' }])", ctx);
+    equal(hideOpenRow.length, 1, "open worktree row hides the recent entry");
+    equal(hideOpenRow[0].title, "Gamma");
+
+    // A worktree row without an open workspace (open_workspace_id null) does
+    // NOT hide the entry: the folder can still be opened.
+    vm.runInContext(
+      `state.worktrees = [{ open_workspace_id: null, path: "/repo/beta" }];`,
+      ctx,
+    );
+    const keepClosedRow = vm.runInContext("recentWorkspaceCandidates([{ path: '/repo/beta', label: 'Beta' }, { path: '/repo/gamma', label: 'Gamma' }])", ctx);
+    equal(keepClosedRow.length, 2, "closed worktree row keeps the recent entry visible");
+
+    vm.runInContext("state.workspaces = []; state.worktrees = [];", ctx);
+
     // Clear button behavior: POSTs clear, empties state, invalidates cache, rerenders.
     let clearCalls = 0;
     const originalFetch = ctx.fetch;

@@ -401,9 +401,20 @@ async function loadRecentWorkspaces() {
   }
 }
 
+function recentWorkspaceIsOpen(path) {
+  const target = String(path || "");
+  if (!target) return false;
+  const openPaths = (state.workspaces || []).map((workspace) => workspacePath(workspace));
+  const openWorktrees = (state.worktrees || [])
+    .filter((worktree) => worktree && worktree.open_workspace_id && worktree.path)
+    .map((worktree) => worktree.path);
+  return openPaths.concat(openWorktrees).some((candidate) => samePath(candidate, target));
+}
+
 function recentWorkspaceCandidates(recent) {
   const needle = String(searchPaletteState.query || "").trim().toLowerCase();
   return (recent || [])
+    .filter((item) => !recentWorkspaceIsOpen(item.path))
     .map((item) => {
       const title = item.label || (item.path || "").split("/").filter(Boolean).pop() || item.path || "";
       const subtitle = [item.kind === "worktree" ? "worktree" : "workspace", item.branch, item.path].filter(Boolean).join(" · ");
