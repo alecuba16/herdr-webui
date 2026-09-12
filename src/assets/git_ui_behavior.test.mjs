@@ -122,6 +122,7 @@ const SHARED_SOURCES = [
   "./shared/workspace_search.js",
   "./desktop/git_ui/settings.js",
   "./desktop/git_ui/primitives.js",
+  "./desktop/git_ui/diff_search.js",
   "./desktop/git_ui/syntax.js",
   "./desktop/git_ui/log.js",
   "./desktop/git_ui/shortcuts.js",
@@ -940,6 +941,66 @@ test("primitives clamp option values, escape html, and build diff keys", () => {
   assert.equal(JSON.stringify(grouped.map((line) => line.text)), JSON.stringify(["a", "b", "c", "d", "e"]));
   const limited = primitives.previewChunkLines(lines, 2);
   assert.equal(JSON.stringify(limited.map((line) => line.text)), JSON.stringify(["a"]), "delete group that exceeds the limit is dropped");
+});
+
+test("diff_search module is registered and wired before git_ui.js consumes it", () => {
+  const diffSearchSource = readFileSync(new URL("./desktop/git_ui/diff_search.js", import.meta.url), "utf8");
+  assert.match(diffSearchSource, /globalThis\.HerdrGitUiDiffSearchModule = \{ create: createGitUiDiffSearch \}/);
+  assert.match(diffSearchSource, /function highlightDiffText\(code, path\) \{/);
+  assert.match(diffSearchSource, /git-ui-search-match/);
+  assert.match(diffSearchSource, /\["history", "log", "stash", "cleanup", "conflicts"\]\.includes\(view\.tab\)/);
+  const gitUiSource = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
+  assert.match(gitUiSource, /globalThis\.HerdrGitUiDiffSearchModule\.create\(\{/);
+  assert.match(gitUiSource, /const highlightDiffText = diffSearch\.highlightDiffText;/);
+  assert.match(gitUiSource, /unifiedRows: \(chunk\) => unifiedRows\(chunk\)/);
+  const assetsSource = readFileSync(new URL("../assets.rs", import.meta.url), "utf8");
+  const diffSearchIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui/diff_search.js")');
+  const gitUiIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui.js")');
+  assert.ok(diffSearchIndex > -1 && diffSearchIndex < gitUiIndex, "diff_search.js concatenates before git_ui.js");
+});
+
+test("diff search counts matches and wraps hits in marks", () => {
+  const diffSearchSource = readFileSync(new URL("./desktop/git_ui/diff_search.js", import.meta.url), "utf8");
+  const ctx = vm.createContext({ window: {}, globalThis: null, console, Math, JSON, Object, Array, String, Number, Set, Error });
+  ctx.globalThis = ctx;
+  vm.runInContext(diffSearchSource, ctx);
+  let activeView = { diffSearchQuery: "todo" };
+  const fakeSyntax = { highlight: (code) => `[${code}]` };
+  const mod = ctx.globalThis.HerdrGitUiDiffSearchModule.create({
+    active: () => activeView,
+    Syntax: () => fakeSyntax,
+    diffLayoutMode: () => "unified",
+    unifiedRows: (chunk) => chunk.lines.map((line) => ({ line })),
+    sideBySideRows: (chunk) => chunk.lines.map((line) => ({ oldLine: line, newLine: null })),
+  });
+  assert.equal(mod.diffSearchQuery(), "todo");
+  assert.equal(mod.countTextMatches("todo TODO todo", "todo"), 3);
+  assert.equal(mod.countTextMatches("anything", ""), 0);
+  // highlightDiffText wraps each hit in a mark and routes through Syntax.
+  assert.equal(
+    mod.highlightDiffText("a todo b", "src/x.js"),
+    "[a ]<mark class=\"git-ui-search-match\">[todo]</mark>[ b]"
+  );
+  // No query: plain highlight passthrough.
+  activeView = { diffSearchQuery: "" };
+  assert.equal(mod.highlightDiffText("plain", "src/x.js"), "[plain]");
+  // canSearchDiff: side editor blocks, file presence allows.
+  assert.equal(mod.canSearchDiff({ sideEditor: true }), false);
+  assert.equal(mod.canSearchDiff({ tab: "log" }), false);
+  assert.equal(mod.canSearchDiff({ tab: "changes", diff: { files: [{ path: "a" }] } }), true);
+  assert.equal(mod.canSearchDiff({ tab: "changes", file: "a.js", diff: { files: [] } }), true);
+  assert.equal(mod.canSearchDiff(null), false);
+  // diffSearchMatchCount over unified rows.
+  activeView = { diffSearchQuery: "todo" };
+  const view = {
+    diff: {
+      files: [
+        { chunks: [{ lines: [{ content: "todo fix" }, { content: "clean" }] }] },
+        { chunks: [{ lines: [{ content: "todo todo" }] }] },
+      ],
+    },
+  };
+  assert.equal(mod.diffSearchMatchCount(view, "todo"), 3);
 });
 
 test("primitives module is registered and wired before git_ui.js consumes it", () => {

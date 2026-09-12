@@ -62,6 +62,7 @@ const DESKTOP_SHORTCUTS_CSS: &str = include_str!("assets/desktop/shortcuts.css")
 const DESKTOP_GIT_UI_JS: &str = concat!(
     include_str!("assets/desktop/git_ui/settings.js"),
     include_str!("assets/desktop/git_ui/primitives.js"),
+    include_str!("assets/desktop/git_ui/diff_search.js"),
     include_str!("assets/desktop/git_ui/syntax.js"),
     include_str!("assets/desktop/git_ui/log.js"),
     include_str!("assets/desktop/git_ui/shortcuts.js"),

@@ -1717,10 +1717,10 @@ describe("app bundle load", () => {
     match(gitShortcutsSource, /event\.ctrlKey && !event\.metaKey|!event\.ctrlKey && !event\.metaKey/);
     match(gitUiSource, /id="gitUiDiffSearch"/);
     match(gitUiSource, /state\.focusDiffSearch = true/);
-    match(gitUiSource, /function highlightDiffText\(code, path\)/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_search.js", import.meta.url), "utf8"), /function highlightDiffText\(code, path\)/);
     const gitDiffRenderRowsSource = readFileSync(new URL("./desktop/git_ui/diff_render.js", import.meta.url), "utf8");
     match(gitDiffRenderRowsSource, /const rows = markChangeGroups\(diffLayoutMode\(\) === "unified" \? unifiedRows\(chunk\) : sideBySideRows\(chunk\)\)/);
-    match(gitUiSource, /<mark class="git-ui-search-match">/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_search.js", import.meta.url), "utf8"), /<mark class="git-ui-search-match">/);
     match(gitDiffRenderRowsSource, /renderDiffCode\(oldLine, newLine, path, "old"\)/);
     match(gitDiffRenderRowsSource, /renderDiffCode\(oldLine, newLine, path, "new"\)/);
     match(gitDiffRenderRowsSource, /highlightDiffText\(content\.slice\(changed\.start, changed\.end\), path\)/);
