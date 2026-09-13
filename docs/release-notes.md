@@ -1,6 +1,31 @@
 # Release notes
 
 ## 0.4.30 Release Notes
+- The desktop Git UI bundle is decomposed into factory modules with zero
+  behavior change: `git_ui.js` goes from 4,092 lines to a 2,338-line
+  composition root plus 17 modules under `git_ui/` (primitives, toasts,
+  diff_search, workspace_nav, diff_view, log_render, branch_list, modals,
+  side_tree, conflicts, diff_render, cleanup, stash, shortcuts, log,
+  syntax, settings), each registered before the composition root consumes
+  it and guarded by concat-order checks in `src/assets.rs`. The mobile
+  bundle gets the same treatment (screens, panels, workmeta, theme,
+  actions, backend, sessions, events, search, git) and `main.rs` extracts
+  auth and server-settings modules. Findings and the deliberate
+  composition-root decision are recorded in `docs/code-quality-audit.md`.
+- Tests were retargeted, never weakened: frontend suite grows from 547 to
+  558 with behavioral vm tests added for every module that previously had
+  only source-regex coverage, and app_load assertions now read the module
+  sources (196 references).
+- New real-browser acceptance runs on the served app: `just
+  terminal-fit-e2e` (26 checks; wires the previously orphaned
+  terminal-fit script into a runner and fixes its three latent bugs:
+  wrong workspace-id shape, a vertical-fill check predating the whole-row
+  alignment contract, and a missing CDP close that hung the runner) and
+  `just git-drawer-e2e` (21 checks; drives the Git drawer content in the
+  live DOM: branch chip, changes tree with real +N/-N counts, diff view
+  after a file click, log graph, branch list popover, return to terminal).
+- One shared HTTP client now serves all bundles, and session headers are
+  attached consistently (covered by `http_client.test.mjs`).
 - The recent workspaces list only offers reopenable entries now.
   `GET /api/recent-workspaces` filters out entries whose folder no longer
   exists on disk, persists that pruning to `webui-settings.json` so stale
