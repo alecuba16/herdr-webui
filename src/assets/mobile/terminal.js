@@ -1,5 +1,5 @@
 (function () {
-  function createMobileTerminal({ el, state, wsUrl, onHerdrError }) {
+  function createMobileTerminal({ el, state, wsUrl, onHerdrError, onTerminalOutput }) {
     let term = null,
       termWs = null,
       openedTerminalElement = null,
@@ -113,6 +113,7 @@
           return;
         }
         enqueueTerminalFrame(typeof event.data === "string" ? event.data : new Uint8Array(event.data));
+        if (onTerminalOutput && state.terminalId) onTerminalOutput(state.terminalId);
       };
       ws.onclose = () => {
         if (termWs === ws) {

@@ -52,7 +52,15 @@ function fillChecks(tag, shell, term, cell, cols, rows) {
   const horizGap = Math.abs(shell.w - term.w - PAD);
   const vertGap = shell.h - (term.h + PAD);
   check(`${tag}: terminal fills shell horizontally`, horizGap <= 1.5, `shell=${shell.w} term=${term.w}`);
-  check(`${tag}: terminal fills shell vertically`, vertGap <= 1.5, `shell=${shell.h} term=${term.h} gap=${vertGap.toFixed(1)}`);
+  // fitTerminalSurface aligns the surface height to whole terminal rows: at
+  // most one row of reserved gap at the bottom is the designed contract
+  // (it stops wterm's follow-scroll and scrollToBottom fighting on every
+  // frame). Anything larger means the surface stopped filling the shell.
+  check(
+    `${tag}: terminal fills shell vertically`,
+    vertGap >= -1 && vertGap < cell.height,
+    `shell=${shell.h} term=${term.h} gap=${vertGap.toFixed(1)} row=${cell.height.toFixed(1)}`
+  );
   const expectedCols = Math.floor((shell.w - PAD) / cell.width);
   const expectedRows = Math.floor((shell.h - PAD) / cell.height);
   check(`${tag}: cols match shell width`, Math.abs(cols - expectedCols) <= 1, `cols=${cols} expected≈${expectedCols}`);
@@ -70,7 +78,7 @@ const created = await evalx(`(async () => {
     return await r.json();
   } catch (e) { return { error: String(e) }; }
 })()`);
-const wsId = created && (created.workspace_id || (created.result && created.result.workspace_id));
+const wsId = created && (created.result && created.result.workspace && created.result.workspace.workspace_id);
 check('workspace created', !!wsId, `resp=${JSON.stringify(created).slice(0, 120)}`);
 if (!wsId) process.exit(1);
 
@@ -153,4 +161,7 @@ await new Promise((r) => setTimeout(r, 1200));
 
 const failed = results.filter((r) => !r.ok).length;
 console.log(failed ? `terminal fit acceptance: ${failed} FAILED of ${results.length}` : `terminal fit acceptance: all ${results.length} checks passed`);
+// The CDP websocket keeps the node event loop alive; close it or the runner
+// hangs after the last check.
+cdp.close();
 process.exitCode = failed ? 1 : 0;

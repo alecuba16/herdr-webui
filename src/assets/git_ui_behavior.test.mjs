@@ -121,8 +121,22 @@ const SHARED_SOURCES = [
   "./shared/file_content_search.js",
   "./shared/workspace_search.js",
   "./desktop/git_ui/settings.js",
+  "./desktop/git_ui/primitives.js",
+  "./desktop/git_ui/diff_search.js",
+  "./desktop/git_ui/workspace_nav.js",
   "./desktop/git_ui/syntax.js",
   "./desktop/git_ui/log.js",
+  "./desktop/git_ui/shortcuts.js",
+  "./desktop/git_ui/stash.js",
+  "./desktop/git_ui/cleanup.js",
+  "./desktop/git_ui/diff_render.js",
+  "./desktop/git_ui/conflicts.js",
+  "./desktop/git_ui/side_tree.js",
+  "./desktop/git_ui/modals.js",
+  "./desktop/git_ui/branch_list.js",
+  "./desktop/git_ui/toasts.js",
+  "./desktop/git_ui/diff_view.js",
+  "./desktop/git_ui/log_render.js",
 ]
   .map((path) => readFileSync(new URL(path, import.meta.url), "utf8"))
   .join("\n;\n");
@@ -563,4 +577,829 @@ test("branch list trash deletes a local branch and refreshes the list", async ()
   html = String(ctxHtml(booted));
   assert.match(html, /git-ui-branch-list"/);
   assert.ok(!/aria-label="Delete branch wip"/.test(html), "deleted branch is gone from the list");
+});
+
+test("stash renderer module is registered and wired before git_ui.js consumes it", async () => {
+  const stashSource = readFileSync(new URL("./desktop/git_ui/stash.js", import.meta.url), "utf8");
+  assert.match(stashSource, /globalThis\.HerdrGitUiStashModule = \{ create: createGitUiStash \}/);
+  assert.match(stashSource, /\/api\/git-ui\/stashes\?cwd=/);
+  const gitUiSource = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
+  assert.match(gitUiSource, /globalThis\.HerdrGitUiStashModule\.create\(\{/);
+  assert.match(gitUiSource, /const renderStash = stash\.renderStash;/);
+  const assetsSource = readFileSync(new URL("../assets.rs", import.meta.url), "utf8");
+  const stashIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui/stash.js")');
+  const gitUiIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui.js")');
+  assert.ok(stashIndex > -1 && stashIndex < gitUiIndex, "stash.js concatenates before git_ui.js");
+});
+
+test("cleanup renderer module is registered and wired before git_ui.js consumes it", () => {
+  const cleanupSource = readFileSync(new URL("./desktop/git_ui/cleanup.js", import.meta.url), "utf8");
+  assert.match(cleanupSource, /globalThis\.HerdrGitUiCleanupModule = \{ create: createGitUiCleanup \}/);
+  assert.match(cleanupSource, /git-ui-cleanup-bulk/);
+  assert.match(cleanupSource, /use --force/);
+  const gitUiSource = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
+  assert.match(gitUiSource, /globalThis\.HerdrGitUiCleanupModule\.create\(\{/);
+  assert.match(gitUiSource, /const renderCleanup = cleanup\.renderCleanup;/);
+  const assetsSource = readFileSync(new URL("../assets.rs", import.meta.url), "utf8");
+  const cleanupIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui/cleanup.js")');
+  const gitUiIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui.js")');
+  assert.ok(cleanupIndex > -1 && cleanupIndex < gitUiIndex, "cleanup.js concatenates before git_ui.js");
+});
+
+test("diff render module is registered and wired before git_ui.js consumes it", () => {
+  const diffRenderSource = readFileSync(new URL("./desktop/git_ui/diff_render.js", import.meta.url), "utf8");
+  assert.match(diffRenderSource, /globalThis\.HerdrGitUiDiffRenderModule = \{ create: createGitUiDiffRender \}/);
+  assert.match(diffRenderSource, /\/api\/git-ui\/blame\?cwd=/);
+  assert.match(diffRenderSource, /git-ui-word-change/);
+  const gitUiSource = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
+  assert.match(gitUiSource, /globalThis\.HerdrGitUiDiffRenderModule\.create\(\{/);
+  assert.match(gitUiSource, /const renderChunk = diffRender\.renderChunk;/);
+  const assetsSource = readFileSync(new URL("../assets.rs", import.meta.url), "utf8");
+  const diffIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui/diff_render.js")');
+  const gitUiIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui.js")');
+  assert.ok(diffIndex > -1 && diffIndex < gitUiIndex, "diff_render.js concatenates before git_ui.js");
+});
+
+test("conflicts module is registered and wired before git_ui.js consumes it", () => {
+  const conflictsSource = readFileSync(new URL("./desktop/git_ui/conflicts.js", import.meta.url), "utf8");
+  assert.match(conflictsSource, /globalThis\.HerdrGitUiConflictsModule = \{ create: createGitUiConflicts \}/);
+  assert.match(conflictsSource, /function conflictBlocksInText\(text\)/);
+  assert.match(conflictsSource, /HerdrGitUi\.resolveEditorConflictBlock\(/);
+  const gitUiSource = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
+  assert.match(gitUiSource, /globalThis\.HerdrGitUiConflictsModule\.create\(\{/);
+  assert.match(gitUiSource, /const renderSideEditor = conflicts\.renderSideEditor;/);
+  const assetsSource = readFileSync(new URL("../assets.rs", import.meta.url), "utf8");
+  const conflictsIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui/conflicts.js")');
+  const gitUiIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui.js")');
+  assert.ok(conflictsIndex > -1 && conflictsIndex < gitUiIndex, "conflicts.js concatenates before git_ui.js");
+});
+
+test("conflict block parsing resolves ours, base, and theirs per block", () => {
+  const conflictsSource = readFileSync(new URL("./desktop/git_ui/conflicts.js", import.meta.url), "utf8");
+  const ctx = context(async () => ({ ok: true, status: 200, json: async () => ({}) }));
+  vm.runInContext(conflictsSource, ctx);
+  const create = ctx.globalThis.HerdrGitUiConflictsModule.create;
+  const deps = {
+    active: () => ({ status: { conflicted: ["src/app.js"] } }),
+    esc: (s) => String(s),
+    arg: (s) => String(s),
+    currentMode: () => "changes",
+    diffLayoutMode: () => "side-by-side",
+  };
+  const mod = create(deps);
+  const text = [
+    "shared top",
+    "<<<<<<< HEAD",
+    "ours line",
+    "||||||| base",
+    "base line",
+    "=======",
+    "theirs line",
+    ">>>>>>> remote",
+    "shared bottom",
+  ].join("\n");
+  const blocks = mod.conflictBlocksInText(text);
+  assert.equal(blocks.length, 1);
+  assert.equal(JSON.stringify(blocks[0].ours), JSON.stringify(["ours line"]));
+  assert.equal(JSON.stringify(blocks[0].base), JSON.stringify(["base line"]));
+  assert.equal(JSON.stringify(blocks[0].theirs), JSON.stringify(["theirs line"]));
+  assert.equal(mod.resolveConflictBlockText(text, 0, "ours").includes("theirs line"), false);
+  assert.equal(mod.resolveConflictBlockText(text, 0, "base").includes("base line"), true);
+  assert.equal(mod.resolveConflictBlockText(text, 0, "theirs").includes("ours line"), false);
+  // A block without the ||||||| base section resolves base to null (button disabled).
+  const twoWay = ["<<<<<<< HEAD", "ours", "=======", "theirs", ">>>>>>> e"].join("\n");
+  const twoWayBlocks = mod.conflictBlocksInText(twoWay);
+  assert.equal(twoWayBlocks.length, 1);
+  assert.equal(twoWayBlocks[0].base, null);
+  assert.equal(mod.resolveConflictBlockText(twoWay, 0, "base"), twoWay);
+});
+
+test("conflict resolution buttons render per mode and conflicted path", () => {
+  const conflictsSource = readFileSync(new URL("./desktop/git_ui/conflicts.js", import.meta.url), "utf8");
+  const ctx = context(async () => ({ ok: true, status: 200, json: async () => ({}) }));
+  vm.runInContext(conflictsSource, ctx);
+  const create = ctx.globalThis.HerdrGitUiConflictsModule.create;
+  let mode = "changes";
+  const mod = create({
+    active: () => ({ status: { conflicted: ["src/app.js"] } }),
+    esc: (s) => String(s),
+    arg: (s) => String(s),
+    currentMode: () => mode,
+    diffLayoutMode: () => "side-by-side",
+  });
+  const conflicted = { path: "src/app.js" };
+  const clean = { path: "README.md" };
+  assert.match(mod.renderDiffConflictResolutionButtons(conflicted), /git-ui-conflict-diff-actions/);
+  assert.match(mod.renderDiffConflictResolutionButtons(conflicted), />Mark resolved</);
+  assert.equal(mod.renderDiffConflictResolutionButtons(clean), "");
+  mode = "current-compare";
+  assert.equal(mod.renderDiffConflictResolutionButtons(conflicted), "");
+  const full = mod.renderConflictResolutionButtons("src/app.js");
+  assert.match(full, /HerdrGitUi\.resolve\('src\/app\.js','ours'\)/);
+  assert.match(full, /HerdrGitUi\.resolve\('src\/app\.js','base'\)/);
+  assert.match(full, /HerdrGitUi\.resolve\('src\/app\.js','theirs'\)/);
+  assert.match(full, /HerdrGitUi\.resolve\('src\/app\.js','mark'\)/);
+});
+
+test("side editor renders editable hunks with conflict block controls", () => {
+  const conflictsSource = readFileSync(new URL("./desktop/git_ui/conflicts.js", import.meta.url), "utf8");
+  const ctx = context(async () => ({ ok: true, status: 200, json: async () => ({}) }));
+  vm.runInContext(conflictsSource, ctx);
+  const create = ctx.globalThis.HerdrGitUiConflictsModule.create;
+  let layout = "side-by-side";
+  const mod = create({
+    active: () => null,
+    esc: (s) => String(s),
+    arg: (s) => String(s),
+    currentMode: () => "changes",
+    diffLayoutMode: () => layout,
+  });
+  const conflictedHunk = {
+    index: 0,
+    header: "@@ -1,3 +1,5 @@",
+    oldText: "base",
+    text: ["ours", "<<<<<<< HEAD", "keep", "=======", "new", ">>>>>>> r"].join("\n"),
+    newStart: 1,
+    newEnd: 5,
+  };
+  const sideHtml = mod.renderSideEditor({ sideEditor: { hunks: [conflictedHunk] } });
+  assert.match(sideHtml, /git-ui-hunk-editor-list/);
+  assert.match(sideHtml, /Previous hunk stays read-only/);
+  assert.match(sideHtml, /Conflict block 1/);
+  assert.match(sideHtml, /HerdrGitUi\.resolveEditorConflictBlock\(0,0,'ours'\)/);
+  assert.match(sideHtml, /disabled>Use parent</);
+  layout = "unified";
+  const unifiedHtml = mod.renderSideEditor({ sideEditor: { hunks: [conflictedHunk] } });
+  assert.match(unifiedHtml, /Edit the hunk text below/);
+  assert.match(unifiedHtml, /git-ui-hunk-editor-unified/);
+  const loading = mod.renderSideEditor({ sideEditor: { loading: true } });
+  assert.match(loading, /Loading file editor/);
+});
+
+test("buildEditableHunks splits chunk lines into old and current hunk text", () => {
+  const conflictsSource = readFileSync(new URL("./desktop/git_ui/conflicts.js", import.meta.url), "utf8");
+  const ctx = context(async () => ({ ok: true, status: 200, json: async () => ({}) }));
+  vm.runInContext(conflictsSource, ctx);
+  const create = ctx.globalThis.HerdrGitUiConflictsModule.create;
+  const mod = create({
+    active: () => null,
+    esc: (s) => String(s),
+    arg: (s) => String(s),
+    currentMode: () => "changes",
+    diffLayoutMode: () => "side-by-side",
+  });
+  const file = {
+    chunks: [{
+      header: "@@ -1,3 +1,3 @@",
+      lines: [
+        { line_type: "context", content: "shared", new_line_number: 1 },
+        { line_type: "delete", content: "old", old_line_number: 2 },
+        { line_type: "add", content: "new", new_line_number: 2 },
+      ],
+    }],
+  };
+  const hunks = mod.buildEditableHunks(file);
+  assert.equal(hunks.length, 1);
+  assert.equal(hunks[0].oldText, "shared\nold");
+  assert.equal(hunks[0].text, "shared\nnew");
+  assert.equal(JSON.stringify(hunks[0].oldLineTypes), JSON.stringify(["context", "del"]));
+  assert.equal(JSON.stringify(hunks[0].newLineTypes), JSON.stringify(["context", "add"]));
+  assert.equal(hunks[0].newStart, 1);
+  assert.equal(hunks[0].newEnd, 2);
+});
+
+test("side tree module is registered and wired before git_ui.js consumes it", () => {
+  const sideTreeSource = readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8");
+  assert.match(sideTreeSource, /globalThis\.HerdrGitUiSideTreeModule = \{ create: createGitUiSideTree \}/);
+  assert.match(sideTreeSource, /function renderFileTree\(files, kind, view, options\)/);
+  assert.match(sideTreeSource, /FileTree\.renderPathTree\(files, \{/);
+  assert.match(sideTreeSource, /git-ui-stash-entry/);
+  const gitUiSource = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
+  assert.match(gitUiSource, /globalThis\.HerdrGitUiSideTreeModule\.create\(\{/);
+  assert.match(gitUiSource, /const section = sideTree\.section;/);
+  const assetsSource = readFileSync(new URL("../assets.rs", import.meta.url), "utf8");
+  const sideTreeIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui/side_tree.js")');
+  const gitUiIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui.js")');
+  assert.ok(sideTreeIndex > -1 && sideTreeIndex < gitUiIndex, "side_tree.js concatenates before git_ui.js");
+});
+
+test("side tree sections render status trees with bulk actions and limits", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": { branch: "main", ahead: 0, behind: 0, staged: ["src/app.js"], unstaged: ["src/lib.js"], untracked: ["scratchdir/"], conflicted: ["src/conf.js"] },
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  await booted.ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  const html = ctxHtml(booted);
+  // Sections render for all four kinds with counts.
+  assert.match(html, /git-ui-section-head[\s\S]*?>Conflicted</);
+  assert.match(html, /Staged</);
+  assert.match(html, /Unstaged</);
+  assert.match(html, /Untracked</);
+  // Staged section carries the unstage-all bulk action; unstaged/untracked carry stage-all.
+  assert.match(html, /HerdrGitUi\.bulkSectionAction\('unstage','Staged'\)/);
+  assert.match(html, /HerdrGitUi\.bulkSectionAction\('stage','Unstaged'\)/);
+  assert.match(html, /HerdrGitUi\.bulkSectionAction\('stage','Untracked'\)/);
+  // Conflicted kind has no bulk action button.
+  const conflictedChunk = (html.split("Conflicted")[1] || "").split("</div>")[0] + (html.split("Conflicted")[1] || "").slice(0, 400);
+  assert.ok(!conflictedChunk.includes("bulkSectionAction('stage','Conflicted')"), "conflicted section has no bulk action");
+  // File rows are rendered by the shared FileTree (renderPathTree), so assert
+  // the shared row markup with the git callback instead of direct onclick.
+  assert.match(html, /herdr-tree-row file git-ui-file/);
+  assert.ok(html.includes("src/app.js"), "staged file appears in the tree");
+});
+
+test("side tree stash tab renders stash list and file sections through the module", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": { branch: "main", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [], stashes: 2 },
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+    "/api/git-ui/stashes": { stashes: [{ name: "stash@{0}", date: "2024-01-01", message: "wip" }, { name: "stash@{1}", date: "2024-01-02", message: "wip2" }] },
+    "/api/git-ui/stash-show": { files: [{ path: "src/app.js" }] },
+  });
+  await booted.ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  const ui = booted.ui;
+  ui.tab("stash");
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const html = ctxHtml(booted);
+  assert.match(html, /git-ui-stash-list/);
+  assert.match(html, /stash \(2\)/);
+  await ui.selectStash(encodeURIComponent("stash@{0}"));
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const stashHtml = ctxHtml(booted);
+  assert.match(stashHtml, /Stash files stash 0/);
+  assert.ok(stashHtml.includes("src/app.js"), "stash file appears in the tree");
+  assert.match(stashHtml, /No files in this stash|herdr-tree-row/);
+});
+
+test("modals module is registered and wired before git_ui.js consumes it", () => {
+  const modalsSource = readFileSync(new URL("./desktop/git_ui/modals.js", import.meta.url), "utf8");
+  assert.match(modalsSource, /globalThis\.HerdrGitUiModalsModule = \{ create: createGitUiModals \}/);
+  assert.match(modalsSource, /git-ui-modal-backdrop/);
+  assert.match(modalsSource, /Commit & Push/);
+  assert.match(modalsSource, /Retry push/);
+  const gitUiSource = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
+  assert.match(gitUiSource, /globalThis\.HerdrGitUiModalsModule\.create\(\{/);
+  assert.match(gitUiSource, /const renderCommitModal = modals\.renderCommitModal;/);
+  const assetsSource = readFileSync(new URL("../assets.rs", import.meta.url), "utf8");
+  const modalsIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui/modals.js")');
+  const gitUiIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui.js")');
+  assert.ok(modalsIndex > -1 && modalsIndex < gitUiIndex, "modals.js concatenates before git_ui.js");
+});
+
+test("modals render commit and git-op flows from module state", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": { branch: "main", ahead: 0, behind: 0, staged: ["src/app.js"], unstaged: [], untracked: [], conflicted: [] },
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+    "/api/git-ui/branches": { local: [{ name: "main", current: true }, { name: "feature-x" }], remote: [{ name: "origin/feature-x", remote: true }] },
+  });
+  const ui = booted.ui;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  // Commit modal: opens, toggles body textarea, drafts persist.
+  ui.openCommitModal();
+  let html = ctxHtml(booted);
+  assert.match(html, /Commit staged changes/);
+  assert.match(html, /HerdrGitUi\.commitFromModal\(true\)">Commit & Push</);
+  assert.ok(!/gitCommitBody/.test(html), "body textarea hidden before toggle");
+  ui.toggleCommitBody(true);
+  html = ctxHtml(booted);
+  assert.match(html, /id="gitCommitBody"/);
+  // Pull modal: loads branches and renders the pull mode select via the module.
+  await ui.openPullModal();
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  html = ctxHtml(booted);
+  assert.match(html, /Pull changes/);
+  assert.match(html, /id="gitUiOpMode"/);
+  assert.match(html, /Update \(fetch \+ fast-forward\)/);
+  assert.match(html, /HerdrGitUi\.runPullFromModal\(\)/);
+  // Branch select dedupes and marks the current branch; the default for pull
+  // is Current upstream, so main carries the (current) label without selected.
+  assert.match(html, /<option value="main"[^>]*>main \(current\)<\/option>/);
+  assert.match(html, /<option value="" selected>Current upstream<\/option>/);
+});
+
+test("branch list module is registered and wired before git_ui.js consumes it", () => {
+  const branchListSource = readFileSync(new URL("./desktop/git_ui/branch_list.js", import.meta.url), "utf8");
+  assert.match(branchListSource, /globalThis\.HerdrGitUiBranchListModule = \{ create: createGitUiBranchList \}/);
+  assert.match(branchListSource, /function branchListRow\(branch, currentBranch\)/);
+  assert.match(branchListSource, /Local branches/);
+  assert.match(branchListSource, /Load more branches/);
+  const gitUiSource = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
+  assert.match(gitUiSource, /globalThis\.HerdrGitUiBranchListModule\.create\(\{/);
+  assert.match(gitUiSource, /const renderBranchList = branchList\.renderBranchList;/);
+  const assetsSource = readFileSync(new URL("../assets.rs", import.meta.url), "utf8");
+  const branchListIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui/branch_list.js")');
+  const gitUiIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui.js")');
+  assert.ok(branchListIndex > -1 && branchListIndex < gitUiIndex, "branch_list.js concatenates before git_ui.js");
+});
+
+test("primitives clamp option values, escape html, and build diff keys", () => {
+  const primitivesSource = readFileSync(new URL("./desktop/git_ui/primitives.js", import.meta.url), "utf8");
+  const ctx = vm.createContext({ window: {}, globalThis: null, console, Math, JSON, Object, Array, String, Number, Set, encodeURIComponent, Error });
+  ctx.globalThis = ctx;
+  vm.runInContext(primitivesSource, ctx);
+  const primitives = ctx.globalThis.HerdrGitUiPrimitivesModule.create();
+  // No HerdrOptions: defaults must apply and reads must not throw.
+  assert.deepEqual([
+    primitives.largeDiffLineLimit(),
+    primitives.largeChangeFileLimit(),
+    primitives.largeSectionFileLimit(),
+    primitives.gitRemoteBranchPreload(),
+  ], [2000, 25, 250, 10]);
+  assert.equal(primitives.fileListMode(), "tree");
+  assert.equal(primitives.diffLayoutMode(), "side-by-side");
+  assert.equal(primitives.gitLogDefaultBranch(), "master");
+  assert.equal(primitives.normalizeLogScope("bogus"), "all");
+  assert.equal(primitives.normalizeLogScope("base-current"), "base-current");
+  assert.equal(primitives.normalizeLogScope("base"), "base");
+  // With HerdrOptions: values are clamped and normalized.
+  ctx.window.HerdrOptions = {
+    read: () => ({ gitUiLargeDiffLineLimit: -5, gitUiLargeChangeFileLimit: 999, gitUiRemoteBranchPreload: 500, gitUiFileListMode: "flat", gitUiDiffLayout: "unified", gitUiDefaultBranch: "  develop  " }),
+  };
+  assert.equal(primitives.largeDiffLineLimit(), 0, "negative clamps to 0");
+  assert.equal(primitives.largeChangeFileLimit(), 999, "finite passes through");
+  assert.equal(primitives.gitRemoteBranchPreload(), 100, "preload caps at 100");
+  assert.equal(primitives.fileListMode(), "flat");
+  assert.equal(primitives.diffLayoutMode(), "unified");
+  assert.equal(primitives.gitLogDefaultBranch(), "develop", "default branch trims");
+  // esc/arg escaping.
+  assert.equal(primitives.esc("<a href=\"x\">&amp;"), "&lt;a href=&quot;x&quot;&gt;&amp;amp;");
+  assert.equal(primitives.arg("it's"), "it%27s");
+  // diffFileKey accepts both path and file object forms.
+  assert.equal(primitives.diffFileKey("src/a.js", "staged"), "staged:src/a.js");
+  assert.equal(primitives.diffFileKey({ path: "src/b.js", diff_kind: "unstaged" }), "unstaged:src/b.js");
+  // previewChunkLines keeps delete+add groups together and honors the limit.
+  const lines = [
+    { line_type: "context", text: "a" },
+    { line_type: "delete", text: "b" },
+    { line_type: "delete", text: "c" },
+    { line_type: "add", text: "d" },
+    { line_type: "context", text: "e" },
+  ];
+  const grouped = primitives.previewChunkLines(lines, 5);
+  assert.equal(JSON.stringify(grouped.map((line) => line.text)), JSON.stringify(["a", "b", "c", "d", "e"]));
+  const limited = primitives.previewChunkLines(lines, 2);
+  assert.equal(JSON.stringify(limited.map((line) => line.text)), JSON.stringify(["a"]), "delete group that exceeds the limit is dropped");
+});
+
+test("diff_search module is registered and wired before git_ui.js consumes it", () => {
+  const diffSearchSource = readFileSync(new URL("./desktop/git_ui/diff_search.js", import.meta.url), "utf8");
+  assert.match(diffSearchSource, /globalThis\.HerdrGitUiDiffSearchModule = \{ create: createGitUiDiffSearch \}/);
+  assert.match(diffSearchSource, /function highlightDiffText\(code, path\) \{/);
+  assert.match(diffSearchSource, /git-ui-search-match/);
+  assert.match(diffSearchSource, /\["history", "log", "stash", "cleanup", "conflicts"\]\.includes\(view\.tab\)/);
+  const gitUiSource = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
+  assert.match(gitUiSource, /globalThis\.HerdrGitUiDiffSearchModule\.create\(\{/);
+  assert.match(gitUiSource, /const highlightDiffText = diffSearch\.highlightDiffText;/);
+  assert.match(gitUiSource, /unifiedRows: \(chunk\) => unifiedRows\(chunk\)/);
+  const assetsSource = readFileSync(new URL("../assets.rs", import.meta.url), "utf8");
+  const diffSearchIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui/diff_search.js")');
+  const gitUiIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui.js")');
+  assert.ok(diffSearchIndex > -1 && diffSearchIndex < gitUiIndex, "diff_search.js concatenates before git_ui.js");
+});
+
+test("diff search counts matches and wraps hits in marks", () => {
+  const diffSearchSource = readFileSync(new URL("./desktop/git_ui/diff_search.js", import.meta.url), "utf8");
+  const ctx = vm.createContext({ window: {}, globalThis: null, console, Math, JSON, Object, Array, String, Number, Set, Error });
+  ctx.globalThis = ctx;
+  vm.runInContext(diffSearchSource, ctx);
+  let activeView = { diffSearchQuery: "todo" };
+  const fakeSyntax = { highlight: (code) => `[${code}]` };
+  const mod = ctx.globalThis.HerdrGitUiDiffSearchModule.create({
+    active: () => activeView,
+    Syntax: () => fakeSyntax,
+    diffLayoutMode: () => "unified",
+    unifiedRows: (chunk) => chunk.lines.map((line) => ({ line })),
+    sideBySideRows: (chunk) => chunk.lines.map((line) => ({ oldLine: line, newLine: null })),
+  });
+  assert.equal(mod.diffSearchQuery(), "todo");
+  assert.equal(mod.countTextMatches("todo TODO todo", "todo"), 3);
+  assert.equal(mod.countTextMatches("anything", ""), 0);
+  // highlightDiffText wraps each hit in a mark and routes through Syntax.
+  assert.equal(
+    mod.highlightDiffText("a todo b", "src/x.js"),
+    "[a ]<mark class=\"git-ui-search-match\">[todo]</mark>[ b]"
+  );
+  // No query: plain highlight passthrough.
+  activeView = { diffSearchQuery: "" };
+  assert.equal(mod.highlightDiffText("plain", "src/x.js"), "[plain]");
+  // canSearchDiff: side editor blocks, file presence allows.
+  assert.equal(mod.canSearchDiff({ sideEditor: true }), false);
+  assert.equal(mod.canSearchDiff({ tab: "log" }), false);
+  assert.equal(mod.canSearchDiff({ tab: "changes", diff: { files: [{ path: "a" }] } }), true);
+  assert.equal(mod.canSearchDiff({ tab: "changes", file: "a.js", diff: { files: [] } }), true);
+  assert.equal(mod.canSearchDiff(null), false);
+  // diffSearchMatchCount over unified rows.
+  activeView = { diffSearchQuery: "todo" };
+  const view = {
+    diff: {
+      files: [
+        { chunks: [{ lines: [{ content: "todo fix" }, { content: "clean" }] }] },
+        { chunks: [{ lines: [{ content: "todo todo" }] }] },
+      ],
+    },
+  };
+  assert.equal(mod.diffSearchMatchCount(view, "todo"), 3);
+});
+
+test("workspace_nav module is registered and wired before git_ui.js consumes it", () => {
+  const navSource = readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8");
+  assert.match(navSource, /globalThis\.HerdrGitUiWorkspaceNavModule = \{ create: createGitUiWorkspaceNav \}/);
+  assert.match(navSource, /function workspaceCwd\(workspace\) \{/);
+  assert.match(navSource, /if \(window\.HerdrWorkspacePath\) return window\.HerdrWorkspacePath\(workspace\)/);
+  assert.match(navSource, /view\.navigationStack = stack\.concat\(snapshot\)\.slice\(-12\)/);
+  assert.match(navSource, /git-ui-breadcrumbs/);
+  assert.match(navSource, /HerdrGitUi\.goBack\(\)/);
+  const gitUiSource = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
+  assert.match(gitUiSource, /globalThis\.HerdrGitUiWorkspaceNavModule\.create\(\{/);
+  assert.match(gitUiSource, /const compactPath = workspaceNav\.compactPath;/);
+  assert.match(gitUiSource, /const samePath = workspaceNav\.samePath;/);
+  const assetsSource = readFileSync(new URL("../assets.rs", import.meta.url), "utf8");
+  const navIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui/workspace_nav.js")');
+  const gitUiIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui.js")');
+  assert.ok(navIndex > -1 && navIndex < gitUiIndex, "workspace_nav.js concatenates before git_ui.js");
+});
+
+test("workspace navigation snapshots, trail, and status helpers behave", () => {
+  const navSource = readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8");
+  const ctx = vm.createContext({ window: {}, globalThis: null, console, Math, JSON, Object, Array, String, Number, Set, Error, document: { querySelector: () => null } });
+  ctx.globalThis = ctx;
+  vm.runInContext(navSource, ctx);
+  const state = { cache: {}, activeKey: "", visible: false, sideScrollTop: 0 };
+  let mode = "changes";
+  const calls = [];
+  const mod = ctx.globalThis.HerdrGitUiWorkspaceNavModule.create({
+    state,
+    currentMode: () => mode,
+    normalizeLogScope: (scope) => ["all", "base-current", "base"].includes(scope) ? scope : "all",
+    preserveContentScroll: () => true,
+    loadDiff: async () => { calls.push("loadDiff"); },
+    loadSelectedCommitPreview: (view, hash) => { calls.push(`preview:${hash}`); },
+    render: () => { calls.push("render"); },
+    esc: (value) => String(value == null ? "" : value).replace(/</g, "&lt;"),
+    GIT_LOG_PAGE_SIZE: 80,
+  });
+  // workspace cwd/key/title helpers.
+  assert.equal(mod.workspaceCwd(null), "");
+  assert.equal(mod.workspaceCwd({ cwd: "/repo/a" }), "/repo/a");
+  assert.equal(mod.workspaceCwd({ worktree: { checkout_path: "/wt/b" } }), "/wt/b");
+  assert.equal(mod.workspaceKey({ workspace_id: "w1" }), "w1");
+  assert.equal(mod.workspaceKey(null), "default");
+  assert.equal(mod.workspaceTitle({ worktree: { branch: "dev" } }), "dev");
+  assert.equal(mod.workspaceTitle(null), "Git");
+  // samePath normalizes trailing slashes.
+  assert.equal(mod.samePath("/repo/a/", "/repo/a"), true);
+  assert.equal(mod.samePath("/", "/"), true);
+  assert.equal(mod.samePath("/repo/a", "/repo/b"), false);
+  assert.equal(mod.gitCwdMatchesWorkspace({ cwd: "/repo/a/", workspaceCwd: "/repo/a" }), true);
+  assert.equal(mod.gitCwdMatchesWorkspace({}), true);
+  // resetGitViewForCwd clears navigation and compare state.
+  const view = { cwd: "/old", file: "x.js", navigationStack: [{}], mode: "log", tab: "log", selectedLogCommits: ["h"], status: {}, diff: {} };
+  mod.resetGitViewForCwd(view, "/new");
+  assert.deepEqual(
+    { cwd: view.cwd, file: view.file, mode: view.mode, tab: view.tab, stack: view.navigationStack.length },
+    { cwd: "/new", file: "", mode: "changes", tab: "changes", stack: 0 }
+  );
+  // clonePlain falls back on circular input.
+  const circular = {};
+  circular.self = circular;
+  assert.deepEqual(mod.clonePlain(circular, "fallback"), "fallback");
+  // navigation labels per tab.
+  assert.equal(mod.currentNavigationLabel({ tab: "log", logFilePath: "a.js" }), "Log · a.js");
+  assert.equal(mod.currentNavigationLabel({ tab: "stash", selectedStash: "s1" }), "Stash · s1");
+  assert.equal(mod.currentNavigationLabel({ tab: "history", file: "a.js" }), "History · a.js");
+  assert.equal(mod.currentNavigationLabel({ tab: "cleanup" }), "Cleanup");
+  assert.equal(mod.currentNavigationLabel({ file: "a.js" }), "Current file · a.js");
+  mode = "compare";
+  assert.equal(mod.currentNavigationLabel({ file: "a.js" }), "Compared file · a.js");
+  // push dedupes identical consecutive signatures and caps the stack at 12.
+  const v = { tab: "changes", mode: "changes", file: "", selectedLogCommits: [] };
+  mod.pushNavigationSnapshot(v, "one");
+  mod.pushNavigationSnapshot(v, "one");
+  assert.equal(v.navigationStack.length, 1, "duplicate signature is not pushed");
+  v.file = "b.js";
+  mod.pushNavigationSnapshot(v);
+  assert.equal(v.navigationStack.length, 2);
+  // trail renders crumbs with a back button.
+  const trail = mod.renderNavigationTrail(v);
+  assert.match(trail, /git-ui-breadcrumbs/);
+  assert.match(trail, /HerdrGitUi\.goBack\(\)/);
+  assert.match(trail, /one/);
+  assert.equal(mod.renderNavigationTrail({}), "");
+  // workspaceStatus: nogit when no workspace cwd, open when active+visible.
+  assert.equal(mod.workspaceStatus("k", { cwd: "/repo/a" }), "closed");
+  state.visible = true;
+  state.activeKey = "k";
+  assert.equal(mod.workspaceStatus("k", { cwd: "/repo/a" }), "open");
+  assert.equal(mod.workspaceStatus("k", {}), "nogit");
+  state.cache["k"] = { error: "boom" };
+  assert.equal(mod.workspaceStatus("k", { cwd: "/repo/a" }), "nogit", "error view is nogit");
+  // compactPath keeps at most 3 segments.
+  assert.equal(mod.compactPath("a/b/c"), "a/b/c");
+  assert.equal(mod.compactPath("a/b/c/d/e"), ".../c/d/e");
+  assert.equal(mod.compactPath(""), "No repo path");
+});
+
+test("restoreNavigationSnapshot reloads diff and clamps log scope", async () => {
+  const navSource = readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8");
+  const ctx = vm.createContext({ window: {}, globalThis: null, console, Math, JSON, Object, Array, String, Number, Set, Error, document: { querySelector: () => null } });
+  ctx.globalThis = ctx;
+  vm.runInContext(navSource, ctx);
+  const state = { cache: {}, activeKey: "", visible: false, sideScrollTop: 0 };
+  const calls = [];
+  const mod = ctx.globalThis.HerdrGitUiWorkspaceNavModule.create({
+    state,
+    currentMode: () => "changes",
+    normalizeLogScope: (scope) => ["all", "base-current", "base"].includes(scope) ? scope : "all",
+    preserveContentScroll: () => false,
+    loadDiff: async () => { calls.push("loadDiff"); },
+    loadSelectedCommitPreview: (view, hash) => { calls.push(`preview:${hash}`); },
+    render: () => { calls.push("render"); },
+    esc: (v) => v,
+    GIT_LOG_PAGE_SIZE: 80,
+  });
+  // changes tab: loadDiff is awaited, render is not called.
+  const view = { tab: "changes" };
+  await mod.restoreNavigationSnapshot(view, { tab: "changes", file: "a.js" });
+  assert.deepEqual(calls, ["loadDiff"]);
+  // log tab with one selected commit and no matching preview: preview loads, then render.
+  calls.length = 0;
+  const logView = { tab: "log", selectedLogCommits: [], selectedCommitPreview: null };
+  await mod.restoreNavigationSnapshot(logView, {
+    tab: "log",
+    selectedLogCommits: ["abc"],
+    selectedCommitPreview: null,
+    logScope: "bogus",
+    logAll: true,
+  });
+  assert.equal(logView.logScope, "all", "bogus scope normalizes to all");
+  assert.equal(logView.logAll, true);
+  assert.deepEqual(calls, ["preview:abc", "render"]);
+  // null view or snapshot is a no-op.
+  assert.equal(await mod.restoreNavigationSnapshot(null, { tab: "changes" }), undefined);
+  assert.equal(await mod.restoreNavigationSnapshot({}, null), undefined);
+});
+
+test("diff_view module is registered and wired before git_ui.js consumes it", () => {
+  const diffViewSource = readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8");
+  assert.match(diffViewSource, /globalThis\.HerdrGitUiDiffViewModule = \{ create: createGitUiDiffView \}/);
+  assert.match(diffViewSource, /function renderSide\(\) \{/);
+  assert.match(diffViewSource, /skipped_large_change_set/);
+  assert.match(diffViewSource, /hidden-change-diff-reason-/);
+  assert.match(diffViewSource, /HerdrGitUi\.menuAction\('copyPermalink'\)/);
+  assert.match(diffViewSource, /view\.compareBase = `\$\{hash\}\^`/);
+  const gitUiSource = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
+  assert.match(gitUiSource, /globalThis\.HerdrGitUiDiffViewModule\.create\(\{/);
+  assert.match(gitUiSource, /const renderSide = diffView\.renderSide;/);
+  assert.match(gitUiSource, /canEditCurrentFile: \(\.\.\.args\) => canEditCurrentFile\(\.\.\.args\)/);
+  assert.match(gitUiSource, /renderDiffFileBody: \(\.\.\.args\) => renderDiffFileBody\(\.\.\.args\)/);
+  assert.match(gitUiSource, /canMutateDiff: \(\.\.\.args\) => canMutateDiff\(\.\.\.args\)/);
+  const assetsSource = readFileSync(new URL("../assets.rs", import.meta.url), "utf8");
+  const diffViewIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui/diff_view.js")');
+  const gitUiIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui.js")');
+  assert.ok(diffViewIndex > -1 && diffViewIndex < gitUiIndex, "diff_view.js concatenates before git_ui.js");
+});
+
+test("diff view renders toolbar, large-diff guards, and file labels", () => {
+  const diffViewSource = readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8");
+  const ctx = vm.createContext({ window: {}, globalThis: null, console, Math, JSON, Object, Array, String, Number, Set, Map, encodeURIComponent, Error, document: { querySelectorAll: () => [] } });
+  ctx.globalThis = ctx;
+  vm.runInContext(diffViewSource, ctx);
+  const calls = [];
+  const state = { contextMenu: { kind: "M", x: 10, y: 20, path: "a.js" }, logContextMenu: null };
+  const toolbarViewFiles = [];
+  const stableView = { tab: "changes", status: { staged: ["a.js"], unstaged: [], untracked: [] }, diff: { files: toolbarViewFiles }, file: "" };
+  const mod = ctx.globalThis.HerdrGitUiDiffViewModule.create({
+    state,
+    active: () => stableView,
+    currentMode: () => "changes",
+    compareRefLabel: (ref) => `ref:${ref || "none"}`,
+    isNoGitRepositoryView: () => false,
+    diffFile: (path) => ({ path, status: "modified", diff_kind: "M" }),
+    diffFileKey: (file) => `${file.diff_kind}:${file.path}`,
+    diffFileLineCount: (file) => ((file && file.chunks) || []).reduce((sum, c) => sum + (c.lines || []).length, 0),
+    diffLineCount: (files) => files.reduce((t, f) => t + ((f.chunks || []).reduce((s, c) => s + (c.lines || []).length, 0)), 0),
+    largeDiffLineLimit: () => 2000,
+    loadedLargeDiffPreviewLimit: () => 1200,
+    previewDiffFile: (file, limit) => ({ ...file, preview_large_diff: true, chunks: [] }),
+    diffLayoutMode: () => "side-by-side",
+    hashText: (v) => "h" + String(v).length,
+    esc: (v) => String(v == null ? "" : v).replace(/</g, "&lt;"),
+    arg: (v) => encodeURIComponent(String(v == null ? "" : v)).replace(/'/g, "%27"),
+    canSearchDiff: () => false,
+    diffSearchMatchCount: () => 0,
+    LARGE_FILE_DIFF_LINE_LIMIT: 500,
+    renderNavigationTrail: () => "",
+    titleWithGitShortcut: (title) => title,
+    renderDiffConflictResolutionButtons: () => "",
+    renderSideEditor: () => "SIDE-EDITOR",
+    ensureBlame: (path) => { calls.push(`blame:${path}`); },
+    renderChunk: (file, chunk, index) => `<div>chunk${index}</div>`,
+    stashCount: () => 0,
+    canOpenStashView: () => true,
+    section: (label, paths, kind) => `SECTION[${label}:${paths.join(",")}:${kind}]`,
+    commitPreviewSection: () => "",
+    stashListHtml: () => "STASH-LIST",
+    stashFileSection: () => "STASH-FILES",
+    renderGitViewTabs: (tabs, activeTab) => `TABS[${tabs.map((t) => t.id).join("|")}:${activeTab}]`,
+    hasStagedChanges: () => true,
+    filterFiles: (paths) => paths,
+    sideFileCount: () => 2,
+    renderWorktreeActions: () => "ACTIONS",
+    renderGitLocationSelector: () => "LOCATION",
+    renderDirContextMenu: (menu) => `DIRMENU[${menu.path}]`,
+    gitCwdMatchesWorkspace: () => true,
+    compactPath: (p) => p,
+    appRefreshIconButton: (opts) => `<button class="${opts.className}">refresh</button>`,
+  });
+  // allFiles dedupes across status lists.
+  assert.equal(JSON.stringify(mod.allFiles()), JSON.stringify(["a.js"]));
+  // canMutateDiff: stash tab blocks, changes mode allows.
+  assert.equal(mod.canMutateDiff(), true);
+  // context menus render for file and dir kinds.
+  assert.match(mod.renderContextMenu(), /menuAction\('copyPermalink'\)/);
+  state.contextMenu = { kind: "dir", path: "src" };
+  assert.match(mod.renderContextMenu(), /DIRMENU\[src\]/);
+  state.contextMenu = null;
+  assert.equal(mod.renderContextMenu(), "");
+  // file view labels + compare state.
+  assert.equal(mod.fileViewStateLabel({ file: "a.js" }, null), "Current file · a.js");
+  assert.equal(mod.historicalFileCommitLabel({ historyCommitHash: "abcdef123456789" }), "abcdef123456");
+  const view = { temporaryHistoryCompare: true, historyCommitHash: "h1" };
+  mod.clearHistoryCompareState(view, { clearSource: true, clearBackTarget: true });
+  assert.equal(JSON.stringify({ t: view.temporaryHistoryCompare, h: view.historyCommitHash, s: view.historySource, b: view.fileBackTarget }), JSON.stringify({ t: false, h: "", s: "", b: null }));
+  const rv = { file: "a.js" };
+  mod.startHistoryCommitCompare(rv, "abc");
+  assert.equal(JSON.stringify({ base: rv.compareBase, target: rv.compareTarget, mode: rv.mode, paths: rv.compareFilePaths }), JSON.stringify({ base: "abc^", target: "abc", mode: "readonly-compare", paths: ["a.js"] }));
+  // largeChangeFileItems builds kind-tagged status items.
+  const items = mod.largeChangeFileItems({ status: { conflicted: ["u.js"], staged: ["s.js"], unstaged: ["m.js"], untracked: ["q.js"] } });
+  assert.equal(JSON.stringify(items), JSON.stringify([{ path: "u.js", kind: "U" }, { path: "s.js", kind: "S" }, { path: "m.js", kind: "M" }, { path: "q.js", kind: "?" }]));
+  // fileDiffLeftLabel per diff kind.
+  assert.equal(mod.fileDiffLeftLabel({ diff_kind: "S" }), "index");
+  assert.equal(mod.fileDiffLeftLabel({ diff_kind: "?" }), "new file");
+  assert.equal(mod.fileDiffLeftLabel({ diff_kind: "M" }), "previous");
+  // largeChangeHiddenFile folds status summaries in.
+  const hidden = mod.largeChangeHiddenFile({ status: { summaries: { unstaged: { "m.js": { additions: 3 } } } } }, { path: "m.js", kind: "M" });
+  assert.equal(JSON.stringify({ path: hidden.path, additions: hidden.additions, hidden: hidden.hidden_large_change }), JSON.stringify({ path: "m.js", additions: 3, hidden: true }));
+  // renderDiffFile with a large file renders the load-diff placeholder.
+  const file = { path: "big.js", diff_kind: "M", additions: 10, deletions: 2, chunks: [{ lines: new Array(600).fill({ line_type: "context" }) }] };
+  const html = mod.renderDiffFile(file);
+  assert.match(html, /hidden-diff-reason-/);
+  assert.match(html, /HerdrGitUi\.loadLargeDiff\('big\.js'\)/);
+  // renderDiffSearchControl hidden when search is unavailable.
+  assert.equal(mod.renderDiffSearchControl({}), "");
+  // canEditCurrentFile: staged scope and deleted files block editing.
+  assert.equal(mod.canEditCurrentFile({ file: "a.js" }), true);
+  assert.equal(mod.canEditCurrentFile({ file: "a.js", diffScope: "staged" }), false);
+  assert.equal(mod.canEditCurrentFile({ file: "dir/" }), false);
+  // toolbar renders the collapse-all control when files exist on the changes tab.
+  toolbarViewFiles.length = 0;
+  toolbarViewFiles.push({ path: "a.js" });
+  const toolbar = mod.renderFileToolbar("changes");
+  assert.match(toolbar, /Collapse all/);
+  // renderSide composes tabs/actions/filter.
+  const side = mod.renderSide();
+  assert.match(side, /TABS\[changes\|log\|stash\|cleanup:changes\]/);
+  assert.match(side, /SECTION\[Staged:a\.js:S\]/);
+});
+
+test("log_render module is registered and wired before git_ui.js consumes it", () => {
+  const logRenderSource = readFileSync(new URL("./desktop/git_ui/log_render.js", import.meta.url), "utf8");
+  assert.match(logRenderSource, /globalThis\.HerdrGitUiLogRenderModule = \{ create: createGitUiLogRender \}/);
+  assert.match(logRenderSource, /window\.HerdrGitLog && window\.HerdrGitLog\.selectedBranchForHash/);
+  assert.match(logRenderSource, /window\.HerdrGitLog\.scrollToCommit\(hash\)/);
+  assert.match(logRenderSource, /updateGitLogStickyOffsets/);
+  const gitUiSource = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
+  assert.match(gitUiSource, /globalThis\.HerdrGitUiLogRenderModule\.create\(\{/);
+  assert.match(gitUiSource, /const renderMain = logRender\.renderMain;/);
+  assert.match(gitUiSource, /const renderLog = logRender\.renderLog;/);
+  const assetsSource = readFileSync(new URL("../assets.rs", import.meta.url), "utf8");
+  const logRenderIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui/log_render.js")');
+  const gitUiIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui.js")');
+  assert.ok(logRenderIndex > -1 && logRenderIndex < gitUiIndex, "log_render.js concatenates before git_ui.js");
+});
+
+test("log render loads the log, tracks the selected branch, and routes tabs in renderMain", async () => {
+  const logRenderSource = readFileSync(new URL("./desktop/git_ui/log_render.js", import.meta.url), "utf8");
+  const stickyContent = {
+    style: { setProperty() {} },
+    getBoundingClientRect: () => ({ height: 10 }),
+    querySelector: () => null,
+  };
+  const ctx = vm.createContext({ window: {}, globalThis: null, console, Math, JSON, Object, Array, String, Number, Set, Map, encodeURIComponent, requestAnimationFrame: (fn) => fn(), Error, document: { querySelector: () => stickyContent } });
+  ctx.globalThis = ctx;
+  vm.runInContext(logRenderSource, ctx);
+  const calls = [];
+  const state = { renderVersion: 0 };
+  const view = { tab: "log", cwd: "/repo", logLimit: 80, logScope: "all", logAll: true, selectedLogCommits: ["abc"], pendingLogScrollHash: "abc", status: { branch: "main", conflicted: ["merge.txt"] } };
+  ctx.window.HerdrGitLog = {
+    render: (opts) => `LOG(${opts.data.commits.length}, sel=${opts.selected.join(",")}, limit=${opts.logLimit})`,
+    selectedBranchForHash: (data, hash, base) => `branch-for:${hash}:${base}`,
+    scrollToCommit: (hash) => { calls.push(`scroll:${hash}`); },
+  };
+  const mod = ctx.globalThis.HerdrGitUiLogRenderModule.create({
+    active: () => view,
+    api: async (url) => {
+      calls.push(`api:${url}`);
+      if (String(url).startsWith("/api/git-ui/log")) return { commits: [{ hash: "abc" }], lines: [] };
+      if (String(url).startsWith("/api/git-ui/history")) return { html: "<div>HISTORY</div>" };
+      return {};
+    },
+    esc: (v) => v,
+    arg: (v) => encodeURIComponent(String(v)),
+    gitLogDefaultBranch: () => "master",
+    normalizeLogScope: (scope) => ["all", "base-current", "base"].includes(scope) ? scope : "all",
+    GIT_LOG_PAGE_SIZE: 80,
+    GIT_LOG_MAX_LIMIT: 2000,
+    isNoGitRepositoryView: () => false,
+    renderFileToolbar: (tab) => `TOOLBAR[${tab}]`,
+    renderCleanup: () => "CLEANUP",
+    renderStashDiff: () => "STASHDIFF",
+    renderConflictResolutionButtons: () => "CONFLICT-BUTTONS",
+    renderDiff: () => "DIFF",
+    replaceContent: (version, html) => { calls.push(`content:${html.slice(0, 40)}`); },
+    render: () => { calls.push("render"); },
+  });
+  // renderLog: fetches, records selectedBranchForHash, scrolls to the pending hash.
+  await mod.renderLog(1);
+  assert.ok(calls.some((c) => c.startsWith("api:/api/git-ui/log")), "log GET reached the stubbed backend");
+  assert.equal(view.selectedLogBranch, "branch-for:abc:master");
+  assert.ok(calls.includes("scroll:abc"), "pending scroll hash consumed");
+  assert.equal(view.pendingLogScrollHash, "");
+  assert.ok(calls.some((c) => c.startsWith("content:LOG(")), "log content replaced");
+  // renderMain routes per tab inside the main shell.
+  view.tab = "changes";
+  assert.match(mod.renderMain(), />DIFF</);
+  view.tab = "stash";
+  assert.match(mod.renderMain(), />STASHDIFF</);
+  view.tab = "cleanup";
+  assert.match(mod.renderMain(), />CLEANUP</);
+  view.tab = "conflicts";
+  assert.match(mod.renderMain(), /TOOLBAR\[conflicts\]/);
+  assert.match(mod.renderMain(), /CONFLICT-BUTTONS/);
+});
+
+test("primitives module is registered and wired before git_ui.js consumes it", () => {
+  const primitivesSource = readFileSync(new URL("./desktop/git_ui/primitives.js", import.meta.url), "utf8");
+  assert.match(primitivesSource, /globalThis\.HerdrGitUiPrimitivesModule = \{ create: createGitUiPrimitives \}/);
+  assert.match(primitivesSource, /function gitUiOptions\(\) \{/);
+  assert.match(primitivesSource, /window\.HerdrOptions \? window\.HerdrOptions\.read\(\) : \{\}/);
+  assert.match(primitivesSource, /function esc\(value\) \{/);
+  assert.match(primitivesSource, /function arg\(value\) \{/);
+  assert.match(primitivesSource, /function hashText\(value\) \{/);
+  assert.match(primitivesSource, /function previewChunkLines\(lines, limit\) \{/);
+  assert.match(primitivesSource, /gitUiFileListMode === "flat" \? "flat" : "tree"/);
+  assert.match(primitivesSource, /gitUiDiffLayout === "unified" \? "unified" : "side-by-side"/);
+  const gitUiSource = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
+  assert.match(gitUiSource, /globalThis\.HerdrGitUiPrimitivesModule\.create\(\)/);
+  assert.match(gitUiSource, /const esc = primitives\.esc;/);
+  assert.match(gitUiSource, /const arg = primitives\.arg;/);
+  const assetsSource = readFileSync(new URL("../assets.rs", import.meta.url), "utf8");
+  const primitivesIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui/primitives.js")');
+  const gitUiIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui.js")');
+  assert.ok(primitivesIndex > -1 && primitivesIndex < gitUiIndex, "primitives.js concatenates before git_ui.js");
+});
+
+test("toasts module is registered and wired before git_ui.js consumes it", () => {
+  const toastsSource = readFileSync(new URL("./desktop/git_ui/toasts.js", import.meta.url), "utf8");
+  assert.match(toastsSource, /globalThis\.HerdrGitUiToastsModule = \{ create: createGitUiToasts \}/);
+  assert.match(toastsSource, /`\$\{base\}\/branch\/\$\{branchPath\(branch\)\}`/);
+  assert.match(toastsSource, /pull-requests\/new\?source=\$\{encodeURIComponent\(branch\)\}/);
+  assert.match(toastsSource, /Permalink copied/);
+  const gitUiSource = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
+  assert.match(gitUiSource, /globalThis\.HerdrGitUiToastsModule\.create\(\{/);
+  assert.match(gitUiSource, /const renderGitToast = toasts\.renderGitToast;/);
+  const assetsSource = readFileSync(new URL("../assets.rs", import.meta.url), "utf8");
+  const toastsIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui/toasts.js")');
+  const gitUiIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui.js")');
+  assert.ok(toastsIndex > -1 && toastsIndex < gitUiIndex, "toasts.js concatenates before git_ui.js");
+});
+
+test("permalink copy shows a toast and builds PR urls from the remote", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": { branch: "feature-x", ahead: 2, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [], remote_url: "git@github.com:acme/widget.git" },
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+    "/api/git-ui/permalink": { url: "https://github.com/acme/widget/blob/abc/src/app.js" },
+  });
+  const ui = booted.ui;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  const html0 = ctxHtml(booted);
+  assert.ok(!/git-ui-toast/.test(html0), "no toast before copy");
+  // Drive the context-menu copyPermalink flow, which routes through the
+  // toasts module: clipboard write + Permalink copied toast.
+  ui.fileMenu({ preventDefault() {}, stopPropagation() {}, clientX: 5, clientY: 5 }, "src/app.js", "M");
+  await ui.menuAction("copyPermalink");
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const calls = booted.calls;
+  const permalinkCall = calls.find((call) => call.path === "/api/git-ui/permalink");
+  assert.ok(permalinkCall, "permalink GET reached the stubbed backend");
+  const html1 = ctxHtml(booted);
+  assert.match(html1, /git-ui-toast/);
+  assert.match(html1, /Permalink copied/);
 });

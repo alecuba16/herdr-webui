@@ -19,6 +19,8 @@ const DESKTOP_STYLES = [
 const MOBILE_STYLES = ["/assets/mobile/app.css", ...SHARED_STYLES];
 const SHARED_SCRIPTS = [
   "/assets/shared/core.js",
+  "/assets/shared/http.js",
+  "/assets/shared/attention.js",
   "/assets/shared/options.js",
   "/assets/shared/actions.js",
   "/assets/shared/file-icons.js",
@@ -51,6 +53,16 @@ const MOBILE_SCRIPTS = [
   "/assets/mobile/worktrees.js",
   "/assets/mobile/file-browser.js",
   "/assets/mobile/settings.js",
+  "/assets/mobile/search.js",
+  "/assets/mobile/git.js",
+  "/assets/mobile/sessions.js",
+  "/assets/mobile/events.js",
+  "/assets/mobile/screens.js",
+  "/assets/mobile/panels.js",
+  "/assets/mobile/workmeta.js",
+  "/assets/mobile/theme.js",
+  "/assets/mobile/actions.js",
+  "/assets/mobile/backend.js",
   "/assets/mobile/app.js",
 ];
 

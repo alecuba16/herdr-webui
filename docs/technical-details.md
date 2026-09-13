@@ -81,6 +81,8 @@ The Rust binary embeds assets with `include_str!` or `include_bytes!`. Public ro
 
 - `/assets/app-boot.js`
 - `/assets/shared/core.js`
+- `/assets/shared/http.js`
+- `/assets/shared/attention.js`
 - `/assets/shared/colors.css`
 - `/assets/shared/content-search.css`
 - `/assets/shared/file-icons.js`

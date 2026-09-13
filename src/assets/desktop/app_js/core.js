@@ -3094,33 +3094,27 @@ function statusDot(status) {
     return `<span class="dot ${s === "done" ? "done" : "idle"}"></span>`;
   return '<span class="dot unknown"></span>';
 }
+// All HTTP from desktop goes through the shared HerdrHttp client so every
+// surface (core, lazy Git/Files/picker/LSP modules) sends the same
+// session/backend headers and handles 401 identically.
+if (globalThis.HerdrHttp) {
+  globalThis.HerdrHttp.configure(() => ({
+    session: state.session,
+    backend: currentSessionBackend(),
+  }));
+}
 function apiOptions(opt) {
-  const next = Object.assign({}, opt || {});
-  next.headers = Object.assign(
-    {},
-    next.headers || {},
-    state.session && state.session !== "default"
-      ? { "x-herdr-session": state.session }
-      : {},
-    currentSessionBackend()
-      ? { "x-herdr-backend": currentSessionBackend() }
-      : {},
-  );
-  return next;
+  return globalThis.HerdrHttp
+    ? globalThis.HerdrHttp.options(opt)
+    : Object.assign({ credentials: "same-origin" }, opt || {});
 }
 function apiErrorMessage(body, statusText) {
-  const err = body && body.error;
-  if (!err) return statusText;
-  if (typeof err === "string") return err;
-  if (err.message) return String(err.message);
-  if (err.code) return String(err.code);
-  try {
-    return JSON.stringify(err);
-  } catch (_) {
-    return statusText;
-  }
+  return globalThis.HerdrHttp
+    ? globalThis.HerdrHttp.errorMessage(body, statusText)
+    : body && body.error ? String(body.error) : statusText;
 }
 async function api(url, opt) {
+  if (globalThis.HerdrHttp) return globalThis.HerdrHttp.request(url, opt);
   const r = await fetch(url, apiOptions(opt));
   if (r.status === 401) {
     location.href = "/";

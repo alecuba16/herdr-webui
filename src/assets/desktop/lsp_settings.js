@@ -54,6 +54,8 @@
   }
 
   async function api(url, opt) {
+    // Shared client keeps session/backend headers and 401 handling uniform.
+    if (globalThis.HerdrHttp) return globalThis.HerdrHttp.request(url, opt);
     const res = await fetch(url, Object.assign({ credentials: "same-origin" }, opt || {}));
     const body = await res.json();
     if (!res.ok || body.error) throw Error(body.error || res.statusText);

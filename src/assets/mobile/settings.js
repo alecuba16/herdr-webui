@@ -1,5 +1,6 @@
 (function () {
   function createMobileSettings({
+    api,
     applyTheme,
     escapeHtml,
     localStorage,
@@ -134,6 +135,11 @@
       const worktreeDirectory = worktreeDefaultDirectoryValue();
       const explorationDirectory = explorationDefaultDirectoryValue();
       const volume = notificationVolumeValue();
+      const soundScope = readOptions().soundScope === "all" ? "all" : "current";
+      const agentSortMode = readOptions().agentSortMode || "off";
+      const stuckWorking = readOptions().stuckWorkingEnabled !== false;
+      const dismissMinutes = workingDismissMinutesValue();
+      const noSleep = state.noSleep || { mode: "off", error: null, supported: true };
       const links = terminalLinksEnabled();
       const core = terminalCoreValue();
       const mouseReporting = terminalMouseReportingEnabled();
@@ -147,7 +153,9 @@
         { title: "Editor", keywords: "editor word wrap tab size codemirror lsp diagnostics language server", html: editorSection(editorEnhanced, editorWordWrap, editorTabSize, lsp) },
         { title: "Files and search", keywords: "files search browser content line numbers regex", html: filesSection(depth, lineNumbers, headerSearch, searchOrder, pathSearchPageSize, minChars, contentPageSize, contextLines, autoCollapse, defaultExpanded, matchesPerFile, matchCase, regex) },
         { title: "Workspaces", keywords: "workspace worktree exploration default directory", html: workspacesSection(worktreeDirectory, explorationDirectory) },
-        { title: "Alerts", keywords: "alerts notifications sound volume", html: alertsSection(notifications, volume) },
+        { title: "Alerts", keywords: "alerts notifications sound volume scope", html: alertsSection(notifications, volume, soundScope) },
+        { title: "Agents", keywords: "agents sorting stuck working dismiss blocked done idle", html: agentsSection(agentSortMode, stuckWorking, dismissMinutes) },
+        { title: "Energy", keywords: "no sleep energy coffee awake power", html: energySection(noSleep.mode, noSleep.error, noSleep.supported === false) },
         { title: "Terminal", keywords: "terminal renderer core ghostty font links mouse reporting", html: terminalSection(font, core, links, mouseReporting) },
         { title: "Data", keywords: "refresh reload data", html: dataSection() },
       ];
@@ -202,8 +210,22 @@
       return `<div class="mobile-settings-group"><h3>Workspaces</h3><label data-settings-id="worktreeDefaultDirectory">${rollbackHtml("worktreeDefaultDirectory")}${appliedFlashHtml("worktreeDefaultDirectory")}<span>Worktree default directory</span><input placeholder="../worktrees" value="${escapeHtml(worktreeDirectory)}" onchange="HerdrMobile.setWorktreeDefaultDirectory(this.value)"></label><small>Base for generated worktree checkout paths.</small><label data-settings-id="explorationDefaultDirectory">${rollbackHtml("explorationDefaultDirectory")}${appliedFlashHtml("explorationDefaultDirectory")}<span>Exploration default directory</span><input placeholder="~/Documents/code" value="${escapeHtml(explorationDirectory)}" onchange="HerdrMobile.setExplorationDefaultDirectory(this.value)"></label><small>Prefills worktree discovery paths.</small></div>`;
     }
 
-    function alertsSection(notifications, volume) {
-      return `<div class="mobile-settings-group"><h3>Alerts</h3><label data-settings-id="browserNotifications">${rollbackHtml("browserNotifications")}${appliedFlashHtml("browserNotifications")}<input type="checkbox" ${notifications ? "checked" : ""} onchange="HerdrMobile.setBrowserNotifications(this.checked)"><span>Browser notifications</span><small>Show system notifications when an agent is blocked or done.</small></label><label data-settings-id="notificationVolume">${rollbackHtml("notificationVolume")}${appliedFlashHtml("notificationVolume")}<span>Notification volume (${volume}%)</span><input type="range" min="0" max="100" step="1" value="${volume}" onchange="HerdrMobile.setNotificationVolume(this.value)"></label><small>Controls the local attention tone volume.</small></div>`;
+    function alertsSection(notifications, volume, soundScope) {
+      return `<div class="mobile-settings-group"><h3>Alerts</h3><label data-settings-id="browserNotifications">${rollbackHtml("browserNotifications")}${appliedFlashHtml("browserNotifications")}<input type="checkbox" ${notifications ? "checked" : ""} onchange="HerdrMobile.setBrowserNotifications(this.checked)"><span>Browser notifications</span><small>Show system notifications when an agent is blocked or done.</small></label><label data-settings-id="notificationVolume">${rollbackHtml("notificationVolume")}${appliedFlashHtml("notificationVolume")}<span>Notification volume (${volume}%)</span><input type="range" min="0" max="100" step="1" value="${volume}" onchange="HerdrMobile.setNotificationVolume(this.value)"></label><label data-settings-id="soundScope">${rollbackHtml("soundScope")}${appliedFlashHtml("soundScope")}<span>Notification scope</span><select onchange="HerdrMobile.setSoundScope(this.value)"><option value="current" ${soundScope !== "all" ? "selected" : ""}>Current agent tab</option><option value="all" ${soundScope === "all" ? "selected" : ""}>All tabs</option></select><small>Play the attention tone in every open tab or only in the tab viewing the agent.</small></label><small>Controls the local attention tone volume.</small></div>`;
+    }
+
+    function agentsSection(agentSortMode, stuckWorking, dismissMinutes) {
+      return `<div class="mobile-settings-group"><h3>Agents</h3><label data-settings-id="agentSortMode">${rollbackHtml("agentSortMode")}${appliedFlashHtml("agentSortMode")}<span>Agent sorting</span><select onchange="HerdrMobile.setAgentSortMode(this.value)"><option value="off" ${agentSortMode !== "attention" && agentSortMode !== "attention_inverted" ? "selected" : ""}>Attention rank (blocked first)</option><option value="attention" ${agentSortMode === "attention" ? "selected" : ""}>Custom group order</option><option value="attention_inverted" ${agentSortMode === "attention_inverted" ? "selected" : ""}>Working-first preset</option></select><small>Blocked and done agents always float up; custom order follows the desktop agent group order.</small></label><label data-settings-id="stuckWorkingEnabled">${rollbackHtml("stuckWorkingEnabled")}${appliedFlashHtml("stuckWorkingEnabled")}<input type="checkbox" ${stuckWorking ? "checked" : ""} onchange="HerdrMobile.setStuckWorkingEnabled(this.checked)"><span>Ignore stuck working agents</span><small>Dismiss working agents that appear stuck. Clears automatically on status changes.</small></label><label data-settings-id="workingDismissMinutes">${rollbackHtml("workingDismissMinutes")}${appliedFlashHtml("workingDismissMinutes")}<span>Ignore stuck working for (minutes)</span><input type="number" min="1" max="1440" step="1" value="${dismissMinutes}" onchange="HerdrMobile.setWorkingDismissMinutes(this.value)"></label></div>`;
+    }
+
+    function energySection(noSleepMode, noSleepError, noSleepUnsupported) {
+      const mode = noSleepMode || "off";
+      const note = noSleepUnsupported
+        ? `<div class="mobile-error">${escapeHtml(noSleepError || "No-sleep mode is not supported on this host")}</div>`
+        : noSleepError
+          ? `<div class="mobile-error">${escapeHtml(noSleepError)}</div>`
+          : "";
+      return `<div class="mobile-settings-group"><h3>Energy</h3><label data-settings-id="noSleepMode"><span>No-sleep mode</span><select onchange="HerdrMobile.setNoSleepMode(this.value)" ${noSleepUnsupported ? "disabled" : ""}><option value="off" ${mode === "off" ? "selected" : ""}>Off</option><option value="auto" ${mode === "auto" ? "selected" : ""}>Auto</option><option value="1h" ${mode === "1h" ? "selected" : ""}>1 hour</option><option value="2h" ${mode === "2h" ? "selected" : ""}>2 hours</option><option value="4h" ${mode === "4h" ? "selected" : ""}>4 hours</option><option value="infinite" ${mode === "infinite" ? "selected" : ""}>Infinite</option></select><small>Prevent computer sleep from the WebUI server. Auto keeps the host awake while agents work.</small></label>${note}</div>`;
     }
 
     function terminalSection(font, core, links, mouseReporting) {
@@ -409,6 +431,72 @@
       if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
     }
 
+    function setSoundScope(value) {
+      const parsed = readOptions();
+      parsed.soundScope = value === "all" ? "all" : "current";
+      writeOptions(parsed);
+      queueAppliedFlash("soundScope");
+      if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
+    }
+
+    function setAgentSortMode(value) {
+      const parsed = readOptions();
+      parsed.agentSortMode = ["off", "attention", "attention_inverted"].includes(value)
+        ? value
+        : "off";
+      writeOptions(parsed);
+      queueAppliedFlash("agentSortMode");
+      if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
+    }
+
+    function setStuckWorkingEnabled(value) {
+      const parsed = readOptions();
+      parsed.stuckWorkingEnabled = !!value;
+      writeOptions(parsed);
+      queueAppliedFlash("stuckWorkingEnabled");
+      if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
+    }
+
+    function setWorkingDismissMinutes(value) {
+      const parsed = readOptions();
+      parsed.workingDismissMinutes = Math.max(
+        1,
+        Math.min(1440, Number(value) || 30),
+      );
+      writeOptions(parsed);
+      queueAppliedFlash("workingDismissMinutes");
+      if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
+    }
+
+    function workingDismissMinutesValue() {
+      return Math.max(1, Math.min(1440, Number(readOptions().workingDismissMinutes) || 30));
+    }
+
+    async function setNoSleepMode(value) {
+      const mode = ["off", "auto", "1h", "2h", "4h", "infinite"].includes(value)
+        ? value
+        : "off";
+      try {
+        state.noSleep = await api("/api/no-sleep", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ mode }),
+        });
+      } catch (error) {
+        state.noSleep = { mode: "off", error: (error && error.message) || String(error), supported: true };
+      }
+      if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
+    }
+
+    async function loadNoSleep() {
+      try {
+        state.noSleep = await api("/api/no-sleep");
+      } catch (_) {
+        state.noSleep = { mode: "off", error: null, supported: true };
+      }
+      return state.noSleep;
+    }
+
     function setFileBrowserDepth(value) {
       const parsed = readOptions();
       parsed.fileBrowserDepth = Math.max(0, Math.min(8, Number(value) || 0));
@@ -610,6 +698,12 @@
       resetSettingBaselines,
       setBrowserNotifications,
       setExplorationDefaultDirectory,
+      loadNoSleep,
+      setNoSleepMode,
+      setAgentSortMode,
+      setSoundScope,
+      setStuckWorkingEnabled,
+      setWorkingDismissMinutes,
       setFileBrowserDepth,
       setFileBrowserLineNumbers,
       setFileBrowserSearchPageSize,

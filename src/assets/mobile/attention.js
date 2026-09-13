@@ -5,10 +5,11 @@
       knownAttention = null,
       lastAttentionSound = 0;
 
-    function statusClass(status) {
-      return status === "done" ? "done" : status || "unknown";
-    }
+    const shared = globalThis.HerdrAttention || {};
+    const statusClass = shared.statusClass || ((status) => (status === "done" ? "done" : status || "unknown"));
 
+    // Attention ranking (blocked first) used when agent sorting is off, so
+    // "Agents needing attention" surfaces blocked agents before done ones.
     function rank(agent) {
       const status = statusClass(agent && agent.agent_status);
       return (
@@ -17,6 +18,7 @@
     }
 
     function sortAgents(agents) {
+      if (shared.sortAgents) return shared.sortAgents(agents);
       return (agents || []).slice().sort((a, b) => rank(a) - rank(b));
     }
 

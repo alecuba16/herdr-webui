@@ -8,6 +8,8 @@ pub(crate) const APP_HTML: &str = include_str!("assets/app.html");
 const LOGIN_CSS: &str = include_str!("assets/login.css");
 const LOGIN_JS: &str = include_str!("assets/login.js");
 const SHARED_CORE_JS: &str = include_str!("assets/shared/core.js");
+const SHARED_HTTP_JS: &str = include_str!("assets/shared/http.js");
+const SHARED_ATTENTION_JS: &str = include_str!("assets/shared/attention.js");
 const SHARED_OPTIONS_JS: &str = include_str!("assets/shared/options.js");
 const SHARED_ACTIONS_JS: &str = include_str!("assets/shared/actions.js");
 const SHARED_FILE_ICONS_JS: &str = include_str!("assets/shared/file_icons.js");
@@ -59,8 +61,22 @@ const DESKTOP_DIRECTORY_PICKER_CSS: &str = include_str!("assets/desktop/director
 const DESKTOP_SHORTCUTS_CSS: &str = include_str!("assets/desktop/shortcuts.css");
 const DESKTOP_GIT_UI_JS: &str = concat!(
     include_str!("assets/desktop/git_ui/settings.js"),
+    include_str!("assets/desktop/git_ui/primitives.js"),
+    include_str!("assets/desktop/git_ui/diff_search.js"),
+    include_str!("assets/desktop/git_ui/workspace_nav.js"),
     include_str!("assets/desktop/git_ui/syntax.js"),
     include_str!("assets/desktop/git_ui/log.js"),
+    include_str!("assets/desktop/git_ui/shortcuts.js"),
+    include_str!("assets/desktop/git_ui/stash.js"),
+    include_str!("assets/desktop/git_ui/cleanup.js"),
+    include_str!("assets/desktop/git_ui/diff_render.js"),
+    include_str!("assets/desktop/git_ui/conflicts.js"),
+    include_str!("assets/desktop/git_ui/side_tree.js"),
+    include_str!("assets/desktop/git_ui/modals.js"),
+    include_str!("assets/desktop/git_ui/branch_list.js"),
+    include_str!("assets/desktop/git_ui/toasts.js"),
+    include_str!("assets/desktop/git_ui/diff_view.js"),
+    include_str!("assets/desktop/git_ui/log_render.js"),
     include_str!("assets/desktop/git_ui.js"),
 );
 const DESKTOP_SEARCH_JS: &str = include_str!("assets/desktop/search.js");
@@ -85,6 +101,16 @@ const MOBILE_SETTINGS_JS: &str = include_str!("assets/mobile/settings.js");
 const MOBILE_TERMINAL_JS: &str = include_str!("assets/mobile/terminal.js");
 const MOBILE_WORKTREES_JS: &str = include_str!("assets/mobile/worktrees.js");
 const MOBILE_FILE_BROWSER_JS: &str = include_str!("assets/mobile/file_browser.js");
+const MOBILE_SEARCH_JS: &str = include_str!("assets/mobile/search.js");
+const MOBILE_GIT_JS: &str = include_str!("assets/mobile/git.js");
+const MOBILE_SESSIONS_JS: &str = include_str!("assets/mobile/sessions.js");
+const MOBILE_EVENTS_JS: &str = include_str!("assets/mobile/events.js");
+const MOBILE_SCREENS_JS: &str = include_str!("assets/mobile/screens.js");
+const MOBILE_PANELS_JS: &str = include_str!("assets/mobile/panels.js");
+const MOBILE_WORKMETA_JS: &str = include_str!("assets/mobile/workmeta.js");
+const MOBILE_THEME_JS: &str = include_str!("assets/mobile/theme.js");
+const MOBILE_ACTIONS_JS: &str = include_str!("assets/mobile/actions.js");
+const MOBILE_BACKEND_JS: &str = include_str!("assets/mobile/backend.js");
 const MOBILE_CSS: &str = include_str!("assets/mobile/app.css");
 const MOBILE_JS: &str = include_str!("assets/mobile/app.js");
 const JETBRAINS_MONO_NERD_FONT: &[u8] =
@@ -153,6 +179,14 @@ pub(crate) async fn app_boot_js() -> Response {
 
 pub(crate) async fn shared_core_js() -> Response {
     static_text(SHARED_CORE_JS, "application/javascript; charset=utf-8")
+}
+
+pub(crate) async fn shared_http_js() -> Response {
+    static_text(SHARED_HTTP_JS, "application/javascript; charset=utf-8")
+}
+
+pub(crate) async fn shared_attention_js() -> Response {
+    static_text(SHARED_ATTENTION_JS, "application/javascript; charset=utf-8")
 }
 
 pub(crate) async fn shared_options_js() -> Response {
@@ -347,6 +381,46 @@ pub(crate) async fn mobile_attention_js() -> Response {
 
 pub(crate) async fn mobile_settings_js() -> Response {
     static_text(MOBILE_SETTINGS_JS, "application/javascript; charset=utf-8")
+}
+
+pub(crate) async fn mobile_search_js() -> Response {
+    static_text(MOBILE_SEARCH_JS, "application/javascript; charset=utf-8")
+}
+
+pub(crate) async fn mobile_git_js() -> Response {
+    static_text(MOBILE_GIT_JS, "application/javascript; charset=utf-8")
+}
+
+pub(crate) async fn mobile_sessions_js() -> Response {
+    static_text(MOBILE_SESSIONS_JS, "application/javascript; charset=utf-8")
+}
+
+pub(crate) async fn mobile_events_js() -> Response {
+    static_text(MOBILE_EVENTS_JS, "application/javascript; charset=utf-8")
+}
+
+pub(crate) async fn mobile_screens_js() -> Response {
+    static_text(MOBILE_SCREENS_JS, "application/javascript; charset=utf-8")
+}
+
+pub(crate) async fn mobile_panels_js() -> Response {
+    static_text(MOBILE_PANELS_JS, "application/javascript; charset=utf-8")
+}
+
+pub(crate) async fn mobile_workmeta_js() -> Response {
+    static_text(MOBILE_WORKMETA_JS, "application/javascript; charset=utf-8")
+}
+
+pub(crate) async fn mobile_theme_js() -> Response {
+    static_text(MOBILE_THEME_JS, "application/javascript; charset=utf-8")
+}
+
+pub(crate) async fn mobile_actions_js() -> Response {
+    static_text(MOBILE_ACTIONS_JS, "application/javascript; charset=utf-8")
+}
+
+pub(crate) async fn mobile_backend_js() -> Response {
+    static_text(MOBILE_BACKEND_JS, "application/javascript; charset=utf-8")
 }
 
 pub(crate) async fn mobile_terminal_js() -> Response {
