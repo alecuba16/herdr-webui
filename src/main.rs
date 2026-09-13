@@ -8439,8 +8439,6 @@ mod tests {
         expected_method: &str,
         response: serde_json::Value,
     ) -> (PathBuf, thread::JoinHandle<()>) {
-        use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
-
         let path = std::env::temp_dir().join(format!(
             "herdr-webui-test-{}-{}.sock",
             SystemTime::now()
@@ -8449,6 +8447,20 @@ mod tests {
                 .as_nanos(),
             fake_socket_suffix()
         ));
+        fake_api_socket_for_method_at(path, expected_method, response)
+    }
+
+    /// Binds the fake API socket at an explicit path instead of temp_dir.
+    /// Use when the test needs the fake at a location outside temp_dir:
+    /// rename(2) across filesystems fails with EXDEV (cross-device link)
+    /// inside sandboxes where TMPDIR and the target dir differ in device.
+    fn fake_api_socket_for_method_at(
+        path: PathBuf,
+        expected_method: &str,
+        response: serde_json::Value,
+    ) -> (PathBuf, thread::JoinHandle<()>) {
+        use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+
         let _ = fs::remove_file(&path);
         let name = path.clone().to_fs_name::<GenericFilePath>().unwrap();
         let listener = ListenerOptions::new()
@@ -11338,17 +11350,18 @@ mod tests {
         ));
         std::env::set_var("XDG_CONFIG_HOME", &config_home);
 
-        let (socket, handle) = fake_api_socket_for_method(
+        // Bind the fake ping listener at the built-in default session path:
+        // the request targets the built-in backend, so that is the socket
+        // versions actually pings. Bind it there directly instead of
+        // moving a temp-dir socket with rename(), which fails with EXDEV
+        // when temp_dir and the socket dir are on different filesystems.
+        let (api_socket, _) = builtin_socket_paths(None);
+        fs::create_dir_all(api_socket.parent().unwrap()).unwrap();
+        let (_, handle) = fake_api_socket_for_method_at(
+            api_socket.clone(),
             "ping",
             json!({ "id": "web:ping", "result": { "version": "0.9.0", "protocol": 22 } }),
         );
-        // Bind the fake ping listener at the built-in default session path:
-        // the request targets the built-in backend, so that is the socket
-        // versions actually pings.
-        let (api_socket, _) = builtin_socket_paths(None);
-        fs::create_dir_all(api_socket.parent().unwrap()).unwrap();
-        let _ = fs::remove_file(&api_socket);
-        fs::rename(&socket, &api_socket).unwrap();
 
         let mut state = test_state();
         // Server configured external-herdr while the browser pins builtin.
