@@ -8454,6 +8454,7 @@ mod tests {
     /// Use when the test needs the fake at a location outside temp_dir:
     /// rename(2) across filesystems fails with EXDEV (cross-device link)
     /// inside sandboxes where TMPDIR and the target dir differ in device.
+    #[cfg(unix)]
     fn fake_api_socket_for_method_at(
         path: PathBuf,
         expected_method: &str,
