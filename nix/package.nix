@@ -1,6 +1,7 @@
 {
   lib,
   rustPlatform,
+  git,
 }:
 
 let
@@ -25,6 +26,10 @@ rustPlatform.buildRustPackage {
   cargoLock = {
     lockFile = ../Cargo.lock;
   };
+
+  # The test suite creates throwaway git repos by shelling out to `git`;
+  # without it in the sandbox PATH, 40+ tests fail with ENOENT in checkPhase.
+  nativeCheckInputs = [ git ];
 
   meta = {
     description = "Browser UI for an official Herdr backend session";
