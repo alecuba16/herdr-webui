@@ -1,5 +1,42 @@
 # Release notes
 
+## 0.4.32 Release Notes
+- Terminal image support works end to end on every render path. The wterm
+  core is upgraded to @wterm 0.5.0 (Kitty graphics capable) and Kitty
+  graphics escape sequences now pass through the image filter instead of
+  being stripped; builtin panes advertise ghostty terminal env hints so
+  tools like jcode detect image-capable terminals and emit real Kitty
+  transmissions, and text parsers skip DCS/APC/SOS/PM payloads (with ANSI
+  stripped in builtin pane.read) so escape bodies never leak into the
+  grid. The ghostty-core path renders real jcode PNG output through a live
+  pane (covered by E2E).
+- The external herdr backend shows images too: a new graphics bridge (p5)
+  translates the wterm overlay into ClientShell SurfaceState/ImageFrame
+  messages against a herdr 0.9.0 daemon, and a live browser E2E (p6)
+  drives headless Chrome against an isolated daemon on desktop AND mobile
+  viewports, asserting the red RGBA asset is drawn pixel-exactly
+  (`[255,0,0,255]`) while the text grid stays clean.
+- A validation pass against herdr 0.9.0 source fixed four real bugs, each
+  with regression tests: handshake/resize now clamp to herdr's own protocol
+  limits (cols/rows <= 4096, cells <= 1M, cell px <= 4096) instead of
+  integer maxima that made the daemon disconnect clients; `setTerminal` no
+  longer leaks the old host's scroll listener on rebinding; ImageBitmaps
+  are `close()`d on eviction and disconnect with in-flight decodes tracked
+  so orphan bitmaps do not linger; and the WS reader no longer leaves a
+  zombie daemon client holding the pinned tab's geometry on browser close —
+  it now sends `ClientMessage::Detach` after the select loop (protocol
+  level, portable to Windows named pipes).
+- The external-graphics E2E live-validates that teardown: it closes the
+  browser page for real (CDP `Target.closeTarget`) and asserts the
+  daemon's own log shows a detached/disconnected line for every client id
+  that ever connected — the same code path that restores tab geometry
+  (18/18 checks).
+- Full battery green: fmt + clippy clean (0 warnings), 557 Rust tests,
+  568 Node tests, and all E2E suites pass (external-graphics 18/18,
+  theme 15/15, terminal-fit 26/26, session-ux 26/26, mobile-edit 52/52,
+  LSP 20/20, ghostty-core 7/7, jcode-image-flow 8/8, git, git-drawer,
+  content-search).
+
 ## 0.4.30 Release Notes
 - The desktop Git UI bundle is decomposed into factory modules with zero
   behavior change: `git_ui.js` goes from 4,092 lines to a 2,338-line
