@@ -1,15 +1,17 @@
 # Terminal image display: feasibility analysis
 
-Status: implementation round 4 in progress. Round 4 steps 1-4 are
-landed: DCS/APC/SOS/PM payloads are now skipped until ST in all three
-text-strip sites, builtin `pane.read` strips ANSI to match external
-herdr's default, @wterm is upgraded to 0.5.0, Kitty sequences pass
-through to the Ghostty core (iTerm2/Sixel stay filtered), and builtin
+Status: implementation round 4 steps 1-5 COMPLETE for the builtin
+backend (2026-09-18). DCS/APC/SOS/PM payloads are skipped until ST in
+all three text-strip sites, builtin `pane.read` strips ANSI to match
+external herdr's default, @wterm is upgraded to 0.5.0, Kitty sequences
+pass through to the Ghostty core (iTerm2/Sixel stay filtered), builtin
 panes advertise `TERM_PROGRAM=ghostty` with inherited `KITTY_WINDOW_ID`
-scrubbed at PTY spawn. See "Round-4 progress" at the end of this
-document. The document answers "can the WebUI terminal display images
-(e.g. jcode-generated), and what are the implications and technical
-decisions?"
+scrubbed at PTY spawn, and the full real flow is E2E-verified: a real
+jcode `read`-tool PNG renders in the browser terminal on the Ghostty
+core (placeholder on wterm). The external-herdr backend remains open
+(phase-2 bridge rearchitecture, see the round-3 plan). The document
+answers "can the WebUI terminal display images (e.g. jcode-generated),
+and what are the implications and technical decisions?"
 
 ## Short answer
 
@@ -213,9 +215,11 @@ cross-backend matrix under Observed evidence below):
    built-in panes and inherited `KITTY_WINDOW_ID` is removed at PTY spawn
    (`TERMINAL_ENV_SCRUB_KEYS` + `CommandBuilder::env_remove`), so jcode
    picks Kitty and a leaked real-kitty ID cannot misdirect it.
-5. E2E validation: run a pane under the real flow, emit a Kitty test image
-   (jcode `read` of a PNG), verify render on Ghostty core, placeholder on
-   wterm core, clean pane.read output, and stable agent-status detection.
+5. E2E validation (landed, round 4 step 5): the real jcode `read` tool's
+   Kitty PNG emit renders on the Ghostty core and substitutes the
+   placeholder on wterm, verified live on both cores
+   (`just jcode-image-flow-e2e`), with clean visible text and stable
+   pane status.
 
 **External herdr backend (structured graphics pipeline):**
 
@@ -728,6 +732,48 @@ layout (max-width 760px), and the mobile bundle never defines the
 desktop `go()` - the check must launch Chrome with
 `--window-size=1600,1000` like the other e2e runners.
 
-**Remaining for builtin images: step 5** (E2E with a real jcode PNG
-through the real flow), then the external-backend phase 2 bridge
-rearchitecture per the round-3 plan.
+**Round 4 step 5 landed (E2E, real jcode PNG through the real flow):**
+two new live checks close the loop:
+
+- `scripts/e2e/smoke-jcode-kitty-emit.sh` (no browser): a real
+  `jcode serve` runs on a real PTY (`scripts/e2e/pty_capture.py`, an
+  incremental-capture replacement for macOS `script`, which only
+  flushes its transcript on clean exit) with the exact pane env
+  (`TERM_PROGRAM=ghostty`, `TERM=xterm-256color`, no
+  `KITTY_WINDOW_ID`); the real `read` tool driven over the debug
+  socket (`JCODE_RUNTIME_DIR` isolated, `JCODE_DEBUG_CONTROL=1`,
+  `create_session` + `tool:read`) emits the chunked Kitty form
+  `ESC_G a=T,f=100,c=20,r=10,m=0;<base64 PNG> ESC \` to the PTY.
+  Negative control (`SMOKE_MODE=noemit`): without the TERM_PROGRAM
+  hint the same tool emits nothing - proving the emitter selection
+  is driven by the step-4 env.
+- `just jcode-image-flow-e2e` (`scripts/e2e/run-jcode-image-flow-e2e.sh`
+  + `jcode-image-flow-acceptance.mjs`, 8 checks x both cores): the
+  full production path in a real browser. A workspace boots on the
+  isolated server, a real `jcode serve` is typed into the live pane
+  (so the server's stdout IS the pane PTY and TERM_PROGRAM=ghostty
+  comes from the real pane env), then the real `read` tool is driven
+  over the debug socket. Results: Ghostty core renders the jcode PNG
+  as a `.term-image` canvas (images=1, placeholder=false); wterm
+  core substitutes `[inline image omitted]` (placeholder=true,
+  images=0); the visible grid text carries no base64 payload
+  (`iVBORw0KGgo` absent) and no escape framing on BOTH cores; the
+  pane status API reports sane statuses. Per-core
+  `JCODE_RUNTIME_DIR`s because the pane-owned `jcode serve` outlives
+  its acceptance run.
+
+Live-debugging notes recorded for future harnesses: (a) headless
+Chrome without `--window-size` gets a narrow viewport, `app_boot.js`
+resolves the mobile layout (max-width 760px), and the mobile bundle
+never defines the desktop `go()` - image e2e runners must launch
+Chrome with `--window-size=1600,1000`; (b) node scripts driving CDP
+must end with an explicit `process.exit(...)` - the CDP WebSocket
+keeps the event loop alive otherwise; (c) `jcode serve` (unlike
+`jcode debug start`, which spawns `Stdio::null()`) runs in-process,
+so its stdout follows the invoking shell's PTY - that is what makes
+the pane the right place to run it.
+
+**Builtin backend image support is COMPLETE.** Remaining open work:
+the external-herdr backend (phase 2 bridge rearchitecture per the
+round-3 plan: the webui bridge must become a ClientShell endpoint
+client to receive herdr's graphics relay).
