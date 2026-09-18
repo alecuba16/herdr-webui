@@ -85,5 +85,25 @@ CHROME_PID=$!
 wait_for "headless Chrome CDP" "http://127.0.0.1:$CDP/json/version" "" || exit 1
 
 echo "==> running ghostty core acceptance checks"
-ACCEPT_REPO="$REPO" E2E_BASE_URL="https://127.0.0.1:$PORT/" CDP_PORT="$CDP" \
+ACCEPT_REPO="$REPO" TERMINAL_CORE=ghostty E2E_BASE_URL="https://127.0.0.1:$PORT/" CDP_PORT="$CDP" \
+  node "$ROOT/scripts/e2e/ghostty-core-acceptance.mjs"
+
+# The wterm core must keep substituting the placeholder: same flow, core=wterm.
+"$CHROME_BIN" --headless=new --window-size=1600,1000 \
+  --remote-debugging-port="$CDP" --remote-allow-origins='*' \
+  --user-data-dir="$WORK/chrome-profile-2" about:blank &
+WTERM_CHROME_PID=$!
+cleanup() {
+  [[ $KEEP -eq 1 ]] && { echo "--keep set: leaving $WORK running"; return; }
+  stop_pid "${WTERM_CHROME_PID:-}"
+  stop_pid "${CHROME_PID:-}"
+  stop_pid "${SERVER_PID:-}"
+  for i in 1 2 3 4 5; do
+    rm -rf "$WORK" 2>/dev/null && break
+    sleep 1
+  done
+}
+
+echo "==> running wterm core placeholder checks"
+ACCEPT_REPO="$REPO" TERMINAL_CORE=wterm E2E_BASE_URL="https://127.0.0.1:$PORT/" CDP_PORT="$CDP" \
   node "$ROOT/scripts/e2e/ghostty-core-acceptance.mjs"

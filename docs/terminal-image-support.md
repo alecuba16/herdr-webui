@@ -652,3 +652,46 @@ The image filter (`filterTerminalImageSequences`) is still active and
 unchanged - it is step 3's job to gate Kitty pass-through on the
 Ghostty core. Images still render as the `[inline image omitted: ...]`
 placeholder on both cores until then.
+
+**Round 4 step 3 landed (Kitty pass-through gate):**
+`filterTerminalImageSequences` in `src/assets/shared/terminal_adapter.js`
+now passes Kitty `ESC _ G ... ESC \` sequences through untouched when the
+adapter runs the Ghostty core; every other core (default wterm VT) keeps
+the `[inline image omitted: Kitty graphics...]` placeholder. iTerm2 and
+Sixel stay filtered on ALL cores (wterm 0.5.0 renders neither). The gate
+is `state.allowKittyGraphics`, captured once at adapter construction
+(`this.core === "ghostty"`), because the core cannot change without
+recreating the adapter (Settings already reconnects on switch). Split
+chunk buffering still works on the pass-through path (a sequence split
+across ws frames is held until its ST arrives).
+
+Live verification (real served app, real Chrome, real shell typing the
+emit through the pane PTY): the extended ghostty-core e2e
+(`scripts/e2e/ghostty-core-acceptance.mjs`, parametrized
+`TERMINAL_CORE=ghostty|wterm`, runner runs BOTH) types the exact
+round-3 direct-RGBA transmit + placement into a live zsh pane:
+
+- Ghostty core: `.term-image` canvas renders (images=1), no placeholder
+  text (placeholder=false). Full real path exercised: zsh ->
+  `/dev/pts` -> pane stdout -> WebSocket -> adapter gate -> Ghostty
+  core -> graphics layer.
+- wterm core: same bytes, adapter substitutes the placeholder
+  (placeholder=true), no `.term-image` (images=0).
+- A first attempt with a PNG payload under `f=32,t=d` produced no image
+  (correct behavior: direct-RGBA expects raw RGBA bytes, not PNG base64)
+  - the round-3 probe payload is the right test vector.
+
+Unit tests added (`src/assets/terminal_adapter.test.mjs`): Kitty
+pass-through on ghostty core (whole and split chunks), placeholder kept
+on wterm core, iTerm2/Sixel still summarized on ghostty core. 562/562
+node tests, 547/547 Rust tests.
+
+Settings/help text updated per parity rules (desktop settings label,
+desktop help row, mobile settings renderer note): Ghostty renders Kitty
+graphics inline, other cores show a placeholder, reload after switching.
+
+**Remaining for builtin images: step 4** (PTY env hints: set
+`TERM_PROGRAM=ghostty` on builtin panes and scrub inherited
+`TERM_PROGRAM`/`KITTY_WINDOW_ID` so jcode's env detection picks the
+Kitty emitter), then step 5 (E2E with a real jcode PNG through the real
+flow).

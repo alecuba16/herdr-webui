@@ -55,7 +55,7 @@ function wheelEvent(deltaY, extra = {}) {
   };
 }
 
-async function createAdapter({ normalBuffer = true, wheelReports = false, rows = 24, cols = 80 } = {}) {
+async function createAdapter({ normalBuffer = true, wheelReports = false, rows = 24, cols = 80, core } = {}) {
   const source = readFileSync(new URL("./shared/terminal_adapter.js", import.meta.url), "utf8");
   const container = makeElement();
   const reports = [];
@@ -83,6 +83,9 @@ async function createAdapter({ normalBuffer = true, wheelReports = false, rows =
         write(data) { this.writes.push(data); }
         destroy() { this.destroyed = true; }
       },
+      GhosttyCore: {
+        async load() { return {}; },
+      },
     },
   };
   ctx.window = ctx;
@@ -91,6 +94,7 @@ async function createAdapter({ normalBuffer = true, wheelReports = false, rows =
   const adapter = await ctx.HerdrTerminalRenderer.create(container, {
     rows,
     cols,
+    core,
     links: false,
     ...(wheelReports ? { onWheelMouseReport: (report) => reports.push(report) } : {}),
   });
@@ -207,6 +211,44 @@ describe("terminal adapter inline image fallback", () => {
     equal(adapter.wterm.writes[0], "pre");
     ok(lastWrite(adapter).includes("inline image omitted: iTerm2 graphics"));
     ok(lastWrite(adapter).endsWith("post"));
+  });
+
+  it("passes Kitty graphics through on the Ghostty core", async () => {
+    const { adapter } = await createAdapter({ core: "ghostty" });
+
+    adapter.write("a\x1b_Gf=100;AAAA\x1b\\z");
+
+    equal(lastWrite(adapter), "a\x1b_Gf=100;AAAA\x1b\\z");
+  });
+
+  it("passes split Kitty chunks through on the Ghostty core", async () => {
+    const { adapter } = await createAdapter({ core: "ghostty" });
+
+    adapter.write("pre\x1b_Gf=100,m=1;AA");
+    adapter.write("AA\x1b\\post");
+
+    equal(adapter.wterm.writes[0], "pre");
+    equal(lastWrite(adapter), "\x1b_Gf=100,m=1;AAAA\x1b\\post");
+  });
+
+  it("still summarizes iTerm2 and Sixel on the Ghostty core", async () => {
+    const { adapter } = await createAdapter({ core: "ghostty" });
+
+    adapter.write(`\x1b]1337;File=inline=1:${Buffer.from("png").toString("base64")}\x07`);
+    adapter.write("x\x1bPq#0;2;0;0;0\x1b\\y");
+
+    ok(adapter.wterm.writes[0].includes("inline image omitted: iTerm2 graphics"));
+    ok(lastWrite(adapter).includes("inline image omitted: SIXEL graphics"));
+  });
+
+  it("still summarizes Kitty graphics on the default wterm core", async () => {
+    const { adapter } = await createAdapter();
+
+    adapter.write("a\x1b_Gf=100;AAAA\x1b\\z");
+
+    const text = lastWrite(adapter);
+    ok(text.includes("inline image omitted: Kitty graphics"));
+    ok(!text.includes("\x1b_G"));
   });
 });
 
