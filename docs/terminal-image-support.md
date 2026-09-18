@@ -6,13 +6,22 @@ technical decisions?"
 
 ## Short answer
 
-Yes, and the cheapest correct path is already 80% built. The renderer stack
-(@wterm/dom + @wterm/ghostty) gained native Kitty Graphics Protocol support in
-0.5.0, but this repo pins 0.3.0 and strips image escapes defensively. Upgrading
-the wterm packages to 0.5.0, un-stripping Kitty sequences on the Ghostty core,
-and advertising capability to the PTY environment would make jcode's inline
-images appear in the browser terminal. iTerm2/Sixel remain non-renderable and
-must stay filtered.
+Yes for the builtin backend, and the cheapest correct path is already 80%
+built. The renderer stack (@wterm/dom + @wterm/ghostty) gained native Kitty
+Graphics Protocol support in 0.5.0, but this repo pins 0.3.0 and strips image
+escapes defensively. Upgrading the wterm packages to 0.5.0, un-stripping
+Kitty sequences on the Ghostty core, and advertising capability to the PTY
+environment would make jcode's inline images appear in the browser
+terminal. iTerm2/Sixel remain non-renderable and must stay filtered.
+
+For the external-herdr backend the answer is "yes, but only after a bridge
+rearchitecture" (round-3, source- and live-verified): herdr 0.9.0 consumes
+image escapes server-side and relays pane graphics ONLY to ClientShell
+endpoint clients (`endpoint.hello.v1` hello with `direct_graphics`); the
+webui bridge's TerminalAttach mode is structurally excluded from graphics
+delivery - an attach client watching the same pane receives the text but
+zero image bytes. See the External herdr backend section and round-3
+findings for the corrected plan.
 
 ## Why images are invisible today
 
@@ -201,21 +210,49 @@ cross-backend matrix under Observed evidence below):
 
 **External herdr backend (structured graphics pipeline):**
 
-1. Provide real cell metrics: the webui bridge currently attaches with
-   `cell_width_px: 0`, which makes herdr answer `pane.graphics.info` with
-   `cell_size_unavailable` and disables its graphics relay. Forward the
-   browser terminal's real cell size on attach/resize (`ClientMessage::
-   Resize` already carries cell px fields).
-2. Consume herdr's graphics protocol instead of raw escapes: handle
-   `ServerMessage::Graphics` / `GraphicsFile` frames and the
-   `pane.graphics.*` API/subscription events in the bridge, and render
-   images as canvas overlays in the frontend from that structured data.
-3. The adapter's Kitty passthrough/filter is IRRELEVANT for external
+Round-3 correction (source + live verified on herdr 0.9.0): the original
+plan assumed the webui bridge could arm herdr's graphics relay by
+providing cell metrics on its existing attach connection. That is wrong:
+herdr delivers pane graphics ONLY to ClientShell endpoint clients, and
+the webui's bridge is a direct terminal client. The corrected plan:
+
+1. The webui bridge would have to switch from TerminalHello +
+   `AttachTerminal` to the endpoint hello (`EndpointControl`,
+   `kind="endpoint.hello.v1"`, generation 1, JSON payload) - becoming a
+   client-owned shell - to receive `PaneSurfaceFrame.graphics`
+   (`SurfaceGraphicsScene` assets + placements) and
+   `ServerMessage::GraphicsFile`. That is a different connection mode
+   with different frame semantics (semantic frames of the whole shell
+   surface, not per-terminal raw streams), i.e. a bridge rearchitecture,
+   not a parameter change. Server-side arming requirements
+   (herdr 0.9.0 `src/server/headless.rs:941` `client_supports_direct_graphics`):
+   active shell client + `direct_graphics: true` + `pixel_mouse: true`
+   + known cell size (from hello `cell_width_px/cell_height_px` +
+   `surface_size`); the client-side profile gate
+   (`src/client/handshake.rs` `direct_graphics_profile_allowed`) only
+   arms under TERM_PROGRAM ghostty/wezterm (or TERM xterm-ghostty/
+   xterm-kitty/xterm-wezterm, or KITTY_WINDOW_ID), local tty, not under
+   TMUX/SSH.
+2. `pane.graphics.*` API (`pane.graphics.set/clear/info/stream`) is a
+   producer API: `pane.graphics.stream` pushes RGBA/BGRA frames INTO a
+   pane layer (file or base64 payload, `FrameHeader` JSON + body). It
+   does not subscribe the webui to pane graphics; consumption for
+   clients is only the ClientShell surface-scene delivery above.
+3. If the bridge stays a TerminalAttach client, external pane images are
+   permanently invisible in the webui: the server renders attached
+   terminals as virtual cell frames (`render_terminal_virtual`) with no
+   graphics channel (verified live: an attach client watching the same
+   pane where a shell client received the full Kitty upload+placement
+   relay got the pane TEXT but zero `ESC_G` bytes).
+4. The adapter's Kitty passthrough/filter is IRRELEVANT for external
    panes: raw escapes never reach the browser. Do not gate external image
    support on the wterm upgrade.
-4. Parser hardening is NOT needed for external `pane.read` (already
+5. Parser hardening is NOT needed for external `pane.read` (already
    clean), but the webui's builtin-side parsers and its own API proxy
    still need it for builtin sessions.
+6. Phasing decision for 100% coverage: ship builtin first (Option A),
+   then external as phase 2 (bridge rearchitecture to ClientShell mode
+   or a second parallel endpoint connection dedicated to graphics).
 
 **Shared (both backends):**
 
@@ -237,18 +274,17 @@ cross-backend matrix under Observed evidence below):
 - Should the mobile/temp-terminal surfaces get a settings toggle for inline
   images, or inherit the desktop setting?
 - Does external herdr (the other backend) want the same TERM_PROGRAM hint?
-  (Refined: yes, but for a different reason than builtin. External herdr
-  consumes jcode's Kitty emission server-side into its graphics layer
-  regardless of env; setting `TERM_PROGRAM=ghostty` there steers jcode to
-  the Kitty emitter - the protocol herdr's `src/kitty_graphics.rs` is built
-  around - instead of iTerm2/Sixel output that herdr would also consume
-  but with less graphics-pipeline fidelity. Scrubbing the inherited
-  `TERM_PROGRAM=iTerm.app` matters on both.)
-- External backend scope decision: does this repo take on rendering
-  herdr's structured graphics (bridge + frontend overlay work), or ship
-  builtin-only image support first and treat external as phase 2?
-  100% coverage across both backends requires the graphics-pipeline work
-  above; it cannot ride the wterm 0.5.0 escape passthrough.
+  (Refined round 2, reaffirmed round 3: yes, but only to steer jcode's
+  emitter choice - herdr ingests Kitty/iTerm2/Sixel escapes server-side
+  regardless of env, so the hint only ensures jcode emits Kitty, the
+  protocol herdr's graphics pipeline is built around. Scrubbing the
+  inherited `TERM_PROGRAM=iTerm.app` matters on both.)
+- External backend scope decision (resolved round 3): the bridge cannot
+  ride the existing attach connection; external image support requires
+  the ClientShell-mode rearchitecture described above. Phasing: builtin
+  first (Option A), external as phase 2. 100% coverage across both
+  backends therefore needs both work streams; the wterm 0.5.0 upgrade
+  alone covers only builtin.
 
 ## Observed evidence (real-path validation, 2026-09-18)
 
@@ -289,15 +325,18 @@ renderers never see it.
 - **External herdr 0.9.0**: the server consumes all three image protocols
   (observed: clean char-coded escapes never reach the browser stream and
   `pane.read` stays clean) and exposes a structured graphics surface
-  (`pane.graphics.set/clear/info` API, `Graphics` server frames,
-  `pane_graphics_frame_ack` events, `file_frame_*` transport, and a
-  server-side `src/kitty_graphics.rs` gated by `terminal.kitty_graphics`,
-  default true per herdr 0.9.1 config reference). The wire mechanics of
-  how graphics reach the browser are under investigation via source
-  review; rendering external-session images in the webui requires
-  consuming that structured pipeline rather than forwarding escapes.
-  The webui bridge attaches with `cell_width_px: 0`, and `pane.graphics.info`
-  answers `cell_size_unavailable`; real cell metrics are a prerequisite.
+  (`pane.graphics.set/clear/info/stream` API and a server-side
+  `src/kitty_graphics.rs` gated by `terminal.kitty_graphics`, default true
+  per herdr 0.9.1 config reference). The wire mechanics of how graphics
+  reach the browser are now fully source- and live-verified (round 3):
+  graphics are relayed ONLY to ClientShell endpoint clients
+  (`EndpointControl` hello `endpoint.hello.v1` with `direct_graphics: true`),
+  via `PaneSurfaceFrame.graphics` (`SurfaceGraphicsScene`: assets +
+  placements) and `ServerMessage::GraphicsFile`; the webui's
+  TerminalAttach bridge mode is structurally excluded (see round-3
+  findings). The webui bridge attaches with `cell_width_px: 0`, and
+  `pane.graphics.info` answers `cell_size_unavailable`; real cell metrics
+  are a prerequisite for any ClientShell-style integration.
   Leak profile differs too: external `pane.read` is already clean of image
   payloads (parser hardening in step 1 is less urgent for external, still
   needed for builtin and for the webui's own `pane.read` API proxy).
@@ -424,12 +463,80 @@ wterm 0.5.0 Kitty rendering in the real browser app (scratch-install
 verification covers the library surface only: getGraphicsState/
 getGraphicsImage, imageStorageLimit default 32 MiB, CSI 14t/16t answers,
 WASM 429KB -> 577KB, aria-hidden patch drift); end-to-end render
-verification remains builtin step 5. (b) External herdr's graphics relay
-end-to-end: raw protocol probing confirmed the attach variant (index 5 on
-the wire), that `cell_width_px` is carried in TerminalHello/Resize, and
-that `pane.graphics.info` still answers `cell_size_unavailable` even while
-a direct client holds an 8x16-cell attach. Source review located the
-graphics relay pieces (server `src/server/client_shell_graphics.rs`,
-`src/client/direct_graphics.rs`, `src/client/shell/graphics.rs`) but did
-not trace the full arming conditions (which client type, hello fields, or
-subscription arms `Graphics` frame delivery); that wiring remains open.
+verification remains builtin step 5. (b) WAS closed by round 3 below:
+herdr's graphics relay is now traced end-to-end and verified live.
+
+8. **Round 3: herdr graphics relay fully traced + live-verified end-to-end
+   (2026-09-18).** Using the sparse-cloned herdr v0.9.0 source
+   (github.com/herdrdev/herdr) plus a live isolated daemon
+   (`herdr server` on scratch sockets, session `imgext3`, never touching
+   the user's real session), the complete arming + delivery chain was
+   verified:
+
+   - Arming: a shell client sends `EndpointControl` kind
+     `endpoint.hello.v1` (generation 1) with `direct_graphics: true`,
+     `pixel_mouse: true`, cell px, and `surface_size`. The herdr TUI
+     client itself only sets `direct_graphics` when the terminal profile
+     allows it (TERM_PROGRAM ghostty/wezterm, TERM xterm-ghostty/
+     xterm-kitty/xterm-wezterm, or KITTY_WINDOW_ID; local tty; not
+     TMUX/SSH) and the ioctl winsize reports pixel extent
+     (`src/client/handshake.rs`, `src/client/terminal_geometry.rs`).
+   - Server state: `client_supports_direct_graphics`
+     (`src/server/headless.rs:941`) = active shell client + writer +
+     `direct_graphics` + `pixel_mouse`; `host_cell_size` is set only
+     while `kitty_graphics_enabled && cell_size.is_known()`
+     (`src/server/headless.rs:841`), and resets when the last shell
+     client leaves. Live: with the client connected,
+     `pane.graphics.info` returns real cell metrics; after it detaches,
+     the same call answers `cell_size_unavailable` (observed both).
+   - Ingestion: pane PTY output goes through the vendored Ghostty VT;
+     a canonical Kitty direct-RGBA transmit
+     (`ESC_G a=T,f=32,t=d,i=7,p=3,s=2,v=2,c=10,r=5,q=2;<b64> ESC \`)
+     is parsed and stored (test reference `src/ghostty/mod.rs`
+     `kitty_graphics_direct_rgba_placement_is_queryable`). Server debug
+     log live: `collect_visible_placements: done placements_len=1`,
+     `clipped_placement: success`.
+   - Delivery to shell clients: `src/server/client_shell_graphics.rs`
+     `collect` builds a `SurfaceGraphicsScene` (assets + placements) into
+     `PaneSurfaceFrame` for `ClientConnectionMode::ClientShell` only
+     (`src/server/headless/render.rs` render_and_stream); the client
+     shell re-encodes it as Kitty APC to its host terminal
+     (`src/client/shell/graphics.rs` `compose_graphics`). Live: the shell
+     client's pty received the full relay - upload
+     `ESC_G a=t,t=d,f=32,s=2,v=2,i=24159,q=2,m=0;/wAA//8AAP//AAD//wAA/w== ESC \`
+     then placement
+     `ESC_G a=p,i=24159,p=146484,c=10,r=5,z=0,C=1,q=2,w=2,h=2 ESC \`.
+   - `ServerMessage::GraphicsFile` (herdr's direct file-transfer path,
+     `src/server/headless/pane_graphics.rs`) also targets ClientShell
+     clients only (`matches!(client.mode, ClientShell)` gate), with an
+     inline-data fallback when no shell client can take the file.
+   - Negative control (live): a TerminalAttach client - exactly the
+     webui bridge's mode, `TerminalHello` v22 + `AttachTerminal`
+     (bincode-2 varint wire, variant index 5) to the same pane - received
+     3.7-11.6 KiB of pane TEXT frames including the command output, but
+     ZERO `ESC_G` bytes while the shell client got the full image relay.
+     `ServerMessage::Graphics` (raw bytes variant) is never sent by the
+     0.9.0 server at all.
+   - Producer API: `pane.graphics.stream`
+     (`src/api/server/pane_graphics_stream.rs`) pushes frames INTO pane
+     layers (JSON `FrameHeader` + raw body, rgba/bgra, 16 MiB base64 /
+     400 MiB file paths per `pane.graphics.info` live answer); it is not
+     a subscription for clients.
+   - Wire notes for any future bridge: the legacy `ClientShellHello`
+     variant is rejected by 0.9.0 ("this client predates the stable
+     endpoint protocol"); the live hello is `EndpointControl`/JSON.
+     `HERDR_SESSION` on the client overrides `HERDR_SOCKET_PATH` socket
+     derivation (session data dir wins), and `HERDR_SOCKET_PATH` derives
+     the client socket as `<stem>-client.sock` - both matter for test
+     harnesses. Probe scripts: `/tmp/herdr-imgtest.Wg8S4A/probe14.py`,
+     `probe19.py`, `probe20.py`.
+
+9. **Corrections to round-2 claims.** (a) The round-2 doc mentioned a
+   `pane_graphics_frame_ack` event; no such event exists in the 0.9.0
+   API event set (`src/api/schema/events.rs` EventKind list has no
+   graphics entries). Graphics reach clients only via the ClientShell
+   surface scene / GraphicsFile paths above. (b) Round-2's plan item
+   "provide real cell metrics on the existing attach connection" is
+   impossible: TerminalAttach clients never qualify for graphics
+   delivery regardless of cell metrics; the corrected external plan is in
+   the External herdr backend section above.
