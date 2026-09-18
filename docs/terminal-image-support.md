@@ -179,7 +179,10 @@ Useful complements, not substitutes. Could be done independently of Option A.
 
 ## Recommended decision
 
-Adopt Option A, in this order:
+The plan splits by backend because their pipelines differ (see the
+cross-backend matrix under Observed evidence below):
+
+**Builtin backend (raw escape pass-through):**
 
 1. Parser hardening first (terminal_text.rs / tui_terminal.rs DCS+APC skip),
    with regression tests. Independent of everything else and fixes a latent
@@ -189,12 +192,39 @@ Adopt Option A, in this order:
 3. Gate Kitty pass-through on the Ghostty core in the adapter (keep iTerm2/
    Sixel filtered everywhere), with settings text and docs updated together
   per the repo's parity rules.
-4. PTY env: set `TERM_PROGRAM=ghostty` for built-in panes (and same for
-   external herdr upstream if desired), so jcode picks Kitty; scrub inherited
-   KITTY_WINDOW_ID.
+4. PTY env: set `TERM_PROGRAM=ghostty` for built-in panes, so jcode picks
+   Kitty; scrub inherited `TERM_PROGRAM`/`KITTY_WINDOW_ID` (both leak in
+   from the launching shell).
 5. E2E validation: run a pane under the real flow, emit a Kitty test image
    (jcode `read` of a PNG), verify render on Ghostty core, placeholder on
    wterm core, clean pane.read output, and stable agent-status detection.
+
+**External herdr backend (structured graphics pipeline):**
+
+1. Provide real cell metrics: the webui bridge currently attaches with
+   `cell_width_px: 0`, which makes herdr answer `pane.graphics.info` with
+   `cell_size_unavailable` and disables its graphics relay. Forward the
+   browser terminal's real cell size on attach/resize (`ClientMessage::
+   Resize` already carries cell px fields).
+2. Consume herdr's graphics protocol instead of raw escapes: handle
+   `ServerMessage::Graphics` / `GraphicsFile` frames and the
+   `pane.graphics.*` API/subscription events in the bridge, and render
+   images as canvas overlays in the frontend from that structured data.
+3. The adapter's Kitty passthrough/filter is IRRELEVANT for external
+   panes: raw escapes never reach the browser. Do not gate external image
+   support on the wterm upgrade.
+4. Parser hardening is NOT needed for external `pane.read` (already
+   clean), but the webui's builtin-side parsers and its own API proxy
+   still need it for builtin sessions.
+
+**Shared (both backends):**
+
+- PTY env scrubbing: the `TERM_PROGRAM` leak exists on both; setting
+  `TERM_PROGRAM=ghostty` matters only where raw Kitty escapes flow
+  (builtin). For external, herdr consumes jcode's Kitty emission
+  server-side regardless of env.
+- jcode's query-based `ImageProtocol::detect` never works under either
+  backend (no emulator at the PTY end); only env-based detection applies.
 
 ## Open questions (answer before implementation)
 
@@ -204,38 +234,96 @@ Adopt Option A, in this order:
 - Should the mobile/temp-terminal surfaces get a settings toggle for inline
   images, or inherit the desktop setting?
 - Does external herdr (the other backend) want the same TERM_PROGRAM hint?
-  (Out of this repo's scope but affects parity.)
+  (Answered: not needed; herdr consumes the escapes server-side. Its own
+  client-shell surfaces get Kitty natively.)
+- External backend scope decision: does this repo take on rendering
+  herdr's structured graphics (bridge + frontend overlay work), or ship
+  builtin-only image support first and treat external as phase 2?
+  100% coverage across both backends requires the graphics-pipeline work
+  above; it cannot ride the wterm 0.5.0 escape passthrough.
 
 ## Observed evidence (real-path validation, 2026-09-18)
 
-All observations below come from the real built server
+### Cross-backend behavior matrix (clean real escapes, no echo pollution)
+
+Identical clean inputs (real `ESC _ G` Kitty, real `ESC P` Sixel DCS, real
+`ESC ] 1337` iTerm2 escapes emitted via a python `bytes([...])` heredoc so
+the typed text never contains recognizable payload bytes) driven through
+the real `/ws/terminal` bridge against both backends:
+
+| Observation | Builtin backend | External herdr 0.9.0 |
+| --- | --- | --- |
+| Kitty `ESC_G` reaches browser stream | YES (escape + payload intact) | NO (consumed server-side) |
+| Sixel DCS reaches browser stream | YES | NO (consumed server-side) |
+| iTerm2 OSC 1337 reaches browser stream | YES | NO (consumed server-side) |
+| Payload text leaks into `pane.read` | YES (all three) | NO (clean; only command echo remains) |
+| Server-side image interception | none (raw PTY pass-through) | herdr parses all 3 protocols into its own graphics layer |
+| `TERM` in pane env | xterm-256color | xterm-256color |
+| `TERM_PROGRAM` in pane env | leaks from launching shell (observed `iTerm.app` on this host) | same leak observed |
+| DA1 query answered by emulator | NO (emulator lives in browser) | NO |
+
+**Consequence for the design:** the two backends need different solutions.
+
+- **Builtin**: pure pass-through. The Option A plan (wterm 0.5.0 upgrade +
+  Kitty passthrough on Ghostty core + env hints) applies directly, because
+  the browser receives the raw Kitty bytes.
+- **External herdr 0.9.0**: the server already parses Kitty/Sixel/iTerm2
+  into its own graphics model and emits structured graphics
+  (`pane.graphics.set/clear/info` API, `ServerMessage::Graphics` frames,
+  `pane_graphics_frame_ack` events, `file_frame_*` transport). Raw escapes
+  never reach the browser. Rendering images for external sessions requires
+  consuming herdr's graphics pipeline instead of forwarding escapes: the
+  webui bridge must decode graphics frames/notifications and the frontend
+  must overlay images from `pane.graphics.*` data. Note `pane.graphics.info`
+  currently answers `cell_size_unavailable` because the webui attaches with
+  `cell_width_px: 0`; providing real cell metrics (e.g. from the wterm DOM
+  renderer) is a prerequisite for herdr to even accept/relay graphics.
+  ALSO note the leak profile differs: external `pane.read` is already clean
+  of image payloads (parser hardening in step 1 is less urgent for external,
+  still needed for builtin and for the webui's own `pane.read` API proxy).
+
+All observations come from the real built server
 (`./target/debug/herdr-webui --https off --bind 127.0.0.1:8891
 --session imgtest-e2e --backend-mode builtin`, isolated XDG/HOME config)
 driven by a real client built on this crate's own public API
 (`BackendClient` + `attach_terminal` + `send_input` + `read_event`,
-integration client kept outside the repo at `/tmp/herdr-imgtest.Wg8S4A/`).
+integration client kept outside the repo at `/tmp/herdr-imgtest.Wg8S4A/`),
+plus a real external herdr 0.9.0 daemon (`herdr server` on scratch sockets
+`/tmp/herdr-imgtest.Wg8S4A/ext-herdr{,-client}.sock`) attached through the
+same webui binary in `--backend-mode external-herdr` (port 8892), with the
+browser WS path replicated by a real WebSocket client
+(`websockets` python) speaking the same `/ws/terminal` protocol the
+frontend uses. External herdr is the user's real installed `herdr 0.9.0`
+binary, run as an isolated daemon on scratch sockets; the user's own
+herdr session was never touched.
 
-1. **Escape delivery is NOT the blocker.** Pushing real Kitty
+1. **Escape delivery is NOT the blocker (builtin backend).** Pushing real Kitty
    (`ESC _ G a=T,f=100...;b64...ESC \`), Sixel (`ESC P 0;1q ... ESC \`), and
    iTerm2 (`ESC ] 1337;File=...`) sequences through a live PTY pane and
    reading the terminal socket stream (the exact bytes `/ws/terminal`
    forwards to the browser) shows all three protocols are delivered
-   byte-complete and unfiltered: escape framing intact, base64 payloads
-   intact, all command sentinels intact. The only image stripping happens
-   client-side in `filterTerminalImageSequences()`. Therefore the wterm
-   upgrade alone is sufficient for the wire path; the filter gate is a
-   pure client-side toggle decision.
-2. **The pane.read leak is real and confirmed.** After emitting the same
-   escapes, `pane.read` returns text containing the Kitty base64 payload
-   (`iVBORw0KGgoAAAANSUhEUg==`), the raw `ESC _ G` framing, the Sixel
-   raster bytes, and the iTerm2 base64. Any consumer of `pane.read`
-   (herdr-webui-tui, agent-status detection) sees image payloads as text
-   garbage today. This hardens the case for doing step 1 (parser
-   hardening) first.
-3. **Env detection finding: TERM_PROGRAM leaks.** A fresh pane in the
-   test session reports `TERM=xterm-256color`, and - unexpectedly -
+   byte-complete and unfiltered on the BUILTIN backend: escape framing
+   intact, base64 payloads intact, all command sentinels intact. The only
+   image stripping happens client-side in
+   `filterTerminalImageSequences()`. Therefore the wterm upgrade alone is
+   sufficient for the builtin wire path; the filter gate is a pure
+   client-side toggle decision. (The external backend differs; see the
+   matrix above.)
+2. **The pane.read leak is real and confirmed (builtin backend).** After
+   emitting the same escapes, builtin `pane.read` returns text containing
+   the Kitty base64 payload (`iVBORw0KGgoAAAANSUhEUg==`), the raw `ESC _ G`
+   framing, the Sixel raster bytes, and the iTerm2 base64. Any consumer of
+   builtin `pane.read` (herdr-webui-tui, agent-status detection) sees image
+   payloads as text garbage today. This hardens the case for doing step 1
+   (parser hardening) first. The external backend's `pane.read` (source
+   `recent`/`visible`, formats `text`/`ansi`) is already clean of image
+   payloads - herdr 0.9.0 filters them into its graphics layer - so the
+   leak is builtin-specific.
+3. **Env detection finding: TERM_PROGRAM leaks (both backends).** Fresh
+   panes report `TERM=xterm-256color`, and - unexpectedly -
    `TERM_PROGRAM=iTerm.app` with `COLORTERM=truecolor`, inherited from the
-   shell that launched the server. Consequences: (a) jcode's env-based
+   shell that launched the server, on BOTH backends. Consequences: (a)
+   jcode's env-based
    Kitty detection (`TERM_PROGRAM` in ghostty/kitty set) sees iTerm.app and
    may pick iTerm2 graphics, which wterm 0.5.0 does NOT render - the
    placeholder path again; (b) any env hint we set must be set
@@ -256,9 +344,16 @@ integration client kept outside the repo at `/tmp/herdr-imgtest.Wg8S4A/`).
    `src/backend_client.rs`; all 534 tests pass after the fix. This bug
    exists on master too and is a prerequisite for any TUI-side image work.
 
-What was NOT verified (and cannot be without the upgrade): actual wterm
-0.5.0 Kitty rendering in the real browser app. The scratch-install
-verification (getGraphicsState/getGraphicsImage, imageStorageLimit
-default 32 MiB, CSI 14t/16t answers, WASM 429KB -> 577KB, aria-hidden
-patch drift) covers the library surface only; end-to-end render
-verification remains step 5 of Option A.
+What was NOT verified (and cannot be without doing the work): (a) actual
+wterm 0.5.0 Kitty rendering in the real browser app (scratch-install
+verification covers the library surface only: getGraphicsState/
+getGraphicsImage, imageStorageLimit default 32 MiB, CSI 14t/16t answers,
+WASM 429KB -> 577KB, aria-hidden patch drift); end-to-end render
+verification remains builtin step 5. (b) External herdr's graphics relay
+end-to-end: raw protocol probing confirmed the attach variant (index 5 on
+the wire), that `cell_width_px` is carried in TerminalHello/Resize, and
+that `pane.graphics.info` still answers `cell_size_unavailable` even while
+a direct client holds an 8x16-cell attach - whether herdr requires a
+client-shell (ClientShellHello) connection instead of a direct terminal
+client to arm its graphics relay is unverified and needs herdr-side docs
+or source review.
