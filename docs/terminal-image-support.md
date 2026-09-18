@@ -223,8 +223,11 @@ cross-backend matrix under Observed evidence below):
   `TERM_PROGRAM=ghostty` matters only where raw Kitty escapes flow
   (builtin). For external, herdr consumes jcode's Kitty emission
   server-side regardless of env.
-- jcode's query-based `ImageProtocol::detect` never works under either
-  backend (no emulator at the PTY end); only env-based detection applies.
+- jcode's query-based `ImageProtocol::detect` cannot complete on either
+  backend: builtin has no DA1 responder at all, and external answers DA1
+  (`?62;22c`, VT200+color, nothing image-specific) but stays silent on
+  XTGETTCAP/Kitty graphics queries, so the Kitty probe never completes.
+  Env-based detection is the only reliable route on both backends.
 
 ## Open questions (answer before implementation)
 
@@ -234,8 +237,13 @@ cross-backend matrix under Observed evidence below):
 - Should the mobile/temp-terminal surfaces get a settings toggle for inline
   images, or inherit the desktop setting?
 - Does external herdr (the other backend) want the same TERM_PROGRAM hint?
-  (Answered: not needed; herdr consumes the escapes server-side. Its own
-  client-shell surfaces get Kitty natively.)
+  (Refined: yes, but for a different reason than builtin. External herdr
+  consumes jcode's Kitty emission server-side into its graphics layer
+  regardless of env; setting `TERM_PROGRAM=ghostty` there steers jcode to
+  the Kitty emitter - the protocol herdr's `src/kitty_graphics.rs` is built
+  around - instead of iTerm2/Sixel output that herdr would also consume
+  but with less graphics-pipeline fidelity. Scrubbing the inherited
+  `TERM_PROGRAM=iTerm.app` matters on both.)
 - External backend scope decision: does this repo take on rendering
   herdr's structured graphics (bridge + frontend overlay work), or ship
   builtin-only image support first and treat external as phase 2?
@@ -257,30 +265,42 @@ the real `/ws/terminal` bridge against both backends:
 | Sixel DCS reaches browser stream | YES | NO (consumed server-side) |
 | iTerm2 OSC 1337 reaches browser stream | YES | NO (consumed server-side) |
 | Payload text leaks into `pane.read` | YES (all three) | NO (clean; only command echo remains) |
-| Server-side image interception | none (raw PTY pass-through) | herdr parses all 3 protocols into its own graphics layer |
+| Server-side image interception | none (raw PTY pass-through) | consumes all 3 protocols server-side (structured graphics layer; observed with kitty_graphics enabled - daemon inherited the user config where experimental.kitty_graphics=true; default true per herdr 0.9.1 config reference) |
 | `TERM` in pane env | xterm-256color | xterm-256color |
 | `TERM_PROGRAM` in pane env | leaks from launching shell (observed `iTerm.app` on this host) | same leak observed |
-| DA1 query answered by emulator | NO (emulator lives in browser) | NO |
+| `KITTY_WINDOW_ID` in pane env | unset | unset |
+| DA1 (`CSI c`) answered | NO (emulator lives in browser) | YES: `ESC[?62;22c` on pane stdin, instant (raw-mode capture t=0.0s) |
+| CSI 14t/16t/18t (px geometry) answered | NO | NO |
+| XTGETTCAP (Tc/RGB) answered | NO | NO |
+| DECRPM sixel (`?1070 $ p`) answered | NO | NO |
+
+External DA1 answers exist because herdr 0.9.0 runs each pane through
+its embedded Ghostty VT server-side (`terminal_responses` written back to
+the pane PTY); see herdr source `src/pane/terminal.rs`,
+`src/pty/actor/unix.rs`, and `vendor/libghostty-vt`. Note the answer is
+written to pane STDIN, never forwarded to the browser stream, so browser
+renderers never see it.
 
 **Consequence for the design:** the two backends need different solutions.
 
 - **Builtin**: pure pass-through. The Option A plan (wterm 0.5.0 upgrade +
   Kitty passthrough on Ghostty core + env hints) applies directly, because
   the browser receives the raw Kitty bytes.
-- **External herdr 0.9.0**: the server already parses Kitty/Sixel/iTerm2
-  into its own graphics model and emits structured graphics
-  (`pane.graphics.set/clear/info` API, `ServerMessage::Graphics` frames,
-  `pane_graphics_frame_ack` events, `file_frame_*` transport). Raw escapes
-  never reach the browser. Rendering images for external sessions requires
-  consuming herdr's graphics pipeline instead of forwarding escapes: the
-  webui bridge must decode graphics frames/notifications and the frontend
-  must overlay images from `pane.graphics.*` data. Note `pane.graphics.info`
-  currently answers `cell_size_unavailable` because the webui attaches with
-  `cell_width_px: 0`; providing real cell metrics (e.g. from the wterm DOM
-  renderer) is a prerequisite for herdr to even accept/relay graphics.
-  ALSO note the leak profile differs: external `pane.read` is already clean
-  of image payloads (parser hardening in step 1 is less urgent for external,
-  still needed for builtin and for the webui's own `pane.read` API proxy).
+- **External herdr 0.9.0**: the server consumes all three image protocols
+  (observed: clean char-coded escapes never reach the browser stream and
+  `pane.read` stays clean) and exposes a structured graphics surface
+  (`pane.graphics.set/clear/info` API, `Graphics` server frames,
+  `pane_graphics_frame_ack` events, `file_frame_*` transport, and a
+  server-side `src/kitty_graphics.rs` gated by `terminal.kitty_graphics`,
+  default true per herdr 0.9.1 config reference). The wire mechanics of
+  how graphics reach the browser are under investigation via source
+  review; rendering external-session images in the webui requires
+  consuming that structured pipeline rather than forwarding escapes.
+  The webui bridge attaches with `cell_width_px: 0`, and `pane.graphics.info`
+  answers `cell_size_unavailable`; real cell metrics are a prerequisite.
+  Leak profile differs too: external `pane.read` is already clean of image
+  payloads (parser hardening in step 1 is less urgent for external, still
+  needed for builtin and for the webui's own `pane.read` API proxy).
 
 All observations come from the real built server
 (`./target/debug/herdr-webui --https off --bind 127.0.0.1:8891
@@ -328,12 +348,44 @@ herdr session was never touched.
    may pick iTerm2 graphics, which wterm 0.5.0 does NOT render - the
    placeholder path again; (b) any env hint we set must be set
    explicitly on PTY spawn, and inherited values must be scrubbed.
-4. **Query-based detection cannot work.** A `CSI c` (DA1) probe sent to a
-   pane is echoed by the shell but never answered on the terminal socket:
-   the terminal emulator lives in the browser, not the server, so nobody
-   responds to DA1/XTGETTCAP. jcode's `ImageProtocol::detect` (query
-   DA1, wait for response) will always time out and fall back under
-   herdr-webui. Only the env-variable route can steer it.
+   External nuance: setting `TERM_PROGRAM=ghostty` (or `kitty`) on external
+   panes is still USEFUL - not for escape routing, but so jcode picks the
+   Kitty emitter, whose output herdr then ingests server-side into its
+   graphics layer. iTerm2 OSC 1337 and Sixel are consumed by herdr too, but
+   Kitty is the protocol herdr's graphics pipeline is built around
+   (`src/kitty_graphics.rs`), so steering jcode to Kitty maximizes
+   compatibility.
+4. **Query-based detection split by backend (round-2 correction).** On the
+   BUILTIN backend, DA1 is never answered: the emulator lives in the
+   browser, so a pane-side `CSI c` has no responder on the server side.
+   On the EXTERNAL backend, herdr 0.9.0 DOES answer DA1 - instantly and on
+   the pane's stdin - because pane output is processed server-side by
+   herdr's embedded Ghostty VT (vendored `libghostty-vt`), whose
+   `process_pty_bytes` returns `terminal_responses` that herdr's PTY actor
+   writes straight back to the PTY (verified in herdr 0.9.0 source:
+   `src/pane/terminal.rs` + `src/pty/actor/unix.rs`). The reply is
+   `ESC[?62;22c` (VT200 conformance level 62 + ANSI color 22, xterm-style;
+   no Sixel attribute 4, no kitty advertisement). Round-1's "no DA1
+   answer" was a measurement artifact, and round-1's one-time `62;22c`
+   observation is now fully explained (see the correction note below).
+   Side findings on external: CSI 14t/16t/18t (pixel/cell geometry) are
+   NOT answered, XTGETTCAP (Tc, RGB) is NOT answered, DECRPM sixel
+   (`CSI ?1070 $ p`) is NOT answered, `KITTY_WINDOW_ID` is unset. So even
+   on external, jcode's query-based `ImageProtocol::detect` cannot
+   complete a Kitty graphics probe (no XTGETTCAP answer), and DA1 alone
+   advertises nothing about image support. Env-based detection remains the
+   only reliable route on both backends.
+
+   Correction note (honesty): the round-1 observation `?62;22c` appearing
+   "rendered at the zsh prompt, never reproducible" is now explained: the
+   reply arrives on pane stdin WITH NO trailing newline while the tty is
+   in canonical mode with echo. A canonical-mode reader's `select()` never
+   fires, so naive probes read `NONE`; the bytes sit in the input queue and
+   zsh's line editor later inserts them into the next typed command (proof:
+   `~/.zsh_history` entries `62;22cprintf ...` / `62;22cclear` exactly at
+   probe timestamps). A raw-mode (`termios` ICANON/ECHO off) foreground
+   reader captures the reply at t=0.0s deterministically. Probes stored at
+   `/tmp/herdr-imgtest.Wg8S4A/probe10.py`.
 5. **ImageMagick is absent on this host** (`magick: command not found`),
    so jcode's Sixel claim on this machine relies on a non-ImageMagick
    path or is stale; do not assume ImageMagick-backed Sixel works here.
@@ -344,6 +396,29 @@ herdr session was never touched.
    `src/backend_client.rs`; all 534 tests pass after the fix. This bug
    exists on master too and is a prerequisite for any TUI-side image work.
 
+7. **External DA1 answering mechanism (round-2, source-verified).** herdr
+   0.9.0 processes every pane's PTY output through an embedded Ghostty VT
+   (vendored `libghostty-vt`, see `src/ghostty/` in the herdr repo), and
+   terminal query responses (DA1, XTGETTCAP, etc.) are written back to the
+   pane PTY input by the PTY actor (`src/pty/actor/unix.rs`
+   `read_once` -> `enqueue_terminal_responses`, immediate). DA1 therefore
+   answers `ESC[?62;22c` at t=0.0s (raw-mode `termios` reader,
+   deterministic across fresh panes p1/p2/p3). The earlier "never
+   reproducible" observation was a canonical-mode tty artifact: the reply
+   carries no newline, so `select()` on a canonical tty never fires; the
+   bytes sat in the input queue and zsh's line editor pasted them into the
+   next typed command (evidence: `~/.zsh_history` entries `62;22cprintf
+   ...` at probe timestamps). herdr's graphics engine itself is
+   `src/kitty_graphics.rs`, gated by `terminal.kitty_graphics` (default
+   true per the herdr 0.9.1 config reference; the deprecated
+   `experimental.kitty_graphics` is honored for compatibility), and the
+   error string "pane graphics are disabled by terminal.kitty_graphics"
+   exists in the shipped binary. herdr is open source
+   (github.com/herdrdev/herdr, tag v0.9.0); this analysis reviewed
+   `src/kitty_graphics.rs`, `src/pane/terminal.rs`, `src/pane.rs`,
+   `src/pty/actor/unix.rs`, `src/ghostty/bindings.rs` presence, and the
+   config reference for these claims.
+
 What was NOT verified (and cannot be without doing the work): (a) actual
 wterm 0.5.0 Kitty rendering in the real browser app (scratch-install
 verification covers the library surface only: getGraphicsState/
@@ -353,7 +428,8 @@ verification remains builtin step 5. (b) External herdr's graphics relay
 end-to-end: raw protocol probing confirmed the attach variant (index 5 on
 the wire), that `cell_width_px` is carried in TerminalHello/Resize, and
 that `pane.graphics.info` still answers `cell_size_unavailable` even while
-a direct client holds an 8x16-cell attach - whether herdr requires a
-client-shell (ClientShellHello) connection instead of a direct terminal
-client to arm its graphics relay is unverified and needs herdr-side docs
-or source review.
+a direct client holds an 8x16-cell attach. Source review located the
+graphics relay pieces (server `src/server/client_shell_graphics.rs`,
+`src/client/direct_graphics.rs`, `src/client/shell/graphics.rs`) but did
+not trace the full arming conditions (which client type, hello fields, or
+subscription arms `Graphics` frame delivery); that wiring remains open.
