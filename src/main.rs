@@ -64,13 +64,13 @@ use assets::{
     mobile_terminal_js, mobile_theme_js, mobile_workmeta_js, mobile_worktrees_js,
     shared_actions_js, shared_attention_js, shared_colors_css, shared_content_search_css,
     shared_core_js, shared_editor_js, shared_file_content_search_js, shared_file_icons_css,
-    shared_file_icons_js, shared_file_tree_css, shared_file_tree_js, shared_http_js,
-    shared_line_context_js, shared_lsp_js, shared_markdown_preview_css, shared_markdown_preview_js,
-    shared_options_js, shared_settings_confirm_js, shared_settings_feedback_js,
-    shared_temp_terminal_js, shared_terminal_adapter_js, shared_terminal_fit_js,
-    shared_terminal_scroll_js, shared_workspace_search_js, vendor_codemirror_js,
-    vendor_dompurify_js, vendor_ghostty_wasm, vendor_marked_js, vendor_mermaid_js,
-    vendor_wterm_css, vendor_wterm_js,
+    shared_file_icons_js, shared_file_tree_css, shared_file_tree_js, shared_graphics_bridge_js,
+    shared_http_js, shared_line_context_js, shared_lsp_js, shared_markdown_preview_css,
+    shared_markdown_preview_js, shared_options_js, shared_settings_confirm_js,
+    shared_settings_feedback_js, shared_temp_terminal_js, shared_terminal_adapter_js,
+    shared_terminal_fit_js, shared_terminal_scroll_js, shared_workspace_search_js,
+    vendor_codemirror_js, vendor_dompurify_js, vendor_ghostty_wasm, vendor_marked_js,
+    vendor_mermaid_js, vendor_wterm_css, vendor_wterm_js,
 };
 use compat::SimpleVersion;
 use compat::{backend_compatibility, BackendCompatibility};
@@ -1190,6 +1190,10 @@ fn app_router(state: WebState) -> Router {
             get(shared_terminal_adapter_js),
         )
         .route(
+            "/assets/shared/graphics-bridge.js",
+            get(shared_graphics_bridge_js),
+        )
+        .route(
             "/assets/shared/temp-terminal.js",
             get(shared_temp_terminal_js),
         )
@@ -1263,6 +1267,7 @@ fn app_router(state: WebState) -> Router {
         .route("/favicon-error.svg", get(favicon_error_svg))
         .route("/ws/events", get(events_ws))
         .route("/ws/terminal", get(terminal_ws))
+        .route("/ws/terminal-graphics", get(terminal_graphics_ws))
         .with_state(state)
 }
 
@@ -4200,6 +4205,21 @@ struct TerminalQuery {
     temporary_tab_id: Option<String>,
 }
 
+/// Query for the external-backend graphics bridge WS. The bridge opens a
+/// parallel ClientShell-mode connection pinned to the terminal's tab so the
+/// browser can render the tab's Kitty graphics scene on a canvas overlay,
+/// while the attach connection keeps feeding wterm the pane text.
+#[derive(Deserialize)]
+struct TerminalGraphicsQuery {
+    tab_id: String,
+    cols: Option<u16>,
+    rows: Option<u16>,
+    cell_width_px: Option<u32>,
+    cell_height_px: Option<u32>,
+    session: Option<String>,
+    backend: Option<String>,
+}
+
 #[derive(Deserialize)]
 struct SessionQuery {
     session: Option<String>,
@@ -4360,6 +4380,416 @@ async fn terminal_socket(
             json!({ "id": "web:temp-terminal:close", "method": "tab.close", "params": { "tab_id": tab_id } }),
         );
     }
+}
+
+/// Events from the graphics bridge reader thread: graphics payloads to relay
+/// to the browser, or a fatal bridge error that ends the socket.
+#[derive(Debug)]
+enum TerminalGraphicsEvent {
+    Message(String),
+    Error(String),
+}
+
+/// WS wrapper for the external-backend graphics bridge.
+async fn terminal_graphics_ws(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    Query(query): Query<TerminalGraphicsQuery>,
+    ws: WebSocketUpgrade,
+) -> Response {
+    if let Err(response) = require_auth(&state, &headers, remote) {
+        return response;
+    }
+    log_event(
+        &state.log_level(),
+        &format!("websocket: terminal graphics bridge from {remote}"),
+    );
+    let client_socket_path = client_socket_for_query_session(
+        &state,
+        &headers,
+        query.session.as_deref(),
+        query.backend.as_deref(),
+    );
+    ws.on_upgrade(move |socket| terminal_graphics_socket(client_socket_path, query, socket))
+}
+
+/// Opens a ClientShell-mode connection to the external herdr daemon,
+/// pins it to the requested tab, and relays each PaneSurface graphics scene
+/// (plus the pane rects the browser needs to translate surface-relative
+/// placements into pane-local coordinates) as JSON text frames.
+///
+/// herdr 0.9.0 rejects a bare `ClientShellHello`; shell clients must send
+/// `EndpointControl { kind: "endpoint.hello.v1", data: <EndpointClientHello
+/// JSON> }` first. The scene collection is armed by known cell metrics
+/// (`collect_scene` gates on `cell_size.is_known()`), so the bridge always
+/// sends real cell dimensions, never zero.
+async fn terminal_graphics_socket(
+    path: PathBuf,
+    query: TerminalGraphicsQuery,
+    mut socket: WebSocket,
+) {
+    let cols = query.cols.unwrap_or(100).max(1);
+    let rows = query.rows.unwrap_or(30).max(1);
+    let cell_width_px = query.cell_width_px.unwrap_or(9).max(1);
+    let cell_height_px = query.cell_height_px.unwrap_or(17).max(1);
+    let tab_id = query.tab_id.clone();
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<TerminalGraphicsEvent>();
+    let (in_tx, in_rx) = std::sync::mpsc::channel::<ClientMessage>();
+
+    std::thread::spawn(move || {
+        let mut stream =
+            match connect_terminal_graphics_shell(&path, cols, rows, cell_width_px, cell_height_px)
+            {
+                Ok(stream) => stream,
+                Err(error) => {
+                    let _ = out_tx.send(TerminalGraphicsEvent::Error(error));
+                    return;
+                }
+            };
+        let Ok(mut writer) = stream.try_clone() else {
+            let _ = out_tx.send(TerminalGraphicsEvent::Error(
+                "failed to clone herdr client socket".into(),
+            ));
+            return;
+        };
+        let mut pin_writer = writer
+            .try_clone()
+            .expect("third clone of client socket must succeed");
+        std::thread::spawn(move || {
+            for message in in_rx {
+                if write_message(&mut writer, &message).is_err() {
+                    break;
+                }
+            }
+        });
+
+        // Read loop: forward every PaneSurface graphics payload to the
+        // browser as one JSON frame. `PaneSurfacePatch` never carries
+        // graphics (any scene change forces a full PaneSurface), so patches
+        // can be dropped here without losing images. The first
+        // EndpointControl after the welcome is the shell snapshot carrying
+        // `boot_id`, which the tab pinning request needs. Unknown
+        // EndpointControl kinds are ignored by contract (append-only enum).
+        let mut boot_id: Option<String> = None;
+        loop {
+            match read_message::<_, ServerMessage>(&mut stream, MAX_GRAPHICS_FRAME_SIZE) {
+                Ok(ServerMessage::EndpointControl { kind, data })
+                    if kind == "shell.snapshot.v1" =>
+                {
+                    if boot_id.is_none() {
+                        boot_id = serde_json::from_str::<serde_json::Value>(&data)
+                            .ok()
+                            .and_then(|snapshot| {
+                                snapshot
+                                    .get("boot_id")
+                                    .and_then(|value| value.as_str())
+                                    .map(str::to_owned)
+                            });
+                        if let Some(boot_id) = boot_id.as_deref().filter(|id| !id.is_empty()) {
+                            if !tab_id.is_empty() {
+                                let pin = serde_json::json!({
+                                    "id": "web:graphics-bridge:tab-focus",
+                                    "method": "tab.focus",
+                                    "params": { "tab_id": tab_id },
+                                });
+                                if write_message(
+                                    &mut pin_writer,
+                                    &ClientMessage::ClientShellEndpointRequest {
+                                        boot_id: boot_id.to_string(),
+                                        request: pin.to_string(),
+                                    },
+                                )
+                                .is_err()
+                                {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(ServerMessage::PaneSurface(frame)) => {
+                    let payload = graphics_bridge_payload(&frame);
+                    match serde_json::to_string(&payload) {
+                        Ok(text) => {
+                            if out_tx.send(TerminalGraphicsEvent::Message(text)).is_err() {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+                Ok(ServerMessage::ServerShutdown { .. }) => break,
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+    });
+
+    loop {
+        tokio::select! {
+            message = out_rx.recv() => {
+                match message {
+                    Some(TerminalGraphicsEvent::Error(error)) => {
+                        let payload = json!({
+                            "type": "graphics_bridge_error",
+                            "message": error,
+                        });
+                        if let Ok(text) = serde_json::to_string(&payload) {
+                            let _ = socket.send(Message::Text(text.into())).await;
+                        }
+                        break;
+                    }
+                    Some(TerminalGraphicsEvent::Message(text)) => {
+                        if socket.send(Message::Text(text.into())).await.is_err() { break; }
+                    }
+                    None => break,
+                }
+            }
+            message = socket.recv() => {
+                match message {
+                    Some(Ok(Message::Text(text))) => {
+                        for message in terminal_graphics_text_messages(&text, &query) {
+                            if in_tx.send(message).is_err() { break; }
+                        }
+                    }
+                    Some(Ok(Message::Close(_))) | None => break,
+                    Some(Ok(_)) => {}
+                    Some(Err(_)) => break,
+                }
+            }
+        }
+    }
+}
+
+/// JSON payload relayed to the browser for one PaneSurface. Only the fields
+/// the browser renderer needs: surface dimensions, pane rects (so it can
+/// translate surface-relative placements into the attach pane's local grid),
+/// new assets (base64), retained asset keys, and placements.
+#[derive(serde::Serialize)]
+struct GraphicsBridgePayload<'a> {
+    #[serde(rename = "type")]
+    kind: &'a str,
+    surface_revision: u64,
+    cols: u16,
+    rows: u16,
+    panes: Vec<GraphicsBridgePane>,
+    assets: Vec<GraphicsBridgeAsset<'a>>,
+    placements: Vec<&'a SurfaceGraphicsPlacement>,
+    retained_assets: &'a [SurfaceGraphicsAssetKey],
+}
+
+#[derive(serde::Serialize)]
+struct GraphicsBridgePane {
+    pane_id: String,
+    x: u16,
+    y: u16,
+    width: u16,
+    height: u16,
+    inner_x: u16,
+    inner_y: u16,
+    inner_width: u16,
+    inner_height: u16,
+    focused: bool,
+    scrollback_offset: u32,
+}
+
+#[derive(serde::Serialize)]
+struct GraphicsBridgeAsset<'a> {
+    key: &'a SurfaceGraphicsAssetKey,
+    /// Base64-encoded RGBA/PNG bytes. The browser decodes with `fetch`-free
+    /// `Uint8Array.fromBase64`-style parsing and `createImageBitmap`.
+    data: String,
+}
+
+fn graphics_bridge_payload(frame: &PaneSurfaceFrame) -> GraphicsBridgePayload<'_> {
+    let panes = frame
+        .panes
+        .iter()
+        .map(|pane| GraphicsBridgePane {
+            pane_id: pane.pane_id.clone(),
+            x: pane.rect.x,
+            y: pane.rect.y,
+            width: pane.rect.width,
+            height: pane.rect.height,
+            inner_x: pane.inner_rect.x,
+            inner_y: pane.inner_rect.y,
+            inner_width: pane.inner_rect.width,
+            inner_height: pane.inner_rect.height,
+            focused: pane.focused,
+            scrollback_offset: pane
+                .scroll
+                .as_ref()
+                .map(|scroll| scroll.offset_from_bottom as u32)
+                .unwrap_or(0),
+        })
+        .collect();
+    let assets = frame
+        .graphics
+        .assets
+        .iter()
+        .map(|asset| GraphicsBridgeAsset {
+            key: &asset.key,
+            data: base64_encode(&asset.data),
+        })
+        .collect();
+    GraphicsBridgePayload {
+        kind: "graphics_scene",
+        surface_revision: frame.surface_revision,
+        cols: frame.frame.width,
+        rows: frame.frame.height,
+        panes,
+        assets,
+        placements: frame.graphics.placements.iter().collect(),
+        retained_assets: &frame.graphics.retained_assets,
+    }
+}
+
+/// Minimal standard base64 encoder (no external crate): the webui keeps its
+/// dependency footprint tiny, and asset uploads are the only consumer.
+fn base64_encode(data: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(ALPHABET[(n >> 18) as usize & 63] as char);
+        out.push(ALPHABET[(n >> 12) as usize & 63] as char);
+        if chunk.len() > 1 {
+            out.push(ALPHABET[(n >> 6) as usize & 63] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(ALPHABET[n as usize & 63] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
+}
+
+/// Maps browser text messages on the graphics WS to upstream ClientShell
+/// messages. The browser only needs `resize` (keep the shell surface in
+/// sync with the attach grid) and focus/blur.
+fn terminal_graphics_text_messages(
+    text: &str,
+    query: &TerminalGraphicsQuery,
+) -> Vec<ClientMessage> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+        return Vec::new();
+    };
+    match value.get("type").and_then(|value| value.as_str()) {
+        Some("resize") => {
+            let cols = value
+                .get("cols")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(cols_of(query))
+                .clamp(1, u16::MAX as u64) as u16;
+            let rows = value
+                .get("rows")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(rows_of(query))
+                .clamp(1, u16::MAX as u64) as u16;
+            let cell_width_px = value
+                .get("cell_width_px")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(query.cell_width_px.unwrap_or(9).max(1) as u64)
+                .clamp(1, u32::MAX as u64) as u32;
+            let cell_height_px = value
+                .get("cell_height_px")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(query.cell_height_px.unwrap_or(17).max(1) as u64)
+                .clamp(1, u32::MAX as u64) as u32;
+            vec![ClientMessage::ClientShellResize {
+                cell_width_px,
+                cell_height_px,
+                surface_size: ClientSurfaceSize { cols, rows },
+                pixel_mouse: false,
+            }]
+        }
+        Some("focus") => vec![ClientMessage::ClientShellFocus {
+            focused: value
+                .get("focused")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(true),
+        }],
+        _ => Vec::new(),
+    }
+}
+
+fn cols_of(query: &TerminalGraphicsQuery) -> u64 {
+    query.cols.unwrap_or(100).max(1) as u64
+}
+
+fn rows_of(query: &TerminalGraphicsQuery) -> u64 {
+    query.rows.unwrap_or(30).max(1) as u64
+}
+
+/// Opens a ClientShell-mode connection to the herdr daemon and pins it to
+/// the terminal's tab. Mirrors herdr 0.9.0's handshake contract:
+/// `endpoint.hello.v1` welcome, then `tab.focus` scoped to this connection.
+fn connect_terminal_graphics_shell(
+    path: &Path,
+    cols: u16,
+    rows: u16,
+    cell_width_px: u32,
+    cell_height_px: u32,
+) -> Result<LocalStream, String> {
+    let mut stream = connect_local_stream(path).map_err(|err| format!("connect failed: {err}"))?;
+    let hello = serde_json::json!({
+        "generation": 1,
+        "cell_width_px": cell_width_px,
+        "cell_height_px": cell_height_px,
+        "surface_size": { "cols": cols, "rows": rows },
+        "pixel_mouse": false,
+        "direct_graphics": false,
+        "endpoint_keybindings": false,
+        "mouse_capture": false,
+        "surface_active": true,
+        "snapshot_codecs": ["shell.snapshot.v1"],
+        "surface_codecs": ["shell.surface.v1"],
+        "input_codecs": ["shell.input.semantic.v1"],
+        "blob_codecs": ["shell.blob.v1"],
+    });
+    write_message(
+        &mut stream,
+        &ClientMessage::EndpointControl {
+            kind: "endpoint.hello.v1".into(),
+            data: hello.to_string(),
+        },
+    )
+    .map_err(|err| format!("send hello failed: {err}"))?;
+
+    match read_message::<_, ServerMessage>(&mut stream, MAX_FRAME_SIZE) {
+        Ok(ServerMessage::EndpointControl { kind, data }) if kind == "endpoint.welcome.v1" => {
+            // Any rejection arrives as an EndpointHandshakeError JSON in a
+            // generic `EndpointControl` or a Welcome error; surface both.
+            if let Ok(welcome) = serde_json::from_str::<serde_json::Value>(&data) {
+                if let Some(error) = welcome.get("error") {
+                    let code = error
+                        .get("code")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("unknown");
+                    let message = error
+                        .get("message")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("backend rejected the graphics bridge");
+                    return Err(format!("{code}: {message}"));
+                }
+            }
+        }
+        Ok(ServerMessage::Welcome {
+            error: Some(error), ..
+        }) => {
+            return Err(error);
+        }
+        Ok(_) => return Err("unexpected handshake response".into()),
+        Err(err) => return Err(format!("read welcome failed: {err}")),
+    }
+    Ok(stream)
 }
 
 fn terminal_text_messages(text: &str) -> Vec<ClientMessage> {
@@ -13685,5 +14115,189 @@ mod tui_parity_e2e_tests {
         );
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod graphics_bridge_tests {
+    use super::*;
+
+    fn test_frame() -> PaneSurfaceFrame {
+        PaneSurfaceFrame {
+            boot_id: "boot-1".to_string(),
+            projection_revision: 1,
+            surface_revision: 7,
+            frame: FrameData {
+                cells: Vec::new(),
+                width: 100,
+                height: 30,
+                cursor: None,
+                hyperlinks: Vec::new(),
+                graphics: Vec::new(),
+            },
+            panes: vec![PaneSurfacePane {
+                pane_id: "ws-1:p1".to_string(),
+                content_revision: 3,
+                rect: SurfaceRect {
+                    x: 0,
+                    y: 0,
+                    width: 100,
+                    height: 30,
+                },
+                inner_rect: SurfaceRect {
+                    x: 1,
+                    y: 1,
+                    width: 98,
+                    height: 28,
+                },
+                scrollbar_rect: None,
+                scroll: Some(PaneSurfaceScrollMetrics {
+                    offset_from_bottom: 12,
+                    max_offset_from_bottom: 50,
+                    viewport_rows: 28,
+                }),
+                focused: true,
+                mouse_reporting: false,
+                sgr_pixel_mouse: false,
+                alternate_screen_active: false,
+                pixel_width: 900,
+                pixel_height: 500,
+            }],
+            splits: Vec::new(),
+            popup: None,
+            graphics: SurfaceGraphicsScene {
+                assets: vec![SurfaceGraphicsAsset {
+                    key: SurfaceGraphicsAssetKey {
+                        source: SurfaceGraphicsSource::Terminal {
+                            target: SurfaceGraphicsTarget::Pane {
+                                pane_id: "ws-1:p1".to_string(),
+                            },
+                            image_id: 42,
+                        },
+                        image_width: 4,
+                        image_height: 2,
+                        format: SurfaceGraphicsFormat::Rgba,
+                        data_len: 32,
+                        data_fingerprint: 99,
+                    },
+                    data: vec![1, 2, 3, 4, 5, 6, 7],
+                }],
+                placements: vec![SurfaceGraphicsPlacement {
+                    asset: SurfaceGraphicsAssetKey {
+                        source: SurfaceGraphicsSource::Terminal {
+                            target: SurfaceGraphicsTarget::Pane {
+                                pane_id: "ws-1:p1".to_string(),
+                            },
+                            image_id: 42,
+                        },
+                        image_width: 4,
+                        image_height: 2,
+                        format: SurfaceGraphicsFormat::Rgba,
+                        data_len: 32,
+                        data_fingerprint: 99,
+                    },
+                    logical_placement_id: 1,
+                    x: 1,
+                    y: 1,
+                    cols: 4,
+                    rows: 2,
+                    source_x: 0,
+                    source_y: 0,
+                    source_width: 4,
+                    source_height: 2,
+                    x_offset: 3,
+                    y_offset: 5,
+                    z: 0,
+                    scrollback_offset: 0,
+                }],
+                retained_assets: Vec::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn base64_encode_matches_standard_alphabet() {
+        // RFC 4648 test vectors.
+        assert_eq!(base64_encode(b""), "");
+        assert_eq!(base64_encode(b"f"), "Zg==");
+        assert_eq!(base64_encode(b"fo"), "Zm8=");
+        assert_eq!(base64_encode(b"foo"), "Zm9v");
+        assert_eq!(base64_encode(b"foob"), "Zm9vYg==");
+        assert_eq!(base64_encode(b"fooba"), "Zm9vYmE=");
+        assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
+        assert_eq!(base64_encode(&[251, 255, 190]), "+/++");
+    }
+
+    #[test]
+    fn graphics_bridge_payload_serializes_browser_contract() {
+        let frame = test_frame();
+        let payload = graphics_bridge_payload(&frame);
+        let json = serde_json::to_value(&payload).expect("payload serializes");
+        assert_eq!(json["type"], "graphics_scene");
+        assert_eq!(json["surface_revision"], 7);
+        assert_eq!(json["cols"], 100);
+        assert_eq!(json["rows"], 30);
+        assert_eq!(json["panes"][0]["pane_id"], "ws-1:p1");
+        assert_eq!(json["panes"][0]["inner_x"], 1);
+        assert_eq!(json["panes"][0]["inner_y"], 1);
+        assert_eq!(json["panes"][0]["inner_width"], 98);
+        assert_eq!(json["panes"][0]["inner_height"], 28);
+        assert_eq!(json["panes"][0]["focused"], true);
+        assert_eq!(json["panes"][0]["scrollback_offset"], 12);
+        // serde externally-tagged enums must match what the browser parses.
+        assert_eq!(
+            json["placements"][0]["asset"]["source"]["Terminal"]["image_id"],
+            42
+        );
+        assert_eq!(
+            json["placements"][0]["asset"]["source"]["Terminal"]["target"]["Pane"]["pane_id"],
+            "ws-1:p1"
+        );
+        assert_eq!(json["placements"][0]["x"], 1);
+        assert_eq!(json["placements"][0]["cols"], 4);
+        assert_eq!(json["placements"][0]["x_offset"], 3);
+        assert_eq!(json["placements"][0]["y_offset"], 5);
+        // Asset bytes ride as base64 with the same key shape.
+        assert_eq!(
+            json["assets"][0]["data"],
+            base64_encode(&[1, 2, 3, 4, 5, 6, 7])
+        );
+        assert_eq!(json["assets"][0]["key"]["format"], "Rgba");
+    }
+
+    #[test]
+    fn terminal_graphics_text_messages_maps_browser_messages() {
+        let query = TerminalGraphicsQuery {
+            tab_id: "t1".to_string(),
+            cols: Some(100),
+            rows: Some(30),
+            cell_width_px: Some(9),
+            cell_height_px: Some(17),
+            session: None,
+            backend: None,
+        };
+        let resize = terminal_graphics_text_messages(
+            r#"{"type":"resize","cols":80,"rows":24,"cell_width_px":10,"cell_height_px":20}"#,
+            &query,
+        );
+        assert_eq!(
+            resize,
+            vec![ClientMessage::ClientShellResize {
+                cell_width_px: 10,
+                cell_height_px: 20,
+                surface_size: ClientSurfaceSize { cols: 80, rows: 24 },
+                pixel_mouse: false,
+            }]
+        );
+
+        let focus = terminal_graphics_text_messages(r#"{"type":"focus","focused":false}"#, &query);
+        assert_eq!(
+            focus,
+            vec![ClientMessage::ClientShellFocus { focused: false }]
+        );
+
+        // Garbage and unknown types map to nothing.
+        assert!(terminal_graphics_text_messages("not json", &query).is_empty());
+        assert!(terminal_graphics_text_messages(r#"{"type":"bogus"}"#, &query).is_empty());
     }
 }

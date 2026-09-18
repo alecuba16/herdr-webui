@@ -86,6 +86,7 @@
       "/assets/shared/lsp.js",
       "/assets/shared/terminal-fit.js",
       "/assets/shared/terminal-adapter.js",
+      "/assets/shared/graphics-bridge.js",
       "/assets/shared/temp-terminal.js",
       ...(mobile ? [
         "/assets/mobile/core.js",

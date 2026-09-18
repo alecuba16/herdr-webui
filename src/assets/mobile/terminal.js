@@ -96,10 +96,25 @@
         terminalScrollBound = true;
       }
       try { term.resize(nextSize.cols, nextSize.rows); } catch (_) {}
+      // External-backend Kitty graphics: open the parallel shell-graphics
+      // bridge pinned to this tab (parity with the desktop terminal).
+      // No-op in builtin mode or when the adapter is unavailable.
+      const bridge = globalThis.HerdrGraphicsBridge;
+      if (bridge) {
+        bridge.connect(state, { terminal: term, wsUrl });
+        bridge.resize({ cols: nextSize.cols, rows: nextSize.rows });
+      }
       const ws = new WebSocket(wsUrl(`/ws/terminal?terminal_id=${encodeURIComponent(state.terminalId)}&cols=${nextSize.cols}&rows=${nextSize.rows}`));
       termWs = ws;
       ws.binaryType = "arraybuffer";
       ws.onopen = () => { if (termWs === ws) terminalAttachPending = true; };
+      ws.onclose = () => {
+        if (termWs === ws) {
+          termWs = null;
+          connectedTerminalKey = "";
+          connectedTerminalSize = "";
+        }
+      };
       ws.onmessage = (event) => {
         if (termWs !== ws) return;
         if (
@@ -144,6 +159,7 @@
     }
 
     function disconnect(clear) {
+      if (globalThis.HerdrGraphicsBridge) globalThis.HerdrGraphicsBridge.disconnect();
       if (termWs) {
         termWs.onclose = null;
         try { termWs.close(); } catch (_) {}

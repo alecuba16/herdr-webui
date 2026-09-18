@@ -3350,6 +3350,7 @@ function resetTerminalConnection(clear = false, destroy = false) {
     clearTimeout(inputFlushTimer);
     inputFlushTimer = null;
   }
+  if (window.HerdrGraphicsBridge) window.HerdrGraphicsBridge.disconnect();
   inputQueue = [];
   terminalQueryReplyState = {};
   inputQueueMaxBufferedAmount = 65536;
