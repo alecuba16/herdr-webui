@@ -35,6 +35,11 @@ theme-e2e:
 terminal-fit-e2e:
     scripts/e2e/run-terminal-fit-e2e.sh
 
+# Real-browser acceptance run for the Ghostty terminal core (attach,
+# prompt render, 0.5.0 graphics layer container). See scripts/e2e/README.md.
+ghostty-core-e2e:
+    scripts/e2e/run-ghostty-core-e2e.sh
+
 # Real-browser acceptance run for the Git drawer CONTENT (changes tree,
 # diff view, log graph, branch list) in the live DOM. See scripts/e2e/README.md.
 git-drawer-e2e:

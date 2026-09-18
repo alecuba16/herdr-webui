@@ -619,3 +619,36 @@ build-script patch, step 3 Ghostty-core Kitty gate in the filter, step 4
 PTY env hints (set `TERM_PROGRAM=ghostty`, scrub inherited
 `TERM_PROGRAM`/`KITTY_WINDOW_ID`), step 5 E2E validation, then the
 external-backend phase 2 bridge rearchitecture per the round-3 plan.
+
+**Round 4 step 2 landed (wterm 0.5.0 upgrade):** `@wterm/core`,
+`@wterm/dom`, `@wterm/ghostty` pinned 0.3.0 -> 0.5.0 (exact pins, as
+before); `npm run build:wterm` regenerated the vendored bundle with both
+build-script patches intact (default WASM URL -> `/assets/vendor/
+ghostty-vt.wasm`; IME textarea `aria-hidden` fix). Sizes match the
+round-1 scratch-install verification: bundle 43,842 -> 96,005 bytes,
+`ghostty-vt.wasm` 428,644 -> 577,013 bytes. The 0.5.0 CSS ships the
+`.term-images` graphics layer. No adapter source changes were needed:
+the 0.5.0 API surface the adapter uses (`WTerm` constructor options,
+`init/write/resize/focus/destroy`, `GhosttyCore.load({wasmPath,
+scrollbackLimit})`, `bridge`) is unchanged; the only 0.5.0 removal is
+the public `rowHeight()` method, and every call site already guards
+with a DOM-measured fallback or constant (17px), so wheel/touch
+scrolling keeps working (terminal-fit e2e confirms scroll-adjacent
+sizing still correct). The renderer still emits `.term-row`, which the
+adapter's DOM-measured `rowHeight()` uses.
+
+Verification (all on the real served app, isolated servers):
+- Rust suite: 547 passing (embedding the new bundle).
+- `node --test src/assets/*.test.mjs`: 558/558.
+- Terminal-fit e2e (default wterm core, real Chrome): 26/26.
+- Ghostty-core e2e (NEW, `scripts/e2e/run-ghostty-core-e2e.sh`, `just
+  ghostty-core-e2e`): forces `terminalCore=ghostty` via localStorage and
+  verifies attach, rendered rows, live shell prompt (starship `❯`), and
+  the `.term-images` graphics container present: 5/5.
+- Main e2e (60 checks incl. session UX), theme 15/15, mobile-edit
+  52/52, git, git-drawer 21, content-search, lsp 20/20: all green.
+
+The image filter (`filterTerminalImageSequences`) is still active and
+unchanged - it is step 3's job to gate Kitty pass-through on the
+Ghostty core. Images still render as the `[inline image omitted: ...]`
+placeholder on both cores until then.

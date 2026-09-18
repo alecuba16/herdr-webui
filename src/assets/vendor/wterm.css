@@ -36,6 +36,7 @@
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
   outline: none;
   overflow: hidden;
+  overflow-anchor: none;
 }
 
 .wterm:focus,
@@ -45,9 +46,31 @@
 
 .term-grid {
   display: block;
+  position: relative;
   white-space: pre;
   contain: layout paint style;
   will-change: contents;
+}
+
+.term-images {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: visible;
+  z-index: 1;
+}
+
+.term-image-flow-spacer {
+  display: block;
+  height: 0;
+  pointer-events: none;
+}
+
+.term-image {
+  position: absolute;
+  display: block;
+  pointer-events: none;
+  user-select: none;
 }
 
 .term-row {
@@ -57,10 +80,33 @@
   contain: layout style;
 }
 
-.term-row > span {
+.term-scrollback-spacer {
+  display: block;
+  pointer-events: none;
+}
+
+.term-row > span,
+.term-row > .term-link,
+.term-link > span {
   display: inline-block;
   height: var(--term-row-height);
   vertical-align: top;
+}
+
+.term-link {
+  color: inherit;
+  cursor: text;
+}
+
+.wterm.link-modifier-active .term-link:hover,
+.term-link:focus-visible {
+  cursor: pointer;
+}
+
+.wterm.link-modifier-active .term-link:hover > span,
+.term-link:focus-visible > span {
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
 }
 
 .term-block {
@@ -68,7 +114,14 @@
   overflow: hidden;
 }
 
+.term-wide {
+  width: 2ch;
+  overflow: hidden;
+}
+
 .term-cursor {
+  color: var(--term-cell-fg, inherit);
+  background: var(--term-cell-bg, transparent);
   outline: 1px solid var(--term-cursor);
   outline-offset: -1px;
 }
@@ -88,7 +141,8 @@
   50% { background: transparent; color: inherit; }
 }
 
-.wterm.has-scrollback {
+.wterm.has-scrollback,
+.wterm.has-image-flow {
   overflow-y: auto;
 }
 
