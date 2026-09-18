@@ -251,4 +251,148 @@ describe("graphics bridge", () => {
     equal(decoded.length, 2, "evicted asset re-decoded on re-delivery");
     bridge.disconnect();
   });
+
+  it("closes evicted bitmaps and frees all assets on disconnect", async () => {
+    const { bridge, sandbox } = loadBridge();
+    const closed = [];
+    const fakeCtx = {
+      setTransform() {}, clearRect() {}, scale() {}, drawImage() {},
+    };
+    sandbox.createImageBitmap = async () => ({
+      width: 4,
+      height: 2,
+      close() { closed.push("bitmap"); },
+    });
+    sandbox.document = {
+      createElement: () => ({
+        style: {}, setAttribute() {}, classList: { add() {} },
+        getContext: () => fakeCtx,
+      }),
+    };
+    const element = {
+      style: {}, firstChild: null, insertBefore() {},
+      querySelector: () => ({
+        getBoundingClientRect: () => ({ left: 0, top: 0, width: 720, height: 408 }),
+      }),
+      getBoundingClientRect: () => ({ left: 0, top: 0, width: 720, height: 408 }),
+      clientWidth: 720, clientHeight: 408, scrollTop: 0,
+      addEventListener() {}, removeEventListener() {},
+    };
+    const terminal = {
+      element, cols: 80, rows: 24,
+      cellSize: () => ({ width: 9, height: 17 }),
+    };
+    const state = {
+      session: "default", ws: "ws-1", tab: "ws-1:t1", pane: "ws-1:p1",
+      terminalId: "term-9", sessionBackend: "external-herdr",
+    };
+    bridge.connect(state, { terminal, wsUrl: (p) => "ws://test" + p });
+    const ws = sandbox.sockets[0];
+    const pngBase64 = Buffer.from([1, 2, 3]).toString("base64");
+
+    ws.onmessage({
+      data: JSON.stringify({
+        type: "graphics_scene", surface_revision: 1, cols: 80, rows: 24,
+        panes: [], assets: [{ key: TERMINAL_KEY, data: pngBase64 }],
+        placements: [], retained_assets: [TERMINAL_KEY],
+      }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    equal(closed.length, 0, "decoded bitmap is live");
+
+    // Evict via a scene that neither retains nor places the key.
+    ws.onmessage({
+      data: JSON.stringify({
+        type: "graphics_scene", surface_revision: 2, cols: 80, rows: 24,
+        panes: [], assets: [], placements: [], retained_assets: [],
+      }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    equal(closed.length, 1, "evicted bitmap closed");
+
+    // Decode again, then disconnect: the flush must close it too.
+    ws.onmessage({
+      data: JSON.stringify({
+        type: "graphics_scene", surface_revision: 3, cols: 80, rows: 24,
+        panes: [], assets: [{ key: TERMINAL_KEY, data: pngBase64 }],
+        placements: [], retained_assets: [TERMINAL_KEY],
+      }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    equal(closed.length, 1, "re-decoded bitmap is live again");
+    bridge.disconnect();
+    equal(closed.length, 2, "disconnect frees the cached bitmap");
+  });
+
+  it("detaches the scroll listener from the old terminal element on switch", async () => {
+    const { bridge, sandbox } = loadBridge();
+    const listeners = [];
+    const element = {
+      style: {}, firstChild: null, insertBefore() {},
+      querySelector: () => ({
+        getBoundingClientRect: () => ({ left: 0, top: 0, width: 720, height: 408 }),
+      }),
+      getBoundingClientRect: () => ({ left: 0, top: 0, width: 720, height: 408 }),
+      clientWidth: 720, clientHeight: 408, scrollTop: 0,
+      addEventListener: (type, fn) => listeners.push([element, type, fn]),
+      removeEventListener: (type, fn) => {
+        const i = listeners.findIndex(
+          ([el, t, f]) => el === element && t === type && f === fn,
+        );
+        if (i >= 0) listeners.splice(i, 1);
+      },
+    };
+    const element2 = {
+      ...element,
+      addEventListener: (type, fn) => listeners.push([element2, type, fn]),
+      removeEventListener: (type, fn) => {
+        const i = listeners.findIndex(
+          ([el, t, f]) => el === element2 && t === type && f === fn,
+        );
+        if (i >= 0) listeners.splice(i, 1);
+      },
+    };
+    const terminal1 = {
+      element, cols: 80, rows: 24, cellSize: () => ({ width: 9, height: 17 }),
+    };
+    const terminal2 = {
+      element: element2, cols: 80, rows: 24, cellSize: () => ({ width: 9, height: 17 }),
+    };
+    const state = {
+      session: "default", ws: "ws-1", tab: "ws-1:t1", pane: "ws-1:p1",
+      terminalId: "term-9", sessionBackend: "external-herdr",
+    };
+    const opts = {
+      terminal: terminal1,
+      wsUrl: (p) => "ws://test" + p,
+    };
+    sandbox.document = {
+      createElement: () => ({
+        style: {}, setAttribute() {}, classList: { add() {} },
+        getContext: () => ({ setTransform() {}, clearRect() {}, scale() {}, drawImage() {} }),
+      }),
+    };
+    bridge.connect(state, opts);
+
+    // A scene triggers ensureCanvas, which binds the scroll listener.
+    sandbox.sockets[0].onmessage({
+      data: JSON.stringify({
+        type: "graphics_scene", surface_revision: 1, cols: 80, rows: 24,
+        panes: [], assets: [], placements: [], retained_assets: [],
+      }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    if (sandbox.__raf) { const r = sandbox.__raf; sandbox.__raf = null; r(); }
+    const boundToOld = listeners.filter(([el]) => el === element).length;
+    equal(boundToOld, 1, "scroll listener bound to first element");
+
+    // Switch terminals: the old element's listener must be removed.
+    bridge.connect(
+      { ...state, terminalId: "term-10" },
+      { terminal: terminal2, wsUrl: opts.wsUrl },
+    );
+    const stillOnOld = listeners.filter(([el]) => el === element).length;
+    equal(stillOnOld, 0, "old element listener removed on terminal switch");
+    bridge.disconnect();
+  });
 });

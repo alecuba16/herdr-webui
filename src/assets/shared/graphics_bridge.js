@@ -55,6 +55,7 @@
       this.connectedKey = "";
       this.assets = new Map(); // key string -> ImageBitmap
       this.pendingAssets = new Map(); // key string -> {data, width, height, format}
+      this.pendingDecodeKeys = new Set(); // keys with a decode promise in flight
       this.latestScene = null;
       this.canvas = null;
       this.ctx = null;
@@ -68,8 +69,21 @@
 
     setTerminal(terminal) {
       if (this.terminal === terminal) return;
+      // Detach listeners from the OLD element before switching: the
+      // teardown below reads this.terminal to unbind.
+      this.detachHostListeners();
       this.terminal = terminal;
       this.teardownCanvas();
+    }
+
+    // Removes the scroll listener from whichever element currently owns
+    // it, independent of the canvas teardown order.
+    detachHostListeners() {
+      if (this.scrollBound && this.terminal && this.terminal.element && this._onHostScroll) {
+        this.terminal.element.removeEventListener("scroll", this._onHostScroll);
+      }
+      this.scrollBound = false;
+      this._onHostScroll = null;
     }
 
     cellMetrics() {
@@ -178,6 +192,10 @@
     disconnect() {
       this.connectedKey = "";
       this.enabled = false;
+      // A full disconnect (tab close, backend switch, builtin mode) ends
+      // this connection's delivery cache: the server re-sends any bytes a
+      // future connection needs, so all cached bitmaps can be freed now.
+      this.clearAssets();
       if (this.reconnectTimer) {
         clearTimeout(this.reconnectTimer);
         this.reconnectTimer = null;
@@ -201,14 +219,26 @@
       if (this.canvas && this.canvas.parentNode) {
         this.canvas.parentNode.removeChild(this.canvas);
       }
-      if (this.scrollBound && this.terminal && this.terminal.element && this._onHostScroll) {
-        this.terminal.element.removeEventListener("scroll", this._onHostScroll);
-      }
-      this.scrollBound = false;
-      this._onHostScroll = null;
+      this.detachHostListeners();
       this.canvas = null;
       this.ctx = null;
       this.latestScene = null;
+    }
+
+    // Frees every decoded bitmap and invalidates in-flight decodes; safe to
+    // call on tab switches (the server re-delivers bytes a new connection
+    // needs).
+    clearAssets() {
+      for (const bitmap of this.assets.values()) {
+        if (bitmap && typeof bitmap.close === "function") {
+          try {
+            bitmap.close();
+          } catch (_) {}
+        }
+      }
+      this.assets.clear();
+      this.pendingAssets.clear();
+      this.pendingDecodeKeys.clear();
     }
 
     handleMessage(text) {
@@ -230,7 +260,8 @@
     ingestScene(scene) {
       // Track which asset keys stay live (explicitly retained or still
       // placed). Anything else can be evicted: the server only re-sends
-      // bytes it has not already delivered on this connection.
+      // bytes it has not already delivered on this connection. Evicted
+      // bitmaps are closed so their GPU memory is released.
       const liveKeys = new Set();
       (scene.retained_assets || []).forEach((key) =>
         liveKeys.add(assetKeyString(key)),
@@ -238,8 +269,15 @@
       (scene.placements || []).forEach((placement) =>
         liveKeys.add(assetKeyString(placement.asset)),
       );
-      for (const key of this.assets.keys()) {
-        if (!liveKeys.has(key)) this.assets.delete(key);
+      for (const [key, bitmap] of this.assets) {
+        if (!liveKeys.has(key)) {
+          this.assets.delete(key);
+          if (bitmap && typeof bitmap.close === "function") {
+            try {
+              bitmap.close();
+            } catch (_) {}
+          }
+        }
       }
 
       let decoding = false;
@@ -264,6 +302,7 @@
       const entries = Array.from(this.pendingAssets.entries());
       if (!entries.length) return;
       this.pendingAssets.clear();
+      if (!this.pendingDecodeKeys) this.pendingDecodeKeys = new Set();
       entries.forEach(([key, meta]) => {
         let blob;
         try {
@@ -274,17 +313,33 @@
             blob = rawToImageData(meta);
           }
         } catch (_) {
+          this.pendingDecodeKeys.delete(key);
           return;
         }
-        if (!blob) return;
+        if (!blob) {
+          this.pendingDecodeKeys.delete(key);
+          return;
+        }
+        this.pendingDecodeKeys.add(key);
         Promise.resolve(
           root.createImageBitmap ? createImageBitmap(blob) : Promise.reject(),
         )
           .then((bitmap) => {
+            // A disconnect (or asset flush) while this decode was in flight
+            // invalidated the key: close the orphan instead of caching it.
+            if (!this.enabled || !this.pendingDecodeKeys || !this.pendingDecodeKeys.has(key)) {
+              if (bitmap && typeof bitmap.close === "function") {
+                try { bitmap.close(); } catch (_) {}
+              }
+              return;
+            }
+            this.pendingDecodeKeys.delete(key);
             this.assets.set(key, bitmap);
             this.scheduleRedraw();
           })
-          .catch(() => {});
+          .catch(() => {
+            if (this.pendingDecodeKeys) this.pendingDecodeKeys.delete(key);
+          });
       });
     }
 

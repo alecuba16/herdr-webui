@@ -1062,3 +1062,43 @@ otherwise; the p2 probe test remains env-gated via
 Both backends now support Kitty graphics: builtin via the Ghostty
 core's inline `.term-image` rendering, external via the bridge canvas
 overlay, with wterm-core placeholder fallback shared by both.
+
+### Round-6 validation pass (same day): protocol-limit + lifecycle fixes
+
+A deeper validation sweep of p3-p6 against herdr 0.9.0 source
+(`/tmp/hs/herdr`) surfaced four real bugs, all fixed and covered by
+regression tests:
+
+1. **Handshake/resize clamps matched the wrong limits.** Both the WS
+   query handler and `terminal_graphics_text_messages` clamped
+   geometry to `u16::MAX`/`u32::MAX`, but herdr's client transport
+   DISCONNECTS shell clients beyond its own limits (verified in
+   `client_transport.rs`): `cols`/`rows` > 4096, `cols*rows` >
+   1_000_000, or cell px > 4096. Both paths now clamp to those
+   protocol limits (cell product budgeted per rows). Regression test:
+   `terminal_graphics_text_messages_clamps_to_protocol_limits`.
+2. **`setTerminal` leaked the old host's scroll listener.** Repeated
+   `connect()` calls on the same bridge (tab switches) bound a new
+   scroll listener per terminal element without detaching the old
+   one. `detachHostListeners()` now runs before rebinding.
+3. **ImageBitmaps were never closed.** Evicted and disconnected
+   bitmaps are now `close()`d (`clearAssets()`), and in-flight decodes
+   are tracked in `pendingDecodeKeys` so a decode that resolves after
+   a disconnect/eviction closes its orphan instead of caching it.
+   Regression tests cover eviction-close and disconnect-flush.
+4. **Zombie daemon client on browser WS close.** The reader thread
+   blocks in `read_message` on a healthy, idle daemon connection
+   (shell clients get no heartbeat frames), leaving a live shell
+   client on the daemon holding the pinned tab's geometry
+   (`tab_geometry_controllers`, `remove_client_and_resize_if_needed`).
+   The WS handler now sends `ClientMessage::Detach` (herdr's graceful
+   disconnect, verified in `headless.rs::ServerEvent::ClientDetach`)
+   after the select loop ends: the daemon removes the client,
+   restores tab geometry, closes its stream, and the reader unblocks
+   with EOF. This is protocol-level, so it is portable to Windows
+   named pipes (no fd shutdown tricks).
+
+Full battery re-run after the fixes: fmt + clippy clean (0 warnings),
+557 Rust tests, 568 Node tests, and the live external-graphics E2E
+16/16 (desktop + mobile, pixel sample still exactly
+`[255, 0, 0, 255]`).

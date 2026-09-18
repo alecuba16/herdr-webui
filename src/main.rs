@@ -4429,10 +4429,20 @@ async fn terminal_graphics_socket(
     query: TerminalGraphicsQuery,
     mut socket: WebSocket,
 ) {
-    let cols = query.cols.unwrap_or(100).max(1);
-    let rows = query.rows.unwrap_or(30).max(1);
-    let cell_width_px = query.cell_width_px.unwrap_or(9).max(1);
-    let cell_height_px = query.cell_height_px.unwrap_or(17).max(1);
+    // Clamp browser-provided geometry to herdr 0.9.0's client-shell limits
+    // (client_transport.rs): the daemon closes the connection otherwise.
+    const MAX_SHELL_DIMENSION: u16 = 4096;
+    const MAX_SHELL_CELLS: u32 = 1_000_000;
+    const MAX_CELL_PX: u32 = 4096;
+    let cols = query.cols.unwrap_or(100).clamp(1, MAX_SHELL_DIMENSION);
+    let rows = query.rows.unwrap_or(30).clamp(1, MAX_SHELL_DIMENSION);
+    let cols = if u32::from(cols) * u32::from(rows) > MAX_SHELL_CELLS {
+        (MAX_SHELL_CELLS / u32::from(rows)).min(u32::from(MAX_SHELL_DIMENSION)) as u16
+    } else {
+        cols
+    };
+    let cell_width_px = query.cell_width_px.unwrap_or(9).clamp(1, MAX_CELL_PX);
+    let cell_height_px = query.cell_height_px.unwrap_or(17).clamp(1, MAX_CELL_PX);
     let tab_id = query.tab_id.clone();
     let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<TerminalGraphicsEvent>();
     let (in_tx, in_rx) = std::sync::mpsc::channel::<ClientMessage>();
@@ -4560,6 +4570,17 @@ async fn terminal_graphics_socket(
             }
         }
     }
+
+    // The browser WS is gone, but the reader thread above may be blocked in
+    // read_message on a healthy, idle daemon connection — shell clients get
+    // no heartbeat frames, so nothing would ever unblock it. That would
+    // leave a zombie shell client on the daemon side holding the pinned
+    // tab's geometry (headless.rs `tab_geometry_controllers`). herdr 0.9.0
+    // processes ClientMessage::Detach as a graceful disconnect: it removes
+    // the client (restoring tab geometry via remove_client_and_resize_if_
+    // needed) and closes its stream, which unblocks the reader with EOF.
+    // The writer thread delivers Detach and then exits when `in_tx` drops.
+    let _ = in_tx.send(ClientMessage::Detach);
 }
 
 /// JSON payload relayed to the browser for one PaneSurface. Only the fields
@@ -4683,26 +4704,37 @@ fn terminal_graphics_text_messages(
     };
     match value.get("type").and_then(|value| value.as_str()) {
         Some("resize") => {
+            // Clamp to herdr 0.9.0's client-shell geometry limits
+            // (client_transport.rs): anything beyond these makes the
+            // daemon drop the connection, not just ignore the resize.
+            const MAX_SHELL_DIMENSION: u64 = 4096;
+            const MAX_SHELL_CELLS: u64 = 1_000_000;
+            const MAX_CELL_PX: u64 = 4096;
             let cols = value
                 .get("cols")
                 .and_then(|value| value.as_u64())
                 .unwrap_or(cols_of(query))
-                .clamp(1, u16::MAX as u64) as u16;
+                .clamp(1, MAX_SHELL_DIMENSION) as u16;
             let rows = value
                 .get("rows")
                 .and_then(|value| value.as_u64())
                 .unwrap_or(rows_of(query))
-                .clamp(1, u16::MAX as u64) as u16;
+                .clamp(1, MAX_SHELL_DIMENSION) as u16;
+            let cols = if u64::from(cols) * u64::from(rows) > MAX_SHELL_CELLS {
+                ((MAX_SHELL_CELLS / u64::from(rows)).min(MAX_SHELL_DIMENSION)) as u16
+            } else {
+                cols
+            };
             let cell_width_px = value
                 .get("cell_width_px")
                 .and_then(|value| value.as_u64())
                 .unwrap_or(query.cell_width_px.unwrap_or(9).max(1) as u64)
-                .clamp(1, u32::MAX as u64) as u32;
+                .clamp(1, MAX_CELL_PX) as u32;
             let cell_height_px = value
                 .get("cell_height_px")
                 .and_then(|value| value.as_u64())
                 .unwrap_or(query.cell_height_px.unwrap_or(17).max(1) as u64)
-                .clamp(1, u32::MAX as u64) as u32;
+                .clamp(1, MAX_CELL_PX) as u32;
             vec![ClientMessage::ClientShellResize {
                 cell_width_px,
                 cell_height_px,
@@ -14299,5 +14331,72 @@ mod graphics_bridge_tests {
         // Garbage and unknown types map to nothing.
         assert!(terminal_graphics_text_messages("not json", &query).is_empty());
         assert!(terminal_graphics_text_messages(r#"{"type":"bogus"}"#, &query).is_empty());
+    }
+
+    #[test]
+    fn terminal_graphics_text_messages_clamps_to_protocol_limits() {
+        // herdr 0.9.0's client transport disconnects shell clients whose
+        // geometry exceeds its limits instead of ignoring the resize, so
+        // the bridge must clamp before forwarding. (See the HELLO_MAX_*
+        // checks in herdr's client_transport.rs.)
+        let query = TerminalGraphicsQuery {
+            tab_id: "t1".to_string(),
+            cols: Some(100),
+            rows: Some(30),
+            cell_width_px: Some(9),
+            cell_height_px: Some(17),
+            session: None,
+            backend: None,
+        };
+
+        // Dimensions beyond 4096 clamp to 4096.
+        let oversized =
+            terminal_graphics_text_messages(r#"{"type":"resize","cols":9999,"rows":24}"#, &query);
+        let ClientMessage::ClientShellResize { surface_size, .. } = &oversized[0] else {
+            panic!("expected resize");
+        };
+        assert_eq!(surface_size.cols, 4096);
+
+        // cols*rows beyond 1_000_000 clamps cols to the budget for the rows.
+        let huge =
+            terminal_graphics_text_messages(r#"{"type":"resize","cols":6000,"rows":1000}"#, &query);
+        let ClientMessage::ClientShellResize {
+            surface_size,
+            cell_width_px,
+            cell_height_px,
+            ..
+        } = &huge[0]
+        else {
+            panic!("expected resize");
+        };
+        assert_eq!(surface_size.rows, 1000);
+        assert_eq!(surface_size.cols, 1000); // 1_000_000 / 1000
+        assert_eq!(cell_width_px, &query.cell_width_px.unwrap());
+        assert_eq!(cell_height_px, &query.cell_height_px.unwrap());
+
+        // Cell metrics clamp to 4096 px too.
+        let cells = terminal_graphics_text_messages(
+            r#"{"type":"resize","cols":80,"rows":24,"cell_width_px":9999,"cell_height_px":9999}"#,
+            &query,
+        );
+        let ClientMessage::ClientShellResize {
+            cell_width_px,
+            cell_height_px,
+            ..
+        } = &cells[0]
+        else {
+            panic!("expected resize");
+        };
+        assert_eq!(cell_width_px, &4096);
+        assert_eq!(cell_height_px, &4096);
+
+        // Missing fields fall back to the query geometry (already clamped
+        // at handshake time), and zero/negative-ish values clamp to 1.
+        let fallback = terminal_graphics_text_messages(r#"{"type":"resize"}"#, &query);
+        let ClientMessage::ClientShellResize { surface_size, .. } = &fallback[0] else {
+            panic!("expected resize");
+        };
+        assert_eq!(surface_size.cols, 100);
+        assert_eq!(surface_size.rows, 30);
     }
 }
