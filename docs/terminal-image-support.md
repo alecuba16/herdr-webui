@@ -824,3 +824,176 @@ metrics so `collect_scene` arms), receive `PaneSurface`/
 browser (asset cache keyed by `SurfaceGraphicsAssetKey`, placements
 positioned by cells), plus the input path (`ClientShellPaneInput`)
 and resize (`ClientShellResize`).
+
+## Round-5 design: external-backend bridge rearchitecture (p3, 2026-09-18)
+
+Every claim below is verified against the herdr v0.9.0 source at
+`/tmp/hs/herdr` (the same tag as the installed homebrew binary that the
+p2 probe exercised live). File references are `src/`-relative.
+
+### Verified protocol facts (p3 research)
+
+**Connection handshake is `EndpointControl`-based, not `ClientShellHello`.**
+0.9.0's `server/client_transport.rs::handle_client_handshake` rejects a
+bare `ClientMessage::ClientShellHello` ("this client predates the stable
+endpoint protocol"). The first message MUST be
+`ClientMessage::EndpointControl { kind: "endpoint.hello.v1", data: <JSON EndpointClientHello> }`
+(`protocol/endpoint.rs`), with:
+
+- `generation: 1` (else `unsupported_generation` rejection)
+- all four v1 codecs advertised: `shell.snapshot.v1`,
+  `shell.surface.v1`, `shell.input.semantic.v1`, `shell.blob.v1`
+  (else `no_common_core`)
+- `cell_width_px`/`cell_height_px` > 0 and within
+  `MAX_CLIENT_CELL_SIZE_PX` (4096); `surface_size` within
+  `MAX_CLIENT_SHELL_DIMENSION` (4096) and `MAX_CLIENT_SHELL_CELLS`
+  (1_000_000) (else `invalid_surface`)
+- `surface_active: true` (defaults true) promotes the client to
+  foreground and lets it claim geometry
+- `direct_graphics: true` + `pixel_mouse: true` arms the direct
+  `GraphicsFile` upload path (only used when the server chooses direct
+  delivery; the scene path needs neither - it needs only known cell size)
+
+The server replies `ServerMessage::EndpointControl { kind: "endpoint.welcome.v1", data: <JSON EndpointServerWelcome> }`
+and then immediately sends the initial snapshot as
+`EndpointControl { kind: "shell.snapshot.v1", data: <JSON ClientShellSnapshot> }`
+(`protocol/endpoint.rs::snapshot_message`, `headless.rs` sends it right
+after client registration). From then on:
+
+- **Full surfaces** arrive as binary `ServerMessage::PaneSurface(PaneSurfaceFrame)`
+  (`render_stream.rs::prepare_pane_surface`). `PaneSurfaceFrame` carries
+  `frame: FrameData`, `panes/splits/popup`, and `graphics: SurfaceGraphicsScene`.
+- **Text-only deltas** arrive as `ServerMessage::PaneSurfacePatch`. The
+  patch never carries graphics ("The published row patch cannot carry
+  images"); any scene change forces `prepare_pane_surface` to fall back
+  to a full `PaneSurface`.
+- New image bytes arrive inline in `SurfaceGraphicsScene.assets`
+  (`SurfaceGraphicsAsset { key, data }`); `retained_assets` lists keys
+  that stay live even when their pane is off-screen. One transaction is
+  budgeted at `MAX_GRAPHICS_FRAME_SIZE - MAX_FRAME_SIZE` = 30 MiB.
+- Placements are surface-relative cell coordinates (`x/y/cols/rows`,
+  plus `source_*` sub-rect and `x_offset/y_offset` pixel sub-cell
+  offsets), so the browser can position them directly on top of the
+  wterm surface using cell metrics.
+- Input goes upstream as `ClientMessage::ClientShellPaneInput { pane_id, events }`
+  (semantic `ClientPaneInputEvent`s; `ClientShellPopupInput` targets the
+  popup), resize as `ClientMessage::ClientShellResize { cell_width_px,
+  cell_height_px, surface_size, pixel_mouse }`, and API calls
+  (`tab.create`, `pane.send_text`, ...) as
+  `ClientMessage::ClientShellEndpointRequest { boot_id, request: <JSON method> }`
+  with chunked responses via
+  `ServerMessage::ClientShellEndpointResponseChunk`.
+
+**Per-client view state exists and is tab-addressable.** Each shell
+client has a `ClientShellLocation { focused_workspace_id,
+active_tab_ids }` (`headless/client_views.rs::reconcile_client_shell_locations`),
+and API methods that change navigation (`tab.focus`, `workspace.focus`,
+`pane.focus`, `command.invoke` with a tab) update only that client's
+location. `shell_endpoint_claims_geometry` lists exactly the methods
+that re-claim tab geometry for the calling shell client. The webui's
+existing external flow (`src/main.rs::connect_terminal_attach`) creates
+tabs with `focus: false`; under the new bridge each terminal's shell
+connection will pin itself to its own tab with an explicit
+`tab.focus` after `tab.create`, which scopes rendering AND input
+without disturbing other clients' locations.
+
+**Attach and shell clients coexist, with geometry arbitration.** When a
+shell client is `surface_active`, it owns its tab's geometry
+(`claim_shell_tab_geometry`); an attach client resizing a terminal is
+ignored while a shell geometry controller owns that tab's terminal
+(`shell_geometry_controller_for_terminal`). When an attach client
+disconnects, `remove_client_and_resize_if_needed` restores the shell
+controller's geometry. This means a tab can be viewed simultaneously
+by an attach client (raw ANSI) and a shell client (semantic surface),
+but NOT resized by both; the design below keeps attach connections out
+of the way by retiring them once a shell connection owns the tab.
+
+**Endpoint controls to honor.** `EndpointControl { kind: ... }` from the
+server may also carry `health.*` ping/pong (answer or the connection
+is dropped) and other named kinds; unknown kinds MUST be ignored
+(the enum is append-only by contract).
+
+### Design decision: one shell connection per webui terminal
+
+Rejected alternative: a single shared shell connection that multiplexes
+all terminals. The surface is a single active-tab scene per connection;
+multiplexing would require the server to render every webui tab into one
+client's viewport, which the protocol does not offer, and
+`ClientShellResize` is per-connection.
+
+Chosen: **each webui terminal (tab) opens its own ClientShell-mode
+connection** to the same daemon, pinned to its own tab via
+`tab.create` (focus:false) + `tab.focus {tab_id}` endpoint request.
+This maps 1:1 onto the protocol's per-client location model, keeps the
+geometry arbitration entirely server-side, and matches the existing
+one-attach-connection-per-terminal structure already in `main.rs`.
+
+### Bridge rearchitecture (p5 scope)
+
+1. **New connection mode in `src/main.rs`.** New WS route (or a mode
+   switch on `/ws/terminal`) opens a `ClientShell` connection instead
+   of `connect_terminal_attach`:
+   - hello: `EndpointControl{endpoint.hello.v1}` JSON with real cell
+     metrics from the browser terminal (cell_w/cell_h in CSS px scaled
+     by devicePixelRatio, `surface_size` = cols/rows, `pixel_mouse`,
+     `direct_graphics: true`, `surface_active: true`, all four codecs).
+   - then `ClientShellEndpointRequest{boot_id, "tab.create"}` and
+     `tab.focus` (or reuse a tab when the webui terminal is rebound),
+     remembering the created `tab_id` for that connection.
+   - upstream: `ClientShellPaneInput` (routed by pane_id from the
+     browser), `ClientShellResize` on browser resize, `ClientShellFocus`,
+     health pings.
+   - downstream: decode `PaneSurface`/`PaneSurfacePatch`/
+     `ClientShellEndpointResponseChunk`/`EndpointControl` and forward
+     over the WS to the browser as structured JSON/binary messages.
+2. **Browser rendering.** The terminal adapter keeps wterm's cell grid
+   fed by `PaneSurface` cells (and patches); a new graphics renderer
+   layer maintains a `Map<SurfaceGraphicsAssetKey, ImageBitmap>`
+   (decode RGBA assets via `createImageBitmap` on a Blob), redraws
+   placements each frame at `x*cell_w + x_offset`, `y*cell_h +
+   y_offset` clipped to `cols/rows` cells, sources sub-rects, and
+   respects `z` and `scrollback_offset` (surface-relative; no scroll
+   compositing needed on the initial cut - placements are cleared and
+   redrawn per frame). `retained_assets` keys are never evicted while
+   listed; keys absent from `assets ∪ retained_assets` of the newest
+   scene are dropped.
+3. **Fallback and coexistence.** The attach mode stays as the default
+   while the shell bridge is behind a setting (external backend option),
+   or per-connection negotiation: if the hello is rejected
+   (`unsupported_generation`/`no_common_core`), the webui falls back to
+   the existing attach connection and Kitty passthrough is simply
+   unavailable for that backend. Tabs created by the shell bridge are
+   owned by it; closing the webui terminal closes the tab
+   (`tab.close`) and drops the connection (server restores geometry).
+
+### Risks and mitigations
+
+- **Two webui terminals watching the same tab**: second `tab.focus`
+  moves only that client's location - but both claim the same tab's
+  geometry, last claim wins. Mitigation: webui UI already creates a new
+  tab per terminal; the bridge enforces one-connection-per-tab.
+- **Cell metrics mismatch**: browser cell size is fractional; the
+  protocol wants integers. Mitigation: round to integer px and send
+  the same metrics back with `ClientShellResize`; the scene's
+  placements are in cells, so a sub-pixel error only shifts images by
+  <1px, and `collect_scene` uses the server-side `cell_size` only to
+  compute placement geometry.
+- **Large assets**: 30 MiB budget per transaction; assets arrive inline
+  inside `PaneSurface` frames. Mitigation: accept the budget (it is the
+  server's own), decode asynchronously (ImageBitmap), and evict on
+  scene turnover.
+- **Popup panes**: `ClientShellPopupSurface` rides inside
+  `PaneSurfaceFrame.popup`; popup input uses `ClientShellPopupInput`.
+  First cut renders popup content as plain cells (it is a terminal
+  surface too); no separate graphics handling needed unless popup
+  images appear in practice.
+
+### p6 test plan
+
+Extend the env-gated probe harness (`HERDR_WEBUI_EXTERNAL_PROBE`) into
+an E2E that drives the real webui (isolated daemon + headless Chrome
+`--window-size=1600,1000`): open a terminal on the external backend,
+emit the same Kitty transmission the p2 probe used, and assert a
+non-empty canvas draw (read back pixels via CDP) plus normal text
+rendering, then repeat on mobile viewport. Keep CI daemon-free: the
+test remains env-gated and asserts a clean no-op skip otherwise.
