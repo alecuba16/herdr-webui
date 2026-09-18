@@ -1228,7 +1228,14 @@ impl BuiltinState {
             data.terminals.get(&pane.terminal_id).cloned()
         }
         .ok_or_else(|| "terminal not found".to_string())?;
-        Ok(String::from_utf8_lossy(&terminal.history_bytes()).to_string())
+        // Match external herdr's pane.read default (strip_ansi: true) so
+        // inline-image payloads (Kitty APC, Sixel DCS, iTerm2 OSC 1337)
+        // never leak as base64 garbage into API consumers. Drop mode keeps
+        // CRLF line ends single, like herdr's grid-row join.
+        Ok(terminal_text::strip_ansi_lossy(
+            &String::from_utf8_lossy(&terminal.history_bytes()),
+            terminal_text::StripCarriageReturn::Drop,
+        ))
     }
 
     fn worktree_list(&self, cwd: Option<String>) -> Result<Value, String> {
@@ -6455,6 +6462,57 @@ mod tests {
             detect_agent_status(Some("opencode"), "■■■■", JcodeDetectionVariant::Vanilla),
             "working"
         );
+    }
+
+    #[test]
+    fn builtin_read_pane_strips_image_payloads_and_keeps_single_newlines() {
+        let state = BuiltinState::new(
+            std::env::temp_dir(),
+            Some(default_shell()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        // printf \r\n exercises ONLCR-style CRLF history bytes; the Kitty
+        // APC and iTerm2 OSC forms are the exact escape families whose
+        // base64 payloads used to leak into pane.read (round-2 finding 2).
+        let script = "printf 'one\\r\\n\\033_Ga=T,f=32,t=d,i=7,q=2;/wAA==\\033\\\\two\\r\\n\\033]1337;File=inline=1:SEVMTE8=\\033\\\\end\\r\\n'";
+        let started = state
+            .handle_request_inner(
+                "agent.start",
+                json!({
+                    "name": "imgemit",
+                    "argv": ["/bin/sh", "-c", script],
+                    "cwd": std::env::temp_dir().to_string_lossy()
+                }),
+            )
+            .unwrap();
+        let pane_id = started["agent"]["pane_id"].as_str().unwrap().to_string();
+
+        // Poll until the shell command's output has been captured.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let text = loop {
+            let text = state.read_pane_recent(&pane_id).unwrap();
+            if text.contains("end") || std::time::Instant::now() > deadline {
+                break text;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+
+        assert!(
+            !text.contains("/wAA=="),
+            "Kitty base64 payload leaked: {text:?}"
+        );
+        assert!(
+            !text.contains("SEVMTE8="),
+            "iTerm2 base64 payload leaked: {text:?}"
+        );
+        assert!(
+            !text.contains("\u{1b}_G") && !text.contains("\u{1b}]1337"),
+            "escape framing leaked: {text:?}"
+        );
+        assert!(text.contains("one") && text.contains("two") && text.contains("end"));
+        // Drop mode: CRLF history must not become double newlines.
+        assert!(!text.contains("\n\n"), "double newline from CRLF: {text:?}");
     }
 
     #[test]

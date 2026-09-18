@@ -53,6 +53,14 @@ pub(crate) fn terminal_text_lossy(input: &str, options: TerminalTextOptions) -> 
                     chars.next();
                     skip_osc(&mut chars);
                 }
+                // DCS (Sixel and friends), SOS, PM, APC (Kitty graphics):
+                // payloads are binary/base64 and must never render as text.
+                // Skip until ST only; a BEL byte can legally appear inside a
+                // Sixel quoted string and must not terminate the sequence.
+                Some('P' | 'X' | '^' | '_') => {
+                    chars.next();
+                    skip_string_sequence(&mut chars);
+                }
                 Some(_) => {
                     chars.next();
                 }
@@ -86,6 +94,11 @@ pub(crate) fn strip_ansi_lossy(input: &str, carriage_return: StripCarriageReturn
                 Some(']') => {
                     chars.next();
                     skip_osc(&mut chars);
+                }
+                // DCS (Sixel), SOS, PM, APC (Kitty graphics): skip payloads.
+                Some('P' | 'X' | '^' | '_') => {
+                    chars.next();
+                    skip_string_sequence(&mut chars);
                 }
                 Some(_) => {
                     chars.next();
@@ -287,6 +300,23 @@ fn skip_osc(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
     }
 }
 
+/// Skips a DCS/SOS/PM/APC string payload until its String Terminator (ST,
+/// `ESC \`), preserving everything after it.
+///
+/// Unlike OSC, a BEL byte does not terminate these sequences: a Sixel
+/// quoted string may legitimately contain `0x07` inside its payload.
+/// An unterminated sequence consumes the rest of the input, mirroring
+/// terminal behavior for a lost terminator.
+fn skip_string_sequence(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
+    let mut previous_escape = false;
+    for next in chars.by_ref() {
+        if previous_escape && next == '\\' {
+            break;
+        }
+        previous_escape = next == '\u{1b}';
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -322,5 +352,80 @@ mod tests {
         let raw = "a\r\u{1b}[31mb\u{1b}[0m\u{1b}]0;t\u{7}";
         assert_eq!(strip_ansi_lossy(raw, StripCarriageReturn::Drop), "ab");
         assert_eq!(strip_ansi_lossy(raw, StripCarriageReturn::Newline), "a\nb");
+    }
+
+    #[test]
+    fn terminal_text_skips_kitty_apc_payload_until_st() {
+        // Canonical Kitty direct-RGBA transmit (the form herdr 0.9.0's VT
+        // ingests; also what jcode emits once env hints land).
+        let raw = "before\u{1b}_Ga=T,f=32,t=d,i=7,p=3,s=2,v=2,c=10,r=5,q=2;/wAA//8AAP//AAD//wAA/w==\u{1b}\\after";
+        assert_eq!(
+            terminal_text_lossy(raw, TerminalTextOptions::tui_tail()),
+            "beforeafter"
+        );
+        assert_eq!(
+            terminal_text_lossy(raw, TerminalTextOptions::backend_tail()),
+            "beforeafter"
+        );
+        assert_eq!(
+            strip_ansi_lossy(raw, StripCarriageReturn::Drop),
+            "beforeafter"
+        );
+    }
+
+    #[test]
+    fn terminal_text_skips_sixel_dcs_payload_until_st() {
+        // Sixel DCS: BEL (0x07) is a legal byte inside a quoted string and
+        // must NOT terminate the sequence.
+        let raw = "pre\u{1b}P0;1q#0;2;0;0;0\u{7}!10~-\u{1b}\\post";
+        assert_eq!(
+            terminal_text_lossy(raw, TerminalTextOptions::tui_tail()),
+            "prepost"
+        );
+        assert_eq!(strip_ansi_lossy(raw, StripCarriageReturn::Drop), "prepost");
+    }
+
+    #[test]
+    fn terminal_text_skips_sos_pm_and_unterminated_sequences() {
+        // SOS, PM, and an unterminated APC consume to end of input.
+        assert_eq!(
+            terminal_text_lossy("a\u{1b}Xsos\u{1b}\\b", TerminalTextOptions::tui_tail()),
+            "ab"
+        );
+        assert_eq!(
+            terminal_text_lossy("a\u{1b}^pm\u{1b}\\b", TerminalTextOptions::tui_tail()),
+            "ab"
+        );
+        assert_eq!(
+            terminal_text_lossy("a\u{1b}_never terminated", TerminalTextOptions::tui_tail()),
+            "a"
+        );
+    }
+
+    #[test]
+    fn terminal_text_skips_iterm2_osc_1337_payload() {
+        // iTerm2 inline image: OSC 1337 with ST terminator, and with BEL
+        // terminator (both forms seen in the wild).
+        let st_form = "a\u{1b}]1337;File=name=aGVsbG8=;size=11;inline=1:SEVMTE8=\u{1b}\\b";
+        assert_eq!(
+            terminal_text_lossy(st_form, TerminalTextOptions::tui_tail()),
+            "ab"
+        );
+        let bel_form = "a\u{1b}]1337;File=inline=1:SEVMTE8=\u{7}b";
+        assert_eq!(
+            terminal_text_lossy(bel_form, TerminalTextOptions::tui_tail()),
+            "ab"
+        );
+        assert_eq!(strip_ansi_lossy(st_form, StripCarriageReturn::Drop), "ab");
+    }
+
+    #[test]
+    fn terminal_text_keeps_text_after_image_sequences() {
+        // Kitty upload + placement back to back, with output between.
+        let raw = "EMIT\n\u{1b}_Ga=T,f=32,s=2,v=2,i=24159,q=2,m=0;/wAA//8AAP//AAD//wAA/w==\u{1b}\\\u{1b}_Ga=p,i=24159,p=146484,c=10,r=5,z=0,C=1,q=2,w=2,h=2;\u{1b}\\done";
+        assert_eq!(
+            terminal_text_lossy(raw, TerminalTextOptions::tui_tail()),
+            "EMIT\ndone"
+        );
     }
 }

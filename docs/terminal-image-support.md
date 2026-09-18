@@ -1,8 +1,12 @@
 # Terminal image display: feasibility analysis
 
-Status: analysis only, no code change yet. Answers: "can the WebUI terminal
-display images (e.g. jcode-generated), and what are the implications and
-technical decisions?"
+Status: implementation round 4 in progress. Round 4 step 1 (parser
+hardening) is landed: DCS/APC/SOS/PM payloads are now skipped until ST in
+all three text-strip sites, and builtin `pane.read` strips ANSI to match
+external herdr's default. See "Round-4 progress" at the end of this
+document. The document answers "can the WebUI terminal display images
+(e.g. jcode-generated), and what are the implications and technical
+decisions?"
 
 ## Short answer
 
@@ -540,3 +544,78 @@ herdr's graphics relay is now traced end-to-end and verified live.
    impossible: TerminalAttach clients never qualify for graphics
    delivery regardless of cell metrics; the corrected external plan is in
    the External herdr backend section above.
+
+## Round-4 progress (implementation, 2026-09-18)
+
+Step 1 of the builtin plan is landed (this repo, branch
+`image_support_terminal`): parser hardening + `pane.read` parity, with
+regression tests. No renderer, filter, or env changes yet - those are
+steps 2-5.
+
+**What changed (all verified by tests, 547 passing, baseline 534):**
+
+1. `src/terminal_text.rs`: `terminal_text_lossy` and `strip_ansi_lossy`
+   gained a match arm for `ESC P` (DCS/Sixel), `ESC X` (SOS), `ESC ^`
+   (PM), and `ESC _` (APC/Kitty). A new `skip_string_sequence` helper
+   consumes the payload until the String Terminator `ESC \` only. BEL
+   (0x07) intentionally does NOT terminate: Sixel quoted strings may
+   legally contain 0x07, so stopping at BEL would truncate mid-image and
+   leak the rest as text. Unterminated sequences consume the remainder of
+   the input, mirroring a real terminal holding the string open.
+2. `src/tui_terminal.rs`: the styled-lines parser gained the same match
+   arm, delegating to a local `skip_string_sequence` (kept separate from
+   the existing `skip_osc`, which must keep terminating on BEL).
+3. `src/builtin_backend.rs` `read_pane_recent`: now runs
+   `terminal_text::strip_ansi_lossy(..., StripCarriageReturn::Drop)`
+   over the history bytes before returning, matching external herdr's
+   `pane.read` default (`strip_ansi: true`). Drop mode (not Newline)
+   because history bytes carry CRLF line ends from the PTY: Newline
+   mode would double every line break, while herdr's grid-row join
+   emits single `\n`. This closes the round-2 leak finding (finding 2
+   above): Kitty base64, Sixel raster, and iTerm2 base64 no longer reach
+   builtin `pane.read` consumers (TUI panes, agent-status
+   screen-scrape). The webui TUI's `refresh_tail` re-strips (Drop mode)
+   anyway, so this is defense in depth, and the strip is idempotent for
+   already-clean text.
+
+**Regression tests added** (cover every leak site + the round-2 live
+evidence shapes):
+
+- `terminal_text_skips_kitty_apc_payload_until_st`: the canonical Kitty
+  direct-RGBA transmit form herdr 0.9.0 ingests, across
+  `tui_tail`/`backend_tail`/`strip_ansi_lossy`.
+- `terminal_text_skips_sixel_dcs_payload_until_st`: Sixel DCS with an
+  embedded BEL in a quoted string - asserts BEL does not terminate.
+- `terminal_text_skips_sos_pm_and_unterminated_sequences`: SOS, PM, and
+  a truncated/unterminated APC (e.g. a Kitty `m=1` chunk that never gets
+  its final chunk) consume the rest of input.
+- `terminal_text_skips_iterm2_osc_1337_payload`: iTerm2 inline image in
+  both ST and BEL terminator forms.
+- `terminal_text_keeps_text_after_image_sequences`: upload + placement
+  back to back using the exact byte shapes observed live in round 3
+  (`a=T,f=32,s=2,v=2,i=24159,q=2,m=0` then `a=p,i=24159,...`), with
+  surrounding output preserved.
+- `terminal_output_styled_lines_skip_kitty_and_sixel_payloads` and
+  `terminal_output_styled_lines_skip_unterminated_apc`: the TUI
+  styled-lines parser equivalents.
+- `builtin_read_pane_strips_image_payloads_and_keeps_single_newlines`:
+  a real-PTY integration test through `agent.start` + `read_pane_recent`
+  that emits Kitty APC and iTerm2 OSC via `/bin/sh -c printf` and
+  asserts no base64/escape framing leaks and CRLF stays a single
+  newline.
+
+**Explicitly NOT changed:** the client-side image filter
+(`filterTerminalImageSequences`), wterm package pins (still 0.3.0), PTY
+env (`TERM_PROGRAM` etc.), and the external-herdr bridge. Step 1 was
+chosen first precisely because it is independent and fixes a real leak
+on the builtin backend even if images are never rendered. iTerm2
+OSC 1337 needed no new parser code (OSC payloads were already skipped
+by the pre-existing OSC arms), but it now has an explicit regression
+test (`terminal_text_skips_iterm2_osc_1337_payload`, both ST and BEL
+terminator forms) since it is one of the three protocols jcode emits.
+
+**Next steps (unchanged order):** step 2 wterm 0.5.0 upgrade with the
+build-script patch, step 3 Ghostty-core Kitty gate in the filter, step 4
+PTY env hints (set `TERM_PROGRAM=ghostty`, scrub inherited
+`TERM_PROGRAM`/`KITTY_WINDOW_ID`), step 5 E2E validation, then the
+external-backend phase 2 bridge rearchitecture per the round-3 plan.

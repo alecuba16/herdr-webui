@@ -288,6 +288,12 @@ pub(crate) fn terminal_output_styled_lines_lossy(value: &str) -> Vec<Vec<TuiText
                     chars.next();
                     skip_osc(&mut chars);
                 }
+                // DCS (Sixel), SOS, PM, APC (Kitty graphics): skip payloads
+                // until ST only; BEL is a legal byte inside Sixel data.
+                Some('P' | 'X' | '^' | '_') => {
+                    chars.next();
+                    skip_string_sequence(&mut chars);
+                }
                 Some(_) => {
                     chars.next();
                 }
@@ -381,6 +387,18 @@ fn skip_osc(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
     let mut previous_escape = false;
     for next in chars.by_ref() {
         if next == '\u{7}' || (previous_escape && next == '\\') {
+            break;
+        }
+        previous_escape = next == '\u{1b}';
+    }
+}
+
+/// Skips a DCS/SOS/PM/APC payload until ST (`ESC \`). BEL does not
+/// terminate these sequences; a Sixel quoted string may contain `0x07`.
+fn skip_string_sequence(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
+    let mut previous_escape = false;
+    for next in chars.by_ref() {
+        if previous_escape && next == '\\' {
             break;
         }
         previous_escape = next == '\u{1b}';
