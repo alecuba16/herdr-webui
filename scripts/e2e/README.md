@@ -217,9 +217,9 @@ It verifies in the live DOM:
 | `E2E_PORT`  | `8899`  | HTTPS port of the isolated server    |
 | `CDP_PORT`  | `9222`  | Chrome remote debugging port         |
 
-## Terminal image support acceptance (3 runs)
+## Terminal image support acceptance (4 runs)
 
-The terminal-image work (see `docs/terminal-image-support.md`) has three
+The terminal-image work (see `docs/terminal-image-support.md`) has four
 live checks, all self-contained (isolated server + headless Chrome, own
 scratch dirs, cleanup on exit):
 
@@ -241,6 +241,19 @@ scratch dirs, cleanup on exit):
   and its Kitty `a=T,f=100` PNG emit must render as an image on the
   Ghostty core / substitute the placeholder on wterm, with no base64
   leak in the visible grid text. 8 checks per core.
+- `scripts/e2e/run-external-graphics-probe.sh`: the external-backend
+  probe for phase 2. Boots an ISOLATED herdr 0.9.0 daemon (scratch
+  `XDG_CONFIG_HOME` + `HERDR_SESSION`), then runs the env-gated Rust
+  probe test (`HERDR_WEBUI_EXTERNAL_PROBE`) which speaks the real
+  ClientShell endpoint protocol with the WebUI's own protocol.rs types:
+  `endpoint.hello.v1` handshake, `endpoint.welcome.v1` codec check,
+  a pane Kitty emission (the same f=32 RGBA transmit + placement
+  herdr's own headless tests use) driven through `tab.create` +
+  `pane.send_text`, a decoded PaneSurface graphics scene (1 asset +
+  1 placement, RGBA `[ff,00,00,ff]`), and a no-cell-metrics negative
+  control that must receive surfaces with NO graphics scene. Normal
+  `cargo test` runs skip the probe entirely (the env gate makes it a
+  no-op), so CI never spawns daemons.
 
 `scripts/e2e/smoke-jcode-kitty-emit.sh` is the no-browser smoke of the
 jcode side: a real `jcode serve` on a `pty_capture.py` PTY plus the real

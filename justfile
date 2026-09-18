@@ -45,6 +45,12 @@ ghostty-core-e2e:
 jcode-image-flow-e2e:
     scripts/e2e/run-jcode-image-flow-e2e.sh
 
+# External-backend graphics probe: isolated herdr 0.9.0 daemon + the webui's
+# protocol.rs types speaking the real ClientShell endpoint protocol. See
+# scripts/e2e/README.md.
+external-graphics-probe:
+    scripts/e2e/run-external-graphics-probe.sh
+
 # Real-browser acceptance run for the Git drawer CONTENT (changes tree,
 # diff view, log graph, branch list) in the live DOM. See scripts/e2e/README.md.
 git-drawer-e2e:

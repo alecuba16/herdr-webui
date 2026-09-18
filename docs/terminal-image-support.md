@@ -777,3 +777,50 @@ the pane the right place to run it.
 the external-herdr backend (phase 2 bridge rearchitecture per the
 round-3 plan: the webui bridge must become a ClientShell endpoint
 client to receive herdr's graphics relay).
+
+## Round-5 progress (external-backend live probe, 2026-09-18)
+
+**Phase 2 opened with a live-verified external graphics probe.** The
+round-3 plan's first unknown ("does an endpoint client actually receive
+PaneSurface graphics for a pane emitting Kitty?") is now answered with
+live evidence, not just source reading:
+
+- `scripts/e2e/run-external-graphics-probe.sh` boots an ISOLATED herdr
+  0.9.0 daemon (scratch `XDG_CONFIG_HOME` + `HERDR_SESSION`, sun_path
+  kept short by using a shallow `/tmp` scratch dir) and runs the
+  env-gated Rust probe test in `src/protocol.rs`
+  (`HERDR_WEBUI_EXTERNAL_PROBE` points at the session data dir; without
+  it the test is a no-op, so `cargo test` in CI never spawns daemons).
+- The probe speaks the real ClientShell endpoint protocol with the
+  WebUI's OWN protocol.rs types (u32-LE length prefix + bincode
+  standard): `EndpointControl{endpoint.hello.v1}` as the first client
+  message (a bare `ClientShellHello` is REJECTED by 0.9.0's
+  client_transport), `endpoint.welcome.v1` with the four v1 codecs,
+  `tab.create` + `pane.send_text` (newline JSON API) to drive a pane,
+  and the exact Kitty emission herdr's own headless tests use
+  (`a=T,f=32,t=d,i=7,p=3,s=1,v=1,c=1,r=1,q=2` + `a=p,U=1,i=7`).
+- Live results: the daemon's Ghostty core captures the pane emission
+  and ships a PaneSurface frame whose graphics scene the webui types
+  decode to **1 asset (RGBA `[ff,00,00,ff]`, 1x1) + 1 placement**.
+- Negative control corrected by the probe itself: herdr 0.9.0 gates
+  the scene on `cell_size.is_known()` (kitty_graphics/surface.rs
+  `collect_scene`), NOT on the hello's `direct_graphics` flag - that
+  flag only arms the GraphicsFile direct-upload path. A second
+  connection with cell 0x0 receives surfaces with an empty scene.
+- Probe infrastructure notes: interprocess `Stream` has no read-timeout
+  API, so the probe decodes frames on a spawned reader thread and uses
+  `recv_timeout` for its poll deadlines (otherwise a quiet server
+  blocks `read_exact` past every deadline); `printf` FORMAT arguments
+  interpret `\033` while `%s` arguments do not, so the emitter command
+  must pass the Kitty bytes as the format string, not as data.
+
+**Answer to the round-3 feasibility question: YES** - the wire layer is
+already 100% parity (protocol.rs decodes real herdr frames, graphics
+scenes included), so the external bridge does not need any protocol
+changes. What remains is the bridge rearchitecture itself: the webui's
+attach connection must move to ClientShell mode (hello with real cell
+metrics so `collect_scene` arms), receive `PaneSurface`/
+`PaneSurfacePatch` frames, and render the graphics scene in the
+browser (asset cache keyed by `SurfaceGraphicsAssetKey`, placements
+positioned by cells), plus the input path (`ClientShellPaneInput`)
+and resize (`ClientShellResize`).
