@@ -997,3 +997,68 @@ emit the same Kitty transmission the p2 probe used, and assert a
 non-empty canvas draw (read back pixels via CDP) plus normal text
 rendering, then repeat on mobile viewport. Keep CI daemon-free: the
 test remains env-gated and asserts a clean no-op skip otherwise.
+
+## Round-6 progress: external-backend graphics bridge shipped (p5 + p6, 2026-09-18)
+
+Both p5 (bridge implementation) and p6 (live E2E) are complete and
+committed on `image_support_terminal`.
+
+### What was built (p5)
+
+- **Server bridge** (`src/main.rs`): route `/ws/terminal-graphics`
+  accepts `{tab_id, cols, rows, cell_width_px, cell_height_px, session,
+  backend}`. `connect_terminal_graphics_shell` opens a ClientShell-mode
+  connection to the external daemon: `endpoint.hello.v1` hello with
+  `surface_active: true` and real cell metrics (arming `collect_scene`),
+  welcome validation, then a `tab.focus {tab_id}` pin sent with the
+  `boot_id` captured from the first `shell.snapshot.v1`. Each
+  `PaneSurface` is relayed as JSON (`graphics_bridge_payload`): pane
+  rects with `inner_rect` + `focused` flag + scrollback offset, base64
+  assets (no new dependency: hand-rolled RFC 4648 `base64_encode`),
+  placements, retained keys. Patches are dropped (never carry
+  graphics). Browser text messages map to `ClientShellResize` /
+  `ClientShellFocus`.
+- **Browser bridge** (`src/assets/shared/graphics_bridge.js`): decodes
+  assets (Png via Blob, Rgb/Rgba via `ImageData`) into
+  `ImageBitmap`s; evicts keys absent from `assets ∪ retained_assets`;
+  draws ONLY the attach pane's placements (`placementTargetsPane`
+  matches the asset source's public pane id; containment fallback)
+  onto a canvas overlay anchored to the wterm live viewport
+  (`gridHeight - rows*rowHeight - scrollTop` keeps it glued while
+  scrollback scrolls); `z`-ordered draws; reconnect with backoff;
+  resize + window focus/blur forwarded.
+- **Coordinate correction (verified in herdr 0.9.0 source):** placements
+  are INNER-RECT-relative (`clipped_placement` computes
+  `x = area.x + viewport_col` with `area = info.inner_rect` for terminal
+  and pane-layer sources alike), not surface-origin. The overlay
+  translates by `placement.x - pane.inner_x` per frame.
+- **Wiring with parity:** desktop (`app_js/terminal.js` +
+  `core.js::resetTerminalConnection`) and mobile (`mobile/terminal.js`)
+  connect on attach-open and drop on teardown; `wsUrl` is injected per
+  app (session/backend query params); builtin sessions
+  auto-disconnect. Asset served at `/assets/shared/graphics-bridge.js`,
+  loaded by `app_boot.js` before the terminal controllers.
+- **Tests:** Rust (base64 RFC vectors, payload JSON contract incl.
+  externally-tagged enum shapes, browser message mapping) and Node
+  (connect URL contract, builtin no-op, reconnect-on-tab-change, scene
+  ingest + decode + eviction through a vm sandbox).
+
+### What was proven (p6)
+
+`scripts/e2e/run-external-graphics-e2e.sh` boots an isolated
+`herdr server` (scratch `XDG_CONFIG_HOME` + `HERDR_SESSION`, shallow
+socket paths), an isolated webui with `--backend-mode external-herdr`
+on that session, and headless Chrome. The acceptance module drives the
+real UI: create workspace → shell prompt → bridge overlay attached →
+type the p2 Kitty printf transmission through CDP into the pane PTY →
+canvas pixel readback. Result: **16/16 checks pass, desktop AND mobile
+viewports** — the overlay draws 136 painted pixels and the sampled
+pixel is exactly `[255, 0, 0, 255]` (the 1x1 f=32 red RGBA asset), with
+57/38 text rows rendered and no raw `\x1b_G` leak. CI stays
+daemon-free: the wrapper requires `herdr` on PATH and exits early
+otherwise; the p2 probe test remains env-gated via
+`HERDR_WEBUI_EXTERNAL_PROBE`.
+
+Both backends now support Kitty graphics: builtin via the Ghostty
+core's inline `.term-image` rendering, external via the bridge canvas
+overlay, with wterm-core placeholder fallback shared by both.

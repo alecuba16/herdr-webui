@@ -255,6 +255,19 @@ scratch dirs, cleanup on exit):
   `cargo test` runs skip the probe entirely (the env gate makes it a
   no-op), so CI never spawns daemons.
 
+- `scripts/e2e/run-external-graphics-e2e.sh`: the p6 end-to-end
+  acceptance for the external-backend graphics bridge. Boots an
+  ISOLATED herdr daemon plus an isolated webui with
+  `--backend-mode external-herdr` on the same scratch session, drives
+  headless Chrome over CDP, and asserts the full pipeline: workspace
+  creation on the external backend, shell prompt in the attach
+  terminal, bridge canvas overlay attached, the p2 Kitty transmission
+  typed into the pane PTY, overlay pixel readback (exactly the
+  `[255,0,0,255]` red asset drawn, 16/16 checks on desktop AND mobile
+  viewports), and no raw `\x1b_G` escape leak in the text grid.
+  Requires `herdr` on PATH; exits early (clean skip) otherwise so CI
+  stays daemon-free.
+
 `scripts/e2e/smoke-jcode-kitty-emit.sh` is the no-browser smoke of the
 jcode side: a real `jcode serve` on a `pty_capture.py` PTY plus the real
 read tool must emit `ESC_G a=T,f=100` under `TERM_PROGRAM=ghostty`
