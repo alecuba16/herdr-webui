@@ -205,3 +205,60 @@ Adopt Option A, in this order:
   images, or inherit the desktop setting?
 - Does external herdr (the other backend) want the same TERM_PROGRAM hint?
   (Out of this repo's scope but affects parity.)
+
+## Observed evidence (real-path validation, 2026-09-18)
+
+All observations below come from the real built server
+(`./target/debug/herdr-webui --https off --bind 127.0.0.1:8891
+--session imgtest-e2e --backend-mode builtin`, isolated XDG/HOME config)
+driven by a real client built on this crate's own public API
+(`BackendClient` + `attach_terminal` + `send_input` + `read_event`,
+integration client kept outside the repo at `/tmp/herdr-imgtest.Wg8S4A/`).
+
+1. **Escape delivery is NOT the blocker.** Pushing real Kitty
+   (`ESC _ G a=T,f=100...;b64...ESC \`), Sixel (`ESC P 0;1q ... ESC \`), and
+   iTerm2 (`ESC ] 1337;File=...`) sequences through a live PTY pane and
+   reading the terminal socket stream (the exact bytes `/ws/terminal`
+   forwards to the browser) shows all three protocols are delivered
+   byte-complete and unfiltered: escape framing intact, base64 payloads
+   intact, all command sentinels intact. The only image stripping happens
+   client-side in `filterTerminalImageSequences()`. Therefore the wterm
+   upgrade alone is sufficient for the wire path; the filter gate is a
+   pure client-side toggle decision.
+2. **The pane.read leak is real and confirmed.** After emitting the same
+   escapes, `pane.read` returns text containing the Kitty base64 payload
+   (`iVBORw0KGgoAAAANSUhEUg==`), the raw `ESC _ G` framing, the Sixel
+   raster bytes, and the iTerm2 base64. Any consumer of `pane.read`
+   (herdr-webui-tui, agent-status detection) sees image payloads as text
+   garbage today. This hardens the case for doing step 1 (parser
+   hardening) first.
+3. **Env detection finding: TERM_PROGRAM leaks.** A fresh pane in the
+   test session reports `TERM=xterm-256color`, and - unexpectedly -
+   `TERM_PROGRAM=iTerm.app` with `COLORTERM=truecolor`, inherited from the
+   shell that launched the server. Consequences: (a) jcode's env-based
+   Kitty detection (`TERM_PROGRAM` in ghostty/kitty set) sees iTerm.app and
+   may pick iTerm2 graphics, which wterm 0.5.0 does NOT render - the
+   placeholder path again; (b) any env hint we set must be set
+   explicitly on PTY spawn, and inherited values must be scrubbed.
+4. **Query-based detection cannot work.** A `CSI c` (DA1) probe sent to a
+   pane is echoed by the shell but never answered on the terminal socket:
+   the terminal emulator lives in the browser, not the server, so nobody
+   responds to DA1/XTGETTCAP. jcode's `ImageProtocol::detect` (query
+   DA1, wait for response) will always time out and fall back under
+   herdr-webui. Only the env-variable route can steer it.
+5. **ImageMagick is absent on this host** (`magick: command not found`),
+   so jcode's Sixel claim on this machine relies on a non-ImageMagick
+   path or is stale; do not assume ImageMagick-backed Sixel works here.
+6. **Latent TUI bug found and fixed during validation:** the shipped
+   `herdr-webui-tui` and `BackendClient` spoke protocol 16 while the
+   server requires 22, so the shipped TUI could not attach to the shipped
+   server at all. `BUILTIN_TUI_PROTOCOL_VERSION` bumped 16 -> 22 in
+   `src/backend_client.rs`; all 534 tests pass after the fix. This bug
+   exists on master too and is a prerequisite for any TUI-side image work.
+
+What was NOT verified (and cannot be without the upgrade): actual wterm
+0.5.0 Kitty rendering in the real browser app. The scratch-install
+verification (getGraphicsState/getGraphicsImage, imageStorageLimit
+default 32 MiB, CSI 14t/16t answers, WASM 429KB -> 577KB, aria-hidden
+patch drift) covers the library surface only; end-to-end render
+verification remains step 5 of Option A.
