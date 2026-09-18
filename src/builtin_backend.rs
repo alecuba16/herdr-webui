@@ -1497,6 +1497,9 @@ impl TerminalRuntime {
         for (key, value) in terminal_environment(&shell_for_env) {
             command.env(key, value);
         }
+        for key in TERMINAL_ENV_SCRUB_KEYS {
+            command.env_remove(key);
+        }
         command.cwd(cwd);
         command.env("TERM", "xterm-256color");
         command.env("COLORTERM", "truecolor");
@@ -2442,8 +2445,23 @@ fn terminal_environment(shell: &str) -> HashMap<String, String> {
         enriched_terminal_path(env.get("PATH").map(String::as_str), &home),
     );
     env.insert("HERDR_WEBUI".to_string(), "1".to_string());
+    // Image-protocol hints. The browser terminal renders Kitty graphics
+    // (Ghostty core in wterm 0.5.0), so advertise a Kitty-capable host
+    // terminal: agents like jcode use these to pick the Kitty emitter
+    // instead of iTerm2/Sixel. Overwrite inherited values - the launching
+    // shell (e.g. iTerm.app) leaks its own TERM_PROGRAM and KITTY_WINDOW_ID
+    // into the server env, which would misdirect detection toward
+    // protocols the web renderer cannot show. The PTY child inherits the
+    // server env directly (CommandBuilder::env only adds on top), so the
+    // spawn site must also env_remove() the keys listed here.
+    env.insert("TERM_PROGRAM".to_string(), "ghostty".to_string());
+    env.remove("KITTY_WINDOW_ID");
     env
 }
+
+/// Env keys that `terminal_environment` scrubs and that the spawn site must
+/// remove from the inherited PTY env (CommandBuilder::env() cannot unset).
+pub(crate) const TERMINAL_ENV_SCRUB_KEYS: [&str; 1] = ["KITTY_WINDOW_ID"];
 
 fn default_home_dir() -> Option<String> {
     default_user_name().and_then(|user| {
@@ -6513,6 +6531,92 @@ mod tests {
         assert!(text.contains("one") && text.contains("two") && text.contains("end"));
         // Drop mode: CRLF history must not become double newlines.
         assert!(!text.contains("\n\n"), "double newline from CRLF: {text:?}");
+    }
+
+    #[test]
+    fn builtin_panes_advertise_kitty_env_and_scrub_inherited_hints() {
+        // The image hint env must be set even when the server process
+        // itself inherited misleading values (e.g. launched from iTerm).
+        // SAFETY on env mutation: each cargo test binary runs tests in
+        // threads of ONE process, so a leaked TERM_PROGRAM would only
+        // mislead other panes; remove it first to keep the test
+        // deterministic either way.
+        let previous_term_program = std::env::var("TERM_PROGRAM").ok();
+        let previous_kitty_id = std::env::var("KITTY_WINDOW_ID").ok();
+        std::env::set_var("TERM_PROGRAM", "iTerm.app");
+        std::env::set_var("KITTY_WINDOW_ID", "123");
+
+        let env = terminal_environment("/bin/zsh");
+        assert_eq!(env.get("TERM_PROGRAM").map(String::as_str), Some("ghostty"));
+        assert!(!env.contains_key("KITTY_WINDOW_ID"));
+
+        // Restore so other tests are unaffected.
+        match previous_term_program {
+            Some(value) => std::env::set_var("TERM_PROGRAM", value),
+            None => std::env::remove_var("TERM_PROGRAM"),
+        }
+        match previous_kitty_id {
+            Some(value) => std::env::set_var("KITTY_WINDOW_ID", value),
+            None => std::env::remove_var("KITTY_WINDOW_ID"),
+        }
+    }
+
+    #[test]
+    fn builtin_pane_child_env_advertises_kitty_hint_and_scrubs_inherited_kitty_id() {
+        // Real-PTY proof that the spawn-site scrub reaches the child process:
+        // poison the server process env the way a real iTerm/kitty launch
+        // would, start a pane that prints the vars it sees, and assert the
+        // child got TERM_PROGRAM=ghostty and NO KITTY_WINDOW_ID. This covers
+        // the CommandBuilder::env_remove() step that the HashMap-only unit
+        // test above cannot reach (env() only adds on top of the inherited
+        // env, it cannot unset).
+        let previous_term_program = std::env::var("TERM_PROGRAM").ok();
+        let previous_kitty_id = std::env::var("KITTY_WINDOW_ID").ok();
+        std::env::set_var("TERM_PROGRAM", "iTerm.app");
+        std::env::set_var("KITTY_WINDOW_ID", "123");
+
+        let state = BuiltinState::new(
+            std::env::temp_dir(),
+            Some(default_shell()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        let script = "printf 'TP=%s KID=%s' \"$TERM_PROGRAM\" \"${KITTY_WINDOW_ID:-}\"";
+        let started = state
+            .handle_request_inner(
+                "agent.start",
+                json!({
+                    "name": "envhint",
+                    "argv": ["/bin/sh", "-c", script],
+                    "cwd": std::env::temp_dir().to_string_lossy()
+                }),
+            )
+            .unwrap();
+        let pane_id = started["agent"]["pane_id"].as_str().unwrap().to_string();
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let text = loop {
+            let text = state.read_pane_recent(&pane_id).unwrap();
+            if text.contains("TP=") || std::time::Instant::now() > deadline {
+                break text;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+
+        assert!(
+            text.contains("TP=ghostty KID="),
+            "child env wrong: {text:?}"
+        );
+
+        // Restore so other tests are unaffected.
+        match previous_term_program {
+            Some(value) => std::env::set_var("TERM_PROGRAM", value),
+            None => std::env::remove_var("TERM_PROGRAM"),
+        }
+        match previous_kitty_id {
+            Some(value) => std::env::set_var("KITTY_WINDOW_ID", value),
+            None => std::env::remove_var("KITTY_WINDOW_ID"),
+        }
     }
 
     #[test]

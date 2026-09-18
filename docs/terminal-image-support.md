@@ -1,9 +1,12 @@
 # Terminal image display: feasibility analysis
 
-Status: implementation round 4 in progress. Round 4 step 1 (parser
-hardening) is landed: DCS/APC/SOS/PM payloads are now skipped until ST in
-all three text-strip sites, and builtin `pane.read` strips ANSI to match
-external herdr's default. See "Round-4 progress" at the end of this
+Status: implementation round 4 in progress. Round 4 steps 1-4 are
+landed: DCS/APC/SOS/PM payloads are now skipped until ST in all three
+text-strip sites, builtin `pane.read` strips ANSI to match external
+herdr's default, @wterm is upgraded to 0.5.0, Kitty sequences pass
+through to the Ghostty core (iTerm2/Sixel stay filtered), and builtin
+panes advertise `TERM_PROGRAM=ghostty` with inherited `KITTY_WINDOW_ID`
+scrubbed at PTY spawn. See "Round-4 progress" at the end of this
 document. The document answers "can the WebUI terminal display images
 (e.g. jcode-generated), and what are the implications and technical
 decisions?"
@@ -30,8 +33,9 @@ findings for the corrected plan.
 ## Why images are invisible today
 
 1. PTY env (builtin backend, `src/builtin_backend.rs`): `TERM=xterm-256color`,
-   `COLORTERM=truecolor`, no `TERM_PROGRAM`, no `KITTY_WINDOW_ID`. External
-   herdr also sets `TERM=xterm-256color`.
+   `COLORTERM=truecolor`, and (since round 4 step 4) `TERM_PROGRAM=ghostty`
+   with inherited `KITTY_WINDOW_ID` scrubbed at PTY spawn. External herdr
+   also sets `TERM=xterm-256color` (no image hints).
 2. jcode detection (`crates/jcode-terminal-image/src/display.rs`,
    `infer_protocol_from_env` in `jcode-tui-mermaid`): with this env the Kitty
    path is never selected. Worst case, if ImageMagick (`convert`) is installed,
@@ -205,9 +209,10 @@ cross-backend matrix under Observed evidence below):
 3. Gate Kitty pass-through on the Ghostty core in the adapter (keep iTerm2/
    Sixel filtered everywhere), with settings text and docs updated together
   per the repo's parity rules.
-4. PTY env: set `TERM_PROGRAM=ghostty` for built-in panes, so jcode picks
-   Kitty; scrub inherited `TERM_PROGRAM`/`KITTY_WINDOW_ID` (both leak in
-   from the launching shell).
+4. PTY env (landed, round 4 step 4): `TERM_PROGRAM=ghostty` is set for
+   built-in panes and inherited `KITTY_WINDOW_ID` is removed at PTY spawn
+   (`TERMINAL_ENV_SCRUB_KEYS` + `CommandBuilder::env_remove`), so jcode
+   picks Kitty and a leaked real-kitty ID cannot misdirect it.
 5. E2E validation: run a pane under the real flow, emit a Kitty test image
    (jcode `read` of a PNG), verify render on Ghostty core, placeholder on
    wterm core, clean pane.read output, and stable agent-status detection.
@@ -690,8 +695,39 @@ Settings/help text updated per parity rules (desktop settings label,
 desktop help row, mobile settings renderer note): Ghostty renders Kitty
 graphics inline, other cores show a placeholder, reload after switching.
 
-**Remaining for builtin images: step 4** (PTY env hints: set
-`TERM_PROGRAM=ghostty` on builtin panes and scrub inherited
-`TERM_PROGRAM`/`KITTY_WINDOW_ID` so jcode's env detection picks the
-Kitty emitter), then step 5 (E2E with a real jcode PNG through the real
-flow).
+**Round 4 step 4 landed (PTY env hints):**
+`terminal_environment()` in `src/builtin_backend.rs` now sets
+`TERM_PROGRAM=ghostty` and removes `KITTY_WINDOW_ID` from the env map,
+and - the part the map alone cannot do - the pane spawn site calls
+`CommandBuilder::env_remove()` for each key in the new
+`TERMINAL_ENV_SCRUB_KEYS` list (`KITTY_WINDOW_ID`): `CommandBuilder::
+env()` only adds on top of the inherited process env, it cannot unset,
+so removing the key from the HashMap was a no-op for the PTY child (a
+first live check caught `KITTY_WINDOW_ID=999` still reaching the shell
+with the map-only fix). `TERM` stays `xterm-256color` (terminfo-safe,
+already set at spawn), so agents detect Kitty via `TERM_PROGRAM`
+only - which also disables the accidental Sixel-on-xterm path.
+
+Verification:
+- Unit: `terminal_environment()` map asserts `TERM_PROGRAM=ghostty`
+  and no `KITTY_WINDOW_ID` with the process env poisoned to
+  `iTerm.app`/`123`.
+- Real-PTY integration (NEW): a pane spawned via `agent.start` with
+  `/bin/sh -c printf` while the test process env is poisoned prints
+  `TP=ghostty KID=` - proving `env_remove()` reaches the actual child,
+  not just the map.
+- Live check (`scripts/e2e/run-env-hints-check.sh`, self-contained
+  server+Chrome, poisons the server env `TERM_PROGRAM=iTerm.app`,
+  `KITTY_WINDOW_ID=999`): typing the printf into a real pane in the
+  served app shows `TP=ghostty KID= TERM=xterm-256color`.
+- Rust suite 549 passing; fmt/clippy clean.
+
+Live-check debugging note: headless Chrome without `--window-size`
+gets a narrow default viewport, `app_boot.js` resolves the mobile
+layout (max-width 760px), and the mobile bundle never defines the
+desktop `go()` - the check must launch Chrome with
+`--window-size=1600,1000` like the other e2e runners.
+
+**Remaining for builtin images: step 5** (E2E with a real jcode PNG
+through the real flow), then the external-backend phase 2 bridge
+rearchitecture per the round-3 plan.
