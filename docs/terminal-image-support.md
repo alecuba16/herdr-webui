@@ -1098,7 +1098,26 @@ regression tests:
    with EOF. This is protocol-level, so it is portable to Windows
    named pipes (no fd shutdown tricks).
 
+   Live-validated through the public interfaces: the
+   external-graphics E2E now closes the browser page for real (CDP
+   `Target.closeTarget` — `Page.navigate` to `about:blank` can be
+   deferred by the page and does NOT reliably tear the WSes down)
+   and asserts two teardown oracles: while attached the daemon's
+   client socket carries the attach + graphics connections, and
+   after the close the daemon's own `herdr-server.log` shows a
+   `client detached`/`client disconnected` line for every client id
+   that ever connected (that log line is emitted by the same code
+   path that restores geometry, so a missing line == a zombie).
+   Two empirical findings from building that check: (a) on macOS the
+   daemon keeps its accepted-connection fds open for a while after
+   the client is removed — upstream fd hygiene, invisible to the
+   protocol and out of the webui's control, so raw `lsof` counts on
+   the daemon are the wrong oracle; the webui drops all of its own
+   fds. (b) The detach lines land ~1s after the page close
+   (unload → WS close → webui reader wakes → Detach → daemon select
+   loop), so the check polls the log with a bounded retry loop.
+
 Full battery re-run after the fixes: fmt + clippy clean (0 warnings),
 557 Rust tests, 568 Node tests, and the live external-graphics E2E
 16/16 (desktop + mobile, pixel sample still exactly
-`[255, 0, 0, 255]`).
+`[255, 0, 0, 255]`); with the teardown checks the E2E is 18/18.

@@ -99,12 +99,26 @@ echo "daemon up (pid $DAEMON_PID)"
 echo "==> building herdr-webui (debug)"
 (cd "$ROOT" && cargo build --target-dir target --quiet)
 
+function daemon_client_conns() {
+  # Distinct unix-socket device addresses (lsof DEVICE column) among the
+  # daemon's client-socket fds: dup'd writer clones of one connection share
+  # an address, so this counts sockets, not fds.
+  lsof -U -a -p "$DAEMON_PID" 2>/dev/null \
+    | grep "herdr-client.sock" \
+    | awk '{print $6}' | sort -u | wc -l | tr -d ' '
+}
+
 echo "==> starting isolated webui on https://127.0.0.1:$PORT (external-herdr)"
 XDG_CONFIG_HOME="$WORK/xdg" "$ROOT/target/debug/herdr-webui" \
   --bind "127.0.0.1:$PORT" --session "$SESSION" \
   --backend-mode external-herdr >"$WORK/webui.log" 2>&1 &
 SERVER_PID=$!
 wait_for "webui" "https://127.0.0.1:$PORT/" -k || exit 1
+
+# Baseline daemon client-socket connection count with NO browser attached:
+# just the listener. The teardown check compares against this floor.
+BASELINE_CONNS=$(daemon_client_conns)
+echo "==> baseline daemon client-socket conns: $BASELINE_CONNS (listener only)"
 
 echo "==> launching headless Chrome (CDP port $CDP)"
 CHROME_BIN="${CHROME_BIN:-}"
@@ -130,7 +144,15 @@ REPO="$WORK/ext-repo"
 mkdir -p "$REPO/src"
 printf 'print("ext graphics fixture")\n' > "$REPO/src/demo.py"
 
+# E2E_DAEMON_PID + E2E_CLIENT_SOCK (+ E2E_BASELINE_CONNS + E2E_DAEMON_LOG)
+# let the acceptance module assert the teardown: while the browser is
+# attached the daemon's client socket carries the attach + graphics
+# connections, and after the browser closes every daemon client must show
+# a "client detached"/"client disconnected" log line (no zombie shell
+# client left holding the tab's geometry).
 E2E_BASE_URL="https://127.0.0.1:$PORT/" CDP_PORT="$CDP" ACCEPT_REPO="$REPO" \
+  E2E_DAEMON_PID="$DAEMON_PID" E2E_CLIENT_SOCK="$SESSION_DIR/herdr-client.sock" \
+  E2E_BASELINE_CONNS="$BASELINE_CONNS" E2E_DAEMON_LOG="$SESSION_DIR/herdr-server.log" \
   node "$ROOT/scripts/e2e/external-graphics-acceptance.mjs"
 
 echo "EXTERNAL GRAPHICS E2E ACCEPTANCE PASSED"

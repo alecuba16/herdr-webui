@@ -263,10 +263,13 @@ scratch dirs, cleanup on exit):
   creation on the external backend, shell prompt in the attach
   terminal, bridge canvas overlay attached, the p2 Kitty transmission
   typed into the pane PTY, overlay pixel readback (exactly the
-  `[255,0,0,255]` red asset drawn, 16/16 checks on desktop AND mobile
-  viewports), and no raw `\x1b_G` escape leak in the text grid.
-  Requires `herdr` on PATH; exits early (clean skip) otherwise so CI
-  stays daemon-free.
+  `[255,0,0,255]` red asset drawn on desktop AND mobile viewports),
+  no raw `\x1b_G` escape leak in the text grid, and the teardown: it
+  closes the browser page for real (CDP `Target.closeTarget`) and
+  asserts that the daemon removed every client — `herdr-server.log`
+  must show a `client detached`/`client disconnected` line for every
+  client id (18/18 checks). Requires `herdr` on PATH; exits early
+  (clean skip) otherwise so CI stays daemon-free.
 
 `scripts/e2e/smoke-jcode-kitty-emit.sh` is the no-browser smoke of the
 jcode side: a real `jcode serve` on a `pty_capture.py` PTY plus the real
