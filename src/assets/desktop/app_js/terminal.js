@@ -186,6 +186,15 @@ async function connectTerminal() {
     term.resize(cols, rows);
     fitTerminalSurface();
   } catch (e) {}
+  // External-backend Kitty graphics: open the parallel shell-graphics
+  // bridge pinned to this tab. No-op (and auto-disconnected) in builtin
+  // mode or when the adapter is unavailable.
+  if (window.HerdrGraphicsBridge) {
+    window.HerdrGraphicsBridge.connect(state, { terminal: term, wsUrl });
+    // Every grid renegotiation funnels through connectTerminal, so the
+    // shell surface stays in sync with the attach grid here.
+    window.HerdrGraphicsBridge.resize({ cols, rows });
+  }
   const ws = new WebSocket(
     wsUrl(
       `/ws/terminal?terminal_id=${encodeURIComponent(state.terminalId)}&cols=${cols}&rows=${rows}`,
@@ -945,6 +954,14 @@ window.addEventListener("resize", () => {
 window.addEventListener("focus", () =>
   requestAnimationFrame(fitFocusedTerminal),
 );
+// External-backend graphics bridge: keep the shell client's focus state
+// in sync with the browser window so herdr routes input correctly.
+window.addEventListener("focus", () => {
+  if (window.HerdrGraphicsBridge) window.HerdrGraphicsBridge.focus(true);
+});
+window.addEventListener("blur", () => {
+  if (window.HerdrGraphicsBridge) window.HerdrGraphicsBridge.focus(false);
+});
 function wsUrl(path) {
   const params = [];
   if (state.session && state.session !== "default")

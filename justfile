@@ -35,6 +35,22 @@ theme-e2e:
 terminal-fit-e2e:
     scripts/e2e/run-terminal-fit-e2e.sh
 
+# Real-browser acceptance run for the Ghostty terminal core (attach,
+# prompt render, 0.5.0 graphics layer container). See scripts/e2e/README.md.
+ghostty-core-e2e:
+    scripts/e2e/run-ghostty-core-e2e.sh
+
+# Real-flow acceptance: a real jcode read-tool PNG rendered through a live
+# pane on both cores (ghostty renders, wterm substitutes). See scripts/e2e/README.md.
+jcode-image-flow-e2e:
+    scripts/e2e/run-jcode-image-flow-e2e.sh
+
+# External-backend graphics probe: isolated herdr 0.9.0 daemon + the webui's
+# protocol.rs types speaking the real ClientShell endpoint protocol. See
+# scripts/e2e/README.md.
+external-graphics-probe:
+    scripts/e2e/run-external-graphics-probe.sh
+
 # Real-browser acceptance run for the Git drawer CONTENT (changes tree,
 # diff view, log graph, branch list) in the live DOM. See scripts/e2e/README.md.
 git-drawer-e2e:

@@ -16,6 +16,7 @@ The README is the short project summary. This `docs/` directory holds detailed f
 | [Release notes](release-notes.md) | Release policy and release history. |
 | [Code quality audit](code-quality-audit.md) | Baseline quality audit, remediated issues, and deferred risks. |
 | [UX flow proposal](ux-flow-proposal.md) | Proposed UX improvements for desktop and mobile navigation. |
+| [Terminal image support analysis](terminal-image-support.md) | Feasibility study for rendering jcode-generated images in the browser terminal: protocol support, wterm/Ghostty upgrade path, and risks. |
 
 ## Topic map
 

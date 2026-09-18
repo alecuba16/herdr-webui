@@ -265,7 +265,7 @@ impl BackendClient {
     }
 }
 
-pub const BUILTIN_TUI_PROTOCOL_VERSION: u32 = 16;
+pub const BUILTIN_TUI_PROTOCOL_VERSION: u32 = 22;
 pub const MAX_TUI_TERMINAL_FRAME_SIZE: usize = 32 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

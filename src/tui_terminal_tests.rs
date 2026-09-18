@@ -39,6 +39,35 @@ fn terminal_output_styled_lines_handle_tabs_backspace_osc_and_empty_edges() {
 }
 
 #[test]
+fn terminal_output_styled_lines_skip_kitty_and_sixel_payloads() {
+    // Kitty APC upload + placement (the exact relay herdr 0.9.0 shells
+    // receive) must leave no trace; Sixel DCS with an embedded BEL must
+    // not terminate early.
+    let kitty = "line\u{1b}_Ga=T,f=32,t=d,i=7,p=3,s=2,v=2,c=10,r=5,q=2;/wAA//8AAP//AAD//wAA/w==\u{1b}\\\u{1b}_Ga=p,i=7,c=10,r=5,q=2;\u{1b}\\end";
+    assert_eq!(
+        plain_lines(&terminal_output_styled_lines_lossy(kitty)),
+        vec!["lineend"]
+    );
+
+    let sixel = "s\u{1b}P0;1q#0;2;0;0;0\u{7}!10~-\u{1b}\\t";
+    assert_eq!(
+        plain_lines(&terminal_output_styled_lines_lossy(sixel)),
+        vec!["st"]
+    );
+}
+
+#[test]
+fn terminal_output_styled_lines_skip_unterminated_apc() {
+    // Truncated Kitty chunk (m=1 without a final chunk) consumes the rest.
+    assert_eq!(
+        plain_lines(&terminal_output_styled_lines_lossy(
+            "a\u{1b}_Gf=32,s=2,v=2,a=T,m=1;eJz7"
+        )),
+        vec!["a"]
+    );
+}
+
+#[test]
 fn terminal_output_styled_lines_support_style_resets_and_bright_colors() {
     let lines =
         terminal_output_styled_lines_lossy("\x1b[2;3;4;94;104mbright\x1b[22;23;24;39;49mplain");

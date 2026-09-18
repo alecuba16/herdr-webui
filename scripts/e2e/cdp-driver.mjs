@@ -77,3 +77,31 @@ export async function connectToPage() {
     close: () => ws.close(),
   };
 }
+
+// Browser-level helpers for teardown checks: Page.navigate can be deferred
+// by the page (unload handlers), so a teardown that must observe the page's
+// WebSockets dying closes the target itself — a real tab close.
+export async function currentPageTargetId() {
+  const targets = await getJson('/json/list');
+  const page = targets.find((t) => t.type === 'page');
+  return page ? page.id : null;
+}
+
+export function closeTargetViaBrowser(targetId) {
+  return new Promise((resolve, reject) => {
+    getJson('/json/version').then((ver) => {
+      const ws = new WebSocket(ver.webSocketDebuggerUrl);
+      ws.onopen = () => {
+        ws.send(JSON.stringify({ id: 1, method: 'Target.closeTarget', params: { targetId } }));
+      };
+      ws.onmessage = (m) => {
+        const msg = JSON.parse(m.data);
+        if (msg.id === 1) {
+          ws.close();
+          resolve(msg.result);
+        }
+      };
+      ws.onerror = reject;
+    }, reject);
+  });
+}

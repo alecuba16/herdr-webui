@@ -216,3 +216,71 @@ It verifies in the live DOM:
 | ----------- | ------- | ------------------------------------ |
 | `E2E_PORT`  | `8899`  | HTTPS port of the isolated server    |
 | `CDP_PORT`  | `9222`  | Chrome remote debugging port         |
+
+## Terminal image support acceptance (4 runs)
+
+The terminal-image work (see `docs/terminal-image-support.md`) has four
+live checks, all self-contained (isolated server + headless Chrome, own
+scratch dirs, cleanup on exit):
+
+- `just ghostty-core-e2e` (`run-ghostty-core-e2e.sh`): forces each
+  terminal core via localStorage and emits a known Kitty direct-RGBA
+  transmit + placement through a live pane. Ghostty core must render the
+  `.term-image` canvas; wterm core must substitute the
+  `[inline image omitted]` placeholder. 7 checks per core.
+- `scripts/e2e/run-env-hints-check.sh`: boots a server whose process env
+  is poisoned (`TERM_PROGRAM=iTerm.app`, `KITTY_WINDOW_ID=999`), types an
+  env printf into a real pane, and asserts the pane sees
+  `TP=ghostty KID= TERM=xterm-256color` (the PTY env hints + spawn-site
+  scrub).
+- `just jcode-image-flow-e2e` (`run-jcode-image-flow-e2e.sh`): the full
+  production path with the real jcode binary. A real `jcode serve` runs
+  INSIDE a pane (its stdout is the pane PTY and `TERM_PROGRAM=ghostty`
+  comes from the real pane env), the real `read` tool is driven over the
+  debug socket (`JCODE_RUNTIME_DIR` isolated, `JCODE_DEBUG_CONTROL=1`),
+  and its Kitty `a=T,f=100` PNG emit must render as an image on the
+  Ghostty core / substitute the placeholder on wterm, with no base64
+  leak in the visible grid text. 8 checks per core.
+- `scripts/e2e/run-external-graphics-probe.sh`: the external-backend
+  probe for phase 2. Boots an ISOLATED herdr 0.9.0 daemon (scratch
+  `XDG_CONFIG_HOME` + `HERDR_SESSION`), then runs the env-gated Rust
+  probe test (`HERDR_WEBUI_EXTERNAL_PROBE`) which speaks the real
+  ClientShell endpoint protocol with the WebUI's own protocol.rs types:
+  `endpoint.hello.v1` handshake, `endpoint.welcome.v1` codec check,
+  a pane Kitty emission (the same f=32 RGBA transmit + placement
+  herdr's own headless tests use) driven through `tab.create` +
+  `pane.send_text`, a decoded PaneSurface graphics scene (1 asset +
+  1 placement, RGBA `[ff,00,00,ff]`), and a no-cell-metrics negative
+  control that must receive surfaces with NO graphics scene. Normal
+  `cargo test` runs skip the probe entirely (the env gate makes it a
+  no-op), so CI never spawns daemons.
+
+- `scripts/e2e/run-external-graphics-e2e.sh`: the p6 end-to-end
+  acceptance for the external-backend graphics bridge. Boots an
+  ISOLATED herdr daemon plus an isolated webui with
+  `--backend-mode external-herdr` on the same scratch session, drives
+  headless Chrome over CDP, and asserts the full pipeline: workspace
+  creation on the external backend, shell prompt in the attach
+  terminal, bridge canvas overlay attached, the p2 Kitty transmission
+  typed into the pane PTY, overlay pixel readback (exactly the
+  `[255,0,0,255]` red asset drawn on desktop AND mobile viewports),
+  no raw `\x1b_G` escape leak in the text grid, and the teardown: it
+  closes the browser page for real (CDP `Target.closeTarget`) and
+  asserts that the daemon removed every client — `herdr-server.log`
+  must show a `client detached`/`client disconnected` line for every
+  client id (18/18 checks). Requires `herdr` on PATH; exits early
+  (clean skip) otherwise so CI stays daemon-free.
+
+`scripts/e2e/smoke-jcode-kitty-emit.sh` is the no-browser smoke of the
+jcode side: a real `jcode serve` on a `pty_capture.py` PTY plus the real
+read tool must emit `ESC_G a=T,f=100` under `TERM_PROGRAM=ghostty`
+(`SMOKE_MODE=noemit` is the negative control without the hint).
+
+| Variable               | Default | Meaning                                  |
+| ---------------------- | ------- | ---------------------------------------- |
+| `E2E_PORT`             | `8895`  | HTTPS port of the isolated server        |
+| `CDP_PORT`             | `9340`  | Chrome remote debugging port             |
+
+Headless Chrome must launch with `--window-size=1600,1000` for the
+desktop layout: `app_boot.js` serves the mobile bundle under 760px
+width, and the mobile app has no desktop `go()` for the harness to call.

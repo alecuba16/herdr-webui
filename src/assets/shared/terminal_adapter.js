@@ -184,6 +184,20 @@
         continue;
       }
       if (next.marker === "\x1b_G") {
+        // The Ghostty core (wterm 0.5.0+) renders Kitty graphics natively;
+        // pass the whole sequence through so its graphics layer can ingest
+        // it. Every other core still gets the placeholder summary.
+        if (imageState.allowKittyGraphics) {
+          const end = text.indexOf(INLINE_IMAGE_ST, next.index);
+          if (end < 0) {
+            imageState.imageEscapeBuffer = text.slice(next.index);
+            break;
+          }
+          const stop = end + INLINE_IMAGE_ST.length;
+          output += text.slice(next.index, stop);
+          cursor = stop;
+          continue;
+        }
         const end = text.indexOf(INLINE_IMAGE_ST, next.index);
         if (end < 0) {
           imageState.imageEscapeBuffer = text.slice(next.index);
@@ -318,7 +332,13 @@
       this._destroyed = false;
       this._linkClick = null;
       this._wheelScroll = null;
-      this._imageFallbackState = { imageEscapeBuffer: "" };
+      this._imageFallbackState = {
+        imageEscapeBuffer: "",
+        // Only the Ghostty core (wterm 0.5.0+) renders Kitty graphics;
+        // this is captured once at construction because the core cannot
+        // change without recreating the adapter.
+        allowKittyGraphics: this.core === "ghostty",
+      };
       this._mouseMode = { tracking: false, sgrMouse: false };
       this._onWheelMouseReport = typeof options.onWheelMouseReport === "function" ? options.onWheelMouseReport : null;
       if (this._onWheelMouseReport) this._trackPointer();

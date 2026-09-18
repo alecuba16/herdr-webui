@@ -30,6 +30,7 @@ const SHARED_MARKDOWN_PREVIEW_CSS: &str = include_str!("assets/shared/markdown_p
 const SHARED_TERMINAL_SCROLL_JS: &str = include_str!("assets/shared/terminal_scroll.js");
 const SHARED_TERMINAL_FIT_JS: &str = include_str!("assets/shared/terminal_fit.js");
 const SHARED_TERMINAL_ADAPTER_JS: &str = include_str!("assets/shared/terminal_adapter.js");
+const SHARED_GRAPHICS_BRIDGE_JS: &str = include_str!("assets/shared/graphics_bridge.js");
 const SHARED_TEMP_TERMINAL_JS: &str = include_str!("assets/shared/temp_terminal.js");
 const VENDOR_CODEMIRROR_JS: &str = include_str!("assets/vendor/codemirror.bundle.js");
 const VENDOR_MARKED_JS: &str = include_str!("assets/vendor/marked.bundle.js");
@@ -295,6 +296,13 @@ pub(crate) async fn shared_terminal_fit_js() -> Response {
 pub(crate) async fn shared_terminal_adapter_js() -> Response {
     static_text(
         SHARED_TERMINAL_ADAPTER_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(crate) async fn shared_graphics_bridge_js() -> Response {
+    static_text(
+        SHARED_GRAPHICS_BRIDGE_JS,
         "application/javascript; charset=utf-8",
     )
 }

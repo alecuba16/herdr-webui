@@ -942,3 +942,431 @@ pub(crate) enum ServerMessage {
     /// Extensible named control message for the stable client-owned endpoint protocol.
     EndpointControl { kind: String, data: String },
 }
+
+#[cfg(test)]
+mod external_probe_tests {
+    //! Live probe against a real, isolated herdr 0.9.0 daemon, proving the
+    //! WebUI's `ClientMessage`/`ServerMessage` types can speak the external
+    //! backend's ClientShell endpoint protocol and receive pane graphics.
+    //!
+    //! Gated on `HERDR_WEBUI_EXTERNAL_PROBE` (set to the session data dir
+    //! holding `herdr-client.sock`) so normal `cargo test` runs never spawn
+    //! or contact daemons. The driver script owns isolation: scratch
+    //! `XDG_CONFIG_HOME`, scratch `HERDR_SESSION`, and cleanup.
+
+    use super::*;
+    use interprocess::local_socket::Stream as LocalStream;
+    use std::io::{Read, Write};
+    use std::path::{Path, PathBuf};
+    use std::time::{Duration, Instant};
+
+    fn probe_session_dir() -> Option<PathBuf> {
+        let dir = std::env::var("HERDR_WEBUI_EXTERNAL_PROBE").ok()?;
+        if dir.trim().is_empty() {
+            return None;
+        }
+        Some(PathBuf::from(dir))
+    }
+
+    fn client_socket_path() -> PathBuf {
+        probe_session_dir()
+            .expect("probe enabled")
+            .join("herdr-client.sock")
+    }
+
+    fn api_socket_path() -> PathBuf {
+        probe_session_dir()
+            .expect("probe enabled")
+            .join("herdr.sock")
+    }
+
+    fn connect(path: &Path) -> LocalStream {
+        use interprocess::local_socket::{prelude::*, GenericFilePath};
+        let name = path.to_fs_name::<GenericFilePath>().unwrap();
+        LocalStream::connect(name).unwrap()
+    }
+
+    /// Spawns a reader thread for a client-socket stream. The thread pushes
+    /// each decoded `ServerMessage` (or an error string) into the channel;
+    /// the test side uses `recv_timeout` so deadlines actually fire even
+    /// when the server goes quiet. interprocess streams have no read-timeout
+    /// API, so this is the only robust way to bound waits.
+    fn spawn_reader(mut stream: LocalStream) -> std::sync::mpsc::Receiver<ServerMessage> {
+        let (tx, rx) = std::sync::mpsc::channel::<ServerMessage>();
+        std::thread::spawn(move || loop {
+            let mut len_buf = [0u8; 4];
+            if let Err(err) = stream.read_exact(&mut len_buf) {
+                let _ = tx.send(panic_marker(format!("client socket read failed: {err}")));
+                return;
+            }
+            let len = u32::from_le_bytes(len_buf) as usize;
+            assert!(len <= 32 * 1024 * 1024, "oversized server frame {len}");
+            let mut payload = vec![0u8; len];
+            if let Err(err) = stream.read_exact(&mut payload) {
+                let _ = tx.send(panic_marker(format!("client socket read failed: {err}")));
+                return;
+            }
+            match bincode::serde::decode_from_slice::<ServerMessage, _>(
+                &payload,
+                bincode::config::standard(),
+            ) {
+                Ok((message, _)) => {
+                    if tx.send(message).is_err() {
+                        return;
+                    }
+                }
+                Err(err) => {
+                    let _ = tx.send(panic_marker(format!("decode ServerMessage failed: {err}")));
+                    return;
+                }
+            }
+        });
+        rx
+    }
+
+    /// Terminal error frame that makes the poll loop panic with context.
+    fn panic_marker(message: String) -> ServerMessage {
+        // Reuse ClientShellError: the poll loops treat it as fatal.
+        ServerMessage::ClientShellError { message }
+    }
+
+    /// Blocking read of one frame; only used where the server is contractually
+    /// about to answer immediately (handshake).
+    fn read_server_message(rx: &std::sync::mpsc::Receiver<ServerMessage>) -> ServerMessage {
+        rx.recv().expect("server frame")
+    }
+    /// Minimal empty frame, mirroring an unrendered surface.
+    fn empty_frame() -> FrameData {
+        FrameData {
+            cells: Vec::new(),
+            width: 0,
+            height: 0,
+            cursor: None,
+            hyperlinks: Vec::new(),
+            graphics: Vec::new(),
+        }
+    }
+
+    /// JSON payload for the `endpoint.hello.v1` EndpointControl handshake.
+    /// `direct_graphics` arms the GraphicsFile upload path; the graphics scene
+    /// itself is gated on known cell metrics (collect_scene checks
+    /// `cell_size.is_known()`), so the probe sends real cell dimensions.
+    fn endpoint_hello_json(direct_graphics: bool) -> String {
+        serde_json::json!({
+            "generation": 1,
+            "cell_width_px": 10,
+            "cell_height_px": 20,
+            "surface_size": { "cols": 80, "rows": 24 },
+            "pixel_mouse": true,
+            "direct_graphics": direct_graphics,
+            "endpoint_keybindings": false,
+            "mouse_capture": false,
+            "surface_active": true,
+            "snapshot_codecs": ["shell.snapshot.v1"],
+            "surface_codecs": ["shell.surface.v1"],
+            "input_codecs": ["shell.input.semantic.v1"],
+            "blob_codecs": ["shell.blob.v1"],
+        })
+        .to_string()
+    }
+
+    fn send_client_message(stream: &mut LocalStream, msg: &ClientMessage) {
+        let payload = bincode::serde::encode_to_vec(msg, bincode::config::standard()).unwrap();
+        let len = u32::try_from(payload.len()).unwrap();
+        stream.write_all(&len.to_le_bytes()).unwrap();
+        stream.write_all(&payload).unwrap();
+        stream.flush().unwrap();
+    }
+
+    /// One newline-delimited JSON API request on a fresh connection. The
+    /// server answers once and closes, so `read_to_end` terminates.
+    fn api_request(method: &str, params: serde_json::Value) -> serde_json::Value {
+        let mut stream = connect(&api_socket_path());
+        let req = serde_json::json!({
+            "id": format!("probe-{method}"),
+            "method": method,
+            "params": params,
+        });
+        stream
+            .write_all(serde_json::to_string(&req).unwrap().as_bytes())
+            .unwrap();
+        stream.write_all(b"\n").unwrap();
+        stream.flush().unwrap();
+        let mut buf = Vec::new();
+        stream.read_to_end(&mut buf).unwrap();
+        assert!(
+            !buf.is_empty(),
+            "empty response for {method}; daemon likely not running"
+        );
+        serde_json::from_slice(&buf).unwrap()
+    }
+
+    fn api_expect_ok(method: &str, params: serde_json::Value) {
+        let response = api_request(method, params);
+        let result_type = &response["result"]["type"];
+        assert_eq!(
+            result_type,
+            &serde_json::json!("ok"),
+            "{method} failed: {response}"
+        );
+    }
+
+    /// Kitty graphics sequence: direct RGB (f=32) transmit + placement, all
+    /// ASCII after the escape bytes. Emitted into a pane, the embedded
+    /// Ghostty core parses it into placements and render_and_stream ships
+    /// them as a PaneSurface graphics scene.
+    fn kitty_rgb_emit_bytes() -> Vec<u8> {
+        // Byte-for-byte the sequence herdr's own headless tests feed into a
+        // pane to prove scene delivery (tests/pane_graphics.rs): direct
+        // RGBA transmit with an explicit image id, then the display action.
+        // Ghostty stores f=32 data as RGBA for a 1x1 image, so the asset
+        // arrives as [255, 0, 0, 255].
+        let mut out = b"\x1b_Ga=T,f=32,t=d,i=7,p=3,s=1,v=1,c=1,r=1,q=2;/wAA/w==\x1b\\".to_vec();
+        out.extend_from_slice(b"\x1b_Ga=p,U=1,i=7,c=1,r=1,q=2\x1b\\");
+        out
+    }
+
+    /// Shell command that re-emits `bytes` onto the PTY. Uses printf's FORMAT
+    /// argument (which interprets `\033`) instead of `%s` arguments (which do
+    /// not), so the typed command line stays plain ASCII for zsh's line
+    /// editor while printf writes the raw Kitty escape bytes.
+    fn printf_command(bytes: &[u8]) -> String {
+        let mut out = String::from("printf '");
+        for &b in bytes {
+            match b {
+                b'\'' => out.push_str("'\\''"),
+                b'\\' => out.push_str("\\\\"),
+                0x1b => out.push_str("\\033"),
+                0x20..=0x7E => out.push(b as char),
+                _ => out.push_str(&format!("\\{:03o}", b)),
+            }
+        }
+        out.push_str("'\n");
+        out
+    }
+
+    #[test]
+    fn external_endpoint_graphics_probe() {
+        if probe_session_dir().is_none() {
+            return;
+        }
+
+        // 1. Endpoint hello as the FIRST client message (client_transport.rs
+        //    rejects a bare ClientShellHello in 0.9.0).
+        let mut stream = connect(&client_socket_path());
+        send_client_message(
+            &mut stream,
+            &ClientMessage::EndpointControl {
+                kind: "endpoint.hello.v1".into(),
+                data: endpoint_hello_json(true),
+            },
+        );
+        let rx = spawn_reader(stream);
+
+        // 2. First server frame must be the endpoint welcome.
+        let welcome = read_server_message(&rx);
+        let ServerMessage::EndpointControl { kind, data } = &welcome else {
+            panic!("expected endpoint welcome, got {welcome:?}");
+        };
+        assert_eq!(kind, "endpoint.welcome.v1");
+        let welcome: serde_json::Value = serde_json::from_str(data).unwrap();
+        assert_eq!(welcome["generation"], 1);
+        assert_eq!(welcome["snapshot_codec"], "shell.snapshot.v1");
+        assert_eq!(welcome["surface_codec"], "shell.surface.v1");
+        assert_eq!(welcome["input_codec"], "shell.input.semantic.v1");
+        assert_eq!(welcome["blob_codec"], "shell.blob.v1");
+
+        // 3. tab.create gives a fresh shell pane and returns its pane id.
+        let created = api_request(
+            "tab.create",
+            serde_json::json!({ "focus": true, "label": "probe" }),
+        );
+        assert_eq!(
+            created["result"]["type"], "tab_created",
+            "tab.create failed: {created}"
+        );
+        let pane_id = created["result"]["root_pane"]["pane_id"]
+            .as_str()
+            .expect("tab_created missing root_pane.pane_id")
+            .to_string();
+
+        // Give the spawned shell a moment to initialize before typing into it.
+        std::thread::sleep(Duration::from_millis(1500));
+
+        // 4. Type the Kitty emitter into the pane and press Enter. The pane
+        //    is an interactive shell; printf re-emits the bytes onto the PTY
+        //    where the Ghostty core captures them as graphics placements.
+        let command = printf_command(&kitty_rgb_emit_bytes());
+        api_expect_ok(
+            "pane.send_text",
+            serde_json::json!({ "pane_id": pane_id, "text": command }),
+        );
+
+        // 5. PaneSurface frames must arrive, and one must carry graphics.
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let mut saw_surface = false;
+        let mut saw_graphics = false;
+        while Instant::now() < deadline {
+            let Ok(msg) = rx.recv_timeout(Duration::from_millis(500)) else {
+                continue;
+            };
+            match msg {
+                ServerMessage::PaneSurface(frame) => {
+                    saw_surface = true;
+                    let scene = &frame.graphics;
+                    if !scene.assets.is_empty() || !scene.placements.is_empty() {
+                        saw_graphics = true;
+                        let asset = scene.assets.first().unwrap();
+                        println!(
+                            "PROBE graphics scene: {} assets, {} placements, {} retained; first asset format={:?} len={} data[0..8]={:02x?}",
+                            scene.assets.len(),
+                            scene.placements.len(),
+                            scene.retained_assets.len(),
+                            asset.key.format,
+                            asset.data.len(),
+                            &asset.data[..asset.data.len().min(8)],
+                        );
+                        assert_eq!(
+                            asset.data,
+                            vec![255, 0, 0, 255],
+                            "1x1 f=32 asset must decode to red RGBA"
+                        );
+                        assert_eq!(asset.key.image_width, 1);
+                        assert_eq!(asset.key.image_height, 1);
+                        assert!(matches!(asset.key.format, SurfaceGraphicsFormat::Rgba));
+                        break;
+                    }
+                }
+                ServerMessage::EndpointControl { kind, .. } if kind == "endpoint.snapshot.v1" => {
+                    // shell snapshot precedes surfaces; expected.
+                }
+                ServerMessage::ClientShellError { message } => {
+                    panic!("client shell error: {message}");
+                }
+                _ => {}
+            }
+        }
+        assert!(saw_surface, "never received a PaneSurface frame");
+        assert!(
+            saw_graphics,
+            "no graphics scene arrived with direct_graphics=true"
+        );
+
+        // 6. Negative control: a second connection reporting NO cell metrics
+        //    (cell 0x0) must receive surfaces without any graphics scene.
+        //    In herdr 0.9.0 the scene gate is `cell_size.is_known()`
+        //    (kitty_graphics/surface.rs collect_scene); the hello's
+        //    `direct_graphics` flag only arms the GraphicsFile upload path.
+        let mut plain = connect(&client_socket_path());
+        let mut no_cell_hello = endpoint_hello_json(false);
+        {
+            let mut hello: serde_json::Value = serde_json::from_str(&no_cell_hello).unwrap();
+            hello["cell_width_px"] = serde_json::json!(0);
+            hello["cell_height_px"] = serde_json::json!(0);
+            no_cell_hello = serde_json::to_string(&hello).unwrap();
+        }
+        send_client_message(
+            &mut plain,
+            &ClientMessage::EndpointControl {
+                kind: "endpoint.hello.v1".into(),
+                data: no_cell_hello,
+            },
+        );
+        let rx2 = spawn_reader(plain);
+        let welcome2 = read_server_message(&rx2);
+        let ServerMessage::EndpointControl { kind, .. } = &welcome2 else {
+            panic!("expected endpoint welcome 2, got {welcome2:?}");
+        };
+        assert_eq!(kind, "endpoint.welcome.v1");
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut frames = 0;
+        let mut got_graphics = false;
+        while Instant::now() < deadline {
+            let Ok(msg) = rx2.recv_timeout(Duration::from_millis(500)) else {
+                continue;
+            };
+            match msg {
+                ServerMessage::PaneSurface(frame) => {
+                    frames += 1;
+                    let scene = &frame.graphics;
+                    if !scene.assets.is_empty() || !scene.placements.is_empty() {
+                        got_graphics = true;
+                        break;
+                    }
+                }
+                ServerMessage::ClientShellError { message } => {
+                    panic!("client shell error (negative control): {message}");
+                }
+                _ => {}
+            }
+        }
+        assert!(frames > 0, "negative control never got a PaneSurface frame");
+        assert!(
+            !got_graphics,
+            "a client with unknown cell size must not receive graphics"
+        );
+    }
+
+    /// Decode floor: the webui ServerMessage must keep round-tripping herdr
+    /// 0.9.0 pane-surface graphics shapes. Plain unit test so parity stays
+    /// checked in CI even without the live daemon.
+    #[test]
+    fn external_surface_graphics_roundtrip_matches_herdr_shapes() {
+        let key = SurfaceGraphicsAssetKey {
+            source: SurfaceGraphicsSource::Terminal {
+                target: SurfaceGraphicsTarget::Pane {
+                    pane_id: "p1".into(),
+                },
+                image_id: 7,
+            },
+            image_width: 4,
+            image_height: 2,
+            format: SurfaceGraphicsFormat::Rgb,
+            data_len: 24,
+            data_fingerprint: 42,
+        };
+        let frame = PaneSurfaceFrame {
+            boot_id: "boot".into(),
+            projection_revision: 1,
+            surface_revision: 2,
+            frame: empty_frame(),
+            panes: Vec::new(),
+            splits: Vec::new(),
+            popup: None,
+            graphics: SurfaceGraphicsScene {
+                assets: vec![SurfaceGraphicsAsset {
+                    key: key.clone(),
+                    data: vec![255; 24],
+                }],
+                placements: vec![SurfaceGraphicsPlacement {
+                    asset: key,
+                    logical_placement_id: 1,
+                    x: 0,
+                    y: 0,
+                    cols: 4,
+                    rows: 2,
+                    source_x: 0,
+                    source_y: 0,
+                    source_width: 4,
+                    source_height: 2,
+                    x_offset: 0,
+                    y_offset: 0,
+                    z: 0,
+                    scrollback_offset: 0,
+                }],
+                retained_assets: Vec::new(),
+            },
+        };
+        let message = ServerMessage::PaneSurface(frame);
+        let bytes = bincode::serde::encode_to_vec(&message, bincode::config::standard()).unwrap();
+        let (decoded, _): (ServerMessage, usize) =
+            bincode::serde::decode_from_slice(&bytes, bincode::config::standard()).unwrap();
+        let ServerMessage::PaneSurface(decoded_frame) = decoded else {
+            panic!("roundtrip lost the PaneSurface variant");
+        };
+        assert_eq!(decoded_frame.graphics.assets.len(), 1);
+        assert_eq!(decoded_frame.graphics.placements.len(), 1);
+        assert_eq!(decoded_frame.boot_id, "boot");
+    }
+}
