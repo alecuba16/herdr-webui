@@ -241,7 +241,9 @@ describe("terminal adapter inline image fallback", () => {
     ok(lastWrite(adapter).includes("inline image omitted: SIXEL graphics"));
   });
 
-  it("still summarizes Kitty graphics on the default wterm core", async () => {
+  it("still summarizes Kitty graphics on the adapter-level wterm core", async () => {
+    // The adapter itself defaults to wterm when constructed without a core;
+    // every real caller passes the normalized app setting (ghostty default).
     const { adapter } = await createAdapter();
 
     adapter.write("a\x1b_Gf=100;AAAA\x1b\\z");

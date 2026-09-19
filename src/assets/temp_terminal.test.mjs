@@ -1,7 +1,10 @@
 import { describe, it } from "node:test";
 import { deepEqual, equal, ok } from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import vm from "node:vm";
+
+const require = createRequire(import.meta.url);
 
 function makeElement(id = "") {
   const el = {
@@ -237,6 +240,7 @@ function context() {
     apiRequests,
     elements,
     console,
+    HerdrAppHelpers: require("./shared/core.js"),
   };
   ctx.globalThis = ctx;
   ctx.window = ctx;
@@ -866,10 +870,11 @@ describe("temporary terminal", () => {
     ok(true, "handleResize completed without error");
   });
 
-  it("tempTerminalCore defaults to wterm when localStorage is unavailable", async () => {
+  it("tempTerminalCore defaults to ghostty when localStorage is unavailable", async () => {
     const ctx = context();
     const tempTerminal = await openTempTerminal(ctx);
-    // Without localStorage, tempTerminalCore should default to "wterm".
+    // Without localStorage and HerdrAppHelpers, tempTerminalCore falls back
+    // to the ghostty default (see resolveTerminalCoreChoice in shared/core.js).
     // The terminal should still be created successfully.
     // The modal is created dynamically and appended to document.body.
     const modal = ctx.createdElements.find((e) => e.className && e.className.includes && e.className.includes("temp-terminal-backdrop"));

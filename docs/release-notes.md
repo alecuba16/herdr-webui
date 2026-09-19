@@ -78,6 +78,27 @@
   (smart-modal open, Git mode toggle, close, reopen from the Recent section),
   asserting the direct workspace+tab+pane landing, restored Git mode, live
   terminal, and localStorage path: survival across close (10 checks).
+||||||| parent of 4daf95b (Default browser terminal core to Ghostty VT with one-time stored-blob migration)
+## 0.4.33 Release Notes
+- The browser terminal renderer now defaults to the Ghostty VT core, so
+  jcode read-tool PNG output and other Kitty graphics render inline
+  everywhere (desktop, mobile, temporary terminals) without touching
+  Settings. The wterm core stays selectable for lightweight rendering and
+  keeps its image placeholder.
+- Existing browsers are handled by a one-time migration: older stored
+  settings blobs carry `terminalCore: "wterm"` even when the user never
+  chose it (the blob persists merged defaults), so a default flip alone
+  would never reach them. `terminalCoreGhosttyMigrated` is stamped in the
+  blob the first time the new code runs, flipping such default-artifact
+  wterm values to Ghostty exactly once; explicit re-choices of wterm made
+  after the migration are preserved verbatim. Shared resolvers
+  (`resolveTerminalCore`, `resolveTerminalCoreChoice`) live in
+  `src/assets/shared/core.js` and are used by desktop, mobile, and
+  temporary-terminal reads and writes.
+- Pairs with the jcode-side fix: under `HERDR_WEBUI`, jcode's mermaid
+  picker now clamps Kitty/iTerm2/Sixel hints to Halfblocks so the pane
+  never claims raster-protocol support the web terminal cannot honor;
+  inline read-tool images still flow through the Kitty path.
 
 ## 0.4.32 Release Notes
 - Terminal image support works end to end on every render path. The wterm

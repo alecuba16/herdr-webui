@@ -229,7 +229,7 @@
     }
 
     function terminalSection(font, core, links, mouseReporting) {
-      return `<div class="mobile-settings-group"><h3>Terminal</h3><label data-settings-id="terminalCore">${rollbackHtml("terminalCore")}${appliedFlashHtml("terminalCore")}<span>Terminal renderer</span><select onchange="HerdrMobile.setTerminalCore(this.value)"><option value="wterm" ${core === "wterm" ? "selected" : ""}>wterm VT core</option><option value="ghostty" ${core === "ghostty" ? "selected" : ""}>Ghostty VT core</option></select><small>Ghostty renders Kitty graphics inline; wterm shows a placeholder. Reload the page after switching.</small></label><label data-settings-id="terminalFontFamily">${rollbackHtml("terminalFontFamily")}${appliedFlashHtml("terminalFontFamily")}<span>Terminal font</span><input placeholder="JetBrainsMono Nerd Font, monospace" value="${escapeHtml(font)}" onchange="HerdrMobile.setTerminalFontFamily(this.value)"></label><label data-settings-id="terminalLinks">${rollbackHtml("terminalLinks")}${appliedFlashHtml("terminalLinks")}<input type="checkbox" ${links ? "checked" : ""} onchange="HerdrMobile.setTerminalLinks(this.checked)"><span>Terminal links</span><small>Detect http/https URLs and open them when tapped.</small></label><label data-settings-id="terminalMouseReporting">${rollbackHtml("terminalMouseReporting")}${appliedFlashHtml("terminalMouseReporting")}<input type="checkbox" ${mouseReporting ? "checked" : ""} onchange="HerdrMobile.setTerminalMouseReporting(this.checked)"><span>Terminal mouse reporting</span><small>Forward mouse input to terminal apps. Disabled by default; scrolling still works.</small></label><small>Add a Nerd Font family name so icon glyphs render. Leave blank for the default stack.</small></div>`;
+      return `<div class="mobile-settings-group"><h3>Terminal</h3><label data-settings-id="terminalCore">${rollbackHtml("terminalCore")}${appliedFlashHtml("terminalCore")}<span>Terminal renderer</span><select onchange="HerdrMobile.setTerminalCore(this.value)"><option value="ghostty" ${core === "ghostty" ? "selected" : ""}>Ghostty VT core</option><option value="wterm" ${core === "wterm" ? "selected" : ""}>wterm VT core</option></select><small>Ghostty renders Kitty graphics inline; wterm shows a placeholder. One-time default switch: wterm flips to Ghostty unless you chose wterm after this change. Reload the page after switching.</small></label><label data-settings-id="terminalFontFamily">${rollbackHtml("terminalFontFamily")}${appliedFlashHtml("terminalFontFamily")}<span>Terminal font</span><input placeholder="JetBrainsMono Nerd Font, monospace" value="${escapeHtml(font)}" onchange="HerdrMobile.setTerminalFontFamily(this.value)"></label><label data-settings-id="terminalLinks">${rollbackHtml("terminalLinks")}${appliedFlashHtml("terminalLinks")}<input type="checkbox" ${links ? "checked" : ""} onchange="HerdrMobile.setTerminalLinks(this.checked)"><span>Terminal links</span><small>Detect http/https URLs and open them when tapped.</small></label><label data-settings-id="terminalMouseReporting">${rollbackHtml("terminalMouseReporting")}${appliedFlashHtml("terminalMouseReporting")}<input type="checkbox" ${mouseReporting ? "checked" : ""} onchange="HerdrMobile.setTerminalMouseReporting(this.checked)"><span>Terminal mouse reporting</span><small>Forward mouse input to terminal apps. Disabled by default; scrolling still works.</small></label><small>Add a Nerd Font family name so icon glyphs render. Leave blank for the default stack.</small></div>`;
     }
 
     function dataSection() {
@@ -300,7 +300,11 @@
     }
 
     function terminalCoreValue() {
-      return readOptions().terminalCore === "ghostty" ? "ghostty" : "wterm";
+      const parsed = readOptions();
+      return globalThis.HerdrAppHelpers.resolveTerminalCoreChoice(
+        parsed.terminalCore,
+        parsed.terminalCoreGhosttyMigrated === true,
+      );
     }
 
     function fileBrowserDepthValue() {
@@ -650,7 +654,8 @@
 
     function setTerminalCore(value) {
       const parsed = readOptions();
-      parsed.terminalCore = value === "ghostty" ? "ghostty" : "wterm";
+      parsed.terminalCore = globalThis.HerdrAppHelpers.resolveTerminalCore(value);
+      parsed.terminalCoreGhosttyMigrated = true;
       writeOptions(parsed);
       queueAppliedFlash("terminalCore");
       if (globalThis.HerdrMobile && globalThis.HerdrMobile.reloadTerminal)
@@ -736,6 +741,7 @@
       setTerminalMouseReporting,
       setThemeMode,
       setWorktreeDefaultDirectory,
+      terminalCoreValue,
     };
   }
 

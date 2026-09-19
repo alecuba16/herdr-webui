@@ -281,9 +281,9 @@ the webui's bridge is a direct terminal client. The corrected plan:
 
 ## Open questions (answer before implementation)
 
-- Is Ghostty core the default for new users today? (Settings default is
-  `wterm`.) If it stays default, most users still see the placeholder; a
-  feature flag or default flip decision is needed.
+- Is Ghostty core the default for new users today? (Answered: yes as of
+  the default flip; the Settings default is now `ghostty`, and stored
+  wterm-as-default blobs migrate once via `terminalCoreGhosttyMigrated`.)
 - Should the mobile/temp-terminal surfaces get a settings toggle for inline
   images, or inherit the desktop setting?
 - Does external herdr (the other backend) want the same TERM_PROGRAM hint?
@@ -649,7 +649,9 @@ adapter's DOM-measured `rowHeight()` uses.
 Verification (all on the real served app, isolated servers):
 - Rust suite: 547 passing (embedding the new bundle).
 - `node --test src/assets/*.test.mjs`: 558/558.
-- Terminal-fit e2e (default wterm core, real Chrome): 26/26.
+- Terminal-fit e2e (wterm core, real Chrome): 26/26. (Verified while wterm
+  was still the default; the 0.4.33 default flip to Ghostty does not change
+  the fit harness, which pins its own core.)
 - Ghostty-core e2e (NEW, `scripts/e2e/run-ghostty-core-e2e.sh`, `just
   ghostty-core-e2e`): forces `terminalCore=ghostty` via localStorage and
   verifies attach, rendered rows, live shell prompt (starship `❯`), and
