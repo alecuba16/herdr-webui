@@ -37,7 +37,11 @@ png = b'\x89PNG\r\n\x1a\n' + ihdr + chunk(b'IDAT', zlib.compress(raw)) + chunk(b
 open(sys.argv[1], 'wb').write(png)
 PY
 
-XDG_CONFIG_HOME="$WORK/xdg" "$ROOT/target/debug/herdr-webui" \
+# Scrub the HERDR_WEBUI gate vars from the server env: this script may run
+# from inside a webui pane (which exports them), and the migration phase
+# asserts the builtin backend exports them to panes on its own.
+env -u HERDR_WEBUI -u KITTY_WINDOW_ID -u TERM_PROGRAM \
+  XDG_CONFIG_HOME="$WORK/xdg" "$ROOT/target/debug/herdr-webui" \
   --bind "127.0.0.1:$PORT" --session "jcodeflow-$$" >"$WORK/server.log" 2>&1 &
 SERVER_PID=$!
 for i in $(seq 1 50); do curl -sfk "https://127.0.0.1:$PORT/" >/dev/null && break; sleep 0.2; done
@@ -49,6 +53,19 @@ CHROME_PID=$!
 for i in $(seq 1 50); do curl -sf "http://127.0.0.1:$CDP/json/version" >/dev/null && break; sleep 0.2; done
 
 RC=0
+# Phase 3 runs first because it navigates the same page/profile; the other
+# phases re-seed localStorage themselves, so order between them is free.
+# Keep the dir name short: the full debug socket path must stay under the
+# 104-char Unix sun_path limit.
+MIG_RUNTIME="$RUNTIME_DIR/mig"
+mkdir -p "$MIG_RUNTIME"
+echo "==> legacy-blob migration acceptance (ghostty default)"
+LEGACY_MIGRATION=1 \
+  E2E_BASE_URL="https://127.0.0.1:$PORT/" \
+  CDP_PORT="$CDP" \
+  JCODE_IMG_E2E_RUNTIME_DIR="$MIG_RUNTIME" \
+  PNG_PATH="$WORK/test.png" \
+  node "$ROOT/scripts/e2e/jcode-image-flow-acceptance.mjs" || RC=1
 for CORE in ghostty wterm; do
   # Per-core runtime dir: the pane runs `jcode serve` in the foreground,
   # which only dies with the pane; a second run on the same socket would
