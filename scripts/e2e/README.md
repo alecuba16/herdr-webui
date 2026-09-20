@@ -271,6 +271,19 @@ scratch dirs, cleanup on exit):
   client id (18/18 checks). Requires `herdr` on PATH; exits early
   (clean skip) otherwise so CI stays daemon-free.
 
+- `scripts/e2e/run-recent-workspace-e2e.sh`: the recent-workspace
+  acceptance for the direct panel open and per-workspace shell mode
+  persistence. Boots an isolated server plus headless Chrome and drives
+  the real UI end to end: open a workspace through the real smart modal
+  (palette -> Open workspace action), switch to Git mode with the real
+  header toggle, close it via the real sidebar button, then reopen the
+  same folder from the real Recent workspaces section of the search
+  palette. Asserts the URL lands directly on
+  `/workspace/<id>/tab/<tab>/pane/<pane>` with a live terminal id, that
+  the Git shell mode is restored un-minimized (real git drawer visible),
+  and that the localStorage `path:` entry survives the close while the
+  workspace-id entry is pruned (10/10 checks).
+
 `scripts/e2e/smoke-jcode-kitty-emit.sh` is the no-browser smoke of the
 jcode side: a real `jcode serve` on a `pty_capture.py` PTY plus the real
 read tool must emit `ESC_G a=T,f=100` under `TERM_PROGRAM=ghostty`
