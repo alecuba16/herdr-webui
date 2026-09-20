@@ -56,6 +56,12 @@ external-graphics-probe:
 git-drawer-e2e:
     scripts/e2e/run-git-drawer-e2e.sh
 
+# Real-browser acceptance run for the recent-workspace direct panel open
+# and shell mode persistence (smart-modal open -> Git toggle -> close ->
+# reopen from the Recent palette section). See scripts/e2e/README.md.
+recent-workspace-e2e:
+    scripts/e2e/run-recent-workspace-e2e.sh
+
 check: lint test
 
 build:
