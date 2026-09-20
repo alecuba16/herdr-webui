@@ -24,6 +24,11 @@
   workspaces.
 - Recent rows get a stable `recent:<path>` result key so selection and
   rendering never collide with action or workspace targets.
+- New real-browser acceptance run: `scripts/e2e/run-recent-workspace-e2e.sh`
+  boots an isolated server plus headless Chrome and drives the full user flow
+  (smart-modal open, Git mode toggle, close, reopen from the Recent section),
+  asserting the direct workspace+tab+pane landing, restored Git mode, live
+  terminal, and localStorage path: survival across close (10 checks).
 
 ## 0.4.32 Release Notes
 - Terminal image support works end to end on every render path. The wterm
