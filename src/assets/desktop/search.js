@@ -637,7 +637,14 @@ async function openRecentWorkspace(path, label) {
     });
     if (window.HerdrActionRegistry && window.HerdrActionRegistry.invalidateRecent) window.HerdrActionRegistry.invalidateRecent();
     const result = (r && r.result) || {};
-    go(result.workspace && result.workspace.workspace_id);
+    // worktree.open returns the workspace plus its focused tab and root pane;
+    // navigating with all three lands directly on a live terminal panel
+    // instead of leaving the selection unresolvable until the next refresh.
+    go(
+      result.workspace && result.workspace.workspace_id,
+      result.tab && result.tab.tab_id,
+      result.root_pane && result.root_pane.pane_id,
+    );
   } catch (error) {
     alert(error.message || String(error));
   } finally {

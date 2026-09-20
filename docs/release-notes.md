@@ -1,6 +1,18 @@
 # Release notes
 
 ## 0.4.33 Release Notes
+- Opening a recent workspace from the desktop search palette now lands
+  directly on the workspace's first tab and terminal panel: the open
+  handler navigates with the focused tab and root pane that
+  `worktree.open` returns, instead of leaving the selection for the next
+  refresh cycle to resolve. Mobile already navigated this way through
+  `navigateToResult`.
+- Desktop workspace shell modes (terminal/Git/Files) now persist to
+  `localStorage` under `herdr-web-workspace-shell`, keyed per workspace id
+  and per folder path (newest 20 paths). The mode survives page reloads,
+  and reopening a workspace from the recents list restores the Git or
+  Files panel it had before it was closed. Reopens always start
+  un-minimized, and corrupted storage falls back to terminal mode.
 - Recent workspace rows in the desktop search palette now open the exact
   workspace you click instead of the keyboard-selected row: each recent row
   carries its own index, so mouse clicks and Enter never dispatch the wrong

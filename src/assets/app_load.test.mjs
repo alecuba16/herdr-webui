@@ -350,7 +350,17 @@ describe("app bundle load", () => {
         const body = JSON.parse(init.body);
         equal(body.path, "/repo/alpha", "open sends the workspace path");
         equal(body.label, "Alpha", "open sends the label");
-        return { status: 200, ok: true, json: async () => ({ result: { workspace: { workspace_id: "ws-1" } } }) };
+        return {
+          status: 200,
+          ok: true,
+          json: async () => ({
+            result: {
+              workspace: { workspace_id: "ws-1" },
+              tab: { tab_id: "tab-1" },
+              root_pane: { pane_id: "pane-1" },
+            },
+          }),
+        };
       }
       if (String(url).includes("/api/recent-workspaces/clear")) {
         return { status: 200, json: async () => ({ ok: true, cleared: 0 }) };
@@ -361,10 +371,15 @@ describe("app bundle load", () => {
       return { status: 200, json: async () => ({}) };
     };
     ctx.__navigated = [];
-    vm.runInContext("globalThis.go = (id) => { globalThis.__navigated.push(id); };", ctx);
+    // Strings avoid cross-realm Array prototype mismatches in deepStrictEqual.
+    vm.runInContext("globalThis.go = (ws, tab, pane) => { globalThis.__navigated.push([ws, tab, pane].join('|')); };", ctx);
     await vm.runInContext('openRecentWorkspace("/repo/alpha", "Alpha")', ctx);
     equal(openCalls, 1, "openRecentWorkspace posts once");
-    deepEqual(ctx.__navigated, ["ws-1"], "openRecentWorkspace navigates to the opened workspace");
+    deepEqual(
+      ctx.__navigated,
+      ["ws-1|tab-1|pane-1"],
+      "openRecentWorkspace navigates to the opened workspace tab and pane",
+    );
     // Empty path exits early without calling the API.
     openCalls = 0;
     await vm.runInContext('openRecentWorkspace("", "Empty")', ctx);
@@ -1522,6 +1537,103 @@ describe("app bundle load", () => {
     match(readFileSync(new URL("./desktop/app_js/worktrees.js", import.meta.url), "utf8"), /forgetWorkspaceShell\(closingWorkspace\)/);
     match(gitUiSource, /state\.visible && state\.activeKey === key && !openOptions\.forceOpen/);
     match(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), /state\.open && activeKey === key && !openOptions\.forceOpen/);
+  });
+
+  it("persists per-workspace shell mode across reloads in localStorage", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    const storageKey = "herdr-web-workspace-shell";
+
+    // A mode change writes the shell state under the workspace key. The test
+    // workspace is not in state.workspaces, so no path: entry is written.
+    vm.runInContext('state.ws = "ws-keep";', ctx);
+    vm.runInContext('rememberWorkspaceShellMode("git", "ws-keep", { minimized: false });', ctx);
+    let saved = JSON.parse(ctx.localStorage.getItem(storageKey) || "{}");
+    equal(saved["ws-keep"] && saved["ws-keep"].mode, "git", "rememberWorkspaceShellMode persists the git mode");
+    ok(!("path:/repo/keep" in saved), "workspaces without a loaded row get no path entry");
+
+    // Minimizing persists the minimized flag too.
+    vm.runInContext('minimizeWorkspaceShell("ws-keep");', ctx);
+    saved = JSON.parse(ctx.localStorage.getItem(storageKey) || "{}");
+    equal(saved["ws-keep"] && saved["ws-keep"].minimized, true, "minimizeWorkspaceShell persists minimized");
+
+    // Restoring clears minimized and persists again.
+    vm.runInContext('restoreWorkspaceShell("ws-keep");', ctx);
+    saved = JSON.parse(ctx.localStorage.getItem(storageKey) || "{}");
+    equal(saved["ws-keep"] && saved["ws-keep"].minimized, false, "restoreWorkspaceShell persists un-minimized");
+
+    // Forget drops the entry.
+    vm.runInContext('forgetWorkspaceShell("ws-keep");', ctx);
+    saved = JSON.parse(ctx.localStorage.getItem(storageKey) || "{}");
+    ok(!("ws-keep" in saved), "forgetWorkspaceShell drops the persisted entry");
+
+    // A fresh load (new context) restores the persisted mode for a workspace.
+    vm.runInContext('rememberWorkspaceShellMode("files", "ws-reload", { minimized: false });', ctx);
+    const fresh = context();
+    // Pre-seed the storage the way a browser would after a reload.
+    fresh.localStorage.setItem(storageKey, ctx.localStorage.getItem(storageKey));
+    vm.runInContext(source, fresh);
+    equal(
+      vm.runInContext('currentWorkspaceShellMode("ws-reload");', fresh),
+      "files",
+      "a fresh page load restores the persisted shell mode",
+    );
+
+    // Corrupted storage is ignored without throwing.
+    const broken = context();
+    broken.localStorage.setItem(storageKey, "{not json");
+    doesNotThrow(() => vm.runInContext(source, broken));
+    equal(
+      vm.runInContext('currentWorkspaceShellMode("ws-any");', broken),
+      "terminal",
+      "corrupted storage falls back to terminal mode",
+    );
+
+    // Pruning keeps live workspaces, the default folder, and bounded path
+    // entries; it drops closed workspace ids.
+    vm.runInContext('rememberWorkspaceShellMode("git", "ws-live", { minimized: false });', ctx);
+    vm.runInContext('rememberWorkspaceShellMode("git", "ws-dead", { minimized: false });', ctx);
+    vm.runInContext('state.workspaces = [{ workspace_id: "ws-live" }];', ctx);
+    vm.runInContext("pruneWorkspaceShellStates();", ctx);
+    saved = JSON.parse(ctx.localStorage.getItem(storageKey) || "{}");
+    ok("ws-live" in saved, "prune keeps live workspaces");
+    ok(!("ws-dead" in saved), "prune drops closed workspaces from storage");
+
+    // A workspace with a folder row also writes a path: entry, and a reopened
+    // workspace (fresh id, same folder) inherits the remembered mode.
+    vm.runInContext('state.workspaces = [{ workspace_id: "ws-a", cwd: "/repo/gamma" }];', ctx);
+    vm.runInContext('rememberWorkspaceShellMode("files", "ws-a", { minimized: false });', ctx);
+    saved = JSON.parse(ctx.localStorage.getItem(storageKey) || "{}");
+    ok(saved["path:/repo/gamma"] && saved["path:/repo/gamma"].mode === "files", "mode changes write a path entry for the folder");
+    vm.runInContext('delete state.workspaceShell["ws-b"];', ctx);
+    vm.runInContext('state.workspaces = [{ workspace_id: "ws-b", cwd: "/repo/gamma" }];', ctx);
+    equal(
+      vm.runInContext('currentWorkspaceShellMode("ws-b");', ctx),
+      "files",
+      "a reopened workspace at the same folder restores the remembered mode",
+    );
+    equal(
+      vm.runInContext('isWorkspaceShellMinimized("ws-b");', ctx),
+      false,
+      "a reopened workspace starts un-minimized",
+    );
+
+    // Minimized state is remembered per folder but reopens still start visible.
+    vm.runInContext('state.workspaces = [{ workspace_id: "ws-c", cwd: "/repo/gamma" }];', ctx);
+    vm.runInContext('minimizeWorkspaceShell("ws-c");', ctx);
+    vm.runInContext('delete state.workspaceShell["ws-d"];', ctx);
+    vm.runInContext('state.workspaces = [{ workspace_id: "ws-d", cwd: "/repo/gamma" }];', ctx);
+    equal(
+      vm.runInContext('currentWorkspaceShellMode("ws-d");', ctx),
+      "files",
+      "a reopened workspace keeps the folder's mode even after a minimize",
+    );
+
+    // Path entries are bounded to the most recent WORKSPACE_SHELL_PATH_LIMIT.
+    vm.runInContext("for (let i = 0; i < 30; i++) { const id = 'ws-many-' + i; state.workspaces = [{ workspace_id: id, cwd: '/repo/many/' + i }]; rememberWorkspaceShellMode('git', id, { minimized: false }); }", ctx);
+    saved = JSON.parse(ctx.localStorage.getItem(storageKey) || "{}");
+    const pathEntryCount = Object.keys(saved).filter((key) => key.startsWith("path:")).length;
+    equal(pathEntryCount, 20, "path entries are capped at 20");
   });
 
   it("opens search results as file browser tabs with split support", () => {
