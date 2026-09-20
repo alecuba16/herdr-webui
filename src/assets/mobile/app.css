@@ -1248,6 +1248,12 @@ body.light .mobile-nav-status.working {
   color: var(--muted);
   margin-top: 4px;
 }
+.mobile-worktree-row.mobile-recent-open {
+  opacity: 0.55;
+}
+.mobile-worktree-row.mobile-recent-open .mobile-btn.primary[disabled] {
+  cursor: default;
+}
 .mobile-recent-actions {
   display: flex;
   gap: 8px;

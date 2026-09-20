@@ -49,6 +49,19 @@
   background: var(--panel2);
   border-color: var(--border2);
 }
+.search-result-disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+.search-result-disabled:hover,
+.search-result-disabled.active {
+  background: transparent;
+  border-color: transparent;
+}
+.search-result-open-hint {
+  color: var(--muted);
+  font-weight: 400;
+}
 .search-result-icon {
   display: grid;
   place-items: center;

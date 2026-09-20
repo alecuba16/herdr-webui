@@ -1,5 +1,18 @@
 # Release notes
 
+## 0.4.33 Release Notes
+- Recent workspace rows in the desktop search palette now open the exact
+  workspace you click instead of the keyboard-selected row: each recent row
+  carries its own index, so mouse clicks and Enter never dispatch the wrong
+  entry.
+- Already-open workspaces stay visible in the recents list on both desktop
+  and mobile, but they are grayed out and disabled (no click, no Enter) so
+  you cannot accidentally reopen a folder that is already running. Mobile
+  matches the desktop `openPaths` semantics, including plain `cwd`
+  workspaces.
+- Recent rows get a stable `recent:<path>` result key so selection and
+  rendering never collide with action or workspace targets.
+
 ## 0.4.32 Release Notes
 - Terminal image support works end to end on every render path. The wterm
   core is upgraded to @wterm 0.5.0 (Kitty graphics capable) and Kitty

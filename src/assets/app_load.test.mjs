@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { beforeEach, describe, it } from "node:test";
-import { deepEqual, doesNotThrow, equal, match, ok } from "node:assert/strict";
+import { deepEqual, doesNotThrow, equal, match, notEqual, ok } from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 
@@ -257,44 +257,59 @@ describe("app bundle load", () => {
     const fallbackTitle = vm.runInContext("recentWorkspaceCandidates([{ path: '/repo/fallback/nested' }])", ctx);
     equal(fallbackTitle[0].title, "nested", "label falls back to last path segment");
 
-    // Recents already open as a workspace are hidden from the palette.
+    // Recents already open as a workspace stay visible but flagged disabled.
     vm.runInContext(
       `state.workspaces = [{ workspace_id: "ws-open", cwd: "/repo/beta" }];`,
       ctx,
     );
-    const hideWorkspace = vm.runInContext("recentWorkspaceCandidates([{ path: '/repo/beta', label: 'Beta' }, { path: '/repo/gamma', label: 'Gamma' }])", ctx);
-    equal(hideWorkspace.length, 1, "open workspace entry is hidden");
-    equal(hideWorkspace[0].title, "Gamma");
+    const flaggedWorkspace = vm.runInContext("recentWorkspaceCandidates([{ path: '/repo/beta', label: 'Beta' }, { path: '/repo/gamma', label: 'Gamma' }])", ctx);
+    equal(flaggedWorkspace.length, 2, "open workspace entry stays visible");
+    equal(flaggedWorkspace[0].title, "Beta");
+    ok(flaggedWorkspace[0].isOpen === true, "open workspace entry is flagged isOpen");
+    ok(flaggedWorkspace[1].isOpen !== true, "closed entry is not flagged");
 
-    // A workspace whose worktree checkout path matches the recent entry hides
+    // A workspace whose worktree checkout path matches the recent entry flags
     // it too.
     vm.runInContext(
       `state.workspaces = [{ workspace_id: "ws-wt", worktree: { checkout_path: "/repo/beta" } }];`,
       ctx,
     );
-    const hideWorktreePath = vm.runInContext("recentWorkspaceCandidates([{ path: '/repo/beta', label: 'Beta' }, { path: '/repo/gamma', label: 'Gamma' }])", ctx);
-    equal(hideWorktreePath.length, 1, "open worktree checkout hides the recent entry");
-    equal(hideWorktreePath[0].title, "Gamma");
+    const flaggedWorktreePath = vm.runInContext("recentWorkspaceCandidates([{ path: '/repo/beta', label: 'Beta' }, { path: '/repo/gamma', label: 'Gamma' }])", ctx);
+    equal(flaggedWorktreePath.length, 2, "open worktree checkout keeps the recent entry visible");
+    ok(flaggedWorktreePath[0].isOpen === true, "worktree checkout match flags the entry");
+    equal(flaggedWorktreePath[1].title, "Gamma");
 
-    // A worktree row with an open workspace at the same path also hides the
+    // A worktree row with an open workspace at the same path also flags the
     // entry even when no workspace row exposes that path.
     vm.runInContext("state.workspaces = [];", ctx);
     vm.runInContext(
       `state.worktrees = [{ open_workspace_id: "ws-1", path: "/repo/beta" }];`,
       ctx,
     );
-    const hideOpenRow = vm.runInContext("recentWorkspaceCandidates([{ path: '/repo/beta', label: 'Beta' }, { path: '/repo/gamma', label: 'Gamma' }])", ctx);
-    equal(hideOpenRow.length, 1, "open worktree row hides the recent entry");
-    equal(hideOpenRow[0].title, "Gamma");
+    const flaggedOpenRow = vm.runInContext("recentWorkspaceCandidates([{ path: '/repo/beta', label: 'Beta' }, { path: '/repo/gamma', label: 'Gamma' }])", ctx);
+    equal(flaggedOpenRow.length, 2, "open worktree row keeps the recent entry visible");
+    ok(flaggedOpenRow[0].isOpen === true, "open worktree row flags the recent entry");
+    equal(flaggedOpenRow[1].title, "Gamma");
 
     // A worktree row without an open workspace (open_workspace_id null) does
-    // NOT hide the entry: the folder can still be opened.
+    // NOT flag the entry: the folder can still be opened.
     vm.runInContext(
       `state.worktrees = [{ open_workspace_id: null, path: "/repo/beta" }];`,
       ctx,
     );
     const keepClosedRow = vm.runInContext("recentWorkspaceCandidates([{ path: '/repo/beta', label: 'Beta' }, { path: '/repo/gamma', label: 'Gamma' }])", ctx);
     equal(keepClosedRow.length, 2, "closed worktree row keeps the recent entry visible");
+    ok(keepClosedRow[0].isOpen !== true, "closed worktree row does not flag the entry");
+    ok(keepClosedRow[1].isOpen !== true, "unrelated entries are not flagged");
+
+    // Trailing-slash variants of the same open path still flag the entry.
+    vm.runInContext(
+      `state.worktrees = [{ open_workspace_id: "ws-1", path: "/repo/beta/" }];`,
+      ctx,
+    );
+    const flaggedTrailingSlash = vm.runInContext("recentWorkspaceCandidates([{ path: '/repo/beta', label: 'Beta' }])", ctx);
+    equal(flaggedTrailingSlash.length, 1);
+    ok(flaggedTrailingSlash[0].isOpen === true, "trailing-slash open path still flags the entry");
 
     vm.runInContext("state.workspaces = []; state.worktrees = [];", ctx);
 
@@ -422,6 +437,161 @@ describe("app bundle load", () => {
     removeCalls = 0;
     await vm.runInContext("HerdrSearchPalette.removeRecent(null, '')", ctx);
     equal(removeCalls, 0, "removeRecent ignores an empty path");
+  });
+
+  it("dispatches the clicked recent row, not the keyboard-selected row", async () => {
+    const ctx = context();
+    let recentPayload = [
+      { path: "/repo/alpha", label: "Alpha", kind: "workspace" },
+      { path: "/repo/beta", label: "Beta", kind: "workspace" },
+    ];
+    let openedPaths = [];
+    ctx.fetch = async (url, init) => {
+      if (String(url) === "/api/recent-workspaces" && init && init.method === "POST") {
+        const body = JSON.parse(init.body);
+        openedPaths.push({ path: body.path, label: body.label });
+        return { status: 200, ok: true, json: async () => ({ result: { workspace: { workspace_id: "ws-opened" } } }) };
+      }
+      if (String(url).includes("/api/recent-workspaces")) {
+        return { status: 200, json: async () => ({ recent: recentPayload }) };
+      }
+      return { status: 200, json: async () => ({}) };
+    };
+    vm.runInContext(source, ctx);
+
+    // Two recents render after the action rows; the keyboard selection sits
+    // on the first recent while the user clicks the second one.
+    vm.runInContext(`
+      searchPaletteState.recent = recentWorkspaceCandidates([
+        { path: '/repo/alpha', label: 'Alpha', kind: 'workspace' },
+        { path: '/repo/beta', label: 'Beta', kind: 'workspace' },
+      ]);
+      searchPaletteState.sectionsExpanded = { actions: true, recent: true, workspaces: true, files: true, content: true };
+      searchPaletteState.selectedIndex = 0;
+      renderSearchPalette();
+    `, ctx);
+    const results = vm.runInContext("searchPaletteState.results", ctx);
+    ok(results.length >= 2, "palette results include the recent rows");
+    const recentRows = results.filter((row) => row.type === "recent");
+    equal(recentRows.length, 2, "both recent rows are in the results list");
+    equal(recentRows[0].path, "/repo/alpha");
+    equal(recentRows[1].path, "/repo/beta");
+
+    const betaIndex = results.indexOf(recentRows[1]);
+    ok(betaIndex !== recentRows[0] && betaIndex > 0, "the beta row has its own absolute index");
+    vm.runInContext(`searchPaletteState.selectedIndex = ${betaIndex - 1};`, ctx);
+
+    // The rendered HTML must dispatch the clicked row's absolute index, not
+    // rely on the keyboard selectedIndex.
+    const html = vm.runInContext("el('searchPaletteResults').innerHTML", ctx);
+    const onclicks = Array.from(html.matchAll(/onclick="chooseSearchResult\((\d+)\)"/g)).map((m) => Number(m[1]));
+    ok(onclicks.length >= 2, "recent rows carry explicit onclick indexes");
+    const alphaIndex = results.indexOf(recentRows[0]);
+    ok(onclicks.includes(alphaIndex), "the alpha row dispatches its own absolute index");
+    ok(onclicks.includes(betaIndex), "the beta row dispatches its own absolute index");
+    ok(!onclicks.includes(undefined), "no recent row dispatches undefined");
+    ok(html.includes(`onclick="chooseSearchResult(${betaIndex})"`), "clicking beta dispatches the beta index");
+
+    // Actually dispatch: choosing the beta index must open /repo/beta even
+    // though the keyboard selection points at the alpha row.
+    await vm.runInContext(`chooseSearchResult(${betaIndex})`, ctx);
+    equal(openedPaths.length, 1, "clicking a recent row opens that workspace");
+    equal(openedPaths[0].path, "/repo/beta", "the clicked row's path is opened, not the keyboard row's");
+    equal(openedPaths[0].label, "Beta", "the clicked row's label is sent");
+
+    // Sanity: the old bug path (undefined index) falls back to the keyboard
+    // selection, so the rendered rows must always carry their own index.
+    openedPaths.length = 0;
+    vm.runInContext(`
+      searchPaletteState.recent = recentWorkspaceCandidates([
+        { path: '/repo/alpha', label: 'Alpha', kind: 'workspace' },
+        { path: '/repo/beta', label: 'Beta', kind: 'workspace' },
+      ]);
+      searchPaletteState.sectionsExpanded = { actions: true, recent: true, workspaces: true, files: true, content: true };
+      renderSearchPalette();
+      searchPaletteState.selectedIndex = ${alphaIndex};
+    `, ctx);
+    await vm.runInContext("chooseSearchResult(undefined)", ctx);
+    equal(openedPaths.length, 1, "undefined index falls back to the keyboard selection");
+    equal(openedPaths[0].path, "/repo/alpha", "the keyboard-selected row opens on undefined");
+  });
+
+  it("renders already-open recents as disabled rows and blocks their activation", async () => {
+    const ctx = context();
+    let openedPaths = [];
+    ctx.fetch = async (url, init) => {
+      if (String(url) === "/api/recent-workspaces" && init && init.method === "POST") {
+        const body = JSON.parse(init.body);
+        openedPaths.push(body.path);
+        return { status: 200, ok: true, json: async () => ({ result: { workspace: { workspace_id: "ws-opened" } } }) };
+      }
+      return { status: 200, json: async () => ({}) };
+    };
+    vm.runInContext(source, ctx);
+
+    vm.runInContext(`
+      state.workspaces = [{ workspace_id: "ws-open", cwd: "/repo/beta" }];
+      searchPaletteState.recent = recentWorkspaceCandidates([
+        { path: '/repo/alpha', label: 'Alpha', kind: 'workspace' },
+        { path: '/repo/beta', label: 'Beta', kind: 'workspace' },
+      ]);
+      searchPaletteState.sectionsExpanded = { actions: true, recent: true, workspaces: true, files: true, content: true };
+      renderSearchPalette();
+    `, ctx);
+    const results = vm.runInContext("searchPaletteState.results", ctx);
+    const betaRow = results.find((row) => row.type === "recent" && row.path === "/repo/beta");
+    const alphaRow = results.find((row) => row.type === "recent" && row.path === "/repo/alpha");
+    ok(betaRow && betaRow.isOpen === true, "the open recent is flagged");
+    ok(alphaRow && !alphaRow.isOpen, "the closed recent is not flagged");
+
+    const html = vm.runInContext("el('searchPaletteResults').innerHTML", ctx);
+    ok(html.includes("search-result-disabled"), "open recent rows get the disabled class");
+    ok(html.includes("aria-disabled=\"true\""), "open recent rows expose aria-disabled");
+    ok(html.includes("(already open)"), "open recent rows show the already-open hint");
+    ok(html.includes('title="This workspace is already open"') === false, "desktop rows do not use the mobile title hint");
+
+    // The disabled row must not carry an onclick dispatcher.
+    const betaIndex = results.indexOf(betaRow);
+    ok(!html.includes(`onclick="chooseSearchResult(${betaIndex})"`), "disabled recent rows have no onclick handler");
+
+    // Enter on a disabled row must not dispatch, even with an explicit index.
+    await vm.runInContext(`chooseSearchResult(${betaIndex})`, ctx);
+    equal(openedPaths.length, 0, "choosing a disabled recent does not open anything");
+
+    // Keyboard selection must skip disabled rows: moving down from the first
+    // row lands on a selectable row, never on the disabled beta.
+    vm.runInContext("searchPaletteState.selectedIndex = 0; searchPaletteState.query = ''; renderSearchPalette();", ctx);
+    vm.runInContext("moveSearchSelection(1)", ctx);
+    const after = vm.runInContext("searchPaletteState.results[searchPaletteState.selectedIndex]", ctx);
+    equal(after.type, "action", "keyboard selection moves to the next selectable row");
+    vm.runInContext("moveSearchSelection(-1)", ctx);
+    const back = vm.runInContext("searchPaletteState.results[searchPaletteState.selectedIndex]", ctx);
+    ok(back.type === "action" || back.type === "recent", "keyboard selection wraps over selectable rows");
+    ok(!vm.runInContext("searchResultDisabled(searchPaletteState.results[searchPaletteState.selectedIndex])", ctx), "selection never rests on a disabled row after wrap");
+
+    // Re-render with the selection stuck on a disabled row snaps it to a
+    // selectable one.
+    vm.runInContext(`searchPaletteState.selectedIndex = ${betaIndex}; renderSearchPalette();`, ctx);
+    const snapped = vm.runInContext("searchResultDisabled(searchPaletteState.results[searchPaletteState.selectedIndex])", ctx);
+    ok(!snapped, "render snaps a disabled selection to a selectable row");
+
+    // All-selectable sanity: alpha remains clickable.
+    const alphaIndex = results.indexOf(alphaRow);
+    await vm.runInContext(`chooseSearchResult(${alphaIndex})`, ctx);
+    equal(openedPaths.length, 1, "the closed recent still opens");
+    equal(openedPaths[0], "/repo/alpha");
+  });
+
+  it("keys recent rows by type and path so actions and recents never collide", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    const key = (row) => vm.runInContext(`searchResultKey(${JSON.stringify(row)})`, ctx);
+    equal(key({ type: "recent", path: "/repo/beta" }), "recent:/repo/beta");
+    equal(key({ type: "recent", path: "/repo/alpha" }), "recent:/repo/alpha");
+    notEqual(key({ type: "recent", path: "/repo/beta" }), key({ type: "target", ws: "recent", tab: null, pane: null }), "recent and target keys do not collide");
+    notEqual(key({ type: "recent", path: "/repo/beta" }), key({ type: "action", action: "recent" }), "recent and action keys do not collide");
+    match(source, /function searchResultKey\(result\)/);
+    match(source, /recent:\$\{result\.path\}/);
   });
 
   it("returns desktop UX actions from a single command-palette candidate path", () => {
