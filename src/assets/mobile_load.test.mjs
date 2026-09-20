@@ -291,6 +291,27 @@ function context(pathname = "/", options = {}) {
           status: 200,
           json: async () => optionValue("sessionMutation", { ok: true, pid: 4242 }),
         };
+      if (url === "/api/recent-workspaces" && opt.method === "POST")
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            result: {
+              workspace: { workspace_id: "w1" },
+              tab: { tab_id: "w1:t1" },
+              root_pane: { pane_id: "w1:p1" },
+            },
+          }),
+        };
+      if (
+        String(url).startsWith("/api/recent-workspaces") &&
+        (!opt.method || opt.method === "GET")
+      )
+        return {
+          ok: true,
+          status: 200,
+          json: async () => optionValue("recentWorkspaces", { recent: [] }),
+        };
       const result = url.includes("workspaces")
         ? {
             workspaces: optionValue("workspaces", [
@@ -1286,6 +1307,41 @@ describe("mobile bundle load", () => {
     ok(html.includes("<strong>mobile-worktree</strong>"));
     ok(html.includes("<small>alpha · Latest commit"));
     ok(source.includes("worktreeActivityLabel"));
+    ok(!readFileSync(new URL("./mobile/worktrees.js", import.meta.url), "utf8").includes("sortWorktreesByRecent"));
+  });
+
+  it("renders already-open recent workspaces as disabled rows", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1", {
+      recentWorkspaces: {
+        recent: [
+          { path: "/tmp/alpha", label: "Alpha", kind: "workspace" },
+          { path: "/tmp/other", label: "Other", kind: "workspace" },
+        ],
+      },
+    });
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    await ctx.HerdrMobile.loadRecentWorkspaces();
+    ctx.HerdrMobile.showScreen("worktrees");
+    const html = ctx.document.getElementById("mobileScreen").innerHTML;
+
+    // The open workspace (/tmp/alpha matches the open w1 cwd) stays visible
+    // but is grayed out and its Open button is disabled.
+    ok(html.includes("Alpha"), "open recent workspace stays visible");
+    ok(html.includes("mobile-recent-open"), "open recent row gets the open class");
+    ok(html.includes("Alpha (already open)"), "open recent row shows the already-open hint");
+    ok(
+      /mobile-btn primary" title="This workspace is already open" disabled/.test(html),
+      "open recent Open button is disabled",
+    );
+    ok(html.includes("Other"), "closed recent workspace stays visible");
+    ok(!/Other \(already open\)/.test(html), "closed recent row is not marked open");
+
+    // Raw paths through jsArg remain for both rows (jsArg emits a JSON string
+    // literal, so quotes appear as &quot; entities).
+    const openRow = html.slice(html.indexOf("Alpha (already open)"));
+    ok(openRow.includes("openRecentWorkspace(&quot;/tmp/alpha&quot;)"), "open recent row keeps the raw jsArg path");
+    ok(html.includes("removeRecentWorkspace(&quot;/tmp/alpha&quot;)"), "open recent row still offers removal");
     ok(!readFileSync(new URL("./mobile/worktrees.js", import.meta.url), "utf8").includes("sortWorktreesByRecent"));
   });
 

@@ -414,7 +414,6 @@ function recentWorkspaceIsOpen(path) {
 function recentWorkspaceCandidates(recent) {
   const needle = String(searchPaletteState.query || "").trim().toLowerCase();
   return (recent || [])
-    .filter((item) => !recentWorkspaceIsOpen(item.path))
     .map((item) => {
       const title = item.label || (item.path || "").split("/").filter(Boolean).pop() || item.path || "";
       const subtitle = [item.kind === "worktree" ? "worktree" : "workspace", item.branch, item.path].filter(Boolean).join(" · ");
@@ -424,6 +423,8 @@ function recentWorkspaceCandidates(recent) {
         title,
         subtitle,
         path: item.path,
+        label: item.label,
+        isOpen: recentWorkspaceIsOpen(item.path),
         searchText: `${title} ${subtitle}`.toLowerCase(),
       };
     })
@@ -476,6 +477,10 @@ function renderSearchPalette() {
   searchPaletteState.results = buildSearchSelectionRows(actions, targets, order, opts);
   if (searchPaletteState.selectedIndex >= searchPaletteState.results.length)
     searchPaletteState.selectedIndex = Math.max(0, searchPaletteState.results.length - 1);
+  if (searchResultDisabled(searchPaletteState.results[searchPaletteState.selectedIndex])) {
+    const next = selectableSearchResults()[0];
+    searchPaletteState.selectedIndex = next ? searchPaletteState.results.indexOf(next) : 0;
+  }
   const container = el("searchPaletteResults");
   if (!container) return;
   const sections = {
@@ -518,6 +523,7 @@ function searchResultKey(result) {
   if (result.type === "action") return `action:${result.action}`;
   if (result.type === "path") return `path:${result.kind}:${result.path}`;
   if (result.type === "content") return `content:${result.file && result.file.path}:${result.match && result.match.id}`;
+  if (result.type === "recent") return `recent:${result.path}`;
   return `target:${result.ws}:${result.tab}:${result.pane}`;
 }
 
@@ -529,12 +535,17 @@ function renderSearchRowResult(result) {
 
 function renderRecentRowResult(result, index) {
   if (!result.path) return renderTargetResult(result, index);
+  const key = searchResultKey(result);
+  const absoluteIndex = searchPaletteState.results.findIndex((row) => row === result || searchResultKey(row) === key);
   const remove = `<button class="search-result-remove" type="button" title="Remove this recent workspace" aria-label="Remove ${escapeAttr(result.title)} from recent workspaces" onclick="HerdrSearchPalette.removeRecent(event, '${escapeAttr(result.path)}')"><span class="app-icon app-icon-trash" aria-hidden="true"></span></button>`;
-  return renderTargetResult(result, index, remove);
+  return renderTargetResult(result, Number.isInteger(index) ? index : absoluteIndex, remove);
 }
 
 function renderTargetResult(result, index, trailingHtml = "") {
-  return `<div class="search-result ${index === searchPaletteState.selectedIndex ? "active" : ""}" onclick="chooseSearchResult(${index})"><span class="search-result-icon">${escapeHtml(result.icon)}</span><div class="search-result-body"><div class="search-result-title">${escapeHtml(result.title)}</div><div class="search-result-subtitle">${escapeHtml(result.subtitle || result.kind)}</div></div>${trailingHtml}</div>`;
+  const disabled = result.type === "recent" && result.isOpen;
+  const cls = `search-result${index === searchPaletteState.selectedIndex ? " active" : ""}${disabled ? " search-result-disabled" : ""}`;
+  const title = disabled ? `${escapeHtml(result.title)} <span class="search-result-open-hint">(already open)</span>` : escapeHtml(result.title);
+  return `<div class="${cls}"${disabled ? ' aria-disabled="true"' : ""}${disabled ? "" : ` onclick="chooseSearchResult(${index})"`}><span class="search-result-icon">${escapeHtml(result.icon)}</span><div class="search-result-body"><div class="search-result-title">${title}</div><div class="search-result-subtitle">${escapeHtml(result.subtitle || result.kind)}</div></div>${trailingHtml}</div>`;
 }
 
 function renderWorkspacePathSection(opts = searchSettings()) {
@@ -570,16 +581,30 @@ function renderWorkspaceContentSection() {
   return `<section class="search-section search-content-section"><button class="search-section-head search-section-toggle" onclick="HerdrSearchPalette.toggleSection('content')" aria-expanded="${expanded ? "true" : "false"}"><strong><span class="herdr-tree-icon herdr-tree-icon-${expanded ? "chevron-down" : "chevron-right"}" aria-hidden="true"></span>File content</strong><span>${Number(searchPaletteState.content.total_matches || 0)} matches</span></button>${expanded ? body : ""}</section>`;
 }
 
+function selectableSearchResults() {
+  return searchPaletteState.results.filter((row) => !searchResultDisabled(row));
+}
+
+function searchResultDisabled(result) {
+  return !!result && result.type === "recent" && !!result.isOpen;
+}
+
 function moveSearchSelection(delta) {
-  if (!searchPaletteState.results.length) return;
-  searchPaletteState.selectedIndex =
-    (searchPaletteState.selectedIndex + delta + searchPaletteState.results.length) % searchPaletteState.results.length;
+  const selectable = selectableSearchResults();
+  if (!selectable.length) return;
+  const current = searchResultDisabled(searchPaletteState.results[searchPaletteState.selectedIndex])
+    ? null
+    : searchPaletteState.results[searchPaletteState.selectedIndex];
+  let position = current ? selectable.indexOf(current) : -1;
+  if (position === -1) position = delta > 0 ? -1 : 0;
+  const next = selectable[(position + delta + selectable.length) % selectable.length];
+  searchPaletteState.selectedIndex = searchPaletteState.results.indexOf(next);
   renderSearchPalette();
 }
 
 function chooseSearchResult(index = searchPaletteState.selectedIndex) {
   const result = searchPaletteState.results[index];
-  if (!result) return;
+  if (!result || searchResultDisabled(result)) return;
   if (result.type === "path") {
     openWorkspaceSearchPath(result.path, result.kind);
     return;

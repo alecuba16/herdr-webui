@@ -39,8 +39,12 @@
 
     function openPaths() {
       const workspaces = state.workspaces || [];
-      const paths = workspaces.map((workspace) =>
-        (workspace.worktree && workspace.worktree.checkout_path) || "",
+      const paths = workspaces.map(
+        (workspace) =>
+          (workspace.worktree && workspace.worktree.checkout_path) ||
+          workspace.cwd ||
+          workspace.path ||
+          "",
       );
       return new Set(paths.filter(Boolean));
     }
@@ -52,9 +56,17 @@
     function recentCandidates() {
       const open = openPaths();
       return (recent || [])
-        .filter((item) => item && item.path && !open.has(item.path.replace(/\/+$/, "")))
+        .filter((item) => item && item.path)
         .filter((item, index, list) => list.findIndex((other) => samePath(other.path, item.path)) === index)
+        .map((item) => ({ ...item, isOpen: recentIsOpen(open, item.path) }))
         .slice(0, 8);
+    }
+
+    function recentIsOpen(open, path) {
+      for (const candidate of open) {
+        if (samePath(candidate, path)) return true;
+      }
+      return false;
     }
 
     function renderRecentSection() {
@@ -68,7 +80,8 @@
       const title = item.label || pathBasename(item.path) || item.path;
       const kind = item.kind === "worktree" ? "worktree" : "workspace";
       const meta = [kind, item.branch, item.path].filter(Boolean).join(" · ");
-      return `<div class="mobile-worktree-row"><span><strong>${escapeHtml(title)}</strong><small>${escapeHtml(meta)}</small></span><span class="mobile-recent-actions"><button class="mobile-btn primary" onclick="HerdrMobile.openRecentWorkspace(${jsArg(item.path)})">Open</button><button class="mobile-btn" title="Remove from recent list" onclick="HerdrMobile.removeRecentWorkspace(${jsArg(item.path)})">✕</button></span></div>`;
+      const open = !!item.isOpen;
+      return `<div class="mobile-worktree-row${open ? " mobile-recent-open" : ""}"><span><strong>${escapeHtml(title)}${open ? " (already open)" : ""}</strong><small>${escapeHtml(meta)}</small></span><span class="mobile-recent-actions"><button class="mobile-btn primary"${open ? ' title="This workspace is already open" disabled' : ""} onclick="HerdrMobile.openRecentWorkspace(${jsArg(item.path)})">Open</button><button class="mobile-btn" title="Remove from recent list" onclick="HerdrMobile.removeRecentWorkspace(${jsArg(item.path)})">✕</button></span></div>`;
     }
 
     async function loadRecent() {
