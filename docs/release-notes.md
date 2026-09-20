@@ -1,6 +1,6 @@
 # Release notes
 
-## 0.4.33 Release Notes
+## 0.4.34 Release Notes
 - Opening a recent workspace from the desktop search palette now lands
   directly on the workspace's first tab and terminal panel: the open
   handler navigates with the focused tab and root pane that
