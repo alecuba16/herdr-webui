@@ -1,6 +1,28 @@
 # Release notes
 
 ## Unreleased
+- Session manager: reopening a session now restores the workspace, tab and
+  terminal panel the user left. Explicit navigation saves the selection per
+  session and backend (`herdr-session-state:<backend>:<session>`), and
+  switching back to a session (manager row or mobile switch) pushes the
+  saved `/session/<s>/workspace/...` path. Sessions with no saved selection
+  reopen bare; nothing auto-opens on fresh boots or fresh sessions.
+- Session close is now integrity-safe end to end. Inactive session rows have
+  Close buttons (desktop manager and mobile sessions screen). `already_stopped`
+  and the usual stale-target errors (`No such file`, `not running`, `ENOENT`)
+  count as success. The closed session's stored backend pin and saved
+  selections are always forgotten, the bound events websocket is torn down,
+  and the browser retargets the default session keeping its own pinned
+  backend. Server side, a closed-session marker blocks every auto-start path
+  from resurrecting a user-closed built-in session until an explicit launch,
+  and close deletes the socket files and the empty session directory.
+- Back/Forward after switching sessions works again. Backend pins are stored
+  per session (`herdr-session-backend:<session>`), so sessions no longer leak
+  the last-used backend into each other. The popstate handler re-reads the
+  target session's pin, resets the target state on a session change, and
+  cycles the stale events websocket only when the session or backend actually
+  changed. Deep-URL boots (`/session/work/...`) parse the route and pin the
+  routed session's backend before any request runs.
 - Documentation quick start fix: `cargo run -- --https off --backend-mode
   builtin` failed with `could not determine which binary to run` because the
   package builds two binaries (`herdr-webui` and `herdr-webui-tui`) without a
