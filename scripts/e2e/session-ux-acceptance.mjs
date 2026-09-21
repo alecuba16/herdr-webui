@@ -39,13 +39,15 @@ if (!title || title === 'Privacy error' || String(title).includes('Privacy')) {
 check('app loads (title present)', !!(await cdp.evalExpr('document.title')));
 
 // Fresh browser: no stored backend, must land on built-in with "session · built-in".
+// Backend pins are per session (herdr-session-backend:<session>); this run
+// targets the default session.
 const fresh = await cdp.evalExpr(`(async () => {
   await new Promise((r) => setTimeout(r, 600));
   const versions = await fetch('/api/versions').then((r) => r.json());
   const button = document.getElementById('footerSessionButton');
   const styles = button ? getComputedStyle(button) : null;
   return {
-    stored: localStorage.getItem('herdr-session-backend'),
+    stored: localStorage.getItem('herdr-session-backend:default'),
     backendMode: versions.backend_mode,
     currentBackend: versions.current_backend,
     herdrInstall: versions.herdr_install || null,
@@ -149,9 +151,13 @@ if (manager.herdrHidden === false) {
     row.click();
     await new Promise((r) => setTimeout(r, 2000));
     const button = document.getElementById('footerSessionButton');
+    // goSession pins the switched-to session's backend under its own key.
+    const pin = location.pathname.startsWith('/session/')
+      ? 'herdr-session-backend:' + decodeURIComponent(location.pathname.split('/')[2] || 'default')
+      : 'herdr-session-backend:default';
     return {
       found: true,
-      stored: localStorage.getItem('herdr-session-backend'),
+      stored: localStorage.getItem(pin),
       footerText: button.textContent,
       footerClass: button.className,
     };
@@ -215,20 +221,21 @@ const staleUi = await cdp.evalExpr(`(async () => {
   if (!row) return { found: false };
   row.click();
   await new Promise((r) => setTimeout(r, 1500));
-  const buttons = [...document.querySelectorAll('#sessionList .session-button.danger')];
+  const buttons = [...document.querySelectorAll('#sessionList .session-line .session-button.danger')];
   const closeBtn = buttons.find((b) => /Close/.test(b.textContent));
   if (!closeBtn) return { found: true, closeBtn: false };
   window.confirm = () => true;
   closeBtn.click();
   await new Promise((r) => setTimeout(r, 1200));
   const m = document.getElementById('sessionManager');
+  const probePin = 'herdr-session-backend:stale-probe';
   return {
     found: true,
     closeBtn: true,
     visible: m && getComputedStyle(m).display !== 'none',
     title: document.getElementById('sessionManagerTitle').textContent,
     text: document.getElementById('sessionManagerText').textContent,
-    stored: localStorage.getItem('herdr-session-backend'),
+    stored: localStorage.getItem(probePin),
   };
 })()`, true);
 check(
@@ -264,7 +271,13 @@ const disabled = await cdp.evalExpr(`(async () => {
   if (!herdrRow) return { pinned: false };
   herdrRow.click();
   await new Promise((r) => setTimeout(r, 2000));
-  const storedPin = localStorage.getItem('herdr-session-backend');
+  // The close above retargets the browser to the server's default backend;
+  // the current session's pin reflects that (fall back to default when the
+  // URL is not session-scoped).
+  const pinKey = location.pathname.startsWith('/session/')
+    ? 'herdr-session-backend:' + decodeURIComponent(location.pathname.split('/')[2] || 'default')
+    : 'herdr-session-backend:default';
+  const storedPin = localStorage.getItem(pinKey);
   if (storedPin !== 'external-herdr') return { pinned: false, storedPin };
   // Disable external-herdr via the settings API (loopback no-auth server).
   // Preserve every other field (read current settings first) so the save
@@ -295,7 +308,7 @@ const disabled = await cdp.evalExpr(`(async () => {
     pinned: true,
     savedOk: res.status === 200 && !!(saved && saved.enabled_backends
       && saved.enabled_backends['external-herdr'] === false),
-    stored: localStorage.getItem('herdr-session-backend'),
+    stored: localStorage.getItem(pinKey),
     footerText: button ? button.textContent : '',
     footerClass: button ? button.className : '',
   };
