@@ -1,6 +1,6 @@
 # Release notes
 
-## Unreleased
+## 0.4.35 Release Notes
 - Session manager: reopening a session now restores the workspace, tab and
   terminal panel the user left. Explicit navigation saves the selection per
   session and backend (`herdr-session-state:<backend>:<session>`), and
