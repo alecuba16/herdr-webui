@@ -299,4 +299,4 @@ Run those commands from the directory containing the downloaded `herdr-webui` bi
 
 ### The port is already in use
 
-If another process already listens on the bind address, the server does not exit: it prints `failed to bind <scheme>://<address>: Address already in use` and retries every second until the port becomes free. This is intentional, so a rebind (for example after a settings change) never drops the process. Stop the other instance, pick another port with `--bind`, or interrupt the retry loop with Ctrl+C.
+If another process already listens on the bind address, the server does not exit: it prints `failed to bind <scheme>://<address>: Address already in use` and retries every second until the port becomes free. This is intentional, so a rebind (for example after a settings change) never drops the process. While the server is retrying it ignores Ctrl+C and `SIGTERM`; stop the other instance, pick another port with `--bind`, or kill the process with `kill -9` (or `kill -TERM` after it has bound once).

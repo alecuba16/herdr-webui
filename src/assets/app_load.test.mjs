@@ -4237,6 +4237,7 @@ describe("app bundle load", () => {
     match(installationDoc, /This is the recommended quick-start path/);
     match(installationDoc, /For an external Herdr-compatible backend, point TUI at the socket pair explicitly/);
     match(installationDoc, /prints `failed to bind <scheme>:\/\/<address>: Address already in use` and retries every second/);
+    match(installationDoc, /While the server is retrying it ignores Ctrl\+C and `SIGTERM`/);
     match(releaseNotes, /Updates the global `\?` Help & Shortcuts modal/);
     match(releaseNotes, /`Worktree…` creates a linked worktree/);
     match(releaseNotes, /table header, and filter row sticky/);
