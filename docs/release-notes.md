@@ -12,6 +12,11 @@
   same documented quick start runs from the extracted binary without a Rust
   toolchain, and the tarball's self-install commands (`install-mac`/
   `install-linux`) are linked to the installation docs.
+- Installation FAQ now documents the bind-retry behavior: when the port is
+  already in use the server prints `failed to bind ... Address already in use`
+  and retries every second by design (rebinds must not drop the process), with
+  the exit options (stop the other instance, `--bind` another port, or
+  Ctrl+C).
 - Documentation accuracy pass: installation requirements now mark the `herdr`
   binary as optional (only external sessions need it, herdr `0.9.0`+), the
   WebUI/Herdr compatibility table now reflects protocol `22` exact-match

@@ -4236,6 +4236,7 @@ describe("app bundle load", () => {
     match(readmeDoc, /install-mac` or `install-linux/);
     match(installationDoc, /This is the recommended quick-start path/);
     match(installationDoc, /For an external Herdr-compatible backend, point TUI at the socket pair explicitly/);
+    match(installationDoc, /prints `failed to bind <scheme>:\/\/<address>: Address already in use` and retries every second/);
     match(releaseNotes, /Updates the global `\?` Help & Shortcuts modal/);
     match(releaseNotes, /`Worktree…` creates a linked worktree/);
     match(releaseNotes, /table header, and filter row sticky/);
