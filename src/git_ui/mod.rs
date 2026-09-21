@@ -789,6 +789,7 @@ mod tests {
     use axum::body::to_bytes;
     use serde_json::Value;
     use std::collections::HashMap;
+    use std::collections::HashSet;
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -818,6 +819,7 @@ mod tests {
             backend_mode: BackendMode::ExternalHerdr,
             _builtin_backend: None,
             builtin_sessions: Arc::new(Mutex::new(HashMap::new())),
+            closed_builtin_sessions: Arc::new(Mutex::new(HashSet::new())),
             builtin_start_lock: Arc::new(Mutex::new(())),
             herdr_bin: "herdr".to_string(),
             auth: Arc::new(Mutex::new(AuthConfig {
