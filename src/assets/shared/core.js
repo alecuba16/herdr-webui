@@ -145,6 +145,32 @@
     return trimmed || DEFAULT_TERMINAL_FONT_FAMILY;
   }
 
+  // Default terminal core: Ghostty VT, the only core that renders Kitty
+  // graphics (inline images) in the browser terminal. wterm stays selectable
+  // in Settings for lightweight rendering. Shared so every layout normalizes
+  // the stored choice against one default; see resolveTerminalCoreChoice for
+  // the one-time migration of pre-Ghostty-default stored blobs.
+  const DEFAULT_TERMINAL_CORE = "ghostty";
+
+  function resolveTerminalCore(value) {
+    return value === "wterm" ? "wterm" : DEFAULT_TERMINAL_CORE;
+  }
+
+  // One-time migration to the Ghostty default. Browsers that saved options
+  // while wterm was the default carry terminalCore:"wterm" in their stored
+  // blob (saveOptions persists the whole object, including defaults), so a
+  // default flip alone would never reach them. Migrate such blobs once:
+  // anything that is not an explicit post-migration wterm choice becomes
+  // ghostty. The in-blob flag (`terminalCoreGhosttyMigrated`) marks migration
+  // done and is persisted by the next saveOptions(); after it, explicit user
+  // choices ("wterm" or "ghostty") are preserved verbatim. Only values that
+  // predate the migration ("wterm" without the flag, missing, or invalid)
+  // get rewritten.
+  function resolveTerminalCoreChoice(value, migrated) {
+    if (migrated) return resolveTerminalCore(value);
+    return value === "wterm" ? DEFAULT_TERMINAL_CORE : resolveTerminalCore(value);
+  }
+
   function textValue(v) {
     if (v === null || v === undefined) return "";
     if (typeof v === "string") return v;
@@ -344,6 +370,8 @@
     normalizeOrder,
     normalizeThemeColors,
     resolveTerminalFontFamily,
+    resolveTerminalCore,
+    resolveTerminalCoreChoice,
     textValue,
     resolveWorktreeSource,
     checkedOutWorktreeForBranch,

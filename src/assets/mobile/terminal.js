@@ -31,7 +31,11 @@
     }
 
     function terminalCore() {
-      return options().terminalCore === "ghostty" ? "ghostty" : "wterm";
+      const parsed = options();
+      return globalThis.HerdrAppHelpers.resolveTerminalCoreChoice(
+        parsed.terminalCore,
+        parsed.terminalCoreGhosttyMigrated === true,
+      );
     }
 
     function applyFontFamily() {

@@ -769,9 +769,14 @@
       function tempTerminalCore() {
         try {
           var parsed = globalThis.HerdrOptions ? globalThis.HerdrOptions.read() : {};
-          return parsed.terminalCore === "ghostty" ? "ghostty" : "wterm";
+          return globalThis.HerdrAppHelpers.resolveTerminalCoreChoice(
+            parsed.terminalCore,
+            parsed.terminalCoreGhosttyMigrated === true,
+          );
         } catch (e) {
-          return "wterm";
+          // Matches DEFAULT_TERMINAL_CORE in shared/core.js; duplicated here
+          // because this catch path may run without HerdrAppHelpers loaded.
+          return "ghostty";
         }
       }
 

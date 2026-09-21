@@ -298,7 +298,7 @@ Browser-local settings are stored in `localStorage` under `herdr-web-options` an
 | `gitShortcuts` | app default | Git UI shortcut map. |
 | `searchShortcut` | `off` | Optional search prefix. |
 | `terminalFontFamily` | bundled Nerd Font stack | Migrates old monospace default. |
-| `terminalCore` | `wterm` | Browser terminal renderer core. Valid values are `wterm` and `ghostty`; invalid values normalize to `wterm`. Changing it reconnects the active terminal. |
+| `terminalCore` | `ghostty` | Browser terminal renderer core. Valid values are `wterm` and `ghostty`; invalid values normalize to `ghostty`. Changing it reconnects the active terminal. Browsers whose stored blob predates the Ghostty default (wterm stored as a default artifact, not an explicit choice) migrate to `ghostty` once via the `terminalCoreGhosttyMigrated` flag; explicit re-choices of `wterm` are preserved. |
 | `terminalLinks` | `true` | Terminal link detection. |
 | `terminalMouseReporting` | `false` | Allows terminal renderer mouse reports through to the PTY. Disabled by default so text selection and accidental mouse report echoes stay safe. |
 | `agentSortMode` | `off` | Optional attention/status sorting. |

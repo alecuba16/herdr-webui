@@ -943,8 +943,8 @@ describe("app bundle load", () => {
     match(html, /Functionality map/);
     match(html, /Keyboard shortcuts/);
     match(html, /Workspaces show open roots\/worktrees; agents list status/);
-    match(html, /Desktop, mobile, and temporary terminals use the shared wterm renderer adapter/);
-    match(html, /Settings → Terminal → Renderer switches between wterm and Ghostty/);
+    match(html, /Desktop, mobile, and temporary terminals use the shared renderer adapter/);
+    match(html, /switches between the default Ghostty core and the lightweight wterm core/);
     match(html, /external Herdr sessions try backend scroll first, built-in sessions use local renderer scrollback/);
     match(html, /Links are enabled by default, mouse reporting is opt-in, paste uses bounded WebSocket chunks/);
     match(html, /Temporary terminal captures Tab\/Backspace\/navigation keys and normal input while open/);
@@ -986,7 +986,7 @@ describe("app bundle load", () => {
     match(source, /Tab \/ Backspace \/ navigation keys/);
     match(source, /Paste clipboard text into terminal through bounded WebSocket chunks/);
     const featuresDocs = readFileSync(new URL("../../docs/features.md", import.meta.url), "utf8");
-    match(featuresDocs, /Settings → Terminal → Renderer can switch between the default wterm core and the Ghostty core/);
+    match(featuresDocs, /Settings → Terminal → Renderer can switch between the default Ghostty core and the wterm core/);
     match(featuresDocs, /\| Prefix then `Shift\+M` \| Desktop WebUI \| Opens the temporary terminal, minimizes it to the restore pill, or restores the same live temporary terminal/);
     match(featuresDocs, /\| `PageUp` \/ `PageDown` \| Main terminal \| Scrolls terminal output by one visible terminal page/);
     match(featuresDocs, /\| `Tab`, `Backspace`, navigation keys \| Temporary terminal overlay \| Captured before browser focus movement and sent to the PTY/);

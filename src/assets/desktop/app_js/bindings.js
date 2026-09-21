@@ -176,7 +176,8 @@ registerSettingsCommit("optTerminalFontFamily", commitTerminalFontFamily, () => 
 const optTerminalCore = el("optTerminalCore");
 if (optTerminalCore)
   optTerminalCore.onchange = () => {
-    options.terminalCore = optTerminalCore.value === "ghostty" ? "ghostty" : "wterm";
+    options.terminalCore = HerdrAppHelpers.resolveTerminalCore(optTerminalCore.value);
+    options.terminalCoreGhosttyMigrated = true;
     saveOptions();
     resetTerminalConnection(true);
     connectTerminal();

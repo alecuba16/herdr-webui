@@ -50,7 +50,7 @@ Built-in backend:
 
 Browser terminal:
 
-- Desktop, mobile, and temporary terminals use the shared wterm renderer adapter. Settings → Terminal → Renderer can switch between the default wterm core and the Ghostty core; changing the renderer reconnects the current terminal so the new core owns future output.
+- Desktop, mobile, and temporary terminals use the shared wterm renderer adapter. Settings → Terminal → Renderer can switch between the default Ghostty core and the wterm core; changing the renderer reconnects the current terminal so the new core owns future output.
 - Desktop workspace shell modes are remembered per workspace/worktree. Terminal, Git, and Files can be minimized/restored independently for each workspace, and switching workspaces restores that workspace's last shell mode without changing other workspaces. The per-workspace mode is also persisted to `localStorage` under `herdr-web-workspace-shell` (per workspace id and per folder path, newest 20 paths), so it survives page reloads and a recent-workspace reopen lands on the same Git/Files panel it had. Reopens always start un-minimized.
 - The renderer bundle, CSS, and Ghostty WASM are embedded static assets served from `/assets/vendor/wterm.js`, `/assets/vendor/wterm.css`, and `/assets/vendor/ghostty-vt.wasm`. The old xterm assets are removed.
 - Terminal font, URL link detection, mouse reporting, scroll speed, Shift+Enter newline behavior, and renderer choice are persisted in browser `localStorage` under `herdr-web-options` and apply to desktop, mobile, and temporary terminals.
