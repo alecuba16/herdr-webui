@@ -19,6 +19,11 @@
     backendEnabled,
     sessionBackendLabel,
     sessionBackendClass,
+    readSessionBackend,
+    readSessionSelection,
+    writeSessionBackend,
+    forgetSessionState,
+    saveSessionSelection,
   }) {
     function renderSessions() {
       const busy = !!state.sessionBusy;
@@ -36,7 +41,7 @@
           : '<span class="mobile-chip">offline</span>';
         const controls = active
           ? `${pill}<span class="mobile-btn agent-action" role="button" tabindex="0" ${busy ? "data-disabled=\"1\"" : ""} onclick="event.stopPropagation();HerdrMobile.refreshSessions()">Retry</span><span class="mobile-btn danger agent-action" role="button" tabindex="0" ${busy ? "data-disabled=\"1\"" : ""} onclick="event.stopPropagation();HerdrMobile.closeSession()">Close</span>`
-          : `${pill}${status}`;
+          : `${pill}${status}<span class="mobile-btn danger agent-action" role="button" tabindex="0" ${busy ? "data-disabled=\"1\"" : ""} onclick="event.stopPropagation();HerdrMobile.closeSessionRow(${jsArg(label)},${jsArg(backend)})">Close</span>`;
         return `<button class="mobile-row${active ? " active" : ""}" onclick="HerdrMobile.selectSession(${jsArg(label)},${jsArg(backend)})"><strong>${escapeHtml(label)}${active ? " · current" : ""}</strong><span>${controls}</span></button>`;
       }).join("");
       const herdrUsable = state.herdrCompatible && backendEnabled("external-herdr");
@@ -111,12 +116,17 @@
 
     // Switch the browser target to a session (mobile parity with the desktop
     // goSession flow: route, terminal, events socket, and list refresh).
+    // Reopening restores the surface the user left: the saved selection
+    // (workspace/tab/pane, stored per session+backend by saveSessionSelection)
+    // is replayed into the pushed URL so the refresh lands exactly where the
+    // user was. A session with no saved selection reopens bare (no
+    // auto-open), per the boot-clean rule.
     function switchSession(name, backend) {
       if (backend === "external-herdr" && (!state.herdrCompatible || !backendEnabled("external-herdr")))
         backend = "builtin";
       state.session = name || "default";
       state.sessionBackend = backend || "builtin";
-      localStorage.setItem("herdr-session-backend", state.sessionBackend);
+      writeSessionBackend(state.session, state.sessionBackend);
       state.ws = null;
       state.tab = null;
       state.pane = null;
@@ -127,7 +137,17 @@
       state.panes = [];
       destroyTerminal(true);
       closeEventWs();
-      pushState(null, "", sessionPrefix(state.session));
+      const saved = readSessionSelection(state.session, state.sessionBackend);
+      if (saved && saved.ws) {
+        const path = saved.pane != null && saved.tab != null
+          ? `/session/${encodeURIComponent(state.session)}/workspace/${encodeURIComponent(saved.ws)}/tab/${encodeURIComponent(saved.tab)}/pane/${encodeURIComponent(saved.pane)}`
+          : saved.tab != null
+            ? `/session/${encodeURIComponent(state.session)}/workspace/${encodeURIComponent(saved.ws)}/tab/${encodeURIComponent(saved.tab)}`
+            : `/session/${encodeURIComponent(state.session)}/workspace/${encodeURIComponent(saved.ws)}`;
+        pushState(null, "", path);
+      } else {
+        pushState(null, "", sessionPrefix(state.session));
+      }
       syncBackendBadge();
       refresh();
       connectEvents();
@@ -143,22 +163,51 @@
     }
 
     // Close the active session (mobile parity with closeCurrentSession).
+    // "Closed" must mean closed with integrity: the POST is sent with the
+    // pair captured before any retargeting, an already-stopped target is a
+    // success (idempotent close), the per-session pin and saved selections
+    // are forgotten so nothing resurrects the closed surface, the terminal
+    // and the bound events socket are torn down, and the browser retargets
+    // to the server's default backend so the refresh lands on a live target.
     async function closeSession() {
       if (state.sessionBusy) return;
       if (!confirmFn(`Close current ${sessionBackendLabel(currentSessionBackend())} session?`)) return;
+      const session = state.session || "default";
+      const backend = currentSessionBackend();
       state.sessionBusy = true;
       state.sessionBusyLabel = "Closing session...";
       render();
       try {
-        await api("/api/session/close", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ session: state.session || "default", backend: currentSessionBackend() }),
-        });
+        let alreadyStopped = false;
+        try {
+          await api("/api/session/close", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ session, backend }),
+          });
+        } catch (e) {
+          const message = e && e.message ? e.message : String(e);
+          // already_stopped is the server's idempotent-close marker; the
+          // stale-target errors also mean the session is already down.
+          if (/already_stopped|No such file|not running|ENOENT/i.test(message)) {
+            alreadyStopped = true;
+          } else {
+            throw e;
+          }
+        }
+        forgetSessionState(session);
         // Retarget the server's default backend so the refresh below lands
         // on a working session (the server auto-starts built-in on demand).
-        state.sessionBackend = state.serverDefaultBackend || "builtin";
-        localStorage.setItem("herdr-session-backend", state.sessionBackend);
+        // The closed session's target is abandoned: retarget the browser to
+        // the default session so nothing keeps pointing at the closed
+        // surface (staying there would show the offline manager forever).
+        const retargetBackend = state.serverDefaultBackend || "builtin";
+        if (session !== "default") {
+          state.session = "default";
+          history.pushState(null, "", "/session/default");
+        }
+        state.sessionBackend = retargetBackend;
+        writeSessionBackend(state.session || "default", state.sessionBackend);
         state.ws = null;
         state.tab = null;
         state.pane = null;
@@ -166,6 +215,51 @@
         closeEventWs();
         refresh();
         connectEvents();
+      } catch (e) {
+        state.sessionsError = e.message || String(e);
+      } finally {
+        state.sessionBusy = false;
+        state.sessionBusyLabel = "";
+        render();
+        setTimeout(refreshSessions, 400);
+      }
+    }
+
+    // Close a row from the sessions list without switching to it first
+    // (mobile parity with the desktop closeSessionRow). Closing a different
+    // session must not disturb the current target: send the POST for the
+    // row's pair, forget the row's stored state, and refresh the list.
+    async function closeSessionRow(name, backend) {
+      if (state.sessionBusy) return;
+      const session = name || "default";
+      const rowBackend = backend || "builtin";
+      const isCurrent =
+        session === (state.session || "default") &&
+        rowBackend === currentSessionBackend();
+      if (isCurrent) {
+        // Closing the current row is exactly closeSession (confirm prompt
+        // and full teardown included).
+        await closeSession();
+        return;
+      }
+      if (!confirmFn(`Close ${sessionBackendLabel(rowBackend)} session ${session}?`)) return;
+      state.sessionBusy = true;
+      state.sessionBusyLabel = "Closing session...";
+      render();
+      try {
+        try {
+          await api("/api/session/close", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ session, backend: rowBackend }),
+          });
+        } catch (e) {
+          const message = e && e.message ? e.message : String(e);
+          if (!/already_stopped|No such file|not running|ENOENT/i.test(message)) {
+            throw e;
+          }
+        }
+        forgetSessionState(session);
       } catch (e) {
         state.sessionsError = e.message || String(e);
       } finally {
@@ -184,6 +278,7 @@
       newSession,
       selectSession,
       closeSession,
+      closeSessionRow,
     };
   }
 

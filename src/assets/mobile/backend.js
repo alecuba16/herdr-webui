@@ -6,6 +6,8 @@
     localStorage,
     refresh,
     getMobileEvents,
+    readSessionBackend,
+    writeSessionBackend,
   }) {
     let herdrErrorOfferPending = false;
 
@@ -42,7 +44,7 @@
               : state.backendMode === "builtin"
                 ? "builtin"
                 : state.sessionBackend;
-          localStorage.setItem("herdr-session-backend", state.sessionBackend);
+          writeSessionBackend(state.session || "default", state.sessionBackend);
         }
         state.serverBackendConfirmed = true;
       } catch (_) {}
@@ -73,7 +75,7 @@
         }
         if (currentSessionBackend() === "external-herdr" && !state.herdrCompatible) {
           state.sessionBackend = "builtin";
-          localStorage.setItem("herdr-session-backend", "builtin");
+          writeSessionBackend(state.session || "default", "builtin");
         }
       } catch (e) {
         state.sessions = [
@@ -131,7 +133,7 @@
               });
             } catch (_) {}
             state.sessionBackend = "builtin";
-            localStorage.setItem("herdr-session-backend", "builtin");
+            writeSessionBackend(state.session || "default", "builtin");
             refresh();
           }
         } finally {
@@ -172,7 +174,7 @@
             ? "builtin"
             : "external-herdr";
       state.sessionBackend = fallback;
-      localStorage.setItem("herdr-session-backend", fallback);
+      writeSessionBackend(state.session || "default", fallback);
       // The events socket is bound to the disabled backend through its URL
       // query (?backend=...). Cycle it so the reconnect targets the fallback
       // backend instead of polling the dead one until a manual reload.

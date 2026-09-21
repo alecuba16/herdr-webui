@@ -23,6 +23,61 @@
     return `${ws}:${id}`;
   }
 
+  // Per-session storage keys (mobile parity with the desktop core helpers).
+  // The backend pin used to be a single global `herdr-session-backend` value,
+  // which leaked the last-used backend into every other session; each session
+  // keeps its own pin now, and each session+backend pair keeps its own last
+  // selection (workspace/tab/pane) so session rows restore the exact surface
+  // the user left, per the no-auto-open-on-startup rule.
+  function sessionBackendKey(session) {
+    return "herdr-session-backend:" + (session || "default");
+  }
+  function sessionStateKey(backend, session) {
+    return (
+      "herdr-session-state:" + (backend || "builtin") + ":" + (session || "default")
+    );
+  }
+  function readSessionBackend(session) {
+    try {
+      return localStorage.getItem(sessionBackendKey(session)) || "builtin";
+    } catch (e) {
+      return "builtin";
+    }
+  }
+  function writeSessionBackend(session, backend) {
+    try {
+      localStorage.setItem(sessionBackendKey(session), backend || "builtin");
+    } catch (e) {}
+  }
+  // Closed means closed: forget the stored backend pin and the saved
+  // selections so no reopen path resurrects the closed surface.
+  function forgetSessionState(session) {
+    try {
+      localStorage.removeItem(sessionBackendKey(session));
+      localStorage.removeItem(sessionStateKey("builtin", session));
+      localStorage.removeItem(sessionStateKey("external-herdr", session));
+    } catch (e) {}
+  }
+  function saveSessionSelection(session, backend, { ws, tab, pane }) {
+    try {
+      localStorage.setItem(
+        sessionStateKey(backend, session),
+        JSON.stringify({ ws: ws || null, tab: tab || null, pane: pane || null }),
+      );
+    } catch (e) {}
+  }
+  function readSessionSelection(session, backend) {
+    try {
+      const raw = localStorage.getItem(sessionStateKey(backend, session));
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object") return null;
+      return { ws: parsed.ws || null, tab: parsed.tab || null, pane: parsed.pane || null };
+    } catch (e) {
+      return null;
+    }
+  }
+
   function sessionPrefix(session) {
     return "/session/" + encodeURIComponent(session || "default");
   }
@@ -78,11 +133,18 @@
   globalThis.HerdrMobileCore = {
     compactScopedId,
     escapeHtml,
+    forgetSessionState,
     jsArg,
     parseRoutePath,
     pathBasename,
+    readSessionBackend,
+    readSessionSelection,
     samePath,
+    saveSessionSelection,
     selectionPath,
+    sessionBackendKey,
     sessionPrefix,
+    sessionStateKey,
+    writeSessionBackend,
   };
 })();
