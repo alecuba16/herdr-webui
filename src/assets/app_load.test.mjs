@@ -91,7 +91,19 @@ function context() {
       setItem: (key, value) => localStorage.set(key, String(value)),
       removeItem: (key) => localStorage.delete(key),
     },
-    history: { pushState() {}, replaceState() {} },
+    // Real browsers update location on pushState/replaceState; mirror that so
+    // parseRoute() after a navigation reads the pushed URL, exactly like the
+    // browser would. Each test that needs to inspect the calls can still
+    // override history with a recording object.
+    history: {
+      pushState(_state, _title, path) {
+        if (typeof path === "string") this.location.pathname = path;
+      },
+      replaceState(_state, _title, path) {
+        if (typeof path === "string") this.location.pathname = path;
+      },
+      location: null,
+    },
     location: { pathname: "/", href: "" },
     navigator: { clipboard: {} },
     window: null,
@@ -108,6 +120,7 @@ function context() {
   ctx.terminal = getElement("terminal");
   ctx.window = ctx;
   ctx.globalThis = ctx;
+  ctx.history.location = ctx.location;
   const contextObject = vm.createContext(ctx);
   // Mirror production boot order: the shared HTTP client loads before any
   // bundle module so api()/apiOptions() delegate to HerdrHttp.
@@ -2364,7 +2377,8 @@ describe("app bundle load", () => {
     // does not default to. default_backend is the server's true
     // configured default and must win on first load.
     const ctx = context();
-    ctx.localStorage.setItem("herdr-session-backend", "builtin");
+    // Per-session pin (sessionBackendKey); seeding the default session's key.
+    ctx.localStorage.setItem("herdr-session-backend:default", "builtin");
     ctx.fetch = async (url) => {
       equal(url, "/api/versions");
       return {
@@ -2388,7 +2402,7 @@ describe("app bundle load", () => {
 
     equal(vm.runInContext("state.sessionBackend", ctx), "external-herdr");
     equal(
-      ctx.localStorage.getItem("herdr-session-backend"),
+      ctx.localStorage.getItem("herdr-session-backend:default"),
       "external-herdr",
     );
 
@@ -2603,9 +2617,49 @@ describe("app bundle load", () => {
     // refresh cannot hit the just-closed session's dead socket and
     // re-open the offline manager over the clean close message.
     equal(
-      ctx.localStorage.getItem("herdr-session-backend"),
+      ctx.localStorage.getItem("herdr-session-backend:default"),
       "builtin",
     );
+  });
+
+  it("retargets the default session when closing a non-default current session", async () => {
+    const ctx = context();
+    ctx.location.pathname = "/session/work";
+    const calls = [];
+    ctx.fetch = async (url, opt) => {
+      calls.push({ url, opt });
+      if (url === "/api/session/close") {
+        return { ok: true, status: 200, json: async () => ({ ok: true, pid: 123 }) };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ result: { workspaces: [] } }),
+      };
+    };
+    ctx.localStorage.setItem("herdr-session-backend:work", "builtin");
+    ctx.localStorage.setItem(
+      "herdr-session-state:builtin:work",
+      JSON.stringify({ ws: "w1", tab: null, pane: null }),
+    );
+    vm.runInContext(source, ctx);
+    // Land on the work session like the boot tail would after parseRoute.
+    vm.runInContext("state.sessionBackend = readSessionBackend(state.session || 'default')", ctx);
+
+    await ctx.closeCurrentSession();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const closeCall = calls.find((call) => call.url === "/api/session/close");
+    ok(closeCall, "closeCurrentSession must call /api/session/close");
+    deepEqual(JSON.parse(closeCall.opt.body), { session: "work", backend: "builtin" });
+    // The browser retargets the default session: URL entry pushed, target
+    // state cleared, and the closed session's stored state forgotten.
+    equal(vm.runInContext("state.session", ctx), "default");
+    equal(vm.runInContext("state.ws", ctx), null);
+    equal(ctx.history.location.pathname, "/session/default");
+    equal(ctx.localStorage.getItem("herdr-session-backend:work"), null);
+    equal(ctx.localStorage.getItem("herdr-session-state:builtin:work"), null);
+    equal(ctx.localStorage.getItem("herdr-session-backend:default"), "builtin");
   });
 
   it("hides the external Herdr offer when no compatible herdr install is detected", async () => {
@@ -4644,6 +4698,271 @@ describe("app bundle load", () => {
 
     equal(vm.runInContext("state.sessionBackend", ctx), "builtin");
     equal(vm.runInContext("state.serverBackendConfirmed", ctx), true);
-    equal(ctx.localStorage.getItem("herdr-session-backend"), "builtin");
+    equal(ctx.localStorage.getItem("herdr-session-backend:default"), "builtin");
+  });
+
+  it("saves the selection on explicit navigation so reopen can restore it", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    ctx.setupSessionChrome();
+
+    ctx.location.pathname = "/session/default/workspace/main-ws/tab/tab-1/pane/pane-2";
+    ctx.go("main-ws", "tab-1", "pane-2");
+
+    equal(
+      ctx.localStorage.getItem("herdr-session-state:builtin:default"),
+      JSON.stringify({ ws: "main-ws", tab: "tab-1", pane: "pane-2" }),
+    );
+
+    // Switching sessions must not clobber the saved selection of the first.
+    ctx.location.pathname = "/session/work";
+    ctx.goSession("work", "builtin");
+    ctx.location.pathname = "/session/work/workspace/other-ws";
+    ctx.go("other-ws", null, null);
+    equal(
+      ctx.localStorage.getItem("herdr-session-state:builtin:work"),
+      JSON.stringify({ ws: "other-ws", tab: null, pane: null }),
+    );
+    equal(
+      ctx.localStorage.getItem("herdr-session-state:builtin:default"),
+      JSON.stringify({ ws: "main-ws", tab: "tab-1", pane: "pane-2" }),
+    );
+  });
+
+  it("restores the saved workspace selection when goSession reopens a session", async () => {
+    const ctx = context();
+    const historyCalls = [];
+    vm.runInContext(source, ctx);
+    ctx.setupSessionChrome();
+    // Keep the base harness behavior (location mirrors pushState) but also
+    // record the calls so the pushed paths can be asserted.
+    const push = ctx.history.pushState.bind(ctx.history);
+    ctx.history.pushState = (...args) => {
+      historyCalls.push(args[2]);
+      return push(...args);
+    };
+
+    ctx.location.pathname = "/session/default/workspace/main-ws/tab/tab-1/pane/pane-2";
+    ctx.go("main-ws", "tab-1", "pane-2");
+    ctx.location.pathname = "/session/work";
+    ctx.goSession("work", "builtin");
+    equal(vm.runInContext("state.ws", ctx), null);
+
+    ctx.location.pathname = "/session/default";
+    ctx.goSession("default", "builtin");
+    equal(vm.runInContext("state.ws", ctx), "main-ws");
+    equal(vm.runInContext("state.tab", ctx), "tab-1");
+    equal(vm.runInContext("state.pane", ctx), "pane-2");
+    ok(
+      historyCalls.some((p) => p === "/session/default/workspace/main-ws/tab/tab-1/pane/pane-2"),
+      "reopen must push the saved selection path",
+    );
+
+    // A session with no saved selection reopens bare (no auto-open).
+    ctx.location.pathname = "/session/fresh";
+    ctx.goSession("fresh", "builtin");
+    equal(vm.runInContext("state.ws", ctx), null);
+    ok(
+      historyCalls.some((p) => p === "/session/fresh"),
+      "bare reopen must push the session prefix only",
+    );
+  });
+
+  it("re-pins the per-session backend and cycles the socket on Back across sessions", async () => {
+    const ctx = context();
+    const sockets = [];
+    ctx.WebSocket = class {
+      constructor(url) {
+        this.url = url;
+        this.closed = false;
+        sockets.push(this);
+      }
+      close() {
+        this.closed = true;
+      }
+    };
+    ctx.fetch = async (url) => {
+      if (url === "/api/sessions") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            current_backend: "builtin",
+            herdr_available: true,
+            herdr_compatible: true,
+            herdr_version: "0.9.0",
+            sessions: [
+              { name: "work", backend: "external-herdr", backend_label: "Herdr", running: true },
+            ],
+          }),
+        };
+      }
+      if (url === "/api/versions") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            webui: "1.2.3",
+            backend: "builtin-0.1.0",
+            backend_mode: "builtin",
+            current_backend: "builtin",
+            session: "default",
+            compatibility: { status: "compatible" },
+          }),
+        };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    };
+    vm.runInContext(source, ctx);
+    ctx.setupSessionChrome();
+    // The external backend is only selectable for a compatible install:
+    // loadSessions adopts herdr_compatible from the /api/sessions reply.
+    await ctx.loadSessions();
+    await ctx.loadVersions();
+
+    ctx.location.pathname = "/session/work";
+    ctx.goSession("work", "external-herdr");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    equal(vm.runInContext("state.sessionBackend", ctx), "external-herdr");
+
+    // Back to the default session, which is still pinned builtin.
+    ctx.location.pathname = "/session/default";
+    ctx.handleSessionPopState();
+
+    equal(vm.runInContext("state.session", ctx), "default");
+    equal(vm.runInContext("state.sessionBackend", ctx), "builtin");
+    equal(ctx.localStorage.getItem("herdr-session-backend:default"), "builtin");
+    // The zombie socket bound to work/external-herdr must be closed and a
+    // fresh subscription started for the restored target.
+    const closed = sockets.filter((s) => s.closed).length;
+    ok(closed > 0, "cross-session Back must close the old events socket");
+  });
+
+  it("closes an inactive session row without disturbing the current target", async () => {
+    const ctx = context();
+    const closeRequests = [];
+    ctx.fetch = async (url, opt = {}) => {
+      if (url === "/api/session/close") {
+        closeRequests.push({ url, opt });
+        return { ok: true, status: 200, json: async () => ({}) };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    };
+    vm.runInContext(source, ctx);
+    ctx.setupSessionChrome();
+
+    await ctx.showSessionManager();
+    ctx.location.pathname = "/session/work";
+    ctx.goSession("work", "builtin");
+
+    await ctx.closeSessionRow("stale", "builtin");
+
+    equal(closeRequests.length, 1);
+    equal(closeRequests[0].opt.body, JSON.stringify({ session: "stale", backend: "builtin" }));
+    // Current target untouched: still work, still no saved stale selection.
+    equal(vm.runInContext("state.session", ctx), "work");
+    equal(ctx.localStorage.getItem("herdr-session-backend:stale"), null);
+    equal(ctx.localStorage.getItem("herdr-session-state:builtin:stale"), null);
+  });
+
+  it("treats already_stopped and stale-target close errors as success", async () => {
+    for (const message of ["already_stopped", "No such file or directory (os error 2)", "session not running", "ENOENT: db lock"]) {
+      const ctx = context();
+      const closeRequests = [];
+      ctx.fetch = async (url, opt = {}) => {
+        if (url === "/api/session/close") {
+          closeRequests.push({ url, opt });
+          return { ok: false, status: 400, json: async () => ({ error: message }) };
+        }
+        return { ok: true, status: 200, json: async () => ({}) };
+      };
+      vm.runInContext(source, ctx);
+      ctx.setupSessionChrome();
+
+      await ctx.closeSessionRow("stale", "builtin");
+
+      equal(closeRequests.length, 1);
+      // Not an error surface: the row is simply already closed.
+      equal(vm.runInContext("state.sessionsError", ctx) || "", "");
+      equal(ctx.localStorage.getItem("herdr-session-backend:stale"), null);
+    }
+  });
+
+  it("keeps per-session backend pins isolated from each other", async () => {
+    const ctx = context();
+    ctx.fetch = async (url) => {
+      if (url === "/api/sessions") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            current_backend: "builtin",
+            herdr_available: true,
+            herdr_compatible: true,
+            herdr_version: "0.9.0",
+            sessions: [
+              { name: "work", backend: "external-herdr", backend_label: "Herdr", running: true },
+            ],
+          }),
+        };
+      }
+      if (url === "/api/versions") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            webui: "1.2.3",
+            backend: "builtin-0.1.0",
+            backend_mode: "builtin",
+            current_backend: "builtin",
+            session: "default",
+            compatibility: { status: "compatible" },
+          }),
+        };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    };
+    vm.runInContext(source, ctx);
+    ctx.setupSessionChrome();
+    // The external backend is only selectable for a compatible install.
+    await ctx.loadSessions();
+    await ctx.loadVersions();
+
+    ctx.location.pathname = "/session/work";
+    ctx.goSession("work", "external-herdr");
+    equal(vm.runInContext("state.sessionBackend", ctx), "external-herdr");
+    equal(ctx.localStorage.getItem("herdr-session-backend:work"), "external-herdr");
+
+    // The default session keeps its own pin; switching back must not inherit
+    // the external pin from the work session.
+    ctx.location.pathname = "/session/default";
+    ctx.goSession("default", "builtin");
+    equal(vm.runInContext("state.sessionBackend", ctx), "builtin");
+    equal(ctx.localStorage.getItem("herdr-session-backend:default"), "builtin");
+    equal(ctx.localStorage.getItem("herdr-session-backend:work"), "external-herdr");
+  });
+
+  it("pins the routed session's backend on a deep-URL boot", async () => {
+    // Boot directly at /session/work/... (e.g. a restored tab or a shared
+    // link). The boot tail parses the route and re-reads the routed
+    // session's pin, so the work session targets its own stored backend and
+    // the default session's pin is neither leaked into the boot nor
+    // clobbered by boot-time backend bookkeeping.
+    const ctx = context();
+    ctx.location.pathname = "/session/work/workspace/main-ws";
+    // work is pinned built-in; default is pinned external from a previous
+    // run. A deep-URL boot on work must not inherit default's pin.
+    ctx.localStorage.setItem("herdr-session-backend:work", "builtin");
+    ctx.localStorage.setItem("herdr-session-backend:default", "external-herdr");
+    vm.runInContext(source, ctx);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    equal(vm.runInContext("state.session", ctx), "work");
+    equal(vm.runInContext("state.ws", ctx), "main-ws");
+    equal(vm.runInContext("state.sessionBackend", ctx), "builtin");
+    // Neither pin moved: work kept its own pin and default kept its
+    // explicitly chosen one.
+    equal(ctx.localStorage.getItem("herdr-session-backend:work"), "builtin");
+    equal(ctx.localStorage.getItem("herdr-session-backend:default"), "external-herdr");
   });
 });

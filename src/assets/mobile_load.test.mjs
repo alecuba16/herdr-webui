@@ -47,6 +47,12 @@ function context(pathname = "/", options = {}) {
     if (!elements.has(id)) elements.set(id, element(id));
     return elements.get(id);
   };
+  const locationRef = {
+    pathname,
+    href: "",
+    protocol: "http:",
+    host: "127.0.0.1:8787",
+  };
   const ctx = {
     console,
     TextEncoder,
@@ -75,21 +81,23 @@ function context(pathname = "/", options = {}) {
     history: {
       pushState(_state, _title, path) {
         historyCalls.push({ type: "push", path });
+        // Real browsers update location on pushState; mirror that so
+        // parseRoute() inside the refresh flows reads the pushed URL.
+        if (typeof path === "string") locationRef.pathname = path;
       },
       replaceState(_state, _title, path) {
         historyCalls.push({ type: "replace", path });
+        if (typeof path === "string") locationRef.pathname = path;
       },
       calls: historyCalls,
     },
-    location: {
-      pathname,
-      href: "",
-      protocol: "http:",
-      host: "127.0.0.1:8787",
-    },
+    location: locationRef,
     localStorage: {
       getItem: (key) => localStorage.get(key) || null,
       setItem: (key, value) => localStorage.set(key, String(value)),
+      removeItem: (key) => {
+        localStorage.delete(key);
+      },
     },
     confirm: options.confirm || (() => true),
     window: null,
@@ -402,9 +410,13 @@ function context(pathname = "/", options = {}) {
   ctx.dispatchDocumentEvent = (event) => {
     for (const listener of listeners[event] || []) listener();
   };
+  // window.addEventListener is how app.js registers popstate/resize; record
+  // those listeners so tests can drive history navigation.
   ctx.window = Object.assign(ctx, {
     matchMedia: () => ({ matches: false }),
-    addEventListener() {},
+    addEventListener(event, listener) {
+      (listeners[event] || (listeners[event] = [])).push(listener);
+    },
   });
   ctx.globalThis = ctx;
   return vm.createContext(ctx);
@@ -577,7 +589,7 @@ describe("mobile bundle load", () => {
   it("routes mobile backend headers and sockets from selected backend branches", async () => {
     for (const [storedBackend, expected] of [["external", "external-herdr"], ["external-herdr", "external-herdr"], ["builtin", "builtin"]]) {
       const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
-      ctx.localStorage.setItem("herdr-session-backend", storedBackend);
+      ctx.localStorage.setItem("herdr-session-backend:default", storedBackend);
       vm.runInContext(source, ctx);
       await ctx.HerdrMobile.refresh();
       const workspacesRequest = ctx.requests.find((request) => request.url === "/api/workspaces");
@@ -609,7 +621,7 @@ describe("mobile bundle load", () => {
     match(source, /badge\.onclick = \(\) => showScreen\("sessions"\)/);
     for (const [storedBackend, label, cls] of [["builtin", "built-in", "backend-builtin"], ["external-herdr", "Herdr", "backend-herdr"]]) {
       const ctx = context("/session/default/workspace/w1");
-      ctx.localStorage.setItem("herdr-session-backend", storedBackend);
+      ctx.localStorage.setItem("herdr-session-backend:default", storedBackend);
       vm.runInContext(source, ctx);
       ctx.HerdrMobile.showScreen("home");
       const badge = ctx.document.getElementById("mobileBackendBadge");
@@ -654,7 +666,9 @@ describe("mobile bundle load", () => {
     vm.runInContext(source, ctx);
     ctx.HerdrMobile.selectSession("revolut", "builtin");
     ok(ctx.history.calls.some((c) => c.path === "/session/revolut"));
-    equal(ctx.localStorage.getItem("herdr-session-backend"), "builtin");
+    // The per-session pin follows the switched-to session (revolut), not the
+    // one we switched from (default).
+    equal(ctx.localStorage.getItem("herdr-session-backend:revolut"), "builtin");
   });
 
   it("closes the current session from the sessions screen and retargets the default", async () => {
@@ -664,7 +678,12 @@ describe("mobile bundle load", () => {
     const close = ctx.requests.find((r) => r.url === "/api/session/close");
     ok(close, "session close request missing");
     equal(close.opt.body, JSON.stringify({ session: "revolut", backend: "builtin" }));
-    equal(ctx.localStorage.getItem("herdr-session-backend"), "builtin");
+    // Closing a non-default session retargets the browser to the default
+    // session with the server's default backend; the closed session's
+    // stored state is gone (closed means closed).
+    equal(ctx.HerdrMobile.currentSessionBackend(), "builtin");
+    equal(ctx.location.pathname, "/session/default");
+    equal(ctx.localStorage.getItem("herdr-session-state:builtin:revolut"), null);
   });
 
   it("rejects a new session without a name and surfaces the error inline", async () => {
@@ -1405,5 +1424,112 @@ describe("mobile bundle load", () => {
     equal(ctx.HerdrMobile.currentSelection().tab, "w1:t2");
     equal(ctx.HerdrMobile.currentSelection().pane, "w1:p2");
     equal(ctx.history.calls.at(-1).path, "/session/default/workspace/w1/tab/t2/pane/p2");
+  });
+
+  it("restores the saved selection when switching back to a session", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+
+    // An explicit navigation inside the default session saves the selection.
+    ctx.HerdrMobile.selectWorkspace("w2");
+    equal(
+      ctx.localStorage.getItem("herdr-session-state:builtin:default"),
+      JSON.stringify({ ws: "w2", tab: null, pane: null }),
+    );
+
+    // Switch away: no saved selection for revolut yet, so bare prefix.
+    ctx.HerdrMobile.selectSession("revolut", "builtin");
+    equal(ctx.history.calls.at(-1).path, "/session/revolut");
+    equal(ctx.localStorage.getItem("herdr-session-backend:revolut"), "builtin");
+
+    // Switch back: the saved selection is replayed into the pushed URL.
+    ctx.HerdrMobile.selectSession("default", "builtin");
+    equal(ctx.history.calls.at(-1).path, "/session/default/workspace/w2");
+    equal(ctx.HerdrMobile.currentSelection().ws, "w2");
+  });
+
+  it("keeps per-session backend pins isolated on mobile", async () => {
+    const ctx = context("/session/default");
+    vm.runInContext(source, ctx);
+
+    ctx.HerdrMobile.selectSession("work", "builtin");
+    equal(ctx.localStorage.getItem("herdr-session-backend:work"), "builtin");
+    equal(ctx.localStorage.getItem("herdr-session-backend:default"), null);
+
+    // The default session keeps no pin; the work pin must not leak into it.
+    ctx.localStorage.setItem("herdr-session-backend:default", "builtin");
+    ctx.localStorage.setItem("herdr-session-backend:work", "external-herdr");
+    ctx.HerdrMobile.selectSession("default", "builtin");
+    equal(ctx.localStorage.getItem("herdr-session-backend:default"), "builtin");
+    equal(ctx.localStorage.getItem("herdr-session-backend:work"), "external-herdr");
+  });
+
+  it("closes an inactive session row and forgets its stored state", async () => {
+    const ctx = context("/session/default");
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+
+    // Seed stored state for the row's session, as a previous visit would.
+    ctx.localStorage.setItem("herdr-session-backend:stale", "builtin");
+    ctx.localStorage.setItem("herdr-session-state:builtin:stale", JSON.stringify({ ws: "w9", tab: null, pane: null }));
+
+    await ctx.HerdrMobile.closeSessionRow("stale", "builtin");
+
+    const close = ctx.requests.find((r) => r.url === "/api/session/close");
+    ok(close, "row close request missing");
+    equal(close.opt.body, JSON.stringify({ session: "stale", backend: "builtin" }));
+    // Closed means closed: pin and saved selection are forgotten.
+    equal(ctx.localStorage.getItem("herdr-session-backend:stale"), null);
+    equal(ctx.localStorage.getItem("herdr-session-state:builtin:stale"), null);
+    // The current target is untouched: same backend pin and session, and the
+    // refreshed workspace list still serves the default session.
+    equal(ctx.HerdrMobile.currentSessionBackend(), "builtin");
+    equal(
+      ctx.requests.some((r) => r.url.includes("x-herdr-backend=external-herdr")),
+      false,
+      "row close must not retarget the current session",
+    );
+  });
+
+  it("treats already-stopped rows as closed without surfacing an error", async () => {
+    const ctx = context("/session/default");
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+
+    const originalFetch = ctx.fetch;
+    ctx.fetch = async (url, opt = {}) => {
+      if (url === "/api/session/close") {
+        return { ok: false, status: 400, json: async () => ({ error: "already_stopped" }) };
+      }
+      return originalFetch(url, opt);
+    };
+
+    await ctx.HerdrMobile.closeSessionRow("stale", "builtin");
+
+    // Already stopped is a success for close: no error banner is rendered on
+    // the sessions screen and the stored state is forgotten.
+    await ctx.settle();
+    ctx.HerdrMobile.showScreen("sessions");
+    const screenHtml = ctx.document.getElementById("mobileScreen").innerHTML;
+    ok(!screenHtml.includes("mobile-error"), "already_stopped must not surface as an error");
+    equal(ctx.localStorage.getItem("herdr-session-backend:stale"), null);
+  });
+
+  it("re-pins the backend per session on Back and resets the target state", async () => {
+    const ctx = context("/session/work");
+    ctx.localStorage.setItem("herdr-session-backend:work", "external-herdr");
+    ctx.localStorage.setItem("herdr-session-backend:default", "builtin");
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+
+    equal(ctx.HerdrMobile.currentSessionBackend(), "external-herdr");
+
+    // Back to the default session's entry.
+    ctx.location.pathname = "/session/default";
+    ctx.dispatchDocumentEvent("popstate");
+
+    equal(ctx.HerdrMobile.currentSessionBackend(), "builtin");
+    equal(ctx.HerdrMobile.currentSelection().ws, null);
   });
 });
