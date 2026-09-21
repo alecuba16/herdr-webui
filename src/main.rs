@@ -13024,9 +13024,19 @@ mod tui_parity_e2e_tests {
     use herdr_webui::tui_web_api::WebApiClient;
 
     fn temp_git_repo() -> PathBuf {
+        // Fixture dirs must be unique per call even when tests run in
+        // parallel inside one process: the macOS clock has ~1us resolution,
+        // so pid + timestamp alone can collide (two tokio worker threads
+        // sampled the same microsecond on a CI runner and shared one repo:
+        // "remote origin already exists" / half-mutated file status). The
+        // atomic counter is unique per call within the process; the pid
+        // keeps separate processes apart.
+        static FIXTURE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = FIXTURE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!(
-            "herdr-tui-e2e-repo-{}-{}",
+            "herdr-tui-e2e-repo-{}-{}-{}",
             std::process::id(),
+            seq,
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
@@ -13062,15 +13072,15 @@ mod tui_parity_e2e_tests {
         std::fs::write(dir.join("readme.md"), "hello\nworld\n").unwrap();
         std::fs::write(dir.join("new_file.rs"), "fn main() {}\n").unwrap();
         // A bare sibling repo acts as "origin" so fetch/pull/push have a
-        // real remote to talk to in the round-trip test.
-        let bare = std::env::temp_dir().join(format!(
-            "herdr-tui-e2e-bare-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
+        // real remote to talk to in the round-trip test. It derives from the
+        // repo dir name, so it is unique per fixture call exactly like the
+        // repo itself.
+        let bare = std::env::temp_dir().join(
+            dir.file_name()
                 .unwrap()
-                .as_nanos(),
-        ));
+                .to_string_lossy()
+                .replace("herdr-tui-e2e-repo-", "herdr-tui-e2e-bare-"),
+        );
         let bare_str = bare.to_string_lossy().to_string();
         // The runner environment can hit transient git failures (packfile
         // refresh races right after the commit above). Retry like the other
