@@ -13072,17 +13072,38 @@ mod tui_parity_e2e_tests {
                 .as_nanos(),
         ));
         let bare_str = bare.to_string_lossy().to_string();
-        assert!(
-            Command::new("git")
+        // The runner environment can hit transient git failures (packfile
+        // refresh races right after the commit above). Retry like the other
+        // setup commands instead of failing the whole matrix job.
+        let mut bare_attempt = 0;
+        loop {
+            let output = Command::new("git")
                 .arg("clone")
                 .arg("-q")
                 .arg("--bare")
                 .arg(&dir)
                 .arg(&bare)
-                .output()
-                .is_ok_and(|out| out.status.success()),
-            "git clone --bare failed in test setup"
-        );
+                .output();
+            match output {
+                Ok(out) if out.status.success() => break,
+                Ok(out) => {
+                    bare_attempt += 1;
+                    if bare_attempt >= 3 {
+                        panic!(
+                            "git clone --bare failed in test setup: {}",
+                            String::from_utf8_lossy(&out.stderr).trim()
+                        );
+                    }
+                }
+                Err(err) => {
+                    bare_attempt += 1;
+                    if bare_attempt >= 3 {
+                        panic!("git clone --bare failed in test setup: {err}");
+                    }
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100 * bare_attempt as u64));
+        }
         run(&["remote", "add", "origin", &bare_str]);
         run(&["push", "-q", "-u", "origin", "HEAD"]);
         run(&["config", "pull.rebase", "true"]);
