@@ -6,16 +6,29 @@ It runs as a Rust Axum server, serves embedded frontend assets, and starts a bui
 
 ## Quick start
 
-Start the browser WebUI with the built-in backend, which is the default for fresh settings:
+Prebuilt binaries ship on the [releases page](https://github.com/alecuba16/herdr-webui/releases): pick the tarball for your platform (Linux x86_64, macOS aarch64, macOS x86_64), extract it, and run the documented quick start without a Rust toolchain:
+
+```bash
+curl -LO https://github.com/alecuba16/herdr-webui/releases/latest/download/herdr-webui-macos-aarch64.tar.gz
+tar -xzf herdr-webui-macos-aarch64.tar.gz
+./herdr-webui-macos-aarch64/herdr-webui --https off --backend-mode builtin
+# open http://127.0.0.1:8787
+```
+
+Each tarball contains `herdr-webui`, `herdr-webui-tui`, and a `README.txt`; a matching `.sha256` checksum is published next to it. The binary can also install itself as a service: `./herdr-webui install-mac` or `install-linux` (see [docs/installation.md](docs/installation.md)).
+
+To build from source instead, the same quick start works with the Rust toolchain. From a fresh clone:
 
 ```bash
 cargo run -- --https off --backend-mode builtin
 # open http://127.0.0.1:8787
 ```
 
-That command starts one process: the Axum WebUI server plus the embedded PTY backend. No separate `herdr server` process is required.
+That command starts one process: the Axum WebUI server plus the embedded PTY backend. No separate `herdr server` process is required, and no `herdr` binary is needed for this mode.
 
-To use an external Herdr daemon instead, launch the daemon separately, then point WebUI at it:
+Cargo picks the `herdr-webui` server automatically (`default-run` in `Cargo.toml`). If you need the other binary, `cargo run --bin herdr-webui-tui` runs the TUI client. When passing `--bin`, it must come before the `--` separator: `cargo run --bin herdr-webui -- --https off`.
+
+To use an external Herdr daemon instead (requires the official `herdr` binary, herdr `0.9.0` or newer), launch the daemon separately, then point WebUI at it:
 
 ```bash
 herdr server
@@ -31,6 +44,13 @@ herdr-webui-tui --once       # one-shot text snapshot
 ```
 
 For a named built-in WebUI session, use the same namespace:
+
+```bash
+cargo run -- --session demo --backend-mode builtin
+cargo run --bin herdr-webui-tui -- --session demo
+```
+
+Or with installed binaries:
 
 ```bash
 herdr-webui --session demo --backend-mode builtin

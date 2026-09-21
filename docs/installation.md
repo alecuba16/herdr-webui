@@ -4,17 +4,23 @@
 
 - Rust toolchain for local builds.
 - Git CLI for worktree features.
-- Official Herdr binary available as `herdr` in `PATH`, or set `HERDR_WEB_HERDR_BIN`.
+- Optional: official Herdr binary available as `herdr` in `PATH`, or set `HERDR_WEB_HERDR_BIN`. Only needed for external Herdr sessions; the built-in backend does not require it.
 
 Compatibility:
 
 | WebUI | Herdr | Protocol | Status | Notes |
 | --- | --- | --- | --- | --- |
-| `0.2.99` | `0.8.0` | `20` with `18` and `16` fallback | Current | File explorer opens files editable by default with a lock toggle, dirty tabs, and Cmd/Ctrl+S save. Git UI adds folder rows with stage/unstage/discard actions and current-compare mode targeting the working tree. Builtin backend suppresses ghost agent rows after a jcode exit and reports `unknown` status instead of coercing to `idle`. |
+| `0.4.34` | `0.9.0` | `22` exact match | Current | Search palette recent rows open the exact workspace and disabled rows cannot be reopened; workspace shell mode (terminal/Git/Files) persists per workspace and folder across reloads. |
+| `0.4.32` | `0.9.0` | `22` exact match | Superseded | Terminal image support end to end on every render path: wterm core at @wterm 0.5.0 (Kitty graphics capable), Kitty graphics escapes pass the image filter, builtin panes advertise ghostty terminal env hints, and text parsers skip DCS/APC/SOS/PM payloads. |
+| `0.4.30` | `0.9.0` | `22` exact match | Superseded | Built-in session cold starts are serialized (`builtin_start_lock`) so a freshly loaded browser cannot race on the session socket bind. |
+| `0.4.13` | `0.9.0` | `22` exact match | Superseded | herdr 0.9.0 / protocol 22 upgrade (agent status, scroll regions, sixel/OSC 8 awareness). External herdr installs are detected and compat-gated (`herdr --version` at startup), incompatible or missing binaries disable external sessions, and a failed external attach offers the built-in backend. herdr 0.9.0 requires an exact client protocol match at handshake, so this WebUI dropped the older multi-version attach fallback. |
+| `0.4.0`-`0.4.12` | `0.8.0` | `20` with `18` and `16` fallback | Superseded | Zed-style language server integration for the browser editor: in-editor diagnostics, LSP settings section, crash recovery, configurable editor settings. |
+| `0.3.0` | `0.8.0` | `20` with `18` and `16` fallback | Superseded | Builtin backend becomes the default for fresh settings; `BackendMode` persisted in settings; session manager detects built-in and external sessions. |
+| `0.2.99` | `0.8.0` | `20` with `18` and `16` fallback | Superseded | File explorer opens files editable by default with a lock toggle, dirty tabs, and Cmd/Ctrl+S save. Git UI adds folder rows with stage/unstage/discard actions and current-compare mode targeting the working tree. Builtin backend suppresses ghost agent rows after a jcode exit and reports `unknown` status instead of coercing to `idle`. |
 | `0.2.98` | `0.8.0` | `20` with `18` and `16` fallback | Superseded | Advertises truecolor support to builtin-backend PTY children via `COLORTERM=truecolor`, so TUIs (k9s, etc.) emit SGR 38/48;2 RGB colors instead of quantized palette indexes that mapped to theme palette slots (k9s black bg rendered gray in dark theme). |
 | `0.2.97` | `0.8.0` | `20` with `18` and `16` fallback | Superseded | Forwards alt-screen mouse wheel events as SGR mouse reports from the shared terminal adapter, enabling TUIs like jcode to scroll on the builtin backend. Removes the previous split `{type:"scroll"}` WebSocket protocol and Rust `sgr_scroll_reports` handler. |
 | `0.2.96` | `0.8.0` | `20` with `18` and `16` fallback | Superseded | Adds Zed-like CodeMirror editor enhancements (fold gutter, active line highlighting, bracket matching, accent cursor/selection). Adds accent-colored file tabs with right-click context menu (Focus, Split, Find, Edit, Save, History, Reload, Copy path, Close). Adds mobile CSS parity for all editor enhancements. |
-| `0.2.91` | `0.8.0` | `20` with `18` and `16` fallback | Superseded | Syncs to Herdr v0.8.0 protocol 20. Terminal attach retries protocols 20, 18, and 16 in descending order for compatible older servers. Adds Claurst and Qwen agent detection. Adds markdown preview with Mermaid support. Adds jcode detection variant support (vanilla + alecuba16 fork). |
+| `0.2.91` | `0.8.0` | `20` with `18` and `16` fallback | Superseded | Syncs to Herdr v0.8.0 protocol 20. Adds markdown preview with Mermaid support, Claurst and Qwen agent detection, a configurable log level for login and websocket events, and jcode detection variant support (vanilla + alecuba16 fork). Terminal attach retries protocols 20, 18, and 16 in descending order for compatible older servers. |
 | `0.2.87` | `0.7.5+` | `18` with `17` and `16` fallback | Superseded | Bumps wire protocol 16 to 18 for Herdr 0.7.5+ compatibility. Raises minimum supported protocol from 14 to 16. Adds KittyKeyboardReportAll server message variant. |
 | `0.2.84` | `0.7.3` | `16` with `15` and `14` fallback | Superseded | CPU optimization: 500ms throttling on agent status detection, cached pane presentation, event-driven no-sync for agent status changes, removed auto-theme polling. |
 | `0.2.80` | `0.7.3` | `16` with `15` and `14` fallback | Superseded | Replaces xterm.js with wterm terminal renderer adapter. Adds Settings-backed renderer selection between wterm and Ghostty. Adds terminal mouse reporting opt-in. Adds in-diff Git hunk editing for both side-by-side and unified layouts. |
@@ -45,7 +51,7 @@ Compatibility:
 | `0.0.45` | `0.7.1` | `14` | Tested | Improves embedded Git UI navigation with Escape handling, all-changes return behavior, split frontend assets, scoped file history controls, keyboard-owned drawer input, and per-file large diff loading. |
 | `0.0.45` | `0.7.0` | `14` | Minimum supported | Uses WebUI's legacy existing-branch worktree fallback when needed. |
 
-Newer Herdr builds may work when protocol stays compatible, but WebUI reports them as untested. WebUI 0.2.91 treats Herdr 0.8.0 protocol 20 as tested and retries protocols 18 and 16 in descending order for compatible older Herdr servers. The minimum supported protocol is 16 (raised from 14 in v0.2.87).
+Newer Herdr builds may work when protocol stays compatible, but WebUI reports them as untested. Since WebUI 0.4.13, the terminal handshake requires an exact protocol match (protocol `22`) because herdr 0.9.0 rejects mismatched client versions; the older multi-version attach fallback (protocols 20/18/16) was removed. The minimum supported protocol is `22`.
 
 ## Build
 
@@ -122,7 +128,7 @@ HERDR_WEB_HERDR_BIN=/opt/homebrew/bin/herdr herdr-webui --https off --backend-mo
 ```text
 herdr-webui [--verbose] [--bind HOST:PORT] [--https off|auto|self-signed|files] [--tls-cert PATH --tls-key PATH] [--session NAME] [--api-socket PATH] [--client-socket PATH] [--backend-mode <external-herdr|builtin|auto>]
 herdr-webui --version
-herdr-webui-tui [--session NAME] [--api-socket PATH --terminal-socket PATH] [--refresh-ms MS] [--theme dark|light|system] [--summary|--once]
+herdr-webui-tui [--session NAME] [--api-socket PATH --terminal-socket PATH] [--webui-api HOST:PORT] [--refresh-ms MS] [--theme dark|light|system] [--summary|--once]
 herdr-webui install-mac [--verbose] [--bind HOST:PORT] [--https off|auto|self-signed|files] [--tls-cert PATH --tls-key PATH] [--session NAME]
 herdr-webui update-mac [--verbose]
 herdr-webui install-linux [--bind HOST:PORT] [--https off|auto|self-signed|files] [--tls-cert PATH --tls-key PATH] [--session NAME]
@@ -144,7 +150,7 @@ Backend mode details:
 - `--backend-mode external-herdr`: use external `herdr.sock` and `herdr-client.sock` paths, preserving named session behavior.
 - `--backend-mode auto`: prefer a live compatible external API socket, otherwise start built-in.
 - Settings → Backend writes `backend_mode`, optional `builtin_shell`, `builtin_backend_enabled`, and `external_herdr_backend_enabled` to `~/.config/herdr-webui/webui-settings.json`. Existing saved settings keep their saved mode until changed. Disable a backend type to hide it from the session manager and prevent selecting, creating, or closing sessions through that backend; at least one backend type must remain enabled. External Herdr discovery is passive and does not execute `herdr` unless you explicitly launch/create an external session. Disabling a backend while tabs are open is safe: those tabs retarget to the server's default backend immediately (no reload needed), and any explicit request for the disabled backend returns a clear error until it is re-enabled.
-- Current built-in MVP supports workspace/tab/pane basics, PTY terminal attach/input/resize/reconnect, event-hub updates for built-in sessions, agent/Jcode tail detection, and worktree list/open/create. It intentionally does not yet provide full Herdr parity for server-side scroll/search/selection, persistence after WebUI restart, or built-in worktree remove.
+- Current built-in MVP supports workspace/tab/pane basics, PTY terminal attach/input/resize/reconnect, event-hub updates for built-in sessions, agent/Jcode tail detection, and worktree list/open/create. It intentionally does not yet provide full Herdr parity for server-side scroll/search/selection, persistence after WebUI restart, or built-in `worktree.remove` (the UI falls back to a server-side `git worktree remove` through `/api/worktrees/remove-path`, and the TUI client covers navigation, live attach, Files, and Git screens).
 
 TUI details:
 
@@ -271,13 +277,13 @@ If `--session NAME` is supplied, launched Herdr processes receive `HERDR_SESSION
 
 ## FAQ
 
-### `herdr rejected terminal connection: client version 20 is newer than server version X; please upgrade the herdr server`
+### `herdr rejected terminal connection: client version 22 is newer than server version X; ...`
 
-This means WebUI is using a newer terminal attach protocol than the Herdr server process handling the session. WebUI retries protocols 20, 18, and 16 in descending order automatically when a newer handshake reaches a compatible older server, so seeing this error usually means the running Herdr server is older than WebUI's fallback range or failed after the fallback retries.
+This means WebUI is using a different terminal attach protocol than the Herdr server process handling the session. Since herdr 0.9.0 the handshake requires an exact protocol match (WebUI speaks protocol `22`), so a running Herdr server older than WebUI's protocol cannot accept the attach.
 
 Check two things:
 
-- Verify the `herdr` binary version in `PATH`, or the binary set through `HERDR_WEB_HERDR_BIN`.
+- Verify the `herdr` binary version in `PATH`, or the binary set through `HERDR_WEB_HERDR_BIN`. WebUI requires herdr `0.9.0` or newer for external sessions.
 - Make sure old Herdr server sessions are not still running. Updating the `herdr` binary does not upgrade already-running session processes; close all running Herdr sessions, then start them again with the updated binary.
 
 ### macOS blocks the downloaded binary

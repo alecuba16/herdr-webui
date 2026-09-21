@@ -5355,6 +5355,23 @@ mod tests {
     }
 
     #[test]
+    fn manifest_keeps_default_run_for_quick_start() {
+        // `cargo run -- ...` (the documented quick start) fails with "could
+        // not determine which binary to run" unless the package sets
+        // `default-run`, because this crate builds two binaries.
+        let manifest = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"))
+            .expect("Cargo.toml next to the crate root");
+        let has_active_default_run = manifest.lines().any(|line| {
+            line.trim_start()
+                .starts_with("default-run = \"herdr-webui\"")
+        });
+        assert!(
+            has_active_default_run,
+            "Cargo.toml must keep an active `default-run = \"herdr-webui\"` key so the README quick start works"
+        );
+    }
+
+    #[test]
     fn rejects_invalid_config_flags() {
         let missing = ["--bind"].map(String::from);
         let invalid_bind = ["--bind", "not-a-socket"].map(String::from);
