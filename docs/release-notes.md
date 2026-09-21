@@ -1,6 +1,6 @@
 # Release notes
 
-## Unreleased
+## 0.4.36 Release Notes
 - The browser terminal renderer now defaults to the Ghostty VT core, so
   jcode read-tool PNG output and other Kitty graphics render inline
   everywhere (desktop, mobile, temporary terminals) without touching
