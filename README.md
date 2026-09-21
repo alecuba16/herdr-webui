@@ -6,7 +6,18 @@ It runs as a Rust Axum server, serves embedded frontend assets, and starts a bui
 
 ## Quick start
 
-Requires the Rust toolchain. From a fresh clone:
+Prebuilt binaries ship on the [releases page](https://github.com/alecuba16/herdr-webui/releases): pick the tarball for your platform (Linux x86_64, macOS aarch64, macOS x86_64), extract it, and run the documented quick start without a Rust toolchain:
+
+```bash
+curl -LO https://github.com/alecuba16/herdr-webui/releases/latest/download/herdr-webui-macos-aarch64.tar.gz
+tar -xzf herdr-webui-macos-aarch64.tar.gz
+./herdr-webui-macos-aarch64/herdr-webui --https off --backend-mode builtin
+# open http://127.0.0.1:8787
+```
+
+Each tarball contains `herdr-webui`, `herdr-webui-tui`, and a `README.txt`; a matching `.sha256` checksum is published next to it. The binary can also install itself as a service: `./herdr-webui install-mac` or `install-linux` (see [docs/installation.md](docs/installation.md)).
+
+To build from source instead, the same quick start works with the Rust toolchain. From a fresh clone:
 
 ```bash
 cargo run -- --https off --backend-mode builtin

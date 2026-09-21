@@ -7,6 +7,11 @@
   `default-run` manifest key. `Cargo.toml` now sets `default-run = "herdr-webui"`
   so plain `cargo run` starts the WebUI server. README documents the `--bin`
   flag position (before the `--` separator) and the TUI run form.
+- README quick start now leads with the prebuilt release tarballs (Linux
+  x86_64, macOS aarch64, macOS x86_64, each with a `.sha256` checksum): the
+  same documented quick start runs from the extracted binary without a Rust
+  toolchain, and the tarball's self-install commands (`install-mac`/
+  `install-linux`) are linked to the installation docs.
 - Documentation accuracy pass: installation requirements now mark the `herdr`
   binary as optional (only external sessions need it, herdr `0.9.0`+), the
   WebUI/Herdr compatibility table now reflects protocol `22` exact-match

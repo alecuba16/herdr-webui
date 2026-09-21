@@ -4231,6 +4231,9 @@ describe("app bundle load", () => {
     match(releaseNotes, /0\.2\.50 Release Notes/);
     match(readmeDoc, /herdr-webui-tui --api-socket \/path\/to\/herdr\.sock --terminal-socket \/path\/to\/herdr-client\.sock/);
     match(readmeDoc, /The TUI is a client; it does not start the backend by itself/);
+    match(readmeDoc, /Prebuilt binaries ship on the \[releases page\]/);
+    match(readmeDoc, /releases\/latest\/download\/herdr-webui-/);
+    match(readmeDoc, /install-mac` or `install-linux/);
     match(installationDoc, /This is the recommended quick-start path/);
     match(installationDoc, /For an external Herdr-compatible backend, point TUI at the socket pair explicitly/);
     match(releaseNotes, /Updates the global `\?` Help & Shortcuts modal/);
