@@ -786,8 +786,7 @@ async fn main() -> io::Result<()> {
     ));
     let (rebind_tx, rebind_rx) = tokio::sync::watch::channel(server_settings.lock().unwrap().bind);
     let (settings_tx, _) = tokio::sync::broadcast::channel(16);
-    let closed_builtin_sessions: ClosedBuiltinSessions =
-        Arc::new(Mutex::new(HashSet::new()));
+    let closed_builtin_sessions: ClosedBuiltinSessions = Arc::new(Mutex::new(HashSet::new()));
     let state = WebState {
         api_socket,
         client_socket,
@@ -8840,7 +8839,11 @@ mod tests {
             "closed session must be skipped, not resurrected"
         );
         assert!(
-            !state.builtin_sessions.lock().unwrap().contains_key("closed-one"),
+            !state
+                .builtin_sessions
+                .lock()
+                .unwrap()
+                .contains_key("closed-one"),
             "no backend may be started for a closed session"
         );
         let (api_socket, _) = builtin_socket_paths(Some("closed-one"));
@@ -8852,7 +8855,11 @@ mod tests {
         // Non-closed sessions still auto-start normally.
         assert!(ensure_builtin_session(&state, Some("open-one")).is_ok());
         assert!(
-            state.builtin_sessions.lock().unwrap().contains_key("open-one"),
+            state
+                .builtin_sessions
+                .lock()
+                .unwrap()
+                .contains_key("open-one"),
             "auto-start must still work for non-closed sessions"
         );
 
@@ -8939,7 +8946,11 @@ mod tests {
             .unwrap()
             .insert("resurrect-guard".to_string());
 
-        ensure_backend_for_request(&state, SessionBackendTarget::Builtin, Some("resurrect-guard"));
+        ensure_backend_for_request(
+            &state,
+            SessionBackendTarget::Builtin,
+            Some("resurrect-guard"),
+        );
 
         assert!(
             !state
