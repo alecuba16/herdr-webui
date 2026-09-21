@@ -196,12 +196,16 @@
           }
         }
         forgetSessionState(session);
-        // Retarget the server's default backend so the refresh below lands
-        // on a working session (the server auto-starts built-in on demand).
-        // The closed session's target is abandoned: retarget the browser to
-        // the default session so nothing keeps pointing at the closed
-        // surface (staying there would show the offline manager forever).
-        const retargetBackend = state.serverDefaultBackend || "builtin";
+        // Retarget so the refresh below lands on a working session (the
+        // server auto-starts built-in on demand). The closed session's
+        // target is abandoned: retarget the browser to the default session
+        // so nothing keeps pointing at the closed surface (staying there
+        // would show the offline manager forever). The default session's
+        // own stored pin wins when the user had one; only a browser with
+        // no pin for it adopts the server's configured default backend.
+        const retargetSession = session !== "default" ? "default" : session;
+        const retargetBackend =
+          readSessionBackend(retargetSession) || state.serverDefaultBackend || "builtin";
         if (session !== "default") {
           state.session = "default";
           history.pushState(null, "", "/session/default");

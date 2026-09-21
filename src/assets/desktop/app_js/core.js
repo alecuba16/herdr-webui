@@ -3110,7 +3110,9 @@ async function closeCurrentSession() {
     // Closed means closed: forget this session's stored backend pin and its
     // saved selections so no reopen path resurrects the closed surface.
     forgetSessionState(closedSession);
-    const retargetBackend = state.serverDefaultBackend || "builtin";
+    const retargetSession = closedSession !== "default" ? "default" : closedSession;
+    const retargetBackend =
+      readSessionBackend(retargetSession) || state.serverDefaultBackend || "builtin";
     // Stay on the default session when it is the one being closed; pushing a
     // /session/default entry would only re-target the just-closed surface.
     if (closedSession !== "default") {
@@ -3123,6 +3125,9 @@ async function closeCurrentSession() {
       syncWorkspaceShellRestoreControl();
       history.pushState(null, "", "/session/default");
     }
+    // The retarget lands on the default session's own stored pin when the
+    // user had one (the explicit per-session choice wins); only a browser
+    // with no pin for it adopts the server's configured default backend.
     state.sessionBackend = retargetBackend;
     writeSessionBackend(state.session || "default", state.sessionBackend);
     // The live events socket still subscribes to the closed session's
