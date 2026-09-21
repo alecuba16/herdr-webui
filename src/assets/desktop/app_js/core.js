@@ -1,3 +1,59 @@
+// Per-session storage keys. The backend pin used to be a single global
+// `herdr-session-backend` value, which leaked the last-used backend into
+// every other session: reopening session A after using external Herdr in
+// session B made A's first /api/versions request run against Herdr while
+// its URL said builtin. Each session now keeps its own backend pin, and
+// each session+backend pair keeps its own last selection (workspace/tab/
+// pane) so Back and session rows can restore the exact surface the user
+// left, per the no-auto-open-on-startup rule (fresh boot starts clean).
+function sessionBackendKey(session) {
+  return "herdr-session-backend:" + (session || "default");
+}
+function sessionStateKey(backend, session) {
+  return (
+    "herdr-session-state:" + (backend || "builtin") + ":" + (session || "default")
+  );
+}
+function readSessionBackend(session) {
+  try {
+    return localStorage.getItem(sessionBackendKey(session)) || "builtin";
+  } catch (e) {
+    return "builtin";
+  }
+}
+function writeSessionBackend(session, backend) {
+  try {
+    localStorage.setItem(sessionBackendKey(session), backend || "builtin");
+  } catch (e) {}
+}
+function forgetSessionState(session) {
+  try {
+    localStorage.removeItem(sessionBackendKey(session));
+    localStorage.removeItem(sessionStateKey("builtin", session));
+    localStorage.removeItem(sessionStateKey("external-herdr", session));
+  } catch (e) {}
+}
+// Saved per-session selection: {ws, tab, pane} raw backend ids (desktop
+// ids are unscoped, see the parseRoute note below).
+function saveSessionSelection(session, backend, { ws, tab, pane }) {
+  try {
+    localStorage.setItem(
+      sessionStateKey(backend, session),
+      JSON.stringify({ ws: ws || null, tab: tab || null, pane: pane || null }),
+    );
+  } catch (e) {}
+}
+function readSessionSelection(session, backend) {
+  try {
+    const raw = localStorage.getItem(sessionStateKey(backend, session));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    return { ws: parsed.ws || null, tab: parsed.tab || null, pane: parsed.pane || null };
+  } catch (e) {
+    return null;
+  }
+}
 let state = {
   session: "default",
   sessions: [],
@@ -37,7 +93,10 @@ let state = {
   // the first successful snapshot; falls back to legacy polling when false.
   supportsSessionSnapshot: false,
   backendMode: "builtin",
-  sessionBackend: localStorage.getItem("herdr-session-backend") || "builtin",
+  // Per-session pin (see sessionBackendKey); the boot path calls
+  // parseRoute() before this matters, so read the pin for the default
+  // session here and let every switch path re-read for its own session.
+  sessionBackend: readSessionBackend("default"),
   // True until the first /api/versions response confirms which backend the
   // server defaults to. Browsers used to hardcode a backend here and race
   // loadVersions(); now the server's default (built-in) is authoritative.
@@ -2772,20 +2831,13 @@ function syncSessionBackendFromServer() {
         ? "builtin"
         : "external-herdr";
   state.sessionBackend = fallback;
-  localStorage.setItem("herdr-session-backend", fallback);
+  writeSessionBackend(state.session || "default", fallback);
   updateFooterSessionButton();
   // The events socket is bound to the disabled backend through its URL
   // query (?backend=...). Cycle it so the reconnect targets the fallback
   // backend; otherwise the tab keeps polling the dead backend's events
   // (attach/subscribe failures on every reconnect) until a manual reload.
-  if (eventWs) {
-    eventWs.onclose = null;
-    try {
-      eventWs.close();
-    } catch (e) {}
-    eventWs = null;
-    setTimeout(connectEvents, 100);
-  }
+  if (eventWs && typeof cycleEventsSocket === "function") cycleEventsSocket();
 }
 async function newSessionTarget(backend) {
   if (backend === "external-herdr" && !backendEnabled("external-herdr")) {
@@ -2856,7 +2908,7 @@ function renderSessionRows() {
       const backendPill = `<span class="status-pill ${sessionBackendClass(backend)}">${escapeHtml(s.backend_label || sessionBackendLabel(backend))}</span>`;
       const controls = active
         ? `<span class="session-controls">${backendPill}<button class="session-button primary" onclick="event.stopPropagation();launchBackend('${escapeAttr(s.name)}','${escapeAttr(backend)}')">Launch</button><button class="session-button" onclick="event.stopPropagation();refresh()">Retry</button><button class="session-button" onclick="event.stopPropagation();resetSession()">Reset workspaces</button><button class="session-button danger" onclick="event.stopPropagation();closeCurrentSession()">Close</button></span>`
-        : `<span class="session-controls">${backendPill}${status}</span>`;
+        : `<span class="session-controls">${backendPill}${status}<button class="session-button danger" onclick="event.stopPropagation();closeSessionRow('${escapeAttr(s.name)}','${escapeAttr(backend)}')">Close</button></span>`;
       const hint = active
         ? "current browser target"
         : s.running
@@ -3023,12 +3075,17 @@ async function handleHerdrErrorFrame(raw) {
 }
 async function closeCurrentSession() {
   if (!confirm(`Close current ${sessionBackendLabel(currentSessionBackend())} session?`)) return;
+  // Capture before any retargeting: the POST body and the post-close cleanup
+  // must refer to the session+backend being closed, not to whatever the
+  // browser retargets to afterwards.
+  const closedSession = state.session || "default";
+  const closedBackend = currentSessionBackend();
   showBlocking("Closing session...");
   try {
     const result = await api("/api/session/close", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ session: state.session || "default", backend: currentSessionBackend() }),
+      body: JSON.stringify({ session: closedSession, backend: closedBackend }),
     });
     // A stale row (backend died without a live socket) closes cleanly too:
     // the server reports already_stopped so the UI can dismiss it.
@@ -3045,15 +3102,81 @@ async function closeCurrentSession() {
     }
     // The browser no longer has a live backend to talk to: the just-closed
     // session is gone (a stale socket would only return ENOENT errors on the
-    // next refresh). Retarget the server's configured default backend so the
-    // delayed refresh() below lands on a working session (the server
-    // auto-starts the built-in backend on demand) instead of re-opening the
-    // offline manager and overwriting the clean close message above.
-    state.sessionBackend = state.serverDefaultBackend || "builtin";
-    localStorage.setItem("herdr-session-backend", state.sessionBackend);
+    // next refresh). Retarget to the server's configured default backend on
+    // the default session so the delayed refresh() below lands on a working
+    // target (the server auto-starts the built-in backend on demand) instead
+    // of re-opening the offline manager on the closed session and
+    // overwriting the clean close message above.
+    // Closed means closed: forget this session's stored backend pin and its
+    // saved selections so no reopen path resurrects the closed surface.
+    forgetSessionState(closedSession);
+    const retargetSession = closedSession !== "default" ? "default" : closedSession;
+    const retargetBackend =
+      readSessionBackend(retargetSession) || state.serverDefaultBackend || "builtin";
+    // Stay on the default session when it is the one being closed; pushing a
+    // /session/default entry would only re-target the just-closed surface.
+    if (closedSession !== "default") {
+      state.session = "default";
+      state.ws = null;
+      state.tab = null;
+      state.pane = null;
+      state.workspaceShell = {};
+      lastShellWorkspace = null;
+      syncWorkspaceShellRestoreControl();
+      history.pushState(null, "", "/session/default");
+    }
+    // The retarget lands on the default session's own stored pin when the
+    // user had one (the explicit per-session choice wins); only a browser
+    // with no pin for it adopts the server's configured default backend.
+    state.sessionBackend = retargetBackend;
+    writeSessionBackend(state.session || "default", state.sessionBackend);
+    // The live events socket still subscribes to the closed session's
+    // backend (bound in its URL query params). Cycle it so the reconnect
+    // follows the retargeted pin instead of polling a dead subscription.
+    if (typeof cycleEventsSocket === "function") cycleEventsSocket();
     setTimeout(refresh, 800);
   } catch (e) {
     showSessionManager("Close failed", e.message || String(e));
+  } finally {
+    hideBlocking();
+  }
+}
+// Close a non-active session row straight from the manager. The current
+// session goes through closeCurrentSession (which also retargets the
+// browser to the server default); other sessions just stop on the server.
+// Integrity: already_stopped and the usual stale-row errors (backend died
+// without a live socket) count as success, and the stored pin + saved
+// selections for the session are always forgotten so no reopen path
+// resurrects the closed surface.
+async function closeSessionRow(name, backend) {
+  if (!confirm(`Close ${sessionBackendLabel(backend)} session ${name}?`)) return;
+  showBlocking("Closing session...");
+  try {
+    let alreadyStopped = false;
+    try {
+      const result = await api("/api/session/close", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ session: name || "default", backend }),
+      });
+      alreadyStopped = !!(result && result.already_stopped);
+    } catch (e) {
+      const msg = String((e && e.message) || e);
+      if (!/No such file|not running|ENOENT/.test(msg)) {
+        showSessionManager("Close failed", msg);
+        return;
+      }
+      // Stale row: the backend was already gone, so the goal (no live
+      // session) held before the request. Clear it as closed.
+      alreadyStopped = true;
+    }
+    forgetSessionState(name || "default");
+    await showSessionManager(
+      "Session closed",
+      alreadyStopped
+        ? "That session was not running; its stale entry was cleared. You can launch it again."
+        : "Session stopped. You can launch it again.",
+    );
   } finally {
     hideBlocking();
   }
@@ -3264,7 +3387,7 @@ async function loadVersions() {
       const serverDefault = v.default_backend || v.current_backend;
       if (serverDefault) {
         state.sessionBackend = serverDefault;
-        localStorage.setItem("herdr-session-backend", state.sessionBackend);
+        writeSessionBackend(state.session || "default", state.sessionBackend);
       }
     }
     // Remember the server's configured default backend so a closed session
@@ -3282,7 +3405,7 @@ async function loadVersions() {
     syncSessionBackendFromServer();
     if (currentSessionBackend() === "external-herdr" && !state.herdrCompatible) {
       state.sessionBackend = "builtin";
-      localStorage.setItem("herdr-session-backend", "builtin");
+      writeSessionBackend(state.session || "default", "builtin");
     }
     state.serverBackendConfirmed = true;
     if (!state.sessionBackend) state.sessionBackend = currentSessionBackend();
@@ -3402,6 +3525,16 @@ function resetTerminalConnection(clear = false, destroy = false) {
   } else if (clear && term) term.clear();
 }
 function replaceSelectionHistory() {
+  // Persist the current selection per session+backend so reopening the
+  // session (row click) restores the exact surface the user left. Bare
+  // entries never overwrite a saved selection: a fresh boot lands clean
+  // (no auto-open) and must not erase what reopen should restore.
+  if (state.ws)
+    saveSessionSelection(state.session || "default", currentSessionBackend(), {
+      ws: state.ws,
+      tab: state.tab,
+      pane: state.pane,
+    });
   history.replaceState(null, "", state.ws ? selectionPath(state.ws, state.tab, state.pane) : sessionPrefix());
 }
 function navigateSelection(e, ws, tab, pane) {
@@ -3416,6 +3549,16 @@ function navigateSelection(e, ws, tab, pane) {
   return false;
 }
 function go(ws, tab, pane) {
+  // Explicit navigation (workspace switch, tab/pane click, search result,
+  // agent pick): persist the selection per session+backend so reopening the
+  // session restores exactly this surface. Without this, only close-fallback
+  // flows (replaceSelectionHistory) ever stored a selection and reopen had
+  // almost nothing to restore.
+  saveSessionSelection(state.session, currentSessionBackend(), {
+    ws,
+    tab,
+    pane,
+  });
   history.pushState(null, "", selectionPath(ws, tab, pane));
   parseRoute();
   resetTerminalConnection(true);
@@ -3434,27 +3577,81 @@ function goSession(name, backend = currentSessionBackend(), { closeManager = tru
   if (closeManager) hideSessionManager();
   state.session = name || "default";
   state.sessionBackend = backend || "builtin";
-  localStorage.setItem("herdr-session-backend", state.sessionBackend);
-  state.ws = null;
-  state.tab = null;
-  state.pane = null;
+  writeSessionBackend(state.session, state.sessionBackend);
+  // Reopen restores the surface the user left in this session+backend pair:
+  // land on the saved workspace/tab/pane instead of the bare session entry.
+  // With no saved selection (fresh session, or the boot-clean rule) the
+  // bare entry is kept, so nothing auto-opens on a plain switch.
+  const saved = readSessionSelection(state.session, state.sessionBackend);
+  if (saved && saved.ws) {
+    state.ws = saved.ws;
+    state.tab = saved.tab || null;
+    state.pane = saved.pane || null;
+  } else {
+    state.ws = null;
+    state.tab = null;
+    state.pane = null;
+  }
   state.workspaceShell = {};
   lastShellWorkspace = null;
   syncWorkspaceShellRestoreControl();
   resetTerminalConnection(true);
   setTerminalLoading(true);
-  if (eventWs) {
-    eventWs.onclose = null;
-    try {
-      eventWs.close();
-    } catch (e) {}
-    eventWs = null;
-  }
-  history.pushState(null, "", sessionPrefix());
+  // Cycle the events socket through the shared helper so it re-subscribes
+  // with the new session+backend (the previous socket is a zombie after the
+  // switch; its stale-session guard would drop every message). Harnesses
+  // that do not load terminal.js skip the cycle; the trailing
+  // connectEvents() then remains the connection path and is a no-op in
+  // production where cycleEventsSocket already reconnected.
+  if (typeof cycleEventsSocket === "function") cycleEventsSocket();
+  history.pushState(
+    null,
+    "",
+    state.ws ? selectionPath(state.ws, state.tab, state.pane) : sessionPrefix(),
+  );
   parseRoute();
   loadVersions();
   refresh();
   connectEvents();
+}
+// Popstate (Back/Forward) handler. refresh() alone re-parses the URL and
+// restores the workspace selection from it, but it cannot fix the
+// session-level hazards of history navigation:
+// 1. The backend pin is per session now: re-read it for the session the
+//    history entry points at (a stale in-memory value must not leak the
+//    previous session's backend into the target).
+// 2. The events socket is bound to the session+backend captured at connect
+//    time; after a cross-session Back it is a zombie. Cycle it.
+// 3. Shell state (workspaceShell/lastShellWorkspace) describes the previous
+//    session's workspace; reset it on a session change so the shell mode is
+//    re-derived for the target workspace.
+// Workspace/tab/pane restoration comes from the URL itself via refresh();
+// bare session entries stay bare (no auto-open), per the boot-clean rule.
+function handleSessionPopState() {
+  const fromSession = state.session || "default";
+  const fromBackend = currentSessionBackend();
+  parseRoute();
+  const toSession = state.session || "default";
+  state.sessionBackend = readSessionBackend(toSession);
+  const sessionChanged = toSession !== fromSession;
+  const backendChanged = state.sessionBackend !== fromBackend;
+  if (sessionChanged) {
+    state.workspaceShell = {};
+    lastShellWorkspace = null;
+    syncWorkspaceShellRestoreControl();
+  }
+  // Re-subscribe the events socket only when what it is bound to actually
+  // changed; Back within one session keeps the live subscription, and the
+  // re-validation below only matters for a switch.
+  if (sessionChanged || backendChanged) {
+    if (typeof cycleEventsSocket === "function") cycleEventsSocket();
+    // Re-validate the re-pinned backend against the server's enabled
+    // backends (syncSessionBackendFromServer inside retargets and cycles
+    // again if the pin is now disabled). serverBackendConfirmed stays true
+    // after boot, so the user's explicit per-session choice is preserved.
+    loadVersions();
+  }
+  refresh();
 }
 async function refreshOnline(seq) {
   parseRoute();

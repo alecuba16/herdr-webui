@@ -641,7 +641,7 @@ document.addEventListener("keydown", (e) => {
     pasteClipboard();
   }
 });
-window.onpopstate = refresh;
+window.onpopstate = handleSessionPopState;
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) {
     clearTimeout(noSleepPollTimer);
@@ -665,6 +665,15 @@ applyTheme();
 applyOptions();
 syncNoSleepControls();
 loadNoSleep();
+// Deep-URL boots land straight on a routed session (/session/work/...).
+// Parse the route now so the boot-time backend bookkeeping (first-load
+// adoption in loadVersions, enabled-backends re-validation) reads and
+// writes the routed session's pin instead of the default session's, and
+// re-pin that session's stored backend. A fresh boot on "/" keeps the
+// default session's pin. Nothing auto-opens either way (the boot-clean
+// rule): refresh() only restores what the URL itself describes.
+parseRoute();
+state.sessionBackend = readSessionBackend(state.session || "default");
 loadVersions();
 loadServerSettings();
 refresh();

@@ -7,6 +7,8 @@
     render,
     showScreen,
     selectionPath,
+    currentSessionBackend,
+    saveSessionSelection,
     currentWorkspaceCwd,
     tabTitle,
     getMobileFileBrowser,
@@ -26,6 +28,14 @@
       state.gitDiff = null;
       state.gitDiffError = "";
       getMobileFileBrowser().reset();
+      // Persist the explicit selection (per session+backend) so reopening
+      // this session restores exactly this surface; the history entry and
+      // the stored selection stay in sync.
+      saveSessionSelection(state.session, currentSessionBackend(), {
+        ws: state.ws,
+        tab: null,
+        pane: null,
+      });
       history.pushState(null, "", selectionPath(id));
       getMobileTerminal().destroy(true);
       refresh();
@@ -36,6 +46,11 @@
       state.tab = tab;
       state.pane = pane;
       state.screen = "terminal";
+      saveSessionSelection(state.session, currentSessionBackend(), {
+        ws: state.ws,
+        tab: state.tab,
+        pane: state.pane,
+      });
       history.pushState(null, "", selectionPath(ws, tab, pane));
       getMobileTerminal().destroy(true);
       refresh();
@@ -48,6 +63,11 @@
       state.pane = pane && pane.pane_id;
       state.terminalId = pane && pane.terminal_id;
       state.screen = "terminal";
+      saveSessionSelection(state.session, currentSessionBackend(), {
+        ws: state.ws,
+        tab: state.tab,
+        pane: state.pane,
+      });
       history.pushState(null, "", selectionPath(state.ws, state.tab, state.pane));
       getMobileTerminal().destroy(true);
       render();
@@ -67,6 +87,11 @@
           state.tab = tab;
           state.pane = null;
           state.screen = "terminal";
+          saveSessionSelection(state.session, currentSessionBackend(), {
+            ws: state.ws,
+            tab: state.tab,
+            pane: null,
+          });
           history.pushState(null, "", selectionPath(state.ws, tab));
           getMobileTerminal().destroy(true);
         }

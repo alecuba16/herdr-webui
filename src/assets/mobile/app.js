@@ -1,12 +1,17 @@
 (function () {
   const {
     escapeHtml,
+    forgetSessionState,
     jsArg,
     parseRoutePath,
     pathBasename,
+    readSessionBackend,
+    readSessionSelection,
     samePath,
+    saveSessionSelection,
     selectionPath: mobileSelectionPath,
     sessionPrefix,
+    writeSessionBackend,
   } = globalThis.HerdrMobileCore;
   const { createFaviconNotifier } = globalThis.HerdrAppHelpers;
   const MORE_SCREENS = ["agents", "panels", "worktrees", "files", "git", "settings", "sessions"];
@@ -16,7 +21,10 @@
     backendMode: "",
     // Built-in sessions are the default; /api/server-settings confirms the
     // server's configured backend mode on first load.
-    sessionBackend: localStorage.getItem("herdr-session-backend") || "builtin",
+    // Per-session pin (see sessionBackendKey in mobile/core.js); the boot
+    // path calls parseRoute() before this matters, so read the pin for the
+    // default session here and let every switch path re-read for its own.
+    sessionBackend: readSessionBackend("default"),
     serverBackendConfirmed: false,
     // Backend enablement from the server's enabled_backends (settings). A
     // long-lived tab may outlive a settings change that disabled a backend;
@@ -581,6 +589,8 @@
     render,
     showScreen,
     selectionPath,
+    currentSessionBackend,
+    saveSessionSelection,
     currentWorkspaceCwd,
     tabTitle,
     getMobileFileBrowser: () => mobileFileBrowser,
@@ -596,6 +606,8 @@
     localStorage,
     refresh,
     getMobileEvents: () => mobileEvents,
+    readSessionBackend,
+    writeSessionBackend,
   });
   const workingDismissals = globalThis.HerdrAttention && globalThis.HerdrAttention.createDismissals
     ? globalThis.HerdrAttention.createDismissals({
@@ -650,12 +662,14 @@
   });
   mobileWorktrees = globalThis.HerdrMobileWorktrees.create({
     api,
+    currentSessionBackend,
     defaultFolderFn: () => state.defaultFolder || "",
     destroyTerminal: mobileTerminal.destroy,
     escapeHtml,
     jsArg,
     refresh,
     render,
+    saveSessionSelection,
     selectionPath,
     state,
   });
@@ -726,6 +740,11 @@
     backendEnabled,
     sessionBackendLabel,
     sessionBackendClass,
+    readSessionBackend,
+    readSessionSelection,
+    writeSessionBackend,
+    forgetSessionState,
+    saveSessionSelection,
   });
 
   mobilePanels = globalThis.HerdrMobilePanelsModule.create({
@@ -769,6 +788,7 @@
     selectTab,
     createPanel,
     closeCurrentPanel,
+    currentSessionBackend,
     dismissWorkingAgent: (...args) => mobileScreens.dismissWorkingAgent(...args),
     restoreWorkingAgent: (...args) => mobileScreens.restoreWorkingAgent(...args),
     loadGitStatus: (...args) => mobileGit.loadGitStatus(...args),
@@ -876,6 +896,7 @@
     newSession: (...args) => mobileSessions.newSession(...args),
     selectSession: (...args) => mobileSessions.selectSession(...args),
     closeSession: (...args) => mobileSessions.closeSession(...args),
+    closeSessionRow: (...args) => mobileSessions.closeSessionRow(...args),
   };
 
   globalThis.HerdrMobileFiles = {
@@ -889,14 +910,64 @@
   updateMobileViewport();
   applyTheme();
   parseRoute(true);
+  // Deep-URL boots land straight on a routed session (/session/work/...);
+  // re-read that session's pin instead of keeping the default session's pin
+  // read during state init (a stale default pin would target the wrong
+  // backend for the routed session). Fresh boots on "/" keep the default
+  // pin; nothing auto-opens either way.
+  state.sessionBackend = readSessionBackend(state.session || "default");
   render();
   loadServerSettings().then(render);
   refresh();
   mobileEvents.connectEvents();
-  window.addEventListener("popstate", () => {
+  // Popstate (Back/Forward) handler (mobile parity with the desktop
+  // handleSessionPopState). refresh() alone re-parses the URL and restores
+  // the workspace selection from it, but it cannot fix the session-level
+  // hazards of history navigation:
+  // 1. The backend pin is per session: re-read it for the session the
+  //    history entry points at (a stale in-memory value must not leak the
+  //    previous session's backend into the target).
+  // 2. The events socket is bound to the session+backend captured at connect
+  //    time; after a cross-session Back it is a zombie. Cycle it.
+  // 3. Terminal/workspace state describes the previous session's target;
+  //    reset it on a session change so nothing from the old session leaks.
+  // Workspace/tab/pane restoration comes from the URL itself via refresh();
+  // bare session entries stay bare (no auto-open), per the boot-clean rule.
+  function handleSessionPopState() {
+    const fromSession = state.session || "default";
+    const fromBackend = mobileBackend.currentSessionBackend();
     parseRoute(true);
+    const toSession = state.session || "default";
+    state.sessionBackend = readSessionBackend(toSession);
+    const sessionChanged = toSession !== fromSession;
+    const backendChanged = mobileBackend.currentSessionBackend() !== fromBackend;
+    if (sessionChanged) {
+      state.ws = null;
+      state.tab = null;
+      state.pane = null;
+      state.terminalId = null;
+      state.workspaces = [];
+      state.tabs = [];
+      state.allTabs = [];
+      state.panes = [];
+      mobileTerminal.destroy(true);
+    }
+    // Re-subscribe the events socket only when what it is bound to actually
+    // changed; Back within one session keeps the live subscription, and the
+    // re-validation below only matters for a switch.
+    if (sessionChanged || backendChanged) {
+      mobileEvents.closeEventWs();
+      mobileEvents.scheduleEventReconnect();
+      // Re-validate the re-pinned backend against the server's enabled
+      // backends (syncSessionBackendFromServer inside retargets and cycles
+      // again if the pin is now disabled). serverBackendConfirmed stays true
+      // after boot, so the user's explicit per-session choice is preserved.
+      mobileBackend.loadServerSettings();
+    }
+    syncBackendBadge();
     refresh();
-  });
+  }
+  window.addEventListener("popstate", handleSessionPopState);
   window.addEventListener("resize", scheduleTerminalResize);
   if (window.visualViewport)
     window.visualViewport.addEventListener("resize", scheduleTerminalResize);

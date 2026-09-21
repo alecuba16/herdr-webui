@@ -68,7 +68,8 @@ async function runViewport(label, cdp, { width, height }) {
   );
 
   // Pin the browser to the external backend before creating anything.
-  await cdp.evalExpr(`localStorage.setItem('herdr-session-backend', 'external-herdr')`);
+  // Backend pins are per session; this flow targets the default session.
+  await cdp.evalExpr(`localStorage.setItem('herdr-session-backend:default', 'external-herdr')`);
   await cdp.send('Page.navigate', { url: BASE });
   await new Promise((r) => setTimeout(r, 2500));
 

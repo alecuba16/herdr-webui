@@ -2,11 +2,13 @@
   function createMobileWorktrees(deps) {
     const {
       api,
+      currentSessionBackend,
       destroyTerminal,
       escapeHtml,
       jsArg,
       refresh,
       render,
+      saveSessionSelection,
       selectionPath,
       state,
       defaultFolderFn,
@@ -318,6 +320,13 @@
       state.tab = tab.tab_id || null;
       state.pane = pane.pane_id || null;
       state.screen = "terminal";
+      // Landing on a fresh worktree surface is an explicit selection: store
+      // it so reopening this session restores the same surface.
+      saveSessionSelection(state.session, currentSessionBackend(), {
+        ws: state.ws,
+        tab: state.tab,
+        pane: state.pane,
+      });
       history.pushState(
         null,
         "",

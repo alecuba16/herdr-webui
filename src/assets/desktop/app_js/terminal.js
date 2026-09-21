@@ -68,6 +68,23 @@ function connectEvents() {
       setTimeout(connectEvents, 1500);
   };
 }
+// Close any live events socket and reconnect immediately. The events
+// subscription is bound to the session + backend captured in the wsUrl()
+// query params at connect time; after a session or backend switch the old
+// socket is a zombie (its stale-session guard silently drops every message
+// while the server keeps the dead subscription alive). Every switch path
+// (goSession, syncSessionBackendFromServer, handleSessionPopState) cycles
+// through here so no stale subscription outlives a switch.
+function cycleEventsSocket() {
+  if (eventWs) {
+    eventWs.onclose = null;
+    try {
+      eventWs.close();
+    } catch (e) {}
+    eventWs = null;
+  }
+  connectEvents();
+}
 async function connectTerminal() {
   if (document.hidden) return;
   if (!state.terminalId) {

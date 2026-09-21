@@ -90,6 +90,12 @@ const DEFAULT_FOLDER_READ_TIMEOUT: Duration = Duration::from_millis(1500);
 type LocalStream = interprocess::local_socket::Stream;
 type BuiltinSessionRegistry =
     Arc<Mutex<HashMap<String, Arc<builtin_backend::BuiltinBackendHandle>>>>;
+/// Canonical names of built-in sessions the user explicitly closed. Close is
+/// a destructive action: the workspace state is gone, so the marker stops
+/// every auto-start path (workspace proxying, events socket, terminal) from
+/// silently resurrecting the session. An explicit `/api/session/launch`
+/// clears the marker; a fresh WebUI process starts with no markers.
+type ClosedBuiltinSessions = Arc<Mutex<HashSet<String>>>;
 
 fn backend_compatibility_for_supported_range(
     backend: Option<&str>,
@@ -458,6 +464,7 @@ pub(crate) struct WebState {
     backend_mode: BackendMode,
     _builtin_backend: Option<Arc<builtin_backend::BuiltinBackendHandle>>,
     builtin_sessions: BuiltinSessionRegistry,
+    closed_builtin_sessions: ClosedBuiltinSessions,
     /// Serializes built-in session cold starts. Several handlers can
     /// auto-start the same session concurrently on a fresh browser load;
     /// without a lock two starts would race on binding the session socket
@@ -779,6 +786,7 @@ async fn main() -> io::Result<()> {
     ));
     let (rebind_tx, rebind_rx) = tokio::sync::watch::channel(server_settings.lock().unwrap().bind);
     let (settings_tx, _) = tokio::sync::broadcast::channel(16);
+    let closed_builtin_sessions: ClosedBuiltinSessions = Arc::new(Mutex::new(HashSet::new()));
     let state = WebState {
         api_socket,
         client_socket,
@@ -786,6 +794,7 @@ async fn main() -> io::Result<()> {
         backend_mode,
         _builtin_backend: None,
         builtin_sessions,
+        closed_builtin_sessions,
         builtin_start_lock,
         herdr_bin: std::env::var("HERDR_WEB_HERDR_BIN").unwrap_or_else(|_| "herdr".to_string()),
         auth,
@@ -2243,6 +2252,17 @@ fn action_backend(
 
 fn ensure_builtin_session(state: &WebState, session: Option<&str>) -> Result<(), String> {
     let session_name = canonical_session_name(session);
+    // Closed means closed: a user-closed session must not be resurrected by
+    // workspace proxying, the events socket, or the terminal auto-start.
+    // Only an explicit /api/session/launch clears the marker and starts it.
+    if state
+        .closed_builtin_sessions
+        .lock()
+        .map(|closed| closed.contains(&session_name))
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
     if state
         .builtin_sessions
         .lock()
@@ -2361,6 +2381,12 @@ async fn launch_session(
         }
     }
     if backend == SessionBackendTarget::Builtin {
+        // An explicit launch revives the session: clear the closed marker so
+        // ensure_builtin_session (and every later auto-start) can run again.
+        let canonical = canonical_session_name(session.as_deref());
+        if let Ok(mut closed) = state.closed_builtin_sessions.lock() {
+            closed.remove(&canonical);
+        }
         // ensure_builtin_session does socket connect and process spawning;
         // offload to avoid stalling the async runtime.
         let state_clone = state.clone();
@@ -2459,13 +2485,49 @@ async fn close_session(
         let session_name = canonical_session_name(session.as_deref());
         let api = api_for_target_session(&state, backend, session.as_deref());
         let response = proxy_server_stop(api).await;
+        let stopped = response.status().is_success();
         if let Ok(mut sessions) = state.builtin_sessions.lock() {
             sessions.remove(&session_name);
+        }
+        if stopped {
+            mark_closed_builtin_session(&state, &session_name);
         }
         return response;
     }
     let api = api_for_target_session(&state, backend, session.as_deref());
     proxy_server_stop(api).await
+}
+
+/// Record a successful built-in session close and remove its on-disk residue.
+///
+/// Close is destructive and final until an explicit relaunch: the marker stops
+/// every auto-start path (workspace proxying, events socket, terminal) from
+/// resurrecting the stopped backend, the socket files are deleted so no
+/// stale connect target remains, and the session's `builtin/<name>` directory
+/// is removed once empty so the session disappears from the manager list
+/// (known_builtin_sessions discovers sessions there). The `default` directory
+/// is never removed: closing the default session must not delete the slot
+/// fresh sessions relaunch into. All filesystem steps are best-effort; the
+/// close itself already succeeded.
+fn mark_closed_builtin_session(state: &WebState, session_name: &str) {
+    if let Ok(mut closed) = state.closed_builtin_sessions.lock() {
+        closed.insert(session_name.to_string());
+    }
+    let (api_socket, client_socket) = builtin_socket_paths(Some(session_name));
+    for socket in [&api_socket, &client_socket] {
+        let _ = fs::remove_file(socket);
+    }
+    if session_name == "default" {
+        return;
+    }
+    if let Some(dir) = api_socket.parent() {
+        let empty = fs::read_dir(dir)
+            .map(|mut entries| entries.next().is_none())
+            .unwrap_or(false);
+        if empty {
+            let _ = fs::remove_dir(dir);
+        }
+    }
 }
 
 /// Sends `server.stop` to the backend and treats a connection drop as success.
@@ -5034,6 +5096,7 @@ mod tests {
             backend_mode: BackendMode::ExternalHerdr,
             _builtin_backend: None,
             builtin_sessions: Arc::new(Mutex::new(HashMap::new())),
+            closed_builtin_sessions: Arc::new(Mutex::new(HashSet::new())),
             builtin_start_lock: Arc::new(Mutex::new(())),
             herdr_bin: "herdr".to_string(),
             auth: Arc::new(Mutex::new(AuthConfig {
@@ -8671,6 +8734,255 @@ mod tests {
             !sessions_registry.lock().unwrap().contains_key(session_name),
             "registry entry must be removed after closing a stale built-in session"
         );
+        let _ = fs::remove_dir_all(config_home);
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    // ── closed built-in session marker ──
+    // Close must be final until an explicit relaunch: the marker has to block
+    // every auto-start path (workspace proxying, events socket, terminal) and
+    // clean the on-disk residue so the row disappears from the manager list.
+
+    #[cfg(unix)]
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn close_session_builtin_marks_session_closed_and_removes_residue() {
+        let _guard = lock_env();
+        let config_home = std::env::temp_dir().join(format!(
+            "herdr-webui-builtin-close-marker-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
+        let session_name = "marker-close";
+        let (api_socket, client_socket) = builtin_socket_paths(Some(session_name));
+        fs::create_dir_all(api_socket.parent().unwrap()).unwrap();
+        let _ = fs::remove_file(&api_socket);
+        let _ = fs::remove_file(&client_socket);
+
+        // Live socket so close succeeds without the stale-row shortcut.
+        use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+        let name = api_socket.clone().to_fs_name::<GenericFilePath>().unwrap();
+        let listener = ListenerOptions::new()
+            .name(name)
+            .try_overwrite(true)
+            .create_sync()
+            .unwrap();
+        let accept_handle = thread::spawn(move || {
+            let stream = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            // server.stop: close the connection, simulating shutdown.
+            drop(stream);
+        });
+
+        let state = test_state();
+        let closed_registry = state.closed_builtin_sessions.clone();
+        let sessions_registry = state.builtin_sessions.clone();
+        let state_for_list = state.clone();
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/session/close")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "session": session_name, "backend": "builtin" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        accept_handle.join().unwrap();
+        assert!(
+            closed_registry.lock().unwrap().contains(session_name),
+            "closed marker must be set after a successful builtin close"
+        );
+        assert!(
+            !sessions_registry.lock().unwrap().contains_key(session_name),
+            "live registry entry must be removed after close"
+        );
+        assert!(
+            !api_socket.exists(),
+            "api socket file must be removed after close"
+        );
+        assert!(
+            !client_socket.exists(),
+            "client socket file must be removed after close"
+        );
+        assert!(
+            !api_socket.parent().unwrap().exists(),
+            "empty session directory must be removed after close"
+        );
+        // The session must be gone from the manager list.
+        assert!(
+            !known_sessions(&state_for_list, true)
+                .iter()
+                .any(|session| session.get("name").and_then(Value::as_str) == Some(session_name)),
+            "closed session must disappear from known_sessions"
+        );
+
+        let _ = fs::remove_dir_all(config_home);
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_builtin_session_skips_closed_sessions() {
+        let _guard = lock_env();
+        let config_home = std::env::temp_dir().join(format!(
+            "herdr-webui-builtin-closed-skip-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
+
+        let state = test_state();
+        state
+            .closed_builtin_sessions
+            .lock()
+            .unwrap()
+            .insert("closed-one".to_string());
+
+        assert!(
+            ensure_builtin_session(&state, Some("closed-one")).is_ok(),
+            "closed session must be skipped, not resurrected"
+        );
+        assert!(
+            !state
+                .builtin_sessions
+                .lock()
+                .unwrap()
+                .contains_key("closed-one"),
+            "no backend may be started for a closed session"
+        );
+        let (api_socket, _) = builtin_socket_paths(Some("closed-one"));
+        assert!(
+            !api_socket.exists(),
+            "closed session must leave no socket behind"
+        );
+
+        // Non-closed sessions still auto-start normally.
+        assert!(ensure_builtin_session(&state, Some("open-one")).is_ok());
+        assert!(
+            state
+                .builtin_sessions
+                .lock()
+                .unwrap()
+                .contains_key("open-one"),
+            "auto-start must still work for non-closed sessions"
+        );
+
+        let _ = fs::remove_dir_all(config_home);
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    #[cfg(unix)]
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn launch_session_builtin_clears_closed_marker_and_revives_session() {
+        let _guard = lock_env();
+        let config_home = std::env::temp_dir().join(format!(
+            "herdr-webui-builtin-relaunch-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
+        let session_name = "relaunch-me";
+        let state = test_state();
+        state
+            .closed_builtin_sessions
+            .lock()
+            .unwrap()
+            .insert(session_name.to_string());
+        let closed_registry = state.closed_builtin_sessions.clone();
+        let state_after = state.clone();
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/session/launch")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "session": session_name, "backend": "builtin" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["ok"], true);
+        assert!(
+            !closed_registry.lock().unwrap().contains(session_name),
+            "explicit launch must clear the closed marker"
+        );
+        assert!(
+            state_after
+                .builtin_sessions
+                .lock()
+                .unwrap()
+                .contains_key(session_name),
+            "relaunched session must be running again"
+        );
+
+        let _ = fs::remove_dir_all(config_home);
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_backend_for_request_does_not_resurrect_closed_session() {
+        // The workspace-proxy auto-start funnel: a request aimed at a closed
+        // session (ensure_backend_for_request is what api_for_headers_ensured
+        // calls) must not start its backend again.
+        let _guard = lock_env();
+        let config_home = std::env::temp_dir().join(format!(
+            "herdr-webui-builtin-resurrect-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
+
+        let state = test_state();
+        state
+            .closed_builtin_sessions
+            .lock()
+            .unwrap()
+            .insert("resurrect-guard".to_string());
+
+        ensure_backend_for_request(
+            &state,
+            SessionBackendTarget::Builtin,
+            Some("resurrect-guard"),
+        );
+
+        assert!(
+            !state
+                .builtin_sessions
+                .lock()
+                .unwrap()
+                .contains_key("resurrect-guard"),
+            "auto-start must not resurrect a closed session"
+        );
+        let (api_socket, _) = builtin_socket_paths(Some("resurrect-guard"));
+        assert!(
+            !api_socket.exists(),
+            "auto-start must leave no socket behind for a closed session"
+        );
+
         let _ = fs::remove_dir_all(config_home);
         std::env::remove_var("XDG_CONFIG_HOME");
     }
@@ -12789,6 +13101,7 @@ mod tui_parity_e2e_tests {
             backend_mode: BackendMode::ExternalHerdr,
             _builtin_backend: None,
             builtin_sessions: Arc::new(Mutex::new(HashMap::new())),
+            closed_builtin_sessions: Arc::new(Mutex::new(HashSet::new())),
             builtin_start_lock: Arc::new(Mutex::new(())),
             herdr_bin: "herdr".to_string(),
             auth: Arc::new(Mutex::new(AuthConfig {

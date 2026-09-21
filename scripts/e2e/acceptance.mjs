@@ -48,7 +48,7 @@ check('app loads (title present)', !!title, `title="${title}"`);
   const backend = await cdp.evalExpr(`(async () => {
     await new Promise((r) => setTimeout(r, 500));
     return {
-      stored: localStorage.getItem('herdr-session-backend'),
+      stored: localStorage.getItem('herdr-session-backend:default'),
       footer: (document.getElementById('footerSessionButton') || {}).textContent || '',
       versions: await fetch('/api/versions').then((r) => r.json()),
     };
@@ -163,7 +163,10 @@ if (openResult === 'grid') {
   check('workspace created from folder', wsResult && wsResult.includes('"modal":"none"'), String(wsResult).slice(0, 160));
   // The create request must carry the browser's selected session backend.
   {
-    const stored = await cdp.evalExpr(`localStorage.getItem('herdr-session-backend')`);
+    // Backend pins are per session; read the current session's pin.
+    const stored = await cdp.evalExpr(`(location.pathname.startsWith('/session/')
+      ? localStorage.getItem('herdr-session-backend:' + decodeURIComponent(location.pathname.split('/')[2] || 'default'))
+      : localStorage.getItem('herdr-session-backend:default'))`);
     const createReq = createRequests[createRequests.length - 1];
     check(
       'workspace create request targeted the selected session backend',
