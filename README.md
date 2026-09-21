@@ -6,16 +6,18 @@ It runs as a Rust Axum server, serves embedded frontend assets, and starts a bui
 
 ## Quick start
 
-Start the browser WebUI with the built-in backend, which is the default for fresh settings:
+Requires the Rust toolchain. From a fresh clone:
 
 ```bash
 cargo run -- --https off --backend-mode builtin
 # open http://127.0.0.1:8787
 ```
 
-That command starts one process: the Axum WebUI server plus the embedded PTY backend. No separate `herdr server` process is required.
+That command starts one process: the Axum WebUI server plus the embedded PTY backend. No separate `herdr server` process is required, and no `herdr` binary is needed for this mode.
 
-To use an external Herdr daemon instead, launch the daemon separately, then point WebUI at it:
+Cargo picks the `herdr-webui` server automatically (`default-run` in `Cargo.toml`). If you need the other binary, `cargo run --bin herdr-webui-tui` runs the TUI client. When passing `--bin`, it must come before the `--` separator: `cargo run --bin herdr-webui -- --https off`.
+
+To use an external Herdr daemon instead (requires the official `herdr` binary, herdr `0.9.0` or newer), launch the daemon separately, then point WebUI at it:
 
 ```bash
 herdr server
@@ -31,6 +33,13 @@ herdr-webui-tui --once       # one-shot text snapshot
 ```
 
 For a named built-in WebUI session, use the same namespace:
+
+```bash
+cargo run -- --session demo --backend-mode builtin
+cargo run --bin herdr-webui-tui -- --session demo
+```
+
+Or with installed binaries:
 
 ```bash
 herdr-webui --session demo --backend-mode builtin

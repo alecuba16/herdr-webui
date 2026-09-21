@@ -176,7 +176,7 @@ The future TUI may copy these features/functionality as a guide while keeping or
 
 ## Protocol version note
 
-The TUI backend client uses `BUILTIN_TUI_PROTOCOL_VERSION: u32 = 16` (the minimum supported protocol) for built-in session connections, while the WebUI server supports up to protocol 20. This ensures the TUI can connect to any compatible built-in session regardless of the server's maximum protocol version. The protocol handshake iterates all supported protocol versions from 20 down to 16 (inclusive) in descending order for external Herdr connections, retrying on "newer than server version" rejections until the minimum supported protocol is reached.
+The TUI backend client uses `BUILTIN_TUI_PROTOCOL_VERSION: u32 = 22`, matching the server's protocol version (`src/protocol.rs`). herdr 0.9.0 requires an exact client protocol version match at handshake time, so both the WebUI server and the TUI client send `version: 22` and a mismatch is rejected with a `Welcome{error}` (there is no multi-version fallback anymore; earlier WebUI releases retried protocols 20/18/16 in descending order, that chain was removed with the herdr 0.9.0 upgrade in WebUI 0.4.13).
 
 ## Current gaps
 

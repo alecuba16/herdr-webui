@@ -1,5 +1,19 @@
 # Release notes
 
+## Unreleased
+- Documentation quick start fix: `cargo run -- --https off --backend-mode
+  builtin` failed with `could not determine which binary to run` because the
+  package builds two binaries (`herdr-webui` and `herdr-webui-tui`) without a
+  `default-run` manifest key. `Cargo.toml` now sets `default-run = "herdr-webui"`
+  so plain `cargo run` starts the WebUI server. README documents the `--bin`
+  flag position (before the `--` separator) and the TUI run form.
+- Documentation accuracy pass: installation requirements now mark the `herdr`
+  binary as optional (only external sessions need it, herdr `0.9.0`+), the
+  WebUI/Herdr compatibility table now reflects protocol `22` exact-match
+  handshakes (fallback 20/18/16 removed in 0.4.13) and the current release
+  line (`0.4.34`), the FAQ error text matches what the server actually prints,
+  and `herdr-webui-tui --webui-api` is documented in the CLI section.
+
 ## 0.4.34 Release Notes
 - Opening a recent workspace from the desktop search palette now lands
   directly on the workspace's first tab and terminal panel: the open
