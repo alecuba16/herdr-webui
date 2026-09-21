@@ -13193,6 +13193,14 @@ mod tui_parity_e2e_tests {
         result.unwrap_or_else(|err| panic!("tui round trip failed: {err}"));
         server.abort();
         let _ = std::fs::remove_dir_all(&repo);
+        // The bare "origin" sibling shares the repo's timestamped name.
+        let bare = std::env::temp_dir().join(
+            repo.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .replace("herdr-tui-e2e-repo-", "herdr-tui-e2e-bare-"),
+        );
+        let _ = std::fs::remove_dir_all(&bare);
     }
 
     fn tui_round_trip_assertions(api: &WebApiClient, cwd: &str) -> Result<(), String> {
@@ -13783,8 +13791,13 @@ mod tui_parity_e2e_tests {
         );
         // And the error arms still exist: point the panel at a plain
         // directory outside the repo that has no remotes at all.
-        let no_remote_dir =
-            std::env::temp_dir().join(format!("herdr-tui-e2e-noremote-{}", std::process::id()));
+        static NOREMOTE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let no_remote_seq = NOREMOTE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let no_remote_dir = std::env::temp_dir().join(format!(
+            "herdr-tui-e2e-noremote-{}-{}",
+            std::process::id(),
+            no_remote_seq
+        ));
         std::fs::create_dir_all(&no_remote_dir).map_err(|e| e.to_string())?;
         app.git_panel.cwd = no_remote_dir.to_string_lossy().to_string();
         press(&mut app, 'f');
