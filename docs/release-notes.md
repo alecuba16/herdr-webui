@@ -13,6 +13,9 @@
   handshakes (fallback 20/18/16 removed in 0.4.13) and the current release
   line (`0.4.34`), the FAQ error text matches what the server actually prints,
   and `herdr-webui-tui --webui-api` is documented in the CLI section.
+- TUI docs: the Files/Git screens' WebUI HTTP API routes are corrected to the
+  actual endpoints (`/api/file-browser/*`, `/api/git-ui/*`), not the stale
+  `/api/files/*`/`/api/git/*` names.
 
 ## 0.4.34 Release Notes
 - Opening a recent workspace from the desktop search palette now lands
