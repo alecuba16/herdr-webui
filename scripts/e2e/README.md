@@ -198,6 +198,11 @@ that the drawer's rendered HTML survives attach in a real DOM with real
 event wiring; this run closes that gap for the git_ui.js module
 decomposition.
 
+Both runners fail fast when `E2E_PORT` (and `CDP_PORT` for the drawer
+run) is already listening: a leftover `--keep` instance would otherwise
+answer the health check and the run would silently test the stale build.
+Kill the leftover instance (the error lists the listening PID) and rerun.
+
 It verifies in the live DOM:
 
 - the drawer opens through the app path (`openWorkspaceGitUi`) and shows
