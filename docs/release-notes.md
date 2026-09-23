@@ -8,6 +8,11 @@
   `ok + already_stopped` and the row clears cleanly on desktop and mobile.
   This is not a permission issue: a real permission problem surfaces as
   "Permission denied (os error 13)" and still reports an error.
+- Session manager: desktop now also treats a close error carrying the
+  `already_stopped` marker as success when clearing a row, matching mobile
+  and the success-response path. Older or proxied servers that surface the
+  idempotent close as an error no longer leave the row stuck behind a
+  "Close failed" banner.
 
 ## 0.4.37 Release Notes
 - Terminal resize no longer flickers at the tail. Every desktop resize path
