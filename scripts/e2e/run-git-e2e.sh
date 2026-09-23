@@ -17,9 +17,18 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 PORT="${E2E_PORT:-8898}"
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/herdr-git-e2e.XXXXXX")"
 KEEP=0
 [[ "${1:-}" == "--keep" ]] && KEEP=1
+
+# A leftover instance from a previous --keep run would answer the health
+# check and the run would silently test the stale build. Fail fast instead.
+if lsof -nP -iTCP:"$PORT" -sTCP:LISTEN 2>/dev/null | grep -q .; then
+  echo "ERROR: port $PORT is already in use; kill the leftover e2e instance first." >&2
+  lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >&2 || true
+  exit 1
+fi
+
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/herdr-git-e2e.XXXXXX")"
 
 session_id() {
   printf 'git-e2e-%s-%s' "$$" "$(date +%s)"

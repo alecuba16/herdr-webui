@@ -198,6 +198,11 @@ that the drawer's rendered HTML survives attach in a real DOM with real
 event wiring; this run closes that gap for the git_ui.js module
 decomposition.
 
+Both runners fail fast when `E2E_PORT` (and `CDP_PORT` for the drawer
+run) is already listening: a leftover `--keep` instance would otherwise
+answer the health check and the run would silently test the stale build.
+Kill the leftover instance (the error lists the listening PID) and rerun.
+
 It verifies in the live DOM:
 
 - the drawer opens through the app path (`openWorkspaceGitUi`) and shows
@@ -211,6 +216,22 @@ It verifies in the live DOM:
 - the branch list popover lists local branches (including `feature/drawer`)
   with author · relative-time rows
 - returning to the terminal hides the panel and restores the shell
+- the navigation redesign: real `Input.dispatchMouseEvent` clicks on the
+  changes tab, the file row, the History button, `View change`, `Back`,
+  `Find in log`, and the clear-scope `×` (the inline `onclick` wiring the
+  no-browser VM never parses), breadcrumb titles per step
+  (`Changes › file › History`, `History › file › Committed <hash>`,
+  `Log › file`, `Log`), real layout measurement of the location bar (size,
+  horizontal overflow, panel bounds, clickable clear-scope size), and real
+  `Input.dispatchKeyEvent` Esc presses walking the ladder one level at a
+  time (scoped log → history → changes root → hide, with the native
+  `confirm` auto-accepted by the driver)
+- narrow-window edge: a real long file name (the fixture's 60-char
+  checklist file) clicked open, then viewport emulation at 900px — above
+  the app's 760px mobile breakpoint so the desktop panel never reloads —
+  must keep the location bar inside the panel bounds with zero horizontal
+  overflow, and the crumb steps must ellipsize (clipped) instead of
+  pushing the bar out
 
 | Variable    | Default | Meaning                              |
 | ----------- | ------- | ------------------------------------ |

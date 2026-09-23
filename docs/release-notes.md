@@ -1,5 +1,28 @@
 # Release notes
 
+## Unreleased
+- The Git drawer has a redesigned navigation: one always-visible location
+  bar with state-derived breadcrumbs (`Changes › file › History`,
+  `History › file › Committed <hash>`, `Log › file`, scoped-log states)
+  replaces the old mode-conditional toolbars, so it always answers where
+  you are. Crumbs cap and ellipsize so long file names never push the bar
+  out of the panel, at full width and in narrow windows.
+- One Back story: the `← Back` button and `Esc` both pop the internal view
+  stack one level at a time and never leave the drawer; `Esc` only hides
+  the drawer at the changes root, and open menus/modals close first
+  without popping. `View change` (read-only commit-vs-parent diff from
+  file history), `Find in log` (the log scoped to that file, cleared with
+  the `×` in the location bar), and `openFileHistory` now reuse the
+  existing workspace Git view instead of switching tools or losing
+  selection state.
+- The no-browser git e2e runner and the new real-browser drawer
+  acceptance runner both fail fast when their ports are already in use:
+  a leftover `--keep` instance previously answered the health check and
+  runs silently tested the stale build. The real-browser suite covers 42
+  checks (real clicks on tabs/rows/buttons, real Esc keypresses, layout
+  geometry, narrow-window crumb clipping), and the drawer navigation
+  behavior is mutation-verified end to end.
+
 ## 0.4.37 Release Notes
 - Terminal resize no longer flickers at the tail. Every desktop resize path
   (window resize, sidebar toggle, Git drawer/Files round-trip) now sends a

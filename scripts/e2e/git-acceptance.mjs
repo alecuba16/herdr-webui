@@ -81,11 +81,12 @@ function element() {
 }
 
 const calls = [];
+const keydownListeners = [];
 const fetchImpl = async (url, init) => {
   const raw = String(url);
   const full = raw.startsWith("http") ? raw : `${ORIGIN}${raw}`;
   const path = new URL(full).pathname;
-  calls.push({ path, init });
+  calls.push({ path, init, url: full });
   const res = await httpsJson(full, init);
   const body = await res.json();
   return { ok: res.status >= 200 && res.status < 300, status: res.status, json: async () => body };
@@ -93,6 +94,9 @@ const fetchImpl = async (url, init) => {
 
 function context() {
   const localStorage = new Map();
+  // One persistent .git-ui-content element so async tab bodies (history rows,
+  // log rows) rendered via replaceContent are observable from the checks.
+  const contentEl = element();
   const ctx = {
     console,
     setTimeout,
@@ -114,9 +118,10 @@ function context() {
       hidden: false,
       visibilityState: "visible",
       __panelHtml: "",
+      __contentEl: contentEl,
       createElement: () => element(),
       execCommand: () => true,
-      querySelector: () => element(),
+      querySelector(selector) { return selector === ".git-ui-content" ? contentEl : element(); },
       querySelectorAll: () => [],
       getElementById(id) {
         const el = element();
@@ -140,7 +145,7 @@ function context() {
     window: null,
     globalThis: null,
     WebSocket: class {},
-    addEventListener() {},
+    addEventListener(type, listener) { if (type === "keydown") keydownListeners.push(listener); },
   };
   ctx.window = ctx;
   ctx.globalThis = ctx;
@@ -300,5 +305,118 @@ const afterRes = await httpsJson(`${ORIGIN}/api/git-ui/status?cwd=${encodeURICom
 const after = await afterRes.json();
 assert(!after.untracked.some((p) => p.startsWith("scratchdir")), "scratchdir is gone from real repo status");
 
+// 12. Navigation redesign: the served bundle drives the new location bar,
+// the single Back ladder, and the file-scoped history/log flows against the
+// real backend. The VM stubs document.addEventListener as a no-op, so the
+// window keydown handler is captured before boot and driven manually for
+// the Esc checks. History/log tab bodies land in the persistent
+// .git-ui-content element; the panel HTML carries the location bar.
+const contentHtml = () => ctx.document.__contentEl.innerHTML || "";
+// The breadcrumbs span carries title="A › B › C" (esc()d), which mirrors the
+// rendered crumb labels; parse it instead of walking nested spans.
+const crumbs = (html) => {
+  const title = (html.match(/git-ui-breadcrumbs" title="([^"]*)"/) || ["", ""])[1];
+  return title.replace(/&quot;/g, '"').replace(/&amp;/g, "&").split("›").map((part) => part.trim()).filter(Boolean);
+};
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const pressEsc = () => keydownListeners.forEach((listener) =>
+  listener({ key: "Escape", stopPropagation() {}, stopImmediatePropagation() {}, preventDefault() {} }));
+
+calls.length = 0;
+await ui.openFileHistory(encodeURIComponent(REPO), encodeURIComponent("src/app.js"));
+await wait(500);
+{
+  const historyFetch = calls.filter((c) => c.path === "/api/git-ui/file-history").pop();
+  assert(historyFetch, "openFileHistory fetched file-history from the real backend");
+  assert(historyFetch.url.includes("file=src%2Fapp.js"), "file-history fetch scoped to src/app.js");
+  const histHtml = contentHtml();
+  assert(/View change/.test(histHtml) && /Find in log/.test(histHtml), "history rows offer View change / Find in log");
+  const histBar = panelHtml();
+  assert(/git-ui-location-bar/.test(histBar), "location bar rendered for the history view");
+  assert(JSON.stringify(crumbs(histBar)) === JSON.stringify(["Changes", "src/app.js", "History"]), `history crumbs read Changes › file › History (${crumbs(histBar).join(" › ")})`);
+  assert(!/git-ui-breadcrumb-ellipsis/.test(histBar), "no legacy breadcrumb-ellipsis markup in the location bar");
+  assert(!/HerdrFileBrowser/.test(histBar), "history view markup never references the File Browser tool");
+}
+
+// 13. View change: committed-file diff for the picked commit.
+calls.length = 0;
+const firstHash = (contentHtml().match(/showHistoryCommit\('([^']+)'\)/) || ["", ""])[1];
+assert(firstHash, "picked a real commit hash from the rendered history");
+await ui.showHistoryCommit(firstHash);
+await wait(500);
+{
+  const compareFetch = calls.filter((c) => c.path === "/api/git-ui/compare").pop();
+  assert(compareFetch, "View change fetched compare from the real backend");
+  assert(compareFetch.url.includes("file=src%2Fapp.js"), "committed-file compare scoped to src/app.js");
+  const changeBar = panelHtml();
+  assert(JSON.stringify(crumbs(changeBar)) === JSON.stringify(["History", "src/app.js", `Committed ${decodeURIComponent(firstHash).slice(0, 12)}`]), `committed-file crumbs read History › file › Committed <hash> (${crumbs(changeBar).join(" › ")})`);
+  assert(/Committed files/.test(panelHtml()), "committed-file side section rendered");
+}
+
+// 14. Back from the committed file returns to the history view, in-drawer.
+calls.length = 0;
+await ui.goBack();
+await wait(500);
+{
+  const backBar = panelHtml();
+  assert(JSON.stringify(crumbs(backBar)) === JSON.stringify(["Changes", "src/app.js", "History"]), `Back restored the history view (${crumbs(backBar).join(" › ")})`);
+  const historyRefetch = calls.filter((c) => c.path === "/api/git-ui/file-history").pop();
+  assert(historyRefetch, "Back re-fetched file-history (restored history, not the changes list)");
+  assert(ui.isVisible(), "Back stayed inside the Git drawer (panel still visible)");
+}
+
+// 15. Find in log keeps the file scope, with a clear-scope control.
+calls.length = 0;
+const secondHash = (contentHtml().match(/showHistoryCommit\('([^']+)'\)/) || ["", ""])[1];
+assert(secondHash, "picked a second real commit hash from the restored history");
+await ui.gotoLogCommit(secondHash);
+await wait(500);
+{
+  const logFetch = calls.filter((c) => c.path === "/api/git-ui/log").pop();
+  assert(logFetch, "Find in log fetched the log from the real backend");
+  assert(logFetch.url.includes("file=src%2Fapp.js"), "log fetch kept the file scope");
+  const logBar = panelHtml();
+  assert(JSON.stringify(crumbs(logBar)) === JSON.stringify(["Log", "src/app.js"]), `file-scoped log crumbs read Log › file (${crumbs(logBar).join(" › ")})`);
+  assert(/git-ui-crumb-clear/.test(logBar), "location bar shows the clear-scope control");
+  assert(/clearLogFileHistory/.test(logBar), "clear-scope control wires clearLogFileHistory");
+}
+
+// 16. Clearing the scope returns the whole-repo log.
+calls.length = 0;
+await ui.clearLogFileHistory();
+await wait(500);
+{
+  const clearBar = panelHtml();
+  assert(JSON.stringify(crumbs(clearBar)) === JSON.stringify(["Log"]), `cleared scope shows the whole-repo log (${crumbs(clearBar).join(" › ")})`);
+  assert(!/git-ui-crumb-clear/.test(clearBar), "clear-scope control hidden when the log is unscoped");
+  const logFetch = calls.filter((c) => c.path === "/api/git-ui/log").pop();
+  assert(logFetch, "clear-scope re-fetched the unscoped log");
+  assert(!logFetch.url.includes("file="), "unscoped log fetch dropped the file param");
+}
+
+// 17. Esc pops one level per press: the unscoped log snapshot underneath has
+// no file scope (captured from the history view), so the first Esc returns
+// to file history. The drawer never hands off to the File Browser tool.
+calls.length = 0;
+pressEsc();
+await wait(500);
+{
+  const escBar = panelHtml();
+  assert(JSON.stringify(crumbs(escBar)) === JSON.stringify(["Changes", "src/app.js", "History"]), `first Esc popped back to file history (${crumbs(escBar).join(" › ")})`);
+  assert(ui.isVisible(), "Esc kept the drawer open at a deeper view");
+}
+// Esc at the history view pops the openFileHistory snapshot: back to changes.
+pressEsc();
+await wait(500);
+{
+  const escBar = panelHtml();
+  assert(JSON.stringify(crumbs(escBar)) === JSON.stringify(["Changes"]), `second Esc popped file history back to changes (${crumbs(escBar).join(" › ")})`);
+  assert(ui.isVisible(), "drawer still open at the changes root");
+}
+// Esc at the changes root asks to hide (VM confirm approves) and closes.
+pressEsc();
+await wait(500);
+assert(!ui.isVisible(), "Esc at the changes root hid the drawer");
+assert(!/HerdrFileBrowser/.test(panelHtml()), "Esc never handed off to the File Browser tool");
 
 console.log("GIT E2E ACCEPTANCE PASSED");

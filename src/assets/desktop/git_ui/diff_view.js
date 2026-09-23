@@ -1,5 +1,5 @@
 (function () {
-  function createGitUiDiffView({state, active, currentMode, compareRefLabel, isNoGitRepositoryView, diffFile, diffFileKey, diffFileLineCount, diffLineCount, largeDiffLineLimit, loadedLargeDiffPreviewLimit, previewDiffFile, diffLayoutMode, hashText, esc, arg, canSearchDiff, diffSearchMatchCount, LARGE_FILE_DIFF_LINE_LIMIT, renderNavigationTrail, titleWithGitShortcut, renderDiffConflictResolutionButtons, renderSideEditor, ensureBlame, renderChunk, stashCount, canOpenStashView, section, commitPreviewSection, stashListHtml, stashFileSection, renderGitViewTabs, hasStagedChanges, filterFiles, sideFileCount, renderWorktreeActions, renderGitLocationSelector, renderDirContextMenu, gitCwdMatchesWorkspace, compactPath, appRefreshIconButton}) {
+  function createGitUiDiffView({state, active, currentMode, compareRefLabel, isNoGitRepositoryView, diffFile, diffFileKey, diffFileLineCount, diffLineCount, largeDiffLineLimit, loadedLargeDiffPreviewLimit, previewDiffFile, diffLayoutMode, hashText, esc, arg, canSearchDiff, diffSearchMatchCount, LARGE_FILE_DIFF_LINE_LIMIT, titleWithGitShortcut, renderDiffConflictResolutionButtons, renderSideEditor, ensureBlame, renderChunk, stashCount, canOpenStashView, section, commitPreviewSection, stashListHtml, stashFileSection, renderGitViewTabs, hasStagedChanges, filterFiles, sideFileCount, renderWorktreeActions, renderGitLocationSelector, renderDirContextMenu, gitCwdMatchesWorkspace, compactPath, appRefreshIconButton}) {
     function canMutateDiff() {
       const view = active() || {};
       if (view.tab === "stash") return false;
@@ -38,24 +38,22 @@
     }
 
     function historicalFileCommitLabel(view) {
-      const hash = view && (view.historyCommitHash || view.compareTarget || "");
+      const committed = view && view.committedFile;
+      const hash = (committed && committed.hash) || (view && view.compareTarget) || "";
       return hash ? String(hash).slice(0, 12) : "selected commit";
     }
 
-    function clearHistoryCompareState(view, options = {}) {
+    function clearHistoryCompareState(view) {
       if (!view) return;
-      view.temporaryHistoryCompare = false;
-      view.historyCommitHash = "";
-      if (options.clearSource) view.historySource = "";
-      if (options.clearBackTarget) view.fileBackTarget = null;
+      view.committedFile = null;
     }
 
-    function resetToChangesMode(view, options = {}) {
+    function resetToChangesMode(view) {
       if (!view) return;
       view.mode = "changes";
       view.compareBase = "";
       view.compareTarget = "";
-      clearHistoryCompareState(view, options);
+      clearHistoryCompareState(view);
     }
 
     function startHistoryCommitCompare(view, hash) {
@@ -63,27 +61,8 @@
       view.compareBase = `${hash}^`;
       view.compareTarget = hash;
       view.mode = "readonly-compare";
-      view.temporaryHistoryCompare = !!view.file;
-      view.historyCommitHash = hash;
-      view.fileBackTarget = null;
+      view.committedFile = view.file ? { hash, from: view.tab === "history" ? "history" : "log" } : null;
       if (view.file) view.compareFilePaths = [view.file];
-    }
-
-    function fileViewStateLabel(view, activeTab) {
-      if (activeTab === "history") return view.file ? `History · ${view.file}` : "File history";
-      if (view.fileBackTarget && view.fileBackTarget.type === "log") return `Committed file · ${view.file || "file"} · ${historicalFileCommitLabel(view)}`;
-      if (view.temporaryHistoryCompare) return `Committed file · ${view.file || "file"} · ${historicalFileCommitLabel(view)}`;
-      if (view.file && currentMode() === "changes") return `Current file · ${view.file}`;
-      if (view.file && currentMode() !== "changes") return `Compared file · ${view.file}`;
-      if (currentMode() === "changes") return "Current changes";
-      return "Compared changes";
-    }
-
-    function fileToolbarBackButton(view, activeTab) {
-      if (activeTab === "history") return `<button class="git-ui-btn" title="Back to file view" onclick="HerdrGitUi.backToFileView()">← Back</button>`;
-      if (view.temporaryHistoryCompare) return `<button class="git-ui-btn" title="Back to file history" onclick="HerdrGitUi.backToFileHistory()">← Back</button>`;
-      if (view.fileBackTarget || currentMode() !== "changes") return `<button class="git-ui-btn" title="Back" onclick="HerdrGitUi.backFromFileView()">← Back</button>`;
-      return "";
     }
 
     function renderSide() {
@@ -95,7 +74,7 @@
         ? [{ id: "changes", label: "changes", disabled: true, disabledReason }, { id: "log", label: "log", disabled: true, disabledReason }, { id: "stash", label: "stash", disabled: true, disabledReason }, { id: "cleanup", label: "cleanup" }]
         : [{ id: "changes", label: "changes" }, { id: "log", label: "log" }, { id: "stash", label: stashCount(view) ? `stash (${stashCount(view)})` : "stash", disabled: !canOpenStashView(view), disabledReason: "No stashes stored. Refresh to rescan." }, { id: "cleanup", label: "cleanup" }];
       const filter = String(view.fileFilter || "").trim();
-      const committedSelection = view.temporaryHistoryCompare || (view.fileBackTarget && view.fileBackTarget.type === "log");
+      const committedSelection = !!view.committedFile;
       const fileSections = view.tab === "log"
         ? commitPreviewSection(view, filter)
         : view.tab === "stash"
@@ -139,11 +118,7 @@
     function renderFileToolbar(activeTab) {
       const view = active() || {};
       const conflicts = ((((view.status || {}).conflicted) || []).length > 0);
-      const breadcrumbs = renderNavigationTrail(view);
-      const back = breadcrumbs ? "" : fileToolbarBackButton(view, activeTab);
-      const viewStateLabel = fileViewStateLabel(view, activeTab);
-      const stateLabel = breadcrumbs || `<span class="git-ui-compare-state git-ui-file-view-state" title="${esc(viewStateLabel)}">${esc(viewStateLabel)}</span>`;
-      const compare = activeTab !== "history" && currentMode() !== "changes" && !view.temporaryHistoryCompare && !view.fileBackTarget
+      const compare = activeTab !== "history" && currentMode() !== "changes" && !view.committedFile
         ? `<span class="git-ui-compare-state">Comparing ${esc(compareRefLabel(view.compareBase))} → ${esc(compareRefLabel(view.compareTarget))}</span>`
         : "";
       const files = (view.diff && view.diff.files) || [];
@@ -159,7 +134,7 @@
           ? `<button class="git-ui-btn" title="${esc(titleWithGitShortcut("Edit file", "edit"))}" onclick="HerdrGitUi.editFile()">Edit</button>`
           : "";
       const search = renderDiffSearchControl(view);
-      return `<div class="git-ui-log-head">${back}${stateLabel}${changes}${history}${blame}${sideEditor}${conflicts ? `<button class="git-ui-btn ${activeTab === "conflicts" ? "active" : ""}" onclick="HerdrGitUi.tab('conflicts')">Conflicts</button>` : ""}${collapse}${search}${compare}</div>`;
+      return `<div class="git-ui-log-head">${changes}${history}${blame}${sideEditor}${conflicts ? `<button class="git-ui-btn ${activeTab === "conflicts" ? "active" : ""}" onclick="HerdrGitUi.tab('conflicts')">Conflicts</button>` : ""}${collapse}${search}${compare}</div>`;
     }
 
     function renderDiffSearchControl(view) {
@@ -285,8 +260,6 @@
       clearHistoryCompareState,
       resetToChangesMode,
       startHistoryCommitCompare,
-      fileViewStateLabel,
-      fileToolbarBackButton,
       renderSide,
       renderDiffLayoutSideToggle,
       renderFileToolbar,
