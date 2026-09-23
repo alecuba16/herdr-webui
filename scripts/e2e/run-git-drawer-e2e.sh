@@ -21,7 +21,6 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 PORT="${E2E_PORT:-8899}"
 CDP="${CDP_PORT:-9222}"
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/herdr-git-drawer-e2e.XXXXXX")"
 KEEP=0
 [[ "${1:-}" == "--keep" ]] && KEEP=1
 
@@ -34,6 +33,8 @@ for probe_port in "$PORT" "$CDP"; do
     exit 1
   fi
 done
+
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/herdr-git-drawer-e2e.XXXXXX")"
 
 session_id() {
   # Unique per run so two concurrent runs never share server state.
