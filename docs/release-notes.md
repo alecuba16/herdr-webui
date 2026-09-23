@@ -1,5 +1,22 @@
 # Release notes
 
+## 0.4.37 Release Notes
+- Terminal resize no longer flickers at the tail. Every desktop resize path
+  (window resize, sidebar toggle, Git drawer/Files round-trip) now sends a
+  live `{"type":"resize"}` message on the open terminal socket instead of
+  tearing down and re-attaching the WebSocket; the old path replayed up to
+  8MB of scrollback and flashed the loading overlay on every resize, which
+  was the visible tail flicker.
+- The pty resizes in place for both backends: the builtin runtime resizes
+  directly and the external herdr daemon applies `ClientResize` to the pty;
+  the Kitty graphics bridge resizes with the same message. Session, tab and
+  pane switches keep their intentional reconnect semantics.
+- New e2e regression suite (`scripts/e2e/run-live-resize-e2e.sh`) drives the
+  real UI in headless Chrome over CDP: zero reconnects across window resizes,
+  sidebar toggle/restore and a drawer round-trip with the window resized
+  while hidden, with the pty `stty size` matching the browser grid at every
+  step (29/29 checks).
+
 ## 0.4.36 Release Notes
 - The browser terminal renderer now defaults to the Ghostty VT core, so
   jcode read-tool PNG output and other Kitty graphics render inline
