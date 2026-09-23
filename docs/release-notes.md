@@ -1,5 +1,14 @@
 # Release notes
 
+## Unreleased
+- Session manager: closing another session no longer fails with "Close failed
+  Connection refused (os error 61)" when the target backend died without
+  cleaning its socket (crash, `kill -9`). That refusal is the same stale-row
+  case as the already-handled missing-socket error, so the server now reports
+  `ok + already_stopped` and the row clears cleanly on desktop and mobile.
+  This is not a permission issue: a real permission problem surfaces as
+  "Permission denied (os error 13)" and still reports an error.
+
 ## 0.4.37 Release Notes
 - Terminal resize no longer flickers at the tail. Every desktop resize path
   (window resize, sidebar toggle, Git drawer/Files round-trip) now sends a
