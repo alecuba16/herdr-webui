@@ -1,6 +1,6 @@
 # Release notes
 
-## Unreleased
+## 0.4.39 Release Notes
 - Session manager: closing another session no longer fails with "Close failed
   Connection refused (os error 61)" when the target backend died without
   cleaning its socket (crash, `kill -9`). That refusal is the same stale-row
