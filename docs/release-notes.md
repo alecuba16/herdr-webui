@@ -1,6 +1,6 @@
 # Release notes
 
-## Unreleased
+## 0.4.38 Release Notes
 - The Git drawer has a redesigned navigation: one always-visible location
   bar with state-derived breadcrumbs (`Changes › file › History`,
   `History › file › Committed <hash>`, `Log › file`, scoped-log states)
