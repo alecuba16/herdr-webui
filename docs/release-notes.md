@@ -16,6 +16,14 @@
   "Close failed" banner, and closing the current session still forgets the
   stale entry and retargets the default session instead of reporting
   failure.
+- The session-UX e2e suite now covers the dead-listener close flows on both
+  surfaces: closing a stale row through the server's `ok + already_stopped`
+  path, closing the current session against a dead listener, and the
+  client-side tolerance for legacy 400 "Connection refused" close errors
+  (stubbed fetch) including forgetting the closed session's stored pin and
+  saved selection. The mobile check samples continuously instead of reading
+  the error banner once, because a scheduled refresh clears it within
+  400ms and a one-shot read false-greens (63 checks).
 
 ## 0.4.37 Release Notes
 - Terminal resize no longer flickers at the tail. Every desktop resize path
