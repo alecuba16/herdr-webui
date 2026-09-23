@@ -51,9 +51,7 @@
       view.selectedStashDiff = null;
       view.stashFile = "";
       view.stashData = null;
-      view.historyCommitHash = "";
-      view.historySource = "";
-      view.fileBackTarget = null;
+      view.committedFile = null;
       view.navigationStack = [];
       view.mode = "changes";
       view.tab = "changes";
@@ -64,18 +62,36 @@
       catch (_) { return fallback; }
     }
 
-    function currentNavigationLabel(view) {
-      if (!view) return "Git";
-      if (view.tab === "history" && view.file) return `History · ${view.file}`;
-      if (view.tab === "log" && view.logFilePath) return `Log · ${view.logFilePath}`;
-      if (view.tab === "log") return "Log";
-      if (view.tab === "stash" && view.selectedStash) return `Stash · ${view.selectedStash}`;
-      if (view.tab === "stash") return "Stash";
-      if (view.tab === "cleanup") return "Cleanup";
-      if (view.fileBackTarget && view.fileBackTarget.type === "log") return `Committed file · ${view.file || "file"}`;
-      if (view.temporaryHistoryCompare && view.file) return `Committed file · ${view.file}`;
-      if (view.file) return currentMode() === "changes" ? `Current file · ${view.file}` : `Compared file · ${view.file}`;
-      return currentMode() === "changes" ? "Current changes" : "Compared changes";
+    // Breadcrumbs are derived from the current view state, never from the
+    // navigation stack, so the location bar always answers "where am I".
+    function viewCrumbs(view) {
+      if (!view) return ["Git"];
+      const file = String(view.file || "");
+      if (view.tab === "history") return file ? ["Changes", file, "History"] : ["History"];
+      if (view.tab === "log") return view.logFilePath ? ["Log", view.logFilePath] : ["Log"];
+      if (view.tab === "stash") return view.selectedStash ? ["Stash", view.selectedStash] : ["Stash"];
+      if (view.tab === "cleanup") return ["Cleanup"];
+      if (view.tab === "conflicts") return ["Changes", "Conflicts"];
+      const committed = view.committedFile;
+      if (committed && file) {
+        const base = committed.from === "history" ? "History" : "Log";
+        const hash = String(committed.hash || "");
+        return [base, file, hash ? `Committed ${hash.slice(0, 12)}` : "Committed file"];
+      }
+      if (file) return currentMode() === "changes" ? ["Changes", file] : ["Compare", file];
+      return currentMode() === "changes" ? ["Changes"] : ["Compare"];
+    }
+
+    function renderLocationBar(view) {
+      const crumbs = viewCrumbs(view);
+      const title = crumbs.join(" › ");
+      const parts = crumbs.map((label, index) => index === crumbs.length - 1
+        ? `<strong title="${esc(label)}">${esc(label)}</strong>`
+        : `<span class="git-ui-breadcrumb-step" title="${esc(label)}">${esc(label)}</span>`).join(`<span class="git-ui-breadcrumb-sep">›</span>`);
+      const clearScope = view && view.tab === "log" && view.logFilePath
+        ? `<button class="git-ui-crumb-clear" title="Show log for the whole repository" onclick="HerdrGitUi.clearLogFileHistory()">×</button>`
+        : "";
+      return `<div class="git-ui-location-bar"><button class="git-ui-btn" title="Go back to previous Git view" onclick="HerdrGitUi.goBack()">← Back</button><span class="git-ui-breadcrumbs" title="${esc(title)}">${parts}</span>${clearScope}</div>`;
     }
 
     function captureNavigationSnapshot(view, label) {
@@ -83,7 +99,7 @@
       const content = document.querySelector(".git-ui-content");
       if (content && preserveContentScroll(view.tab)) view.contentScrollTop = content.scrollTop;
       return {
-        label: label || currentNavigationLabel(view),
+        label: label || viewCrumbs(view).join(" › "),
         tab: view.tab || "changes",
         mode: view.mode || "changes",
         file: view.file || "",
@@ -100,10 +116,7 @@
         logAll: !!view.logAll,
         logFilters: clonePlain(view.logFilters, { description: "", date: "", author: "" }),
         fileFilter: view.fileFilter || "",
-        temporaryHistoryCompare: !!view.temporaryHistoryCompare,
-        historyCommitHash: view.historyCommitHash || "",
-        historySource: view.historySource || "",
-        fileBackTarget: clonePlain(view.fileBackTarget, null),
+        committedFile: clonePlain(view.committedFile, null),
         contentScrollTop: view.contentScrollTop || 0,
         sideScrollTop: state.sideScrollTop || 0,
       };
@@ -114,8 +127,8 @@
       if (!snapshot) return;
       const stack = (view.navigationStack || []).filter(Boolean);
       const last = stack[stack.length - 1];
-      const signature = `${snapshot.tab}|${snapshot.mode}|${snapshot.file}|${snapshot.compareBase}|${snapshot.compareTarget}|${snapshot.selectedLogCommits.join(",")}|${snapshot.logFilePath}`;
-      const lastSignature = last ? `${last.tab}|${last.mode}|${last.file}|${last.compareBase}|${last.compareTarget}|${(last.selectedLogCommits || []).join(",")}|${last.logFilePath}` : "";
+      const signature = `${snapshot.tab}|${snapshot.mode}|${snapshot.file}|${snapshot.compareBase}|${snapshot.compareTarget}|${snapshot.selectedLogCommits.join(",")}|${snapshot.logFilePath}|${(snapshot.committedFile && snapshot.committedFile.hash) || ""}`;
+      const lastSignature = last ? `${last.tab}|${last.mode}|${last.file}|${last.compareBase}|${last.compareTarget}|${(last.selectedLogCommits || []).join(",")}|${last.logFilePath}|${((last.committedFile && last.committedFile.hash) || "")}` : "";
       if (signature === lastSignature) return;
       view.navigationStack = stack.concat(snapshot).slice(-12);
     }
@@ -138,10 +151,7 @@
       view.logAll = view.logScope === "all";
       view.logFilters = clonePlain(snapshot.logFilters, { description: "", date: "", author: "" });
       view.fileFilter = snapshot.fileFilter || "";
-      view.temporaryHistoryCompare = !!snapshot.temporaryHistoryCompare;
-      view.historyCommitHash = snapshot.historyCommitHash || "";
-      view.historySource = snapshot.historySource || "";
-      view.fileBackTarget = clonePlain(snapshot.fileBackTarget, null);
+      view.committedFile = clonePlain(snapshot.committedFile, null);
       view.contentScrollTop = snapshot.contentScrollTop || 0;
       state.sideScrollTop = snapshot.sideScrollTop || 0;
       view.sideEditor = null;
@@ -153,21 +163,6 @@
         loadSelectedCommitPreview(view, view.selectedLogCommits[0]);
       }
       render();
-    }
-
-    function renderNavigationTrail(view) {
-      const stack = ((view && view.navigationStack) || []).filter(Boolean);
-      if (!stack.length) return "";
-      const labels = stack.map((item) => item.label || "Git").concat(currentNavigationLabel(view));
-      const title = labels.join(" › ");
-      const visible = stack.length > 2
-        ? [stack[0], { label: "…", ellipsis: true }, stack[stack.length - 1]]
-        : stack;
-      const crumbs = visible.map((item) => item.ellipsis
-        ? `<span class="git-ui-breadcrumb-ellipsis" title="${esc(title)}">…</span>`
-        : `<span class="git-ui-breadcrumb-step" title="${esc(item.label || "Git")}">${esc(item.label || "Git")}</span>`)
-        .join(`<span class="git-ui-breadcrumb-sep">›</span>`);
-      return `<span class="git-ui-breadcrumbs" title="${esc(title)}"><button class="git-ui-btn" title="Go back to previous Git view" onclick="HerdrGitUi.goBack()">← Back</button>${crumbs}<span class="git-ui-breadcrumb-sep">›</span><strong title="${esc(currentNavigationLabel(view))}">${esc(currentNavigationLabel(view))}</strong></span>`;
     }
 
     function workspaceStatus(key, workspace) {
@@ -192,11 +187,11 @@
       gitCwdMatchesWorkspace,
       resetGitViewForCwd,
       clonePlain,
-      currentNavigationLabel,
+      viewCrumbs,
+      renderLocationBar,
       captureNavigationSnapshot,
       pushNavigationSnapshot,
       restoreNavigationSnapshot,
-      renderNavigationTrail,
       workspaceStatus,
       compactPath,
     };

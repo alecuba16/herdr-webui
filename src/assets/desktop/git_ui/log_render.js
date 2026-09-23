@@ -1,5 +1,5 @@
 (function () {
-  function createGitUiLogRender({active, api, esc, arg, gitLogDefaultBranch, normalizeLogScope, GIT_LOG_PAGE_SIZE, GIT_LOG_MAX_LIMIT, isNoGitRepositoryView, renderFileToolbar, renderCleanup, renderStashDiff, renderConflictResolutionButtons, renderDiff, replaceContent, render}) {
+  function createGitUiLogRender({active, api, esc, arg, gitLogDefaultBranch, normalizeLogScope, GIT_LOG_PAGE_SIZE, GIT_LOG_MAX_LIMIT, isNoGitRepositoryView, renderFileToolbar, renderCleanup, renderStashDiff, renderConflictResolutionButtons, renderDiff, replaceContent, render, renderLocationBar}) {
     async function renderLog(version) {
       const view = active();
       const baseBranch = gitLogDefaultBranch();
@@ -55,7 +55,7 @@
       const view = active();
       if (!view.file) return `${renderFileToolbar("history")}<div class="git-ui-muted">Select file first.</div>`;
       const data = await api(`/api/git-ui/file-history?cwd=${encodeURIComponent(view.cwd)}&file=${encodeURIComponent(view.file)}`);
-      return `${renderFileToolbar("history")}<div class="git-ui-list">${(data.commits || []).map((c) => `<div class="git-ui-file"><span><strong>${esc(c.hash)}</strong> ${esc(c.message)}</span><span class="git-ui-file-meta"><span class="git-ui-muted">${esc(c.author)} ${esc(c.date)}</span><button class="git-ui-file-action" onclick="event.stopPropagation();HerdrGitUi.showHistoryCommit('${arg(c.hash)}')">committed file</button><button class="git-ui-file-action" onclick="event.stopPropagation();HerdrGitUi.gotoLogCommit('${arg(c.hash)}')">log</button></span></div>`).join("") || `<div class="git-ui-empty-row">No history for selected file</div>`}</div>`;
+      return `${renderFileToolbar("history")}<div class="git-ui-list">${(data.commits || []).map((c) => `<div class="git-ui-file"><span><strong>${esc(c.hash)}</strong> ${esc(c.message)}</span><span class="git-ui-file-meta"><span class="git-ui-muted">${esc(c.author)} ${esc(c.date)}</span><button class="git-ui-file-action" title="Open this commit's change for the file" onclick="event.stopPropagation();HerdrGitUi.showHistoryCommit('${arg(c.hash)}')">View change</button><button class="git-ui-file-action" title="Open the file's log at this commit" onclick="event.stopPropagation();HerdrGitUi.gotoLogCommit('${arg(c.hash)}')">Find in log</button></span></div>`).join("") || `<div class="git-ui-empty-row">No history for selected file</div>`}</div>`;
     }
 
     function renderConflictOperationActions() {
@@ -73,8 +73,9 @@
 
     function renderMain() {
       const view = active() || {};
-      if (view.loading) return `<main class="git-ui-main"><div class="git-ui-loading"><span></span><strong>Loading Git state</strong></div></main>`;
-      if (isNoGitRepositoryView(view)) return `<main class="git-ui-main"><div class="git-ui-content">${renderCleanup()}</div></main>`;
+      const locationBar = renderLocationBar(view);
+      if (view.loading) return `<main class="git-ui-main">${locationBar}<div class="git-ui-loading"><span></span><strong>Loading Git state</strong></div></main>`;
+      if (isNoGitRepositoryView(view)) return `<main class="git-ui-main">${locationBar}<div class="git-ui-content">${renderCleanup()}</div></main>`;
       let body = "";
       if (view.tab === "changes") body = renderDiff();
       if (view.tab === "conflicts") body = renderConflicts();
@@ -82,7 +83,7 @@
       if (view.tab === "stash") body = renderStashDiff();
       if (view.tab === "cleanup") body = renderCleanup();
       if (view.tab === "history") body = `<div class="git-ui-muted">Loading history...</div>`;
-      return `<main class="git-ui-main"><div class="git-ui-content">${body}</div></main>`;
+      return `<main class="git-ui-main">${locationBar}<div class="git-ui-content">${body}</div></main>`;
     }
     return {
       renderLog,

@@ -295,7 +295,7 @@
         const files = (preview && preview.diff && preview.diff.files) ? preview.diff.files.length : 0;
         return stashes + files;
       }
-      if (view.temporaryHistoryCompare && view.file) return 1;
+      if (view.committedFile && view.file) return 1;
       if (currentMode() === "changes") {
         return [status.conflicted, status.staged, status.unstaged, status.untracked]
           .reduce((total, list) => total + ((list || []).length), 0);
