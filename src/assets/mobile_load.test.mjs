@@ -1521,6 +1521,32 @@ describe("mobile bundle load", () => {
     }
   });
 
+  it("treats closing the current session over a dead-listener socket as success", async () => {
+    // The backend crashed without unlinking its socket file, so the close
+    // request hits "Connection refused". The current-session close (unlike
+    // the row close) must also treat that as already-stopped: forget state,
+    // retarget to the default session, and show no error.
+    for (const error of ["already_stopped", "Connection refused (os error 61)"]) {
+      const ctx = context("/session/revolut");
+      vm.runInContext(source, ctx);
+
+      const originalFetch = ctx.fetch;
+      ctx.fetch = async (url, opt = {}) => {
+        if (url === "/api/session/close") return { ok: false, status: 400, json: async () => ({ error }) };
+        return originalFetch(url, opt);
+      };
+
+      await ctx.HerdrMobile.closeSession();
+
+      await ctx.settle();
+      ctx.HerdrMobile.showScreen("sessions");
+      const screenHtml = ctx.document.getElementById("mobileScreen").innerHTML;
+      ok(!screenHtml.includes("mobile-error"), `${error} must not surface as an error`);
+      equal(ctx.location.pathname, "/session/default", `${error} must retarget the default session`);
+      equal(ctx.localStorage.getItem("herdr-session-state:builtin:revolut"), null);
+    }
+  });
+
   it("re-pins the backend per session on Back and resets the target state", async () => {
     const ctx = context("/session/work");
     ctx.localStorage.setItem("herdr-session-backend:work", "external-herdr");
