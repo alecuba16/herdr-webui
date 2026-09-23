@@ -1351,7 +1351,7 @@ describe("app bundle load", () => {
     match(readFileSync(new URL("./desktop/git_ui/log_render.js", import.meta.url), "utf8"), /View change<\/button>/);
     match(readFileSync(new URL("./desktop/git_ui/log_render.js", import.meta.url), "utf8"), /Find in log<\/button>/);
     ok(!readFileSync(new URL("./desktop/git_ui/log_render.js", import.meta.url), "utf8").includes("committed file</button>"));
-    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /view\.committedFile = view\.file \? \{ hash, from: options\.from \|\| \(view\.tab === "history" \? "history" : "log"\) \} : null;/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /view\.committedFile = view\.file \? \{ hash, from: view\.tab === "history" \? "history" : "log" \} : null;/);
     match(gitUiSource, /view\.committedFile = \{ hash, from: view\.tab === "history" \? "history" : "log" \};/);
     match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /const committedSelection = !!view\.committedFile;/);
     match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /section\(`Committed files \$\{historicalFileCommitLabel\(view\)\}`/);

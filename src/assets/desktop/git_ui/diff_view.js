@@ -56,12 +56,12 @@
       clearHistoryCompareState(view);
     }
 
-    function startHistoryCommitCompare(view, hash, options = {}) {
+    function startHistoryCommitCompare(view, hash) {
       if (!view || !hash) return;
       view.compareBase = `${hash}^`;
       view.compareTarget = hash;
       view.mode = "readonly-compare";
-      view.committedFile = view.file ? { hash, from: options.from || (view.tab === "history" ? "history" : "log") } : null;
+      view.committedFile = view.file ? { hash, from: view.tab === "history" ? "history" : "log" } : null;
       if (view.file) view.compareFilePaths = [view.file];
     }
 
