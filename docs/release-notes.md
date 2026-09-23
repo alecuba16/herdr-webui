@@ -9,10 +9,13 @@
   This is not a permission issue: a real permission problem surfaces as
   "Permission denied (os error 13)" and still reports an error.
 - Session manager: desktop now also treats a close error carrying the
-  `already_stopped` marker as success when clearing a row, matching mobile
-  and the success-response path. Older or proxied servers that surface the
+  `already_stopped` marker as success, matching mobile and the
+  success-response path, on both close surfaces: the manager row Close and
+  closing the current session. Older or proxied servers that surface the
   idempotent close as an error no longer leave the row stuck behind a
-  "Close failed" banner.
+  "Close failed" banner, and closing the current session still forgets the
+  stale entry and retargets the default session instead of reporting
+  failure.
 
 ## 0.4.37 Release Notes
 - Terminal resize no longer flickers at the tail. Every desktop resize path

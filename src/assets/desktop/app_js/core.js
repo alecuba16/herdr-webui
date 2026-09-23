@@ -3145,7 +3145,38 @@ async function closeCurrentSession() {
     if (typeof cycleEventsSocket === "function") cycleEventsSocket();
     setTimeout(refresh, 800);
   } catch (e) {
-    showSessionManager("Close failed", e.message || String(e));
+    // Stale row: the backend was already gone (dead listener on a crash
+    // without unlink, missing socket, or an already_stopped marker from an
+    // older/proxied server), so the goal (no live session) held before the
+    // request and the close succeeds. Forget and retarget exactly like the
+    // success path.
+    const msg = String((e && e.message) || e);
+    if (!/already_stopped|No such file|not running|ENOENT|Connection refused/.test(msg)) {
+      showSessionManager("Close failed", msg);
+      return;
+    }
+    forgetSessionState(closedSession);
+    const retargetSession = closedSession !== "default" ? "default" : closedSession;
+    const retargetBackend =
+      readSessionBackend(retargetSession) || state.serverDefaultBackend || "builtin";
+    if (closedSession !== "default") {
+      state.session = "default";
+      state.ws = null;
+      state.tab = null;
+      state.pane = null;
+      state.workspaceShell = {};
+      lastShellWorkspace = null;
+      syncWorkspaceShellRestoreControl();
+      history.pushState(null, "", "/session/default");
+    }
+    state.sessionBackend = retargetBackend;
+    writeSessionBackend(state.session || "default", state.sessionBackend);
+    if (typeof cycleEventsSocket === "function") cycleEventsSocket();
+    showSessionManager(
+      "Session closed",
+      "That session was not running; its stale entry was cleared. You can launch it again.",
+    );
+    setTimeout(refresh, 800);
   } finally {
     hideBlocking();
   }
