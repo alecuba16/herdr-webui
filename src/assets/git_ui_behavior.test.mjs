@@ -1555,3 +1555,52 @@ test("Esc pops one navigation level and only hides at the changes root", async (
   escKey(root);
   assert.equal(hidden, true, "Esc at the changes root hides the Git drawer");
 });
+
+test("Esc closes an open menu or modal before touching the navigation stack", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/file-history": { commits: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, ctx } = booted;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  let lastAction = "";
+  let rendered = 0;
+  const openWithState = (extra) => {
+    const shortcuts = ctx.window.HerdrGitUiShortcuts.create({
+      state: Object.assign({
+        visible: true, contextMenu: null, logContextMenu: null, headerMenu: null, branchList: null,
+        worktreeList: null, branchModal: null, gitOpModal: null, commitModal: null,
+        compareSelectedModal: null, resetSelectedModal: null, tagSelectedModal: null,
+        cleanupConfirm: null, shortcutPrefixUntil: 0,
+      }, extra),
+      render: () => { rendered++; },
+      active: () => ({ tab: "history", file: "a.js", mode: "changes", navigationStack: [{ tab: "changes", file: "", mode: "changes" }], sideEditor: null }),
+      currentMode: () => "changes",
+      gitUiOptions: () => ({}),
+      explorationDefaultDirectory: () => "",
+      canSearchDiff: () => false,
+      canEditCurrentFile: () => false,
+      saveDraftFromDom: () => {},
+      hide: () => {},
+      confirmFn: () => true,
+      alertFn: () => {},
+      getGitUi: () => ({
+        goBack: () => { lastAction = "goBack"; },
+        showChangesList: () => { lastAction = "showChangesList"; },
+      }),
+    });
+    shortcuts.handleKeydown({ key: "Escape", target: {}, preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {} });
+  };
+  // With the branch list open mid-flow, Esc closes it and does NOT pop.
+  openWithState({ branchList: { open: true } });
+  assert.equal(lastAction, "", "Esc with a modal open never reaches the navigation stack");
+  assert.equal(rendered, 1, "closing the modal re-renders");
+  // Same for the log context menu and the branch popover states.
+  openWithState({ contextMenu: { x: 1, y: 1 } });
+  assert.equal(lastAction, "", "Esc with a context menu open never reaches the navigation stack");
+  openWithState({ commitModal: { open: true } });
+  assert.equal(lastAction, "", "Esc with the commit modal open never reaches the navigation stack");
+});
