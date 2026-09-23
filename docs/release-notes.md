@@ -24,6 +24,11 @@
   saved selection. The mobile check samples continuously instead of reading
   the error banner once, because a scheduled refresh clears it within
   400ms and a one-shot read false-greens (63 checks).
+- The dead-listener classification now requires the socket path to be an
+  actual socket file. Linux also returns "Connection refused" when the path
+  is not a socket at all (a regular file or directory at the socket path is
+  a real misconfiguration), and those close errors must keep surfacing as
+  502 instead of being swallowed as already-stopped.
 
 ## 0.4.38 Release Notes
 - The Git drawer has a redesigned navigation: one always-visible location
