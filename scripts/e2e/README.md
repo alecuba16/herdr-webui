@@ -221,7 +221,7 @@ It verifies in the live DOM:
   `Input.dispatchKeyEvent` Esc presses walking the ladder one level at a
   time (scoped log → history → changes root → hide, with the native
   `confirm` auto-accepted by the driver)
-- narrow-window edge: a real long file name (the fixture's 56-char
+- narrow-window edge: a real long file name (the fixture's 60-char
   checklist file) clicked open, then viewport emulation at 900px — above
   the app's 760px mobile breakpoint so the desktop panel never reloads —
   must keep the location bar inside the panel bounds with zero horizontal

@@ -25,6 +25,16 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/herdr-git-drawer-e2e.XXXXXX")"
 KEEP=0
 [[ "${1:-}" == "--keep" ]] && KEEP=1
 
+# A leftover instance from a previous --keep run would answer the health
+# check and the run would silently test the stale build. Fail fast instead.
+for probe_port in "$PORT" "$CDP"; do
+  if lsof -nP -iTCP:"$probe_port" -sTCP:LISTEN 2>/dev/null | grep -q .; then
+    echo "ERROR: port $probe_port is already in use; kill the leftover e2e instance first." >&2
+    lsof -nP -iTCP:"$probe_port" -sTCP:LISTEN >&2 || true
+    exit 1
+  fi
+done
+
 session_id() {
   # Unique per run so two concurrent runs never share server state.
   printf 'git-drawer-e2e-%s-%s' "$$" "$(date +%s)"

@@ -247,25 +247,37 @@ check('location bar present on the file diff view', await evalx(`!!document.quer
     return !!bar && (bar.getAttribute("title") || "").endsWith("${LONG}");
   })()`);
   check('real click on the long-path row opens its diff', longDiff);
-  await cdp.send('Emulation.setDeviceMetricsOverride', { width: 900, height: 1000, deviceScaleFactor: 0, mobile: false });
-  await new Promise((r) => setTimeout(r, 400));
-  const narrow = await evalx(`(() => {
-    const panel = document.getElementById("gitUiPanel");
-    const bar = panel && panel.querySelector(".git-ui-location-bar");
-    const crumbs = bar && bar.querySelector(".git-ui-breadcrumbs");
-    const steps = bar ? bar.querySelectorAll(".git-ui-breadcrumb-step") : [];
-    if (!bar || !crumbs) return null;
-    const pr = panel.getBoundingClientRect();
-    const cr = crumbs.getBoundingClientRect();
+
+  // The long name is the current crumb: a <strong> inside the crumbs. Measure
+  // its computed style and geometry — geometry alone cannot tell ellipsis
+  // from overflow: visible, so both are asserted.
+  const crumbBox = () => evalx(`(() => {
+    const bar = document.querySelector("#gitUiPanel .git-ui-breadcrumbs");
+    const strong = bar && bar.querySelector("strong");
+    if (!strong) return null;
+    const cs = getComputedStyle(strong);
     return {
-      panelRight: pr.right,
-      crumbsRight: cr.right,
-      barOverflow: bar.scrollWidth - bar.clientWidth,
-      clipped: Array.from(steps).some((s) => s.scrollWidth > s.clientWidth + 1),
+      label: strong.textContent || "",
+      clientW: strong.clientWidth,
+      scrollW: strong.scrollWidth,
+      overflowX: cs.overflowX,
+      textOverflow: cs.textOverflow,
+      crumbsRight: bar.getBoundingClientRect().right,
+      panelRight: document.getElementById("gitUiPanel").getBoundingClientRect().right,
+      barOverflow: document.querySelector("#gitUiPanel .git-ui-location-bar").scrollWidth - document.querySelector("#gitUiPanel .git-ui-location-bar").clientWidth,
     };
   })()`);
+  const wide = await crumbBox();
+  const wideOk = !!wide && wide.label === LONG && wide.overflowX === 'hidden' && wide.textOverflow === 'ellipsis'
+    && wide.scrollW > wide.clientW + 1 && wide.clientW <= 241;
+  check('long crumb is capped and ellipsizes at full width', wideOk, JSON.stringify(wide));
+
+  await cdp.send('Emulation.setDeviceMetricsOverride', { width: 900, height: 1000, deviceScaleFactor: 0, mobile: false });
+  await new Promise((r) => setTimeout(r, 400));
+  const narrow = await crumbBox();
   check('narrow window keeps the location bar inside the panel', !!narrow && narrow.crumbsRight <= narrow.panelRight + 1 && narrow.barOverflow <= 2, JSON.stringify(narrow));
-  check('long file crumbs ellipsize instead of overflowing', !!narrow && narrow.clipped === true, JSON.stringify(narrow));
+  const narrowOk = !!narrow && narrow.label === LONG && narrow.overflowX === 'hidden' && narrow.textOverflow === 'ellipsis' && narrow.scrollW > narrow.clientW + 1;
+  check('long file crumbs ellipsize instead of overflowing', narrowOk, JSON.stringify(narrow));
   await cdp.send('Emulation.clearDeviceMetricsOverride');
   await new Promise((r) => setTimeout(r, 400));
   // Return the flow to the README.md diff the rest of the checks expect.
