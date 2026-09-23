@@ -1,5 +1,30 @@
 # Release notes
 
+## Unreleased
+- Session manager: closing another session no longer fails with "Close failed
+  Connection refused (os error 61)" when the target backend died without
+  cleaning its socket (crash, `kill -9`). That refusal is the same stale-row
+  case as the already-handled missing-socket error, so the server now reports
+  `ok + already_stopped` and the row clears cleanly on desktop and mobile.
+  This is not a permission issue: a real permission problem surfaces as
+  "Permission denied (os error 13)" and still reports an error.
+- Session manager: desktop now also treats a close error carrying the
+  `already_stopped` marker as success, matching mobile and the
+  success-response path, on both close surfaces: the manager row Close and
+  closing the current session. Older or proxied servers that surface the
+  idempotent close as an error no longer leave the row stuck behind a
+  "Close failed" banner, and closing the current session still forgets the
+  stale entry and retargets the default session instead of reporting
+  failure.
+- The session-UX e2e suite now covers the dead-listener close flows on both
+  surfaces: closing a stale row through the server's `ok + already_stopped`
+  path, closing the current session against a dead listener, and the
+  client-side tolerance for legacy 400 "Connection refused" close errors
+  (stubbed fetch) including forgetting the closed session's stored pin and
+  saved selection. The mobile check samples continuously instead of reading
+  the error banner once, because a scheduled refresh clears it within
+  400ms and a one-shot read false-greens (63 checks).
+
 ## 0.4.38 Release Notes
 - The Git drawer has a redesigned navigation: one always-visible location
   bar with state-derived breadcrumbs (`Changes › file › History`,

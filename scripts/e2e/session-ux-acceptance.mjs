@@ -221,9 +221,16 @@ const staleUi = await cdp.evalExpr(`(async () => {
   if (!row) return { found: false };
   row.click();
   await new Promise((r) => setTimeout(r, 1500));
-  const buttons = [...document.querySelectorAll('#sessionList .session-line .session-button.danger')];
-  const closeBtn = buttons.find((b) => /Close/.test(b.textContent));
-  if (!closeBtn) return { found: true, closeBtn: false };
+  // The manager re-rendered after the retarget: re-find the probe's row and
+  // use ITS Close button. A global first-match picks whatever row renders
+  // first (here: the default external row), which closes the wrong session
+  // and can fail on unrelated socket paths.
+  const rows2 = [...document.querySelectorAll('#sessionList .session-line')];
+  const probeRow = rows2.find((r) => /stale-probe/.test(r.textContent));
+  if (!probeRow) return { found: true, reFound: false };
+  const closeBtn = [...probeRow.querySelectorAll('.session-button.danger')]
+    .find((b) => /Close/.test(b.textContent));
+  if (!closeBtn) return { found: true, reFound: true, closeBtn: false };
   window.confirm = () => true;
   closeBtn.click();
   await new Promise((r) => setTimeout(r, 1200));
@@ -231,6 +238,7 @@ const staleUi = await cdp.evalExpr(`(async () => {
   const probePin = 'herdr-session-backend:stale-probe';
   return {
     found: true,
+    reFound: true,
     closeBtn: true,
     visible: m && getComputedStyle(m).display !== 'none',
     title: document.getElementById('sessionManagerTitle').textContent,
@@ -241,11 +249,12 @@ const staleUi = await cdp.evalExpr(`(async () => {
 check(
   'closing a stale session via the UI shows the clean already-stopped message',
   staleUi.found === true
+    && staleUi.reFound === true
     && staleUi.closeBtn === true
     && staleUi.visible === true
     && staleUi.title === 'Session closed'
     && /not running/.test(staleUi.text || ''),
-  `found=${staleUi.found} title="${staleUi.title}" text="${staleUi.text}" stored=${staleUi.stored}`,
+  `found=${staleUi.found} reFound=${staleUi.reFound} title="${staleUi.title}" text="${staleUi.text}" stored=${staleUi.stored}`,
 );
 // Return to the built-in session so later checks run on the default backend.
 await cdp.evalExpr(`(async () => {
@@ -255,6 +264,132 @@ await cdp.evalExpr(`(async () => {
   await new Promise((r) => setTimeout(r, 1200));
   return true;
 })()`, true);
+
+// ---------- Dead-listener session close ----------
+// The sibling stale case: the backend crashed without unlinking its socket
+// file, so connect(2) gets ECONNREFUSED ("Connection refused", macOS os
+// error 61) instead of ENOENT. Closing the row must be ok + already_stopped
+// (the exact "Close failed Connection refused" bug).
+const deadApi = await cdp.evalExpr(`(async () => {
+  const res = await fetch('/api/session/close', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ session: 'dead-listener', backend: 'external-herdr' }),
+  });
+  const body = await res.json().catch(() => null);
+  return { status: res.status, body };
+})()`, true);
+check(
+  'closing a dead-listener (refused socket) external session returns ok already_stopped',
+  deadApi.status === 200
+    && !!(deadApi.body && deadApi.body.ok)
+    && deadApi.body.already_stopped === true,
+  `status=${deadApi.status} body=${JSON.stringify(deadApi.body)}`,
+);
+
+const deadUi = await cdp.evalExpr(`(async () => {
+  document.getElementById('footerSessionButton').click();
+  await new Promise((r) => setTimeout(r, 900));
+  const rows = [...document.querySelectorAll('#sessionList .session-line')];
+  const row = rows.find((r) => /dead-listener(?!-)/.test(r.textContent));
+  if (!row) return { found: false };
+  window.confirm = () => true;
+  const closeBtn = [...row.querySelectorAll('.session-button.danger')]
+    .find((b) => /Close/.test(b.textContent));
+  if (!closeBtn) return { found: true, closeBtn: false };
+  closeBtn.click();
+  await new Promise((r) => setTimeout(r, 1200));
+  const m = document.getElementById('sessionManager');
+  return {
+    found: true,
+    closeBtn: true,
+    visible: m && getComputedStyle(m).display !== 'none',
+    title: document.getElementById('sessionManagerTitle').textContent,
+    text: document.getElementById('sessionManagerText').textContent,
+    stored: localStorage.getItem('herdr-session-backend:dead-listener'),
+  };
+})()`, true);
+check(
+  'closing a dead-listener session via the UI shows the clean already-stopped message',
+  deadUi.found === true
+    && deadUi.closeBtn === true
+    && deadUi.visible === true
+    && deadUi.title === 'Session closed'
+    && /not running/.test(deadUi.text || ''),
+  `found=${deadUi.found} title="${deadUi.title}" text="${deadUi.text}" stored=${deadUi.stored}`,
+);
+
+// The CURRENT-session close button (closeCurrentSession) must tolerate the
+// same stale-target error class on its catch path. Older or proxied servers
+// surface the idempotent close as a 400 error instead of 200 already_stopped;
+// the browser must still forget the session, retarget the default, and show
+// the clean message instead of "Close failed". The first dead-listener
+// fixture was closed (and its directory removed) by the row-close check
+// above, so this drives the fresh dead-listener-2 row: targeting it makes its
+// Close button the closeCurrentSession one. Stub the close fetch to emit the
+// legacy error shape and click the real button.
+const deadCurrentUi = await cdp.evalExpr(`(async () => {
+  document.getElementById('footerSessionButton').click();
+  await new Promise((r) => setTimeout(r, 900));
+  const rows = [...document.querySelectorAll('#sessionList .session-line')];
+  const row = rows.find((r) => /dead-listener-2/.test(r.textContent));
+  if (!row) return { found: false };
+  // Target the dead-listener-2 session so its Close button is the
+  // closeCurrentSession one (active row wiring).
+  row.click();
+  await new Promise((r) => setTimeout(r, 1500));
+  const rows2 = [...document.querySelectorAll('#sessionList .session-line')];
+  const activeRow = rows2.find((r) => /dead-listener-2/.test(r.textContent));
+  if (!activeRow) return { found: true, reFound: false };
+  const closeBtn = [...activeRow.querySelectorAll('.session-button.danger')]
+    .find((b) => /Close/.test(b.textContent));
+  if (!closeBtn) return { found: true, reFound: true, closeBtn: false };
+  // Legacy-server error shape: 400 with a stale-target message (the class
+  // also covers already_stopped / No such file / not running / ENOENT; one
+  // representative refusal is enough at the live layer).
+  const realFetch = window.fetch;
+  window.fetch = async (url, opt) => {
+    if (String(url).includes('/api/session/close')) {
+      return new Response(JSON.stringify({ error: 'Connection refused (os error 61)' }), {
+        status: 400,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    return realFetch(url, opt);
+  };
+  window.confirm = () => true;
+  try {
+    closeBtn.click();
+    await new Promise((r) => setTimeout(r, 1500));
+  } finally {
+    window.fetch = realFetch;
+  }
+  const m = document.getElementById('sessionManager');
+  return {
+    found: true,
+    reFound: true,
+    closeBtn: true,
+    visible: m && getComputedStyle(m).display !== 'none',
+    title: document.getElementById('sessionManagerTitle').textContent,
+    text: document.getElementById('sessionManagerText').textContent,
+    stored: localStorage.getItem('herdr-session-backend:dead-listener-2'),
+    // The app retargets by pushing /session/default; read the live URL since
+    // the bundle's state object is module-scoped, not on window.
+    path: location.pathname,
+  };
+})()`, true);
+check(
+  'closing the current dead-listener session over a legacy 400 error still succeeds',
+  deadCurrentUi.found === true
+    && deadCurrentUi.reFound === true
+    && deadCurrentUi.closeBtn === true
+    && deadCurrentUi.visible === true
+    && deadCurrentUi.title === 'Session closed'
+    && /not running/.test(deadCurrentUi.text || '')
+    && deadCurrentUi.stored === null
+    && deadCurrentUi.path === '/session/default',
+  `found=${deadCurrentUi.found} reFound=${deadCurrentUi.reFound} title="${deadCurrentUi.title}" text="${deadCurrentUi.text}" stored=${deadCurrentUi.stored} path=${deadCurrentUi.path}`,
+);
 
 // ---------- Mid-session backend disable ----------
 // The core enabled_backends scenario: a tab pinned to external-herdr when
@@ -415,6 +550,183 @@ check(
     && /backend-builtin/.test(mobile.badgeClass || '')
     && !!mobile.badgeColor,
   `layout=${mobile.layout} text="${mobile.badgeText}" class="${mobile.badgeClass}" color=${mobile.badgeColor}`,
+);
+// The mobile sessions screen must also close a dead-listener row cleanly:
+// the backend crashed without unlinking its socket, so the server reports
+// ok + already_stopped and the row's Close button must show no error banner
+// (the mobile bundle renders .mobile-error for failures). dead-listener-3
+// is the fixture consumed here: the desktop checks above already closed
+// the first two. The backend pin and a saved selection are PRESET for the
+// row so the stored assertions discriminate: a fixed close forgets the
+// closed session's stored state (forgetSessionState removes both keys),
+// while a close that skips the forget leaves the pin behind.
+const mobileClose = await cdp.evalExpr(`(async () => {
+  // Preset the row session's stored pin and saved selection so the
+  // post-close assertions below can prove the close FORGOT them.
+  localStorage.setItem('herdr-session-backend:dead-listener-3', 'builtin');
+  localStorage.setItem(
+    'herdr-session-state:builtin:dead-listener-3',
+    JSON.stringify({ ws: 'w0', tab: 't0', pane: 'p0' }),
+  );
+  // Open the real sessions screen through the badge.
+  const badge = document.getElementById('mobileBackendBadge');
+  if (!badge) return { badge: false };
+  badge.click();
+  await new Promise((r) => setTimeout(r, 900));
+  const rows = [...document.querySelectorAll('.mobile-row')];
+  const row = rows.find((r) => /dead-listener-3/.test(r.textContent));
+  if (!row) return { badge: true, found: false };
+  const closeBtn = [...row.querySelectorAll('.mobile-btn.danger')]
+    .find((b) => /Close/.test(b.textContent));
+  if (!closeBtn) return { badge: true, found: true, closeBtn: false };
+  window.confirm = () => true;
+  // First close against the real server: the fixed server answers 200 with
+  // already_stopped, so this pins the success-marker path end to end.
+  closeBtn.click();
+  await new Promise((r) => setTimeout(r, 1500));
+  const screen1 = document.getElementById('mobileScreen');
+  const successNoError = !(screen1 && screen1.innerHTML.includes('mobile-error'));
+  // Then pin the catch path live too: stub the close fetch with the legacy
+  // 400 error shape (older/proxied servers) and re-render the screen so the
+  // row (re-listed after the server-side close removed the fixture) gets a
+  // fresh Close button... the closed session is gone from the list, so
+  // instead drive the CURRENT-session Close with the stub active: the
+  // default session's close returns the legacy error and must still show no
+  // banner (the current-session catch tolerates the same class).
+  const realFetch = window.fetch;
+  window.fetch = async (url, opt) => {
+    if (String(url).includes('/api/session/close')) {
+      return new Response(JSON.stringify({ error: 'Connection refused (os error 61)' }), {
+        status: 400,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    return realFetch(url, opt);
+  };
+  let currentNoError = null;
+  try {
+    const btns = [...document.querySelectorAll('.mobile-btn.danger')]
+      .filter((b) => /Close/.test(b.textContent));
+    const currentClose = btns.find((b) => /current/.test(b.closest('.mobile-row').textContent));
+    if (currentClose) {
+      // The mobile close path schedules refreshSessions at +400ms, and a
+      // successful refresh CLEARS state.sessionsError (backend.js
+      // loadSessions sets sessionsError = ""). A broken catch would show the
+      // error banner only in the 0-400ms window, then wipe it. Sampling once
+      // at +1500ms would false-green, so poll continuously and record
+      // whether the banner EVER appeared.
+      let everHadError = false;
+      const sampler = setInterval(() => {
+        const screen2 = document.getElementById('mobileScreen');
+        if (screen2 && screen2.innerHTML.includes('mobile-error')) everHadError = true;
+      }, 50);
+      try {
+        currentClose.click();
+        await new Promise((r) => setTimeout(r, 1500));
+      } finally {
+        clearInterval(sampler);
+      }
+      const screen3 = document.getElementById('mobileScreen');
+      currentNoError = !everHadError
+        && !(screen3 && screen3.innerHTML.includes('mobile-error'));
+    }
+  } finally {
+    window.fetch = realFetch;
+  }
+  return {
+    badge: true,
+    found: true,
+    closeBtn: true,
+    errorShown: !successNoError,
+    currentNoError,
+    stored: localStorage.getItem('herdr-session-backend:dead-listener-3'),
+    selection: localStorage.getItem('herdr-session-state:builtin:dead-listener-3'),
+  };
+})()`, true);
+check(
+  'mobile sessions screen closes a dead-listener row with no error banner',
+  mobileClose.badge === true
+    && mobileClose.found === true
+    && mobileClose.closeBtn === true
+    && mobileClose.errorShown === false
+    && mobileClose.currentNoError === true
+    && mobileClose.stored === null
+    && mobileClose.selection === null,
+  `badge=${mobileClose.badge} found=${mobileClose.found} closeBtn=${mobileClose.closeBtn} errorShown=${mobileClose.errorShown} currentNoError=${mobileClose.currentNoError} stored=${mobileClose.stored} selection=${mobileClose.selection}`,
+);
+// The row-close CATCH path is pinned live here, not only in the VM suite:
+// the close fetch is stubbed to the legacy 400 error shape that older or
+// proxied servers still return for a dead-listener socket (errno 61 /
+// Connection refused). closeSessionRow must tolerate that class: no error
+// banner ever (the +400ms refresh would clear it, so sample continuously)
+// and the row session's stored pin and saved selection must be forgotten
+// (forgetSessionState). The stub never reaches the server, so the row
+// stays listed after the refresh; that is the realistic outcome and is
+// asserted as documentation, not as the mutation discriminator.
+const mobileRowCatch = await cdp.evalExpr(`(async () => {
+  // Give the post-close refresh from the previous check time to settle so
+  // the row list is stable before presetting and clicking.
+  await new Promise((r) => setTimeout(r, 900));
+  localStorage.setItem('herdr-session-backend:dead-listener-4', 'builtin');
+  localStorage.setItem(
+    'herdr-session-state:builtin:dead-listener-4',
+    JSON.stringify({ ws: 'w0', tab: 't0', pane: 'p0' }),
+  );
+  const rows = [...document.querySelectorAll('.mobile-row')];
+  const row = rows.find((r) => /dead-listener-4/.test(r.textContent));
+  if (!row) return { found: false };
+  const closeBtn = [...row.querySelectorAll('.mobile-btn.danger')]
+    .find((b) => /Close/.test(b.textContent));
+  if (!closeBtn) return { found: true, closeBtn: false };
+  window.confirm = () => true;
+  const realFetch = window.fetch;
+  window.fetch = async (url, opt) => {
+    if (String(url).includes('/api/session/close')) {
+      return new Response(JSON.stringify({ error: 'Connection refused (os error 61)' }), {
+        status: 400,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    return realFetch(url, opt);
+  };
+  // A broken catch sets sessionsError and the finally render shows the
+  // banner; the +400ms refresh then clears it (loadSessions sets
+  // sessionsError = ""). Sample continuously across that window so a
+  // transient banner cannot slip past a one-shot read.
+  let everHadError = false;
+  const sampler = setInterval(() => {
+    const screen = document.getElementById('mobileScreen');
+    if (screen && screen.innerHTML.includes('mobile-error')) everHadError = true;
+  }, 50);
+  try {
+    closeBtn.click();
+    await new Promise((r) => setTimeout(r, 1500));
+  } finally {
+    clearInterval(sampler);
+    window.fetch = realFetch;
+  }
+  const screen = document.getElementById('mobileScreen');
+  const rowsAfter = [...document.querySelectorAll('.mobile-row')];
+  return {
+    found: true,
+    closeBtn: true,
+    everHadError,
+    noErrorNow: !(screen && screen.innerHTML.includes('mobile-error')),
+    pinForgotten: localStorage.getItem('herdr-session-backend:dead-listener-4') === null,
+    selectionForgotten: localStorage.getItem('herdr-session-state:builtin:dead-listener-4') === null,
+    rowStillListed: rowsAfter.some((r) => /dead-listener-4/.test(r.textContent)),
+  };
+})()`, true);
+check(
+  'mobile row close tolerates legacy dead-listener error and forgets stored state',
+  mobileRowCatch.found === true
+    && mobileRowCatch.closeBtn === true
+    && mobileRowCatch.everHadError === false
+    && mobileRowCatch.noErrorNow === true
+    && mobileRowCatch.pinForgotten === true
+    && mobileRowCatch.selectionForgotten === true
+    && mobileRowCatch.rowStillListed === true,
+  `found=${mobileRowCatch.found} closeBtn=${mobileRowCatch.closeBtn} everHadError=${mobileRowCatch.everHadError} noErrorNow=${mobileRowCatch.noErrorNow} pinForgotten=${mobileRowCatch.pinForgotten} selectionForgotten=${mobileRowCatch.selectionForgotten} rowStillListed=${mobileRowCatch.rowStillListed}`,
 );
 // The hidden attribute must actually hide the New Herdr offer: a CSS
 // display rule on .session-button previously defeated it (real-browser

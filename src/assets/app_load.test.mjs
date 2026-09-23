@@ -2663,6 +2663,148 @@ describe("app bundle load", () => {
     equal(ctx.localStorage.getItem("herdr-session-backend:default"), "builtin");
   });
 
+  it("treats stale-target close errors when closing the current session as success", async () => {
+    // Older or proxied servers can surface the idempotent close as an error
+    // (status 400 with the marker in the error text); the browser must still
+    // treat already_stopped, missing sockets, and dead-listener refusals as
+    // a clean close: forget the closed session, retarget the default, and
+    // never surface a "Close failed" banner for an already-down backend.
+    for (const message of [
+      "already_stopped",
+      "No such file or directory (os error 2)",
+      "session not running",
+      "ENOENT: db lock",
+      "Connection refused (os error 61)",
+    ]) {
+      const ctx = context();
+      ctx.location.pathname = "/session/work";
+      const calls = [];
+      ctx.fetch = async (url, opt = {}) => {
+        calls.push({ url, opt });
+        if (url === "/api/session/close") {
+          return { ok: false, status: 400, json: async () => ({ error: message }) };
+        }
+        if (url === "/api/versions") {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              webui: "test",
+              current_backend: "builtin",
+              default_backend: "builtin",
+              herdr_install: { available: false, compatible: false },
+            }),
+          };
+        }
+        return { ok: true, status: 200, json: async () => ({ result: { workspaces: [] } }) };
+      };
+      ctx.localStorage.setItem("herdr-session-backend:work", "builtin");
+      ctx.localStorage.setItem(
+        "herdr-session-state:builtin:work",
+        JSON.stringify({ ws: "w1", tab: null, pane: null }),
+      );
+      vm.runInContext(source, ctx);
+      vm.runInContext("state.sessionBackend = readSessionBackend(state.session || 'default')", ctx);
+
+      await ctx.closeCurrentSession();
+      await new Promise((resolve) => setImmediate(resolve));
+
+      const closeCall = calls.find((call) => call.url === "/api/session/close");
+      ok(closeCall, "closeCurrentSession must call /api/session/close");
+      deepEqual(JSON.parse(closeCall.opt.body), { session: "work", backend: "builtin" });
+      // Not a failure surface: the stale close is a success.
+      equal(
+        ctx.document.getElementById("sessionManagerTitle").textContent,
+        "Session closed",
+        message,
+      );
+      match(
+        ctx.document.getElementById("sessionManagerText").textContent,
+        /not running/,
+        message,
+      );
+      // The closed session's stored state is forgotten and the browser
+      // retargets the default, exactly like the success path.
+      equal(vm.runInContext("state.session", ctx), "default", message);
+      equal(ctx.history.location.pathname, "/session/default", message);
+      equal(ctx.localStorage.getItem("herdr-session-backend:work"), null, message);
+      equal(ctx.localStorage.getItem("herdr-session-state:builtin:work"), null, message);
+      equal(ctx.localStorage.getItem("herdr-session-backend:default"), "builtin", message);
+    }
+
+    // The default session itself: closing it must NOT push a new history
+    // entry (staying on /session/default) but must still forget its pin and
+    // show the clean message. This exercises the same-session branch of the
+    // catch path.
+    for (const message of ["already_stopped", "Connection refused (os error 61)"]) {
+      const ctx = context();
+      ctx.location.pathname = "/session/default";
+      const calls = [];
+      ctx.fetch = async (url, opt = {}) => {
+        calls.push({ url, opt });
+        if (url === "/api/session/close") {
+          return { ok: false, status: 400, json: async () => ({ error: message }) };
+        }
+        if (url === "/api/versions") {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              webui: "test",
+              current_backend: "builtin",
+              default_backend: "builtin",
+              herdr_install: { available: false, compatible: false },
+            }),
+          };
+        }
+        return { ok: true, status: 200, json: async () => ({ result: { workspaces: [] } }) };
+      };
+      ctx.localStorage.setItem("herdr-session-backend:default", "builtin");
+      ctx.localStorage.setItem(
+        "herdr-session-state:builtin:default",
+        JSON.stringify({ ws: "w1", tab: null, pane: null }),
+      );
+      // Record pushState so the test can prove no new entry is pushed when
+      // the default session is the one being closed.
+      const historyCalls = [];
+      ctx.history = {
+        pushState(_s, _t, path) {
+          historyCalls.push(path);
+          this.location.pathname = path;
+        },
+        replaceState(_s, _t, path) {
+          if (typeof path === "string") this.location.pathname = path;
+        },
+        location: ctx.location,
+      };
+      vm.runInContext(source, ctx);
+      vm.runInContext("state.sessionBackend = readSessionBackend(state.session || 'default')", ctx);
+
+      await ctx.closeCurrentSession();
+      await new Promise((resolve) => setImmediate(resolve));
+
+      const closeCall = calls.find((call) => call.url === "/api/session/close");
+      ok(closeCall, "closeCurrentSession must call /api/session/close");
+      deepEqual(JSON.parse(closeCall.opt.body), { session: "default", backend: "builtin" });
+      equal(
+        ctx.document.getElementById("sessionManagerTitle").textContent,
+        "Session closed",
+        message,
+      );
+      // Stays on the default session entry: no /session/default push over the
+      // just-closed surface.
+      equal(ctx.history.location.pathname, "/session/default", message);
+      equal(historyCalls.length, 0, message);
+      // The saved selection is forgotten. The backend pin is re-written by
+      // the retarget (the default session stays the current target and needs
+      // a valid pin for the next refresh), exactly like the success path:
+      // the first committed test asserts the same "builtin" after closing
+      // the default session through a 200 already_stopped response.
+      equal(ctx.localStorage.getItem("herdr-session-backend:default"), "builtin", message);
+      equal(ctx.localStorage.getItem("herdr-session-state:builtin:default"), null, message);
+    }
+  });
+
   it("hides the external Herdr offer when no compatible herdr install is detected", async () => {
     const ctx = context();
     ctx.fetch = async (url) => {
@@ -4872,7 +5014,13 @@ describe("app bundle load", () => {
   });
 
   it("treats already_stopped and stale-target close errors as success", async () => {
-    for (const message of ["already_stopped", "No such file or directory (os error 2)", "session not running", "ENOENT: db lock"]) {
+    for (const message of [
+      "already_stopped",
+      "No such file or directory (os error 2)",
+      "session not running",
+      "ENOENT: db lock",
+      "Connection refused (os error 61)",
+    ]) {
       const ctx = context();
       const closeRequests = [];
       ctx.fetch = async (url, opt = {}) => {
@@ -4885,12 +5033,21 @@ describe("app bundle load", () => {
       vm.runInContext(source, ctx);
       ctx.setupSessionChrome();
 
+      // The stale row must carry a stored backend pin and a saved selection
+      // before closing: the success path (including stale-target errors like
+      // a dead-listener "Connection refused") forgets both. Without a stored
+      // pin, a regression that bails out early on the error would still
+      // pass the null assertions below.
+      ctx.localStorage.setItem("herdr-session-backend:stale", "builtin");
+      ctx.localStorage.setItem("herdr-session-state:builtin:stale", "{}");
+
       await ctx.closeSessionRow("stale", "builtin");
 
       equal(closeRequests.length, 1);
       // Not an error surface: the row is simply already closed.
       equal(vm.runInContext("state.sessionsError", ctx) || "", "");
       equal(ctx.localStorage.getItem("herdr-session-backend:stale"), null);
+      equal(ctx.localStorage.getItem("herdr-session-state:builtin:stale"), null);
     }
   });
 

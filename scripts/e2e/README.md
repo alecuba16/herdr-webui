@@ -43,6 +43,11 @@ What it does:
      the row has no live backend) returns `ok + already_stopped` instead of
      a 502 ENOENT error, and the UI shows the clean already-stopped message
      without the offline auto-open manager overwriting it
+   - closing a dead-listener session (socket file present, nobody accepts:
+     ECONNREFUSED) behaves the same, both via the row Close button and via
+     the CURRENT-session Close button (`closeCurrentSession`, which must
+     also tolerate the legacy 400 error shape from older/proxied servers,
+     forget the session, and retarget the default)
    - the mobile layout renders the backend badge with matching colors
 7. Tears everything down (pass `--keep` to leave the stack up for debugging).
 

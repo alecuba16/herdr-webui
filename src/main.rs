@@ -2550,15 +2550,19 @@ async fn proxy_server_stop(api: ApiClient) -> Response {
             // (crash, kill -9). Removing a stale session row must still
             // count as success: there is nothing left to stop. LocalStream
             // connect surfaces a missing socket path as ENOENT ("No such
-            // file or directory").
+            // file or directory"). A dead listener with the socket file
+            // still bound surfaces as ECONNREFUSED ("Connection refused"),
+            // the same stale-row case: the path exists but nobody accepts.
             let is_missing_socket = err.contains("No such file or directory");
+            let is_dead_listener =
+                err.contains("Connection refused") || err.contains("ConnectionRefused");
             let is_connection_drop = err.contains("empty response")
                 || err.contains("UnexpectedEof")
                 || err.contains("ConnectionReset")
                 || err.contains("Connection reset")
                 || err.contains("broken pipe")
                 || err.contains("Broken pipe");
-            if is_missing_socket {
+            if is_missing_socket || is_dead_listener {
                 Json(json!({ "ok": true, "already_stopped": true })).into_response()
             } else if is_connection_drop {
                 Json(json!({ "ok": true })).into_response()
@@ -8653,6 +8657,147 @@ mod tests {
         let body = response_json(response).await;
         assert_eq!(body["ok"], true);
         assert_eq!(body["already_stopped"], true);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn close_session_reports_already_stopped_when_listener_died_with_socket_file() {
+        // Stale row variant: the backend crashed (or was kill -9'd) without
+        // unlinking its socket, so connect(2) gets ECONNREFUSED ("Connection
+        // refused", macOS os error 61) instead of ENOENT. The session is
+        // already down, so close must be ok + already_stopped, not 502.
+        // /tmp, not std::env::temp_dir(): CI runners have a long $TMPDIR
+        // that pushes this path past sun_path's 104-byte capacity.
+        let path = PathBuf::from(format!(
+            "/tmp/herdr-webui-test-dead-listener-{}.sock",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        // Bind then drop the listener: the socket file survives with nobody
+        // accepting on it, exactly like a crashed backend. std's UnixListener
+        // does not unlink on drop, unlike interprocess's ReclaimGuard.
+        {
+            let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+            drop(listener);
+        }
+
+        let mut state = test_state();
+        state.api_socket = Some(path.clone());
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                request(Method::POST, "/api/session/close")
+                    .header(header::COOKIE, "herdr_web_session=token-123")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "session": "default", "backend": "external-herdr" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["ok"], true);
+        assert_eq!(body["already_stopped"], true);
+        let _ = fs::remove_file(path);
+    }
+
+    #[cfg(unix)]
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn close_session_builtin_reports_already_stopped_when_listener_died_with_socket_file() {
+        // Same dead-listener stale row for the built-in backend: the session
+        // directory still holds a socket file with no listener (crashed
+        // child). Close must be ok + already_stopped, drop the registry
+        // entry, and remove the dead socket residue.
+        let _guard = lock_env();
+        // Short /tmp prefix, not std::env::temp_dir(): CI runners have a
+        // long $TMPDIR that pushes the session socket path past sun_path's
+        // 104-byte capacity (and past the deterministic fallback in
+        // builtin_socket_paths, which would exercise a different code path).
+        let config_home = PathBuf::from(format!(
+            "/tmp/hw-dlclose-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
+        let session_name = "dead-listener-builtin";
+        let (api_socket, _client_socket) = builtin_socket_paths(Some(session_name));
+        fs::create_dir_all(api_socket.parent().unwrap()).unwrap();
+        {
+            let listener = std::os::unix::net::UnixListener::bind(&api_socket).unwrap();
+            drop(listener);
+        }
+
+        let mut state = test_state();
+        state.builtin_sessions = Arc::new(Mutex::new(HashMap::new()));
+        // Registry entries hold live handles; a real (throwaway) handle keeps
+        // the map shape honest. Its sockets live in /tmp and are never the ones
+        // close_session contacts (that path comes from XDG_CONFIG_HOME).
+        let stale_handle = Arc::new(
+            builtin_backend::BuiltinBackendHandle::start(builtin_backend::BuiltinBackendConfig {
+                api_socket: PathBuf::from(format!(
+                    "/tmp/herdr-webui-dead-listener-close-api-{}.sock",
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_nanos(),
+                )),
+                client_socket: PathBuf::from(format!(
+                    "/tmp/herdr-webui-dead-listener-close-client-{}.sock",
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_nanos(),
+                )),
+                cwd: std::env::temp_dir(),
+                shell: None,
+                jcode_detection_variant: JcodeDetectionVariant::Vanilla,
+            })
+            .unwrap(),
+        );
+        state
+            .builtin_sessions
+            .lock()
+            .unwrap()
+            .insert(session_name.to_string(), stale_handle);
+        let sessions_registry = state.builtin_sessions.clone();
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                request(Method::POST, "/api/session/close")
+                    .header(header::COOKIE, "herdr_web_session=token-123")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "session": session_name, "backend": "builtin" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["ok"], true);
+        assert_eq!(body["already_stopped"], true);
+        assert!(
+            !sessions_registry.lock().unwrap().contains_key(session_name),
+            "registry entry must be removed after closing a dead-listener built-in session"
+        );
+        assert!(
+            !api_socket.exists(),
+            "dead socket file must be removed after close"
+        );
+        let _ = fs::remove_dir_all(config_home);
+        std::env::remove_var("XDG_CONFIG_HOME");
     }
 
     #[cfg(unix)]

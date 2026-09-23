@@ -75,6 +75,65 @@ git -C "$REPO" -c user.name=e2e -c user.email=e2e@local commit -qm init
 # that closing it succeeds instead of returning a 502 ENOENT error.
 mkdir -p "$WORK/xdg/herdr/sessions/stale-probe"
 
+# Dead-listener external-session fixture: a session whose socket file still
+# exists but nobody accepts on it (backend crashed without unlinking its
+# socket, e.g. kill -9). Closing it surfaces ECONNREFUSED ("Connection
+# refused", macOS os error 61), not ENOENT, and must also close cleanly.
+# Short name so the socket path stays under the 104-byte AF_UNIX limit even
+# with long TMPDIRs.
+mkdir -p "$WORK/xdg/herdr/sessions/dead-listener"
+python3 - "$WORK/xdg/herdr/sessions/dead-listener/herdr.sock" <<'PYEOF'
+import socket, sys
+path = sys.argv[1]
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.bind(path)
+s.close()  # file remains, no listener -> connect gets ECONNREFUSED
+print(f"dead-listener fixture socket at {path}")
+PYEOF
+
+# Second dead-listener fixture: the session-ux acceptance closes the first
+# one via the row Close button (server close deletes the socket file and
+# directory), and the follow-up check needs a fresh dead listener to close
+# through the CURRENT-session button (closeCurrentSession). Still short for
+# the sun_path limit.
+mkdir -p "$WORK/xdg/herdr/sessions/dead-listener-2"
+python3 - "$WORK/xdg/herdr/sessions/dead-listener-2/herdr.sock" <<'PYEOF'
+import socket, sys
+path = sys.argv[1]
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.bind(path)
+s.close()
+print(f"dead-listener-2 fixture socket at {path}")
+PYEOF
+
+# Third dead-listener fixture: consumed by the MOBILE sessions-screen close
+# check (the desktop current-session check closes dead-listener-2 and the
+# server deletes its directory).
+mkdir -p "$WORK/xdg/herdr/sessions/dead-listener-3"
+python3 - "$WORK/xdg/herdr/sessions/dead-listener-3/herdr.sock" <<'PYEOF'
+import socket, sys
+path = sys.argv[1]
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.bind(path)
+s.close()
+print(f"dead-listener-3 fixture socket at {path}")
+PYEOF
+
+# Fourth dead-listener fixture: consumed by the MOBILE row-close catch check.
+# Unlike dead-listener-3 (real server close, success path), this row is closed
+# with the close fetch stubbed to the legacy 400 error shape, pinning the
+# client-side catch tolerance (old/proxied servers). The stub never reaches
+# the server, so the row stays listed; that is realistic and asserted.
+mkdir -p "$WORK/xdg/herdr/sessions/dead-listener-4"
+python3 - "$WORK/xdg/herdr/sessions/dead-listener-4/herdr.sock" <<'PYEOF'
+import socket, sys
+path = sys.argv[1]
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.bind(path)
+s.close()
+print(f"dead-listener-4 fixture socket at {path}")
+PYEOF
+
 wait_for() {
   # wait_for <desc> <url> [-k]
   local desc="$1" url="$2" kflag="$3"
