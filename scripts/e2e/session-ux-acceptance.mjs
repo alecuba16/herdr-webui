@@ -291,7 +291,7 @@ const deadUi = await cdp.evalExpr(`(async () => {
   document.getElementById('footerSessionButton').click();
   await new Promise((r) => setTimeout(r, 900));
   const rows = [...document.querySelectorAll('#sessionList .session-line')];
-  const row = rows.find((r) => /dead-listener(?!-2)/.test(r.textContent));
+  const row = rows.find((r) => /dead-listener(?!-)/.test(r.textContent));
   if (!row) return { found: false };
   window.confirm = () => true;
   const closeBtn = [...row.querySelectorAll('.session-button.danger')]
@@ -556,8 +556,18 @@ check(
 // ok + already_stopped and the row's Close button must show no error banner
 // (the mobile bundle renders .mobile-error for failures). dead-listener-3
 // is the fixture consumed here: the desktop checks above already closed
-// the first two.
+// the first two. The backend pin and a saved selection are PRESET for the
+// row so the stored assertions discriminate: a fixed close forgets the
+// closed session's stored state (forgetSessionState removes both keys),
+// while a close that skips the forget leaves the pin behind.
 const mobileClose = await cdp.evalExpr(`(async () => {
+  // Preset the row session's stored pin and saved selection so the
+  // post-close assertions below can prove the close FORGOT them.
+  localStorage.setItem('herdr-session-backend:dead-listener-3', 'builtin');
+  localStorage.setItem(
+    'herdr-session-state:builtin:dead-listener-3',
+    JSON.stringify({ ws: 'w0', tab: 't0', pane: 'p0' }),
+  );
   // Open the real sessions screen through the badge.
   const badge = document.getElementById('mobileBackendBadge');
   if (!badge) return { badge: false };
@@ -630,6 +640,7 @@ const mobileClose = await cdp.evalExpr(`(async () => {
     errorShown: !successNoError,
     currentNoError,
     stored: localStorage.getItem('herdr-session-backend:dead-listener-3'),
+    selection: localStorage.getItem('herdr-session-state:builtin:dead-listener-3'),
   };
 })()`, true);
 check(
@@ -639,8 +650,83 @@ check(
     && mobileClose.closeBtn === true
     && mobileClose.errorShown === false
     && mobileClose.currentNoError === true
-    && mobileClose.stored === null,
-  `badge=${mobileClose.badge} found=${mobileClose.found} closeBtn=${mobileClose.closeBtn} errorShown=${mobileClose.errorShown} currentNoError=${mobileClose.currentNoError} stored=${mobileClose.stored}`,
+    && mobileClose.stored === null
+    && mobileClose.selection === null,
+  `badge=${mobileClose.badge} found=${mobileClose.found} closeBtn=${mobileClose.closeBtn} errorShown=${mobileClose.errorShown} currentNoError=${mobileClose.currentNoError} stored=${mobileClose.stored} selection=${mobileClose.selection}`,
+);
+// The row-close CATCH path is pinned live here, not only in the VM suite:
+// the close fetch is stubbed to the legacy 400 error shape that older or
+// proxied servers still return for a dead-listener socket (errno 61 /
+// Connection refused). closeSessionRow must tolerate that class: no error
+// banner ever (the +400ms refresh would clear it, so sample continuously)
+// and the row session's stored pin and saved selection must be forgotten
+// (forgetSessionState). The stub never reaches the server, so the row
+// stays listed after the refresh; that is the realistic outcome and is
+// asserted as documentation, not as the mutation discriminator.
+const mobileRowCatch = await cdp.evalExpr(`(async () => {
+  // Give the post-close refresh from the previous check time to settle so
+  // the row list is stable before presetting and clicking.
+  await new Promise((r) => setTimeout(r, 900));
+  localStorage.setItem('herdr-session-backend:dead-listener-4', 'builtin');
+  localStorage.setItem(
+    'herdr-session-state:builtin:dead-listener-4',
+    JSON.stringify({ ws: 'w0', tab: 't0', pane: 'p0' }),
+  );
+  const rows = [...document.querySelectorAll('.mobile-row')];
+  const row = rows.find((r) => /dead-listener-4/.test(r.textContent));
+  if (!row) return { found: false };
+  const closeBtn = [...row.querySelectorAll('.mobile-btn.danger')]
+    .find((b) => /Close/.test(b.textContent));
+  if (!closeBtn) return { found: true, closeBtn: false };
+  window.confirm = () => true;
+  const realFetch = window.fetch;
+  window.fetch = async (url, opt) => {
+    if (String(url).includes('/api/session/close')) {
+      return new Response(JSON.stringify({ error: 'Connection refused (os error 61)' }), {
+        status: 400,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    return realFetch(url, opt);
+  };
+  // A broken catch sets sessionsError and the finally render shows the
+  // banner; the +400ms refresh then clears it (loadSessions sets
+  // sessionsError = ""). Sample continuously across that window so a
+  // transient banner cannot slip past a one-shot read.
+  let everHadError = false;
+  const sampler = setInterval(() => {
+    const screen = document.getElementById('mobileScreen');
+    if (screen && screen.innerHTML.includes('mobile-error')) everHadError = true;
+  }, 50);
+  try {
+    closeBtn.click();
+    await new Promise((r) => setTimeout(r, 1500));
+  } finally {
+    clearInterval(sampler);
+    window.fetch = realFetch;
+  }
+  const screen = document.getElementById('mobileScreen');
+  const rowsAfter = [...document.querySelectorAll('.mobile-row')];
+  return {
+    found: true,
+    closeBtn: true,
+    everHadError,
+    noErrorNow: !(screen && screen.innerHTML.includes('mobile-error')),
+    pinForgotten: localStorage.getItem('herdr-session-backend:dead-listener-4') === null,
+    selectionForgotten: localStorage.getItem('herdr-session-state:builtin:dead-listener-4') === null,
+    rowStillListed: rowsAfter.some((r) => /dead-listener-4/.test(r.textContent)),
+  };
+})()`, true);
+check(
+  'mobile row close tolerates legacy dead-listener error and forgets stored state',
+  mobileRowCatch.found === true
+    && mobileRowCatch.closeBtn === true
+    && mobileRowCatch.everHadError === false
+    && mobileRowCatch.noErrorNow === true
+    && mobileRowCatch.pinForgotten === true
+    && mobileRowCatch.selectionForgotten === true
+    && mobileRowCatch.rowStillListed === true,
+  `found=${mobileRowCatch.found} closeBtn=${mobileRowCatch.closeBtn} everHadError=${mobileRowCatch.everHadError} noErrorNow=${mobileRowCatch.noErrorNow} pinForgotten=${mobileRowCatch.pinForgotten} selectionForgotten=${mobileRowCatch.selectionForgotten} rowStillListed=${mobileRowCatch.rowStillListed}`,
 );
 // The hidden attribute must actually hide the New Herdr offer: a CSS
 // display rule on .session-button previously defeated it (real-browser

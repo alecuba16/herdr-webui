@@ -119,6 +119,21 @@ s.close()
 print(f"dead-listener-3 fixture socket at {path}")
 PYEOF
 
+# Fourth dead-listener fixture: consumed by the MOBILE row-close catch check.
+# Unlike dead-listener-3 (real server close, success path), this row is closed
+# with the close fetch stubbed to the legacy 400 error shape, pinning the
+# client-side catch tolerance (old/proxied servers). The stub never reaches
+# the server, so the row stays listed; that is realistic and asserted.
+mkdir -p "$WORK/xdg/herdr/sessions/dead-listener-4"
+python3 - "$WORK/xdg/herdr/sessions/dead-listener-4/herdr.sock" <<'PYEOF'
+import socket, sys
+path = sys.argv[1]
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.bind(path)
+s.close()
+print(f"dead-listener-4 fixture socket at {path}")
+PYEOF
+
 wait_for() {
   # wait_for <desc> <url> [-k]
   local desc="$1" url="$2" kflag="$3"
