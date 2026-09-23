@@ -12,6 +12,11 @@
 //      - the pty agrees with the browser grid (`stty size` output matches),
 //      - the loading overlay never flashes (no re-attach).
 //   4. A second resize back repeats the same checks.
+//   5. Sidebar toggle + restore (shell width change with NO window resize,
+//      the original user-visible flicker repro): same invariants.
+//   6. Git drawer round-trip with the window resized WHILE the terminal is
+//      hidden: the grid cannot change while hidden, so the resize must land
+//      on reopen through the live fast path (no reconnect).
 // Usage: ACCEPT_REPO=... E2E_BASE_URL=... CDP_PORT=... node scripts/e2e/live-resize-acceptance.mjs
 import { connectToPage } from './cdp-driver.mjs';
 
@@ -227,6 +232,93 @@ const pty2 = await ptySizeViaStty();
 check('resize 2: pty matches new grid', !!pty2 && !!grid2 &&
   pty2.cols === grid2.cols && pty2.rows === grid2.rows,
   `pty=${pty2 && pty2.cols + 'x' + pty2.rows} grid=${grid2 && grid2.cols + 'x' + grid2.rows}`);
+
+// Sidebar toggle (shell width change WITHOUT a window resize): the original
+// user-visible flicker repro. The fast path must send the live resize on the
+// open socket; the socket must not cycle and the pty must follow the grid.
+const sidebarBefore = await gridFromState();
+await evalx(`document.getElementById("sidebarToggle").click()`);
+await new Promise((r) => setTimeout(r, 1000));
+const probeSb = await evalx(`globalThis.__wsProbe`);
+const sidebarGrid = await gridFromState();
+const sidebarShell = await evalx(`(() => {
+  const app = document.getElementById("app");
+  return app ? { collapsed: app.classList.contains("sidebar-collapsed") } : null;
+})()`);
+check('sidebar toggle: collapsed state flipped', !!sidebarShell && sidebarShell.collapsed === true,
+  `app=${JSON.stringify(sidebarShell)}`);
+check('sidebar toggle: grid changed', !!sidebarGrid && !!sidebarBefore &&
+  (sidebarGrid.cols !== sidebarBefore.cols || sidebarGrid.rows !== sidebarBefore.rows),
+  `before=${sidebarBefore && sidebarBefore.cols + 'x' + sidebarBefore.rows} after=${sidebarGrid && sidebarGrid.cols + 'x' + sidebarGrid.rows}`);
+check('sidebar toggle: no reconnect', probeSb.opens === 0 && probeSb.closes === 0,
+  `opens=${probeSb.opens} closes=${probeSb.closes}`);
+check('sidebar toggle: no loading overlay flash', probeSb.loadingShows === 0, `shows=${probeSb.loadingShows}`);
+const ptySb = await ptySizeViaStty();
+check('sidebar toggle: pty matches new grid', !!ptySb && !!sidebarGrid &&
+  ptySb.cols === sidebarGrid.cols && ptySb.rows === sidebarGrid.rows,
+  `pty=${ptySb && ptySb.cols + 'x' + ptySb.rows} grid=${sidebarGrid && sidebarGrid.cols + 'x' + sidebarGrid.rows}`);
+
+// Sidebar restore: same invariants on the way back.
+await evalx(`document.getElementById("sidebarToggle").click()`);
+await new Promise((r) => setTimeout(r, 1000));
+const probeSb2 = await evalx(`globalThis.__wsProbe`);
+const sidebarGrid2 = await gridFromState();
+check('sidebar restore: no reconnect', probeSb2.opens === 0 && probeSb2.closes === 0,
+  `opens=${probeSb2.opens} closes=${probeSb2.closes}`);
+check('sidebar restore: no loading overlay flash', probeSb2.loadingShows === 0, `shows=${probeSb2.loadingShows}`);
+check('sidebar restore: grid back to pre-toggle', !!sidebarGrid2 && !!sidebarBefore &&
+  sidebarGrid2.cols === sidebarBefore.cols && sidebarGrid2.rows === sidebarBefore.rows,
+  `before=${sidebarBefore && sidebarBefore.cols + 'x' + sidebarBefore.rows} after=${sidebarGrid2 && sidebarGrid2.cols + 'x' + sidebarGrid2.rows}`);
+const ptySb2 = await ptySizeViaStty();
+check('sidebar restore: pty matches grid', !!ptySb2 && !!sidebarGrid2 &&
+  ptySb2.cols === sidebarGrid2.cols && ptySb2.rows === sidebarGrid2.rows,
+  `pty=${ptySb2 && ptySb2.cols + 'x' + ptySb2.rows} grid=${sidebarGrid2 && sidebarGrid2.cols + 'x' + sidebarGrid2.rows}`);
+
+// Drawer round-trip with the window resized WHILE the terminal is hidden:
+// the shell is display:none, so the grid cannot change while hidden; the
+// pending resize must land on reopen through the live fast path (no
+// reconnect). This mirrors switching to the Git drawer, resizing the
+// browser, and switching back to the terminal.
+const drawerGridBefore = await gridFromState();
+await evalx(`document.getElementById("gitWorkspaceToggle").click()`);
+await new Promise((r) => setTimeout(r, 700));
+const drawerHidden = await evalx(`(() => {
+  const shell = document.getElementById("terminalShell");
+  const panel = document.getElementById("gitUiPanel");
+  return {
+    shellHidden: shell ? shell.style.display === "none" : null,
+    gitPanelShown: panel ? panel.style.display !== "none" && !!panel.offsetParent : false,
+  };
+})()`);
+check('drawer open: terminal shell hidden', drawerHidden && drawerHidden.shellHidden === true,
+  `state=${JSON.stringify(drawerHidden)}`);
+check('drawer open: git panel visible', drawerHidden && drawerHidden.gitPanelShown === true,
+  `state=${JSON.stringify(drawerHidden)}`);
+// Resize while hidden (grid must NOT change yet: shell is display:none).
+await setViewport(1100, 800);
+const drawerGridHidden = await gridFromState();
+check('drawer open: grid unchanged while hidden', !!drawerGridHidden && !!drawerGridBefore &&
+  drawerGridHidden.cols === drawerGridBefore.cols && drawerGridHidden.rows === drawerGridBefore.rows,
+  `before=${drawerGridBefore && drawerGridBefore.cols + 'x' + drawerGridBefore.rows} hidden=${drawerGridHidden && drawerGridHidden.cols + 'x' + drawerGridHidden.rows}`);
+// Switch back to the terminal: the resize must apply through the fast path.
+await evalx(`document.getElementById("terminalWorkspaceToggle").click()`);
+await new Promise((r) => setTimeout(r, 1000));
+const probeDr = await evalx(`globalThis.__wsProbe`);
+const drawerGridAfter = await gridFromState();
+check('drawer reopen: no reconnect', probeDr.opens === 0 && probeDr.closes === 0,
+  `opens=${probeDr.opens} closes=${probeDr.closes}`);
+check('drawer reopen: no loading overlay flash', probeDr.loadingShows === 0, `shows=${probeDr.loadingShows}`);
+check('drawer reopen: grid now matches smaller window', !!drawerGridAfter &&
+  drawerGridAfter.cols < (drawerGridBefore && drawerGridBefore.cols) &&
+  drawerGridAfter.rows < (drawerGridBefore && drawerGridBefore.rows),
+  `before=${drawerGridBefore && drawerGridBefore.cols + 'x' + drawerGridBefore.rows} after=${drawerGridAfter && drawerGridAfter.cols + 'x' + drawerGridAfter.rows}`);
+const ptyDr = await ptySizeViaStty();
+check('drawer reopen: pty matches grid', !!ptyDr && !!drawerGridAfter &&
+  ptyDr.cols === drawerGridAfter.cols && ptyDr.rows === drawerGridAfter.rows,
+  `pty=${ptyDr && ptyDr.cols + 'x' + ptyDr.rows} grid=${drawerGridAfter && drawerGridAfter.cols + 'x' + drawerGridAfter.rows}`);
+
+// Final viewport restore.
+await setViewport(1600, 1000);
 
 function finish() {
   const failed = results.filter((r) => !r.ok);
