@@ -234,6 +234,49 @@ await realClick(`document.querySelector('#gitUiPanel [data-git-path="README.md"]
 check('real click on file row opens its diff', await waitForExpr(`!!document.querySelector("#gitUiPanel .git-ui-diff-row")`));
 check('location bar present on the file diff view', await evalx(`!!document.querySelector("#gitUiPanel .git-ui-location-bar")`) === true);
 
+// Narrow-window edge: a real long file name must ellipsize inside the panel
+// instead of overflowing the bar. Uses the browser's own viewport emulation
+// (the panel is a flex item, so inline width hacks do not apply). 900px stays
+// above the app's 760px mobile breakpoint, so the desktop panel never
+// reloads and its in-memory navigation state survives the check.
+{
+  const LONG = "integration_tests_kubernetes_manifest_rendering_checklist.md";
+  await realClick(`document.querySelector('#gitUiPanel [data-git-path="${LONG}"]')`);
+  const longDiff = await waitForExpr(`(() => {
+    const bar = document.querySelector("#gitUiPanel .git-ui-breadcrumbs");
+    return !!bar && (bar.getAttribute("title") || "").endsWith("${LONG}");
+  })()`);
+  check('real click on the long-path row opens its diff', longDiff);
+  await cdp.send('Emulation.setDeviceMetricsOverride', { width: 900, height: 1000, deviceScaleFactor: 0, mobile: false });
+  await new Promise((r) => setTimeout(r, 400));
+  const narrow = await evalx(`(() => {
+    const panel = document.getElementById("gitUiPanel");
+    const bar = panel && panel.querySelector(".git-ui-location-bar");
+    const crumbs = bar && bar.querySelector(".git-ui-breadcrumbs");
+    const steps = bar ? bar.querySelectorAll(".git-ui-breadcrumb-step") : [];
+    if (!bar || !crumbs) return null;
+    const pr = panel.getBoundingClientRect();
+    const cr = crumbs.getBoundingClientRect();
+    return {
+      panelRight: pr.right,
+      crumbsRight: cr.right,
+      barOverflow: bar.scrollWidth - bar.clientWidth,
+      clipped: Array.from(steps).some((s) => s.scrollWidth > s.clientWidth + 1),
+    };
+  })()`);
+  check('narrow window keeps the location bar inside the panel', !!narrow && narrow.crumbsRight <= narrow.panelRight + 1 && narrow.barOverflow <= 2, JSON.stringify(narrow));
+  check('long file crumbs ellipsize instead of overflowing', !!narrow && narrow.clipped === true, JSON.stringify(narrow));
+  await cdp.send('Emulation.clearDeviceMetricsOverride');
+  await new Promise((r) => setTimeout(r, 400));
+  // Return the flow to the README.md diff the rest of the checks expect.
+  await realClick(`document.querySelector('#gitUiPanel [data-git-path="README.md"]')`);
+  const readmeRestored = await waitForExpr(`(() => {
+    const bar = document.querySelector("#gitUiPanel .git-ui-breadcrumbs");
+    return !!bar && (bar.getAttribute("title") || "") === "Changes › README.md";
+  })()`);
+  check('README diff restored after the narrow-window check', readmeRestored);
+}
+
 // Real click on the toolbar History button.
 await realClick(`document.querySelector('#gitUiPanel button[title^="File history"]')`);
 check('real click on History button opens file history', await waitForExpr(`(() => {

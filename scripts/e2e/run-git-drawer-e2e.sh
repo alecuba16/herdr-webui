@@ -93,6 +93,11 @@ e2e drawer acceptance line
 EOF
 mkdir -p "$REPO/scratchdir"
 : > "$REPO/scratchdir/placeholder.txt"
+# A long-named dirty file so the location-bar ellipsis rules are exercised
+# by a real crumb (the narrow-window layout check clicks this row).
+cat > "$REPO/integration_tests_kubernetes_manifest_rendering_checklist.md" <<'EOF'
+- [ ] verify manifest rendering end to end
+EOF
 
 wait_for() {
   # wait_for <desc> <url> [-k]
