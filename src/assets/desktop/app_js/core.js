@@ -3174,8 +3174,9 @@ async function closeSessionRow(name, backend) {
       // Stale row: the backend was already gone, so the goal (no live
       // session) held before the request. Dead-listener sockets (backend
       // crashed without unlinking its socket file) refuse connections on a
-      // still-present path and count as closed too.
-      if (!/No such file|not running|ENOENT|Connection refused/.test(msg)) {
+      // still-present path, and servers that surface the close as an error
+      // use the already_stopped marker; both count as closed too.
+      if (!/already_stopped|No such file|not running|ENOENT|Connection refused/.test(msg)) {
         showSessionManager("Close failed", msg);
         return;
       }

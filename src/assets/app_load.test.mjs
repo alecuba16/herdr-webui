@@ -4890,12 +4890,21 @@ describe("app bundle load", () => {
       vm.runInContext(source, ctx);
       ctx.setupSessionChrome();
 
+      // The stale row must carry a stored backend pin and a saved selection
+      // before closing: the success path (including stale-target errors like
+      // a dead-listener "Connection refused") forgets both. Without a stored
+      // pin, a regression that bails out early on the error would still
+      // pass the null assertions below.
+      ctx.localStorage.setItem("herdr-session-backend:stale", "builtin");
+      ctx.localStorage.setItem("herdr-session-state:builtin:stale", "{}");
+
       await ctx.closeSessionRow("stale", "builtin");
 
       equal(closeRequests.length, 1);
       // Not an error surface: the row is simply already closed.
       equal(vm.runInContext("state.sessionsError", ctx) || "", "");
       equal(ctx.localStorage.getItem("herdr-session-backend:stale"), null);
+      equal(ctx.localStorage.getItem("herdr-session-state:builtin:stale"), null);
     }
   });
 
