@@ -2542,6 +2542,19 @@ fn mark_closed_builtin_session(state: &WebState, session_name: &str) {
 /// stall the async runtime (and by extension, active WebSocket loops) while
 /// waiting for the backend to respond or drop the connection.
 async fn proxy_server_stop(api: ApiClient) -> Response {
+    // Linux also returns ECONNREFUSED when the socket path is not a socket
+    // file at all; the dead-listener classification below checks the file
+    // type, which needs the unix extension trait in scope.
+    #[cfg(unix)]
+    use std::os::unix::fs::FileTypeExt;
+    // Capture before `api` moves into the closure below: the path must be
+    // an actual socket file for ECONNREFUSED to count as a dead listener
+    // (Linux also refuses non-socket paths with ECONNREFUSED).
+    let socket_path_is_socket = api
+        .socket_path
+        .metadata()
+        .map(|meta| meta.file_type().is_socket())
+        .unwrap_or(false);
     let request = json!({ "id": "web:server:stop", "method": "server.stop", "params": {} });
     match tokio::task::spawn_blocking(move || api.request_value(request)).await {
         Ok(Ok(value)) => Json(value).into_response(),
@@ -2554,8 +2567,15 @@ async fn proxy_server_stop(api: ApiClient) -> Response {
             // still bound surfaces as ECONNREFUSED ("Connection refused"),
             // the same stale-row case: the path exists but nobody accepts.
             let is_missing_socket = err.contains("No such file or directory");
-            let is_dead_listener =
-                err.contains("Connection refused") || err.contains("ConnectionRefused");
+            // Linux also returns ECONNREFUSED when the path is not a socket
+            // file at all (a regular file, a directory...), which is a real
+            // error, not a crashed backend. Only a socket file nobody accepts
+            // on is a dead listener. macOS surfaces non-socket paths as
+            // ENOTSOCK ("Socket type not supported") instead, so the gate
+            // only changes behavior for the misconfigured-path class.
+            let is_dead_listener = (err.contains("Connection refused")
+                || err.contains("ConnectionRefused"))
+                && socket_path_is_socket;
             let is_connection_drop = err.contains("empty response")
                 || err.contains("UnexpectedEof")
                 || err.contains("ConnectionReset")
@@ -9146,6 +9166,46 @@ mod tests {
         ));
         // A regular file is not a socket: connect fails with
         // "Connection refused"/"Socket type not supported", not ENOENT.
+        fs::write(&path, b"").unwrap();
+
+        let mut state = test_state();
+        state.api_socket = Some(path.clone());
+        let app = test_app_with_state(state);
+
+        let response = app
+            .oneshot(
+                request(Method::POST, "/api/session/close")
+                    .header(header::COOKIE, "herdr_web_session=token-123")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "session": "default", "backend": "external-herdr" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let _ = fs::remove_file(path);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn close_session_returns_bad_gateway_when_refused_path_is_not_a_socket() {
+        // Linux quirk: connect(2) to a path that is NOT a socket file also
+        // returns ECONNREFUSED, identical to a crashed backend's dead
+        // listener. A regular file at the socket path is a misconfiguration
+        // (real error), so it must surface as 502 even though the error
+        // string says "Connection refused". The dead-listener classification
+        // gates on the path being an actual socket file; this pins that
+        // gate against Linux, where the strings are indistinguishable.
+        let path = std::env::temp_dir().join(format!(
+            "herdr-webui-test-refused-regular-file-{}.sock",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
         fs::write(&path, b"").unwrap();
 
         let mut state = test_state();
