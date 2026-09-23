@@ -211,6 +211,16 @@ It verifies in the live DOM:
 - the branch list popover lists local branches (including `feature/drawer`)
   with author · relative-time rows
 - returning to the terminal hides the panel and restores the shell
+- the navigation redesign: real `Input.dispatchMouseEvent` clicks on the
+  changes tab, the file row, the History button, `View change`, `Back`,
+  `Find in log`, and the clear-scope `×` (the inline `onclick` wiring the
+  no-browser VM never parses), breadcrumb titles per step
+  (`Changes › file › History`, `History › file › Committed <hash>`,
+  `Log › file`, `Log`), real layout measurement of the location bar (size,
+  horizontal overflow, panel bounds, clickable clear-scope size), and real
+  `Input.dispatchKeyEvent` Esc presses walking the ladder one level at a
+  time (scoped log → history → changes root → hide, with the native
+  `confirm` auto-accepted by the driver)
 
 | Variable    | Default | Meaning                              |
 | ----------- | ------- | ------------------------------------ |

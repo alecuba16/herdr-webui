@@ -180,7 +180,7 @@ const crumbsTitle = () => evalx(`(() => {
   const bar = document.querySelector("#gitUiPanel .git-ui-breadcrumbs");
   return bar ? (bar.getAttribute("title") || "") : "";
 })()`);
-const waitForExpr = async (desc, expr, tries = 24) => {
+const waitForExpr = async (expr, tries = 24) => {
   for (let i = 0; i < tries; i++) {
     if (await evalx(expr) === true) return true;
     await new Promise((r) => setTimeout(r, 500));
@@ -209,7 +209,7 @@ const pressEsc = async () => {
 };
 
 await evalx('openWorkspaceGitUi(state.ws, { forceOpen: true })');
-check('drawer reopens for navigation checks', await waitForExpr('drawer', `(() => {
+check('drawer reopens for navigation checks', await waitForExpr(`(() => {
   const panel = document.getElementById("gitUiPanel");
   return !!(panel && panel.style.display !== "none" && panel.innerHTML.trim() && !panel.querySelector(".git-ui-loading"));
 })()`));
@@ -231,12 +231,12 @@ await realClick(`(() => {
 
 // Real click on the README.md changes-tree row.
 await realClick(`document.querySelector('#gitUiPanel [data-git-path="README.md"]')`);
-check('real click on file row opens its diff', await waitForExpr('diff rows', `!!document.querySelector("#gitUiPanel .git-ui-diff-row")`));
+check('real click on file row opens its diff', await waitForExpr(`!!document.querySelector("#gitUiPanel .git-ui-diff-row")`));
 check('location bar present on the file diff view', await evalx(`!!document.querySelector("#gitUiPanel .git-ui-location-bar")`) === true);
 
 // Real click on the toolbar History button.
 await realClick(`document.querySelector('#gitUiPanel button[title^="File history"]')`);
-check('real click on History button opens file history', await waitForExpr('history rows', `(() => {
+check('real click on History button opens file history', await waitForExpr(`(() => {
   const buttons = Array.from(document.querySelectorAll("#gitUiPanel button"));
   return buttons.some((b) => (b.title || "") === "Open this commit's change for the file");
 })()`));
@@ -263,14 +263,14 @@ check('location bar has real size and no horizontal overflow', !!layout && layou
 
 // Real click on the first View change button.
 await realClick(`document.querySelector('#gitUiPanel button[title="Open this commit\\'s change for the file"]')`);
-check('real click on View change loads the committed diff', await waitForExpr('committed diff', `(() => {
+check('real click on View change loads the committed diff', await waitForExpr(`(() => {
   const bar = document.querySelector("#gitUiPanel .git-ui-breadcrumbs");
   return !!(bar && (bar.getAttribute("title") || "").startsWith("History › README.md › Committed "));
 })()`));
 
 // Real click on the location-bar Back button returns to file history.
 await realClick(`document.querySelector('#gitUiPanel button[title="Go back to previous Git view"]')`);
-check('real click on Back restores file history', await waitForExpr('history restored', `(() => {
+check('real click on Back restores file history', await waitForExpr(`(() => {
   const bar = document.querySelector("#gitUiPanel .git-ui-breadcrumbs");
   return !!bar && (bar.getAttribute("title") || "") === "Changes › README.md › History";
 })()`));
@@ -278,7 +278,7 @@ check('drawer still visible after Back (no tool switch)', (await evalx('!!(windo
 
 // Real click on Find in log keeps the file scope.
 await realClick(`document.querySelector('#gitUiPanel button[title="Open the file\\'s log at this commit"]')`);
-check('real click on Find in log opens the scoped log', await waitForExpr('scoped log', `(() => {
+check('real click on Find in log opens the scoped log', await waitForExpr(`(() => {
   const bar = document.querySelector("#gitUiPanel .git-ui-breadcrumbs");
   const clear = document.querySelector("#gitUiPanel .git-ui-crumb-clear");
   return !!bar && (bar.getAttribute("title") || "") === "Log › README.md" && !!clear;
@@ -293,7 +293,7 @@ check('clear-scope control has real clickable size', !!clearBox && clearBox.w > 
 
 // Real click on the clear-scope control returns the whole-repo log.
 await realClick(`document.querySelector('#gitUiPanel .git-ui-crumb-clear')`);
-check('real click on clear-scope shows the unscoped log', await waitForExpr('unscoped log', `(() => {
+check('real click on clear-scope shows the unscoped log', await waitForExpr(`(() => {
   const bar = document.querySelector("#gitUiPanel .git-ui-breadcrumbs");
   const clear = document.querySelector("#gitUiPanel .git-ui-crumb-clear");
   return !!bar && (bar.getAttribute("title") || "") === "Log" && !clear;
