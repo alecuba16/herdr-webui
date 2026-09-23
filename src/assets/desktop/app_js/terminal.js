@@ -109,6 +109,40 @@ async function connectTerminal() {
     focusTerminal();
     return;
   }
+  // Live resize on the open socket: when only the grid changed (same
+  // terminal, socket healthy), send a resize message instead of tearing
+  // down and re-attaching. The re-attach path replays the whole scrollback
+  // buffer (up to 8MB) and is the main source of visible flicker at the
+  // tail; the resize message resizes the pty in place with no repaint.
+  // The backend maps {"type":"resize"} to ClientMessage::Resize for both
+  // the builtin and external backends (terminal_text_messages in main.rs),
+  // and falls back gracefully if the send fails mid-resize (onclose clears
+  // connectedSize, so the next connectTerminal() re-attaches cleanly).
+  if (
+    termWs &&
+    termWs.readyState === 1 &&
+    connectedTerminalId === target &&
+    connectedSize &&
+    connectedSize !== size
+  ) {
+    // connectedSize and size both come from the same `${cols}x${rows}`
+    // template, so a difference can only mean the grid itself changed.
+    connectedSize = size;
+    try { term.resize(cols, rows); } catch (e) {}
+    try {
+      termWs.send(JSON.stringify({ type: "resize", cols: cols, rows: rows }));
+    } catch (e) {
+      // Socket died mid-resize: onclose clears connectedSize, so the next
+      // connectTerminal() tears down and re-attaches cleanly.
+    }
+    if (window.HerdrGraphicsBridge) {
+      window.HerdrGraphicsBridge.resize({ cols, rows });
+    }
+    setTerminalLoading(false);
+    fitTerminalSurface();
+    focusTerminal();
+    return;
+  }
   resetTerminalConnection(true);
   setTerminalLoading(true);
   connectedTerminalId = target;
