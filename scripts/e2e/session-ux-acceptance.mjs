@@ -221,9 +221,16 @@ const staleUi = await cdp.evalExpr(`(async () => {
   if (!row) return { found: false };
   row.click();
   await new Promise((r) => setTimeout(r, 1500));
-  const buttons = [...document.querySelectorAll('#sessionList .session-line .session-button.danger')];
-  const closeBtn = buttons.find((b) => /Close/.test(b.textContent));
-  if (!closeBtn) return { found: true, closeBtn: false };
+  // The manager re-rendered after the retarget: re-find the probe's row and
+  // use ITS Close button. A global first-match picks whatever row renders
+  // first (here: the default external row), which closes the wrong session
+  // and can fail on unrelated socket paths.
+  const rows2 = [...document.querySelectorAll('#sessionList .session-line')];
+  const probeRow = rows2.find((r) => /stale-probe/.test(r.textContent));
+  if (!probeRow) return { found: true, reFound: false };
+  const closeBtn = [...probeRow.querySelectorAll('.session-button.danger')]
+    .find((b) => /Close/.test(b.textContent));
+  if (!closeBtn) return { found: true, reFound: true, closeBtn: false };
   window.confirm = () => true;
   closeBtn.click();
   await new Promise((r) => setTimeout(r, 1200));
@@ -231,6 +238,7 @@ const staleUi = await cdp.evalExpr(`(async () => {
   const probePin = 'herdr-session-backend:stale-probe';
   return {
     found: true,
+    reFound: true,
     closeBtn: true,
     visible: m && getComputedStyle(m).display !== 'none',
     title: document.getElementById('sessionManagerTitle').textContent,
@@ -241,11 +249,12 @@ const staleUi = await cdp.evalExpr(`(async () => {
 check(
   'closing a stale session via the UI shows the clean already-stopped message',
   staleUi.found === true
+    && staleUi.reFound === true
     && staleUi.closeBtn === true
     && staleUi.visible === true
     && staleUi.title === 'Session closed'
     && /not running/.test(staleUi.text || ''),
-  `found=${staleUi.found} title="${staleUi.title}" text="${staleUi.text}" stored=${staleUi.stored}`,
+  `found=${staleUi.found} reFound=${staleUi.reFound} title="${staleUi.title}" text="${staleUi.text}" stored=${staleUi.stored}`,
 );
 // Return to the built-in session so later checks run on the default backend.
 await cdp.evalExpr(`(async () => {
@@ -255,6 +264,60 @@ await cdp.evalExpr(`(async () => {
   await new Promise((r) => setTimeout(r, 1200));
   return true;
 })()`, true);
+
+// ---------- Dead-listener session close ----------
+// The sibling stale case: the backend crashed without unlinking its socket
+// file, so connect(2) gets ECONNREFUSED ("Connection refused", macOS os
+// error 61) instead of ENOENT. Closing the row must be ok + already_stopped
+// (the exact "Close failed Connection refused" bug).
+const deadApi = await cdp.evalExpr(`(async () => {
+  const res = await fetch('/api/session/close', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ session: 'dead-listener', backend: 'external-herdr' }),
+  });
+  const body = await res.json().catch(() => null);
+  return { status: res.status, body };
+})()`, true);
+check(
+  'closing a dead-listener (refused socket) external session returns ok already_stopped',
+  deadApi.status === 200
+    && !!(deadApi.body && deadApi.body.ok)
+    && deadApi.body.already_stopped === true,
+  `status=${deadApi.status} body=${JSON.stringify(deadApi.body)}`,
+);
+
+const deadUi = await cdp.evalExpr(`(async () => {
+  document.getElementById('footerSessionButton').click();
+  await new Promise((r) => setTimeout(r, 900));
+  const rows = [...document.querySelectorAll('#sessionList .session-line')];
+  const row = rows.find((r) => /dead-listener/.test(r.textContent));
+  if (!row) return { found: false };
+  window.confirm = () => true;
+  const closeBtn = [...row.querySelectorAll('.session-button.danger')]
+    .find((b) => /Close/.test(b.textContent));
+  if (!closeBtn) return { found: true, closeBtn: false };
+  closeBtn.click();
+  await new Promise((r) => setTimeout(r, 1200));
+  const m = document.getElementById('sessionManager');
+  return {
+    found: true,
+    closeBtn: true,
+    visible: m && getComputedStyle(m).display !== 'none',
+    title: document.getElementById('sessionManagerTitle').textContent,
+    text: document.getElementById('sessionManagerText').textContent,
+    stored: localStorage.getItem('herdr-session-backend:dead-listener'),
+  };
+})()`, true);
+check(
+  'closing a dead-listener session via the UI shows the clean already-stopped message',
+  deadUi.found === true
+    && deadUi.closeBtn === true
+    && deadUi.visible === true
+    && deadUi.title === 'Session closed'
+    && /not running/.test(deadUi.text || ''),
+  `found=${deadUi.found} title="${deadUi.title}" text="${deadUi.text}" stored=${deadUi.stored}`,
+);
 
 // ---------- Mid-session backend disable ----------
 // The core enabled_backends scenario: a tab pinned to external-herdr when

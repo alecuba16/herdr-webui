@@ -75,6 +75,22 @@ git -C "$REPO" -c user.name=e2e -c user.email=e2e@local commit -qm init
 # that closing it succeeds instead of returning a 502 ENOENT error.
 mkdir -p "$WORK/xdg/herdr/sessions/stale-probe"
 
+# Dead-listener external-session fixture: a session whose socket file still
+# exists but nobody accepts on it (backend crashed without unlinking its
+# socket, e.g. kill -9). Closing it surfaces ECONNREFUSED ("Connection
+# refused", macOS os error 61), not ENOENT, and must also close cleanly.
+# Short name so the socket path stays under the 104-byte AF_UNIX limit even
+# with long TMPDIRs.
+mkdir -p "$WORK/xdg/herdr/sessions/dead-listener"
+python3 - "$WORK/xdg/herdr/sessions/dead-listener/herdr.sock" <<'PYEOF'
+import socket, sys
+path = sys.argv[1]
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.bind(path)
+s.close()  # file remains, no listener -> connect gets ECONNREFUSED
+print(f"dead-listener fixture socket at {path}")
+PYEOF
+
 wait_for() {
   # wait_for <desc> <url> [-k]
   local desc="$1" url="$2" kflag="$3"

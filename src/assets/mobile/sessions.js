@@ -188,8 +188,14 @@
         } catch (e) {
           const message = e && e.message ? e.message : String(e);
           // already_stopped is the server's idempotent-close marker; the
-          // stale-target errors also mean the session is already down.
-          if (/already_stopped|No such file|not running|ENOENT/i.test(message)) {
+          // stale-target errors also mean the session is already down. A
+          // dead-listener socket (crash without unlink) adds "Connection
+          // refused" to that class.
+          if (
+            /already_stopped|No such file|not running|ENOENT|Connection refused/i.test(
+              message,
+            )
+          ) {
             alreadyStopped = true;
           } else {
             throw e;
@@ -259,7 +265,15 @@
           });
         } catch (e) {
           const message = e && e.message ? e.message : String(e);
-          if (!/already_stopped|No such file|not running|ENOENT/i.test(message)) {
+          // Dead-listener sockets (backend crashed without unlinking its
+          // socket file) surface as "Connection refused"; the session is
+          // already down, so closing it is a success like the other stale
+          // target errors.
+          if (
+            !/already_stopped|No such file|not running|ENOENT|Connection refused/i.test(
+              message,
+            )
+          ) {
             throw e;
           }
         }

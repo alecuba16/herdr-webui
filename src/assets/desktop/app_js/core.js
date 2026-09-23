@@ -3171,12 +3171,14 @@ async function closeSessionRow(name, backend) {
       alreadyStopped = !!(result && result.already_stopped);
     } catch (e) {
       const msg = String((e && e.message) || e);
-      if (!/No such file|not running|ENOENT/.test(msg)) {
+      // Stale row: the backend was already gone, so the goal (no live
+      // session) held before the request. Dead-listener sockets (backend
+      // crashed without unlinking its socket file) refuse connections on a
+      // still-present path and count as closed too.
+      if (!/No such file|not running|ENOENT|Connection refused/.test(msg)) {
         showSessionManager("Close failed", msg);
         return;
       }
-      // Stale row: the backend was already gone, so the goal (no live
-      // session) held before the request. Clear it as closed.
       alreadyStopped = true;
     }
     forgetSessionState(name || "default");

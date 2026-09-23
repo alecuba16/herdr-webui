@@ -4871,7 +4871,13 @@ describe("app bundle load", () => {
   });
 
   it("treats already_stopped and stale-target close errors as success", async () => {
-    for (const message of ["already_stopped", "No such file or directory (os error 2)", "session not running", "ENOENT: db lock"]) {
+    for (const message of [
+      "already_stopped",
+      "No such file or directory (os error 2)",
+      "session not running",
+      "ENOENT: db lock",
+      "Connection refused (os error 61)",
+    ]) {
       const ctx = context();
       const closeRequests = [];
       ctx.fetch = async (url, opt = {}) => {

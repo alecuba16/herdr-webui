@@ -1493,27 +1493,32 @@ describe("mobile bundle load", () => {
   });
 
   it("treats already-stopped rows as closed without surfacing an error", async () => {
-    const ctx = context("/session/default");
-    vm.runInContext(source, ctx);
-    await ctx.HerdrMobile.refresh();
+    // Same class of stale-target errors: the server's idempotent-close marker
+    // and a dead-listener socket refusal (backend crashed without unlinking
+    // its socket file) both mean the session is already down.
+    for (const error of ["already_stopped", "Connection refused (os error 61)"]) {
+      const ctx = context("/session/default");
+      vm.runInContext(source, ctx);
+      await ctx.HerdrMobile.refresh();
 
-    const originalFetch = ctx.fetch;
-    ctx.fetch = async (url, opt = {}) => {
-      if (url === "/api/session/close") {
-        return { ok: false, status: 400, json: async () => ({ error: "already_stopped" }) };
-      }
-      return originalFetch(url, opt);
-    };
+      const originalFetch = ctx.fetch;
+      ctx.fetch = async (url, opt = {}) => {
+        if (url === "/api/session/close") {
+          return { ok: false, status: 400, json: async () => ({ error }) };
+        }
+        return originalFetch(url, opt);
+      };
 
-    await ctx.HerdrMobile.closeSessionRow("stale", "builtin");
+      await ctx.HerdrMobile.closeSessionRow("stale", "builtin");
 
-    // Already stopped is a success for close: no error banner is rendered on
-    // the sessions screen and the stored state is forgotten.
-    await ctx.settle();
-    ctx.HerdrMobile.showScreen("sessions");
-    const screenHtml = ctx.document.getElementById("mobileScreen").innerHTML;
-    ok(!screenHtml.includes("mobile-error"), "already_stopped must not surface as an error");
-    equal(ctx.localStorage.getItem("herdr-session-backend:stale"), null);
+      // Already stopped is a success for close: no error banner is rendered on
+      // the sessions screen and the stored state is forgotten.
+      await ctx.settle();
+      ctx.HerdrMobile.showScreen("sessions");
+      const screenHtml = ctx.document.getElementById("mobileScreen").innerHTML;
+      ok(!screenHtml.includes("mobile-error"), `${error} must not surface as an error`);
+      equal(ctx.localStorage.getItem("herdr-session-backend:stale"), null);
+    }
   });
 
   it("re-pins the backend per session on Back and resets the target state", async () => {
