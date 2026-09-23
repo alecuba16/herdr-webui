@@ -291,7 +291,7 @@ const deadUi = await cdp.evalExpr(`(async () => {
   document.getElementById('footerSessionButton').click();
   await new Promise((r) => setTimeout(r, 900));
   const rows = [...document.querySelectorAll('#sessionList .session-line')];
-  const row = rows.find((r) => /dead-listener/.test(r.textContent));
+  const row = rows.find((r) => /dead-listener(?!-2)/.test(r.textContent));
   if (!row) return { found: false };
   window.confirm = () => true;
   const closeBtn = [...row.querySelectorAll('.session-button.danger')]
@@ -317,6 +317,78 @@ check(
     && deadUi.title === 'Session closed'
     && /not running/.test(deadUi.text || ''),
   `found=${deadUi.found} title="${deadUi.title}" text="${deadUi.text}" stored=${deadUi.stored}`,
+);
+
+// The CURRENT-session close button (closeCurrentSession) must tolerate the
+// same stale-target error class on its catch path. Older or proxied servers
+// surface the idempotent close as a 400 error instead of 200 already_stopped;
+// the browser must still forget the session, retarget the default, and show
+// the clean message instead of "Close failed". The first dead-listener
+// fixture was closed (and its directory removed) by the row-close check
+// above, so this drives the fresh dead-listener-2 row: targeting it makes its
+// Close button the closeCurrentSession one. Stub the close fetch to emit the
+// legacy error shape and click the real button.
+const deadCurrentUi = await cdp.evalExpr(`(async () => {
+  document.getElementById('footerSessionButton').click();
+  await new Promise((r) => setTimeout(r, 900));
+  const rows = [...document.querySelectorAll('#sessionList .session-line')];
+  const row = rows.find((r) => /dead-listener-2/.test(r.textContent));
+  if (!row) return { found: false };
+  // Target the dead-listener-2 session so its Close button is the
+  // closeCurrentSession one (active row wiring).
+  row.click();
+  await new Promise((r) => setTimeout(r, 1500));
+  const rows2 = [...document.querySelectorAll('#sessionList .session-line')];
+  const activeRow = rows2.find((r) => /dead-listener-2/.test(r.textContent));
+  if (!activeRow) return { found: true, reFound: false };
+  const closeBtn = [...activeRow.querySelectorAll('.session-button.danger')]
+    .find((b) => /Close/.test(b.textContent));
+  if (!closeBtn) return { found: true, reFound: true, closeBtn: false };
+  // Legacy-server error shape: 400 with a stale-target message (the class
+  // also covers already_stopped / No such file / not running / ENOENT; one
+  // representative refusal is enough at the live layer).
+  const realFetch = window.fetch;
+  window.fetch = async (url, opt) => {
+    if (String(url).includes('/api/session/close')) {
+      return new Response(JSON.stringify({ error: 'Connection refused (os error 61)' }), {
+        status: 400,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    return realFetch(url, opt);
+  };
+  window.confirm = () => true;
+  try {
+    closeBtn.click();
+    await new Promise((r) => setTimeout(r, 1500));
+  } finally {
+    window.fetch = realFetch;
+  }
+  const m = document.getElementById('sessionManager');
+  return {
+    found: true,
+    reFound: true,
+    closeBtn: true,
+    visible: m && getComputedStyle(m).display !== 'none',
+    title: document.getElementById('sessionManagerTitle').textContent,
+    text: document.getElementById('sessionManagerText').textContent,
+    stored: localStorage.getItem('herdr-session-backend:dead-listener-2'),
+    // The app retargets by pushing /session/default; read the live URL since
+    // the bundle's state object is module-scoped, not on window.
+    path: location.pathname,
+  };
+})()`, true);
+check(
+  'closing the current dead-listener session over a legacy 400 error still succeeds',
+  deadCurrentUi.found === true
+    && deadCurrentUi.reFound === true
+    && deadCurrentUi.closeBtn === true
+    && deadCurrentUi.visible === true
+    && deadCurrentUi.title === 'Session closed'
+    && /not running/.test(deadCurrentUi.text || '')
+    && deadCurrentUi.stored === null
+    && deadCurrentUi.path === '/session/default',
+  `found=${deadCurrentUi.found} reFound=${deadCurrentUi.reFound} title="${deadCurrentUi.title}" text="${deadCurrentUi.text}" stored=${deadCurrentUi.stored} path=${deadCurrentUi.path}`,
 );
 
 // ---------- Mid-session backend disable ----------

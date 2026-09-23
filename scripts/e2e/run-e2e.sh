@@ -91,6 +91,21 @@ s.close()  # file remains, no listener -> connect gets ECONNREFUSED
 print(f"dead-listener fixture socket at {path}")
 PYEOF
 
+# Second dead-listener fixture: the session-ux acceptance closes the first
+# one via the row Close button (server close deletes the socket file and
+# directory), and the follow-up check needs a fresh dead listener to close
+# through the CURRENT-session button (closeCurrentSession). Still short for
+# the sun_path limit.
+mkdir -p "$WORK/xdg/herdr/sessions/dead-listener-2"
+python3 - "$WORK/xdg/herdr/sessions/dead-listener-2/herdr.sock" <<'PYEOF'
+import socket, sys
+path = sys.argv[1]
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.bind(path)
+s.close()
+print(f"dead-listener-2 fixture socket at {path}")
+PYEOF
+
 wait_for() {
   # wait_for <desc> <url> [-k]
   local desc="$1" url="$2" kflag="$3"
