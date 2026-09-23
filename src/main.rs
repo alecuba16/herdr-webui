@@ -8666,8 +8666,10 @@ mod tests {
         // unlinking its socket, so connect(2) gets ECONNREFUSED ("Connection
         // refused", macOS os error 61) instead of ENOENT. The session is
         // already down, so close must be ok + already_stopped, not 502.
-        let path = std::env::temp_dir().join(format!(
-            "herdr-webui-test-dead-listener-{}.sock",
+        // /tmp, not std::env::temp_dir(): CI runners have a long $TMPDIR
+        // that pushes this path past sun_path's 104-byte capacity.
+        let path = PathBuf::from(format!(
+            "/tmp/herdr-webui-test-dead-listener-{}.sock",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
@@ -8714,8 +8716,12 @@ mod tests {
         // child). Close must be ok + already_stopped, drop the registry
         // entry, and remove the dead socket residue.
         let _guard = lock_env();
-        let config_home = std::env::temp_dir().join(format!(
-            "herdr-webui-builtin-dead-listener-close-{}",
+        // Short /tmp prefix, not std::env::temp_dir(): CI runners have a
+        // long $TMPDIR that pushes the session socket path past sun_path's
+        // 104-byte capacity (and past the deterministic fallback in
+        // builtin_socket_paths, which would exercise a different code path).
+        let config_home = PathBuf::from(format!(
+            "/tmp/hw-dlclose-{}",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
@@ -8737,15 +8743,15 @@ mod tests {
         // close_session contacts (that path comes from XDG_CONFIG_HOME).
         let stale_handle = Arc::new(
             builtin_backend::BuiltinBackendHandle::start(builtin_backend::BuiltinBackendConfig {
-                api_socket: std::env::temp_dir().join(format!(
-                    "herdr-webui-dead-listener-close-api-{}.sock",
+                api_socket: PathBuf::from(format!(
+                    "/tmp/herdr-webui-dead-listener-close-api-{}.sock",
                     SystemTime::now()
                         .duration_since(UNIX_EPOCH)
                         .unwrap()
                         .as_nanos(),
                 )),
-                client_socket: std::env::temp_dir().join(format!(
-                    "herdr-webui-dead-listener-close-client-{}.sock",
+                client_socket: PathBuf::from(format!(
+                    "/tmp/herdr-webui-dead-listener-close-client-{}.sock",
                     SystemTime::now()
                         .duration_since(UNIX_EPOCH)
                         .unwrap()
