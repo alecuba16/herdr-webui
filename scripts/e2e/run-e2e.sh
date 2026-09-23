@@ -106,6 +106,19 @@ s.close()
 print(f"dead-listener-2 fixture socket at {path}")
 PYEOF
 
+# Third dead-listener fixture: consumed by the MOBILE sessions-screen close
+# check (the desktop current-session check closes dead-listener-2 and the
+# server deletes its directory).
+mkdir -p "$WORK/xdg/herdr/sessions/dead-listener-3"
+python3 - "$WORK/xdg/herdr/sessions/dead-listener-3/herdr.sock" <<'PYEOF'
+import socket, sys
+path = sys.argv[1]
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.bind(path)
+s.close()
+print(f"dead-listener-3 fixture socket at {path}")
+PYEOF
+
 wait_for() {
   # wait_for <desc> <url> [-k]
   local desc="$1" url="$2" kflag="$3"

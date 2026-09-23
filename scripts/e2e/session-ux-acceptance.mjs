@@ -551,6 +551,97 @@ check(
     && !!mobile.badgeColor,
   `layout=${mobile.layout} text="${mobile.badgeText}" class="${mobile.badgeClass}" color=${mobile.badgeColor}`,
 );
+// The mobile sessions screen must also close a dead-listener row cleanly:
+// the backend crashed without unlinking its socket, so the server reports
+// ok + already_stopped and the row's Close button must show no error banner
+// (the mobile bundle renders .mobile-error for failures). dead-listener-3
+// is the fixture consumed here: the desktop checks above already closed
+// the first two.
+const mobileClose = await cdp.evalExpr(`(async () => {
+  // Open the real sessions screen through the badge.
+  const badge = document.getElementById('mobileBackendBadge');
+  if (!badge) return { badge: false };
+  badge.click();
+  await new Promise((r) => setTimeout(r, 900));
+  const rows = [...document.querySelectorAll('.mobile-row')];
+  const row = rows.find((r) => /dead-listener-3/.test(r.textContent));
+  if (!row) return { badge: true, found: false };
+  const closeBtn = [...row.querySelectorAll('.mobile-btn.danger')]
+    .find((b) => /Close/.test(b.textContent));
+  if (!closeBtn) return { badge: true, found: true, closeBtn: false };
+  window.confirm = () => true;
+  // First close against the real server: the fixed server answers 200 with
+  // already_stopped, so this pins the success-marker path end to end.
+  closeBtn.click();
+  await new Promise((r) => setTimeout(r, 1500));
+  const screen1 = document.getElementById('mobileScreen');
+  const successNoError = !(screen1 && screen1.innerHTML.includes('mobile-error'));
+  // Then pin the catch path live too: stub the close fetch with the legacy
+  // 400 error shape (older/proxied servers) and re-render the screen so the
+  // row (re-listed after the server-side close removed the fixture) gets a
+  // fresh Close button... the closed session is gone from the list, so
+  // instead drive the CURRENT-session Close with the stub active: the
+  // default session's close returns the legacy error and must still show no
+  // banner (the current-session catch tolerates the same class).
+  const realFetch = window.fetch;
+  window.fetch = async (url, opt) => {
+    if (String(url).includes('/api/session/close')) {
+      return new Response(JSON.stringify({ error: 'Connection refused (os error 61)' }), {
+        status: 400,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    return realFetch(url, opt);
+  };
+  let currentNoError = null;
+  try {
+    const btns = [...document.querySelectorAll('.mobile-btn.danger')]
+      .filter((b) => /Close/.test(b.textContent));
+    const currentClose = btns.find((b) => /current/.test(b.closest('.mobile-row').textContent));
+    if (currentClose) {
+      // The mobile close path schedules refreshSessions at +400ms, and a
+      // successful refresh CLEARS state.sessionsError (backend.js
+      // loadSessions sets sessionsError = ""). A broken catch would show the
+      // error banner only in the 0-400ms window, then wipe it. Sampling once
+      // at +1500ms would false-green, so poll continuously and record
+      // whether the banner EVER appeared.
+      let everHadError = false;
+      const sampler = setInterval(() => {
+        const screen2 = document.getElementById('mobileScreen');
+        if (screen2 && screen2.innerHTML.includes('mobile-error')) everHadError = true;
+      }, 50);
+      try {
+        currentClose.click();
+        await new Promise((r) => setTimeout(r, 1500));
+      } finally {
+        clearInterval(sampler);
+      }
+      const screen3 = document.getElementById('mobileScreen');
+      currentNoError = !everHadError
+        && !(screen3 && screen3.innerHTML.includes('mobile-error'));
+    }
+  } finally {
+    window.fetch = realFetch;
+  }
+  return {
+    badge: true,
+    found: true,
+    closeBtn: true,
+    errorShown: !successNoError,
+    currentNoError,
+    stored: localStorage.getItem('herdr-session-backend:dead-listener-3'),
+  };
+})()`, true);
+check(
+  'mobile sessions screen closes a dead-listener row with no error banner',
+  mobileClose.badge === true
+    && mobileClose.found === true
+    && mobileClose.closeBtn === true
+    && mobileClose.errorShown === false
+    && mobileClose.currentNoError === true
+    && mobileClose.stored === null,
+  `badge=${mobileClose.badge} found=${mobileClose.found} closeBtn=${mobileClose.closeBtn} errorShown=${mobileClose.errorShown} currentNoError=${mobileClose.currentNoError} stored=${mobileClose.stored}`,
+);
 // The hidden attribute must actually hide the New Herdr offer: a CSS
 // display rule on .session-button previously defeated it (real-browser
 // regression caught by this suite).
