@@ -1068,14 +1068,22 @@ test("workspace navigation snapshots, trail, and status helpers behave", () => {
   const circular = {};
   circular.self = circular;
   assert.deepEqual(mod.clonePlain(circular, "fallback"), "fallback");
-  // navigation labels per tab.
-  assert.equal(mod.currentNavigationLabel({ tab: "log", logFilePath: "a.js" }), "Log · a.js");
-  assert.equal(mod.currentNavigationLabel({ tab: "stash", selectedStash: "s1" }), "Stash · s1");
-  assert.equal(mod.currentNavigationLabel({ tab: "history", file: "a.js" }), "History · a.js");
-  assert.equal(mod.currentNavigationLabel({ tab: "cleanup" }), "Cleanup");
-  assert.equal(mod.currentNavigationLabel({ file: "a.js" }), "Current file · a.js");
-  mode = "compare";
-  assert.equal(mod.currentNavigationLabel({ file: "a.js" }), "Compared file · a.js");
+  // breadcrumbs per view state (JSON compare: arrays come from the VM context).
+  assert.equal(JSON.stringify(mod.viewCrumbs({ tab: "log", logFilePath: "a.js" })), JSON.stringify(["Log", "a.js"]));
+  assert.equal(JSON.stringify(mod.viewCrumbs({ tab: "log" })), JSON.stringify(["Log"]));
+  assert.equal(JSON.stringify(mod.viewCrumbs({ tab: "stash", selectedStash: "s1" })), JSON.stringify(["Stash", "s1"]));
+  assert.equal(JSON.stringify(mod.viewCrumbs({ tab: "stash" })), JSON.stringify(["Stash"]));
+  assert.equal(JSON.stringify(mod.viewCrumbs({ tab: "history", file: "a.js" })), JSON.stringify(["Changes", "a.js", "History"]));
+  assert.equal(JSON.stringify(mod.viewCrumbs({ tab: "history" })), JSON.stringify(["History"]));
+  assert.equal(JSON.stringify(mod.viewCrumbs({ tab: "cleanup" })), JSON.stringify(["Cleanup"]));
+  assert.equal(JSON.stringify(mod.viewCrumbs({ tab: "conflicts" })), JSON.stringify(["Changes", "Conflicts"]));
+  assert.equal(JSON.stringify(mod.viewCrumbs({ tab: "changes", committedFile: { hash: "abc123def456", from: "history" }, file: "a.js" })), JSON.stringify(["History", "a.js", "Committed abc123def456"]));
+  assert.equal(JSON.stringify(mod.viewCrumbs({ tab: "changes", committedFile: { hash: "abc", from: "log" }, file: "a.js" })), JSON.stringify(["Log", "a.js", "Committed abc"]));
+  assert.equal(JSON.stringify(mod.viewCrumbs({ file: "a.js" })), JSON.stringify(["Changes", "a.js"]));
+  assert.equal(JSON.stringify(mod.viewCrumbs({})), JSON.stringify(["Changes"]));
+  assert.equal(JSON.stringify(mod.viewCrumbs(null)), JSON.stringify(["Git"]));
+  mode = "readonly-compare";
+  assert.equal(JSON.stringify(mod.viewCrumbs({ file: "a.js" })), JSON.stringify(["Compare", "a.js"]));
   // push dedupes identical consecutive signatures and caps the stack at 12.
   const v = { tab: "changes", mode: "changes", file: "", selectedLogCommits: [] };
   mod.pushNavigationSnapshot(v, "one");
@@ -1084,12 +1092,22 @@ test("workspace navigation snapshots, trail, and status helpers behave", () => {
   v.file = "b.js";
   mod.pushNavigationSnapshot(v);
   assert.equal(v.navigationStack.length, 2);
-  // trail renders crumbs with a back button.
-  const trail = mod.renderNavigationTrail(v);
-  assert.match(trail, /git-ui-breadcrumbs/);
-  assert.match(trail, /HerdrGitUi\.goBack\(\)/);
-  assert.match(trail, /one/);
-  assert.equal(mod.renderNavigationTrail({}), "");
+  // The stack caps at 12 entries: pushing distinct files keeps only the last 12.
+  for (let i = 1; i <= 20; i++) {
+    v.file = `f${i}.js`;
+    mod.pushNavigationSnapshot(v);
+  }
+  assert.equal(v.navigationStack.length, 12, "stack is capped at 12 entries");
+  assert.equal(v.navigationStack[0].file, "f9.js", "oldest entries beyond the cap are dropped");
+  assert.equal(v.navigationStack[v.navigationStack.length - 1].file, "f20.js", "newest entry is kept");
+  v.file = "b.js";
+  // location bar always renders with a back button and state-derived crumbs.
+  const bar = mod.renderLocationBar(v);
+  assert.match(bar, /git-ui-location-bar/);
+  assert.match(bar, /git-ui-breadcrumbs/);
+  assert.match(bar, /HerdrGitUi\.goBack\(\)/);
+  assert.match(bar, /b\.js/);
+  assert.match(mod.renderLocationBar({}), /git-ui-location-bar/, "location bar renders even with no view");
   // workspaceStatus: nogit when no workspace cwd, open when active+visible.
   assert.equal(mod.workspaceStatus("k", { cwd: "/repo/a" }), "closed");
   state.visible = true;
@@ -1142,6 +1160,15 @@ test("restoreNavigationSnapshot reloads diff and clamps log scope", async () => 
   // null view or snapshot is a no-op.
   assert.equal(await mod.restoreNavigationSnapshot(null, { tab: "changes" }), undefined);
   assert.equal(await mod.restoreNavigationSnapshot({}, null), undefined);
+  // committedFile is captured, pushed, and restored with the snapshot.
+  const commitView = { tab: "changes", mode: "changes", file: "a.js", selectedLogCommits: [], navigationStack: [] };
+  commitView.committedFile = { hash: "h9", from: "log" };
+  mod.pushNavigationSnapshot(commitView);
+  assert.equal(commitView.navigationStack.length, 1);
+  assert.equal(JSON.stringify(commitView.navigationStack[0].committedFile), JSON.stringify({ hash: "h9", from: "log" }));
+  commitView.committedFile = null;
+  await mod.restoreNavigationSnapshot(commitView, commitView.navigationStack.pop());
+  assert.equal(JSON.stringify(commitView.committedFile), JSON.stringify({ hash: "h9", from: "log" }), "committedFile survives snapshot restore");
 });
 
 test("diff_view module is registered and wired before git_ui.js consumes it", () => {
@@ -1193,7 +1220,6 @@ test("diff view renders toolbar, large-diff guards, and file labels", () => {
     canSearchDiff: () => false,
     diffSearchMatchCount: () => 0,
     LARGE_FILE_DIFF_LINE_LIMIT: 500,
-    renderNavigationTrail: () => "",
     titleWithGitShortcut: (title) => title,
     renderDiffConflictResolutionButtons: () => "",
     renderSideEditor: () => "SIDE-EDITOR",
@@ -1226,15 +1252,16 @@ test("diff view renders toolbar, large-diff guards, and file labels", () => {
   assert.match(mod.renderContextMenu(), /DIRMENU\[src\]/);
   state.contextMenu = null;
   assert.equal(mod.renderContextMenu(), "");
-  // file view labels + compare state.
-  assert.equal(mod.fileViewStateLabel({ file: "a.js" }, null), "Current file · a.js");
-  assert.equal(mod.historicalFileCommitLabel({ historyCommitHash: "abcdef123456789" }), "abcdef123456");
-  const view = { temporaryHistoryCompare: true, historyCommitHash: "h1" };
-  mod.clearHistoryCompareState(view, { clearSource: true, clearBackTarget: true });
-  assert.equal(JSON.stringify({ t: view.temporaryHistoryCompare, h: view.historyCommitHash, s: view.historySource, b: view.fileBackTarget }), JSON.stringify({ t: false, h: "", s: "", b: null }));
-  const rv = { file: "a.js" };
+  // committed-file labels + compare state.
+  assert.equal(mod.historicalFileCommitLabel({ committedFile: { hash: "abcdef123456789" } }), "abcdef123456");
+  assert.equal(mod.historicalFileCommitLabel({}), "selected commit");
+  const view = { committedFile: { hash: "h1", from: "log" } };
+  mod.clearHistoryCompareState(view);
+  assert.equal(view.committedFile, null);
+  const rv = { file: "a.js", tab: "history" };
   mod.startHistoryCommitCompare(rv, "abc");
   assert.equal(JSON.stringify({ base: rv.compareBase, target: rv.compareTarget, mode: rv.mode, paths: rv.compareFilePaths }), JSON.stringify({ base: "abc^", target: "abc", mode: "readonly-compare", paths: ["a.js"] }));
+  assert.equal(JSON.stringify(rv.committedFile), JSON.stringify({ hash: "abc", from: "history" }), "committedFile tracks origin tab");
   // largeChangeFileItems builds kind-tagged status items.
   const items = mod.largeChangeFileItems({ status: { conflicted: ["u.js"], staged: ["s.js"], unstaged: ["m.js"], untracked: ["q.js"] } });
   assert.equal(JSON.stringify(items), JSON.stringify([{ path: "u.js", kind: "U" }, { path: "s.js", kind: "S" }, { path: "m.js", kind: "M" }, { path: "q.js", kind: "?" }]));
@@ -1323,6 +1350,7 @@ test("log render loads the log, tracks the selected branch, and routes tabs in r
     renderDiff: () => "DIFF",
     replaceContent: (version, html) => { calls.push(`content:${html.slice(0, 40)}`); },
     render: () => { calls.push("render"); },
+    renderLocationBar: (view) => `<div class="git-ui-location-bar">BAR:${view.tab}</div>`,
   });
   // renderLog: fetches, records selectedBranchForHash, scrolls to the pending hash.
   await mod.renderLog(1);
@@ -1331,8 +1359,10 @@ test("log render loads the log, tracks the selected branch, and routes tabs in r
   assert.ok(calls.includes("scroll:abc"), "pending scroll hash consumed");
   assert.equal(view.pendingLogScrollHash, "");
   assert.ok(calls.some((c) => c.startsWith("content:LOG(")), "log content replaced");
-  // renderMain routes per tab inside the main shell.
+  // renderMain routes per tab inside the main shell, with the location bar always visible.
   view.tab = "changes";
+  assert.match(mod.renderMain(), /git-ui-location-bar/);
+  assert.match(mod.renderMain(), /BAR:changes/);
   assert.match(mod.renderMain(), />DIFF</);
   view.tab = "stash";
   assert.match(mod.renderMain(), />STASHDIFF</);
@@ -1402,4 +1432,175 @@ test("permalink copy shows a toast and builds PR urls from the remote", async ()
   const html1 = ctxHtml(booted);
   assert.match(html1, /git-ui-toast/);
   assert.match(html1, /Permalink copied/);
+});
+
+test("gotoLogCommit keeps the file scope and Back returns to the history list", async () => {
+  const FILE = "cccccccccccccccccccccccccccccccccccc";
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/path-info": { repo_root: "/tmp/demo-repo", file: "src/app.js" },
+    "/api/git-ui/file-history": { commits: [{ hash: FILE, message: "touch app", author: "a", date: "d" }] },
+    "/api/git-ui/log": { commits: [{ hash: FILE }], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, calls } = booted;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await ui.openFileHistory("/tmp/demo-repo", "src/app.js");
+  assert.ok(calls.some((call) => call.path === "/api/git-ui/file-history"), "history view loads the file history");
+  // "Find in log" jumps to the log while keeping the file scope.
+  ui.gotoLogCommit(FILE);
+  const logCall = lastPostCall(calls, "/api/git-ui/log");
+  assert.ok(logCall, "log request fired after the jump");
+  assert.equal(logCall.params.get("file"), "src/app.js", "log stays scoped to the history file");
+  assert.match(ctxHtml(booted), /Log[\s\S]*?src\/app\.js/, "location bar names the file-scoped log");
+  assert.match(ctxHtml(booted), /clearLogFileHistory/, "file-scoped log offers a clear-scope action");
+  // Back pops the pushed snapshot and returns to the history list, never leaving the drawer.
+  await ui.goBack();
+  assert.ok(!booted.ctx.window.HerdrFileBrowser, "Back must not hand off to the file browser");
+  const historyCalls = calls.filter((call) => call.path === "/api/git-ui/file-history");
+  assert.ok(historyCalls.length >= 2, "Back restored the history list view");
+});
+
+test("goBack from a committed file restores the snapshot without switching tools", async () => {
+  const NEW = "dddddddddddddddddddddddddddddddddddd";
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/path-info": { repo_root: "/tmp/demo-repo", file: "src/app.js" },
+    "/api/git-ui/file-history": { commits: [{ hash: NEW, message: "m", author: "a", date: "d" }] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, calls } = booted;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  // Real flow: file history, then "View change" on a commit row.
+  await ui.openFileHistory("/tmp/demo-repo", "src/app.js");
+  await ui.showHistoryCommit(NEW);
+  const compareCall = lastPostCall(calls, "/api/git-ui/compare");
+  assert.ok(compareCall, "committed file view compares hash^ against hash");
+  assert.equal(compareCall.params.get("target"), NEW);
+  assert.match(ctxHtml(booted), /Committed dddddddd/, "crumbs name the committed-file place");
+  // Back pops to the previous place: the history list (same drawer, same tool).
+  await ui.goBack();
+  const historyCalls = calls.filter((call) => call.path === "/api/git-ui/file-history");
+  assert.ok(historyCalls.length >= 2, "Back restored the history list view");
+  assert.ok(!booted.ctx.window.HerdrFileBrowser, "Back must not hand off to the file browser");
+});
+
+test("openFileHistory reuses the existing Git view for the same cwd", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/path-info": { repo_root: "/tmp/demo-repo", file: "src/app.js" },
+    "/api/git-ui/file-history": { commits: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui } = booted;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  const before = ui.activeWorkspaceId();
+  await ui.openFileHistory("/tmp/demo-repo", "src/app.js");
+  const after = ui.activeWorkspaceId();
+  assert.equal(after, before, "no synthetic git-file-history workspace view is created");
+  assert.match(ctxHtml(booted), /History/, "history tab renders in the reused view");
+});
+
+test("Esc pops one navigation level and only hides at the changes root", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/file-history": { commits: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, ctx } = booted;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  let hidden = false;
+  let lastAction = "";
+  const escKey = (view) => {
+    lastAction = "";
+    const shortcuts = ctx.window.HerdrGitUiShortcuts.create({
+      state: {
+        visible: true, contextMenu: null, logContextMenu: null, headerMenu: null, branchList: null,
+        worktreeList: null, branchModal: null, gitOpModal: null, commitModal: null,
+        compareSelectedModal: null, resetSelectedModal: null, tagSelectedModal: null,
+        cleanupConfirm: null, shortcutPrefixUntil: 0,
+      },
+      render: () => {},
+      active: () => view,
+      currentMode: () => (view && view.mode) || "changes",
+      gitUiOptions: () => ({}),
+      explorationDefaultDirectory: () => "",
+      canSearchDiff: () => false,
+      canEditCurrentFile: () => false,
+      saveDraftFromDom: () => {},
+      hide: () => { hidden = true; },
+      confirmFn: () => true,
+      alertFn: () => {},
+      getGitUi: () => ({
+        goBack: () => { lastAction = "goBack"; },
+        showChangesList: () => { lastAction = "showChangesList"; },
+      }),
+    });
+    shortcuts.handleKeydown({ key: "Escape", target: {}, preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {} });
+  };
+  // A view deep in the flow (history tab with a file) pops one level per Esc.
+  const view = { tab: "history", file: "a.js", mode: "changes", navigationStack: [{ tab: "changes", file: "", mode: "changes" }], sideEditor: null };
+  escKey(view);
+  assert.equal(lastAction, "goBack", "Esc with a navigation stack pops one level via goBack");
+  assert.equal(hidden, false, "Esc mid-flow must not hide the drawer");
+  // At the changes root with an empty stack Esc hides after confirm.
+  const root = { tab: "changes", file: "", mode: "changes", navigationStack: [], sideEditor: null };
+  escKey(root);
+  assert.equal(hidden, true, "Esc at the changes root hides the Git drawer");
+});
+
+test("Esc closes an open menu or modal before touching the navigation stack", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/file-history": { commits: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, ctx } = booted;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  let lastAction = "";
+  let rendered = 0;
+  const openWithState = (extra) => {
+    const shortcuts = ctx.window.HerdrGitUiShortcuts.create({
+      state: Object.assign({
+        visible: true, contextMenu: null, logContextMenu: null, headerMenu: null, branchList: null,
+        worktreeList: null, branchModal: null, gitOpModal: null, commitModal: null,
+        compareSelectedModal: null, resetSelectedModal: null, tagSelectedModal: null,
+        cleanupConfirm: null, shortcutPrefixUntil: 0,
+      }, extra),
+      render: () => { rendered++; },
+      active: () => ({ tab: "history", file: "a.js", mode: "changes", navigationStack: [{ tab: "changes", file: "", mode: "changes" }], sideEditor: null }),
+      currentMode: () => "changes",
+      gitUiOptions: () => ({}),
+      explorationDefaultDirectory: () => "",
+      canSearchDiff: () => false,
+      canEditCurrentFile: () => false,
+      saveDraftFromDom: () => {},
+      hide: () => {},
+      confirmFn: () => true,
+      alertFn: () => {},
+      getGitUi: () => ({
+        goBack: () => { lastAction = "goBack"; },
+        showChangesList: () => { lastAction = "showChangesList"; },
+      }),
+    });
+    shortcuts.handleKeydown({ key: "Escape", target: {}, preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {} });
+  };
+  // With the branch list open mid-flow, Esc closes it and does NOT pop.
+  openWithState({ branchList: { open: true } });
+  assert.equal(lastAction, "", "Esc with a modal open never reaches the navigation stack");
+  assert.equal(rendered, 1, "closing the modal re-renders");
+  // Same for the log context menu and the branch popover states.
+  openWithState({ contextMenu: { x: 1, y: 1 } });
+  assert.equal(lastAction, "", "Esc with a context menu open never reaches the navigation stack");
+  openWithState({ commitModal: { open: true } });
+  assert.equal(lastAction, "", "Esc with the commit modal open never reaches the navigation stack");
 });

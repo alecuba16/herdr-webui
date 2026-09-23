@@ -21,9 +21,20 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 PORT="${E2E_PORT:-8899}"
 CDP="${CDP_PORT:-9222}"
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/herdr-git-drawer-e2e.XXXXXX")"
 KEEP=0
 [[ "${1:-}" == "--keep" ]] && KEEP=1
+
+# A leftover instance from a previous --keep run would answer the health
+# check and the run would silently test the stale build. Fail fast instead.
+for probe_port in "$PORT" "$CDP"; do
+  if lsof -nP -iTCP:"$probe_port" -sTCP:LISTEN 2>/dev/null | grep -q .; then
+    echo "ERROR: port $probe_port is already in use; kill the leftover e2e instance first." >&2
+    lsof -nP -iTCP:"$probe_port" -sTCP:LISTEN >&2 || true
+    exit 1
+  fi
+done
+
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/herdr-git-drawer-e2e.XXXXXX")"
 
 session_id() {
   # Unique per run so two concurrent runs never share server state.
@@ -93,6 +104,11 @@ e2e drawer acceptance line
 EOF
 mkdir -p "$REPO/scratchdir"
 : > "$REPO/scratchdir/placeholder.txt"
+# A long-named dirty file so the location-bar ellipsis rules are exercised
+# by a real crumb (the narrow-window layout check clicks this row).
+cat > "$REPO/integration_tests_kubernetes_manifest_rendering_checklist.md" <<'EOF'
+- [ ] verify manifest rendering end to end
+EOF
 
 wait_for() {
   # wait_for <desc> <url> [-k]

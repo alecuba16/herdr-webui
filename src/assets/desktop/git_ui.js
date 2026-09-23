@@ -80,11 +80,11 @@
   const gitCwdMatchesWorkspace = workspaceNav.gitCwdMatchesWorkspace;
   const resetGitViewForCwd = workspaceNav.resetGitViewForCwd;
   const clonePlain = workspaceNav.clonePlain;
-  const currentNavigationLabel = workspaceNav.currentNavigationLabel;
+  const viewCrumbs = workspaceNav.viewCrumbs;
+  const renderLocationBar = workspaceNav.renderLocationBar;
   const captureNavigationSnapshot = workspaceNav.captureNavigationSnapshot;
   const pushNavigationSnapshot = workspaceNav.pushNavigationSnapshot;
   const restoreNavigationSnapshot = workspaceNav.restoreNavigationSnapshot;
-  const renderNavigationTrail = workspaceNav.renderNavigationTrail;
   const workspaceStatus = workspaceNav.workspaceStatus;
   const compactPath = workspaceNav.compactPath;
 
@@ -396,7 +396,6 @@
     canSearchDiff,
     diffSearchMatchCount,
     LARGE_FILE_DIFF_LINE_LIMIT,
-    renderNavigationTrail,
     titleWithGitShortcut,
     renderDiffConflictResolutionButtons,
     renderSideEditor,
@@ -427,8 +426,6 @@
   const clearHistoryCompareState = diffView.clearHistoryCompareState;
   const resetToChangesMode = diffView.resetToChangesMode;
   const startHistoryCommitCompare = diffView.startHistoryCommitCompare;
-  const fileViewStateLabel = diffView.fileViewStateLabel;
-  const fileToolbarBackButton = diffView.fileToolbarBackButton;
   const renderSide = diffView.renderSide;
   const renderDiffLayoutSideToggle = diffView.renderDiffLayoutSideToggle;
   const renderFileToolbar = diffView.renderFileToolbar;
@@ -462,6 +459,7 @@
     renderDiff,
     replaceContent,
     render,
+    renderLocationBar,
   });
   const renderLog = logRender.renderLog;
   const updateGitLogStickyOffsets = logRender.updateGitLogStickyOffsets;
@@ -579,10 +577,7 @@
         fileFilter: "",
         pendingLogScrollHash: "",
         logFilters: { description: "", date: "", author: "" },
-        temporaryHistoryCompare: false,
-        historyCommitHash: "",
-        historySource: "",
-        fileBackTarget: null,
+        committedFile: null,
         navigationStack: [],
         sideEditor: null,
       };
@@ -1032,12 +1027,13 @@
         render();
         return;
       }
-      resetToChangesMode(view, { clearSource: true, clearBackTarget: true });
+      resetToChangesMode(view);
       view.navigationStack = [];
       view.sideEditor = null;
       view.file = "";
       view.diffKind = "";
       view.diffScope = "all";
+      view.logFilePath = "";
       view.tab = "changes";
       loadDiff().catch((e) => { view.error = e.message; render(); });
     },
@@ -1050,12 +1046,11 @@
       if (view.sideEditor && view.sideEditor.path !== path) view.sideEditor = null;
       if (kind === "C" && view.selectedCommitPreview && view.selectedCommitPreview.hash) {
         const hash = view.selectedCommitPreview.hash;
-        if (!(view.fileBackTarget && view.fileBackTarget.type === "log")) pushNavigationSnapshot(view);
+        if (!view.committedFile) pushNavigationSnapshot(view);
         view.mode = "readonly-compare";
         view.compareBase = `${hash}^`;
         view.compareTarget = hash;
-        view.historyCommitHash = hash;
-        view.fileBackTarget = { type: "log", hash };
+        view.committedFile = { hash, from: view.tab === "history" ? "history" : "log" };
         view.compareFilePaths = ((view.selectedCommitPreview.diff && view.selectedCommitPreview.diff.files) || []).map((file) => file.path);
         view.tab = "changes";
         loadDiff().then(() => requestAnimationFrame(() => scrollToDiffFile(view.file))).catch((e) => { view.error = e.message; render(); });
@@ -2040,7 +2035,7 @@
       view.compareBase = base;
       view.compareTarget = target;
       view.mode = "readonly-compare";
-      clearHistoryCompareState(view, { clearBackTarget: true });
+      clearHistoryCompareState(view);
       view.tab = "changes";
       await loadDiff();
     },
@@ -2053,54 +2048,15 @@
       view.tab = "changes";
       await loadDiff();
     },
-    async backToFileHistory() {
-      const view = active();
-      if (!view || !view.file) return;
-      resetToChangesMode(view, { clearBackTarget: true });
-      view.tab = "history";
-      render();
-    },
-    async backToFileView() {
-      const view = active();
-      if (!view || !view.file) return;
-      const cwd = view.cwd;
-      const path = view.file;
-      resetToChangesMode(view, { clearBackTarget: true });
-      view.tab = "changes";
-      if (view.historySource === "file-browser" && window.HerdrFileBrowser && window.HerdrFileBrowser.openAt) {
-        await window.HerdrFileBrowser.openAt({ workspace_id: state.activeKey || `git-file-history:${cwd}`, cwd, label: compactPath(cwd) }, path);
-        return;
-      }
-      await loadDiff();
-    },
-    async backFromFileView() {
-      const view = active();
-      if (!view) return;
-      if ((view.navigationStack || []).length) {
-        const snapshot = view.navigationStack.pop();
-        await restoreNavigationSnapshot(view, snapshot);
-        return;
-      }
-      const backTarget = view.fileBackTarget;
-      if (backTarget && backTarget.type === "log") {
-        resetToChangesMode(view, { clearBackTarget: true });
-        view.file = "";
-        view.diffKind = "";
-        view.tab = "log";
-        if (backTarget.hash) {
-          view.selectedLogCommits = [backTarget.hash];
-          if (!view.selectedCommitPreview || view.selectedCommitPreview.hash !== backTarget.hash) loadSelectedCommitPreview(view, backTarget.hash);
-        }
-        render();
-        return;
-      }
-      this.showChangesList();
-    },
     gotoLogCommit(hash) {
       hash = decodeURIComponent(hash);
       const view = active();
       if (!view || !hash) return;
+      pushNavigationSnapshot(view);
       view.pendingLogScrollHash = hash;
+      // Jumping from the file history keeps the file scope so the log answers
+      // "history of this file", matching how the user arrived here.
+      if (view.file) view.logFilePath = view.file;
       view.logAll = true;
       view.logScope = "all";
       view.tab = "log";
@@ -2118,7 +2074,7 @@
         // Keep the existing best-effort behavior so non-git folders still surface the Git error in-panel.
       }
       if (!(state.visible && active() && samePath(active().cwd, cwd))) {
-        await open({ workspace_id: `git-file-history:${cwd}`, cwd, label: compactPath(cwd) }, { forceOpen: true });
+        await open({ workspace_id: workspaceKey({ cwd }), cwd, label: compactPath(cwd) }, { forceOpen: true });
       }
       const view = active();
       if (!view) return;
@@ -2126,8 +2082,7 @@
       view.file = path;
       view.diffKind = "";
       view.tab = "history";
-      resetToChangesMode(view, { clearBackTarget: true });
-      view.historySource = "file-browser";
+      resetToChangesMode(view);
       render();
     },
     clearLogFileHistory() {
@@ -2232,7 +2187,7 @@
       view.compareBase = hash;
       view.compareTarget = ".";
       view.mode = "current-compare";
-      clearHistoryCompareState(view, { clearBackTarget: true });
+      clearHistoryCompareState(view);
       view.tab = "changes";
       await loadDiff();
     },

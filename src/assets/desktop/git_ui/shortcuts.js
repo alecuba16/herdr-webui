@@ -119,6 +119,10 @@
         render();
         return;
       }
+      if ((view.navigationStack || []).length) {
+        getGitUi().goBack();
+        return;
+      }
       if (isChangesListView(view)) {
         if (confirmFn("Hide Git UI?")) hide();
       } else {

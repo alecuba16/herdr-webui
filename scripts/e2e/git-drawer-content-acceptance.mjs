@@ -172,6 +172,202 @@ const hidden = await evalx(`(() => {
 })()`);
 check('drawer hides back to terminal', hidden.panelHidden === true && hidden.shellVisible === true && hidden.uiVisible === false, JSON.stringify(hidden));
 
+// 7. Navigation redesign in the real browser: real DOM clicks through the
+// onclick wiring the VM never parses, real Esc keypresses through the actual
+// keydown pipeline, and real layout measurement of the location bar. Reopens
+// the drawer first because check 6 hid it.
+const crumbsTitle = () => evalx(`(() => {
+  const bar = document.querySelector("#gitUiPanel .git-ui-breadcrumbs");
+  return bar ? (bar.getAttribute("title") || "") : "";
+})()`);
+const waitForExpr = async (expr, tries = 24) => {
+  for (let i = 0; i < tries; i++) {
+    if (await evalx(expr) === true) return true;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  return false;
+};
+// Click through the browser's input pipeline: hit-test coordinates from the
+// live element's box, then mousePressed/mouseReleased. Executes the inline
+// onclick handler exactly as a user click does.
+const realClick = async (selectorExpr) => {
+  const rect = await evalx(`(() => {
+    const el = ${selectorExpr};
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2, w: r.width, h: r.height };
+  })()`);
+  if (!rect || !rect.w || !rect.h) throw new Error('no clickable element: ' + selectorExpr);
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: rect.x, y: rect.y, button: 'left', clickCount: 1 });
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: rect.x, y: rect.y, button: 'left', clickCount: 1 });
+  await new Promise((r) => setTimeout(r, 300));
+};
+const pressEsc = async () => {
+  await cdp.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27 });
+  await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27 });
+  await new Promise((r) => setTimeout(r, 350));
+};
+
+await evalx('openWorkspaceGitUi(state.ws, { forceOpen: true })');
+check('drawer reopens for navigation checks', await waitForExpr(`(() => {
+  const panel = document.getElementById("gitUiPanel");
+  return !!(panel && panel.style.display !== "none" && panel.innerHTML.trim() && !panel.querySelector(".git-ui-loading"));
+})()`));
+
+// Land on the changes tree: earlier checks left the cached view on the log tab.
+await realClick(`(() => {
+  const tabs = Array.from(document.querySelectorAll("#gitUiPanel .git-ui-view-toggle[role=tab]"));
+  return tabs.find((b) => (b.textContent || "").trim() === "changes" && !b.classList.contains("active")) || tabs.find((b) => (b.textContent || "").trim() === "changes") || null;
+})()`);
+{
+  // Fall back to the direct tab call only if the click target is stale.
+  const onChanges = await evalx(`(() => {
+    const active = document.querySelector("#gitUiPanel .git-ui-view-toggle.active");
+    return !!active && active.textContent.trim() === "changes";
+  })()`);
+  if (!onChanges) await evalx('HerdrGitUi.tab("changes")');
+  await new Promise((r) => setTimeout(r, 400));
+}
+
+// Real click on the README.md changes-tree row.
+await realClick(`document.querySelector('#gitUiPanel [data-git-path="README.md"]')`);
+check('real click on file row opens its diff', await waitForExpr(`!!document.querySelector("#gitUiPanel .git-ui-diff-row")`));
+check('location bar present on the file diff view', await evalx(`!!document.querySelector("#gitUiPanel .git-ui-location-bar")`) === true);
+
+// Narrow-window edge: a real long file name must ellipsize inside the panel
+// instead of overflowing the bar. Uses the browser's own viewport emulation
+// (the panel is a flex item, so inline width hacks do not apply). 900px stays
+// above the app's 760px mobile breakpoint, so the desktop panel never
+// reloads and its in-memory navigation state survives the check.
+{
+  const LONG = "integration_tests_kubernetes_manifest_rendering_checklist.md";
+  await realClick(`document.querySelector('#gitUiPanel [data-git-path="${LONG}"]')`);
+  const longDiff = await waitForExpr(`(() => {
+    const bar = document.querySelector("#gitUiPanel .git-ui-breadcrumbs");
+    return !!bar && (bar.getAttribute("title") || "").endsWith("${LONG}");
+  })()`);
+  check('real click on the long-path row opens its diff', longDiff);
+
+  // The long name is the current crumb: a <strong> inside the crumbs. Measure
+  // its computed style and geometry — geometry alone cannot tell ellipsis
+  // from overflow: visible, so both are asserted.
+  const crumbBox = () => evalx(`(() => {
+    const bar = document.querySelector("#gitUiPanel .git-ui-breadcrumbs");
+    const strong = bar && bar.querySelector("strong");
+    if (!strong) return null;
+    const cs = getComputedStyle(strong);
+    return {
+      label: strong.textContent || "",
+      clientW: strong.clientWidth,
+      scrollW: strong.scrollWidth,
+      overflowX: cs.overflowX,
+      textOverflow: cs.textOverflow,
+      crumbsRight: bar.getBoundingClientRect().right,
+      panelRight: document.getElementById("gitUiPanel").getBoundingClientRect().right,
+      barOverflow: document.querySelector("#gitUiPanel .git-ui-location-bar").scrollWidth - document.querySelector("#gitUiPanel .git-ui-location-bar").clientWidth,
+    };
+  })()`);
+  const wide = await crumbBox();
+  const wideOk = !!wide && wide.label === LONG && wide.overflowX === 'hidden' && wide.textOverflow === 'ellipsis'
+    && wide.scrollW > wide.clientW + 1 && wide.clientW <= 241;
+  check('long crumb is capped and ellipsizes at full width', wideOk, JSON.stringify(wide));
+
+  await cdp.send('Emulation.setDeviceMetricsOverride', { width: 900, height: 1000, deviceScaleFactor: 0, mobile: false });
+  await new Promise((r) => setTimeout(r, 400));
+  const narrow = await crumbBox();
+  check('narrow window keeps the location bar inside the panel', !!narrow && narrow.crumbsRight <= narrow.panelRight + 1 && narrow.barOverflow <= 2, JSON.stringify(narrow));
+  const narrowOk = !!narrow && narrow.label === LONG && narrow.overflowX === 'hidden' && narrow.textOverflow === 'ellipsis' && narrow.scrollW > narrow.clientW + 1;
+  check('long file crumbs ellipsize instead of overflowing', narrowOk, JSON.stringify(narrow));
+  await cdp.send('Emulation.clearDeviceMetricsOverride');
+  await new Promise((r) => setTimeout(r, 400));
+  // Return the flow to the README.md diff the rest of the checks expect.
+  await realClick(`document.querySelector('#gitUiPanel [data-git-path="README.md"]')`);
+  const readmeRestored = await waitForExpr(`(() => {
+    const bar = document.querySelector("#gitUiPanel .git-ui-breadcrumbs");
+    return !!bar && (bar.getAttribute("title") || "") === "Changes › README.md";
+  })()`);
+  check('README diff restored after the narrow-window check', readmeRestored);
+}
+
+// Real click on the toolbar History button.
+await realClick(`document.querySelector('#gitUiPanel button[title^="File history"]')`);
+check('real click on History button opens file history', await waitForExpr(`(() => {
+  const buttons = Array.from(document.querySelectorAll("#gitUiPanel button"));
+  return buttons.some((b) => (b.title || "") === "Open this commit's change for the file");
+})()`));
+check('history crumbs read Changes › README.md › History', (await crumbsTitle()) === 'Changes › README.md › History', await crumbsTitle());
+
+// Real layout measurement: the bar and its breadcrumbs occupy real space and
+// do not overflow the panel horizontally.
+const layout = await evalx(`(() => {
+  const panel = document.getElementById("gitUiPanel");
+  const bar = panel && panel.querySelector(".git-ui-location-bar");
+  const crumbs = bar && bar.querySelector(".git-ui-breadcrumbs");
+  if (!bar || !crumbs) return null;
+  const br = bar.getBoundingClientRect();
+  const cr = crumbs.getBoundingClientRect();
+  const pr = panel.getBoundingClientRect();
+  return {
+    barW: br.width, barH: br.height,
+    crumbsW: cr.width,
+    barOverflow: bar.scrollWidth - bar.clientWidth,
+    insidePanel: cr.left >= pr.left - 1 && cr.right <= pr.right + 1,
+  };
+})()`);
+check('location bar has real size and no horizontal overflow', !!layout && layout.barW > 100 && layout.barH >= 20 && layout.crumbsW > 0 && layout.barOverflow <= 2 && layout.insidePanel === true, JSON.stringify(layout));
+
+// Real click on the first View change button.
+await realClick(`document.querySelector('#gitUiPanel button[title="Open this commit\\'s change for the file"]')`);
+check('real click on View change loads the committed diff', await waitForExpr(`(() => {
+  const bar = document.querySelector("#gitUiPanel .git-ui-breadcrumbs");
+  return !!(bar && (bar.getAttribute("title") || "").startsWith("History › README.md › Committed "));
+})()`));
+
+// Real click on the location-bar Back button returns to file history.
+await realClick(`document.querySelector('#gitUiPanel button[title="Go back to previous Git view"]')`);
+check('real click on Back restores file history', await waitForExpr(`(() => {
+  const bar = document.querySelector("#gitUiPanel .git-ui-breadcrumbs");
+  return !!bar && (bar.getAttribute("title") || "") === "Changes › README.md › History";
+})()`));
+check('drawer still visible after Back (no tool switch)', (await evalx('!!(window.HerdrGitUi && window.HerdrGitUi.isVisible())')) === true);
+
+// Real click on Find in log keeps the file scope.
+await realClick(`document.querySelector('#gitUiPanel button[title="Open the file\\'s log at this commit"]')`);
+check('real click on Find in log opens the scoped log', await waitForExpr(`(() => {
+  const bar = document.querySelector("#gitUiPanel .git-ui-breadcrumbs");
+  const clear = document.querySelector("#gitUiPanel .git-ui-crumb-clear");
+  return !!bar && (bar.getAttribute("title") || "") === "Log › README.md" && !!clear;
+})()`));
+const clearBox = await evalx(`(() => {
+  const clear = document.querySelector("#gitUiPanel .git-ui-crumb-clear");
+  if (!clear) return null;
+  const r = clear.getBoundingClientRect();
+  return { w: r.width, h: r.height };
+})()`);
+check('clear-scope control has real clickable size', !!clearBox && clearBox.w > 0 && clearBox.h > 0, JSON.stringify(clearBox));
+
+// Real click on the clear-scope control returns the whole-repo log.
+await realClick(`document.querySelector('#gitUiPanel .git-ui-crumb-clear')`);
+check('real click on clear-scope shows the unscoped log', await waitForExpr(`(() => {
+  const bar = document.querySelector("#gitUiPanel .git-ui-breadcrumbs");
+  const clear = document.querySelector("#gitUiPanel .git-ui-crumb-clear");
+  return !!bar && (bar.getAttribute("title") || "") === "Log" && !clear;
+})()`));
+
+// Real Esc keypresses pop the ladder one level at a time.
+await pressEsc();
+check('first real Esc pops back to file history', (await crumbsTitle()) === 'Changes › README.md › History', await crumbsTitle());
+await pressEsc();
+check('second real Esc pops to the changes root', (await crumbsTitle()) === 'Changes', await crumbsTitle());
+check('drawer stays open at the changes root', (await evalx('!!(window.HerdrGitUi && window.HerdrGitUi.isVisible())')) === true);
+await pressEsc();
+const afterEsc = await evalx(`(() => ({
+  uiVisible: !!(window.HerdrGitUi && window.HerdrGitUi.isVisible && window.HerdrGitUi.isVisible()),
+  fileBrowserVisible: !!(window.HerdrFileBrowser && window.HerdrFileBrowser.isVisible && window.HerdrFileBrowser.isVisible()),
+  shellVisible: (() => { const s = document.getElementById("terminalShell"); return !s || s.style.display !== "none"; })(),
+}))()`);
+check('third real Esc hides the drawer and restores the terminal', afterEsc.uiVisible === false && afterEsc.fileBrowserVisible === false && afterEsc.shellVisible === true, JSON.stringify(afterEsc));
+
 const failed = results.filter((r) => !r.ok).length;
 console.log(failed ? `git drawer content acceptance: ${failed} FAILED of ${results.length}` : `git drawer content acceptance: all ${results.length} checks passed`);
 // The CDP websocket keeps the node event loop alive; close it or the runner
