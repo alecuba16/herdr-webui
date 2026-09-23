@@ -1092,6 +1092,15 @@ test("workspace navigation snapshots, trail, and status helpers behave", () => {
   v.file = "b.js";
   mod.pushNavigationSnapshot(v);
   assert.equal(v.navigationStack.length, 2);
+  // The stack caps at 12 entries: pushing distinct files keeps only the last 12.
+  for (let i = 1; i <= 20; i++) {
+    v.file = `f${i}.js`;
+    mod.pushNavigationSnapshot(v);
+  }
+  assert.equal(v.navigationStack.length, 12, "stack is capped at 12 entries");
+  assert.equal(v.navigationStack[0].file, "f9.js", "oldest entries beyond the cap are dropped");
+  assert.equal(v.navigationStack[v.navigationStack.length - 1].file, "f20.js", "newest entry is kept");
+  v.file = "b.js";
   // location bar always renders with a back button and state-derived crumbs.
   const bar = mod.renderLocationBar(v);
   assert.match(bar, /git-ui-location-bar/);
