@@ -23,13 +23,12 @@ pub fn install_macos(config: WebConfig) -> io::Result<()> {
     println!("Installing {INSTALL_LABEL} {HERDR_WEBUI_VERSION}");
     let (install_bin, outcome) = copy_current_exe_to_install_path()?;
     warn_if_noop_self_install(&outcome, "install-mac");
-    if let Some((tui_bin, _)) = copy_sibling_tui_to_install_path(std::env::current_exe()?.parent())?
+    if let Some((tui_bin, tui_outcome)) =
+        copy_sibling_tui_to_install_path(std::env::current_exe()?.parent())?
     {
-        println!("Installed TUI binary at {}", tui_bin.display());
+        print_tui_install_line("Installed", &tui_bin, &tui_outcome);
     }
-    if matches!(outcome, CopyOutcome::Copied) {
-        println!("Installed binary at {}", install_bin.display());
-    }
+    print_main_install_line("Installed", &install_bin, &outcome);
     fs::create_dir_all(plist.parent().expect("plist has parent"))?;
     fs::create_dir_all(mac_log_dir()?)?;
     fs::write(&plist, mac_plist_xml(&config, &install_bin)?)?;
@@ -48,19 +47,13 @@ pub fn update_macos() -> io::Result<()> {
     println!("Updating {INSTALL_LABEL} to {HERDR_WEBUI_VERSION}");
     let (install_bin, outcome) = copy_current_exe_to_install_path()?;
     warn_if_noop_self_install(&outcome, "update-mac");
-    if let Some((tui_bin, _)) = copy_sibling_tui_to_install_path(std::env::current_exe()?.parent())?
+    if let Some((tui_bin, tui_outcome)) =
+        copy_sibling_tui_to_install_path(std::env::current_exe()?.parent())?
     {
-        println!("Updated TUI binary at {}", tui_bin.display());
+        print_tui_install_line("Updated", &tui_bin, &tui_outcome);
     }
     restart_macos_service()?;
-    match outcome {
-        CopyOutcome::Copied => println!("Updated binary at {}", install_bin.display()),
-        CopyOutcome::SameFile => println!(
-            "Binary at {} is already {}",
-            install_bin.display(),
-            HERDR_WEBUI_VERSION
-        ),
-    }
+    print_main_install_line("Updated", &install_bin, &outcome);
     Ok(())
 }
 
@@ -117,9 +110,10 @@ pub fn install_linux(config: WebConfig) -> io::Result<()> {
     println!("Installing {INSTALL_LABEL} {HERDR_WEBUI_VERSION}");
     let (install_bin, outcome) = copy_current_exe_to_install_path()?;
     warn_if_noop_self_install(&outcome, "install-linux");
-    if let Some((tui_bin, _)) = copy_sibling_tui_to_install_path(std::env::current_exe()?.parent())?
+    if let Some((tui_bin, tui_outcome)) =
+        copy_sibling_tui_to_install_path(std::env::current_exe()?.parent())?
     {
-        println!("Installed TUI binary at {}", tui_bin.display());
+        print_tui_install_line("Installed", &tui_bin, &tui_outcome);
     }
     let service = linux_service_path()?;
     fs::create_dir_all(service.parent().expect("service path has parent"))?;
@@ -127,9 +121,7 @@ pub fn install_linux(config: WebConfig) -> io::Result<()> {
     systemctl_user(&["daemon-reload"])?;
     systemctl_user(&["enable", "--now", &format!("{INSTALL_LABEL}.service")])?;
     println!("Installed {INSTALL_LABEL} at {}", service.display());
-    if matches!(outcome, CopyOutcome::Copied) {
-        println!("Installed binary at {}", install_bin.display());
-    }
+    print_main_install_line("Installed", &install_bin, &outcome);
     println!("Open {}://{}", config.tls.scheme(), config.bind);
     Ok(())
 }
@@ -138,15 +130,14 @@ pub fn update_linux() -> io::Result<()> {
     println!("Updating {INSTALL_LABEL} to {HERDR_WEBUI_VERSION}");
     let (install_bin, outcome) = copy_current_exe_to_install_path()?;
     warn_if_noop_self_install(&outcome, "update-linux");
-    if let Some((tui_bin, _)) = copy_sibling_tui_to_install_path(std::env::current_exe()?.parent())?
+    if let Some((tui_bin, tui_outcome)) =
+        copy_sibling_tui_to_install_path(std::env::current_exe()?.parent())?
     {
-        println!("Updated TUI binary at {}", tui_bin.display());
+        print_tui_install_line("Updated", &tui_bin, &tui_outcome);
     }
     systemctl_user(&["daemon-reload"])?;
     restart_linux_service()?;
-    if matches!(outcome, CopyOutcome::Copied) {
-        println!("Updated binary at {}", install_bin.display());
-    }
+    print_main_install_line("Updated", &install_bin, &outcome);
     Ok(())
 }
 
@@ -263,10 +254,38 @@ fn warn_if_noop_self_install(outcome: &CopyOutcome, command: &str) {
     }
 }
 
+/// Print the TUI install line only when the TUI was actually copied, so a
+/// no-op refresh does not claim the TUI was updated when nothing changed.
+fn print_tui_install_line(verb: &str, tui_bin: &Path, outcome: &CopyOutcome) {
+    match outcome {
+        CopyOutcome::Copied => println!("{verb} TUI binary at {}", tui_bin.display()),
+        CopyOutcome::SameFile => println!(
+            "TUI binary at {} is already {}",
+            tui_bin.display(),
+            HERDR_WEBUI_VERSION
+        ),
+    }
+}
+
+/// Print the main-binary install line matching the actual copy outcome, so
+/// every command reports the same outcome the same way.
+fn print_main_install_line(verb: &str, install_bin: &Path, outcome: &CopyOutcome) {
+    match outcome {
+        CopyOutcome::Copied => println!("{verb} binary at {}", install_bin.display()),
+        CopyOutcome::SameFile => println!(
+            "Binary at {} is already {}",
+            install_bin.display(),
+            HERDR_WEBUI_VERSION
+        ),
+    }
+}
+
 fn copy_executable(source: &Path, target: &Path) -> io::Result<CopyOutcome> {
     // Follow a symlinked install path so the refresh writes through it
-    // instead of replacing the link with a regular file.
-    let target = fs::canonicalize(target).unwrap_or_else(|_| target.to_path_buf());
+    // instead of replacing the link with a regular file. resolve_path
+    // returns the link's own target for a dangling link, so the refresh
+    // recreates the missing destination file instead of clobbering the link.
+    let target = resolve_path(target);
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -279,6 +298,11 @@ fn copy_executable(source: &Path, target: &Path) -> io::Result<CopyOutcome> {
     // service binary is still running, and truncates the live process image
     // in place on macOS. The rename swaps the inode atomically instead.
     let temp = target.with_extension(format!("tmp-{}", std::process::id()));
+    // A leftover temp from an interrupted copy is stale garbage. If it is
+    // somehow a symlink, remove it rather than write through it.
+    if fs::symlink_metadata(&temp).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        let _ = fs::remove_file(&temp);
+    }
     if let Err(err) = fs::copy(source, &temp)
         .and_then(|_| {
             let mut permissions = fs::metadata(&temp)?.permissions();
@@ -296,6 +320,38 @@ fn copy_executable(source: &Path, target: &Path) -> io::Result<CopyOutcome> {
         return Err(err);
     }
     Ok(CopyOutcome::Copied)
+}
+
+/// Resolve symlinked path components of `path` the way the kernel would for
+/// an open(O_CREAT), so a refresh writes through the link instead of
+/// replacing it. rename(2) never follows a symlinked final component, so it
+/// must be resolved here; a dangling link keeps the link's own target and the
+/// copy recreates the missing destination. Parent components are resolved by
+/// the kernel itself, so only the final component needs this treatment.
+fn resolve_path(path: &Path) -> PathBuf {
+    let parent = path.parent().unwrap_or_else(|| Path::new("/"));
+    let parent = fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf());
+    let Some(name) = path.file_name() else {
+        return parent;
+    };
+    let mut resolved = parent.join(name);
+    // Follow a chain of symlinks, with a bound so a link loop cannot spin.
+    // A link loop eventually fails at the copy/rename with ELOOP, which is
+    // the correct error to surface.
+    for _ in 0..8 {
+        let Ok(link) = fs::read_link(&resolved) else {
+            return resolved;
+        };
+        resolved = if link.is_absolute() {
+            link
+        } else {
+            resolved
+                .parent()
+                .unwrap_or_else(|| Path::new("/"))
+                .join(link)
+        };
+    }
+    resolved
 }
 
 fn same_file(source: &Path, target: &Path) -> bool {
@@ -916,6 +972,58 @@ mod tests {
             "fresh-bytes\n",
             "reading through the link returns the refreshed bytes"
         );
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn copy_executable_recreates_dangling_symlink_target() {
+        let _guard = env_lock().lock().unwrap();
+        let base = std::env::temp_dir().join(format!(
+            "herdr-webui-copy-dangling-link-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join("realdir")).unwrap();
+        fs::create_dir_all(base.join("linkdir")).unwrap();
+        // Dangling link: its target was removed but the link remains.
+        let link = base.join("linkdir").join("herdr-webui");
+        let real = base.join("realdir").join("herdr-webui");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let fresh = base.join("herdr-webui-new");
+        fs::write(&fresh, "fresh-bytes\n").unwrap();
+
+        assert_eq!(copy_executable(&fresh, &link).unwrap(), CopyOutcome::Copied);
+
+        // The link survives and its missing target is recreated.
+        assert!(
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "a dangling link must not be replaced by a regular file"
+        );
+        assert_eq!(fs::read_to_string(&real).unwrap(), "fresh-bytes\n");
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn copy_executable_reports_same_file_for_sibling_tui_noop() {
+        let _guard = env_lock().lock().unwrap();
+        let base = std::env::temp_dir().join(format!(
+            "herdr-webui-copy-tui-noop-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        let tui = base.join("herdr-webui-tui");
+        fs::write(&tui, "tui-bytes\n").unwrap();
+
+        // Refreshing the TUI from itself (PATH-resolved no-op) copies nothing.
+        assert_eq!(copy_executable(&tui, &tui).unwrap(), CopyOutcome::SameFile);
 
         let _ = fs::remove_dir_all(&base);
     }
