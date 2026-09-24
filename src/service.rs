@@ -20,12 +20,15 @@ pub fn install_macos(config: WebConfig) -> io::Result<()> {
     let domain = mac_domain();
     let service = mac_service_target();
     log_macos_context("install", Some(&plist));
-    let (install_bin, outcome) = copy_current_exe_to_install_path()?;
-    warn_if_noop_self_install(outcome, "install-mac");
     println!("Installing {INSTALL_LABEL} {HERDR_WEBUI_VERSION}");
+    let (install_bin, outcome) = copy_current_exe_to_install_path()?;
+    warn_if_noop_self_install(&outcome, "install-mac");
     if let Some((tui_bin, _)) = copy_sibling_tui_to_install_path(std::env::current_exe()?.parent())?
     {
         println!("Installed TUI binary at {}", tui_bin.display());
+    }
+    if matches!(outcome, CopyOutcome::Copied) {
+        println!("Installed binary at {}", install_bin.display());
     }
     fs::create_dir_all(plist.parent().expect("plist has parent"))?;
     fs::create_dir_all(mac_log_dir()?)?;
@@ -35,7 +38,6 @@ pub fn install_macos(config: WebConfig) -> io::Result<()> {
     launchctl_required(&["bootstrap", &domain, &plist_arg])?;
     launchctl_required(&["kickstart", "-k", &service])?;
     println!("Installed {INSTALL_LABEL} at {}", plist.display());
-    println!("Installed binary at {}", install_bin.display());
     println!("Open {}://{}", config.tls.scheme(), config.bind);
     Ok(())
 }
@@ -43,15 +45,22 @@ pub fn install_macos(config: WebConfig) -> io::Result<()> {
 pub fn update_macos() -> io::Result<()> {
     ensure_macos_user_context()?;
     log_macos_context("update", mac_plist_path().ok().as_deref());
-    let (install_bin, outcome) = copy_current_exe_to_install_path()?;
-    warn_if_noop_self_install(outcome, "update-mac");
     println!("Updating {INSTALL_LABEL} to {HERDR_WEBUI_VERSION}");
+    let (install_bin, outcome) = copy_current_exe_to_install_path()?;
+    warn_if_noop_self_install(&outcome, "update-mac");
     if let Some((tui_bin, _)) = copy_sibling_tui_to_install_path(std::env::current_exe()?.parent())?
     {
         println!("Updated TUI binary at {}", tui_bin.display());
     }
     restart_macos_service()?;
-    println!("Updated binary at {}", install_bin.display());
+    match outcome {
+        CopyOutcome::Copied => println!("Updated binary at {}", install_bin.display()),
+        CopyOutcome::SameFile => println!(
+            "Binary at {} is already {}",
+            install_bin.display(),
+            HERDR_WEBUI_VERSION
+        ),
+    }
     Ok(())
 }
 
@@ -105,9 +114,9 @@ pub fn uninstall_macos() -> io::Result<()> {
 }
 
 pub fn install_linux(config: WebConfig) -> io::Result<()> {
-    let (install_bin, outcome) = copy_current_exe_to_install_path()?;
-    warn_if_noop_self_install(outcome, "install-linux");
     println!("Installing {INSTALL_LABEL} {HERDR_WEBUI_VERSION}");
+    let (install_bin, outcome) = copy_current_exe_to_install_path()?;
+    warn_if_noop_self_install(&outcome, "install-linux");
     if let Some((tui_bin, _)) = copy_sibling_tui_to_install_path(std::env::current_exe()?.parent())?
     {
         println!("Installed TUI binary at {}", tui_bin.display());
@@ -118,22 +127,26 @@ pub fn install_linux(config: WebConfig) -> io::Result<()> {
     systemctl_user(&["daemon-reload"])?;
     systemctl_user(&["enable", "--now", &format!("{INSTALL_LABEL}.service")])?;
     println!("Installed {INSTALL_LABEL} at {}", service.display());
-    println!("Installed binary at {}", install_bin.display());
+    if matches!(outcome, CopyOutcome::Copied) {
+        println!("Installed binary at {}", install_bin.display());
+    }
     println!("Open {}://{}", config.tls.scheme(), config.bind);
     Ok(())
 }
 
 pub fn update_linux() -> io::Result<()> {
-    let (install_bin, outcome) = copy_current_exe_to_install_path()?;
-    warn_if_noop_self_install(outcome, "update-linux");
     println!("Updating {INSTALL_LABEL} to {HERDR_WEBUI_VERSION}");
+    let (install_bin, outcome) = copy_current_exe_to_install_path()?;
+    warn_if_noop_self_install(&outcome, "update-linux");
     if let Some((tui_bin, _)) = copy_sibling_tui_to_install_path(std::env::current_exe()?.parent())?
     {
         println!("Updated TUI binary at {}", tui_bin.display());
     }
     systemctl_user(&["daemon-reload"])?;
     restart_linux_service()?;
-    println!("Updated binary at {}", install_bin.display());
+    if matches!(outcome, CopyOutcome::Copied) {
+        println!("Updated binary at {}", install_bin.display());
+    }
     Ok(())
 }
 
@@ -240,7 +253,7 @@ fn copy_sibling_tui_to_install_path(
 /// Warn when the running binary is already the installed one, so a PATH
 /// resolved `herdr-webui update-mac` cannot silently reinstall the old
 /// version over itself.
-fn warn_if_noop_self_install(outcome: CopyOutcome, command: &str) {
+fn warn_if_noop_self_install(outcome: &CopyOutcome, command: &str) {
     if matches!(outcome, CopyOutcome::SameFile) {
         eprintln!(
             "warning: running binary is already the installed {HERDR_WEBUI_VERSION}; \
