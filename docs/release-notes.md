@@ -1,5 +1,31 @@
 # Release notes
 
+## 0.4.40 Release Notes
+- Terminal resize no longer freezes the UI when an external-herdr backend dies
+  mid-drag. Four gaps fixed behind the storm: a kill-chain gate (only the
+  backend's own unusability verdict, `suggest_builtin`, may tear the external
+  session down; infra failures keep the session and the daemon alive instead of
+  proxying close to `server.stop` and killing a live daemon), a terminal
+  reconnect backoff (failed attaches arm an exponential 500ms-to-8s window
+  gated per target, so resize frames cannot reattach at frame cadence), a
+  graphics-bridge backoff (same-key open with a dead socket goes through the
+  reconnect timer instead of disconnect+open per frame), and a socket-length
+  guard (oversized session socket paths fail fast with a structured
+  `socket_path_too_long` herdr_error instead of a confusing connect() error
+  that looks like a dead daemon).
+- The reconnect backoff survives two subtle holes: the server now sends the
+  structured herdr_error BEFORE the raw binary failure preamble (any binary
+  frame counted as attach success and reset the backoff every cycle), and an
+  in-flight recovery socket blocks resize-frame teardowns until it settles,
+  so no fresh WebSocket churns per frame inside the backoff window.
+- Dynamic validation on an isolated scratch stack (daemon SIGTERM mid-drag):
+  attach WebSocket opens dropped from 377 to 4, graphics sockets to 5, zero
+  session/close POSTs, the webui server survives, the session stays
+  external-herdr, and the backoff staircase doubles per attempt
+  (500/1000/2000/4000ms). The e2e midrag-death probe now kills only an
+  env-provided `DAEMON_PID` (never a ps-grep scan that could match a real
+  instance) and the post-fix validation runner boots its own scratch stack.
+
 ## 0.4.39 Release Notes
 - Session manager: closing another session no longer fails with "Close failed
   Connection refused (os error 61)" when the target backend died without
