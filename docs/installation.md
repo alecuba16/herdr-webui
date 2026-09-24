@@ -234,7 +234,7 @@ The release-binary equivalents refresh both binaries:
 Run these with the `./` prefix from the extracted tarball directory. A plain
 `herdr-webui update-mac` resolves through `PATH`, so when `~/.local/bin` comes
 first it executes the already-installed binary and silently reinstalls the old
-version over itself. Since v0.4.40 the update commands print the running version
+version over itself. Newer update commands print the running version
 (`Updating herdr-web to v0.4.40`) and warn when the running binary is already
 the installed one, so a no-op refresh is visible instead of silent.
 

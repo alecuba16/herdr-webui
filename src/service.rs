@@ -251,10 +251,13 @@ fn warn_if_noop_self_install(outcome: CopyOutcome, command: &str) {
 }
 
 fn copy_executable(source: &Path, target: &Path) -> io::Result<CopyOutcome> {
+    // Follow a symlinked install path so the refresh writes through it
+    // instead of replacing the link with a regular file.
+    let target = fs::canonicalize(target).unwrap_or_else(|_| target.to_path_buf());
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent)?;
     }
-    let same_file = same_file(source, target);
+    let same_file = same_file(source, &target);
     if same_file {
         return Ok(CopyOutcome::SameFile);
     }
@@ -864,6 +867,72 @@ mod tests {
             CopyOutcome::Copied
         );
         assert_eq!(fs::read_to_string(&binary).unwrap(), "fresh-bytes\n");
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn copy_executable_writes_through_symlinked_target() {
+        let _guard = env_lock().lock().unwrap();
+        let base = std::env::temp_dir().join(format!(
+            "herdr-webui-copy-symlink-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join("real")).unwrap();
+        let real = base.join("real").join("herdr-webui");
+        fs::write(&real, "installed-bytes\n").unwrap();
+        fs::create_dir_all(base.join("linkdir")).unwrap();
+        let link = base.join("linkdir").join("herdr-webui");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let fresh = base.join("herdr-webui-new");
+        fs::write(&fresh, "fresh-bytes\n").unwrap();
+
+        assert_eq!(copy_executable(&fresh, &link).unwrap(), CopyOutcome::Copied);
+
+        // The link stays a link and points at refreshed content.
+        assert!(fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(fs::read_to_string(&real).unwrap(), "fresh-bytes\n");
+        assert_eq!(
+            fs::read_to_string(&link).unwrap(),
+            "fresh-bytes\n",
+            "reading through the link returns the refreshed bytes"
+        );
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn copy_executable_overwrites_stale_temp_file() {
+        let _guard = env_lock().lock().unwrap();
+        let base = std::env::temp_dir().join(format!(
+            "herdr-webui-copy-stale-temp-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+
+        let source = base.join("herdr-webui-new");
+        fs::write(&source, "fresh-bytes\n").unwrap();
+        let target = base.join("herdr-webui");
+        fs::write(&target, "installed-bytes\n").unwrap();
+
+        // Simulate a leftover temp file from an interrupted earlier copy,
+        // with the same name our current process would pick.
+        let temp = target.with_extension(format!("tmp-{}", std::process::id()));
+        fs::write(&temp, "garbage-from-crashed-copy\n").unwrap();
+
+        assert_eq!(
+            copy_executable(&source, &target).unwrap(),
+            CopyOutcome::Copied
+        );
+        assert_eq!(fs::read_to_string(&target).unwrap(), "fresh-bytes\n");
+        assert!(!temp.exists(), "temp file is consumed by the rename");
 
         let _ = fs::remove_dir_all(&base);
     }
