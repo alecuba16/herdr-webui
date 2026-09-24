@@ -1,5 +1,37 @@
 # Release notes
 
+## 0.4.41 Release Notes
+- Self-refresh cannot reinstall the old version silently anymore. Running
+  `herdr-webui update-mac`/`update-linux` without `./` resolves through
+  `PATH` and executes the already-installed binary, which used to copy
+  itself over the install path and silently keep the old version. The
+  update/install commands now print the running version up front
+  (`Updating herdr-web to v0.4.41`) and warn when the running binary is
+  already the installed one, telling you to run `./herdr-webui update-mac`
+  from the extracted tarball directory instead.
+- Binary refreshes are atomic and code-signature safe. The copy now goes to
+  a temporary sibling followed by `rename`, so a refresh no longer truncates
+  the live process image in place (which corrupted macOS code signatures and
+  left the binary SIGKILLed with `CODESIGNING: Invalid Page`) and no longer
+  fails with `ETXTBSY` on Linux while the old service binary is running.
+- Install-path symlinks are preserved. The refresh resolves the install
+  path like the kernel would for an `open(O_CREAT)`, so a symlinked install
+  location keeps its link, a dangling link gets its missing target recreated
+  instead of being silently replaced by a regular file, and relative link
+  chains resolve to the real file. The plist keeps the logical install path
+  so launchd behavior with symlinked installs is unchanged.
+- Refresh output now matches reality for both binaries: "Updated/Installed
+  binary at ..." prints only after a real copy, and a no-op refresh reports
+  "Binary at ... is already <version>" / "TUI binary at ... is already
+  <version>" instead of a false update line. A missing TUI sibling still
+  skips silently, as before.
+- The release workflow verifies the built binary's `--version` on every
+  matrix target, including the cross-built x86_64 macOS build (previously
+  skipped because the host check did not match, shipping it unverified).
+- `--verbose` works on every service subcommand and is now documented for
+  the Linux variants in the help text and docs, matching the actual
+  behavior of the global flag parsing.
+
 ## 0.4.40 Release Notes
 - Terminal resize no longer freezes the UI when an external-herdr backend dies
   mid-drag. Four gaps fixed behind the storm: a kill-chain gate (only the
