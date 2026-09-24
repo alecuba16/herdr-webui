@@ -3040,7 +3040,14 @@ async function handleHerdrErrorFrame(raw) {
   if (herdrErrorOfferPending) return true;
   herdrErrorOfferPending = true;
   try {
-    if (currentSessionBackend() === "external-herdr") {
+    // Only the backend's own unusability verdict (suggests_builtin, set for
+    // protocol/handshake rejections) may tear the external session down.
+    // Infra-level failures (daemon stopped mid-drag, connect_failed,
+    // socket_path_too_long) keep the session AND the daemon alive: killing
+    // them here turned a transient outage into a dead session (the server
+    // proxies session/close to server.stop).
+    const unusableBackend = msg.suggest_builtin === true;
+    if (currentSessionBackend() === "external-herdr" && unusableBackend) {
       // Detach from the unusable herdr session so stale sockets do not linger.
       try {
         await api("/api/session/close", {

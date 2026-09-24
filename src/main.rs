@@ -887,6 +887,13 @@ fn short_socket_hash(value: &str) -> String {
         .collect()
 }
 
+/// Maximum socket path length the OS can bind/connect. Unix sun_path is
+/// 104 bytes on macOS (108 on Linux) but the built-in backend deliberately
+/// keeps a stricter budget (<100) so the same guard works everywhere; the
+/// external-session guard reuses it. On Windows named pipes have no such
+/// limit and the check passes trivially.
+pub const SOCKET_PATH_LIMIT: usize = 100;
+
 fn socket_path_pair_fits(paths: &(PathBuf, PathBuf)) -> bool {
     socket_path_fits(&paths.0) && socket_path_fits(&paths.1)
 }
@@ -894,7 +901,7 @@ fn socket_path_pair_fits(paths: &(PathBuf, PathBuf)) -> bool {
 #[cfg(unix)]
 fn socket_path_fits(path: &Path) -> bool {
     use std::os::unix::ffi::OsStrExt;
-    path.as_os_str().as_bytes().len() < 100
+    path.as_os_str().as_bytes().len() < SOCKET_PATH_LIMIT
 }
 
 #[cfg(not(unix))]
@@ -4358,6 +4365,30 @@ async fn terminal_socket(
     let terminal_id = query.terminal_id.clone();
     let cols = query.cols.unwrap_or(100).max(1);
     let rows = query.rows.unwrap_or(30).max(1);
+    // Guard parity with the built-in backend's socket_path_pair_fits: an
+    // external session whose socket path exceeds the OS limit can never
+    // attach (connect() fails with a confusing ENAMETOOLONG/ENOENT), so
+    // surface the real cause as a structured frame instead of letting the
+    // browser retry forever. Without this the failure looks like a dead
+    // daemon and the recovery UI keeps pumping reconnects.
+    if !socket_path_fits(&path) {
+        let payload = json!({
+            "type": "herdr_error",
+            "backend": backend.as_str(),
+            "kind": "socket_path_too_long",
+            "message": format!(
+                "session socket path is too long for this OS: {} ({} bytes, limit {})",
+                path.display(),
+                std::ffi::OsStr::as_encoded_bytes(path.as_os_str()).len(),
+                SOCKET_PATH_LIMIT
+            ),
+            "suggest_builtin": false,
+        });
+        if let Ok(text) = serde_json::to_string(&payload) {
+            let _ = socket.send(Message::Text(text.into())).await;
+        }
+        return;
+    }
     let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<TerminalEvent>();
     let (in_tx, in_rx) = std::sync::mpsc::channel::<ClientMessage>();
 
@@ -4365,14 +4396,18 @@ async fn terminal_socket(
         let mut stream = match connect_terminal_attach(&path, &terminal_id, cols, rows) {
             Ok(stream) => stream,
             Err(error) => {
-                // Order matters: the raw text first, then the structured
-                // error, through ONE channel so the select loop can never
-                // observe the channel close before the error frame. (With a
-                // separate error channel, a closed out_rx could win the
-                // select race and the browser would never see the JSON
-                // frame offering a built-in session.)
+                // Order matters: the STRUCTURED error first, then the raw
+                // text, through ONE channel. The browser treats any binary
+                // frame as a live-backend signal (attach success) and only
+                // herdr_error text re-arms its reconnect backoff, so the
+                // structured frame must arrive first or every failed
+                // reconnect resets the backoff and a resize drag rebuilds
+                // a per-frame WebSocket storm. (With a separate error
+                // channel, a closed out_rx could win the select race and
+                // the browser would never see the JSON frame offering a
+                // built-in session.)
+                let _ = out_tx.send(TerminalEvent::Error(error.clone()));
                 let _ = out_tx.send(TerminalEvent::Bytes(error.user_message().into_bytes()));
-                let _ = out_tx.send(TerminalEvent::Error(error));
                 return;
             }
         };
@@ -5009,14 +5044,17 @@ fn terminal_text_messages(text: &str) -> Vec<ClientMessage> {
 }
 
 /// Events from the terminal reader thread to the WS select loop, through one
-/// ordered channel. Ordering is load-bearing: the raw failure text must be
-/// delivered before the structured error so the browser always receives the
-/// `herdr_error` JSON frame (a closed channel can never race ahead of it).
+/// ordered channel. Ordering is load-bearing: the STRUCTURED error must be
+/// delivered before the raw failure text, because the browser treats any
+/// binary frame as a live-backend signal (attach success) and only the
+/// `herdr_error` JSON re-arms its reconnect backoff; raw text first would
+/// reset the backoff on every failed attempt (see terminal.js ws.onmessage).
 enum TerminalEvent {
     Bytes(Vec<u8>),
     Error(TerminalAttachError),
 }
 
+#[derive(Clone)]
 enum TerminalAttachError {
     Connect,
     SendHandshake,
@@ -5580,6 +5618,40 @@ mod tests {
         assert!(client.to_string_lossy().contains("herdr-webui-builtin-"));
         assert!(api.as_os_str().as_bytes().len() < 100);
         assert!(client.as_os_str().as_bytes().len() < 100);
+
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn socket_path_fits_matches_limit_boundaries() {
+        let _guard = lock_env();
+        // Exactly at the limit fails; one byte under passes.
+        let at_limit = PathBuf::from("x".repeat(SOCKET_PATH_LIMIT));
+        let under_limit = PathBuf::from("x".repeat(SOCKET_PATH_LIMIT - 1));
+        assert!(!socket_path_fits(&at_limit));
+        assert!(socket_path_fits(&under_limit));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn external_client_socket_path_reports_unfitting_sessions() {
+        let _guard = lock_env();
+        // Short roots keep short session names fitting (regression guard):
+        // config_dir()/sessions/<name>/herdr-client.sock under the limit.
+        std::env::set_var("XDG_CONFIG_HOME", "/tmp/herdr-test");
+        let short = client_socket_path_for(Some("work"));
+        assert!(socket_path_fits(&short));
+
+        // A root long enough that config_dir()/sessions/<name>/
+        // herdr-client.sock cannot fit: the guard must flag it so the
+        // attach path can refuse with a clear error instead of a confusing
+        // connect failure.
+        let long_component = "x".repeat(140);
+        std::env::set_var("XDG_CONFIG_HOME", format!("/tmp/{long_component}"));
+        let long_session = "y".repeat(60);
+        let client = client_socket_path_for(Some(&long_session));
+        assert!(!socket_path_fits(&client));
 
         std::env::remove_var("XDG_CONFIG_HOME");
     }
