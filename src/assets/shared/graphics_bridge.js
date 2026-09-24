@@ -125,6 +125,15 @@
         state.terminalId || "",
       ].join("|");
       if (this.connectedKey === key && this.ws && this.ws.readyState <= 1) return;
+      // Same target but the socket is gone (backend outage): reconnect
+      // through the backoff timer. Calling disconnect() here would cancel
+      // the pending reconnect (disconnect is a full teardown for target
+      // CHANGES), and then open() immediately: during a resize storm that
+      // meant a fresh socket per resize frame, all at frame cadence.
+      if (this.connectedKey === key) {
+        if (!this.reconnectTimer) this.scheduleReconnect(key, state);
+        return;
+      }
       this.disconnect();
       this.connectedKey = key;
       this.paneId = state.pane || "";

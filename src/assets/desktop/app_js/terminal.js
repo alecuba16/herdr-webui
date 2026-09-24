@@ -143,6 +143,16 @@ async function connectTerminal() {
     focusTerminal();
     return;
   }
+  // Reconnect backoff: after a failed attach (backend outage, herdr_error
+  // teardown), suppress the teardown-and-reattach path until the backoff
+  // window elapses. Resize frames during a drag would otherwise reattach
+  // at frame cadence (~60/s), and each failure schedules a refresh burst
+  // that re-enters connectTerminal: the storm. A scheduled reconnect is
+  // already pending; the success path resets the delay.
+  if (terminalAttachInBackoff(target)) {
+    setTerminalLoading(false);
+    return;
+  }
   resetTerminalConnection(true);
   setTerminalLoading(true);
   connectedTerminalId = target;
@@ -252,6 +262,13 @@ async function connectTerminal() {
     ),
   );
   termWs = ws;
+  // Recovery attempt for a previously failed target: remember the socket
+  // so resize frames arriving while it is still connecting cannot tear it
+  // down and churn a fresh one per frame. Cleared on settle (success note,
+  // failure note, or the socket's own readyState going past OPEN).
+  if (terminalReconnectTarget === target) {
+    terminalReconnectAttemptWs = ws;
+  }
   ws.binaryType = "arraybuffer";
   ws.onopen = () => {
     if (termWs === ws) {
@@ -263,11 +280,22 @@ async function connectTerminal() {
   ws.onmessage = (e) => {
     if (termWs !== ws || connectedTerminalId !== target) return;
     if (typeof e.data === "string" && handleHerdrErrorFrame(e.data)) {
-      // Backend attach failed (e.g. protocol mismatch). The handler offered
-      // recovery; drop this socket so a clean reconnect happens later.
+      // Backend attach failed (e.g. protocol mismatch or connect_failed
+      // during a daemon outage). The handler offered recovery; drop this
+      // socket so a clean reconnect happens later. Error frames are NOT
+      // attach success: resetting the backoff here would re-open the gate
+      // for the very next resize frame and rebuild the per-frame storm.
       ws.close();
       return;
     }
+    // Any real frame means the attach reached a live backend: reset the
+    // reconnect backoff so the next genuine outage starts from the base
+    // delay instead of the accumulated one. herdr_error frames never
+    // reach this reset: the structured error arrives FIRST on connect
+    // failure (see terminal_socket in main.rs) and the branch above drops
+    // the socket, so no raw binary preamble can be mistaken for
+    // terminal data (the storm's per-cycle backoff reset).
+    noteTerminalAttachSuccess();
     // Don't hide loading overlay here for attach frames; the write callback
     // in flushTerminalFrames will reveal the terminal once parsing completes.
     // For normal frames, hide it immediately.
@@ -281,6 +309,11 @@ async function connectTerminal() {
       connectedTerminalId = null;
       connectedSize = "";
       setTerminalLoading(false);
+      // Attach failed (backend unreachable or herdr_error teardown): start
+      // the reconnect backoff so resize frames cannot reattach at frame
+      // cadence. Deliberate teardowns null onclose before closing, so they
+      // skip this path.
+      noteTerminalAttachFailure(target);
       scheduleRefreshBurst();
     }
   };
@@ -326,6 +359,92 @@ const PASTE_FLUSH_DELAY_MS = 4;
 const LARGE_FRAME_THRESHOLD = 32768;
 // Set true on WS open, cleared after the first large frame is fully written.
 let terminalAttachPending = false;
+
+// Reconnect backoff for terminal attach. The browser-to-webui WebSocket
+// always opens (webui is the endpoint); an attach failure only surfaces
+// when webui closes the socket after the herdr_error frame, or when the
+// backend is unreachable and onclose fires. Without backoff, every resize
+// frame during a backend outage reattaches at frame cadence (~60/s), and
+// each failed cycle schedules another refresh burst: the resize storm.
+// Deliberate teardowns (navigation, tab close) null onclose first, so
+// they never count as failures. Reset on the first successful data frame.
+const TERMINAL_RECONNECT_BASE_MS = 500;
+const TERMINAL_RECONNECT_MAX_MS = 8000;
+let terminalReconnectNotBefore = 0;
+let terminalReconnectDelay = TERMINAL_RECONNECT_BASE_MS;
+let terminalReconnectTimer = null;
+// Target (session|backend|ws|tab|pane|terminalId) whose attach failed:
+// the backoff only gates the SAME target. Navigating to a different pane
+// or tab must attach immediately (its backend may be alive).
+let terminalReconnectTarget = null;
+// Socket of the in-flight backoff-recovery attempt for the failed target.
+// While it exists and is still open/connecting, resize frames must not tear
+// it down and open a fresh one per frame (that rebuilds the storm inside
+// every backoff window). Unlike a boolean flag, a stale reference self-heals:
+// once the socket settles (readyState > 1) the gate reopens even if the
+// settle callbacks never ran (e.g. a deliberate teardown nulled onclose).
+let terminalReconnectAttemptWs = null;
+
+// Monotonic-ish clock for the backoff window. Some embedders/tests run
+// this fragment without a `performance` global; Date.now() is a fine
+// fallback because only elapsed deltas matter.
+function terminalReconnectNow() {
+  if (typeof performance !== "undefined" && performance && typeof performance.now === "function") {
+    return performance.now();
+  }
+  return Date.now();
+}
+
+function terminalAttemptInFlight() {
+  return !!(
+    terminalReconnectAttemptWs &&
+    terminalReconnectAttemptWs.readyState <= 1
+  );
+}
+
+function terminalAttachInBackoff(target) {
+  return (
+    (terminalReconnectNow() < terminalReconnectNotBefore ||
+      terminalAttemptInFlight()) &&
+    terminalReconnectTarget === target
+  );
+}
+
+// Schedules a connectTerminal attempt once the backoff window elapses, so
+// recovery does not depend on the next resize/poll event arriving.
+function scheduleTerminalReconnect() {
+  if (terminalReconnectTimer) clearTimeout(terminalReconnectTimer);
+  const delay = terminalReconnectDelay;
+  terminalReconnectTimer = setTimeout(() => {
+    terminalReconnectTimer = null;
+    // Skip if an attempt for the failed target is still settling: its
+    // own failure callback re-arms the timer.
+    if (terminalReconnectTarget && !terminalAttemptInFlight()) {
+      connectTerminal();
+    }
+  }, delay);
+  terminalReconnectNotBefore = terminalReconnectNow() + delay;
+  terminalReconnectDelay = Math.min(
+    TERMINAL_RECONNECT_MAX_MS,
+    terminalReconnectDelay * 2,
+  );
+}
+
+function noteTerminalAttachFailure(target) {
+  terminalReconnectTarget = target;
+  terminalReconnectAttemptWs = null;
+  scheduleTerminalReconnect();
+}
+
+function noteTerminalAttachSuccess() {
+  terminalReconnectTarget = null;
+  terminalReconnectAttemptWs = null;
+  terminalReconnectDelay = TERMINAL_RECONNECT_BASE_MS;
+  if (terminalReconnectTimer) {
+    clearTimeout(terminalReconnectTimer);
+    terminalReconnectTimer = null;
+  }
+}
 
 function enqueueTerminalFrame(data) {
   // Attach frame path: the first frame after connecting is a full-screen
