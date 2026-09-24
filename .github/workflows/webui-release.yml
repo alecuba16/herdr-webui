@@ -48,11 +48,9 @@ jobs:
 
       - name: Verify release version
         run: |
-          if [ "${{ matrix.target }}" = "$(rustc -vV | sed -n 's/^host: //p')" ]; then
-            actual="$(target/${{ matrix.target }}/release/herdr-webui --version)"
-            echo "version=$actual"
-            test "$actual" = "$GITHUB_REF_NAME"
-          fi
+          actual="$(target/${{ matrix.target }}/release/herdr-webui --version)"
+          echo "version=$actual"
+          test "$actual" = "$GITHUB_REF_NAME"
 
       - name: Package
         run: |
