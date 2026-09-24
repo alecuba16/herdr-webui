@@ -13,8 +13,21 @@ function loadBridge() {
   );
   const sandbox = {
     console,
-    setTimeout,
-    clearTimeout,
+    // Controllable timers: scheduled callbacks are captured so tests can
+    // assert backoff behavior without real waiting.
+    setTimeout: (fn, ms) => {
+      sandbox.__timers.push({ fn, ms });
+      return sandbox.__timers.length;
+    },
+    clearTimeout: (id) => {
+      if (id) sandbox.__timers[id - 1] = null;
+    },
+    __timers: [],
+    __flushTimer: () => {
+      const pending = sandbox.__timers.filter(Boolean);
+      sandbox.__timers = [];
+      for (const { fn } of pending) fn();
+    },
     Blob,
     requestAnimationFrame: (fn) => {
       sandbox.__raf = fn;
@@ -146,6 +159,71 @@ describe("graphics bridge", () => {
     bridge.connect({ ...base, tab: "ws-1:t2" }, opts);
     equal(sandbox.sockets.length, 2, "new tab reopens");
     bridge.disconnect();
+  });
+
+  it("same-key reconnect after socket loss respects the backoff timer", () => {
+    const { bridge, sandbox } = loadBridge();
+    const terminal = {
+      element: null,
+      cols: 80,
+      rows: 24,
+      cellSize: () => ({ width: 9, height: 17 }),
+    };
+    const opts = { terminal, wsUrl: (p) => "ws://test" + p };
+    const state = {
+      session: "default",
+      ws: "ws-1",
+      tab: "ws-1:t1",
+      pane: "ws-1:p1",
+      terminalId: "term-9",
+      sessionBackend: "external-herdr",
+    };
+    bridge.connect(state, opts);
+    equal(sandbox.sockets.length, 1, "initial connect opens one socket");
+    // Backend dies: the socket closes and schedules a backoff reconnect.
+    const ws = sandbox.sockets[0];
+    ws.onclose();
+    equal(sandbox.sockets.length, 1, "no immediate reopen on close");
+    // Frame-cadence connect() calls during the backoff window must not
+    // cancel the pending timer nor open new sockets (the resize-storm
+    // regression: connect() used to call disconnect(), clearing the timer,
+    // then open(), churning a socket per resize frame).
+    for (let i = 0; i < 20; i++) bridge.connect(state, opts);
+    equal(sandbox.sockets.length, 1, "frame-cadence connects stay gated");
+    // The pending reconnect timer eventually fires and opens one socket.
+    const before = sandbox.sockets.length;
+    sandbox.__flushTimer?.();
+    equal(sandbox.sockets.length, before + 1, "backoff timer opens exactly one reconnect");
+    bridge.disconnect();
+  });
+
+  it("full disconnect still clears the pending reconnect timer", () => {
+    const { bridge, sandbox } = loadBridge();
+    const terminal = {
+      element: null,
+      cols: 80,
+      rows: 24,
+      cellSize: () => ({ width: 9, height: 17 }),
+    };
+    const opts = { terminal, wsUrl: (p) => "ws://test" + p };
+    const state = {
+      session: "default",
+      ws: "ws-1",
+      tab: "ws-1:t1",
+      pane: "ws-1:p1",
+      terminalId: "term-9",
+      sessionBackend: "external-herdr",
+    };
+    bridge.connect(state, opts);
+    equal(sandbox.sockets.length, 1, "socket opened");
+    // Backend dies: close schedules a backoff reconnect.
+    sandbox.sockets[0].onclose();
+    equal(sandbox.sockets.length, 1, "no immediate reopen");
+    // Full teardown (tab close / backend switch) must cancel the pending
+    // reconnect: flushing timers afterwards opens nothing.
+    bridge.disconnect();
+    sandbox.__flushTimer();
+    equal(sandbox.sockets.length, 1, "full teardown canceled the pending reconnect");
   });
 
   it("ingests scenes, decodes assets, and evicts dropped keys", async () => {
