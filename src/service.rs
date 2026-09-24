@@ -1011,6 +1011,48 @@ mod tests {
     }
 
     #[test]
+    fn copy_executable_follows_symlink_chain_to_real_target() {
+        let _guard = env_lock().lock().unwrap();
+        let base = std::env::temp_dir().join(format!(
+            "herdr-webui-copy-link-chain-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join("a")).unwrap();
+        fs::create_dir_all(base.join("b")).unwrap();
+        let real = base.join("a").join("herdr-webui");
+        fs::write(&real, "installed-bytes\n").unwrap();
+        // link2 -> ../a/herdr-webui (relative link), link1 -> link2.
+        let link2 = base.join("b").join("link2");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("../a/herdr-webui", &link2).unwrap();
+        let link1 = base.join("b").join("herdr-webui");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("link2", &link1).unwrap();
+
+        let fresh = base.join("herdr-webui-new");
+        fs::write(&fresh, "fresh-bytes\n").unwrap();
+
+        assert_eq!(
+            copy_executable(&fresh, &link1).unwrap(),
+            CopyOutcome::Copied
+        );
+
+        // Both links survive; the relative chain resolves to the real file.
+        assert!(fs::symlink_metadata(&link1)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert!(fs::symlink_metadata(&link2)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(fs::read_to_string(&real).unwrap(), "fresh-bytes\n");
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
     fn copy_executable_reports_same_file_for_sibling_tui_noop() {
         let _guard = env_lock().lock().unwrap();
         let base = std::env::temp_dir().join(format!(
