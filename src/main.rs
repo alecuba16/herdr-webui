@@ -443,16 +443,16 @@ fn help_text() -> &'static str {
 herdr-webui --version\n\
 herdr-webui install-mac [--verbose] [--bind HOST:PORT] [--https off|auto|self-signed|files] [--tls-cert PATH --tls-key PATH] [--session NAME]\n\
 herdr-webui update-mac [--verbose]\n\
-herdr-webui install-linux [--bind HOST:PORT] [--https off|auto|self-signed|files] [--tls-cert PATH --tls-key PATH] [--session NAME]\n\
-herdr-webui update-linux\n\
+herdr-webui install-linux [--verbose] [--bind HOST:PORT] [--https off|auto|self-signed|files] [--tls-cert PATH --tls-key PATH] [--session NAME]\n\
+herdr-webui update-linux [--verbose]\n\
 herdr-webui start-mac | start [--verbose]\n\
 herdr-webui stop-mac | stop [--verbose]\n\
 herdr-webui restart-mac | restart [--verbose]\n\
-herdr-webui start-linux | start\n\
-herdr-webui stop-linux | stop\n\
-herdr-webui restart-linux | restart\n\
+herdr-webui start-linux | start [--verbose]\n\
+herdr-webui stop-linux | stop [--verbose]\n\
+herdr-webui restart-linux | restart [--verbose]\n\
 herdr-webui uninstall-mac [--verbose]\n\
-herdr-webui uninstall-linux\n\
+herdr-webui uninstall-linux [--verbose]\n\
 Default backend mode for fresh settings is builtin. Use --backend-mode external-herdr for a separate Herdr daemon.\n"
 }
 

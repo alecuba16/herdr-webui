@@ -131,16 +131,16 @@ herdr-webui --version
 herdr-webui-tui [--session NAME] [--api-socket PATH --terminal-socket PATH] [--webui-api HOST:PORT] [--refresh-ms MS] [--theme dark|light|system] [--summary|--once]
 herdr-webui install-mac [--verbose] [--bind HOST:PORT] [--https off|auto|self-signed|files] [--tls-cert PATH --tls-key PATH] [--session NAME]
 herdr-webui update-mac [--verbose]
-herdr-webui install-linux [--bind HOST:PORT] [--https off|auto|self-signed|files] [--tls-cert PATH --tls-key PATH] [--session NAME]
-herdr-webui update-linux
+herdr-webui install-linux [--verbose] [--bind HOST:PORT] [--https off|auto|self-signed|files] [--tls-cert PATH --tls-key PATH] [--session NAME]
+herdr-webui update-linux [--verbose]
 herdr-webui start-mac | start [--verbose]
 herdr-webui stop-mac | stop [--verbose]
 herdr-webui restart-mac | restart [--verbose]
-herdr-webui start-linux | start
-herdr-webui stop-linux | stop
-herdr-webui restart-linux | restart
+herdr-webui start-linux | start [--verbose]
+herdr-webui stop-linux | stop [--verbose]
+herdr-webui restart-linux | restart [--verbose]
 herdr-webui uninstall-mac [--verbose]
-herdr-webui uninstall-linux
+herdr-webui uninstall-linux [--verbose]
 ```
 
 Backend mode details:
