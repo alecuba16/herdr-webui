@@ -156,7 +156,7 @@ function context() {
 
   class FakeWebSocket {
     constructor() {
-      this.readyState = 1;
+      this.readyState = ctx.deferWsOpen ? 0 : 1;
       this.bufferedAmount = 0;
       this._onopen = null;
       ctx.lastWebSocket = this;
@@ -165,7 +165,10 @@ function context() {
     set onopen(fn) {
       this._onopen = fn;
       // Auto-fire onopen on next microtask, like a real WebSocket.
-      if (typeof fn === "function") Promise.resolve().then(fn);
+      if (typeof fn === "function") {
+        if (ctx.deferWsOpen) ctx.pendingWsOpen = fn;
+        else Promise.resolve().then(fn);
+      }
     }
     send(data) {
       sentFrames.push(data);
@@ -176,11 +179,18 @@ function context() {
   }
 
   function flushWsOnOpen() {
-    // No-op: onopen is auto-fired via the setter.
+    if (ctx.pendingWsOpen) {
+      const onopen = ctx.pendingWsOpen;
+      ctx.pendingWsOpen = null;
+      if (ctx.lastWebSocket) ctx.lastWebSocket.readyState = 1;
+      onopen();
+    }
   }
 
   ctx = {
     TextEncoder,
+    deferWsOpen: false,
+    pendingWsOpen: null,
     fitCalls: [],
     HerdrTerminalRenderer: {
       create(target, options) {
@@ -232,7 +242,7 @@ function context() {
         ctx.fitCalls.push({ target, opts });
       },
       gridSize() {
-        return { cols: 88, rows: 22 };
+        return ctx.gridSize || { cols: 88, rows: 22 };
       },
       visibleBox() {
         return { width: 800, height: 420 };
@@ -522,6 +532,25 @@ describe("temporary terminal", () => {
       // not the raw body height (420).
       equal(call.opts.height, 22 * 20, "height should be rows * cellHeight");
     }
+  });
+
+  it("delivers the latest resize after a temporary terminal websocket opens", async () => {
+    const ctx = context();
+    ctx.deferWsOpen = true;
+    const tempTerminal = await openTempTerminal(ctx);
+    ok(ctx.lastWebSocket, "expected a websocket to exist");
+
+    ctx.gridSize = { cols: 90, rows: 23 };
+    tempTerminal.handleResize();
+    deepEqual(ctx.lastTerminal.resizeCalls.at(-1), [90, 23]);
+    equal(ctx.sentFrames.filter((frame) => typeof frame === "string").length, 0);
+
+    ctx.flushWsOnOpen();
+    const resizeFrame = ctx.sentFrames.find((frame) => {
+      if (typeof frame !== "string") return false;
+      try { return JSON.parse(frame).type === "resize"; } catch (_) { return false; }
+    });
+    deepEqual(JSON.parse(resizeFrame), { type: "resize", cols: 90, rows: 23 });
   });
 
   it("sends cd command when a target folder is specified", async () => {

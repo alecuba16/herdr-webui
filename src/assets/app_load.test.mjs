@@ -917,6 +917,17 @@ describe("app bundle load", () => {
     );
   });
 
+  it("coalesces window and shell resize work", () => {
+    match(desktopTerminalSource, /const TERMINAL_RESIZE_MIN_INTERVAL_MS = 32;/);
+    match(desktopTerminalSource, /window\.addEventListener\("resize", scheduleTerminalResize\);/);
+    match(desktopTerminalSource, /const refitAfterShellResize = scheduleTerminalResize;/);
+    match(
+      desktopTerminalSource,
+      /const changed = state\.termCols !== fit\.cols \|\| state\.termRows !== fit\.rows;[\s\S]*?if \(changed\) connectTerminal\(fit\);\n\s+else fitTerminalSurface\(\);/,
+    );
+    ok(!desktopTerminalSource.includes("let shellResizeFrame = null"));
+  });
+
   it("keeps Git UI keyboard input away from the terminal", () => {
     match(gitShortcutsSource, /Git drawer owns keyboard while visible/);
     match(gitShortcutsSource, /event\.stopImmediatePropagation/);

@@ -642,6 +642,132 @@ describe("HerdrEditor line number helpers", () => {
   });
 
 
+  it("keeps the returned API stable when CodeMirror loads lazily", async () => {
+    const mount = { innerHTML: "" };
+    const parent = {
+      innerHTML: "",
+      _herdrEditorApi: null,
+      querySelector(selector) {
+        return selector === ".herdr-editor-mount" ? mount : null;
+      },
+    };
+    let editorValue = "a\nb";
+    let destroyed = false;
+    const view = { state: {} };
+    const context = {
+      window: {},
+      document: {
+        createElement() {
+          return { async: false, src: "", onload: null, onerror: null };
+        },
+        body: {
+          appendChild(script) {
+            context.window.HerdrCodeMirror = {
+              create() {
+                return {
+                  view,
+                  getValue() { return editorValue; },
+                  setValue(value) { editorValue = String(value); },
+                  selectRange() {},
+                  replaceRange(from, to, value) {
+                    editorValue = editorValue.slice(0, from) + value + editorValue.slice(to);
+                  },
+                  destroy() { destroyed = true; },
+                };
+              },
+            };
+            script.onload();
+          },
+        },
+      },
+      Promise,
+    };
+    const source = readFileSync(new URL("./shared/editor.js", import.meta.url), "utf8");
+    vm.runInNewContext(source, context);
+
+    const api = context.window.HerdrEditor.create({
+      parent,
+      path: "demo.txt",
+      content: editorValue,
+      readonly: false,
+      hideFind: true,
+    });
+    assert.equal(parent._herdrEditorApi, api);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(parent._herdrEditorApi, api);
+    assert.equal(api.getValue(), "a\nb");
+    assert.equal(api._view, view);
+    api.setValue("changed");
+    assert.equal(api.getValue(), "changed");
+    api.destroy();
+    assert.equal(destroyed, true);
+    assert.equal(parent._herdrEditorApi, undefined);
+  });
+
+  it("reattaches a pending lazy editor before CodeMirror mounts", async () => {
+    const makeParent = (mount) => ({
+      innerHTML: "",
+      _herdrEditorApi: null,
+      querySelector(selector) {
+        return selector === ".herdr-editor-mount" ? mount : null;
+      },
+    });
+    const firstMount = { innerHTML: "" };
+    const nextMount = { innerHTML: "" };
+    const parent = makeParent(firstMount);
+    const nextParent = makeParent(nextMount);
+    let script;
+    let readyCalls = 0;
+    let editorValue = "a\nb";
+    const view = { state: {} };
+    const context = {
+      window: {},
+      document: {
+        createElement() {
+          return { async: false, src: "", onload: null, onerror: null };
+        },
+        body: {
+          appendChild(child) {
+            script = child;
+          },
+        },
+      },
+      Promise,
+    };
+    const source = readFileSync(new URL("./shared/editor.js", import.meta.url), "utf8");
+    vm.runInNewContext(source, context);
+
+    const api = context.window.HerdrEditor.create({
+      parent,
+      path: "demo.txt",
+      content: editorValue,
+      readonly: false,
+      onReady() { readyCalls += 1; },
+    });
+    api.attach(nextParent);
+    assert.equal(parent._herdrEditorApi, undefined);
+    assert.equal(nextParent._herdrEditorApi, api);
+
+    context.window.HerdrCodeMirror = {
+      create() {
+        return {
+          view,
+          getValue() { return editorValue; },
+          setValue(value) { editorValue = String(value); },
+          destroy() {},
+        };
+      },
+    };
+    script.onload();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.equal(nextParent._herdrEditorApi, api);
+    assert.equal(readyCalls, 1);
+    assert.equal(api._view, view);
+    assert.equal(firstMount.innerHTML, "");
+    assert.equal(nextMount.innerHTML, "");
+  });
+
   it("renders a floating find toggle on headerless mounts (A1)", async () => {
     const source = readFileSync(new URL("./shared/editor.js", import.meta.url), "utf8");
     const boot = () => {

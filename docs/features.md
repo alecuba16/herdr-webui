@@ -57,6 +57,14 @@ Browser terminal:
 - Terminal URL links are enabled by default. When enabled, detected `http` and `https` links open in a new browser tab. Disable `Terminal links` when terminal apps need raw click handling.
 - Terminal mouse reporting is opt-in. By default WebUI strips SGR/X10 mouse reports emitted by browser terminal renderers so normal text selection and shell input stay safe. Enable `Terminal mouse reporting` only for TUIs that need mouse input.
 - Desktop terminal output is frame-batched before writes to the renderer. Large initial attach frames stay behind the loading overlay until the renderer callback finishes, preventing partial line-by-line reveals.
+- Terminal resize events from the browser window and changing shell panels share
+  one frame-coalesced scheduler. Expensive grid updates are capped at 32 ms
+  intervals, identical geometry is ignored, and healthy desktop and mobile
+  sockets receive live resize messages without reconnecting or replaying
+  scrollback.
+- CodeMirror loads only when the file editor is opened. Git, Files, and large
+  markdown renderer assets remain feature-lazy, while the terminal renderer
+  stays eager because it is needed for the initial workspace surface.
 - wterm currently does not render raster inline graphics protocols such as iTerm2 OSC 1337 images, Kitty graphics, or SIXEL; upstream tracks this in vercel-labs/wterm issue #60. WebUI detects those sequences and replaces them with a short placeholder instead of leaking raw base64/control data into scrollback. For terminal image previews today, use chafa text output such as `chafa --symbols=braille --colors=full image.png`; chafa Kitty/SIXEL/iTerm2 modes still require renderer support.
 - Large paste input bypasses renderer paste APIs. WebUI normalizes pasted text, sends bounded WebSocket chunks with backpressure, and keeps typed input on the same raw-input path.
 - Wheel and touch scrolling use terminal row metrics. Pixel trackpad deltas accumulate before scrolling; line-mode wheel events use the configured `Scroll speed`; page-mode events and PageUp/PageDown scroll almost one viewport.

@@ -27,6 +27,11 @@
   the tab stays closable like any temporary tab. The HTTP route is
   `POST /api/tabs/{id}/promote`, backed by the new `tab.promote` API, and
   returns the full workspace/tab/pane payload the browser navigates from.
+- Terminal resizing now coalesces window and shell geometry changes through a
+  single throttled scheduler. Desktop keeps live PTY resize on the existing
+  socket, mobile now does the same instead of reconnecting for every grid
+  change, and temporary terminals skip duplicate grid updates. CodeMirror is
+  also deferred until an editor is opened, removing its eager startup cost.
 
 ## 0.4.41 Release Notes
 - Self-refresh cannot reinstall the old version silently anymore. Running

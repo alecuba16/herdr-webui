@@ -90,7 +90,7 @@ The Rust binary embeds assets with `include_str!` or `include_bytes!`. Public ro
 - `/assets/shared/file-tree.js`
 - `/assets/shared/file-content-search.js`
 - `/assets/shared/workspace-search.js`
-- `/assets/vendor/codemirror.js`
+- `/assets/vendor/codemirror.js`, lazy-loaded by the editor module on first use
 - `/assets/shared/editor.js`
 - `/assets/vendor/wterm.js`
 - `/assets/vendor/wterm.css`
@@ -257,7 +257,7 @@ This avoids two competing actions over one path field and keeps Git drawer state
 
 ## Editor
 
-The editor stack is CodeMirror. The WebUI preloads `/assets/vendor/codemirror.js` before `/assets/shared/editor.js` so file open can create a CodeMirror DOM immediately.
+The editor stack is CodeMirror. The editor module lazy-loads `/assets/vendor/codemirror.js` on first file-editor use, so the terminal and workspace shell do not pay the CodeMirror parse and transfer cost during startup. The route remains explicit for compatibility and direct editor loading.
 
 Desktop file views keep a per-workspace editor instance cache (`file_browser.js`): `render()` rewrites the panel HTML, so `mountEditors()` reattaches the cached editor wrapper (and its API handle) when the file's editor signature (content/draft, lock state, preview mode, search highlight, editor options) is unchanged, instead of recreating the CodeMirror instance on every tab switch or tree refresh. Editors are only rebuilt when the signature changes and are released on close, delete, rename remap, or workspace forget; other workspaces' cached editors survive a switch so switching back does not rebuild them.
 
@@ -378,7 +378,7 @@ This split keeps expensive or repository-sensitive work in Rust and keeps browse
 
 - Shared modules avoid duplicate browser computation. `file_tree.js`, `file_icons.js`, `workspace_search.js`, `file_content_search.js`, `editor.js`, and terminal helpers are reused by desktop/mobile.
 - File content search groups are collapsed by default when result counts exceed the configured threshold. Full per-file matches are lazy-loaded only when needed.
-- CodeMirror is preloaded once and reused for preview, edit, and Git hunk editing. A numbered HTML fallback exists only for load failure.
+- CodeMirror is lazy-loaded once and reused for preview, edit, and Git hunk editing. A numbered HTML fallback exists only for load failure.
 - Desktop terminal output is coalesced once per animation frame before terminal renderer writes. Attach frames have suppression logic so large initial frames do not reveal partial output.
 - Large paste input bypasses terminal renderer synchronous `paste()` and uses bounded WebSocket chunks with backpressure.
 - Browser terminals use `src/assets/shared/terminal_adapter.js` as the renderer boundary over the checked-in wterm bundle. The adapter exposes `write`, `resize`, `focus`, `destroy`, `cellSize`, `rowHeight`, `scrollLines`, `scrollToBottom`, `atBottom`, link toggling, theme variables, font variables, and normal/alternate-screen detection to desktop, mobile, and temporary terminal controllers.

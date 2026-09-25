@@ -71,12 +71,17 @@
       const nextSize = size();
       const terminalKey = `${state.session}|${state.ws}|${state.tab}|${state.pane}|${state.terminalId}|${terminalCore()}`;
       const terminalSizeKey = `${nextSize.cols}x${nextSize.rows}`;
-      if (
-        termWs &&
-        termWs.readyState === 1 &&
-        connectedTerminalKey === terminalKey &&
-        connectedTerminalSize === terminalSizeKey
-      ) return;
+      if (termWs && termWs.readyState === 1 && connectedTerminalKey === terminalKey) {
+        if (connectedTerminalSize === terminalSizeKey) return;
+        connectedTerminalSize = terminalSizeKey;
+        try { term.resize(nextSize.cols, nextSize.rows); } catch (_) {}
+        const bridge = globalThis.HerdrGraphicsBridge;
+        if (bridge) bridge.resize({ cols: nextSize.cols, rows: nextSize.rows });
+        try {
+          termWs.send(JSON.stringify({ type: "resize", cols: nextSize.cols, rows: nextSize.rows }));
+        } catch (_) {}
+        return;
+      }
       disconnect(false);
       connectedTerminalKey = terminalKey;
       connectedTerminalSize = terminalSizeKey;
@@ -112,13 +117,6 @@
       termWs = ws;
       ws.binaryType = "arraybuffer";
       ws.onopen = () => { if (termWs === ws) terminalAttachPending = true; };
-      ws.onclose = () => {
-        if (termWs === ws) {
-          termWs = null;
-          connectedTerminalKey = "";
-          connectedTerminalSize = "";
-        }
-      };
       ws.onmessage = (event) => {
         if (termWs !== ws) return;
         if (

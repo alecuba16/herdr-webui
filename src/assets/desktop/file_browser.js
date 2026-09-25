@@ -934,7 +934,8 @@
         // editor DOM (and its listeners) instead of recreating the instance.
         // Note: no destroy here; the cache entry is reused, not dropped.
         try { parent.appendChild(cached.mount); } catch (_) { editorCache.delete(cacheKey); continue; }
-        parent._herdrEditorApi = cached.api;
+        if (cached.api && cached.api.attach) cached.api.attach(parent);
+        else parent._herdrEditorApi = cached.api;
         continue;
       }
       forgetEditor(file.path);
@@ -963,6 +964,9 @@
           file.dirty = value !== (file.content || "");
           syncDirtyDots();
           lspDidChange(file.path, value);
+        },
+        onReady() {
+          lspRenderDiagnostics(file.path);
         },
       });
       // Cache the editor's own wrapper node (not the pane container) so the

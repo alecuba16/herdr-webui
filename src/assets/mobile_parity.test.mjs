@@ -400,4 +400,11 @@ describe("mobile parity feature guards", () => {
     assert.match(appSource, /onTerminalOutput: \(\.\.\.args\) => mobileScreens\.clearDismissedWorkingForTerminal/);
     assert.match(readFileSync(new URL("./mobile/screens.js", import.meta.url), "utf8"), /clearForTerminal\(terminalId\)/);
   });
+
+  it("resizes a healthy mobile socket without reconnecting", () => {
+    const terminalSource = readFileSync(new URL("./mobile/terminal.js", import.meta.url), "utf8");
+    assert.match(terminalSource, /connectedTerminalKey === terminalKey\) \{/);
+    assert.match(terminalSource, /term\.resize\(nextSize\.cols, nextSize\.rows\)/);
+    assert.match(terminalSource, /termWs\.send\(JSON\.stringify\(\{ type: "resize", cols: nextSize\.cols, rows: nextSize\.rows \}\)\)/);
+  });
 });

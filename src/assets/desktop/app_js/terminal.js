@@ -85,15 +85,21 @@ function cycleEventsSocket() {
   }
   connectEvents();
 }
-async function connectTerminal() {
+async function connectTerminal(fitOverride = null) {
   if (document.hidden) return;
   if (!state.terminalId) {
     resetTerminalConnection(true);
     setTerminalLoading(false);
     return;
   }
-  fitTerminalShell();
-  if (shouldFitFocusedWebTerminal() || options.fitToBrowser) applyBrowserTerminalSize();
+  if (!fitOverride) fitTerminalShell();
+  if (shouldFitFocusedWebTerminal() || options.fitToBrowser) {
+    const fit = fitOverride || browserTerminalSize();
+    if (fit) {
+      state.termCols = fit.cols;
+      state.termRows = fit.rows;
+    }
+  }
   const cols = state.termCols || 100,
     rows = state.termRows || 30,
     size = `${cols}x${rows}`;
@@ -1066,31 +1072,61 @@ function fitFocusedTerminal() {
   if (applyBrowserTerminalSize()) connectTerminal();
   else fitTerminalSurface();
 }
-window.addEventListener("resize", () => {
-  if (resizeFramePending) return;
-  resizeFramePending = true;
-  requestAnimationFrame(() => {
-    resizeFramePending = false;
+const TERMINAL_RESIZE_MIN_INTERVAL_MS = 32;
+let terminalResizeFrame = null;
+let terminalResizeTimer = null;
+let terminalResizeLastAppliedAt = 0;
+
+function terminalResizeNow() {
+  return typeof performance !== "undefined" && performance && typeof performance.now === "function"
+    ? performance.now()
+    : Date.now();
+}
+
+function applyScheduledTerminalResize() {
+  terminalResizeFrame = null;
+  terminalResizeLastAppliedAt = terminalResizeNow();
+  if (!state.terminalId || document.hidden) return;
+
+  const shouldFit =
+    options.fitToBrowser ||
+    shouldFitFocusedWebTerminal() ||
+    shouldAutoFitDetachedTerminal();
+  if (!shouldFit) {
     fitTerminalShell();
-    if (
-      options.fitToBrowser ||
-      shouldFitFocusedWebTerminal() ||
-      shouldAutoFitDetachedTerminal()
-    ) {
-      const fit = browserTerminalSize();
-      if (fit) {
-        state.termCols = fit.cols;
-        state.termRows = fit.rows;
-        connectTerminal();
-      }
-    }
-  });
-});
+    fitTerminalSurface();
+    return;
+  }
+
+  const fit = browserTerminalSize();
+  if (!fit) return;
+  const changed = state.termCols !== fit.cols || state.termRows !== fit.rows;
+  state.termCols = fit.cols;
+  state.termRows = fit.rows;
+  if (changed) connectTerminal(fit);
+  else fitTerminalSurface();
+}
+
+function scheduleTerminalResize() {
+  if (terminalResizeFrame !== null || terminalResizeTimer !== null) return;
+  const elapsed = terminalResizeNow() - terminalResizeLastAppliedAt;
+  const delay = Math.max(0, TERMINAL_RESIZE_MIN_INTERVAL_MS - elapsed);
+  const queueFrame = () => {
+    terminalResizeTimer = null;
+    terminalResizeFrame = requestAnimationFrame(applyScheduledTerminalResize);
+  };
+  if (delay > 0) terminalResizeTimer = setTimeout(queueFrame, delay);
+  else queueFrame();
+}
+
+// Window resize and shell resize can fire together during a drag. Both feed
+// the same scheduler so an expensive renderer resize happens at most once per
+// frame and never more often than the terminal can usefully consume it.
+window.addEventListener("resize", scheduleTerminalResize);
+
 // Refit the terminal whenever the shell itself changes size, even when the
 // window does not (sidebar toggle, Git drawer / Files browser open-close,
-// project dashboard appearing, panel switcher, zoom). The observer is the
-// single source of truth for shell-driven refits; every pane-layout path
-// keeps working because the window "resize" listener above still exists.
+// project dashboard appearing, panel switcher, zoom).
 (function observeTerminalShell() {
   const shell =
     (typeof el === "function" && el("terminalShell")) ||
@@ -1098,27 +1134,7 @@ window.addEventListener("resize", () => {
       document.getElementById &&
       document.getElementById("terminalShell"));
   if (!shell || typeof ResizeObserver !== "function") return;
-  let shellResizeFrame = null;
-  const refitAfterShellResize = () => {
-    if (shellResizeFrame !== null) {
-      cancelAnimationFrame(shellResizeFrame);
-    }
-    shellResizeFrame = requestAnimationFrame(() => {
-      shellResizeFrame = null;
-      if (!state.terminalId) return;
-      fitTerminalShell();
-      if (
-        options.fitToBrowser ||
-        shouldFitFocusedWebTerminal() ||
-        shouldAutoFitDetachedTerminal()
-      ) {
-        if (applyBrowserTerminalSize()) connectTerminal();
-        else fitTerminalSurface();
-      } else {
-        fitTerminalSurface();
-      }
-    });
-  };
+  const refitAfterShellResize = scheduleTerminalResize;
   new ResizeObserver(refitAfterShellResize).observe(shell);
 })();
 window.addEventListener("focus", () =>
