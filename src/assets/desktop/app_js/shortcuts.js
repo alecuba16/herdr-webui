@@ -324,6 +324,13 @@ function runPrefixedShortcut(e) {
     tempTerminalToggle: () => {
       return toggleTempTerminalShortcut();
     },
+    tempTerminalPromote: () => {
+      // Only meaningful with the overlay visible: promote the visible
+      // temporary terminal into a workspace at the shell's live cwd.
+      if (!tempTerminal || !tempTerminal.isVisible || !tempTerminal.isVisible()) return false;
+      if (tempTerminal.promote) tempTerminal.promote();
+      return true;
+    },
     focusNext: () => {
       return focusRelativeControl(1);
     },
@@ -362,7 +369,12 @@ function handleGlobalShortcut(e) {
   if (tempTerminalOnly) {
     if (prefixActive) {
       hideShortcutPrefixOverlay();
-      if (shortcutKey(e) !== (options.webuiShortcuts || {}).tempTerminalToggle)
+      // While the temporary-terminal overlay is open the prefix branch
+      // only honours its own shortcuts (toggle + promote): anything else
+      // falls through, so the terminal keeps receiving its input.
+      const webui = options.webuiShortcuts || {};
+      const key = shortcutKey(e);
+      if (key !== webui.tempTerminalToggle && key !== webui.tempTerminalPromote)
         return false;
       runPrefixedShortcut(e);
       return consumeShortcutEvent(e);
