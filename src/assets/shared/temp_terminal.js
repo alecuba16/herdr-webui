@@ -182,6 +182,7 @@
       var terminalQueryReplyState = {};
       var resizeTimer = null;
       var lastResizeKey = "";
+      var pendingResize = null;
       var linkProvider = null;
       var confirmVisible = false;
       var keyTrapBound = false;
@@ -608,6 +609,7 @@
             var cols = size.cols, rows = size.rows;
             resizeTerminalSurface(container, cols, rows);
             lastResizeKey = cols + "x" + rows;
+            pendingResize = null;
             var url = wsUrl(
               "/ws/terminal?terminal_id=" + encodeURIComponent(terminalId) +
               "&cols=" + cols + "&rows=" + rows +
@@ -617,6 +619,13 @@
             termWs = ws;
             ws.binaryType = "arraybuffer";
             ws.onopen = function () {
+              if (termWs === ws && pendingResize) {
+                var resize = pendingResize;
+                pendingResize = null;
+                try {
+                  ws.send(JSON.stringify({ type: "resize", cols: resize.cols, rows: resize.rows }));
+                } catch (e) {}
+              }
               if (termWs === ws && term) try { term.focus(); } catch (e) {}
               // Send cd command if a specific folder was requested and
               // it differs from the workspace cwd.
@@ -1025,13 +1034,18 @@
           var size = terminalGridSize(container);
           var cols = size.cols, rows = size.rows;
           var resizeKey = cols + "x" + rows;
-          if (resizeKey === lastResizeKey) return;
+          if (resizeKey === lastResizeKey) {
+            if (termWs && termWs.readyState === 0) pendingResize = null;
+            return;
+          }
           lastResizeKey = resizeKey;
           resizeTerminalSurface(container, cols, rows);
           if (termWs && termWs.readyState === 1) {
             try {
               termWs.send(JSON.stringify({ type: "resize", cols: cols, rows: rows }));
             } catch (e) {}
+          } else if (termWs && termWs.readyState === 0) {
+            pendingResize = { cols: cols, rows: rows };
           }
           if (!confirmVisible) { try { term.focus(); } catch (e) {} }
         }, 100);

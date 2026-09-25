@@ -778,10 +778,11 @@
         const parent = document.getElementById("mobileFilePreview");
         if (parent && local.file) {
           const configured = editorOptions();
+          const filePath = local.file.path;
           if (local.editing) {
-            Editor.create({ parent, path: local.file.path, content: local.draft || local.file.content || "", readonly: false, hideHeader: true, lineNumbers: lineNumbersEnabled(), wordWrap: configured.wordWrap, tabSize: configured.tabSize, bracketMatching: configured.bracketMatching, folding: configured.folding, activeLine: configured.activeLine, whitespace: configured.whitespace, markdownPreview: false, onChange(value) { local.draft = value; local.dirty = value !== (local.file.content || ""); syncPreviewDirtyState(); lspDidChange(local.file.path, value); } });
+            Editor.create({ parent, path: filePath, content: local.draft || local.file.content || "", readonly: false, hideHeader: true, lineNumbers: lineNumbersEnabled(), wordWrap: configured.wordWrap, tabSize: configured.tabSize, bracketMatching: configured.bracketMatching, folding: configured.folding, activeLine: configured.activeLine, whitespace: configured.whitespace, markdownPreview: false, onChange(value) { local.draft = value; local.dirty = value !== (local.file.content || ""); syncPreviewDirtyState(); lspDidChange(filePath, value); }, onReady() { lspRenderDiagnostics(filePath); } });
           } else {
-            Editor.create({ parent, path: local.file.path, content: local.file.content || "", readonly: true, hideHeader: true, lineNumbers: lineNumbersEnabled(), wordWrap: configured.wordWrap, tabSize: configured.tabSize, bracketMatching: configured.bracketMatching, folding: configured.folding, activeLine: configured.activeLine, whitespace: configured.whitespace, markdownPreview: !local.file.searchHighlight, searchHighlight: local.file.searchHighlight || null, linesHtml: local.file.linesHtml || null, size: local.file.size });
+            Editor.create({ parent, path: filePath, content: local.file.content || "", readonly: true, hideHeader: true, lineNumbers: lineNumbersEnabled(), wordWrap: configured.wordWrap, tabSize: configured.tabSize, bracketMatching: configured.bracketMatching, folding: configured.folding, activeLine: configured.activeLine, whitespace: configured.whitespace, markdownPreview: !local.file.searchHighlight, searchHighlight: local.file.searchHighlight || null, linesHtml: local.file.linesHtml || null, size: local.file.size, onReady() { lspRenderDiagnostics(filePath); } });
           }
           lspDidOpen(local.file);
         }

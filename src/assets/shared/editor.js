@@ -348,46 +348,36 @@
 
   function create(options) {
     const opts = options || {};
-    const parent = opts.parent;
+    let parent = opts.parent;
     if (!parent) return null;
     if (markdownPreviewEnabled(opts)) {
       parent.innerHTML = markdownPreviewHtml(opts);
       return createMarkdownPreview(opts);
     }
     const readonly = opts.readonly !== false;
-    if (window.HerdrCodeMirror && window.HerdrCodeMirror.create) {
-      parent.innerHTML = codeMirrorShellHtml(opts);
-      const mount = parent.querySelector(".herdr-editor-mount");
-      if (mount) mount.innerHTML = "";
-      const editor = window.HerdrCodeMirror.create(Object.assign({}, opts, { parent: mount }));
-      const api = {
-        getValue() { return editor.getValue(); },
-        setValue(value) { editor.setValue(value); },
-        selectRange(from, to) { if (editor.selectRange) editor.selectRange(from, to); },
-        replaceRange(from, to, value) { if (editor.replaceRange) editor.replaceRange(from, to, value); },
-        // Expose the underlying CodeMirror view (if present) so integrations
-        // like the LSP diagnostics list can compute line positions.
-        get _view() { return editor.view || null; },
-        destroy() { editor.destroy(); if (parent._herdrEditorApi === api) delete parent._herdrEditorApi; parent.innerHTML = ""; },
-      };
-      parent._herdrEditorApi = api;
-      wireFindToolbar(parent, api, opts);
-      wirePositionReadout(parent, api);
-      wireGotoShortcut(parent, api);
-      return api;
-    }
-    parent.innerHTML = codeMirrorShellHtml(opts);
+    let editor = null;
+    let destroyed = false;
+
     const api = {
       getValue() {
+        if (editor && editor.getValue) return editor.getValue();
         const node = parent.querySelector("textarea");
         return node ? node.value : String(opts.content || "");
       },
       setValue(value) {
+        if (editor && editor.setValue) {
+          editor.setValue(value);
+          return;
+        }
         opts.content = String(value == null ? "" : value);
         parent.innerHTML = readonly ? previewHtml(opts) : editHtml(opts);
         wireFindToolbar(parent, api, opts);
       },
       selectRange(from, to) {
+        if (editor && editor.selectRange) {
+          editor.selectRange(from, to);
+          return;
+        }
         const node = parent.querySelector("textarea") || parent.querySelector(".herdr-editor-code");
         if (node && typeof node.setSelectionRange === "function") {
           node.focus();
@@ -395,27 +385,77 @@
         }
       },
       replaceRange(from, to, value) {
+        if (editor && editor.replaceRange) {
+          editor.replaceRange(from, to, value);
+          return;
+        }
         const current = api.getValue();
         api.setValue(current.slice(0, from) + String(value == null ? "" : value) + current.slice(to));
         if (opts.onChange) opts.onChange(api.getValue());
       },
+      // Expose the underlying CodeMirror view (if present) so integrations
+      // like the LSP diagnostics list can compute line positions. The API is
+      // stable while the lazy CodeMirror mount replaces the implementation.
+      get _view() { return editor && editor.view ? editor.view : null; },
+      attach(nextParent) {
+        if (!nextParent || destroyed) return;
+        if (parent && parent !== nextParent && parent._herdrEditorApi === api) delete parent._herdrEditorApi;
+        parent = nextParent;
+        parent._herdrEditorApi = api;
+      },
       destroy() {
+        destroyed = true;
+        if (editor && editor.destroy) editor.destroy();
+        editor = null;
         if (parent._herdrEditorApi === api) delete parent._herdrEditorApi;
         parent.innerHTML = "";
       },
     };
-    parent._herdrEditorApi = api;
-    wireFindToolbar(parent, api, opts);
-    ensureCodeMirror().then(() => {
-      if (!window.HerdrCodeMirror || !window.HerdrCodeMirror.create) return;
-      const value = api.getValue();
-      create(Object.assign({}, opts, { content: value, readonly }));
-    }).catch(() => {
+
+    function notifyReady() {
+      if (typeof opts.onReady === "function") {
+        try { opts.onReady(api); } catch (_) {}
+      }
+    }
+
+    function renderFallback() {
+      if (destroyed || parent._herdrEditorApi !== api) return;
       parent.innerHTML = readonly ? previewHtml(opts) : editHtml(opts);
       const textarea = parent.querySelector("textarea");
       if (textarea && opts.onChange) textarea.addEventListener("input", () => opts.onChange(textarea.value));
       wireFindToolbar(parent, api, opts);
-    });
+      notifyReady();
+    }
+
+    function mountCodeMirror(value) {
+      if (destroyed || !window.HerdrCodeMirror || !window.HerdrCodeMirror.create) return false;
+      parent.innerHTML = codeMirrorShellHtml(Object.assign({}, opts, { content: value }));
+      const mount = parent.querySelector(".herdr-editor-mount");
+      if (mount) mount.innerHTML = "";
+      editor = window.HerdrCodeMirror.create(Object.assign({}, opts, { content: value, parent: mount }));
+      parent._herdrEditorApi = api;
+      wireFindToolbar(parent, api, opts);
+      wirePositionReadout(parent, api);
+      wireGotoShortcut(parent, api);
+      notifyReady();
+      return true;
+    }
+
+    parent.innerHTML = codeMirrorShellHtml(opts);
+    parent._herdrEditorApi = api;
+    wireFindToolbar(parent, api, opts);
+
+    if (window.HerdrCodeMirror && window.HerdrCodeMirror.create) {
+      mountCodeMirror(api.getValue());
+      return api;
+    }
+
+    ensureCodeMirror()
+      .then(() => {
+        if (destroyed || parent._herdrEditorApi !== api) return;
+        if (!mountCodeMirror(api.getValue())) renderFallback();
+      })
+      .catch(() => renderFallback());
     return api;
   }
 
@@ -454,7 +494,7 @@
   }
 
   function createMarkdownPreview(opts) {
-    const parent = opts.parent;
+    let parent = opts.parent;
     const api = {
       getValue() { return String(opts.content || ""); },
       setValue(value) {
@@ -464,12 +504,21 @@
       },
       selectRange() {},
       replaceRange() {},
+      attach(nextParent) {
+        if (!nextParent) return;
+        if (parent && parent !== nextParent && parent._herdrEditorApi === api) delete parent._herdrEditorApi;
+        parent = nextParent;
+        parent._herdrEditorApi = api;
+      },
       destroy() { if (parent._herdrEditorApi === api) delete parent._herdrEditorApi; parent.innerHTML = ""; },
     };
     parent._herdrEditorApi = api;
     wireFindToolbar(parent, api, opts);
     const mount = parent.querySelector(".herdr-markdown-preview-mount");
     if (mount && window.HerdrMarkdownPreview) window.HerdrMarkdownPreview.renderInto(mount, opts.content || "");
+    if (typeof opts.onReady === "function") {
+      try { opts.onReady(api); } catch (_) {}
+    }
     return api;
   }
 
