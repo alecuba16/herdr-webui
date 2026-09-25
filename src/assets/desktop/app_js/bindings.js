@@ -706,6 +706,18 @@ if (globalThis.HerdrTempTerminal) {
     defaultFolderFn: defaultFolderPath,
     workspaceIdFn: tempTerminalWorkspaceId,
     shortcutLabelFn: () => shortcutLabel("webuiShortcuts", "tempTerminalToggle"),
+    promoteShortcutLabelFn: () => shortcutLabel("webuiShortcuts", "tempTerminalPromote"),
+    // Navigate from the HTTP response (no workspace.created handler): the
+    // backend already focused the promoted workspace/tab/pane, and the
+    // workspace.closed event for the emptied temp workspace lands via the
+    // regular refresh burst.
+    onPromoted: (workspace, tab, pane) => {
+      const wsId = workspace && workspace.workspace_id;
+      const tabId = tab && tab.tab_id;
+      const paneId = pane && pane.pane_id;
+      if (!wsId) return;
+      go(wsId, tabId || null, paneId || null);
+    },
   });
   window.addEventListener("resize", () => tempTerminal.handleResize());
 }

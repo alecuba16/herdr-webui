@@ -630,6 +630,16 @@
     api,
     modalId: "tempTerminalModal",
     onHerdrError: handleHerdrErrorFrame,
+    // Navigate from the HTTP response: the backend already focused the
+    // promoted workspace/tab/pane. selectAgent mirrors that surface and
+    // persists the selection like any other explicit navigation.
+    onPromoted: (workspace, tab, pane) => {
+      const wsId = workspace && workspace.workspace_id;
+      const tabId = tab && tab.tab_id;
+      const paneId = pane && pane.pane_id;
+      if (!wsId) return;
+      mobileActions.selectAgent(wsId, tabId || null, paneId || null);
+    },
     fontFamilyFn: () => {
       try {
         const parsed = globalThis.HerdrOptions ? globalThis.HerdrOptions.read() : {};

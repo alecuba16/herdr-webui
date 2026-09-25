@@ -1,5 +1,29 @@
 # Release notes
 
+## 0.4.42 Release Notes
+- Temporary terminals can be promoted into real workspaces without losing
+  the shell. The `⤴` button in the temporary-terminal overlay head (or
+  `Ctrl+B` then `Shift+P` on desktop) re-parents the live tab into a
+  workspace rooted at the shell's current directory, following `cd`s in the
+  live session. The promote is registry-only: the process keeps running, the
+  tab stays open, and the overlay simply hands off and closes. The promoted
+  folder is recorded in recent workspaces.
+- Promotion reuses an existing workspace when one already sits at the live
+  path (paths are canonicalized, so `/var` and `/private/var` aliases on
+  macOS meet) and drops the emptied temporary workspace when the promoted
+  tab was its only tab. Promoting into the workspace the tab already runs
+  in is rejected with the backend's error surfaced in the overlay head, and
+  the tab is left exactly as it was.
+- The terminal WebSocket learned a release toggle
+  (`{"type":"release","enabled":true}`): a connection that promoted its
+  tab skips the `temporary_tab_id` auto-close on teardown, so the promoted
+  shell survives the overlay closing. The skip is double-guarded: the
+  promote route records the tab in a server-side promoted registry, so the
+  teardown can never close a promoted tab even if the WebSocket died before
+  the toggle frame was delivered. The HTTP route is
+  `POST /api/tabs/{id}/promote`, backed by the new `tab.promote` API, and
+  returns the full workspace/tab/pane payload the browser navigates from.
+
 ## 0.4.41 Release Notes
 - Self-refresh cannot reinstall the old version silently anymore. Running
   `herdr-webui update-mac`/`update-linux` without `./` resolves through

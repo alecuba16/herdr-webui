@@ -180,6 +180,7 @@ const DEFAULT_WEBUI_SHORTCUTS = {
   prevPanel: "BracketLeft",
   focusTerminal: "KeyF",
   tempTerminalToggle: "Shift+KeyM",
+  tempTerminalPromote: "Shift+KeyP",
   focusNext: "Period",
   focusPrev: "Comma",
 };
@@ -729,6 +730,7 @@ const shortcutEditorGroups = [
       ["prevPanel", "Previous panel"],
       ["focusTerminal", "Focus terminal"],
       ["tempTerminalToggle", "Open/minimize/restore temporary terminal"],
+      ["tempTerminalPromote", "Promote temporary terminal to workspace"],
       ["focusNext", "Focus next control"],
       ["focusPrev", "Focus previous control"],
     ],

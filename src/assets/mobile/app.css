@@ -1343,7 +1343,11 @@ body.light .mobile-nav-status.working {
   color: var(--muted, #a6adc8);
   font-size: 12px;
 }
+.temp-terminal-hint-error {
+  color: var(--danger, #f38ba8);
+}
 .temp-terminal-minimize,
+.temp-terminal-promote,
 .temp-terminal-close {
   background: transparent;
   border: 0;
@@ -1354,6 +1358,7 @@ body.light .mobile-nav-status.working {
   border-radius: 6px;
 }
 .temp-terminal-minimize:hover,
+.temp-terminal-promote:hover,
 .temp-terminal-close:hover {
   background: var(--border, #313244);
   color: var(--fg, #cdd6f4);

@@ -18,6 +18,14 @@ function makeElement(id = "") {
     className: "",
     title: "",
     type: "",
+    textContent: "",
+    classList: {
+      add() {},
+      remove() {},
+      contains() {
+        return false;
+      },
+    },
     __herdrTempTerminalMinimizeBound: false,
     addEventListener() {},
     removeEventListener() {},
@@ -50,6 +58,10 @@ function makeElement(id = "") {
       if (typeof value === "string") {
         if (value.includes("temp-terminal-minimize") && !this.minimizeButton)
           this.minimizeButton = makeElement("minimize");
+        if (value.includes("temp-terminal-promote") && !this.promoteButton)
+          this.promoteButton = makeElement("promote");
+        if (value.includes("temp-terminal-hint") && !this.hintElement)
+          this.hintElement = makeElement("hint");
         if (value.includes("temp-terminal-close") && !this.closeButton)
           this.closeButton = makeElement("close");
         if (value.includes("terminal-follow-button") && !this.followButton)
@@ -66,6 +78,8 @@ function makeElement(id = "") {
     },
     querySelector(selector) {
       if (selector === ".temp-terminal-minimize") return this.minimizeButton || null;
+      if (selector === ".temp-terminal-promote") return this.promoteButton || null;
+      if (selector === ".temp-terminal-hint") return this.hintElement || null;
       if (selector === ".temp-terminal-close") return this.closeButton || null;
       if (selector === ".terminal" || selector === ".wterm") return this.terminalElement || null;
       if (selector === ".terminal-follow-button") return this.followButton || null;
@@ -909,5 +923,134 @@ describe("temporary terminal", () => {
     });
     // No sessions opened yet
     ok(!tempTerminal.isVisible(), "should not be visible with no sessions");
+  });
+
+  it("promote sends the release toggle, keeps the tab open, and hands off via onPromoted", async () => {
+    const ctx = context();
+    let promoteCall = null;
+    ctx.api = (url, opt = {}) => {
+      ctx.apiCalls.push(url);
+      ctx.apiRequests.push({ url, opt });
+      if (url === "/api/workspaces" && opt.method === "POST")
+        return Promise.resolve({ result: { workspace: { workspace_id: "workspace-temp" } } });
+      if (url === "/api/tabs") return Promise.resolve({ result: { tab: { tab_id: "tab-1" } } });
+      if (url.startsWith("/api/panes"))
+        return Promise.resolve({ result: { panes: [{ tab_id: "tab-1", pane_id: "pane-1", terminal_id: "term-1" }] } });
+      if (url === "/api/tabs/tab-1/promote") {
+        promoteCall = { url, opt };
+        return Promise.resolve({
+          result: {
+            type: "tab_promoted",
+            workspace_created: true,
+            workspace: { workspace_id: "ws-77", label: "promoted", cwd: "/repo/promoted" },
+            tab: { tab_id: "tab-1" },
+            root_pane: { pane_id: "pane-1" },
+          },
+        });
+      }
+      return Promise.resolve({ result: {} });
+    };
+    const promoted = [];
+    const tempTerminal = await openTempTerminal(ctx, {
+      api: ctx.api,
+      onPromoted: (workspace, tab, pane, sessionId) => {
+        promoted.push({ workspace, tab, pane, sessionId });
+      },
+    });
+    ok(tempTerminal.isVisible(), "session is visible before promote");
+
+    tempTerminal.promote();
+    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+
+    ok(promoteCall, "POST /api/tabs/{id}/promote was called");
+    equal(promoted.length, 1, "onPromoted fired once");
+    equal(promoted[0].workspace.workspace_id, "ws-77");
+    equal(promoted[0].tab.tab_id, "tab-1");
+    equal(promoted[0].pane.pane_id, "pane-1");
+
+    // Release toggle armed over the WS BEFORE teardown.
+    const releaseFrames = ctx.sentFrames
+      .filter((frame) => typeof frame === "string")
+      .map((frame) => JSON.parse(frame))
+      .filter((msg) => msg.type === "release");
+    equal(releaseFrames.length, 1, "exactly one release toggle");
+    equal(releaseFrames[0].enabled, true, "release toggle armed");
+
+    // Overlay torn down but the tab was NOT closed.
+    ok(!tempTerminal.isVisible(), "overlay closed after promote");
+    const closeCalls = ctx.apiCalls.filter((url) => url === "/api/tabs/tab-1/close");
+    equal(closeCalls.length, 0, "tab.close must never fire for a promoted tab");
+  });
+
+  it("promote failure keeps the overlay open, disarms the toggle, and surfaces the error", async () => {
+    const ctx = context();
+    ctx.api = (url, opt = {}) => {
+      ctx.apiCalls.push(url);
+      ctx.apiRequests.push({ url, opt });
+      if (url === "/api/workspaces" && opt.method === "POST")
+        return Promise.resolve({ result: { workspace: { workspace_id: "workspace-temp" } } });
+      if (url === "/api/tabs") return Promise.resolve({ result: { tab: { tab_id: "tab-1" } } });
+      if (url.startsWith("/api/panes"))
+        return Promise.resolve({ result: { panes: [{ tab_id: "tab-1", pane_id: "pane-1", terminal_id: "term-1" }] } });
+      if (url === "/api/tabs/tab-1/promote") {
+        const err = new Error("tab tab-1 already runs in workspace ws-1 (cwd /repo/x)");
+        return Promise.reject(err);
+      }
+      return Promise.resolve({ result: {} });
+    };
+    const tempTerminal = await openTempTerminal(ctx, { api: ctx.api });
+    ok(tempTerminal.isVisible());
+
+    // The shared ctx stub runs timers synchronously, which would fire the
+    // 5s error-reset before the assertions; defer them like a real timer.
+    const deferredTimers = [];
+    ctx.setTimeout = (fn) => {
+      deferredTimers.push(fn);
+      return deferredTimers.length;
+    };
+
+    tempTerminal.promote();
+    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+
+    // Overlay stays open so the user can retry or close explicitly.
+    ok(tempTerminal.isVisible(), "overlay must survive a failed promote");
+    // Release toggle was disarmed defensively.
+    const releaseFrames = ctx.sentFrames
+      .filter((frame) => typeof frame === "string")
+      .map((frame) => JSON.parse(frame))
+      .filter((msg) => msg.type === "release");
+    deepEqual(
+      releaseFrames.map((msg) => msg.enabled),
+      [false],
+      "release toggle disarmed after failure",
+    );
+    // Error surfaced in the head hint.
+    const modal = ctx.createdElements.find(
+      (e) => e.className && e.className.includes && e.className.includes("temp-terminal-backdrop"),
+    );
+    ok(modal && modal.hintElement, "hint element exists");
+    ok(
+      modal.hintElement.textContent.includes("already runs in workspace"),
+      "hint shows the backend error message",
+    );
+    ok(modal.hintElement.textContent.includes("Promote failed:"), "hint is marked as a promote failure");
+    // Tab close still not called.
+    const closeCalls = ctx.apiCalls.filter((url) => url === "/api/tabs/tab-1/close");
+    equal(closeCalls.length, 0, "tab.close must not fire on a failed promote");
+  });
+
+  it("promote button is wired in the overlay head", async () => {
+    const ctx = context();
+    await openTempTerminal(ctx);
+    const modal = ctx.createdElements.find(
+      (e) => e.className && e.className.includes && e.className.includes("temp-terminal-backdrop"),
+    );
+    ok(modal, "modal created");
+    ok(modal.promoteButton, "promote button stub exists in head");
+    ok(modal.innerHTML.includes("temp-terminal-promote"), "head markup contains the promote button");
+    ok(
+      modal.innerHTML.includes("Input captured") && modal.innerHTML.includes("Ctrl+G detaches"),
+      "default hint intact",
+    );
   });
 });

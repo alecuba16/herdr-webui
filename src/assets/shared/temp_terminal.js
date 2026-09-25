@@ -73,10 +73,21 @@
       return workspaces.length === 1 && workspaces[0] ? (workspaces[0].workspace_id || "") : "";
     };
     var shortcutLabelFn = opts.shortcutLabelFn || function () { return ""; };
+    var onPromoted = opts.onPromoted || null;
+    var promoteShortcutLabelFn = opts.promoteShortcutLabelFn || function () { return ""; };
 
     // Shared workspace state across all temp terminals.
     var sharedWorkspaceId = null;
     var pendingWorkspacePromise = null;
+
+    // A promoted tab leaves the shared temp workspace (which the backend
+    // drops when the promoted tab was its only tab). Reset the cached id so
+    // the next session re-resolves the workspace instead of calling
+    // tab.create against a dead id.
+    function resetSharedWorkspaceAfterPromote() {
+      sharedWorkspaceId = null;
+      pendingWorkspacePromise = null;
+    }
 
     // Active sessions keyed by session id.
     var sessions = {};
@@ -177,6 +188,15 @@
       var scrollBound = false;
       var createdAt = Date.now();
       var cdSent = false;
+      // Promote hand-off: once the backend accepted the promote, the tab
+      // belongs to a real workspace. All teardown paths must skip the
+      // tab.close calls (the server WS also skips its auto-close after the
+      // release toggle).
+      var promoted = false;
+      var promotePending = false;
+      var promoteError = null;
+      var promoteErrorDefaultText = "";
+      var promoteErrorTimer = null;
 
       // Each session creates its own modal and container DOM.
       var modal = null;
@@ -196,6 +216,7 @@
           '<h2 id="tempTerminalTitle-' + id + '">Temporary terminal</h2>' +
           '<div class="temp-terminal-head-actions">' +
           '<span class="temp-terminal-hint">Input captured · Ctrl+G detaches</span>' +
+          '<button class="temp-terminal-promote" type="button">⤴</button>' +
           '<button class="temp-terminal-minimize" type="button">−</button>' +
           '<button class="temp-terminal-close" type="button">✕</button>' +
           '</div></div>' +
@@ -206,6 +227,10 @@
         doc.body.appendChild(modal);
 
         container = modal.querySelector(".terminal");
+
+        var promoteBtn = modal.querySelector(".temp-terminal-promote");
+        if (promoteBtn) promoteBtn.onclick = promote;
+        setShortcutTitle(promoteBtn, "Promote temporary terminal to workspace", promoteShortcutLabelFn);
 
         var minimizeBtn = modal.querySelector(".temp-terminal-minimize");
         if (minimizeBtn) minimizeBtn.onclick = minimize;
@@ -407,7 +432,7 @@
       }
 
       function isCloseControl(target) {
-        return !!(target && target.closest && target.closest(".temp-terminal-close, .temp-terminal-minimize, .temp-terminal-restore, .temp-terminal-confirm"));
+        return !!(target && target.closest && target.closest(".temp-terminal-close, .temp-terminal-minimize, .temp-terminal-restore, .temp-terminal-confirm, .temp-terminal-promote"));
       }
 
       function tempTerminalOwnsEventTarget(target) {
@@ -675,16 +700,16 @@
         }).catch(function () {});
       }
 
-      function setShortcutTitle(node, action) {
+      function setShortcutTitle(node, action, labelFn) {
         if (!node) return;
-        var title = shortcutTitle(action);
+        var title = shortcutTitle(action, labelFn);
         node.title = title;
         node.setAttribute && node.setAttribute("aria-label", title);
       }
 
-      function shortcutTitle(action) {
+      function shortcutTitle(action, labelFn) {
         var label = "";
-        try { label = shortcutLabelFn() || ""; } catch (e) {}
+        try { label = (labelFn || shortcutLabelFn)() || ""; } catch (e) {}
         return label ? action + " (" + label + ")" : action;
       }
 
@@ -754,7 +779,9 @@
       }
 
       function closeTab() {
-        if (!createdTabId) return;
+        // A promoted tab belongs to a real workspace now: never close it
+        // from the overlay teardown (the process must survive).
+        if (!createdTabId || promoted) return;
         var tabId = createdTabId;
         createdTabId = null;
         closeTabById(tabId);
@@ -764,6 +791,90 @@
         if (!tabId) return;
         api("/api/tabs/" + encodeURIComponent(tabId) + "/close", { method: "POST" })
           .catch(function () {});
+      }
+
+      // Promotes this session's tab into a workspace rooted at the shell's
+      // live cwd. Registry-only on the backend: the process keeps running
+      // and the tab stays open. On success the overlay arms the server WS
+      // release toggle (so its teardown skips the auto-close), hands the
+      // promoted surface to the host app (navigation), and tears down
+      // locally WITHOUT closing the tab.
+      function promote() {
+        if (!isOpen || isMinimized) return;
+        if (promoted || promotePending) return;
+        if (!createdTabId) {
+          showPromoteError("terminal not ready yet");
+          return;
+        }
+        promotePending = true;
+        hidePromoteError();
+        api("/api/tabs/" + encodeURIComponent(createdTabId) + "/promote", { method: "POST" })
+          .then(function (res) {
+            var result = res && res.result;
+            var workspace = result && result.workspace;
+            var tab = result && result.tab;
+            // HTTP 200: the backend re-parented the tab. Even a malformed
+            // payload must never close it: arm the release toggle and hand
+            // off with whatever data exists.
+            promoted = true;
+            // Arm the server-side release toggle FIRST: the WS teardown
+            // races the response handling, and an unarmed socket would
+            // auto-close the freshly promoted tab.
+            sendReleaseToggle(true);
+            // The promoted tab left the shared temp workspace; drop the
+            // cached id so a later session re-resolves it.
+            resetSharedWorkspaceAfterPromote();
+            if (onPromoted) {
+              try {
+                onPromoted(workspace || null, tab || null, (result && result.root_pane) || null, id);
+              } catch (e) {}
+            }
+            // Local teardown without closing the tab: closeTab() checks
+            // `promoted` and skips; the server already skipped via the
+            // release toggle.
+            close();
+          })
+          .catch(function (err) {
+            promotePending = false;
+            // The tab must survive a failed promote exactly as it was:
+            // keep the overlay open so the user can retry or close it
+            // explicitly. Disarm defensively in case a stale toggle ever
+            // armed, and surface the error in the head.
+            sendReleaseToggle(false);
+            var message = err && err.message ? String(err.message) : "promote failed";
+            showPromoteError(message);
+          });
+      }
+
+      function sendReleaseToggle(enabled) {
+        if (!termWs || termWs.readyState !== 1) return;
+        try { termWs.send(JSON.stringify({ type: "release", enabled: !!enabled })); } catch (e) {}
+      }
+
+      function showPromoteError(message) {
+        if (!modal) return;
+        var hint = modal.querySelector(".temp-terminal-hint");
+        if (!hint) return;
+        if (!promoteError) promoteErrorDefaultText = hint.textContent;
+        promoteError = message;
+        hint.textContent = "Promote failed: " + message;
+        hint.classList.add("temp-terminal-hint-error");
+        if (promoteErrorTimer) clearTimeout(promoteErrorTimer);
+        promoteErrorTimer = setTimeout(hidePromoteError, 5000);
+      }
+
+      function hidePromoteError() {
+        if (promoteErrorTimer) {
+          clearTimeout(promoteErrorTimer);
+          promoteErrorTimer = null;
+        }
+        if (!modal) { promoteError = null; return; }
+        var hint = modal.querySelector(".temp-terminal-hint");
+        if (hint && promoteError) {
+          hint.classList.remove("temp-terminal-hint-error");
+          hint.textContent = promoteErrorDefaultText || "Input captured · Ctrl+G detaches";
+        }
+        promoteError = null;
       }
 
       function tempTerminalCore() {
@@ -958,6 +1069,7 @@
         close: close,
         minimize: minimize,
         restore: restore,
+        promote: promote,
         isVisible: isVisible,
         handleResize: handleResize,
         handlePaneExited: handlePaneExited,
@@ -1003,6 +1115,13 @@
       if (sess) sess.minimize();
     }
 
+    // Promotes the visible session's tab; the host app navigates from the
+    // response via onPromoted. No-op when no session is visible.
+    function promote() {
+      var sess = getVisibleSession();
+      if (sess) sess.promote();
+    }
+
     function restore() {
       // Restore the most recently minimized session.
       var minimized = getMinimizedSessions();
@@ -1046,6 +1165,7 @@
       close: close,
       minimize: minimize,
       restore: restore,
+      promote: promote,
       isVisible: isVisible,
       handleResize: handleResize,
       handlePaneExited: handlePaneExited,

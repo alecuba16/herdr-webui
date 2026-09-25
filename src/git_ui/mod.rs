@@ -820,6 +820,7 @@ mod tests {
             _builtin_backend: None,
             builtin_sessions: Arc::new(Mutex::new(HashMap::new())),
             closed_builtin_sessions: Arc::new(Mutex::new(HashSet::new())),
+            promoted_temporary_tabs: Arc::new(Mutex::new(HashSet::new())),
             builtin_start_lock: Arc::new(Mutex::new(())),
             herdr_bin: "herdr".to_string(),
             auth: Arc::new(Mutex::new(AuthConfig {

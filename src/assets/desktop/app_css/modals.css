@@ -231,7 +231,11 @@
   color: var(--muted);
   font-size: 12px;
 }
+.temp-terminal-hint-error {
+  color: var(--danger, #f38ba8);
+}
 .temp-terminal-minimize,
+.temp-terminal-promote,
 .temp-terminal-close {
   background: transparent;
   border: 0;
@@ -242,6 +246,7 @@
   border-radius: 6px;
 }
 .temp-terminal-minimize:hover,
+.temp-terminal-promote:hover,
 .temp-terminal-close:hover {
   background: var(--border);
   color: var(--fg);

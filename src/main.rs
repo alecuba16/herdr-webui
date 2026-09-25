@@ -96,6 +96,13 @@ type BuiltinSessionRegistry =
 /// silently resurrecting the session. An explicit `/api/session/launch`
 /// clears the marker; a fresh WebUI process starts with no markers.
 type ClosedBuiltinSessions = Arc<Mutex<HashSet<String>>>;
+/// Tab ids that were promoted out of the temporary-terminal overlay via
+/// `POST /api/tabs/{id}/promote`. The terminal WS teardown auto-closes the
+/// temporary tab it served; a promote must survive that teardown, so the
+/// promote handler records the id here and the teardown skips it. This is
+/// the server-side half of the client release toggle: it closes the window
+/// where the WS dies before the toggle frame is delivered.
+type PromotedTemporaryTabs = Arc<Mutex<HashSet<String>>>;
 
 fn backend_compatibility_for_supported_range(
     backend: Option<&str>,
@@ -465,6 +472,7 @@ pub(crate) struct WebState {
     _builtin_backend: Option<Arc<builtin_backend::BuiltinBackendHandle>>,
     builtin_sessions: BuiltinSessionRegistry,
     closed_builtin_sessions: ClosedBuiltinSessions,
+    promoted_temporary_tabs: PromotedTemporaryTabs,
     /// Serializes built-in session cold starts. Several handlers can
     /// auto-start the same session concurrently on a fresh browser load;
     /// without a lock two starts would race on binding the session socket
@@ -787,6 +795,7 @@ async fn main() -> io::Result<()> {
     let (rebind_tx, rebind_rx) = tokio::sync::watch::channel(server_settings.lock().unwrap().bind);
     let (settings_tx, _) = tokio::sync::broadcast::channel(16);
     let closed_builtin_sessions: ClosedBuiltinSessions = Arc::new(Mutex::new(HashSet::new()));
+    let promoted_temporary_tabs: PromotedTemporaryTabs = Arc::new(Mutex::new(HashSet::new()));
     let state = WebState {
         api_socket,
         client_socket,
@@ -795,6 +804,7 @@ async fn main() -> io::Result<()> {
         _builtin_backend: None,
         builtin_sessions,
         closed_builtin_sessions,
+        promoted_temporary_tabs,
         builtin_start_lock,
         herdr_bin: std::env::var("HERDR_WEB_HERDR_BIN").unwrap_or_else(|_| "herdr".to_string()),
         auth,
@@ -1124,6 +1134,7 @@ fn app_router(state: WebState) -> Router {
         .route("/api/tabs", get(tabs).post(create_tab))
         .route("/api/tabs/{tab_id}/rename", post(rename_tab))
         .route("/api/tabs/{tab_id}/close", post(close_tab))
+        .route("/api/tabs/{tab_id}/promote", post(promote_tab))
         .route("/api/panes", get(panes))
         .route("/api/panes/{pane_id}/close", post(close_pane))
         .route("/api/pane-layout", get(pane_layout))
@@ -4067,6 +4078,86 @@ async fn close_pane(
     .await
 }
 
+/// Promotes a temporary terminal tab into a workspace rooted at the shell's
+/// live cwd. Thin proxy: the backend owns the semantics (registry-only
+/// re-parent, never stopping the process); the HTTP result carries the full
+/// workspace/tab/pane payload the browser navigates from. On success the
+/// promoted workspace is also recorded in recent workspaces, mirroring
+/// create/open routes (the path comes from the result because the backend
+/// resolves the live cwd).
+async fn promote_tab(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    AxumPath(tab_id): AxumPath<String>,
+) -> Response {
+    if let Err(response) = require_auth(&state, &headers, remote) {
+        return response;
+    }
+    let api = api_for_headers_ensured(&state, &headers).await;
+    // request_value() does blocking socket I/O; offload to a blocking
+    // thread so it does not stall the async runtime (and the terminal
+    // WebSocket loops feeding the overlay).
+    let tab_id_for_registry = tab_id.clone();
+    let outcome = tokio::task::spawn_blocking(move || {
+        api.request_value(json!({
+            "id": "web:tab:promote",
+            "method": "tab.promote",
+            "params": { "tab_id": tab_id },
+        }))
+    })
+    .await;
+    match outcome {
+        Ok(Ok(value)) => {
+            // Relay the full envelope; the browser reads the workspace/tab/
+            // pane fields from it (or shows the backend error inside it).
+            // Record the tab id before relaying, but only on a promote
+            // success: if this socket dies before the overlay's release
+            // toggle frame is delivered, the terminal WS teardown must
+            // still skip the auto-close for the freshly promoted tab (see
+            // terminal_socket cleanup). A failed promote must stay closable.
+            let promoted_ok = value.get("error").is_none();
+            if promoted_ok {
+                if let Ok(mut promoted) = state.promoted_temporary_tabs.lock() {
+                    promoted.insert(tab_id_for_registry);
+                }
+            }
+            let workspace = value
+                .get("result")
+                .and_then(|result| result.get("workspace"));
+            let cwd = workspace
+                .and_then(|workspace| workspace.get("cwd"))
+                .and_then(|cwd| cwd.as_str())
+                .map(|cwd| cwd.trim().to_string())
+                .unwrap_or_default();
+            let label = workspace
+                .and_then(|workspace| workspace.get("label"))
+                .and_then(|label| label.as_str())
+                .map(|label| label.trim().to_string())
+                .filter(|label| !label.is_empty());
+            if !cwd.is_empty() {
+                // Recording must not fail or delay the promote response:
+                // errors are swallowed like in open_recent_workspace.
+                let _ = record_recent_workspace(
+                    &state,
+                    &cwd,
+                    label,
+                    None,
+                    Some("workspace".to_string()),
+                )
+                .await;
+            }
+            Json(value).into_response()
+        }
+        Ok(Err(err)) => (StatusCode::BAD_GATEWAY, Json(json!({ "error": err }))).into_response(),
+        Err(err) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": err.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
 async fn events_ws(
     State(state): State<WebState>,
     headers: HeaderMap,
@@ -4351,7 +4442,15 @@ async fn terminal_ws(
     )
     .await;
     ws.on_upgrade(move |socket| {
-        terminal_socket(client_socket_path, api, attach_backend, query, socket)
+        let promoted_temporary_tabs = state.promoted_temporary_tabs.clone();
+        terminal_socket(
+            client_socket_path,
+            api,
+            attach_backend,
+            query,
+            socket,
+            promoted_temporary_tabs,
+        )
     })
 }
 
@@ -4361,10 +4460,16 @@ async fn terminal_socket(
     backend: SessionBackendTarget,
     query: TerminalQuery,
     mut socket: WebSocket,
+    promoted_temporary_tabs: PromotedTemporaryTabs,
 ) {
     let terminal_id = query.terminal_id.clone();
     let cols = query.cols.unwrap_or(100).max(1);
     let rows = query.rows.unwrap_or(30).max(1);
+    // Per-connection flag armed by the browser's release toggle after a
+    // successful promote. When armed, teardown skips the temporary-tab
+    // auto-close: the tab now belongs to a real workspace and the overlay
+    // is tearing down without closing it.
+    let mut release_armed = false;
     // Guard parity with the built-in backend's socket_path_pair_fits: an
     // external session whose socket path exceeds the OS limit can never
     // attach (connect() fails with a confusing ENAMETOOLONG/ENOENT), so
@@ -4480,7 +4585,14 @@ async fn terminal_socket(
                         if in_tx.send(ClientMessage::Input { data: data.to_vec() }).is_err() { break; }
                     }
                     Some(Ok(Message::Text(text))) => {
-                        for message in terminal_text_messages(&text) {
+                        let text = text.as_str();
+                        // Promote hand-off: the overlay armed this socket with
+                        // a release toggle, so its cleanup must not auto-close
+                        // the now-promoted tab. Consumed here, never forwarded.
+                        if terminal_release_toggle(text, &mut release_armed) {
+                            continue;
+                        }
+                        for message in terminal_text_messages(text) {
                             if in_tx.send(message).is_err() { break; }
                         }
                     }
@@ -4492,14 +4604,36 @@ async fn terminal_socket(
         }
     }
     let _ = in_tx.send(ClientMessage::Detach);
-    if let Some(tab_id) = query
+    let close_tab_id = query
         .temporary_tab_id
         .as_deref()
-        .filter(|value| !value.is_empty())
-    {
+        .filter(|value| !value.is_empty());
+    if should_auto_close_temporary_tab(release_armed, close_tab_id, &promoted_temporary_tabs) {
         let _ = api.request_value(
-            json!({ "id": "web:temp-terminal:close", "method": "tab.close", "params": { "tab_id": tab_id } }),
+            json!({ "id": "web:temp-terminal:close", "method": "tab.close", "params": { "tab_id": close_tab_id.unwrap() } }),
         );
+    }
+}
+
+/// Teardown decision for the temporary tab served by a terminal socket:
+/// auto-close unless the browser armed the release toggle (successful
+/// promote, toggle frame delivered) or the promote route already recorded
+/// the tab in the server-side registry (toggle frame lost when the socket
+/// died mid-promote). A promoted tab must never be closed here.
+fn should_auto_close_temporary_tab(
+    release_armed: bool,
+    tab_id: Option<&str>,
+    promoted_tabs: &PromotedTemporaryTabs,
+) -> bool {
+    if release_armed {
+        return false;
+    }
+    match tab_id.map(str::trim).filter(|tab_id| !tab_id.is_empty()) {
+        Some(tab_id) => !promoted_tabs
+            .lock()
+            .map(|promoted| promoted.contains(tab_id))
+            .unwrap_or(false),
+        None => false,
     }
 }
 
@@ -5043,6 +5177,25 @@ fn terminal_text_messages(text: &str) -> Vec<ClientMessage> {
     }
 }
 
+/// Release toggle for temporary terminal WebSockets. After a successful
+/// promote the overlay sends `{"type":"release","enabled":true}` so this
+/// socket's cleanup skips the `temporary_tab_id` auto-close: the promoted
+/// tab must survive the overlay teardown. Returns true when the message is
+/// a release toggle (consumed here, never forwarded as terminal input).
+fn terminal_release_toggle(text: &str, armed: &mut bool) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+        return false;
+    };
+    if value.get("type").and_then(|value| value.as_str()) != Some("release") {
+        return false;
+    }
+    *armed = value
+        .get("enabled")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    true
+}
+
 /// Events from the terminal reader thread to the WS select loop, through one
 /// ordered channel. Ordering is load-bearing: the STRUCTURED error must be
 /// delivered before the raw failure text, because the browser treats any
@@ -5159,6 +5312,7 @@ mod tests {
             _builtin_backend: None,
             builtin_sessions: Arc::new(Mutex::new(HashMap::new())),
             closed_builtin_sessions: Arc::new(Mutex::new(HashSet::new())),
+            promoted_temporary_tabs: Arc::new(Mutex::new(HashSet::new())),
             builtin_start_lock: Arc::new(Mutex::new(())),
             herdr_bin: "herdr".to_string(),
             auth: Arc::new(Mutex::new(AuthConfig {
@@ -6543,6 +6697,85 @@ mod tests {
                 data: b"\x1b[200~fn main() {\n    println!(\"hi\");\n}\n\x1b[201~".to_vec(),
             }]
         );
+    }
+
+    #[test]
+    fn terminal_release_toggle_arms_only_on_release_messages() {
+        let mut armed = false;
+        assert!(terminal_release_toggle(
+            r#"{"type":"release","enabled":true}"#,
+            &mut armed
+        ));
+        assert!(armed);
+
+        assert!(terminal_release_toggle(
+            r#"{"type":"release","enabled":false}"#,
+            &mut armed
+        ));
+        assert!(!armed);
+
+        // Non-release payloads never touch the flag.
+        let mut armed = false;
+        assert!(!terminal_release_toggle(
+            r#"{"type":"resize","cols":80,"rows":24}"#,
+            &mut armed
+        ));
+        assert!(!armed);
+        assert!(!terminal_release_toggle("plain text", &mut armed));
+        assert!(!armed);
+
+        // A release without an enabled field disarms (defaults to false).
+        let mut armed = true;
+        assert!(terminal_release_toggle(r#"{"type":"release"}"#, &mut armed));
+        assert!(!armed);
+    }
+
+    #[test]
+    fn terminal_release_toggle_keeps_release_text_out_of_terminal_input() {
+        // The toggle is consumed by the socket loop before forwarding, but
+        // keep the guarantee explicit: a release payload must never be
+        // interpreted as terminal input, even if routing changes.
+        let messages = terminal_text_messages(r#"{"type":"release","enabled":true}"#);
+        assert!(messages.is_empty());
+    }
+
+    #[test]
+    fn auto_close_skips_armed_and_promoted_temporary_tabs() {
+        let promoted: PromotedTemporaryTabs = Arc::new(Mutex::new(HashSet::new()));
+
+        // Normal teardown: the temporary tab is auto-closed.
+        assert!(should_auto_close_temporary_tab(
+            false,
+            Some("tab-1"),
+            &promoted
+        ));
+
+        // Armed release toggle (promote succeeded, toggle delivered): skip.
+        assert!(!should_auto_close_temporary_tab(
+            true,
+            Some("tab-1"),
+            &promoted
+        ));
+
+        // Promote recorded the tab server-side (toggle lost): skip.
+        promoted.lock().unwrap().insert("tab-2".to_string());
+        assert!(!should_auto_close_temporary_tab(
+            false,
+            Some("tab-2"),
+            &promoted
+        ));
+        // Other tabs in the same registry still auto-close.
+        assert!(should_auto_close_temporary_tab(
+            false,
+            Some("tab-1"),
+            &promoted
+        ));
+
+        // No temporary tab id: nothing to close.
+        assert!(!should_auto_close_temporary_tab(false, None, &promoted));
+
+        // Empty id is treated as absent.
+        assert!(!should_auto_close_temporary_tab(false, Some(""), &promoted));
     }
 
     #[test]
@@ -9859,6 +10092,85 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         handle.join().unwrap();
         let _ = fs::remove_file(socket);
+    }
+
+    // Promote proxies the tab id and relays the full result payload (the
+    // browser navigates from the workspace/tab/pane fields in it). A success
+    // also records the promoted workspace in recent workspaces, using the
+    // cwd/label from the result.
+    #[cfg(unix)]
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn promote_tab_handler_proxies_promote_and_relays_result() {
+        let _guard = lock_env();
+        let config_home = std::env::temp_dir().join(format!(
+            "herdr-webui-promote-recent-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&config_home).unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
+
+        let (socket, handle) = fake_api_socket_for_method(
+            "tab.promote",
+            json!({
+                "id": "web:tab:promote",
+                "result": {
+                    "type": "tab_promoted",
+                    "workspace_created": true,
+                    "workspace": { "id": "ws-77", "label": "promoted", "cwd": "/repo/promoted" },
+                    "tab": { "id": "tab-99" },
+                    "root_pane": { "id": "pane-1" }
+                }
+            }),
+        );
+        let mut state = test_state();
+        state.api_socket = Some(socket.clone());
+        let app = test_app_with_state(state.clone());
+
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/tabs/tab-99/promote")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["result"]["type"], "tab_promoted");
+        assert_eq!(body["result"]["workspace_created"], true);
+        assert_eq!(body["result"]["workspace"]["id"], "ws-77");
+        assert_eq!(body["result"]["tab"]["id"], "tab-99");
+        assert_eq!(body["result"]["root_pane"]["id"], "pane-1");
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
+
+        // The tab id was recorded in the promoted-tabs registry so the
+        // terminal WS teardown can never auto-close it, even if the release
+        // toggle frame was lost.
+        assert!(
+            state
+                .promoted_temporary_tabs
+                .lock()
+                .unwrap()
+                .contains("tab-99"),
+            "promoted tab must be recorded in the promoted-tabs registry"
+        );
+
+        // The promoted cwd/label were recorded in recents.
+        {
+            let guard = state.server_settings.lock().unwrap();
+            let recent = &guard.recent_workspaces;
+            assert_eq!(recent.len(), 1);
+            assert_eq!(recent[0].path, "/repo/promoted");
+            assert_eq!(recent[0].label.as_deref(), Some("promoted"));
+            assert_eq!(recent[0].kind.as_deref(), Some("workspace"));
+        }
+        let _ = fs::remove_dir_all(&config_home);
+        std::env::remove_var("XDG_CONFIG_HOME");
     }
 
     #[cfg(unix)]
@@ -13410,6 +13722,7 @@ mod tui_parity_e2e_tests {
             _builtin_backend: None,
             builtin_sessions: Arc::new(Mutex::new(HashMap::new())),
             closed_builtin_sessions: Arc::new(Mutex::new(HashSet::new())),
+            promoted_temporary_tabs: Arc::new(Mutex::new(HashSet::new())),
             builtin_start_lock: Arc::new(Mutex::new(())),
             herdr_bin: "herdr".to_string(),
             auth: Arc::new(Mutex::new(AuthConfig {

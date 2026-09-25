@@ -626,6 +626,18 @@ impl BuiltinState {
                 "tab.closed",
                 json!({ "tab_id": optional_string(params, "tab_id") }),
             ),
+            // `tab.promote` returns the full result (workspace + tab + pane)
+            // so clients can navigate from the HTTP response itself; the
+            // events are for other connected browsers. workspace_created
+            // marks whether a new workspace was created (refresh) or the tab
+            // just moved into an existing one (cheaper tab.renamed refresh).
+            "tab.promote" => {
+                if result.get("workspace_created") == Some(&Value::Bool(true)) {
+                    self.publish_event("workspace.created", result.clone())
+                } else {
+                    self.publish_event("tab.renamed", result.clone())
+                }
+            }
             "pane.close" => self.publish_event(
                 "pane.closed",
                 json!({ "pane_id": optional_string(params, "pane_id") }),
@@ -708,6 +720,11 @@ impl BuiltinState {
                 let tab_id = required_string(&params, "tab_id")?;
                 self.close_tab(&tab_id)?;
                 Ok(json!({ "type": "ok" }))
+            }
+            "tab.promote" => {
+                let tab_id = required_string(&params, "tab_id")?;
+                let result = self.promote_tab(&tab_id)?;
+                Ok(result)
             }
             "pane.list" => Ok(
                 json!({ "type": "pane_list", "panes": self.pane_list(optional_string(&params, "workspace_id"))? }),
@@ -1170,6 +1187,181 @@ impl BuiltinState {
         }
 
         Ok(())
+    }
+
+    /// Promotes a temporary terminal tab into a real workspace rooted at the
+    /// terminal's CURRENT live path (the directory the shell `cd`-ed into),
+    /// without stopping the process or closing the tab.
+    ///
+    /// Registry-only re-parent: the TabRecord/PaneRecord workspace_id fields
+    /// are rewritten, the tab_id moves between the workspace tab_ids lists,
+    /// and the emptied temporary workspace is dropped. `data.terminals` is
+    /// never touched, so the PTY child keeps running and the attached
+    /// browser keeps its live connection.
+    fn promote_tab(&self, tab_id: &str) -> Result<Value, String> {
+        // Snapshot the tab/pane/terminal ids and the spawn cwd without
+        // holding the lock during the filesystem probes.
+        let (pane_id, terminal_id, pane_cwd) = {
+            let data = self
+                .data
+                .lock()
+                .map_err(|_| "state unavailable".to_string())?;
+            let tab = data
+                .tabs
+                .get(tab_id)
+                .ok_or_else(|| format!("tab {tab_id} not found"))?;
+            let pane_id = tab
+                .pane_ids
+                .first()
+                .cloned()
+                .ok_or_else(|| format!("tab {tab_id} has no panes"))?;
+            let pane = data
+                .panes
+                .get(&pane_id)
+                .ok_or_else(|| format!("pane {pane_id} not found"))?;
+            (pane_id, pane.terminal_id.clone(), pane.cwd.clone())
+        };
+
+        // Resolve the terminal's live cwd. A missing probe falls back to the
+        // pane's registered cwd (same semantics as worktree_open's
+        // canonicalize fallback).
+        let live_cwd = self
+            .terminal(&terminal_id)
+            .and_then(|terminal| live_process_cwd(terminal.child_pid()))
+            .unwrap_or(pane_cwd.clone());
+        let canonical_live = std::fs::canonicalize(&live_cwd).unwrap_or(live_cwd.clone());
+
+        let mut data = self
+            .data
+            .lock()
+            .map_err(|_| "state unavailable".to_string())?;
+        // Re-validate under the lock: the tab may have been closed while we
+        // probed the filesystem.
+        let tab = data
+            .tabs
+            .get(tab_id)
+            .ok_or_else(|| format!("tab {tab_id} not found"))?
+            .clone();
+
+        // Guard: promoting into the workspace the tab already lives in is a
+        // no-op error; the caller keeps the tab exactly as it was.
+        let current_workspace_cwd = data
+            .workspaces
+            .get(&tab.workspace_id)
+            .map(|workspace| {
+                std::fs::canonicalize(&workspace.cwd).unwrap_or_else(|_| workspace.cwd.clone())
+            })
+            .unwrap_or_else(|| PathBuf::from(""));
+        if current_workspace_cwd == canonical_live {
+            return Err(format!(
+                "tab {tab_id} already runs in workspace {} (cwd {})",
+                tab.workspace_id,
+                canonical_live.display()
+            ));
+        }
+
+        // Find-or-create the workspace at the canonical live path, reusing
+        // worktree_open semantics: canonicalize both sides so a temp cwd and
+        // a user-typed path to the same folder meet.
+        let existing_workspace_id = data
+            .workspaces
+            .values()
+            .find(|workspace| {
+                std::fs::canonicalize(&workspace.cwd).unwrap_or_else(|_| workspace.cwd.clone())
+                    == canonical_live
+            })
+            .map(|workspace| workspace.workspace_id.clone());
+        let (workspace_id, created_workspace) = match existing_workspace_id {
+            Some(existing) => (existing, false),
+            None => {
+                let workspace_id = next_id(&mut data, "ws");
+                data.workspaces.insert(
+                    workspace_id.clone(),
+                    WorkspaceRecord {
+                        workspace_id: workspace_id.clone(),
+                        label: workspace_label(&canonical_live),
+                        cwd: canonical_live.clone(),
+                        tab_ids: Vec::new(),
+                    },
+                );
+                (workspace_id, true)
+            }
+        };
+
+        // Registry-only re-parent. The order matters for the guard above:
+        // rewrite the records before moving the tab_id so a panic mid-way can
+        // never leave the tab in both lists (the ids stay unique because
+        // every edit is under the same lock).
+        let old_workspace_id = tab.workspace_id.clone();
+        if let Some(tab_record) = data.tabs.get_mut(tab_id) {
+            tab_record.workspace_id = workspace_id.clone();
+            if tab_record.label == "temp" {
+                tab_record.label = "Shell".to_string();
+            }
+        }
+        for pane_id in &tab.pane_ids {
+            if let Some(pane) = data.panes.get_mut(pane_id) {
+                pane.workspace_id = workspace_id.clone();
+                pane.cwd = canonical_live.clone();
+            }
+        }
+        if let Some(old_workspace) = data.workspaces.get_mut(&old_workspace_id) {
+            old_workspace.tab_ids.retain(|id| id != tab_id);
+        }
+        if let Some(workspace) = data.workspaces.get_mut(&workspace_id) {
+            workspace.tab_ids.push(tab_id.to_string());
+        }
+
+        // Drop the emptied temporary workspace. No terminals are left behind
+        // (the promoted tab took the only panes with it), so this is purely
+        // a registry removal; close_workspace's kill loop must NOT run.
+        let mut dropped_temp_workspace = None;
+        if let Some(old_workspace) = data.workspaces.get(&old_workspace_id) {
+            if old_workspace.tab_ids.is_empty() {
+                data.workspaces.remove(&old_workspace_id);
+                dropped_temp_workspace = Some(old_workspace_id.clone());
+            }
+        }
+
+        // Focus the promoted surface.
+        data.focused_workspace_id = Some(workspace_id.clone());
+        data.focused_tab_id = Some(tab_id.to_string());
+        data.focused_pane_id = tab.pane_ids.first().cloned();
+
+        normalize_focus(&mut data);
+
+        let workspace = data
+            .workspaces
+            .get(&workspace_id)
+            .map(|workspace| workspace_json(workspace, &data))
+            .unwrap_or_else(|| json!({}));
+        let tab_json_value = data
+            .tabs
+            .get(tab_id)
+            .map(|tab| tab_json(tab, &data))
+            .unwrap_or_else(|| json!({}));
+        let pane_json_value = data
+            .panes
+            .get(&pane_id)
+            .map(|pane| pane_json(pane, &data))
+            .unwrap_or_else(|| json!({}));
+        drop(data);
+
+        // Events for OTHER connected browsers. The promoting client navigates
+        // from the HTTP response (publish_success_event relays the full
+        // result as workspace.created when a new workspace was made, or as
+        // tab.renamed when the tab only moved into an existing one).
+        if let Some(dropped) = dropped_temp_workspace {
+            self.publish_event("workspace.closed", json!({ "workspace_id": dropped }));
+        }
+
+        Ok(json!({
+            "type": "tab_promoted",
+            "workspace_created": created_workspace,
+            "workspace": workspace,
+            "tab": tab_json_value,
+            "root_pane": pane_json_value,
+        }))
     }
 
     fn close_pane(&self, pane_id: &str) -> Result<(), String> {
@@ -2708,6 +2900,42 @@ fn process_table_uncached() -> io::Result<Vec<ProcessInfo>> {
 #[cfg(not(unix))]
 fn process_table() -> io::Result<Vec<ProcessInfo>> {
     Ok(Vec::new())
+}
+
+/// Reads a live process's current working directory. Used by `tab.promote`
+/// to root the promoted workspace at the directory the shell `cd`-ed into,
+/// not the PTY spawn cwd. Returns `None` when the probe fails (missing pid,
+/// permission denied, unsupported platform) so callers fall back to the
+/// pane's registered cwd.
+#[cfg(unix)]
+fn live_process_cwd(pid: Option<u32>) -> Option<PathBuf> {
+    let pid = pid?;
+    #[cfg(target_os = "linux")]
+    {
+        // Cheapest probe: /proc/<pid>/cwd resolves to the live cwd.
+        std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        // macOS and other unixes: ask lsof for the process's cwd. Output is
+        // line-oriented with -Fn: "p<pid>", "fcwd", "n<path>".
+        let output = std::process::Command::new("lsof")
+            .args(["-a", "-p", &pid.to_string(), "-d", "cwd", "-Fn"])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let text = String::from_utf8_lossy(&output.stdout);
+        text.lines()
+            .find_map(|line| line.strip_prefix('n'))
+            .map(PathBuf::from)
+    }
+}
+
+#[cfg(not(unix))]
+fn live_process_cwd(_pid: Option<u32>) -> Option<PathBuf> {
+    None
 }
 
 fn parse_process_table(raw: &str) -> Vec<ProcessInfo> {
@@ -4599,6 +4827,420 @@ mod tests {
         assert!(tabs
             .iter()
             .any(|tab| tab["tab_id"] == background_tab_id && tab["focused"] == false));
+    }
+
+    // ── tab.promote ──
+
+    /// Shared fixture for the promote tests: a workspace "temp" at `dir`
+    /// holding one overlay-shaped tab labeled "temp", with a live terminal
+    /// process so the live-cwd probe and the "process must never die"
+    /// invariant are both exercised. Records are inserted by hand (no
+    /// workspace.create/tab.create round-trip) so no login shell is spawned:
+    /// the user's rc files (pyenv and friends) can delay input processing for
+    /// seconds and make the cd-driven tests flaky.
+    fn promote_fixture(dir: &Path) -> (BuiltinState, String, String) {
+        let state = BuiltinState::new(
+            dir.to_path_buf(),
+            Some(default_shell()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        let workspace_id = promote_create_workspace(&state, "temp", dir);
+        #[cfg(unix)]
+        let tab_id = promote_create_tab_with_shell(&state, &workspace_id, "temp");
+        #[cfg(not(unix))]
+        let tab_id = {
+            let tab = state.handle_request(
+                "tab",
+                "tab.create",
+                json!({ "workspace_id": workspace_id, "label": "temp", "focus": false }),
+            );
+            tab["result"]["tab"]["tab_id"].as_str().unwrap().to_string()
+        };
+        (state, workspace_id, tab_id)
+    }
+
+    /// Inserts a bare WorkspaceRecord (no root tab, no terminal). Mirrors
+    /// create_workspace's registry shape for tests that only need the
+    /// bookkeeping.
+    fn promote_create_workspace(state: &BuiltinState, label: &str, cwd: &Path) -> String {
+        let mut data = state.data.lock().unwrap();
+        let workspace_id = next_id(&mut data, "ws");
+        data.workspaces.insert(
+            workspace_id.clone(),
+            WorkspaceRecord {
+                workspace_id: workspace_id.clone(),
+                label: label.to_string(),
+                cwd: cwd.to_path_buf(),
+                tab_ids: Vec::new(),
+            },
+        );
+        workspace_id
+    }
+
+    /// Creates a tab whose terminal runs an rc-free interactive shell, so a
+    /// written `cd` is processed within milliseconds instead of waiting on
+    /// login-shell rc files. Mirrors create_tab's registry shape exactly;
+    /// test-only.
+    #[cfg(unix)]
+    fn promote_create_tab_with_shell(
+        state: &BuiltinState,
+        workspace_id: &str,
+        label: &str,
+    ) -> String {
+        let cwd = {
+            let data = state.data.lock().unwrap();
+            data.workspaces
+                .get(workspace_id)
+                .map(|workspace| workspace.cwd.clone())
+                .unwrap()
+        };
+        let argv = vec!["/bin/sh".to_string(), "-i".to_string()];
+        let (tab_id, pane_id, terminal_id) = {
+            let mut data = state.data.lock().unwrap();
+            (
+                next_id(&mut data, "tab"),
+                next_id(&mut data, "pane"),
+                next_id(&mut data, "term"),
+            )
+        };
+        let terminal = TerminalRuntime::spawn(
+            terminal_id.clone(),
+            cwd.clone(),
+            argv.clone(),
+            30,
+            100,
+            state.events.clone(),
+            PaneEventContext {
+                workspace_id: workspace_id.to_string(),
+                tab_id: tab_id.clone(),
+                pane_id: pane_id.clone(),
+                terminal_id: terminal_id.clone(),
+            },
+            state.jcode_detection_variant,
+        )
+        .unwrap();
+        let mut data = state.data.lock().unwrap();
+        data.tabs.insert(
+            tab_id.clone(),
+            TabRecord {
+                tab_id: tab_id.clone(),
+                workspace_id: workspace_id.to_string(),
+                label: label.to_string(),
+                pane_ids: vec![pane_id.clone()],
+            },
+        );
+        if let Some(workspace) = data.workspaces.get_mut(workspace_id) {
+            workspace.tab_ids.push(tab_id.clone());
+        }
+        data.panes.insert(
+            pane_id.clone(),
+            PaneRecord {
+                pane_id: pane_id.clone(),
+                terminal_id: terminal_id.clone(),
+                workspace_id: workspace_id.to_string(),
+                tab_id: tab_id.clone(),
+                cwd,
+                label: None,
+                argv,
+            },
+        );
+        data.terminals.insert(terminal_id, terminal);
+        tab_id
+    }
+
+    /// Writes a `cd <dir>` into the tab's shell and waits for the shell to
+    /// process it, so the live-cwd probe observes the change like in
+    /// production. Polls because shell startup and parallel test load can
+    /// delay the command; panics after ~5s so a stuck shell fails the test
+    /// loudly instead of tripping the same-workspace guard below.
+    #[cfg(unix)]
+    fn promote_send_cd(state: &BuiltinState, tab_id: &str, dir: &Path) {
+        let terminal_id = {
+            let data = state.data.lock().unwrap();
+            data.tabs
+                .get(tab_id)
+                .and_then(|tab| tab.pane_ids.first())
+                .and_then(|pane_id| data.panes.get(pane_id))
+                .map(|pane| pane.terminal_id.clone())
+                .unwrap()
+        };
+        let Some(terminal) = state.terminal(&terminal_id) else {
+            panic!("no terminal for tab {tab_id}");
+        };
+        let _ = terminal.write_input(format!("cd {}\n", dir.to_string_lossy()).as_bytes());
+        // The probe resolves symlinks (macOS tempdir is /var -> /private/var),
+        // so compare canonical forms.
+        let canonical_dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+        let mut last_seen = None;
+        for _ in 0..50 {
+            let observed = live_process_cwd(terminal.child_pid());
+            if observed.as_deref() == Some(canonical_dir.as_path()) {
+                return;
+            }
+            last_seen = observed;
+            thread::sleep(Duration::from_millis(100));
+        }
+        panic!(
+            "shell in tab {tab_id} never processed cd into {dir:?} (last live cwd: {last_seen:?})"
+        );
+    }
+
+    fn promoted_workspaces(snapshot: &Value) -> Vec<String> {
+        snapshot["result"]["snapshot"]["workspaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|workspace| {
+                workspace["workspace_id"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn builtin_promote_reparents_tab_into_new_workspace_without_killing_terminal() {
+        let temp = std::env::temp_dir().join(format!(
+            "herdr-promote-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&temp).unwrap();
+        let (state, temp_workspace_id, tab_id) = promote_fixture(&temp);
+
+        // Terminal is alive before the promote.
+        let terminal_id = {
+            let data = state.data.lock().unwrap();
+            data.tabs
+                .get(&tab_id)
+                .and_then(|tab| tab.pane_ids.first())
+                .and_then(|pane_id| data.panes.get(pane_id))
+                .map(|pane| pane.terminal_id.clone())
+                .unwrap()
+        };
+        let alive_before = state
+            .terminal(&terminal_id)
+            .is_some_and(|terminal| !terminal.exited.load(Ordering::Acquire));
+        assert!(alive_before);
+
+        // Promote: the live cwd (the shell has not cd-ed anywhere yet, so
+        // the probe reports the spawn cwd = temp) is already the workspace
+        // cwd, so this first call must fail the same-workspace guard.
+        let guard =
+            state.handle_request("promote-guard", "tab.promote", json!({ "tab_id": tab_id }));
+        assert!(
+            guard["error"].is_object(),
+            "promoting into the same workspace must fail, got: {guard}"
+        );
+
+        // cd the shell into a subdirectory, then promote for real. The
+        // live-cwd probe must pick the subdirectory, not the spawn cwd.
+        let sub = temp.join("sub");
+        fs::create_dir_all(&sub).unwrap();
+        let canonical_sub = std::fs::canonicalize(&sub).unwrap_or_else(|_| sub.clone());
+        // Drive the shell with a real `cd` so the live probe sees it. This
+        // requires the PTY child to be a shell; the fixture's /bin/sh -i
+        // guarantees that on unix.
+        promote_send_cd(&state, &tab_id, &sub);
+        let live = state
+            .terminal(&terminal_id)
+            .and_then(|terminal| live_process_cwd(terminal.child_pid()))
+            .unwrap_or_else(|| PathBuf::from(""));
+        assert_eq!(
+            live, canonical_sub,
+            "live cwd probe should follow the shell cd"
+        );
+
+        let promoted = state.handle_request("promote", "tab.promote", json!({ "tab_id": tab_id }));
+        assert!(
+            promoted["result"].is_object(),
+            "promote should succeed, got: {promoted}"
+        );
+        let new_workspace_id = promoted["result"]["workspace"]["workspace_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_ne!(new_workspace_id, temp_workspace_id);
+        assert_eq!(
+            promoted["result"]["workspace"]["cwd"],
+            canonical_sub.to_string_lossy().to_string(),
+            "promoted workspace must root at the live cwd"
+        );
+        assert_eq!(promoted["result"]["tab"]["label"], "Shell");
+
+        // Invariant: the terminal was never stopped.
+        let alive_after = state
+            .terminal(&terminal_id)
+            .is_some_and(|terminal| !terminal.exited.load(Ordering::Acquire));
+        assert!(alive_after, "promote must never stop the process");
+
+        // The emptied temp workspace is gone from the registry.
+        let snapshot = state.handle_request("snapshot", "session.snapshot", json!({}));
+        let workspace_ids = promoted_workspaces(&snapshot);
+        assert!(!workspace_ids.contains(&temp_workspace_id));
+        assert!(workspace_ids.contains(&new_workspace_id));
+
+        // The promoted tab lists the new workspace and keeps its pane.
+        let listed_tab = snapshot["result"]["snapshot"]["tabs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tab| tab["tab_id"] == tab_id.as_str())
+            .unwrap()
+            .clone();
+        assert_eq!(listed_tab["workspace_id"], new_workspace_id.as_str());
+        let panes = snapshot["result"]["snapshot"]["panes"].as_array().unwrap();
+        assert!(panes.iter().any(|pane| pane["tab_id"] == tab_id.as_str()
+            && pane["workspace_id"] == new_workspace_id.as_str()));
+
+        let _ = fs::remove_dir_all(&temp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn builtin_promote_finds_existing_workspace_at_live_path() {
+        let temp = std::env::temp_dir().join(format!(
+            "herdr-promote-existing-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let sub = temp.join("sub");
+        fs::create_dir_all(&sub).unwrap();
+        let (state, temp_workspace_id, tab_id) = promote_fixture(&temp);
+
+        // A workspace already exists at the target path (bare record, like
+        // a workspace whose root tab was closed).
+        let existing_workspace_id = promote_create_workspace(&state, "existing", &sub);
+
+        // Point the pane cwd at the target (the live probe runs against the
+        // shell pid; in the test the shell is real so cd is possible, but the
+        // registry pane.cwd fallback covers the probe-less path too). Drive
+        // a real cd so both the live probe and the fallback agree.
+        promote_send_cd(&state, &tab_id, &sub);
+
+        let promoted = state.handle_request("promote", "tab.promote", json!({ "tab_id": tab_id }));
+        assert!(
+            promoted["result"].is_object(),
+            "promote should reuse the existing workspace, got: {promoted}"
+        );
+        assert_eq!(
+            promoted["result"]["workspace"]["workspace_id"],
+            existing_workspace_id.as_str(),
+            "must reuse the workspace already open at the live path"
+        );
+
+        let snapshot = state.handle_request("snapshot", "session.snapshot", json!({}));
+        let workspace_ids = promoted_workspaces(&snapshot);
+        assert!(!workspace_ids.contains(&temp_workspace_id));
+        assert!(workspace_ids.contains(&existing_workspace_id));
+        let listed_tab = snapshot["result"]["snapshot"]["tabs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tab| tab["tab_id"] == tab_id.as_str())
+            .unwrap()
+            .clone();
+        assert_eq!(listed_tab["workspace_id"], existing_workspace_id.as_str());
+
+        let _ = fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn builtin_promote_unknown_tab_fails() {
+        let state = BuiltinState::new(
+            std::env::temp_dir(),
+            Some(default_shell()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        let promoted =
+            state.handle_request("promote", "tab.promote", json!({ "tab_id": "tab_missing" }));
+        assert!(promoted["error"].is_object());
+        assert!(promoted["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("tab tab_missing not found"));
+    }
+
+    #[test]
+    fn builtin_promote_same_workspace_is_an_error() {
+        let temp = std::env::temp_dir().join(format!(
+            "herdr-promote-same-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&temp).unwrap();
+        let (state, _workspace_id, tab_id) = promote_fixture(&temp);
+
+        // The shell has not cd-ed anywhere: the live cwd equals the
+        // workspace cwd, so promote must refuse instead of making a
+        // duplicate workspace.
+        let promoted = state.handle_request("promote", "tab.promote", json!({ "tab_id": tab_id }));
+        assert!(promoted["error"].is_object());
+        let message = promoted["error"]["message"].as_str().unwrap();
+        assert!(
+            message.contains("already runs in workspace"),
+            "unexpected error: {message}"
+        );
+
+        let _ = fs::remove_dir_all(&temp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn builtin_promote_publishes_workspace_events() {
+        let temp = std::env::temp_dir().join(format!(
+            "herdr-promote-events-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let sub = temp.join("sub");
+        fs::create_dir_all(&sub).unwrap();
+        let (state, temp_workspace_id, tab_id) = promote_fixture(&temp);
+        let rx = state.subscribe_events();
+
+        // cd into the subdir and promote.
+        promote_send_cd(&state, &tab_id, &sub);
+        let promoted = state.handle_request("promote", "tab.promote", json!({ "tab_id": tab_id }));
+        assert!(promoted["result"].is_object(), "promote failed: {promoted}");
+
+        // The workspace.closed event for the dropped temp workspace fires
+        // through publish_success_event (tab.promote arm), and
+        // workspace.created for the new workspace.
+        let mut saw_closed = false;
+        let mut saw_created = false;
+        while let Ok(event) = rx.try_recv() {
+            match event["event"].as_str() {
+                Some("workspace.closed")
+                    if event["data"]["workspace_id"] == temp_workspace_id.as_str() =>
+                {
+                    saw_closed = true;
+                }
+                Some("workspace.created") => saw_created = true,
+                _ => {}
+            }
+        }
+        assert!(
+            saw_closed,
+            "workspace.closed for the emptied temp workspace must fire"
+        );
+        assert!(
+            saw_created,
+            "workspace.created for the promoted workspace must fire"
+        );
+
+        let _ = fs::remove_dir_all(&temp);
     }
 
     #[test]
