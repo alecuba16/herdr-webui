@@ -5489,6 +5489,22 @@ mod tests {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     }
 
+    /// Deterministic directory for fake local-socket paths whose length must
+    /// stay under `SOCKET_PATH_LIMIT` even on CI runners whose TMPDIR is a
+    /// long per-job path (GitHub macOS runners use ~70+ byte temp dirs, so a
+    /// nanos-based name there would push the attach socket over the limit
+    /// and the relay would reject it before ever connecting).
+    #[cfg(unix)]
+    fn fake_socket_dir() -> PathBuf {
+        static DIR: OnceLock<PathBuf> = OnceLock::new();
+        DIR.get_or_init(|| {
+            let dir = PathBuf::from("/tmp").join(format!("herdr-wui-t{}", std::process::id()));
+            let _ = fs::create_dir_all(&dir);
+            dir
+        })
+        .clone()
+    }
+
     #[cfg(unix)]
     fn fake_api_socket(response: serde_json::Value) -> (PathBuf, thread::JoinHandle<()>) {
         use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
@@ -7029,8 +7045,8 @@ mod tests {
     ) -> (PathBuf, thread::JoinHandle<()>) {
         use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
 
-        let path = std::env::temp_dir().join(format!(
-            "herdr-webui-attach-test-{}-{}.sock",
+        let path = fake_socket_dir().join(format!(
+            "attach-{}-{}.sock",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
@@ -7090,8 +7106,8 @@ mod tests {
     ) -> (PathBuf, thread::JoinHandle<()>) {
         use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
 
-        let path = std::env::temp_dir().join(format!(
-            "herdr-webui-close-test-{}-{}.sock",
+        let path = fake_socket_dir().join(format!(
+            "close-{}-{}.sock",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
@@ -7252,8 +7268,8 @@ mod tests {
         {
             use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
 
-            let stuck_path = std::env::temp_dir().join(format!(
-                "herdr-webui-stuck-api-{}-{}.sock",
+            let stuck_path = fake_socket_dir().join(format!(
+                "stuck-{}-{}.sock",
                 SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap()
