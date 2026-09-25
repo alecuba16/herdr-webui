@@ -181,6 +181,7 @@
       var writeFlushPending = false;
       var terminalQueryReplyState = {};
       var resizeTimer = null;
+      var lastResizeKey = "";
       var linkProvider = null;
       var confirmVisible = false;
       var keyTrapBound = false;
@@ -532,8 +533,6 @@
             return;
           }
           connectTerminalWs(terminalId);
-          setTimeout(handleResize, 50);
-          setTimeout(handleResize, 250);
         });
       }
 
@@ -608,6 +607,7 @@
             if (!isOpen || !term) return;
             var cols = size.cols, rows = size.rows;
             resizeTerminalSurface(container, cols, rows);
+            lastResizeKey = cols + "x" + rows;
             var url = wsUrl(
               "/ws/terminal?terminal_id=" + encodeURIComponent(terminalId) +
               "&cols=" + cols + "&rows=" + rows +
@@ -1024,6 +1024,9 @@
           if (!container) return;
           var size = terminalGridSize(container);
           var cols = size.cols, rows = size.rows;
+          var resizeKey = cols + "x" + rows;
+          if (resizeKey === lastResizeKey) return;
+          lastResizeKey = resizeKey;
           resizeTerminalSurface(container, cols, rows);
           if (termWs && termWs.readyState === 1) {
             try {
