@@ -52,9 +52,11 @@ echo "==> building herdr-webui (debug)"
 # the backend-rejected same-workspace case).
 ACCEPT_ROOT="$WORK/promote-target"
 ACCEPT_ROOT2="$WORK/promote-target-2"
-mkdir -p "$ACCEPT_ROOT" "$ACCEPT_ROOT2"
+ACCEPT_ROOT3="$WORK/promote-target-3"
+mkdir -p "$ACCEPT_ROOT" "$ACCEPT_ROOT2" "$ACCEPT_ROOT3"
 echo "# promote scratch" > "$ACCEPT_ROOT/README.md"
 echo "# promote scratch 2" > "$ACCEPT_ROOT2/README.md"
+echo "# promote scratch 3" > "$ACCEPT_ROOT3/README.md"
 
 wait_for() {
   local desc="$1" url="$2"
@@ -93,7 +95,7 @@ CHROME_PID=$!
 wait_for "headless Chrome CDP" "http://127.0.0.1:$CDP/json/version" || exit 1
 
 echo "==> running promote acceptance checks"
-ACCEPT_ROOT="$ACCEPT_ROOT" ACCEPT_ROOT2="$ACCEPT_ROOT2" E2E_BASE_URL="http://127.0.0.1:$PORT/" CDP_PORT="$CDP" \
+ACCEPT_ROOT="$ACCEPT_ROOT" ACCEPT_ROOT2="$ACCEPT_ROOT2" ACCEPT_ROOT3="$ACCEPT_ROOT3" E2E_BASE_URL="http://127.0.0.1:$PORT/" CDP_PORT="$CDP" \
   node "$ROOT/scripts/e2e/temp-terminal-promote-acceptance.mjs"
 RC=$?
 

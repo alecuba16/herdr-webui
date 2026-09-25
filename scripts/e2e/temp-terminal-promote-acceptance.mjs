@@ -18,9 +18,10 @@ import { connectToPage } from './cdp-driver.mjs';
 
 const ROOT = process.env.ACCEPT_ROOT; // scratch folder to cd into + promote
 const ROOT2 = process.env.ACCEPT_ROOT2; // second scratch folder (button path)
+const ROOT3 = process.env.ACCEPT_ROOT3; // third scratch folder (mobile path)
 const URL = process.env.E2E_BASE_URL || 'http://127.0.0.1:8791/';
-if (!ROOT || !ROOT2) {
-  console.error('ACCEPT_ROOT and ACCEPT_ROOT2 (absolute scratch dirs, must exist) are required');
+if (!ROOT || !ROOT2 || !ROOT3) {
+  console.error('ACCEPT_ROOT, ACCEPT_ROOT2 and ACCEPT_ROOT3 (absolute scratch dirs, must exist) are required');
   process.exit(2);
 }
 
@@ -260,6 +261,109 @@ await sleep(3000);
     /\/workspace\//.test(String(url2)), url2);
   const closes = await evalApp('window.__e2eTabCloses');
   check('zero tab.close requests after button promote', Number(closes) === 0, `closes=${closes}`);
+}
+
+// ---------------------------------------------------------------- section 7
+// Mobile layout: same origin, localStorage forces the mobile app. Open the
+// temp terminal via the T button, cd into ROOT (the second promote left
+// the current workspace at ROOT2, so this is a fresh move), tap ⤴, and
+// verify selectAgent navigation (URL pushState + terminal screen).
+{
+  await evalApp(`(function(){
+    localStorage.setItem('herdr-web-layout', 'mobile');
+    return true;
+  })()`);
+  await cdp.send('Page.navigate', { url: URL });
+  await sleep(3500);
+
+  const mobileBoot = await evalApp(`(function(){
+    return {
+      isMobileApp: !!document.querySelector('.mobile-app, #mobileApp, .mobile-nav, #mobileTempTerminal'),
+      toggleBtn: !!document.getElementById('mobileTempTerminal'),
+    };
+  })()`);
+  check('mobile layout app booted', !!mobileBoot.isMobileApp && !!mobileBoot.toggleBtn,
+    JSON.stringify(mobileBoot));
+
+  // The mobile app needs a workspace too (fresh page state after reload
+  // shares the same backend, so the earlier ones are still there).
+  const wsCount = await evalApp(`(async function(){
+    const list = await (await fetch('/api/workspaces')).json();
+    return list.result.workspaces.length;
+  })()`);
+  check('mobile sees workspaces', Number(wsCount) > 0, `count=${wsCount}`);
+
+  await evalApp(`(function(){
+    const b = document.getElementById('mobileTempTerminal');
+    if (b) b.click();
+    return !!b;
+  })()`);
+  let mobileAttached = false;
+  for (let i = 0; i < 24; i++) {
+    mobileAttached = !!(await evalApp(`(function(){
+      const t = document.querySelector('.temp-terminal-backdrop .terminal');
+      return !!(t && t.textContent.trim().length > 0);
+    })()`));
+    if (mobileAttached) break;
+    await sleep(500);
+  }
+  check('mobile temp terminal attached via T button', mobileAttached);
+
+  // cd into ROOT3: guaranteed no workspace sits there yet, so the promote
+  // always moves the tab (the mobile page reloaded onto the workspace at
+  // ROOT, and a same-cwd promote would be the rejected case).
+  await evalApp(`(function(){
+    const t = document.querySelector('.temp-terminal-backdrop .terminal textarea, .temp-terminal-backdrop textarea');
+    if (t) t.focus();
+    return !!t;
+  })()`);
+  await typeText('cd ' + ROOT3);
+  await pressEnter();
+  await sleep(2500);
+
+  // Tap the ⤴ button (mobile has no keyboard prefix path).
+  await evalApp(`(function(){
+    const b = document.querySelector('.temp-terminal-promote');
+    if (b) b.click();
+    return !!b;
+  })()`);
+  await sleep(3000);
+  const mobileOverlayGone = await evalApp(`!document.querySelector('.temp-terminal-backdrop')`);
+  check('mobile ⤴ tap promotes and closes overlay', !!mobileOverlayGone);
+  const mobileUrl = await evalApp('location.href');
+  check('mobile selectAgent navigated to the promoted workspace',
+    new RegExp('/workspace/[^/]+/tab/').test(String(mobileUrl)),
+    mobileUrl);
+  const mobileScreen = await evalApp(`(function(){
+    // Mobile terminal container is #terminal (.mobile-terminal), not the
+    // desktop .terminal class.
+    const term = document.getElementById('terminal');
+    return !!(term && term.textContent.trim().length > 0);
+  })()`);
+  check('mobile shows the terminal screen after promote', !!mobileScreen);
+  // The promoted shell must still be alive on mobile too: echo round-trip
+  // through the reconnected terminal.
+  await evalApp(`(function(){
+    const t = document.querySelector('#terminal textarea, #terminal .xterm-helper-textarea');
+    if (t) t.focus();
+    return !!t;
+  })()`);
+  await typeText('echo MOBILE_PROMOTE_ALIVE');
+  await pressEnter();
+  await sleep(2500);
+  const mobileAlive = await evalApp(`(function(){
+    const t = document.getElementById('terminal');
+    return t ? t.textContent.includes('MOBILE_PROMOTE_ALIVE') : false;
+  })()`);
+  check('mobile promoted shell alive (echo round-trip)', !!mobileAlive);
+  const recents3 = await evalApp(`(async function(){
+    const r = await fetch('/api/recent-workspaces');
+    return await r.json();
+  })()`);
+  const paths3 = ((recents3 && recents3.recent) || []).map((x) => x.path);
+  check('mobile promote recorded in recents',
+    paths3.some((p) => p === ROOT3),
+    JSON.stringify(paths3));
 }
 
 // ---------------------------------------------------------------- summary
