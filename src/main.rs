@@ -96,13 +96,68 @@ type BuiltinSessionRegistry =
 /// silently resurrecting the session. An explicit `/api/session/launch`
 /// clears the marker; a fresh WebUI process starts with no markers.
 type ClosedBuiltinSessions = Arc<Mutex<HashSet<String>>>;
-/// Tab ids that were promoted out of the temporary-terminal overlay via
-/// `POST /api/tabs/{id}/promote`. The terminal WS teardown auto-closes the
-/// temporary tab it served; a promote must survive that teardown, so the
-/// promote handler records the id here and the teardown skips it. This is
-/// the server-side half of the client release toggle: it closes the window
-/// where the WS dies before the toggle frame is delivered.
-type PromotedTemporaryTabs = Arc<Mutex<HashSet<String>>>;
+/// Server-side guard for temporary tabs going through promote.
+/// `Promoting(n)` counts promote requests the backend has not answered
+/// yet, so the terminal WS teardown (which can fire at any moment, e.g. a
+/// network blip or navigation during the promote round-trip) must not
+/// auto-close the tab before the backend decides. `Promoted` marks a
+/// promote that succeeded; the skip must persist because the
+/// release-toggle frame from the overlay can still be lost afterwards.
+/// When all in-flight promotes of a tab finish with failures the marker is
+/// removed, so the tab stays closable like any normal temporary tab.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PromotedTemporaryTabState {
+    /// `n` concurrent unanswered promote requests for this tab.
+    Promoting(u32),
+    Promoted,
+}
+
+type PromotedTemporaryTabs = Arc<Mutex<HashMap<String, PromotedTemporaryTabState>>>;
+
+/// Marks a tab as having another in-flight promote request. Never
+/// downgrades a tab that is already promoted.
+fn begin_temporary_tab_promote(registry: &PromotedTemporaryTabs, tab_id: &str) {
+    let tab_id = tab_id.trim();
+    if tab_id.is_empty() {
+        return;
+    }
+    if let Ok(mut registry) = registry.lock() {
+        match registry.get_mut(tab_id) {
+            Some(PromotedTemporaryTabState::Promoting(count)) => {
+                *count = count.saturating_add(1);
+            }
+            Some(PromotedTemporaryTabState::Promoted) => {}
+            None => {
+                registry.insert(tab_id.to_string(), PromotedTemporaryTabState::Promoting(1));
+            }
+        }
+    }
+}
+
+/// Marks one previously in-flight promote as finished. `promoted` keeps the
+/// tab protected forever (the shell is now a real workspace tab), while a
+/// failed promote decrements the in-flight count and removes the marker at
+/// zero, restoring normal auto-close semantics.
+fn finish_temporary_tab_promote(registry: &PromotedTemporaryTabs, tab_id: &str, promoted: bool) {
+    let tab_id = tab_id.trim();
+    if tab_id.is_empty() {
+        return;
+    }
+    if let Ok(mut registry) = registry.lock() {
+        if promoted {
+            registry.insert(tab_id.to_string(), PromotedTemporaryTabState::Promoted);
+            return;
+        }
+        // Only decrement our own in-flight count; never touch a tab a
+        // concurrent promote already finished successfully.
+        if let Some(PromotedTemporaryTabState::Promoting(count)) = registry.get_mut(tab_id) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                registry.remove(tab_id);
+            }
+        }
+    }
+}
 
 fn backend_compatibility_for_supported_range(
     backend: Option<&str>,
@@ -795,7 +850,7 @@ async fn main() -> io::Result<()> {
     let (rebind_tx, rebind_rx) = tokio::sync::watch::channel(server_settings.lock().unwrap().bind);
     let (settings_tx, _) = tokio::sync::broadcast::channel(16);
     let closed_builtin_sessions: ClosedBuiltinSessions = Arc::new(Mutex::new(HashSet::new()));
-    let promoted_temporary_tabs: PromotedTemporaryTabs = Arc::new(Mutex::new(HashSet::new()));
+    let promoted_temporary_tabs: PromotedTemporaryTabs = Arc::new(Mutex::new(HashMap::new()));
     let state = WebState {
         api_socket,
         client_socket,
@@ -4095,9 +4150,12 @@ async fn promote_tab(
         return response;
     }
     let api = api_for_headers_ensured(&state, &headers).await;
-    // request_value() does blocking socket I/O; offload to a blocking
-    // thread so it does not stall the async runtime (and the terminal
-    // WebSocket loops feeding the overlay).
+    // Arm the in-flight guard before the backend call: the overlay's
+    // terminal WS can start teardown at any point of this round-trip
+    // (navigation, network blip, browser close). Without the pre-arm the
+    // auto-close wins the race, kills the live shell the user asked to
+    // keep, and the promote then fails with "tab not found".
+    begin_temporary_tab_promote(&state.promoted_temporary_tabs, &tab_id);
     let tab_id_for_registry = tab_id.clone();
     let outcome = tokio::task::spawn_blocking(move || {
         api.request_value(json!({
@@ -4117,11 +4175,11 @@ async fn promote_tab(
             // still skip the auto-close for the freshly promoted tab (see
             // terminal_socket cleanup). A failed promote must stay closable.
             let promoted_ok = value.get("error").is_none();
-            if promoted_ok {
-                if let Ok(mut promoted) = state.promoted_temporary_tabs.lock() {
-                    promoted.insert(tab_id_for_registry);
-                }
-            }
+            finish_temporary_tab_promote(
+                &state.promoted_temporary_tabs,
+                &tab_id_for_registry,
+                promoted_ok,
+            );
             let workspace = value
                 .get("result")
                 .and_then(|result| result.get("workspace"));
@@ -4149,12 +4207,29 @@ async fn promote_tab(
             }
             Json(value).into_response()
         }
-        Ok(Err(err)) => (StatusCode::BAD_GATEWAY, Json(json!({ "error": err }))).into_response(),
-        Err(err) => (
-            StatusCode::BAD_GATEWAY,
-            Json(json!({ "error": err.to_string() })),
-        )
-            .into_response(),
+        Ok(Err(err)) => {
+            // The backend call itself failed (dead socket, daemon stop):
+            // restore normal auto-close semantics for this tab.
+            finish_temporary_tab_promote(
+                &state.promoted_temporary_tabs,
+                &tab_id_for_registry,
+                false,
+            );
+            (StatusCode::BAD_GATEWAY, Json(json!({ "error": err }))).into_response()
+        }
+        Err(err) => {
+            // spawn_blocking failed (shutdown): same restoration.
+            finish_temporary_tab_promote(
+                &state.promoted_temporary_tabs,
+                &tab_id_for_registry,
+                false,
+            );
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "error": err.to_string() })),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -4608,18 +4683,35 @@ async fn terminal_socket(
         .temporary_tab_id
         .as_deref()
         .filter(|value| !value.is_empty());
+    // A promote request for this tab can be in transit when the overlay
+    // socket dies (the HTTP route arms the server-side guard only once the
+    // request is parsed; a WS close is detected faster than the promote
+    // POST can arrive). Closing now would kill the shell the user asked to
+    // keep, so when the tab looks closable give an in-transit promote a
+    // short grace window to arm its guard; if none shows up the temporary
+    // tab closes exactly as before.
+    const PROMOTE_GRACE: Duration = Duration::from_millis(250);
     if should_auto_close_temporary_tab(release_armed, close_tab_id, &promoted_temporary_tabs) {
-        let _ = api.request_value(
-            json!({ "id": "web:temp-terminal:close", "method": "tab.close", "params": { "tab_id": close_tab_id.unwrap() } }),
-        );
+        if close_tab_id.is_some() {
+            tokio::time::sleep(PROMOTE_GRACE).await;
+        }
+        if should_auto_close_temporary_tab(release_armed, close_tab_id, &promoted_temporary_tabs) {
+            let _ = api.request_value(
+                json!({ "id": "web:temp-terminal:close", "method": "tab.close", "params": { "tab_id": close_tab_id.unwrap() } }),
+            );
+        }
     }
 }
 
 /// Teardown decision for the temporary tab served by a terminal socket:
 /// auto-close unless the browser armed the release toggle (successful
-/// promote, toggle frame delivered) or the promote route already recorded
-/// the tab in the server-side registry (toggle frame lost when the socket
-/// died mid-promote). A promoted tab must never be closed here.
+/// promote, toggle frame delivered), a promote request is currently in
+/// flight, or the promote route already marked the tab promoted
+/// (toggle frame lost when the socket died mid-promote). A promoted or
+/// promoting tab must never be closed here: in-flight protection closes
+/// the pre-success race where the teardown auto-close used to kill the
+/// shell before the backend answered, failing the promote with
+/// "tab not found".
 fn should_auto_close_temporary_tab(
     release_armed: bool,
     tab_id: Option<&str>,
@@ -4631,7 +4723,7 @@ fn should_auto_close_temporary_tab(
     match tab_id.map(str::trim).filter(|tab_id| !tab_id.is_empty()) {
         Some(tab_id) => !promoted_tabs
             .lock()
-            .map(|promoted| promoted.contains(tab_id))
+            .map(|promoted| promoted.contains_key(tab_id))
             .unwrap_or(false),
         None => false,
     }
@@ -5312,7 +5404,7 @@ mod tests {
             _builtin_backend: None,
             builtin_sessions: Arc::new(Mutex::new(HashMap::new())),
             closed_builtin_sessions: Arc::new(Mutex::new(HashSet::new())),
-            promoted_temporary_tabs: Arc::new(Mutex::new(HashSet::new())),
+            promoted_temporary_tabs: Arc::new(Mutex::new(HashMap::new())),
             builtin_start_lock: Arc::new(Mutex::new(())),
             herdr_bin: "herdr".to_string(),
             auth: Arc::new(Mutex::new(AuthConfig {
@@ -6741,7 +6833,7 @@ mod tests {
 
     #[test]
     fn auto_close_skips_armed_and_promoted_temporary_tabs() {
-        let promoted: PromotedTemporaryTabs = Arc::new(Mutex::new(HashSet::new()));
+        let promoted: PromotedTemporaryTabs = Arc::new(Mutex::new(HashMap::new()));
 
         // Normal teardown: the temporary tab is auto-closed.
         assert!(should_auto_close_temporary_tab(
@@ -6758,10 +6850,24 @@ mod tests {
         ));
 
         // Promote recorded the tab server-side (toggle lost): skip.
-        promoted.lock().unwrap().insert("tab-2".to_string());
+        promoted
+            .lock()
+            .unwrap()
+            .insert("tab-2".to_string(), PromotedTemporaryTabState::Promoted);
         assert!(!should_auto_close_temporary_tab(
             false,
             Some("tab-2"),
+            &promoted
+        ));
+        // A promote still in flight (backend not answered yet) is equally
+        // protected: the pre-arm must beat the teardown auto-close.
+        promoted
+            .lock()
+            .unwrap()
+            .insert("tab-3".to_string(), PromotedTemporaryTabState::Promoting(1));
+        assert!(!should_auto_close_temporary_tab(
+            false,
+            Some("tab-3"),
             &promoted
         ));
         // Other tabs in the same registry still auto-close.
@@ -6776,6 +6882,106 @@ mod tests {
 
         // Empty id is treated as absent.
         assert!(!should_auto_close_temporary_tab(false, Some(""), &promoted));
+    }
+
+    #[test]
+    fn promote_guard_registry_lifecycle() {
+        let registry: PromotedTemporaryTabs = Arc::new(Mutex::new(HashMap::new()));
+
+        // begin: in-flight marker protects the tab from teardown auto-close.
+        begin_temporary_tab_promote(&registry, "tab-A");
+        assert_eq!(
+            registry.lock().unwrap().get("tab-A"),
+            Some(&PromotedTemporaryTabState::Promoting(1))
+        );
+        assert!(!should_auto_close_temporary_tab(
+            false,
+            Some("tab-A"),
+            &registry
+        ));
+
+        // finish(success): stays protected forever (Promoted).
+        finish_temporary_tab_promote(&registry, "tab-A", true);
+        assert_eq!(
+            registry.lock().unwrap().get("tab-A"),
+            Some(&PromotedTemporaryTabState::Promoted)
+        );
+        assert!(!should_auto_close_temporary_tab(
+            false,
+            Some("tab-A"),
+            &registry
+        ));
+
+        // finish(failure) on a fresh tab: marker cleared, closable again.
+        begin_temporary_tab_promote(&registry, "tab-B");
+        finish_temporary_tab_promote(&registry, "tab-B", false);
+        assert!(registry.lock().unwrap().get("tab-B").is_none());
+        assert!(should_auto_close_temporary_tab(
+            false,
+            Some("tab-B"),
+            &registry
+        ));
+
+        // finish(failure) never downgrades a tab a concurrent promote
+        // already finished successfully.
+        begin_temporary_tab_promote(&registry, "tab-C");
+        finish_temporary_tab_promote(&registry, "tab-C", true);
+        finish_temporary_tab_promote(&registry, "tab-C", false);
+        assert_eq!(
+            registry.lock().unwrap().get("tab-C"),
+            Some(&PromotedTemporaryTabState::Promoted)
+        );
+
+        // A promote arriving while another is in flight counts up, and
+        // each failure decrements only its own count.
+        begin_temporary_tab_promote(&registry, "tab-D");
+        begin_temporary_tab_promote(&registry, "tab-D");
+        assert_eq!(
+            registry.lock().unwrap().get("tab-D"),
+            Some(&PromotedTemporaryTabState::Promoting(2))
+        );
+        finish_temporary_tab_promote(&registry, "tab-D", false);
+        assert_eq!(
+            registry.lock().unwrap().get("tab-D"),
+            Some(&PromotedTemporaryTabState::Promoting(1))
+        );
+        assert!(!should_auto_close_temporary_tab(
+            false,
+            Some("tab-D"),
+            &registry
+        ));
+        finish_temporary_tab_promote(&registry, "tab-D", true);
+        assert_eq!(
+            registry.lock().unwrap().get("tab-D"),
+            Some(&PromotedTemporaryTabState::Promoted)
+        );
+
+        // Second promote over an already-promoted tab (UI double click):
+        // begin must not downgrade Promoted, and its rejection must not
+        // strip the protection either.
+        begin_temporary_tab_promote(&registry, "tab-A");
+        assert_eq!(
+            registry.lock().unwrap().get("tab-A"),
+            Some(&PromotedTemporaryTabState::Promoted)
+        );
+        finish_temporary_tab_promote(&registry, "tab-A", false);
+        assert_eq!(
+            registry.lock().unwrap().get("tab-A"),
+            Some(&PromotedTemporaryTabState::Promoted)
+        );
+
+        // Empty/whitespace ids are ignored (treated as absent everywhere).
+        let empty_registry: PromotedTemporaryTabs = Arc::new(Mutex::new(HashMap::new()));
+        begin_temporary_tab_promote(&empty_registry, "   ");
+        assert!(empty_registry.lock().unwrap().is_empty());
+        finish_temporary_tab_promote(&empty_registry, "", true);
+        assert!(empty_registry.lock().unwrap().is_empty());
+        // Absent ids never auto-close: there is no tab to close.
+        assert!(!should_auto_close_temporary_tab(
+            false,
+            Some("   "),
+            &empty_registry
+        ));
     }
 
     #[test]
@@ -10152,11 +10358,8 @@ mod tests {
         // terminal WS teardown can never auto-close it, even if the release
         // toggle frame was lost.
         assert!(
-            state
-                .promoted_temporary_tabs
-                .lock()
-                .unwrap()
-                .contains("tab-99"),
+            state.promoted_temporary_tabs.lock().unwrap().get("tab-99")
+                == Some(&PromotedTemporaryTabState::Promoted),
             "promoted tab must be recorded in the promoted-tabs registry"
         );
 
@@ -13722,7 +13925,7 @@ mod tui_parity_e2e_tests {
             _builtin_backend: None,
             builtin_sessions: Arc::new(Mutex::new(HashMap::new())),
             closed_builtin_sessions: Arc::new(Mutex::new(HashSet::new())),
-            promoted_temporary_tabs: Arc::new(Mutex::new(HashSet::new())),
+            promoted_temporary_tabs: Arc::new(Mutex::new(HashMap::new())),
             builtin_start_lock: Arc::new(Mutex::new(())),
             herdr_bin: "herdr".to_string(),
             auth: Arc::new(Mutex::new(AuthConfig {

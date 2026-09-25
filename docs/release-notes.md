@@ -20,7 +20,11 @@
   shell survives the overlay closing. The skip is double-guarded: the
   promote route records the tab in a server-side promoted registry, so the
   teardown can never close a promoted tab even if the WebSocket died before
-  the toggle frame was delivered. The HTTP route is
+  the toggle frame was delivered. The registry also pre-arms before the
+  backend call, so a teardown racing an in-flight promote (navigation or
+  network blip during the round-trip) can no longer kill the shell and fail
+  the promote with "tab not found"; a failed promote clears the marker and
+  the tab stays closable like any temporary tab. The HTTP route is
   `POST /api/tabs/{id}/promote`, backed by the new `tab.promote` API, and
   returns the full workspace/tab/pane payload the browser navigates from.
 

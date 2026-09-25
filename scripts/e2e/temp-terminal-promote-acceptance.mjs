@@ -142,14 +142,25 @@ await sleep(3000);
     if (t) t.focus();
     return !!t;
   })()`);
-  await typeText('cd ' + ROOT);
+  // Require the marker twice (typed echo + executed output): the PTY
+  // echoes typed input, so a single match can be the echo alone.
+  const cdMarker1 = `CD_OK_D1_${Date.now()}`;
+  await evalApp(`window.__cdMarker = ${JSON.stringify(cdMarker1)};`);
+  await typeText(`cd ${ROOT} && echo ${cdMarker1}`);
   await pressEnter();
-  await sleep(2500);
-  const echoed = await evalApp(`(function(){
-    const t = document.querySelector('.temp-terminal-backdrop .terminal');
-    return t ? t.textContent.includes(${JSON.stringify(ROOT)}) : false;
-  })()`);
-  check('cd command reached the live shell (echo visible)', !!echoed);
+  let cdConfirmed1 = false;
+  for (let i = 0; i < 30 && !cdConfirmed1; i++) {
+    await sleep(400);
+    cdConfirmed1 = await evalApp(`(function(){
+      const t = document.querySelector('.temp-terminal-backdrop .terminal');
+      const txt = t ? t.textContent : '';
+      const m = window.__cdMarker || '';
+      let idx = -1, count = 0;
+      while ((idx = txt.indexOf(m, idx + 1)) !== -1) count++;
+      return count >= 2;
+    })()`);
+  }
+  check('cd executed in live shell (marker twice)', cdConfirmed1);
 }
 
 // ---------------------------------------------------------------- section 4
@@ -245,9 +256,23 @@ await sleep(3000);
     if (t) t.focus();
     return !!t;
   })()`);
-  await typeText('cd ' + ROOT2);
+  const cdMarker2 = `CD_OK_D2_${Date.now()}`;
+  await evalApp(`window.__cdMarker = ${JSON.stringify(cdMarker2)};`);
+  await typeText(`cd ${ROOT2} && echo ${cdMarker2}`);
   await pressEnter();
-  await sleep(2500);
+  let cdConfirmed2 = false;
+  for (let i = 0; i < 30 && !cdConfirmed2; i++) {
+    await sleep(400);
+    cdConfirmed2 = await evalApp(`(function(){
+      const t = document.querySelector('.temp-terminal-backdrop .terminal');
+      const txt = t ? t.textContent : '';
+      const m = window.__cdMarker || '';
+      let idx = -1, count = 0;
+      while ((idx = txt.indexOf(m, idx + 1)) !== -1) count++;
+      return count >= 2;
+    })()`);
+  }
+  check('retry cd executed in live shell (marker twice)', cdConfirmed2);
   await evalApp(`(function(){
     const b = document.querySelector('.temp-terminal-promote');
     if (b) b.click();
@@ -317,9 +342,28 @@ await sleep(3000);
     if (t) t.focus();
     return !!t;
   })()`);
-  await typeText('cd ' + ROOT3);
+  // The PTY echoes typed input, so waiting for the marker text alone would
+  // match the typed line itself. Require two occurrences (typed echo plus
+  // actual shell output) before tapping ⤴, otherwise the promote can fire
+  // while the shell still sits at ROOT and gets rejected as same-workspace.
+  const cdMarker = `CD_OK_MOBILE_${Date.now()}`;
+  await evalApp(`window.__cdMarker = ${JSON.stringify(cdMarker)};`);
+  await typeText(`cd ${ROOT3} && echo ${cdMarker}`);
   await pressEnter();
-  await sleep(2500);
+  let cdConfirmed = false;
+  for (let i = 0; i < 30 && !cdConfirmed; i++) {
+    await sleep(400);
+    cdConfirmed = await evalApp(`(function(){
+      const t = document.querySelector('.temp-terminal-backdrop #terminal, .temp-terminal-backdrop .terminal');
+      const txt = t ? t.textContent : '';
+      const m = window.__cdMarker || '';
+      if (!m) return false;
+      let idx = -1, count = 0;
+      while ((idx = txt.indexOf(m, idx + 1)) !== -1) count++;
+      return count >= 2;
+    })()`);
+  }
+  check('mobile cd confirmed by executed output', cdConfirmed);
 
   // Tap the ⤴ button (mobile has no keyboard prefix path).
   await evalApp(`(function(){
