@@ -1239,9 +1239,10 @@ impl BuiltinState {
         // probed the filesystem.
         let tab = data
             .tabs
-            .get(tab_id)
+            .get_mut(tab_id)
             .ok_or_else(|| format!("tab {tab_id} not found"))?
             .clone();
+        let old_workspace_id = tab.workspace_id.clone();
 
         // Guard: promoting into the workspace the tab already lives in is a
         // no-op error; the caller keeps the tab exactly as it was.
@@ -1292,8 +1293,11 @@ impl BuiltinState {
         // rewrite the records before moving the tab_id so a panic mid-way can
         // never leave the tab in both lists (the ids stay unique because
         // every edit is under the same lock).
-        let old_workspace_id = tab.workspace_id.clone();
-        if let Some(tab_record) = data.tabs.get_mut(tab_id) {
+        {
+            let tab_record = data
+                .tabs
+                .get_mut(tab_id)
+                .expect("tab re-validated above under the same lock");
             tab_record.workspace_id = workspace_id.clone();
             if tab_record.label == "temp" {
                 tab_record.label = "Shell".to_string();
@@ -5241,6 +5245,156 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&temp);
+    }
+
+    /// Promote must survive a workspace record that went missing between
+    /// validation and the re-parent (dangling id in a tab or pane): the
+    /// skip-if-absent arms must keep the promote a success instead of
+    /// panicking on a half-updated registry. Built by deleting the old
+    /// workspace record while the tab still references it.
+    #[cfg(unix)]
+    #[test]
+    fn builtin_promote_survives_dangling_workspace_references() {
+        let temp = std::env::temp_dir().join(format!(
+            "herdr-promote-dangling-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let sub = temp.join("sub");
+        fs::create_dir_all(&sub).unwrap();
+        let (state, temp_workspace_id, tab_id) = promote_fixture(&temp);
+        promote_send_cd(&state, &tab_id, &sub);
+
+        // Break the invariant on purpose: drop the workspace record the
+        // tab/pane still point at. Every promote code path that touches
+        // workspace records must tolerate the miss.
+        {
+            let mut data = state.data.lock().unwrap();
+            data.workspaces.remove(&temp_workspace_id);
+        }
+
+        let promoted = state.handle_request("promote", "tab.promote", json!({ "tab_id": tab_id }));
+        assert!(
+            promoted["result"].is_object(),
+            "promote must survive dangling workspace ids, got: {promoted}"
+        );
+        let new_workspace_id = promoted["result"]["workspace"]["workspace_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_ne!(new_workspace_id, temp_workspace_id);
+
+        // The snapshot stays coherent: the tab lives in the new workspace,
+        // and no workspace carries the removed id.
+        let snapshot = state.handle_request("snapshot", "session.snapshot", json!({}));
+        let listed_tab = snapshot["result"]["snapshot"]["tabs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tab| tab["tab_id"] == tab_id.as_str())
+            .unwrap()
+            .clone();
+        assert_eq!(listed_tab["workspace_id"], new_workspace_id.as_str());
+
+        let _ = fs::remove_dir_all(&temp);
+    }
+
+    /// The live-cwd probe returns None when the process cannot be
+    /// interrogated (here: a pid that does not exist), and promote falls
+    /// back to the pane's registered cwd when the terminal record is gone.
+    /// Exercises the lsof failure arm on non-Linux unix plus the fallback
+    /// wiring: the same-workspace guard must fire on the pane cwd.
+    #[cfg(all(unix, not(target_os = "linux")))]
+    #[test]
+    fn builtin_promote_probe_failure_falls_back_to_pane_cwd() {
+        // Bogus pid: lsof fails, the probe degrades to None.
+        assert!(live_process_cwd(Some(u32::MAX)).is_none());
+
+        let temp = std::env::temp_dir().join(format!(
+            "herdr-promote-probe-fail-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&temp).unwrap();
+        let (state, _temp_workspace_id, tab_id) = promote_fixture(&temp);
+        let pane_cwd = {
+            let data = state.data.lock().unwrap();
+            let tab = data.tabs.get(&tab_id).unwrap();
+            let pane_id = tab.pane_ids.first().unwrap();
+            data.panes.get(pane_id).unwrap().cwd.clone()
+        };
+        // Drop the terminal record so the live probe short-circuits to
+        // None and promote must fall back to the pane's registered cwd.
+        {
+            let mut data = state.data.lock().unwrap();
+            let tab = data.tabs.get(&tab_id).unwrap();
+            let pane_id = tab.pane_ids.first().unwrap().clone();
+            let terminal_id = data.panes.get(&pane_id).unwrap().terminal_id.clone();
+            data.terminals.remove(&terminal_id);
+        }
+        // The fallback equals the workspace cwd, so promote must refuse
+        // on the same-workspace guard, naming the pane cwd.
+        let promoted = state.handle_request("promote", "tab.promote", json!({ "tab_id": tab_id }));
+        let message = promoted["error"]["message"].as_str().unwrap_or("");
+        assert!(
+            promoted["error"].is_object() && message.contains(&*pane_cwd.to_string_lossy()),
+            "probe failure must fall back to the pane cwd (guard must mention it), got: {promoted}"
+        );
+
+        let _ = fs::remove_dir_all(&temp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[should_panic(expected = "no terminal for tab")]
+    fn builtin_promote_send_cd_panics_without_terminal_runtime() {
+        let temp = std::env::temp_dir().join(format!(
+            "herdr-promote-cd-noterm-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&temp).unwrap();
+        let (state, _workspace_id, tab_id) = promote_fixture(&temp);
+        // Tab and pane stay, the terminal runtime goes: the helper's
+        // lookup must fail loudly instead of writing into a dead PTY.
+        {
+            let mut data = state.data.lock().unwrap();
+            let tab = data.tabs.get(&tab_id).unwrap();
+            let pane_id = tab.pane_ids.first().unwrap().clone();
+            let terminal_id = data.panes.get(&pane_id).unwrap().terminal_id.clone();
+            data.terminals.remove(&terminal_id);
+        }
+        promote_send_cd(&state, &tab_id, std::env::temp_dir().as_path());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[should_panic(expected = "never processed cd into")]
+    fn builtin_promote_send_cd_panics_when_shell_never_cds() {
+        let temp = std::env::temp_dir().join(format!(
+            "herdr-promote-cd-stuck-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&temp).unwrap();
+        let (state, _workspace_id, tab_id) = promote_fixture(&temp);
+        // A directory that cannot become the shell's cwd: remove it after
+        // creating the fixture, so every probe observation disagrees with
+        // the expected target and the helper hits its 5s panic.
+        let gone = temp.join("gone-dir");
+        fs::create_dir_all(&gone).unwrap();
+        fs::remove_dir(&gone).unwrap();
+        promote_send_cd(&state, &tab_id, &gone);
+
+        unreachable!("promote_send_cd must panic when the cd never happens");
     }
 
     #[test]

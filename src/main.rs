@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::SocketAddr;
+use std::panic::resume_unwind;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{mpsc, Arc, Mutex};
@@ -4133,6 +4134,18 @@ async fn close_pane(
     .await
 }
 
+/// Folds a failed `spawn_blocking` join into the promote route's error
+/// channel. A panic in the backend call must still propagate (it may hold
+/// poisoned locks or invariant breakage worth crashing on), while a plain
+/// join failure (task cancelled, runtime shutdown) degrades to its message
+/// so the route can restore auto-close semantics and answer 502.
+fn promote_join_failure(join: tokio::task::JoinError) -> String {
+    match join.try_into_panic() {
+        Ok(panic) => resume_unwind(panic),
+        Err(err) => err.to_string(),
+    }
+}
+
 /// Promotes a temporary terminal tab into a workspace rooted at the shell's
 /// live cwd. Thin proxy: the backend owns the semantics (registry-only
 /// re-parent, never stopping the process); the HTTP result carries the full
@@ -4164,9 +4177,15 @@ async fn promote_tab(
             "params": { "tab_id": tab_id },
         }))
     })
-    .await;
+    .await
+    // Fold the spawn_blocking join failure (runtime shutdown or a panic in
+    // the backend call) into the same error channel as a failed backend
+    // call: panics still propagate, join failures degrade to their message,
+    // and a single Err arm below restores auto-close for both.
+    .map_err(promote_join_failure)
+    .and_then(|inner| inner);
     match outcome {
-        Ok(Ok(value)) => {
+        Ok(value) => {
             // Relay the full envelope; the browser reads the workspace/tab/
             // pane fields from it (or shows the backend error inside it).
             // Record the tab id before relaying, but only on a promote
@@ -4207,28 +4226,16 @@ async fn promote_tab(
             }
             Json(value).into_response()
         }
-        Ok(Err(err)) => {
-            // The backend call itself failed (dead socket, daemon stop):
-            // restore normal auto-close semantics for this tab.
+        Err(err) => {
+            // The backend call itself failed (dead socket, daemon stop, or
+            // the spawn_blocking task died): restore normal auto-close
+            // semantics for this tab.
             finish_temporary_tab_promote(
                 &state.promoted_temporary_tabs,
                 &tab_id_for_registry,
                 false,
             );
             (StatusCode::BAD_GATEWAY, Json(json!({ "error": err }))).into_response()
-        }
-        Err(err) => {
-            // spawn_blocking failed (shutdown): same restoration.
-            finish_temporary_tab_promote(
-                &state.promoted_temporary_tabs,
-                &tab_id_for_registry,
-                false,
-            );
-            (
-                StatusCode::BAD_GATEWAY,
-                Json(json!({ "error": err.to_string() })),
-            )
-                .into_response()
         }
     }
 }
@@ -4692,13 +4699,13 @@ async fn terminal_socket(
     // tab closes exactly as before.
     const PROMOTE_GRACE: Duration = Duration::from_millis(250);
     if should_auto_close_temporary_tab(release_armed, close_tab_id, &promoted_temporary_tabs) {
-        if close_tab_id.is_some() {
-            tokio::time::sleep(PROMOTE_GRACE).await;
-        }
+        tokio::time::sleep(PROMOTE_GRACE).await;
         if should_auto_close_temporary_tab(release_armed, close_tab_id, &promoted_temporary_tabs) {
-            let _ = api.request_value(
-                json!({ "id": "web:temp-terminal:close", "method": "tab.close", "params": { "tab_id": close_tab_id.unwrap() } }),
-            );
+            if let Some(tab_id) = close_tab_id {
+                let _ = api.request_value(
+                    json!({ "id": "web:temp-terminal:close", "method": "tab.close", "params": { "tab_id": tab_id } }),
+                );
+            }
         }
     }
 }
@@ -5614,6 +5621,58 @@ mod tests {
         let args = ["--https", "off"].map(String::from);
 
         assert_eq!(WebConfig::parse(&args).unwrap().tls.mode, TlsMode::Off);
+    }
+
+    #[test]
+    fn parses_bare_https_defaults_to_auto() {
+        // Bare `--https` with no value must default to Auto (self-signed),
+        // and it must not swallow the next flag as its value.
+        let args = ["--https"].map(String::from);
+        assert_eq!(WebConfig::parse(&args).unwrap().tls.mode, TlsMode::Auto);
+
+        // `--https` directly followed by another flag: Auto again, and the
+        // following flag is still parsed (bind wins the error surface).
+        let args = ["--https", "--bind", "127.0.0.1:9797"].map(String::from);
+        let config = WebConfig::parse(&args).unwrap();
+        assert_eq!(config.tls.mode, TlsMode::Auto);
+        assert_eq!(config.bind, "127.0.0.1:9797".parse::<SocketAddr>().unwrap());
+    }
+
+    #[test]
+    fn promote_guard_registry_ignores_blank_ids_and_counts_concurrent_begins() {
+        let registry: PromotedTemporaryTabs = Arc::new(Mutex::new(HashMap::new()));
+
+        // Blank ids (whitespace-only or empty) must never enter the registry:
+        // a stray marker for "" would protect nothing and only leak memory.
+        begin_temporary_tab_promote(&registry, "");
+        begin_temporary_tab_promote(&registry, "   ");
+        assert!(registry.lock().unwrap().is_empty());
+
+        // finish with a blank id is a no-op: it must not decrement some
+        // other tab's count (the lookup is by the same blank id, but the
+        // guard documents the contract).
+        finish_temporary_tab_promote(&registry, "", false);
+        assert!(registry.lock().unwrap().is_empty());
+
+        // finish(failure) for a tab that never began must not insert
+        // anything (saturating decrement of a missing entry is a no-op).
+        finish_temporary_tab_promote(&registry, "tab-ghost", false);
+        assert!(registry.lock().unwrap().get("tab-ghost").is_none());
+
+        // Concurrent begins count up on the same tab; begin over an
+        // already-Promoted tab never downgrades it to Promoting.
+        begin_temporary_tab_promote(&registry, "tab-x");
+        begin_temporary_tab_promote(&registry, "tab-x");
+        assert_eq!(
+            registry.lock().unwrap().get("tab-x"),
+            Some(&PromotedTemporaryTabState::Promoting(2))
+        );
+        finish_temporary_tab_promote(&registry, "tab-x", true);
+        begin_temporary_tab_promote(&registry, "tab-x");
+        assert_eq!(
+            registry.lock().unwrap().get("tab-x"),
+            Some(&PromotedTemporaryTabState::Promoted)
+        );
     }
 
     #[test]
@@ -6882,6 +6941,691 @@ mod tests {
 
         // Empty id is treated as absent.
         assert!(!should_auto_close_temporary_tab(false, Some(""), &promoted));
+    }
+
+    /// A poisoned registry lock must degrade to a no-op in both directions:
+    /// begin does not insert (the tab keeps its current auto-close
+    /// semantics) and finish does not remove or corrupt anything. The
+    /// lock is only poisoned by a panic while held elsewhere; the
+    /// promote paths deliberately never unwrap it.
+    #[test]
+    fn promote_guard_registry_survives_poisoned_lock() {
+        let registry: PromotedTemporaryTabs = Arc::new(Mutex::new(HashMap::new()));
+        begin_temporary_tab_promote(&registry, "tab-P");
+        assert_eq!(
+            registry.lock().unwrap().get("tab-P"),
+            Some(&PromotedTemporaryTabState::Promoting(1))
+        );
+
+        // Poison the mutex: a panic unwinds while the guard is held.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = registry.lock().unwrap();
+            struct PanicOnDrop;
+            impl Drop for PanicOnDrop {
+                fn drop(&mut self) {
+                    panic!("poisoning promote registry");
+                }
+            }
+            drop(PanicOnDrop);
+        }));
+
+        // begin is a no-op: the entry is untouched, never inserted twice.
+        begin_temporary_tab_promote(&registry, "tab-Q");
+        assert!(
+            registry
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .get("tab-Q")
+                .is_none(),
+            "begin must not insert while poisoned"
+        );
+        assert_eq!(
+            registry
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .get("tab-P"),
+            Some(&PromotedTemporaryTabState::Promoting(1))
+        );
+
+        // finish is also a no-op: no decrement, no removal.
+        finish_temporary_tab_promote(&registry, "tab-P", false);
+        assert_eq!(
+            registry
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .get("tab-P"),
+            Some(&PromotedTemporaryTabState::Promoting(1)),
+            "finish must not mutate while poisoned"
+        );
+        finish_temporary_tab_promote(&registry, "tab-P", true);
+        assert_eq!(
+            registry
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .get("tab-P"),
+            Some(&PromotedTemporaryTabState::Promoting(1)),
+            "finish(success) must not mutate while poisoned"
+        );
+
+        // The teardown decision also degrades under poison: the lookup is
+        // unwrap_or(false), i.e. "promoted state unavailable -> treat as
+        // closable", so a poisoned registry keeps the tab closable like any
+        // ordinary temporary tab.
+        assert!(
+            should_auto_close_temporary_tab(false, Some("tab-P"), &registry),
+            "poisoned registry must fail open (closable) in the teardown decision"
+        );
+    }
+
+    /// Fake herdr client socket for a terminal attach: answers the
+    /// TerminalHello handshake, records the AttachTerminal target, and
+    /// relays every forwarded ClientMessage (input etc.) to `received` so
+    /// tests can assert what the WS layer actually forwarded. The stream
+    /// stays open until the test drops the socket, keeping the relay loop
+    /// in its Ok(_) => {} steady state.
+    #[cfg(unix)]
+    fn fake_terminal_attach_socket(
+        received: std::sync::mpsc::Sender<String>,
+    ) -> (PathBuf, thread::JoinHandle<()>) {
+        use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+
+        let path = std::env::temp_dir().join(format!(
+            "herdr-webui-attach-test-{}-{}.sock",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            fake_socket_suffix()
+        ));
+        let _ = fs::remove_file(&path);
+        let name = path.clone().to_fs_name::<GenericFilePath>().unwrap();
+        let listener = ListenerOptions::new()
+            .name(name)
+            .try_overwrite(true)
+            .create_sync()
+            .unwrap();
+        let handle = thread::spawn(move || {
+            // Every WS scenario opens its own attach connection; serve each
+            // accepted stream on its own thread so several sequential
+            // terminal sockets can handshake against one listener.
+            while let Ok(mut stream) = listener.accept() {
+                let received = received.clone();
+                thread::spawn(move || {
+                    let mut writer = stream.try_clone().unwrap();
+                    // TerminalHello -> Welcome(error: None). Not sending
+                    // further frames keeps the WS relay loop idle and
+                    // teardown in the caller's control.
+                    let _ = read_message::<_, ClientMessage>(&mut stream, MAX_FRAME_SIZE);
+                    let _ = write_message(
+                        &mut writer,
+                        &ServerMessage::Welcome {
+                            version: PROTOCOL_VERSION,
+                            encoding: RenderEncoding::TerminalAnsi,
+                            error: None,
+                        },
+                    );
+                    let _ = read_message::<_, ClientMessage>(&mut stream, MAX_FRAME_SIZE);
+                    loop {
+                        match read_message::<_, ClientMessage>(&mut stream, MAX_FRAME_SIZE) {
+                            Ok(ClientMessage::Detach) => break,
+                            Ok(message) => {
+                                let _ = received.send(format!("{message:?}"));
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                });
+            }
+        });
+        (path, handle)
+    }
+
+    /// Fake API socket that records every tab.close request into `closed`
+    /// and answers with an empty result. Unlike `fake_api_socket_multi` it
+    /// accepts any number of connections until the channel receiver is
+    /// dropped, so several teardown scenarios can share one listener.
+    #[cfg(unix)]
+    fn fake_api_socket_recording(
+        closed: tokio::sync::mpsc::UnboundedSender<String>,
+    ) -> (PathBuf, thread::JoinHandle<()>) {
+        use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+
+        let path = std::env::temp_dir().join(format!(
+            "herdr-webui-close-test-{}-{}.sock",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            fake_socket_suffix()
+        ));
+        let _ = fs::remove_file(&path);
+        let name = path.clone().to_fs_name::<GenericFilePath>().unwrap();
+        let listener = ListenerOptions::new()
+            .name(name)
+            .try_overwrite(true)
+            .create_sync()
+            .unwrap();
+        let handle = thread::spawn(move || {
+            while let Ok(mut stream) = listener.accept() {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_err() {
+                    break;
+                }
+                let Ok(request) = serde_json::from_str::<serde_json::Value>(&line) else {
+                    break;
+                };
+                if request["method"] == "tab.close" {
+                    if let Some(tab_id) = request["params"]["tab_id"].as_str() {
+                        let _ = closed.send(tab_id.to_string());
+                    }
+                }
+                let _ = stream.write_all(
+                    serde_json::to_string(&json!({ "id": request["id"], "result": {} }))
+                        .unwrap()
+                        .as_bytes(),
+                );
+                let _ = stream.write_all(b"\n");
+                let _ = stream.flush();
+            }
+        });
+        (path, handle)
+    }
+
+    /// Terminal-WS teardown is the heart of the promote hand-off: the
+    /// overlay tab's WS must close the underlying temporary tab on a normal
+    /// disconnect, skip the close when the browser armed the release toggle
+    /// (successful promote) or when a promote is in flight / already done
+    /// (server-side guard), and give an in-transit promote a grace window
+    /// to arm that guard. One server, three sequential connections, one
+    /// recording api socket; the attach socket relays nothing so teardown
+    /// is driven purely by the WS lifecycle.
+    #[cfg(unix)]
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn terminal_ws_teardown_respects_promote_release_and_grace() {
+        use futures_util::SinkExt;
+        use tokio_tungstenite::connect_async;
+
+        // Async channel: the test must never block the tokio runtime with a
+        // std recv while the server task still needs to run.
+        let (close_tx, mut close_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let (attach_tx, _attach_rx) = std::sync::mpsc::channel::<String>();
+        let (api_socket, _api_thread) = fake_api_socket_recording(close_tx.clone());
+        let (attach_socket, _attach_thread) = fake_terminal_attach_socket(attach_tx.clone());
+
+        let mut state = test_state();
+        state.api_socket = Some(api_socket.clone());
+        state.client_socket = Some(attach_socket.clone());
+        let app = test_app_with_state(state.clone());
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let server_handle = tokio::spawn(async move {
+            let mut shutdown_rx = Some(shutdown_rx);
+            let _ = axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .with_graceful_shutdown(async move {
+                let _ = shutdown_rx.take().unwrap().await;
+            })
+            .await;
+        });
+
+        let connect = |temporary_tab_id: &str| {
+            let url = format!(
+                "ws://{addr}/ws/terminal?terminal_id=t1&temporary_tab_id={temporary_tab_id}"
+            );
+            async move {
+                let request = tokio_tungstenite::tungstenite::http::Request::builder()
+                    .uri(&url)
+                    .header("cookie", "herdr_web_session=token-123")
+                    .header("host", addr.to_string())
+                    .header("connection", "Upgrade")
+                    .header("upgrade", "websocket")
+                    .header("sec-websocket-version", "13")
+                    .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+                    .body(())
+                    .unwrap();
+                connect_async(request)
+                    .await
+                    .expect("failed to connect to terminal WS")
+                    .0
+            }
+        };
+
+        // 1) Normal teardown: no release frame, no guard entry -> the
+        //    temporary tab is auto-closed after the grace window.
+        let mut ws = connect("tab-grace-normal").await;
+        let _ = ws.close(None).await;
+        let closed = tokio::time::timeout(Duration::from_secs(10), close_rx.recv())
+            .await
+            .expect("temporary tab must be closed on normal teardown")
+            .expect("api socket thread alive");
+        assert_eq!(closed, "tab-grace-normal");
+
+        // 2) Armed release toggle: the same teardown must NOT close the
+        //    tab (the promote succeeded and the overlay is going away).
+        let mut ws = connect("tab-grace-armed").await;
+        ws.send(tokio_tungstenite::tungstenite::Message::Text(
+            json!({ "type": "release", "enabled": true })
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+        // Give the server a beat to consume the release frame before the
+        // Close frame tears the socket down.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let _ = ws.close(None).await;
+        let unexpected = tokio::time::timeout(Duration::from_millis(600), close_rx.recv()).await;
+        assert!(
+            unexpected.is_err(),
+            "armed release toggle must keep the promoted tab open (got {unexpected:?})"
+        );
+
+        // 3) In-flight promote arms the server-side guard during the grace
+        //    window: the teardown re-check must observe it and skip the
+        //    close. Simulates the WS dying exactly while the promote POST is
+        //    between the socket read and the backend round-trip.
+        let mut ws = connect("tab-grace-inflight").await;
+        begin_temporary_tab_promote(&state.promoted_temporary_tabs, "tab-grace-inflight");
+        let _ = ws.close(None).await;
+        let unexpected = tokio::time::timeout(Duration::from_millis(600), close_rx.recv()).await;
+        assert!(
+            unexpected.is_err(),
+            "in-flight promote must win the grace race and keep the tab open"
+        );
+
+        // Clean the guard so later checks stay honest.
+        finish_temporary_tab_promote(&state.promoted_temporary_tabs, "tab-grace-inflight", false);
+
+        // 4) In-transit promote: the WS closes first, then the promote POST
+        //    lands inside the grace window. Its api socket accepts but never
+        //    answers, so the request stays in flight and the guard stays
+        //    armed (Promoting) when the teardown performs the grace
+        //    re-check: the close must be skipped.
+        let mut ws = connect("tab-grace-inflight-late").await;
+        let _ = ws.close(None).await;
+        {
+            use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+
+            let stuck_path = std::env::temp_dir().join(format!(
+                "herdr-webui-stuck-api-{}-{}.sock",
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos(),
+                fake_socket_suffix()
+            ));
+            let _ = fs::remove_file(&stuck_path);
+            let name = stuck_path.clone().to_fs_name::<GenericFilePath>().unwrap();
+            let stuck_listener = ListenerOptions::new()
+                .name(name)
+                .try_overwrite(true)
+                .create_sync()
+                .unwrap();
+            // Accept, hold the request past the grace window, then answer
+            // with a backend error so the in-flight promote task completes
+            // and can be awaited deterministically.
+            thread::spawn(move || {
+                while let Ok(mut stream) = stuck_listener.accept() {
+                    thread::sleep(Duration::from_secs(2));
+                    let _ =
+                        stream.write_all(br#"{"id":"web:tab:promote","error":"stuck backend"}"#);
+                    let _ = stream.write_all(b"\n");
+                    let _ = stream.flush();
+                }
+            });
+
+            let mut late_state = state.clone();
+            late_state.api_socket = Some(stuck_path.clone());
+            let late = tokio::spawn(async move {
+                let request = Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/tabs/tab-grace-inflight-late/promote")
+                    .header("cookie", "herdr_web_session=token-123")
+                    .extension(ConnectInfo("192.0.2.1:1234".parse::<SocketAddr>().unwrap()))
+                    .body(Body::empty())
+                    .unwrap();
+                test_app_with_state(late_state)
+                    .oneshot(request)
+                    .await
+                    .unwrap()
+            });
+            let unexpected =
+                tokio::time::timeout(Duration::from_millis(600), close_rx.recv()).await;
+            assert!(
+                unexpected.is_err(),
+                "in-transit promote inside the grace window must keep the tab open"
+            );
+            // Disarm the guard; the stuck socket then answers with a
+            // backend error after the grace window, so the promote task
+            // finishes on its own (the error path decrements the saturated
+            // count back to zero) and the full route tail, including the
+            // join, is executed.
+            finish_temporary_tab_promote(
+                &state.promoted_temporary_tabs,
+                "tab-grace-inflight-late",
+                false,
+            );
+            let late_response = tokio::time::timeout(Duration::from_secs(10), late)
+                .await
+                .expect("late promote task must finish")
+                .expect("late promote request must complete");
+            // Transport succeeded, so the backend error rides inside the
+            // envelope with an overall 200; the route must also have
+            // disarmed the in-flight guard again on its error path.
+            assert_eq!(
+                late_response.status(),
+                StatusCode::OK,
+                "a backend error inside the envelope keeps the 200 transport status"
+            );
+            let body = to_bytes(late_response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let envelope: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(
+                envelope["error"], "stuck backend",
+                "the backend error must be relayed in the envelope"
+            );
+            let _ = fs::remove_file(&stuck_path);
+        }
+
+        // 5) Guard armed mid-grace: teardown passes the first check while
+        //    the tab is still closable, then the promote guard arms during
+        //    the 250ms window (exactly when an in-transit promote request
+        //    gets parsed). The re-check must observe it and skip the close:
+        //    this exercises the re-check false arm of the grace window.
+        {
+            let mut ws = connect("tab-grace-mid-arm").await;
+            let _ = ws.close(None).await;
+            // The close is detected and the first closability check has
+            // passed by now (well under the grace window), so arming the
+            // guard here puts it between the two checks deterministically.
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            begin_temporary_tab_promote(&state.promoted_temporary_tabs, "tab-grace-mid-arm");
+            let unexpected =
+                tokio::time::timeout(Duration::from_millis(600), close_rx.recv()).await;
+            assert!(
+                unexpected.is_err(),
+                "guard armed mid-grace must keep the tab open at the re-check"
+            );
+            finish_temporary_tab_promote(
+                &state.promoted_temporary_tabs,
+                "tab-grace-mid-arm",
+                false,
+            );
+        }
+
+        let _ = shutdown_tx.send(());
+        let _ = tokio::time::timeout(Duration::from_secs(5), server_handle).await;
+        drop(close_tx);
+        drop(attach_tx);
+        // The fake-socket threads block in accept() until process exit;
+        // they are intentionally detached (unique socket names, no joins).
+        let _ = fs::remove_file(api_socket);
+        let _ = fs::remove_file(attach_socket);
+    }
+
+    /// Forwarding happy path: the WS relay must translate browser frames
+    /// into herdr ClientMessages on the attach socket (binary passthrough,
+    /// JSON `input` text, plain text fallback) and keep the ping loop alive.
+    /// The abrupt socket drop after the ping exercises the raw-io error path
+    /// of the outbound relay without a clean Close handshake.
+    #[cfg(unix)]
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn terminal_ws_forwards_input_frames_to_attach_socket() {
+        use futures_util::SinkExt;
+        use tokio_tungstenite::connect_async;
+
+        let (received_tx, received_rx) = std::sync::mpsc::channel::<String>();
+        let (attach_socket, _attach_thread) = fake_terminal_attach_socket(received_tx.clone());
+
+        let mut state = test_state();
+        state.api_socket = Some(PathBuf::from("/tmp/nonexistent-api.sock"));
+        state.client_socket = Some(attach_socket.clone());
+        let app = test_app_with_state(state.clone());
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let server_handle = tokio::spawn(async move {
+            let mut shutdown_rx = Some(shutdown_rx);
+            let _ = axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .with_graceful_shutdown(async move {
+                let _ = shutdown_rx.take().unwrap().await;
+            })
+            .await;
+        });
+
+        let url = format!("ws://{addr}/ws/terminal?terminal_id=t1&temporary_tab_id=tab-forward");
+        let request = tokio_tungstenite::tungstenite::http::Request::builder()
+            .uri(&url)
+            .header("cookie", "herdr_web_session=token-123")
+            .header("host", addr.to_string())
+            .header("connection", "Upgrade")
+            .header("upgrade", "websocket")
+            .header("sec-websocket-version", "13")
+            .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+            .body(())
+            .unwrap();
+        let mut ws = connect_async(request)
+            .await
+            .expect("failed to connect to terminal WS")
+            .0;
+
+        ws.send(tokio_tungstenite::tungstenite::Message::Binary(
+            vec![0x41, 0x42].into(),
+        ))
+        .await
+        .unwrap();
+        ws.send(tokio_tungstenite::tungstenite::Message::Text(
+            json!({ "input": "XY" }).to_string().into(),
+        ))
+        .await
+        .unwrap();
+        ws.send(tokio_tungstenite::tungstenite::Message::Text("Z".into()))
+            .await
+            .unwrap();
+        ws.send(tokio_tungstenite::tungstenite::Message::Ping(
+            tokio_tungstenite::tungstenite::Bytes::from_static(b"keepalive"),
+        ))
+        .await
+        .unwrap();
+
+        // The relay may need a beat to drain the frames through the socket
+        // pair; read the recorded messages on a blocking thread so the
+        // tokio runtime is never blocked by the std mpsc receiver.
+        let received_rx = Arc::new(StdMutex::new(received_rx));
+        let next = || {
+            let rx = Arc::clone(&received_rx);
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    rx.lock()
+                        .unwrap_or_else(|poison| poison.into_inner())
+                        .recv_timeout(Duration::from_secs(10))
+                })
+                .await
+                .unwrap()
+            }
+        };
+        let first = next()
+            .await
+            .expect("attach socket must record binary passthrough");
+        assert_eq!(first, "Input { data: [65, 66] }");
+        let second = next().await.expect("attach socket must record json input");
+        assert_eq!(second, "Input { data: [88, 89] }");
+        let third = next().await.expect("attach socket must record plain text");
+        assert_eq!(third, "Input { data: [90] }");
+
+        // Abrupt drop: no Close frame, the socket dies while the relay is
+        // healthy. The relay's outbound half must terminate and forward
+        // nothing further.
+        drop(ws);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let leftover = received_rx
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .try_recv();
+        assert!(
+            leftover.is_err(),
+            "no frames may be forwarded after the abrupt WS drop (got {leftover:?})"
+        );
+
+        let _ = shutdown_tx.send(());
+        let _ = tokio::time::timeout(Duration::from_secs(5), server_handle).await;
+        drop(received_tx);
+        let _ = fs::remove_file(&attach_socket);
+    }
+
+    /// Raw-arm coverage for the recording api-socket fake: a connection
+    /// whose first line is not valid UTF-8 must hit the read_line error arm,
+    /// and a line that is valid UTF-8 but not JSON must hit the parse-fail
+    /// arm. Both end the accept loop, so the socket thread terminates and
+    /// no tab.close is ever recorded from these probe connections.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn fake_api_socket_recording_ends_on_raw_and_garbage_lines() {
+        use interprocess::local_socket::{prelude::*, GenericFilePath};
+        use std::io::Write as _;
+
+        let (closed_tx, mut closed_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+
+        // Invalid UTF-8 on the wire: BufReader::read_line errors out and
+        // the accept loop breaks on the raw-io arm.
+        let (bad_utf8_socket, bad_utf8_thread) = fake_api_socket_recording(closed_tx.clone());
+        let name = bad_utf8_socket
+            .clone()
+            .to_fs_name::<GenericFilePath>()
+            .unwrap();
+        let mut stream = LocalStream::connect(name).unwrap();
+        stream.write_all(&[0xff, 0xfe, b'\n']).unwrap();
+        stream.flush().unwrap();
+        drop(stream);
+        bad_utf8_thread.join().unwrap();
+        let _ = fs::remove_file(&bad_utf8_socket);
+
+        // Valid UTF-8 but not JSON: the parse-fail arm ends the loop.
+        let (garbage_socket, garbage_thread) = fake_api_socket_recording(closed_tx.clone());
+        let name = garbage_socket
+            .clone()
+            .to_fs_name::<GenericFilePath>()
+            .unwrap();
+        let mut stream = LocalStream::connect(name).unwrap();
+        stream.write_all(b"not-json\n").unwrap();
+        stream.flush().unwrap();
+        drop(stream);
+        garbage_thread.join().unwrap();
+        let _ = fs::remove_file(&garbage_socket);
+
+        // Valid JSON but not tab.close: the method filter arm falls
+        // through, the request is answered, and no close is recorded.
+        // The accept loop stays alive (detached like the other fakes), so
+        // completion is observed from the response on the client stream.
+        let (ping_socket, _ping_thread) = fake_api_socket_recording(closed_tx.clone());
+        let name = ping_socket.clone().to_fs_name::<GenericFilePath>().unwrap();
+        let mut stream = LocalStream::connect(name).unwrap();
+        stream
+            .write_all(br#"{"id":1,"method":"tab.list","params":{}}"#)
+            .unwrap();
+        stream.write_all(b"\n").unwrap();
+        stream.flush().unwrap();
+        let mut response = String::new();
+        {
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            reader.read_line(&mut response).unwrap();
+        }
+        assert_eq!(response.trim(), r#"{"id":1,"result":{}}"#);
+        drop(stream);
+        let _ = fs::remove_file(&ping_socket);
+
+        // Attach-socket fake Err arm: after the Welcome handshake the relay
+        // loop must end on a malformed frame instead of looping forever.
+        let (attach_probe_tx, attach_probe_rx) = std::sync::mpsc::channel::<String>();
+        let (attach_probe_socket, _attach_probe_thread) =
+            fake_terminal_attach_socket(attach_probe_tx);
+        let name = attach_probe_socket
+            .clone()
+            .to_fs_name::<GenericFilePath>()
+            .unwrap();
+        let mut stream = LocalStream::connect(name).unwrap();
+        write_message(
+            &mut stream,
+            &ClientMessage::TerminalHello {
+                version: PROTOCOL_VERSION,
+                cols: 80,
+                rows: 24,
+                cell_width_px: 0,
+                cell_height_px: 0,
+                pixel_mouse: false,
+            },
+        )
+        .unwrap();
+        // First Input frame is consumed by the pre-loop read; the second
+        // one is echoed into the received channel; the zero-length frame
+        // after it fails bincode decoding and must end the relay loop.
+        write_message(&mut stream, &ClientMessage::Input { data: vec![0x41] }).unwrap();
+        write_message(&mut stream, &ClientMessage::Input { data: vec![0x43] }).unwrap();
+        stream.write_all(&[0, 0, 0, 0]).unwrap();
+        stream.flush().unwrap();
+        let echoed = attach_probe_rx
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap();
+        assert_eq!(echoed, "Input { data: [67] }");
+        drop(stream);
+        let _ = fs::remove_file(&attach_probe_socket);
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), closed_rx.recv())
+                .await
+                .is_err(),
+            "no tab.close may be recorded from raw probe connections"
+        );
+    }
+
+    #[test]
+    fn tls_config_scheme_follows_mode() {
+        // `--https off` needs the explicit value: bare `--https` defaults
+        // to Auto, and a bare `off` would be an unknown arg.
+        let cases: &[(&str, &[&str], &str)] = &[
+            (
+                "off",
+                &["--bind", "127.0.0.1:9797", "--https", "off"],
+                "http",
+            ),
+            ("auto", &["--bind", "127.0.0.1:9797", "--https"], "https"),
+            (
+                "self-signed",
+                &["--bind", "127.0.0.1:9797", "--https", "self-signed"],
+                "https",
+            ),
+            (
+                "files",
+                &[
+                    "--bind",
+                    "127.0.0.1:9797",
+                    "--https",
+                    "files",
+                    "--tls-cert",
+                    "/tmp/cert.pem",
+                    "--tls-key",
+                    "/tmp/key.pem",
+                ],
+                "https",
+            ),
+        ];
+        for (mode, args, expected) in cases {
+            let args = args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
+            let scheme = WebConfig::parse(&args).unwrap().tls.scheme();
+            assert_eq!(scheme, *expected, "mode {mode}");
+        }
     }
 
     #[test]
@@ -10374,6 +11118,205 @@ mod tests {
         }
         let _ = fs::remove_dir_all(&config_home);
         std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    /// A backend error envelope (e.g. same-workspace rejection) must relay
+    /// the error AND leave the tab closable: the in-flight marker armed by
+    /// begin_temporary_tab_promote must be decremented back to zero and
+    /// removed, so the terminal WS teardown auto-closes the tab as usual.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn promote_tab_handler_failure_restores_closable_state() {
+        let (socket, handle) = fake_api_socket_for_method(
+            "tab.promote",
+            json!({
+                "id": "web:tab:promote",
+                "error": { "code": "builtin_error", "message": "tab tab-98 already runs in workspace ws-1" }
+            }),
+        );
+        let mut state = test_state();
+        state.api_socket = Some(socket.clone());
+        let app = test_app_with_state(state.clone());
+
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/tabs/tab-98/promote")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = response_json(response).await;
+        assert_eq!(
+            body["error"]["message"],
+            "tab tab-98 already runs in workspace ws-1"
+        );
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
+
+        // The guard must be fully released: no marker for this tab remains.
+        assert!(
+            state
+                .promoted_temporary_tabs
+                .lock()
+                .unwrap()
+                .get("tab-98")
+                .is_none(),
+            "failed promote must remove the in-flight marker so teardown auto-closes again"
+        );
+    }
+
+    /// A dead backend socket (daemon stopped mid-call) surfaces BAD_GATEWAY
+    /// and also restores closable state.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn promote_tab_handler_backend_failure_restores_closable_state() {
+        let (socket, handle) = fake_api_socket_for_method(
+            "tab.promote",
+            json!({ "id": "web:tab:promote", "error": { "code": "builtin_error", "message": "backend socket closed" } }),
+        );
+        let mut state = test_state();
+        state.api_socket = Some(socket.clone());
+        let app = test_app_with_state(state.clone());
+
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/tabs/tab-97/promote")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = response_json(response).await;
+        assert!(
+            body["error"].is_object(),
+            "backend failure must relay an error, got {body}"
+        );
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
+        assert!(
+            state
+                .promoted_temporary_tabs
+                .lock()
+                .unwrap()
+                .get("tab-97")
+                .is_none(),
+            "backend-failed promote must release the in-flight guard"
+        );
+    }
+
+    /// A dead backend socket (removed path) must surface 502 through the
+    /// route's single Err arm and also release the in-flight guard, exactly
+    /// like a backend error envelope: connect_local_stream fails before a
+    /// request is ever written.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn promote_tab_handler_dead_socket_restores_closable_state() {
+        let missing = std::env::temp_dir().join(format!(
+            "herdr-webui-promote-missing-{}-{}.sock",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            fake_socket_suffix()
+        ));
+        let mut state = test_state();
+        state.api_socket = Some(missing.clone());
+        let app = test_app_with_state(state.clone());
+
+        let response = app
+            .oneshot(
+                authed_request(Method::POST, "/api/tabs/tab-96/promote")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = response_json(response).await;
+        assert!(
+            body["error"].as_str().is_some_and(|err| !err.is_empty()),
+            "dead socket must relay a join-failure error, got {body}"
+        );
+        assert!(
+            state
+                .promoted_temporary_tabs
+                .lock()
+                .unwrap()
+                .get("tab-96")
+                .is_none(),
+            "dead-socket promote must release the in-flight guard"
+        );
+    }
+
+    /// A panic inside the spawn_blocking backend call must keep propagating
+    /// after the join failure is folded: promote_join_failure resumes the
+    /// original panic payload instead of degrading it to a 502 message.
+    #[tokio::test]
+    #[should_panic(expected = "join-panic probe")]
+    async fn promote_join_failure_propagates_backend_panic() {
+        let join = tokio::task::spawn_blocking(|| panic!("join-panic probe"))
+            .await
+            .unwrap_err();
+        promote_join_failure(join);
+    }
+
+    /// A cancelled spawn_blocking task yields a JoinError that is not a
+    /// panic: promote_join_failure must degrade it to its message string so
+    /// the route answers 502 and restores auto-close. Built on a runtime
+    /// whose only blocking thread is parked, so the queued task is still
+    /// waiting for a pool slot when it is aborted.
+    #[test]
+    fn promote_join_failure_degrades_cancelled_task_to_message() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .max_blocking_threads(1)
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+            let parked = tokio::task::spawn_blocking(move || {
+                let _ = std::sync::mpsc::channel::<()>();
+                // Park the only blocking thread until the test is done.
+                drop(release_rx);
+            });
+            let queued = tokio::task::spawn_blocking(|| unreachable!());
+            // Yield so `queued` is registered as waiting for the pool, then
+            // cancel it before it ever runs.
+            tokio::task::yield_now().await;
+            queued.abort();
+            let join = queued.await.unwrap_err();
+            assert!(join.is_cancelled(), "probe task must be cancelled, not run");
+            let message = promote_join_failure(join);
+            assert!(
+                message.contains("cancelled"),
+                "join failure must degrade to its message, got {message}"
+            );
+            let _ = release_tx.send(());
+            let _ = parked.await;
+        });
+    }
+
+    /// An unauthenticated promote request must be rejected before the route
+    /// arms the in-flight guard: the registry stays untouched so the tab
+    /// keeps its normal auto-close semantics.
+    #[tokio::test]
+    async fn promote_tab_handler_rejects_unauthenticated() {
+        let state = test_state();
+        let app = test_app_with_state(state.clone());
+
+        let response = app
+            .oneshot(
+                request(Method::POST, "/api/tabs/tab-99/promote")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert!(
+            state.promoted_temporary_tabs.lock().unwrap().is_empty(),
+            "rejected promote must never arm the in-flight guard"
+        );
     }
 
     #[cfg(unix)]
