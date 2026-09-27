@@ -16,6 +16,10 @@ mod stash;
 #[cfg(test)]
 pub(crate) use cleanup::{parse_cleanup_repos, CleanupItemKind};
 pub use conflicts::{ConflictAction, ConflictResolveMode};
+pub use log::LogScope;
+#[cfg(test)]
+pub(crate) use log::LOG_MAX_LIMIT;
+pub(crate) use log::LOG_PAGE_SIZE;
 
 use std::collections::HashMap;
 
@@ -174,6 +178,18 @@ pub struct GitPanel {
     pub cleanup_root: Option<String>,
     pub cleanup_repos: Vec<CleanupRepo>,
     pub cleanup_selected: usize,
+    /// Log view scope, mirroring the webui log scope cycle
+    /// (all → base-current → base). `base` is the configured default
+    /// branch ("master" unless the webui option changes it).
+    pub log_scope: LogScope,
+    /// Webui log page size: 80 per page, hard cap 2000
+    /// (`GIT_LOG_PAGE_SIZE` / `GIT_LOG_MAX_LIMIT`).
+    pub log_limit: usize,
+    /// `has_more` from the last log fetch: `+` grows `log_limit`.
+    pub log_has_more: bool,
+    /// File filter for the Log view (webui `logFilePath`); set by the
+    /// file explorer "show history" entry.
+    pub log_file: Option<String>,
     pub status: Option<String>,
     pub message: Option<String>,
 }
@@ -221,6 +237,10 @@ impl GitPanel {
             cleanup_root: None,
             cleanup_repos: Vec::new(),
             cleanup_selected: 0,
+            log_scope: LogScope::default(),
+            log_limit: LOG_PAGE_SIZE,
+            log_has_more: false,
+            log_file: None,
             status: None,
             message: None,
         }

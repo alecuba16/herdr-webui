@@ -130,6 +130,9 @@ pub struct TuiApp {
     pub tick: u64,
     /// Two-step worktree creation: branch typed first, then checkout path.
     pub worktree_create_stage: Option<workspace::WorktreeCreateStage>,
+    /// Rebase upstream typed into the RebaseUpstream prompt; consumed by
+    /// the follow-up typed confirm (webui rebase modal two-step).
+    pub rebase_pending_upstream: Option<String>,
     /// Vertical scroll of the Help overlay (j/k when help is open).
     pub help_scroll: usize,
     dirty: bool,
@@ -173,6 +176,21 @@ pub enum PromptKind {
     CreateWorktreePath,
     ConfirmCloseWorkspace,
     ConfirmCleanupDelete,
+    /// Log view: tag name for the selected commit (webui tag modal).
+    CreateTag,
+    /// Log view: reset mode text (soft/mixed/hard) for the selected
+    /// commit (webui reset modal). `hard` chains into a typed confirm.
+    ResetMode,
+    /// Log view: typed `y` guard for a hard reset (webui asks for
+    /// "reset hard"; the server double-checks the same string).
+    ConfirmResetHard,
+    /// Log view: rebase upstream ref for the selected commit (webui
+    /// rebase modal). Chains into `ConfirmRebase`'s typed `y`.
+    RebaseUpstream,
+    /// Log view: typed `y` guard that runs the rebase staged by
+    /// `RebaseUpstream` (the webui modal has both fields at once;
+    /// the TUI prompts sequentially).
+    ConfirmRebase,
 }
 
 impl PromptKind {
@@ -185,6 +203,8 @@ impl PromptKind {
                 | Self::ConfirmDropStash
                 | Self::ConfirmCloseWorkspace
                 | Self::ConfirmCleanupDelete
+                | Self::ConfirmResetHard
+                | Self::ConfirmRebase
         )
     }
 
@@ -201,6 +221,11 @@ impl PromptKind {
             Self::CreateWorktreePath => "Create worktree: checkout path",
             Self::ConfirmCloseWorkspace => "Close workspace (y)",
             Self::ConfirmCleanupDelete => "Delete cleanup item (y)",
+            Self::CreateTag => "Tag commit",
+            Self::ResetMode => "Reset to commit",
+            Self::ConfirmResetHard => "Hard reset (y)",
+            Self::RebaseUpstream => "Rebase: upstream ref",
+            Self::ConfirmRebase => "Rebase (y)",
         }
     }
 
@@ -212,6 +237,9 @@ impl PromptKind {
             Self::RenameWorkspace | Self::RenamePanel => "type the new name, Enter renames",
             Self::CreateWorktreeBranch => "type the branch name, Enter continues",
             Self::CreateWorktreePath => "type the checkout path, Enter creates",
+            Self::CreateTag => "type the tag name, Enter tags the selected commit",
+            Self::ResetMode => "type soft, mixed or hard, Enter resets",
+            Self::RebaseUpstream => "type the upstream ref, then y + Enter to rebase",
             _ => "type y then Enter to confirm, Esc cancels",
         }
     }
@@ -268,6 +296,7 @@ impl TuiApp {
             palette: Palette::for_theme(theme),
             tick: 0,
             worktree_create_stage: None,
+            rebase_pending_upstream: None,
             help_scroll: 0,
             dirty: true,
         }
@@ -464,6 +493,57 @@ impl TuiApp {
                 },
                 None => self.error = Some("no cleanup item selected".to_string()),
             },
+            PromptKind::CreateTag => {
+                let tag = text.trim();
+                if tag.is_empty() {
+                    self.error = Some("type a tag name".to_string());
+                } else {
+                    match self.git_panel.log_tag(&self.web_api, tag) {
+                        Ok(()) => self.status = format!("tagged {tag}"),
+                        Err(err) => self.error = Some(err.to_string()),
+                    }
+                }
+            }
+            PromptKind::ResetMode => {
+                let mode = text.trim();
+                match mode {
+                    "soft" | "mixed" => match self.git_panel.log_reset(&self.web_api, mode) {
+                        Ok(()) => self.status = format!("reset {mode}"),
+                        Err(err) => self.error = Some(err.to_string()),
+                    },
+                    // Hard reset chains into the typed-y confirm; the
+                    // server independently requires "reset hard".
+                    "hard" => {
+                        self.prompt_input = Some(PromptInput::new(PromptKind::ConfirmResetHard));
+                        self.status = PromptKind::ConfirmResetHard.title().to_string();
+                    }
+                    _ => self.error = Some("type soft, mixed or hard".to_string()),
+                }
+            }
+            PromptKind::ConfirmResetHard => match self.git_panel.log_reset(&self.web_api, "hard") {
+                Ok(()) => self.status = "reset hard".to_string(),
+                Err(err) => self.error = Some(err.to_string()),
+            },
+            PromptKind::RebaseUpstream => {
+                let upstream = text.trim();
+                if upstream.is_empty() {
+                    self.error = Some("type the upstream ref".to_string());
+                } else {
+                    self.rebase_pending_upstream = Some(upstream.to_string());
+                    self.prompt_input = Some(PromptInput::new(PromptKind::ConfirmRebase));
+                    self.status = PromptKind::ConfirmRebase.title().to_string();
+                }
+            }
+            PromptKind::ConfirmRebase => {
+                let Some(upstream) = self.rebase_pending_upstream.take() else {
+                    self.error = Some("no rebase pending".to_string());
+                    return;
+                };
+                match self.git_panel.log_rebase(&self.web_api, &upstream) {
+                    Ok(()) => self.status = format!("rebase onto {upstream}"),
+                    Err(err) => self.error = Some(err.to_string()),
+                }
+            }
         }
     }
 
@@ -661,6 +741,8 @@ impl TuiApp {
             Shortcut::GitLog => {
                 self.open_git_screen();
                 self.git_panel.view = GitView::Log;
+                // Keep an existing file scope (webui `logFilePath`) when
+                // re-opening the Log view.
                 self.refresh_active_screen();
             }
             Shortcut::GitStash => {
@@ -984,6 +1066,27 @@ impl TuiApp {
                 }
             }
             KeyCode::Char('r') => self.refresh_active_screen(),
+            // Webui file-browser "show history": open the git Log view
+            // scoped to the selected file (`logFilePath`). Plain `h` is
+            // go-up here, so the log entry is `L` (Log).
+            KeyCode::Char('L') => {
+                let file = self
+                    .file_explorer
+                    .selected_entry()
+                    .filter(|entry| !entry.is_dir)
+                    .map(|entry| entry.path.clone());
+                match file {
+                    Some(file) => {
+                        self.open_git_screen();
+                        self.git_panel.view = GitView::Log;
+                        self.git_panel.log_file = Some(file.clone());
+                        self.git_panel.log_limit = crate::tui::panels::git::LOG_PAGE_SIZE;
+                        self.refresh_active_screen();
+                        self.status = format!("log: {file}");
+                    }
+                    None => self.error = Some("select a file first".to_string()),
+                }
+            }
             KeyCode::Char('/') => self.file_explorer.start_filter(),
             KeyCode::Char('e') => match self.file_explorer.start_edit() {
                 Ok(()) => self.status = "editing: Ctrl-S saves, Esc stops".to_string(),
@@ -1056,6 +1159,59 @@ impl TuiApp {
                     GitView::Cleanup => GitView::Changes,
                 };
                 self.refresh_active_screen();
+            }
+            // Log view actions (webui log toolbar). All guarded to Log so
+            // the shared git keys keep their meaning elsewhere. `s` (stage)
+            // has no use in Log, so it cycles the log scope here.
+            KeyCode::Char('s') if self.git_panel.view == GitView::Log => {
+                self.git_panel.cycle_log_scope();
+                if let Err(err) = self.git_panel.refresh_log(&self.web_api) {
+                    self.error = Some(err.to_string());
+                } else {
+                    self.status = format!("log scope: {}", self.git_panel.log_scope.label());
+                }
+            }
+            KeyCode::Char('+') if self.git_panel.view == GitView::Log => {
+                if self.git_panel.log_load_more() {
+                    if let Err(err) = self.git_panel.refresh_log(&self.web_api) {
+                        self.error = Some(err.to_string());
+                    } else {
+                        self.status = format!("log limit: {}", self.git_panel.log_limit);
+                    }
+                } else {
+                    self.status = "no more commits".to_string();
+                }
+            }
+            KeyCode::Char('t') if self.git_panel.view == GitView::Log => {
+                if self.git_panel.selected_commit_hash().is_some() {
+                    self.prompt_input = Some(PromptInput::new(PromptKind::CreateTag));
+                    self.status = PromptKind::CreateTag.title().to_string();
+                } else {
+                    self.error = Some("no commit selected".to_string());
+                }
+            }
+            KeyCode::Char('R') if self.git_panel.view == GitView::Log => {
+                if self.git_panel.selected_commit_hash().is_some() {
+                    self.prompt_input = Some(PromptInput::new(PromptKind::ResetMode));
+                    self.status = PromptKind::ResetMode.title().to_string();
+                } else {
+                    self.error = Some("no commit selected".to_string());
+                }
+            }
+            KeyCode::Char('b') if self.git_panel.view == GitView::Log => {
+                if self.git_panel.selected_commit_hash().is_some() {
+                    self.prompt_input = Some(PromptInput::new(PromptKind::RebaseUpstream));
+                    self.status = PromptKind::RebaseUpstream.title().to_string();
+                } else {
+                    self.error = Some("no commit selected".to_string());
+                }
+            }
+            // Webui "worktree from branch": reuse the two-step worktree
+            // creation prompt chain (branch, then checkout path).
+            KeyCode::Char('w') if self.git_panel.view == GitView::Log => {
+                self.worktree_create_stage = None;
+                self.prompt_input = Some(PromptInput::new(PromptKind::CreateWorktreeBranch));
+                self.status = PromptKind::CreateWorktreeBranch.title().to_string();
             }
             KeyCode::Char('s') => {
                 if let Err(err) = self.git_panel.stage_selected(&self.web_api) {
@@ -1207,7 +1363,20 @@ impl TuiApp {
                         );
                     }
                 }
-                GitView::Log => {}
+                GitView::Log => {
+                    // Webui log commit preview: compare the selected
+                    // commit with its parent into the Log diff pane.
+                    let hash = self.git_panel.selected_commit_hash().map(str::to_string);
+                    match hash {
+                        Some(hash) => {
+                            match self.git_panel.log_compare_parent(&self.web_api, &hash) {
+                                Ok(()) => self.status = format!("compare {hash}^..{hash}"),
+                                Err(err) => self.error = Some(err.to_string()),
+                            }
+                        }
+                        None => self.error = Some("no commit selected".to_string()),
+                    }
+                }
                 GitView::Conflicts | GitView::Cleanup => {}
             },
             // Conflicts view actions (webui conflicts tab buttons).

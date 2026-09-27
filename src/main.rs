@@ -16001,6 +16001,87 @@ mod tui_parity_e2e_tests {
             app.git_panel.commits.len().saturating_sub(1),
             "log refresh must clamp the selection"
         );
+
+        // --- Log view actions (webui log toolbar parity).
+        // Enter compares the selected commit with its parent.
+        app.git_panel.commit_selected = 0;
+        app.handle_key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Enter,
+        ));
+        assert!(
+            !app.git_panel.diff_lines.is_empty(),
+            "log Enter loads the parent compare diff"
+        );
+        assert!(app.error.is_none(), "log Enter error: {:?}", app.error);
+        assert!(
+            app.status.contains("compare"),
+            "log Enter status: {}",
+            app.status
+        );
+
+        // `s` cycles the log scope (all -> base-current -> base).
+        let scope_before = app.git_panel.log_scope;
+        press(&mut app, 's');
+        assert_ne!(app.git_panel.log_scope, scope_before, "s cycles log scope");
+        assert!(
+            app.status.contains("log scope"),
+            "scope status: {}",
+            app.status
+        );
+
+        // `+` load-more is refused without more pages (or grows the limit
+        // and refetches); both paths keep the view consistent.
+        press(&mut app, '+');
+        assert!(
+            app.status.contains("log limit") || app.status.contains("no more"),
+            "+ load more status: {}",
+            app.status
+        );
+
+        // `t` opens the tag prompt; typing a name tags the selected commit.
+        press(&mut app, 't');
+        assert!(app.prompt_input.is_some(), "t opens the tag prompt");
+        for ch in "v-e2e".chars() {
+            press(&mut app, ch);
+        }
+        app.handle_key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Enter,
+        ));
+        assert_eq!(app.status, "tagged v-e2e", "tag prompt: {}", app.status);
+
+        // `R` opens the reset prompt; mixed mode resets the current
+        // branch to the selected commit.
+        press(&mut app, 'R');
+        for ch in "mixed".chars() {
+            press(&mut app, ch);
+        }
+        app.handle_key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Enter,
+        ));
+        assert_eq!(app.status, "reset mixed", "reset prompt: {}", app.status);
+
+        // `R` then "hard" chains into the typed-y confirm; non-y cancels
+        // without touching the repo. The actual hard reset is not executed
+        // here because it would wipe the working tree edits the later
+        // sections of this test still need; the typed-y path is the same
+        // `run_prompt_action` arm the mixed reset already exercised.
+        press(&mut app, 'R');
+        for ch in "hard".chars() {
+            press(&mut app, ch);
+        }
+        app.handle_key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Enter,
+        ));
+        assert!(matches!(
+            app.prompt_input.as_ref().map(|p| p.kind),
+            Some(herdr_webui::tui::PromptKind::ConfirmResetHard)
+        ));
+        press(&mut app, 'n');
+        app.handle_key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Enter,
+        ));
+        assert_eq!(app.status, "cancelled", "non-y confirm cancels");
+
         app.git_panel.view = herdr_webui::tui::panels::GitView::History;
         app.git_panel
             .refresh_view(&app.web_api)

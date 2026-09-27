@@ -6,7 +6,8 @@
 use super::files::parse_entries;
 use super::git::{
     parse_blame_authors, parse_branch, parse_cleanup_repos, parse_commit,
-    parse_diff_lines_with_meta, parse_git_files, CleanupItemKind, CleanupRepo,
+    parse_diff_lines_with_meta, parse_git_files, CleanupItemKind, CleanupRepo, LogScope,
+    LOG_MAX_LIMIT, LOG_PAGE_SIZE,
 };
 use super::*;
 use crate::tui::web_api::WebApiClient;
@@ -980,4 +981,75 @@ fn stash_diff_without_selection_errors() {
     let mut panel = GitPanel::new("/repo");
     panel.view = GitView::Stash;
     assert!(panel.load_stash_diff(&api).is_err());
+}
+
+#[test]
+fn log_scope_cycles_in_webui_order() {
+    // Webui `cycleLogScope`: all -> base-current -> base -> all.
+    assert_eq!(LogScope::default(), LogScope::BaseCurrent);
+    let mut scope = LogScope::All;
+    assert_eq!(scope.api_name(), "all");
+    scope = scope.next();
+    assert_eq!(scope, LogScope::BaseCurrent);
+    assert_eq!(scope.api_name(), "base-current");
+    scope = scope.next();
+    assert_eq!(scope, LogScope::Base);
+    assert_eq!(scope.api_name(), "base");
+    scope = scope.next();
+    assert_eq!(scope, LogScope::All);
+}
+
+#[test]
+fn log_load_more_grows_by_page_and_caps_at_webui_max() {
+    let mut panel = GitPanel::new("/repo");
+    assert_eq!(panel.log_limit, LOG_PAGE_SIZE);
+    // Without has_more, load more is refused.
+    assert!(!panel.log_load_more());
+    assert_eq!(panel.log_limit, LOG_PAGE_SIZE);
+    panel.log_has_more = true;
+    assert!(panel.log_load_more());
+    assert_eq!(panel.log_limit, LOG_PAGE_SIZE * 2);
+    // Cycling the scope resets the page size (webui `cycleLogScope`).
+    panel.cycle_log_scope();
+    assert_eq!(panel.log_limit, LOG_PAGE_SIZE);
+    // Default is BaseCurrent; one cycle advances to Base.
+    assert_eq!(panel.log_scope, LogScope::Base);
+    // Cap: the limit never passes LOG_MAX_LIMIT.
+    panel.log_has_more = true;
+    panel.log_limit = LOG_MAX_LIMIT;
+    assert!(panel.log_load_more());
+    assert_eq!(panel.log_limit, LOG_MAX_LIMIT);
+}
+
+#[test]
+fn log_actions_without_selected_commit_error() {
+    let api = WebApiClient::new("127.0.0.1", 1);
+    let mut panel = GitPanel::new("/repo");
+    panel.view = GitView::Log;
+    assert!(panel.selected_commit_hash().is_none());
+    assert!(panel.log_tag(&api, "v1").is_err());
+    assert!(panel.log_reset(&api, "soft").is_err());
+}
+
+#[test]
+fn selected_commit_hash_tracks_selection() {
+    let mut panel = GitPanel::new("/repo");
+    panel.commits = vec![
+        GitCommitEntry {
+            hash: "aaaa1111".to_string(),
+            author: "a".to_string(),
+            date: "d".to_string(),
+            message: "first".to_string(),
+            labels: Vec::new(),
+        },
+        GitCommitEntry {
+            hash: "bbbb2222".to_string(),
+            author: "b".to_string(),
+            date: "d".to_string(),
+            message: "second".to_string(),
+            labels: Vec::new(),
+        },
+    ];
+    panel.commit_selected = 1;
+    assert_eq!(panel.selected_commit_hash(), Some("bbbb2222"));
 }

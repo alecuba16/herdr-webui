@@ -26,6 +26,7 @@ pub enum WebApiError {
     InvalidUrl(String),
     Http { status: u16, message: String },
     Json(String),
+    Api(String),
 }
 
 impl std::fmt::Display for WebApiError {
@@ -41,6 +42,7 @@ impl std::fmt::Display for WebApiError {
                 }
             }
             Self::Json(message) => write!(f, "invalid WebUI API response: {message}"),
+            Self::Api(message) => write!(f, "{message}"),
         }
     }
 }
@@ -306,12 +308,29 @@ impl WebApiClient {
         self.get(&url)
     }
 
-    pub fn git_log(&self, cwd: &str, max: usize, all: bool) -> Result<Value, WebApiError> {
-        self.get(&format!(
-            "/api/git-ui/log?cwd={}&all={}&scope=all&max={max}",
+    /// `/api/git-ui/log` with full webui params: `scope` (all /
+    /// base-current / base), `base` branch, per-page `max` and an
+    /// optional file filter (webui `logFilePath`). `all` is redundant
+    /// with `scope` but the server reads both.
+    pub fn git_log_scoped(
+        &self,
+        cwd: &str,
+        scope: &str,
+        base: &str,
+        max: usize,
+        file: Option<&str>,
+    ) -> Result<Value, WebApiError> {
+        let mut url = format!(
+            "/api/git-ui/log?cwd={}&all={}&scope={}&base={}&max={max}",
             urlencode(cwd),
-            if all { "true" } else { "false" },
-        ))
+            if scope == "all" { "true" } else { "false" },
+            urlencode(scope),
+            urlencode(base),
+        );
+        if let Some(file) = file {
+            url.push_str(&format!("&file={}", urlencode(file)));
+        }
+        self.get(&url)
     }
 
     pub fn git_branches(&self, cwd: &str) -> Result<Value, WebApiError> {
@@ -413,6 +432,63 @@ impl WebApiClient {
         self.post(
             "/api/git-ui/switch",
             &json!({ "cwd": cwd, "branch": branch, "create": create }),
+        )
+    }
+
+    /// `/api/git-ui/reset`: the server requires the typed confirmation
+    /// `"reset hard"` for hard mode; soft/mixed accept an empty string.
+    pub fn git_reset(
+        &self,
+        cwd: &str,
+        ref_name: &str,
+        mode: &str,
+        confirmation: &str,
+    ) -> Result<Value, WebApiError> {
+        self.post(
+            "/api/git-ui/reset",
+            &json!({
+                "cwd": cwd,
+                "ref_name": ref_name,
+                "mode": mode,
+                "confirmation": confirmation,
+            }),
+        )
+    }
+
+    /// `/api/git-ui/rebase`: upstream + optional onto (server falls back
+    /// to main/master). `pull_first` refreshes the remote first, matching
+    /// the webui rebase modal's checkbox. Requires typed confirmation
+    /// `"rebase selected"` on the server side.
+    pub fn git_rebase(
+        &self,
+        cwd: &str,
+        upstream: &str,
+        onto: Option<&str>,
+        pull_first: bool,
+        confirmation: &str,
+    ) -> Result<Value, WebApiError> {
+        self.post(
+            "/api/git-ui/rebase",
+            &json!({
+                "cwd": cwd,
+                "upstream": upstream,
+                "onto": onto,
+                "pull_first": pull_first,
+                "confirmation": confirmation,
+            }),
+        )
+    }
+
+    /// `/api/git-ui/tag`: create `tag_name` on `ref_name` (a hash or
+    /// branch). The server validates both as single git tokens.
+    pub fn git_tag(&self, cwd: &str, tag_name: &str, ref_name: &str) -> Result<Value, WebApiError> {
+        self.post(
+            "/api/git-ui/tag",
+            &json!({
+                "cwd": cwd,
+                "tag_name": tag_name,
+                "ref_name": ref_name,
+            }),
         )
     }
 

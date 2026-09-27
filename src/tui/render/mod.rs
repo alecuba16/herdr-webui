@@ -750,6 +750,10 @@ fn render_diff_pane_full(
 }
 
 fn render_git_log(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
+    // Webui log layout: commit list plus the compare-with-parent diff
+    // pane (Enter / `c` compare the selected commit with its parent).
+    let [list_area, diff_area] =
+        Layout::horizontal([Constraint::Percentage(45), Constraint::Percentage(55)]).areas(area);
     let panel = &app.git_panel;
     let items = panel
         .commits
@@ -778,12 +782,36 @@ fn render_git_log(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) 
     if !items.is_empty() {
         state.select(Some(panel.commit_selected));
     }
+    // Title mirrors the webui log toolbar: scope, load-more hint and
+    // the file filter when the log is file-scoped.
+    let scope = panel.log_scope.label();
+    let more = if panel.log_has_more {
+        format!(" · +more {}", panel.log_limit)
+    } else {
+        String::new()
+    };
+    let title = match panel.log_file.as_deref() {
+        Some(file) if !file.is_empty() => {
+            format!(" Log · {scope} · {}{more} ", truncate(file, 24))
+        }
+        _ => format!(" Log · {scope}{more} "),
+    };
     let list = List::new(items)
-        .block(panel_block(" Log ", p))
+        .block(panel_block(&title, p))
         .style(Style::default().fg(p.text).bg(p.panel_bg))
         .highlight_style(Style::default().fg(p.accent).add_modifier(Modifier::BOLD))
         .highlight_symbol("> ");
-    frame.render_stateful_widget(list, area, &mut state);
+    frame.render_stateful_widget(list, list_area, &mut state);
+
+    let diff_title = format!(" Compare · {} ", truncate(&panel.diff_title, 40));
+    render_diff_pane(
+        frame,
+        diff_area,
+        &diff_title,
+        &panel.diff_lines,
+        p,
+        "Select a commit to compare with its parent (Enter).",
+    );
 }
 
 fn render_git_branches(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
@@ -1045,6 +1073,26 @@ fn render_prompt_input(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
             .selected_cleanup_item()
             .map(|item| format!("{} {}", item.kind.label(), item.name))
             .unwrap_or_default(),
+        // Log action prompts: show the selected commit as the subject.
+        crate::tui::PromptKind::CreateTag
+        | crate::tui::PromptKind::ResetMode
+        | crate::tui::PromptKind::ConfirmResetHard
+        | crate::tui::PromptKind::RebaseUpstream
+        | crate::tui::PromptKind::ConfirmRebase => {
+            let hash = app
+                .git_panel
+                .selected_commit_hash()
+                .unwrap_or_default()
+                .to_string();
+            let short = &hash[..hash.len().min(7)];
+            let message = app
+                .git_panel
+                .commits
+                .get(app.git_panel.commit_selected)
+                .map(|commit| truncate(&commit.message, 30))
+                .unwrap_or_default();
+            format!("{short} {message}")
+        }
     };
     let title = format!(" {} ", prompt.kind.title());
     let lines = vec![

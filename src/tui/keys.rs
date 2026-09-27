@@ -275,6 +275,17 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
             "fetch / pull / push (s stage, d discard, r refresh)",
         ),
         ("git: D", "delete branch (branches) / drop stash (stash)"),
+        ("git: Enter", "log: compare commit with parent"),
+        (
+            "git: t/R/b (log)",
+            "tag / reset (soft, mixed, hard) / rebase selected commit",
+        ),
+        (
+            "git: s/+ (log)",
+            "cycle scope (all/base+current/base) / load more",
+        ),
+        ("git: w (log)", "worktree from branch (branch, then path)"),
+        ("files: L", "git log of the selected file"),
     ]
 }
 
