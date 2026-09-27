@@ -33,8 +33,8 @@ use super::files::move_index;
 
 pub use parse::GitDiffLineMeta;
 pub(super) use parse::{
-    parse_blame_authors, parse_branch, parse_commit, parse_diff_lines_with_meta, parse_git_files,
-    parse_stash,
+    parse_blame_authors, parse_branch, parse_commit, parse_diff_lines_with_meta,
+    parse_diff_old_path, parse_git_files, parse_stash,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,6 +150,14 @@ pub struct GitPanel {
     pub diff_title: String,
     /// Parallel to `diff_lines`: git line numbers for blame annotation.
     pub diff_meta: Vec<Option<GitDiffLineMeta>>,
+    /// `old_path` of the file the Changes diff shows (webui `hunkPatch`
+    /// `a/` side; rename source). `None` while no per-file diff is
+    /// loaded (working-tree diff or another view's diff).
+    pub diff_old_path: Option<String>,
+    /// Hunk cursor for the Changes diff (gap 14): ordinal into the
+    /// `@@` headers of `diff_lines`. `J`/`K` move it, `H` applies the
+    /// webui hunk action (stage when unstaged, unstage when staged).
+    pub diff_hunk_selected: usize,
     /// Webui `gitShortcuts.blame` toggle: annotate diff lines with the
     /// author of the line (`new_line_number || old_line_number`).
     pub show_blame: bool,
@@ -227,6 +235,8 @@ impl GitPanel {
             diff_lines: Vec::new(),
             diff_title: String::new(),
             diff_meta: Vec::new(),
+            diff_old_path: None,
+            diff_hunk_selected: 0,
             show_blame: false,
             blame_authors: HashMap::new(),
             blame_path: None,

@@ -333,6 +333,10 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
             "git: f/p/P",
             "fetch / pull / push (s stage, d discard, r refresh)",
         ),
+        (
+            "git: J/K/H (changes)",
+            "hunk cursor / apply (stage when unstaged, unstage when staged)",
+        ),
         ("git: D", "delete branch (branches) / drop stash (stash)"),
         ("git: Enter", "log: compare commit with parent"),
         (
@@ -490,5 +494,6 @@ mod tests {
         assert!(rows
             .iter()
             .any(|(_, description)| description.contains("files")));
+        assert!(rows.iter().any(|(keys, _)| keys.contains("git: J/K/H")));
     }
 }

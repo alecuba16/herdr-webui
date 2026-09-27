@@ -1242,3 +1242,166 @@ fn recent_previews_dedupe_and_cycle_rotates() {
     explorer.recent_previews.truncate(1);
     assert!(!explorer.cycle_recent_preview(&api).unwrap());
 }
+
+#[test]
+fn parse_diff_old_path_prefers_rename_source() {
+    use super::git::parse_diff_old_path;
+    // Rename: old_path is the `a/` side.
+    let data = json!({"files": [
+        {"path": "new-name.rs", "old_path": "old-name.rs", "chunks": []}
+    ]});
+    assert_eq!(parse_diff_old_path(&data).as_deref(), Some("old-name.rs"));
+    // Plain modification: falls back to path like the webui
+    // `file.old_path || file.path`.
+    let data = json!({"files": [{"path": "src/lib.rs", "chunks": []}]});
+    assert_eq!(parse_diff_old_path(&data).as_deref(), Some("src/lib.rs"));
+    // Empty array / missing shape: None.
+    assert_eq!(parse_diff_old_path(&json!({"files": []})), None);
+    assert_eq!(parse_diff_old_path(&json!({})), None);
+}
+
+#[test]
+fn hunk_cursor_walks_headers_and_wraps() {
+    let mut panel = GitPanel::new("/repo");
+    // No diff: nothing to select.
+    assert!(!panel.move_hunk_selection(1));
+    assert!(!panel.move_hunk_selection(-1));
+
+    // Two hunks: header (meta None) + one line each.
+    panel.diff_lines = vec![
+        "@@ -1,2 +1,3 @@".to_string(),
+        "+added".to_string(),
+        "@@ -9,1 +9,2 @@".to_string(),
+        "-removed".to_string(),
+    ];
+    panel.diff_meta = vec![
+        None,
+        Some(GitDiffLineMeta::default()),
+        None,
+        Some(GitDiffLineMeta::default()),
+    ];
+    assert!(panel.move_hunk_selection(1));
+    assert_eq!(panel.diff_hunk_selected, 1);
+    assert_eq!(panel.hunk_cursor_line(), Some(2));
+    // Wrap forward past the end...
+    assert!(panel.move_hunk_selection(1));
+    assert_eq!(panel.diff_hunk_selected, 0);
+    // ...and backward past the start.
+    assert!(panel.move_hunk_selection(-1));
+    assert_eq!(panel.diff_hunk_selected, 1);
+}
+
+#[test]
+fn apply_hunk_action_builds_webui_hunk_patch() {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::sync::mpsc::Receiver;
+
+    // Fake server: answers the diff with two chunks (renamed file so
+    // old_path is exercised), records the apply-patch body.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tx, rx): (_, Receiver<String>) = std::sync::mpsc::channel();
+    let handle = std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { break };
+            // Read headers, then the Content-Length body.
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut headers = String::new();
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    break;
+                }
+                if line == "\r\n" {
+                    break;
+                }
+                headers.push_str(&line);
+            }
+            let length: usize = headers
+                .lines()
+                .find_map(|line| line.strip_prefix("Content-Length: "))
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(0);
+            let mut body = vec![0u8; length];
+            if length > 0 {
+                reader.read_exact(&mut body).unwrap();
+            }
+            let target = headers.split(' ').nth(1).unwrap_or_default().to_string();
+            let response = if target.starts_with("/api/git-ui/diff") {
+                json!({"files": [{
+                    "path": "new.rs",
+                    "old_path": "old.rs",
+                    "chunks": [
+                        {"header": "@@ -1,2 +1,3 @@", "lines": [
+                            {"line_type": "normal", "content": "ctx", "old_line_number": 1, "new_line_number": 1},
+                            {"line_type": "add", "content": "added", "new_line_number": 2}
+                        ]},
+                        {"header": "@@ -9,1 +9,2 @@", "lines": [
+                            {"line_type": "delete", "content": "gone", "old_line_number": 9}
+                        ]}
+                    ]
+                }]})
+            } else if target.starts_with("/api/git-ui/apply-patch") {
+                tx.send(String::from_utf8_lossy(&body).to_string()).ok();
+                json!({"ok": true})
+            } else if target.starts_with("/api/git-ui/status") {
+                json!({"branch": "main", "state": "dirty", "unstaged": ["new.rs"]})
+            } else {
+                json!({"ok": true})
+            };
+            let text = response.to_string();
+            let _ = stream.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    text.len(),
+                    text
+                )
+                .as_bytes(),
+            );
+        }
+    });
+
+    let api = WebApiClient::new("127.0.0.1", port);
+    let mut panel = GitPanel::new("/repo");
+    panel.view = GitView::Changes;
+    panel.files = vec![GitFileEntry {
+        path: "new.rs".to_string(),
+        status: GitFileStatus::Unstaged,
+    }];
+    panel.file_selected = 0;
+    panel.refresh_diff(&api).unwrap();
+    assert_eq!(panel.diff_old_path.as_deref(), Some("old.rs"));
+    assert_eq!(panel.hunk_count(), 2);
+
+    // H applies the webui stageHunk for an unstaged file: cached, not
+    // reverse, and the patch carries the second hunk after J.
+    assert!(panel.move_hunk_selection(1));
+    panel.apply_hunk_action(&api).unwrap();
+    let body = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+    let request: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(request["cwd"], "/repo");
+    assert_eq!(request["cached"], true);
+    assert_eq!(request["reverse"], false);
+    let patch = request["patch"].as_str().unwrap();
+    assert_eq!(
+        patch,
+        "diff --git a/old.rs b/new.rs\n--- a/old.rs\n+++ b/new.rs\n@@ -9,1 +9,2 @@\n-gone\n"
+    );
+
+    // Unstaged scope unstage arm: a staged file sends reverse + cached.
+    panel.files[0].status = GitFileStatus::Staged;
+    panel.diff_hunk_selected = 0;
+    panel.apply_hunk_action(&api).unwrap();
+    let body = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+    let request: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(request["cached"], true);
+    assert_eq!(request["reverse"], true);
+    let patch = request["patch"].as_str().unwrap();
+    assert!(patch.starts_with("diff --git a/old.rs b/new.rs\n"));
+    assert!(patch.contains("@@ -1,2 +1,3 @@\n ctx\n+added\n"));
+
+    // No per-file diff: the guard errors instead of calling the API.
+    panel.diff_title = "working tree".to_string();
+    assert!(panel.apply_hunk_action(&api).is_err());
+    drop(handle);
+}

@@ -54,6 +54,11 @@ Panel/workspace management:
 6. No settings screen; no shortcut help overlay parity for the new keys.
 7. No "close last panel closes workspace" guard parity (webui closes workspace
    via `workspace.close` when the last tab is closed).
+
+   Closed: `Ctrl+B x` on the last tab of a workspace now sends
+   `tab.close` followed by `workspace.close` (the built-in backend
+   auto-drops emptied workspaces; the explicit close covers external
+   backends, and a not-found answer is ignored).
 8. No webui `sidebar` (KeyB), `focusNext`/`focusPrev` (`.`/`,`), or
    temporary terminal overlay shortcuts `tempTerminalToggle`/
    `tempTerminalPromote` (Shift+M/Shift+P).
@@ -85,6 +90,15 @@ Git management gaps:
 13. No git directory picker / cwd change (webui `prefix I` opens the Git
     directory or branch dialog; yellow badge for foreign cwd).
 14. No `apply-patch` / hunk editing (apply-patch exists as a route).
+
+   Closed in the gap-14 pass: `J`/`K` walk the `@@` hunks of the
+   Changes diff (wrapping, selected header highlighted) and `H` applies
+   the webui hunk action through `/api/git-ui/apply-patch` — stage the
+   hunk (`cached: true`) when the shown diff is working-tree scope,
+   unstage it (`reverse + cached`) when staged, exactly one action per
+   scope like the webui buttons. In-hunk content editing (webui hunk
+   editor with hash-guard saves) stays a documented non-goal; the
+   Files preview editor covers editing.
 15. No branch creation prompt (`git_switch` with `create: true` already
     supported by the client).
 

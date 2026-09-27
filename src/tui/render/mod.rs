@@ -892,8 +892,9 @@ fn render_git_changes(
         Some(&panel.diff_meta),
         blame,
         panel.diff_search_active_line(),
+        panel.hunk_cursor_line(),
         p,
-        "Select a file to load its diff (Enter).",
+        "Select a file to load its diff (Enter). J/K hunk, H applies.",
     );
 }
 
@@ -908,7 +909,7 @@ fn render_diff_pane(
     empty_hint: &str,
 ) {
     render_diff_pane_full(
-        frame, diff_area, diff_title, diff_lines, None, None, None, p, empty_hint,
+        frame, diff_area, diff_title, diff_lines, None, None, None, None, p, empty_hint,
     )
 }
 
@@ -927,6 +928,10 @@ fn render_diff_pane_full(
     // search is running. The whole line gets the accent background so it
     // stands out among the +/- colored lines.
     active_match: Option<usize>,
+    // Hunk cursor: index (into `diff_lines`) of the `@@` header the
+    // hunk cursor sits on (gap 14); the header gets the accent
+    // background like the webui hunk head the buttons live in.
+    active_hunk: Option<usize>,
     p: &Palette,
     empty_hint: &str,
 ) {
@@ -945,6 +950,11 @@ fn render_diff_pane_full(
         // coloring (webui highlights the find bar hit).
         if active_match == Some(index) {
             style = Style::default().fg(p.panel_bg).bg(p.accent);
+        }
+        // Hunk cursor highlight (gap 14): the selected `@@` header gets
+        // the accent treatment, matching the search hit emphasis.
+        if active_hunk == Some(index) {
+            style = Style::default().fg(p.accent).add_modifier(Modifier::BOLD);
         }
         // Blame annotation (webui `blameName`): the author for the line
         // number, first two words, shown when blame is toggled on for

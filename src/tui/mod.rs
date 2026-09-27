@@ -1174,6 +1174,7 @@ impl TuiApp {
             self.error = Some("no workspace selected".to_string());
             return;
         };
+        let workspace_id = workspace.id.clone();
         let tab_id = workspace.active_tab_id.clone().or_else(|| {
             self.snapshot
                 .workspace_tabs(&workspace.id)
@@ -1184,15 +1185,35 @@ impl TuiApp {
             self.error = Some("no tab to close".to_string());
             return;
         };
+        // Webui closeTab guard (gap 7): closing the last tab in a
+        // workspace also closes the workspace. The built-in backend
+        // auto-closes emptied workspaces, but external backends may
+        // keep them, so the TUI mirrors the webui and closes it
+        // explicitly after the tab is gone.
+        let was_last_tab = self.snapshot.workspace_tabs(&workspace_id).len().max(1) == 1;
         match self
             .client
             .request("tab.close", serde_json::json!({ "tab_id": tab_id }))
         {
             Ok(_) => {
                 self.status = "tab closed".to_string();
+                if was_last_tab {
+                    if let Err(err) = self.client.request(
+                        "workspace.close",
+                        serde_json::json!({ "workspace_id": workspace_id }),
+                    ) {
+                        // The built-in backend may have already dropped
+                        // the emptied workspace; only surface real
+                        // failures.
+                        if !err.to_string().contains("not found") {
+                            self.error = Some(err.to_string());
+                        }
+                    }
+                }
                 if let Err(err) = self.refresh() {
                     self.error = Some(err.to_string());
                 }
+                self.clamp_selection();
             }
             Err(err) => self.error = Some(err.to_string()),
         }
@@ -1594,6 +1615,30 @@ impl TuiApp {
             }
             KeyCode::Char('j') | KeyCode::Down => self.git_panel.move_selection(1),
             KeyCode::Char('k') | KeyCode::Up => self.git_panel.move_selection(-1),
+            // Hunk actions (gap 14, webui per-hunk stage/unstage
+            // buttons): J/K walk the `@@` headers of the loaded Changes
+            // diff (wrapping), H applies the hunk action — stage when
+            // the diff is working-tree scope, unstage when staged.
+            KeyCode::Char('J') if self.git_panel.view == GitView::Changes => {
+                if !self.git_panel.move_hunk_selection(1) {
+                    self.status = "no hunks in the loaded diff".to_string();
+                } else {
+                    self.status = format!("hunk {}", self.git_panel.diff_hunk_selected + 1);
+                }
+            }
+            KeyCode::Char('K') if self.git_panel.view == GitView::Changes => {
+                if !self.git_panel.move_hunk_selection(-1) {
+                    self.status = "no hunks in the loaded diff".to_string();
+                } else {
+                    self.status = format!("hunk {}", self.git_panel.diff_hunk_selected + 1);
+                }
+            }
+            KeyCode::Char('H') if self.git_panel.view == GitView::Changes => {
+                match self.git_panel.apply_hunk_action(&self.web_api) {
+                    Ok(()) => self.status = "hunk applied".to_string(),
+                    Err(err) => self.error = Some(err.to_string()),
+                }
+            }
             KeyCode::Tab => {
                 self.git_panel.view = match self.git_panel.view {
                     GitView::Changes => GitView::Log,

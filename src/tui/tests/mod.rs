@@ -204,6 +204,56 @@ fn git_panel_key_navigation_cycles_views() {
 }
 
 #[test]
+fn git_changes_hunk_keys_move_cursor_and_apply() {
+    let client = BackendClient::builtin_session(None);
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    app.screen = TuiScreen::Git;
+    app.mode = TuiMode::Attach;
+    app.git_panel.view = GitView::Changes;
+    // Two hunks loaded (headers are the meta-None lines).
+    app.git_panel.diff_lines = vec![
+        "@@ -1,2 +1,3 @@".to_string(),
+        "+added".to_string(),
+        "@@ -9,1 +9,2 @@".to_string(),
+        "-removed".to_string(),
+    ];
+    app.git_panel.diff_meta = vec![
+        None,
+        Some(crate::tui::panels::GitDiffLineMeta::default()),
+        None,
+        Some(crate::tui::panels::GitDiffLineMeta::default()),
+    ];
+    // J walks to the second hunk (status announces it), K back to the
+    // first, K again wraps to the last.
+    app.handle_key(KeyEvent::from(KeyCode::Char('J')));
+    assert_eq!(app.git_panel.diff_hunk_selected, 1);
+    assert_eq!(app.status, "hunk 2");
+    app.handle_key(KeyEvent::from(KeyCode::Char('K')));
+    assert_eq!(app.git_panel.diff_hunk_selected, 0);
+    app.handle_key(KeyEvent::from(KeyCode::Char('K')));
+    assert_eq!(app.git_panel.diff_hunk_selected, 1, "K wraps to the last");
+
+    // H without a per-file diff loaded: guard error, no API call.
+    app.git_panel.diff_title = "working tree".to_string();
+    app.error = None;
+    app.handle_key(KeyEvent::from(KeyCode::Char('H')));
+    assert!(
+        app.error
+            .as_deref()
+            .is_some_and(|e| e.contains("select a file to load its diff")),
+        "guard error surfaces: {:?}",
+        app.error
+    );
+
+    // J/K on other views fall through to their own bindings (Log uses
+    // plain j/k for commits; uppercase J must not move the hunk cursor
+    // there and must not crash).
+    app.git_panel.view = GitView::Log;
+    app.handle_key(KeyEvent::from(KeyCode::Char('J')));
+    assert_eq!(app.git_panel.diff_hunk_selected, 1, "untouched in Log");
+}
+
+#[test]
 fn render_smoke_contains_herdr_chrome() {
     let backend = TestBackend::new(100, 28);
     let mut terminal = Terminal::new(backend).unwrap();
@@ -2099,6 +2149,15 @@ fn fake_backend_socket() -> (std::path::PathBuf, std::sync::mpsc::Sender<()>) {
             "tab.create" | "tab.close" => {
                 json!({"id": request["id"], "result": {"ok": true}})
             }
+            "workspace.close" => {
+                // Built-in backend drops the emptied workspace itself; a
+                // second close reports not-found, which the TUI ignores.
+                if request["workspace_id"].as_str() == Some("ws_gone") {
+                    json!({"id": request["id"], "error": "workspace not found"})
+                } else {
+                    json!({"id": request["id"], "result": {"ok": true}})
+                }
+            }
             method => json!({"error": format!("unexpected method {method}")}),
         };
         stream
@@ -2277,6 +2336,56 @@ fn tab_create_and_close_shortcuts_hit_the_backend() {
         assert_eq!(app.error.as_deref(), Some("no tab to close"));
         let _ = std::fs::remove_file(&api_socket);
     }
+}
+
+#[test]
+fn close_last_tab_also_closes_the_workspace() {
+    // Gap 7: webui closeTab closes the workspace explicitly when the
+    // tab was the last one in it. The single-tab fixture exercises the
+    // workspace.close arm: the fake backend answers both requests and
+    // the refreshed status proves the full round trip.
+    let (api_socket, _stop) = fake_backend_socket();
+    let client = BackendClient::new(api_socket.clone(), api_socket.clone());
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    app.snapshot = fixture_snapshot();
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('x')));
+    assert_eq!(
+        app.status, "backend test · protocol 1 · 1 workspaces · 1 agents",
+        "closing the last tab must refresh against the fake backend"
+    );
+    assert!(app.error.is_none(), "last-tab close error: {:?}", app.error);
+    let _ = std::fs::remove_file(&api_socket);
+}
+
+#[test]
+fn close_last_tab_ignores_workspace_not_found() {
+    // Built-in backends drop the emptied workspace themselves, so the
+    // explicit workspace.close may come back "not found"; the TUI must
+    // swallow that and still report success.
+    let (api_socket, _stop) = fake_backend_socket();
+    let client = BackendClient::new(api_socket.clone(), api_socket.clone());
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    let mut snapshot = fixture_snapshot();
+    snapshot.workspaces[0].id = "ws_gone".to_string();
+    snapshot.tabs[0].workspace_id = "ws_gone".to_string();
+    app.snapshot = snapshot;
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('x')));
+    // Refresh succeeds against the fake backend, so the status is the
+    // backend summary; the point is that the not-found error is gone.
+    assert_eq!(
+        app.status,
+        "backend test · protocol 1 · 1 workspaces · 1 agents"
+    );
+    assert!(
+        !app.error
+            .as_deref()
+            .is_some_and(|e| e.contains("not found")),
+        "workspace-already-gone not-found must be ignored: {:?}",
+        app.error
+    );
+    let _ = std::fs::remove_file(&api_socket);
 }
 
 #[test]

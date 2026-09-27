@@ -9,7 +9,7 @@ use super::{GitBranchEntry, GitCommitEntry, GitFileEntry, GitFileStatus, GitStas
 
 /// Git line numbers for one parsed diff line, used to attach blame
 /// authors (`new_line_number || old_line_number`, mirroring the webui).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct GitDiffLineMeta {
     pub old_line: Option<usize>,
     pub new_line: Option<usize>,
@@ -104,6 +104,23 @@ pub(crate) fn parse_diff_lines_with_meta(
         }
     }
     (out, meta)
+}
+
+/// `old_path` of the first file in a `/api/git-ui/diff` response (the
+/// `a/` side of the webui `hunkPatch`; rename source). Falls back to
+/// `path` when the server omits `old_path`, like the webui
+/// `file.old_path || file.path`.
+pub(crate) fn parse_diff_old_path(data: &Value) -> Option<String> {
+    let file = data
+        .get("files")
+        .and_then(Value::as_array)
+        .and_then(|files| files.first())?;
+    let path = file
+        .get("old_path")
+        .and_then(Value::as_str)
+        .filter(|path| !path.is_empty())
+        .or_else(|| file.get("path").and_then(Value::as_str))?;
+    Some(path.to_string())
 }
 
 pub(crate) fn parse_git_files(data: &Value) -> Vec<GitFileEntry> {

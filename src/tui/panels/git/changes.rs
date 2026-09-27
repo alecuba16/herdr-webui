@@ -4,7 +4,9 @@ use serde_json::Value;
 
 use crate::tui::web_api::{WebApiClient, WebApiError};
 
-use super::{parse_blame_authors, parse_diff_lines_with_meta, GitFileStatus, GitPanel};
+use super::{
+    parse_blame_authors, parse_diff_lines_with_meta, parse_diff_old_path, GitFileStatus, GitPanel,
+};
 
 impl GitPanel {
     pub fn refresh_diff(&mut self, api: &WebApiClient) -> Result<(), WebApiError> {
@@ -26,6 +28,11 @@ impl GitPanel {
         self.diff_lines = lines;
         self.diff_meta = meta;
         self.diff_title = file.clone().unwrap_or_else(|| "working tree".to_string());
+        // Hunk actions need the `a/` side for the apply-patch header
+        // (webui hunkPatch); only a per-file diff carries it.
+        self.diff_old_path = file.as_deref().and_then(|_| parse_diff_old_path(&data));
+        // A new diff shifts hunk boundaries: reset the hunk cursor.
+        self.diff_hunk_selected = 0;
         // A new diff invalidates the diff search matches (line indices
         // shifted); keep the query so re-running `/` resumes it.
         self.diff_search_matches.clear();
@@ -141,6 +148,89 @@ impl GitPanel {
             .ok_or_else(|| WebApiError::Io("no file selected".to_string()))?;
         api.git_unstage(&self.cwd, &paths)?;
         self.refresh_view(api)
+    }
+
+    /// Move the hunk cursor (gap 14). `J`/`K` parity with the webui
+    /// per-hunk buttons: the cursor walks the `@@` headers of the
+    /// loaded Changes diff, wrapping around. Returns false when the
+    /// diff has no hunks (nothing selectable).
+    pub fn move_hunk_selection(&mut self, delta: i32) -> bool {
+        let hunks = self.hunk_headers();
+        if hunks.is_empty() {
+            return false;
+        }
+        let len = hunks.len();
+        let current = self.diff_hunk_selected.min(len - 1);
+        let next = if delta >= 0 {
+            (current + delta.unsigned_abs() as usize) % len
+        } else {
+            (current + len - delta.unsigned_abs() as usize % len) % len
+        };
+        self.diff_hunk_selected = next;
+        true
+    }
+
+    /// Indices of the `@@` chunk-header lines in the loaded diff.
+    fn hunk_headers(&self) -> Vec<usize> {
+        self.diff_meta
+            .iter()
+            .enumerate()
+            .filter_map(|(index, meta)| meta.is_none().then_some(index))
+            .collect()
+    }
+
+    /// Number of `@@` hunks in the loaded diff.
+    pub fn hunk_count(&self) -> usize {
+        self.hunk_headers().len()
+    }
+
+    /// Index (into `diff_lines`) of the `@@` header the hunk cursor
+    /// sits on, for highlighting. None when the diff has no hunks.
+    pub fn hunk_cursor_line(&self) -> Option<usize> {
+        self.hunk_headers().get(self.diff_hunk_selected).copied()
+    }
+
+    /// Apply the webui hunk action to the hunk under the cursor
+    /// (`stageHunk` when the shown diff is working-tree scope,
+    /// `unstageHunk` reverse-cached when it is staged). Mirrors
+    /// `git_ui.js applyHunk` + `hunkPatch`: a single-chunk patch
+    /// rebuilt from the parsed diff lines, posted to
+    /// `/api/git-ui/apply-patch`, then the view and diff refresh.
+    pub fn apply_hunk_action(&mut self, api: &WebApiClient) -> Result<(), WebApiError> {
+        let file = self.diff_title.trim().to_string();
+        if file.is_empty() || file == "working tree" {
+            return Err(WebApiError::Io(
+                "select a file to load its diff".to_string(),
+            ));
+        }
+        let hunks = self.hunk_headers();
+        let Some(&start) = hunks.get(self.diff_hunk_selected.min(hunks.len().saturating_sub(1)))
+        else {
+            return Err(WebApiError::Io("no hunk selected".to_string()));
+        };
+        let end = hunks
+            .get(self.diff_hunk_selected + 1)
+            .copied()
+            .unwrap_or(self.diff_lines.len());
+        let old_path = self.diff_old_path.clone().unwrap_or_else(|| file.clone());
+        let mut patch = String::new();
+        patch.push_str(&format!("diff --git a/{old_path} b/{file}\n"));
+        patch.push_str(&format!("--- a/{old_path}\n"));
+        patch.push_str(&format!("+++ b/{file}\n"));
+        for line in &self.diff_lines[start..end] {
+            patch.push_str(line);
+            patch.push('\n');
+        }
+        // Working-tree diff stages the hunk; a staged diff unstages it
+        // (webui renders exactly one button per scope, never a toggle).
+        let staged = self
+            .files
+            .iter()
+            .find(|entry| entry.path == file)
+            .is_some_and(|entry| entry.status == GitFileStatus::Staged);
+        api.git_apply_patch(&self.cwd, &patch, staged, true)?;
+        self.refresh_view(api)?;
+        self.refresh_diff(api)
     }
 
     pub fn discard_selected(&mut self, api: &WebApiClient) -> Result<(), WebApiError> {

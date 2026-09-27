@@ -434,6 +434,22 @@ impl WebApiClient {
         self.post("/api/git-ui/stage", &json!({ "cwd": cwd, "paths": paths }))
     }
 
+    /// `/api/git-ui/apply-patch`: apply a single-hunk patch (webui
+    /// `applyHunk`). `cached: true` stages the hunk (git apply --cached);
+    /// adding `reverse: true` unstages it (git apply -R --cached).
+    pub fn git_apply_patch(
+        &self,
+        cwd: &str,
+        patch: &str,
+        reverse: bool,
+        cached: bool,
+    ) -> Result<Value, WebApiError> {
+        self.post(
+            "/api/git-ui/apply-patch",
+            &json!({ "cwd": cwd, "patch": patch, "reverse": reverse, "cached": cached }),
+        )
+    }
+
     pub fn git_unstage(&self, cwd: &str, paths: &[String]) -> Result<Value, WebApiError> {
         self.post(
             "/api/git-ui/unstage",
