@@ -1421,15 +1421,17 @@ fn shortcut_dispatch_covers_every_arm() {
     );
     app.commit_input = None;
 
-    // Prefix s opens the stash view.
+    // Prefix s opens the settings overlay (webui settings: KeyS).
     app.handle_key(ctrl_b);
     app.handle_key(KeyEvent::from(KeyCode::Char('s')));
-    assert_eq!(app.git_panel.view, GitView::Stash);
+    assert_eq!(app.mode, TuiMode::Settings);
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert_eq!(app.mode, TuiMode::Navigate);
 
     // Unknown prefix key cancels quietly (the `_ => None` arm).
     app.handle_key(ctrl_b);
     app.handle_key(KeyEvent::from(KeyCode::F(7)));
-    assert_eq!(app.git_panel.view, GitView::Stash);
+    assert_eq!(app.git_panel.view, GitView::Log);
 
     // History requires a selected file.
     app.handle_key(ctrl_b);
@@ -3347,4 +3349,31 @@ fn files_screen_tab_cycles_recent_previews_and_w_reveals_git_file() {
         app.error.as_deref(),
         Some("no file selected in the git panel")
     );
+}
+
+#[test]
+fn settings_overlay_opens_cycles_theme_and_closes() {
+    let mut app = app_with_snapshot();
+    app.theme = TuiTheme::Dark;
+
+    // Ctrl+B s opens the settings overlay.
+    app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    assert_eq!(app.mode, TuiMode::Settings);
+    let drawn = draw(&app, 150, 30);
+    assert!(drawn.contains("web api base"));
+    assert!(drawn.contains("refresh interval"));
+    assert!(drawn.contains("theme"));
+    assert!(drawn.contains("dark"));
+
+    // t cycles the theme live.
+    app.handle_key(KeyEvent::from(KeyCode::Char('t')));
+    assert_eq!(app.theme, TuiTheme::Light);
+    assert_eq!(app.status, "theme: light");
+    app.handle_key(KeyEvent::from(KeyCode::Char('t')));
+    assert_eq!(app.theme, TuiTheme::System);
+
+    // Esc closes back to navigate mode.
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert_eq!(app.mode, TuiMode::Navigate);
 }

@@ -102,6 +102,8 @@ pub enum Shortcut {
     // Git cwd picker (plan: prefix I; the webui has no default binding,
     // its location bar is mouse-driven).
     GitCwdPicker,
+    // Settings overlay (webui settings: KeyS).
+    Settings,
 }
 
 impl Shortcut {
@@ -147,6 +149,7 @@ impl Shortcut {
             Self::RenamePanel => "rename panel",
             Self::RenameWorkspace => "rename workspace",
             Self::GitCwdPicker => "git cwd",
+            Self::Settings => "settings",
         }
     }
 }
@@ -184,12 +187,15 @@ pub fn shortcut_for_key(key: KeyEvent) -> Option<Shortcut> {
         (KeyCode::Char('2'), false) => Some(Shortcut::GitCommit),
         (KeyCode::Char('3'), false) => Some(Shortcut::GitLog),
         (KeyCode::Char('4'), false) => Some(Shortcut::GitStash),
+        // Stash used to live on plain `s` (a TUI addition); the webui
+        // default binds plain `S` to settings, so `s` now matches the
+        // webui and stash stays on `4` (webui `stash: Digit4`).
+        (KeyCode::Char('s'), false) => Some(Shortcut::Settings),
         // Webui `help: Digit0` shows the git shortcut help.
         (KeyCode::Char('0'), false) => Some(Shortcut::Help),
         (KeyCode::Char('b'), false) => Some(Shortcut::GitBranch),
         (KeyCode::Char('c'), false) => Some(Shortcut::GitCommit),
         (KeyCode::Char('l') | KeyCode::Char('L'), false) => Some(Shortcut::GitLog),
-        (KeyCode::Char('s'), false) => Some(Shortcut::GitStash),
         (KeyCode::Char('y'), false) => Some(Shortcut::GitStageFile),
         (KeyCode::Char('u'), false) => Some(Shortcut::GitUnstageFile),
         (KeyCode::Char('d'), false) => Some(Shortcut::GitDiscardFile),
@@ -218,6 +224,9 @@ pub fn shortcut_for_key(key: KeyEvent) -> Option<Shortcut> {
         (KeyCode::Char('T'), true) => Some(Shortcut::CreateWorktree),
         (KeyCode::Delete | KeyCode::Backspace, _) => Some(Shortcut::RemoveWorktree),
         (KeyCode::Char('S'), true) => Some(Shortcut::RenameWorkspace),
+        // Settings overlay: webui `settings: KeyS` is plain S. Stash
+        // stays on `4` (webui `stash: Digit4`); the old TUI-only
+        // prefix-`s` stash binding moved aside for parity.
         // Git cwd picker: prefix I (no webui default; its location bar is
         // mouse-driven). Uppercase so plain `i` stays free.
         (KeyCode::Char('I'), _) => Some(Shortcut::GitCwdPicker),
@@ -255,7 +264,7 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
         ("Ctrl+B 1", "git: changes"),
         ("Ctrl+B 2/c", "git: commit modal"),
         ("Ctrl+B 3/l", "git: log"),
-        ("Ctrl+B 4/s", "git: stash"),
+        ("Ctrl+B 4", "git: stash"),
         ("Ctrl+B b/v", "git: branches / switch"),
         (
             "Ctrl+B h/o",
@@ -314,6 +323,7 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
         ),
         ("git: c (branches)", "create and switch to a new branch"),
         ("Ctrl+B I", "git cwd: type a repo path"),
+        ("Ctrl+B s", "settings overlay (t cycles the theme)"),
     ]
 }
 

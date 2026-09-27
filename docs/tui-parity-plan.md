@@ -1,8 +1,23 @@
 # TUI parity with the desktop WebUI
 
-Status: plan (not started). This document inventories the desktop feature set,
-audits the current TUI, and lays out a modular implementation so each TUI
-subfeature lives in its own module inside `src/tui/`.
+Status: implemented (phases 0-5 complete on branch `tui-parity`). This
+document originally inventoried the desktop feature set, audited the TUI,
+and laid out a modular implementation so each TUI subfeature lives in its
+own module inside `src/tui/`. It is kept as the record of what was built;
+the user-facing summary lives in `docs/features.md` (Terminal UI section).
+
+Implementation notes beyond the plan text:
+
+- Phase 4 reveal: the tree endpoint compacts single-child dirs at the top
+  level, so `reveal_path` skips absent ancestors when their children are
+  already visible instead of failing.
+- Phase 4 new directory: no mkdir endpoint exists, so `A` writes a
+  `.gitkeep` marker inside the new dir (documented deviation).
+- Phase 4 replace: `Ctrl+H` opens the shared prompt; trailing `!`
+  replaces all matches (the webui bar has separate one/all buttons).
+- Phase 5 settings: prefix `s` (webui `settings: KeyS`) opens a read-only
+  overlay with a theme cycle; the old TUI-only prefix-`s` stash binding
+  moved aside, stash stays on `4` (webui `stash: Digit4`).
 
 ## Current state audit
 

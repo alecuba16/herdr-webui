@@ -15583,6 +15583,78 @@ mod tui_parity_e2e_tests {
             "Tab must rotate back to the previously opened file"
         );
 
+        // Conflicts view: create a real merge conflict, refresh through
+        // the panel, resolve with `theirs`, then abort the merge (the
+        // resolve stage-marks the file so abort restores the pre-merge
+        // state and later assertions keep a clean repo).
+        let run_git = |args: &[&str]| -> Result<String, String> {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(cwd)
+                .args(args)
+                .output()
+                .map_err(|err| err.to_string())?;
+            if !out.status.success() {
+                return Err(format!(
+                    "git {args:?}: exit={} stdout={} stderr={}",
+                    out.status.code().unwrap_or(-1),
+                    String::from_utf8_lossy(&out.stdout).trim(),
+                    String::from_utf8_lossy(&out.stderr).trim()
+                ));
+            }
+            Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+        };
+        run_git(&["checkout", "-q", "-b", "conflict-side"])?;
+        std::fs::write(
+            std::path::Path::new(cwd).join("readme.md"),
+            "hello\nconflict-side\n",
+        )
+        .map_err(|err| err.to_string())?;
+        run_git(&["commit", "-q", "-a", "-m", "conflict side"])?;
+        run_git(&["checkout", "-q", "master"]).or_else(|_| run_git(&["checkout", "-q", "main"]))?;
+        std::fs::write(
+            std::path::Path::new(cwd).join("readme.md"),
+            "hello\nmaster-side\n",
+        )
+        .map_err(|err| err.to_string())?;
+        run_git(&["commit", "-q", "-a", "-m", "master side"])?;
+        // The merge exits 1 with the conflict; that is the expected state.
+        let merge_out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(cwd)
+            .args(["merge", "conflict-side"])
+            .output()
+            .map_err(|err| err.to_string())?;
+        assert!(
+            !merge_out.status.success(),
+            "merge must conflict, got: {}",
+            String::from_utf8_lossy(&merge_out.stdout)
+        );
+        let mut panel = herdr_webui::tui::panels::GitPanel::new(cwd);
+        panel
+            .refresh_conflicts(api)
+            .map_err(|err| format!("refresh_conflicts failed: {err}"))?;
+        assert_eq!(
+            panel.conflict_files,
+            vec!["readme.md".to_string()],
+            "conflicts must list readme.md"
+        );
+        assert!(panel.merge_in_progress, "merge must be in progress");
+        panel
+            .resolve_selected_conflict(api, herdr_webui::tui::panels::ConflictResolveMode::Remote)
+            .map_err(|err| format!("resolve_selected_conflict failed: {err}"))?;
+        assert!(
+            panel.conflict_files.is_empty(),
+            "resolve must clear the conflict list"
+        );
+        panel
+            .conflict_action(api, herdr_webui::tui::panels::ConflictAction::MergeAbort)
+            .map_err(|err| format!("conflict_action failed: {err}"))?;
+        assert!(
+            !panel.merge_in_progress,
+            "merge-abort must end the merge state"
+        );
+
         Ok(())
     }
 

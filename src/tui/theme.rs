@@ -28,6 +28,24 @@ impl TuiTheme {
             Self::System => Palette::system(detect_terminal_theme().unwrap_or(TerminalTheme::Dark)),
         }
     }
+
+    /// Cycle used by the settings overlay (`t`).
+    pub fn next(self) -> Self {
+        match self {
+            Self::System => Self::Dark,
+            Self::Dark => Self::Light,
+            Self::Light => Self::System,
+        }
+    }
+
+    /// Lowercase label for the settings overlay and status line.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::Dark => "dark",
+            Self::Light => "light",
+        }
+    }
 }
 
 impl FromStr for TuiTheme {

@@ -407,6 +407,17 @@ impl TuiApp {
                 }
                 _ => {}
             },
+            TuiMode::Settings => match key.code {
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('s') => {
+                    self.mode = TuiMode::Navigate;
+                }
+                // Theme cycle (webui settings theme select).
+                KeyCode::Char('t') | KeyCode::Tab => {
+                    self.theme = self.theme.next();
+                    self.status = format!("theme: {}", self.theme.label());
+                }
+                _ => {}
+            },
             TuiMode::Navigate => self.handle_navigation_key(key),
             TuiMode::Attach => {
                 if self.screen == TuiScreen::Terminal {
@@ -893,6 +904,10 @@ impl TuiApp {
                 self.open_git_screen();
                 self.prompt_input = Some(PromptInput::new(PromptKind::GitCwd));
                 self.status = PromptKind::GitCwd.title().to_string();
+            }
+            Shortcut::Settings => {
+                // Prefix s: settings overlay (webui settings modal).
+                self.mode = TuiMode::Settings;
             }
             Shortcut::Quit => self.status = "quit".to_string(),
             Shortcut::GitChanges => {

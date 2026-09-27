@@ -35,6 +35,9 @@ pub fn render(frame: &mut Frame<'_>, app: &TuiApp) {
     if app.mode == TuiMode::Help {
         render_help(frame, area, p, app.help_scroll);
     }
+    if app.mode == TuiMode::Settings {
+        render_settings(frame, area, app, p);
+    }
     if app.commit_input.is_some() {
         render_commit_input(frame, area, app, p);
     }
@@ -1419,6 +1422,7 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
         TuiMode::Navigate => "NAV",
         TuiMode::Attach => "ATTACH",
         TuiMode::Help => "HELP",
+        TuiMode::Settings => "SET",
     };
     let prefix = if app.prefix.is_armed() {
         "Ctrl+B> "
@@ -1435,6 +1439,7 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
         }
         (TuiMode::Navigate, _) => " Ctrl+B prefix · ↑/↓ j/k select · Enter attach · q quit ",
         (TuiMode::Help, _) => " Esc closes help ",
+        (TuiMode::Settings, _) => " t theme · Esc closes ",
     };
     let message = app.error.as_deref().unwrap_or(&app.status);
     let line = Line::from(vec![
@@ -1491,6 +1496,59 @@ fn render_help(frame: &mut Frame<'_>, area: Rect, p: &Palette, scroll: usize) {
             .block(panel(" Help · Esc closes · j/k scrolls ", p))
             .style(Style::default().fg(p.text).bg(p.panel_bg))
             .scroll((scroll as u16, 0)),
+        rect,
+    );
+}
+
+/// Settings overlay (webui Settings modal, prefix `s`): read-only
+/// display of the discovered API base, theme mode, refresh interval,
+/// and the git/exploration roots. `t` cycles the theme; the rest is
+/// informational (webui stores the rest in browser storage, which has
+/// no TUI equivalent yet).
+fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
+    let width = area.width.min(64);
+    let height = 12;
+    let rect = Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+    let git_cwd = app.git_panel.cwd.clone();
+    let files_cwd = app.file_explorer.cwd.clone();
+    let row = |key: &str, value: &str| {
+        Line::from(vec![
+            Span::styled(format!("  {key:<16}"), Style::default().fg(p.muted)),
+            Span::styled(value.to_string(), Style::default().fg(p.text)),
+        ])
+    };
+    let lines = vec![
+        Line::from(Span::styled(
+            "Settings",
+            Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
+        )),
+        row("web api base", &app.web_api.base_url()),
+        row(
+            "refresh interval",
+            &format!("{}s", app.refresh_interval.as_secs()),
+        ),
+        row("theme", app.theme.label()),
+        row("git cwd", &git_cwd),
+        row("files cwd", &files_cwd),
+        Line::from(""),
+        Line::from(Span::styled(
+            " t cycles the theme · Esc closes ",
+            Style::default().fg(p.accent),
+        )),
+        Line::from(Span::styled(
+            " other options live in the webui Settings modal ",
+            Style::default().fg(p.muted),
+        )),
+    ];
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(panel(" Settings · Esc closes ", p))
+            .style(Style::default().fg(p.text).bg(p.panel_bg)),
         rect,
     );
 }
