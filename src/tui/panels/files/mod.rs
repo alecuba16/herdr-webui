@@ -100,6 +100,11 @@ pub struct FileExplorer {
     pub editor_find: EditorFind,
     /// Recently opened preview paths, most recent first (Tab cycles).
     pub recent_previews: Vec<String>,
+    /// Markdown outline flip (gap 22): when set, the preview pane shows
+    /// the header outline (`#`/`##`/… lines indented by level, with the
+    /// source line number) instead of the raw source. `M` toggles it,
+    /// mirroring the webui eye toggle for markdown files.
+    pub markdown_outline: bool,
 }
 
 impl FileExplorer {
@@ -123,6 +128,7 @@ impl FileExplorer {
             preview_jump_line: None,
             editor_find: EditorFind::default(),
             recent_previews: Vec::new(),
+            markdown_outline: false,
         }
     }
 
@@ -600,6 +606,54 @@ impl FileExplorer {
         self.preview_jump_line = Some(line.max(1));
         Ok(())
     }
+
+    /// Markdown outline flip (gap 22): `M` on the Files screen toggles
+    /// the outline view when the open preview is a markdown file,
+    /// mirroring the webui eye toggle. Returns the new state so the
+    /// caller can report it; None when no markdown preview is open.
+    pub fn toggle_markdown_outline(&mut self) -> Option<bool> {
+        let is_markdown = self
+            .preview
+            .path
+            .as_deref()
+            .is_some_and(|path| path.ends_with(".md") || path.ends_with(".markdown"));
+        if !is_markdown || self.edit_active {
+            return None;
+        }
+        self.markdown_outline = !self.markdown_outline;
+        Some(self.markdown_outline)
+    }
+}
+
+/// Markdown header outline (gap 22): every ATX heading (`#`…`######`)
+/// as `(level, line_number, text)`, indented by level when rendered.
+/// Fenced code blocks are skipped so `#` inside them is not a heading.
+pub fn parse_markdown_outline(content: &str) -> Vec<(usize, usize, String)> {
+    let mut out = Vec::new();
+    let mut in_fence = false;
+    for (index, line) in content.lines().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        let Some(after) = trimmed.strip_prefix('#') else {
+            continue;
+        };
+        let level = after.len() - after.trim_start_matches('#').len() + 1;
+        if level > 6 {
+            continue;
+        }
+        let text = after.trim_start_matches('#').trim();
+        if text.is_empty() && level > 1 {
+            continue;
+        }
+        out.push((level, index + 1, text.to_string()));
+    }
+    out
 }
 
 /// Join a typed name under the current root, stripping leading slashes

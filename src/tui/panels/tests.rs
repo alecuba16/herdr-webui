@@ -1405,3 +1405,134 @@ fn apply_hunk_action_builds_webui_hunk_patch() {
     assert!(panel.apply_hunk_action(&api).is_err());
     drop(handle);
 }
+
+#[test]
+fn log_selection_toggles_and_caps_at_two() {
+    let mut panel = GitPanel::new("/repo");
+    // Mark three commits: the oldest is evicted like the webui slice(-2).
+    panel.log_toggle_selection("a");
+    panel.log_toggle_selection("b");
+    panel.log_toggle_selection("c");
+    assert_eq!(panel.log_selected, vec!["b".to_string(), "c".to_string()]);
+    // Toggle off removes; toggle on re-adds.
+    panel.log_toggle_selection("b");
+    assert_eq!(panel.log_selected, vec!["c".to_string()]);
+    panel.log_toggle_selection("b");
+    assert_eq!(panel.log_selected, vec!["c".to_string(), "b".to_string()]);
+
+    // Comparing with fewer than two selected errors without an API call.
+    panel.log_selected.truncate(1);
+    let api = WebApiClient::new("127.0.0.1", 1);
+    assert!(panel.log_compare_selection(&api).is_err());
+}
+
+#[test]
+fn log_compare_selection_orders_by_log_position() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::sync::mpsc::Receiver;
+
+    // Fake server: answers the compare call, records base/target.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tx, rx): (_, Receiver<String>) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { break };
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut request_line = String::new();
+            if reader.read_line(&mut request_line).unwrap_or(0) == 0 {
+                continue;
+            }
+            tx.send(request_line.clone()).ok();
+            let body = "{\"ok\":true}";
+            let _ = stream.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+                .as_bytes(),
+            );
+        }
+    });
+
+    let api = WebApiClient::new("127.0.0.1", port);
+    let mut panel = GitPanel::new("/repo");
+    panel.commits = vec![
+        GitCommitEntry {
+            hash: "newest".to_string(),
+            message: "n".to_string(),
+            author: "a".to_string(),
+            labels: vec![],
+            date: String::new(),
+        },
+        GitCommitEntry {
+            hash: "middle".to_string(),
+            message: "m".to_string(),
+            author: "a".to_string(),
+            labels: vec![],
+            date: String::new(),
+        },
+        GitCommitEntry {
+            hash: "oldest".to_string(),
+            message: "o".to_string(),
+            author: "a".to_string(),
+            labels: vec![],
+            date: String::new(),
+        },
+    ];
+    // Click order must not matter: newest is always the target.
+    panel.log_selected = vec!["oldest".to_string(), "newest".to_string()];
+    panel.log_compare_selection(&api).unwrap();
+    let request = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+    assert!(
+        request.contains("base=oldest"),
+        "base is the oldest: {request}"
+    );
+    assert!(
+        request.contains("target=newest"),
+        "newest is target: {request}"
+    );
+    assert_eq!(panel.diff_title, "oldest..newest");
+}
+
+#[test]
+fn markdown_outline_parses_headings_and_skips_fences() {
+    use crate::tui::panels::files::parse_markdown_outline;
+    let content = "# Title\n\ntext\n\n## Section\n\n```rust\n# not a heading\n```\n\n### Deep\n\n####### seven hashes skipped\nplain text\n";
+    let outline = parse_markdown_outline(content);
+    let summaries: Vec<_> = outline
+        .iter()
+        .map(|(level, line, text)| (*level, *line, text.as_str()))
+        .collect();
+    assert_eq!(
+        summaries,
+        vec![(1, 1, "Title"), (2, 5, "Section"), (3, 11, "Deep")],
+        "fenced # and >6 hashes skipped"
+    );
+    // No headings: empty outline.
+    assert!(parse_markdown_outline("plain text only").is_empty());
+}
+
+#[test]
+fn markdown_outline_toggle_requires_markdown_preview() {
+    let mut explorer = crate::tui::panels::files::FileExplorer::new("/repo");
+    // No preview open: refused.
+    assert_eq!(explorer.toggle_markdown_outline(), None);
+    // Non-markdown preview: refused.
+    explorer.preview.path = Some("src/lib.rs".to_string());
+    assert_eq!(explorer.toggle_markdown_outline(), None);
+    assert!(!explorer.markdown_outline);
+    // Markdown preview: toggles on and back off.
+    explorer.preview.path = Some("docs/plan.md".to_string());
+    assert_eq!(explorer.toggle_markdown_outline(), Some(true));
+    assert!(explorer.markdown_outline);
+    assert_eq!(explorer.toggle_markdown_outline(), Some(false));
+    assert!(!explorer.markdown_outline);
+    // .markdown suffix counts too.
+    explorer.preview.path = Some("notes.markdown".to_string());
+    assert_eq!(explorer.toggle_markdown_outline(), Some(true));
+    // Editing refuses the flip (outline of a shifting buffer).
+    explorer.edit_active = true;
+    assert_eq!(explorer.toggle_markdown_outline(), None);
+}

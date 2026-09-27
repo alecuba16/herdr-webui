@@ -174,6 +174,52 @@ impl GitPanel {
         Ok(())
     }
 
+    /// Webui `selectLogCommit` shift-click arm: toggle the selected
+    /// commit in `log_selected`, keeping at most two (newest kept like
+    /// the webui `slice(-2)`).
+    pub fn log_toggle_selection(&mut self, hash: &str) {
+        if self.log_selected.iter().any(|h| h == hash) {
+            self.log_selected.retain(|h| h != hash);
+        } else {
+            self.log_selected.push(hash.to_string());
+            while self.log_selected.len() > 2 {
+                self.log_selected.remove(0);
+            }
+        }
+    }
+
+    /// Webui `compareSelectedLog`: diff the two selected commits into
+    /// the Log diff pane. The newest (earliest in `commits`, which is
+    /// newest-first) is the target; the other is the base, the same
+    /// ordering rule the webui applies regardless of click order.
+    pub fn log_compare_selection(&mut self, api: &WebApiClient) -> Result<(), WebApiError> {
+        if self.log_selected.len() != 2 {
+            return Err(WebApiError::Api(
+                "select two commits (Space) to compare".to_string(),
+            ));
+        }
+        let rank = |hash: &str| {
+            self.commits
+                .iter()
+                .position(|commit| commit.hash == hash)
+                .unwrap_or(usize::MAX)
+        };
+        let (target, base) = {
+            let (a, b) = (&self.log_selected[0], &self.log_selected[1]);
+            if rank(a) <= rank(b) {
+                (a.clone(), b.clone())
+            } else {
+                (b.clone(), a.clone())
+            }
+        };
+        let data = api.git_compare(&self.cwd, &base, &target, self.log_file.as_deref())?;
+        let (lines, meta) = parse_diff_lines_with_meta(&data);
+        self.diff_lines = lines;
+        self.diff_meta = meta;
+        self.diff_title = format!("{base}..{target}");
+        Ok(())
+    }
+
     /// Webui log tag action: create `tag_name` on the selected commit.
     pub fn log_tag(&mut self, api: &WebApiClient, tag_name: &str) -> Result<(), WebApiError> {
         let Some(hash) = self.selected_commit_hash().map(str::to_string) else {

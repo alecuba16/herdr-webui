@@ -204,6 +204,77 @@ fn git_panel_key_navigation_cycles_views() {
 }
 
 #[test]
+fn log_two_commit_compare_keys_and_markdown_outline_key() {
+    let client = BackendClient::builtin_session(None);
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    app.screen = TuiScreen::Git;
+    app.mode = TuiMode::Attach;
+    app.git_panel.view = GitView::Log;
+    app.git_panel.commits = vec![
+        crate::tui::panels::git::GitCommitEntry {
+            hash: "aaa".to_string(),
+            message: "new".to_string(),
+            author: "a".to_string(),
+            date: String::new(),
+            labels: vec![],
+        },
+        crate::tui::panels::git::GitCommitEntry {
+            hash: "bbb".to_string(),
+            message: "old".to_string(),
+            author: "a".to_string(),
+            date: String::new(),
+            labels: vec![],
+        },
+    ];
+    // Space marks the selected commit, Space again on the next commit.
+    app.handle_key(KeyEvent::from(KeyCode::Char(' ')));
+    assert_eq!(app.git_panel.log_selected, vec!["aaa".to_string()]);
+    app.git_panel.commit_selected = 1;
+    app.handle_key(KeyEvent::from(KeyCode::Char(' ')));
+    assert_eq!(
+        app.git_panel.log_selected,
+        vec!["aaa".to_string(), "bbb".to_string()]
+    );
+    // c with two selected compares (dead web API: the error surfaces,
+    // but only after the selection guard passed).
+    app.handle_key(KeyEvent::from(KeyCode::Char('c')));
+    assert!(
+        app.error
+            .as_deref()
+            .is_some_and(|e| e.contains("webui connection failed")),
+        "compare hits the API: {:?}",
+        app.error
+    );
+    // One selected: c keeps the commit-modal meaning (no compare call).
+    app.error = None;
+    app.git_panel.log_selected.truncate(1);
+    app.handle_key(KeyEvent::from(KeyCode::Char('c')));
+    assert!(app.commit_input.is_some(), "c opens the commit modal");
+    // Close the modal so the Files keys below are not swallowed by it.
+    app.commit_input = None;
+
+    // Files screen: M without a markdown preview errors; with one it
+    // flips the outline mode on and back off.
+    app.screen = TuiScreen::Files;
+    app.git_panel.log_selected.clear();
+    app.error = None;
+    app.file_explorer.preview = crate::tui::panels::FilePreview::default();
+    app.handle_key(KeyEvent::from(KeyCode::Char('M')));
+    assert!(app
+        .error
+        .as_deref()
+        .is_some_and(|e| e.contains("open a markdown file first")));
+    app.error = None;
+    app.file_explorer.preview.path = Some("docs/plan.md".to_string());
+    app.handle_key(KeyEvent::from(KeyCode::Char('M')));
+    assert!(app.file_explorer.markdown_outline);
+    assert_eq!(app.status, "outline view (M shows source)");
+    app.handle_key(KeyEvent::from(KeyCode::Char('M')));
+    assert!(!app.file_explorer.markdown_outline);
+    assert_eq!(app.status, "source view");
+}
+
+#[test]
 fn git_changes_hunk_keys_move_cursor_and_apply() {
     let client = BackendClient::builtin_session(None);
     let mut app = TuiApp::new(client, Duration::from_secs(1));

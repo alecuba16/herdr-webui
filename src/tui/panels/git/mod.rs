@@ -199,6 +199,10 @@ pub struct GitPanel {
     /// File filter for the Log view (webui `logFilePath`); set by the
     /// file explorer "show history" entry.
     pub log_file: Option<String>,
+    /// Webui `selectedLogCommits`: up to two commits marked with Space
+    /// in the Log view; `c` compares the pair ordered by log position
+    /// (newest = target, like `compareSelectedLog`).
+    pub log_selected: Vec<String>,
     /// Diff search (webui Ctrl+F in the diff): incremental query over
     /// `diff_lines` while typing, `n`/`N` cycle matches.
     pub diff_search_active: bool,
@@ -260,6 +264,7 @@ impl GitPanel {
             log_limit: LOG_PAGE_SIZE,
             log_has_more: false,
             log_file: None,
+            log_selected: Vec::new(),
             diff_search_active: false,
             diff_search_query: String::new(),
             diff_search_matches: Vec::new(),

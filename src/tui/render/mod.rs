@@ -537,10 +537,20 @@ fn render_file_preview(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
     let explorer = &app.file_explorer;
     let preview = &explorer.preview;
     let dirty_marker = if preview.dirty { " *" } else { "" };
+    // Markdown outline flip (gap 22): the webui eye toggle renders the
+    // header outline; the TUI shows it in place of the raw source.
+    let outline_mode = explorer.markdown_outline
+        && !preview.binary
+        && preview
+            .path
+            .as_deref()
+            .is_some_and(|path| path.ends_with(".md") || path.ends_with(".markdown"));
     let title = match &preview.path {
         Some(path) => {
             if explorer.edit_active {
                 format!(" Editing · {}{dirty_marker} ", truncate(path, 44))
+            } else if outline_mode {
+                format!(" Outline · {} ", truncate(path, 44))
             } else {
                 format!(" Preview · {} ", truncate(path, 48))
             }
@@ -556,6 +566,35 @@ fn render_file_preview(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
             "binary file",
             Style::default().fg(p.muted),
         )));
+    } else if outline_mode {
+        // Header outline: level-indented headings with source line
+        // numbers; an empty state explains the toggle when the file has
+        // no ATX headings.
+        let outline = crate::tui::panels::files::parse_markdown_outline(&preview.content);
+        if outline.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "no headings (M shows the source)",
+                Style::default().fg(p.muted),
+            )));
+        }
+        for (level, line_no, text) in outline {
+            let indent = "  ".repeat(level.saturating_sub(1));
+            let marker = match level {
+                1 => "#",
+                2 => "##",
+                3 => "###",
+                _ => "-",
+            };
+            let style = if level <= 2 {
+                Style::default().fg(p.accent).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(p.text)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!("{line_no:>4} "), Style::default().fg(p.muted)),
+                Span::styled(format!("{indent}{marker} {text}"), style),
+            ]));
+        }
     } else if let Some(path) = &preview.path {
         // Cursor position decides the scrolled window while editing.
         let cursor_line = if explorer.edit_active {
@@ -1012,7 +1051,18 @@ fn render_git_log(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) 
             } else {
                 format!(" ({})", commit.labels.join(", "))
             };
+            // Webui shift-click selection marker (gap 11): marked
+            // commits show `*` before the hash.
+            let mark = if panel.log_selected.contains(&commit.hash) {
+                Span::styled(
+                    "* ",
+                    Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
+                )
+            } else {
+                Span::styled("  ", Style::default().fg(p.muted))
+            };
             ListItem::new(Line::from(vec![
+                mark,
                 Span::styled(
                     format!("{} ", &commit.hash[..commit.hash.len().min(7)]),
                     Style::default().fg(p.yellow),

@@ -86,6 +86,17 @@ Git management gaps:
     file tree and full stash diff.
 11. No log actions: compare (single/two-commit), reset, rebase, tag, worktree
     from branch, load-more pagination, scope filters (all/branch/master+branch).
+
+    Closed in the follow-up pass: single-commit compare (`Enter`, commit vs
+    parent), `t` tag, `R` reset, `b` rebase, `w` worktree from branch, `+`
+    load more, `s` scope cycle shipped in the git-log-actions pass; the
+    remaining webui shift-click two-commit compare is now covered too:
+    `Space` in the Log view marks commits for comparison (kept list capped
+    at the last 2, webui `slice(-2)` semantics) and `c` with exactly two
+    marked commits runs the pair compare (`git_compare`, newest = target,
+    oldest = base, diff title `base..target`). With fewer than two marked,
+    `c` keeps the commit-modal meaning, so the webui compare-button
+    shortcut stays unclaimed.
 12. No diff search (webui `Ctrl+F` in diff) and no side-by-side toggle.
 13. No git directory picker / cwd change (webui `prefix I` opens the Git
     directory or branch dialog; yellow badge for foreign cwd).
@@ -115,6 +126,13 @@ File explorer gaps vs neovim-style:
     regex).
 22. No markdown preview flip; TUI shows raw text (acceptable for TUI, may
     render markdown header outline instead).
+
+    Closed in the gap-22 pass: the raw-source choice stays (a rendered
+    markdown view is a browser concern), but `M` on the Files screen now
+    toggles a markdown header outline of the open `.md`/`.markdown` preview
+    (ATX headings `#`..`######`, fenced code blocks skipped, line numbers
+    shown, `M` again returns to the source), the TUI counterpart of the
+    webui eye toggle between rendered preview and source.
 
 Terminal parity (documented as out of scope in `docs/features.md` line 100):
 layout mutation, copy/search scrollback, mouse/touch, worktree dialogs
@@ -277,6 +295,9 @@ Extend `panels/files/`:
   one/all (prompt flow), matching webui editor behavior where possible.
 - Markdown files: keep raw source (TUI-appropriate); optional future: outline
   view.
+
+  Shipped: `M` toggles the header outline of the open markdown preview
+  (level-indented markers, line numbers) and back to the source.
 - Split panes/multi-tab preview: out of scope for this pass (terminal cell
   budget); preview switching via `Tab` within Files screen to cycle recently
   opened files (cheap approximation, documented).

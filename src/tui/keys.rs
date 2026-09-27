@@ -346,6 +346,8 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
         ),
         ("git: D", "delete branch (branches) / drop stash (stash)"),
         ("git: Enter", "log: compare commit with parent"),
+        ("git: Space (log)", "mark commit for compare (keep last 2)"),
+        ("git: c (log, 2 marked)", "compare the two marked commits"),
         (
             "git: t/R/b (log)",
             "tag / reset (soft, mixed, hard) / rebase selected commit",
@@ -356,6 +358,7 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
         ),
         ("git: w (log)", "worktree from branch (branch, then path)"),
         ("files: L", "git log of the selected file"),
+        ("files: M", "markdown preview: outline view of the headers"),
         (
             "files: / + t",
             "search files/folders/content, t cycles the scope",
@@ -502,5 +505,7 @@ mod tests {
             .iter()
             .any(|(_, description)| description.contains("files")));
         assert!(rows.iter().any(|(keys, _)| keys.contains("git: J/K/H")));
+        assert!(rows.iter().any(|(keys, _)| keys.contains("Space (log)")));
+        assert!(rows.iter().any(|(keys, _)| keys.contains("files: M")));
     }
 }

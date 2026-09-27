@@ -1503,6 +1503,16 @@ impl TuiApp {
                     text: String::new(),
                 });
             }
+            // Markdown outline flip (gap 22): webui eye toggle. M shows
+            // the header outline of the open markdown preview (or the
+            // source again); a non-markdown preview explains itself.
+            KeyCode::Char('M') => match self.file_explorer.toggle_markdown_outline() {
+                Some(true) => self.status = "outline view (M shows source)".to_string(),
+                Some(false) => self.status = "source view".to_string(),
+                None => {
+                    self.error = Some("open a markdown file first".to_string());
+                }
+            },
             KeyCode::Char('e') => match self.file_explorer.start_edit() {
                 Ok(()) => self.status = "editing: Ctrl-S saves, Esc stops".to_string(),
                 Err(err) => self.error = Some(err.to_string()),
@@ -1650,6 +1660,26 @@ impl TuiApp {
                     GitView::Cleanup => GitView::Changes,
                 };
                 self.refresh_active_screen();
+            }
+            // Webui `selectLogCommit` shift-click arm (gap 11 two-commit
+            // compare): Space marks up to two commits, `c` compares the
+            // pair ordered by log position (newest = target).
+            KeyCode::Char(' ') if self.git_panel.view == GitView::Log => {
+                if let Some(hash) = self.git_panel.selected_commit_hash().map(str::to_string) {
+                    self.git_panel.log_toggle_selection(&hash);
+                    self.status = format!("selected: {:?}", self.git_panel.log_selected);
+                } else {
+                    self.error = Some("no commit selected".to_string());
+                }
+            }
+            KeyCode::Char('c')
+                if self.git_panel.view == GitView::Log
+                    && self.git_panel.log_selected.len() == 2 =>
+            {
+                match self.git_panel.log_compare_selection(&self.web_api) {
+                    Ok(()) => self.status = "compare loaded".to_string(),
+                    Err(err) => self.error = Some(err.to_string()),
+                }
             }
             // Log view actions (webui log toolbar). All guarded to Log so
             // the shared git keys keep their meaning elsewhere. `s` (stage)
