@@ -14771,8 +14771,8 @@ mod tui_parity_e2e_tests {
     use super::*;
     use crate::lsp::LspRegistry;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use herdr_webui::tui_panels::{FileExplorer, GitFileStatus, GitPanel, GitView};
-    use herdr_webui::tui_web_api::WebApiClient;
+    use herdr_webui::tui::panels::{FileExplorer, GitFileStatus, GitPanel, GitView};
+    use herdr_webui::tui::web_api::WebApiClient;
 
     fn temp_git_repo() -> PathBuf {
         // Fixture dirs must be unique per call even when tests run in
@@ -15366,7 +15366,7 @@ mod tui_parity_e2e_tests {
         app.snapshot = TuiSnapshot::default();
         app.screen = TuiScreen::Files;
         app.mode = TuiMode::Attach;
-        app.file_explorer = herdr_webui::tui_panels::FileExplorer::new(cwd);
+        app.file_explorer = herdr_webui::tui::panels::FileExplorer::new(cwd);
         app.file_explorer
             .refresh(&app.web_api)
             .map_err(|e| e.to_string())?;
@@ -15462,7 +15462,7 @@ mod tui_parity_e2e_tests {
 
         // --- Git branch delete via prompt: Tab to Branches, D opens, y confirms.
         app.screen = TuiScreen::Git;
-        app.git_panel.view = herdr_webui::tui_panels::GitView::Branches;
+        app.git_panel.view = herdr_webui::tui::panels::GitView::Branches;
         app.git_panel
             .refresh_view(&app.web_api)
             .map_err(|e| e.to_string())?;
@@ -15506,7 +15506,7 @@ mod tui_parity_e2e_tests {
 
         // --- Stash drop via prompt: create a stash, Tab to Stash, D opens, y confirms.
         app.web_api.git_stash(cwd).map_err(|e| e.to_string())?;
-        app.git_panel.view = herdr_webui::tui_panels::GitView::Stash;
+        app.git_panel.view = herdr_webui::tui::panels::GitView::Stash;
         app.git_panel
             .refresh_view(&app.web_api)
             .map_err(|e| e.to_string())?;
@@ -15522,7 +15522,7 @@ mod tui_parity_e2e_tests {
 
         // --- Git fetch/pull/push round-trip against the bare "origin":
         // the remote exists, so each action succeeds and refresh_view runs.
-        app.git_panel.view = herdr_webui::tui_panels::GitView::Branches;
+        app.git_panel.view = herdr_webui::tui::panels::GitView::Branches;
         press(&mut app, 'f');
         assert!(
             app.error.is_none(),
@@ -15573,7 +15573,7 @@ mod tui_parity_e2e_tests {
         )
         .map_err(|e| e.to_string())?;
         app.screen = TuiScreen::Git;
-        app.git_panel.view = herdr_webui::tui_panels::GitView::Changes;
+        app.git_panel.view = herdr_webui::tui::panels::GitView::Changes;
         app.git_panel
             .refresh_view(&app.web_api)
             .map_err(|e| e.to_string())?;
@@ -15640,7 +15640,7 @@ mod tui_parity_e2e_tests {
         )
         .map_err(|e| e.to_string())?;
         app.screen = TuiScreen::Git;
-        app.git_panel.view = herdr_webui::tui_panels::GitView::Changes;
+        app.git_panel.view = herdr_webui::tui::panels::GitView::Changes;
         app.git_panel
             .refresh_view(&app.web_api)
             .map_err(|e| e.to_string())?;
@@ -15691,7 +15691,7 @@ mod tui_parity_e2e_tests {
         )
         .map_err(|e| e.to_string())?;
         app.screen = TuiScreen::Git;
-        app.git_panel.view = herdr_webui::tui_panels::GitView::Changes;
+        app.git_panel.view = herdr_webui::tui::panels::GitView::Changes;
         app.git_panel
             .refresh_view(&app.web_api)
             .map_err(|e| e.to_string())?;
@@ -15708,7 +15708,7 @@ mod tui_parity_e2e_tests {
                 .files
                 .iter()
                 .filter(|f| f.path != "other.rs")
-                .all(|f| f.status == herdr_webui::tui_panels::GitFileStatus::Staged),
+                .all(|f| f.status == herdr_webui::tui::panels::GitFileStatus::Staged),
             "stage-all stages tracked changes: {:?}",
             app.git_panel
                 .files
@@ -15725,7 +15725,7 @@ mod tui_parity_e2e_tests {
             !app.git_panel
                 .files
                 .iter()
-                .any(|f| f.status == herdr_webui::tui_panels::GitFileStatus::Staged),
+                .any(|f| f.status == herdr_webui::tui::panels::GitFileStatus::Staged),
             "stage-all toggles everything back"
         );
 
@@ -15741,7 +15741,7 @@ mod tui_parity_e2e_tests {
         press(&mut app, 'y');
         assert!(
             app.git_panel.files.iter().any(|f| f.path == "edit_me.rs"
-                && f.status == herdr_webui::tui_panels::GitFileStatus::Staged),
+                && f.status == herdr_webui::tui::panels::GitFileStatus::Staged),
             "prefix y stages the selected file"
         );
         app.git_panel.file_selected = y_idx;
@@ -15749,7 +15749,7 @@ mod tui_parity_e2e_tests {
         press(&mut app, 'u');
         assert!(
             app.git_panel.files.iter().any(|f| f.path == "edit_me.rs"
-                && f.status != herdr_webui::tui_panels::GitFileStatus::Staged),
+                && f.status != herdr_webui::tui::panels::GitFileStatus::Staged),
             "prefix u unstages the selected file"
         );
 
@@ -15762,7 +15762,7 @@ mod tui_parity_e2e_tests {
             app.git_panel.files
         );
         // Restore the stashed changes for the later sections.
-        app.git_panel.view = herdr_webui::tui_panels::GitView::Stash;
+        app.git_panel.view = herdr_webui::tui::panels::GitView::Stash;
         app.git_panel
             .refresh_view(&app.web_api)
             .map_err(|e| e.to_string())?;
@@ -15770,7 +15770,7 @@ mod tui_parity_e2e_tests {
             crossterm::event::KeyCode::Enter,
         ));
         assert_eq!(app.status, "stash applied", "stash restore: {}", app.status);
-        app.git_panel.view = herdr_webui::tui_panels::GitView::Changes;
+        app.git_panel.view = herdr_webui::tui::panels::GitView::Changes;
         app.git_panel
             .refresh_view(&app.web_api)
             .map_err(|e| e.to_string())?;
@@ -15806,21 +15806,21 @@ mod tui_parity_e2e_tests {
         assert_eq!(app.status, "blame off", "blame off status: {}", app.status);
 
         // --- Prefix m from a non-Changes view resets to Changes first.
-        app.git_panel.view = herdr_webui::tui_panels::GitView::Branches;
+        app.git_panel.view = herdr_webui::tui::panels::GitView::Branches;
         app.git_panel.diff_title = "edit_me.rs".to_string();
         app.git_panel
             .refresh_view(&app.web_api)
             .map_err(|e| e.to_string())?;
         // Keep the changes list for blame resolution while showing Branches.
-        app.git_panel.files = vec![herdr_webui::tui_panels::GitFileEntry {
+        app.git_panel.files = vec![herdr_webui::tui::panels::GitFileEntry {
             path: "edit_me.rs".to_string(),
-            status: herdr_webui::tui_panels::GitFileStatus::Unstaged,
+            status: herdr_webui::tui::panels::GitFileStatus::Unstaged,
         }];
         app.handle_key(ctrl_b);
         press(&mut app, 'm');
         assert_eq!(
             app.git_panel.view,
-            herdr_webui::tui_panels::GitView::Changes,
+            herdr_webui::tui::panels::GitView::Changes,
             "prefix m resets the view to Changes"
         );
         assert!(app.git_panel.show_blame, "blame toggles on from Branches");
@@ -15862,11 +15862,11 @@ mod tui_parity_e2e_tests {
         press(&mut app, 'o');
         assert_eq!(
             app.git_panel.view,
-            herdr_webui::tui_panels::GitView::Changes
+            herdr_webui::tui::panels::GitView::Changes
         );
 
         // --- Prefix v with a non-current branch switches to it and back.
-        app.git_panel.view = herdr_webui::tui_panels::GitView::Branches;
+        app.git_panel.view = herdr_webui::tui::panels::GitView::Branches;
         app.git_panel
             .refresh_view(&app.web_api)
             .map_err(|e| e.to_string())?;
@@ -15920,7 +15920,7 @@ mod tui_parity_e2e_tests {
 
         // --- Prefix d with a dirty preview on the same file is refused first,
         // then the plain discard runs.
-        app.git_panel.view = herdr_webui::tui_panels::GitView::Changes;
+        app.git_panel.view = herdr_webui::tui::panels::GitView::Changes;
         app.git_panel
             .refresh_view(&app.web_api)
             .map_err(|e| e.to_string())?;
@@ -15963,7 +15963,7 @@ mod tui_parity_e2e_tests {
         )
         .map_err(|e| e.to_string())?;
         app.screen = TuiScreen::Git;
-        app.git_panel.view = herdr_webui::tui_panels::GitView::Changes;
+        app.git_panel.view = herdr_webui::tui::panels::GitView::Changes;
         app.git_panel
             .refresh_view(&app.web_api)
             .map_err(|e| e.to_string())?;
@@ -15982,7 +15982,7 @@ mod tui_parity_e2e_tests {
         app.handle_key(ctrl_b);
         press(&mut app, 'l');
         assert!(
-            app.git_panel.view == herdr_webui::tui_panels::GitView::Log,
+            app.git_panel.view == herdr_webui::tui::panels::GitView::Log,
             "prefix l opens the Log view"
         );
         assert_eq!(
@@ -15990,7 +15990,7 @@ mod tui_parity_e2e_tests {
             app.git_panel.commits.len().saturating_sub(1),
             "log refresh must clamp the selection"
         );
-        app.git_panel.view = herdr_webui::tui_panels::GitView::History;
+        app.git_panel.view = herdr_webui::tui::panels::GitView::History;
         app.git_panel
             .refresh_view(&app.web_api)
             .map_err(|e| e.to_string())?;
@@ -16035,7 +16035,7 @@ mod tui_parity_e2e_tests {
 
         // Branches: Enter switches to the selected non-current branch, then
         // back to the default branch.
-        app.git_panel.view = herdr_webui::tui_panels::GitView::Branches;
+        app.git_panel.view = herdr_webui::tui::panels::GitView::Branches;
         app.git_panel
             .refresh_view(&app.web_api)
             .map_err(|e| e.to_string())?;
@@ -16080,7 +16080,7 @@ mod tui_parity_e2e_tests {
 
         // Stash: stash the dirty edit, Enter applies it.
         app.web_api.git_stash(cwd).map_err(|e| e.to_string())?;
-        app.git_panel.view = herdr_webui::tui_panels::GitView::Stash;
+        app.git_panel.view = herdr_webui::tui::panels::GitView::Stash;
         app.git_panel
             .refresh_view(&app.web_api)
             .map_err(|e| e.to_string())?;
@@ -16163,7 +16163,7 @@ mod tui_parity_e2e_tests {
         // --- Prefix e from Git Changes on a file that no longer exists on
         // disk surfaces the read error instead of opening edit mode.
         app.screen = TuiScreen::Git;
-        app.git_panel.view = herdr_webui::tui_panels::GitView::Changes;
+        app.git_panel.view = herdr_webui::tui::panels::GitView::Changes;
         app.git_panel
             .refresh_view(&app.web_api)
             .map_err(|e| e.to_string())?;

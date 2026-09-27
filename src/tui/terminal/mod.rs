@@ -429,5 +429,6 @@ fn truncate(value: &str, max_width: usize) -> String {
 }
 
 #[cfg(test)]
-#[path = "tui_terminal_tests.rs"]
 mod tests;
+
+pub mod input;

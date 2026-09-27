@@ -1,16 +1,18 @@
 mod protocol;
 mod terminal_text;
-mod tui_input;
-mod tui_keys;
-mod tui_model;
-mod tui_render;
-mod tui_terminal;
-mod tui_theme;
 
 pub mod backend_client;
 pub mod tui;
-pub mod tui_panels;
-pub mod tui_web_api;
+
+// Compatibility re-exports: the public TUI surface stays `herdr_webui::tui_*`
+// for the binary and the e2e test module.
+pub use tui::keys;
+pub use tui::model;
+pub use tui::panels;
+pub use tui::render;
+pub use tui::terminal;
+pub use tui::theme;
+pub use tui::web_api;
 
 /// Process-wide lock serializing env-var manipulation across all lib
 /// test modules (backend_client, service-adjacent helpers, tui_web_api).

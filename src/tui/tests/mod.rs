@@ -5,7 +5,7 @@ use ratatui::style::Color;
 use ratatui::Terminal;
 use serde_json::json;
 
-use crate::tui_panels::{
+use crate::tui::panels::{
     FileEntry, GitBranchEntry, GitCommitEntry, GitFileEntry, GitFileStatus, GitStashEntry, GitView,
 };
 
@@ -437,7 +437,7 @@ fn files_screen_delete_requires_typed_y_confirmation() {
 
 #[test]
 fn git_branches_delete_blocked_for_current_branch_and_confirmed_for_others() {
-    use crate::tui_panels::GitBranchEntry;
+     use crate::tui::panels::GitBranchEntry;
     let client = BackendClient::builtin_session(None);
     let mut app = TuiApp::new(client, Duration::from_secs(1));
     app.screen = TuiScreen::Git;
@@ -480,7 +480,7 @@ fn git_branches_delete_blocked_for_current_branch_and_confirmed_for_others() {
 
 #[test]
 fn git_stash_view_d_opens_drop_confirmation() {
-    use crate::tui_panels::GitStashEntry;
+     use crate::tui::panels::GitStashEntry;
     let client = BackendClient::builtin_session(None);
     let mut app = TuiApp::new(client, Duration::from_secs(1));
     app.screen = TuiScreen::Git;
@@ -504,7 +504,7 @@ fn files_screen_e_starts_edit_and_esc_stops_with_dirty_kept() {
     let client = BackendClient::builtin_session(None);
     let mut app = TuiApp::new(client, Duration::from_secs(1));
     app.screen = TuiScreen::Files;
-    app.file_explorer.preview = crate::tui_panels::FilePreview {
+    app.file_explorer.preview = crate::tui::panels::FilePreview {
         path: Some("notes.md".to_string()),
         content: "line one".to_string(),
         truncated: false,
@@ -586,7 +586,7 @@ fn files_screen_dirty_preview_survives_switch_and_blocks_replacement() {
     let client = BackendClient::builtin_session(None);
     let mut app = TuiApp::new(client, Duration::from_secs(1));
     app.screen = TuiScreen::Files;
-    app.file_explorer.preview = crate::tui_panels::FilePreview {
+    app.file_explorer.preview = crate::tui::panels::FilePreview {
         path: Some("notes.md".to_string()),
         content: "line one".to_string(),
         truncated: false,
@@ -655,7 +655,7 @@ fn dirty_preview_blocks_rename_delete_and_discard_of_edited_file() {
     let client = BackendClient::builtin_session(None);
     let mut app = TuiApp::new(client, Duration::from_secs(1));
     app.screen = TuiScreen::Files;
-    app.file_explorer.preview = crate::tui_panels::FilePreview {
+    app.file_explorer.preview = crate::tui::panels::FilePreview {
         path: Some("notes.md".to_string()),
         content: "line one".to_string(),
         truncated: false,
@@ -890,7 +890,7 @@ fn renders_blame_annotations_in_changes_diff() {
     }];
     app.git_panel.diff_title = "src/app.rs".to_string();
     app.git_panel.diff_lines = vec!["+added line".to_string()];
-    app.git_panel.diff_meta = vec![Some(crate::tui_panels::GitDiffLineMeta {
+    app.git_panel.diff_meta = vec![Some(crate::tui::panels::GitDiffLineMeta {
         old_line: None,
         new_line: Some(2),
     })];
@@ -926,7 +926,7 @@ fn renders_files_preview_states() {
             expanded: false,
         },
     ];
-    app.file_explorer.preview = crate::tui_panels::FilePreview {
+    app.file_explorer.preview = crate::tui::panels::FilePreview {
         path: Some("readme.md".to_string()),
         content: "hello world".to_string(),
         truncated: false,
@@ -966,7 +966,7 @@ fn renders_files_preview_states() {
     app.file_explorer.filter.clear();
 
     // No preview at all: the placeholder hints render.
-    app.file_explorer.preview = crate::tui_panels::FilePreview::default();
+    app.file_explorer.preview = crate::tui::panels::FilePreview::default();
     let no_preview = draw(&app, 150, 30);
     assert!(
         no_preview.contains("Select a file with j/k and press Enter to preview."),
@@ -978,7 +978,7 @@ fn renders_files_preview_states() {
     );
 
     // Empty file preview shows the empty-file line.
-    app.file_explorer.preview = crate::tui_panels::FilePreview {
+    app.file_explorer.preview = crate::tui::panels::FilePreview {
         path: Some("empty.txt".to_string()),
         content: String::new(),
         truncated: false,
@@ -1685,7 +1685,7 @@ fn files_in_panel_keys_cover_rename_delete_and_enter() {
     app.file_explorer.filter.clear();
 
     // e starts editing the open preview.
-    app.file_explorer.preview = crate::tui_panels::FilePreview {
+    app.file_explorer.preview = crate::tui::panels::FilePreview {
         path: Some("a.txt".to_string()),
         content: "x".to_string(),
         truncated: false,
@@ -1735,7 +1735,7 @@ fn files_in_panel_keys_cover_rename_delete_and_enter() {
 fn shortcut_labels_cover_every_variant() {
     // Every Shortcut variant renders a non-empty label; exercise the
     // full match arms without going through the key map.
-    use crate::tui_keys::Shortcut;
+    use crate::tui::keys::Shortcut;
     let all = vec![
         Shortcut::Help,
         Shortcut::Files,
@@ -1788,7 +1788,7 @@ fn shortcut_labels_cover_every_variant() {
 #[test]
 fn file_explorer_expand_and_set_cwd_reset_state() {
     let client = BackendClient::builtin_session(None);
-    let mut explorer = crate::tui_panels::FileExplorer::new("/repo");
+    let mut explorer = crate::tui::panels::FileExplorer::new("/repo");
     explorer.entries = vec![
         FileEntry {
             name: "src".to_string(),
@@ -1820,7 +1820,7 @@ fn file_explorer_expand_and_set_cwd_reset_state() {
     let _ = explorer.toggle_expand(&api);
 
     // set_cwd on GitPanel resets diff/blame state for the new repo.
-    let mut panel = crate::tui_panels::GitPanel::new("/repo");
+    let mut panel = crate::tui::panels::GitPanel::new("/repo");
     panel.diff_lines = vec!["+x".to_string()];
     panel.show_blame = true;
     panel.blame_path = Some("src/app.rs".to_string());
@@ -1835,7 +1835,7 @@ fn file_explorer_expand_and_set_cwd_reset_state() {
 #[test]
 fn git_panel_switch_and_delete_and_stash_hit_api() {
     let api = WebApiClient::new("127.0.0.1", 1);
-    let mut panel = crate::tui_panels::GitPanel::new("/repo");
+    let mut panel = crate::tui::panels::GitPanel::new("/repo");
     panel.branches = vec![GitBranchEntry {
         name: "feature".to_string(),
         current: false,
@@ -1857,7 +1857,7 @@ fn git_panel_switch_and_delete_and_stash_hit_api() {
 #[test]
 fn git_panel_commit_pull_push_fetch_hit_api() {
     let api = WebApiClient::new("127.0.0.1", 1);
-    let mut panel = crate::tui_panels::GitPanel::new("/repo");
+    let mut panel = crate::tui::panels::GitPanel::new("/repo");
     assert!(panel.commit(&api, "msg", false).is_err());
     assert!(panel.pull(&api).is_err());
     assert!(panel.push(&api).is_err());
@@ -2201,7 +2201,7 @@ fn tab_create_and_close_shortcuts_hit_the_backend() {
         // Prefix f (files screen) with a dead web API: explorer refresh
         // error surfaces.
         app.screen = TuiScreen::Terminal;
-        app.file_explorer = crate::tui_panels::FileExplorer::new("/definitely/not/here");
+        app.file_explorer = crate::tui::panels::FileExplorer::new("/definitely/not/here");
         app.error = None;
         app.handle_key(ctrl_b);
         app.handle_key(KeyEvent::from(KeyCode::Char('f')));
@@ -2275,7 +2275,7 @@ fn prefix_e_and_discard_guards_against_dead_web_api() {
     // start_edit's own guard.
     app.error = None;
     app.screen = TuiScreen::Files;
-    app.file_explorer.preview = crate::tui_panels::FilePreview::default();
+    app.file_explorer.preview = crate::tui::panels::FilePreview::default();
     app.handle_key(ctrl_b);
     app.handle_key(KeyEvent::from(KeyCode::Char('e')));
     assert!(
@@ -2392,7 +2392,7 @@ fn files_key_error_and_guard_arms() {
 
     // R with a dirty preview of the selected file is refused.
     app.file_explorer.selected = 1;
-    app.file_explorer.preview = crate::tui_panels::FilePreview {
+    app.file_explorer.preview = crate::tui::panels::FilePreview {
         path: Some("a.txt".to_string()),
         content: "x".to_string(),
         truncated: false,
@@ -2449,7 +2449,7 @@ fn edit_key_save_error_surfaces_from_files_screen() {
     );
     app.screen = TuiScreen::Files;
     app.mode = TuiMode::Attach;
-    app.file_explorer.preview = crate::tui_panels::FilePreview {
+    app.file_explorer.preview = crate::tui::panels::FilePreview {
         path: Some("a.txt".to_string()),
         content: "x".to_string(),
         truncated: false,
@@ -2671,7 +2671,7 @@ fn files_enter_refuses_to_open_preview_with_dirty_other_file() {
     // A dirty buffer on another file blocks Enter preview loading: the
     // refusal surfaces as an error, keeping the dirty buffer intact.
     app.file_explorer.entries = vec![
-        crate::tui_panels::FileEntry {
+        crate::tui::panels::FileEntry {
             name: "one.txt".to_string(),
             path: "one.txt".to_string(),
             is_dir: false,
@@ -2679,7 +2679,7 @@ fn files_enter_refuses_to_open_preview_with_dirty_other_file() {
             level: 0,
             expanded: false,
         },
-        crate::tui_panels::FileEntry {
+        crate::tui::panels::FileEntry {
             name: "two.txt".to_string(),
             path: "two.txt".to_string(),
             is_dir: false,
@@ -2688,7 +2688,7 @@ fn files_enter_refuses_to_open_preview_with_dirty_other_file() {
             expanded: false,
         },
     ];
-    app.file_explorer.preview = crate::tui_panels::FilePreview {
+    app.file_explorer.preview = crate::tui::panels::FilePreview {
         path: Some("one.txt".to_string()),
         content: "edited".to_string(),
         truncated: false,
@@ -2718,9 +2718,9 @@ fn files_l_and_u_surface_refresh_errors_from_a_dead_api() {
     let mut app = TuiApp::new(client, Duration::from_secs(1));
     app.screen = TuiScreen::Files;
     app.mode = TuiMode::Attach;
-    app.file_explorer = crate::tui_panels::FileExplorer::new("/repo");
+    app.file_explorer = crate::tui::panels::FileExplorer::new("/repo");
     app.file_explorer.entries = vec![
-        crate::tui_panels::FileEntry {
+        crate::tui::panels::FileEntry {
             name: "dir".to_string(),
             path: "dir".to_string(),
             is_dir: true,
@@ -2728,7 +2728,7 @@ fn files_l_and_u_surface_refresh_errors_from_a_dead_api() {
             level: 0,
             expanded: false,
         },
-        crate::tui_panels::FileEntry {
+        crate::tui::panels::FileEntry {
             name: "file.txt".to_string(),
             path: "file.txt".to_string(),
             is_dir: false,
@@ -2824,7 +2824,7 @@ fn renders_prefix_armed_footer_and_tiny_screens() {
     // A file longer than the pane breaks out of the line loop instead
     // of overflowing the visible rows.
     app.screen = TuiScreen::Files;
-    app.file_explorer.preview = crate::tui_panels::FilePreview {
+    app.file_explorer.preview = crate::tui::panels::FilePreview {
         path: Some("long.txt".to_string()),
         content: (0..200)
             .map(|i| format!("line {i}"))
@@ -2863,7 +2863,7 @@ fn files_and_git_panel_error_arms_surface_to_status() {
     assert_eq!(app.screen, TuiScreen::Files, "second open is a no-op");
 
     // Enter on a file entry: toggle_expand fails against the dead API.
-    app.file_explorer.entries = vec![crate::tui_panels::FileEntry {
+    app.file_explorer.entries = vec![crate::tui::panels::FileEntry {
         name: "a.rs".to_string(),
         path: "a.rs".to_string(),
         is_dir: false,
@@ -2899,7 +2899,7 @@ fn files_and_git_panel_error_arms_surface_to_status() {
     // refresh surfaces too.
     app.screen = TuiScreen::Files;
     app.git_panel.cwd = std::env::temp_dir().to_string_lossy().to_string();
-    app.file_explorer.entries = vec![crate::tui_panels::FileEntry {
+    app.file_explorer.entries = vec![crate::tui::panels::FileEntry {
         name: "vanished.rs".to_string(),
         path: "vanished.rs".to_string(),
         is_dir: false,
@@ -2918,7 +2918,7 @@ fn files_and_git_panel_error_arms_surface_to_status() {
         kind: PromptKind::RenameFile,
         text: "b.rs".to_string(),
     });
-    app.file_explorer.entries = vec![crate::tui_panels::FileEntry {
+    app.file_explorer.entries = vec![crate::tui::panels::FileEntry {
         name: "a.rs".to_string(),
         path: "a.rs".to_string(),
         is_dir: false,
@@ -3013,7 +3013,7 @@ fn rename_delete_and_edit_succeed_but_refresh_fails() {
     );
     app.snapshot = fixture_snapshot();
     app.screen = TuiScreen::Files;
-    app.file_explorer.entries = vec![crate::tui_panels::FileEntry {
+    app.file_explorer.entries = vec![crate::tui::panels::FileEntry {
         name: "a.rs".to_string(),
         path: "a.rs".to_string(),
         is_dir: false,
@@ -3049,11 +3049,11 @@ fn rename_delete_and_edit_succeed_but_refresh_fails() {
     // rebuilt explorer's tree refresh fails -> error surfaces, and the
     // edit still starts from the fetched content.
     app.screen = TuiScreen::Git;
-    app.git_panel.view = crate::tui_panels::GitView::Changes;
+    app.git_panel.view = crate::tui::panels::GitView::Changes;
     app.git_panel.cwd = std::env::temp_dir().to_string_lossy().to_string();
-    app.git_panel.files = vec![crate::tui_panels::GitFileEntry {
+    app.git_panel.files = vec![crate::tui::panels::GitFileEntry {
         path: "a.rs".to_string(),
-        status: crate::tui_panels::GitFileStatus::Unstaged,
+        status: crate::tui::panels::GitFileStatus::Unstaged,
     }];
     app.git_panel.file_selected = 0;
     app.handle_key(ctrl('b'));
@@ -3073,7 +3073,7 @@ fn rename_delete_and_edit_succeed_but_refresh_fails() {
     // fails (tree endpoint dead) -> Err arm.
     app.screen = TuiScreen::Files;
     app.file_explorer.edit_active = false;
-    app.file_explorer.entries = vec![crate::tui_panels::FileEntry {
+    app.file_explorer.entries = vec![crate::tui::panels::FileEntry {
         name: "d".to_string(),
         path: "d".to_string(),
         is_dir: true,
@@ -3089,7 +3089,7 @@ fn rename_delete_and_edit_succeed_but_refresh_fails() {
     // Enter on a plain file with the read endpoint dead: open_preview Err.
     let (dead_port, _stop2) = fake_web_api_server(true, true, false);
     app.web_api = WebApiClient::new("127.0.0.1", dead_port);
-    app.file_explorer.entries = vec![crate::tui_panels::FileEntry {
+    app.file_explorer.entries = vec![crate::tui::panels::FileEntry {
         name: "x.rs".to_string(),
         path: "x.rs".to_string(),
         is_dir: false,

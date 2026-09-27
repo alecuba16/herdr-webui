@@ -1,3 +1,15 @@
+pub mod keys;
+pub mod model;
+pub mod panels;
+pub mod render;
+pub mod terminal;
+pub mod theme;
+pub mod web_api;
+pub mod workspace;
+
+#[cfg(test)]
+pub mod tests;
+
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -6,17 +18,17 @@ use serde_json::Value;
 
 use crate::backend_client::{BackendClient, BackendClientError, TerminalOutput};
 use crate::terminal_text::{self, StripCarriageReturn};
-pub use crate::tui_keys::{PrefixState, Shortcut};
-pub use crate::tui_model::{
+pub use keys::{PrefixState, Shortcut};
+pub use model::{
     snapshot_summary, SidebarFocus, TuiAgent, TuiMode, TuiPane, TuiSnapshot, TuiTab, TuiWorkspace,
 };
-use crate::tui_model::{value_str, value_u64};
-use crate::tui_panels::{FileExplorer, GitPanel, GitView};
-pub use crate::tui_render::render;
-use crate::tui_terminal::{terminal_output_styled_lines_lossy, TuiTextSpan};
-use crate::tui_theme::Palette;
-pub use crate::tui_theme::TuiTheme;
-use crate::tui_web_api::WebApiClient;
+use model::{value_str, value_u64};
+use panels::{FileExplorer, GitPanel, GitView};
+pub use render::render;
+use terminal::{terminal_output_styled_lines_lossy, TuiTextSpan};
+use theme::Palette;
+pub use theme::TuiTheme;
+use web_api::WebApiClient;
 
 const TAIL_LINES: usize = 240;
 const TERMINAL_RAW_BUFFER_BYTES: usize = 512 * 1024;
@@ -483,13 +495,13 @@ impl TuiApp {
                             // leave stale entries resolved against the new
                             // cwd.
                             let mut explorer =
-                                crate::tui_panels::FileExplorer::new(&self.git_panel.cwd);
+                                crate::tui::panels::FileExplorer::new(&self.git_panel.cwd);
                             // Best effort: a failed tree refresh leaves an
                             // empty tree but keeps cwd and preview aligned.
                             if let Err(err) = explorer.refresh(&self.web_api) {
                                 self.error = Some(err.to_string());
                             }
-                            explorer.preview = crate::tui_panels::FilePreview {
+                            explorer.preview = crate::tui::panels::FilePreview {
                                 path: Some(file),
                                 content: content.to_string(),
                                 truncated,
@@ -624,7 +636,7 @@ impl TuiApp {
 
     fn run_git_action(
         &mut self,
-        action: impl FnOnce(&mut GitPanel, &WebApiClient) -> Result<(), crate::tui_web_api::WebApiError>,
+        action: impl FnOnce(&mut GitPanel, &WebApiClient) -> Result<(), crate::tui::web_api::WebApiError>,
     ) {
         self.open_git_screen();
         self.git_panel.view = GitView::Changes;
@@ -1371,7 +1383,7 @@ pub fn build_client(options: &TuiOptions) -> BackendClient {
     }
 }
 
-pub use crate::tui_input::{is_menu_key, key_to_terminal_bytes};
+pub use terminal::input::{is_menu_key, key_to_terminal_bytes};
 
 fn move_index(current: usize, len: usize, delta: isize) -> usize {
     if len == 0 {
@@ -1396,7 +1408,3 @@ fn trim_terminal_raw_output(value: &mut String) {
         .unwrap_or(value.len());
     value.drain(..drain_to);
 }
-
-#[cfg(test)]
-#[path = "tui_tests.rs"]
-mod tests;

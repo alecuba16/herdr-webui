@@ -5,10 +5,10 @@ use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wra
 use ratatui::Frame;
 
 use crate::tui::{SidebarFocus, TuiApp, TuiMode, TuiScreen};
-use crate::tui_keys::help_rows;
-use crate::tui_panels::GitView;
-use crate::tui_terminal::styled_terminal_line;
-use crate::tui_theme::Palette;
+use crate::tui::keys::help_rows;
+use crate::tui::panels::GitView;
+use crate::tui::terminal::styled_terminal_line;
+use crate::tui::theme::Palette;
 
 const SPINNERS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const MAX_DIFF_LINES: usize = 400;
@@ -605,10 +605,10 @@ fn render_git_changes(
         .iter()
         .map(|entry| {
             let (letter, style) = match entry.status {
-                crate::tui_panels::GitFileStatus::Staged => ('S', Style::default().fg(p.green)),
-                crate::tui_panels::GitFileStatus::Unstaged => ('M', Style::default().fg(p.yellow)),
-                crate::tui_panels::GitFileStatus::Untracked => ('U', Style::default().fg(p.teal)),
-                crate::tui_panels::GitFileStatus::Conflicted => ('C', Style::default().fg(p.red)),
+                crate::tui::panels::GitFileStatus::Staged => ('S', Style::default().fg(p.green)),
+                crate::tui::panels::GitFileStatus::Unstaged => ('M', Style::default().fg(p.yellow)),
+                crate::tui::panels::GitFileStatus::Untracked => ('U', Style::default().fg(p.teal)),
+                crate::tui::panels::GitFileStatus::Conflicted => ('C', Style::default().fg(p.red)),
             };
             ListItem::new(Line::from(vec![
                 Span::styled(format!("{letter} "), style.add_modifier(Modifier::BOLD)),
@@ -683,7 +683,7 @@ fn render_diff_pane_full(
     diff_area: Rect,
     diff_title: &str,
     diff_lines: &[String],
-    diff_meta: Option<&[Option<crate::tui_panels::GitDiffLineMeta>]>,
+    diff_meta: Option<&[Option<crate::tui::panels::GitDiffLineMeta>]>,
     blame: Option<&std::collections::HashMap<usize, String>>,
     p: &Palette,
     empty_hint: &str,
