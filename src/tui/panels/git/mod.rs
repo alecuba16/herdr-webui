@@ -11,6 +11,7 @@ mod cleanup;
 mod conflicts;
 mod log;
 mod parse;
+mod search;
 mod stash;
 
 #[cfg(test)]
@@ -190,6 +191,14 @@ pub struct GitPanel {
     /// File filter for the Log view (webui `logFilePath`); set by the
     /// file explorer "show history" entry.
     pub log_file: Option<String>,
+    /// Diff search (webui Ctrl+F in the diff): incremental query over
+    /// `diff_lines` while typing, `n`/`N` cycle matches.
+    pub diff_search_active: bool,
+    pub diff_search_query: String,
+    /// Indices into `diff_lines` matching the current query.
+    pub diff_search_matches: Vec<usize>,
+    /// Which match `n`/`N` currently points at.
+    pub diff_search_selected: usize,
     pub status: Option<String>,
     pub message: Option<String>,
 }
@@ -241,6 +250,10 @@ impl GitPanel {
             log_limit: LOG_PAGE_SIZE,
             log_has_more: false,
             log_file: None,
+            diff_search_active: false,
+            diff_search_query: String::new(),
+            diff_search_matches: Vec::new(),
+            diff_search_selected: 0,
             status: None,
             message: None,
         }

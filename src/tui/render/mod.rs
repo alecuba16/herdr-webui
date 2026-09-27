@@ -556,6 +556,17 @@ fn render_git_tab_bar(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palet
             .bg(p.accent)
             .add_modifier(Modifier::BOLD),
     )];
+    // Yellow badge when the git cwd drifted from the workspace cwd
+    // (prefix I location bar parity).
+    if let Some(workspace_cwd) = app.active_cwd() {
+        if workspace_cwd != panel.cwd {
+            spans.push(Span::styled(
+                " ≠ workspace ",
+                Style::default().fg(p.yellow).bg(p.panel_alt),
+            ));
+            spans.push(Span::raw(" "));
+        }
+    }
     spans.push(Span::raw(" "));
     for view in GitView::all() {
         let active = panel.view == view;
@@ -640,7 +651,19 @@ fn render_git_changes(
         .highlight_symbol("> ");
     frame.render_stateful_widget(list, list_area, &mut state);
 
-    let diff_title = if panel.show_blame {
+    let diff_title = if panel.diff_search_active {
+        format!(
+            " Diff · {} · /{} ({}/{}) ",
+            truncate(&panel.diff_title, 24),
+            truncate(&panel.diff_search_query, 12),
+            if panel.diff_search_matches.is_empty() {
+                0
+            } else {
+                panel.diff_search_selected + 1
+            },
+            panel.diff_search_matches.len()
+        )
+    } else if panel.show_blame {
         format!(" Diff · {} [blame] ", truncate(&panel.diff_title, 32))
     } else {
         format!(" Diff · {} ", truncate(&panel.diff_title, 40))
@@ -663,6 +686,7 @@ fn render_git_changes(
         &panel.diff_lines,
         Some(&panel.diff_meta),
         blame,
+        panel.diff_search_active_line(),
         p,
         "Select a file to load its diff (Enter).",
     );
@@ -679,7 +703,7 @@ fn render_diff_pane(
     empty_hint: &str,
 ) {
     render_diff_pane_full(
-        frame, diff_area, diff_title, diff_lines, None, None, p, empty_hint,
+        frame, diff_area, diff_title, diff_lines, None, None, None, p, empty_hint,
     )
 }
 
@@ -694,6 +718,10 @@ fn render_diff_pane_full(
     diff_lines: &[String],
     diff_meta: Option<&[Option<crate::tui::panels::GitDiffLineMeta>]>,
     blame: Option<&std::collections::HashMap<usize, String>>,
+    // Diff search: index (into `diff_lines`) of the active match, if a
+    // search is running. The whole line gets the accent background so it
+    // stands out among the +/- colored lines.
+    active_match: Option<usize>,
     p: &Palette,
     empty_hint: &str,
 ) {
@@ -702,12 +730,17 @@ fn render_diff_pane_full(
     frame.render_widget(block, diff_area);
     let mut lines = Vec::new();
     for (index, line) in diff_lines.iter().take(MAX_DIFF_LINES).enumerate() {
-        let style = match line.chars().next() {
+        let mut style = match line.chars().next() {
             Some('+') => Style::default().fg(p.green),
             Some('-') => Style::default().fg(p.red),
             Some('@') => Style::default().fg(p.teal),
             _ => Style::default().fg(p.text),
         };
+        // Diff search highlight: the active match line inverts the usual
+        // coloring (webui highlights the find bar hit).
+        if active_match == Some(index) {
+            style = Style::default().fg(p.panel_bg).bg(p.accent);
+        }
         // Blame annotation (webui `blameName`): the author for the line
         // number, first two words, shown when blame is toggled on for
         // the file the diff shows.
@@ -1093,6 +1126,10 @@ fn render_prompt_input(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
                 .unwrap_or_default();
             format!("{short} {message}")
         }
+        // Git cwd: show the current git panel cwd as the starting point.
+        crate::tui::PromptKind::GitCwd => app.git_panel.cwd.clone(),
+        // Branch create: runs on the repo, no subject line.
+        crate::tui::PromptKind::CreateBranch => String::new(),
     };
     let title = format!(" {} ", prompt.kind.title());
     let lines = vec![

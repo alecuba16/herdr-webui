@@ -26,6 +26,13 @@ impl GitPanel {
         self.diff_lines = lines;
         self.diff_meta = meta;
         self.diff_title = file.clone().unwrap_or_else(|| "working tree".to_string());
+        // A new diff invalidates the diff search matches (line indices
+        // shifted); keep the query so re-running `/` resumes it.
+        self.diff_search_matches.clear();
+        self.diff_search_selected = 0;
+        if !self.diff_search_query.trim().is_empty() {
+            self.refresh_diff_search_matches();
+        }
         // A new diff target invalidates the blame cache (webui keeps
         // blame per file path).
         if self.blame_path != file {

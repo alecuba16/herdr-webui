@@ -99,6 +99,9 @@ pub enum Shortcut {
     RemoveWorktree,
     RenamePanel,
     RenameWorkspace,
+    // Git cwd picker (plan: prefix I; the webui has no default binding,
+    // its location bar is mouse-driven).
+    GitCwdPicker,
 }
 
 impl Shortcut {
@@ -143,6 +146,7 @@ impl Shortcut {
             Self::RemoveWorktree => "remove worktree",
             Self::RenamePanel => "rename panel",
             Self::RenameWorkspace => "rename workspace",
+            Self::GitCwdPicker => "git cwd",
         }
     }
 }
@@ -214,6 +218,9 @@ pub fn shortcut_for_key(key: KeyEvent) -> Option<Shortcut> {
         (KeyCode::Char('T'), true) => Some(Shortcut::CreateWorktree),
         (KeyCode::Delete | KeyCode::Backspace, _) => Some(Shortcut::RemoveWorktree),
         (KeyCode::Char('S'), true) => Some(Shortcut::RenameWorkspace),
+        // Git cwd picker: prefix I (no webui default; its location bar is
+        // mouse-driven). Uppercase so plain `i` stays free.
+        (KeyCode::Char('I'), _) => Some(Shortcut::GitCwdPicker),
         _ => None,
     }
 }
@@ -286,6 +293,12 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
         ),
         ("git: w (log)", "worktree from branch (branch, then path)"),
         ("files: L", "git log of the selected file"),
+        (
+            "git: / (changes)",
+            "diff search: n/N cycle, Enter keeps, Esc clears",
+        ),
+        ("git: c (branches)", "create and switch to a new branch"),
+        ("Ctrl+B I", "git cwd: type a repo path"),
     ]
 }
 

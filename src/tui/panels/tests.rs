@@ -1053,3 +1053,60 @@ fn selected_commit_hash_tracks_selection() {
     panel.commit_selected = 1;
     assert_eq!(panel.selected_commit_hash(), Some("bbbb2222"));
 }
+
+#[test]
+fn diff_search_matches_incrementally_and_cycles() {
+    let mut panel = GitPanel::new("/repo");
+    panel.diff_lines = vec![
+        "+fn alpha() {}".to_string(),
+        " context line".to_string(),
+        "-fn beta() {}".to_string(),
+        "+fn gamma() {}".to_string(),
+    ];
+    panel.start_diff_search();
+    assert!(panel.diff_search_active);
+    // Incremental: "fn" matches all three code lines.
+    panel.push_diff_search_char('f');
+    panel.push_diff_search_char('n');
+    assert_eq!(panel.diff_search_matches, vec![0, 2, 3]);
+    // Narrowing to "fn g" keeps only the gamma line (case-insensitive).
+    panel.push_diff_search_char(' ');
+    panel.push_diff_search_char('g');
+    assert_eq!(panel.diff_search_matches, vec![3]);
+    assert_eq!(panel.diff_search_active_line(), Some(3));
+    // Backspace restores the broader match set.
+    panel.pop_diff_search_char();
+    panel.pop_diff_search_char();
+    assert_eq!(panel.diff_search_matches, vec![0, 2, 3]);
+    // n/N wrap around.
+    assert!(panel.diff_search_next());
+    assert_eq!(panel.diff_search_active_line(), Some(2));
+    assert!(panel.diff_search_next());
+    assert_eq!(panel.diff_search_active_line(), Some(3));
+    assert!(panel.diff_search_next());
+    assert_eq!(panel.diff_search_active_line(), Some(0));
+    assert!(panel.diff_search_prev());
+    assert_eq!(panel.diff_search_active_line(), Some(3));
+    // Enter keeps the matches so n/N keep working after the bar closes.
+    panel.end_diff_search();
+    assert!(!panel.diff_search_active);
+    assert_eq!(panel.diff_search_matches, vec![0, 2, 3]);
+    // Esc forgets the search entirely.
+    panel.cancel_diff_search();
+    assert!(panel.diff_search_matches.is_empty());
+    assert!(panel.diff_search_query.is_empty());
+    assert_eq!(panel.diff_search_active_line(), None);
+}
+
+#[test]
+fn diff_search_without_matches_fails_navigation() {
+    let mut panel = GitPanel::new("/repo");
+    panel.diff_lines = vec!["+fn alpha() {}".to_string()];
+    panel.diff_search_matches.clear();
+    assert!(!panel.diff_search_next());
+    assert!(!panel.diff_search_prev());
+    // Empty query never matches.
+    panel.start_diff_search();
+    panel.refresh_diff_search_matches();
+    assert!(panel.diff_search_matches.is_empty());
+}

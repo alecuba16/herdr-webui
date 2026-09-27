@@ -191,6 +191,12 @@ pub enum PromptKind {
     /// `RebaseUpstream` (the webui modal has both fields at once;
     /// the TUI prompts sequentially).
     ConfirmRebase,
+    /// Git cwd picker (prefix I): type a repo path, Enter switches the
+    /// git panel to it (webui location bar).
+    GitCwd,
+    /// Branches view: create a new branch from the typed name
+    /// (webui `git_switch` with create: true).
+    CreateBranch,
 }
 
 impl PromptKind {
@@ -226,6 +232,8 @@ impl PromptKind {
             Self::ConfirmResetHard => "Hard reset (y)",
             Self::RebaseUpstream => "Rebase: upstream ref",
             Self::ConfirmRebase => "Rebase (y)",
+            Self::GitCwd => "Git directory",
+            Self::CreateBranch => "Create branch",
         }
     }
 
@@ -240,6 +248,8 @@ impl PromptKind {
             Self::CreateTag => "type the tag name, Enter tags the selected commit",
             Self::ResetMode => "type soft, mixed or hard, Enter resets",
             Self::RebaseUpstream => "type the upstream ref, then y + Enter to rebase",
+            Self::GitCwd => "type a repository path, Enter switches the git panel",
+            Self::CreateBranch => "type the branch name, Enter creates and switches",
             _ => "type y then Enter to confirm, Esc cancels",
         }
     }
@@ -544,6 +554,36 @@ impl TuiApp {
                     Err(err) => self.error = Some(err.to_string()),
                 }
             }
+            PromptKind::GitCwd => {
+                let path = text.trim();
+                if path.is_empty() {
+                    self.error = Some("type a directory path".to_string());
+                } else {
+                    self.git_panel.set_cwd(path);
+                    if let Err(err) = self.git_panel.refresh_view(&self.web_api) {
+                        self.error = Some(err.to_string());
+                    } else {
+                        self.status = format!("git cwd: {path}");
+                    }
+                }
+            }
+            PromptKind::CreateBranch => {
+                let branch = text.trim();
+                if branch.is_empty() {
+                    self.error = Some("type a branch name".to_string());
+                } else {
+                    let cwd = self.git_panel.cwd.clone();
+                    match self.web_api.git_switch(&cwd, branch, true) {
+                        Ok(_) => {
+                            self.status = format!("switched to {branch}");
+                            if let Err(err) = self.git_panel.refresh_view(&self.web_api) {
+                                self.error = Some(err.to_string());
+                            }
+                        }
+                        Err(err) => self.error = Some(err.to_string()),
+                    }
+                }
+            }
         }
     }
 
@@ -644,6 +684,13 @@ impl TuiApp {
             Shortcut::RenameWorkspace => {
                 self.prompt_input = Some(PromptInput::new(PromptKind::RenameWorkspace));
                 self.status = PromptKind::RenameWorkspace.title().to_string();
+            }
+            Shortcut::GitCwdPicker => {
+                // Prefix I: switch the git panel to a typed repo path
+                // (webui location bar; no webui default binding).
+                self.open_git_screen();
+                self.prompt_input = Some(PromptInput::new(PromptKind::GitCwd));
+                self.status = PromptKind::GitCwd.title().to_string();
             }
             Shortcut::Quit => self.status = "quit".to_string(),
             Shortcut::GitChanges => {
@@ -1145,7 +1192,59 @@ impl TuiApp {
     }
 
     fn handle_git_key(&mut self, key: KeyEvent) {
+        // Diff search (webui Ctrl+F): while active it owns the keyboard;
+        // Enter commits the query, Esc closes, typing searches
+        // incrementally, n/N still work from the committed state.
+        if self.git_panel.diff_search_active {
+            match key.code {
+                // Enter commits the query but keeps the matches so n/N
+                // keep cycling; Esc forgets the search entirely.
+                KeyCode::Enter => self.git_panel.end_diff_search(),
+                KeyCode::Esc => self.git_panel.cancel_diff_search(),
+                KeyCode::Backspace => self.git_panel.pop_diff_search_char(),
+                KeyCode::Char('n') => {
+                    self.git_panel.diff_search_next();
+                }
+                KeyCode::Char('N') => {
+                    self.git_panel.diff_search_prev();
+                }
+                KeyCode::Char(ch) => {
+                    self.git_panel.push_diff_search_char(ch);
+                }
+                _ => {}
+            }
+            self.status = format!(
+                "diff search: {} ({} matches)",
+                self.git_panel.diff_search_query,
+                self.git_panel.diff_search_matches.len()
+            );
+            return;
+        }
         match key.code {
+            // Esc also clears a committed search (bar closed by Enter but
+            // matches kept): the webui Esc dismisses the highlight too.
+            KeyCode::Esc
+                if self.git_panel.view == GitView::Changes
+                    && !self.git_panel.diff_search_matches.is_empty() =>
+            {
+                self.git_panel.cancel_diff_search();
+            }
+            // Webui Ctrl+F in the diff: open the incremental search
+            // while the Changes diff pane is the target.
+            KeyCode::Char('/') if self.git_panel.view == GitView::Changes => {
+                self.git_panel.start_diff_search();
+                self.status = "diff search: type to match, n/N cycle, Esc closes".to_string();
+            }
+            KeyCode::Char('n') if self.git_panel.view == GitView::Changes => {
+                if !self.git_panel.diff_search_next() {
+                    self.status = "no diff search matches".to_string();
+                }
+            }
+            KeyCode::Char('N') if self.git_panel.view == GitView::Changes => {
+                if !self.git_panel.diff_search_prev() {
+                    self.status = "no diff search matches".to_string();
+                }
+            }
             KeyCode::Char('j') | KeyCode::Down => self.git_panel.move_selection(1),
             KeyCode::Char('k') | KeyCode::Up => self.git_panel.move_selection(-1),
             KeyCode::Tab => {
@@ -1252,6 +1351,13 @@ impl TuiApp {
                 if let Err(err) = self.git_panel.push(&self.web_api) {
                     self.error = Some(err.to_string());
                 }
+            }
+            // Webui branch creation: in the Branches view `c` prompts
+            // for a new branch name (git_switch create: true). Elsewhere
+            // `c` keeps opening the commit modal.
+            KeyCode::Char('c') if self.git_panel.view == GitView::Branches => {
+                self.prompt_input = Some(PromptInput::new(PromptKind::CreateBranch));
+                self.status = PromptKind::CreateBranch.title().to_string();
             }
             KeyCode::Char('c') => {
                 self.commit_input = Some(CommitInput {

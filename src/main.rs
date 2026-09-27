@@ -16170,6 +16170,112 @@ mod tui_parity_e2e_tests {
             app.status
         );
 
+        // --- Branch create: Branches view `c` prompts, typed name creates
+        // and switches (webui git_switch create: true).
+        press(&mut app, 'c');
+        assert!(
+            app.prompt_input.is_some(),
+            "branches c opens the create prompt"
+        );
+        for ch in "tui-created-branch".chars() {
+            press(&mut app, ch);
+        }
+        app.handle_key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Enter,
+        ));
+        assert_eq!(
+            app.status, "switched to tui-created-branch",
+            "branch create: {}",
+            app.status
+        );
+        assert!(
+            app.git_panel
+                .branches
+                .iter()
+                .any(|b| b.name == "tui-created-branch" && b.current),
+            "created branch is current after the switch"
+        );
+        // Switch back to the default branch for the later sections.
+        let back_idx = app
+            .git_panel
+            .branches
+            .iter()
+            .position(|b| b.name == default_branch)
+            .ok_or("default branch missing after create")?;
+        app.git_panel.branch_selected = back_idx;
+        app.handle_key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Enter,
+        ));
+
+        // --- Diff search in Changes (webui Ctrl+F): / opens, typing
+        // matches incrementally, Enter commits, n/N cycle.
+        app.git_panel.view = herdr_webui::tui::panels::GitView::Changes;
+        app.git_panel
+            .refresh_view(&app.web_api)
+            .map_err(|e| e.to_string())?;
+        let edit_idx = app
+            .git_panel
+            .files
+            .iter()
+            .position(|f| f.path == "edit_me.rs")
+            .ok_or("edit_me.rs missing for diff search")?;
+        app.git_panel.file_selected = edit_idx;
+        app.handle_key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Enter,
+        ));
+        assert!(!app.git_panel.diff_lines.is_empty(), "diff loaded");
+        press(&mut app, '/');
+        assert!(app.git_panel.diff_search_active, "/ opens the diff search");
+        press(&mut app, 'e');
+        press(&mut app, 'd');
+        press(&mut app, 'i');
+        press(&mut app, 't');
+        assert!(
+            !app.git_panel.diff_search_matches.is_empty(),
+            "diff search matches after typing"
+        );
+        let first_match = app.git_panel.diff_search_active_line();
+        app.handle_key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Enter,
+        ));
+        assert!(!app.git_panel.diff_search_active, "Enter closes the bar");
+        assert!(
+            !app.git_panel.diff_search_matches.is_empty(),
+            "Enter keeps the matches"
+        );
+        press(&mut app, 'n');
+        assert_ne!(
+            app.git_panel.diff_search_active_line(),
+            first_match,
+            "n moves the active match"
+        );
+        press(&mut app, 'N');
+        assert_eq!(
+            app.git_panel.diff_search_active_line(),
+            first_match,
+            "N returns to the first match"
+        );
+        app.handle_key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Esc,
+        ));
+        assert!(
+            app.git_panel.diff_search_matches.is_empty(),
+            "Esc clears the search"
+        );
+
+        // --- Git cwd picker (prefix I): type a path, the panel switches.
+        app.handle_key(ctrl_b);
+        press(&mut app, 'I');
+        assert!(app.prompt_input.is_some(), "prefix I opens the cwd prompt");
+        for ch in cwd.chars() {
+            press(&mut app, ch);
+        }
+        app.handle_key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Enter,
+        ));
+        assert_eq!(app.git_panel.cwd, cwd, "cwd prompt switches the git panel");
+        assert!(app.error.is_none(), "cwd switch error: {:?}", app.error);
+
         // Stash: stash the dirty edit, Enter previews the diff, `a` applies it.
         app.web_api.git_stash(cwd).map_err(|e| e.to_string())?;
         app.git_panel.view = herdr_webui::tui::panels::GitView::Stash;
