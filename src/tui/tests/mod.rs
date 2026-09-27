@@ -4363,3 +4363,356 @@ fn round2_shortcuts_git_guards_and_refresh_tail_edges() {
     app.refresh_tail();
     assert!(app.pane_tail.is_empty());
 }
+
+#[test]
+fn round3_commit_modal_editing_and_submit_error_arms() {
+    let mut app = TuiApp::new_with_options(
+        BackendClient::new("/nonexistent.sock", "/nonexistent.sock"),
+        Duration::from_secs(1),
+        TuiTheme::Dark,
+        WebApiClient::new("127.0.0.1", 1),
+    );
+    app.screen = TuiScreen::Git;
+    app.git_panel.view = GitView::Changes;
+
+    app.commit_input = Some(CommitInput {
+        text: "abc".to_string(),
+        amend: true,
+    });
+    app.handle_key(KeyEvent::from(KeyCode::Backspace));
+    app.handle_key(KeyEvent::from(KeyCode::Char('d')));
+    assert_eq!(app.commit_input.as_ref().unwrap().text, "abd");
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+    assert_eq!(app.commit_input.as_ref().unwrap().text, "");
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.error.as_deref(), Some("commit message is empty"));
+    assert!(app.commit_input.is_none());
+
+    app.error = None;
+    app.commit_input = Some(CommitInput {
+        text: "ship it".to_string(),
+        amend: false,
+    });
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app
+        .error
+        .as_deref()
+        .is_some_and(|err| err.contains("webui connection failed")));
+
+    app.error = None;
+    app.commit_input = Some(CommitInput {
+        text: "cancel me".to_string(),
+        amend: false,
+    });
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert!(app.commit_input.is_none());
+}
+
+#[test]
+fn round3_log_toolbar_prompts_and_prompt_error_paths() {
+    let mut app = TuiApp::new_with_options(
+        BackendClient::new("/nonexistent.sock", "/nonexistent.sock"),
+        Duration::from_secs(1),
+        TuiTheme::Dark,
+        WebApiClient::new("127.0.0.1", 1),
+    );
+    app.screen = TuiScreen::Git;
+    app.mode = TuiMode::Attach;
+    app.git_panel.view = GitView::Log;
+
+    for key in ['t', 'R', 'b'] {
+        app.error = None;
+        app.handle_key(KeyEvent::from(KeyCode::Char(key)));
+        assert_eq!(app.error.as_deref(), Some("no commit selected"));
+    }
+
+    app.git_panel.commits = vec![GitCommitEntry {
+        hash: "abc123".to_string(),
+        message: "change".to_string(),
+        author: "Ada".to_string(),
+        date: String::new(),
+        labels: vec![],
+    }];
+    app.git_panel.commit_selected = 0;
+
+    app.handle_key(KeyEvent::from(KeyCode::Char('t')));
+    assert_eq!(
+        app.prompt_input.as_ref().unwrap().kind,
+        PromptKind::CreateTag
+    );
+    app.prompt_input.as_mut().unwrap().text = "v1".to_string();
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app
+        .error
+        .as_deref()
+        .is_some_and(|err| err.contains("webui connection failed")));
+
+    app.error = None;
+    app.handle_key(KeyEvent::from(KeyCode::Char('R')));
+    assert_eq!(
+        app.prompt_input.as_ref().unwrap().kind,
+        PromptKind::ResetMode
+    );
+    app.prompt_input.as_mut().unwrap().text = "bogus".to_string();
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.error.as_deref(), Some("type soft, mixed or hard"));
+
+    app.error = None;
+    app.prompt_input = Some(PromptInput {
+        kind: PromptKind::ResetMode,
+        text: "hard".to_string(),
+    });
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(
+        app.prompt_input.as_ref().unwrap().kind,
+        PromptKind::ConfirmResetHard
+    );
+    app.prompt_input.as_mut().unwrap().text = "y".to_string();
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app
+        .error
+        .as_deref()
+        .is_some_and(|err| err.contains("webui connection failed")));
+
+    app.error = None;
+    app.handle_key(KeyEvent::from(KeyCode::Char('b')));
+    assert_eq!(
+        app.prompt_input.as_ref().unwrap().kind,
+        PromptKind::RebaseUpstream
+    );
+    app.prompt_input.as_mut().unwrap().text = "origin/main".to_string();
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(
+        app.prompt_input.as_ref().unwrap().kind,
+        PromptKind::ConfirmRebase
+    );
+    app.prompt_input.as_mut().unwrap().text = "y".to_string();
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app
+        .error
+        .as_deref()
+        .is_some_and(|err| err.contains("webui connection failed")));
+
+    app.error = None;
+    app.git_panel.view = GitView::Branches;
+    app.handle_key(KeyEvent::from(KeyCode::Char('c')));
+    assert_eq!(
+        app.prompt_input.as_ref().unwrap().kind,
+        PromptKind::CreateBranch
+    );
+    app.prompt_input.as_mut().unwrap().text = "feature/demo".to_string();
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app
+        .error
+        .as_deref()
+        .is_some_and(|err| err.contains("webui connection failed")));
+
+    app.error = None;
+    app.git_panel.view = GitView::Log;
+    app.handle_key(KeyEvent::from(KeyCode::Char('w')));
+    assert_eq!(
+        app.prompt_input.as_ref().unwrap().kind,
+        PromptKind::CreateWorktreeBranch
+    );
+}
+
+#[test]
+fn round3_git_diff_search_hunk_and_stash_key_error_paths() {
+    let mut app = TuiApp::new_with_options(
+        BackendClient::new("/nonexistent.sock", "/nonexistent.sock"),
+        Duration::from_secs(1),
+        TuiTheme::Dark,
+        WebApiClient::new("127.0.0.1", 1),
+    );
+    app.screen = TuiScreen::Git;
+    app.mode = TuiMode::Attach;
+    app.git_panel.view = GitView::Changes;
+    app.git_panel.diff_lines = vec![
+        "@@ -1 +1 @@".to_string(),
+        "-old needle".to_string(),
+        "+new needle".to_string(),
+    ];
+
+    app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+    assert!(app.git_panel.diff_search_active);
+    app.handle_key(KeyEvent::from(KeyCode::Char('e')));
+    assert_eq!(app.git_panel.diff_search_query, "e");
+    app.handle_key(KeyEvent::from(KeyCode::Char('d')));
+    assert_eq!(app.git_panel.diff_search_query, "ed");
+    app.handle_key(KeyEvent::from(KeyCode::Char('n')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('N')));
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(!app.git_panel.diff_search_active);
+    assert!(!app.git_panel.diff_search_matches.is_empty());
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert!(app.git_panel.diff_search_matches.is_empty());
+    app.git_panel.diff_lines = vec![
+        "@@ -1 +1 @@".to_string(),
+        "-old needle".to_string(),
+        "+new needle".to_string(),
+    ];
+    app.git_panel.diff_meta = vec![
+        None,
+        Some(crate::tui::panels::git::GitDiffLineMeta::default()),
+        Some(crate::tui::panels::git::GitDiffLineMeta::default()),
+    ];
+
+    app.handle_key(KeyEvent::from(KeyCode::Char('J')));
+    assert_eq!(app.status, "hunk 1");
+    app.handle_key(KeyEvent::from(KeyCode::Char('K')));
+    assert_eq!(app.status, "hunk 1");
+    app.handle_key(KeyEvent::from(KeyCode::Char('H')));
+    assert!(app
+        .error
+        .as_deref()
+        .is_some_and(|err| err.contains("webui connection failed")));
+
+    app.error = None;
+    app.git_panel.view = GitView::Stash;
+    app.git_panel.stashes = vec![GitStashEntry {
+        name: "stash@{0}".to_string(),
+        message: "wip".to_string(),
+    }];
+    app.handle_key(KeyEvent::from(KeyCode::Char('a')));
+    assert!(app
+        .error
+        .as_deref()
+        .is_some_and(|err| err.contains("webui connection failed")));
+
+    app.error = None;
+    app.handle_key(KeyEvent::from(KeyCode::Char('D')));
+    assert_eq!(
+        app.prompt_input.as_ref().unwrap().kind,
+        PromptKind::ConfirmDropStash
+    );
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert!(app.prompt_input.is_none());
+}
+
+#[test]
+fn round3_specific_tui_edges_and_shortcuts() {
+    let mut app = TuiApp::new_with_options(
+        BackendClient::new("/nonexistent.sock", "/nonexistent.sock"),
+        Duration::from_secs(1),
+        TuiTheme::Dark,
+        WebApiClient::new("127.0.0.1", 1),
+    );
+    app.snapshot = fixture_snapshot();
+
+    app.refresh_if_due();
+    assert!(app.error.is_some());
+    app.error = Some("visible".to_string());
+    assert!(app.text_snapshot().contains("error: visible"));
+
+    app.run_shortcut(Shortcut::RenamePanel);
+    assert_eq!(
+        app.prompt_input.as_ref().unwrap().kind,
+        PromptKind::RenamePanel
+    );
+    app.prompt_input = None;
+
+    app.run_shortcut(Shortcut::TempTerminalToggle);
+    assert!(app.error.is_some());
+    app.error = None;
+
+    app.screen = TuiScreen::Files;
+    app.mode = TuiMode::Attach;
+    app.file_explorer.entries = vec![FileEntry {
+        name: "dir".to_string(),
+        path: "dir".to_string(),
+        is_dir: true,
+        size: None,
+        level: 0,
+        expanded: false,
+        git_status: None,
+    }];
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    app.handle_key(KeyEvent::from(KeyCode::Tab));
+    assert!(app.status == "no recent previews" || app.error.is_some());
+    app.git_panel.files = vec![GitFileEntry {
+        path: "src/lib.rs".to_string(),
+        status: GitFileStatus::Unstaged,
+    }];
+    app.handle_key(KeyEvent::from(KeyCode::Char('w')));
+    assert!(app.status.contains("revealed") || app.error.is_some());
+
+    app.file_explorer.edit_active = true;
+    app.file_explorer.preview.path = Some("edit.rs".to_string());
+    app.file_explorer.preview.content = "hello".to_string();
+    app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+    assert!(app.status == "saved" || app.error.is_some());
+
+    app.screen = TuiScreen::Git;
+    app.mode = TuiMode::Attach;
+    app.git_panel.view = GitView::Changes;
+    app.git_panel.diff_lines = vec!["@@ -1 +1 @@".to_string(), "+hello".to_string()];
+    app.git_panel.diff_hunk_selected = 0;
+    app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('@')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('n')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('N')));
+    app.handle_key(KeyEvent::from(KeyCode::Backspace));
+    app.git_panel.cancel_diff_search();
+    app.git_panel.diff_lines = vec!["@@ -1 +1 @@".to_string(), "+hello".to_string()];
+    app.git_panel.view = GitView::Changes;
+    app.handle_key(KeyEvent::from(KeyCode::Char('J')));
+    assert!(app.status == "hunk 1" || app.status == "no hunks in the loaded diff");
+    app.handle_key(KeyEvent::from(KeyCode::Char('H')));
+    assert!(app.status == "hunk applied" || app.error.is_some());
+
+    app.error = None;
+    app.git_panel.view = GitView::Branches;
+    app.handle_key(KeyEvent::from(KeyCode::Char('c')));
+    assert_eq!(
+        app.prompt_input.as_ref().unwrap().kind,
+        PromptKind::CreateBranch
+    );
+    app.prompt_input = None;
+    app.git_panel.view = GitView::Changes;
+    app.handle_key(KeyEvent::from(KeyCode::Char('c')));
+    assert!(app.commit_input.is_some());
+    app.commit_input = None;
+
+    app.git_panel.view = GitView::Stash;
+    app.handle_key(KeyEvent::from(KeyCode::Char('a')));
+    assert!(app.status == "stash applied" || app.error.is_some());
+    app.error = None;
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.status == "stash diff loaded" || app.error.is_some());
+
+    app.error = None;
+    app.git_panel.view = GitView::History;
+    app.git_panel.commits = vec![GitCommitEntry {
+        hash: "abc123".to_string(),
+        message: "msg".to_string(),
+        author: "me".to_string(),
+        date: String::new(),
+        labels: vec![],
+    }];
+    app.git_panel.commit_selected = 0;
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.status.contains("commit abc123") || app.error.is_some());
+
+    app.error = None;
+    app.git_panel.view = GitView::Branches;
+    app.git_panel.branches = vec![GitBranchEntry {
+        name: "feature".to_string(),
+        current: false,
+        remote: false,
+        pushed: false,
+    }];
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.status.contains("switched") || app.error.is_some());
+
+    app.mode = TuiMode::Navigate;
+    app.screen = TuiScreen::Terminal;
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.mode, TuiMode::Attach);
+    app.handle_key(KeyEvent::from(KeyCode::Char('x')));
+    assert!(app.error.is_some());
+
+    app.load_selected_terminal_history(80, 24);
+    assert!(app.error.is_some());
+    assert!(!app.should_quit());
+}

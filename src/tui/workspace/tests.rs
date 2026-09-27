@@ -478,3 +478,54 @@ fn workspace_prompt_status_and_no_selection_edges() {
     }));
     assert_eq!(empty.move_panel(1).unwrap_err(), "no workspace selected");
 }
+
+#[test]
+fn round3_move_panel_and_prompt_guard_edges() {
+    let mut app = app_with_snapshot(json!({
+        "type": "session_snapshot",
+        "snapshot": {
+            "workspaces": [{"workspace_id":"ws_1","label":"Repo","cwd":"/repo","focused":true,"agent_status":"idle","pane_count":1,"tab_count":2,"active_tab_id":"tab_1"}],
+            "tabs": [
+                {"tab_id":"tab_1","workspace_id":"ws_1","label":"One","focused":true,"pane_count":1,"agent_status":"idle"},
+                {"tab_id":"tab_2","workspace_id":"ws_1","label":"Two","focused":false,"pane_count":1,"agent_status":"idle"}
+            ],
+            "panes": [{"pane_id":"pane_2","terminal_id":"term_2","workspace_id":"ws_1","tab_id":"tab_2","agent":"shell","display_agent":"shell","agent_status":"idle","foreground_cwd":"/repo","focused":false}],
+            "agents": []
+        }
+    }));
+    app.selected_agent = 7;
+    assert_eq!(app.move_panel(1).unwrap(), "panel 2/2");
+    assert_eq!(app.selected_agent, 7);
+
+    run_prompt(&mut app, &WorkspacePrompt::RenameWorkspace, "   ");
+    assert_eq!(app.error.as_deref(), Some("type a workspace name"));
+    app.error = None;
+    run_prompt(&mut app, &WorkspacePrompt::RenamePanel, "");
+    assert_eq!(app.error.as_deref(), Some("type a panel name"));
+    app.error = None;
+    app.status = "before".to_string();
+    run_prompt(&mut app, &WorkspacePrompt::CreateWorktreePath, "/tmp/wt");
+    assert_eq!(app.status, "before");
+}
+
+#[test]
+fn round3_temp_terminal_promote_missing_refreshed_pane_keeps_selection() {
+    let (mut app, _stop) = app_with_fake_backend();
+    app.snapshot.tabs.push(crate::tui::model::TuiTab {
+        id: "tab_missing_pane".to_string(),
+        workspace_id: "ws_1".to_string(),
+        label: "temp".to_string(),
+        focused: false,
+        pane_count: 0,
+        agent_status: "idle".to_string(),
+    });
+    app.selected_workspace = 1;
+    app.selected_agent = 2;
+
+    assert_eq!(
+        app.temp_terminal_promote().unwrap(),
+        "temporary terminal promoted"
+    );
+    assert_eq!(app.selected_workspace, 0);
+    assert_eq!(app.selected_agent, 0);
+}

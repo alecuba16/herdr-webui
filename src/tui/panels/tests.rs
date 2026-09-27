@@ -1939,3 +1939,11 @@ fn cleanup_delete_and_prune_use_cleanup_routes() {
         .any(|(request, _)| request.starts_with("POST /api/git-ui/worktree-prune")));
     handle.join().unwrap();
 }
+
+#[test]
+fn round3_conflict_labels_cover_remaining_variants() {
+    assert_eq!(ConflictResolveMode::Ours.label(), "use HEAD");
+    assert_eq!(ConflictResolveMode::Remote.label(), "use remote");
+    assert_eq!(LogScope::All.label(), "all");
+    assert_eq!(LogScope::Base.label(), "base");
+}
