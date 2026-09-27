@@ -15316,6 +15316,179 @@ mod tui_parity_e2e_tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn tui_content_search_git_status_and_new_file_round_trip() {
+        let repo = temp_git_repo();
+        let state = localhost_no_auth_state(repo.clone());
+        let app = app_router(state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+
+        let api = WebApiClient::new("127.0.0.1", addr.port());
+        let cwd = repo.to_string_lossy().to_string();
+
+        let result = tokio::task::spawn_blocking(move || tui_phase3_assertions(&api, &cwd))
+            .await
+            .unwrap();
+        result.unwrap_or_else(|err| panic!("tui phase3 round trip failed: {err}"));
+        server.abort();
+        let _ = std::fs::remove_dir_all(&repo);
+        let bare = std::env::temp_dir().join(
+            repo.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .replace("herdr-tui-e2e-repo-", "herdr-tui-e2e-bare-"),
+        );
+        let _ = std::fs::remove_dir_all(&bare);
+    }
+
+    fn tui_phase3_assertions(api: &WebApiClient, cwd: &str) -> Result<(), String> {
+        use herdr_webui::tui::panels::files::{
+            content_rows, run_content_search, ContentRow, SearchKind,
+        };
+
+        // Git status colors: the fixture has a modified readme.md and an
+        // untracked new_file.rs, so the tree payload's git_status map
+        // must reach the parsed entries.
+        let mut explorer = FileExplorer::new(cwd);
+        explorer.refresh(api).unwrap();
+        let readme = explorer
+            .entries
+            .iter()
+            .find(|entry| entry.name == "readme.md")
+            .ok_or("tree missing readme.md")?;
+        assert_eq!(readme.git_status.as_deref(), Some("modified"));
+        let new_file = explorer
+            .entries
+            .iter()
+            .find(|entry| entry.name == "new_file.rs")
+            .ok_or("tree missing new_file.rs")?;
+        assert_eq!(new_file.git_status.as_deref(), Some("untracked"));
+
+        // Content search: the fixture readme contains "world"; the
+        // grouped results must include the file with a matched line.
+        explorer.filter = "world".to_string();
+        explorer.search_mode = true;
+        explorer.search_kind = SearchKind::Content;
+        run_content_search(&mut explorer, api, false).unwrap();
+        let state = &explorer.content_search;
+        let readme_hit = state
+            .files
+            .iter()
+            .find(|file| file.path == "readme.md")
+            .ok_or(format!(
+                "content search missing readme.md, files: {:?}",
+                state
+                    .files
+                    .iter()
+                    .map(|f| f.path.clone())
+                    .collect::<Vec<_>>()
+            ))?;
+        assert!(readme_hit.match_count >= 1, "expected a match in readme.md");
+        assert!(state.total_matches >= 1);
+        // Flat rows: file header plus the chunk lines of the expanded
+        // file; the matched line must appear.
+        let rows = content_rows(state);
+        assert!(matches!(rows[0], ContentRow::File(0)));
+        let matched = rows.iter().any(|row| match row {
+            ContentRow::Line { matched, .. } => *matched,
+            _ => false,
+        });
+        assert!(matched, "no matched line in the flat rows");
+
+        // Jump-to-line: open the matched line and verify the jump state
+        // plus the preview content.
+        let jump = rows
+            .iter()
+            .find_map(|row| match row {
+                ContentRow::Line { file, line, .. } if *file == 0 => Some(*line),
+                _ => None,
+            })
+            .ok_or("no chunk line for the first file")?;
+        explorer
+            .open_preview_at_line(api, "readme.md", jump)
+            .map_err(|err| format!("jump to readme.md:{jump} failed: {err}"))?;
+        assert_eq!(explorer.preview.path.as_deref(), Some("readme.md"));
+        assert_eq!(explorer.preview_jump_line, Some(jump));
+
+        // Match-case toggle: default is case-insensitive so "WORLD"
+        // still matches "world"; with match_case on it must not.
+        explorer.content_search.match_case = false;
+        explorer.content_search.regex = false;
+        explorer.filter = "WORLD".to_string();
+        run_content_search(&mut explorer, api, false).unwrap();
+        assert!(
+            explorer
+                .content_search
+                .files
+                .iter()
+                .any(|file| file.path == "readme.md"),
+            "case-insensitive search for WORLD must match readme.md"
+        );
+        explorer.content_search.match_case = true;
+        run_content_search(&mut explorer, api, false).unwrap();
+        assert!(
+            explorer.content_search.files.is_empty(),
+            "match-case search for WORLD must not match lowercase world"
+        );
+        // Regex toggle: `wor.d` matches "world" in both modes.
+        explorer.content_search.match_case = false;
+        explorer.content_search.regex = true;
+        explorer.filter = "wor.d".to_string();
+        run_content_search(&mut explorer, api, false).unwrap();
+        assert!(
+            explorer
+                .content_search
+                .files
+                .iter()
+                .any(|file| file.path == "readme.md"),
+            "regex search must match readme.md"
+        );
+
+        // New file: empty write then preview, cursor lands on the file.
+        explorer.search_mode = false;
+        explorer.filter.clear();
+        explorer.refresh(api).unwrap();
+        explorer.create_file(api, "made_by_tui.rs").unwrap();
+        let created = explorer
+            .entries
+            .iter()
+            .find(|entry| entry.name == "made_by_tui.rs")
+            .ok_or("created file missing from tree")?;
+        assert_eq!(created.path, "made_by_tui.rs");
+        assert_eq!(
+            explorer.selected_entry().map(|e| e.name.clone()),
+            Some("made_by_tui.rs".to_string())
+        );
+        assert!(repo_file_exists(cwd, "made_by_tui.rs"));
+
+        // New directory: `.gitkeep` marker makes the dir visible.
+        explorer
+            .create_directory(api, "tui_new_dir")
+            .map_err(|err| format!("create_directory failed: {err}"))?;
+        assert!(repo_dir_exists(cwd, "tui_new_dir"));
+        assert!(repo_file_exists(cwd, "tui_new_dir/.gitkeep"));
+
+        Ok(())
+    }
+
+    fn repo_file_exists(root: &str, rel: &str) -> bool {
+        std::path::Path::new(root).join(rel).is_file()
+    }
+
+    fn repo_dir_exists(root: &str, rel: &str) -> bool {
+        std::path::Path::new(root).join(rel).is_dir()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn tui_app_prompt_and_git_actions_round_trip() {
         let repo = temp_git_repo();
         let state = localhost_no_auth_state(repo.clone());

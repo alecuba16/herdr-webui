@@ -236,12 +236,37 @@ impl WebApiClient {
         query: &str,
         offset: usize,
         limit: usize,
+        dirs_only: bool,
     ) -> Result<Value, WebApiError> {
         self.get(&format!(
-            "/api/file-browser/tree?cwd={}&path={}&q={}&offset={offset}&limit={limit}&include_git_status=true",
+            "/api/file-browser/tree?cwd={}&path={}&q={}&offset={offset}&limit={limit}&search_kind={}&include_git_status=true",
             urlencode(cwd),
             urlencode(path),
             urlencode(query),
+            if dirs_only { "dir" } else { "file" },
+        ))
+    }
+
+    /// `/api/file-browser/content-search`: grep-style results grouped
+    /// per file with pre-merged context chunks. `offset`/`limit` page
+    /// over files; `match_case`/`regex` mirror the webui toggles.
+    pub fn content_search(
+        &self,
+        cwd: &str,
+        path: &str,
+        query: &str,
+        offset: usize,
+        limit: usize,
+        match_case: bool,
+        regex: bool,
+    ) -> Result<Value, WebApiError> {
+        self.get(&format!(
+            "/api/file-browser/content-search?cwd={}&path={}&q={}&offset={offset}&limit={limit}&context_lines=2&match_case={}&regex={}",
+            urlencode(cwd),
+            urlencode(path),
+            urlencode(query),
+            if match_case { "true" } else { "false" },
+            if regex { "true" } else { "false" },
         ))
     }
 
@@ -260,6 +285,28 @@ impl WebApiClient {
         content: &str,
         expected_hash: Option<&str>,
     ) -> Result<Value, WebApiError> {
+        self.file_write_ext(cwd, path, content, expected_hash, false)
+    }
+
+    /// `file_write` with `create_parents`: missing intermediate
+    /// directories are created (new-file/new-directory flow).
+    pub fn file_write_create(
+        &self,
+        cwd: &str,
+        path: &str,
+        content: &str,
+    ) -> Result<Value, WebApiError> {
+        self.file_write_ext(cwd, path, content, None, true)
+    }
+
+    fn file_write_ext(
+        &self,
+        cwd: &str,
+        path: &str,
+        content: &str,
+        expected_hash: Option<&str>,
+        create_parents: bool,
+    ) -> Result<Value, WebApiError> {
         self.post(
             "/api/file-browser/file",
             &json!({
@@ -267,6 +314,7 @@ impl WebApiClient {
                 "path": path,
                 "content": content,
                 "expected_hash": expected_hash,
+                "create_parents": create_parents,
             }),
         )
     }

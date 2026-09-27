@@ -301,6 +301,52 @@ fn file_entries_parse_tree_payload() {
 }
 
 #[test]
+fn file_entries_parse_git_status_map() {
+    let data = json!({
+        "entries": [
+            {"name": "readme.md", "path": "readme.md", "kind": "file", "level": 0},
+            {"name": "src", "path": "src", "kind": "dir", "level": 0},
+        ],
+        "git_status": {
+            "readme.md": "modified",
+            "src": "untracked"
+        }
+    });
+    let entries = parse_entries(&data);
+    assert_eq!(entries[0].git_status.as_deref(), Some("modified"));
+    assert_eq!(entries[1].git_status.as_deref(), Some("untracked"));
+}
+
+#[test]
+fn search_kind_cycles_files_folders_content() {
+    use super::files::SearchKind;
+    let mut explorer = FileExplorer::new("/repo");
+    assert_eq!(explorer.search_kind, SearchKind::File);
+    explorer.cycle_search_kind();
+    assert_eq!(explorer.search_kind, SearchKind::Dir);
+    explorer.cycle_search_kind();
+    assert_eq!(explorer.search_kind, SearchKind::Content);
+    // Cycling resets the content-search results.
+    explorer.content_search.total_matches = 7;
+    explorer.cycle_search_kind();
+    assert_eq!(explorer.search_kind, SearchKind::File);
+    assert_eq!(explorer.content_search.total_matches, 0);
+    assert_eq!(SearchKind::Dir.label(), "Folders");
+}
+
+#[test]
+fn join_root_path_joins_under_current_root() {
+    // The helper is private; exercise it through create_file's guard:
+    // an empty name must be rejected without any API call.
+    let api = WebApiClient::new("127.0.0.1", 1);
+    let mut explorer = FileExplorer::new("/repo");
+    let err = explorer.create_file(&api, "").unwrap_err();
+    assert!(err.to_string().contains("file name is required"));
+    let err = explorer.create_directory(&api, "  ").unwrap_err();
+    assert!(err.to_string().contains("directory name is required"));
+}
+
+#[test]
 fn explorer_collapse_scan_uses_child_levels() {
     let mut explorer = FileExplorer::new("/repo");
     explorer.entries = vec![
@@ -311,6 +357,7 @@ fn explorer_collapse_scan_uses_child_levels() {
             size: None,
             level: 0,
             expanded: true,
+            git_status: None,
         },
         FileEntry {
             name: "main.rs".to_string(),
@@ -319,6 +366,7 @@ fn explorer_collapse_scan_uses_child_levels() {
             size: None,
             level: 1,
             expanded: false,
+            git_status: None,
         },
         FileEntry {
             name: "tui".to_string(),
@@ -327,6 +375,7 @@ fn explorer_collapse_scan_uses_child_levels() {
             size: None,
             level: 0,
             expanded: false,
+            git_status: None,
         },
     ];
     explorer.selected = 0;
@@ -358,6 +407,7 @@ fn explorer_navigation_clamps_and_goes_up() {
             size: None,
             level: 0,
             expanded: false,
+            git_status: None,
         },
         FileEntry {
             name: "b".to_string(),
@@ -366,6 +416,7 @@ fn explorer_navigation_clamps_and_goes_up() {
             size: None,
             level: 0,
             expanded: false,
+            git_status: None,
         },
     ];
     explorer.move_selection(5);
@@ -706,6 +757,7 @@ fn toggle_expand_merges_children_and_collapses_back() {
         size: None,
         level: 0,
         expanded: false,
+        git_status: None,
     }];
     // No selection: nothing expands.
     explorer.selected = 5;
@@ -794,6 +846,7 @@ fn open_preview_on_dir_expands_and_ctrl_r_reloads() {
         size: None,
         level: 0,
         expanded: false,
+        git_status: None,
     }];
     explorer.selected = 0;
 

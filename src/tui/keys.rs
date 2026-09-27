@@ -294,6 +294,15 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
         ("git: w (log)", "worktree from branch (branch, then path)"),
         ("files: L", "git log of the selected file"),
         (
+            "files: / + t",
+            "search files/folders/content, t cycles the scope",
+        ),
+        (
+            "files: content search",
+            "Enter opens match (jump-to-line), + more, A/X toggles",
+        ),
+        ("files: a/A", "new file / new directory under the cursor"),
+        (
             "git: / (changes)",
             "diff search: n/N cycle, Enter keeps, Esc clears",
         ),

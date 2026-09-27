@@ -5,6 +5,7 @@ use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wra
 use ratatui::Frame;
 
 use crate::tui::keys::help_rows;
+use crate::tui::panels::files::{content_rows, ContentRow, SearchKind};
 use crate::tui::panels::GitView;
 use crate::tui::terminal::styled_terminal_line;
 use crate::tui::theme::Palette;
@@ -274,6 +275,12 @@ fn render_files_screen(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
 
 fn render_file_tree(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
     let explorer = &app.file_explorer;
+    // Content-search results replace the tree while visible (webui
+    // switches the browser body to the HerdrContentSearch view).
+    if explorer.search_mode && explorer.search_kind == SearchKind::Content {
+        render_content_search(frame, area, app, p);
+        return;
+    }
     let title = format!(
         " Files · {} ",
         if explorer.root_path.is_empty() {
@@ -294,13 +301,20 @@ fn render_file_tree(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette
                 Style::default().fg(p.accent),
             ),
         ]));
-        lines.push(Line::from(Span::styled(
-            "Enter applies · Esc cancels",
-            Style::default().fg(p.muted),
-        )));
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("searching {} · ", explorer.search_kind.label()),
+                Style::default().fg(p.teal),
+            ),
+            Span::styled("Enter applies · Esc cancels", Style::default().fg(p.muted)),
+        ]));
     } else if explorer.search_mode {
         lines.push(Line::from(Span::styled(
-            format!("search results for '{}'", explorer.filter),
+            format!(
+                "search results for '{}' in {}",
+                explorer.filter,
+                explorer.search_kind.label()
+            ),
             Style::default().fg(p.muted),
         )));
     }
@@ -337,7 +351,17 @@ fn render_file_tree(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette
         } else {
             " "
         };
-        let name_style = if entry.is_dir {
+        let name_style = if let Some(status) = entry.git_status.as_deref() {
+            // Webui `git-{status}` classes: modified yellow, deleted red,
+            // added/untracked green, conflict orange (yellow reads clearer
+            // on both TUI themes).
+            match status {
+                "deleted" | "conflict" => Style::default().fg(p.red),
+                "modified" => Style::default().fg(p.yellow),
+                "added" | "untracked" => Style::default().fg(p.green),
+                _ => Style::default().fg(p.text),
+            }
+        } else if entry.is_dir {
             Style::default().fg(p.accent)
         } else {
             Style::default().fg(p.text)
@@ -363,6 +387,140 @@ fn render_file_tree(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette
         ));
         frame.render_widget(empty, inner);
     }
+}
+
+/// Content-search results view (webui `HerdrContentSearch.render`):
+/// summary line, file groups with match counts, context chunks with
+/// matched lines highlighted, selection over the flat row list.
+fn render_content_search(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
+    let state = &app.file_explorer.content_search;
+    let toggles = format!(
+        "{}match-case{} · {}regex{}",
+        if state.match_case { "[" } else { " " },
+        if state.match_case { "]" } else { " " },
+        if state.regex { "[" } else { " " },
+        if state.regex { "]" } else { " " }
+    );
+    let title = format!(
+        " Search {} · '{}' · {} matches in {} files ",
+        app.file_explorer.search_kind.label(),
+        truncate(&state.query, 24),
+        state.total_matches,
+        state.total_files
+    );
+    let block = panel(&title, p).border_style(Style::default().fg(p.accent));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let rows = content_rows(state);
+    let mut lines: Vec<Line> = Vec::new();
+    // Header: summary like the webui tools line (`N matches in M files,
+    // searched K files`), plus the toggle state and the pager hint.
+    let more = if state.done { "" } else { " · + loads more" };
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!(
+                "searched {} files{}{}",
+                state.visited,
+                if state.truncated {
+                    " (stopped at limit)"
+                } else {
+                    ""
+                },
+                more
+            ),
+            Style::default().fg(p.muted),
+        ),
+        Span::raw("  "),
+        Span::styled(toggles, Style::default().fg(p.teal)),
+    ]));
+    let header_height = lines.len() as u16;
+    let [header_area, list_area] =
+        Layout::vertical([Constraint::Length(header_height), Constraint::Min(1)]).areas(inner);
+    frame.render_widget(Paragraph::new(lines), header_area);
+
+    let visible = list_area.height as usize;
+    if rows.is_empty() {
+        let empty = Paragraph::new(Span::styled(
+            "No content matches.",
+            Style::default().fg(p.muted),
+        ));
+        frame.render_widget(empty, list_area);
+        return;
+    }
+    // Keep the selection centered in view like the tree list.
+    let start = if rows.len() > visible && visible > 0 {
+        state.selected.saturating_sub(visible / 2)
+    } else {
+        0
+    };
+    let mut rendered: Vec<Line> = Vec::new();
+    for (index, row) in rows.iter().enumerate().skip(start) {
+        if rendered.len() >= visible {
+            break;
+        }
+        let selected = index == state.selected;
+        let line = match row {
+            ContentRow::File(file_index) => {
+                let file = &state.files[*file_index];
+                let expanded = state.expanded.get(*file_index).copied().unwrap_or(true);
+                let caret = if expanded { "▾" } else { "▸" };
+                let trunc = if file.truncated { " …" } else { "" };
+                Line::from(vec![
+                    Span::styled(
+                        if selected { "> " } else { "  " },
+                        Style::default().fg(p.accent),
+                    ),
+                    Span::styled(caret, Style::default().fg(p.muted)),
+                    Span::raw(" "),
+                    Span::styled(
+                        truncate(&file.path, 52),
+                        Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!(
+                            " {} match{}{}",
+                            file.match_count,
+                            if file.match_count == 1 { "" } else { "es" },
+                            trunc
+                        ),
+                        Style::default().fg(p.muted),
+                    ),
+                ])
+            }
+            ContentRow::Line {
+                file: file_index,
+                line,
+                matched,
+            } => {
+                let file = &state.files[*file_index];
+                let text = file
+                    .chunks
+                    .iter()
+                    .flat_map(|chunk| chunk.rows.iter())
+                    .find(|row| row.line == *line)
+                    .map(|row| row.text.clone())
+                    .unwrap_or_default();
+                let number = format!("{line:>5} ");
+                Line::from(vec![
+                    Span::styled(
+                        if selected { "> " } else { "  " },
+                        Style::default().fg(p.accent),
+                    ),
+                    Span::styled(number, Style::default().fg(p.muted)),
+                    Span::styled(
+                        truncate(&text, (list_area.width.saturating_sub(9)) as usize),
+                        if *matched {
+                            Style::default().fg(p.yellow).add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(p.text)
+                        },
+                    ),
+                ])
+            }
+        };
+        rendered.push(line);
+    }
+    frame.render_widget(Paragraph::new(rendered), list_area);
 }
 
 fn render_file_preview(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
@@ -400,21 +558,32 @@ fn render_file_preview(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
         let visible = inner.height as usize;
         let start = if explorer.edit_active {
             cursor_line.saturating_sub(visible.saturating_sub(1))
+        } else if let Some(jump) = explorer.preview_jump_line {
+            // Content-search jump: center the target line in view.
+            jump.saturating_sub(1).saturating_sub(visible / 2)
         } else {
             0
         };
         for (index, line) in preview.content.lines().enumerate().skip(start) {
             let number = format!("{:>4} ", index + 1);
-            let number_style = if explorer.edit_active && index == cursor_line {
+            let jump_hit = !explorer.edit_active && explorer.preview_jump_line == Some(index + 1);
+            let number_style = if jump_hit {
+                Style::default().fg(p.yellow).add_modifier(Modifier::BOLD)
+            } else if explorer.edit_active && index == cursor_line {
                 Style::default().fg(p.accent).add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(p.muted)
+            };
+            let line_style = if jump_hit {
+                Style::default().fg(p.yellow).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(p.text)
             };
             lines.push(Line::from(vec![
                 Span::styled(number, number_style),
                 Span::styled(
                     truncate(line, (inner.width as usize).saturating_sub(6)),
-                    Style::default().fg(p.text),
+                    line_style,
                 ),
             ]));
             if lines.len() >= visible {
@@ -1130,6 +1299,14 @@ fn render_prompt_input(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
         crate::tui::PromptKind::GitCwd => app.git_panel.cwd.clone(),
         // Branch create: runs on the repo, no subject line.
         crate::tui::PromptKind::CreateBranch => String::new(),
+        // New file/directory: show the root the name joins under.
+        crate::tui::PromptKind::CreateFile | crate::tui::PromptKind::CreateDirectory => {
+            if app.file_explorer.root_path.is_empty() {
+                "(workspace root)".to_string()
+            } else {
+                app.file_explorer.root_path.clone()
+            }
+        }
     };
     let title = format!(" {} ", prompt.kind.title());
     let lines = vec![

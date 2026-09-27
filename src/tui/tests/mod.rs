@@ -103,6 +103,7 @@ fn files_screen_navigation_and_preview_flow() {
             size: None,
             level: 0,
             expanded: false,
+            git_status: None,
         },
         FileEntry {
             name: "main.rs".to_string(),
@@ -111,6 +112,7 @@ fn files_screen_navigation_and_preview_flow() {
             size: Some(120),
             level: 0,
             expanded: false,
+            git_status: None,
         },
     ];
     app.file_explorer.move_selection(1);
@@ -387,6 +389,7 @@ fn files_screen_rename_opens_prompt_prefilled_with_name() {
         size: None,
         level: 0,
         expanded: false,
+        git_status: None,
     }];
     app.handle_key(KeyEvent::from(KeyCode::Char('R')));
     let prompt = app.prompt_input.as_ref().expect("rename prompt open");
@@ -417,6 +420,7 @@ fn files_screen_delete_requires_typed_y_confirmation() {
         size: None,
         level: 0,
         expanded: false,
+        git_status: None,
     }];
     app.handle_key(KeyEvent::from(KeyCode::Char('x')));
     assert_eq!(
@@ -606,6 +610,7 @@ fn files_screen_dirty_preview_survives_switch_and_blocks_replacement() {
             size: None,
             level: 0,
             expanded: false,
+            git_status: None,
         },
         FileEntry {
             name: "other.txt".to_string(),
@@ -614,6 +619,7 @@ fn files_screen_dirty_preview_survives_switch_and_blocks_replacement() {
             size: None,
             level: 0,
             expanded: false,
+            git_status: None,
         },
     ];
     app.handle_key(KeyEvent::from(KeyCode::Char('e')));
@@ -674,6 +680,7 @@ fn dirty_preview_blocks_rename_delete_and_discard_of_edited_file() {
         size: None,
         level: 0,
         expanded: false,
+        git_status: None,
     }];
     app.handle_key(KeyEvent::from(KeyCode::Char('e')));
     app.handle_key(KeyEvent::from(KeyCode::Char('!')));
@@ -920,6 +927,7 @@ fn renders_files_preview_states() {
             size: None,
             level: 0,
             expanded: false,
+            git_status: None,
         },
         FileEntry {
             name: "readme.md".to_string(),
@@ -928,6 +936,7 @@ fn renders_files_preview_states() {
             size: Some(42),
             level: 0,
             expanded: false,
+            git_status: None,
         },
     ];
     app.file_explorer.preview = crate::tui::panels::FilePreview {
@@ -1038,6 +1047,7 @@ fn renders_files_preview_states() {
         size: None,
         level: 0,
         expanded: true,
+        git_status: None,
     }];
     for i in 0..40 {
         many.push(FileEntry {
@@ -1047,6 +1057,7 @@ fn renders_files_preview_states() {
             size: None,
             level: 0,
             expanded: false,
+            git_status: None,
         });
     }
     app.file_explorer.entries = many;
@@ -1087,6 +1098,7 @@ fn renders_prompt_commit_help_and_modes() {
         size: None,
         level: 0,
         expanded: false,
+        git_status: None,
     }];
     app.prompt_input = Some(PromptInput {
         kind: PromptKind::RenameFile,
@@ -1160,6 +1172,7 @@ fn prompt_key_flow_types_confirms_and_cancels() {
         size: None,
         level: 0,
         expanded: false,
+        git_status: None,
     }];
 
     // Rename: typing builds text, Backspace pops, Esc cancels, Enter acts.
@@ -1652,6 +1665,7 @@ fn files_in_panel_keys_cover_rename_delete_and_enter() {
             size: None,
             level: 0,
             expanded: false,
+            git_status: None,
         },
         FileEntry {
             name: "a.txt".to_string(),
@@ -1660,6 +1674,7 @@ fn files_in_panel_keys_cover_rename_delete_and_enter() {
             size: None,
             level: 0,
             expanded: false,
+            git_status: None,
         },
     ];
 
@@ -1809,6 +1824,7 @@ fn file_explorer_expand_and_set_cwd_reset_state() {
             size: None,
             level: 0,
             expanded: false,
+            git_status: None,
         },
         FileEntry {
             name: "child.rs".to_string(),
@@ -1817,6 +1833,7 @@ fn file_explorer_expand_and_set_cwd_reset_state() {
             size: None,
             level: 1,
             expanded: false,
+            git_status: None,
         },
     ];
     let api = WebApiClient::new("127.0.0.1", 1);
@@ -2377,6 +2394,7 @@ fn files_key_error_and_guard_arms() {
             size: None,
             level: 0,
             expanded: false,
+            git_status: None,
         },
         FileEntry {
             name: "a.txt".to_string(),
@@ -2385,6 +2403,7 @@ fn files_key_error_and_guard_arms() {
             size: None,
             level: 0,
             expanded: false,
+            git_status: None,
         },
     ];
 
@@ -2690,6 +2709,7 @@ fn files_enter_refuses_to_open_preview_with_dirty_other_file() {
             size: None,
             level: 0,
             expanded: false,
+            git_status: None,
         },
         crate::tui::panels::FileEntry {
             name: "two.txt".to_string(),
@@ -2698,6 +2718,7 @@ fn files_enter_refuses_to_open_preview_with_dirty_other_file() {
             size: None,
             level: 0,
             expanded: false,
+            git_status: None,
         },
     ];
     app.file_explorer.preview = crate::tui::panels::FilePreview {
@@ -2739,6 +2760,7 @@ fn files_l_and_u_surface_refresh_errors_from_a_dead_api() {
             size: None,
             level: 0,
             expanded: false,
+            git_status: None,
         },
         crate::tui::panels::FileEntry {
             name: "file.txt".to_string(),
@@ -2747,6 +2769,7 @@ fn files_l_and_u_surface_refresh_errors_from_a_dead_api() {
             size: None,
             level: 0,
             expanded: false,
+            git_status: None,
         },
     ];
     // l on a plain file falls through to toggle_expand, which returns
@@ -2882,6 +2905,7 @@ fn files_and_git_panel_error_arms_surface_to_status() {
         size: None,
         level: 0,
         expanded: false,
+        git_status: None,
     }];
     app.file_explorer.selected = 0;
     app.handle_key(KeyEvent::from(KeyCode::Enter));
@@ -2918,6 +2942,7 @@ fn files_and_git_panel_error_arms_surface_to_status() {
         size: None,
         level: 0,
         expanded: false,
+        git_status: None,
     }];
     app.file_explorer.selected = 0;
     app.handle_key(ctrl('b'));
@@ -2937,6 +2962,7 @@ fn files_and_git_panel_error_arms_surface_to_status() {
         size: None,
         level: 0,
         expanded: false,
+        git_status: None,
     }];
     app.file_explorer.selected = 0;
     app.handle_key(KeyEvent::from(KeyCode::Enter));
@@ -3032,6 +3058,7 @@ fn rename_delete_and_edit_succeed_but_refresh_fails() {
         size: None,
         level: 0,
         expanded: false,
+        git_status: None,
     }];
     app.file_explorer.selected = 0;
 
@@ -3092,6 +3119,7 @@ fn rename_delete_and_edit_succeed_but_refresh_fails() {
         size: None,
         level: 0,
         expanded: false,
+        git_status: None,
     }];
     app.file_explorer.selected = 0;
     app.handle_key(KeyEvent::from(KeyCode::Enter));
@@ -3108,6 +3136,7 @@ fn rename_delete_and_edit_succeed_but_refresh_fails() {
         size: None,
         level: 0,
         expanded: false,
+        git_status: None,
     }];
     app.file_explorer.selected = 0;
     app.handle_key(KeyEvent::from(KeyCode::Enter));
@@ -3119,4 +3148,59 @@ fn rename_delete_and_edit_succeed_but_refresh_fails() {
     app.file_explorer.root_path = std::env::temp_dir().to_string_lossy().to_string();
     app.handle_key(KeyEvent::from(KeyCode::Char('h')));
     assert!(app.error.is_some(), "go_up refresh failure surfaces");
+}
+
+#[test]
+fn content_search_keys_own_results_and_toggles_re_run() {
+    use crate::tui::panels::files::{ContentSearchChunk, ContentSearchFile, ContentSearchRow};
+
+    let client = BackendClient::builtin_session(None);
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    app.screen = TuiScreen::Files;
+
+    // Fabricate results without a server: the key flow must not hit the
+    // API for j/k, Enter-toggle, or A/X toggles with a dead endpoint...
+    // except toggles re-run the search, so use the fake server that
+    // answers content-search with an empty payload (parse-safe).
+    let (port, _stop) = fake_web_api_server(true, true, true);
+    app.web_api = WebApiClient::new("127.0.0.1", port);
+    app.file_explorer.search_mode = true;
+    app.file_explorer.search_kind = crate::tui::panels::files::SearchKind::Content;
+    app.file_explorer.filter = "needle".to_string();
+    app.file_explorer.content_search = crate::tui::panels::files::ContentSearchState {
+        query: "needle".to_string(),
+        files: vec![ContentSearchFile {
+            path: "a.txt".to_string(),
+            name: "a.txt".to_string(),
+            match_count: 1,
+            chunks: vec![ContentSearchChunk {
+                start: 1,
+                end: 1,
+                rows: vec![ContentSearchRow {
+                    line: 4,
+                    text: "hit here".to_string(),
+                    matched: true,
+                }],
+            }],
+            truncated: false,
+            first_match_line: 4,
+        }],
+        expanded: vec![true],
+        done: true,
+        ..Default::default()
+    };
+
+    // j moves over the flat rows (header + one line).
+    app.handle_key(KeyEvent::from(KeyCode::Char('j')));
+    assert_eq!(app.file_explorer.content_search.selected, 1);
+
+    // Enter on a matched line jumps: preview opens at the line. The
+    // fake server must answer file reads for this to succeed.
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.file_explorer.preview_jump_line, Some(4));
+
+    // Esc clears the results and leaves content mode.
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert!(!app.file_explorer.search_mode);
+    assert!(app.file_explorer.content_search.files.is_empty());
 }

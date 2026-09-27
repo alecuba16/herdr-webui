@@ -23,6 +23,7 @@ pub use model::{
     snapshot_summary, SidebarFocus, TuiAgent, TuiMode, TuiPane, TuiSnapshot, TuiTab, TuiWorkspace,
 };
 use model::{value_str, value_u64};
+use panels::files::{content_rows, content_search, run_content_search, ContentRow, SearchKind};
 use panels::git::{ConflictAction, ConflictResolveMode};
 use panels::{FileExplorer, GitPanel, GitView};
 pub use render::render;
@@ -197,6 +198,12 @@ pub enum PromptKind {
     /// Branches view: create a new branch from the typed name
     /// (webui `git_switch` with create: true).
     CreateBranch,
+    /// Files screen `a`: new empty file under the current root
+    /// (webui mobile new-file flow; desktop has no default key).
+    CreateFile,
+    /// Files screen `A`: new directory. No mkdir endpoint exists, so
+    /// this writes a `.gitkeep` marker inside (documented deviation).
+    CreateDirectory,
 }
 
 impl PromptKind {
@@ -234,6 +241,8 @@ impl PromptKind {
             Self::ConfirmRebase => "Rebase (y)",
             Self::GitCwd => "Git directory",
             Self::CreateBranch => "Create branch",
+            Self::CreateFile => "New file",
+            Self::CreateDirectory => "New directory",
         }
     }
 
@@ -250,6 +259,8 @@ impl PromptKind {
             Self::RebaseUpstream => "type the upstream ref, then y + Enter to rebase",
             Self::GitCwd => "type a repository path, Enter switches the git panel",
             Self::CreateBranch => "type the branch name, Enter creates and switches",
+            Self::CreateFile => "type the file name, Enter creates an empty file",
+            Self::CreateDirectory => "type the directory name, Enter creates it",
             _ => "type y then Enter to confirm, Esc cancels",
         }
     }
@@ -584,6 +595,126 @@ impl TuiApp {
                     }
                 }
             }
+            PromptKind::CreateFile => {
+                if text.trim().is_empty() {
+                    self.error = Some("type a file name".to_string());
+                } else {
+                    match self.file_explorer.create_file(&self.web_api, text.trim()) {
+                        Ok(()) => {
+                            self.status = format!("created {}", text.trim());
+                            // Webui opens the new file right away.
+                            if let Err(err) = self.file_explorer.open_preview(&self.web_api) {
+                                self.error = Some(err.to_string());
+                            }
+                        }
+                        Err(err) => self.error = Some(err.to_string()),
+                    }
+                }
+            }
+            PromptKind::CreateDirectory => {
+                if text.trim().is_empty() {
+                    self.error = Some("type a directory name".to_string());
+                } else {
+                    match self
+                        .file_explorer
+                        .create_directory(&self.web_api, text.trim())
+                    {
+                        Ok(()) => self.status = format!("created {}", text.trim()),
+                        Err(err) => self.error = Some(err.to_string()),
+                    }
+                }
+            }
+        }
+    }
+
+    /// Keys while content-search results are visible (webui results
+    /// view): j/k walk the flat rows, Enter opens the match (or toggles
+    /// a file group), `+` appends the next page, `A`/`X` flip the
+    /// match-case/regex toggles and re-run, Esc clears the results.
+    fn handle_content_search_key(&mut self, key: KeyEvent) {
+        let rows = content_rows(&self.file_explorer.content_search);
+        let len = rows.len();
+        let state = &mut self.file_explorer.content_search;
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                state.selected = move_index(state.selected, len, 1);
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                state.selected = move_index(state.selected, len, -1);
+            }
+            KeyCode::Enter => {
+                let selected = state.selected;
+                match rows.get(selected) {
+                    Some(ContentRow::File(index)) => {
+                        let index = *index;
+                        content_search::toggle_content_file(state, index);
+                    }
+                    Some(ContentRow::Line { file, line, .. }) => {
+                        let path = state.files[*file].path.clone();
+                        let line = *line;
+                        if let Err(err) =
+                            self.file_explorer
+                                .open_preview_at_line(&self.web_api, &path, line)
+                        {
+                            self.error = Some(err.to_string());
+                        } else {
+                            self.status = format!("{path}:{line}");
+                        }
+                    }
+                    None => {}
+                }
+            }
+            // Load more files (webui `loadMore`, appending at the offset).
+            KeyCode::Char('+') => {
+                let done = state.done;
+                if !done {
+                    if let Err(err) =
+                        run_content_search(&mut self.file_explorer, &self.web_api, true)
+                    {
+                        self.error = Some(err.to_string());
+                    } else {
+                        self.status = "loaded more results".to_string();
+                    }
+                } else {
+                    self.status = "no more results".to_string();
+                }
+            }
+            // Match-case toggle (webui setting `fileContentSearchMatchCase`);
+            // no default webui key: A/X are the TUI bindings, documented.
+            KeyCode::Char('A') => {
+                state.match_case = !state.match_case;
+                self.rerun_content_search();
+            }
+            // Regex toggle (webui setting `fileContentSearchRegex`).
+            KeyCode::Char('X') => {
+                state.regex = !state.regex;
+                self.rerun_content_search();
+            }
+            // Clear the results and go back to the tree.
+            KeyCode::Esc => {
+                state.clear_results();
+                self.file_explorer.search_mode = false;
+                self.file_explorer.filter.clear();
+                self.status = "content search closed".to_string();
+                if let Err(err) = self.file_explorer.refresh(&self.web_api) {
+                    self.error = Some(err.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Re-run the content search after a toggle flip (fresh, offset 0).
+    fn rerun_content_search(&mut self) {
+        match run_content_search(&mut self.file_explorer, &self.web_api, false) {
+            Ok(()) => {
+                self.status = format!(
+                    "search re-run: match-case {}, regex {}",
+                    self.file_explorer.content_search.match_case,
+                    self.file_explorer.content_search.regex
+                )
+            }
+            Err(err) => self.error = Some(err.to_string()),
         }
     }
 
@@ -1068,9 +1199,32 @@ impl TuiApp {
             if self.file_explorer.filter_active {
                 return;
             }
-            if let Err(err) = self.file_explorer.refresh(&self.web_api) {
+            // Committing the filter runs the search for the active
+            // kind: tree search refreshes entries, content search fills
+            // the grouped results (webui `runContentSearch`).
+            let result = if self.file_explorer.search_mode
+                && self.file_explorer.search_kind == SearchKind::Content
+            {
+                run_content_search(&mut self.file_explorer, &self.web_api, false)
+                    .map(|_| self.status = "content search done".to_string())
+            } else {
+                self.file_explorer
+                    .refresh(&self.web_api)
+                    .map(|_| self.status = String::new())
+            };
+            if let Err(err) = result {
                 self.error = Some(err.to_string());
             }
+            return;
+        }
+        // Content-search results own the keyboard while visible
+        // (webui results view): j/k move over the flat rows, Enter
+        // jumps/toggles, +/- page, A/X flip match-case/regex.
+        if self.file_explorer.search_mode
+            && self.file_explorer.search_kind == SearchKind::Content
+            && self.file_explorer.content_search.has_results()
+        {
+            self.handle_content_search_key(key);
             return;
         }
         match key.code {
@@ -1135,6 +1289,28 @@ impl TuiApp {
                 }
             }
             KeyCode::Char('/') => self.file_explorer.start_filter(),
+            // Cycle the filter scope (webui filter-kind toggle button):
+            // Files → Folders → Content.
+            KeyCode::Char('t') => {
+                self.file_explorer.cycle_search_kind();
+                self.status = format!("search: {}", self.file_explorer.search_kind.label());
+            }
+            // New file (webui mobile new-file flow): empty file created
+            // via `file_write` under the current root, then previewed.
+            KeyCode::Char('a') => {
+                self.prompt_input = Some(PromptInput {
+                    kind: PromptKind::CreateFile,
+                    text: String::new(),
+                });
+            }
+            // New directory: `.gitkeep` marker via `file_write` (the
+            // API has no mkdir endpoint; documented deviation).
+            KeyCode::Char('A') => {
+                self.prompt_input = Some(PromptInput {
+                    kind: PromptKind::CreateDirectory,
+                    text: String::new(),
+                });
+            }
             KeyCode::Char('e') => match self.file_explorer.start_edit() {
                 Ok(()) => self.status = "editing: Ctrl-S saves, Esc stops".to_string(),
                 Err(err) => self.error = Some(err.to_string()),

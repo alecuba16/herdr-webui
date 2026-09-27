@@ -1,9 +1,45 @@
 //! File explorer panel: tree, lazy expansion, filter, preview, edit.
+//! Content search lives in the `content_search` submodule.
+
+pub mod content_search;
 
 use serde_json::Value;
 
 use crate::tui::model::value_str;
 use crate::tui::web_api::{WebApiClient, WebApiError};
+
+pub use content_search::{
+    content_rows, run_content_search, ContentRow, ContentSearchChunk, ContentSearchFile,
+    ContentSearchRow, ContentSearchState,
+};
+
+/// Which set of things `/` searches. Webui `filterKind` cycles
+/// Files → Folders → Content → Files (`nextSearchScope`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchKind {
+    File,
+    Dir,
+    Content,
+}
+
+impl SearchKind {
+    pub fn next(self) -> Self {
+        match self {
+            Self::File => Self::Dir,
+            Self::Dir => Self::Content,
+            Self::Content => Self::File,
+        }
+    }
+
+    /// Webui `searchScopeLabel`.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::File => "Files",
+            Self::Dir => "Folders",
+            Self::Content => "Content",
+        }
+    }
+}
 
 /// File explorer state. Mirrors the WebUI file browser: lazy directory
 /// expansion, flat search results, preview pane for text files.
@@ -15,6 +51,11 @@ pub struct FileEntry {
     pub size: Option<u64>,
     pub level: usize,
     pub expanded: bool,
+    /// Git status from the tree payload's `git_status` map
+    /// ("modified"/"deleted"/"untracked"/"added"/"conflict"),
+    /// already priority-propagated to parent dirs by the server
+    /// (red > yellow > green in the webui tree).
+    pub git_status: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -43,8 +84,16 @@ pub struct FileExplorer {
     pub filter: String,
     pub filter_active: bool,
     pub search_mode: bool,
+    /// What `/` searches: files, folders, or file contents
+    /// (webui `filterKind` cycle).
+    pub search_kind: SearchKind,
+    /// Content search results (webui `HerdrContentSearch` state).
+    pub content_search: ContentSearchState,
     pub truncated: bool,
     pub status: Option<String>,
+    /// Line to scroll the preview to after a content-search jump
+    /// (1-based). Render highlights and centers on this line.
+    pub preview_jump_line: Option<usize>,
 }
 
 impl FileExplorer {
@@ -61,14 +110,29 @@ impl FileExplorer {
             filter: String::new(),
             filter_active: false,
             search_mode: false,
+            search_kind: SearchKind::File,
+            content_search: ContentSearchState::default(),
             truncated: false,
             status: None,
+            preview_jump_line: None,
         }
     }
 
     pub fn refresh(&mut self, api: &WebApiClient) -> Result<(), WebApiError> {
+        // Content search results live in `content_search` state, not the
+        // tree; nothing to fetch here (the render path shows them).
+        if self.search_mode && self.search_kind == SearchKind::Content {
+            return Ok(());
+        }
         let data = if self.search_mode && !self.filter.trim().is_empty() {
-            api.file_search(&self.cwd, &self.root_path, self.filter.trim(), 0, 200)?
+            api.file_search(
+                &self.cwd,
+                &self.root_path,
+                self.filter.trim(),
+                0,
+                200,
+                self.search_kind == SearchKind::Dir,
+            )?
         } else {
             api.file_tree(&self.cwd, &self.root_path, 0)?
         };
@@ -364,16 +428,105 @@ impl FileExplorer {
         self.filter_active = false;
         self.search_mode = !self.filter.trim().is_empty();
     }
+
+    /// Cycle the `/` search scope (webui `toggleFilterKind`:
+    /// Files → Folders → Content). Fresh scope resets results.
+    pub fn cycle_search_kind(&mut self) {
+        self.search_kind = self.search_kind.next();
+        self.content_search.clear_results();
+        if self.search_mode && self.search_kind != SearchKind::Content {
+            self.selected = 0;
+        }
+    }
+
+    /// Create a new empty file (webui mobile new-file flow): write an
+    /// empty file under the current root via `file_write`, then refresh.
+    /// The server creates parent directories as needed.
+    pub fn create_file(&mut self, api: &WebApiClient, name: &str) -> Result<(), WebApiError> {
+        let path = join_root_path(&self.root_path, name);
+        if path.is_empty() {
+            return Err(WebApiError::Io("file name is required".to_string()));
+        }
+        api.file_write_create(&self.cwd, &path, "")?;
+        self.refresh(api)?;
+        self.select_path(&path);
+        Ok(())
+    }
+
+    /// Create a new directory. The file-browser API has no mkdir
+    /// endpoint, so this writes an empty `.gitkeep` marker inside
+    /// (documented deviation: the webui has no new-directory flow at
+    /// all; the marker keeps the empty dir visible to git and the tree).
+    pub fn create_directory(&mut self, api: &WebApiClient, name: &str) -> Result<(), WebApiError> {
+        let dir = join_root_path(&self.root_path, name);
+        if dir.is_empty() {
+            return Err(WebApiError::Io("directory name is required".to_string()));
+        }
+        let marker = format!("{dir}/.gitkeep");
+        api.file_write_create(&self.cwd, &marker, "")?;
+        self.refresh(api)?;
+        Ok(())
+    }
+
+    /// Select the entry with `path` if visible (used after creating a
+    /// file so the cursor lands on it).
+    pub fn select_path(&mut self, path: &str) {
+        if let Some(index) = self.entries.iter().position(|entry| entry.path == path) {
+            self.selected = index;
+        }
+    }
+
+    /// Open `path` at `line` (1-based) in the preview, jumping the
+    /// scroll so the line is visible (content-search Enter).
+    pub fn open_preview_at_line(
+        &mut self,
+        api: &WebApiClient,
+        path: &str,
+        line: usize,
+    ) -> Result<(), WebApiError> {
+        // Same dirty-buffer guard as opening any other file.
+        if self.preview.dirty && self.preview.path.as_deref() != Some(path) {
+            return Err(WebApiError::Io(
+                "unsaved edits: save or reload before opening another file".to_string(),
+            ));
+        }
+        self.open_preview_path(api, path)?;
+        self.preview_jump_line = Some(line.max(1));
+        Ok(())
+    }
+}
+
+/// Join a typed name under the current root, stripping leading slashes
+/// (webui mobile `joinPath`).
+fn join_root_path(root: &str, name: &str) -> String {
+    let name = name.trim().trim_start_matches('/');
+    if name.is_empty() {
+        return String::new();
+    }
+    if root.is_empty() {
+        name.to_string()
+    } else {
+        format!("{}/{}", root.trim_end_matches('/'), name)
+    }
 }
 
 pub(super) fn parse_entries(data: &Value) -> Vec<FileEntry> {
+    let git_status = data.get("git_status").and_then(Value::as_object);
     data.get("entries")
         .and_then(Value::as_array)
-        .map(|items| items.iter().map(parse_entry).collect())
+        .map(|items| {
+            items
+                .iter()
+                .map(|item| parse_entry_with_status(item, git_status))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
-fn parse_entry(value: &Value) -> FileEntry {
+fn parse_entry_with_status(
+    value: &Value,
+    git_status: Option<&serde_json::Map<String, Value>>,
+) -> FileEntry {
     // The server compact single-child chains into names like `a/b/`;
     // strip the trailing slash so the tree shows a clean name and path
     // joining stays consistent.
@@ -384,13 +537,19 @@ fn parse_entry(value: &Value) -> FileEntry {
     } else {
         name
     };
+    let path = value_str(value, &["path"]).unwrap_or_default().to_string();
+    let git_status = git_status
+        .and_then(|map| map.get(&path))
+        .and_then(Value::as_str)
+        .map(str::to_string);
     FileEntry {
         name: name.to_string(),
-        path: value_str(value, &["path"]).unwrap_or_default().to_string(),
+        path,
         is_dir,
         size: value.get("size").and_then(Value::as_u64),
         level: value.get("level").and_then(Value::as_u64).unwrap_or(0) as usize,
         expanded: false,
+        git_status,
     }
 }
 
