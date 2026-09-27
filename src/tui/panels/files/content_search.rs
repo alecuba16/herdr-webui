@@ -381,5 +381,73 @@ mod tests {
         assert!(!state.expanded[0]);
         toggle_content_file(&mut state, 0);
         assert!(state.expanded[0]);
+        assert_eq!(selected_row(&state), Some(ContentRow::File(0)));
+    }
+
+    #[test]
+    fn run_content_search_empty_query_clears_without_api() {
+        let api = WebApiClient::new("127.0.0.1", 1);
+        let mut explorer = FileExplorer::new("/repo");
+        explorer.filter = "   ".to_string();
+        explorer.content_search.files.push(ContentSearchFile {
+            path: "old".into(),
+            name: "old".into(),
+            match_count: 1,
+            chunks: vec![],
+            truncated: true,
+            first_match_line: 9,
+        });
+        run_content_search(&mut explorer, &api, false).unwrap();
+        assert!(explorer.content_search.files.is_empty());
+        assert!(explorer.content_search.done);
+    }
+
+    #[test]
+    fn run_content_search_replaces_and_appends_results() {
+        use std::io::{BufRead as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = std::thread::spawn(move || {
+            for index in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+                let mut request = String::new();
+                reader.read_line(&mut request).unwrap();
+                loop {
+                    let mut header = String::new();
+                    reader.read_line(&mut header).unwrap();
+                    if header.trim().is_empty() {
+                        break;
+                    }
+                }
+                assert!(request.contains("/api/file-browser/content-search"));
+                let body = if index == 0 {
+                    json!({"files":[{"path":"a.rs","name":"a.rs","match_count":1,"matches":[{"start_line":2}],"chunks":[]}],"total_files":2,"total_matches":3,"visited":8,"truncated":true})
+                } else {
+                    assert!(request.contains("offset=1"));
+                    json!({"files":[{"path":"b.rs","name":"b.rs","match_count":2,"matches":[{"line":4}],"chunks":[]}],"truncated":false})
+                };
+                let body = body.to_string();
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+                .unwrap();
+            }
+        });
+        let api = WebApiClient::new("127.0.0.1", port);
+        let mut explorer = FileExplorer::new("/repo");
+        explorer.filter = "needle".to_string();
+        run_content_search(&mut explorer, &api, false).unwrap();
+        assert_eq!(explorer.content_search.offset, 1);
+        assert!(!explorer.content_search.done);
+        assert_eq!(explorer.content_search.total_files, 2);
+        run_content_search(&mut explorer, &api, true).unwrap();
+        handle.join().unwrap();
+        assert_eq!(explorer.content_search.files.len(), 2);
+        assert_eq!(explorer.content_search.expanded, vec![true, true]);
+        assert!(explorer.content_search.done);
     }
 }

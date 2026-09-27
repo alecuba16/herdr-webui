@@ -508,4 +508,45 @@ mod tests {
         assert!(rows.iter().any(|(keys, _)| keys.contains("Space (log)")));
         assert!(rows.iter().any(|(keys, _)| keys.contains("files: M")));
     }
+
+    #[test]
+    fn shortcut_labels_cover_workspace_and_focus_actions() {
+        for shortcut in [
+            Shortcut::NextPanel,
+            Shortcut::PrevPanel,
+            Shortcut::NewWorkspace,
+            Shortcut::OpenWorktrees,
+            Shortcut::CreateWorktree,
+            Shortcut::CloseWorkspace,
+            Shortcut::RemoveWorktree,
+            Shortcut::RenamePanel,
+            Shortcut::RenameWorkspace,
+            Shortcut::GitCwdPicker,
+            Shortcut::Settings,
+            Shortcut::Sidebar,
+            Shortcut::FocusNext,
+            Shortcut::FocusPrev,
+            Shortcut::TempTerminalToggle,
+            Shortcut::TempTerminalPromote,
+        ] {
+            assert!(!shortcut.label().is_empty());
+        }
+    }
+
+    #[test]
+    fn prefix_maps_workspace_worktree_and_cwd_shortcuts() {
+        let cases = [
+            (key('w'), Shortcut::OpenWorktrees),
+            (KeyEvent::from(KeyCode::Delete), Shortcut::RemoveWorktree),
+            (KeyEvent::from(KeyCode::Backspace), Shortcut::RemoveWorktree),
+            (shift_key('s'), Shortcut::RenameWorkspace),
+            (KeyEvent::from(KeyCode::Char('I')), Shortcut::GitCwdPicker),
+        ];
+
+        for (event, shortcut) in cases {
+            let mut prefix = PrefixState::new();
+            prefix.feed(ctrl('b'));
+            assert_eq!(prefix.feed(event), Some(shortcut));
+        }
+    }
 }

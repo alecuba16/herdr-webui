@@ -198,7 +198,48 @@ mod tests {
         assert!(explorer.preview.dirty);
         explorer.editor_replace("Y", true).unwrap();
         assert_eq!(explorer.preview.content, "X two Y");
-        // Ranges re-ran against the new content.
         assert!(explorer.editor_find.ranges.is_empty());
+    }
+
+    #[test]
+    fn clear_and_limit_edges_are_covered() {
+        let mut find = EditorFind {
+            active: true,
+            query: "x".to_string(),
+            match_case: true,
+            regex: false,
+            ranges: vec![(0, 1)],
+            selected: 5,
+        };
+        find.clear();
+        assert!(!find.active);
+        assert!(find.ranges.is_empty());
+        assert_eq!(find.selected, 0);
+
+        let haystack = "a".repeat(MAX_FIND_MATCHES + 5);
+        let ranges = find_ranges(&haystack, "a", false, false);
+        assert_eq!(ranges.len(), MAX_FIND_MATCHES);
+    }
+
+    #[test]
+    fn file_explorer_find_mutators_and_replace_errors() {
+        let mut explorer = FileExplorer::new("/repo");
+        explorer.preview.content = "abc abc".to_string();
+        explorer.editor_find_open();
+        assert!(explorer.editor_find.active);
+        explorer.push_find_char('a');
+        explorer.push_find_char('b');
+        assert_eq!(explorer.editor_find.ranges, vec![(0, 2), (4, 6)]);
+        explorer.pop_find_char();
+        assert_eq!(explorer.editor_find.query, "a");
+        explorer.editor_find_next(true);
+        assert_eq!(explorer.edit_cursor, 4);
+        explorer.editor_find.query = "missing".to_string();
+        explorer.refresh_find();
+        explorer.editor_find_next(true);
+        let err = explorer.editor_replace("x", false).unwrap_err();
+        assert!(err.to_string().contains("no find matches"));
+        explorer.editor_find_close();
+        assert!(!explorer.editor_find.active);
     }
 }

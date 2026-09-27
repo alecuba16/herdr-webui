@@ -45,6 +45,47 @@ fn preview(content: &str) -> FilePreview {
     }
 }
 
+fn one_shot_json_server<F>(handler: F) -> (WebApiClient, std::thread::JoinHandle<()>)
+where
+    F: FnOnce(String, String) -> serde_json::Value + Send + 'static,
+{
+    use std::io::{BufRead as _, Read as _, Write as _};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let handle = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+        let mut request = String::new();
+        reader.read_line(&mut request).unwrap();
+        let mut content_length = 0usize;
+        loop {
+            let mut header = String::new();
+            reader.read_line(&mut header).unwrap();
+            let trimmed = header.trim();
+            if trimmed.is_empty() {
+                break;
+            }
+            if let Some(value) = trimmed.to_ascii_lowercase().strip_prefix("content-length:") {
+                content_length = value.trim().parse().unwrap();
+            }
+        }
+        let mut body = vec![0; content_length];
+        if content_length > 0 {
+            reader.read_exact(&mut body).unwrap();
+        }
+        let response = handler(request, String::from_utf8(body).unwrap());
+        let body = response.to_string();
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .unwrap();
+    });
+    (WebApiClient::new("127.0.0.1", port), handle)
+}
+
 #[test]
 fn parse_blame_authors_covers_header_edges() {
     // Normal header + author.
@@ -1497,6 +1538,98 @@ fn log_compare_selection_orders_by_log_position() {
 }
 
 #[test]
+fn file_api_workflows_cover_create_save_reveal_and_open_line() {
+    let (api, handle) = one_shot_json_server(|request, body| {
+        assert!(request.starts_with("POST /api/file-browser/file "));
+        let body: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(body["path"], "src/new.rs");
+        assert_eq!(body["create_parents"], true);
+        json!({"ok": true})
+    });
+    let mut explorer = FileExplorer::new("/repo");
+    explorer.root_path = "src".to_string();
+    let err = explorer.create_file(&api, "new.rs").unwrap_err();
+    assert!(err.to_string().contains("webui connection failed"));
+    handle.join().unwrap();
+
+    explorer.entries.push(FileEntry {
+        name: "new.rs".to_string(),
+        path: "src/new.rs".to_string(),
+        is_dir: false,
+        size: None,
+        level: 0,
+        expanded: false,
+        git_status: None,
+    });
+    explorer.select_path("src/new.rs");
+    assert_eq!(explorer.selected, 0);
+
+    let (api, handle) = one_shot_json_server(|request, body| {
+        assert!(request.starts_with("POST /api/file-browser/file "));
+        let body: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(body["expected_hash"], "old-hash");
+        json!({"hash": "new-hash"})
+    });
+    explorer.preview = FilePreview {
+        path: Some("src/new.rs".to_string()),
+        content: "changed".to_string(),
+        truncated: false,
+        binary: false,
+        hash: "old-hash".to_string(),
+        dirty: true,
+    };
+    explorer.save_preview(&api).unwrap();
+    handle.join().unwrap();
+    assert_eq!(explorer.preview.hash, "new-hash");
+    assert!(!explorer.preview.dirty);
+
+    let (api, handle) = one_shot_json_server(|request, _| {
+        assert!(request.starts_with("GET /api/file-browser/file?cwd=%2Frepo&path=src%2Fnew.rs "));
+        json!({"content": "a\nb", "hash": "h2"})
+    });
+    explorer
+        .open_preview_at_line(&api, "src/new.rs", 0)
+        .unwrap();
+    handle.join().unwrap();
+    assert_eq!(explorer.preview_jump_line, Some(1));
+}
+
+#[test]
+fn reveal_path_covers_compacted_and_error_branches() {
+    let mut explorer = FileExplorer::new("/repo");
+    let api = WebApiClient::new("127.0.0.1", 1);
+    assert!(explorer.reveal_path(&api, "").is_err());
+    explorer.entries = vec![
+        FileEntry {
+            name: "nested/deep".to_string(),
+            path: "nested/deep".to_string(),
+            is_dir: true,
+            size: None,
+            level: 0,
+            expanded: true,
+            git_status: None,
+        },
+        FileEntry {
+            name: "file.rs".to_string(),
+            path: "nested/deep/file.rs".to_string(),
+            is_dir: false,
+            size: None,
+            level: 1,
+            expanded: false,
+            git_status: None,
+        },
+    ];
+    explorer.reveal_path(&api, "nested/deep/file.rs").unwrap();
+    assert_eq!(explorer.selected, 1);
+    let err = explorer.reveal_path(&api, "missing/file.rs").unwrap_err();
+    assert!(err.to_string().contains("missing is not in the tree"));
+    let err = explorer
+        .reveal_path(&api, "nested/deep/absent.rs")
+        .unwrap_err();
+    assert!(err.to_string().contains("not found"));
+}
+
+#[test]
 fn markdown_outline_parses_headings_and_skips_fences() {
     use crate::tui::panels::files::parse_markdown_outline;
     let content = "# Title\n\ntext\n\n## Section\n\n```rust\n# not a heading\n```\n\n### Deep\n\n####### seven hashes skipped\nplain text\n";
@@ -1515,7 +1648,184 @@ fn markdown_outline_parses_headings_and_skips_fences() {
 }
 
 #[test]
-fn markdown_outline_toggle_requires_markdown_preview() {
+fn git_log_history_and_actions_cover_http_success_paths() {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::sync::mpsc::Receiver;
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tx, rx): (_, Receiver<(String, String)>) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { break };
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut request = String::new();
+            if reader.read_line(&mut request).unwrap_or(0) == 0 {
+                continue;
+            }
+            let mut len = 0usize;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                    break;
+                }
+                if let Some(value) = line.strip_prefix("Content-Length: ") {
+                    len = value.trim().parse().unwrap_or(0);
+                }
+            }
+            let mut bytes = vec![0; len];
+            if len > 0 {
+                reader.read_exact(&mut bytes).unwrap();
+            }
+            let target = request.split(' ').nth(1).unwrap_or_default().to_string();
+            tx.send((target.clone(), String::from_utf8_lossy(&bytes).to_string()))
+                .ok();
+            let body = if target.starts_with("/api/git-ui/log") {
+                json!({"commits":[{"hash":"new","message":"n","author":"a","date":"d","labels":["main"]},{"hash":"old","message":"o","author":"b","date":"d","labels":[]}],"has_more":true})
+            } else if target.starts_with("/api/git-ui/file-history") {
+                json!({"commits":[{"hash":"hist","message":"h","author":"a","date":"d","labels":[]}]})
+            } else if target.starts_with("/api/git-ui/compare") {
+                json!({"files":[{"path":"src/lib.rs","chunks":[{"header":"@@ -1 +1 @@","lines":[{"line_type":"add","content":"new","new_line_number":1}]}]}]})
+            } else {
+                json!({"ok":true})
+            };
+            let text = body.to_string();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                text.len(),
+                text
+            )
+            .unwrap();
+        }
+    });
+    let api = WebApiClient::new("127.0.0.1", port);
+    let mut panel = GitPanel::new("/repo");
+    panel.log_scope = LogScope::All;
+    panel.log_file = Some("src/lib.rs".to_string());
+    panel.commit_selected = 99;
+    panel.refresh_log(&api).unwrap();
+    let (target, _) = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+    assert!(target.contains("all=true"));
+    assert!(target.contains("file=src%2Flib.rs"));
+    assert_eq!(panel.commit_selected, 1);
+    assert!(panel.log_has_more);
+
+    panel.files = vec![GitFileEntry {
+        path: "src/lib.rs".to_string(),
+        status: GitFileStatus::Unstaged,
+    }];
+    panel.diff_lines = vec!["stale".to_string()];
+    panel.diff_meta = vec![None];
+    panel.refresh_history(&api).unwrap();
+    assert!(rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap()
+        .0
+        .contains("file-history"));
+    assert_eq!(panel.history_file.as_deref(), Some("src/lib.rs"));
+    assert!(panel.diff_lines.is_empty());
+    panel.load_commit_diff(&api, "hist").unwrap();
+    let (target, _) = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+    assert!(target.contains("base=hist%5E"));
+    assert_eq!(panel.diff_title, "hist · src/lib.rs");
+    panel.log_compare_parent(&api, "new").unwrap();
+    assert!(rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap()
+        .0
+        .contains("target=new"));
+
+    panel.log_tag(&api, "v1").unwrap();
+    let (_, body) = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap()["ref_name"],
+        "hist"
+    );
+    panel.log_reset(&api, "hard").unwrap();
+    let (_, body) = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap()["confirmation"],
+        "reset hard"
+    );
+    panel.log_rebase(&api, "origin/main").unwrap();
+    let (_, body) = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap()["upstream"],
+        "origin/main"
+    );
+}
+
+#[test]
+fn git_conflict_cleanup_stash_and_parse_edges() {
+    let api = WebApiClient::new("127.0.0.1", 1);
+    let mut panel = GitPanel::new("/repo");
+    assert!(panel
+        .refresh_log(&api)
+        .unwrap_err()
+        .to_string()
+        .contains("webui connection failed"));
+    panel.refresh_history(&api).unwrap();
+    assert!(panel.commits.is_empty());
+    assert!(panel
+        .cleanup_prune(&api)
+        .unwrap_err()
+        .to_string()
+        .contains("no cleanup item"));
+    assert!(panel.stash_apply(&api).is_err());
+    assert!(panel.stash_drop(&api).is_err());
+    assert_eq!(ConflictResolveMode::MarkResolved.label(), "mark resolved");
+    assert_eq!(ConflictResolveMode::Parent.label(), "use parent");
+    assert_eq!(CleanupItemKind::Branch.label(), "branch");
+    assert_eq!(CleanupItemKind::Worktree.label(), "worktree");
+    let commit = parse_commit(&json!({}));
+    assert!(commit.hash.is_empty());
+    let branch = parse_branch(&json!({}));
+    assert!(branch.name.is_empty());
+    let stash = super::git::parse_stash(&json!({}));
+    assert!(stash.name.is_empty());
+    panel.diff_lines = vec!["Alpha".to_string()];
+    panel.start_diff_search();
+    panel.push_diff_search_char('z');
+    assert_eq!(panel.diff_search_active_line(), None);
+}
+
+#[test]
+fn git_simple_refreshers_parse_success_payloads() {
+    let (api, handle) = one_shot_json_server(|request, _| {
+        assert!(request.starts_with("GET /api/git-ui/conflicts?cwd=%2Frepo "));
+        json!({"files":["a.txt","b.txt"],"merge":true,"rebase":false})
+    });
+    let mut panel = GitPanel::new("/repo");
+    panel.conflict_selected = 99;
+    panel.refresh_conflicts(&api).unwrap();
+    handle.join().unwrap();
+    assert_eq!(panel.selected_conflict().map(String::as_str), Some("b.txt"));
+    assert!(panel.merge_in_progress);
+    assert!(!panel.rebase_in_progress);
+
+    let (api, handle) = one_shot_json_server(|request, _| {
+        assert!(request.starts_with("GET /api/git-ui/cleanup-scan?root=%2Froot "));
+        json!({"repos":[{"path":"/repo","branches":[{"name":"gone","current":false}],"worktrees":[{"path":"/wt","primary":false}]}]})
+    });
+    panel.cleanup_scan(&api, "/root").unwrap();
+    handle.join().unwrap();
+    assert_eq!(panel.cleanup_root.as_deref(), Some("/root"));
+    assert_eq!(panel.cleanup_items().len(), 2);
+
+    let (api, handle) = one_shot_json_server(|request, _| {
+        assert!(request.starts_with("GET /api/git-ui/stashes?cwd=%2Frepo "));
+        json!({"stashes":[{"name":"stash@{0}","message":"wip"}]})
+    });
+    panel.stash_selected = 99;
+    panel.refresh_stashes(&api).unwrap();
+    handle.join().unwrap();
+    assert_eq!(panel.stash_selected, 0);
+    assert_eq!(panel.stashes[0].message, "wip");
+}
+
+#[test]
+fn file_explorer_markdown_outline_toggles_only_for_markdown_preview() {
     let mut explorer = crate::tui::panels::files::FileExplorer::new("/repo");
     // No preview open: refused.
     assert_eq!(explorer.toggle_markdown_outline(), None);

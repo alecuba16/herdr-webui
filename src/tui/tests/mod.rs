@@ -3615,3 +3615,123 @@ fn promote_without_temp_terminal_reports_error_via_shortcut() {
     app.handle_key(KeyEvent::new(KeyCode::Char('P'), KeyModifiers::SHIFT));
     assert_eq!(app.error.as_deref(), Some("no temporary terminal open"));
 }
+
+#[test]
+fn renders_content_search_results_conflicts_cleanup_and_prompt_subjects() {
+    let mut app = app_with_snapshot();
+    app.screen = TuiScreen::Files;
+    app.file_explorer.search_mode = true;
+    app.file_explorer.search_kind = crate::tui::panels::files::SearchKind::Content;
+    app.file_explorer.content_search = crate::tui::panels::files::ContentSearchState {
+        query: "Needle".to_string(),
+        match_case: true,
+        regex: true,
+        files: vec![crate::tui::panels::files::ContentSearchFile {
+            path: "src/search.rs".to_string(),
+            name: "search.rs".to_string(),
+            match_count: 2,
+            chunks: vec![crate::tui::panels::files::ContentSearchChunk {
+                start: 7,
+                end: 8,
+                rows: vec![
+                    crate::tui::panels::files::ContentSearchRow {
+                        line: 7,
+                        text: "before".to_string(),
+                        matched: false,
+                    },
+                    crate::tui::panels::files::ContentSearchRow {
+                        line: 8,
+                        text: "Needle found".to_string(),
+                        matched: true,
+                    },
+                ],
+            }],
+            truncated: true,
+            first_match_line: 8,
+        }],
+        expanded: vec![true],
+        offset: 1,
+        done: false,
+        total_files: 1,
+        total_matches: 2,
+        visited: 11,
+        truncated: true,
+        selected: 2,
+    };
+    let rendered = draw(&app, 220, 30);
+    assert!(rendered.contains("Search Content"));
+    assert!(rendered.contains("Needle"));
+    assert!(rendered.contains("searched 11 files"));
+    assert!(rendered.contains("stopped at limit"));
+    assert!(rendered.contains("stopped at limit"));
+    assert!(rendered.contains("src/search.rs"));
+    assert!(rendered.contains("Needle found"));
+
+    app.file_explorer.content_search.files.clear();
+    app.file_explorer.content_search.expanded.clear();
+    assert!(draw(&app, 220, 30).contains("No content matches."));
+
+    app.screen = TuiScreen::Git;
+    app.git_panel.view = GitView::Conflicts;
+    app.git_panel.conflict_files = vec!["src/lib.rs".to_string()];
+    app.git_panel.rebase_in_progress = true;
+    let conflicts = draw(&app, 150, 30);
+    assert!(conflicts.contains("rebase in progress"));
+    assert!(conflicts.contains("src/lib.rs"));
+    app.git_panel.rebase_in_progress = false;
+    app.git_panel.merge_in_progress = true;
+    assert!(draw(&app, 150, 30).contains("merge in progress"));
+    app.git_panel.merge_in_progress = false;
+    assert!(draw(&app, 150, 30).contains("no merge/rebase in progress"));
+
+    app.git_panel.view = GitView::Cleanup;
+    app.git_panel.cleanup_root = Some("/repo".to_string());
+    app.git_panel.cleanup_repos = vec![crate::tui::panels::git::CleanupRepo {
+        path: "/repo".to_string(),
+        branches: vec!["old-branch".to_string()],
+        worktrees: vec!["stale-worktree".to_string()],
+    }];
+    let cleanup = draw(&app, 150, 30);
+    assert!(cleanup.contains("Cleanup"));
+    assert!(cleanup.contains("old-branch"));
+    assert!(cleanup.contains("stale-worktree"));
+
+    app.git_panel.commits = vec![GitCommitEntry {
+        hash: "abcdef123456".to_string(),
+        message: "subject line".to_string(),
+        author: "Ada".to_string(),
+        date: "today".to_string(),
+        labels: vec![],
+    }];
+    for kind in [
+        PromptKind::CreateTag,
+        PromptKind::ResetMode,
+        PromptKind::ConfirmResetHard,
+        PromptKind::RebaseUpstream,
+        PromptKind::ConfirmRebase,
+    ] {
+        app.prompt_input = Some(PromptInput::new(kind));
+        let prompt = draw(&app, 150, 30);
+        assert!(prompt.contains("abcdef1"));
+        assert!(prompt.contains("subject line"));
+    }
+
+    app.prompt_input = Some(PromptInput::new(PromptKind::GitCwd));
+    app.git_panel.cwd = "/repo/sub".to_string();
+    assert!(draw(&app, 150, 30).contains("/repo/sub"));
+
+    app.prompt_input = Some(PromptInput::new(PromptKind::CreateFile));
+    app.file_explorer.root_path.clear();
+    assert!(draw(&app, 150, 30).contains("(workspace root)"));
+    app.prompt_input = Some(PromptInput::new(PromptKind::CreateDirectory));
+    app.file_explorer.root_path = "/repo/src".to_string();
+    assert!(draw(&app, 150, 30).contains("/repo/src"));
+
+    app.prompt_input = Some(PromptInput::new(PromptKind::ReplaceInFile));
+    app.file_explorer.editor_find.query = "needle".to_string();
+    app.file_explorer.editor_find.ranges.clear();
+    assert!(draw(&app, 150, 30).contains("find: needle (no matches)"));
+    app.file_explorer.editor_find.ranges = vec![(0, 6), (10, 16)];
+    app.file_explorer.editor_find.selected = 1;
+    assert!(draw(&app, 150, 30).contains("find: needle (match 2/2)"));
+}

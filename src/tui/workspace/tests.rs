@@ -305,3 +305,158 @@ fn temp_terminal_toggle_reuses_existing_temp_tab_without_backend_calls() {
         "agent selection moved to the temp pane (first in the agents list)"
     );
 }
+
+fn workspace_fake_socket() -> (std::path::PathBuf, std::sync::mpsc::Sender<()>) {
+    use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+    use interprocess::TryClone as _;
+    use std::io::{BufRead, BufReader, Write};
+
+    let path = std::env::temp_dir().join(format!(
+        "herdr-workspace-fake-{}-{}.sock",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+    ));
+    let _ = std::fs::remove_file(&path);
+    let listener = ListenerOptions::new()
+        .name(path.clone().to_fs_name::<GenericFilePath>().unwrap())
+        .try_overwrite(true)
+        .create_sync()
+        .unwrap();
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let handle = std::thread::spawn(move || loop {
+        if rx.try_recv().is_ok() {
+            break;
+        }
+        let Ok(mut stream) = listener.accept() else {
+            break;
+        };
+        let mut line = String::new();
+        {
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                continue;
+            }
+        }
+        let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let id = request["id"].clone();
+        let response = match request["method"].as_str().unwrap_or("") {
+            "ping" => json!({"id": id, "result": {"version": "test", "protocol": 1}}),
+            "session.snapshot" => json!({"id": id, "result": workspace_snapshot()}),
+            "workspace.create" => {
+                json!({"id": id, "result": {"workspace": {"workspace_id": "ws_2"}}})
+            }
+            "workspace.close" | "workspace.rename" | "tab.rename" | "worktree.remove"
+            | "worktree.create" | "tab.promote" => json!({"id": id, "result": {"ok": true}}),
+            "worktree.list" => {
+                json!({"id": id, "result": {"worktrees": [{"path": "/repo", "branch": "main"}]}})
+            }
+            "tab.create" => json!({"id": id, "result": {"tab": {"tab_id": "tab_t"}}}),
+            method => json!({"id": id, "error": format!("unexpected method {method}")}),
+        };
+        stream
+            .write_all(serde_json::to_string(&response).unwrap().as_bytes())
+            .unwrap();
+        stream.write_all(b"\n").unwrap();
+        stream.flush().unwrap();
+    });
+    std::mem::forget(handle);
+    (path, tx)
+}
+
+fn app_with_fake_backend() -> (TuiApp, std::sync::mpsc::Sender<()>) {
+    let (api_socket, stop) = workspace_fake_socket();
+    let client = BackendClient::new(api_socket.clone(), api_socket);
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    app.snapshot = crate::tui::model::TuiSnapshot::from_backend_response(&workspace_snapshot());
+    (app, stop)
+}
+
+#[test]
+fn workspace_actions_validate_empty_inputs_and_missing_selection() {
+    let mut app = app_with_snapshot(workspace_snapshot());
+    assert_eq!(
+        app.create_workspace("  ").unwrap_err(),
+        "type a directory path"
+    );
+    assert_eq!(
+        app.rename_workspace("  ").unwrap_err(),
+        "type a workspace name"
+    );
+    assert_eq!(app.rename_panel("  ").unwrap_err(), "type a panel name");
+    assert_eq!(
+        app.create_worktree("branch", "  ").unwrap_err(),
+        "type branch and checkout path"
+    );
+
+    app.selected_workspace = 99;
+    assert_eq!(app.close_workspace().unwrap_err(), "no workspace selected");
+    assert_eq!(
+        app.rename_workspace("name").unwrap_err(),
+        "no workspace selected"
+    );
+    assert_eq!(app.rename_panel("panel").unwrap_err(), "no active panel");
+    assert_eq!(app.remove_worktree().unwrap_err(), "no workspace selected");
+    assert_eq!(
+        app.worktree_list().unwrap_err(),
+        "no workspace folder selected"
+    );
+    assert_eq!(
+        app.create_worktree("branch", "/tmp/path").unwrap_err(),
+        "no workspace folder selected"
+    );
+}
+
+#[test]
+fn workspace_backend_actions_succeed_against_fake_socket() {
+    let (mut app, _stop) = app_with_fake_backend();
+
+    assert_eq!(
+        app.create_workspace(" /new ").unwrap(),
+        "workspace created: /new"
+    );
+    assert_eq!(app.selected_workspace, 1);
+    assert_eq!(
+        app.rename_workspace(" Docs ").unwrap(),
+        "workspace renamed to Docs"
+    );
+    assert_eq!(
+        app.rename_panel(" Build ").unwrap(),
+        "panel renamed to Build"
+    );
+    assert_eq!(app.worktree_list().unwrap(), "worktrees: 1 in /docs");
+    assert_eq!(
+        app.create_worktree(" feature ", " /checkout ").unwrap(),
+        "worktree created: feature -> /checkout"
+    );
+    assert_eq!(app.remove_worktree().unwrap(), "worktree removed");
+    assert_eq!(app.close_workspace().unwrap(), "workspace closed");
+}
+
+#[test]
+fn temp_terminal_backend_paths_create_and_promote() {
+    let (mut app, _stop) = app_with_fake_backend();
+    app.snapshot
+        .workspaces
+        .retain(|workspace| workspace.label != "temp");
+
+    assert_eq!(
+        app.temp_terminal_toggle().unwrap(),
+        "temporary terminal ready: Enter attaches"
+    );
+
+    app.snapshot.tabs.push(crate::tui::model::TuiTab {
+        id: "tab_t".to_string(),
+        workspace_id: "ws_1".to_string(),
+        label: "temp".to_string(),
+        focused: false,
+        pane_count: 1,
+        agent_status: "idle".to_string(),
+    });
+    assert_eq!(
+        app.temp_terminal_promote().unwrap(),
+        "temporary terminal promoted"
+    );
+}

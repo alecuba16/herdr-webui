@@ -220,6 +220,22 @@ mod tests {
         assert_eq!(default.teal, Color::Rgb(148, 226, 213));
     }
 
+    #[test]
+    fn theme_cycle_labels_and_env_restore_some_value() {
+        assert_eq!(TuiTheme::System.next(), TuiTheme::Dark);
+        assert_eq!(TuiTheme::Dark.next(), TuiTheme::Light);
+        assert_eq!(TuiTheme::Light.next(), TuiTheme::System);
+        assert_eq!(TuiTheme::System.label(), "system");
+        assert_eq!(TuiTheme::Dark.label(), "dark");
+        assert_eq!(TuiTheme::Light.label(), "light");
+
+        let _guard = env_lock().lock().unwrap();
+        let original = std::env::var_os("HERDR_WEBUI_TUI_THEME");
+        restore_env_var("HERDR_WEBUI_TUI_THEME", Some("dark".into()));
+        assert_eq!(std::env::var("HERDR_WEBUI_TUI_THEME").unwrap(), "dark");
+        restore_env_var("HERDR_WEBUI_TUI_THEME", original);
+    }
+
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
