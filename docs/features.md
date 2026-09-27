@@ -98,7 +98,7 @@ Terminal UI:
 - Terminal rendering understands common ANSI rewrites and SGR styling. Jcode progress/status lines that rewrite the same terminal row stay on that row, and ANSI foreground/background colors plus bold, dim, italic, and underline render in the TUI.
 - TUI theme modes match the Jcode branch shape: `--theme dark`, `--theme light`, or `--theme system`. `system` is the default and means terminal-driven colors; the TUI queries the terminal background with OSC 11 through `terminal-colorsaurus` before raw mode, falls back to dark when detection is unavailable, and also accepts `HERDR_WEBUI_TUI_THEME` or `JCODE_THEME`.
 - WebUI and TUI may run at the same time against the same built-in backend session. Output fans out through separate terminal attaches. Avoid sending input to the same pane from both clients at once because the PTY receives both streams in arrival order.
-- Remaining TUI gaps versus the WebUI: layout mutation, split editor panes and multi-tab previews (Tab cycling approximates tabs), copy/search scrollback, mouse/touch, configurable keymaps, and notification integrations. Markdown previews stay raw source.
+- Remaining TUI gaps versus the WebUI: layout mutation, split editor panes and multi-tab previews (Tab cycling approximates tabs), copy/search scrollback, mouse/touch, configurable keymaps, notification integrations, and the temporary-terminal overlay (webui `Shift+M`/`Shift+P` has no TUI equivalent; see `docs/tui-parity-plan.md` gap 8 for the full shortcut audit). Markdown previews stay raw source.
 
 Notifications and attention sounds:
 

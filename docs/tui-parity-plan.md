@@ -54,6 +54,12 @@ Panel/workspace management:
 6. No settings screen; no shortcut help overlay parity for the new keys.
 7. No "close last panel closes workspace" guard parity (webui closes workspace
    via `workspace.close` when the last tab is closed).
+8. No webui `sidebar` (KeyB; the TUI sidebar is always visible, `Tab`
+   toggles list focus), `focusNext`/`focusPrev` (`.`/`,`, a mouse-era
+   focus walker with no keyboard-only equivalent), or temporary
+   terminal overlay shortcuts `tempTerminalToggle`/`tempTerminalPromote`
+   (Shift+M/Shift+P; the temporary-terminal overlay has no TUI
+   representation, documented as a desktop-only flow).
 
 Git management gaps:
 
