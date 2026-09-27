@@ -529,3 +529,46 @@ fn round3_temp_terminal_promote_missing_refreshed_pane_keeps_selection() {
     assert_eq!(app.selected_workspace, 0);
     assert_eq!(app.selected_agent, 0);
 }
+
+#[test]
+fn round4_workspace_temp_empty_ids_and_create_path_backend_error() {
+    let mut app = app_with_snapshot(json!({
+        "type": "session_snapshot",
+        "snapshot": {
+            "workspaces": [{"workspace_id":"ws_1","label":"Repo","cwd":"/repo","focused":true,"agent_status":"idle","pane_count":1,"tab_count":1,"active_tab_id":"tab_1"}],
+            "tabs": [], "panes": [], "agents": []
+        }
+    }));
+    app.worktree_create_stage = Some(WorktreeCreateStage::Branch("feat".to_string()));
+    run_prompt(
+        &mut app,
+        &WorkspacePrompt::CreateWorktreePath,
+        " /checkout ",
+    );
+    assert!(app.error.is_some());
+
+    let mut app = app_with_snapshot(json!({
+        "type": "session_snapshot",
+        "snapshot": {
+            "workspaces": [{"workspace_id":"","label":"temp","cwd":"/repo","focused":true,"agent_status":"idle","pane_count":0,"tab_count":0}],
+            "tabs": [], "panes": [], "agents": []
+        }
+    }));
+    assert_eq!(
+        app.temp_terminal_toggle().unwrap_err(),
+        "could not create the temp workspace"
+    );
+
+    let mut app = app_with_snapshot(json!({
+        "type": "session_snapshot",
+        "snapshot": {
+            "workspaces": [{"workspace_id":"ws_t","label":"temp","cwd":"/repo","focused":true,"agent_status":"idle","pane_count":0,"tab_count":1}],
+            "tabs": [{"tab_id":"","workspace_id":"ws_t","label":"temp","focused":true,"pane_count":0,"agent_status":"idle"}],
+            "panes": [], "agents": []
+        }
+    }));
+    assert_eq!(
+        app.temp_terminal_toggle().unwrap_err(),
+        "could not create the temp tab"
+    );
+}

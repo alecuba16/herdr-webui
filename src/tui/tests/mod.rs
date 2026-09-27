@@ -4716,3 +4716,222 @@ fn round3_specific_tui_edges_and_shortcuts() {
     assert!(app.error.is_some());
     assert!(!app.should_quit());
 }
+
+#[test]
+fn round4_commit_modal_typing_clear_submit_and_log_prompts() {
+    let mut app = app_with_snapshot();
+    app.screen = TuiScreen::Git;
+    app.mode = TuiMode::Attach;
+    app.git_panel.view = GitView::Changes;
+    app.commit_input = Some(CommitInput {
+        text: String::new(),
+        amend: false,
+    });
+
+    for ch in "hello".chars() {
+        app.handle_key(KeyEvent::from(KeyCode::Char(ch)));
+    }
+    assert_eq!(app.commit_input.as_ref().unwrap().text, "hello");
+    app.handle_key(KeyEvent::from(KeyCode::Backspace));
+    assert_eq!(app.commit_input.as_ref().unwrap().text, "hell");
+    app.handle_key(KeyEvent::from(KeyCode::Left));
+    app.handle_key(KeyEvent::from(KeyCode::Right));
+    assert_eq!(app.commit_input.as_ref().unwrap().text, "hell");
+    app.handle_key(ctrl('u'));
+    assert_eq!(app.commit_input.as_ref().unwrap().text, "");
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.commit_input.is_none());
+    assert_eq!(app.error.as_deref(), Some("commit message is empty"));
+
+    app.error = None;
+    app.commit_input = Some(CommitInput {
+        text: "ship it".to_string(),
+        amend: true,
+    });
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.commit_input.is_none());
+    assert!(
+        app.error
+            .as_deref()
+            .is_some_and(|err| err.contains("webui connection failed")),
+        "dead commit API error is surfaced: {:?}",
+        app.error
+    );
+
+    app.commit_input = Some(CommitInput {
+        text: "cancel me".to_string(),
+        amend: false,
+    });
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert!(app.commit_input.is_none());
+
+    app.git_panel.view = GitView::Log;
+    app.git_panel.commits = vec![GitCommitEntry {
+        hash: "abc123".to_string(),
+        message: "msg".to_string(),
+        author: "me".to_string(),
+        date: String::new(),
+        labels: vec![],
+    }];
+    app.git_panel.commit_selected = 0;
+    app.error = None;
+    app.handle_key(KeyEvent::from(KeyCode::Char('t')));
+    assert_eq!(
+        app.prompt_input.as_ref().unwrap().kind,
+        PromptKind::CreateTag
+    );
+    assert_eq!(app.status, PromptKind::CreateTag.title());
+    app.prompt_input = None;
+    app.handle_key(KeyEvent::from(KeyCode::Char('R')));
+    assert_eq!(
+        app.prompt_input.as_ref().unwrap().kind,
+        PromptKind::ResetMode
+    );
+    assert_eq!(app.status, PromptKind::ResetMode.title());
+
+    app.prompt_input = None;
+    app.git_panel.commits.clear();
+    app.error = None;
+    app.handle_key(KeyEvent::from(KeyCode::Char('t')));
+    assert_eq!(app.error.as_deref(), Some("no commit selected"));
+    app.error = None;
+    app.handle_key(KeyEvent::from(KeyCode::Char('R')));
+    assert_eq!(app.error.as_deref(), Some("no commit selected"));
+}
+
+#[test]
+fn round4_render_small_area_diff_and_status_variants() {
+    let mut app = app_with_snapshot();
+    let backend = TestBackend::new(0, 0);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+
+    app.screen = TuiScreen::Terminal;
+    app.snapshot.workspaces[0].active_tab_id = Some("not-active".to_string());
+    let backend = TestBackend::new(90, 18);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+    let rendered = format!("{:?}", terminal.backend().buffer());
+    assert!(rendered.contains("Shell"));
+
+    app.screen = TuiScreen::Git;
+    app.git_panel.view = GitView::Changes;
+    app.git_panel.diff_title = "src/app.rs".to_string();
+    app.git_panel.diff_search_active = true;
+    app.git_panel.diff_search_query = "absent".to_string();
+    app.git_panel.diff_search_matches.clear();
+    app.git_panel.diff_lines = vec![
+        "@@ -1 +1 @@".to_string(),
+        "-old".to_string(),
+        "+new".to_string(),
+    ];
+    app.git_panel.diff_meta = vec![None, None, None];
+    app.git_panel.diff_hunk_selected = 0;
+    let backend = TestBackend::new(100, 24);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+    let rendered = format!("{:?}", terminal.backend().buffer());
+    assert!(rendered.contains("Diff"));
+    assert!(rendered.contains("0/0"));
+
+    app.snapshot.agents = vec![
+        crate::tui::model::TuiAgent {
+            pane_id: "p1".to_string(),
+            terminal_id: "t1".to_string(),
+            workspace_id: "ws_1".to_string(),
+            tab_id: "tab_1".to_string(),
+            agent: Some("jcode".to_string()),
+            display_agent: Some("jcode".to_string()),
+            title: None,
+            status: "working".to_string(),
+            cwd: "/repo".to_string(),
+            focused: false,
+        },
+        crate::tui::model::TuiAgent {
+            pane_id: "p2".to_string(),
+            terminal_id: "t2".to_string(),
+            workspace_id: "ws_1".to_string(),
+            tab_id: "tab_1".to_string(),
+            agent: Some("shell".to_string()),
+            display_agent: Some("shell".to_string()),
+            title: None,
+            status: "blocked".to_string(),
+            cwd: "/repo".to_string(),
+            focused: false,
+        },
+    ];
+    let backend = TestBackend::new(100, 20);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+    let rendered = format!("{:?}", terminal.backend().buffer());
+    assert!(rendered.contains("jcode"));
+    assert!(rendered.contains("shell"));
+}
+
+#[test]
+fn final_round_prompt_titles_options_and_refresh_error_arms() {
+    assert_eq!(
+        PromptKind::ConfirmCleanupDelete.title(),
+        "Delete cleanup item (y)"
+    );
+    assert_eq!(
+        PromptKind::CreateTag.hint(),
+        "type the tag name, Enter tags the selected commit"
+    );
+    assert_eq!(
+        PromptKind::ResetMode.hint(),
+        "type soft, mixed or hard, Enter resets"
+    );
+    assert_eq!(
+        PromptKind::RebaseUpstream.hint(),
+        "type the upstream ref, then y + Enter to rebase"
+    );
+    assert_eq!(
+        PromptKind::GitCwd.hint(),
+        "type a repository path, Enter switches the git panel"
+    );
+    assert_eq!(
+        PromptKind::CreateBranch.hint(),
+        "type the branch name, Enter creates and switches"
+    );
+    assert_eq!(
+        PromptKind::CreateFile.hint(),
+        "type the file name, Enter creates an empty file"
+    );
+    assert_eq!(
+        PromptKind::CreateDirectory.hint(),
+        "type the directory name, Enter creates it"
+    );
+    assert_eq!(
+        PromptKind::ReplaceInFile.hint(),
+        "type the replacement, Enter replaces the current match (! = all)"
+    );
+
+    let dead_options = TuiOptions {
+        api_socket: Some(std::path::PathBuf::from("/nonexistent.sock")),
+        terminal_socket: Some(std::path::PathBuf::from("/nonexistent-terminal.sock")),
+        ..TuiOptions::default()
+    };
+    let mut app = TuiApp::new_with_options(
+        build_client(&dead_options),
+        Duration::from_secs(0),
+        TuiTheme::Dark,
+        WebApiClient::new("127.0.0.1", 1),
+    );
+    app.snapshot = fixture_snapshot();
+    app.refresh_if_due();
+    assert!(app.error.as_deref().is_some_and(|err| !err.is_empty()));
+
+    let builtin_options = TuiOptions::default();
+    let mut app = TuiApp::new_with_options(
+        build_client(&builtin_options),
+        Duration::from_secs(60),
+        TuiTheme::Dark,
+        WebApiClient::new("127.0.0.1", 1),
+    );
+    app.snapshot = fixture_snapshot();
+    app.status = "before".to_string();
+    app.last_refresh = Some(Instant::now());
+    app.refresh_if_due();
+    assert_eq!(app.status, "before", "not-due refresh skips the backend");
+}

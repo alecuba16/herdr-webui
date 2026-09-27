@@ -1181,4 +1181,60 @@ mod tests {
             .contains("invalid WebUI API response"));
         handle.join().unwrap();
     }
+
+    #[test]
+    fn round4_http_json_errors_resets_and_conflict_resolve_post() {
+        assert_eq!(
+            WebApiError::Api("server said no".to_string()).to_string(),
+            "server said no"
+        );
+
+        let (port, handle) = raw_http_server(|mut s| {
+            write_response(
+                &mut s,
+                "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: 23\r\n\r\n{\"error\":\"boom failed\"}",
+            );
+        });
+        let client = WebApiClient::new("127.0.0.1", port);
+        let err = client.get("/api/fail").unwrap_err();
+        assert_eq!(err.to_string(), "WebUI API error 500: boom failed");
+        handle.join().unwrap();
+
+        let (port, handle) = raw_http_server(|mut s| {
+            write_response(
+                &mut s,
+                "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: 7\r\n\r\nnotjson",
+            );
+        });
+        let client = WebApiClient::new("127.0.0.1", port);
+        let err = client.get("/api/bad-error").unwrap_err();
+        assert!(
+            err.to_string().contains("invalid WebUI API response"),
+            "malformed json error body fails while parsing response: {err}"
+        );
+        handle.join().unwrap();
+
+        let (port, handle) = raw_http_server(|s| {
+            let _ = s.shutdown(std::net::Shutdown::Both);
+        });
+        let client = WebApiClient::new("127.0.0.1", port);
+        assert!(client
+            .get("/api/reset")
+            .unwrap_err()
+            .to_string()
+            .contains("webui connection failed"));
+        handle.join().unwrap();
+
+        let (port, handle) = raw_http_server(|mut s| {
+            write_response(&mut s, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}")
+        });
+        let client = WebApiClient::new("127.0.0.1", port);
+        assert_eq!(
+            client
+                .git_conflict_resolve("/repo", "a.rs", "ours")
+                .unwrap(),
+            json!({})
+        );
+        handle.join().unwrap();
+    }
 }
