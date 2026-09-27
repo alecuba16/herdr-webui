@@ -66,8 +66,7 @@ fn parse_blame_authors_covers_header_edges() {
         parse_blame_authors("0123456789abcdef0123456789abcdef01234567 5 7x 1\nauthor Eve\n");
     assert_eq!(authors.get(&7).map(String::as_str), Some("Eve"));
     // A 40-hex header with only one number column is not accepted.
-    let authors =
-        parse_blame_authors("0123456789abcdef0123456789abcdef01234567 9\nauthor Frank\n");
+    let authors = parse_blame_authors("0123456789abcdef0123456789abcdef01234567 9\nauthor Frank\n");
     assert!(authors.is_empty());
     // A header whose final column starts with a non-digit keeps the
     // previous final line instead of resetting it.
@@ -524,7 +523,8 @@ fn blame_parser_maps_final_lines_to_authors() {
 fn blame_parser_ignores_non_header_lines() {
     // Author lines without a preceding header, and content lines
     // that look like hex, must not corrupt the mapping.
-    let text = "author Nobody\n\tsome content\n0123456789abcdef0123456789abcdef0123456789 not numbers\n";
+    let text =
+        "author Nobody\n\tsome content\n0123456789abcdef0123456789abcdef0123456789 not numbers\n";
     let authors = parse_blame_authors(text);
     assert!(authors.is_empty());
 }

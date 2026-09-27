@@ -89,6 +89,16 @@ pub enum Shortcut {
     GitFileHistory,
     GitChangesBack,
     GitBlame,
+    // Workspace/panel management (WebUI DEFAULT_WEBUI_SHORTCUTS parity).
+    NextPanel,
+    PrevPanel,
+    NewWorkspace,
+    OpenWorktrees,
+    CreateWorktree,
+    CloseWorkspace,
+    RemoveWorktree,
+    RenamePanel,
+    RenameWorkspace,
 }
 
 impl Shortcut {
@@ -124,6 +134,15 @@ impl Shortcut {
             Self::GitFileHistory => "file history",
             Self::GitChangesBack => "back to changes",
             Self::GitBlame => "toggle blame",
+            Self::NextPanel => "next panel",
+            Self::PrevPanel => "previous panel",
+            Self::NewWorkspace => "new workspace",
+            Self::OpenWorktrees => "worktree list",
+            Self::CreateWorktree => "create worktree",
+            Self::CloseWorkspace => "close workspace",
+            Self::RemoveWorktree => "remove worktree",
+            Self::RenamePanel => "rename panel",
+            Self::RenameWorkspace => "rename workspace",
         }
     }
 }
@@ -131,8 +150,12 @@ impl Shortcut {
 /// Resolve a key pressed while the prefix is armed. Shift-sensitivity mirrors
 /// the WebUI map (for example `Shift+X` vs `X`).
 pub fn shortcut_for_key(key: KeyEvent) -> Option<Shortcut> {
-    let shifted = key.modifiers.contains(KeyModifiers::SHIFT);
     let code = key.code;
+    // Terminals send Shift+letter as an uppercase Char with the SHIFT
+    // modifier, but synthetic events may carry the uppercase Char alone;
+    // treat both as shifted so the map stays case-driven.
+    let shifted = key.modifiers.contains(KeyModifiers::SHIFT)
+        || matches!(code, KeyCode::Char(ch) if ch.is_ascii_uppercase());
     match (code, shifted) {
         (KeyCode::Char('?'), _) => Some(Shortcut::Help),
         (KeyCode::Char('/'), _) => Some(Shortcut::Search),
@@ -145,10 +168,13 @@ pub fn shortcut_for_key(key: KeyEvent) -> Option<Shortcut> {
         (KeyCode::Char('k'), false) => Some(Shortcut::PrevWorkspace),
         (KeyCode::Char('a'), false) => Some(Shortcut::NextAgent),
         (KeyCode::Char('A'), true) => Some(Shortcut::PrevAgent),
-        (KeyCode::Char('p'), false) => Some(Shortcut::Git),
+        // Webui newPanel: KeyP. The old `p` => Git was redundant with `g`.
+        (KeyCode::Char('p'), false) => Some(Shortcut::NewTab),
         (KeyCode::Char('P'), true) => Some(Shortcut::GitPush),
-        (KeyCode::Char('n'), false) => Some(Shortcut::NewTab),
+        // Webui newWorkspace: KeyN.
+        (KeyCode::Char('n') | KeyCode::Char('N'), false) => Some(Shortcut::NewWorkspace),
         (KeyCode::Char('x'), false) => Some(Shortcut::CloseTab),
+        (KeyCode::Char('X'), true) => Some(Shortcut::CloseWorkspace),
         (KeyCode::Char('q'), false) => Some(Shortcut::Quit),
         (KeyCode::Char('1'), false) => Some(Shortcut::GitChanges),
         (KeyCode::Char('2'), false) => Some(Shortcut::GitCommit),
@@ -176,6 +202,18 @@ pub fn shortcut_for_key(key: KeyEvent) -> Option<Shortcut> {
         (KeyCode::Char('o') | KeyCode::Char('O'), false) => Some(Shortcut::GitChangesBack),
         (KeyCode::Char('m') | KeyCode::Char('M'), false) => Some(Shortcut::GitBlame),
         (KeyCode::Enter, _) => Some(Shortcut::GitCommit),
+        // Webui DEFAULT_WEBUI_SHORTCUTS parity: BracketRight/BracketLeft
+        // walk panels, W opens the worktree list, Shift+T creates a
+        // worktree (plain `t` stays the terminal screen), Shift+X closes
+        // the workspace, Delete/Backspace removes a linked worktree, and
+        // Shift+S renames the workspace (no webui default; panels rename
+        // via their visible menu, mirrored later).
+        (KeyCode::Char(']'), _) => Some(Shortcut::NextPanel),
+        (KeyCode::Char('['), _) => Some(Shortcut::PrevPanel),
+        (KeyCode::Char('w') | KeyCode::Char('W'), false) => Some(Shortcut::OpenWorktrees),
+        (KeyCode::Char('T'), true) => Some(Shortcut::CreateWorktree),
+        (KeyCode::Delete | KeyCode::Backspace, _) => Some(Shortcut::RemoveWorktree),
+        (KeyCode::Char('S'), true) => Some(Shortcut::RenameWorkspace),
         _ => None,
     }
 }
@@ -190,14 +228,21 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
         ("Tab", "toggle workspace/agent list"),
         ("", ""),
         ("Ctrl+B f", "files explorer"),
-        ("Ctrl+B g/p", "git panel"),
+        ("Ctrl+B g", "git panel"),
         ("Ctrl+B t", "terminal view"),
         ("Ctrl+B /", "search/filter in panel"),
         ("Ctrl+B ?", "help"),
         ("Ctrl+B r", "refresh"),
         ("Ctrl+B j/k", "next/prev workspace"),
         ("Ctrl+B a/A", "next/prev agent"),
-        ("Ctrl+B n/x", "new/close tab"),
+        ("Ctrl+B p/x", "new/close tab"),
+        ("Ctrl+B ]/[", "next/prev panel in workspace"),
+        ("Ctrl+B n", "new workspace (type a path)"),
+        ("Ctrl+B Shift+S", "rename workspace"),
+        ("Ctrl+B Shift+X", "close workspace (y confirms)"),
+        ("Ctrl+B w", "list worktrees of workspace folder"),
+        ("Ctrl+B Shift+T", "create worktree (branch, then path)"),
+        ("Ctrl+B Del", "remove linked worktree"),
         ("Ctrl+B q", "quit"),
         ("", ""),
         ("Ctrl+B 1", "git: changes"),

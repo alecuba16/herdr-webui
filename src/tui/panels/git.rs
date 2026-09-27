@@ -594,7 +594,9 @@ pub(super) fn parse_blame_authors(text: &str) -> HashMap<usize, String> {
 /// with `line_type`/`content`) into display lines plus line-number
 /// metadata parallel to them (`None` for chunk headers). Chunk headers
 /// keep their `@@` prefix so the renderer colors them teal.
-pub(super) fn parse_diff_lines_with_meta(data: &Value) -> (Vec<String>, Vec<Option<GitDiffLineMeta>>) {
+pub(super) fn parse_diff_lines_with_meta(
+    data: &Value,
+) -> (Vec<String>, Vec<Option<GitDiffLineMeta>>) {
     let mut out = Vec::new();
     let mut meta = Vec::new();
     let Some(files) = data.get("files").and_then(Value::as_array) else {
@@ -721,5 +723,3 @@ pub(super) fn parse_stash(value: &Value) -> GitStashEntry {
             .to_string(),
     }
 }
-
-

@@ -4,11 +4,11 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Frame;
 
-use crate::tui::{SidebarFocus, TuiApp, TuiMode, TuiScreen};
 use crate::tui::keys::help_rows;
 use crate::tui::panels::GitView;
 use crate::tui::terminal::styled_terminal_line;
 use crate::tui::theme::Palette;
+use crate::tui::{SidebarFocus, TuiApp, TuiMode, TuiScreen};
 
 const SPINNERS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const MAX_DIFF_LINES: usize = 400;
@@ -32,7 +32,7 @@ pub fn render(frame: &mut Frame<'_>, app: &TuiApp) {
     }
     render_footer(frame, footer, app, p);
     if app.mode == TuiMode::Help {
-        render_help(frame, area, p);
+        render_help(frame, area, p, app.help_scroll);
     }
     if app.commit_input.is_some() {
         render_commit_input(frame, area, app, p);
@@ -890,6 +890,33 @@ fn render_prompt_input(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
             .get(app.git_panel.stash_selected)
             .map(|entry| entry.name.clone())
             .unwrap_or_default(),
+        crate::tui::PromptKind::NewWorkspace
+        | crate::tui::PromptKind::CreateWorktreeBranch
+        | crate::tui::PromptKind::CreateWorktreePath => String::new(),
+        crate::tui::PromptKind::RenameWorkspace => app
+            .selected_workspace()
+            .map(|workspace| workspace.label.clone())
+            .unwrap_or_default(),
+        crate::tui::PromptKind::RenamePanel => app
+            .snapshot
+            .workspace_tabs(
+                &app.selected_workspace()
+                    .map(|ws| ws.id.clone())
+                    .unwrap_or_default(),
+            )
+            .into_iter()
+            .find(|tab| {
+                Some(&tab.id)
+                    == app
+                        .selected_workspace()
+                        .and_then(|ws| ws.active_tab_id.as_ref())
+            })
+            .map(|tab| tab.label.clone())
+            .unwrap_or_default(),
+        crate::tui::PromptKind::ConfirmCloseWorkspace => app
+            .selected_workspace()
+            .map(|workspace| workspace.label.clone())
+            .unwrap_or_default(),
     };
     let title = format!(" {} ", prompt.kind.title());
     let lines = vec![
@@ -1005,10 +1032,10 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
     );
 }
 
-fn render_help(frame: &mut Frame<'_>, area: Rect, p: &Palette) {
+fn render_help(frame: &mut Frame<'_>, area: Rect, p: &Palette, scroll: usize) {
     let rows = help_rows();
     let width = area.width.min(72);
-    let height = area.height.min((rows.len() as u16 + 4).min(30));
+    let height = area.height.min((rows.len() as u16 + 4).min(50));
     let rect = Rect::new(
         area.x + area.width.saturating_sub(width) / 2,
         area.y + area.height.saturating_sub(height) / 2,
@@ -1031,8 +1058,9 @@ fn render_help(frame: &mut Frame<'_>, area: Rect, p: &Palette) {
     }
     frame.render_widget(
         Paragraph::new(lines)
-            .block(panel(" Help · Esc closes ", p))
-            .style(Style::default().fg(p.text).bg(p.panel_bg)),
+            .block(panel(" Help · Esc closes · j/k scrolls ", p))
+            .style(Style::default().fg(p.text).bg(p.panel_bg))
+            .scroll((scroll as u16, 0)),
         rect,
     );
 }

@@ -30,8 +30,33 @@ use theme::Palette;
 pub use theme::TuiTheme;
 use web_api::WebApiClient;
 
+impl PromptKind {
+    /// Map the workspace-management prompt kinds onto the workspace
+    /// module's own enum. File/git kinds never reach this conversion.
+    pub(crate) fn into_workspace_prompt(self) -> workspace::WorkspacePrompt {
+        match self {
+            Self::NewWorkspace => workspace::WorkspacePrompt::NewWorkspace,
+            Self::RenameWorkspace => workspace::WorkspacePrompt::RenameWorkspace,
+            Self::RenamePanel => workspace::WorkspacePrompt::RenamePanel,
+            Self::CreateWorktreeBranch => workspace::WorkspacePrompt::CreateWorktreeBranch,
+            Self::CreateWorktreePath => workspace::WorkspacePrompt::CreateWorktreePath,
+            Self::ConfirmCloseWorkspace => workspace::WorkspacePrompt::ConfirmCloseWorkspace,
+            // File/git kinds have no workspace counterpart; map to the
+            // harmless no-op closest to their intent.
+            _ => workspace::WorkspacePrompt::ConfirmCloseWorkspace,
+        }
+    }
+}
+
 const TAIL_LINES: usize = 240;
 const TERMINAL_RAW_BUFFER_BYTES: usize = 512 * 1024;
+
+/// Max lines the Help overlay can scroll down: total rows minus whatever
+/// fits in the 50-line centered box (title + border included).
+fn help_max_scroll() -> usize {
+    let rows = crate::tui::keys::help_rows().len();
+    rows.saturating_sub(50usize.saturating_sub(4).saturating_sub(1))
+}
 
 /// Which main screen the TUI shows. Mirrors the WebUI workspace shell modes
 /// (terminal, Git, Files) so the same workspace can be inspected from both
@@ -102,6 +127,10 @@ pub struct TuiApp {
     pub theme: TuiTheme,
     pub(crate) palette: Palette,
     pub tick: u64,
+    /// Two-step worktree creation: branch typed first, then checkout path.
+    pub worktree_create_stage: Option<workspace::WorktreeCreateStage>,
+    /// Vertical scroll of the Help overlay (j/k when help is open).
+    pub help_scroll: usize,
     dirty: bool,
 }
 
@@ -121,18 +150,39 @@ pub struct PromptInput {
     pub text: String,
 }
 
+impl PromptInput {
+    pub fn new(kind: PromptKind) -> Self {
+        Self {
+            kind,
+            text: String::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptKind {
     RenameFile,
     ConfirmDeleteFile,
     ConfirmDeleteBranch,
     ConfirmDropStash,
+    NewWorkspace,
+    RenameWorkspace,
+    RenamePanel,
+    CreateWorktreeBranch,
+    CreateWorktreePath,
+    ConfirmCloseWorkspace,
 }
 
 impl PromptKind {
     /// Destructive prompts only submit when the typed text is exactly `y`.
     pub fn needs_confirm(self) -> bool {
-        !matches!(self, Self::RenameFile)
+        matches!(
+            self,
+            Self::ConfirmDeleteFile
+                | Self::ConfirmDeleteBranch
+                | Self::ConfirmDropStash
+                | Self::ConfirmCloseWorkspace
+        )
     }
 
     pub fn title(self) -> &'static str {
@@ -141,6 +191,12 @@ impl PromptKind {
             Self::ConfirmDeleteFile => "Delete file",
             Self::ConfirmDeleteBranch => "Delete branch",
             Self::ConfirmDropStash => "Drop stash",
+            Self::NewWorkspace => "New workspace path",
+            Self::RenameWorkspace => "Rename workspace",
+            Self::RenamePanel => "Rename panel",
+            Self::CreateWorktreeBranch => "Create worktree: branch",
+            Self::CreateWorktreePath => "Create worktree: checkout path",
+            Self::ConfirmCloseWorkspace => "Close workspace (y)",
         }
     }
 
@@ -148,6 +204,10 @@ impl PromptKind {
     pub fn hint(self) -> &'static str {
         match self {
             Self::RenameFile => "type the new name, Enter renames",
+            Self::NewWorkspace => "type a directory path, Enter opens it",
+            Self::RenameWorkspace | Self::RenamePanel => "type the new name, Enter renames",
+            Self::CreateWorktreeBranch => "type the branch name, Enter continues",
+            Self::CreateWorktreePath => "type the checkout path, Enter creates",
             _ => "type y then Enter to confirm, Esc cancels",
         }
     }
@@ -203,6 +263,8 @@ impl TuiApp {
             theme,
             palette: Palette::for_theme(theme),
             tick: 0,
+            worktree_create_stage: None,
+            help_scroll: 0,
             dirty: true,
         }
     }
@@ -271,7 +333,14 @@ impl TuiApp {
         match self.mode {
             TuiMode::Help => match key.code {
                 KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => {
-                    self.mode = TuiMode::Navigate
+                    self.mode = TuiMode::Navigate;
+                    self.help_scroll = 0;
+                }
+                KeyCode::Char('j') | KeyCode::Down | KeyCode::PageDown => {
+                    self.help_scroll = self.help_scroll.saturating_add(1).min(help_max_scroll());
+                }
+                KeyCode::Char('k') | KeyCode::Up | KeyCode::PageUp => {
+                    self.help_scroll = self.help_scroll.saturating_sub(1);
                 }
                 _ => {}
             },
@@ -375,6 +444,15 @@ impl TuiApp {
                 Ok(_) => self.status = "stash dropped".to_string(),
                 Err(err) => self.error = Some(err.to_string()),
             },
+            PromptKind::NewWorkspace
+            | PromptKind::RenameWorkspace
+            | PromptKind::RenamePanel
+            | PromptKind::CreateWorktreeBranch
+            | PromptKind::CreateWorktreePath
+            | PromptKind::ConfirmCloseWorkspace => {
+                let kind = kind.into_workspace_prompt();
+                workspace::run_prompt(self, &kind, text);
+            }
         }
     }
 
@@ -413,7 +491,10 @@ impl TuiApp {
 
     fn run_shortcut(&mut self, shortcut: Shortcut) {
         match shortcut {
-            Shortcut::Help => self.mode = TuiMode::Help,
+            Shortcut::Help => {
+                self.mode = TuiMode::Help;
+                self.help_scroll = 0;
+            }
             Shortcut::Files => self.open_files_screen(),
             Shortcut::Git => self.open_git_screen(),
             Shortcut::Terminal => self.screen = TuiScreen::Terminal,
@@ -436,6 +517,43 @@ impl TuiApp {
             }
             Shortcut::NewTab => self.create_tab(),
             Shortcut::CloseTab => self.close_selected_tab(),
+            Shortcut::NextPanel => {
+                let result = self.move_panel(1);
+                self.workspace_status(result);
+            }
+            Shortcut::PrevPanel => {
+                let result = self.move_panel(-1);
+                self.workspace_status(result);
+            }
+            Shortcut::NewWorkspace => {
+                self.prompt_input = Some(PromptInput::new(PromptKind::NewWorkspace));
+                self.status = PromptKind::NewWorkspace.title().to_string();
+            }
+            Shortcut::OpenWorktrees => {
+                let result = self.worktree_list();
+                self.workspace_status(result);
+            }
+            Shortcut::CreateWorktree => {
+                self.worktree_create_stage = None;
+                self.prompt_input = Some(PromptInput::new(PromptKind::CreateWorktreeBranch));
+                self.status = PromptKind::CreateWorktreeBranch.title().to_string();
+            }
+            Shortcut::CloseWorkspace => {
+                self.prompt_input = Some(PromptInput::new(PromptKind::ConfirmCloseWorkspace));
+                self.status = PromptKind::ConfirmCloseWorkspace.title().to_string();
+            }
+            Shortcut::RemoveWorktree => {
+                let result = self.remove_worktree();
+                self.workspace_status(result);
+            }
+            Shortcut::RenamePanel => {
+                self.prompt_input = Some(PromptInput::new(PromptKind::RenamePanel));
+                self.status = PromptKind::RenamePanel.title().to_string();
+            }
+            Shortcut::RenameWorkspace => {
+                self.prompt_input = Some(PromptInput::new(PromptKind::RenameWorkspace));
+                self.status = PromptKind::RenameWorkspace.title().to_string();
+            }
             Shortcut::Quit => self.status = "quit".to_string(),
             Shortcut::GitChanges => {
                 self.open_git_screen();
@@ -636,7 +754,10 @@ impl TuiApp {
 
     fn run_git_action(
         &mut self,
-        action: impl FnOnce(&mut GitPanel, &WebApiClient) -> Result<(), crate::tui::web_api::WebApiError>,
+        action: impl FnOnce(
+            &mut GitPanel,
+            &WebApiClient,
+        ) -> Result<(), crate::tui::web_api::WebApiError>,
     ) {
         self.open_git_screen();
         self.git_panel.view = GitView::Changes;

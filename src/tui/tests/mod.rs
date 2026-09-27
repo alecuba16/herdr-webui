@@ -437,7 +437,7 @@ fn files_screen_delete_requires_typed_y_confirmation() {
 
 #[test]
 fn git_branches_delete_blocked_for_current_branch_and_confirmed_for_others() {
-     use crate::tui::panels::GitBranchEntry;
+    use crate::tui::panels::GitBranchEntry;
     let client = BackendClient::builtin_session(None);
     let mut app = TuiApp::new(client, Duration::from_secs(1));
     app.screen = TuiScreen::Git;
@@ -480,7 +480,7 @@ fn git_branches_delete_blocked_for_current_branch_and_confirmed_for_others() {
 
 #[test]
 fn git_stash_view_d_opens_drop_confirmation() {
-     use crate::tui::panels::GitStashEntry;
+    use crate::tui::panels::GitStashEntry;
     let client = BackendClient::builtin_session(None);
     let mut app = TuiApp::new(client, Duration::from_secs(1));
     app.screen = TuiScreen::Git;
@@ -1130,9 +1130,13 @@ fn renders_prompt_commit_help_and_modes() {
     // Help overlay.
     app.commit_input = None;
     app.mode = TuiMode::Help;
-    let help = draw(&app, 100, 28);
+    let help = draw(&app, 100, 50);
     assert!(help.contains("Ctrl+B"), "help lists prefix rows");
     assert!(help.contains("toggle blame"), "help lists blame");
+    assert!(
+        help.contains("create worktree"),
+        "help lists workspace rows"
+    );
     app.mode = TuiMode::Navigate;
 
     // Attach mode on the Terminal screen renders the detach hint bar.
@@ -1327,7 +1331,7 @@ fn shortcut_dispatch_covers_every_arm() {
     // NewTab/CloseTab dispatch: against a real backend these mutate the
     // session, so only assert the arms run without panic. Quit status arm.
     app.handle_key(ctrl_b);
-    app.handle_key(KeyEvent::from(KeyCode::Char('n')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('p')));
     app.handle_key(ctrl_b);
     app.handle_key(KeyEvent::from(KeyCode::Char('x')));
 
@@ -1928,7 +1932,7 @@ fn prefix_e_from_git_changes_opens_file_edit_and_tab_arms_error() {
     // NewTab/CloseTab with no workspace selected: error arms.
     app.snapshot.workspaces.clear();
     app.handle_key(ctrl_b);
-    app.handle_key(KeyEvent::from(KeyCode::Char('n')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('p')));
     assert_eq!(app.error.as_deref(), Some("no workspace selected"));
     app.error = None;
     app.handle_key(ctrl_b);
@@ -2145,7 +2149,7 @@ fn tab_create_and_close_shortcuts_hit_the_backend() {
     // NewTab creates a tab, then refresh() replaces the status with the
     // backend summary (proof the refresh after create succeeded).
     app.handle_key(ctrl_b);
-    app.handle_key(KeyEvent::from(KeyCode::Char('n')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('p')));
     assert_eq!(
         app.status, "backend test · protocol 1 · 1 workspaces · 1 agents",
         "create tab must refresh against the fake backend"
@@ -2171,7 +2175,7 @@ fn tab_create_and_close_shortcuts_hit_the_backend() {
         app.snapshot = fixture_snapshot();
         let ctrl_b = ctrl('b');
         app.handle_key(ctrl_b);
-        app.handle_key(KeyEvent::from(KeyCode::Char('n')));
+        app.handle_key(KeyEvent::from(KeyCode::Char('p')));
         assert!(
             app.error.is_some(),
             "create tab against a dead socket errors"
@@ -2781,7 +2785,7 @@ fn tab_shortcut_refresh_errors_surface_after_backend_create_and_close() {
     // Budget 1 answers exactly the tab.create request; the refresh that
     // follows hits the closed stream and its error surfaces.
     app.handle_key(ctrl('b'));
-    app.handle_key(KeyEvent::from(KeyCode::Char('n')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('p')));
     assert_eq!(app.status, "tab created", "create still succeeds");
     assert!(
         app.error.as_deref().is_some_and(|e| !e.is_empty()),

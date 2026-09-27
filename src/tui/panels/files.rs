@@ -401,4 +401,3 @@ pub(super) fn move_index(current: usize, len: usize, delta: isize) -> usize {
     let current = current.min(len - 1) as isize;
     (current + delta).clamp(0, len as isize - 1) as usize
 }
-

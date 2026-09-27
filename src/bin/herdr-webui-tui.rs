@@ -10,11 +10,11 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use herdr_webui::backend_client::{BackendClient, TerminalEvent, TerminalOutput};
+use herdr_webui::tui::web_api::WebApiClient;
 use herdr_webui::tui::{
     build_client, is_menu_key, key_to_terminal_bytes, render, snapshot_summary, TuiApp, TuiMode,
     TuiOptions, TuiScreen,
 };
-use herdr_webui::tui::web_api::WebApiClient;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
