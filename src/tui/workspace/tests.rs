@@ -460,3 +460,21 @@ fn temp_terminal_backend_paths_create_and_promote() {
         "temporary terminal promoted"
     );
 }
+
+#[test]
+fn workspace_prompt_status_and_no_selection_edges() {
+    let mut app = app_with_snapshot(workspace_snapshot());
+    app.workspace_status(Ok("fine".to_string()));
+    assert_eq!(app.status, "fine");
+    app.workspace_status(Err("bad".to_string()));
+    assert_eq!(app.error.as_deref(), Some("bad"));
+
+    super::run_prompt(&mut app, &WorkspacePrompt::CreateWorktreePath, "/tmp/wt");
+    assert_ne!(app.status, "worktree created: feature -> /tmp/wt");
+
+    let mut empty = app_with_snapshot(json!({
+        "type":"session_snapshot",
+        "snapshot":{"workspaces":[],"tabs":[],"panes":[],"agents":[]}
+    }));
+    assert_eq!(empty.move_panel(1).unwrap_err(), "no workspace selected");
+}

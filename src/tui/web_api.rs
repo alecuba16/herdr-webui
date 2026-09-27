@@ -1118,4 +1118,67 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn http_error_extracts_payload_and_request_helpers_cover_cleanup_routes() {
+        let (port, handle) = raw_http_server(|mut s| {
+            write_response(
+                &mut s,
+                "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: 22\r\n\r\n{\"error\":\"bad things\"}",
+            );
+        });
+        let client = WebApiClient::new("127.0.0.1", port);
+        let err = client.git_cleanup_scan("/root dir").unwrap_err();
+        assert_eq!(err.to_string(), "WebUI API error 500: bad things");
+        handle.join().unwrap();
+
+        let (port, handle) = raw_http_server(|mut s| {
+            write_response(
+                &mut s,
+                "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}",
+            );
+        });
+        let client = WebApiClient::new("127.0.0.1", port);
+        let err = client
+            .git_cleanup_branch_delete("/repo", "old")
+            .unwrap_err();
+        assert_eq!(err.to_string(), "WebUI API error 404");
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn request_json_rejects_malformed_status_truncated_body_and_bad_json() {
+        let (port, handle) = raw_http_server(|mut s| {
+            write_response(&mut s, "NOTHTTP\r\n\r\n{}");
+        });
+        let client = WebApiClient::new("127.0.0.1", port);
+        let err = client.get("/bad").unwrap_err();
+        assert!(err.to_string().contains("malformed status line"));
+        handle.join().unwrap();
+
+        let (port, handle) = raw_http_server(|mut s| {
+            write_response(&mut s, "HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nshort");
+        });
+        let client = WebApiClient::new("127.0.0.1", port);
+        assert!(client
+            .get("/short")
+            .unwrap_err()
+            .to_string()
+            .contains("failed"));
+        handle.join().unwrap();
+
+        let (port, handle) = raw_http_server(|mut s| {
+            write_response(
+                &mut s,
+                "HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nnot json",
+            );
+        });
+        let client = WebApiClient::new("127.0.0.1", port);
+        assert!(client
+            .get("/json")
+            .unwrap_err()
+            .to_string()
+            .contains("invalid WebUI API response"));
+        handle.join().unwrap();
+    }
 }

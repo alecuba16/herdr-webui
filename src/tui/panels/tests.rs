@@ -1846,3 +1846,96 @@ fn file_explorer_markdown_outline_toggles_only_for_markdown_preview() {
     explorer.edit_active = true;
     assert_eq!(explorer.toggle_markdown_outline(), None);
 }
+
+#[test]
+fn file_refresh_content_mode_and_navigation_edges() {
+    let api = WebApiClient::new("127.0.0.1", 1);
+    let mut explorer = FileExplorer::new("/repo");
+    explorer.search_mode = true;
+    explorer.search_kind = crate::tui::SearchKind::Content;
+    explorer.refresh(&api).unwrap();
+    assert!(explorer.entries.is_empty());
+
+    explorer.entries = vec![FileEntry {
+        path: "dir".to_string(),
+        name: "dir".to_string(),
+        is_dir: true,
+        level: 0,
+        expanded: false,
+        git_status: None,
+        size: None,
+    }];
+    assert!(explorer.enter_directory());
+    assert_eq!(explorer.root_path, "dir");
+    assert!(explorer.go_up());
+    assert_eq!(explorer.root_path, "");
+    assert!(!explorer.go_up());
+}
+
+#[test]
+fn cleanup_delete_and_prune_use_cleanup_routes() {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::sync::mpsc;
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tx, rx) = mpsc::channel();
+    let handle = std::thread::spawn(move || {
+        for _ in 0..7 {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut request = String::new();
+            reader.read_line(&mut request).unwrap();
+            let mut length = 0usize;
+            loop {
+                let mut header = String::new();
+                reader.read_line(&mut header).unwrap();
+                if header == "\r\n" {
+                    break;
+                }
+                if let Some(value) = header.strip_prefix("Content-Length: ") {
+                    length = value.trim().parse().unwrap();
+                }
+            }
+            let mut body = vec![0; length];
+            if length > 0 {
+                reader.read_exact(&mut body).unwrap();
+            }
+            tx.send((request.clone(), String::from_utf8(body).unwrap()))
+                .ok();
+            let text = if request.starts_with("GET /api/git-ui/cleanup-scan") {
+                json!({"repos":[{"path":"/repo","branches":[{"name":"old","current":false}],"worktrees":[{"path":"/wt","primary":false,"prunable":true}]}]}).to_string()
+            } else {
+                json!({"ok":true}).to_string()
+            };
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                text.len(),
+                text
+            );
+        }
+    });
+
+    let api = WebApiClient::new("127.0.0.1", port);
+    let mut panel = GitPanel::new("/repo");
+    panel.cleanup_scan(&api, "/root").unwrap();
+    let branch = panel.cleanup_items()[0].clone();
+    panel.cleanup_delete(&api, &branch).unwrap();
+    let worktree = panel.cleanup_items()[1].clone();
+    panel.cleanup_delete(&api, &worktree).unwrap();
+    panel.cleanup_selected = 1;
+    panel.cleanup_prune(&api).unwrap();
+
+    let seen: Vec<_> = (0..7).map(|_| rx.recv().unwrap()).collect();
+    assert!(seen.iter().any(|(request, body)| {
+        request.starts_with("POST /api/git-ui/branch-delete") && body.contains("old")
+    }));
+    assert!(seen.iter().any(|(request, body)| {
+        request.starts_with("POST /api/git-ui/worktree-remove") && body.contains("/wt")
+    }));
+    assert!(seen
+        .iter()
+        .any(|(request, _)| request.starts_with("POST /api/git-ui/worktree-prune")));
+    handle.join().unwrap();
+}
