@@ -310,6 +310,25 @@ Extend `panels/files/`:
 
 ## Non-goals (documented desktop gaps that stay TUI-out-of-scope)
 
+Known key-map deviations from `DEFAULT_WEBUI_SHORTCUTS` /
+`DEFAULT_GIT_SHORTCUTS` (all others match or moved aside with the change
+noted in code):
+
+- `focusTerminal: KeyF` — webui-only DOM focus (xterm surface); the TUI
+  terminal always owns the keyboard, so no parity key exists. Prefix `f`
+  keeps the TUI-era Files screen (the webui has no files shortcut).
+- `stageAll: KeyG` — plain `g` was already the TUI git-screen shortcut
+  from before the parity work, so stage-all lives on `Shift+G`.
+- `sidebar: KeyB` — plain `b` stays git branches; sidebar collapse is
+  `Shift+B`.
+- `settings: KeyS`, `stash: Digit4` — the old TUI-only prefix-`s` stash
+  moved aside; stash keeps `4`.
+- `help: Shift+Slash` (webui) maps to prefix `?`/`0` in the TUI.
+- `nextWorkspace: KeyJ`/`prevWorkspace: KeyK` match the prefix table; the
+  git screen reuses `J`/`K` for the hunk cursor (in-screen, no prefix).
+
+Out-of-scope features:
+
 - Side-by-side diff rendering, split editor panes (cell-width budget).
 - Mouse support, copy/search over terminal scrollback, layout mutation,
   notification integrations, configurable keymap recording.

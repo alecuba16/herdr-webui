@@ -188,8 +188,15 @@ pub fn shortcut_for_key(key: KeyEvent) -> Option<Shortcut> {
     match (code, shifted) {
         (KeyCode::Char('?'), _) => Some(Shortcut::Help),
         (KeyCode::Char('/'), _) => Some(Shortcut::Search),
+        // Webui `focusTerminal: KeyF` focuses the xterm DOM surface; the
+        // TUI terminal always owns the keyboard (no DOM), so `F` needs
+        // no parity key. The old TUI-only prefix-`f` Files screen stays
+        // (the webui has no files-explorer shortcut at all).
         (KeyCode::Char('f') | KeyCode::Char('F'), _) => Some(Shortcut::Files),
         (KeyCode::Char('g'), false) => Some(Shortcut::Git),
+        // Webui `stageAll: KeyG` is plain G, but the TUI prefix table
+        // already maps plain `g` to the git screen (a TUI-era addition
+        // predating the parity work), so stage-all lands on Shift+G.
         (KeyCode::Char('G'), true) => Some(Shortcut::GitStageAll),
         (KeyCode::Char('t'), false) => Some(Shortcut::Terminal),
         (KeyCode::Char('r') | KeyCode::Char('R'), false) => Some(Shortcut::Refresh),
