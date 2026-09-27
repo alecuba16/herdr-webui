@@ -23,6 +23,7 @@ pub use model::{
     snapshot_summary, SidebarFocus, TuiAgent, TuiMode, TuiPane, TuiSnapshot, TuiTab, TuiWorkspace,
 };
 use model::{value_str, value_u64};
+use panels::git::{ConflictAction, ConflictResolveMode};
 use panels::{FileExplorer, GitPanel, GitView};
 pub use render::render;
 use terminal::{terminal_output_styled_lines_lossy, TuiTextSpan};
@@ -171,6 +172,7 @@ pub enum PromptKind {
     CreateWorktreeBranch,
     CreateWorktreePath,
     ConfirmCloseWorkspace,
+    ConfirmCleanupDelete,
 }
 
 impl PromptKind {
@@ -182,6 +184,7 @@ impl PromptKind {
                 | Self::ConfirmDeleteBranch
                 | Self::ConfirmDropStash
                 | Self::ConfirmCloseWorkspace
+                | Self::ConfirmCleanupDelete
         )
     }
 
@@ -197,6 +200,7 @@ impl PromptKind {
             Self::CreateWorktreeBranch => "Create worktree: branch",
             Self::CreateWorktreePath => "Create worktree: checkout path",
             Self::ConfirmCloseWorkspace => "Close workspace (y)",
+            Self::ConfirmCleanupDelete => "Delete cleanup item (y)",
         }
     }
 
@@ -453,6 +457,13 @@ impl TuiApp {
                 let kind = kind.into_workspace_prompt();
                 workspace::run_prompt(self, &kind, text);
             }
+            PromptKind::ConfirmCleanupDelete => match self.git_panel.selected_cleanup_item() {
+                Some(item) => match self.git_panel.cleanup_delete(&self.web_api, &item) {
+                    Ok(()) => self.status = format!("deleted {} {}", item.kind.label(), item.name),
+                    Err(err) => self.error = Some(err.to_string()),
+                },
+                None => self.error = Some("no cleanup item selected".to_string()),
+            },
         }
     }
 
@@ -1040,7 +1051,9 @@ impl TuiApp {
                     GitView::Log => GitView::Branches,
                     GitView::Branches => GitView::Stash,
                     GitView::Stash => GitView::History,
-                    GitView::History => GitView::Changes,
+                    GitView::History => GitView::Conflicts,
+                    GitView::Conflicts => GitView::Cleanup,
+                    GitView::Cleanup => GitView::Changes,
                 };
                 self.refresh_active_screen();
             }
@@ -1091,10 +1104,20 @@ impl TuiApp {
                 });
             }
             KeyCode::Char('a') => {
-                self.commit_input = Some(CommitInput {
-                    text: String::new(),
-                    amend: true,
-                });
+                if self.git_panel.view == GitView::Stash {
+                    // Stash view: a applies the selected stash (webui
+                    // stash apply button; Enter is the diff preview now).
+                    if let Err(err) = self.git_panel.stash_apply(&self.web_api) {
+                        self.error = Some(err.to_string());
+                    } else {
+                        self.status = "stash applied".to_string();
+                    }
+                } else {
+                    self.commit_input = Some(CommitInput {
+                        text: String::new(),
+                        amend: true,
+                    });
+                }
             }
             KeyCode::Char('r') => self.refresh_active_screen(),
             KeyCode::Char('D') => match self.git_panel.view {
@@ -1136,6 +1159,15 @@ impl TuiApp {
                         self.error = Some(err.to_string());
                     }
                 }
+                // Stash split view: Enter loads the selected stash's diff
+                // (webui stash view preview).
+                GitView::Stash => {
+                    if let Err(err) = self.git_panel.load_stash_diff(&self.web_api) {
+                        self.error = Some(err.to_string());
+                    } else {
+                        self.status = "stash diff loaded".to_string();
+                    }
+                }
                 // History rows are commits: Enter loads the selected commit's
                 // diff (webui `showHistoryCommit`) into the History diff
                 // pane; the view itself stays so the file context is kept.
@@ -1175,15 +1207,96 @@ impl TuiApp {
                         );
                     }
                 }
-                GitView::Stash => {
-                    if let Err(err) = self.git_panel.stash_apply(&self.web_api) {
-                        self.error = Some(err.to_string());
-                    } else {
-                        self.status = "stash applied".to_string();
-                    }
-                }
                 GitView::Log => {}
+                GitView::Conflicts | GitView::Cleanup => {}
             },
+            // Conflicts view actions (webui conflicts tab buttons).
+            // Keys avoid the shared git actions: o/e/t/m for resolve modes
+            // (p is pull and r is refresh in every git view), R/S/A for the
+            // operation continue/skip/abort.
+            KeyCode::Char('o') if self.git_panel.view == GitView::Conflicts => {
+                match self
+                    .git_panel
+                    .resolve_selected_conflict(&self.web_api, ConflictResolveMode::Ours)
+                {
+                    Ok(()) => self.status = "resolved with HEAD".to_string(),
+                    Err(err) => self.error = Some(err.to_string()),
+                }
+            }
+            KeyCode::Char('e') if self.git_panel.view == GitView::Conflicts => {
+                match self
+                    .git_panel
+                    .resolve_selected_conflict(&self.web_api, ConflictResolveMode::Parent)
+                {
+                    Ok(()) => self.status = "resolved with parent".to_string(),
+                    Err(err) => self.error = Some(err.to_string()),
+                }
+            }
+            KeyCode::Char('t') if self.git_panel.view == GitView::Conflicts => {
+                match self
+                    .git_panel
+                    .resolve_selected_conflict(&self.web_api, ConflictResolveMode::Remote)
+                {
+                    Ok(()) => self.status = "resolved with remote".to_string(),
+                    Err(err) => self.error = Some(err.to_string()),
+                }
+            }
+            KeyCode::Char('m') if self.git_panel.view == GitView::Conflicts => {
+                match self
+                    .git_panel
+                    .resolve_selected_conflict(&self.web_api, ConflictResolveMode::MarkResolved)
+                {
+                    Ok(()) => self.status = "marked resolved".to_string(),
+                    Err(err) => self.error = Some(err.to_string()),
+                }
+            }
+            KeyCode::Char('R') if self.git_panel.view == GitView::Conflicts => {
+                let action = if self.git_panel.rebase_in_progress {
+                    ConflictAction::RebaseContinue
+                } else {
+                    ConflictAction::MergeContinue
+                };
+                match self.git_panel.conflict_action(&self.web_api, action) {
+                    Ok(()) => self.status = "operation continued".to_string(),
+                    Err(err) => self.error = Some(err.to_string()),
+                }
+            }
+            KeyCode::Char('S') if self.git_panel.view == GitView::Conflicts => {
+                match self
+                    .git_panel
+                    .conflict_action(&self.web_api, ConflictAction::RebaseSkip)
+                {
+                    Ok(()) => self.status = "rebase commit skipped".to_string(),
+                    Err(err) => self.error = Some(err.to_string()),
+                }
+            }
+            KeyCode::Char('A') if self.git_panel.view == GitView::Conflicts => {
+                let action = if self.git_panel.rebase_in_progress {
+                    ConflictAction::RebaseAbort
+                } else {
+                    ConflictAction::MergeAbort
+                };
+                match self.git_panel.conflict_action(&self.web_api, action) {
+                    Ok(()) => self.status = "operation aborted".to_string(),
+                    Err(err) => self.error = Some(err.to_string()),
+                }
+            }
+            // Cleanup view actions (webui cleanup tab: delete + prune).
+            KeyCode::Char('x') if self.git_panel.view == GitView::Cleanup => {
+                match self.git_panel.selected_cleanup_item() {
+                    Some(_) => {
+                        self.prompt_input =
+                            Some(PromptInput::new(PromptKind::ConfirmCleanupDelete));
+                    }
+                    None => self.error = Some("no cleanup item selected".to_string()),
+                }
+            }
+            KeyCode::Char('B') if self.git_panel.view == GitView::Cleanup => {
+                match self.git_panel.cleanup_prune(&self.web_api) {
+                    Ok(()) => self.status = "worktrees pruned".to_string(),
+                    Err(err) => self.error = Some(err.to_string()),
+                }
+            }
             KeyCode::Esc | KeyCode::Char('q') => self.screen = TuiScreen::Terminal,
             _ => {}
         }

@@ -473,13 +473,22 @@ fn render_git_screen(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palett
         }
         GitView::Log => render_git_log(frame, content, app, p),
         GitView::Branches => render_git_branches(frame, content, app, p),
-        GitView::Stash => render_git_stash(frame, content, app, p),
+        GitView::Stash => {
+            // Webui stash split view: stash list left, selected stash's
+            // full diff right (Enter loads it via stash-show).
+            let [list_area, diff_area] =
+                Layout::horizontal([Constraint::Percentage(35), Constraint::Percentage(65)])
+                    .areas(content);
+            render_git_stash(frame, list_area, diff_area, app, p);
+        }
         GitView::History => {
             let [list_area, diff_area] =
                 Layout::horizontal([Constraint::Percentage(35), Constraint::Percentage(65)])
                     .areas(content);
             render_git_history(frame, list_area, diff_area, app, p);
         }
+        GitView::Conflicts => render_git_conflicts(frame, content, app, p),
+        GitView::Cleanup => render_git_cleanup(frame, content, app, p),
     }
 }
 
@@ -824,7 +833,13 @@ fn render_git_branches(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
     frame.render_stateful_widget(list, area, &mut state);
 }
 
-fn render_git_stash(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
+fn render_git_stash(
+    frame: &mut Frame<'_>,
+    list_area: Rect,
+    diff_area: Rect,
+    app: &TuiApp,
+    p: &Palette,
+) {
     let panel = &app.git_panel;
     let items = panel
         .stashes
@@ -844,7 +859,115 @@ fn render_git_stash(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette
         state.select(Some(panel.stash_selected));
     }
     let list = List::new(items)
-        .block(panel_block(" Stash · a apply · x drop ", p))
+        .block(panel_block(" Stash · Enter diff · a apply · x drop ", p))
+        .style(Style::default().fg(p.text).bg(p.panel_bg))
+        .highlight_style(Style::default().fg(p.accent).add_modifier(Modifier::BOLD))
+        .highlight_symbol("> ");
+    frame.render_stateful_widget(list, list_area, &mut state);
+
+    let title = if panel.stash_diff_title.is_empty() {
+        " Stash diff ".to_string()
+    } else {
+        format!(" Stash diff · {} ", truncate(&panel.stash_diff_title, 36))
+    };
+    render_diff_pane(
+        frame,
+        diff_area,
+        &title,
+        &panel.stash_diff_lines,
+        p,
+        "Select a stash and press Enter to load its diff.",
+    );
+}
+
+/// Conflicts view (webui conflicts tab): operation state line, conflicted
+/// file list, and per-file resolve action hints in the footer keys line.
+fn render_git_conflicts(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
+    let panel = &app.git_panel;
+    let [head_area, list_area] =
+        Layout::vertical([Constraint::Length(2), Constraint::Min(1)]).areas(area);
+
+    // Operation state mirrors the webui action toolbar: which operation
+    // is in progress drives the continue/skip/abort hints.
+    let state_line = if panel.rebase_in_progress {
+        "rebase in progress · R continue · S skip · A abort"
+    } else if panel.merge_in_progress {
+        "merge in progress · R continue · A abort"
+    } else {
+        "no merge/rebase in progress"
+    };
+    let spans = vec![
+        Span::styled(state_line.to_string(), Style::default().fg(p.yellow)),
+        Span::raw("   "),
+        Span::styled(
+            "o ours · e parent · t remote · m mark resolved",
+            Style::default().fg(p.muted),
+        ),
+    ];
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)).style(Style::default().fg(p.text).bg(p.panel_bg)),
+        head_area,
+    );
+
+    let items = panel
+        .conflict_files
+        .iter()
+        .map(|file| {
+            ListItem::new(Line::from(Span::styled(
+                truncate(file, 80),
+                Style::default().fg(p.text),
+            )))
+        })
+        .collect::<Vec<_>>();
+    let mut state = ListState::default();
+    if !items.is_empty() {
+        state.select(Some(panel.conflict_selected));
+    }
+    let list = List::new(items)
+        .block(panel_block(" Conflicts ", p))
+        .style(Style::default().fg(p.text).bg(p.panel_bg))
+        .highlight_style(Style::default().fg(p.accent).add_modifier(Modifier::BOLD))
+        .highlight_symbol("> ");
+    frame.render_stateful_widget(list, list_area, &mut state);
+}
+
+/// Cleanup view (webui cleanup tab): repos with merged branches and
+/// stale worktrees; x deletes the selected entry after a y-confirm,
+/// p prunes the selected repo's worktree metadata.
+fn render_git_cleanup(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
+    let panel = &app.git_panel;
+    let items = panel
+        .cleanup_items()
+        .into_iter()
+        .map(|item| {
+            ListItem::new(Line::from(vec![
+                Span::styled(
+                    format!("{} ", item.kind.label()),
+                    Style::default().fg(p.teal),
+                ),
+                Span::styled(
+                    format!("{} ", truncate(&item.name, 46)),
+                    Style::default().fg(p.text),
+                ),
+                Span::styled(
+                    format!("· {}", truncate(&item.repo, 28)),
+                    Style::default().fg(p.muted),
+                ),
+            ]))
+        })
+        .collect::<Vec<_>>();
+    let mut state = ListState::default();
+    if !items.is_empty() {
+        state.select(Some(panel.cleanup_selected));
+    }
+    let root = panel.cleanup_root.as_deref().unwrap_or("");
+    let title = if root.is_empty() {
+        " Cleanup · x delete · B prune ".to_string()
+    } else {
+        format!(" Cleanup · {} · x delete · B prune ", truncate(root, 32))
+    };
+    let list = List::new(items)
+        .block(panel_block(&title, p))
         .style(Style::default().fg(p.text).bg(p.panel_bg))
         .highlight_style(Style::default().fg(p.accent).add_modifier(Modifier::BOLD))
         .highlight_symbol("> ");
@@ -916,6 +1039,11 @@ fn render_prompt_input(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
         crate::tui::PromptKind::ConfirmCloseWorkspace => app
             .selected_workspace()
             .map(|workspace| workspace.label.clone())
+            .unwrap_or_default(),
+        crate::tui::PromptKind::ConfirmCleanupDelete => app
+            .git_panel
+            .selected_cleanup_item()
+            .map(|item| format!("{} {}", item.kind.label(), item.name))
             .unwrap_or_default(),
     };
     let title = format!(" {} ", prompt.kind.title());

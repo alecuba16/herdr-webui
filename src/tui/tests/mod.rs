@@ -190,6 +190,10 @@ fn git_panel_key_navigation_cycles_views() {
     app.handle_key(KeyEvent::from(KeyCode::Tab));
     assert_eq!(app.git_panel.view, GitView::History);
     app.handle_key(KeyEvent::from(KeyCode::Tab));
+    assert_eq!(app.git_panel.view, GitView::Conflicts);
+    app.handle_key(KeyEvent::from(KeyCode::Tab));
+    assert_eq!(app.git_panel.view, GitView::Cleanup);
+    app.handle_key(KeyEvent::from(KeyCode::Tab));
     assert_eq!(app.git_panel.view, GitView::Changes);
 
     // Esc/q returns to the terminal screen.
@@ -1583,7 +1587,7 @@ fn git_in_panel_keys_cover_stage_fetch_pull_push_and_enter() {
     app.error = None;
 
     // Tab cycles the git view (Changes -> Log -> Branches -> Stash ->
-    // History -> Changes).
+    // History -> Conflicts -> Cleanup -> Changes).
     app.handle_key(KeyEvent::from(KeyCode::Tab));
     assert_eq!(app.git_panel.view, GitView::Log);
     app.handle_key(KeyEvent::from(KeyCode::Tab));
@@ -1592,6 +1596,10 @@ fn git_in_panel_keys_cover_stage_fetch_pull_push_and_enter() {
     assert_eq!(app.git_panel.view, GitView::Stash);
     app.handle_key(KeyEvent::from(KeyCode::Tab));
     assert_eq!(app.git_panel.view, GitView::History);
+    app.handle_key(KeyEvent::from(KeyCode::Tab));
+    assert_eq!(app.git_panel.view, GitView::Conflicts);
+    app.handle_key(KeyEvent::from(KeyCode::Tab));
+    assert_eq!(app.git_panel.view, GitView::Cleanup);
     app.handle_key(KeyEvent::from(KeyCode::Tab));
     assert_eq!(app.git_panel.view, GitView::Changes);
     app.error = None;

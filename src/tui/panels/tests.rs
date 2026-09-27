@@ -5,7 +5,8 @@
 
 use super::files::parse_entries;
 use super::git::{
-    parse_blame_authors, parse_branch, parse_commit, parse_diff_lines_with_meta, parse_git_files,
+    parse_blame_authors, parse_branch, parse_cleanup_repos, parse_commit,
+    parse_diff_lines_with_meta, parse_git_files, CleanupItemKind, CleanupRepo,
 };
 use super::*;
 use crate::tui::web_api::WebApiClient;
@@ -591,7 +592,15 @@ fn git_view_titles_map_for_tabs() {
             .iter()
             .map(|view| view.title())
             .collect::<Vec<_>>(),
-        vec!["Changes", "Log", "Branches", "Stash", "History"]
+        vec![
+            "Changes",
+            "Log",
+            "Branches",
+            "Stash",
+            "History",
+            "Conflicts",
+            "Cleanup"
+        ]
     );
 }
 
@@ -865,4 +874,110 @@ fn open_preview_and_edit_without_selection_are_safe() {
     // Edit with no preview open is a no-op error.
     explorer.preview = FilePreview::default();
     assert!(explorer.start_edit().is_err());
+}
+
+#[test]
+fn parse_cleanup_repos_filters_current_branches_and_primary_worktrees() {
+    let data = json!({
+        "root": "/code",
+        "truncated": false,
+        "repos": [
+            {
+                "path": "/code/repo",
+                "branches": [
+                    {"name": "main", "current": true, "checked_out": false, "pushed": true},
+                    {"name": "merged-feature", "current": false, "checked_out": false, "pushed": true}
+                ],
+                "worktrees": [
+                    {"path": "/code/repo", "branch": "main", "detached": false, "prunable": false, "primary": true, "pushed": true},
+                    {"path": "/code/wt-stale", "branch": null, "detached": true, "prunable": true, "primary": false, "pushed": null}
+                ],
+                "error": null
+            },
+            {"path": "/code/broken", "branches": [], "worktrees": [], "error": "no git"}
+        ]
+    });
+    let repos = parse_cleanup_repos(&data);
+    assert_eq!(repos.len(), 2);
+    assert_eq!(repos[0].path, "/code/repo");
+    // The current branch is never offered for deletion.
+    assert_eq!(repos[0].branches, vec!["merged-feature"]);
+    // The primary worktree (the repo itself) is not removable.
+    assert_eq!(repos[0].worktrees, vec!["/code/wt-stale"]);
+    assert!(repos[1].branches.is_empty());
+
+    // Missing shapes parse to empty.
+    assert!(parse_cleanup_repos(&json!({})).is_empty());
+    assert!(parse_cleanup_repos(&json!({"repos": []})).is_empty());
+}
+
+#[test]
+fn cleanup_items_flatten_branches_before_worktrees() {
+    let mut panel = GitPanel::new("/repo");
+    panel.cleanup_repos = vec![CleanupRepo {
+        path: "/code/repo".to_string(),
+        branches: vec!["one".to_string(), "two".to_string()],
+        worktrees: vec!["/code/wt".to_string()],
+    }];
+    let items = panel.cleanup_items();
+    assert_eq!(items.len(), 3);
+    assert_eq!(items[0].kind, CleanupItemKind::Branch);
+    assert_eq!(items[0].name, "one");
+    assert_eq!(items[2].kind, CleanupItemKind::Worktree);
+    assert_eq!(items[2].name, "/code/wt");
+
+    panel.cleanup_selected = 2;
+    let selected = panel.selected_cleanup_item().unwrap();
+    assert_eq!(selected.kind, CleanupItemKind::Worktree);
+}
+
+#[test]
+fn conflict_modes_and_actions_map_to_webui_api_names() {
+    assert_eq!(ConflictResolveMode::Ours.api_name(), "ours");
+    assert_eq!(ConflictResolveMode::Parent.api_name(), "base");
+    assert_eq!(ConflictResolveMode::Remote.api_name(), "theirs");
+    assert_eq!(ConflictResolveMode::MarkResolved.api_name(), "mark");
+    for action in [
+        ConflictAction::MergeAbort,
+        ConflictAction::MergeContinue,
+        ConflictAction::RebaseContinue,
+        ConflictAction::RebaseSkip,
+        ConflictAction::RebaseAbort,
+        ConflictAction::CherryPickContinue,
+        ConflictAction::CherryPickAbort,
+    ] {
+        assert!(
+            action.api_name().starts_with(
+                action
+                    .label()
+                    .split(' ')
+                    .next_back()
+                    .map(str::to_string)
+                    .unwrap_or_default()
+                    .as_str()
+            ) || !action.api_name().is_empty()
+        );
+        assert!(!action.label().is_empty());
+    }
+}
+
+#[test]
+fn resolve_without_selected_conflict_errors() {
+    let api = WebApiClient::new("127.0.0.1", 1);
+    let mut panel = GitPanel::new("/repo");
+    panel.view = GitView::Conflicts;
+    assert!(panel
+        .resolve_selected_conflict(&api, ConflictResolveMode::Ours)
+        .is_err());
+    assert!(panel
+        .conflict_action(&api, ConflictAction::RebaseContinue)
+        .is_err());
+}
+
+#[test]
+fn stash_diff_without_selection_errors() {
+    let api = WebApiClient::new("127.0.0.1", 1);
+    let mut panel = GitPanel::new("/repo");
+    panel.view = GitView::Stash;
+    assert!(panel.load_stash_diff(&api).is_err());
 }

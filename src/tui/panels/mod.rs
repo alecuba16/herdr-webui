@@ -11,6 +11,6 @@ mod tests;
 
 pub use files::{FileEntry, FileExplorer, FilePreview};
 pub use git::{
-    GitBranchEntry, GitCommitEntry, GitDiffLineMeta, GitFileEntry, GitFileStatus, GitPanel,
-    GitStashEntry, GitView,
+    ConflictAction, ConflictResolveMode, GitBranchEntry, GitCommitEntry, GitDiffLineMeta,
+    GitFileEntry, GitFileStatus, GitPanel, GitStashEntry, GitView,
 };

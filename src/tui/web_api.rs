@@ -432,6 +432,76 @@ impl WebApiClient {
         self.post("/api/git-ui/stash", &json!({ "cwd": cwd }))
     }
 
+    /// `/api/git-ui/stash-show`: full diff of one stash entry. Response
+    /// shape matches `/api/git-ui/diff`, so `parse_diff_lines_with_meta`
+    /// can parse it.
+    pub fn git_stash_show(&self, cwd: &str, stash: &str) -> Result<Value, WebApiError> {
+        self.get(&format!(
+            "/api/git-ui/stash-show?cwd={}&stash={}&context=3",
+            urlencode(cwd),
+            urlencode(stash),
+        ))
+    }
+
+    /// `/api/git-ui/conflicts`: conflicted file list plus merge/rebase state.
+    pub fn git_conflicts(&self, cwd: &str) -> Result<Value, WebApiError> {
+        self.get(&format!("/api/git-ui/conflicts?cwd={}", urlencode(cwd),))
+    }
+
+    /// `/api/git-ui/conflict-resolve`: resolve one file with `ours` /
+    /// `base` (parent) / `theirs` (remote) / `mark` (git add).
+    pub fn git_conflict_resolve(
+        &self,
+        cwd: &str,
+        path: &str,
+        mode: &str,
+    ) -> Result<Value, WebApiError> {
+        self.post(
+            "/api/git-ui/conflict-resolve",
+            &json!({ "cwd": cwd, "path": path, "mode": mode }),
+        )
+    }
+
+    /// `/api/git-ui/conflict-action`: continue/skip/abort a rebase, merge,
+    /// or cherry-pick in progress.
+    pub fn git_conflict_action(&self, cwd: &str, action: &str) -> Result<Value, WebApiError> {
+        self.post(
+            "/api/git-ui/conflict-action",
+            &json!({ "cwd": cwd, "action": action }),
+        )
+    }
+
+    /// `/api/git-ui/cleanup-scan`: repos with merged branches and stale
+    /// worktrees under a root directory.
+    pub fn git_cleanup_scan(&self, root: &str) -> Result<Value, WebApiError> {
+        self.get(&format!(
+            "/api/git-ui/cleanup-scan?root={}",
+            urlencode(root),
+        ))
+    }
+
+    /// `/api/git-ui/branch-delete` with explicit confirmation (the TUI
+    /// collects its own confirmation before calling).
+    pub fn git_cleanup_branch_delete(&self, cwd: &str, branch: &str) -> Result<Value, WebApiError> {
+        self.post(
+            "/api/git-ui/branch-delete",
+            &json!({ "cwd": cwd, "branch": branch, "force": false, "confirmed": true }),
+        )
+    }
+
+    /// `/api/git-ui/worktree-remove` for cleanup.
+    pub fn git_cleanup_worktree_remove(&self, cwd: &str, path: &str) -> Result<Value, WebApiError> {
+        self.post(
+            "/api/git-ui/worktree-remove",
+            &json!({ "cwd": cwd, "path": path, "confirmed": true }),
+        )
+    }
+
+    /// `/api/git-ui/worktree-prune` for cleanup.
+    pub fn git_cleanup_worktree_prune(&self, cwd: &str) -> Result<Value, WebApiError> {
+        self.post("/api/git-ui/worktree-prune", &json!({ "cwd": cwd }))
+    }
+
     pub fn git_stash_apply(&self, cwd: &str, stash: &str) -> Result<Value, WebApiError> {
         self.post(
             "/api/git-ui/stash-apply",

@@ -15769,6 +15769,17 @@ mod tui_parity_e2e_tests {
         app.handle_key(crossterm::event::KeyEvent::from(
             crossterm::event::KeyCode::Enter,
         ));
+        assert_eq!(
+            app.status, "stash diff loaded",
+            "stash restore: {}",
+            app.status
+        );
+        assert!(
+            app.git_panel.stash_diff_lines.len() > 2,
+            "stash diff has content lines"
+        );
+        // `a` applies the stash (Enter now previews the diff).
+        press(&mut app, 'a');
         assert_eq!(app.status, "stash applied", "stash restore: {}", app.status);
         app.git_panel.view = herdr_webui::tui::panels::GitView::Changes;
         app.git_panel
@@ -16078,7 +16089,7 @@ mod tui_parity_e2e_tests {
             app.status
         );
 
-        // Stash: stash the dirty edit, Enter applies it.
+        // Stash: stash the dirty edit, Enter previews the diff, `a` applies it.
         app.web_api.git_stash(cwd).map_err(|e| e.to_string())?;
         app.git_panel.view = herdr_webui::tui::panels::GitView::Stash;
         app.git_panel
@@ -16088,7 +16099,13 @@ mod tui_parity_e2e_tests {
         app.handle_key(crossterm::event::KeyEvent::from(
             crossterm::event::KeyCode::Enter,
         ));
-        assert_eq!(app.status, "stash applied", "stash Enter: {}", app.status);
+        assert_eq!(
+            app.status, "stash diff loaded",
+            "stash Enter: {}",
+            app.status
+        );
+        press(&mut app, 'a');
+        assert_eq!(app.status, "stash applied", "stash apply: {}", app.status);
         assert!(app.error.is_none(), "stash apply error: {:?}", app.error);
 
         // --- Files navigation: j/k moves, Enter on a directory expands.

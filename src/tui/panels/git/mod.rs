@@ -7,9 +7,15 @@
 
 mod branch;
 mod changes;
+mod cleanup;
+mod conflicts;
 mod log;
 mod parse;
 mod stash;
+
+#[cfg(test)]
+pub(crate) use cleanup::{parse_cleanup_repos, CleanupItemKind};
+pub use conflicts::{ConflictAction, ConflictResolveMode};
 
 use std::collections::HashMap;
 
@@ -35,6 +41,10 @@ pub enum GitView {
     /// Per-file history (webui prefix `h`): commits touching the file
     /// selected in Changes, reusing the commit list rendering.
     History,
+    /// Merge/rebase conflict resolution (webui `conflicts` tab).
+    Conflicts,
+    /// Merged-branch / stale-worktree cleanup (webui `cleanup` tab).
+    Cleanup,
 }
 
 impl GitView {
@@ -45,16 +55,20 @@ impl GitView {
             Self::Branches => "Branches",
             Self::Stash => "Stash",
             Self::History => "History",
+            Self::Conflicts => "Conflicts",
+            Self::Cleanup => "Cleanup",
         }
     }
 
-    pub fn all() -> [GitView; 5] {
+    pub fn all() -> [GitView; 7] {
         [
             Self::Changes,
             Self::Log,
             Self::Branches,
             Self::Stash,
             Self::History,
+            Self::Conflicts,
+            Self::Cleanup,
         ]
     }
 }
@@ -147,8 +161,30 @@ pub struct GitPanel {
     pub branch_selected: usize,
     pub stashes: Vec<GitStashEntry>,
     pub stash_selected: usize,
+    /// Full diff of the stash selected in the Stash view (`stash-show`),
+    /// shown split-right like the webui stash view.
+    pub stash_diff_lines: Vec<String>,
+    pub stash_diff_title: String,
+    /// Conflicts view (`/api/git-ui/conflicts`): files + merge/rebase state.
+    pub conflict_files: Vec<String>,
+    pub conflict_selected: usize,
+    pub merge_in_progress: bool,
+    pub rebase_in_progress: bool,
+    /// Cleanup view: scan results and the space-toggled selection set.
+    pub cleanup_root: Option<String>,
+    pub cleanup_repos: Vec<CleanupRepo>,
+    pub cleanup_selected: usize,
     pub status: Option<String>,
     pub message: Option<String>,
+}
+
+/// One repo found by cleanup-scan with its merged branches and stale
+/// worktrees (webui `cleanup-scan` response shape).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CleanupRepo {
+    pub path: String,
+    pub branches: Vec<String>,
+    pub worktrees: Vec<String>,
 }
 
 impl GitPanel {
@@ -176,6 +212,15 @@ impl GitPanel {
             branch_selected: 0,
             stashes: Vec::new(),
             stash_selected: 0,
+            stash_diff_lines: Vec::new(),
+            stash_diff_title: String::new(),
+            conflict_files: Vec::new(),
+            conflict_selected: 0,
+            merge_in_progress: false,
+            rebase_in_progress: false,
+            cleanup_root: None,
+            cleanup_repos: Vec::new(),
+            cleanup_selected: 0,
             status: None,
             message: None,
         }
@@ -226,6 +271,14 @@ impl GitPanel {
             GitView::Branches => self.refresh_branches(api),
             GitView::Stash => self.refresh_stashes(api),
             GitView::History => self.refresh_history(api),
+            GitView::Conflicts => self.refresh_conflicts(api),
+            GitView::Cleanup => {
+                let root = self
+                    .cleanup_root
+                    .clone()
+                    .unwrap_or_else(|| self.cwd.clone());
+                self.cleanup_scan(api, &root)
+            }
         }
     }
 
@@ -245,6 +298,14 @@ impl GitPanel {
             }
             GitView::Stash => {
                 self.stash_selected = move_index(self.stash_selected, self.stashes.len(), delta);
+            }
+            GitView::Conflicts => {
+                self.conflict_selected =
+                    move_index(self.conflict_selected, self.conflict_files.len(), delta);
+            }
+            GitView::Cleanup => {
+                self.cleanup_selected =
+                    move_index(self.cleanup_selected, self.cleanup_items().len(), delta);
             }
         }
     }
