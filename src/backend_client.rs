@@ -157,6 +157,13 @@ impl BackendClient {
         )
     }
 
+    /// Promote a temporary terminal tab into a real workspace rooted at
+    /// the shell's live cwd (built-in `tab.promote`). The process keeps
+    /// running; only the registry re-parents.
+    pub fn promote_tab(&self, tab_id: &str) -> Result<Value, BackendClientError> {
+        self.request("tab.promote", json!({ "tab_id": tab_id }))
+    }
+
     pub fn list_panes(&self, workspace_id: Option<&str>) -> Result<Value, BackendClientError> {
         self.request("pane.list", json!({ "workspace_id": workspace_id }))
     }

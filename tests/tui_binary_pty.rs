@@ -243,9 +243,26 @@ fn tui_binary_interactive_loop_pty() {
     wait_for(&log, "\u{1b}[11;28Hsystem");
     let _ = writer.write_all(b"\x1b"); // Esc closes the overlay.
     let _ = writer.flush();
-    // Keep Esc and `q` apart: delivered back-to-back, crossterm parses
-    // the bytes `ESC q` as a single Alt+q event, which closes the
-    // overlay instead of quitting, and the TUI never exits.
+    // Give Esc time to land as its own event before the next keys.
+    std::thread::sleep(Duration::from_millis(200));
+
+    // Sidebar collapse through the real binary: Ctrl+B Shift+B hides the
+    // workspace list (webui sidebar: KeyB), Ctrl+B Shift+B restores it.
+    // The transient "sidebar hidden/shown" status loses the race with
+    // the 50ms refresh, so the assertions use durable layout signals:
+    // collapsed, the tab bar redraws at row 1 column 1 (it lived at
+    // column 29 beside the 28-wide sidebar); restored, the sidebar
+    // border redraws at row 1 column 1 with the Workspaces title.
+    let _ = writer.write_all(&[0x02]); // Ctrl+B
+    let _ = writer.write_all(b"B");
+    let _ = writer.flush();
+    wait_for(&log, "\u{1b}[1;1H Repo");
+    let _ = writer.write_all(&[0x02]); // Ctrl+B
+    let _ = writer.write_all(b"B");
+    let _ = writer.flush();
+    wait_for(&log, "\u{1b}[1;1H\u{250c} Workspaces");
+
+    // Keep the last shortcut and `q` apart so both land as events.
     std::thread::sleep(Duration::from_millis(200));
     let _ = writer.write_all(b"q");
     let _ = writer.flush();

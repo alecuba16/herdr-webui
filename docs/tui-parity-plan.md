@@ -54,12 +54,20 @@ Panel/workspace management:
 6. No settings screen; no shortcut help overlay parity for the new keys.
 7. No "close last panel closes workspace" guard parity (webui closes workspace
    via `workspace.close` when the last tab is closed).
-8. No webui `sidebar` (KeyB; the TUI sidebar is always visible, `Tab`
-   toggles list focus), `focusNext`/`focusPrev` (`.`/`,`, a mouse-era
-   focus walker with no keyboard-only equivalent), or temporary
-   terminal overlay shortcuts `tempTerminalToggle`/`tempTerminalPromote`
-   (Shift+M/Shift+P; the temporary-terminal overlay has no TUI
-   representation, documented as a desktop-only flow).
+8. No webui `sidebar` (KeyB), `focusNext`/`focusPrev` (`.`/`,`), or
+   temporary terminal overlay shortcuts `tempTerminalToggle`/
+   `tempTerminalPromote` (Shift+M/Shift+P).
+
+   Closed in the gap-8 pass: prefix `Shift+B` collapses/expands the
+   sidebar column (plain `b` stays git branches), prefix `.`/`,` walk
+   the focus regions (sidebar workspaces -> agents -> main, wrapping),
+   prefix `Shift+M` opens or re-focuses the temporary terminal (a tab
+   labeled `temp` in a workspace labeled `temp`, the same labels the
+   backend and webui use so `tab.promote` works), and prefix `Shift+P`
+   promotes it into a workspace at the shell's live cwd via the built-in
+   `tab.promote`. The TUI approximates the webui overlay with the temp
+   tab; the old TUI-only prefix `P` push moved aside (the git screen
+   keeps the in-screen `P`).
 
 Git management gaps:
 

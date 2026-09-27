@@ -231,3 +231,77 @@ fn remove_worktree_requires_a_workspace_folder() {
     }));
     assert!(app.remove_worktree().is_err());
 }
+
+#[test]
+fn walk_focus_cycles_regions_and_wraps() {
+    // Webui focusNext/focusPrev: workspaces -> agents -> main, wrapping.
+    let mut app = app_with_snapshot(workspace_snapshot());
+    app.main_focused = false;
+    app.sidebar_focus = SidebarFocus::Workspaces;
+
+    app.walk_focus(1);
+    assert_eq!(app.sidebar_focus, SidebarFocus::Agents);
+    assert!(!app.main_focused);
+
+    app.walk_focus(1);
+    assert!(app.main_focused);
+
+    // Wrap: main -> workspaces.
+    app.walk_focus(1);
+    assert!(!app.main_focused);
+    assert_eq!(app.sidebar_focus, SidebarFocus::Workspaces);
+
+    // And backwards wrap: workspaces -> main.
+    app.walk_focus(-1);
+    assert!(app.main_focused);
+    assert_eq!(app.status, "focus: main");
+}
+
+#[test]
+fn temp_terminal_promote_without_temp_tab_reports_error() {
+    // Webui promote guard: no visible temporary terminal means promote
+    // is refused, and nothing hits the backend.
+    let mut app = app_with_snapshot(workspace_snapshot());
+    let result = app.temp_terminal_promote();
+    assert_eq!(result.unwrap_err(), "no temporary terminal open");
+}
+
+#[test]
+fn temp_terminal_toggle_reuses_existing_temp_tab_without_backend_calls() {
+    // With a temp workspace + temp tab already in the snapshot, toggle
+    // must reuse them (no create, no refresh) and move the selection so
+    // Enter attaches to the temporary shell. The builtin session client
+    // has no live socket, so any backend call would fail the test.
+    let mut app = app_with_snapshot(json!({
+        "type": "session_snapshot",
+        "snapshot": {
+            "workspaces": [
+                {"workspace_id":"ws_1","label":"Repo","cwd":"/repo","focused":true,"agent_status":"idle","pane_count":1,"tab_count":1,"active_tab_id":"tab_1"},
+                {"workspace_id":"ws_t","label":"temp","cwd":"/repo","focused":false,"agent_status":"idle","pane_count":1,"tab_count":1,"active_tab_id":"tab_t"}
+            ],
+            "tabs": [
+                {"tab_id":"tab_t","workspace_id":"ws_t","label":"temp","focused":false,"pane_count":1,"agent_status":"idle"},
+                {"tab_id":"tab_1","workspace_id":"ws_1","label":"Shell","focused":true,"pane_count":1,"agent_status":"idle"}
+            ],
+            "panes": [
+                {"pane_id":"pane_t","terminal_id":"term_t","workspace_id":"ws_t","tab_id":"tab_t","agent":"shell","display_agent":"shell","agent_status":"idle","foreground_cwd":"/repo","focused":false},
+                {"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","foreground_cwd":"/repo","focused":true}
+            ],
+            "agents": [
+                {"pane_id":"pane_t","terminal_id":"term_t","workspace_id":"ws_t","tab_id":"tab_t","agent":"shell","display_agent":"shell","agent_status":"idle","cwd":"/repo","focused":false},
+                {"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":true}
+            ]
+        }
+    }));
+    assert_eq!(app.selected_workspace, 0, "selection starts on ws_1");
+    let result = app.temp_terminal_toggle();
+    assert!(result.is_ok(), "reuse path needs no backend");
+    assert_eq!(
+        app.selected_workspace, 1,
+        "selection moved to the temp workspace"
+    );
+    assert_eq!(
+        app.selected_agent, 0,
+        "agent selection moved to the temp pane (first in the agents list)"
+    );
+}

@@ -3377,3 +3377,61 @@ fn settings_overlay_opens_cycles_theme_and_closes() {
     app.handle_key(KeyEvent::from(KeyCode::Esc));
     assert_eq!(app.mode, TuiMode::Navigate);
 }
+
+#[test]
+fn sidebar_toggle_hides_and_restores_the_sidebar_column() {
+    let mut app = app_with_snapshot();
+    let shown = draw(&app, 120, 30);
+    assert!(shown.contains("Workspaces"), "sidebar renders workspaces");
+
+    // Ctrl+B Shift+B collapses the sidebar (webui sidebar: KeyB).
+    app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
+    app.handle_key(KeyEvent::new(KeyCode::Char('B'), KeyModifiers::SHIFT));
+    assert!(app.sidebar_collapsed);
+    assert_eq!(app.status, "sidebar hidden");
+    let hidden = draw(&app, 120, 30);
+    assert!(
+        !hidden.contains("Workspaces"),
+        "collapsed sidebar must not render"
+    );
+
+    // Toggling again restores it.
+    app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
+    app.handle_key(KeyEvent::new(KeyCode::Char('B'), KeyModifiers::SHIFT));
+    assert!(!app.sidebar_collapsed);
+    assert_eq!(app.status, "sidebar shown");
+    assert!(draw(&app, 120, 30).contains("Workspaces"));
+}
+
+#[test]
+fn focus_walker_cycles_sidebar_regions_and_main() {
+    let mut app = app_with_snapshot();
+    assert!(app.main_focused);
+
+    // Ctrl+B . walks forward: main -> workspaces.
+    app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
+    app.handle_key(KeyEvent::from(KeyCode::Char('.')));
+    assert!(!app.main_focused);
+    assert_eq!(app.sidebar_focus, SidebarFocus::Workspaces);
+    assert_eq!(app.status, "focus: workspaces");
+
+    // Again: workspaces -> agents.
+    app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
+    app.handle_key(KeyEvent::from(KeyCode::Char('.')));
+    assert_eq!(app.sidebar_focus, SidebarFocus::Agents);
+
+    // Ctrl+B , walks back and wraps: agents -> workspaces.
+    app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
+    app.handle_key(KeyEvent::from(KeyCode::Char(',')));
+    assert_eq!(app.sidebar_focus, SidebarFocus::Workspaces);
+}
+
+#[test]
+fn promote_without_temp_terminal_reports_error_via_shortcut() {
+    // Ctrl+B Shift+P with no temp tab: the webui promotes only when the
+    // overlay is visible; the TUI equivalent guard refuses and reports.
+    let mut app = app_with_snapshot();
+    app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
+    app.handle_key(KeyEvent::new(KeyCode::Char('P'), KeyModifiers::SHIFT));
+    assert_eq!(app.error.as_deref(), Some("no temporary terminal open"));
+}

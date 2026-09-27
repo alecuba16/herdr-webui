@@ -104,6 +104,23 @@ pub enum Shortcut {
     GitCwdPicker,
     // Settings overlay (webui settings: KeyS).
     Settings,
+    // Sidebar visibility (webui sidebar: KeyB is plain B, so the TUI
+    // uses Shift+B; plain b stays the git branches shortcut).
+    Sidebar,
+    // Focus walker (webui focusNext/focusPrev: Period/Comma). Cycles
+    // sidebar workspaces -> agents -> main screen, the keyboard-only
+    // equivalent of the webui DOM focus walker.
+    FocusNext,
+    FocusPrev,
+    // Temporary terminal (webui tempTerminalToggle: Shift+KeyM). The
+    // TUI approximates the overlay with a tab labeled "temp" living in
+    // a dedicated "temp" workspace.
+    TempTerminalToggle,
+    // Promote the temporary terminal into a real workspace at the
+    // shell's live cwd (webui tempTerminalPromote: Shift+KeyP). The
+    // old TUI-only prefix-GitPush moved aside (git screen keeps the
+    // in-screen P push).
+    TempTerminalPromote,
 }
 
 impl Shortcut {
@@ -150,6 +167,11 @@ impl Shortcut {
             Self::RenameWorkspace => "rename workspace",
             Self::GitCwdPicker => "git cwd",
             Self::Settings => "settings",
+            Self::Sidebar => "toggle sidebar",
+            Self::FocusNext => "focus next",
+            Self::FocusPrev => "focus previous",
+            Self::TempTerminalToggle => "temporary terminal",
+            Self::TempTerminalPromote => "promote temporary terminal",
         }
     }
 }
@@ -176,8 +198,9 @@ pub fn shortcut_for_key(key: KeyEvent) -> Option<Shortcut> {
         (KeyCode::Char('a'), false) => Some(Shortcut::NextAgent),
         (KeyCode::Char('A'), true) => Some(Shortcut::PrevAgent),
         // Webui newPanel: KeyP. The old `p` => Git was redundant with `g`.
+        // Shift+P is now tempTerminalPromote (webui parity); prefix push
+        // moved aside, the git screen keeps the in-screen `P` push.
         (KeyCode::Char('p'), false) => Some(Shortcut::NewTab),
-        (KeyCode::Char('P'), true) => Some(Shortcut::GitPush),
         // Webui newWorkspace: KeyN.
         (KeyCode::Char('n') | KeyCode::Char('N'), false) => Some(Shortcut::NewWorkspace),
         (KeyCode::Char('x'), false) => Some(Shortcut::CloseTab),
@@ -193,6 +216,22 @@ pub fn shortcut_for_key(key: KeyEvent) -> Option<Shortcut> {
         (KeyCode::Char('s'), false) => Some(Shortcut::Settings),
         // Webui `help: Digit0` shows the git shortcut help.
         (KeyCode::Char('0'), false) => Some(Shortcut::Help),
+        // Sidebar visibility: webui `sidebar: KeyB` is plain B, but plain
+        // b is the git branches shortcut (git `branch: KeyV` would be the
+        // webui key, TUI keeps b from its own table), so the toggle
+        // lands on Shift+B.
+        (KeyCode::Char('B'), true) => Some(Shortcut::Sidebar),
+        // Webui focusNext/focusPrev: Period/Comma. Walks the TUI focus
+        // regions instead of DOM controls.
+        (KeyCode::Char('.'), _) => Some(Shortcut::FocusNext),
+        (KeyCode::Char(','), _) => Some(Shortcut::FocusPrev),
+        // Webui tempTerminalToggle: Shift+KeyM (plain m stays git blame
+        // from DEFAULT_GIT_SHORTCUTS).
+        (KeyCode::Char('M'), true) => Some(Shortcut::TempTerminalToggle),
+        // Webui tempTerminalPromote: Shift+KeyP. The old TUI-only prefix
+        // GitPush moved aside for parity (the git screen keeps the
+        // in-screen P push).
+        (KeyCode::Char('P'), true) => Some(Shortcut::TempTerminalPromote),
         (KeyCode::Char('b'), false) => Some(Shortcut::GitBranch),
         (KeyCode::Char('c'), false) => Some(Shortcut::GitCommit),
         (KeyCode::Char('l') | KeyCode::Char('L'), false) => Some(Shortcut::GitLog),
@@ -260,6 +299,10 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
         ("Ctrl+B Shift+T", "create worktree (branch, then path)"),
         ("Ctrl+B Del", "remove linked worktree"),
         ("Ctrl+B q", "quit"),
+        ("Ctrl+B Shift+B", "collapse/expand the sidebar"),
+        ("Ctrl+B . ,", "focus next/prev region (sidebar/main)"),
+        ("Ctrl+B Shift+M", "temporary terminal (open or refocus)"),
+        ("Ctrl+B Shift+P", "promote temporary terminal to workspace"),
         ("", ""),
         ("Ctrl+B 1", "git: changes"),
         ("Ctrl+B 2/c", "git: commit modal"),
@@ -274,7 +317,7 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
         ("Ctrl+B 0", "git: shortcut help"),
         ("Ctrl+B G", "git: toggle stage all"),
         ("Ctrl+B y/u/d/z", "git: stage/unstage/discard/stash file"),
-        ("Ctrl+B P", "git: push"),
+        ("git: P", "git: push (in-screen on the Git screen)"),
         ("", ""),
         (
             "Ctrl+B e",
@@ -414,7 +457,21 @@ mod tests {
         prefix.feed(ctrl('b'));
         assert_eq!(prefix.feed(key('e')), Some(Shortcut::EditFile));
         prefix.feed(ctrl('b'));
-        assert_eq!(prefix.feed(shift_key('p')), Some(Shortcut::GitPush));
+        assert_eq!(
+            prefix.feed(shift_key('p')),
+            Some(Shortcut::TempTerminalPromote)
+        );
+        prefix.feed(ctrl('b'));
+        assert_eq!(prefix.feed(key('.')), Some(Shortcut::FocusNext));
+        prefix.feed(ctrl('b'));
+        assert_eq!(prefix.feed(key(',')), Some(Shortcut::FocusPrev));
+        prefix.feed(ctrl('b'));
+        assert_eq!(prefix.feed(shift_key('b')), Some(Shortcut::Sidebar));
+        prefix.feed(ctrl('b'));
+        assert_eq!(
+            prefix.feed(shift_key('m')),
+            Some(Shortcut::TempTerminalToggle)
+        );
     }
 
     #[test]

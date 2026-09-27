@@ -111,6 +111,11 @@ pub struct TuiApp {
     pub selected_workspace: usize,
     pub selected_agent: usize,
     pub sidebar_focus: SidebarFocus,
+    /// Webui sidebar: KeyB collapses/expands the sidebar column.
+    pub sidebar_collapsed: bool,
+    /// Webui focusNext/focusPrev: walker position. When true, key input
+    /// goes to the main screen instead of the sidebar list.
+    pub main_focused: bool,
     pub mode: TuiMode,
     pub screen: TuiScreen,
     pub prefix: PrefixState,
@@ -307,6 +312,8 @@ impl TuiApp {
             selected_workspace: 0,
             selected_agent: 0,
             sidebar_focus: SidebarFocus::Workspaces,
+            sidebar_collapsed: false,
+            main_focused: true,
             mode: TuiMode::Navigate,
             screen: TuiScreen::Terminal,
             prefix: PrefixState::new(),
@@ -908,6 +915,26 @@ impl TuiApp {
             Shortcut::Settings => {
                 // Prefix s: settings overlay (webui settings modal).
                 self.mode = TuiMode::Settings;
+            }
+            Shortcut::Sidebar => {
+                // Prefix Shift+B: collapse/expand the sidebar column
+                // (webui sidebar: KeyB).
+                self.sidebar_collapsed = !self.sidebar_collapsed;
+                self.status = if self.sidebar_collapsed {
+                    "sidebar hidden".to_string()
+                } else {
+                    "sidebar shown".to_string()
+                };
+            }
+            Shortcut::FocusNext => self.walk_focus(1),
+            Shortcut::FocusPrev => self.walk_focus(-1),
+            Shortcut::TempTerminalToggle => {
+                let result = self.temp_terminal_toggle();
+                self.workspace_status(result);
+            }
+            Shortcut::TempTerminalPromote => {
+                let result = self.temp_terminal_promote();
+                self.workspace_status(result);
             }
             Shortcut::Quit => self.status = "quit".to_string(),
             Shortcut::GitChanges => {

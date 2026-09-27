@@ -18,14 +18,21 @@ pub fn render(frame: &mut Frame<'_>, app: &TuiApp) {
     let p = &app.palette;
     let area = frame.area();
     let [body, footer] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
-    let sidebar_width = if body.width >= 100 {
-        34
+    // Webui sidebar (KeyB) collapse: when hidden, the main screen takes
+    // the full body width and the sidebar column is not rendered.
+    let [sidebar, main] = if app.sidebar_collapsed {
+        Layout::horizontal([Constraint::Length(0), Constraint::Min(1)]).areas(body)
     } else {
-        28.min(body.width / 2)
+        let sidebar_width = if body.width >= 100 {
+            34
+        } else {
+            28.min(body.width / 2)
+        };
+        Layout::horizontal([Constraint::Length(sidebar_width), Constraint::Min(1)]).areas(body)
     };
-    let [sidebar, main] =
-        Layout::horizontal([Constraint::Length(sidebar_width), Constraint::Min(1)]).areas(body);
-    render_sidebar(frame, sidebar, app, p);
+    if !app.sidebar_collapsed {
+        render_sidebar(frame, sidebar, app, p);
+    }
     match app.screen {
         TuiScreen::Terminal => render_main(frame, main, app, p),
         TuiScreen::Files => render_files_screen(frame, main, app, p),
