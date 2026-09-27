@@ -15489,6 +15489,104 @@ mod tui_parity_e2e_tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn tui_reveal_find_replace_and_tab_cycle_round_trip() {
+        let repo = temp_git_repo();
+        let state = localhost_no_auth_state(repo.clone());
+        let app = app_router(state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+
+        let api = WebApiClient::new("127.0.0.1", addr.port());
+        let cwd = repo.to_string_lossy().to_string();
+
+        let result = tokio::task::spawn_blocking(move || tui_phase4_assertions(&api, &cwd))
+            .await
+            .unwrap();
+        result.unwrap_or_else(|err| panic!("tui phase4 round trip failed: {err}"));
+        server.abort();
+        let _ = std::fs::remove_dir_all(&repo);
+        let bare = std::env::temp_dir().join(
+            repo.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .replace("herdr-tui-e2e-repo-", "herdr-tui-e2e-bare-"),
+        );
+        let _ = std::fs::remove_dir_all(&bare);
+    }
+
+    fn tui_phase4_assertions(api: &WebApiClient, cwd: &str) -> Result<(), String> {
+        // Reveal: a nested untracked file must be reachable through
+        // expand-ancestors + select, starting from a flat tree.
+        std::fs::create_dir_all(std::path::Path::new(cwd).join("nested/deep"))
+            .map_err(|err| err.to_string())?;
+        std::fs::write(
+            std::path::Path::new(cwd).join("nested/deep/target.rs"),
+            "fn target() {}\n",
+        )
+        .map_err(|err| err.to_string())?;
+        let mut explorer = FileExplorer::new(cwd);
+        explorer.refresh(api).unwrap();
+        explorer
+            .reveal_path(api, "nested/deep/target.rs")
+            .map_err(|err| format!("reveal_path failed: {err}"))?;
+        assert_eq!(
+            explorer.selected_entry().map(|e| e.path.clone()),
+            Some("nested/deep/target.rs".to_string()),
+            "reveal must select the nested file"
+        );
+
+        // Editor find + replace: open the readme, find "world",
+        // replace-all with "tui", verify the on-disk file after save.
+        explorer
+            .open_preview_at_line(api, "readme.md", 1)
+            .map_err(|err| format!("open readme.md failed: {err}"))?;
+        explorer.start_edit().unwrap();
+        explorer.editor_find_open();
+        for ch in "world".chars() {
+            explorer.push_find_char(ch);
+        }
+        assert_eq!(explorer.editor_find.ranges.len(), 1, "expected one match");
+        explorer
+            .editor_replace("tui", true)
+            .map_err(|err| format!("editor_replace failed: {err}"))?;
+        assert!(explorer.preview.dirty);
+        explorer
+            .editor_save(api)
+            .map_err(|err| format!("editor_save failed: {err}"))?;
+        let saved = std::fs::read_to_string(std::path::Path::new(cwd).join("readme.md"))
+            .map_err(|err| err.to_string())?;
+        assert_eq!(saved, "hello\ntui\n", "replace-all + save must persist");
+        explorer.editor_find_close();
+
+        // Tab cycle: readme + new_file previews rotate round-robin.
+        explorer
+            .open_preview_at_line(api, "new_file.rs", 1)
+            .map_err(|err| format!("open new_file.rs failed: {err}"))?;
+        assert!(
+            explorer.recent_previews.len() >= 2,
+            "recents must track both files"
+        );
+        assert!(explorer.cycle_recent_preview(api).unwrap());
+        let switched = explorer.preview.path.clone();
+        assert_eq!(
+            switched.as_deref(),
+            Some("readme.md"),
+            "Tab must rotate back to the previously opened file"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn tui_app_prompt_and_git_actions_round_trip() {
         let repo = temp_git_repo();
         let state = localhost_no_auth_state(repo.clone());

@@ -1163,3 +1163,82 @@ fn diff_search_without_matches_fails_navigation() {
     panel.refresh_diff_search_matches();
     assert!(panel.diff_search_matches.is_empty());
 }
+
+#[test]
+fn reveal_path_expands_ancestors_and_selects_file() {
+    let (port, _server) = fake_file_browser_server();
+    let api = WebApiClient::new("127.0.0.1", port);
+    let mut explorer = FileExplorer::new("/repo");
+    explorer.entries = vec![
+        FileEntry {
+            name: "src".to_string(),
+            path: "src".to_string(),
+            is_dir: true,
+            size: None,
+            level: 0,
+            expanded: false,
+            git_status: None,
+        },
+        FileEntry {
+            name: "docs".to_string(),
+            path: "docs".to_string(),
+            is_dir: true,
+            size: None,
+            level: 0,
+            expanded: false,
+            git_status: None,
+        },
+    ];
+    explorer.reveal_path(&api, "src/lib.rs").unwrap();
+    // The tree now holds src -> lib.rs (docs stays after the insert) and
+    // lib.rs is selected.
+    let paths: Vec<&str> = explorer.entries.iter().map(|e| e.path.as_str()).collect();
+    assert_eq!(paths, vec!["src", "src/lib.rs", "docs"]);
+    assert_eq!(explorer.selected_entry().unwrap().path, "src/lib.rs");
+    assert!(explorer.entries[0].expanded);
+
+    // Missing ancestor fails instead of guessing.
+    let err = explorer.reveal_path(&api, "nope/lib.rs").unwrap_err();
+    assert!(err.to_string().contains("cannot reveal"));
+
+    // Leading slash is tolerated (git paths are relative to the repo
+    // root; the tree joins them onto root_path the same way).
+    explorer.reveal_path(&api, "/src/lib.rs").unwrap();
+    assert_eq!(explorer.selected_entry().unwrap().path, "src/lib.rs");
+}
+
+#[test]
+fn recent_previews_dedupe_and_cycle_rotates() {
+    let (port, _server) = fake_file_browser_server();
+    let api = WebApiClient::new("127.0.0.1", port);
+    let mut explorer = FileExplorer::new("/repo");
+    // Simulate opening two files in order.
+    explorer.open_preview_path(&api, "src/lib.rs").unwrap();
+    explorer.open_preview_path(&api, "docs/readme.md").unwrap();
+    assert_eq!(
+        explorer.recent_previews,
+        vec!["docs/readme.md".to_string(), "src/lib.rs".to_string()]
+    );
+    // Re-opening moves it to the front without duplicating.
+    explorer.open_preview_path(&api, "src/lib.rs").unwrap();
+    assert_eq!(
+        explorer.recent_previews,
+        vec!["src/lib.rs".to_string(), "docs/readme.md".to_string()]
+    );
+    // Tab cycles back to the other preview.
+    assert!(explorer.cycle_recent_preview(&api).unwrap());
+    assert_eq!(explorer.preview.path.as_deref(), Some("docs/readme.md"));
+    // Cycling rotates the whole list round-robin.
+    assert!(explorer.cycle_recent_preview(&api).unwrap());
+    assert_eq!(explorer.preview.path.as_deref(), Some("src/lib.rs"));
+
+    // A dirty buffer blocks switching files.
+    explorer.preview.dirty = true;
+    assert!(!explorer.cycle_recent_preview(&api).unwrap());
+    assert_eq!(explorer.preview.path.as_deref(), Some("src/lib.rs"));
+
+    // With a single preview there is nothing to cycle to.
+    explorer.preview.dirty = false;
+    explorer.recent_previews.truncate(1);
+    assert!(!explorer.cycle_recent_preview(&api).unwrap());
+}

@@ -2,6 +2,7 @@
 //! Content search lives in the `content_search` submodule.
 
 pub mod content_search;
+pub mod find;
 
 use serde_json::Value;
 
@@ -12,6 +13,7 @@ pub use content_search::{
     content_rows, run_content_search, ContentRow, ContentSearchChunk, ContentSearchFile,
     ContentSearchRow, ContentSearchState,
 };
+pub use find::{find_ranges, EditorFind};
 
 /// Which set of things `/` searches. Webui `filterKind` cycles
 /// Files → Folders → Content → Files (`nextSearchScope`).
@@ -94,6 +96,10 @@ pub struct FileExplorer {
     /// Line to scroll the preview to after a content-search jump
     /// (1-based). Render highlights and centers on this line.
     pub preview_jump_line: Option<usize>,
+    /// Editor find bar state (Ctrl+F in edit mode).
+    pub editor_find: EditorFind,
+    /// Recently opened preview paths, most recent first (Tab cycles).
+    pub recent_previews: Vec<String>,
 }
 
 impl FileExplorer {
@@ -115,6 +121,8 @@ impl FileExplorer {
             truncated: false,
             status: None,
             preview_jump_line: None,
+            editor_find: EditorFind::default(),
+            recent_previews: Vec::new(),
         }
     }
 
@@ -243,7 +251,11 @@ impl FileExplorer {
     /// Load `path` into the preview, replacing whatever is shown. Callers
     /// are responsible for dirty-buffer checks; Ctrl-R reload uses this to
     /// intentionally discard local edits.
-    fn open_preview_path(&mut self, api: &WebApiClient, path: &str) -> Result<(), WebApiError> {
+    pub(super) fn open_preview_path(
+        &mut self,
+        api: &WebApiClient,
+        path: &str,
+    ) -> Result<(), WebApiError> {
         let data = api.file_read(&self.cwd, path)?;
         let content = data.get("content").and_then(Value::as_str).unwrap_or("");
         let binary = data.get("binary").and_then(Value::as_bool).unwrap_or(false);
@@ -251,6 +263,11 @@ impl FileExplorer {
             .get("truncated")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        // Track the recents stack for Tab cycling (most recent first,
+        // deduped like a browser tab history).
+        self.recent_previews.retain(|seen| seen != path);
+        self.recent_previews.insert(0, path.to_string());
+        self.recent_previews.truncate(12);
         self.preview = FilePreview {
             path: Some(path.to_string()),
             content: content.to_string(),
@@ -429,6 +446,38 @@ impl FileExplorer {
         self.search_mode = !self.filter.trim().is_empty();
     }
 
+    /// Cycle to the next recently opened preview (Tab parity with the
+    /// webui's open-file tabs, cheap single-buffer approximation).
+    pub fn cycle_recent_preview(&mut self, api: &WebApiClient) -> Result<bool, WebApiError> {
+        if self.recent_previews.len() < 2 {
+            return Ok(false);
+        }
+        // A dirty buffer blocks switching files (webui keeps dirty
+        // editor tabs open); check before touching the rotation so a
+        // blocked switch leaves the recents untouched.
+        if self.preview.dirty {
+            return Ok(false);
+        }
+        // Rotate the list: the second entry becomes the front.
+        let next = self.recent_previews[1].clone();
+        let front = self.recent_previews.remove(0);
+        self.recent_previews.insert(0, next.clone());
+        self.recent_previews.push(front);
+        // Re-dedupe so rotation does not duplicate entries.
+        let mut seen = Vec::new();
+        self.recent_previews.retain(|path| {
+            if seen.contains(path) {
+                false
+            } else {
+                seen.push(path.clone());
+                true
+            }
+        });
+        self.preview_jump_line = None;
+        self.open_preview_path(api, &next)?;
+        Ok(true)
+    }
+
     /// Cycle the `/` search scope (webui `toggleFilterKind`:
     /// Files → Folders → Content). Fresh scope resets results.
     pub fn cycle_search_kind(&mut self) {
@@ -474,6 +523,63 @@ impl FileExplorer {
         if let Some(index) = self.entries.iter().position(|entry| entry.path == path) {
             self.selected = index;
         }
+    }
+
+    /// Reveal `path` in the tree (neovim reveal-current-file, webui
+    /// "reveal in tree"): expand every ancestor directory lazily and
+    /// land the cursor on the file. `root` here is the explorer's own
+    /// `cwd` + `root_path` join, because the git-panel file paths are
+    /// relative to the repo root while the tree may be scoped deeper.
+    pub fn reveal_path(&mut self, api: &WebApiClient, path: &str) -> Result<(), WebApiError> {
+        let clean = path.trim_start_matches('/');
+        if clean.is_empty() {
+            return Err(WebApiError::Io("no file to reveal".to_string()));
+        }
+        // Walk ancestor directories in order, expanding each one.
+        let mut parts: Vec<&str> = clean.split('/').collect();
+        parts.pop(); // the file itself is selected, not expanded
+        let mut prefix = String::new();
+        for part in parts {
+            prefix = if prefix.is_empty() {
+                part.to_string()
+            } else {
+                format!("{prefix}/{part}")
+            };
+            if let Some(index) = self
+                .entries
+                .iter()
+                .position(|entry| entry.path == prefix && entry.is_dir)
+            {
+                self.selected = index;
+                if !self.entries[index].expanded {
+                    self.toggle_expand(api)?;
+                }
+            } else if self
+                .entries
+                .iter()
+                .any(|entry| entry.is_dir && entry.path.starts_with(&format!("{prefix}/")))
+            {
+                // The server compacts single-child directories at the
+                // top level (e.g. `nested/deep` as one entry), so an
+                // ancestor may be absent while its children are
+                // already visible: nothing to expand, keep walking.
+            } else {
+                return Err(WebApiError::Io(format!(
+                    "cannot reveal {clean}: {prefix} is not in the tree"
+                )));
+            }
+        }
+        self.select_path(clean);
+        if self
+            .selected_entry()
+            .is_none_or(|entry| entry.path != clean)
+        {
+            return Err(WebApiError::Io(format!(
+                "cannot reveal {clean}: not found under {}",
+                self.root_path
+            )));
+        }
+        Ok(())
     }
 
     /// Open `path` at `line` (1-based) in the preview, jumping the

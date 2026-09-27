@@ -204,6 +204,11 @@ pub enum PromptKind {
     /// Files screen `A`: new directory. No mkdir endpoint exists, so
     /// this writes a `.gitkeep` marker inside (documented deviation).
     CreateDirectory,
+    /// Edit mode Ctrl+H: replacement text for the current editor find
+    /// match. A trailing `!` replaces all matches instead of the
+    /// selected one (documented deviation from the webui replace bar,
+    /// which has separate replace/replace-all buttons).
+    ReplaceInFile,
 }
 
 impl PromptKind {
@@ -243,6 +248,7 @@ impl PromptKind {
             Self::CreateBranch => "Create branch",
             Self::CreateFile => "New file",
             Self::CreateDirectory => "New directory",
+            Self::ReplaceInFile => "Replace in file",
         }
     }
 
@@ -261,6 +267,9 @@ impl PromptKind {
             Self::CreateBranch => "type the branch name, Enter creates and switches",
             Self::CreateFile => "type the file name, Enter creates an empty file",
             Self::CreateDirectory => "type the directory name, Enter creates it",
+            Self::ReplaceInFile => {
+                "type the replacement, Enter replaces the current match (! = all)"
+            }
             _ => "type y then Enter to confirm, Esc cancels",
         }
     }
@@ -624,6 +633,27 @@ impl TuiApp {
                     }
                 }
             }
+            PromptKind::ReplaceInFile => {
+                // `!` suffix = replace all (documented deviation).
+                let (replacement, all) = match text.strip_suffix('!') {
+                    Some(head) => (head.to_string(), true),
+                    None => (text.to_string(), false),
+                };
+                let count = self.file_explorer.editor_find.ranges.len();
+                match self.file_explorer.editor_replace(&replacement, all) {
+                    Ok(()) => {
+                        self.status = if all {
+                            format!("replaced {count} matches")
+                        } else {
+                            format!("replaced 1 of {count} matches")
+                        };
+                        // Stay in edit mode with the find bar alive so
+                        // Ctrl+S persists and Enter keeps cycling.
+                        self.file_explorer.edit_active = true;
+                    }
+                    Err(err) => self.error = Some(err.to_string()),
+                }
+            }
         }
     }
 
@@ -715,6 +745,47 @@ impl TuiApp {
                 )
             }
             Err(err) => self.error = Some(err.to_string()),
+        }
+    }
+
+    /// Keys while the editor find bar is active (webui find toolbar).
+    fn handle_editor_find_key(&mut self, key: KeyEvent) {
+        let shift = key
+            .modifiers
+            .contains(crossterm::event::KeyModifiers::SHIFT);
+        match key.code {
+            KeyCode::Esc => {
+                self.file_explorer.editor_find_close();
+                self.status = "find closed".to_string();
+            }
+            KeyCode::Enter => {
+                self.file_explorer.editor_find_next(!shift);
+                let count = self.file_explorer.editor_find.ranges.len();
+                self.status = if count == 0 {
+                    "no matches".to_string()
+                } else {
+                    format!(
+                        "match {}/{}",
+                        self.file_explorer.editor_find.selected + 1,
+                        count
+                    )
+                };
+            }
+            KeyCode::Backspace => self.file_explorer.pop_find_char(),
+            // Match-case / regex toggles (webui toolbar checkboxes).
+            KeyCode::Char('A') => {
+                self.file_explorer.editor_find.match_case =
+                    !self.file_explorer.editor_find.match_case;
+                self.file_explorer.refresh_find();
+            }
+            KeyCode::Char('X') => {
+                self.file_explorer.editor_find.regex = !self.file_explorer.editor_find.regex;
+                self.file_explorer.refresh_find();
+            }
+            KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.file_explorer.push_find_char(ch);
+            }
+            _ => {}
         }
     }
 
@@ -1165,6 +1236,13 @@ impl TuiApp {
     fn handle_files_key(&mut self, key: KeyEvent) {
         // While editing, all keys type into the buffer; Esc exits edit mode.
         if self.file_explorer.edit_active {
+            // Find bar owns the keyboard while active (webui Ctrl+F bar):
+            // typing re-runs incrementally, Enter/Shift+Enter cycle, A/X
+            // flip toggles, Esc closes keeping the query.
+            if self.file_explorer.editor_find.active {
+                self.handle_editor_find_key(key);
+                return;
+            }
             match self.file_explorer.edit_key(key, &self.web_api) {
                 Ok(()) => {
                     if !self.file_explorer.edit_active {
@@ -1173,6 +1251,26 @@ impl TuiApp {
                         } else {
                             "edit mode closed".to_string()
                         };
+                    } else if key
+                        .modifiers
+                        .contains(crossterm::event::KeyModifiers::CONTROL)
+                        && key.code == KeyCode::Char('f')
+                    {
+                        self.file_explorer.editor_find_open();
+                        self.status = "find: Enter next, Shift+Enter prev, Esc closes".to_string();
+                    } else if key
+                        .modifiers
+                        .contains(crossterm::event::KeyModifiers::CONTROL)
+                        && key.code == KeyCode::Char('h')
+                    {
+                        // Replace flows through the shared prompt: type
+                        // the replacement, Enter replaces the current
+                        // match, `!` replaces all (documented deviation
+                        // from the webui's dedicated replace bar).
+                        self.prompt_input = Some(PromptInput {
+                            kind: PromptKind::ReplaceInFile,
+                            text: String::new(),
+                        });
                     } else if key
                         .modifiers
                         .contains(crossterm::event::KeyModifiers::CONTROL)
@@ -1286,6 +1384,37 @@ impl TuiApp {
                         self.status = format!("log: {file}");
                     }
                     None => self.error = Some("select a file first".to_string()),
+                }
+            }
+            // Tab cycles recently opened previews (webui open-file
+            // tabs approximation). Blocked on a dirty buffer like the
+            // webui blocks tab switches with unsaved editors.
+            KeyCode::Tab => match self.file_explorer.cycle_recent_preview(&self.web_api) {
+                Ok(true) => self.status = "switched preview".to_string(),
+                Ok(false) => {
+                    self.status = if self.file_explorer.preview.dirty {
+                        "save or discard before switching".to_string()
+                    } else {
+                        "no recent previews".to_string()
+                    }
+                }
+                Err(err) => self.error = Some(err.to_string()),
+            },
+            // Reveal the git-panel selected file in the tree
+            // (neovim reveal-current-file; plan reserves prefix F, so
+            // plain `w` carries it here like `w` in the git log view
+            // reuses the worktree prompt).
+            KeyCode::Char('w') => {
+                let file = self
+                    .git_panel
+                    .selected_file()
+                    .map(|entry| entry.path.clone());
+                match file {
+                    Some(file) => match self.file_explorer.reveal_path(&self.web_api, &file) {
+                        Ok(()) => self.status = format!("revealed {file}"),
+                        Err(err) => self.error = Some(err.to_string()),
+                    },
+                    None => self.error = Some("no file selected in the git panel".to_string()),
                 }
             }
             KeyCode::Char('/') => self.file_explorer.start_filter(),

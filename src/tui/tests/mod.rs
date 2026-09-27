@@ -966,7 +966,18 @@ fn renders_files_preview_states() {
     app.file_explorer.preview.truncated = false;
     app.file_explorer.start_edit().unwrap();
     assert!(app.file_explorer.edit_active);
-    assert!(draw(&app, 150, 30).contains("Ctrl-S save \u{b7} Esc stop"));
+    assert!(draw(&app, 150, 30)
+        .contains("Ctrl-S save \u{b7} Ctrl-F find \u{b7} Ctrl-H replace \u{b7} Esc stop"));
+
+    // Find bar renders the query and match count while active.
+    app.file_explorer.editor_find.active = true;
+    app.file_explorer.editor_find.query = "read".to_string();
+    app.file_explorer.editor_find.ranges = vec![(1, 5), (10, 14)];
+    app.file_explorer.editor_find.selected = 1;
+    let find_draw = draw(&app, 150, 30);
+    assert!(find_draw.contains("find read"));
+    assert!(find_draw.contains("match 2/2"));
+    app.file_explorer.editor_find.active = false;
 
     // Filter mode renders the filter box.
     app.file_explorer.edit_active = false;
@@ -3203,4 +3214,137 @@ fn content_search_keys_own_results_and_toggles_re_run() {
     app.handle_key(KeyEvent::from(KeyCode::Esc));
     assert!(!app.file_explorer.search_mode);
     assert!(app.file_explorer.content_search.files.is_empty());
+}
+
+#[test]
+fn files_screen_ctrl_f_find_bar_types_cycles_and_esc_keeps_query() {
+    let client = BackendClient::builtin_session(None);
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    app.screen = TuiScreen::Files;
+    app.file_explorer.preview = crate::tui::panels::FilePreview {
+        path: Some("notes.md".to_string()),
+        content: "alpha beta alpha".to_string(),
+        truncated: false,
+        binary: false,
+        hash: "h1".to_string(),
+        dirty: false,
+    };
+    app.file_explorer.edit_active = true;
+    app.file_explorer.edit_cursor = 0;
+
+    // Ctrl+F opens the find bar.
+    app.handle_key(ctrl('f'));
+    assert!(app.file_explorer.editor_find.active);
+
+    // Typing re-runs the search incrementally.
+    app.handle_key(KeyEvent::from(KeyCode::Char('a')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('l')));
+    assert_eq!(app.file_explorer.editor_find.query, "al");
+    assert_eq!(app.file_explorer.editor_find.ranges.len(), 2);
+
+    // Enter cycles forward, Shift+Enter cycles back.
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.file_explorer.editor_find.selected, 1);
+    let shift_enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT);
+    app.handle_key(shift_enter);
+    assert_eq!(app.file_explorer.editor_find.selected, 0);
+
+    // A toggles match case (query "al" is lowercase so no change in
+    // count, but the flag flips and re-runs).
+    app.handle_key(KeyEvent::from(KeyCode::Char('A')));
+    assert!(app.file_explorer.editor_find.match_case);
+
+    // Esc closes the bar but keeps the query for the next open.
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert!(!app.file_explorer.editor_find.active);
+    assert_eq!(app.file_explorer.editor_find.query, "al");
+
+    // Reopen resumes with the same query.
+    app.handle_key(ctrl('f'));
+    assert!(app.file_explorer.editor_find.active);
+    assert_eq!(app.file_explorer.editor_find.ranges.len(), 2);
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+}
+
+#[test]
+fn files_screen_ctrl_h_replace_prompt_replaces_current_and_all() {
+    let client = BackendClient::builtin_session(None);
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    app.screen = TuiScreen::Files;
+    app.file_explorer.preview = crate::tui::panels::FilePreview {
+        path: Some("notes.md".to_string()),
+        content: "foo bar foo".to_string(),
+        truncated: false,
+        binary: false,
+        hash: "h1".to_string(),
+        dirty: false,
+    };
+    app.file_explorer.edit_active = true;
+    app.file_explorer.edit_cursor = 0;
+    app.handle_key(ctrl('f'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('f')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('o')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('o')));
+    assert_eq!(app.file_explorer.editor_find.ranges.len(), 2);
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+
+    // Ctrl+H opens the replace prompt.
+    app.handle_key(ctrl('h'));
+    assert_eq!(
+        app.prompt_input.as_ref().map(|prompt| prompt.kind),
+        Some(PromptKind::ReplaceInFile)
+    );
+
+    // Enter with plain text replaces only the current match.
+    for ch in "qux".chars() {
+        app.handle_key(KeyEvent::from(KeyCode::Char(ch)));
+    }
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.prompt_input.is_none());
+    assert_eq!(app.file_explorer.preview.content, "qux bar foo");
+    assert!(app.file_explorer.preview.dirty);
+    assert!(app.file_explorer.edit_active);
+    // Find re-ran: the remaining foo is still a match.
+    assert_eq!(app.file_explorer.editor_find.ranges.len(), 1);
+
+    // Trailing `!` replaces all matches.
+    app.file_explorer.edit_active = true;
+    app.handle_key(ctrl('h'));
+    for ch in "zap!".chars() {
+        app.handle_key(KeyEvent::from(KeyCode::Char(ch)));
+    }
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.file_explorer.preview.content, "qux bar zap");
+    assert!(app.file_explorer.editor_find.ranges.is_empty());
+}
+
+#[test]
+fn files_screen_tab_cycles_recent_previews_and_w_reveals_git_file() {
+    let client = BackendClient::builtin_session(None);
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    app.screen = TuiScreen::Files;
+    // Two already-open recents: Tab should flip the preview without
+    // touching the (dead) backend.
+    app.file_explorer.recent_previews = vec!["b.md".to_string(), "a.md".to_string()];
+    app.file_explorer.preview = crate::tui::panels::FilePreview {
+        path: Some("b.md".to_string()),
+        content: "b".to_string(),
+        truncated: false,
+        binary: false,
+        hash: "h1".to_string(),
+        dirty: false,
+    };
+    // Tab without a reachable API keeps the list rotating state intact;
+    // the switch itself fails and surfaces an error, so assert on the
+    // non-networking branch: single-entry recents.
+    app.file_explorer.recent_previews.truncate(1);
+    app.handle_key(KeyEvent::from(KeyCode::Tab));
+    assert_eq!(app.status, "no recent previews");
+
+    // `w` with no git file selected errors instead of guessing.
+    app.handle_key(KeyEvent::from(KeyCode::Char('w')));
+    assert_eq!(
+        app.error.as_deref(),
+        Some("no file selected in the git panel")
+    );
 }

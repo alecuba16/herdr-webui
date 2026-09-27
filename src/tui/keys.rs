@@ -302,6 +302,12 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
             "Enter opens match (jump-to-line), + more, A/X toggles",
         ),
         ("files: a/A", "new file / new directory under the cursor"),
+        ("files: Tab", "cycle recently opened previews"),
+        ("files: w", "reveal the git-panel file in the tree"),
+        (
+            "edit: Ctrl+F/H",
+            "find (A case, X regex, Enter next) / replace (! = all)",
+        ),
         (
             "git: / (changes)",
             "diff search: n/N cycle, Enter keeps, Esc clears",

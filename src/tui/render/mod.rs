@@ -591,10 +591,36 @@ fn render_file_preview(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
             }
         }
         if explorer.edit_active {
-            lines.push(Line::from(Span::styled(
-                "Ctrl-S save · Esc stop editing",
-                Style::default().fg(p.accent),
-            )));
+            // Find bar (webui Ctrl+F toolbar): query, toggles, count.
+            if explorer.editor_find.active {
+                let find = &explorer.editor_find;
+                let count = find.ranges.len();
+                let position = if count == 0 {
+                    "no matches".to_string()
+                } else {
+                    format!("match {}/{}", find.selected + 1, count)
+                };
+                let mut spans = vec![
+                    Span::styled("find ".to_string(), Style::default().fg(p.muted)),
+                    Span::styled(find.query.clone(), Style::default().fg(p.accent)),
+                ];
+                if find.match_case {
+                    spans.push(Span::styled(" A", Style::default().fg(p.green)));
+                }
+                if find.regex {
+                    spans.push(Span::styled(" X", Style::default().fg(p.green)));
+                }
+                spans.push(Span::styled(
+                    format!("  {position}  (Enter next, Shift+Enter prev, Esc close)"),
+                    Style::default().fg(p.muted),
+                ));
+                lines.push(Line::from(spans));
+            } else {
+                lines.push(Line::from(Span::styled(
+                    "Ctrl-S save · Ctrl-F find · Ctrl-H replace · Esc stop editing",
+                    Style::default().fg(p.accent),
+                )));
+            }
         }
         if preview.truncated {
             lines.push(Line::from(Span::styled(
@@ -1305,6 +1331,20 @@ fn render_prompt_input(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
                 "(workspace root)".to_string()
             } else {
                 app.file_explorer.root_path.clone()
+            }
+        }
+        // Replace: show the current find query and match position.
+        crate::tui::PromptKind::ReplaceInFile => {
+            let find = &app.file_explorer.editor_find;
+            if find.ranges.is_empty() {
+                format!("find: {} (no matches)", find.query)
+            } else {
+                format!(
+                    "find: {} (match {}/{})",
+                    find.query,
+                    find.selected + 1,
+                    find.ranges.len()
+                )
             }
         }
     };
