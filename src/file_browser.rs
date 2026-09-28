@@ -1807,6 +1807,11 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&root).unwrap();
+        // GitHub's macOS runners expose a /var/folders TMPDIR that is a
+        // symlink alias of /private/var/folders; resolve_child canonicalizes
+        // the joined path, so the root must be canonical for the escape
+        // guard to compare like-for-like.
+        let root = root.canonicalize().unwrap();
         let file = resolve_child_create(&root, "a/new/dir/.gitkeep").unwrap();
         assert!(file.starts_with(&root));
         assert!(root.join("a/new/dir").is_dir());
