@@ -4,7 +4,6 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Frame;
 
-
 use crate::tui::panels::files::{content_rows, ContentRow, SearchKind};
 use crate::tui::panels::GitView;
 use crate::tui::terminal::styled_terminal_line;
@@ -1591,7 +1590,9 @@ fn render_help(frame: &mut Frame<'_>, area: Rect, p: &Palette, filter: &str, scr
     let width = area.width.min(72);
     // One extra line for the filter query while it is active.
     let filter_height = if filter.is_empty() { 0 } else { 1 };
-    let height = area.height.min((rows.len() as u16 + 4 + filter_height).min(50));
+    let height = area
+        .height
+        .min((rows.len() as u16 + 4 + filter_height).min(50));
     let rect = Rect::new(
         area.x + area.width.saturating_sub(width) / 2,
         area.y + area.height.saturating_sub(height) / 2,
@@ -1607,10 +1608,7 @@ fn render_help(frame: &mut Frame<'_>, area: Rect, p: &Palette, filter: &str, scr
     if !filter.is_empty() {
         lines.push(Line::from(vec![
             Span::styled(" filter: ", Style::default().fg(p.muted)),
-            Span::styled(
-                format!("{filter}_"),
-                Style::default().fg(p.accent),
-            ),
+            Span::styled(format!("{filter}_"), Style::default().fg(p.accent)),
             Span::styled(
                 format!("  {}/{}", rows.len(), crate::tui::keys::help_rows().len()),
                 Style::default().fg(p.muted),
@@ -1635,7 +1633,7 @@ fn render_help(frame: &mut Frame<'_>, area: Rect, p: &Palette, filter: &str, scr
         }
     }
     let title = if filter.is_empty() {
-        " Help · Esc closes · type to filter · j/k scrolls "
+        " Help · ? closes · type to filter · j/k scrolls "
     } else {
         " Help · Esc clears the filter "
     };
@@ -1707,7 +1705,11 @@ fn render_worktree_list(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pal
         } else {
             Style::default().fg(p.text)
         };
-        let linked = if row.is_linked { " [linked]" } else { " [main]" };
+        let linked = if row.is_linked {
+            " [linked]"
+        } else {
+            " [main]"
+        };
         lines.push(Line::from(vec![
             Span::styled(cursor, Style::default().fg(p.accent)),
             Span::styled(row.title(), title_style),

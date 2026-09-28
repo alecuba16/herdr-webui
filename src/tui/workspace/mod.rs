@@ -41,10 +41,7 @@ fn home_dir() -> Option<PathBuf> {
 pub(crate) fn validate_workspace_folder(input: &str) -> Result<String, String> {
     let path = expand_tilde_path(input);
     if !Path::new(&path).is_dir() {
-        return Err(format!(
-            "workspace folder must exist: {}",
-            path.display()
-        ));
+        return Err(format!("workspace folder must exist: {}", path.display()));
     }
     Ok(path.to_string_lossy().to_string())
 }
@@ -132,7 +129,11 @@ impl TuiApp {
 
     /// Create + focus a workspace at a validated path. Shared by the
     /// path-only and path+label prompt flows.
-    pub fn create_workspace_at(&mut self, expanded_path: &str, label: Option<&str>) -> WorkspaceResult {
+    pub fn create_workspace_at(
+        &mut self,
+        expanded_path: &str,
+        label: Option<&str>,
+    ) -> WorkspaceResult {
         let client = self.client.clone();
         let result = client
             .create_workspace(Some(expanded_path), label)
@@ -388,10 +389,8 @@ pub(crate) fn run_prompt(app: &mut TuiApp, kind: &WorkspacePrompt, text: &str) {
         WorkspacePrompt::NewWorkspace => {
             match validate_workspace_folder(text) {
                 Ok(expanded) => {
-                    app.workspace_create_stage =
-                        Some(WorkspaceCreateStage::Path(expanded.clone()));
-                    app.prompt_input =
-                        Some(PromptInput::new(PromptKind::NewWorkspaceName));
+                    app.workspace_create_stage = Some(WorkspaceCreateStage::Path(expanded.clone()));
+                    app.prompt_input = Some(PromptInput::new(PromptKind::NewWorkspaceName));
                     app.status = format!("workspace name for {expanded}");
                     return;
                 }

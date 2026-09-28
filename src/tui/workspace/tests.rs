@@ -587,14 +587,17 @@ fn round4_workspace_temp_empty_ids_and_create_path_backend_error() {
 
 #[test]
 fn new_workspace_prompt_validates_tilde_expands_and_chains_name_step() {
-    use super::{WorkspaceCreateStage, validate_workspace_folder};
+    use super::{validate_workspace_folder, WorkspaceCreateStage};
 
     // Tilde expansion mirrors the webui expand_user_path_string.
     let home = std::env::var_os("HOME").expect("HOME set in tests");
     let expanded = super::expand_tilde_path("~");
     assert_eq!(expanded, std::path::PathBuf::from(&home));
     let expanded = super::expand_tilde_path("~/Documents/code");
-    assert_eq!(expanded, std::path::PathBuf::from(&home).join("Documents/code"));
+    assert_eq!(
+        expanded,
+        std::path::PathBuf::from(&home).join("Documents/code")
+    );
     assert_eq!(
         super::expand_tilde_path("/absolute/path"),
         std::path::PathBuf::from("/absolute/path")
@@ -602,9 +605,7 @@ fn new_workspace_prompt_validates_tilde_expands_and_chains_name_step() {
 
     // Webui parity: the folder must exist on disk.
     let missing = validate_workspace_folder("/definitely/not/a/real/dir");
-    assert!(missing
-        .unwrap_err()
-        .contains("workspace folder must exist"));
+    assert!(missing.unwrap_err().contains("workspace folder must exist"));
 
     // Step 1 of the prompt chain: a real folder stages the path and
     // opens the name prompt; a bad path stays on the path prompt.
@@ -634,7 +635,11 @@ fn new_workspace_prompt_validates_tilde_expands_and_chains_name_step() {
 
     // A missing folder keeps the path prompt open and surfaces the error.
     let (mut app, _stop) = app_with_fake_backend();
-    run_prompt(&mut app, &WorkspacePrompt::NewWorkspace, "/definitely/not/real");
+    run_prompt(
+        &mut app,
+        &WorkspacePrompt::NewWorkspace,
+        "/definitely/not/real",
+    );
     assert!(app
         .error
         .as_deref()
@@ -649,10 +654,7 @@ fn new_workspace_prompt_validates_tilde_expands_and_chains_name_step() {
     // The name step without a staged path errors instead of panicking.
     let (mut app, _stop) = app_with_fake_backend();
     run_prompt(&mut app, &WorkspacePrompt::NewWorkspaceName, "orphan");
-    assert_eq!(
-        app.error.as_deref(),
-        Some("no workspace path staged")
-    );
+    assert_eq!(app.error.as_deref(), Some("no workspace path staged"));
 }
 
 #[test]

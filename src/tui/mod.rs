@@ -139,7 +139,7 @@ impl FooterContext {
     pub(crate) fn hint(self) -> &'static str {
         match self {
             Self::ConfirmQuit => " y quit · n/Esc cancel ",
-            Self::HelpOverlay => " Esc closes help · type filters · j/k scrolls ",
+            Self::HelpOverlay => " ? closes help · type filters · j/k scrolls ",
             Self::SettingsOverlay => " t theme · Esc closes ",
             Self::WorktreeList => " Enter opens · j/k moves · type filters · Esc closes ",
             Self::CommitInput => {
@@ -200,7 +200,7 @@ impl FooterContext {
     pub(crate) fn compact_hint(self) -> &'static str {
         match self {
             Self::ConfirmQuit => " y quit · n/Esc cancel ",
-            Self::HelpOverlay => " Esc closes help · type filters · j/k scrolls ",
+            Self::HelpOverlay => " ? closes help · type filters · j/k scrolls ",
             Self::SettingsOverlay => " t theme · Esc closes ",
             Self::WorktreeList => " Enter opens · j/k moves · type filters · Esc closes ",
             Self::CommitInput => " Enter commit · Esc cancel · Ctrl+B ? help ",
@@ -635,18 +635,26 @@ impl TuiApp {
                         self.help_scroll = 0;
                     }
                 }
-                KeyCode::Char('?') | KeyCode::Char('q') => {
+                // Toggle close: ? always closes the overlay (it never
+                // appears in shortcut names or descriptions, so unlike q it
+                // cannot start a query). Esc is the other closer; q types
+                // into the filter like the webui search box, so queries
+                // like "quit" and "quick" are typeable.
+                KeyCode::Char('?') => {
                     self.mode = TuiMode::Navigate;
                     self.help_scroll = 0;
                     self.help_filter.clear();
                 }
                 // While a filter is active every printable key (except the
-                // Esc/?/q closes above) edits the query, so words like
-                // "worktree" and "workspace" type through their j/k letters.
-                // Scrolling then lives on the arrow/Page keys only.
+                // ? toggle and Esc closer above) edits the query, so words
+                // like "worktree" and "quit" type through their j/k/q
+                // letters. Scrolling then lives on the arrow/Page keys only.
                 KeyCode::Down | KeyCode::PageDown => {
-                    let max =
-                        help_max_scroll().min(filtered_help_rows(&self.help_filter).len().saturating_sub(1));
+                    let max = help_max_scroll().min(
+                        filtered_help_rows(&self.help_filter)
+                            .len()
+                            .saturating_sub(1),
+                    );
                     self.help_scroll = self.help_scroll.saturating_add(1).min(max);
                 }
                 KeyCode::Up | KeyCode::PageUp => {
@@ -2414,8 +2422,7 @@ impl TuiApp {
             KeyCode::Char('k') | KeyCode::Up if !filter_active => {
                 let len = self.filtered_worktree_rows().len();
                 if len > 0 {
-                    self.worktree_selected =
-                        (self.worktree_selected + len.saturating_sub(1)) % len;
+                    self.worktree_selected = (self.worktree_selected + len.saturating_sub(1)) % len;
                 }
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {

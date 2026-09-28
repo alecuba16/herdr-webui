@@ -2858,7 +2858,7 @@ fn renders_terminal_footer_and_help_variants() {
 
     app.mode = TuiMode::Help;
     let help = draw(&app, 100, 24);
-    assert!(help.contains("Esc"), "help footer renders");
+    assert!(help.contains("? closes"), "help footer renders");
 }
 
 #[test]
@@ -4363,7 +4363,13 @@ fn round2_constructors_prompt_titles_help_and_refresh_errors() {
     assert_eq!(help.help_scroll, 0);
     help.handle_key(KeyEvent::from(KeyCode::Char('x')));
     assert_eq!(help.mode, TuiMode::Help);
+    // q types into the filter now (? is the toggle closer); the x above
+    // also typed, so clear first.
+    help.help_filter.clear();
     help.handle_key(KeyEvent::from(KeyCode::Char('q')));
+    assert_eq!(help.help_filter, "q");
+    assert_eq!(help.mode, TuiMode::Help);
+    help.handle_key(KeyEvent::from(KeyCode::Char('?')));
     assert_eq!(help.mode, TuiMode::Navigate);
 
     help.mode = TuiMode::Settings;
@@ -5253,7 +5259,13 @@ fn help_overlay_filters_by_typed_query() {
     assert_eq!(app.help_filter, "worktree");
     let drawn = draw(&app, 150, 40);
     assert!(drawn.contains("filter: worktree_"));
-    assert!(drawn.contains("No shortcuts match".replace("No shortcuts match", "worktree").as_str()) || drawn.contains("worktree"));
+    assert!(
+        drawn.contains(
+            "No shortcuts match"
+                .replace("No shortcuts match", "worktree")
+                .as_str()
+        ) || drawn.contains("worktree")
+    );
     // The filter must drop unrelated rows like the terminal detach hint.
     assert!(!drawn.contains("detach terminal"));
 
@@ -5274,16 +5286,56 @@ fn help_overlay_filters_by_typed_query() {
 }
 
 #[test]
+fn help_filter_types_q_into_query_and_question_mark_closes() {
+    // Regression from the pty acceptance run: q must type into the query
+    // ("quit", "quick"...) like the webui search box; ? is the toggle
+    // closer and Esc clears the filter before closing.
+    let mut app = app_with_snapshot();
+    app.handle_key(KeyEvent::from(KeyCode::Char('?')));
+    assert_eq!(app.mode, TuiMode::Help);
+
+    // "quit" must type through its leading q into the filter and match
+    // the quit shortcut row.
+    for ch in "quit".chars() {
+        app.handle_key(KeyEvent::from(KeyCode::Char(ch)));
+    }
+    assert_eq!(app.help_filter, "quit");
+    assert_eq!(app.mode, TuiMode::Help);
+    let drawn = draw(&app, 150, 40);
+    assert!(drawn.contains("filter: quit_"));
+    assert!(drawn.contains("quit"));
+
+    // ? closes the overlay even with a filter active.
+    app.handle_key(KeyEvent::from(KeyCode::Char('?')));
+    assert_eq!(app.mode, TuiMode::Navigate);
+    assert_eq!(app.help_filter, "");
+
+    // Esc clears the filter first (stays in the overlay), then closes.
+    app.handle_key(KeyEvent::from(KeyCode::Char('?')));
+    for ch in "zz".chars() {
+        app.handle_key(KeyEvent::from(KeyCode::Char(ch)));
+    }
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert_eq!(app.help_filter, "");
+    assert_eq!(app.mode, TuiMode::Help);
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert_eq!(app.mode, TuiMode::Navigate);
+}
+
+#[test]
 fn filtered_help_rows_match_keys_and_descriptions() {
     // Direct unit check of the filter helper (webui settings-search parity).
     let rows = crate::tui::filtered_help_rows("worktree");
     assert!(!rows.is_empty());
-    assert!(rows
-        .iter()
-        .all(|(keys, description)| keys.to_ascii_lowercase().contains("worktree")
-            || description.to_ascii_lowercase().contains("worktree")));
+    assert!(rows.iter().all(
+        |(keys, description)| keys.to_ascii_lowercase().contains("worktree")
+            || description.to_ascii_lowercase().contains("worktree")
+    ));
     // Empty query returns every row including separators.
-    assert_eq!(crate::tui::filtered_help_rows("").len(), crate::tui::keys::help_rows().len());
+    assert_eq!(
+        crate::tui::filtered_help_rows("").len(),
+        crate::tui::keys::help_rows().len()
+    );
     // No match returns empty.
     assert!(crate::tui::filtered_help_rows("zzzzzzzz").is_empty());
 }
