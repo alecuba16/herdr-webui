@@ -1521,7 +1521,25 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
         (TuiMode::Help, _) => " Esc closes help · j/k scrolls ",
         (TuiMode::Settings, _) => " t theme · Esc closes ",
     };
+    // On narrow terminals (the classic 80x24) the full hint would push the
+    // discovery tail off-screen: the mode label alone eats 14+ columns and
+    // the status message needs room. Drop the middle actions first and keep
+    // the `Ctrl+B ? help` tail, which is the one hint every screen needs.
+    let label_width = 3 + app.screen.title().len() + 3;
+    // 8 columns of status message minimum; below that the hint shrinks too.
+    let hint_budget = area
+        .width
+        .saturating_sub(label_width as u16)
+        .saturating_sub(prefix.chars().count() as u16)
+        .saturating_sub(8) as usize;
+    let help = if help.chars().count() <= hint_budget {
+        help.to_string()
+    } else {
+        fit_hint(compact_hint(app.mode, app.screen), hint_budget)
+    };
     let message = app.error.as_deref().unwrap_or(&app.status);
+    let used = label_width + help.chars().count() + prefix.chars().count();
+    let status_budget = area.width.saturating_sub(used as u16) as usize;
     let line = Line::from(vec![
         Span::styled(
             format!(" {mode}·{} ", app.screen.title()),
@@ -1535,7 +1553,7 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
             Style::default().fg(p.text).bg(p.panel_alt),
         ),
         Span::styled(
-            truncate(message, area.width.saturating_sub(52) as usize),
+            truncate(message, status_budget),
             Style::default()
                 .fg(if app.error.is_some() { p.red } else { p.muted })
                 .bg(p.panel_alt),
@@ -1545,6 +1563,45 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
         Paragraph::new(line).style(Style::default().bg(p.panel_alt)),
         area,
     );
+}
+
+/// Narrow-terminal footer hints: same information, fewer actions listed.
+/// Every compact hint keeps the `Ctrl+B ? help` discovery tail, which is
+/// what a cramped statusbar must never lose.
+/// Shrink a footer hint from the front, dropping whole `·`-separated
+/// segments until it fits `budget`. The `Ctrl+B ? help` tail is the
+/// discovery hint and is always the last segment kept.
+fn fit_hint(hint: &str, budget: usize) -> String {
+    let width = |segs: &[&str]| {
+        segs.iter().map(|s| s.chars().count()).sum::<usize>() + 3 * segs.len().saturating_sub(1) + 2
+    };
+    let mut segments: Vec<&str> = hint.trim().split(" · ").collect();
+    while width(&segments) > budget && segments.len() > 1 {
+        segments.remove(0);
+    }
+    let joined = format!(" {} ", segments.join(" · "));
+    if joined.chars().count() > budget {
+        // A single segment still too wide (very narrow terminal): keep its
+        // tail, which is where the discovery hint lives.
+        let skip = joined.chars().count().saturating_sub(budget);
+        joined.chars().skip(skip).collect()
+    } else {
+        joined
+    }
+}
+
+fn compact_hint(mode: TuiMode, screen: TuiScreen) -> &'static str {
+    match (mode, screen) {
+        (TuiMode::ConfirmQuit, _) => " y quit · n/Esc cancel ",
+        (TuiMode::Attach, TuiScreen::Terminal) => " Ctrl+B ? help · Ctrl-G detach ",
+        (TuiMode::Attach, TuiScreen::Files) => " j/k · Enter · Ctrl+B ? help ",
+        (TuiMode::Attach, TuiScreen::Git) => " s stage · c commit · Ctrl+B ? help ",
+        (_, TuiScreen::Files) => " j/k · Enter · Ctrl+B ? help ",
+        (_, TuiScreen::Git) => " Tab · s stage · Ctrl+B ? help ",
+        (TuiMode::Navigate, _) => " j/k select · Enter attach · q quit · Ctrl+B ? help ",
+        (TuiMode::Help, _) => " Esc closes help · j/k scrolls ",
+        (TuiMode::Settings, _) => " t theme · Esc closes ",
+    }
 }
 
 fn render_help(frame: &mut Frame<'_>, area: Rect, p: &Palette, scroll: usize) {

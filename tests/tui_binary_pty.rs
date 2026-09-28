@@ -203,11 +203,12 @@ fn tui_binary_interactive_loop_pty() {
     let pty_out = pair.master.try_clone_reader().unwrap();
     let log = pump(pty_out);
 
-    // The TUI renders its footer with the Navigate hint.
+    // The PTY is 80 cols wide, so the footer swaps to the compact hint:
+    // it keeps `q quit` and the discovery tail, but drops `Ctrl+B prefix`.
     wait_for(&log, "q quit");
     assert!(
-        log.lock().unwrap().contains("Ctrl+B prefix"),
-        "footer should show prefix hint"
+        log.lock().unwrap().contains("Ctrl+B ? help"),
+        "footer should show the help discovery hint"
     );
 
     // Walk the settings overlay through the real binary: Ctrl+B arms

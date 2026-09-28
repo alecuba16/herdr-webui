@@ -3159,6 +3159,53 @@ fn footer_shows_help_hint_on_every_screen_and_mode() {
 }
 
 #[test]
+fn footer_keeps_help_hint_visible_at_80_columns() {
+    let mut app = app_with_snapshot();
+
+    // The classic 80x24 terminal: the full hints (60-90 chars) would clip
+    // the `Ctrl+B ? help` tail off-screen. The compact fallbacks must keep
+    // it visible in every mode/screen pair, and the status message must
+    // still render (never a negative-width truncate).
+    app.mode = TuiMode::Navigate;
+    for screen in [TuiScreen::Terminal, TuiScreen::Files, TuiScreen::Git] {
+        app.screen = screen;
+        let rendered = draw(&app, 80, 24);
+        assert!(
+            rendered.contains("Ctrl+B ? help"),
+            "Navigate at 80 cols on {screen:?} must still show the help hint"
+        );
+    }
+    app.mode = TuiMode::Attach;
+    for screen in [TuiScreen::Terminal, TuiScreen::Files, TuiScreen::Git] {
+        app.screen = screen;
+        let rendered = draw(&app, 80, 24);
+        assert!(
+            rendered.contains("Ctrl+B ? help"),
+            "Attach at 80 cols on {screen:?} must still show the help hint"
+        );
+    }
+    // The status message survives next to the compact hint: the fixture
+    // app still carries the constructor's "connecting" status.
+    app.screen = TuiScreen::Terminal;
+    let rendered = draw(&app, 80, 24);
+    assert!(
+        rendered.contains("connecting"),
+        "status message must render at 80 cols, got: {}",
+        rendered.chars().rev().take(200).collect::<String>()
+    );
+
+    // Even a 60-col terminal keeps the help discovery tail.
+    app.mode = TuiMode::Navigate;
+    for screen in [TuiScreen::Terminal, TuiScreen::Files, TuiScreen::Git] {
+        app.screen = screen;
+        assert!(
+            draw(&app, 60, 24).contains("Ctrl+B ? help"),
+            "Navigate at 60 cols on {screen:?} keeps the help tail"
+        );
+    }
+}
+
+#[test]
 fn renders_prefix_armed_footer_and_tiny_screens() {
     let mut app = app_with_snapshot();
 
