@@ -6,7 +6,6 @@
 // response. Axum handlers stay in main.rs because the router has a single
 // state type; they delegate here.
 use std::collections::HashMap;
-use std::hash::{BuildHasher, Hasher};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -39,14 +38,13 @@ impl AuthConfig {
         password: Option<String>,
         localhost_no_auth: bool,
     ) -> Self {
-        use std::hash::Hash;
+        use std::hash::BuildHasher;
         let mut seed = Sha256::new();
         // OS-seeded entropy: a fresh RandomState per call carries keys the
         // process derived from the operating system, not from anything
         // an attacker can observe. Time and credentials only mix it.
-        let mut os_hasher = std::hash::RandomState::new().build_hasher();
-        SystemTime::now().hash(&mut os_hasher);
-        seed.update(os_hasher.finish().to_le_bytes());
+        let os_entropy = std::hash::RandomState::new().hash_one(SystemTime::now());
+        seed.update(os_entropy.to_le_bytes());
         seed.update(user.as_deref().unwrap_or(""));
         seed.update(b":");
         seed.update(password.as_deref().unwrap_or(""));
