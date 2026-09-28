@@ -3072,6 +3072,35 @@ fn quit_confirmation_covers_all_quit_paths() {
 }
 
 #[test]
+fn plain_question_mark_opens_help_from_every_screen() {
+    let client = BackendClient::builtin_session(None);
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    app.mode = TuiMode::Navigate;
+    app.screen = TuiScreen::Terminal;
+    app.handle_key(KeyEvent::from(KeyCode::Char('?')));
+    assert_eq!(app.mode, TuiMode::Help);
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+
+    // Files screen: ? opens help even while a panel owns the keyboard.
+    app.screen = TuiScreen::Files;
+    app.file_explorer = crate::tui::panels::FileExplorer::new("/repo");
+    app.handle_key(KeyEvent::from(KeyCode::Char('?')));
+    assert_eq!(app.mode, TuiMode::Help);
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+
+    // Git screen: same from every git view.
+    app.screen = TuiScreen::Git;
+    app.git_panel = crate::tui::panels::GitPanel::new("/repo");
+    for view in [GitView::Changes, GitView::Log, GitView::Branches] {
+        app.git_panel.view = view;
+        app.handle_key(KeyEvent::from(KeyCode::Char('?')));
+        assert_eq!(app.mode, TuiMode::Help, "? opens help from {view:?}");
+        app.handle_key(KeyEvent::from(KeyCode::Esc));
+        assert_eq!(app.mode, TuiMode::Navigate);
+    }
+}
+
+#[test]
 fn tab_shortcut_refresh_errors_surface_after_backend_create_and_close() {
     let (api_socket, _stop) = fake_backend_socket_failing_snapshots();
     let client = BackendClient::new(api_socket.clone(), api_socket.clone());
@@ -3095,6 +3124,38 @@ fn tab_shortcut_refresh_errors_surface_after_backend_create_and_close() {
         app.error.as_deref().is_some_and(|e| !e.is_empty()),
         "refresh after close must surface the backend error"
     );
+}
+
+#[test]
+fn footer_shows_help_hint_on_every_screen_and_mode() {
+    let mut app = app_with_snapshot();
+
+    // Navigate mode, every screen: the footer ends with the help hint.
+    app.mode = TuiMode::Navigate;
+    for screen in [TuiScreen::Terminal, TuiScreen::Files, TuiScreen::Git] {
+        app.screen = screen;
+        let rendered = draw(&app, 120, 24);
+        assert!(
+            rendered.contains("? help"),
+            "Navigate footer on {screen:?} must advertise help"
+        );
+    }
+
+    // Attach mode, every screen: per-screen action hints plus help.
+    app.mode = TuiMode::Attach;
+    for screen in [TuiScreen::Terminal, TuiScreen::Files, TuiScreen::Git] {
+        app.screen = screen;
+        let rendered = draw(&app, 120, 24);
+        assert!(
+            rendered.contains("? help"),
+            "Attach footer on {screen:?} must advertise help"
+        );
+    }
+    // The Attach hints are per-screen, not one generic string.
+    app.screen = TuiScreen::Git;
+    assert!(draw(&app, 120, 24).contains("Tab view"), "git hint shows");
+    app.screen = TuiScreen::Files;
+    assert!(draw(&app, 120, 24).contains("e edit"), "files hint shows");
 }
 
 #[test]

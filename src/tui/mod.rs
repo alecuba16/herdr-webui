@@ -1594,6 +1594,7 @@ impl TuiApp {
                     });
                 }
             }
+            KeyCode::Char('?') => self.mode = TuiMode::Help,
             KeyCode::Esc | KeyCode::Char('q') => self.screen = TuiScreen::Terminal,
             _ => {}
         }
@@ -2024,6 +2025,9 @@ impl TuiApp {
                     Err(err) => self.error = Some(err.to_string()),
                 }
             }
+            // Plain ? opens the help overlay from any git view (the
+            // footer advertises Ctrl+B ?; a bare ? is the natural reflex).
+            KeyCode::Char('?') => self.mode = TuiMode::Help,
             KeyCode::Esc | KeyCode::Char('q') => self.screen = TuiScreen::Terminal,
             _ => {}
         }
