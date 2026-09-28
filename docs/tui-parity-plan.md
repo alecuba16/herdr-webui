@@ -47,11 +47,21 @@ Panel/workspace management:
 1. No `nextPanel`/`prevPanel` ([/] panel navigation) shortcut.
 2. No `newWorkspace` (prefix `N`) or `openWorktrees` (prefix `W`) or
    `createWorktree` (prefix `T`) dialogs.
+
+   Closed in the open/theme/help parity pass: prefix `N` runs the
+   two-step workspace create prompt (validated `~`-expanded folder path,
+   then name) and prefix `W` opens a browsable worktree overlay
+   (j/k move, type filters, Enter opens through `worktree.open`).
 3. No `closeWorkspace` (prefix `Shift+X`), `removeWorktree`
    (prefix `Delete`/`Backspace`).
 4. No workspace rename, no panel rename.
 5. No search palette (prefix `/`).
 6. No settings screen; no shortcut help overlay parity for the new keys.
+
+   Closed: prefix `S` (settings) and prefix `?` (help) ship, the help
+   overlay has a type-to-filter search (webui settings-search parity:
+   q types into the query, ? toggles closed, Esc clears then closes),
+   and the settings `t` cycle recomputes the palette live.
 7. No "close last panel closes workspace" guard parity (webui closes workspace
    via `workspace.close` when the last tab is closed).
 
