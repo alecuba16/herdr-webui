@@ -1,5 +1,20 @@
 # Release notes
 
+## 0.4.45 Release Notes
+- Quitting the TUI now asks first: every exit path (`Ctrl+B q`, plain `q`,
+  Esc on the terminal screen) opens a small y/n confirmation overlay
+  instead of exiting instantly. `y`/Enter confirms, `n`/Esc cancels and
+  restores the exact mode (Navigate or Attach) the user was in, and
+  Ctrl+C also confirms. The statusbar shows a `QUIT?` mode while the
+  overlay is open.
+- The TUI statusbar now teaches instead of staying silent: every mode and
+  screen combination lists the actions available there (for example the
+  Git screen shows `Tab view · s stage · d discard · c commit · P push`),
+  and every hint ends with the `Ctrl+B ?` help shortcut so the full
+  shortcut overlay is discoverable without reading docs.
+- Plain `?` opens the shortcut help from the Files screen and every Git
+  view too, not only the terminal workspace list.
+
 ## 0.4.44 Release Notes
 - The TUI now matches the desktop WebUI shortcut map and Git/file feature
   set. All 22 gaps from the TUI parity plan are closed: panel/workspace
