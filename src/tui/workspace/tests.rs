@@ -698,3 +698,35 @@ fn worktree_list_browses_filters_and_opens_selected() {
     assert_eq!(app.mode, TuiMode::WorktreeList);
     assert!(!app.worktree_root.is_empty());
 }
+
+#[test]
+fn worktree_overlay_arrows_move_while_filter_active() {
+    // Webui modal parity: the search box does not swallow arrow keys,
+    // while j/k stay query letters (typing "j" extends the filter).
+    let (mut app, _stop) = app_with_fake_backend();
+    app.worktree_list().unwrap();
+    assert_eq!(app.worktree_rows.len(), 1);
+
+    // Type a filter that still matches the single row.
+    for ch in "repo".chars() {
+        app.handle_key(KeyEvent::from(KeyCode::Char(ch)));
+    }
+    assert_eq!(app.worktree_filter, "repo");
+    assert_eq!(app.filtered_worktree_rows().len(), 1);
+
+    // Down keeps the cursor in range (wrap on a 1-row list) instead of
+    // being eaten by the filter, and j extends the query.
+    app.worktree_selected = 0;
+    app.handle_key(KeyEvent::from(KeyCode::Down));
+    assert_eq!(app.worktree_selected, 0, "Down moves even with a filter");
+    app.handle_key(KeyEvent::from(KeyCode::Char('j')));
+    assert_eq!(app.worktree_filter, "repoj", "j types into the filter");
+
+    // A filter matching nothing clamps the cursor to a valid position.
+    app.worktree_filter = "zz".to_string();
+    app.handle_key(KeyEvent::from(KeyCode::Down));
+    assert_eq!(
+        app.worktree_selected, 0,
+        "empty filtered list keeps cursor 0"
+    );
+}

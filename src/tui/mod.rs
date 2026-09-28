@@ -2421,9 +2421,11 @@ impl TuiApp {
     /// rows, printable characters extend the type-to-filter query (same
     /// convention as the help overlay: j/k only move when the query is
     /// empty), Enter opens the selected worktree, Esc closes (clearing
-    /// the filter first).
+    /// the filter first). Arrows always move the cursor like the webui
+    /// modal, which navigates its rows while the search box has text.
     fn handle_worktree_list_key(&mut self, key: KeyEvent) {
         let filter_active = !self.worktree_filter.is_empty();
+        let len = self.filtered_worktree_rows().len();
         match key.code {
             KeyCode::Esc => {
                 if filter_active {
@@ -2437,20 +2439,27 @@ impl TuiApp {
                 Ok(message) => self.status = message,
                 Err(err) => self.status = err,
             },
+            // Arrows always move (webui modal parity): they are not query
+            // letters, so an active filter must not swallow them.
+            KeyCode::Down if len > 0 => {
+                self.worktree_selected = (self.worktree_selected + 1) % len;
+            }
+            KeyCode::Up if len > 0 => {
+                self.worktree_selected = (self.worktree_selected + len.saturating_sub(1)) % len;
+            }
+            // j/k are query letters while the filter is active.
+            KeyCode::Char('j') if !filter_active && len > 0 => {
+                self.worktree_selected = (self.worktree_selected + 1) % len;
+            }
+            KeyCode::Char('k') if !filter_active && len > 0 => {
+                self.worktree_selected = (self.worktree_selected + len.saturating_sub(1)) % len;
+            }
             KeyCode::Backspace => {
                 self.worktree_filter.pop();
                 self.worktree_selected = 0;
-            }
-            KeyCode::Char('j') | KeyCode::Down if !filter_active => {
                 let len = self.filtered_worktree_rows().len();
-                if len > 0 {
-                    self.worktree_selected = (self.worktree_selected + 1) % len;
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up if !filter_active => {
-                let len = self.filtered_worktree_rows().len();
-                if len > 0 {
-                    self.worktree_selected = (self.worktree_selected + len.saturating_sub(1)) % len;
+                if self.worktree_selected >= len {
+                    self.worktree_selected = len.saturating_sub(1);
                 }
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
