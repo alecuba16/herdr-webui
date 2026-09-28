@@ -1500,27 +1500,8 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
     } else {
         ""
     };
-    let help = match (app.mode, app.screen) {
-        (TuiMode::ConfirmQuit, _) => " y quit · n/Esc cancel ",
-        (TuiMode::Attach, TuiScreen::Terminal) => {
-            " Ctrl+B prefix · Ctrl-G detach · type sends input · Ctrl+B ? help "
-        }
-        (TuiMode::Attach, TuiScreen::Files) => {
-            " j/k move · Enter open · e edit · a/A new file/dir · Ctrl+B ? help "
-        }
-        (TuiMode::Attach, TuiScreen::Git) => {
-            " Tab view · s stage · d discard · c commit · P push · Ctrl+B ? help "
-        }
-        (_, TuiScreen::Files) => " Ctrl+B prefix · j/k move · Enter open · h/u up · Ctrl+B ? help ",
-        (_, TuiScreen::Git) => {
-            " Ctrl+B prefix · Tab view · s stage · d discard · c commit · p pull · P push · Ctrl+B ? help "
-        }
-        (TuiMode::Navigate, _) => {
-            " Ctrl+B prefix · ↑/↓ j/k select · Enter attach · q quit · Ctrl+B ? help "
-        }
-        (TuiMode::Help, _) => " Esc closes help · j/k scrolls ",
-        (TuiMode::Settings, _) => " t theme · Esc closes ",
-    };
+    let context = app.footer_context();
+    let help = context.hint();
     // On narrow terminals (the classic 80x24) the full hint would push the
     // discovery tail off-screen: the mode label alone eats 14+ columns and
     // the status message needs room. Drop the middle actions first and keep
@@ -1535,7 +1516,7 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
     let help = if help.chars().count() <= hint_budget {
         help.to_string()
     } else {
-        fit_hint(compact_hint(app.mode, app.screen), hint_budget)
+        fit_hint(context.compact_hint(), hint_budget)
     };
     let message = app.error.as_deref().unwrap_or(&app.status);
     let used = label_width + help.chars().count() + prefix.chars().count();
@@ -1587,20 +1568,6 @@ fn fit_hint(hint: &str, budget: usize) -> String {
         joined.chars().skip(skip).collect()
     } else {
         joined
-    }
-}
-
-fn compact_hint(mode: TuiMode, screen: TuiScreen) -> &'static str {
-    match (mode, screen) {
-        (TuiMode::ConfirmQuit, _) => " y quit · n/Esc cancel ",
-        (TuiMode::Attach, TuiScreen::Terminal) => " Ctrl+B ? help · Ctrl-G detach ",
-        (TuiMode::Attach, TuiScreen::Files) => " j/k · Enter · Ctrl+B ? help ",
-        (TuiMode::Attach, TuiScreen::Git) => " s stage · c commit · Ctrl+B ? help ",
-        (_, TuiScreen::Files) => " j/k · Enter · Ctrl+B ? help ",
-        (_, TuiScreen::Git) => " Tab · s stage · Ctrl+B ? help ",
-        (TuiMode::Navigate, _) => " j/k select · Enter attach · q quit · Ctrl+B ? help ",
-        (TuiMode::Help, _) => " Esc closes help · j/k scrolls ",
-        (TuiMode::Settings, _) => " t theme · Esc closes ",
     }
 }
 

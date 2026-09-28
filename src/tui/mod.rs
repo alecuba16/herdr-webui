@@ -80,6 +80,129 @@ impl TuiScreen {
     }
 }
 
+/// The focused UI context the statusbar hint describes. Resolution order
+/// mirrors `TuiApp::handle_key`, so the hint is always about the keys that
+/// are live right now (the lazygit/k9s standard: popups and input captures
+/// take over the hint line; the focused view names its own actions).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FooterContext {
+    ConfirmQuit,
+    HelpOverlay,
+    SettingsOverlay,
+    /// Commit message modal: typing, Enter commits, Esc cancels.
+    CommitInput,
+    /// Any typed prompt (rename, confirm, new file, ...).
+    PromptInput(PromptKind),
+    /// Git Changes diff search bar (`/`).
+    DiffSearch,
+    /// Editor find bar (Ctrl+F while editing).
+    EditorFind,
+    /// Files edit mode (typing into the preview buffer).
+    FileEdit,
+    /// Files filter bar (`/` on the tree).
+    FilterBar,
+    /// Content-search results view.
+    ContentSearch,
+    Terminal(TuiMode),
+    Files(TuiMode),
+    Git(TuiMode, GitView),
+}
+
+impl FooterContext {
+    /// Full statusbar hint. Every hint keeps the `Ctrl+B ? help`
+    /// discovery tail (v0.4.46 invariant) unless the context captures all
+    /// keys and `Ctrl+B ?` genuinely cannot fire (only the quit overlay
+    /// and the confirm prompts are exempted, and they still name a way
+    /// out).
+    pub(crate) fn hint(self) -> &'static str {
+        match self {
+            Self::ConfirmQuit => " y quit · n/Esc cancel ",
+            Self::HelpOverlay => " Esc closes help · j/k scrolls ",
+            Self::SettingsOverlay => " t theme · Esc closes ",
+            Self::CommitInput => {
+                " type the message · Enter commits · Esc cancels · Ctrl+U clears · Ctrl+B ? help "
+            }
+            Self::PromptInput(PromptKind::ReplaceInFile) => {
+                " type the replacement · Enter replaces · ! all · Esc cancels · Ctrl+B ? help "
+            }
+            Self::PromptInput(_) => " type · Enter accepts · Esc cancels · Ctrl+B ? help ",
+            Self::DiffSearch => {
+                " type to search · n/N cycle · Enter keeps · Esc closes · Ctrl+B ? help "
+            }
+            Self::EditorFind => {
+                " type to find · Enter next · Shift+Enter prev · Esc closes · Ctrl+B ? help "
+            }
+            Self::FileEdit => {
+                " type to edit · Ctrl-S save · Ctrl-R reload · Ctrl-F find · Esc stop · Ctrl+B ? help "
+            }
+            Self::FilterBar => " type to filter · Enter keeps · Esc closes · Ctrl+B ? help ",
+            Self::ContentSearch => {
+                " j/k rows · Enter jump · A case · X regex · Esc exits · Ctrl+B ? help "
+            }
+            Self::Terminal(TuiMode::Attach) => {
+                " Ctrl-G detach · type sends input · Ctrl+B ? help "
+            }
+            Self::Terminal(_) => {
+                " ↑/↓ j/k select · Enter attach · q quit · Ctrl+B ? help "
+            }
+            Self::Files(_) => {
+                " j/k move · Enter open · e edit · a/A new file/dir · R rename · x delete · Ctrl+B ? help "
+            }
+            Self::Git(_, GitView::Changes) => {
+                " Tab view · s stage · d discard · J/K hunk · H apply · / search · c commit · P push · Ctrl+B ? help "
+            }
+            Self::Git(_, GitView::Log) => {
+                " Tab view · Space mark · c compare · t tag · R reset · b rebase · s scope · + more · Ctrl+B ? help "
+            }
+            Self::Git(_, GitView::Branches) => {
+                " Tab view · j/k branches · c create · D delete · Enter refresh · Ctrl+B ? help "
+            }
+            Self::Git(_, GitView::Stash) => {
+                " Tab view · j/k stashes · Enter diff · a apply · D drop · Ctrl+B ? help "
+            }
+            Self::Git(_, GitView::History) => {
+                " j/k commits · Enter commit diff · o back to changes · Ctrl+B ? help "
+            }
+            Self::Git(_, GitView::Conflicts) => {
+                " j/k files · o ours · e parent · t remote · m resolved · R continue · Ctrl+B ? help "
+            }
+            Self::Git(_, GitView::Cleanup) => {
+                " j/k rows · x delete · B prune · Ctrl+B ? help "
+            }
+        }
+    }
+
+    /// Compact hint for narrow terminals: same discovery tail, fewer
+    /// actions. `fit_hint` trims whole segments if even this is too wide.
+    pub(crate) fn compact_hint(self) -> &'static str {
+        match self {
+            Self::ConfirmQuit => " y quit · n/Esc cancel ",
+            Self::HelpOverlay => " Esc closes help · j/k scrolls ",
+            Self::SettingsOverlay => " t theme · Esc closes ",
+            Self::CommitInput => " Enter commit · Esc cancel · Ctrl+B ? help ",
+            Self::PromptInput(PromptKind::ReplaceInFile) => {
+                " Enter replace · ! all · Esc cancel · Ctrl+B ? help "
+            }
+            Self::PromptInput(_) => " Enter accept · Esc cancel · Ctrl+B ? help ",
+            Self::DiffSearch => " n/N cycle · Esc close · Ctrl+B ? help ",
+            Self::EditorFind => " Enter next · Esc close · Ctrl+B ? help ",
+            Self::FileEdit => " Ctrl-S save · Esc stop · Ctrl+B ? help ",
+            Self::FilterBar => " type · Enter keep · Esc close · Ctrl+B ? help ",
+            Self::ContentSearch => " j/k · Enter jump · Esc exit · Ctrl+B ? help ",
+            Self::Terminal(TuiMode::Attach) => " Ctrl+B ? help · Ctrl-G detach ",
+            Self::Terminal(_) => " j/k select · Enter attach · q quit · Ctrl+B ? help ",
+            Self::Files(_) => " j/k · Enter · e edit · Ctrl+B ? help ",
+            Self::Git(_, GitView::Changes) => " s stage · d discard · c commit · Ctrl+B ? help ",
+            Self::Git(_, GitView::Log) => " Space mark · c compare · Ctrl+B ? help ",
+            Self::Git(_, GitView::Branches) => " c create · D delete · Ctrl+B ? help ",
+            Self::Git(_, GitView::Stash) => " Enter diff · a apply · Ctrl+B ? help ",
+            Self::Git(_, GitView::History) => " Enter commit diff · Ctrl+B ? help ",
+            Self::Git(_, GitView::Conflicts) => " o/e/t resolve · R continue · Ctrl+B ? help ",
+            Self::Git(_, GitView::Cleanup) => " x delete · B prune · Ctrl+B ? help ",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TuiOptions {
     pub session: Option<String>,
@@ -378,6 +501,52 @@ impl TuiApp {
                 self.error = Some(err.to_string());
                 self.mark_dirty();
             }
+        }
+    }
+
+    /// Focused UI context for the statusbar hint (lazygit-style context
+    /// resolution): resolves in the same priority order as `handle_key`,
+    /// so the hint always describes the keys that actually do something
+    /// right now.
+    pub(crate) fn footer_context(&self) -> FooterContext {
+        // Input-capture layers own the keyboard, in handle_key order:
+        // commit input, then prompt input, then the panel-local bars.
+        if self.commit_input.is_some() {
+            return FooterContext::CommitInput;
+        }
+        if let Some(prompt) = self.prompt_input.as_ref() {
+            return FooterContext::PromptInput(prompt.kind);
+        }
+        if self.git_panel.diff_search_active {
+            return FooterContext::DiffSearch;
+        }
+        if self.file_explorer.editor_find.active {
+            return FooterContext::EditorFind;
+        }
+        if self.file_explorer.edit_active {
+            return FooterContext::FileEdit;
+        }
+        if self.file_explorer.filter_active {
+            return FooterContext::FilterBar;
+        }
+        if self.file_explorer.search_mode
+            && self.file_explorer.search_kind == SearchKind::Content
+            && self.file_explorer.content_search.has_results()
+        {
+            return FooterContext::ContentSearch;
+        }
+        // Overlays.
+        match self.mode {
+            TuiMode::ConfirmQuit => return FooterContext::ConfirmQuit,
+            TuiMode::Help => return FooterContext::HelpOverlay,
+            TuiMode::Settings => return FooterContext::SettingsOverlay,
+            _ => {}
+        }
+        // Screens and sub-views.
+        match self.screen {
+            TuiScreen::Terminal => FooterContext::Terminal(self.mode),
+            TuiScreen::Files => FooterContext::Files(self.mode),
+            TuiScreen::Git => FooterContext::Git(self.mode, self.git_panel.view),
         }
     }
 

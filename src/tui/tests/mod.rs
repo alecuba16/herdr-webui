@@ -3206,6 +3206,126 @@ fn footer_keeps_help_hint_visible_at_80_columns() {
 }
 
 #[test]
+fn footer_hint_follows_focused_context() {
+    let mut app = app_with_snapshot();
+    app.mode = TuiMode::Attach;
+
+    // Per git view: the hint names the view's own actions, not one
+    // generic git string. Tab cycles views in the app; the test sets
+    // `view` directly to avoid backend refreshes.
+    for (view, needle) in [
+        (GitView::Changes, "J/K hunk"),
+        (GitView::Log, "Space mark"),
+        (GitView::Branches, "c create"),
+        (GitView::Stash, "Enter diff"),
+        (GitView::History, "o back to changes"),
+        (GitView::Conflicts, "o ours"),
+        (GitView::Cleanup, "B prune"),
+    ] {
+        app.screen = TuiScreen::Git;
+        app.git_panel.view = view;
+        let rendered = draw(&app, 140, 24);
+        assert!(
+            rendered.contains(needle),
+            "Git {view:?} hint must show `{needle}`"
+        );
+        assert!(
+            rendered.contains("Ctrl+B ? help"),
+            "Git {view:?} hint keeps the help tail at 140 cols"
+        );
+    }
+    app.git_panel.view = GitView::Changes;
+
+    // Files edit mode takes over: save/stop keys instead of move/open.
+    app.screen = TuiScreen::Files;
+    app.file_explorer.edit_active = true;
+    let rendered = draw(&app, 140, 24);
+    assert!(rendered.contains("Ctrl-S save"), "edit mode names Ctrl-S");
+    assert!(rendered.contains("Esc stop"), "edit mode names Esc");
+    app.file_explorer.edit_active = false;
+
+    // The filter bar owns the keyboard: no move/open hint while typing.
+    app.file_explorer.start_filter();
+    let rendered = draw(&app, 140, 24);
+    assert!(rendered.contains("type to filter"), "filter bar hint");
+    assert!(
+        !rendered.contains("Enter open"),
+        "filter bar hides the browse hint"
+    );
+    app.file_explorer.filter_active = false;
+
+    // Commit input wins over the screen hint.
+    app.screen = TuiScreen::Git;
+    app.commit_input = Some(CommitInput {
+        text: String::new(),
+        amend: false,
+    });
+    let rendered = draw(&app, 140, 24);
+    assert!(rendered.contains("Enter commits"), "commit input hint");
+    app.commit_input = None;
+
+    // Prompt input beats commit input and everything else.
+    app.prompt_input = Some(PromptInput::new(PromptKind::RenameFile));
+    let rendered = draw(&app, 140, 24);
+    assert!(rendered.contains("Enter accepts"), "prompt hint wins");
+    app.prompt_input = None;
+
+    // The quit overlay beats all screen contexts: `q` on the Terminal
+    // screen in Navigate mode asks first, and the overlay hint replaces
+    // whatever context was active.
+    app.mode = TuiMode::Navigate;
+    app.screen = TuiScreen::Terminal;
+    app.handle_key(KeyEvent::from(KeyCode::Char('q')));
+    assert_eq!(app.mode, TuiMode::ConfirmQuit);
+    let rendered = draw(&app, 140, 24);
+    assert!(rendered.contains("y quit"), "quit overlay hint wins");
+    assert!(!rendered.contains("Enter accepts"), "no stale prompt hint");
+}
+
+#[test]
+fn footer_hint_survives_narrow_terminals_per_context() {
+    let mut app = app_with_snapshot();
+    app.mode = TuiMode::Attach;
+
+    // Every context keeps the help tail at 80 cols (the classic width).
+    app.screen = TuiScreen::Git;
+    for view in GitView::all() {
+        app.git_panel.view = view;
+        let rendered = draw(&app, 80, 24);
+        assert!(
+            rendered.contains("Ctrl+B ? help"),
+            "Git {view:?} at 80 cols keeps the help tail"
+        );
+    }
+    app.git_panel.view = GitView::Changes;
+
+    app.screen = TuiScreen::Files;
+    app.file_explorer.edit_active = true;
+    assert!(
+        draw(&app, 80, 24).contains("Ctrl+B ? help"),
+        "edit mode at 80 cols keeps the help tail"
+    );
+    app.file_explorer.edit_active = false;
+
+    app.file_explorer.start_filter();
+    assert!(
+        draw(&app, 80, 24).contains("Ctrl+B ? help"),
+        "filter bar at 80 cols keeps the help tail"
+    );
+    app.file_explorer.filter_active = false;
+
+    app.commit_input = Some(CommitInput {
+        text: String::new(),
+        amend: false,
+    });
+    assert!(
+        draw(&app, 80, 24).contains("Ctrl+B ? help"),
+        "commit input at 80 cols keeps the help tail"
+    );
+    app.commit_input = None;
+}
+
+#[test]
 fn renders_prefix_armed_footer_and_tiny_screens() {
     let mut app = app_with_snapshot();
 
