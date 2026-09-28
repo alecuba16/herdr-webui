@@ -6,6 +6,7 @@
 //! `DEFAULT_WEBUI_SHORTCUTS`. Backed entirely by `BackendClient` JSON-RPC
 //! methods (`workspace.*`, `tab.*`, `worktree.*`).
 
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
@@ -146,14 +147,21 @@ impl TuiApp {
             .to_string();
         self.workspace_create_stage = None;
         self.refresh().map_err(|err| err.to_string())?;
-        // Focus the new workspace like the webui post-create navigation.
-        if !id.is_empty() {
-            if let Some(index) = self.snapshot.workspaces.iter().position(|ws| ws.id == id) {
-                self.selected_workspace = index;
-                self.refresh_tail();
-            }
-        }
+        self.focus_workspace_by_id(&id);
         Ok(format!("workspace created: {expanded_path}"))
+    }
+
+    /// Focus the workspace with the given id after a refresh (webui
+    /// post-create/post-open navigation). Empty or missing ids are
+    /// ignored so the selection simply stays where it was.
+    fn focus_workspace_by_id(&mut self, id: &str) {
+        if id.is_empty() {
+            return;
+        }
+        if let Some(index) = self.snapshot.workspaces.iter().position(|ws| ws.id == id) {
+            self.selected_workspace = index;
+            self.refresh_tail();
+        }
     }
 
     /// Webui `closeWorkspace` (prefix Shift+X): close every panel in the
@@ -290,18 +298,16 @@ impl TuiApp {
             .open_worktree(&row.path, None, None)
             .map_err(|err| err.to_string())?;
         self.refresh().map_err(|err| err.to_string())?;
-        // Focus the opened workspace like the webui post-open navigation.
-        let workspace_id = self
+        // Focus the opened workspace like the webui post-open navigation;
+        // the backend keys it by cwd, so resolve the id first.
+        if let Some(id) = self
             .snapshot
             .workspaces
             .iter()
             .find(|ws| ws.cwd == row.path)
-            .map(|ws| ws.id.clone());
-        if let Some(id) = workspace_id {
-            if let Some(index) = self.snapshot.workspaces.iter().position(|ws| ws.id == id) {
-                self.selected_workspace = index;
-                self.refresh_tail();
-            }
+            .map(|ws| ws.id.clone())
+        {
+            self.focus_workspace_by_id(&id);
         }
         // Opening a worktree is a context switch (the webui navigates to
         // the new workspace), so it also drops any overlay stack.
@@ -325,6 +331,70 @@ impl TuiApp {
             })
             .cloned()
             .collect()
+    }
+
+    /// Keys inside the WorktreeList overlay: j/k move over the filtered
+    /// rows, printable characters extend the type-to-filter query (same
+    /// convention as the help overlay: j/k only move when the query is
+    /// empty), Enter opens the selected worktree, Esc closes (clearing
+    /// the filter first). Arrows always move the cursor like the webui
+    /// modal, which navigates its rows while the search box has text.
+    pub(crate) fn handle_worktree_list_key(&mut self, key: KeyEvent) {
+        let filter_active = !self.worktree_filter.is_empty();
+        let len = self.filtered_worktree_rows().len();
+        match key.code {
+            KeyCode::Esc => {
+                if filter_active {
+                    self.worktree_filter.clear();
+                    self.worktree_selected = 0;
+                } else {
+                    self.close_overlay();
+                }
+            }
+            KeyCode::Enter => match self.worktree_open_selected() {
+                Ok(message) => self.status = message,
+                Err(err) => self.status = err,
+            },
+            // Arrows always move (webui modal parity): they are not query
+            // letters, so an active filter must not swallow them.
+            KeyCode::Down if len > 0 => {
+                self.worktree_selected = (self.worktree_selected + 1) % len;
+            }
+            KeyCode::Up if len > 0 => {
+                self.worktree_selected = (self.worktree_selected + len.saturating_sub(1)) % len;
+            }
+            // j/k are query letters while the filter is active.
+            KeyCode::Char('j') if !filter_active && len > 0 => {
+                self.worktree_selected = (self.worktree_selected + 1) % len;
+            }
+            KeyCode::Char('k') if !filter_active && len > 0 => {
+                self.worktree_selected = (self.worktree_selected + len.saturating_sub(1)) % len;
+            }
+            KeyCode::Backspace => {
+                self.worktree_filter.pop();
+                self.worktree_selected = 0;
+                self.clamp_worktree_cursor();
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.worktree_filter.clear();
+                self.worktree_selected = 0;
+            }
+            KeyCode::Char(c) if !c.is_control() => {
+                self.worktree_filter.push(c);
+                self.worktree_selected = 0;
+                self.clamp_worktree_cursor();
+            }
+            _ => {}
+        }
+    }
+
+    /// Keep the worktree cursor inside the filtered list after the query
+    /// changes its length (webui modal keeps its selection valid).
+    fn clamp_worktree_cursor(&mut self) {
+        let len = self.filtered_worktree_rows().len();
+        if self.worktree_selected >= len {
+            self.worktree_selected = len.saturating_sub(1);
+        }
     }
 
     /// Webui `createWorktree` (prefix Shift+T): create a worktree from

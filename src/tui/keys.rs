@@ -384,6 +384,25 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
     ]
 }
 
+/// Rows kept for the Help overlay after applying the user's filter.
+/// Mirrors the webui settings search: case-insensitive substring match
+/// over both the key sequence and the description; empty separator rows
+/// are dropped so filtered output stays compact.
+pub fn filtered_help_rows(filter: &str) -> Vec<(&'static str, &'static str)> {
+    let query = filter.trim().to_ascii_lowercase();
+    if query.is_empty() {
+        return help_rows();
+    }
+    help_rows()
+        .into_iter()
+        .filter(|(keys, description)| {
+            !keys.is_empty()
+                && (keys.to_ascii_lowercase().contains(&query)
+                    || description.to_ascii_lowercase().contains(&query))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

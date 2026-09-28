@@ -1585,8 +1585,27 @@ fn fit_hint(hint: &str, budget: usize) -> String {
     }
 }
 
+/// The `filter: query_  matched/total` line shared by the help and
+/// worktree overlays while a type-to-filter query is active (webui
+/// search-box counterpart; returns None when the query is empty).
+fn filter_query_line(
+    p: &Palette,
+    filter: &str,
+    matched: usize,
+    total: usize,
+) -> Option<Line<'static>> {
+    if filter.is_empty() {
+        return None;
+    }
+    Some(Line::from(vec![
+        Span::styled(" filter: ", Style::default().fg(p.muted)),
+        Span::styled(format!("{filter}_"), Style::default().fg(p.accent)),
+        Span::styled(format!("  {matched}/{total}"), Style::default().fg(p.muted)),
+    ]))
+}
+
 fn render_help(frame: &mut Frame<'_>, area: Rect, p: &Palette, filter: &str, scroll: usize) {
-    let rows = crate::tui::filtered_help_rows(filter);
+    let rows = crate::tui::keys::filtered_help_rows(filter);
     let width = area.width.min(72);
     // One extra line for the filter query while it is active.
     let filter_height = if filter.is_empty() { 0 } else { 1 };
@@ -1605,15 +1624,10 @@ fn render_help(frame: &mut Frame<'_>, area: Rect, p: &Palette, filter: &str, scr
     ))];
     // Webui settings-search counterpart: show the active query so the
     // user sees why the list shrank.
-    if !filter.is_empty() {
-        lines.push(Line::from(vec![
-            Span::styled(" filter: ", Style::default().fg(p.muted)),
-            Span::styled(format!("{filter}_"), Style::default().fg(p.accent)),
-            Span::styled(
-                format!("  {}/{}", rows.len(), crate::tui::keys::help_rows().len()),
-                Style::default().fg(p.muted),
-            ),
-        ]));
+    if let Some(line) =
+        filter_query_line(p, filter, rows.len(), crate::tui::keys::help_rows().len())
+    {
+        lines.push(line);
     }
     if rows.is_empty() {
         // Same message as the webui settings search empty state.
@@ -1674,18 +1688,10 @@ fn render_worktree_list(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pal
             Style::default().fg(p.muted),
         ),
     ])];
-    if !app.worktree_filter.is_empty() {
-        lines.push(Line::from(vec![
-            Span::styled(" filter: ", Style::default().fg(p.muted)),
-            Span::styled(
-                format!("{}_", app.worktree_filter),
-                Style::default().fg(p.accent),
-            ),
-            Span::styled(
-                format!("  {}/{}", rows.len(), app.worktree_rows.len()),
-                Style::default().fg(p.muted),
-            ),
-        ]));
+    if let Some(line) =
+        filter_query_line(p, &app.worktree_filter, rows.len(), app.worktree_rows.len())
+    {
+        lines.push(line);
     }
     if rows.is_empty() {
         lines.push(Line::from(Span::styled(

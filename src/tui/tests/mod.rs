@@ -5333,7 +5333,7 @@ fn help_filter_types_q_into_query_and_question_mark_closes() {
 #[test]
 fn filtered_help_rows_match_keys_and_descriptions() {
     // Direct unit check of the filter helper (webui settings-search parity).
-    let rows = crate::tui::filtered_help_rows("worktree");
+    let rows = crate::tui::keys::filtered_help_rows("worktree");
     assert!(!rows.is_empty());
     assert!(rows.iter().all(
         |(keys, description)| keys.to_ascii_lowercase().contains("worktree")
@@ -5341,11 +5341,11 @@ fn filtered_help_rows_match_keys_and_descriptions() {
     ));
     // Empty query returns every row including separators.
     assert_eq!(
-        crate::tui::filtered_help_rows("").len(),
+        crate::tui::keys::filtered_help_rows("").len(),
         crate::tui::keys::help_rows().len()
     );
     // No match returns empty.
-    assert!(crate::tui::filtered_help_rows("zzzzzzzz").is_empty());
+    assert!(crate::tui::keys::filtered_help_rows("zzzzzzzz").is_empty());
 }
 
 #[test]
@@ -5463,7 +5463,7 @@ fn help_overlay_scrolls_with_page_keys_and_ctrl_u_clears() {
     // PageDown/Down scroll, PageUp/Up scroll back, all while filtering.
     app.handle_key(KeyEvent::from(KeyCode::Down));
     let scrolled = app.help_scroll;
-    assert!(scrolled <= crate::tui::filtered_help_rows("").len());
+    assert!(scrolled <= crate::tui::keys::filtered_help_rows("").len());
     app.handle_key(KeyEvent::from(KeyCode::PageDown));
     assert!(app.help_scroll >= scrolled);
     app.handle_key(KeyEvent::from(KeyCode::PageUp));

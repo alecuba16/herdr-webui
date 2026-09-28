@@ -882,3 +882,13 @@ fn worktree_backspace_on_filter_matching_nothing_clamps_to_zero() {
     assert_eq!(app.worktree_selected, 0);
     assert_eq!(app.worktree_filter, "z");
 }
+
+#[test]
+fn focus_workspace_by_id_ignores_empty_ids() {
+    // A create/open response without a workspace id must not move the
+    // selection (the early return in focus_workspace_by_id).
+    let (mut app, _stop) = app_with_fake_backend();
+    let before = app.selected_workspace;
+    app.focus_workspace_by_id("");
+    assert_eq!(app.selected_workspace, before);
+}

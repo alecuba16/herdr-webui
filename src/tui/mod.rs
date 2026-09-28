@@ -61,25 +61,6 @@ fn help_max_scroll() -> usize {
     rows.saturating_sub(50usize.saturating_sub(4).saturating_sub(1))
 }
 
-/// Rows kept for the Help overlay after applying the user's filter.
-/// Mirrors the webui settings search: case-insensitive substring match
-/// over both the key sequence and the description; empty separator rows
-/// are dropped so filtered output stays compact.
-pub(crate) fn filtered_help_rows(filter: &str) -> Vec<(&'static str, &'static str)> {
-    let query = filter.trim().to_ascii_lowercase();
-    if query.is_empty() {
-        return crate::tui::keys::help_rows();
-    }
-    crate::tui::keys::help_rows()
-        .into_iter()
-        .filter(|(keys, description)| {
-            !keys.is_empty()
-                && (keys.to_ascii_lowercase().contains(&query)
-                    || description.to_ascii_lowercase().contains(&query))
-        })
-        .collect()
-}
-
 /// Which main screen the TUI shows. Mirrors the WebUI workspace shell modes
 /// (terminal, Git, Files) so the same workspace can be inspected from both
 /// clients.
@@ -639,8 +620,7 @@ impl TuiApp {
                         self.help_filter.clear();
                         self.help_scroll = 0;
                     } else {
-                        self.close_overlay();
-                        self.help_scroll = 0;
+                        self.close_help_overlay();
                     }
                 }
                 // Toggle close: ? always closes the overlay (it never
@@ -649,9 +629,7 @@ impl TuiApp {
                 // into the filter like the webui search box, so queries
                 // like "quit" and "quick" are typeable.
                 KeyCode::Char('?') => {
-                    self.close_overlay();
-                    self.help_scroll = 0;
-                    self.help_filter.clear();
+                    self.close_help_overlay();
                 }
                 // While a filter is active every printable key (except the
                 // ? toggle and Esc closer above) edits the query, so words
@@ -659,7 +637,7 @@ impl TuiApp {
                 // letters. Scrolling then lives on the arrow/Page keys only.
                 KeyCode::Down | KeyCode::PageDown => {
                     let max = help_max_scroll().min(
-                        filtered_help_rows(&self.help_filter)
+                        crate::tui::keys::filtered_help_rows(&self.help_filter)
                             .len()
                             .saturating_sub(1),
                     );
@@ -1142,11 +1120,7 @@ impl TuiApp {
 
     fn run_shortcut(&mut self, shortcut: Shortcut) {
         match shortcut {
-            Shortcut::Help => {
-                self.open_overlay(TuiMode::Help);
-                self.help_scroll = 0;
-                self.help_filter.clear();
-            }
+            Shortcut::Help => self.open_help_overlay(),
             Shortcut::Files => self.open_files_screen(),
             Shortcut::Git => self.open_git_screen(),
             Shortcut::Terminal => self.screen = TuiScreen::Terminal,
@@ -1461,8 +1435,30 @@ impl TuiApp {
 
     /// Close the current overlay, restoring the context it was opened
     /// from (falls back to Navigate when the stack is somehow empty).
-    fn close_overlay(&mut self) {
+    pub(crate) fn close_overlay(&mut self) {
         self.mode = self.overlay_stack.pop().unwrap_or(TuiMode::Navigate);
+    }
+
+    /// Open the help overlay with a clean filter and scroll. Every
+    /// entry point (prefix `?`, bare `?` on Files/Git/Terminal) funnels
+    /// through here so the reset behavior cannot drift between sites.
+    fn open_help_overlay(&mut self) {
+        self.open_overlay(TuiMode::Help);
+        self.reset_help_state();
+    }
+
+    /// Close the help overlay and reset its filter/scroll for the next
+    /// open (both the `?` toggle and the Esc closer go through here).
+    fn close_help_overlay(&mut self) {
+        self.close_overlay();
+        self.reset_help_state();
+    }
+
+    /// Clear the help filter and scroll so the overlay always opens or
+    /// closes from a clean state.
+    fn reset_help_state(&mut self) {
+        self.help_scroll = 0;
+        self.help_filter.clear();
     }
 
     /// Cancel the quit overlay and return to the mode the user was in.
@@ -1900,9 +1896,7 @@ impl TuiApp {
                 }
             }
             KeyCode::Char('?') => {
-                self.open_overlay(TuiMode::Help);
-                self.help_scroll = 0;
-                self.help_filter.clear();
+                self.open_help_overlay();
             }
             KeyCode::Esc | KeyCode::Char('q') => self.screen = TuiScreen::Terminal,
             _ => {}
@@ -2337,9 +2331,7 @@ impl TuiApp {
             // Plain ? opens the help overlay from any git view (the
             // footer advertises Ctrl+B ?; a bare ? is the natural reflex).
             KeyCode::Char('?') => {
-                self.open_overlay(TuiMode::Help);
-                self.help_scroll = 0;
-                self.help_filter.clear();
+                self.open_help_overlay();
             }
             KeyCode::Esc | KeyCode::Char('q') => self.screen = TuiScreen::Terminal,
             _ => {}
@@ -2417,68 +2409,6 @@ impl TuiApp {
         self.mark_dirty();
     }
 
-    /// Keys inside the WorktreeList overlay: j/k move over the filtered
-    /// rows, printable characters extend the type-to-filter query (same
-    /// convention as the help overlay: j/k only move when the query is
-    /// empty), Enter opens the selected worktree, Esc closes (clearing
-    /// the filter first). Arrows always move the cursor like the webui
-    /// modal, which navigates its rows while the search box has text.
-    fn handle_worktree_list_key(&mut self, key: KeyEvent) {
-        let filter_active = !self.worktree_filter.is_empty();
-        let len = self.filtered_worktree_rows().len();
-        match key.code {
-            KeyCode::Esc => {
-                if filter_active {
-                    self.worktree_filter.clear();
-                    self.worktree_selected = 0;
-                } else {
-                    self.close_overlay();
-                }
-            }
-            KeyCode::Enter => match self.worktree_open_selected() {
-                Ok(message) => self.status = message,
-                Err(err) => self.status = err,
-            },
-            // Arrows always move (webui modal parity): they are not query
-            // letters, so an active filter must not swallow them.
-            KeyCode::Down if len > 0 => {
-                self.worktree_selected = (self.worktree_selected + 1) % len;
-            }
-            KeyCode::Up if len > 0 => {
-                self.worktree_selected = (self.worktree_selected + len.saturating_sub(1)) % len;
-            }
-            // j/k are query letters while the filter is active.
-            KeyCode::Char('j') if !filter_active && len > 0 => {
-                self.worktree_selected = (self.worktree_selected + 1) % len;
-            }
-            KeyCode::Char('k') if !filter_active && len > 0 => {
-                self.worktree_selected = (self.worktree_selected + len.saturating_sub(1)) % len;
-            }
-            KeyCode::Backspace => {
-                self.worktree_filter.pop();
-                self.worktree_selected = 0;
-                let len = self.filtered_worktree_rows().len();
-                if self.worktree_selected >= len {
-                    self.worktree_selected = len.saturating_sub(1);
-                }
-            }
-            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.worktree_filter.clear();
-                self.worktree_selected = 0;
-            }
-            KeyCode::Char(c) if !c.is_control() => {
-                self.worktree_filter.push(c);
-                self.worktree_selected = 0;
-                // Keep the cursor in range when the query shrinks the list.
-                let len = self.filtered_worktree_rows().len();
-                if self.worktree_selected >= len {
-                    self.worktree_selected = len.saturating_sub(1);
-                }
-            }
-            _ => {}
-        }
-    }
-
     fn handle_navigation_key(&mut self, key: KeyEvent) {
         // The Files and Git screens own their keys in Navigate mode too;
         // only the Terminal screen keeps the workspace/agent list keys.
@@ -2491,9 +2421,7 @@ impl TuiApp {
             // delegate to their panel handlers above.
             KeyCode::Char('q') | KeyCode::Esc => self.request_quit(),
             KeyCode::Char('?') => {
-                self.open_overlay(TuiMode::Help);
-                self.help_scroll = 0;
-                self.help_filter.clear();
+                self.open_help_overlay();
             }
             KeyCode::Char('r') => self.refresh_active_screen(),
             KeyCode::Char('j') | KeyCode::Down => self.move_selection(1),
