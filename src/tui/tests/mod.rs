@@ -5407,3 +5407,162 @@ fn overlays_restore_the_mode_they_were_opened_from() {
     app.handle_key(KeyEvent::from(KeyCode::Esc));
     assert_eq!(app.mode, TuiMode::Navigate);
 }
+
+#[test]
+fn worktree_overlay_renders_rows_filter_and_empty_states() {
+    let mut app = app_with_snapshot();
+    app.mode = TuiMode::WorktreeList;
+    app.worktree_root = "/repo".to_string();
+    app.worktree_rows = vec![
+        crate::tui::workspace::WorktreeRow {
+            path: "/repo".to_string(),
+            branch: "main".to_string(),
+            label: String::new(),
+            is_linked: false,
+        },
+        crate::tui::workspace::WorktreeRow {
+            path: "/repo-wt".to_string(),
+            branch: "feature".to_string(),
+            label: "wt".to_string(),
+            is_linked: true,
+        },
+    ];
+    app.worktree_selected = 1;
+
+    let buf = draw(&app, 100, 30);
+    assert!(buf.contains("Worktrees"), "title renders");
+    assert!(buf.contains("/repo"), "row path renders");
+    assert!(buf.contains("[linked]"), "linked badge renders");
+    assert!(buf.contains("[main]"), "main badge renders");
+    assert!(buf.contains("WORKTREES"), "footer context renders");
+
+    // Active filter shows the query and the narrowed count.
+    app.worktree_filter = "feature".to_string();
+    let buf = draw(&app, 100, 30);
+    assert!(buf.contains("filter: feature_"), "filter query renders");
+    assert!(buf.contains("1/2"), "filtered count renders");
+    assert!(buf.contains("Esc clears the filter"), "title switches");
+
+    // No match shows the search empty state, not the discovery one.
+    app.worktree_filter = "zz".to_string();
+    let buf = draw(&app, 100, 30);
+    assert!(buf.contains("No worktrees match your search"));
+
+    // No discovered rows shows the discovery empty state.
+    app.worktree_filter.clear();
+    app.worktree_rows.clear();
+    let buf = draw(&app, 100, 30);
+    assert!(buf.contains("No worktrees discovered in this folder"));
+}
+
+#[test]
+fn help_overlay_scrolls_with_page_keys_and_ctrl_u_clears() {
+    let mut app = app_with_snapshot();
+    app.open_overlay(TuiMode::Help);
+
+    // PageDown/Down scroll, PageUp/Up scroll back, all while filtering.
+    app.handle_key(KeyEvent::from(KeyCode::Down));
+    let scrolled = app.help_scroll;
+    assert!(scrolled <= crate::tui::filtered_help_rows("").len());
+    app.handle_key(KeyEvent::from(KeyCode::PageDown));
+    assert!(app.help_scroll >= scrolled);
+    app.handle_key(KeyEvent::from(KeyCode::PageUp));
+    app.handle_key(KeyEvent::from(KeyCode::Up));
+    assert_eq!(app.help_scroll, 0);
+
+    // Ctrl+U clears the active filter.
+    for ch in "theme".chars() {
+        app.handle_key(KeyEvent::from(KeyCode::Char(ch)));
+    }
+    assert_eq!(app.help_filter, "theme");
+    app.handle_key(ctrl('u'));
+    assert_eq!(app.help_filter, "");
+    // The overlay stays open after Ctrl+U.
+    assert_eq!(app.mode, TuiMode::Help);
+    // Filtered render shows the count line and the narrowed title.
+    app.help_filter = "theme".to_string();
+    let buf = draw(&app, 100, 40);
+    assert!(buf.contains("filter: theme_"), "help filter renders");
+    assert!(buf.contains("Esc clears the filter"), "help title switches");
+}
+
+#[test]
+fn new_workspace_name_prompt_shows_the_staged_path() {
+    let mut app = app_with_snapshot();
+    app.workspace_create_stage = Some(crate::tui::workspace::WorkspaceCreateStage::Path(
+        "/repo".to_string(),
+    ));
+    app.prompt_input = Some(PromptInput {
+        kind: PromptKind::NewWorkspaceName,
+        text: String::new(),
+    });
+    let buf = draw(&app, 100, 30);
+    assert!(buf.contains("Workspace name"), "prompt title renders");
+    assert!(buf.contains("/repo"), "staged path shows as subject");
+}
+
+#[test]
+fn footer_context_hints_exist_for_every_variant() {
+    // Every overlay and capture-layer context must advertise its keys in
+    // both full and compact hint forms (the footer is the discoverability
+    // surface; an empty hint is a regression).
+    let contexts = [
+        FooterContext::ConfirmQuit,
+        FooterContext::HelpOverlay,
+        FooterContext::SettingsOverlay,
+        FooterContext::WorktreeList,
+        FooterContext::CommitInput,
+        FooterContext::PromptInput(PromptKind::ReplaceInFile),
+        FooterContext::PromptInput(PromptKind::RenameFile),
+        FooterContext::DiffSearch,
+        FooterContext::EditorFind,
+        FooterContext::FileEdit,
+        FooterContext::FilterBar,
+        FooterContext::ContentSearch,
+        FooterContext::Terminal(TuiMode::Attach),
+        FooterContext::Terminal(TuiMode::Navigate),
+        FooterContext::Files(TuiMode::Navigate),
+        FooterContext::Git(TuiMode::Navigate, GitView::Cleanup),
+    ];
+    for ctx in contexts {
+        assert!(!ctx.hint().trim().is_empty(), "{ctx:?} hint empty");
+        assert!(
+            !ctx.compact_hint().trim().is_empty(),
+            "{ctx:?} compact hint empty"
+        );
+    }
+    // The worktree overlay hint names its keys.
+    let hint = FooterContext::WorktreeList.hint();
+    assert!(hint.contains("Enter opens"), "worktree hint: {hint}");
+    assert!(hint.contains("type filters"), "worktree hint: {hint}");
+}
+
+#[test]
+fn help_overlay_backspace_edits_the_filter() {
+    let mut app = app_with_snapshot();
+    app.open_overlay(TuiMode::Help);
+    for ch in "git".chars() {
+        app.handle_key(KeyEvent::from(KeyCode::Char(ch)));
+    }
+    assert_eq!(app.help_filter, "git");
+    app.handle_key(KeyEvent::from(KeyCode::Backspace));
+    assert_eq!(app.help_filter, "gi");
+    assert_eq!(app.help_scroll, 0, "backspace resets scroll");
+}
+
+#[test]
+fn worktree_row_without_branch_renders_only_the_badge() {
+    // Row with an empty branch shows the linked badge without the
+    // double-space separator.
+    let mut app = app_with_snapshot();
+    app.mode = TuiMode::WorktreeList;
+    app.worktree_root = "/repo".to_string();
+    app.worktree_rows = vec![crate::tui::workspace::WorktreeRow {
+        path: "/repo".to_string(),
+        branch: String::new(),
+        label: String::new(),
+        is_linked: true,
+    }];
+    let buf = draw(&app, 100, 30);
+    assert!(buf.contains("[linked]"), "badge renders without branch");
+}

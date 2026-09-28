@@ -730,3 +730,155 @@ fn worktree_overlay_arrows_move_while_filter_active() {
         "empty filtered list keeps cursor 0"
     );
 }
+
+#[test]
+fn worktree_overlay_covers_remaining_key_arms_and_error_paths() {
+    let (mut app, _stop) = app_with_fake_backend();
+    app.worktree_list().unwrap();
+    assert_eq!(app.worktree_rows.len(), 1);
+    assert_eq!(app.worktree_rows[0].title(), "/repo");
+    // The fake row has no label, so the title is the bare path.
+
+    // Enter with the cursor past the filtered rows errors instead of
+    // panicking (the cursor is clamped by the key handler, but the API
+    // entry must still be defensive).
+    app.worktree_selected = 5;
+    assert_eq!(
+        app.worktree_open_selected().unwrap_err(),
+        "no worktree selected"
+    );
+
+    // Enter with a row whose path is missing errors.
+    app.worktree_selected = 0;
+    app.worktree_rows[0].path = String::new();
+    assert_eq!(
+        app.worktree_open_selected().unwrap_err(),
+        "worktree path missing"
+    );
+
+    // Ctrl+U clears the filter and resets the cursor.
+    app.worktree_list().unwrap();
+    app.handle_key(KeyEvent::from(KeyCode::Char('r')));
+    app.worktree_selected = 9;
+    app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+    assert_eq!(app.worktree_filter, "");
+    assert_eq!(app.worktree_selected, 0);
+
+    // Backspace pops a filter char and clamps the cursor.
+    app.handle_key(KeyEvent::from(KeyCode::Char('r')));
+    app.handle_key(KeyEvent::from(KeyCode::Backspace));
+    assert_eq!(app.worktree_filter, "");
+
+    // Up/k move with wrap on the unfiltered list.
+    app.handle_key(KeyEvent::from(KeyCode::Up));
+    assert_eq!(app.worktree_selected, 0, "up wraps to last on 1 row");
+    app.handle_key(KeyEvent::from(KeyCode::Char('k')));
+    assert_eq!(app.worktree_selected, 0);
+    app.handle_key(KeyEvent::from(KeyCode::Down));
+    assert_eq!(app.worktree_selected, 0);
+    app.handle_key(KeyEvent::from(KeyCode::Char('j')));
+    assert_eq!(app.worktree_selected, 0);
+
+    // A filter matching nothing keeps a valid cursor and Enter errors.
+    for ch in "zz".chars() {
+        app.handle_key(KeyEvent::from(KeyCode::Char(ch)));
+    }
+    assert_eq!(app.filtered_worktree_rows().len(), 0);
+    assert_eq!(
+        app.worktree_open_selected().unwrap_err(),
+        "no worktree selected"
+    );
+
+    // The no-match render message differs from the empty-discovery one.
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.status, "no worktree selected");
+}
+
+#[test]
+fn create_workspace_with_label_validates_the_name() {
+    let (mut app, _stop) = app_with_fake_backend();
+    app.workspace_create_stage = Some(WorkspaceCreateStage::Path("/repo".to_string()));
+    assert_eq!(
+        app.create_workspace_with_label("   ").unwrap_err(),
+        "type a workspace name"
+    );
+    // The orphan name step (no staged path) errors.
+    let (mut app2, _stop2) = app_with_fake_backend();
+    assert_eq!(
+        app2.create_workspace_with_label("name").unwrap_err(),
+        "no workspace path staged"
+    );
+}
+
+#[test]
+fn worktree_row_title_falls_back_to_path_without_label() {
+    let row = WorktreeRow {
+        path: "/repo".to_string(),
+        branch: "main".to_string(),
+        label: String::new(),
+        is_linked: true,
+    };
+    assert_eq!(row.title(), "/repo");
+}
+
+#[test]
+fn worktree_open_focuses_unknown_path_without_panicking() {
+    // Opening a worktree whose cwd is not among the refreshed snapshot
+    // workspaces skips the focus step instead of panicking (backend may
+    // auto-drop or rename on open).
+    let (mut app, _stop) = app_with_fake_backend();
+    app.worktree_list().unwrap();
+    app.worktree_rows[0].path = "/elsewhere".to_string();
+    let before = app.selected_workspace;
+    let result = app.worktree_open_selected().unwrap();
+    assert_eq!(result, "opened /elsewhere");
+    assert_eq!(app.selected_workspace, before, "no focus when cwd missing");
+    assert_eq!(app.mode, TuiMode::Navigate);
+}
+
+#[test]
+fn worktree_backspace_clamps_cursor_when_filter_shrinks() {
+    let (mut app, _stop) = app_with_fake_backend();
+    app.worktree_list().unwrap();
+    // Type a filter, then backspace it to nothing: the cursor stays valid.
+    for ch in "repo".chars() {
+        app.handle_key(KeyEvent::from(KeyCode::Char(ch)));
+    }
+    assert_eq!(app.filtered_worktree_rows().len(), 1);
+    for _ in 0..4 {
+        app.handle_key(KeyEvent::from(KeyCode::Backspace));
+    }
+    assert_eq!(app.worktree_filter, "");
+    assert!(app.worktree_selected < app.filtered_worktree_rows().len());
+}
+
+#[test]
+fn expand_tilde_falls_back_without_home() {
+    // Without $HOME a ~/path stays as typed instead of panicking.
+    let prev = std::env::var_os("HOME");
+    unsafe { std::env::remove_var("HOME") };
+    let expanded = expand_tilde_path("~/Documents");
+    assert_eq!(expanded, std::path::PathBuf::from("~/Documents"));
+    let bare = expand_tilde_path("~");
+    assert_eq!(bare, std::path::PathBuf::from("~"));
+    if let Some(home) = prev {
+        unsafe { std::env::set_var("HOME", home) }
+    }
+}
+
+#[test]
+fn worktree_backspace_on_filter_matching_nothing_clamps_to_zero() {
+    // Deleting the last char of a no-match filter must land the cursor
+    // on saturating_sub path: filter "zz" (0 rows), backspace -> "z"
+    // still 0 rows, cursor clamps to 0 via the len==0 branch.
+    let (mut app, _stop) = app_with_fake_backend();
+    app.worktree_list().unwrap();
+    for ch in "zz".chars() {
+        app.handle_key(KeyEvent::from(KeyCode::Char(ch)));
+    }
+    assert_eq!(app.filtered_worktree_rows().len(), 0);
+    app.worktree_selected = 3;
+    app.handle_key(KeyEvent::from(KeyCode::Backspace));
+    assert_eq!(app.worktree_selected, 0);
+    assert_eq!(app.worktree_filter, "z");
+}
