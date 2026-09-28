@@ -1484,9 +1484,14 @@ fn shortcut_dispatch_covers_every_arm() {
     app.handle_key(ctrl_b);
     app.handle_key(KeyEvent::from(KeyCode::Char('x')));
 
-    // Quit arm.
+    // Quit arm opens the confirmation overlay instead of quitting.
     app.handle_key(ctrl_b);
     app.handle_key(KeyEvent::from(KeyCode::Char('q')));
+    assert_eq!(app.mode, TuiMode::ConfirmQuit);
+    assert!(!app.should_quit(), "quit shortcut asks first");
+    // y confirms; the overlay was opened from Navigate so cancel would
+    // restore that mode, but here we confirm for real.
+    app.handle_key(KeyEvent::from(KeyCode::Char('y')));
     assert_eq!(app.status, "quit");
 
     // Refresh arm and PrevWorkspace arm (focus unchanged by j/k).
@@ -2161,9 +2166,13 @@ fn navigation_keys_cover_sidebar_move_focus_and_attach() {
     app.handle_key(ctrl('g'));
     assert_eq!(app.mode, TuiMode::Navigate);
 
-    // In Navigate on the Terminal screen q quits.
+    // In Navigate on the Terminal screen q opens the quit confirmation.
     app.handle_key(KeyEvent::from(KeyCode::Char('q')));
-    assert_eq!(app.status, "quit");
+    assert_eq!(app.mode, TuiMode::ConfirmQuit);
+    // Esc cancels the quit overlay back to Navigate.
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert_eq!(app.mode, TuiMode::Navigate);
+    assert!(!app.should_quit());
 
     // On the Files screen Navigate keys go to the panel handlers.
     app.screen = TuiScreen::Files;
@@ -2992,12 +3001,74 @@ fn navigate_esc_on_files_screen_returns_to_terminal() {
     app.mode = TuiMode::Navigate;
     app.screen = TuiScreen::Files;
     // Esc on a non-Terminal screen steps back to Terminal (webui Esc
-    // leaves the open panel), and only a second Esc quits.
+    // leaves the open panel); the second Esc opens the quit overlay,
+    // and a third Esc only cancels it.
     app.handle_key(KeyEvent::from(KeyCode::Esc));
     assert_eq!(app.screen, TuiScreen::Terminal);
     assert_ne!(app.status, "quit", "first Esc detaches, not quits");
     app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert_eq!(app.mode, TuiMode::ConfirmQuit);
+    assert!(!app.should_quit(), "second Esc asks, does not quit");
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert_eq!(app.mode, TuiMode::Navigate);
+    assert!(!app.should_quit());
+    // q opens the confirm overlay too, and y confirms it.
+    app.handle_key(KeyEvent::from(KeyCode::Char('q')));
+    assert_eq!(app.mode, TuiMode::ConfirmQuit);
+    app.handle_key(KeyEvent::from(KeyCode::Char('y')));
     assert_eq!(app.status, "quit");
+    assert!(app.should_quit());
+}
+
+#[test]
+fn quit_confirmation_covers_all_quit_paths() {
+    let mut app = app_with_snapshot();
+    app.mode = TuiMode::Attach;
+    app.screen = TuiScreen::Terminal;
+
+    // Plain q in Navigate opens the overlay (covered above); Esc on the
+    // Terminal screen opens it too, and cancel restores the prior mode.
+    app.mode = TuiMode::Navigate;
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert_eq!(app.mode, TuiMode::ConfirmQuit);
+    app.handle_key(KeyEvent::from(KeyCode::Char('n')));
+    assert_eq!(app.mode, TuiMode::Navigate, "cancel restores Navigate");
+
+    // Opened from Attach, cancel restores Attach.
+    app.mode = TuiMode::Attach;
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('q')));
+    assert_eq!(app.mode, TuiMode::ConfirmQuit);
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert_eq!(app.mode, TuiMode::Attach, "cancel restores Attach");
+    assert!(!app.should_quit());
+
+    // Enter confirms, Ctrl+C confirms too.
+    app.mode = TuiMode::Navigate;
+    app.handle_key(KeyEvent::from(KeyCode::Char('q')));
+    assert_eq!(app.mode, TuiMode::ConfirmQuit);
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.should_quit(), "Enter confirms quit");
+
+    app.status = String::new();
+    app.mode = TuiMode::ConfirmQuit;
+    app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+    assert!(app.should_quit(), "Ctrl+C confirms quit");
+
+    // Unknown keys in the overlay do nothing.
+    app.status = String::new();
+    app.mode = TuiMode::ConfirmQuit;
+    app.handle_key(KeyEvent::from(KeyCode::Char('z')));
+    assert_eq!(app.mode, TuiMode::ConfirmQuit);
+    assert!(!app.should_quit());
+
+    // The overlay renders its question, hints, and footer mode.
+    app.mode = TuiMode::ConfirmQuit;
+    let rendered = draw(&app, 100, 24);
+    assert!(rendered.contains("Quit herdr-webui-tui?"), "title renders");
+    assert!(rendered.contains("y"), "y hint renders");
+    assert!(rendered.contains("QUIT?"), "footer shows QUIT? mode");
+    assert!(rendered.contains("n"), "n hint renders");
 }
 
 #[test]

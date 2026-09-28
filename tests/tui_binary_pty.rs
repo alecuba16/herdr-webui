@@ -266,6 +266,15 @@ fn tui_binary_interactive_loop_pty() {
     std::thread::sleep(Duration::from_millis(200));
     let _ = writer.write_all(b"q");
     let _ = writer.flush();
+    // `q` now opens the quit confirmation overlay instead of exiting
+    // directly: wait for the modal, then `y` confirms and the binary exits.
+    wait_for(&log, "Quit herdr-webui-tui?");
+    assert!(
+        log.lock().unwrap().contains("QUIT?"),
+        "footer should show the QUIT? mode while the overlay is open"
+    );
+    let _ = writer.write_all(b"y");
+    let _ = writer.flush();
     drop(writer);
 
     // Reap the child on a watchdog thread with a hard deadline; a plain
@@ -282,7 +291,7 @@ fn tui_binary_interactive_loop_pty() {
     if status.is_err() {
         let _ = killer.kill();
     }
-    let status = status.expect("TUI did not exit after q");
+    let status = status.expect("TUI did not exit after q + y confirm");
     assert!(status.success());
 
     // The child has exited on its own: disarm the panic guard so its

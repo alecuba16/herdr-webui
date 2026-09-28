@@ -141,6 +141,8 @@ pub struct TuiApp {
     pub rebase_pending_upstream: Option<String>,
     /// Vertical scroll of the Help overlay (j/k when help is open).
     pub help_scroll: usize,
+    /// Mode the user was in when the quit overlay opened; restored on cancel.
+    pub(crate) quit_prev_mode: TuiMode,
     dirty: bool,
 }
 
@@ -335,6 +337,7 @@ impl TuiApp {
             worktree_create_stage: None,
             rebase_pending_upstream: None,
             help_scroll: 0,
+            quit_prev_mode: TuiMode::Navigate,
             dirty: true,
         }
     }
@@ -411,6 +414,19 @@ impl TuiApp {
                 }
                 KeyCode::Char('k') | KeyCode::Up | KeyCode::PageUp => {
                     self.help_scroll = self.help_scroll.saturating_sub(1);
+                }
+                _ => {}
+            },
+            TuiMode::ConfirmQuit => match key.code {
+                // y/Enter confirm the quit; n/Esc/q cancel back to the
+                // previous mode. Ctrl+C also confirms (the classic "I
+                // really want out" reflex key).
+                KeyCode::Char('y') | KeyCode::Enter => self.status = "quit".to_string(),
+                KeyCode::Char('n') | KeyCode::Esc | KeyCode::Char('q') => self.cancel_quit(),
+                _ if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && key.code == KeyCode::Char('c') =>
+                {
+                    self.status = "quit".to_string();
                 }
                 _ => {}
             },
@@ -936,7 +952,7 @@ impl TuiApp {
                 let result = self.temp_terminal_promote();
                 self.workspace_status(result);
             }
-            Shortcut::Quit => self.status = "quit".to_string(),
+            Shortcut::Quit => self.request_quit(),
             Shortcut::GitChanges => {
                 self.open_git_screen();
                 self.git_panel.view = GitView::Changes;
@@ -1134,6 +1150,20 @@ impl TuiApp {
             Shortcut::GitStashFile => self.run_git_action(|panel, api| panel.stash_changes(api)),
             Shortcut::GitPush => self.run_git_action(|panel, api| panel.push(api)),
         }
+    }
+
+    /// Open the quit confirmation overlay. Remembers the mode to restore
+    /// when the user cancels.
+    fn request_quit(&mut self) {
+        self.quit_prev_mode = self.mode;
+        self.mode = TuiMode::ConfirmQuit;
+        self.status = "quit? y confirms · Esc cancels".to_string();
+    }
+
+    /// Cancel the quit overlay and return to the mode the user was in.
+    fn cancel_quit(&mut self) {
+        self.mode = self.quit_prev_mode;
+        self.status = "quit cancelled".to_string();
     }
 
     fn run_git_action(
@@ -2080,7 +2110,7 @@ impl TuiApp {
         match key.code {
             // Only the Terminal screen reaches this handler; Files and Git
             // delegate to their panel handlers above.
-            KeyCode::Char('q') | KeyCode::Esc => self.status = "quit".to_string(),
+            KeyCode::Char('q') | KeyCode::Esc => self.request_quit(),
             KeyCode::Char('?') => self.mode = TuiMode::Help,
             KeyCode::Char('r') => self.refresh_active_screen(),
             KeyCode::Char('j') | KeyCode::Down => self.move_selection(1),

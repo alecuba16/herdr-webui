@@ -5,6 +5,10 @@ pub enum TuiMode {
     Navigate,
     Attach,
     Help,
+    /// Quit confirmation overlay: `y`/Enter quits, `n`/Esc cancels.
+    /// All quit paths (Ctrl+B q, plain q, Esc on the Terminal screen)
+    /// land here first so nobody leaves the TUI by accident.
+    ConfirmQuit,
     /// Settings overlay (webui Settings modal, prefix `S`): read-only
     /// display of the API base, theme mode, refresh interval, and
     /// the git/exploration roots, plus a theme toggle (`t`).
